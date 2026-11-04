@@ -7,7 +7,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use deepseek_tui::models::SystemPrompt;
 use deepseek_tui::session_manager::SessionManager;
 
@@ -130,31 +130,89 @@ pub(crate) fn validate_scheduled_workspace_path(root: &Path, workspace: &Path) -
     Ok(())
 }
 
+/// Round-58 (#657 R4): single-source wording constants — the session
+/// creation classifier (`features/session_creation`) classifies transient
+/// vs permanent validator rejections by SUBSTRING, so the wordings live
+/// HERE and both sides reference the same constants: a wording edit can no
+/// longer leave the whole suite green while silently reclassifying real
+/// NotFound errors (attempt-1 poisoning) or re-opening the old
+/// transient-matches-permanent drift (round-31 MAJOR 1).
+pub(crate) const WORKSPACE_WORDING_TRANSIENT: &str =
+    "Workspace path could not be verified right now";
+pub(crate) const WORKSPACE_WORDING_NOT_FOUND: &str = "Workspace path does not exist";
+/// The permanent "must" family prefix (not be empty / be absolute / be a
+/// directory / not be inside the Pinvou home / not be a filesystem volume
+/// root) that the classifier matches as one permanent class.
+pub(crate) const WORKSPACE_WORDING_MUST: &str = "Workspace path must";
+
 /// Validates the working directory a user selected for a plain chat session:
 /// non-empty, absolute, must exist on disk and be a directory. Returns the
 /// canonicalized path (removing `.`, symlinks, and trailing separators); callers
 /// use the return value for both binding and display.
 pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
     if raw.trim().is_empty() {
-        bail!("Workspace path must not be empty");
+        bail!("{WORKSPACE_WORDING_MUST} not be empty");
     }
     let path = PathBuf::from(raw);
     if !path.is_absolute() {
-        bail!("Workspace path must be absolute: {raw}");
+        bail!("{WORKSPACE_WORDING_MUST} be absolute: {raw}");
     }
-    let canonical = path
-        .canonicalize()
-        .with_context(|| format!("Workspace path does not exist: {raw}"))?;
+    let canonical = path.canonicalize().map_err(|error| {
+        // Round-30 minor 8: a transient fault (mount hiccup, permission
+        // race) is not "does not exist" — name the distinction instead of
+        // telling the model a falsehood. Round-31 MAJOR 1 corrected the
+        // classification: only the transient wording retries — the NotFound
+        // wording ("does not exist") IS a permanent class, and the
+        // classifier's transient-prefix-first check is what keeps this
+        // branch retryable. Round-58 (#657 R4): the wordings come from the
+        // shared constants above.
+        if error.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!("{WORKSPACE_WORDING_NOT_FOUND}: {raw}")
+        } else {
+            anyhow::anyhow!("{WORKSPACE_WORDING_TRANSIENT} ({error}): {raw}")
+        }
+    })?;
     if !canonical.is_dir() {
-        bail!("Workspace path must be a directory: {raw}");
+        bail!("{WORKSPACE_WORDING_MUST} be a directory: {raw}");
+    }
+    let canonical_str = crate::platform::os::platform_compat_path(&canonical.to_string_lossy());
+    // Round-23 M1 (#657): the pinvou3 home (settings.json, connector
+    // credentials, sessions/, spool roots) and filesystem volume roots are
+    // refused as project workspaces — binding either would present
+    // privileged state as an unattended opening turn's project. Scope
+    // refusal lives HERE (the panel's own gate) so the panel and the
+    // tool-created path share it. BOTH sides are canonicalized so the
+    // comparison is in real-path space (canonicalize resolves junctions —
+    // e.g. the CI runner's Temp — into their targets, and a string-level
+    // comparison against the raw pinvou3_home() would silently miss).
+    // PathBuf::starts_with compares whole components, so a sibling like
+    // `<home>-backup` is not a false match.
+    let home_canonical = crate::platform::paths::pinvou3_home()
+        .canonicalize()
+        .unwrap_or_else(|_| crate::platform::paths::pinvou3_home());
+    if canonical == home_canonical || canonical.starts_with(&home_canonical) {
+        bail!(
+            "{WORKSPACE_WORDING_MUST} not be inside the Pinvou home ({}): {raw}",
+            home_canonical.display()
+        );
+    }
+    // Round-29 minor: the old `len() <= 3` heuristic misclassified 1-2
+    // character top-level directories (`/a`, `/ab`) as volume roots —
+    // fail-closed but with the wrong message. A path is a volume root iff
+    // it terminates in a root/prefix component (Path::parent is None
+    // there); everything else has a proper parent directory component.
+    let is_volume_root = match canonical.parent() {
+        None => true,
+        Some(parent) => parent == canonical,
+    };
+    if is_volume_root {
+        bail!("{WORKSPACE_WORDING_MUST} not be a filesystem volume root: {raw}");
     }
     // Windows canonicalize returns a \?\ verbatim prefix; agents and the
     // frontend misjudge cwd in string/prefix comparisons, so normalize to a
     // regular drive path (identity on non-Windows) — the same invariant as
     // validate_codex_project_workspace.
-    Ok(crate::platform::os::platform_compat_path(
-        &canonical.to_string_lossy(),
-    ))
+    Ok(canonical_str)
 }
 
 /// Input validation for the keychain snapshot (§6): every additional root
@@ -391,7 +449,10 @@ pub(crate) fn generate_session_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sched_session_id, validate_scheduled_task_id, validate_session_id};
+    use super::{
+        WORKSPACE_WORDING_NOT_FOUND, WORKSPACE_WORDING_TRANSIENT, is_sched_session_id,
+        validate_scheduled_task_id, validate_session_id, validate_user_workspace_path,
+    };
 
     /// Pins the two public error messages byte-for-byte: the shared charset
     /// helper interpolates the id kind, and callers surface these strings.
@@ -434,6 +495,30 @@ mod tests {
         assert!(!is_sched_session_id("schedXxyz")); // no dash at the boundary
         assert!(!is_sched_session_id("main-abc123"));
         assert!(!is_sched_session_id("aux-abc123"));
+    }
+
+    /// Round-58 (#657 R4): the creation classifier classifies by SUBSTRING
+    /// against these wordings, so a reworded branch must stay pinned to its
+    /// constant. A path under a MISSING directory canonicalizes to NotFound
+    /// on every platform, so the permanent-not-found wording is produced
+    /// verbatim from the shared constant — re-inlining a divergent wording
+    /// (or editing the constant without the branch) turns this red.
+    #[test]
+    fn workspace_wordings_stay_single_sourced() {
+        assert_ne!(
+            WORKSPACE_WORDING_TRANSIENT, WORKSPACE_WORDING_NOT_FOUND,
+            "the transient and NotFound wordings must stay distinct classes"
+        );
+        let missing = std::env::temp_dir()
+            .join("pinvou-wording-pin-missing")
+            .join("does-not-exist");
+        let error = validate_user_workspace_path(&missing.to_string_lossy())
+            .err()
+            .expect("a nonexistent directory must be refused");
+        assert!(
+            error.to_string().starts_with(WORKSPACE_WORDING_NOT_FOUND),
+            "the NotFound wording must come from the shared constant: {error}"
+        );
     }
 }
 

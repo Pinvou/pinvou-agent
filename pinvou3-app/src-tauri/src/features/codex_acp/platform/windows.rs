@@ -4,6 +4,9 @@ use crate::platform::process::HiddenTokioCommand;
 use anyhow::{Context, Result};
 use tokio::process::Command;
 
+#[cfg(test)]
+mod shutdown_tests;
+
 pub(super) const NODE_EXECUTABLE_NAME: &str = "node.exe";
 pub(super) const SYSTEM_CODEX_NAME: &str = "codex.cmd";
 pub(super) const MANAGED_ADAPTER_NAME: &str = "codex-acp.cmd";

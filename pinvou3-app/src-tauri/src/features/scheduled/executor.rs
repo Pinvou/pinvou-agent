@@ -191,7 +191,7 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
                     // the turn lock); a genuinely gone session fails the run
                     // loudly instead of being retried forever.
                     self.pool
-                        .deliver_messaging_turn(target_session, message)
+                        .deliver_messaging_turn(target_session, message, false)
                         .await
                         .map_err(|dispatch_error| {
                             anyhow::anyhow!(dispatch_error)
@@ -1307,9 +1307,12 @@ mod tests {
         let steer = body
             .find("self.pool.steer(target_session, message.clone())")
             .expect("steer-first delivery");
+        // Round-34 MAJOR 4: no or_else fallback — the loose needle matched
+        // this test's own string literals (3 hits in-file), so the pin
+        // survived flipping the production argument to true. The exact
+        // production-format needle only matches the runtime impl.
         let dispatch = body
-            .find("self.pool\n                        .deliver_messaging_turn(target_session, message)")
-            .or_else(|| body.find("deliver_messaging_turn(target_session, message)"))
+            .find("self.pool\n                        .deliver_messaging_turn(target_session, message, false)")
             .expect("dispatch fallback after steer failure");
         let timeout = body
             .find("SCHEDULED_MESSAGE_DELIVERY_TIMEOUT, async")

@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.10.16"
+version = "0.10.17"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
@@ -197,8 +197,13 @@ walkdir = "2"
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
 # 电子表格解析（file_ingest 用）：读 xlsx/xls/ods 的全部工作表。
 # 0.37 要求 zip ^9（见上）与 quick-xml ^0.42（ReDoS 修复线,见 RUSTSEC-2026-0194/0195）。
+# 0.38：修 RUSTSEC-2026-0436（CFB/OLE2 解析器对恶意输入 panic/无界分配,见该通告;
+# zip ^9 与 quick-xml ^0.42 约束不变）。注意：本 bump 的极小 lock 更新会让 resolver
+# 把图中 range requirement 边（errno/tempfile/cssparser-macros 等对 windows-sys/
+# getrandom/syn 的 ">=x,<y" 需求）重 pick 到较旧版本——21 个条目共 22 条边随本
+# bump 移动,系 cargo 1.99 的规范输出（byte-reproducible）,非人工改动,勿手工回改。
 # 残留的 quick-xml 0.41 仅来自 wayland-scanner/xcb 的 Linux 构建链（`cargo tree -i quick-xml`）。
-calamine = "0.37"
+calamine = "0.38"
 # XLSX structure preservation: inspect OOXML cell styles, formulas, and merged
 # ranges that calamine's value-only Range intentionally does not expose.
 quick-xml = "0.42"
@@ -303,11 +308,16 @@ objc2-screen-capture-kit = { version = "0.3", default-features = false, features
 ] }
 
 [target.'cfg(windows)'.dependencies]
+tauri = { version = "2.12", features = ["tray-icon"] }
+# Keep this aligned with Tauri's resolved tray-icon/muda versions: Tauri
+# forwards their native events. Direct access supplies the public GUID API
+# needed to query registration without losing Shell's S_FALSE success.
+tray-icon = { version = "=0.25.1", default-features = false }
 # Win32_Graphics_Gdi: the in-repo monitor capture (computer_use) BitBlts the
 # desktop DC directly — xcap 0.9.8's capture_monitor leaks one GDI bitmap per
 # call (DeleteObject runs while the bitmap is still selected into the memory
 # DC) and its selection is never restored.
-windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 webview2-com = "0.39"
 # Native Outlook .msg parsing (ingest_email.rs; same gating the retired
 # os::msg_native_supported() predicate provided). Windows-only compile:

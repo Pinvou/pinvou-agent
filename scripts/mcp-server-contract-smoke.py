@@ -730,7 +730,7 @@ def main():
         "pptx": {"make_pptx"},
         "gongwen": {"make_gongwen"},
         "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
-        "session-reader": {"read_session", "list_sessions", "send_message_to_session"},
+        "session-reader": {"read_session", "list_sessions", "send_message_to_session", "create_session"},
         "app-automations": {
             "create_scheduled_task", "read_scheduled_task", "list_scheduled_tasks",
             "update_scheduled_task", "delete_scheduled_task",
@@ -742,7 +742,9 @@ def main():
     # E6 (ADR-0024): the scoped-mode behavior addition ships as manifest
     # 1.1.0 — the builtin package re-releases by byte comparison
     # (ensure_package_released upgrades an existing install on mismatch).
-    assert manifests["session-reader"]["version"] == "1.1.0", manifests["session-reader"]["version"]
+    # This PR's create_session addition rides the same mechanism one
+    # version further: the merged manifest is 1.2.0.
+    assert manifests["session-reader"]["version"] == "1.2.0", manifests["session-reader"]["version"]
     check_session_reader_length_cap_parity()
     check_session_reader_scoped_journey()
 
@@ -806,7 +808,73 @@ def main():
                 "arguments": {"to_session": "sched-run1", "text": "hi"},
             }))
             assert "not readable" in isolated.get("error", ""), isolated
-    print("✅ session-reader: 跨会话消息校验/幂等/隔离前缀全旅程")
+            # create_session：必填发送者 + 隔离前缀请求者拒绝 + 无 watcher 短等待
+            # 超时回 pending + spool 落盘（规范化后的 workspace 路径）+
+            # 同幂等键重试 duplicate。
+            no_sender = content_json(rpc.call("tools/call", {
+                "name": "create_session",
+                "arguments": {"title": "早报"},
+            }))
+            assert "required" in no_sender.get("error", "") and "from_session" in no_sender.get("error", ""), no_sender
+            rejected = content_json(rpc.call("tools/call", {
+                "name": "create_session",
+                "arguments": {"title": "早报", "from_session": "sched-run1"},
+            }))
+            assert "cannot request session creation" in rejected.get("error", ""), rejected
+            # Round-29 B2-3: the workspace lives OUTSIDE the relocated
+            # PINVOU3_HOME — the fixture previously spooled the home itself,
+            # enshrining the pre-PINVOU3_HOME-aware validator. Both
+            # directions are pinned: the home refused, the outside dir
+            # accepted and spooled (with the canonicalized path).
+            inside = content_json(rpc.call("tools/call", {
+                "name": "create_session",
+                "arguments": {
+                    "title": "早报", "first_message": "汇总",
+                    "workspace_path": str(home),
+                    "from_session": "src0001",
+                },
+            }))
+            assert "Pinvou home" in inside.get("error", ""), inside
+            with tempfile.TemporaryDirectory(prefix="pinvou-create-ws-") as ws_root:
+                ws_dir = Path(ws_root, "ws")
+                ws_dir.mkdir()
+                pending = content_json(rpc.call("tools/call", {
+                    "name": "create_session",
+                    "arguments": {
+                        "title": "重构会话", "first_message": "重构解析器",
+                        "workspace_path": str(ws_dir) + "/..",
+                        "from_session": "src0001", "idempotency_key": "k1",
+                    },
+                }))
+                assert pending.get("ok") is True and pending.get("sessionId") is None, pending
+                assert pending.get("delivery") == "pending", pending
+                spooled = sorted(Path(home, "session-requests", "spool").glob("*.json"))
+                assert len(spooled) == 1, spooled
+                record = json.loads(spooled[0].read_text(encoding="utf-8"))
+                assert record["title"] == "重构会话" and record["first_message"] == "重构解析器", record
+                assert record["workspace_path"] == str(Path(ws_root).resolve()), record
+                # Round-13 minor 9: the replay is IDENTICAL (same
+                # workspace_path argument, so the payload digest matches) —
+                # the old form resent a DIVERGENT payload and asserted only
+                # duplicate:True computed from the pre-existing record, so it
+                # could not distinguish identical-replay from ignore.
+                # Re-assert the record and the mismatch flag as well.
+                duplicate = content_json(rpc.call("tools/call", {
+                    "name": "create_session",
+                    "arguments": {
+                        "title": "重构会话", "first_message": "重构解析器",
+                        "workspace_path": str(ws_dir) + "/..",
+                        "from_session": "src0001", "idempotency_key": "k1",
+                    },
+                }))
+                assert duplicate.get("duplicate") is True, duplicate
+                assert not duplicate.get("payload_mismatch"), duplicate
+                spooled = sorted(Path(home, "session-requests", "spool").glob("*.json"))
+                assert len(spooled) == 1, spooled
+                record = json.loads(spooled[0].read_text(encoding="utf-8"))
+                assert record["title"] == "重构会话" and record["first_message"] == "重构解析器", record
+                assert record["workspace_path"] == str(Path(ws_root).resolve()), record
+    print("✅ session-reader: 跨会话消息/会话创建校验/幂等/隔离前缀全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-app-automations-") as home:
         # A plain session file for the scheduled-message target check.
