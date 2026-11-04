@@ -1409,7 +1409,10 @@ try {
       '在途快照窗口内落下的墓碑必须被 pin（淘汰不得丢弃活证据）');
     assert.match(chatEvents, /if \(map\.size >= 512\) \{[\s\S]{0,300}?if \(state\.approvalReplayPinnedTombstones && state\.approvalReplayPinnedTombstones\.has\(oldest\)\) continue;/,
       '512 逐条淘汰必须跳过被在途快照钉住的墓碑');
-    assert.match(chatEvents, /approvalReplayTerminalSeq/,
+    // round-10 收紧：此前只断言标识符出现（purge 助手自身也含该标识符，
+    // 删掉 bump 语句依旧全绿）——现钉到确切的 bump 语句（与 codex 车道的
+    // 精确钉同款）。
+    assert.match(chatEvents, /const approvalSeqMap = state\.approvalReplayTerminalSeq;\s*\n\s*approvalSeqMap\.set\(String\(sid\), \(approvalSeqMap\.get\(String\(sid\)\) \|\| 0\) \+ 1\);/,
       'chat:done 终态清扫必须推进审批重放代栅栏（sessions.js 消费）');
     // 评审 5764675531：缓冲回收不得在回放窗口开启时重置终态代栅栏——窗口在途
     // 时暂缓删除（pending 标记），关窗 finally 落地；无窗口时照旧直删。
@@ -1425,6 +1428,17 @@ try {
       'codex 车道 chat:done 终态清扫必须推进审批重放代栅栏（CodexAcpView 消费）');
     assert.match(codexView, /const terminalFence = lane\.approvalReplayTerminalSeq \|\| 0;/,
       'codex 车道重放必须在快照发出前捕获终态代栅栏');
+    // round-10 补钉：decideNativeApproval 的同步防重入闩（submitting 置位于
+    // await 之前 + finally 释放）与 resolved 拒入此前零测试——删掉守卫全套
+    // 保持绿（同一提交帧双击会派发两条 decide_approval；终态卡重入会派发
+    // 一条后端必拒的冗余决策）。
+    assert.match(codexView, /if \(card\) \{[\s\S]{0,300}?if \(card\.submitting \|\| card\.resolved\) return;[\s\S]{0,160}?card\.submitting = true;[\s\S]{0,80}?\}/,
+      'decideNativeApproval 必须在 await 前同步拒绝在途与已终态卡（同帧双击/已决重入）');
+    assert.match(codexView, /\} finally \{\s*\n\s*if \(card\) card\.submitting = false;/,
+      'decideNativeApproval 失败臂必须在 finally 释放闩（卡保持可重试）');
+    // native 车道墓碑 512 帽此前同样无钉（主车道墓碑有 512 行为回归）。
+    assert.match(nativeLaneSrc, /if \(lane\.approvalTombstones\.size > 512\) \{[\s\S]{0,200}?lane\.approvalTombstones\.delete\(oldest\);/,
+      'native 车道墓碑必须有界（512 最旧逐出，与主车道同口径）');
     assert.match(codexView, /\(lane\.approvalReplayTerminalSeq \|\| 0\) !== terminalFence\) pendingApprovals = null;/,
       'codex 车道终态代已推进时整批快照必须作废（迟到的登记表不得插回活卡）');
   }

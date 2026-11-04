@@ -1162,6 +1162,11 @@ export function CodexAcpView({
   const [codePermPrefs, setCodePermPrefs] = useState(null);
   // 待确认的 yolo 切换请求（{ draft }）；非 null 时渲染确认卡。
   const [pendingYoloSwitch, setPendingYoloSwitch] = useState(null);
+  // 确认卡的代数（chat 车道 pendingChatYoloDialogGenRef 同约，round-10 评审
+  // 补齐）：门开启与切会话各 bump 一次；confirm_code_yolo 在途回程落定时
+  // 代数不匹配即整单作废——不得清掉更新的对话框，也不得继续已弃置的旧
+  // 确认（M4 落点仍安全，这里收窄的是「顺手武装已弃置会话 + 吞掉新卡」）。
+  const pendingYoloDialogGenRef = useRef(0);
   const [yoloConfirmBusy, setYoloConfirmBusy] = useState(false);
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
@@ -1777,6 +1782,7 @@ export function CodexAcpView({
         // fromAuto 钉住来路档位（chat 车道 action.via 同约）：Auto→Yolo
         // 直达与 Plan→Yolo 退回确认后各自回到发起命令族，防两条等价路径
         // 日后静默分叉。
+        pendingYoloDialogGenRef.current += 1;
         setPendingYoloSwitch({ draft: !activeId, sid: activeId || null, fromAuto: !isPlan });
         return;
       }
@@ -1858,9 +1864,13 @@ export function CodexAcpView({
     const pending = pendingYoloSwitch;
     if (!pending || yoloConfirmBusy) return;
     setYoloConfirmBusy(true);
+    const genAtConfirm = pendingYoloDialogGenRef.current;
     try {
       const prefs = await invoke('confirm_code_yolo');
       if (prefs) setCodePermPrefs(prefs);
+      // 代数不匹配（在途窗口内切了会话 / 开了新门）即整单作废：不清当前
+      // 对话框、不继续旧确认（chat 车道 genAtConfirm 同款收窄）。
+      if (pendingYoloDialogGenRef.current !== genAtConfirm) return;
       setPendingYoloSwitch(null);
       if (pending.draft) {
         stageDraftMode('yolo');
@@ -1887,6 +1897,7 @@ export function CodexAcpView({
   /// 状态，无需额外复位。
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
+    pendingYoloDialogGenRef.current += 1;
     setPendingYoloSwitch(null);
   }, [activeId]);
 
@@ -3483,7 +3494,11 @@ export function CodexAcpView({
       item && item.type === 'approval' && item.approvalId === approvalId
     ));
     if (card) {
-      if (card.submitting) return;
+      // resolved 一并拒入（round-10 评审，chat 车道 decideApproval 同款）：
+      // 卡已就地落终态（本地 settle / resolved 回声 / done 清扫）但按钮尚未
+      // 随下一帧卸载的窗口里，重入只会派发一条后端必拒的冗余 decide_approval
+      // 并闪一条错误提示。
+      if (card.submitting || card.resolved) return;
       card.submitting = true;
     }
     setRespondingSessionId(sid); setError('');
