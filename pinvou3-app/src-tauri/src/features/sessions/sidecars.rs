@@ -10,8 +10,10 @@
 //!
 //! The mode and multi-agent sidecars live beside these and are implemented
 //! in [`super::mode_state`] (`_session_mode_states.json`, with the legacy
-//! `_code_mode_states.json` migrated on load, and `_multi_agent.json`), so
-//! five durable sidecar files exist in total across the two modules. The
+//! `_code_mode_states.json` migrated on load, and `_multi_agent.json`; the
+//! tri-mode waves added `_session_auto_modes.json` and
+//! `_ask_on_guardrail.json`), so seven durable sidecar files exist in total
+//! across the two modules. The
 //! per-session MODE is durable: every session write persists its own entry
 //! and reopening restores its own last mode. Only interaction state that
 //! must reset on a bounce stays in memory — the pending Plan ticket and

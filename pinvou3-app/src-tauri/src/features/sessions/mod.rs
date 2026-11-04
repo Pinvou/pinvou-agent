@@ -342,7 +342,8 @@ pub struct SessionStore {
     /// the RMW under the cache's write lock, but the sweep side's batch removal
     /// was previously lock-free — interleaving loses updates.
     session_models_io: Arc<Mutex<()>>,
-    /// Persistence mutex for `_session_mode_states.json` (same contract as
+    /// Persistence mutex for `_session_mode_states.json` and, since the
+    /// tri-mode waves, the `_ask_on_guardrail.json` RMWs (same contract as
     /// `pinned_sessions_io`): shared by set_mode / set_mode_and_persist / the
     /// retention sweep.
     session_mode_states_io: Arc<Mutex<()>>,

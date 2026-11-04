@@ -10264,8 +10264,9 @@ fn retention_purge_removes_durable_mode_entries_written_after_boot() {
     .expect("write candidate record");
     // A mode entry another process persisted after this store booted: the
     // in-memory map has never seen it, so a purge keyed on the map would
-    // leave it behind — and the mode sidecar has no boot-time ghost cleanup,
-    // so the ghost would survive forever and re-arm on id reuse.
+    // leave it behind. The boot ghost sweep only cleans ids dead at startup;
+    // post-boot ghosts are this durable purge's job — without it they would
+    // survive forever and re-arm on id reuse.
     let mode_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
     let payload = serde_json::json!({ "modeghost-victim": "plan" });
     std::fs::write(&mode_file, payload.to_string()).expect("write ghost mode entry");

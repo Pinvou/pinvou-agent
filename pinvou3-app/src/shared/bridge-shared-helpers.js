@@ -1848,7 +1848,7 @@
     if (state.activeSessionId !== id) return;
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
-    // freshBuffer's modeState is the generic default (yolo); the draft
+    // freshBuffer's modeState is the generic default (auto); the draft
     // display must be overridden with this lane's global default — otherwise
     // delete/archive of the open session lands on a chip reading Yolo while
     // the backend resolves the unbound draft to the lane default (Auto),

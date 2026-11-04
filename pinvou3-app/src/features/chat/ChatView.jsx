@@ -2824,8 +2824,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // One-time YOLO confirmation gate for the first switch of a session/draft
       // with a bound workspace (matching code mode): confirming writes the global
       // flag and continues the switch (for a draft, exitPlanToYolo stages the mode
-      // choice); cancelling stays in Plan. Unbound targets keep the original path
-      // with no card.
+      // choice); cancelling stays in Plan. Unbound drafts are gated too since
+      // round-7: the lane default applies to every future session, so entering
+      // full-auto there goes through the same card.
       const [pendingChatYoloSwitch, setPendingChatYoloSwitch] = useState(false);
       const [chatYoloConfirmBusy, setChatYoloConfirmBusy] = useState(false);
       // Round-9: the state flag commits one render late — the ref latch
@@ -2917,10 +2918,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // lane default, or a plan-stuck card's Go), assigned to
       // pendingChatYoloActionRef unconditionally when the card opens — the
       // explicit parameter closes the preset/default-fill race documented on
-      // the ref above. `gateTarget` ('yolo' for the draft route) extends the
-      // gate to the unbound draft: the lane default applies to every future
-      // session, so entering full-auto there must not skip the one-time
-      // confirmation (codex switchNativeMode parity). Returns true when the
+      // the ref above. The draft route is expressed via `action.via ===
+      // 'draftMode'` and extends the gate to the unbound draft: the lane
+      // default applies to every future session, so entering full-auto there
+      // must not skip the one-time confirmation (codex switchNativeMode
+      // parity). Returns true when the
       // caller may proceed with its final action now (unbound, already
       // confirmed, or bridge without prefs support); false when the
       // confirmation card was opened (or the click went stale mid-await and
@@ -3034,11 +3036,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         }
         // Auto（tri-mode 逐项审批档）：无一次性确认门——门只对 yolo 生效。
         // 目标会话在 entry 捕获：await 期间切走也切的是发起会话的 mode。
-        // 进入 Auto 仍是桌面专属（评审 P2 修复后 Web 桥带 setSessionMode，
-        // 存在性守卫不再区分表面）：Web 面的审批卡无法在浏览器决策
-        // （decideApproval 不在 Web 白名单），放行进入会把会话钉死在
-        // Web 发送门（webAutoSendBlocked）之后；Auto→Yolo 逃生走下方
-        // 同一命令，在 Web 可达。
+        // Web 面的审批卡无法在浏览器决策（decide_approval 在协议白名单是
+        // 前向兼容登记，web 桥门面不导出它——round-8 L6-F1 同口径），放行
+        // 进入 Auto 会把会话钉死在 Web 发送门（webAutoSendBlocked）之后；
+        // Auto→Yolo 逃生走下方同一命令，在 Web 可达。
         if (target === 'auto') {
           if (isWeb || typeof bridge.interaction.setSessionMode !== 'function') return;
           await bridge.interaction.setSessionMode(activeSessionId, 'auto');

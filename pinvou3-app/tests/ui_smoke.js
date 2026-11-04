@@ -2469,7 +2469,7 @@ async function expand(page) {
     const b = document.querySelector('[title^="切换工作模式"]');
     return b ? (b.getAttribute('title') || '').trim() : '';
   });
-  rec('⑥ chip 渲染+下拉两项+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
+  rec('⑥ chip 渲染+三态下拉+ask开关+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
   // Switching the permission mode affects subsequent turns only. The active
   // streaming turn must not be cancelled, and later deltas must remain visible.

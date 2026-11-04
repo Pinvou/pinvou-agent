@@ -212,8 +212,10 @@ pub fn capture_workspace_identity<T: PartialEq>(
     ))
 }
 
-/// `decide_approval` 收口：任何决策（allow / allow_for_session / deny）都先
-/// 摘除登记，返回摘下的条目（决策需要它的 approval_key / grouping_key）。
+/// 未加栅格的摘除助手（round-8 起 `decide_approval` 走 [`remove_fenced`]，
+/// 本函数已无生产调用方——与 [`clear_pending`] 同类，保留为测试/探测胶水；
+/// 新调用方必须走栅格变体，否则失败臂的恢复协议会失去代数前提）。返回摘下
+/// 的条目（决策需要它的 approval_key / grouping_key）。
 pub fn remove(session_id: &str, approval_id: &str) -> Option<PendingApproval> {
     with_store(|store| {
         store.generation = store.generation.wrapping_add(1);
@@ -286,7 +288,9 @@ pub fn restore_if_generation_is(
     })
 }
 
-/// Current store generation (see [`ApprovalStore::generation`]). A global
+/// Current store generation (see [`ApprovalStore::generation`]). Read-side
+/// helper; production fencing goes through [`remove_fenced`]'s atomic
+/// snapshot — today's direct callers are tests/probes. A global
 /// counter by design: the restore fence is deliberately conservative — any
 /// observable registry change during the await window skips the restore,
 /// and a skipped restore only costs a re-trigger of the action, while a

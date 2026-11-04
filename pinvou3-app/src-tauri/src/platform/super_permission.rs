@@ -6,10 +6,11 @@
 //! - **写/删都走 pkexec**：用户拨开关 → 系统密码框 → root 写文件，零终端命令。
 //! - **No reliance on the careful hook**: the base's 5 hard blocks in
 //!   command_safety.rs (`rm -rf /` etc., consumed by the shell tool) only
-//!   fire outside the YOLO posture. pinvou3 sessions default to the Auto
-//!   posture (per-call approval cards), so the backstop does fire there;
-//!   only a session explicitly switched to YOLO skips it, and only in that
-//!   posture is it not a mechanical gate. This switch only turns "sudo
+//!   fire outside the YOLO posture. pinvou3 sessions sit in a non-Yolo
+//!   posture unless explicitly switched (unbound work-lane plain sessions
+//!   resolve to Auto; code-lane sessions follow their last mode), so the
+//!   backstop does fire there; only an explicitly switched YOLO session
+//!   skips it, and only in that posture is it not a mechanical gate. This switch only turns "sudo
 //!   stalls on a password prompt" into "sudo runs directly".
 //!
 //! pkexec 退出码约定：

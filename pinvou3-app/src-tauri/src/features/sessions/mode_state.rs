@@ -176,9 +176,12 @@ impl SessionModeState {
     /// Explicit per-session overrides keep winning, and an
     /// already-materialized entry is never re-seeded by this ctor.
     ///
-    /// ONE seeding point by construction: every fresh-entry mint site must
-    /// go through it (`Default::default()` stays for serde round-trips and
-    /// field-spread bases only).
+    /// The ask-on-guardrail seeding point for fresh entries lives in
+    /// [`Self::ask_on_guardrail_seed`] (explicit override first, then the
+    /// pref); the runtime mint sites route through that helper, so a pref
+    /// change only has one production seeding contract to update.
+    /// (`Default::default()` stays for serde round-trips and field-spread
+    /// bases only.)
     fn default_for_new_session(ask_on_guardrail_default: bool) -> Self {
         Self {
             ask_on_guardrail: ask_on_guardrail_default,
