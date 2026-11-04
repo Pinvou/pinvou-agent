@@ -462,8 +462,10 @@ pub(crate) fn legacy_official_deepseek_base_url(base_url: &str) -> bool {
 
 /// K3.1 family spellings across the kimi catalog groups (moonshot platform +
 /// Kimi Code), case-insensitive: the catalog only produces these exact rows,
-/// but stored prefs keep user-editable strings.
-fn is_moonshot_k31_model(vendor: &Option<String>, model: &str) -> bool {
+/// but stored prefs keep user-editable strings. Also consumed by the bridge's
+/// effort resolution (the send-path default arm must resolve K3.1 to None —
+/// see `request_reasoning_effort_for_provider`).
+pub(crate) fn is_moonshot_k31_model(vendor: &Option<String>, model: &str) -> bool {
     if !vendor
         .as_deref()
         .map_or(false, |value| value.trim().eq_ignore_ascii_case("kimi"))

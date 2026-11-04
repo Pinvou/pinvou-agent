@@ -1584,6 +1584,29 @@ impl Pinvou3Bridge {
     /// [`Self::request_reasoning_effort`] 的档位推导主体；Tachyon 的
     /// high→medium 归一在公共入口统一收口，这里不做 provider 特判。
     fn request_reasoning_effort_for_provider(&self, provider: &str) -> Option<String> {
+        // Kimi K3.1 spellings (kimi-k3.1-pro[-highspeed] /
+        // k3.1-pro[-highspeed], vendor "kimi") are always-reasoning per the
+        // vendor contract and the `thinking` parameter is K2.x-specific — a
+        // K3.1 request must not carry it in any shape. The base's exact-K3
+        // route shapers only learn bare k3 spellings, so any effort resolved
+        // here falls to the generic Moonshot arm and wires
+        // thinking:{type:enabled}, which the vendor rejects outright
+        // (models-overview: "参数约束也与 kimi-k3 完全一致"; not fixable
+        // with keep:all). Resolve to None so the field is omitted entirely —
+        // the foundation's apply_reasoning_effort early-returns on None, so
+        // no thinking key is written and the vendor default (max) applies.
+        // Covers both a stored value (already dropped by the prefs load
+        // normalization) and the `_ => Some("high")` default arm below,
+        // which re-introduced the parameter for fresh records (2026-11-04
+        // review). Mirrors prefs::is_moonshot_k31_model and the frontend
+        // isMoonshotK31ModelName tiers exit.
+        if provider == "moonshot" {
+            if let Some(model) = self.effective_model() {
+                if prefs::is_moonshot_k31_model(&model.vendor, &model.model) {
+                    return None;
+                }
+            }
+        }
         // "Local route": the vllm/ollama/tachyon providers. When the openai
         // wire points at a local/private endpoint (LM Studio/generic server),
         // the engine treats reasoning_effort as a no-op, so knowledge-table
@@ -9571,6 +9594,99 @@ mod tests {
             bridge.opencode_conversation_key("voice-postprocess"),
             "session-a",
             "session-bound bridges share the conversation's session ID"
+        );
+    }
+
+    /// Kimi K3.1 request contract (2026-11-04 review): the K3.1 spellings are
+    /// always-reasoning and the vendor rejects the K2.x-specific `thinking`
+    /// parameter outright, while the base's exact-K3 shapers only learn bare
+    /// k3. The chat request must therefore carry NO reasoning_effort — the
+    /// foundation's apply_reasoning_effort early-returns on None and omits
+    /// the thinking key, letting the vendor default (max) apply. Both the
+    /// default arm (`_ => Some("high")`, which re-introduced the parameter
+    /// for fresh records) and a legacy stored value must resolve to None.
+    #[test]
+    fn kimi_k31_models_resolve_no_effort() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+
+        // A fresh K3.1 record (no stored effort): the default arm must not
+        // inject "high".
+        let mut b = fixture_bridge();
+        set_active_model(
+            &mut b,
+            ModelPreset::Kimi,
+            "kimi-k3.1-pro",
+            "https://api.moonshot.cn/v1",
+            "sk-kimi",
+        );
+        b.prefs.advanced.saved_models[0].vendor = Some("kimi".into());
+        assert_eq!(b.provider(), "moonshot");
+        assert_eq!(
+            b.request_reasoning_effort(),
+            None,
+            "a fresh K3.1 record must resolve to no effort (omits thinking on the wire)"
+        );
+        assert_eq!(
+            b.build_dt_config().reasoning_effort,
+            None,
+            "the engine config carries no effort for K3.1 (the generic Moonshot arm must not fire)"
+        );
+
+        // A legacy stored value (saved through the old generic off/high
+        // ladder) also resolves to None — the send path must not re-inject
+        // what the prefs load normalization dropped.
+        b.prefs.advanced.saved_models[0].reasoning_effort = Some("high".into());
+        assert_eq!(b.request_reasoning_effort(), None);
+        b.prefs.advanced.saved_models[0].reasoning_effort = Some("off".into());
+        assert_eq!(b.request_reasoning_effort(), None);
+
+        // The Kimi Code spelling rides the same contract.
+        set_active_model(
+            &mut b,
+            ModelPreset::OpenaiCompatible,
+            "k3.1-pro-highspeed",
+            "https://api.kimi.com/coding/v1",
+            "sk-kimi-code",
+        );
+        b.prefs.advanced.saved_models[0].vendor = Some("kimi".into());
+        assert_eq!(b.request_reasoning_effort(), None);
+
+        // Bare kimi-k3 keeps the exact tiered route semantics (effort
+        // resolution is untouched for it — off clamps to low on the wire).
+        set_active_model(
+            &mut b,
+            ModelPreset::Kimi,
+            "kimi-k3",
+            "https://api.moonshot.cn/v1",
+            "sk-kimi",
+        );
+        b.prefs.advanced.saved_models[0].vendor = Some("kimi".into());
+        assert_eq!(
+            b.request_reasoning_effort(),
+            Some("high".to_string()),
+            "the K3 exact route keeps its ladder (default high)"
+        );
+
+        // The same id without the kimi vendor stamp (a free-text
+        // openai_compatible row) is outside the vendor contract and keeps
+        // the generic default.
+        set_active_model(
+            &mut b,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3.1-pro",
+            "https://relay.example/v1",
+            "sk-relay",
+        );
+        b.prefs.advanced.saved_models[0].vendor = None;
+        assert_eq!(
+            b.request_reasoning_effort(),
+            Some("high".to_string()),
+            "no kimi vendor stamp → outside the K3.1 contract"
         );
     }
 
