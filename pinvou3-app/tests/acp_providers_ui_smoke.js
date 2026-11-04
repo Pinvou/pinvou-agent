@@ -419,14 +419,14 @@ async function clickSettingsSection(page, label) {
   rec('⑥.3 槽位缺失时阻止保存', await page.evaluate(() =>
     !!document.querySelector('[data-testid="acp-provider-form-error"]')
   ) && (await callCount(page, 'save_acp_provider')) === savesBefore);
-  // 1M 变体按厂商归属：claude 选 Kimi Code 预设只出现 k3[1m]，不出现别家变体
+  // 1M 变体按厂商归属：Kimi Code 预设出现 k3.1-pro[1m]/k3[1m]，不出现别家变体
   await page.click('[data-testid="acp-provider-preset"]');
   await sleep(200);
   await page.click('[data-testid="acp-provider-preset-option-kimi-code"]');
   await sleep(200);
   await page.click('[data-testid="acp-provider-model"]');
   await sleep(200);
-  rec('⑥.4 1M 变体按厂商过滤（Kimi Code 仅 k3[1m]）', await page.evaluate(() => {
+  rec('⑥.4 1M 变体按厂商过滤（Kimi Code k3.1-pro[1m]/k3[1m]）', await page.evaluate(() => {
     const values = [...document.querySelectorAll('[data-testid^="acp-provider-model-option-"]')]
       .map(option => (option.textContent || '').trim());
     return values.includes('k3[1m]')

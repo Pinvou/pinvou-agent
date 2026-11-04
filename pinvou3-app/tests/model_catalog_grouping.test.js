@@ -1355,7 +1355,8 @@ test('imageCapable annotations cross-check the Rust builtin verified table sourc
       }
     }
   }
-  assert.ok(checked >= 60, `parity check coverage is abnormally low (only ${checked} entries); the catalog annotations or alias structure appear to have drifted`);
+  // (The coverage gate `checked >= 60` runs once at the end of this test;
+  // a mid-test duplicate was removed in the 2026-11-04 review wave.)
   const UNANNOTATED_BACKEND_ADMITTED = [
     // OpenRouter/aggregator rows whose org-prefixed spelling carries a vetted
     // substring (gpt-6 / gpt-5.6 / claude-opus-5 / qwen3.8 / glm-5.3-flash /

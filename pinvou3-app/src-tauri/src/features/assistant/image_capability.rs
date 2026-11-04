@@ -78,8 +78,11 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
             // whats-new): the K3.1 generation is thinking-only — requests
             // that turn thinking off are rejected with 400 — same class as
             // the bare-K3 ids above. The `[1m]` spellings are the same
-            // models with the documented 1M declaration (the ACP catalog's
-            // models1m suggestion and the direct-platform bracket form);
+            // models in their documented 1M declaration forms (k3.1-pro[1m]
+            // is the ACP catalog's Kimi Code models1m suggestion;
+            // kimi-k3.1-pro[1m] has no datalist entry — the direct-platform
+            // bracket spelling of the same model; kimi-k3[1m] below is the
+            // moonshot preset's datalist entry);
             // this list is exact-match, so they need their own arms.
             | "k3.1-pro"
             | "k3.1-pro-highspeed"

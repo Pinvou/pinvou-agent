@@ -57,13 +57,15 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   where-to-start tip as "use GPT-6 Astra" and gpt-6.1-terra (2026-10-26)
 //   joined as the efficient 6.1 tier — the balanced-flagship default slot
 //   stays gpt-6.1-sol. The
-//   Azure Foundry capability table pins the wire facts (page updated
-//   2026-10-08): gpt-6.1-sol (2026-09-29) lists the Responses API with
+//   Azure Foundry capability table pins the wire facts (page ms.date
+//   2026-09-21, updated 2026-10-29): gpt-6.1-sol (2026-09-29) lists the
+//   Responses API with
 //   "Functions, tools, and parallel tool calling (Responses API only)",
 //   1,050,000 context / 128,000 output — and the whole preset keeps riding
 //   the OpenAI Responses wire (bridge engine_route_provider), so the picker
-//   exposes low/medium/high/max as before (the Responses effort mapper has
-//   no "none"; off normalizes to low). gpt-6-sol / gpt-6-luna stay listed:
+//   exposes low/medium/high/max as before (the app's effort picker surfaces
+//   those four; the wire enum also has "none"/"xhigh", which the picker
+//   does not expose; an "off" selection normalizes to low). gpt-6-sol / gpt-6-luna stay listed:
 //   Azure shows no retirement for the GPT-6 family (the gpt-5.6 rows are
 //   scheduled 2028-01-11 on Azure's retirement schedule).
 // - anthropic: claude-opus-5-5 (2026-09-22) keeps the default per the
@@ -77,7 +79,7 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   2026-11-18, requests auto-route to M3.1 Flash with the old names kept as
 //   compatibility entries — platform.minimax.cn models faq, re-verified
 //   2026-11-03); MiniMax-M3.1-Flash went GA on 2026-10-19 and is PAYG-served
-//   (the "-Preview" id is retired); see the minimax group.
+//   (the "-Preview" id appears in no official listing any more); see the minimax group.
 // - mimo: mimo-v2.6-pro (2026-09-22 release) stays the default; the v2.5
 //   family auto-routed to its v2.6 successors from 2026-10-14 18:00 (UTC+8)
 //   and the old ids hard-fail since 2026-10-21 10:00 (mimo.mi.com deprecation
@@ -217,11 +219,13 @@ const MODEL_CATALOG = {
       // GLM-5.1 calls auto-switch to GLM-5.3 and GLM-5-Turbo/GLM-4.7
       // auto-switch to GLM-5.3-Flash, so the old rows stay as "legacy model"
       // entries rather than being deleted. GLM-5.3-FlashX is not offered on
-      // the plan: every plan page (overview/faq/latest-model/usage-notes)
-      // enumerates only GLM-5.3/GLM-5.3-Flash plus the legacy routes, and
-      // none states the exclusion explicitly — the supported-model lists are
-      // the record (wording softened from the earlier "explicitly NOT open"
-      // claim, 2026-11-03).
+      // the plan: the plan pages (overview/faq/latest-model/usage-notes)
+      // enumerate only GLM-5.3/GLM-5.3-Flash plus the legacy routes, and
+      // the official GLM-5.3-FlashX model page states the exclusion
+      // explicitly ("套餐当前暂未开放 GLM-5.3-FlashX", docs.bigmodel.cn
+      // glm-5.3-flash page, re-checked 2026-11-04) — the 2026-11-03
+      // "none states the exclusion" softening was wrong on the citation
+      // (the statement exists; the conclusion was unaffected).
       items: [
         { model: 'glm-5.3', imageCapable: false, title: 'GLM-5.3', desc: '旗舰编码模型，全套餐支持' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'GLM-5.3-Flash', desc: '原生多模态编码模型，额度三倍' },
@@ -277,10 +281,10 @@ const MODEL_CATALOG = {
     //   (image) input, so no imageCapable flags here.
     // - Token Plan: https://cloud.tencent.com/document/product/1823/130119
     //   (re-checked 2026-11-03; both 130119 and the 130060 plan overview were
-      //   updated 2026-10-22) — the platform migrated off the lkeap domain per
-      //   announce 101147 (the intl mirror's id; the CN announcement list
-      //   carries the same notice as 2287, whose series also records the old
-      //   platform's API shutdown 2026-09-30): the docs now document only
+    //   updated 2026-10-22) — the platform migrated off the lkeap domain per
+    //   announce 101147 (the intl mirror's id; the CN announcement list
+    //   carries the same notice as 2287, whose series also records the old
+    //   platform's API shutdown 2026-09-30): the docs now document only
     //   https://tokenhub.tencentmaas.com/plan/v3, plus an Anthropic
     //   /plan/anthropic endpoint and a /plan/v3/responses Responses surface
     //   (both unused by this repo's OpenAI route). The group default moves to
@@ -406,11 +410,16 @@ const MODEL_CATALOG = {
       // kimi-for-coding is a stable alias whose underlying model rolls: it
       // became K2.8 Preview on 2026-09-11 (kimi.com/code/docs models page),
       // so the old "standard coding model, smaller context" framing is gone;
-      // the 1M window is tier-gated per the live membership table ("Pro 及
-      // 以上支持 1M"), the default effort is max, and unknown ids silently
+      // the 1M window is available from the plan's lowest coding tier (the
+      // CC docs' tier table lists 1048576 already at Andante — the "Pro 及
+      // 以上支持 1M" gate on the models page attaches to the k3.1-pro / k3
+      // rows, not this alias; corrected 2026-11-04 review), the default
+      // effort is max, and unknown ids silently
       // fall back to the non-thinking K2.8 Preview. kimi-for-coding-highspeed
       // serves K2.7 Code Highspeed at 256K. K3.1 Pro / K3.1 Pro Highspeed
-      // (2026-10-23 per the whats-new; re-checked 2026-11-03 against the
+      // (2026-10-23 per the Kimi Code whats-new — the dated launch entry
+      // lives there; the open-platform changelog carries no dated K3.1
+      // entry; re-checked 2026-11-03 against the
       // models-overview page, which states both spellings carry kimi-k3's
       // constraints verbatim: "参数约束也与 `kimi-k3` 完全一致") are the
       // plan's new
@@ -427,7 +436,7 @@ const MODEL_CATALOG = {
         { model: 'k3.1-pro-highspeed', imageCapable: true, title: 'k3.1-pro-highspeed', desc: 'K3.1 Pro 高速款' },
         { model: 'k3', imageCapable: true, title: 'k3', desc: 'K3 长上下文模型' },
         { model: 'k3-256k', imageCapable: true, title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
-        { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: 'K2.8 Preview，最高 1M（按会员档位）' },
+        { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: 'K2.8 Preview，最高 1M' },
         { model: 'kimi-for-coding-highspeed', imageCapable: true, title: 'kimi-for-coding-highspeed', desc: 'K2.7 Code 高速款，256K' },
         { model: '', title: '自定义 Kimi Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
@@ -449,8 +458,11 @@ const MODEL_CATALOG = {
       // deepseek-v4-pro keeps serving past 09-14 per user requests with
       // unchanged billing — the authoritative record is the updates
       // changelog's 2026-09-10 entry (the pricing-page footnote wording the
-      // 2026-10-13 refresh cited is no longer on the live page; the same
-      // two-page account stands). The pricing page states v4-pro Vision: Not
+      // 2026-10-13 refresh cited is no longer on the live page — the page
+      // now corroborates only implicitly, by still listing v4-pro with its
+      // own pricing; note news260910's superseded "we're phasing out
+      // V4-Pro…" phrasing is still live on that announcement page — the
+      // changelog entry governs). The pricing page states v4-pro Vision: Not
       // supported, so imageCapable:false holds under either account and will
       // be re-checked at the next refresh (when V4.1 Pro ships — it has not
       // shipped as of 2026-11-03).
@@ -616,8 +628,10 @@ const MODEL_CATALOG = {
       // documents the default off — thinking.type=disabled is accepted in
       // both). MiniMax-M3.1-Flash went GA on
       // 2026-10-19 (official "MiniMax M3.1 Flash" post) and is now
-      // PAYG-served (CNY 1.00/4.00 per Mtok) — the "-Preview" id is retired
-      // and lives on in legacyAliases; its effort ladder is the vendor's
+      // PAYG-served (CNY 1.00/4.00 per Mtok) — the "-Preview" id appears in
+      // no official listing any more (treated as retired; not independently
+      // documented) and lives on in legacyAliases for stored configs; its
+      // effort ladder is the vendor's
       // fullest (low/medium/high/xhigh/max, default max) but thinking cannot
       // be disabled there (400 "requires adaptive thinking"). The model docs
       // post the M2.5/M2.7 retirement notice (dates re-verified 2026-11-03):
@@ -656,7 +670,7 @@ const MODEL_CATALOG = {
       // International and China use separate account/key systems.
       endpointAliases: ['https://api.minimax.cn/v1'],
       items: [
-        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
+        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '旗舰模型，1M 上下文多模态' },
         { model: 'MiniMax-M3.1-Flash', legacyAliases: ['MiniMax-M3.1-Flash-Preview'], imageCapable: true, title: 'MiniMax-M3.1-Flash', desc: 'GA 新旗舰（2026-10-19），高效多模态' },
         { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '官方将于 2026-11-18 下线' },
         { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速款，官方将于 2026-11-18 下线' },
@@ -682,7 +696,7 @@ const MODEL_CATALOG = {
       // China group comment). The global docs also expose an /anthropic
       // variant, unused by this repo's OpenAI route.
       items: [
-        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
+        { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '旗舰模型，1M 上下文多模态' },
         { model: 'MiniMax-M3.1-Flash', legacyAliases: ['MiniMax-M3.1-Flash-Preview'], imageCapable: true, title: 'MiniMax-M3.1-Flash', desc: 'GA 新旗舰（2026-10-19），高效多模态' },
         { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '官方将于 2026-11-18 下线' },
         { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速款，官方将于 2026-11-18 下线' },
@@ -770,8 +784,9 @@ const MODEL_CATALOG = {
       // (Singapore region only), a separate subscription from the China
       // edition whose keys (sk-sp-) are not interchangeable. The text rows
       // mirror the personal-plan allowlist (token-plan-personal-overview,
-      // re-checked 2026-11-03; page updated 2026-10-21 — the official list
-      // is now 25 rows and additionally carries non-text image/audio/video
+      // re-checked 2026-11-03 — the page's own updated-on field renders
+      // empty on fetch, so no page date is claimed; the official list
+      // additionally carries non-text image/audio/video
       // entries this text-only catalog does not mirror). New since the last
       // refresh: deepseek-v4.1-flash-1017 joins below. The night discount
       // (22:00-08:00) is 40%-of-price credits for qwen3.8-max AND
@@ -889,15 +904,19 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'doubao',
       // Official figures re-checked 2026-11-03 (docs.volcengine.com/ark
-      // model list, updated 2026-10-30; release announcements 1159178):
+      // model list, live page stamped updated 2026-11-02; release
+      // announcements 1159178):
       // doubao-seed-evolving is still the officially recommended
       // Coding/Agent model — a permanent Model ID whose underlying version
-      // auto-updates (1024k context per the live list), so the old "rolls
-      // weekly" wording is gone. The 2-1 family's -260915 pro/lite and
+      // auto-updates ("版本升级自动生效，通过统一 Model ID 调用"; the docs
+      // still describe the weekly release cadence, so the row desc anchors
+      // the durable-ID mechanism instead; comment corrected 2026-11-04
+      // review) (1024k context per the live list). The 2-1 family's
+      // -260915 pro/lite and
       // -260628 pro/turbo snapshots stay on sale, but every 2-0 -260215
       // snapshot on the model list still carries only the dateless
       // "coming offline soon" badge (no concrete dates posted as of the
-      // 10-30 list update — do not invent dates), so those rows keep the
+      // 11-02 list update — do not invent dates), so those rows keep the
       // coming-retirement note. The coding-specialized preview
       // doubao-seed-2-0-code-preview-260215 also lists multimodal
       // understanding, so the image capability is annotated. Vendor docs now
@@ -937,8 +956,9 @@ const MODEL_CATALOG = {
       // page also documents an Anthropic-compatible
       // https://ark.cn-beijing.volces.com/api/coding endpoint, unused by
       // this repo's OpenAI route. Two rows are removed in this refresh per
-      // the Ark Agent/Coding Plan deprecation notice (docs 2578680 /
-      // 2578687, updated 2026-10-20): kimi-k2.7-code went offline
+      // the Ark Agent/Coding Plan deprecation notice (docs 2578687, live
+      // page stamped 2026-11-03; the enterprise-plan twin 2578680 stamped
+      // 2026-10-19): kimi-k2.7-code went offline
       // 2026-10-28 14:00 (UTC+8; closed to new plan users 2026-10-13,
       // migrate to kimi-k3) and minimax-m3 went offline 2026-11-02 14:00
       // (migrate to doubao-seed-evolving / kimi-k3) — both are absent from
@@ -954,11 +974,11 @@ const MODEL_CATALOG = {
       // glm-5.3-flash、kimi-k3.1-pro、kimi-k3、kimi-k2.8-preview、… 支持 1M
       // 上下文窗口") and in a dated paid activity ("2026年10月24日…至
       // 2026年11月9日…活动期间，Coding Plan 中 Kimi-K3.1-Pro 的可用量…5 折")
-      // — while the quick start's switchable list the rows mirror still
-      // lags behind and does not list it. The overview plus the dated
-      // activity govern over the lagging list (same doctrine as Tencent's
-      // 0731 alias: live-table lag, announcement governs), so the row joins
-      // below. Whether plan-side kimi-k3 now aliases the new K3.1 snapshot
+      // — and the quick start's switchable list the rows mirror lists it
+      // too (the page was updated 2026-11-02; the earlier "the list still
+      // lags behind and does not list it" premise no longer holds — the
+      // row is double-confirmed on both pages as of the 2026-11-04 review).
+      // Whether plan-side kimi-k3 now aliases the new K3.1 snapshot
       // (the PAYG list gained kimi-k3-1-pro-261024) is undocumented.
       items: [
         { model: 'ark-code-latest', title: 'ark-code-latest', desc: 'Coding Plan 自动模型' },
@@ -972,7 +992,7 @@ const MODEL_CATALOG = {
         { model: 'glm-5.3', legacyAliases: ['glm-latest'], title: 'glm-5.3', desc: '旗舰推理与编码' },
         { model: 'glm-5.3-flash', title: 'glm-5.3-flash', desc: '多模态高性价比' },
         { model: 'deepseek-v4.1-flash', title: 'deepseek-v4.1-flash', desc: '快速响应' },
-        { model: 'deepseek-v4.1-flash-economy', title: 'deepseek-v4.1-flash-economy', desc: '快速响应，经济款' },
+        { model: 'deepseek-v4.1-flash-economy', title: 'deepseek-v4.1-flash-economy', desc: '经济款，生成略慢' },
         { model: 'deepseek-v4-flash', title: 'deepseek-v4-flash', desc: '快速响应' },
         { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
         { model: '', title: '自定义火山方舟 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
@@ -990,7 +1010,7 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.openai.com/v1',
       // Official figures re-checked 2026-11-03 (developers.openai.com models
       // + changelog + deprecations; the Azure Foundry capability table,
-      // page updated 2026-10-08, pins the wire facts): gpt-6.1-sol (model
+      // ms.date 2026-09-21 / updated 2026-10-29, pins the wire facts): gpt-6.1-sol (model
       // data 2026-09-29, announced in the "Introducing GPT-6.1 Sol" DevDay
       // post the same day) keeps the
       // default — "Near-Astra performance
@@ -1014,10 +1034,10 @@ const MODEL_CATALOG = {
       // (5.6-sol's promotional pricing is documented through at least
       // 2026-11-21). Deliberately not listed: gpt-5.3-codex (deprecated
       // 2026-10-01, replacement gpt-6-sol; its home is the Codex ACP lane —
-      // the "shutdown 2027-04-01" figure from the deprecations page is
-      // UNVERIFIED: that page has been unreachable from every channel since
-      // the 2026-11-03 refresh and Azure's own retirement table lists
-      // 2027-08-24 Azure-side, so the date is a watch item, not a fact),
+      // the deprecations page is reachable again as of the 2026-11-04
+      // review and confirms API removal 2027-04-01 with six months' notice,
+      // resolving the earlier "UNVERIFIED / page unreachable" watch item;
+      // Azure's own retirement table lists 2027-08-24 Azure-side),
       // gpt-6-rosalind (2026-10-30; Rosalind Research
       // trusted-access program only — same treatment as Anthropic's mythos
       // rows), and gpt-5.6-cyber (on the models page but specialized/gated
@@ -1058,8 +1078,10 @@ const MODEL_CATALOG = {
       // the default recommendation ("start with Claude Opus 5.5 for most
       // workloads"); claude-fable-5-1 remains the highest-capability tier
       // for demanding reasoning and long-horizon agentic work.
-      // claude-fable-5 and claude-opus-5 are both Legacy (retirement floors
-      // 2027-06/2027-07, unchanged). claude-sonnet-5-5 shipped 2026-09-28
+      // claude-fable-5 and claude-opus-5 are both still Active (the
+      // deprecations table's floors read "not sooner than" 2027-06-09 and
+      // 2027-07-24; the earlier "both Legacy" label misread the table —
+      // corrected 2026-11-04 review). claude-sonnet-5-5 shipped 2026-09-28
       // ("a clear upgrade over Claude
       // Sonnet 5, runs 30%+ faster, and costs up to 30% less for most work")
       // and claude-haiku-5-5 shipped 2026-10-07 ("the cheapest, fastest, and
@@ -1103,10 +1125,10 @@ const MODEL_CATALOG = {
         { model: 'claude-sonnet-5-5', imageCapable: true, title: 'claude-sonnet-5-5', desc: '新均衡款，较 Sonnet 5 快 30%+，至多省 30%' },
         { model: 'claude-fable-5-1', imageCapable: true, title: 'claude-fable-5-1', desc: '最强旗舰，高难推理与长程 Agent' },
         { model: 'claude-fable-5', imageCapable: true, title: 'claude-fable-5', desc: '上代旗舰，兼容保留' },
-        { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '官方已转 Legacy，兼容保留' },
+        { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '上代 Opus，兼容保留' },
         { model: 'claude-sonnet-5', imageCapable: true, title: 'claude-sonnet-5', desc: '上代均衡款，兼容保留' },
         { model: 'claude-haiku-5-5', imageCapable: true, title: 'claude-haiku-5-5', desc: '最新小旗舰，100K 以下请求较 4.5 降价 90%' },
-        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，200K 上下文，Azure 端 2026-11-15 下线' },
+        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '上代快档，200K 上下文，Azure 端 2026-11-15 下线' },
         { model: '', title: '自定义 Claude 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -1135,8 +1157,10 @@ const MODEL_CATALOG = {
       // gemini-3.5-flash ("... replaced by gemini-3.6-flash. API requests to
       // gemini-3.5-flash are automatically routed to gemini-3.6-flash"),
       // neither with a shutdown date on the Gemini API — both rows stay with
-      // the auto-route note. Vertex-side concrete dates (Google's GEM
-      // Enterprise lifecycle page, checked 2026-11-03): gemini-3.6-flash
+      // the auto-route note. Vertex-side concrete dates (Vertex AI's
+      // "Model versions and lifecycle" page — the earlier "GEM Enterprise
+      // lifecycle page" label was loose, corrected 2026-11-04 review;
+      // checked 2026-11-03): gemini-3.6-flash
       // retires 2026-11-19 (successor 3.8-flash; 16 days out) and
       // gemini-3.7-flash retires 2027-01-28, while the Gemini API
       // deprecations page still announces no shutdown dates — the rows scope
@@ -1144,7 +1168,14 @@ const MODEL_CATALOG = {
       // API (Vertex floor "2027-07 or later"); gemini-3.1-pro-preview demotes
       // to the previous flagship preview (gemini-3-pro-preview was retired
       // on 2026-03-09). Thinking cannot be turned off for the
-      // Gemini 3 family on the OpenAI-compatible layer.
+      // Gemini 3 family on the OpenAI-compatible layer. The Nov 2 changelog
+      // entry (visible on the check date) additionally deprecates
+      // gemini-2.5-pro / gemini-2.5-flash effective 2026-12-01 with
+      // auto-routing to gemini-3.8-flash / gemini-3.5-flash-lite — recorded
+      // though the group carries no 2.5 rows. gemini-3-flash-preview is live
+      // on the models page's preview table and stays uncataloged (preview
+      // churn; gemini-3.1-pro-preview is kept because the deprecations page
+      // names it as gemini-3-pro-preview's replacement).
       items: [
         { model: 'gemini-4-argon', imageCapable: true, title: 'gemini-4-argon', desc: '最新旗舰，复杂编码与推理' },
         { model: 'gemini-3.8-flash', imageCapable: true, title: 'gemini-3.8-flash', desc: '最新 Flash，均衡高性价比' },
@@ -1171,9 +1202,13 @@ const MODEL_CATALOG = {
       // slot — "For everything else, including code, use Grok 4.7. It is
       // the most capable model we've built" (500K, effort low/medium/high/
       // xhigh, reasoning cannot be turned off); grok-4.6 demotes to the
-      // previous generation. The reasoning guide's summary table now lists
-      // the same low/medium/high/xhigh ladder for grok-4.7, while its caveat
-      // still bounds xhigh to "grok-4.6 and later" for the older rows
+      // previous generation. The grok-4.7 detail page and the September
+      // release notes document its low/medium/high/xhigh ladder (the
+      // reasoning guide's summary table still lists only grok-4.6 /
+      // grok-4.5 / the multi-agent row — the earlier attribution of the
+      // 4.7 ladder to that guide was wrong, corrected 2026-11-04 review),
+      // while the guide's caveat still bounds xhigh to "grok-4.6 and later"
+      // for the older rows
       // (grok-4.5 requests with xhigh are treated as high) — the app follows
       // the caveat and keeps
       // exposing low/medium/high for grok-4.5, matching the base's downgrade.
@@ -1223,19 +1258,31 @@ const MODEL_CATALOG = {
       // Bearer + chat-completions API, so it rides the generic OpenAI
       // wire with the vendor stamped for classification. Rows mirror the
       // live models overview: codestral-latest is the dedicated coding
-      // model (256K context); mistral-medium-latest (multimodal) and
-      // mistral-small-latest (image understanding) are officially
-      // multimodal. Figures reconciled in the 2026-11-04 fix pass:
-      // docs.mistral.ai was unreachable from every channel on both passes,
-      // and models.dev (the base's own reference source, whose engine
-      // registry resolves these ids) lists mistral-medium-latest /
-      // mistral-large-latest / mistral-small-latest at 262,144 context —
-      // the picker descs now say 256K instead of the earlier (wrong)
-      // 128K, matching what the engine already resolves. models.dev also
+      // model; mistral-medium-latest (multimodal per the official Medium 3
+      // announcement) and mistral-small-latest (native text+image — its
+      // figures match the current Small 4 generation, 256k context) are
+      // multimodal. Sources reconciled in the 2026-11-04 fix pass:
+      // docs.mistral.ai was unreachable from every channel on both passes
+      // (still TLS-broken on the 2026-11-04 review), so the generation
+      // state comes from the 2026-11-01 Wayback snapshot of the official
+      // models overview plus mistral.ai/news announcements. The
+      // "256K context" figures on the medium/large descs come from
+      // models.dev (the base's reference source, whose engine registry
+      // resolves these ids: medium/large at 262,144 — the small row's
+      // 256k matches the official Small 4 announcement). models.dev also
       // lists mistral-large-latest modalities text/image/pdf, so its row
-      // is annotated true "per models.dev" (the base's reference; the
-      // official overview page remains unreachable — soften/re-check at
-      // the next refresh). No effort/tier control exists in the
+      // is annotated true "per models.dev" (weakly sourced — soften/
+      // re-check at the next refresh). Generation state: mistral-medium-3-5
+      // and mistral-large-2512 (Large 3) were deprecated 2026-10-31 with
+      // retirement 2027-04-30 and "Mistral Large 4" as the documented
+      // alternative — the -latest aliases the base resolves
+      // (mistral-large-latest → mistral-large-2512 in the base pricing
+      // alias map) point at the deprecated generations, so those rows are
+      // annotated 已弃用 (still served until retirement per the deprecated
+      // table; the current Large 4 preview wire id is unverifiable without
+      // an API key and is not cataloged; codestral 25.08 remains the
+      // current coding model — no official context figure, so its desc
+      // carries none). No effort/tier control exists in the
       // base for this vendor, so no tier UI is exposed. Default drift
       // (upstream follow-up, same class as the Meta muse-spark-1.2 one):
       // the base's DEFAULT_MISTRAL_MODEL is "mistral-code-latest"
@@ -1243,9 +1290,9 @@ const MODEL_CATALOG = {
       // list; the rows stay explicit-id, so app-side resolution is
       // unaffected.
       items: [
-        { model: 'codestral-latest', title: 'codestral-latest', desc: '编码特化模型，256K 上下文' },
-        { model: 'mistral-medium-latest', imageCapable: true, title: 'mistral-medium-latest', desc: '多模态中坚款，256K' },
-        { model: 'mistral-large-latest', imageCapable: true, title: 'mistral-large-latest', desc: '旗舰推理，256K' },
+        { model: 'codestral-latest', title: 'codestral-latest', desc: '编码特化模型' },
+        { model: 'mistral-medium-latest', imageCapable: true, title: 'mistral-medium-latest', desc: '多模态中坚款，已弃用' },
+        { model: 'mistral-large-latest', imageCapable: true, title: 'mistral-large-latest', desc: '旗舰推理，已弃用' },
         { model: 'mistral-small-latest', imageCapable: true, title: 'mistral-small-latest', desc: '轻量款，支持图像理解' },
         { model: '', title: '自定义 Mistral 模型', desc: '手动填写模型 ID', custom: true },
       ],
@@ -1370,11 +1417,22 @@ const MODEL_CATALOG = {
       // zai-org/GLM-5.1 (2026-07-10), zai-org/GLM-5 (2026-06-22),
       // openai/gpt-oss-20b (2026-09-15); removed ids leave the shared
       // serverless catalog entirely. Each row below is verbatim from the
-      // live catalog's Chat table. The page also serves MiniMaxAI/
-      // MiniMax-M2.7 (not listed here — it goes offline 2026-11-18
-      // platform-wide per MiniMax's own notice, see the minimax groups),
-      // Qwen3.5/Qwen3.8 tiers, coder variants and older Llama/Gemma
-      // generations. The base URL matches the engine's provider default
+      // live catalog's Chat table. The canonical page's remaining Chat rows
+      // (deepseek-ai/DeepSeek-V4.1-Flash-1017, MiniMaxAI/MiniMax-M3.1-Flash,
+      // Qwen/Qwen3.7-Plus, Qwen/Qwen3.8-Flash, Qwen/Qwen3.5-9B,
+      // meta-models/Muse-Glimmer-30B, meta-models/Muse-Spark-Open-816B-A42B,
+      // nvidia/NVIDIA-Nemotron-3.5-Super-VL, reflection/Beam-1.0,
+      // Prism-ML/Ternary-Bonsai-27B, together/Tev1-4B-experimental,
+      // zai-org/GLM-5.2) are a deliberate curated-out subset — the
+      // flagship-selection frame excludes them and the custom row covers
+      // hand-typed ids. (The earlier "page also serves MiniMax-M2.7 /
+      // coder variants / older Llama-Gemma generations" sentence described
+      // the OLD page's inventory — corrected 2026-11-04 review.) Verify
+      // only against docs.together.ai/docs/serverless/models: the legacy
+      // URL docs.together.ai/docs/serverless-models is a stale deployed
+      // snapshot that still lists the six retired ids above — both URLs
+      // answer on 2026-11-04, and the earlier "fetched live" verification
+      // hit the stale one. The base URL matches the engine's provider default
       // (the docs' shared-host value is consistent with it, though not
       // literally printed on the pages fetched this refresh — a US-geo
       // variant us-api.together.ai bills +25%). Rows stay unannotated:
@@ -1412,16 +1470,22 @@ const MODEL_CATALOG = {
       // spellings;
       // the Pro/ prefix marks the paid tier (variable rate limits vs the
       // free rows' fixed ones — the docs define it by billing/limits, not
-      // "acceleration"), and the two Pro/ rows below remain API-reference
-      // reasoning_effort targets even though they have left the public
-      // plaza (kept: existing configs and the official API doc still name
-      // them). Since 2026-10-21 deepseek-ai/DeepSeek-V4.1-Flash serves the
+      // "acceleration"), and the two Pro/ rows below are kept for existing
+      // configs even though they have left the public plaza — the official
+      // API reference names the Pro/ prefix on sibling ids (Pro/zai-org/
+      // GLM-4.7 in its examples; Pro/zai-org/GLM-5 and Pro/deepseek-ai/
+      // DeepSeek-V3.2 in the enable_thinking list) but neither of these two
+      // exact ids any more (the earlier "the official API doc still name
+      // them" citation was over-broad, corrected 2026-11-04 review). Since
+      // 2026-10-21 deepseek-ai/DeepSeek-V4.1-Flash serves the
       // 1017 snapshot in place (wire id unchanged, vision, 1M) — unlike
       // OpenRouter, which lists -1017 as a separate id. The engine has
       // dedicated siliconflow kinds (thinking toggle at off via
       // enable_thinking; low/medium/high collapse to high; the chat API
-      // documents reasoning_effort as high|max only for the DeepSeek/GLM
-      // rows), exposed via REASONING_EFFORT_TIERS. Rows stay unannotated:
+      // documents reasoning_effort (high|max, low/medium mapped to high)
+      // scoped to deepseek-ai/DeepSeek-V4-Flash only — the earlier
+      // "DeepSeek/GLM rows" scope overclaimed; corrected 2026-11-04
+      // review), exposed via REASONING_EFFORT_TIERS. Rows stay unannotated:
       // deployments behind the platform are not verified one by one, and
       // their per-deployment context figures are likewise not mirrored (the
       // engine keeps its conservative fallback for these ids).
@@ -1499,10 +1563,12 @@ const MODEL_CATALOG = {
       // base setup template and an ACP preset — this group brings the model
       // catalog to parity. Plain Bearer + chat completions. The production
       // catalog is narrow (Llama + gpt-oss rows) and the llama rows are
-      // tagged Enterprise on the live models page (no longer available on
-      // the free/developer tier; the Enterprise status is the verified
-      // record — no specific decommission date is stated on any reachable
-      // page, so none is claimed) — noted on the rows. Image
+      // tagged Enterprise on the live models page — console.groq.com/docs/
+      // deprecations records the reason: the two llama ids were deprecated
+      // 2026-06-17 and shut down for free/developer tiers on 2026-08-16
+      // (committed-spend Enterprise contracts unaffected; both dates now
+      // past — the earlier "no reachable page states a date" note missed
+      // this page, corrected 2026-11-04 review). Image
       // input is not documented on the models page, so rows stay
       // unannotated; no tier control exists for this vendor.
       items: [

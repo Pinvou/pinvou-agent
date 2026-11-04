@@ -402,8 +402,10 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     ("kimi-k3.1-pro", 1_048_576),
     ("k3.1-pro", 1_048_576),
     // The [1m] bracket declarations of the same models (the ACP datalists'
-    // models1m suggestions: k3.1-pro[1m] / kimi-k3.1-pro[1m] official since
-    // 2026-10-23, kimi-k3[1m] still a live moonshot suggestion):
+    // models1m suggestions carry k3.1-pro[1m] on the Kimi Code preset and
+    // kimi-k3[1m] on the moonshot preset; kimi-k3.1-pro[1m] has no datalist
+    // entry — it is the direct-platform bracket spelling of the same model,
+    // covered defensively alongside them):
     // model_name_matches tolerates dash-suffixes only, so the bracket
     // spellings miss every row above (the context side survives via the
     // `1m` substring hint; the output side would fail-close to 8192).
@@ -776,6 +778,11 @@ mod tests {
         // 1M window from re-clamping to 8192 in the operator quartile
         // branch (quickstart figure first-hand verified 2026-11-04).
         assert_eq!(resolved_output_limit("muse-spark-1.3"), Some(131_072));
+        // muse-wonder-1.0 deliberately stays output-unanchored: the docs
+        // publish only the context window for it, and inventing an output
+        // figure would put it on the 64K-intersection chain unanchored —
+        // pin the None so a future corrupted row is caught.
+        assert_eq!(resolved_output_limit("muse-wonder-1.0"), None);
         // MiniMax-M3.1-Flash: the protocol API references document
         // "recommended 131072 / maximum 524288" (fetched live 2026-11-04);
         // the documented hard cap is anchored per the deepseek-flash
@@ -805,6 +812,15 @@ mod tests {
     fn explicit_window_wins_and_codewhale_remains_the_base_catalog() {
         assert_eq!(resolved_context_window("kimi-k3-256k"), Some(256_000));
         assert_eq!(resolved_context_window("kimi-k3-1m"), Some(1_048_576));
+        // The bracket [1m] spellings match no override row (dash-suffix
+        // tolerance only), so their context survives via the explicit `1m`
+        // substring hint — pin it so a narrowed hint cannot silently drop
+        // the bracket forms' context.
+        assert_eq!(
+            resolved_context_window("kimi-k3.1-pro[1m]"),
+            Some(1_048_576)
+        );
+        assert_eq!(resolved_context_window("k3.1-pro[1m]"), Some(1_048_576));
         assert_eq!(
             resolved_context_window("gpt-5.6-sol"),
             deepseek_tui::models::context_window_for_model("gpt-5.6-sol")
