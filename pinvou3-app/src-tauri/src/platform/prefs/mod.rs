@@ -1032,6 +1032,8 @@ fn default_global_shortcut_accelerator() -> String {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserPrefs {
+    /// Native model-call recovery limits; old settings retain bounded defaults.
+    pub model_rate_limit_retry: deepseek_tui::config::RateLimitRetryPolicy,
     pub theme: Theme,
     /// Color-scheme preference: `system` follows the OS (decided by the
     /// frontend, light when undeterminable), light/dark are explicit picks.
@@ -4116,6 +4118,10 @@ mod tests {
     #[test]
     fn prefs_roundtrip() {
         let prefs = UserPrefs {
+            model_rate_limit_retry: deepseek_tui::config::RateLimitRetryPolicy {
+                max_attempts: 7,
+                ..Default::default()
+            },
             theme: Theme::LiquidDark,
             color_scheme: ColorScheme::Dark,
             language: Language::En,
@@ -4147,6 +4153,7 @@ mod tests {
         };
         let json = serde_json::to_string(&prefs).unwrap();
         let parsed: UserPrefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.model_rate_limit_retry.max_attempts, 7);
         assert_eq!(parsed.theme, Theme::LiquidDark);
         assert_eq!(parsed.color_scheme, ColorScheme::Dark);
         assert_eq!(parsed.language, Language::En);
@@ -4163,6 +4170,7 @@ mod tests {
     fn prefs_partial_json_fills_defaults() {
         let json = r#"{"theme":"genesis"}"#;
         let prefs: UserPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.model_rate_limit_retry.max_attempts, 20);
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);

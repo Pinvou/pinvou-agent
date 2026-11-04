@@ -1,5 +1,15 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
+> 2026-11-05 review candidate: T6 adds bounded HTTP 429 recovery and Engine
+> checkpoint integration. The public maintenance baseline remains `f1eb10efc`;
+> candidate and published-head alignment are distinct. See the T6 review-candidate
+> entry in [fork-modifications.md](fork-modifications.md). No protected branch or
+> tag is advanced by this local implementation.
+> Registered local candidate: `8f3e80e9b95029303593d66ed8f36049e916fa06`, 87 commits above
+> upstream v0.9.12; tree `9f82668ec1c8447cc535660b0ae1a4667085315c`.
+> Candidate drift: 532 files, +95068/-39676 (net +55392). All figures below
+> labeled 2026-10-28 are the historical published baseline, before this candidate.
+
 > 最后更新：2026-11-24。公开维护头 cc2adf8ef 在此前各批（#114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152、#156 与 #157）之上新增本批 #127/#137/#139/#141/#143–#146/#149/#151/#155/#158/#160/#164–#171；父仓 gitlink 与公开维护头对齐。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)

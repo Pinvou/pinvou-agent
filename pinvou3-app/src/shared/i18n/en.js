@@ -1312,3 +1312,14 @@ Object.assign(dictEn.uiAcpProviders, {
   fetchModels:'Fetch models', fetchingModels:'Fetching models…',
   fetchUnavailable:'This build cannot fetch model lists yet',
 });
+
+Object.assign(dictEn.uiChat, {
+  modelRecoveryWaiting: 'Model service rate limited, {attempt}/{max} attempts. Next attempt: {time}. Use Stop to cancel waiting.',
+  modelRecoveryChildWaiting: 'Model service rate limited, {attempt}/{max} attempts. Next attempt: {time}. Waiting for recovery.',
+  modelRecoveryInterrupted: 'Rate-limit recovery paused; progress saved ({attempt}/{max} attempts). Recovery time: {time}. You can continue when available.',
+  modelRecoveryUnknownTime: 'not provided; continue manually later',
+});
+
+Object.assign(dictEn.uiChat, { modelRecoveryAgent: 'Subtask {agent}: ' });
+
+Object.assign(dictEn.uiChat, { modelRecoveryCancelled: 'Rate-limit waiting cancelled.', modelRecoveryStopped: 'Rate-limit waiting ended. See this turn’s result.' });

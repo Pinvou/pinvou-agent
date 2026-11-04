@@ -279,6 +279,11 @@ const expectedProtocolHashes = {
   // occupancy fix rebased on top: the per-request context_input_tokens
   // consumption rides in the shared payload body, so no lane signature moved.
   chat: 'ff28e11c9e8a17c95a5425ab18b992517e13411a0553f4577f49dd0e2d2b4705',
+
+  // Recovery metadata settles at chat:done and notifies after transient updates.
+  // The existing event names/payload transport stay unchanged; callback text
+  // participates in this digest, including those new consumer branches.
+  chat: '286967fbc0db03fd8edf75642b8a603fc882c92655779d0e146dc6053bf6c7e8',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

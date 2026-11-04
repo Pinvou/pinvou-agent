@@ -1319,3 +1319,14 @@ Object.assign(dictJa.uiAcpProviders, {
   fetchModels:'モデル一覧を取得', fetchingModels:'モデル一覧を取得中…',
   fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
 });
+
+Object.assign(dictJa.uiChat, {
+  modelRecoveryWaiting: 'モデルサービスのレート制限です（{attempt}/{max} 回）。次の試行：{time}。「停止」で待機を取り消せます。',
+  modelRecoveryChildWaiting: 'モデルサービスのレート制限です（{attempt}/{max} 回）。次の試行：{time}。回復を待機しています。',
+  modelRecoveryInterrupted: 'レート制限からの復旧を中断し、進捗を保存しました（{attempt}/{max} 回）。復旧時刻：{time}。復旧後に続行できます。',
+  modelRecoveryUnknownTime: '提供されていません。後ほど手動で続行してください',
+});
+
+Object.assign(dictJa.uiChat, { modelRecoveryAgent: 'サブタスク {agent}：' });
+
+Object.assign(dictJa.uiChat, { modelRecoveryCancelled: 'レート制限の待機を取り消しました。', modelRecoveryStopped: 'レート制限の待機が終了しました。このターンの結果を確認してください。' });
