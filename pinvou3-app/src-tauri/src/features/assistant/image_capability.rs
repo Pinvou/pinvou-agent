@@ -63,19 +63,35 @@ impl ImageInputMode {
     }
 }
 
-/// Moonshot always-thinking 模型判定(**探测专用**名单,真实链路不需要):
-/// 名单内的模型官方接入要求 `thinking: {"type":"enabled"}` 保持开启,省略该
-/// 参数的请求会被网关拒绝。真实链路由 bridge `request_reasoning_effort` 默认
-/// high (底座翻译成 `thinking: {"type":"enabled"}`)天然满足,无名单;探测
-/// payload 不带 reasoning 设置,必须按本名单显式注入 thinking,否则
-/// kimi-for-coding 等模型的识图探测会 400 误判(2026-08 kimi-for-coding 实测)。
+/// Moonshot always-thinking model predicate (**probe-only** list; the real
+/// send path does not need it): models on this list officially require the
+/// `thinking: {"type":"enabled"}` field to stay on, and the gateway rejects
+/// requests that omit it. The real send path satisfies this naturally via the
+/// bridge `request_reasoning_effort` default of high (the base translates it
+/// into `thinking: {"type":"enabled"}`), so there is no list there; the probe
+/// payload carries no reasoning setting and must inject `thinking` explicitly
+/// per this list, otherwise the image probe for kimi-for-coding and friends
+/// misreports via a 400 (live-tested 2026-08, kimi-for-coding).
 ///
-/// K3.1 拼写刻意不在名单内(2026-11-04 round-4 review): K3 系列的文档化契约
-/// 是顶层 `reasoning_effort`(low/high/max,默认 max),明确「不使用 K2.x 的
-/// `thinking` 参数」(platform.kimi.com/docs/api/chat);省略即合法形态,与
-/// bridge 发送链路对 K3.1 的省略口径一致。早前「thinking 关不掉 → 省略也被拒」
-/// 的同推把 K2.x 实测的省略拒绝错误外推到了 K3.1;若实测发现网关仍拒绝省略,
-/// 应改为注入顶层 `reasoning_effort` 而非 `thinking`(待有 key 时回归验证)。
+/// K3.1 spellings are deliberately NOT on this list (2026-11-04 round-4
+/// review): the documented K3-series contract is the top-level
+/// `reasoning_effort` ladder (low/high/max, default max) and the docs state
+/// the K2.x `thinking` parameter is not used ("不使用 K2.x 的 `thinking`
+/// 参数", platform.kimi.com/docs/api/chat), so omission is the
+/// documented-valid shape — the same shape the bridge send path resolves for
+/// K3.1. The earlier inference "thinking cannot be turned off → omission is
+/// rejected too" wrongly extrapolated the K2.x live-tested omission
+/// rejection to K3.1; if a live probe ever shows the gateway rejecting
+/// omission for K3.1 as well, the fix is injecting top-level
+/// `reasoning_effort`, not `thinking` (to be regression-verified once a key
+/// is available).
+///
+/// This predicate only answers the thinking-parameter question. The separate
+/// completion-budget question ("does always-on reasoning consume the probe's
+/// max_tokens?") is answered by `moonshot_model_needs_reasoning_budget`
+/// below; K3.1 sits on that list while staying off this one, and one
+/// predicate must never serve both duties (sharing one boolean silently
+/// dropped the K3.1 probe budget to 64 — the round-5 review bug).
 pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
@@ -453,7 +469,7 @@ mod tests {
         ] {
             assert!(
                 !moonshot_model_requires_explicit_thinking(name),
-                "{name} 走 K3 系列省略契约,不应注入 thinking"
+                "{name} walks the K3-series omission contract; thinking must not be injected"
             );
         }
         // k3[1m] must NOT hit the list, but not because bare k3 rides the
