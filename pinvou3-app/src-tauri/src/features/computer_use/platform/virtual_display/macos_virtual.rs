@@ -113,7 +113,6 @@ use super::super::macos::{
 // platform/macos.rs documents for the AX "Copy rule" guards.
 use super::VirtualAvailability;
 use crate::platform::cursor::CFRelease;
-use crate::platform::os::spawn_detached_and_reap;
 use crate::platform::process::std_process_group_leader;
 
 // ---------------------------------------------------------------------------
@@ -543,11 +542,64 @@ fn create_and_wait(deadline: Instant) -> CreatedDisplay {
     }
 }
 
-/// Parks the virtual display right of the main display with a SESSION-scope
-/// display configuration (NEVER `kCGConfigurePermanently` — the user's real
-/// layout must survive process death untouched; session scope evaporates
-/// with it). The main display is pinned at (0,0) and the virtual display at
-/// (main_width, 0), so the virtual bounds never overlap the user's desktop.
+/// Bounds of every active display except `except`, as (id, bounds) pairs.
+/// Empty when the list cannot be read (callers fall back to main-only).
+fn other_display_bounds(except: u32) -> Vec<(u32, CGRect)> {
+    // A session has a handful of displays; 16 is far above any real layout.
+    let mut displays = [0u32; 16];
+    let mut count: u32 = 0;
+    // SAFETY: both pointers are valid out buffers of the declared lengths;
+    // CGGetActiveDisplayList writes at most `max_displays` entries.
+    let error =
+        unsafe { CGGetActiveDisplayList(displays.len() as u32, displays.as_mut_ptr(), &mut count) };
+    if error != CGError::Success {
+        return Vec::new();
+    }
+    let count = usize::try_from(count).unwrap_or(0).min(displays.len());
+    displays[..count]
+        .iter()
+        .filter(|&&id| id != except)
+        .map(|&id| (id, CGDisplayBounds(id)))
+        .collect()
+}
+
+/// Strict rectangle intersection: shared edges do NOT count (a display
+/// parked flush against another's right edge is adjacent, not overlapping).
+fn rects_intersect(a: CGRect, b: CGRect) -> bool {
+    a.origin.x < b.origin.x + b.size.width
+        && b.origin.x < a.origin.x + a.size.width
+        && a.origin.y < b.origin.y + b.size.height
+        && b.origin.y < a.origin.y + a.size.height
+}
+
+/// The right edge of the union of every active display except `except`.
+/// Parking beyond THIS edge — not merely beyond the main display's — is
+/// what keeps the virtual display clear of the user's whole layout: in the
+/// default macOS arrangement an external display sits exactly at
+/// (main_width, 0), so parking at the main display's right edge would drop
+/// the virtual display exactly on top of it.
+fn union_right_edge(except: u32) -> f64 {
+    let others = other_display_bounds(except);
+    if others.is_empty() {
+        // No readable list: fall back to the main display alone.
+        let main_bounds = CGDisplayBounds(CGMainDisplayID());
+        return main_bounds.origin.x + main_bounds.size.width;
+    }
+    others
+        .iter()
+        .map(|(_, bounds)| bounds.origin.x + bounds.size.width)
+        .fold(f64::MIN, f64::max)
+}
+
+/// Parks the virtual display right of the union of ALL active displays with
+/// a SESSION-scope display configuration (NEVER `kCGConfigurePermanently` —
+/// the user's real layout must survive process death untouched; session
+/// scope evaporates with it). The main display is pinned at (0,0) and the
+/// virtual display right of every other display's right edge, and the
+/// applied layout is VERIFIED overlap-free before returning — the central
+/// "the virtual bounds never overlap the user's desktop" invariant is
+/// enforced, not assumed: any residual overlap is an explicit error (the
+/// creation caller falls back to the physical target).
 fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
     let main = CGMainDisplayID();
     let mut config: CGDisplayConfigRef = std::ptr::null_mut();
@@ -561,13 +613,12 @@ fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
             begin.0
         )));
     }
-    let main_bounds = CGDisplayBounds(main);
-    let park_x = (main_bounds.origin.x + main_bounds.size.width).round() as i32;
+    let park_x = union_right_edge(display_id).ceil() as i32;
     // SAFETY: config is the live configuration from the successful begin;
     // both ids are real display ids.
     let main_result = unsafe { CGConfigureDisplayOrigin(config, main, 0, 0) };
     // SAFETY: same live configuration; display_id is a real display id and
-    // park_x was rounded from the main display's real bounds.
+    // park_x was rounded from the other displays' real bounds.
     let vd_result = unsafe { CGConfigureDisplayOrigin(config, display_id, park_x, 0) };
     if main_result != CGError::Success || vd_result != CGError::Success {
         // SAFETY: abandoning the configuration cancels it exactly once.
@@ -584,6 +635,30 @@ fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
         return Err(ComputerUseError::failed(format!(
             "CGCompleteDisplayConfiguration failed: CGError({})",
             complete.0
+        )));
+    }
+    // Enforce the no-overlap invariant on the APPLIED layout: CG may clamp
+    // or adjust origins, so trust only the post-configuration bounds.
+    let applied = CGDisplayBounds(display_id);
+    if let Some((id, bounds)) = other_display_bounds(display_id)
+        .into_iter()
+        .find(|(_, bounds)| rects_intersect(applied, *bounds))
+    {
+        return Err(ComputerUseError::unavailable(format!(
+            "the virtual display still overlaps display {id} after parking \
+             (virtual {:?}, other {:?}); refusing an overlapping placement",
+            (
+                applied.origin.x,
+                applied.origin.y,
+                applied.size.width,
+                applied.size.height
+            ),
+            (
+                bounds.origin.x,
+                bounds.origin.y,
+                bounds.size.width,
+                bounds.size.height
+            )
         )));
     }
     Ok(())
@@ -608,10 +683,12 @@ fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
 ///   computer_use worker thread afterwards; the object is never messaged
 ///   again after creation (write-only lifecycle state), so the only
 ///   cross-thread operation is its Drop;
-/// - dropped (released via the inner `Retained`'s `objc_release`) on the
-///   worker thread — both the normal backend-Drop path and the abandoned
-///   hand-off path (a value sitting in the channel when `recv_timeout` timed
-///   out is released when the receiver side drops, i.e. on the worker) —
+/// - dropped (released via the inner `Retained`'s `objc_release`) on
+///   whichever thread loses the last reference — the worker on the normal
+///   backend-Drop path; the worker when a timed-out `recv_timeout` drops a
+///   still-queued value; the CREATING thread (main, or the worker in the
+///   no-main-dispatch fallback) when the producer's `send` fails after the
+///   receiver side is gone. All three are plain `objc_release` drops —
 ///   thread-safe for a plain release (atomic refcount; no autorelease pool
 ///   is required for `objc_release` itself, matching the invariant
 ///   documented in `platform/macos.rs`). The display then disappears
@@ -839,6 +916,19 @@ fn pid_has_window_on_display(pid: i32, display_id: u32) -> bool {
     on_screen_windows()
         .iter()
         .any(|window| window.pid == pid && window.normal_level && window.intersects(bounds))
+}
+
+/// Whether `pid` currently owns ANY on-screen normal-level window, on any
+/// display. The direct-exec `open` path waits on this before its AX move:
+/// a freshly spawned app maps its window onto the user's desktop first,
+/// and the move is a structural no-op until that window exists.
+fn pid_has_any_window(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    on_screen_windows()
+        .iter()
+        .any(|window| window.pid == pid && window.normal_level)
 }
 
 // ---------------------------------------------------------------------------
@@ -1191,6 +1281,10 @@ const WINDOW_MOVE_MARGIN_PX: f64 = 40.0;
 /// Budget for finding the pid of an app launched via `open -a` (which
 /// cannot report one) by watching for its window to appear.
 const OPEN_PID_DISCOVER_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the launch path waits for the short-lived `/usr/bin/open`
+/// helper's own exit before treating it as "slow, keep discovering". A
+/// FAILED `open` (bad app name, missing bundle) exits in well under this.
+const OPEN_EXIT_STATUS_BUDGET: Duration = Duration::from_secs(3);
 /// How long an unconfirmed newcomer (owner name does not match the launched
 /// program, but the window IS inside the virtual display's bounds) is held
 /// while discovery keeps looking for the program's own window. Bounded so
@@ -1286,10 +1380,13 @@ impl MacosVirtualDisplayBackend {
         }
     }
 
-    /// Forget the keyboard target when an input action failed after being
-    /// posted (explicit failure ⇒ the "last interacted" claim is no longer
-    /// truthful — design §7). The "no application available yet" targeting
-    /// error never reaches this: it propagates before any event is posted.
+    /// Forget the keyboard target when an input action failed (explicit
+    /// failure ⇒ the "last interacted" claim is no longer truthful —
+    /// design §7). Targeting failures — including the "no application
+    /// available yet" case chord routes here — and the "no longer has a
+    /// window on the display" re-verification failure both clear the
+    /// stale remembered target, so the next action re-resolves instead of
+    /// repeating the same error.
     fn clear_focus_on_error(&mut self, error: &ComputerUseError) {
         if matches!(
             error,
@@ -1300,15 +1397,25 @@ impl MacosVirtualDisplayBackend {
     }
 
     /// Session-scope placement guard, piggybacked on every capture (design
-    /// §7): if the virtual display somehow became the main display or joined
-    /// a mirror set (both would put agent content on the user's screen),
-    /// re-apply the session-scope parking right of the main display.
-    /// Bounded and non-fatal (warn only; the next capture re-checks).
+    /// §7): if the virtual display somehow became the main display, joined
+    /// a mirror set, or got OVERLAPPED by a display the user connected or
+    /// moved (all three would put agent content on the user's screen or mix
+    /// the user's windows into captures), re-apply the session-scope
+    /// parking right of all displays — park_right_of_main re-verifies the
+    /// applied layout overlap-free. Bounded and non-fatal (warn only; the
+    /// next capture re-checks).
     fn ensure_parked(&self) {
-        if CGMainDisplayID() == self.display_id || CGDisplayIsInMirrorSet(self.display_id) {
+        let overlapped = other_display_bounds(self.display_id)
+            .iter()
+            .any(|(_, bounds)| rects_intersect(CGDisplayBounds(self.display_id), *bounds));
+        if CGMainDisplayID() == self.display_id
+            || CGDisplayIsInMirrorSet(self.display_id)
+            || overlapped
+        {
             log::warn!(
-                "[computer_use:macos-vd] virtual display became the main display or joined a \
-                 mirror set; re-applying session-scope placement right of the main display"
+                "[computer_use:macos-vd] virtual display became the main display, joined a \
+                 mirror set, or was overlapped by another display; re-applying session-scope \
+                 placement right of all displays"
             );
             if let Err(error) = park_right_of_main(self.display_id) {
                 log::warn!("[computer_use:macos-vd] re-parking failed: {error}");
@@ -1430,7 +1537,17 @@ impl MacosVirtualDisplayBackend {
             .map(|key| virtual_keycode(*key).map(|(code, shift)| (*key, code, shift)))
             .collect::<Result<Vec<_>, _>>()?;
         let cancel = self.cancel.clone();
-        let pid = self.keyboard_pid()?;
+        let pid = match self.keyboard_pid() {
+            Ok(pid) => pid,
+            Err(error) => {
+                // A targeting failure is the same error class the other
+                // input entry points route through clear_focus_on_error —
+                // chord must not skip it, or a stale remembered target
+                // keeps failing every chord until some click resets it.
+                self.clear_focus_on_error(&error);
+                return Err(error);
+            }
+        };
         let mut flags = CGEventFlags::empty();
         // Modifiers pressed so far (flags), non-modifier keys held (codes +
         // their shift requirement for the release mask).
@@ -1535,11 +1652,13 @@ impl MacosVirtualDisplayBackend {
     /// Launches `program` inside the virtual display target.
     ///
     /// Return contract (honest): the returned u32 is the owning pid, or 0
-    /// when the launch channel cannot report one. `open -a` exits without
-    /// the app pid, so the pid is recovered by watching for a NEW pid to
-    /// appear in the on-screen window list; if none appears within
-    /// [`OPEN_PID_DISCOVER_TIMEOUT`], the app was still launched but the
-    /// owning process cannot be determined yet — the session should
+    /// when the launch channel cannot report one. A FAILED launch (a bad
+    /// app name, a missing bundle, a binary that exits without ever showing
+    /// a window) is an explicit `Err`, never a silent `Ok(0)`. `open -a`
+    /// exits without the app pid, so the pid is recovered by watching for a
+    /// NEW pid to appear in the on-screen window list; if none appears
+    /// within [`OPEN_PID_DISCOVER_TIMEOUT`], the app was still launched but
+    /// the owning process cannot be determined yet — the session should
     /// interact via clicks first (a screenshot after `open` shows the
     /// result either way).
     fn launch(&mut self, program: &str, args: &[String]) -> Result<u32, ComputerUseError> {
@@ -1569,18 +1688,59 @@ impl MacosVirtualDisplayBackend {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            // `open` itself is short-lived; reap it via the shared detached
-            // reaper (which discards the pid — exactly what we want here,
-            // the app pid is discovered below).
-            spawn_detached_and_reap(&mut command).map_err(|error| {
+            let mut child = command.spawn().map_err(|error| {
                 ComputerUseError::unavailable(format!("open: cannot launch the app: {error}"))
             })?;
+            // `open` is short-lived: wait for its exit (bounded) so a FAILED
+            // launch — a typo'd app name, a missing bundle — surfaces here
+            // instead of falling through pid discovery and reporting the
+            // false "launched, pid 0". A slow launcher (beyond the budget)
+            // hands its Child to the detached reaper and keeps the old
+            // discovery semantics.
+            let deadline = Instant::now() + OPEN_EXIT_STATUS_BUDGET;
+            let mut exit_status = None;
+            while exit_status.is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        exit_status = Some(status);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        log::warn!(
+                            "[computer_use:macos-vd] cannot read the launcher's exit \
+                             status: {error}"
+                        );
+                        break;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                sleep(POLL_INTERVAL);
+            }
+            match exit_status {
+                Some(status) if !status.success() => {
+                    return Err(ComputerUseError::unavailable(format!(
+                        "open: the launcher exited with {status} — a bad app name or a \
+                         missing bundle fails here"
+                    )));
+                }
+                Some(_) => {} // exited successfully; already reaped
+                None => {
+                    // Still running past the budget: detach a reaper so the
+                    // Child never becomes a zombie.
+                    let _ = std::thread::Builder::new()
+                        .name("computer-use-open-reaper".to_string())
+                        .spawn(move || {
+                            let _ = child.wait();
+                        });
+                }
+            }
             self.discover_new_pid(&known_pids, program)
         } else {
             // Plain executable: direct exec, process-group leader, stdin/out
-            // null; the pid is known immediately. Detached reaper mirrors
-            // platform::os::posix::spawn_detached_and_reap (that helper
-            // discards the Child, so a small inline reaper keeps the pid).
+            // null; the pid is known immediately.
             let mut command = Command::new(program);
             command.args(args);
             command
@@ -1592,11 +1752,64 @@ impl MacosVirtualDisplayBackend {
                 ComputerUseError::unavailable(format!("open: cannot launch the program: {error}"))
             })?;
             let pid = child.id();
-            let _ = std::thread::Builder::new()
-                .name("computer-use-open-reaper".to_string())
-                .spawn(move || {
-                    let _ = child.wait();
-                });
+            // Wait (bounded) for the app's first window BEFORE the AX move
+            // below: the window is created asynchronously after spawn, and
+            // moving immediately reads AXWindows = 0 — a structural no-op
+            // that left the window on the user's desktop even WITH the
+            // Accessibility grant. The wait also catches a binary that
+            // exits without ever showing a window: reporting that as
+            // "launched" would be dishonest.
+            let deadline = Instant::now() + OPEN_PID_DISCOVER_TIMEOUT;
+            let mut window_seen = false;
+            let mut exit_status = None;
+            while !window_seen && exit_status.is_none() {
+                if pid_has_any_window(pid as i32) {
+                    window_seen = true;
+                    break;
+                }
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        exit_status = Some(status);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        log::warn!(
+                            "[computer_use:macos-vd] cannot read the launched program's \
+                             exit status: {error}"
+                        );
+                        break;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                sleep(POLL_INTERVAL);
+            }
+            match (window_seen, exit_status) {
+                (false, Some(status)) => {
+                    return Err(ComputerUseError::unavailable(format!(
+                        "open: the program exited without showing a window ({status}) — a \
+                         bad binary or a purely CLI tool fails here"
+                    )));
+                }
+                (false, None) => {
+                    log::warn!(
+                        "[computer_use:macos-vd] launched {program:?} but no window appeared \
+                         within the budget; attempting the window move anyway"
+                    );
+                }
+                _ => {}
+            }
+            if exit_status.is_none() {
+                // Still running: hand the Child to a detached reaper (the
+                // already-exited case was reaped by try_wait above).
+                let _ = std::thread::Builder::new()
+                    .name("computer-use-open-reaper".to_string())
+                    .spawn(move || {
+                        let _ = child.wait();
+                    });
+            }
             Some(pid)
         };
         let Some(pid) = launched_pid else {
@@ -1617,8 +1830,9 @@ impl MacosVirtualDisplayBackend {
         }
         // Best-effort: move the app's front window into the virtual display
         // bounds (AX position set; needs the Accessibility grant — a missing
-        // grant or an app without windows yet just leaves the window
-        // wherever the system put it, warn only, non-fatal).
+        // grant leaves the window wherever the system put it, warn only,
+        // non-fatal. The direct-exec path waited for the window above, so a
+        // granted machine reliably relocates it).
         self.move_front_window_into_display(pid_i32);
         self.focus_pid = Some(pid_i32);
         Ok(pid)
@@ -1677,10 +1891,14 @@ impl MacosVirtualDisplayBackend {
     }
 
     /// AX-moves the front window of `pid` to the virtual display origin +
-    /// margin (AXWindows → AXPosition on window 0). Best-effort, warn only:
-    /// AX is not load-bearing for this backend (input is delivered by pid,
-    /// capture by display id); without an Accessibility grant the reads
-    /// error out and the window simply stays where the system put it.
+    /// margin (AXWindows → AXPosition on window 0). Best-effort, warn only —
+    /// but NOT cosmetic: the move is what keeps an opened app's window off
+    /// the user's desktop. Without an Accessibility grant the reads error
+    /// out and the window stays where the system put it (disclosed in the
+    /// target note); input itself does not depend on AX (delivered by pid,
+    /// capture by display id) — but see launch(): an app whose window never
+    /// lands in the display bounds becomes uninputtable, so a failed move
+    /// on a granted machine degrades that app, not just the layout.
     fn move_front_window_into_display(&self, pid: i32) {
         if pid <= 0 {
             return;
@@ -1948,9 +2166,10 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
         let dest = self.click_destination()?;
         let pid = self.input_pid(Some(dest))?;
-        // Let the targeting settle before the first down (the physical path
-        // settles after a move; here the settle also keeps the hit-test from
-        // racing a just-arrived window).
+        // Settle before the first down (the physical path settles after a
+        // move). Note the hit-test in input_pid has ALREADY run above — this
+        // settle gives the target app time to process the synthesized
+        // events, not to appear.
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         let (down, up, _) = cg_mouse_event_types(button);
         let cg_button = cg_mouse_button(button);
