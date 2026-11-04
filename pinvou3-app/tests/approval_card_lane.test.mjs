@@ -1353,6 +1353,25 @@ try {
       '后台会话历史首次落客户端后必须触发在途审批补读');
     assert.match(web, /scheduleShellPoll\(id, true\);[\s\S]{0,300}webReplayPendingApprovals\(id\);/,
       '会话切换全量加载（含 live 合并分支）后必须触发在途审批补读');
+    // 重放终态栅栏（评审 5768948485 P2）：补读快照 promise 晚于该会话的
+    // turn 终态解决时，迟到回程会把等待通告/busy 面插回已结束的会话且
+    // 可能没有后续终态清除——快照发出前取终态序号,回程序号已推进即整批
+    // 作废（桌面 sessions.js approvalReplayTerminalSeq 同形先例）;受理的
+    // chat:done 必须推进序号;序号有界且不逐出在途快照的 sid（在途窗口
+    // 内被逐出后以捕获值重臂会让撕裂快照重新过栅栏）。运行时回归在
+    // session_nav_race_web.test.mjs（整桥 VM harness）。
+    assert.match(web, /const webApprovalReplayTerminalSeq = new Map\(\);/,
+      'Web 补读重放必须有按会话的终态栅栏序号表');
+    assert.match(web, /const terminalFence = webApprovalReplayTerminalFence\(sid\);/,
+      '补读快照必须在发出前取样终态栅栏序号');
+    assert.match(web, /webApprovalReplayTerminalFence\(sid\) !== terminalFence\) return;/,
+      '快照在途期间发生 turn 终态时整批迟到快照必须作废（不落通告、不拉 busy）');
+    assert.match(web, /listen\("chat:done", function \(e\) \{[\s\S]{0,900}?bumpWebApprovalReplayTerminalSeq\(sid\);/,
+      '受理的 chat:done 必须推进该会话的重放终态栅栏序号');
+    assert.match(web, /webApprovalReplayTerminalSeq\.size > WEB_APPROVAL_REPLAY_SEQ_CAP/,
+      '重放终态栅栏序号表必须有界（512 最旧逐出,同 webApprovalNoticeIds 口径）');
+    assert.match(web, /if \(webPendingApprovalsInFlight\[candidate\]\) continue;/,
+      '栅栏序号逐出必须跳过在途快照的 sid（在途窗口内重臂会让撕裂快照重新过栅栏）');
     // web 物化必须应用全部三档 lane 默认（与桌面 sessions.js 未绑定 plain
     // 分支逐字镜像）：tri-mode 对账之前只应用 plan,显式的 yolo/auto work
     // 默认被静默丢弃。

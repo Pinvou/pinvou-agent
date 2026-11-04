@@ -4167,12 +4167,44 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   // 读取失败保持 fail-open（静默继续,live chat:approval_required 仍是主
   // 路径）；每个 sid 用在途标记防重叠加载并发重复读。
   const webPendingApprovalsInFlight = Object.create(null);
+  // 重放终态栅栏（评审 5768948485 P2）：bootstrap 补读快照的 promise 晚于
+  // 该会话的 turn 终态（chat:done）解决时，迟到回程仍会落等待通告并
+  // markRemoteTurn 拉起 busy——已结束的会话重新变 busy，且可能没有后续
+  // 终态来清除。桌面 sessions.js 的 approvalReplayTerminalSeq 同形先例：
+  // 快照发出前记下该会话的终态序号，回程时序号已推进即整批作废（不落
+  // 通告、不拉 busy，live 事件仍是主路径）。序号条目不随缓冲区回收删除
+  // （永不重置回 0：pre-terminal 旧快照不可能靠 0==0 复活；条目只增，
+  // 回收后重建的会话保持高水位只会多丢一条迟到通告，方向 fail-safe），
+  // 上限 512 最旧逐出、在途快照的 sid 跳过——在途窗口内被逐出后恰好以
+  // 捕获值重臂会让撕裂快照重新过栅栏（桌面 pin 同口径）。
+  const webApprovalReplayTerminalSeq = new Map();
+  const WEB_APPROVAL_REPLAY_SEQ_CAP = 512;
+  function bumpWebApprovalReplayTerminalSeq(sid) {
+    if (!sid) return;
+    const key = String(sid);
+    webApprovalReplayTerminalSeq.set(key, (webApprovalReplayTerminalSeq.get(key) || 0) + 1);
+    if (webApprovalReplayTerminalSeq.size > WEB_APPROVAL_REPLAY_SEQ_CAP) {
+      for (const candidate of webApprovalReplayTerminalSeq.keys()) {
+        if (webPendingApprovalsInFlight[candidate]) continue;
+        webApprovalReplayTerminalSeq.delete(candidate);
+        break;
+      }
+    }
+  }
+  function webApprovalReplayTerminalFence(sid) {
+    return webApprovalReplayTerminalSeq.get(String(sid)) || 0;
+  }
   function webReplayPendingApprovals(sid) {
     if (!sid || webPendingApprovalsInFlight[sid]) return;
     webPendingApprovalsInFlight[sid] = true;
+    // 终态栅栏在快照发出前取样（含并发防重入标记之后）。
+    const terminalFence = webApprovalReplayTerminalFence(sid);
     invoke("get_pending_approvals", { sessionId: sid }).then(function (pending) {
       const entries = Array.isArray(pending) ? pending : [];
       if (!entries.length) return;
+      // 终态栅栏核对：快照在途期间该会话发生 turn 终态 → 引擎侧登记表
+      // 已被终态兜底清空，迟到快照只是旧状态回声，整批作废。
+      if (webApprovalReplayTerminalFence(sid) !== terminalFence) return;
       runSyncOnSession(sid, function () {
         entries.forEach(function (entry) {
           const approvalId = String(entry && entry.approvalId || "");
@@ -4427,6 +4459,10 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       // allocate a background buffer or persist the active Session into it.
       return;
     }
+    // 审批重放终态栅栏 bump（webReplayPendingApprovals 消费）：受理的
+    // turn 终态推进该会话的终态序号——补读快照若在此前后仍在途，回程时
+    // 序号失配整批作废，不得把等待通告/busy 面插回已结束的会话。
+    bumpWebApprovalReplayTerminalSeq(sid);
     const doneBuffer = sid ? getBuffer(sid) : null;
     // Match the Tauri client: rejected optimistic edits must hydrate the
     // unchanged authoritative transcript before another local turn starts.
