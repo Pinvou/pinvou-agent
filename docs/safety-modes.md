@@ -318,6 +318,9 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`
   （复审修复五头 `1785dae15` 实测 264 过 / 0 挂，既有 fail-closed pin 原样绿；
   协议 crate 71/0 含新增遗留 ChangeMode 载荷 serde 钉）。
+  计数口径（round-8 L10-5）：279 是**行为名**普查（`forkguard_*` 独立测试名，
+  同名多处出现计一），264 是该头**实测通过的测试用例数**（一个行为名可派生
+  多个用例/参数化，且 24 条候选新增钉在该头已含），两数不必相等。
   24 条逐名：
   `forkguard_armed_full_access_forced_hold_resolves_to_prompt`、
   `forkguard_armed_full_access_hold_prompts_instead_of_blocking`、
