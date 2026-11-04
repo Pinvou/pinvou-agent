@@ -866,12 +866,14 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       || Object.keys(lane.toolMeta).length > 0,
   );
   const messages = saved && Array.isArray(saved.messages) ? saved.messages : [];
-  // Tool-gate decisions are host-visible audit records rather than model
-  // messages. Keep them across an authoritative SavedSession rehydrate just
-  // like the work/web bridge keeps live-only system items in its session
-  // buffer; otherwise a reconnect immediately erases the decision.
-  const liveToolGateNotices = lane.items
-    .filter(item => item && item.type === 'system' && item.toolGateDecision)
+  // Tool-gate decisions and guardrail hard-denials are host-visible audit
+  // records rather than model messages. Keep them across an authoritative
+  // SavedSession rehydrate just like the work/web bridge keeps live-only
+  // system items in its session buffer; otherwise a reconnect immediately
+  // erases the decision (guardrail notices carry the same live-only shape —
+  // round-9 extends the toolGateDecision preserve to chat:guardrail_denied).
+  const liveAuditNotices = lane.items
+    .filter(item => item && item.type === 'system' && (item.toolGateDecision || item.guardrailDenied))
     .map(item => ({ ...item }));
   const resultById = {};
   for (const message of messages) {
@@ -1012,11 +1014,19 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     item.state = 'done';
     item.success = item.success === null ? false : item.success;
   }
-  for (const notice of liveToolGateNotices) {
-    const duplicate = lane.items.some(item => (
-      item && item.type === 'system' && item.toolGateDecision
-        && item.toolId === notice.toolId && item.decision === notice.decision
-    ));
+  for (const notice of liveAuditNotices) {
+    // 同类标记才去重（保存的会话消息不会还原这两种 live-only 系统项，
+    // 这里的比对是防御性的）：tool-gate 按 toolId+decision，守卫硬拒按
+    // toolName+reason。
+    const duplicate = lane.items.some(item => {
+      if (!item || item.type !== 'system') return false;
+      if (notice.toolGateDecision) {
+        return item.toolGateDecision
+          && item.toolId === notice.toolId && item.decision === notice.decision;
+      }
+      return item.guardrailDenied
+        && item.toolName === notice.toolName && item.reason === notice.reason;
+    });
     if (!duplicate) lane.items.push({ ...notice, id: nextId(lane) });
   }
   lane.timeline = Array.isArray(timelineEvents) ? [...timelineEvents] : [];

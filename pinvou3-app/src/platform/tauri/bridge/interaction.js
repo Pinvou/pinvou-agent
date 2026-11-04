@@ -82,7 +82,9 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
       if (state.activeSessionId !== sid) {
         runSyncOnSession(sid, function () {
           state.modeState = {
-            mode: ms.mode || "yolo",
+            // tri-mode：定向写回分支的兜底与 active 分支同一最坏方向安全档
+            // auto，不再退最宽档 yolo（round-9 与 sibling 分支对齐）。
+            mode: ms.mode || "auto",
             multiAgent: !!ms.multi_agent,
             askOnGuardrail: ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
           };
@@ -141,13 +143,19 @@ function setModeLane(lane) { return pinvouSharedtauriInteraction().setModeLane(l
     // Any draft-default WRITE invalidates in-flight defaults reads (round-8
     // L7-2 staleness discipline).
     modeDefaultsEpoch += 1;
+    // The write's own response obeys the same discipline as the sibling read
+    // path above: capture the epoch after the invalidating bump and verify
+    // before applying — a defaults read issued after this write bumped the
+    // epoch again, and this stale response must not overwrite the fresher
+    // value that read lands (round-9).
+    const epochAtWrite = modeDefaultsEpoch;
     const boundDraft = !!state.draftWorkspacePath;
     // Bound drafts always write the code lane; unbound drafts follow the
     // current lane (two lanes, work/code; design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
-      if (defaults) state.modeDefaults = defaults;
+      if (defaults && epochAtWrite === modeDefaultsEpoch) state.modeDefaults = defaults;
       if (boundDraft) state.pendingDraftMode = target;
       if (!state.activeSessionId) {
         state.modeState = {
@@ -370,7 +378,8 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
         // 后端返回为准。
         state.pendingDraftMultiAgent = !!enabled;
         state.modeState = {
-          mode: (state.modeState && state.modeState.mode) || "yolo",
+          // tri-mode：缺省兜底与 active 分支同一最坏方向安全档 auto（round-9）。
+          mode: (state.modeState && state.modeState.mode) || "auto",
           multiAgent: !!enabled,
           askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
         };
@@ -388,7 +397,8 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
       // 丢弃，权威值由下方 set_multi_agent_mode 返回后写回（审计意见）。
       bumpModeStateEpoch(sid);
       state.modeState = {
-        mode: (state.modeState && state.modeState.mode) || "yolo",
+        // tri-mode：缺省兜底与 active 分支同一最坏方向安全档 auto（round-9）。
+        mode: (state.modeState && state.modeState.mode) || "auto",
         multiAgent: !!enabled,
         askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
       };
@@ -401,7 +411,8 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
         // 全局 modeState 会把回滚砸进别的会话、报错落错聊天（复核 P1）。
         runOnSession(sid, function () {
           state.modeState = {
-            mode: (state.modeState && state.modeState.mode) || "yolo",
+            // tri-mode：回滚兜底同样取最坏方向安全档 auto（round-9）。
+            mode: (state.modeState && state.modeState.mode) || "auto",
             multiAgent: previousMultiAgent,
             askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
           };

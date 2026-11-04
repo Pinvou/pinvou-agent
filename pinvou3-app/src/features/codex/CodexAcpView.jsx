@@ -3458,6 +3458,17 @@ export function CodexAcpView({
   async function decideNativeApproval(approvalId, decision) {
     if (!activeId || !approvalId) return;
     const sid = activeId;
+    // 在途防重入（interaction.js decideApproval 的 card.submitting 同款）：
+    // `responding` 是 React state，按钮禁用一拍后才提交，同一提交帧内的双击
+    // 两次都过禁用检查、派发两条 decide_approval。在 lane 卡对象上同步置
+    // submitting 并在 await 前拒绝重入，finally 里释放。
+    const card = getNativeLane(sid).items.find(item => (
+      item && item.type === 'approval' && item.approvalId === approvalId
+    ));
+    if (card) {
+      if (card.submitting) return;
+      card.submitting = true;
+    }
     setRespondingSessionId(sid); setError('');
     try {
       await invoke('decide_approval', { sessionId: sid, approvalId, decision });
@@ -3465,6 +3476,7 @@ export function CodexAcpView({
     } catch (err) {
       if (sid === activeIdRef.current) showError(err);
     } finally {
+      if (card) card.submitting = false;
       setRespondingSessionId(current => current === sid ? null : current);
     }
   }

@@ -2828,6 +2828,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // with no card.
       const [pendingChatYoloSwitch, setPendingChatYoloSwitch] = useState(false);
       const [chatYoloConfirmBusy, setChatYoloConfirmBusy] = useState(false);
+      // Round-9: the state flag commits one render late — the ref latch
+      // (consumed in confirmChatYoloSwitch) closes the same-tick double click.
+      const chatYoloConfirmBusyRef = useRef(false);
       const [chatYoloConfirmError, setChatYoloConfirmError] = useState('');
       // Target session captured when the confirm card opens: if the user switches
       // away during the confirm round-trip, exitPlanToYolo must not act on the new
@@ -3094,6 +3097,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         await bridge.interaction.planStuckGo(itemId, gateSid);
       }
       async function confirmChatYoloSwitch() {
+        // Round-9: the state flag commits one render late — the ref latch
+        // closes the same-tick double click (set synchronously at entry,
+        // cleared in the finally below alongside the state reset).
+        if (chatYoloConfirmBusyRef.current) return;
+        chatYoloConfirmBusyRef.current = true;
         if (chatYoloConfirmBusy) return;
         setChatYoloConfirmBusy(true);
         setChatYoloConfirmError('');
@@ -3141,6 +3149,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             setChatYoloConfirmError(String(e && e.message || e || 'error'));
           }
         } finally {
+          chatYoloConfirmBusyRef.current = false;
           setChatYoloConfirmBusy(false);
         }
       }
