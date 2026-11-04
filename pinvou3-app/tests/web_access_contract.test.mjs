@@ -231,7 +231,13 @@ for (const command of [
 // 曾三个全漏)由本钉永久兜住:任何新 web_access_* 命令不加进任一侧即红。
 {
   const defined = new Set();
-  for (const match of remoteControlCommands.matchAll(/pub(?:\([\w:]+\))? (?:async )?fn (web_access_\w+)\(/g)) {
+  // Round-19 复审 M1:正则必须行首锚定。此前的无锚定版本连
+  // `#[cfg(test)]` 折叠错误钉数据表里的 8 条签名形状字符串
+  // ("pub async fn web_access_chat(" 等)一并当作定义——真命令被删
+  // /改名后 Set 仍由这些幻影命中撑住,反向存在钉对其余 8/42 策略命令
+  // 失明(探针实证)。生产签名都在列 0,表数据带缩进,行首锚定即可
+  // 精确切分。
+  for (const match of remoteControlCommands.matchAll(/^pub(?:\([\w:]+\))? (?:async )?fn (web_access_\w+)\(/gm)) {
     defined.add(match[1]);
   }
   assert.ok(defined.size >= 50,
@@ -262,13 +268,25 @@ for (const command of [
 // event_subscribe 是订阅控制)。结构化扫描 Rust 管理器与 JS 桥里的
 // web_access:* 字面量:任何一个都不允许出现在 Web 策略事件名单里,
 // 新增同名事件即被扫进(此前事件半边没有任何反向钉)。
-// Round-15 复审 M5:命令层(app/commands/remote_control.rs)一并纳入扫
-// 描。Round-18 复审口径订正:命令层今天是零命中(唯一的 `web_access:`
-// 字样在 :309 的反引号文档注释里,正则不匹配)——本源现在贡献零断言,
-// 属前瞻性兜底:命令层将来若新增同名事件字面量(转发/状态通道),扫描
-// 会立刻把它拦进反钉,而非逃过。
-for (const source of [remoteControlManager, desktopRemoteControlBridge, remoteControlCommands]) {
-  for (const match of source.matchAll(/"web_access:([a-z_]+)"/g)) {
+// Round-15 复审 M5:命令层一并纳入扫描。Round-18 复审口径订正:命令层
+// 今天是零命中——本源现在贡献零断言,属前瞻性兜底:命令层将来若新增同
+// 名事件字面量(转发/状态通道),扫描会立刻把它拦进反钉,而非逃过。
+// Round-19 复审:扫描面从单个 remote_control.rs 扩到整个 app/commands
+// 聚合(文件顶部已聚合,复用之);正则放宽到任意引号(单引号/模板字符
+// 串)并允许数字段名([a-z0-9_]+),闭合探针实证的三类旁路拼法;注释行
+// 先行剔除,避免文档提及制造幻影断言(幻影方向本就 fail-closed,剔除
+// 只为省掉未来政策化时的假红)。
+// 只剔纯注释行(行首即 // 或 /*):含尾注释的代码行必须保留,否则
+// `web_access:x` 字面量藏在行尾注释前的代码里会被整行删掉,扫描反而
+// fail-open(Round-17 订正过的同类)。块注释续行(`* …`)保留——其中的
+// 字样只会制造 fail-closed 幻影断言,不会放过真违例。
+function stripPureCommentLines(source) {
+  return source.split('\n')
+    .filter(line => !/^\s*(?:\/\/|\/\*)/.test(line))
+    .join('\n');
+}
+for (const source of [remoteControlManager, desktopRemoteControlBridge, commands].map(stripPureCommentLines)) {
+  for (const match of source.matchAll(/["'`]web_access:([a-z0-9_]+)["'`]/g)) {
     const eventName = `web_access:${match[1]}`;
     assert.equal(allowedEvents.has(eventName), false,
       `${eventName} is a management channel and must never enter the web event policy`);
