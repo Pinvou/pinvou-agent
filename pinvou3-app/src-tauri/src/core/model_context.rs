@@ -252,9 +252,11 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // without this row the bare spelling resolves None → the engine falls
     // to 128K while the FE row documents 1M. The -highspeed suffix rides
     // the tolerance of this row: platform.kimi.com/docs/api/models-overview
-    // states the highspeed variant is "同一模型、参数约束完全一致" (same
-    // model, identical constraints; only output speed differs), so it is
-    // the same 1M window — re-checked 2026-11-03.
+    // states both K3.1 spellings carry kimi-k3's constraints verbatim
+    // ("参数约束也与 `kimi-k3` 完全一致" — the same 1M window; note that the
+    // "同一模型、参数约束完全一致（仅输出速度不同）" wording on the same page
+    // belongs to the kimi-k2.7-code/-highspeed family, not to K3.1), so the
+    // highspeed variant is the same 1M window — re-checked 2026-11-03.
     ("k3.1-pro", 1_048_576),
     // muse-spark-1.3 (Meta group headline row, 2026-11-03 refresh):
     // officially 1,048,576 context per the dev.meta.ai quickstart, fetched

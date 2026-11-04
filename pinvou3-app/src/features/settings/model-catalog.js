@@ -17,11 +17,9 @@ import xaiIcon from '../../brand-icons/xai.svg';
 
 // ── 「添加模型」方案:模型快切 chip + 添加/编辑弹窗 ─────────────────
 // 各预设默认 baseUrl/model 模板(与 bridge/prefs.rs 对齐),添加模型时自动填充。
-// openai_compatible 为纯自定义模板,前端刻意不留默认地址/模型,Rust 侧的
-// The OpenAI default only serves as the legacy migration fallback (the custom
-// endpoint identity is unknown; keep the old flagship gpt-5.6-terra instead
-// of following the official recommended slot, to avoid implying official
-// endorsement).
+// openai_compatible 为纯自定义模板,前端刻意不留默认地址/模型;Rust 侧的 OpenAI
+// 默认值仅作旧配置迁移兜底——自定义端点身份未知,保留旧旗舰 gpt-5.6-terra
+// 而不追随官方推荐位,避免暗示官方背书。
 // Default models (checked against each vendor's official docs on 2026-11-03;
 // previous full re-check 2026-10-13):
 // - deepseek: V4.1-Flash (deepseek-flash) is still the mainline and
@@ -115,10 +113,9 @@ const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
 const PROVIDER_KIND_OFFICIAL_API = 'official_api';
 const PROVIDER_KIND_CUSTOM = 'custom';
 // 模型拼写约定：凡底座（CodeWhale）route 目录收录的模型，列表项 `model` 一律
-// always prefer the base models_dev.bundled.json catalog row's exact spelling;
-// no case rule may be applied. Custom compatible endpoints (bigmodel.cn Coding
-// Plan, the open platforms, Tencent/Alibaba Plans) and the
-// modelstudio catalog (qwen_token_plan) keep their own lowercase wire ids.
+// 优先采用底座 models_dev.bundled.json 目录行的原样拼写，不套大小写规则；
+// 自定义兼容端点（bigmodel.cn Coding Plan、各开放平台、腾讯/阿里 Plan）与
+// modelstudio 目录（qwen_token_plan）的行则保留各自的全小写 wire id。
 // z.ai direct's official wire id is confirmed all-lowercase (docs.z.ai API
 // enum, checked 2026-09), so its catalog rows use lowercase and keep the
 // uppercase legacy; the base bundled assets still hold the uppercase rows
@@ -309,9 +306,10 @@ const MODEL_CATALOG = {
     // glm-5 was removed from Coding Plan and glm-5.1 / glm-5 from Token Plan:
     // Tencent announce 2469 took GLM-5 / GLM-5-Turbo / GLM-5.1 offline
     // Beijing time 2026-10-09 00:00 (Coding Plan users auto-switch to Auto,
-    // Token Plan users to GLM-5.3). The live 130092 table still displays
-    // glm-5 with its (now past-due) retirement notice, so the announcement is
-    // the authoritative record. The old ids fall back to the custom listing
+    // Token Plan users to GLM-5.3) — the announcement is the authoritative
+    // record (the live 130092 plan-model table carries only the Auto row,
+    // re-checked 2026-11-04 round-4 review). The old ids fall back to the
+    // custom listing
     // (endpoint classification is URL-based and unaffected), same treatment
     // as kimi-k2.5.
     {
@@ -520,9 +518,9 @@ const MODEL_CATALOG = {
         { model: 'kimi-k3.1-pro', imageCapable: true, title: 'kimi-k3.1-pro', desc: '最新旗舰，原生视觉，1M 上下文' },
         { model: 'kimi-k3.1-pro-highspeed', imageCapable: true, title: 'kimi-k3.1-pro-highspeed', desc: '最新旗舰高速款' },
         { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: '上代旗舰（当前默认），1M 上下文' },
-        { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 12 月底下线' },
-        { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 12 月底下线' },
-        { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用；K2 系列拟 12 月底下线' },
+        { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 2026 年 12 月底下线' },
+        { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 2026 年 12 月底下线' },
+        { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用；K2 系列拟 2026 年 12 月底下线' },
         { model: '', title: '自定义 Kimi 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -544,9 +542,9 @@ const MODEL_CATALOG = {
         { model: 'kimi-k3.1-pro', imageCapable: true, title: 'kimi-k3.1-pro', desc: '最新旗舰，原生视觉，1M 上下文' },
         { model: 'kimi-k3.1-pro-highspeed', imageCapable: true, title: 'kimi-k3.1-pro-highspeed', desc: '最新旗舰高速款' },
         { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: '上代旗舰，1M 上下文' },
-        { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 12 月底下线' },
-        { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 12 月底下线' },
-        { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用；K2 系列拟 12 月底下线' },
+        { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 2026 年 12 月底下线' },
+        { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 2026 年 12 月底下线' },
+        { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用；K2 系列拟 2026 年 12 月底下线' },
         { model: '', title: '自定义 Kimi 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -568,9 +566,9 @@ const MODEL_CATALOG = {
       // previous-generation flagship, all other rows are still on sale.
       // GLM-5.1 / 5-Turbo / 4.7 do not support reasoning_effort. A
       // legal-vertical speed tier, glm-5.3-flashx-legal (noted as a legal
-      // vertical on both sites' vision enums; the launch date and FlashX
-      // pricing often quoted for it are not stated on any reachable page,
-      // so neither is claimed), is deliberately not cataloged —
+      // vertical on both sites' vision enums; priced same as FlashX on both
+      // pricing pages — z.ai $0.37/$1.25, CN ¥2/¥7/¥0.57 — while no launch
+      // date is stated anywhere), is deliberately not cataloged —
       // niche vertical, reachable via the custom row.
       // glm-5 / glm-4.6 are deliberately not listed as rows: superseded
       // generations both sites still sell (the 2026-10-09 GLM-5 retirement
@@ -651,8 +649,10 @@ const MODEL_CATALOG = {
       // The whole M2.x family is text-only with thinking always on. The
       // official China docs' primary endpoint is api.minimax.cn (now the only
       // documented host, with an /anthropic variant);
-      // api.minimaxi.com still answers (a probe returns 404 with body status
-      // 1004 auth-failed, re-checked 2026-11-03) and stays the default
+      // api.minimaxi.com still answers (live probes 2026-11-04 round-4
+      // review: chat/completions answers 401 with body status 1004
+      // auth-failed, the legacy text endpoint answers 200 with the same
+      // 1004 marker) and stays the default
       // because the base tiered route pins
       // it, with the new domain registered as an alias below — note the
       // alias only classifies configs into this group; the exact-route
@@ -762,9 +762,12 @@ const MODEL_CATALOG = {
       // qwen3.8-max-preview is retired with requests auto-routing to the GA
       // version, so it is not listed. No qwen3.9/qwen4 generation exists as
       // of 2026-11-03. The dashscope mainline gateway now also hosts
-      // third-party models (kimi-k3, glm-5.3, MiniMax-M3.1-Flash,
-      // deepseek-v4.1-flash-1017, xiaomi/mimo-v2.6-pro-ultraspeed,
-      // antdigital/Ling-3.1-flash); this group stays scoped to the Qwen
+      // third-party models (kimi-k3, glm-5.3, MiniMax-M3.1-Flash and
+      // deepseek-v4.1-flash-1017 confirmed on the live model lists
+      // 2026-11-04 round-4 review; mimo-v2.6-pro-ultraspeed also listed,
+      // bare id without the xiaomi/ prefix; an antdigital Ling entry was
+      // not found on any live page and is not claimed anymore); this group
+      // stays scoped to the Qwen
       // line — the third-party lineups are covered by their own vendor
       // groups or the custom row.
       items: [
@@ -811,7 +814,7 @@ const MODEL_CATALOG = {
       // claim is made on the deepseek rows.
       items: [
         { model: 'qwen3.8-max', imageCapable: true, title: 'qwen3.8-max', desc: '正式旗舰，夜间 22:00-08:00 四折（个人版）' },
-        { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比，夜间同样四折' },
+        { model: 'qwen3.8-flash', imageCapable: true, title: 'qwen3.8-flash', desc: '快速高性价比，夜间同样四折（个人版）' },
         { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.6-flash', imageCapable: true, title: 'qwen3.6-flash', desc: '轻量兼容款，支持图像输入' },
@@ -1272,11 +1275,13 @@ const MODEL_CATALOG = {
       // docs.mistral.ai was unreachable from every channel on both passes
       // (still TLS-broken on the 2026-11-04 review), so the generation
       // state comes from the 2026-11-01 Wayback snapshot of the official
-      // models overview plus mistral.ai/news announcements. The
-      // "256K context" figures on the medium/large descs come from
-      // models.dev (the base's reference source, whose engine registry
-      // resolves these ids: medium/large at 262,144 — the small row's
-      // 256k matches the official Small 4 announcement). models.dev also
+      // models overview plus mistral.ai/news announcements. The row descs
+      // deliberately carry no context figures: models.dev (the base's
+      // reference source, whose engine registry resolves these ids) lists
+      // medium/large at 262,144, but no official Mistral page confirms any
+      // figure for these ids, so none is claimed (the earlier
+      // models.dev-sourced figures were dropped in the 2026-11-04 round-4
+      // accuracy pass; re-check at the next refresh). models.dev also
       // lists mistral-large-latest modalities text/image/pdf, so its row
       // is annotated true "per models.dev" (weakly sourced — soften/
       // re-check at the next refresh). Generation state: mistral-medium-3-5
@@ -1528,8 +1533,12 @@ const MODEL_CATALOG = {
       // is absent from the global plaza. Of the global-only rows, three
       // joined below in the 2026-11-04 fix pass (deepseek-ai/DeepSeek-V4.1-
       // Flash — the current Flash mainline, which global users would
-      // otherwise miss behind the retired-since-09-10 DeepSeek-V4-Flash
-      // name — plus zai-org/GLM-5.3 / zai-org/GLM-5.3-Flash): the global
+      // otherwise miss behind the older DeepSeek-V4-Flash name: the global
+      // plaza still lists that name with its April release date and no
+      // global page documents a retirement, so the "superseded since 09-10"
+      // reading is an inference from the CN release notes' in-place upgrade
+      // record, re-check at the next refresh — plus zai-org/GLM-5.3 /
+      // zai-org/GLM-5.3-Flash): the global
       // plaza displays them under names equal to the CN wire ids verified
       // against the official CN plaza/pricing, so the "ids unverifiable
       // without a key" rationale does not apply to these three. The
@@ -1539,8 +1548,10 @@ const MODEL_CATALOG = {
       // key, so their exact wire ids stay unverified. The two Pro/ rows
       // below are NOT global-plaza listings: they are the same
       // API-reference keeps as the CN group (they have left the public
-      // plazas; kept for existing configs and the official API doc, which
-      // still names them). Only the unprefixed deepseek-ai/DeepSeek-V4-Pro
+      // plazas; kept for existing configs — the official API reference
+      // names the Pro/ prefix on sibling ids but no longer these two exact
+      // ids, the same corrected citation the CN group carries). Only the
+      // unprefixed deepseek-ai/DeepSeek-V4-Pro
       // / -V4-Flash and moonshotai/Kimi-K2.7-Code rows are verified shared
       // between both plazas.
       items: [
