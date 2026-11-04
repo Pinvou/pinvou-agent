@@ -133,12 +133,28 @@ def content_json(response: dict) -> dict:
 # Background (the k3 slides:[] incident): with `type: "array"` and no items,
 # constrained tool-call decoding channels (Kimi and friends) complete the
 # parameter to its minimal valid value [] (observed live: slides:[] emitted
-# 27 times in a row). The validator on that route (MFJS, CodeWhale
-# schema_sanitize.rs) is much stricter than JSON Schema, and every deviation
-# is the same silent failure — the whole tool is dropped (MissingType /
-# UnsupportedKeyword / InvalidSchemaNode), which is how #683 lost
-# evaluate_script. The shape set below is verified against the validator
-# source at the pinned gitlink, not assumed, and this guard enforces it:
+# 27 times in a row — 2026-11-04 retest: a fresh single turn on the old
+# schema no longer reproduces the 27-in-a-row, but long-context/multi-turn
+# field loss is still real, 5 of 7 calls in a real user session, which is
+# why the pptx schema moved to a per-layout anyOf whose branches carry the
+# fields each layout's renderer cannot draw without; see
+# pinvou3-app/resources/mcp-servers/pptx/server.py). anyOf is a formal MFJS
+# member (the base pipeline is legalizing root-level anyOf via
+# ValidateAnyOf: branches must carry an explicit type, no type sibling at
+# the anyOf level, ≤ 10 branches, ≤ 100 total properties, depth ≤ 5); this
+# guard already walks unions at any node position. Note the root rule
+# below still bans a root-level anyOf because the guard mirrors the
+# validator at the PINNED CodeWhale gitlink, where a root union is
+# stripped/flattened — updating that rule rides the gitlink bump, not this
+# file alone. On the pre-anyOf base a nested union like the pptx one
+# flattens back to all-optional semantics (the old behavior), so the
+# schema degrades safely backward. The validator on that route (MFJS,
+# CodeWhale schema_sanitize.rs) is much stricter than JSON Schema, and every
+# deviation is the same silent failure — the whole tool is dropped
+# (MissingType / UnsupportedKeyword / InvalidSchemaNode), which is how #683
+# lost evaluate_script. The shape set below is verified against the
+# validator source at the pinned gitlink, not assumed, and this guard
+# enforces it:
 #   - every schema position holds an object; boolean and list values are
 #     InvalidSchemaNode, empty nodes are MissingType (the engine repairs
 #     exactly the items:{} shape, nothing else);
@@ -170,9 +186,12 @@ def content_json(response: dict) -> dict:
 #     values, ≤ 64 structural depth, ≤ 120000 encoded bytes) —
 #     ResourceLimitExceeded drops the tool like every other deviation.
 #   - anyOf keeps only the union's own siblings (MFJS InvalidKeywordValue
-#     otherwise) and every branch is walked and concretely typed; $defs
-#     interiors are walked so an unreferenced definition is no blind spot
-#     ($defs/$id are root-only for MFJS).
+#     otherwise) and every branch is walked and concretely typed; branch
+#     budget ≤ 10 and the whole-document properties total (branch-duplicated
+#     names accumulate) ≤ 100 are what make the pptx per-layout union the
+#     widest legal mitigation shape; $defs interiors are walked so an
+#     unreferenced definition is no blind spot ($defs/$id are root-only
+#     for MFJS).
 _MFJS_CONCRETE_TYPES = ("string", "number", "integer", "boolean", "object", "array", "null")
 _MFJS_ALLOWED_KEYWORDS = frozenset((
     "$id", "$ref", "$defs", "anyOf", "properties", "additionalProperties",

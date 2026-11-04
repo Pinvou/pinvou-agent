@@ -52,6 +52,22 @@ first print (review #713 round 7, P2-2). When python-pptx is not installed
 the case skips, exactly like the direct import it replaced; CI's green
 coverage of the real schema comes from the smoke step later in the same
 job (a real stdio pptx boot run through the same guard).
+
+Since 2026-11-04 the real pptx schema is a per-layout anyOf: constrained
+decoding channels complete a deep optional-field payload to its minimal
+legal shape (layout+title-only pages), so slides.items is an anyOf union
+of exactly one type:object branch per layout whose required lists the
+fields that layout's renderer cannot draw without (the only 10/10-
+compliant probe shape at +6% bytes; the all-fields-required control
+falsified at +76% tokens). The union-level tests pin that shape on the
+walker side — typed object branches beside anyOf stay green, the branch
+budget boundary holds for object branches too, and duplicated property
+names across branches accumulate into the total-properties budget — and
+the real-schema cases pin the union itself (exactly one branch per
+layout, single-value layout enums, required ⊆ declared properties,
+properties total within budget). On the pre-anyOf base the engine
+flattens the union back to all-optional semantics — the old behavior —
+so the shape degrades safely backward.
 """
 import importlib.util
 import json
@@ -594,6 +610,54 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNone(_contract_message(
             {"type": "object", "properties": {"x": {"anyOf": branches[:10]}}}))
 
+    def test_anyof_items_of_typed_object_branches_with_required_is_green(self):
+        # The per-layout mitigation shape (pptx slides.items, 2026-11-04):
+        # an items anyOf whose branches are explicit type:object nodes with
+        # their own properties and required. MFJS legalizes this union
+        # (ValidateAnyOf; branches carry explicit types, no type sibling at
+        # the anyOf level), so the guard must stay green — the constrained
+        # decoder reads each branch's required as the fields it must fill.
+        branches = [
+            {"type": "object",
+             "properties": {"layout": {"type": "string", "enum": ["cover"]},
+                            "title": {"type": "string"},
+                            "subtitle": {"type": "string"}},
+             "required": ["layout", "title"]},
+            {"type": "object",
+             "properties": {"layout": {"type": "string", "enum": ["bullets"]},
+                            "title": {"type": "string"},
+                            "bullets": {"type": "array", "items": {"type": "string"}}},
+             "required": ["layout", "title", "bullets"]},
+        ]
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"slides": {"type": "array", "items": {"anyOf": branches}}}}))
+
+    def test_property_budget_accumulates_across_anyof_branches(self):
+        # Branch-duplicated property names count toward the whole-document
+        # properties budget (the validator's MfjsValidationState accumulates
+        # across every node): ten branches of eleven properties each exceed
+        # the 100 budget even though no single branch does.
+        def branch(prefix):
+            return {"type": "object",
+                    "properties": {f"{prefix}{index}": {"type": "string"}
+                                   for index in range(11)},
+                    "required": [f"{prefix}0"]}
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"x": {"anyOf": [branch(f"b{i}_") for i in range(10)]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("exceed the MFJS budget of 100", message)
+        # Ten properties per branch (100 total, top-level property included)
+        # stays inside the budget.
+        def slim_branch(prefix):
+            props = {f"{prefix}{index}": {"type": "string"} for index in range(9)}
+            return {"type": "object", "properties": props,
+                    "required": [f"{prefix}0"]}
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"x": {"anyOf": [slim_branch(f"b{i}_") for i in range(10)]}}}))
+
     def test_total_properties_budget_is_enforced(self):
         def schema_with(count):
             return {"type": "object",
@@ -669,6 +733,75 @@ class SchemaContractWalkerTest(unittest.TestCase):
     @unittest.skipIf(pptx_schema is None, "python-pptx not installed (cannot load the pptx server schema)")
     def test_real_pptx_schema_is_green(self):
         self.assertIsNone(_contract_message(pptx_schema))
+
+    @unittest.skipIf(pptx_schema is None, "python-pptx not installed (cannot load the pptx server schema)")
+    def test_real_pptx_schema_items_is_per_layout_anyof(self):
+        # The 2026-11-04 mitigation shape: slides.items is an anyOf union of
+        # exactly one explicit type:object branch per layout. A regression
+        # to the flat single-object items (whose required was only layout,
+        # so constrained decoding dropped every content field) must turn
+        # red here.
+        slides = pptx_schema["properties"]["slides"]
+        self.assertEqual(slides.get("type"), "array")
+        items = slides.get("items")
+        self.assertIsInstance(items, dict)
+        self.assertNotIn("type", items,
+                         "anyOf must not share its level with type (MFJS InvalidKeywordValue)")
+        branches = items.get("anyOf")
+        self.assertIsInstance(branches, list)
+        self.assertEqual(len(branches), 10,
+                         "one branch per layout; an 11th also exceeds the anyOf budget")
+        layouts = []
+        for index, branch in enumerate(branches):
+            self.assertEqual(branch.get("type"), "object",
+                             f"branch {index} must be an explicit type:object")
+            props = branch.get("properties")
+            required = branch.get("required")
+            self.assertIsInstance(props, dict)
+            self.assertIsInstance(required, list)
+            self.assertTrue(required, f"branch {index} must declare required")
+            self.assertTrue(set(required) <= set(props),
+                            f"branch {index} required must name declared properties")
+            enum = props.get("layout", {}).get("enum")
+            self.assertEqual(len(enum), 1,
+                             f"branch {index} layout enum must be a single value")
+            layouts.append(enum[0])
+        self.assertEqual(sorted(layouts),
+                         sorted(["cover", "agenda", "section", "bullets", "two_col",
+                                 "kpi", "chart", "table", "image", "end"]))
+
+    @unittest.skipIf(pptx_schema is None, "python-pptx not installed (cannot load the pptx server schema)")
+    def test_real_pptx_schema_anyof_budgets_measured(self):
+        # The union duplicates layout/title across its 10 branches, so the
+        # whole-document properties total is what the budget sees. Measure
+        # it the way the guard's _MfjsBudget does (every properties dict,
+        # recursed through anyOf/items/additionalProperties) and pin it
+        # inside the budget: at the 2026-11-04 shape it is 47 of 100 —
+        # headroom for ~5 more layouts at most, after which a branch merge
+        # or a budget widening is required, not silent growth.
+        def count(node):
+            total = 0
+            if not isinstance(node, dict):
+                return total
+            props = node.get("properties")
+            if isinstance(props, dict):
+                total += len(props)
+                for sub in props.values():
+                    total += count(sub)
+            for key in ("items", "additionalProperties"):
+                sub = node.get(key)
+                if isinstance(sub, dict):
+                    total += count(sub)
+                elif isinstance(sub, list):
+                    total += sum(count(entry) for entry in sub)
+            branches = node.get("anyOf")
+            if isinstance(branches, list):
+                total += sum(count(branch) for branch in branches)
+            return total
+        total = count(pptx_schema)
+        self.assertLessEqual(total, smoke._MFJS_MAX_TOTAL_PROPERTIES,
+                             f"pptx schema holds {total} properties — over budget; "
+                             "merge branches or widen deliberately")
 
 
 if __name__ == "__main__":
