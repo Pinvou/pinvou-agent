@@ -1896,8 +1896,8 @@ export function CodexAcpView({
   /// pendingYoloSwitch 里，置 null 一并清掉；本车道确认卡无独立错误/代数
   /// 状态，无需额外复位。
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
     pendingYoloDialogGenRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
     setPendingYoloSwitch(null);
   }, [activeId]);
 
