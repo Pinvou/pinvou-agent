@@ -1825,16 +1825,20 @@ impl AppEngine {
         // Tri-mode safety: one mode_state read feeds both the swarm switch
         // and the safety-profile derivation threaded into the spawn config
         // (the pool's post-spawn arming separately syncs the live posture).
-        // An UNATTENDED scheduled spawn always composes the Full profile:
-        // the stored mode is an interactive posture, and deriving Floor from
-        // a stored Yolo would drop the sensitive-face mechanical gate
-        // (credential destroy/exfil/persistence) for exactly the runs nobody
-        // watches — see `SafetyRuleProfile::for_engine_lane`.
+        // An UNATTENDED spawn always composes the Full profile — a scheduled
+        // run AND a windowless host alike: the stored mode is an interactive
+        // posture, and deriving Floor from a stored Yolo would drop the
+        // sensitive-face mechanical gate (credential destroy/exfil/
+        // persistence) for exactly the runs nobody watches — see
+        // `SafetyRuleProfile::for_engine_lane`. The windowless marker makes
+        // the headless/agentic boot lanes (`run_windowless_host`) unattended
+        // too: no window means no card consumer (round-9 P1).
         let mode_state = store.mode_state(session_id);
         let safety_profile =
             crate::features::assistant::safety_deny_rules::SafetyRuleProfile::for_engine_lane(
                 mode_state.mode,
-                scheduled_unattended_spawn,
+                scheduled_unattended_spawn
+                    || crate::features::assistant::windowless_host::is_windowless_host(),
             );
         let multi_agent_enabled = scheduled_profile.is_none()
             && bridge.multi_agent_mode_available(session_id)
@@ -4534,6 +4538,16 @@ mod tests {
         let config_at = body
             .find("build_engine_config_for_session_roots_with_profile(")
             .expect("the profile must thread the spawn config");
+        // Round-9 P1: the unattended lane flag must include the windowless
+        // host marker — a headless/agentic run reusing a stored-Yolo session
+        // composes Floor otherwise, and no card consumer exists there to
+        // restore the gate.
+        let derivation_args = &body[derivation_at..config_at.max(derivation_at + 1)];
+        assert!(
+            derivation_args.contains("is_windowless_host()"),
+            "the spawn-site unattended lane must OR in the windowless host \
+             marker (round-9 P1)"
+        );
         assert!(
             mode_read_at < derivation_at && derivation_at < config_at && lane_at > 0,
             "ordering: mode read → lane-aware profile derivation → spawn config"

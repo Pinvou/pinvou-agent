@@ -1607,12 +1607,22 @@ impl SessionStore {
     /// recorded choice. Called after `load_session_mode_states`.
     pub fn load_ask_on_guardrail_overrides(&self) {
         let file = crate::platform::paths::sessions_root().join("_ask_on_guardrail.json");
-        let Ok(content) = std::fs::read_to_string(&file) else {
-            return;
+        // 文件缺失是常态（无开关翻写的会话家），静默；读 IO 失败（权限/IO
+        // 错误）与损坏一样响亮记日志——同一纪律：静默跳过会让「重启后开关
+        // 全回默认」无从排查（round-9 minor）。
+        let content = match std::fs::read_to_string(&file) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                eprintln!(
+                    "[sessions] _ask_on_guardrail.json read failed, skipping override merge: \
+                     {file:?}: {error}"
+                );
+                return;
+            }
         };
-        // 文件缺失是常态（无开关翻写的会话家），静默；损坏/被截断则响亮记
-        // 日志——与 load_session_mode_states 的读侧纪律一致，静默跳过会让
-        // 「重启后开关全回默认」无从排查。
+        // 损坏/被截断则响亮记日志——与 load_session_mode_states 的读侧纪律
+        // 一致，静默跳过会让「重启后开关全回默认」无从排查。
         let Ok(mut overrides) =
             serde_json::from_str::<std::collections::HashMap<String, bool>>(&content)
         else {

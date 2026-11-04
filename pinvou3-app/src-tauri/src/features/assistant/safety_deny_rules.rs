@@ -568,6 +568,15 @@
 //!   trailing-slash spellings (v3.2; the R7 chmod face already covers `/`
 //!   itself). Mainstream rm-prompt parity; registered asymmetry (allow-
 //!   pinned).
+//! - POSIX resolved-home trailing-slash upload spelling (`scp -r /home/me/ host:` — round-9
+//!   minor registration): the direct-upload family enumerates the resolved
+//!   real home in its BARE spelling only (the enumerated literal roots
+//!   `~`/`$HOME`/`${HOME}`/`/root` carry bare AND trailing-slash forms, and
+//!   the destroy face does cover the real home's trailing spelling, so
+//!   `exfil_root_targets`' "same enumeration philosophy" docstring was not
+//!   literally true for the real home). Same under-block class as the
+//!   registered Windows destroy-face spelling asymmetry: conservative
+//!   direction, allow-pinned, disclosed rather than enumerated per host.
 //! - `rm -rf /*` and other glob/root-relative spellings of the bare-root
 //!   destroy face: the shell expands the glob, but the engine sees the raw
 //!   token `/*`, which no rule names (the exact-token roots are covered).
@@ -838,23 +847,28 @@ impl SafetyRuleProfile {
 
     /// Engine-incarnation → profile: the profile a ruleset serves for a
     /// SPECIFIC engine (spawn config, spawn arming, and every later hot
-    /// refresh of that engine's ruleset). An UNATTENDED scheduled run always
-    /// composes [`SafetyRuleProfile::Full`]: the stored session mode is an
+    /// refresh of that engine's ruleset). An UNATTENDED run always composes
+    /// [`SafetyRuleProfile::Full`]: the stored session mode is an
     /// interactive posture, and an unattended automation has no one to answer
     /// the armed card Yolo trades the sensitive faces for — deriving Floor
     /// from a stored Yolo would silently drop the credential-destroy /
     /// exfil / persistence mechanical gate for exactly the runs where nobody
     /// watches. (The unattended lane's per-turn approval policy keeps its own
     /// task-profile gate in the forwarder; this restores the deny-ruleset
-    /// half.) Interactive engines — including interactive continuations of a
-    /// scheduled session, which spawn a fresh `scheduled_run_engine = false`
-    /// incarnation — keep the mode-derived tri-mode face.
+    /// half.) The caller passes `unattended = scheduled_run_engine ||
+    /// windowless_host::is_windowless_host()`: a scheduled-run engine and a
+    /// windowless host are the two shapes of "nobody can answer the card" —
+    /// a windowless headless/agentic run reusing a stored-Yolo session would
+    /// otherwise spawn Floor (round-9 P1). Interactive engines — including
+    /// interactive continuations of a scheduled session, which spawn a fresh
+    /// `scheduled_run_engine = false` incarnation on a desktop host — keep
+    /// the mode-derived tri-mode face.
     #[must_use]
     pub fn for_engine_lane(
         mode: crate::core::mode_state::SerializableMode,
-        scheduled_run_engine: bool,
+        unattended: bool,
     ) -> Self {
-        if scheduled_run_engine {
+        if unattended {
             Self::Full
         } else {
             Self::for_mode(mode)
@@ -943,12 +957,14 @@ fn destroy_root_targets() -> Vec<String> {
 /// Bare home-root targets for the direct-UPLOAD family (v3.4): the destroy
 /// face has carried the bare roots since the review pass (`rm -rf ~`), but
 /// the upload face enumerated only credential paths — `scp -r ~ host:`
-/// exfiltrated the whole home past every rule. Same enumeration philosophy
-/// as [`destroy_root_targets`] minus the filesystem root `/` (exfiltrating
+/// exfiltrated the whole home past every rule. Enumeration mirrors
+/// [`destroy_root_targets`] minus the filesystem root `/` (exfiltrating
 /// `/` is not a one-token spelling the inventory needs, and `curl * /` is
 /// the chmod family's face): the enumerated roots `~`/`$HOME`/`${HOME}`/
 /// `/root` in bare AND trailing-slash spellings, plus the resolved real
-/// home's bare spelling. Exact tokens, exact-deduped (a host whose resolved
+/// home's bare spelling only (the trailing-slash real-home upload spelling
+/// is a registered residue — see the module residue list). Exact tokens,
+/// exact-deduped (a host whose resolved
 /// home IS `/root` does not double-count), and the same skip philosophy as
 /// [`win_destroy_rules`] applies at the Windows call sites for `~`/`$home`.
 fn exfil_root_targets() -> Vec<String> {

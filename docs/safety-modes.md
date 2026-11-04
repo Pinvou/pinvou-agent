@@ -226,9 +226,14 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
 - Floor 缺敏感族是产品意图：Yolo 用敏感 deny 面换武装卡，只留「永远不合理」
   的底线（mkfs 全盘、sudoers 写等）。Yolo 会话因此确实失去了敏感族的机械门，
   这是有意的取舍而非疏漏。
-- **引擎车道**（`SafetyRuleProfile::for_engine_lane`）：无人值守 scheduled
-  引擎**恒为 Full**——存储的 Yolo 是交互姿态，无人看卡恰恰是最不能拆机械门的
-  场景；交互引擎（含定时会话的交互续段）按 mode 取档。
+- **引擎车道**（`SafetyRuleProfile::for_engine_lane`）：无人值守引擎**恒为
+  Full**——存储的 Yolo 是交互姿态，无人看卡恰恰是最不能拆机械门的场景；
+  交互引擎（含定时会话的交互续段，桌面宿主）按 mode 取档。「无人值守」的
+  两种形态都进 Full：scheduled run 引擎，**以及 windowless 宿主**
+  （`run_windowless_host` 的 headless/agentic 车道——round-9 P1 修复：此前
+  只有 scheduled 标志进档判定，`pinvou agent run` 复用存为 Yolo 的 GUI 会话
+  会以 Floor 跑无人值守，凭据销毁/外传/持久化机械门整体缺席且无卡可补；
+  spawn config 与热刷新共用同一 lane 判定，两侧都有源码钉）。
 - 热换纪律：mode 改变触发 `Op::ChangeMode` + `SetPermissionRuleset` 同一发布
   序列；同档重发重建同一规则集，调用方无需追踪旧档。spawn 期武装在引擎条目
   发布前排队，第一轮即按会话车道运行；超级权限/连接器/技能开关的热刷新也按
@@ -277,7 +282,7 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
 |---|---|
 | code 会话 / 绑定工作区的 plain 会话 | `code_permission.last_mode`（None → Plan） |
 | 未绑定 plain 会话（工作车道） | Auto；显式选择的 work 车道全局默认（plan/yolo/auto）由前端在会话物化时套用为该会话自己的记录 |
-| 无人值守定时引擎 | 交互审批面不适用；规则档恒 Full（第 5 节） |
+| 无人值守定时引擎 / windowless 宿主 | 交互审批面不适用；规则档恒 Full（第 5 节） |
 
 ## 7. 模型知情（authority transition）
 

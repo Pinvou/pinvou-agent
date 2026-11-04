@@ -62,7 +62,7 @@ pub fn instruction_block() -> &'static str {
 /// no-op 的关键(静态 prompt 刷不动,就每 turn 重新注入)。
 ///
 /// **开启**:直接 sudo 一步到位,别先试裸命令(否则模型对 `/etc` 写只会裸 touch 然后放弃)。
-/// **Off**: sudo is denied by default (the execpolicy deny rule rejects it immediately instead of blocking until timeout; with the session's ask-on-guardrail switch armed, the deny face becomes an approval prompt the user decides); guide the user to enable the toggle.
+/// **Off**: sudo is denied by default in Plan/Auto (the execpolicy deny rule rejects it immediately instead of blocking until timeout; with the session's ask-on-guardrail switch armed, that deny face becomes an approval prompt the user decides — a Yolo session carries no sudo deny rule at all, so the toggle does not gate it); guide the user to enable the toggle.
 pub fn turn_reminder() -> &'static str {
     crate::platform::os::super_permission_turn_reminder()
 }

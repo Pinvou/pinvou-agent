@@ -3682,12 +3682,17 @@ impl Pinvou3Bridge {
     }
 
     /// Build the [`Op::SendMessage`] sent to the engine — switch
-    /// trust/approval/sandbox by `mode`.
+    /// trust/approval/sandbox by `mode`; the approval half arrives as the
+    /// caller's [`TurnApprovalPosture`] (the pool resolves it from the
+    /// session's tri-mode state — Plan/Auto = (false, Suggest), Yolo =
+    /// (true, Bypass); scheduled/benchmark paths pass their own), not from
+    /// this table (round-9 minor: the pre-tri-mode table claimed both Yolo
+    /// and Plan sent `auto_approve=true, Auto`).
     ///
-    /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | effective behavior |
-    /// |------|-------------|------------|--------------|---------------|---------|
-    /// | Yolo | self.allow  | true       | true         | Auto          | fully automatic + trust the whole home directory |
-    /// | Plan | true        | true       | true         | Auto          | read-only toolset + ReadOnly sandbox (the foundation's tool_setup.rs switches automatically by mode) |
+    /// | mode | allow_shell | trust_mode | approval posture | effective behavior |
+    /// |------|-------------|------------|------------------|---------|
+    /// | Yolo | self.allow  | true       | caller's (ordinary: true, Bypass) | fully automatic + trust the whole home directory |
+    /// | Plan | true        | true       | caller's (ordinary: false, Suggest) | read-only toolset + ReadOnly sandbox (the foundation's tool_setup.rs switches automatically by mode) |
     ///
     /// **M1 weak-model hardening**: prepend a `<system-reminder>` block before
     /// the user content, generated dynamically per `phase`. The same

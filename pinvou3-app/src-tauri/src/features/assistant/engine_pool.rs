@@ -5036,7 +5036,8 @@ impl EnginePool {
     ) -> codewhale_execpolicy::Ruleset {
         let profile = SafetyRuleProfile::for_engine_lane(
             self.store.mode_state(session_id).mode,
-            engine.scheduled_run_engine,
+            engine.scheduled_run_engine
+                || crate::features::assistant::windowless_host::is_windowless_host(),
         );
         self.bridge.scope_deny_ruleset_for_mode(session_id, profile)
     }
@@ -11926,6 +11927,50 @@ mod tests {
             span.contains(") && entry.engine.scheduled_run_engine == scheduled_unattended"),
             "reuse must be CONJOINED with the run-engine class — the clause \
              that keeps interactive continuations off the run engine (round-35 M1)"
+        );
+    }
+
+    /// Round-9 P1: the deny-ruleset hot-refresh/arming helper must derive
+    /// its engine-lane profile with the windowless-host fact ORed into the
+    /// unattended flag — a windowless headless/agentic run reusing a
+    /// stored-Yolo session would otherwise compose Floor at every hot
+    /// refresh (sudo/connector/mode toggles), silently re-tightening to the
+    /// mode-derived face that drops the credential-destroy/exfil/persistence
+    /// mechanical gate exactly where no card consumer exists. Source-pin the
+    /// helper body: the spawn config pins its own derivation
+    /// (unattended_spawn_derives_the_safety_profile_through_the_engine_lane),
+    /// this pin holds the refresh side of the same invariant.
+    #[test]
+    fn ruleset_refresh_lane_includes_the_windowless_host_marker() {
+        let source = include_str!("engine_pool.rs");
+        let span = source
+            .split("fn session_scope_ruleset_for_engine")
+            .nth(1)
+            .expect("the ruleset-lane helper present")
+            .split("fn ")
+            .next()
+            .expect("the helper body present")
+            .split('\n')
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            span.contains("SafetyRuleProfile::for_engine_lane("),
+            "the helper must derive through the engine lane"
+        );
+        assert!(
+            span.contains("engine.scheduled_run_engine"),
+            "the scheduled-run leg must stay in the lane flag"
+        );
+        assert!(
+            span.contains("windowless_host::is_windowless_host()"),
+            "the windowless-host leg must OR into the lane flag — the \
+             hot refresh of a windowless stored-Yolo engine would \
+             otherwise downgrade Full to the mode-derived Floor (round-9 P1)"
         );
     }
 }

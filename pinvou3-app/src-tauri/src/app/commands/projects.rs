@@ -4902,7 +4902,7 @@ mod tests {
     /// the `@root` binding), so a pre-rebind decision would otherwise answer
     /// a matching request executed under the moved directory. Mutation
     /// (negative-first): no-op'ing the `clear_session` call inside
-    /// `clear_approval_memory_on_identity_switch` fails the first two
+    /// `clear_approval_memory_for_rebound_sessions` fails the first two
     #[test]
     fn rebind_identity_switch_clears_session_approval_memory() {
         use crate::features::assistant::pending_approvals as approvals;
