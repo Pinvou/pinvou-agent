@@ -2838,8 +2838,9 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
 
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  // 发送受理前的姿态门（评审 P2）：Auto 档会话可能弹出 Web 端无法决策/
-  // 重放的审批卡——旧行为在这里照单全收，turn 卡住后才靠事后通告兜底。
+  // 执行轮受理前的姿态门（评审 P2；doSendFor / acceptPlan / editLastTurn
+  // 共用，骨架见下方 webAutoAdmissionGate）：Auto 档会话可能弹出 Web 端无法
+  // 决策/重放的审批卡——旧行为在这里照单全收，turn 卡住后才靠事后通告兜底。
   // 在受理前解析会话姿态并显式拒绝该不受支持的执行路径；逃生路径真实
   // 存在（模式芯片 setPlanModeNext/exitPlanToYolo 在 Web 白名单内，
   // Auto→Yolo 的 setSessionMode 同样在白名单内——只有进入 Auto 仍由
@@ -2853,28 +2854,30 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // 再提示一次。
   const webAutoSendNoticeSids = new Map();
   const WEB_AUTO_SEND_NOTICE_CAP = 512;
+  // 姿态门共用骨架（doSendFor / acceptPlan / editLastTurn，评审 P2 补口）：
+  // 三者同为执行轮受理面——accept_plan 与 edit_last_turn 和 web_access_chat
+  // 一样受理新一轮执行（多代理拒发清单亦把 edit_last_turn 归为执行类）。
+  // Auto 档显式拒绝；通告先落再拒绝：经 runSyncOnSession 落到 sid 自己的
+  // buffer，后台重试也标注正确的会话；throw 继续走调用方既有的失败面。
+  // get_mode_state 失败 fail-open 放行（事后通告仍是竞态兜底）。
+  async function webAutoAdmissionGate(sid, admitted) {
+    const modeState = await invoke("get_mode_state", { sessionId: sid }).catch(function () { return null; });
+    if (modeState && modeState.mode === "auto") {
+      runSyncOnSession(sid, function () {
+        if (webAutoSendNoticeSids.has(sid)) return;
+        webAutoSendNoticeSids.set(sid, true);
+        if (webAutoSendNoticeSids.size > WEB_AUTO_SEND_NOTICE_CAP) {
+          webAutoSendNoticeSids.delete(webAutoSendNoticeSids.keys().next().value);
+        }
+        addSystemItem(bt("webAutoSendBlocked"));
+      });
+      throw new Error(bt("webAutoSendBlocked"));
+    }
+    return admitted();
+  }
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
-    const admitted = function () {
+    return webAutoAdmissionGate(sid, function () {
       return doSendForAdmitted(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure);
-    };
-    return invoke("get_mode_state", { sessionId: sid }).then(function (modeState) {
-      if (modeState && modeState.mode === "auto") {
-        // 通告先落再拒绝：经 runSyncOnSession 落到 sid 自己的 buffer，后台
-        // flushQueued 的重试也标注正确的会话；throw 继续走调用方既有的失败
-        // 恢复（composer 恢复草稿 / flushQueued 原位保留队首）。
-        runSyncOnSession(sid, function () {
-          if (webAutoSendNoticeSids.has(sid)) return;
-          webAutoSendNoticeSids.set(sid, true);
-          if (webAutoSendNoticeSids.size > WEB_AUTO_SEND_NOTICE_CAP) {
-            webAutoSendNoticeSids.delete(webAutoSendNoticeSids.keys().next().value);
-          }
-          addSystemItem(bt("webAutoSendBlocked"));
-        });
-        throw new Error(bt("webAutoSendBlocked"));
-      }
-      return admitted();
-    }, function () {
-      return admitted();
     });
   }
 
@@ -5179,6 +5182,15 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
   async function acceptPlan(itemId, planMarkdown, echo, planId) {
     const sid = state.activeSessionId;
     if (!sid) return;
+    // 姿态门（同 doSendFor,评审 P2 补口）：接受计划 = accept_plan 受理新一轮
+    // 执行。plan 卡虽诞生于 Plan 档,桌面把会话切进 Auto 后,残留的可点卡在
+    // Web 仍会无门起轮——受理前解析姿态,Auto 显式拒绝（通告去重面共用,
+    // 拒绝必须可观察）,get_mode_state 失败 fail-open 放行。
+    return webAutoAdmissionGate(sid, function () {
+      return acceptPlanAdmitted(sid, itemId, planMarkdown, echo, planId);
+    });
+  }
+  async function acceptPlanAdmitted(sid, itemId, planMarkdown, echo, planId) {
     const planTicket = String(planId || "").trim();
     if (!planTicket) {
       if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
@@ -5391,6 +5403,15 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
     newText = (newText || "").trim();
     if (!newText) return;
     const sid = state.activeSessionId;
+    // 姿态门（同 doSendFor,评审 P2 补口）：edit_last_turn 受理新一轮执行重跑
+    // （多代理拒发清单亦归为执行类）,不得在 Auto 档无门起轮——受理前解析
+    // 姿态,Auto 显式拒绝（通告去重面共用,拒绝必须可观察）,get_mode_state
+    // 失败 fail-open 放行。
+    return webAutoAdmissionGate(sid, function () {
+      return editLastTurnAdmitted(sid, newText);
+    });
+  }
+  async function editLastTurnAdmitted(sid, newText) {
     const editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
