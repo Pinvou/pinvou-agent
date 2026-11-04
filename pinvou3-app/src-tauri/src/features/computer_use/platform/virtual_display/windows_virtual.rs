@@ -92,13 +92,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChildWindowFromPoint, FindWindowW, GW_HWNDLAST, GW_HWNDNEXT, GW_HWNDPREV, GetClassNameW,
-    GetCursorPos, GetForegroundWindow, GetParent, GetSystemMetrics, GetTopWindow, GetWindow,
-    GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, PW_RENDERFULLCONTENT, PostMessageW,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos,
-    SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WindowFromPoint,
+    CS_DBLCLKS, ChildWindowFromPoint, FindWindowW, GCL_STYLE, GW_HWNDNEXT, GW_HWNDPREV,
+    GetClassLongW, GetClassNameW, GetCursorPos, GetForegroundWindow, GetParent, GetSystemMetrics,
+    GetTopWindow, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+    PW_RENDERFULLCONTENT, PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SetCursorPos, SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
 
@@ -110,7 +111,8 @@ use super::super::super::types::{
 use super::super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS,
     HOLD_CANCEL_POLL_MS, MAX_SCROLL_CLICKS, MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun,
-    combine_drag_errors, drag_waypoints, normalize_typed_newlines, split_type_runs,
+    combine_drag_errors, combine_hold_errors, drag_waypoints, normalize_typed_newlines,
+    split_type_runs,
 };
 use super::VirtualAvailability;
 
@@ -362,13 +364,38 @@ fn wheel_wparam(delta: i32) -> usize {
 
 /// The `(down, double-click, up, wParam mark)` message tuple for a button.
 /// The double-click message substitutes for the SECOND down, mirroring what
-/// the OS generates for real input.
+/// the OS generates for real input — see [`multi_click_message`].
 fn mouse_button_messages(button: MouseButton) -> (u32, u32, u32, usize) {
     match button {
         MouseButton::Left => (WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONUP, MK_LBUTTON),
         MouseButton::Right => (WM_RBUTTONDOWN, WM_RBUTTONDBLCLK, WM_RBUTTONUP, MK_RBUTTON),
         MouseButton::Middle => (WM_MBUTTONDOWN, WM_MBUTTONDBLCLK, WM_MBUTTONUP, MK_MBUTTON),
     }
+}
+
+/// The message for press `index` (0-based) of a multi-click. The OS turns
+/// the second (and fourth, ...) press into a DBLCLK **only** when the
+/// target's window class registered `CS_DBLCLKS`; every other class
+/// receives another plain down (to it, no double-click ever happened).
+/// Mirroring that per target keeps `click(count=2)` meaningful for
+/// non-DBLCLKS apps instead of delivering one effective click.
+fn multi_click_message(index: u8, down: u32, double: u32, accepts_dblclk: bool) -> u32 {
+    if index % 2 == 1 && accepts_dblclk {
+        double
+    } else {
+        down
+    }
+}
+
+/// Whether `target`'s window class registered `CS_DBLCLKS`. A query failure
+/// (returns 0) is treated as DBLCLK-capable — the historical behavior —
+/// rather than silently degrading double-clicks.
+///
+/// SAFETY: class-style query on a desktop window from the attached worker.
+unsafe fn window_class_accepts_dblclk(target: HWND) -> bool {
+    // SAFETY: see the fn contract.
+    let style = unsafe { GetClassLongW(target, GCL_STYLE) };
+    style == 0 || (style & CS_DBLCLKS.0) != 0
 }
 
 /// This crate's [`Key`] → Win32 virtual-key code. EXHAUSTIVE over `Key`
@@ -513,8 +540,6 @@ fn validate_open_request(program: &str, args: &[String]) -> Result<(), ComputerU
 
 /// The hidden desktop's shell launch plan: (lpApplicationName, lpCommandLine).
 /// The application path is passed RAW (lpApplicationName is never parsed, so
-/// The hidden desktop's shell launch plan: (lpApplicationName, lpCommandLine).
-/// The application path is passed RAW (lpApplicationName is never parsed, so
 /// quoting it would corrupt the path). NO folder argument: the desktop starts
 /// blank and `wait_for_shell_tray` gates readiness — opening a default folder
 /// (the old plan used %USERPROFILE%) would put the user's home-directory file
@@ -528,6 +553,26 @@ fn explorer_launch_plan(windir: Option<&str>) -> (String, String) {
         format!("{windir}\\explorer.exe"),
         "explorer.exe".to_string(),
     )
+}
+
+/// `GetDIBits` returns the number of scan lines copied as an `i32` (it can
+/// also fail outright with a negative value). A short read — fewer lines
+/// than requested, e.g. under GDI pressure — would leave the buffer tail
+/// zeroed: half-black frames reported as good captures. Returns the
+/// explicit failure reason when the read is incomplete, `None` on a full
+/// read. Pure, so the rejection is pinable without a live desktop.
+fn short_read_reason(lines: i32, height: i32) -> Option<String> {
+    if lines < 0 {
+        Some(format!(
+            "hidden desktop capture: GetDIBits failed with code {lines}"
+        ))
+    } else if lines != height {
+        Some(format!(
+            "hidden desktop capture: GetDIBits returned {lines} of {height} scan lines"
+        ))
+    } else {
+        None
+    }
 }
 
 /// Flip bottom-up rows to top-down and swizzle BGRX → RGBA in place (a
@@ -619,9 +664,12 @@ struct VirtualScreenRect {
     height: i32,
 }
 
-/// Read the virtual-screen rect from the calling thread's attached desktop
-/// (these metrics describe the hidden desktop's session, not the user's
-/// physical session).
+/// Read the virtual-screen rect from the calling thread's attached desktop.
+/// `SM_*VIRTUALSCREEN` metrics are PER-SESSION (every desktop in the session
+/// shares the session's monitor topology), so on the worker — attached to the
+/// hidden desktop — they describe exactly the monitor layout the hidden
+/// desktop's windows are positioned in (identical to the user's physical
+/// layout; the isolation is per-desktop, not per-monitor-topology).
 ///
 /// SAFETY: pure metric query; no pointers involved.
 unsafe fn desktop_virtual_screen_rect() -> VirtualScreenRect {
@@ -723,6 +771,19 @@ unsafe fn recover_leftover_desktop(name: &str, desktop: HDESK) {
     // SAFETY: enumeration + handle-scoped kills, see the fn contract.
     unsafe {
         for pid in desktop_window_pids(desktop) {
+            // Pid-recycling guard (same fail-safe shape as the Linux
+            // identity gate, minus a recorded argv to compare): a pid seen
+            // in the collection may have exited and been RECYCLED by the
+            // time OpenProcess runs — re-check against a FRESH enumeration
+            // immediately before the kill, so a number-only kill cannot
+            // take out an unrelated process that reused the number.
+            if !desktop_window_pids(desktop).contains(&pid) {
+                log::debug!(
+                    "[computer_use][virtual-win] leftover pid {pid} no longer owns a \
+                     window on the desktop (exited or recycled); skipping"
+                );
+                continue;
+            }
             match OpenProcess(PROCESS_TERMINATE, false, pid) {
                 Ok(process) => {
                     if let Err(error) = TerminateProcess(process, 1) {
@@ -807,6 +868,10 @@ unsafe fn launch_suspended_in_job(
         let mut desktop_buffer = desktop_path_wide;
         let mut command_buffer = to_wide(command_line);
         let mut startup = STARTUPINFOW::default();
+        // The documented contract requires cb = sizeof(STARTUPINFOW); without
+        // it the system is free to ignore lpDesktop and start the process on
+        // the caller's desktop instead of the hidden one.
+        startup.cb = core::mem::size_of::<STARTUPINFOW>() as u32;
         startup.lpDesktop = PWSTR::from_raw(desktop_buffer.as_mut_ptr());
         let mut info = PROCESS_INFORMATION::default();
         let application_name = application.map(|path| PCWSTR(path.as_ptr()));
@@ -1142,11 +1207,8 @@ impl GdiPool {
             // A short read (fewer scan lines than requested, e.g. under GDI
             // pressure) would leave the buffer tail zeroed — half-black
             // frames reported as good captures. Fail explicitly instead.
-            if lines != self.rect.height as u32 {
-                return Err(ComputerUseError::unavailable(format!(
-                    "hidden desktop capture: GetDIBits returned {lines} of {} scan lines",
-                    self.rect.height
-                )));
+            if let Some(reason) = short_read_reason(lines, self.rect.height) {
+                return Err(ComputerUseError::unavailable(reason));
             }
             flip_and_swizzle_bgrx_to_rgba(
                 &mut buffer,
@@ -1280,11 +1342,15 @@ fn capture_thread_main(
     let _ = unsafe { SetThreadDesktop(previous) };
 }
 
-/// Visible top-level windows in BOTTOM-TO-TOP order (painter's algorithm):
-/// start at the Z-bottom (`GetTopWindow` + `GW_HWNDLAST`), walk
-/// `GW_HWNDPREV` toward the top, keep the visible ones. The generated
-/// wrappers answer Err where the raw API returns NULL (end of the Z-walk),
-/// so an Err terminates the walk.
+/// Visible top-level windows in BOTTOM-TO-TOP order (painter's algorithm).
+/// The Z-walk itself runs TOP-DOWN (`GetTopWindow`, then `GW_HWNDPREV`
+/// toward the bottom) so the `cap` keeps the TOPMOST visible windows when a
+/// pathological window farm exceeds it — those are the active windows the
+/// screenshot is for; a bottom-first cap silently dropped exactly them. The
+/// collected order is reversed before returning, preserving the painter's
+/// algorithm the composite expects (bottom blitted first, top last). The
+/// generated wrappers answer Err where the raw API returns NULL (end of the
+/// Z-walk), so an Err terminates the walk.
 ///
 /// SAFETY: desktop-relative Z-order enumeration from the attached calling
 /// thread; the returned handles are valid at return time (windows may still
@@ -1296,10 +1362,7 @@ unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
         let Ok(top) = GetTopWindow(None) else {
             return out; // empty desktop
         };
-        let mut current = match GetWindow(top, GW_HWNDLAST) {
-            Ok(bottom) => bottom,
-            Err(_) => return out,
-        };
+        let mut current = top;
         loop {
             if IsWindowVisible(current).as_bool() {
                 out.push(current);
@@ -1312,6 +1375,7 @@ unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
                 Err(_) => break,
             }
         }
+        out.reverse();
         out
     }
 }
@@ -1391,9 +1455,6 @@ struct WindowsVirtualDesktopBackend {
     capture_thread: Option<JoinHandle<()>>,
     /// The worker thread's desktop before attachment (restored at drop).
     worker_original_desktop: Option<HDESK>,
-    /// The window keyboard input targets (deepest child of the last click /
-    /// focus dance). Worker-thread-confined.
-    focused: Option<HWND>,
     /// Caller-timeout cancel flag (mirrors the physical backend's
     /// between-event checks in type/drag/hold/click).
     cancel: Option<Arc<AtomicBool>>,
@@ -1405,9 +1466,9 @@ struct WindowsVirtualDesktopBackend {
 // SAFETY: the raw OS handles (HDESK / HANDLE / HWND) are kernel objects that
 // may legally move between threads; they are only ever PASSED to API calls on
 // the worker thread (input/query paths) or the capture thread (the GDI pool,
-// which never lives in this struct). The worker-thread-confined fields
-// (`focused`, `cancel`) move with the backend itself, which stays on the
-// worker per the BackendHandle contract.
+// which never lives in this struct). The worker-thread-confined field
+// (`cancel`) moves with the backend itself, which stays on the worker per the
+// BackendHandle contract.
 unsafe impl Send for WindowsVirtualDesktopBackend {}
 
 impl WindowsVirtualDesktopBackend {
@@ -1441,7 +1502,10 @@ impl WindowsVirtualDesktopBackend {
 
         // 2. Fresh desktop (also covers the rare recovery close-busy race:
         //    CreateDesktopW on an existing name opens the existing object).
-        // SAFETY: flags/mask per design §6; lpsa None → inherits WinSta0 DACL.
+        // SAFETY: flags/mask per design §6; lpsa None → the desktop gets the
+        // creating process's DEFAULT DACL (not the window station's — other
+        // same-user processes can still open it by name, which is the model
+        // here: isolation by unique naming, not a security boundary).
         let desktop = unsafe {
             CreateDesktopW(
                 PCWSTR(name_wide.as_ptr()),
@@ -1464,7 +1528,6 @@ impl WindowsVirtualDesktopBackend {
             capture_tx: None,
             capture_thread: None,
             worker_original_desktop: None,
-            focused: None,
             cancel: None,
             capture_wedges: 0,
         };
@@ -1647,27 +1710,25 @@ impl WindowsVirtualDesktopBackend {
         }
     }
 
-    /// The keyboard target for type/chord paths: the tracked focused window,
-    /// else the desktop's foreground, else the topmost visible app window.
-    /// Errors explicitly when the desktop has no drivable window at all.
+    /// The keyboard target for type/chord paths: the desktop's foreground
+    /// window (the click/focus dance above leaves it there), else the
+    /// topmost visible app window. Errors explicitly when the desktop has
+    /// no drivable window at all.
     fn keyboard_target(&self) -> Result<HWND, ComputerUseError> {
-        let base = match self.focused {
-            Some(hwnd) => hwnd,
-            None => {
-                // SAFETY: desktop-relative queries on the attached worker.
-                let foreground = unsafe { GetForegroundWindow() };
-                if !foreground.is_invalid() {
-                    foreground
-                } else {
-                    // SAFETY: same.
-                    unsafe { topmost_visible_app_window() }.ok_or_else(|| {
-                        ComputerUseError::unavailable(
-                            "no window on the hidden desktop has keyboard focus; \
-                             click a window (or open an app with the open action) \
-                             before typing",
-                        )
-                    })?
-                }
+        let base = {
+            // SAFETY: desktop-relative queries on the attached worker.
+            let foreground = unsafe { GetForegroundWindow() };
+            if !foreground.is_invalid() {
+                foreground
+            } else {
+                // SAFETY: same.
+                unsafe { topmost_visible_app_window() }.ok_or_else(|| {
+                    ComputerUseError::unavailable(
+                        "no window on the hidden desktop has keyboard focus; \
+                         click a window (or open an app with the open action) \
+                         before typing",
+                    )
+                })?
             }
         };
         Ok(self.focus_dance(base))
@@ -1707,9 +1768,10 @@ impl WindowsVirtualDesktopBackend {
             let mut remaining = hold;
             while remaining > Duration::ZERO {
                 if self.cancelled() {
+                    // The base verdict carries only the cancel fact; the
+                    // combine below appends the truthful release outcome.
                     return Err(ComputerUseError::unavailable(
-                        "hold was cancelled (caller timeout or stop); the keys \
-                         have been released",
+                        "hold was cancelled (caller timeout or stop)",
                     ));
                 }
                 let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
@@ -1720,19 +1782,19 @@ impl WindowsVirtualDesktopBackend {
         })();
         // Release in reverse regardless of how the hold went (a cancelled
         // hold must not strand modifiers).
-        let mut release_error = None;
+        let mut release = Ok(());
         for vk in pressed.iter().rev() {
             if let Err(error) = self.post(top, WM_KEYUP, usize::from(*vk), key_lparam(true)) {
-                if release_error.is_none() {
-                    release_error = Some(error);
+                if release.is_ok() {
+                    release = Err(error);
                 }
             }
         }
-        match (hold_result, release_error) {
-            (Ok(()), None) => Ok(()),
-            (Err(error), _) => Err(error),
-            (Ok(()), Some(error)) => Err(error),
-        }
+        // Merge truthfully (same helper as the Linux hold path): the old
+        // inline merge kept only the hold error, so a cancel plus a failed
+        // release reported "the keys have been released" while the release
+        // had actually failed — stranded keys undisclosed.
+        combine_hold_errors(hold_result, release)
     }
 
     /// Route a capture through the capture thread.
@@ -1882,6 +1944,8 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         };
         let (down, double, up, mark) = mouse_button_messages(button);
         let lparam = pack_mouse_lparam(client_x, client_y);
+        // SAFETY: class-style query on the hit-tested desktop window.
+        let accepts_dblclk = unsafe { window_class_accepts_dblclk(target) };
         for index in 0..count.max(1) {
             if self.cancelled() {
                 return Err(ComputerUseError::unavailable(
@@ -1900,8 +1964,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
             // press 2 = DBLCLK, press 3 = down, press 4 = DBLCLK (a
             // quadruple click is down/dblclk/down/dblclk — the OS re-arms
             // the double-click detector on every odd press, it does not
-            // revert to plain downs after the second).
-            let message = if index % 2 == 1 { double } else { down };
+            // revert to plain downs after the second) — but only for
+            // classes that registered CS_DBLCLKS; others get another plain
+            // down (see multi_click_message).
+            let message = multi_click_message(index, down, double, accepts_dblclk);
             self.post(target, message, mark, lparam)?;
             self.post(target, up, 0, lparam)?;
             if index + 1 < count.max(1) {
@@ -2500,8 +2566,9 @@ mod tests {
     /// double-click message ALTERNATES with the plain down (press 2 and 4
     /// are DBLCLK, presses 1 and 3 plain downs — the OS re-arms the
     /// double-click detector every odd press, so a quadruple click is
-    /// down/dblclk/down/dblclk). WINDOWS-CI-ONLY (this whole file is
-    /// cfg(windows)).
+    /// down/dblclk/down/dblclk) — but only for classes that registered
+    /// CS_DBLCLKS; other classes receive another plain down on every press.
+    /// WINDOWS-CI-ONLY (this whole file is cfg(windows)).
     #[test]
     fn click_sequences_alternate_down_and_double_click_like_the_os() {
         let (down, double, up, mark) = mouse_button_messages(MouseButton::Left);
@@ -2509,21 +2576,21 @@ mod tests {
         assert_eq!(double, WM_LBUTTONDBLCLK);
         assert_eq!(up, WM_LBUTTONUP);
         assert_eq!(mark, MK_LBUTTON);
-        let messages_for = |count: u8| -> Vec<u32> {
+        let messages_for = |count: u8, accepts_dblclk: bool| -> Vec<u32> {
             (0..count.max(1))
                 .flat_map(|index| {
-                    let press = if index % 2 == 1 { double } else { down };
+                    let press = multi_click_message(index, down, double, accepts_dblclk);
                     [press, up]
                 })
                 .collect()
         };
-        assert_eq!(messages_for(1), vec![WM_LBUTTONDOWN, WM_LBUTTONUP]);
+        assert_eq!(messages_for(1, true), vec![WM_LBUTTONDOWN, WM_LBUTTONUP]);
         assert_eq!(
-            messages_for(2),
+            messages_for(2, true),
             vec![WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_LBUTTONUP]
         );
         assert_eq!(
-            messages_for(3),
+            messages_for(3, true),
             vec![
                 WM_LBUTTONDOWN,
                 WM_LBUTTONUP,
@@ -2534,7 +2601,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            messages_for(4),
+            messages_for(4, true),
             vec![
                 WM_LBUTTONDOWN,
                 WM_LBUTTONUP,
@@ -2547,12 +2614,56 @@ mod tests {
             ],
             "the fourth press must be a double-click again (OS alternation)"
         );
+        // A non-CS_DBLCLKS class never sees a double-click: every press is
+        // a plain down (click(count=2) stays TWO effective clicks there).
+        assert_eq!(
+            messages_for(2, false),
+            vec![WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDOWN, WM_LBUTTONUP],
+            "without CS_DBLCLKS the second press must stay a plain down"
+        );
+        assert_eq!(
+            messages_for(4, false),
+            vec![
+                WM_LBUTTONDOWN,
+                WM_LBUTTONUP,
+                WM_LBUTTONDOWN,
+                WM_LBUTTONUP,
+                WM_LBUTTONDOWN,
+                WM_LBUTTONUP,
+                WM_LBUTTONDOWN,
+                WM_LBUTTONUP
+            ]
+        );
         let (right_down, right_double, right_up, right_mark) =
             mouse_button_messages(MouseButton::Right);
         assert_eq!(right_down, WM_RBUTTONDOWN);
         assert_eq!(right_double, WM_RBUTTONDBLCLK);
         assert_eq!(right_up, WM_RBUTTONUP);
         assert_eq!(right_mark, MK_RBUTTON);
+    }
+
+    /// Short-read rejection of the GetDIBits capture (pure helper): a
+    /// truncated read must fail explicitly instead of reporting a half-black
+    /// frame as a good capture. WINDOWS-CI-ONLY (this whole file is
+    /// cfg(windows)).
+    #[test]
+    fn getdibits_short_read_fails_explicitly() {
+        assert_eq!(short_read_reason(800, 800), None, "a full read passes");
+        assert_eq!(
+            short_read_reason(0, 800).is_some(),
+            true,
+            "zero lines is a short read"
+        );
+        assert_eq!(
+            short_read_reason(-1, 800).map(|reason| reason.contains("failed")),
+            Some(true),
+            "a GetDIBits failure code must be reported"
+        );
+        assert_eq!(
+            short_read_reason(743, 800).map(|reason| reason.contains("743 of 800")),
+            Some(true),
+            "a short read must name both counts"
+        );
     }
 
     /// Command-line quoting: bare parts stay bare; parts with spaces or
