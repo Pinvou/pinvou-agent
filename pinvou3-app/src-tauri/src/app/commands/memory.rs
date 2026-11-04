@@ -1190,7 +1190,14 @@ mod tests {
             let at = source
                 .find(needle)
                 .unwrap_or_else(|| panic!("{label} must exist"));
-            let arm = &source[at..at + 900];
+            // 窗口上界向前扩 400 字节并落到字符边界:旧序突变
+            // (redact_storage_prefix(&sanitize_command_error(…) )的标记位
+            // 于 needle 之前,不含前文的窗口会漏看它(F6 突变实证)。
+            let mut window_lo = at.saturating_sub(400);
+            while window_lo > 0 && !source.is_char_boundary(window_lo) {
+                window_lo -= 1;
+            }
+            let arm = &source[window_lo..at + 900];
             assert!(
                 arm.contains("redact_storage_prefix(&format!(\"{e:#}\"))"),
                 "{label} must apply the fold to the raw error detail \
