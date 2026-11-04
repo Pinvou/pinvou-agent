@@ -217,20 +217,38 @@ pub struct ComputerUseTool {
 fn create_backend_reporting_availability(
     shared: &ComputerUseShared,
     prefer_virtual: bool,
-    create: impl FnOnce(bool) -> Result<Box<dyn ComputerUseBackend>, ComputerUseError>,
+    create: impl FnOnce(
+        bool,
+    ) -> (
+        Result<Box<dyn ComputerUseBackend>, ComputerUseError>,
+        platform::TargetDecision,
+    ),
 ) -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> {
-    let created = create(prefer_virtual);
+    let (created, decision) = create(prefer_virtual);
     match &created {
-        // A FAILED virtual creation must not leave the probe's green verdict
-        // in the snapshot: the probe only answers binary/class presence, so
-        // the plain refresh would flip the hint right back to "ready" for a
-        // stack that just demonstrably failed to start. Record the spawn
-        // verdict instead — the next legitimate refresh point (a preference
-        // flip, the next creation, startup replay) re-evaluates it.
+        // A FAILED creation under an on preference must not leave the probe's
+        // green verdict in the snapshot: the probe only answers
+        // binary/class presence, so the plain refresh would flip the hint
+        // right back to "ready" for a stack that just demonstrably failed to
+        // start. Record the failure instead — the next legitimate refresh
+        // point (a preference flip, the next creation, startup replay)
+        // re-evaluates it. The ATTRIBUTION follows the decision, not the
+        // preference: the decision happens before the build, so a failed
+        // Physical build (probe said unavailable) is a physical-backend
+        // failure and must not be recorded as "the last virtual session
+        // failed to start".
         Err(error) if prefer_virtual => {
+            let detail = match decision {
+                platform::TargetDecision::Virtual => {
+                    format!("the last virtual session failed to start: {error}")
+                }
+                platform::TargetDecision::Physical => {
+                    format!("the computer use backend failed to start: {error}")
+                }
+            };
             shared.set_virtual_availability(platform::VirtualAvailabilitySnapshot {
                 state: "unavailable",
-                detail: format!("the last virtual session failed to start: {error}"),
+                detail,
             });
         }
         _ => shared.refresh_virtual_availability(),
@@ -257,7 +275,7 @@ impl ComputerUseTool {
             let backend = create_backend_reporting_availability(
                 &shared_for_factory,
                 prefer_virtual,
-                platform::create_backend,
+                platform::create_backend_with_decision,
             )?;
             let target = backend.capabilities().target;
             shared_for_factory.set_session_target(&session_for_factory, target);
@@ -2784,6 +2802,14 @@ impl ToolSpec for ComputerUseTool {
         let parts = self.parts.clone();
         let audit_session = self.parts.session_id.clone();
         let audit_action = parsed.action.name();
+        // The join-failure audit record must carry the display target like
+        // every other boundary record — this is the "action may have
+        // executed" path, exactly where knowing the target matters most.
+        // `resolved_display_target` reads the cached backend decision (the
+        // capability read in `execute` already primed it for Input actions);
+        // for the rare pre-cache panic it falls back to the probe/preference
+        // answer, which is still better than an untargeted record.
+        let audit_target = resolved_display_target(&self.parts).as_str().to_string();
         tauri::async_runtime::spawn_blocking(move || run(parts, parsed, workspace))
             .await
             .map_err(|error| {
@@ -2794,11 +2820,9 @@ impl ToolSpec for ComputerUseTool {
                 // may embed input content (e.g. a chord fragment from a char
                 // boundary panic) and must not be echoed into the JSONL; the
                 // full error goes only to the model.
-                let record = AuditRecord::new(&audit_session, audit_action, "input").finish(
-                    "error",
-                    Some("worker join failed".to_string()),
-                    0,
-                );
+                let mut record = AuditRecord::new(&audit_session, audit_action, "input");
+                record.with_display_target(audit_target.as_str());
+                let record = record.finish("error", Some("worker join failed".to_string()), 0);
                 if let Err(audit_error) =
                     AuditLog::for_session(&audit_session).and_then(|log| log.append(&record))
                 {
@@ -2824,9 +2848,11 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
 /// action did not run and there is no injection consequence, but the error is
 /// never swallowed silently (fail-open: an append failure only eprintlns).
 /// The record carries the resolved display target like every other
-/// boundary record — both call sites run after the capability read has
-/// cached the backend's decision, so the target is the real one, not the
-/// preference fallback.
+/// boundary record. The target is the backend's recorded decision when the
+/// capability read has already primed the cache (every Input-class path);
+/// Observe-class gate rejections fire before any capability read, so those
+/// records carry the probe/preference fallback answer — good enough for an
+/// action that never executed, and honestly the best available answer.
 fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, message: &str) {
     let mut record = AuditRecord::new(
         &parts.session_id,

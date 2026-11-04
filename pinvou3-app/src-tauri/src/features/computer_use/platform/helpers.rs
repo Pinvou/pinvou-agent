@@ -5,7 +5,7 @@
 //! stays unit-testable on every target.
 
 use super::super::guard::{self, for_each_folded_window};
-use super::super::types::{ComputerUseError, ScrollDirection};
+use super::super::types::{ComputerUseError, Key, ScrollDirection};
 use enigo::{Direction, Enigo, Keyboard};
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
@@ -164,6 +164,16 @@ pub(crate) fn combine_hold_errors(
              the keys may still be held down"
         ))),
     }
+}
+
+/// Chord key press order shared by the physical macOS backend and the
+/// virtual macOS stack (previously two byte-identical private copies):
+/// modifiers lead (stable order otherwise), so a chord's modifier mask is
+/// complete before the non-modifier keys land.
+pub(crate) fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
+    let mut ordered = keys.to_vec();
+    ordered.sort_by_key(|key| !matches!(key, Key::Control | Key::Alt | Key::Shift | Key::Meta));
+    ordered
 }
 
 /// Scroll direction → enigo (axis, signed clicks). enigo convention:

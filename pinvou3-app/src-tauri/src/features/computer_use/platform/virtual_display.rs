@@ -4,9 +4,8 @@
 //! This module deliberately contains NO business logic: the per-OS stacks live
 //! in [`linux_virtual`] / [`macos_virtual`] / [`windows_virtual`], selected by
 //! the same `cfg(target_os)` alias pattern as the physical `create_backend`
-//! (platform/mod.rs). Every per-OS function here is a Wave-1 stub answering
-//! explicit-unavailable; Wave-2 replaces the stub BODIES in their one file and
-//! must keep these exact public signatures.
+//! (platform/mod.rs). The dispatch here only forwards to the per-OS module
+//! behind the `virtual_imp` alias.
 //!
 //! Fallback contract (§9 of the virtual-display design): the virtual-vs-
 //! physical decision happens exactly ONCE, at backend creation, through
@@ -35,8 +34,8 @@ use super::super::types::ComputerUseError;
 
 /// Cheap availability probe for the current platform's virtual display stack:
 /// binary presence on PATH (linux) / private-API class checks (macOS) /
-/// always-available (Windows). NO side effects, NO server spawn — it runs on
-/// every status read and preference flip.
+/// shell-binary presence (Windows — `explorer.exe`). NO side effects, NO
+/// server spawn — it runs on every status read and preference flip.
 pub(crate) fn probe() -> VirtualAvailability {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     return virtual_imp::probe();
@@ -49,8 +48,7 @@ pub(crate) fn probe() -> VirtualAvailability {
 }
 
 /// Create the virtual display backend for the current OS. Called only after
-/// [`resolve_target`] selected the virtual arm — the per-OS module answers
-/// `Unavailable` (stub) or builds its stack (Wave-2). **Must be called on
+/// [`resolve_target`] selected the virtual arm. **Must be called on
 /// computer_use's dedicated worker thread** (same thread-affinity rule as the
 /// physical `create_backend`).
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -78,7 +76,8 @@ pub(crate) fn sweep_orphans() {
     #[cfg(not(target_os = "linux"))]
     {
         // Nothing to sweep: the macOS/Windows virtual targets are reclaimed
-        // by process death, and the stubs have no runtime state yet.
+        // by process death (no pidfile-recorded process trees on those
+        // platforms).
     }
 }
 
@@ -95,15 +94,6 @@ pub(crate) enum VirtualAvailability {
 impl VirtualAvailability {
     pub(crate) fn is_available(&self) -> bool {
         matches!(self, Self::Available)
-    }
-
-    /// The diagnostic detail ("" when available), mirroring the design's
-    /// "detail string always present, may be empty".
-    pub(crate) fn detail(&self) -> &str {
-        match self {
-            Self::Available => "",
-            Self::Unavailable { detail } => detail,
-        }
     }
 }
 

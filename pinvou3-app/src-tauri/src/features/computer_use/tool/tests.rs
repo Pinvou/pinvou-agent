@@ -5651,7 +5651,10 @@ fn create_backend_reporting_availability_refreshes_snapshot_on_both_outcomes() {
         "fixture assumption: fresh state carries the placeholder: {placeholder:?}"
     );
     let err = match create_backend_reporting_availability(&shared, true, |_prefer| {
-        Err(ComputerUseError::unavailable("mock: creation failed"))
+        (
+            Err(ComputerUseError::unavailable("mock: creation failed")),
+            platform::TargetDecision::Virtual,
+        )
     }) {
         // No expect_err: the backend trait object is not Debug, and the
         // failure arm (not a panic helper) is the point of this pin.
@@ -5683,7 +5686,10 @@ fn create_backend_reporting_availability_refreshes_snapshot_on_both_outcomes() {
     let shared = ComputerUseShared::new();
     let mock = Arc::new(Mutex::new(MockState::default()));
     let backend = create_backend_reporting_availability(&shared, true, |_prefer| {
-        Ok(Box::new(MockBackend { state: mock }) as Box<dyn ComputerUseBackend>)
+        (
+            Ok(Box::new(MockBackend { state: mock }) as Box<dyn ComputerUseBackend>),
+            platform::TargetDecision::Virtual,
+        )
     })
     .expect("the injected success propagates");
     let _ = backend.capabilities();
@@ -5691,6 +5697,41 @@ fn create_backend_reporting_availability_refreshes_snapshot_on_both_outcomes() {
     assert_ne!(
         snapshot.detail, placeholder.detail,
         "the placeholder must never survive a refresh (success arm)"
+    );
+}
+
+/// The failure ATTRIBUTION follows the resolved decision, not the
+/// preference: a failed PHYSICAL creation (the probe chose physical, e.g.
+/// Xvfb missing, and the physical stack then failed) must not be recorded
+/// as "the last virtual session failed to start" — the settings hint would
+/// blame a virtual stack that was never attempted.
+#[test]
+fn create_backend_reporting_availability_attributes_physical_failures_to_physical() {
+    let shared = ComputerUseShared::new();
+    let err = match create_backend_reporting_availability(&shared, true, |_prefer| {
+        (
+            Err(ComputerUseError::unavailable("mock: physical stack failed")),
+            platform::TargetDecision::Physical,
+        )
+    }) {
+        Err(error) => error,
+        Ok(_) => panic!("the injected failure must propagate"),
+    };
+    assert!(
+        err.to_string().contains("mock: physical stack failed"),
+        "{err}"
+    );
+    let snapshot = shared.virtual_availability();
+    assert_eq!(snapshot.state, "unavailable");
+    assert!(
+        snapshot
+            .detail
+            .contains("the computer use backend failed to start"),
+        "a failed physical build must be attributed to the physical backend: {snapshot:?}"
+    );
+    assert!(
+        !snapshot.detail.contains("virtual session"),
+        "the virtual wording must not appear for a physical failure: {snapshot:?}"
     );
 }
 

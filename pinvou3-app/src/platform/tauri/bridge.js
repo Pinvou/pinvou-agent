@@ -255,10 +255,12 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       platformSupported: false,
       // Virtual-display projection, fail-closed: "unknown" until the first
       // computer_use_get_status that carries the new fields lands (an older
-      // backend never grows them, and the settings row stays hidden while
-      // unknown). `virtualDisplayDetail` holds the backend's English
-      // diagnostic ("" when absent) — rendered verbatim as secondary text
-      // under a localized lead line, never parsed.
+      // backend never grows them). While unknown the settings row still
+      // RENDERS, disabled and unchecked, so the user can see the option
+      // exists before the first status arrives. `virtualDisplayDetail`
+      // holds the backend's English diagnostic ("" when absent) — rendered
+      // verbatim as secondary text under a localized lead line, never
+      // parsed.
       virtualDisplayState: "unknown",
       virtualDisplayDetail: "",
       // The persisted "prefer isolated virtual display" PREFERENCE (frozen

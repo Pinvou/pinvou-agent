@@ -98,8 +98,8 @@ use super::helpers::{
     DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS,
     MACOS_UNICODE_STRING_UTF16_UNITS, MAX_NAME_CHARS, MAX_TREE_DEPTH, MAX_TREE_NODES,
     MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints,
-    map_scroll, map_xcap_err, normalize_typed_newlines, pick_monitor, release_reverse,
-    sanitize_name, screening_hit, split_type_runs, utf16_chunks,
+    map_scroll, map_xcap_err, normalize_typed_newlines, ordered_chord_keys, pick_monitor,
+    release_reverse, sanitize_name, screening_hit, split_type_runs, utf16_chunks,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -485,16 +485,6 @@ fn move_event_type(held: &[MouseButton]) -> (u32, u32) {
     } else {
         (CG_EVENT_MOUSE_MOVED, CG_MOUSE_BUTTON_LEFT)
     }
-}
-
-/// Press modifiers before character/named keys (stable order otherwise):
-/// enigo's macOS backend attaches its accumulated modifier flags only to the
-/// keys pressed after the modifier (review finding: `s+ctrl` used to inject a
-/// bare `s` followed by a lone ctrl press).
-fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
-    let mut ordered = keys.to_vec();
-    ordered.sort_by_key(|key| !matches!(key, Key::Control | Key::Alt | Key::Shift | Key::Meta));
-    ordered
 }
 
 /// Password field detection: the authoritative signal is subrole

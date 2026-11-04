@@ -42,10 +42,15 @@
 //! there) and rewritten with the real number right after it is read, before
 //! any client (readiness poll, xdotool, open_app) connects.
 //!
-//! Socket residue: a SIGKILLed X server (teardown or crash sweep) cannot run
-//! its cleanup, so `/tmp/.X11-unix/X{n}` survives the process — harmless:
-//! `-displayfd` never reports a number the server failed to bind, and the
-//! next server's number selection retries past sockets already on disk.
+//! Socket residue: a SIGKILLed X server cannot run its cleanup, so an
+//! abnormally-killed server's `/tmp/.X11-unix/X{n}` survives the process —
+//! harmless: `-displayfd` never reports a number the server failed to bind,
+//! and the next server's number selection retries past sockets already on
+//! disk. The NORMAL teardown avoids this: the held Xvfb/WM handles get a
+//! SIGTERM-first wind-down ([`Self::kill_recorded_processes`] →
+//! `terminate_then_kill`), and an X server exiting on SIGTERM removes its
+//! own socket. Only the crash sweep — which must SIGKILL other-process
+//! trees outright — can still strand one.
 //!
 //! Crash/lifecycle contract (design §5/§9):
 //! - Every failure after the Xvfb spawn tears down what was spawned; the
@@ -127,6 +132,10 @@ const WM_CANDIDATES: [&str; 6] = ["mutter", "openbox", "xfwm4", "marco", "fluxbo
 const DISPLAYFD: i32 = 3;
 /// Bounded reap grace after a SIGKILL (same budget as platform::process).
 const REAP_GRACE: Duration = Duration::from_secs(2);
+/// SIGTERM grace before the teardown falls back to SIGKILL: Xvfb exits on
+/// SIGTERM immediately and cleans its `/tmp/.X11-unix` socket on that path;
+/// one second is generous for a server that answers TERM by design.
+const TEARDOWN_TERM_GRACE: Duration = Duration::from_secs(1);
 /// fd 3 read chunk; the display number line is a handful of bytes.
 const DISPLAYFD_CHUNK: usize = 16;
 /// Cap for error-message subprocess stderr excerpts.
@@ -577,6 +586,16 @@ impl VirtualX11Backend {
             .env("XAUTHORITY", &self.auth_path)
             // Keep GTK-based WMs (mutter/marco/xfwm4) on the X11 backend.
             .env("GDK_BACKEND", "x11")
+            // Same session-bus discipline as opened apps (apply_open_env): a
+            // D-Bus-heavy WM (mutter is the first candidate) must not query
+            // or own names on the USER'S real session bus. EWMH window
+            // management itself is X11-property based and needs no session
+            // bus; WM features that do degrade on a dead address are the
+            // disclosed trade (isolation holds either way).
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}", self.session_dir.join("bus").display()),
+            )
             // Same env discipline as xdotool/opened apps: the WM must not
             // pick up the host's Wayland session.
             .env_remove("WAYLAND_DISPLAY")
@@ -662,7 +681,16 @@ impl VirtualX11Backend {
             let json = serde_json::to_string(&file).map_err(|error| {
                 ComputerUseError::failed(format!("cannot serialize the pidfile: {error}"))
             })?;
-            std::fs::write(&path, json).map_err(|error| {
+            // Temp + rename within the same directory: a truncate-in-place
+            // write that dies midway (crash, ENOSPC) would leave a malformed
+            // pidfile the crash sweep cannot parse — exactly the record the
+            // file exists to preserve. rename(2) is atomic on one filesystem.
+            let tmp = self.session_dir.join(format!("{PIDFILE_NAME}.tmp"));
+            std::fs::write(&tmp, json.as_bytes()).map_err(|error| {
+                ComputerUseError::failed(format!("cannot write {}: {error}", tmp.display()))
+            })?;
+            std::fs::rename(&tmp, &path).map_err(|error| {
+                let _ = std::fs::remove_file(&tmp);
                 ComputerUseError::failed(format!("cannot write {}: {error}", path.display()))
             })
         };
@@ -779,28 +807,25 @@ impl VirtualX11Backend {
     /// the held child handles, and clear the records. Child kills go through
     /// the pid-recycling identity gate (a number alone is not an identity);
     /// the WM/Xvfb kills are exempt (their pids were never released for
-    /// recycling — they are still our held handles). All kills go through
-    /// `kill_pid_tree` (kill(2), group-wide, ESRCH-safe) — never an external
-    /// kill binary (architecture guard).
+    /// recycling — they are still our held handles). The WM/Xvfb get a
+    /// SIGTERM-first wind-down: an X server that exits on SIGTERM removes its
+    /// own `/tmp/.X11-unix/X{n}` socket, which a SIGKILLed server cannot (the
+    /// crash sweep — SIGKILL by necessity, other-process context — still
+    /// strands that socket; see the module doc). SIGKILL follows only if the
+    /// grace expires. All kills go through kill(2) (`kill_pid_tree` —
+    /// group-wide, ESRCH-safe) — never an external kill binary (architecture
+    /// guard).
     fn kill_recorded_processes(&mut self) {
         let children = std::mem::take(&mut self.children);
         kill_verified_children(&children);
         if let Some(mut wm) = self.wm.take() {
-            kill_pid_tree(wm.id());
-            let _ = wm.wait_timeout(REAP_GRACE);
+            terminate_then_kill(&mut wm, TEARDOWN_TERM_GRACE);
         }
         if let Some(mut xvfb) = self.xvfb.take() {
-            kill_pid_tree(xvfb.id());
-            let _ = xvfb.wait_timeout(REAP_GRACE);
+            terminate_then_kill(&mut xvfb, TEARDOWN_TERM_GRACE);
         }
         self.display = String::new();
         self.display_number = None;
-    }
-
-    fn cancelled(&self) -> bool {
-        self.cancel
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
 
     /// Run one bounded xdotool call against the virtual display. Never
@@ -1768,11 +1793,18 @@ fn basename_of(program: &str) -> &str {
 }
 
 /// The pid-recycling identity gate for one recorded `open_app` child: the
-/// pid must still run, its argv[0] file name must still be the recorded
-/// program, and the kernel start time must still match the recorded one. A
-/// recycled pid fails the gate and its kill is skipped — killing by number
-/// alone could take out an unrelated process (worse: its whole process
-/// group, via `kill_pid_tree`'s group kill).
+/// pid must still run and its kernel start time must still match the
+/// recorded one. The start time IS the identity — it advances monotonically
+/// with boot time, so a recycled pid can never reproduce the recorded value,
+/// while a child that exec'd into a different image (a shell's tail-exec, a
+/// shebang re-exec, a wrapper script) keeps both pid and start time and must
+/// still be wound down when the session ends. That exec shape is why the
+/// recorded program name is a DIAGNOSTIC here, not a veto: `bash -c 'app'`
+/// ends up running argv[0] `app` under the shell's recorded pid, and skipping
+/// its kill because the basename changed would leave the app alive past Stop
+/// (the capabilities notes promise wind-down). Killing by number alone could
+/// take out an unrelated process — the start-time match is what makes the
+/// kill safe (its whole group goes, via `kill_pid_tree`'s group kill).
 fn child_identity_matches(record: &ChildRecord) -> bool {
     child_identity_matches_with(record, process_argv0)
 }
@@ -1786,10 +1818,22 @@ fn child_identity_matches_with(
     if !process_runs(record.pid) {
         return false;
     }
-    let Some(argv0) = argv0_of(record.pid) else {
+    if process_starttime(record.pid) != Some(record.starttime) {
         return false;
-    };
-    basename_of(&argv0) == record.program && process_starttime(record.pid) == Some(record.starttime)
+    }
+    // Diagnostic only (see the fn doc): a changed basename is logged so the
+    // wind-down log stays explainable, never a reason to skip the kill.
+    if let Some(argv0) = argv0_of(record.pid) {
+        if basename_of(&argv0) != record.program {
+            log::debug!(
+                "[computer_use] virtual display: recorded child pid {} changed program \
+                 ('{}' -> '{argv0}'); killing by its exact start-time identity",
+                record.pid,
+                record.program
+            );
+        }
+    }
+    true
 }
 
 /// Kill the recorded `open_app` children whose identity still verifies;
@@ -1824,6 +1868,26 @@ fn kill_verified_children(children: &[ChildRecord]) -> usize {
     killed
 }
 
+/// Graceful wind-down for a HELD child handle (the WM / Xvfb at teardown):
+/// SIGTERM first — an X server exiting on SIGTERM removes its own
+/// `/tmp/.X11-unix/X{n}` socket, which a SIGKILLed server cannot — then
+/// SIGKILL via `kill_pid_tree` only if the grace expires. The handle was
+/// never released for recycling, so the signal targets our own child.
+fn terminate_then_kill(child: &mut Child, grace: Duration) {
+    // SAFETY: plain kill(2) with a constant signal on our own recorded
+    // child; ESRCH (already gone) is fine to ignore.
+    let _ = unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    kill_pid_tree(child.id());
+    let _ = child.wait_timeout(REAP_GRACE);
+}
+
 /// The argv[0] of a pid — the FIRST NUL-terminated token of
 /// `/proc/<pid>/cmdline` — or `None` when the process is gone or /proc is
 /// unreadable. The kernel delimits argv with NULs, so a path containing a
@@ -1845,6 +1909,20 @@ fn process_argv0(pid: u32) -> Option<String> {
 /// malformed pidfile is left in place with a warning instead of guessed at.
 pub(crate) fn sweep_orphans() {
     sweep_orphans_with(process_argv0);
+}
+
+/// The role side of the sweep's argv[0] gate (pure, unit-pinned): the
+/// recorded server pid must still run a program named `Xvfb`; the recorded
+/// WM pid must run one of [`WM_CANDIDATES`] (the only programs `spawn_wm`
+/// ever records there) — and a WM candidate does NOT satisfy the server
+/// role, nor vice versa. The roles are never interchangeable because the
+/// recorded pid and its role come from the same pidfile write.
+fn role_matches(program: &str, role: &str) -> bool {
+    if role == "wm" {
+        WM_CANDIDATES.contains(&program)
+    } else {
+        program == role
+    }
 }
 
 /// Testable core of [`sweep_orphans`]: the argv[0] lookup is injected so the
@@ -1888,12 +1966,7 @@ fn sweep_orphans_with(argv0_of: impl Fn(u32) -> Option<String>) {
             let Some(argv0) = argv0_of(pid) else {
                 return false;
             };
-            let program = basename_of(&argv0);
-            if role == "wm" {
-                WM_CANDIDATES.contains(&program)
-            } else {
-                program == role
-            }
+            role_matches(basename_of(&argv0), role)
         };
         let mut gated: Vec<(u32, &str)> = vec![(file.xvfb_pid, "Xvfb")];
         if let Some(wm_pid) = file.wm_pid {
@@ -2536,7 +2609,7 @@ mod tests {
         sweep_orphans(); // real /proc lookup: sleep ≠ the recorded "Xvfb" role
         // Give an (incorrect) async group kill no chance to hide, then check
         // via the held Child handle (a SIGKILLed child shows up as reaped).
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(500));
         assert!(
             matches!(child.try_wait(), Ok(None)),
             "a recorded pid whose cmdline does not name Xvfb must be untouched"
@@ -2545,6 +2618,78 @@ mod tests {
         // Clean up the fixture via the sanctioned tree kill.
         kill_pid_tree(pid);
         let _ = child.wait();
+    }
+
+    /// The WM arm of the role gate, live fixture: a stale pidfile claiming a
+    /// live `sleep` process as the WM (`wm_pid`) must NOT get it killed —
+    /// the gate reads /proc/<pid>/cmdline, sees a basename outside
+    /// WM_CANDIDATES, and skips-and-logs. The dir is still consumed.
+    #[test]
+    fn sweep_skips_a_recorded_wm_whose_cmdline_is_not_a_wm() {
+        if Command::new("sleep").arg("0").status().is_err() {
+            eprintln!("skipping: no `sleep` binary on this platform");
+            return;
+        }
+        let home = IsolatedHome::take("sweep-wm-mismatch");
+        let session = home.vd_root().join("vd-wm");
+        std::fs::create_dir_all(&session).expect("create session dir");
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        std_process_group_leader(&mut command);
+        let mut child = command.spawn().expect("spawn sleep fixture");
+        let pid = child.id();
+        write_pidfile(
+            &session,
+            &PidFile {
+                xvfb_pid: 4_000_000_005,
+                wm_pid: Some(pid),
+                display: ":7".to_string(),
+                auth_path: session.join(AUTHORITY_FILE_NAME).display().to_string(),
+                children: vec![],
+                children_detail: vec![],
+                started_at: 0,
+            },
+        );
+        sweep_orphans(); // real /proc lookup: sleep is not a WM candidate
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            matches!(child.try_wait(), Ok(None)),
+            "a recorded wm pid whose cmdline names no WM candidate must be untouched"
+        );
+        assert!(!session.exists(), "the stale session dir is still consumed");
+        kill_pid_tree(pid);
+        let _ = child.wait();
+    }
+
+    /// The role-matching table itself: the server role matches only "Xvfb",
+    /// the WM role matches exactly the spawn candidates, and neither role
+    /// accepts the other side's programs (a real WM is not an Xvfb; Xvfb is
+    /// not a WM candidate).
+    #[test]
+    fn sweep_role_gate_pins_xvfb_and_wm_membership() {
+        assert!(role_matches("Xvfb", "Xvfb"), "the server role matches Xvfb");
+        assert!(
+            !role_matches("sleep", "Xvfb"),
+            "an unrelated basename must not satisfy the server role"
+        );
+        for candidate in WM_CANDIDATES {
+            assert!(
+                role_matches(candidate, "wm"),
+                "every spawn candidate must satisfy the wm role: {candidate}"
+            );
+        }
+        assert!(
+            !role_matches("mutter", "Xvfb"),
+            "a WM candidate must not satisfy the server role"
+        );
+        assert!(
+            !role_matches("Xvfb", "wm"),
+            "the server must not satisfy the wm role"
+        );
+        assert!(
+            !role_matches("not-a-wm", "wm"),
+            "an unrelated basename must not satisfy the wm role"
+        );
     }
 
     /// The matching side of the identity gate: with an argv[0] lookup that
@@ -2653,16 +2798,18 @@ mod tests {
         let _ = child.wait();
     }
 
-    /// The recycling arm of the children gate: the same live `sleep` pid
-    /// recorded under a DIFFERENT program name (the recycled process's
-    /// argv[0] can no longer match) must survive the sweep.
+    /// The exec arm of the children gate: a child that kept its pid and
+    /// kernel start time but changed its program image (the `bash -c 'app'`
+    /// tail-exec shape — recorded as `xmessage` here, running as something
+    /// else) must STILL be killed by the sweep. The start time is the
+    /// recycling-proof identity; the program name is a diagnostic only.
     #[test]
-    fn sweep_skips_a_recorded_child_whose_program_does_not_match() {
+    fn sweep_kills_a_child_that_changed_program_but_keeps_its_starttime() {
         if Command::new("sleep").arg("0").status().is_err() {
             eprintln!("skipping: no `sleep` binary on this platform");
             return;
         }
-        let home = IsolatedHome::take("sweep-child-mismatch");
+        let home = IsolatedHome::take("sweep-child-exec");
         let session = home.vd_root().join("vd-child2");
         std::fs::create_dir_all(&session).expect("create session dir");
         let mut command = Command::new("sleep");
@@ -2681,6 +2828,8 @@ mod tests {
                 children: vec![pid],
                 children_detail: vec![ChildRecord {
                     pid,
+                    // Deliberately wrong: the exec'd image's argv[0] no longer
+                    // matches what was recorded at spawn time.
                     program: "xmessage".to_string(),
                     starttime,
                 }],
@@ -2688,10 +2837,62 @@ mod tests {
             },
         );
         sweep_orphans();
-        std::thread::sleep(Duration::from_millis(200));
+        let mut gone = false;
+        for _ in 0..60 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            gone,
+            "a start-time-verified child must be killed even when its program name changed"
+        );
+        assert!(!session.exists(), "the swept dir must be removed");
+        let _ = child.wait();
+    }
+
+    /// The recycling arm of the children gate: the same pid recorded with a
+    /// start time that NO LONGER matches /proc (the recycled process's kernel
+    /// start time can never reproduce the recorded value) must survive the
+    /// sweep — killing by number alone could take out an unrelated process.
+    #[test]
+    fn sweep_skips_a_recorded_child_whose_starttime_does_not_match() {
+        if Command::new("sleep").arg("0").status().is_err() {
+            eprintln!("skipping: no `sleep` binary on this platform");
+            return;
+        }
+        let home = IsolatedHome::take("sweep-child-mismatch");
+        let session = home.vd_root().join("vd-child2b");
+        std::fs::create_dir_all(&session).expect("create session dir");
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        std_process_group_leader(&mut command);
+        let mut child = command.spawn().expect("spawn sleep fixture");
+        let pid = child.id();
+        let starttime = process_starttime(pid).expect("fixture /proc stat readable");
+        write_pidfile(
+            &session,
+            &PidFile {
+                xvfb_pid: 4_000_000_002,
+                wm_pid: None,
+                display: ":5".to_string(),
+                auth_path: session.join(AUTHORITY_FILE_NAME).display().to_string(),
+                children: vec![pid],
+                children_detail: vec![ChildRecord {
+                    pid,
+                    program: "sleep".to_string(),
+                    starttime: starttime.wrapping_add(1),
+                }],
+                started_at: 0,
+            },
+        );
+        sweep_orphans();
+        std::thread::sleep(Duration::from_millis(500));
         assert!(
             matches!(child.try_wait(), Ok(None)),
-            "a child whose argv[0] no longer matches the record must be untouched"
+            "a child whose start time no longer matches the record must be untouched"
         );
         assert!(!session.exists(), "the stale session dir is still consumed");
         kill_pid_tree(pid);
@@ -2756,14 +2957,16 @@ mod tests {
         assert_eq!(process_starttime(4_000_000_004), None);
     }
 
-    /// The argv[0] is taken at the kernel's NUL boundary, not at a space:
-    /// a program installed under a path containing a space keeps matching
-    /// its recorded basename (the gate reads argv[0] whole, so `/opt/My
-    /// App/bin/app` matches the record `app`). Pinning this keeps the gate
-    /// from regressing to a space-splitting read that silently skipped
-    /// every kill for such programs.
+    /// The start time is the verdict; the program name is a diagnostic. A
+    /// start-time-matching child must be killed regardless of what its
+    /// argv[0] says now (the tail-exec/shebang shapes), while a start-time
+    /// mismatch is skipped no matter how well the name matches. The pure
+    /// `basename_of` space-safety is pinned separately below — it still
+    /// backs the diagnostic log and the sweep's Xvfb/WM role gate, which
+    /// read argv[0] at the kernel's NUL boundary so `/opt/My App/bin/app`
+    /// stays one token.
     #[test]
-    fn identity_gate_matches_an_argv0_containing_spaces() {
+    fn identity_gate_decides_on_starttime_not_program_name() {
         let mine = std::process::id();
         let record = ChildRecord {
             pid: mine,
@@ -2772,17 +2975,31 @@ mod tests {
         };
         assert!(
             child_identity_matches_with(&record, |_| { Some("/opt/My App/bin/app".to_string()) }),
-            "an argv[0] with spaces must still match its recorded basename"
-        );
-        // The gate compares BASENAMES, not full paths: a different directory
-        // housing the same program name still matches its own record.
-        assert!(
-            child_identity_matches_with(&record, |_| { Some("/opt/Other/bin/app".to_string()) }),
-            "the same basename under another directory must still match"
+            "a start-time match decides the kill; argv[0] is only logged"
         );
         assert!(
-            !child_identity_matches_with(&record, |_| { Some("/usr/bin/other".to_string()) }),
-            "a different basename must not match"
+            child_identity_matches_with(&record, |_| { Some("/usr/bin/other".to_string()) }),
+            "a changed basename must not veto a start-time match (exec'd child)"
+        );
+        assert!(
+            child_identity_matches_with(&record, |_| None),
+            "an unreadable argv[0] must not veto a start-time match either"
+        );
+        let stale = ChildRecord {
+            pid: mine,
+            program: "app".to_string(),
+            starttime: process_starttime(mine)
+                .expect("own /proc stat readable")
+                .wrapping_add(1),
+        };
+        assert!(
+            !child_identity_matches_with(&stale, |_| { Some("/opt/My App/bin/app".to_string()) }),
+            "a start-time mismatch is skipped even with a matching name"
+        );
+        assert_eq!(
+            basename_of("/opt/My App/bin/app"),
+            "app",
+            "basename_of splits on '/' only, so spaces in the path stay one token"
         );
     }
 
@@ -2938,8 +3155,10 @@ mod xvfb_live_tests {
     /// screenshot (1280x800, non-black) → move + click verified via an
     /// EXTERNAL xdotool against the same display/auth → scroll → type →
     /// chord → hold → drag → teardown asserting process death, session-dir
-    /// removal and pidfile removal. Runs WM-less (no WM installed here) —
-    /// that exercises the optional-WM path.
+    /// removal and pidfile removal. Runs on BOTH machine shapes: WM-less
+    /// boxes exercise the optional-WM path, WM-equipped boxes additionally
+    /// assert the recorded `wm_pid` dies with the session (a path no other
+    /// test observes).
     #[test]
     #[ignore]
     fn xvfb_live_full_cycle() {
@@ -2977,13 +3196,19 @@ mod xvfb_live_tests {
             pidfile.display
         );
         assert!(pidfile.xvfb_pid > 0);
-        // Portability: WM presence is machine state, not a test given — skip
-        // instead of failing on a box that has a WM candidate on PATH.
-        if pidfile.wm_pid.is_some() {
-            eprintln!("skipping the WM-less assertions: a WM candidate IS installed here");
-            return;
+        // Portability: WM presence is machine state, not a test given — the
+        // WM-dependent EXPECTATION (`wm_pid` must be None) is gated on the
+        // flag below, but the app lifecycle, capture, input and teardown
+        // assertions run on BOTH machine shapes: the WM teardown path (a
+        // recorded `wm_pid` dies on drop) is otherwise asserted nowhere on
+        // any machine state, and the external-pointer pins are server state
+        // a WM does not touch.
+        let has_wm = pidfile.wm_pid.is_some();
+        if has_wm {
+            eprintln!("a WM candidate IS installed here: running the WM-equipped cycle");
+        } else {
+            assert_eq!(pidfile.wm_pid, None, "no WM is installed on this machine");
         }
-        assert_eq!(pidfile.wm_pid, None, "no WM is installed on this machine");
         assert!(pidfile.children.is_empty(), "no app children yet");
 
         // open an app into the virtual display (xmessage is WM-less-safe).
@@ -3066,10 +3291,16 @@ mod xvfb_live_tests {
         backend.drag((100, 100), (300, 300)).expect("drag");
 
         // Teardown: drop → children/WM/Xvfb killed, session dir + pidfile
-        // removed, no process residue.
+        // removed, no process residue. The WM (when this machine has one)
+        // must die with the session too — recorded `wm_pid`, SIGTERM-first
+        // wind-down.
         let xvfb_pid = pidfile.xvfb_pid;
+        let wm_pid = pidfile.wm_pid;
         drop(backend);
         wait_until_gone(xvfb_pid, "the Xvfb server");
+        if let Some(wm) = wm_pid {
+            wait_until_gone(wm, "the window manager");
+        }
         wait_until_gone(app_pid, "the opened xmessage");
         assert!(
             !session_dir.exists(),
@@ -3143,10 +3374,28 @@ mod xvfb_live_tests {
         }
         let mut backend = VirtualX11Backend::new().expect("virtual backend creation");
         let session_dir = backend.session_dir.clone();
+        // Portability: xmessage may be missing (no `x11-apps` package) —
+        // skip the app-dependent assertions rather than failing (the module
+        // contract: skip, early return, not fail).
+        if !find_on_path("xmessage") {
+            eprintln!("skipping: xmessage is not installed on this machine");
+            drop(backend);
+            return;
+        }
         let app_pid = backend
             .open_app("xmessage", &["released".to_string()])
             .expect("open xmessage");
-        std::thread::sleep(Duration::from_millis(1200));
+        // Poll for the recording like the full-cycle test (a loaded machine
+        // maps the window later than any fixed sleep).
+        wait_until(
+            || {
+                read_pidfile(&session_dir)
+                    .children
+                    .first()
+                    .is_some_and(|&pid| pid == app_pid)
+            },
+            "open_app to record its pid",
+        );
         let pidfile = read_pidfile(&session_dir);
         assert_eq!(
             pidfile.children,
@@ -3205,6 +3454,14 @@ mod xvfb_live_tests {
         }
         let mut backend = VirtualX11Backend::new().expect("virtual backend creation");
         let session_dir = backend.session_dir.clone();
+        // Portability: xmessage may be missing (no `x11-apps` package) —
+        // skip the app-dependent assertions rather than failing (the module
+        // contract: skip, early return, not fail).
+        if !find_on_path("xmessage") {
+            eprintln!("skipping: xmessage is not installed on this machine");
+            drop(backend);
+            return;
+        }
         let app_pid = backend
             .open_app("xmessage", &["bus".to_string()])
             .expect("open xmessage");

@@ -343,12 +343,14 @@ uiautomation = "0.25"
 # display (features/computer_use/platform/windows_virtual): hidden-desktop
 # creation (StationsAndDesktops), the hidden-desktop composite capture
 # (Graphics_Gdi), the kill-on-close job object wrapping launched apps
-# (JobObjects + Threading + Security), and the message-level input posts
-# (UI_Input_KeyboardAndMouse + UI_WindowsAndMessaging).
+# (JobObjects + Threading + Security), the message-level input posts
+# (UI_Input_KeyboardAndMouse + UI_WindowsAndMessaging), and the cloaked-
+# window filter for the composite (Graphics_Dwm).
 windows = { version = "0.62", features = [
     "Win32_UI_Accessibility",
     "Win32_System_StationsAndDesktops",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
     "Win32_System_JobObjects",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",

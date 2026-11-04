@@ -22,15 +22,25 @@
 //!
 //! Threading model:
 //! - Creation runs on the computer_use worker thread (guaranteed by the
-//!   shared dispatch, same contract as the physical backends). The whole
-//!   descriptor→applySettings→poll sequence is dispatched to the app's main
-//!   thread via `platform::dispatch_to_main_thread` (the Tauri main thread
-//!   keeps servicing its run loop while this worker waits on a bounded
-//!   channel) because the private display machinery activates reliably only
-//!   with a pumped main run loop. Without a stored app handle the same
-//!   sequence runs on the worker thread. On timeout the answer is an
-//!   explicit `Unavailable` — the ONE-TIME fallback to the physical backend
-//!   happens in `platform::create_backend` (design §9), never mid-session.
+//!   shared dispatch, same contract as the physical backends). The
+//!   descriptor→applySettings build is dispatched to the app's main thread
+//!   via `platform::dispatch_to_main_thread` (the private display machinery
+//!   activates reliably only with a pumped main run loop), and the closure
+//!   deliberately does NOT block the main thread for the whole activation
+//!   poll: it only reads the display id (bounded grace), then hands the
+//!   display back and the worker runs the budgeted activation wait through
+//!   global CG APIs while the main run loop keeps pumping — a closure that
+//!   slept through the poll would freeze the UI for the entire budget and
+//!   contradict the machinery's own pumped-loop premise. If the API refuses
+//!   to assign an id within the grace, the closure falls back to the legacy
+//!   whole sequence on the main thread (behavior preserved; the freeze is
+//!   never worse than the pre-split code). Without a stored app handle the
+//!   same sequence runs on the worker thread. On timeout the answer is an
+//!   explicit `Unavailable` — there is NO mid-creation physical fallback:
+//!   the ONE-TIME probe-based decision already ran in
+//!   `platform::create_backend` (design §9), a creation-time failure is an
+//!   explicit error that the availability snapshot records, and it is never
+//!   a silent mid-session flip.
 //! - The CGVirtualDisplay Obj-C object is created on the main thread (or the
 //!   worker in the fallback) and crosses threads **once**, as a raw +1
 //!   pointer, into [`VdHandle`]. From then on it is single-owner state of
@@ -51,9 +61,15 @@
 //! scale is 1.0, but the derivation never assumes it).
 //!
 //! Input fidelity: mouse events target the app owning the topmost on-screen
-//! normal-level window under the point (hit-tested via
-//! `CGWindowListCopyWindowInfo`); keyboard events target the last-interacted
-//! pid (`open` and successful clicks set it; explicit failures clear it).
+//! normal-level window under the point whose pid the session launched or
+//! whose window sits fully inside the display bounds (hit-tested via
+//! `CGWindowListCopyWindowInfo` — an ownership-scoped geometry test: a user
+//! window merely overhanging the parked bounds is never targeted); keyboard
+//! events target the last-interacted pid (`open` and successful clicks set
+//! it; explicit failures clear it). Every input entry point preflights the
+//! Accessibility TCC grant (the physical backend's required-for-correctness
+//! preflight): without it input answers an explicit error instead of
+//! succeeding silently while WindowServer drops the events.
 //! CGEventPostToPid is public API but semantically private-adjacent: some
 //! apps (e.g. WebKit content processes on recent macOS) may not receive
 //! pid-posted mouse events — disclosed in `Capabilities::target_note`.
@@ -78,11 +94,11 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{
     CGBeginDisplayConfiguration, CGCancelDisplayConfiguration, CGCompleteDisplayConfiguration,
-    CGConfigureDisplayOrigin, CGConfigureOption, CGDataProvider, CGDisplayBounds,
-    CGDisplayConfigRef, CGDisplayIsInMirrorSet, CGError, CGEvent, CGEventField, CGEventFlags,
-    CGEventType, CGGetActiveDisplayList, CGImage, CGMainDisplayID, CGMouseButton,
-    CGScrollEventUnit, CGWindowImageOption, CGWindowListCopyWindowInfo, CGWindowListOption,
-    kCGNullWindowID, kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerName, kCGWindowOwnerPID,
+    CGConfigureDisplayOrigin, CGConfigureOption, CGDisplayBounds, CGDisplayConfigRef,
+    CGDisplayIsInMirrorSet, CGError, CGEvent, CGEventField, CGEventFlags, CGEventType,
+    CGGetActiveDisplayList, CGImage, CGMainDisplayID, CGMouseButton, CGScrollEventUnit,
+    CGWindowImageOption, CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
+    kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerName, kCGWindowOwnerPID,
 };
 // The chosen capture path (see `capture_display_image` for the pick-one
 // justification): obsoleted in the macOS 15 SDK, so the deprecation lint is
@@ -99,8 +115,8 @@ use super::super::super::types::{
 use super::super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS,
     HOLD_CANCEL_POLL_MS, MACOS_UNICODE_STRING_UTF16_UNITS, MAX_SCROLL_CLICKS,
-    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints,
-    normalize_typed_newlines, split_type_runs, utf16_chunks,
+    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, combine_hold_errors,
+    drag_waypoints, normalize_typed_newlines, ordered_chord_keys, split_type_runs, utf16_chunks,
 };
 // TCC preflights and their user-facing error strings are shared with the
 // physical macOS backend (same grants, same System Settings guidance — a
@@ -295,6 +311,14 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// poll plus queue hop latency; the total worst case stays under the
 /// design's 8 s budget).
 const MAIN_DISPATCH_WAIT: Duration = Duration::from_secs(7);
+/// Main-thread grace for the post-build display-id read: normally the id is
+/// assigned within a poll tick or two of `applySettings`, so the closure
+/// typically returns in milliseconds and the main run loop pumps while the
+/// worker runs the budgeted activation wait. A display that never reports
+/// an id within this grace falls back to the legacy whole sequence on the
+/// main thread (behavior preserved, freeze no worse than the pre-split
+/// code) instead of failing a creation the API might still complete.
+const DISPLAY_ID_GRACE: Duration = Duration::from_secs(1);
 
 // libdispatch has no binding in the macOS dependency set this crate may use
 // (dispatch2 is only a transitive dependency of objc2-core-graphics and not
@@ -515,15 +539,19 @@ unsafe fn wait_for_activation(
 /// display (wrapped in the Send handle below — a raw `*mut AnyObject` is
 /// `!Send`, so the wrapper is what makes the channel payload Send) and its
 /// id.
-type CreatedDisplay = Result<(VdHandle, u32), ComputerUseError>;
+type CreatedDisplay = Result<(VdHandle, u32, bool), ComputerUseError>;
 
-/// The whole creation sequence (descriptor → applySettings → poll), running
-/// on whichever thread the caller chose. Ends by handing the +1 display into
-/// a [`VdHandle`] so it can cross the channel; on error the locals (including
-/// the half-built display) drop on the creating thread — the main thread
-/// when dispatched (it created them and has a live run loop), the worker in
-/// the fallback.
-fn create_and_wait(deadline: Instant) -> CreatedDisplay {
+/// The creation sequence up to a usable display id (descriptor →
+/// applySettings → bounded id read), running on whichever thread the caller
+/// chose. The trailing `bool` answers "activation already polled ON THIS
+/// thread": `false` means the caller must run the budgeted activation wait
+/// (the worker-side [`wait_activation_on_worker`]), `true` means the legacy
+/// in-closure poll already completed (the id-grace fallback path). Ends by
+/// handing the +1 display into a [`VdHandle`] so it can cross the channel;
+/// on error the locals (including the half-built display) drop on the
+/// creating thread — the main thread when dispatched (it created them and
+/// has a live run loop), the worker in the fallback.
+fn create_and_read_id(grace_deadline: Instant, activation_deadline: Instant) -> CreatedDisplay {
     // SAFETY: the whole sequence is guarded by probe(); each call site
     // documents its selector. Any failure drops the locals on this thread
     // and returns an explicit error.
@@ -532,13 +560,54 @@ fn create_and_wait(deadline: Instant) -> CreatedDisplay {
         let mode = build_mode()?;
         let display = build_display(&descriptor)?;
         apply_mode(&display, &mode)?;
-        let display_id = wait_for_activation(&display, deadline)?;
-        // Ownership moves out of `display` (into_raw = +1 handed to the
-        // handle, which releases exactly once on Drop); descriptor/mode/
-        // settings drop here on this thread.
+        // Bounded id read: displayID is in required_selectors() (probe()
+        // verified it with responds_to on CGVirtualDisplay before creation).
+        // A fresh display usually reports its id within a poll tick or two
+        // of applySettings; when it does, the closure returns immediately
+        // and the main run loop pumps during the worker's activation wait.
+        let mut display_id: u32 = msg_send![&*display, displayID];
+        while display_id == 0 && Instant::now() < grace_deadline {
+            sleep(POLL_INTERVAL);
+            display_id = msg_send![&*display, displayID];
+        }
+        if display_id != 0 {
+            // Ownership moves out of `display` (into_raw = +1 handed to the
+            // handle, which releases exactly once on Drop); descriptor/mode/
+            // settings drop here on this thread.
+            let handle = VdHandle::from_raw(Retained::into_raw(display))
+                .ok_or_else(|| ComputerUseError::unavailable("virtual display object was lost"))?;
+            return Ok((handle, display_id, false));
+        }
+        // The API did not assign an id within the grace: run the legacy
+        // whole activation poll HERE (this thread) — the same behavior as
+        // the pre-split code, so a machinery that needs the main thread
+        // keeps working and the freeze is never worse than before.
+        let display_id = wait_for_activation(&display, activation_deadline)?;
         let handle = VdHandle::from_raw(Retained::into_raw(display))
             .ok_or_else(|| ComputerUseError::unavailable("virtual display object was lost"))?;
-        Ok((handle, display_id))
+        Ok((handle, display_id, true))
+    }
+}
+
+/// Worker-side activation wait: the same acceptance as
+/// [`wait_for_activation`]'s refresh step (in the refreshed active display
+/// list with non-empty bounds), but through GLOBAL CG APIs only — the
+/// display object has crossed threads by now and the `VdHandle` contract
+/// forbids messaging it again, so the poll never touches the object.
+fn wait_activation_on_worker(display_id: u32, deadline: Instant) -> Result<(), ComputerUseError> {
+    loop {
+        if refresh_and_check_active(display_id) {
+            let bounds = CGDisplayBounds(display_id);
+            if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(ComputerUseError::unavailable(
+                "the virtual display did not become active within the creation budget",
+            ));
+        }
+        sleep(POLL_INTERVAL);
     }
 }
 
@@ -598,8 +667,13 @@ fn union_right_edge(except: u32) -> f64 {
 /// virtual display right of every other display's right edge, and the
 /// applied layout is VERIFIED overlap-free before returning — the central
 /// "the virtual bounds never overlap the user's desktop" invariant is
-/// enforced, not assumed: any residual overlap is an explicit error (the
-/// creation caller falls back to the physical target).
+/// enforced, not assumed: any residual overlap is an explicit error FROM
+/// THIS FUNCTION. At creation time the caller logs it as a warning and
+/// continues (the display is fully functional wherever it sits, and
+/// `ensure_parked` re-checks on every capture — see the call-site
+/// comment), so a creation does not fail over a placement the next capture
+/// would repair; the hit-test's containment scope (see `pid_at_point`)
+/// keeps user windows outside the parked bounds targeted regardless.
 fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
     let main = CGMainDisplayID();
     let mut config: CGDisplayConfigRef = std::ptr::null_mut();
@@ -807,6 +881,39 @@ impl HitWindow {
             bounds.size.height,
         )
     }
+
+    /// Fully inside the display bounds (every edge within): the shape of a
+    /// session app's window — and decisively NOT the shape of a USER window
+    /// overhanging from their desktop, which merely INTERSECTS the parked
+    /// display's bounds with a sliver.
+    fn contained_in(&self, bounds: CGRect) -> bool {
+        rect_contained_in(
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.width,
+            bounds.size.height,
+        )
+    }
+}
+
+/// Full containment (every edge of the inner rect within the outer one).
+/// Touching edges count as inside (a window exactly filling the display is
+/// contained).
+fn rect_contained_in(
+    ax: f64,
+    ay: f64,
+    aw: f64,
+    ah: f64,
+    bx: f64,
+    by: f64,
+    bw: f64,
+    bh: f64,
+) -> bool {
+    ax >= bx && ay >= by && ax + aw <= bx + bw && ay + ah <= by + bh
 }
 
 /// Point-in-rect with half-open right/bottom edges (screen points).
@@ -890,24 +997,47 @@ fn on_screen_windows() -> Vec<HitWindow> {
     windows
 }
 
-/// Topmost on-screen normal-level window containing the point and
-/// overlapping the virtual display's bounds → owning pid.
-fn pid_at_point(point: (i32, i32), display_bounds: CGRect) -> Option<i32> {
+/// Topmost on-screen normal-level window containing the point and belonging
+/// to the virtual display → owning pid. "Belonging" is ownership-scoped, not
+/// bare geometry (the isolation promise is unconditional, so the hit-test
+/// cannot be): the window's pid must be one the session launched
+/// (`session_pids` — includes transitional windows the AX move has not yet
+/// relocated), or the window must sit FULLY INSIDE the display bounds. A
+/// window that merely INTERSECTS the parked bounds is excluded: that is the
+/// shape of a user window overhanging from the user's desktop (partially
+/// dragged off-screen, or restored at a stale position when the display
+/// materialized) — without this scope such a window could win the hit-test
+/// and receive model input on the user's real desktop.
+fn pid_at_point(point: (i32, i32), display_bounds: CGRect, session_pids: &[i32]) -> Option<i32> {
     on_screen_windows()
         .into_iter()
-        .find(|window| {
-            window.normal_level
-                && window.contains(point.0, point.1)
-                && window.intersects(display_bounds)
-        })
+        .find(|window| targetable_at(window, point, display_bounds, session_pids))
         .map(|window| window.pid)
+}
+
+/// The targeting predicate behind [`pid_at_point`] (pure, unit-pinned): a
+/// normal-level window containing the point is targetable when its pid is
+/// one the session launched, or its window sits FULLY inside the display
+/// bounds. Pure so the ownership scope (the isolation contract) is pinable
+/// without a live window list.
+fn targetable_at(
+    window: &HitWindow,
+    point: (i32, i32),
+    display_bounds: CGRect,
+    session_pids: &[i32],
+) -> bool {
+    window.normal_level
+        && window.contains(point.0, point.1)
+        && (session_pids.contains(&window.pid) || window.contained_in(display_bounds))
 }
 
 /// Whether `pid` currently shows an on-screen normal-level window that
 /// intersects the virtual display's bounds — the "still on our display"
 /// check behind the remembered-target verification and the discovery
-/// fallback (a pid whose windows all live elsewhere — the user's desktop —
-/// is never an input target of this backend).
+/// fallback. Remembered targets are always session pids (recorded at
+/// `open`), and `pid_has_window_on_display` only ever answers for a pid the
+/// session already decided to target — a pid whose windows all live
+/// elsewhere (the user's desktop) is never an input target of this backend.
 fn pid_has_window_on_display(pid: i32, display_id: u32) -> bool {
     if pid <= 0 {
         return false;
@@ -973,12 +1103,17 @@ mod vk {
     pub const F12: u16 = 0x6F;
 }
 
-/// US-ANSI character → (kVK keycode, needs Shift). The virtual display has
-/// no user keyboard layout, so chords resolve against the fixed US layout:
-/// shifted characters (`+`, `A`) map to the base position plus the Shift
-/// flag instead of failing closed like the physical path
-/// (`platform/macos.rs` resolves through the CURRENT user layout, which on
-/// a virtual target would be the wrong keyboard's layout anyway).
+/// US-ANSI character → (kVK keycode, needs Shift). Chord keycodes are
+/// POSITIONAL US-ANSI codes; the receiving app resolves them through the
+/// user's CURRENT system-wide input source (keyboard layout is system
+/// state, not per-display), so on a non-US layout a letter chord can
+/// trigger the key sitting at that US position — Cmd+A may act as Cmd+Q
+/// on AZERTY. This misfire is DISCLOSED in `capability_notes` (prefer
+/// named keys or typed text); the table stays fixed because reading the
+/// live layout (Carbon UCKeyTranslate, the physical path's enigo
+/// reverse-mapping) is a separate, hardware-validation-gated change.
+/// Shifted characters (`+`, `A`) map to the base position plus the Shift
+/// flag instead of failing closed like the physical path.
 const CHAR_KEYS: &[(char, u16, bool)] = &[
     // Unshifted letters/digits/punctuation (kVK_ANSI_* positions).
     ('a', 0x00, false),
@@ -1150,16 +1285,6 @@ fn modifier_flag(key: Key) -> Option<CGEventFlags> {
     }
 }
 
-/// Chord keys press modifiers first (stable order otherwise) — the same
-/// rule as the physical backend's `ordered_chord_keys` (module-private
-/// there; duplicated as a 4-line pure fn rather than widening that module's
-/// surface further).
-fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
-    let mut ordered = keys.to_vec();
-    ordered.sort_by_key(|key| !matches!(key, Key::Control | Key::Alt | Key::Shift | Key::Meta));
-    ordered
-}
-
 // ---------------------------------------------------------------------------
 // Scroll mapping (sign parity with the physical path, enigo convention)
 // ---------------------------------------------------------------------------
@@ -1328,6 +1453,14 @@ struct MacosVirtualDisplayBackend {
     /// The last pid the backend interacted with (`open` + successful
     /// clicks): the keyboard target. Cleared on explicit input failures.
     focus_pid: Option<i32>,
+    /// Every pid the session itself launched via `open` (both launch
+    /// channels, recorded at discovery). The hit-test's OWNERSHIP scope:
+    /// these pids are drivable wherever their window currently is (the AX
+    /// move may still be in flight), while unknown pids must keep their
+    /// window fully inside the display bounds to be targeted — a user
+    /// window overhanging from the user's desktop must never win the
+    /// hit-test.
+    session_pids: Vec<i32>,
     /// The last synthesized point this backend moved to. The virtual
     /// display has NO user cursor (nobody's hand is on it), so
     /// `cursor_position` truthfully reports this synthesized state instead
@@ -1358,9 +1491,19 @@ impl MacosVirtualDisplayBackend {
     /// otherwise land wherever that app currently is — the user's desktop
     /// included).
     fn input_pid(&self, hit_test: Option<(i32, i32)>) -> Result<i32, ComputerUseError> {
+        // CGEventPostToPid needs the same Accessibility TCC grant as the
+        // physical backend's CGEventPost — without it WindowServer silently
+        // drops the events and EVERY input would report success while doing
+        // nothing. The physical backend treats this preflight as required
+        // for correctness; the virtual path shares it, at the one choke
+        // point every pid-targeted input passes through (cheap TCC query,
+        // per action, same cadence as the physical preflight).
+        if !accessibility_granted() {
+            return Err(accessibility_error());
+        }
         if let Some(point) = hit_test {
             let bounds = CGDisplayBounds(self.display_id);
-            if let Some(pid) = pid_at_point(point, bounds) {
+            if let Some(pid) = pid_at_point(point, bounds, &self.session_pids) {
                 return Ok(pid);
             }
         }
@@ -1492,8 +1635,14 @@ impl MacosVirtualDisplayBackend {
         Ok(())
     }
 
-    /// One modifier FlagsChanged press (down=true) / release (down=false)
-    /// carrying the accumulated mask.
+    /// One modifier press (down=true) / release (down=false) carrying the
+    /// accumulated mask. NOTE: posted as a keyDown/keyUp
+    /// (`CGEventCreateKeyboardEvent`), NOT a FlagsChanged event — the doc
+    /// previously claimed FlagsChanged, which the event factory here does
+    /// not produce. Chords still work because the non-modifier keys carry
+    /// the flag mask themselves; a lone-modifier hold (hold_key with only
+    /// modifiers) may not register in apps tracking the FlagsChanged event
+    /// type — hardware-validation-gated, disclosed in the module doc.
     fn post_modifier(
         &self,
         pid: i32,
@@ -1570,7 +1719,9 @@ impl MacosVirtualDisplayBackend {
                 }
             }
             // Chunk the hold so a stop/timeout cancel flag is polled within
-            // HOLD_CANCEL_POLL_MS instead of waiting out the whole hold.
+            // HOLD_CANCEL_POLL_MS instead of waiting out the whole hold. The
+            // base verdict carries only the cancel fact; the shared merge
+            // below appends the truthful release outcome.
             let mut remaining = hold;
             while remaining > Duration::ZERO {
                 if cancel
@@ -1578,8 +1729,7 @@ impl MacosVirtualDisplayBackend {
                     .is_some_and(|flag| flag.load(Ordering::SeqCst))
                 {
                     return Err(ComputerUseError::unavailable(
-                        "hold was cancelled (caller timeout or stop); the keys have been \
-                         released",
+                        "hold was cancelled (caller timeout or stop)",
                     ));
                 }
                 let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
@@ -1590,7 +1740,7 @@ impl MacosVirtualDisplayBackend {
         })();
         // Release everything, best-effort, in reverse (characters first,
         // modifiers last, each modifier's flag leaving the mask as it goes).
-        let mut release_error: Option<ComputerUseError> = None;
+        let mut release = Ok(());
         for (code, shift) in pressed_keys.iter().rev() {
             let release_flags = if *shift {
                 flags | CGEventFlags::MaskShift
@@ -1598,26 +1748,25 @@ impl MacosVirtualDisplayBackend {
                 flags
             };
             if let Err(error) = self.post_key_to_pid(pid, *code, false, release_flags, None) {
-                release_error.get_or_insert(error);
+                if release.is_ok() {
+                    release = Err(error);
+                }
             }
         }
         for flag in pressed_modifiers.iter().rev() {
             flags.remove(*flag);
             if let Err(error) = self.post_modifier(pid, released_modifier_key(*flag), flags, false)
             {
-                release_error.get_or_insert(error);
+                if release.is_ok() {
+                    release = Err(error);
+                }
             }
         }
-        let result = match (result, release_error) {
-            (Ok(()), None) => Ok(()),
-            (Ok(()), Some(release)) => {
-                Err(release.same_kind("chord release failed; the keys may still be pressed"))
-            }
-            (Err(action), None) => Err(action),
-            (Err(action), Some(release)) => Err(action.same_kind(format!(
-                "{action}; its release also failed ({release}); the keys may still be pressed"
-            ))),
-        };
+        // Shared truthful merge (the same helper as the Linux/Windows hold
+        // paths — previously a private inline merge with different wording):
+        // the cancel fact AND the release outcome surface together, never
+        // the false "the keys have been released" all-clear.
+        let result = combine_hold_errors(result, release);
         if let Err(error) = &result {
             self.clear_focus_on_error(error);
         }
@@ -1835,6 +1984,10 @@ impl MacosVirtualDisplayBackend {
         // granted machine reliably relocates it).
         self.move_front_window_into_display(pid_i32);
         self.focus_pid = Some(pid_i32);
+        // Ownership record for the hit-test: this pid is the session's (see
+        // `session_pids`) — its windows stay drivable wherever the AX move
+        // has got to.
+        self.session_pids.push(pid_i32);
         Ok(pid)
     }
 
@@ -2057,10 +2210,15 @@ fn capability_notes() -> String {
      window on the virtual display (a moved-away or quit target answers an error — \
      click inside the display to focus a new one); cursor_position reports the last \
      point this backend moved to (a virtual display has no cursor of its own), or the \
-     display's top-left origin before the first move; Screen Recording + \
-     Accessibility grants are required (same as the physical path); typed text \
-     bypasses the keyboard layout (direct Unicode), key chords use the US-ANSI \
-     virtual-key table; the capture uses the CGWindowList path, which on Sequoia+ \
+     display's top-left origin before the first move; Screen Recording and \
+     Accessibility grants are required (input answers an explicit error without \
+     Accessibility, same copy as the physical path); typed text bypasses the \
+     keyboard layout (direct Unicode); key chords are injected as US-ANSI \
+     positional virtual-key codes while the receiving app resolves them through \
+     YOUR current keyboard layout — on a non-US layout a letter chord can trigger \
+     the key sitting at that US position (e.g. Cmd+A may act as Cmd+Q on AZERTY), \
+     so prefer named keys (Enter, arrows, F-keys) or typed text where possible; \
+     the capture uses the CGWindowList path, which on Sequoia+ \
      sits behind the periodic keep-allowing-screen-recording confirmation; apps \
      launched with open take a moment before their windows appear, and the pid \
      reported for such an app is recovered by watching for a new window on the \
@@ -2110,9 +2268,18 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
             ));
         }
         let image = capture_display_image(bounds)?;
-        let width = CGImage::width(Some(&image));
-        let height = CGImage::height(Some(&image));
-        let mut rgba = window_image_to_rgba(&image)?;
+        // Shared BGRA→RGBA conversion — the ScreenCaptureKit adapter's
+        // tested helper, reused via sibling-module visibility instead of the
+        // previous private near-verbatim copy; the stride pin in this
+        // module's tests drives the SAME shared row-copy, so the two stacks
+        // cannot drift.
+        let converted =
+            super::super::screen_capture_kit::bgra_image_to_rgba(&image).map_err(|reason| {
+                ComputerUseError::failed(format!("virtual display capture: {reason}"))
+            })?;
+        let mut rgba = converted.rgba;
+        let width = converted.width;
+        let height = converted.height;
         // CGWindowListCreateImage's alpha depends on the content; force
         // opaque in one pass so the PNG never leaks meaningless alpha (the
         // same convention as both physical macOS capture paths).
@@ -2303,10 +2470,20 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
         // wheel: target the pid under the last synthesized point. Without a
         // pointer position yet, the wheel targets the last-interacted app
         // (keyboard focus semantics) — both fail explicitly on a fresh
-        // session with no app on the display.
+        // session with no app on the display. Targeting failures route
+        // through clear_focus_on_error like every other entry point: a
+        // stale remembered target must not keep failing every scroll until
+        // some click resets it (the same contract `chord` documents).
         let pid = match self.cursor {
-            Some(point) => self.input_pid(Some(point))?,
-            None => self.keyboard_pid()?,
+            Some(point) => self.input_pid(Some(point)),
+            None => self.keyboard_pid(),
+        };
+        let pid = match pid {
+            Ok(pid) => pid,
+            Err(error) => {
+                self.clear_focus_on_error(&error);
+                return Err(error);
+            }
         };
         let (axis, delta) = map_cg_scroll(direction, clicks);
         let (wheel1, wheel2) = if axis == 1 { (delta, 0) } else { (0, delta) };
@@ -2429,84 +2606,6 @@ fn capture_display_image(bounds: CGRect) -> Result<CFRetained<CGImage>, Computer
     })
 }
 
-/// CGImage (BGRA, premultiplied alpha) → tightly packed RGBA. Row copy with
-/// stride handling — the same algorithm as
-/// `platform/screen_capture_kit.rs`'s tested conversion (that module's
-/// helpers are not visible across sibling modules and this change must not
-/// edit them; the stride test below pins the same bytes so the two copies
-/// cannot drift apart silently).
-fn window_image_to_rgba(image: &CGImage) -> Result<Vec<u8>, ComputerUseError> {
-    let width = CGImage::width(Some(image));
-    let height = CGImage::height(Some(image));
-    let bytes_per_row = CGImage::bytes_per_row(Some(image));
-    let bits_per_pixel = CGImage::bits_per_pixel(Some(image));
-    if width == 0 || height == 0 {
-        return Err(ComputerUseError::failed(format!(
-            "empty virtual display capture {width}x{height}"
-        )));
-    }
-    if bits_per_pixel != 32 {
-        return Err(ComputerUseError::failed(format!(
-            "unexpected capture bit depth {bits_per_pixel} (expected 32-bit BGRA)"
-        )));
-    }
-    // Precondition of the row-copy slices: bytes_per_row >= width*4 is CG's
-    // convention for 32bpp images; a violating image would panic inside a
-    // foreign call stack (not protected by the worker's catch_unwind), so
-    // it becomes an explicit error here.
-    let min_row_bytes = width
-        .checked_mul(4)
-        .ok_or_else(|| ComputerUseError::failed("capture width overflows"))?;
-    if bytes_per_row < min_row_bytes {
-        return Err(ComputerUseError::failed(format!(
-            "capture row stride {bytes_per_row} < width*4 ({width}); not a packed 32-bit image"
-        )));
-    }
-    let provider = CGImage::data_provider(Some(image))
-        .ok_or_else(|| ComputerUseError::failed("capture image has no data provider"))?;
-    // CGDataProvider::data copies out an independent CFData managed by the
-    // CFRetained's +1 (dropped automatically; no manual CFRelease here).
-    let data = CGDataProvider::data(Some(&provider))
-        .ok_or_else(|| ComputerUseError::failed("capture image data provider returned null"))?;
-    let expected = bytes_per_row
-        .checked_mul(height)
-        .ok_or_else(|| ComputerUseError::failed("capture row stride overflows"))?;
-    let len = data.length();
-    if len < 0 || (len as usize) < expected {
-        return Err(ComputerUseError::failed(format!(
-            "capture image data too small: {len} bytes, need {expected}"
-        )));
-    }
-    let ptr = data.byte_ptr();
-    if ptr.is_null() {
-        return Err(ComputerUseError::failed(
-            "capture image data has a null byte pointer",
-        ));
-    }
-    // SAFETY: ptr points at the CFData's internal buffer holding `len`
-    // bytes (checked above), valid and unmodified while `data` is retained;
-    // the slice is only read by the row copy below, before `data` drops.
-    let raw = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-    let mut rgba = vec![0u8; width * height * 4];
-    copy_bgra_rows(&mut rgba, raw, width, bytes_per_row, height);
-    Ok(rgba)
-}
-
-/// Row-copy BGRA→RGBA with stride discard (`src` pitch may exceed width*4;
-/// `dst` is tightly packed width*height*4).
-fn copy_bgra_rows(dst: &mut [u8], src: &[u8], width: usize, bytes_per_row: usize, height: usize) {
-    for row in 0..height {
-        let src_row = &src[row * bytes_per_row..row * bytes_per_row + width * 4];
-        let dst_row = &mut dst[row * width * 4..(row + 1) * width * 4];
-        for (out, px) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
-            out[0] = px[2];
-            out[1] = px[1];
-            out[2] = px[0];
-            out[3] = px[3];
-        }
-    }
-}
-
 /// Create the virtual display backend. Called only after the shared dispatch
 /// decided Virtual (probe green + preference on); **must run on the
 /// computer_use worker thread** (a main-thread call would deadlock on the
@@ -2522,15 +2621,24 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     let deadline = Instant::now() + ACTIVATION_POLL_TIMEOUT;
     let (tx, rx) = mpsc::channel::<CreatedDisplay>();
     let dispatched = super::super::dispatch_to_main_thread(Box::new(move || {
-        let _ = tx.send(create_and_wait(deadline));
+        // The closure holds the main thread only for the build + the ≤1 s
+        // id-read grace (see DISPLAY_ID_GRACE); when the id does not appear
+        // it runs the legacy full poll here, exactly the pre-split behavior.
+        let _ = tx.send(create_and_read_id(
+            deadline.min(Instant::now() + DISPLAY_ID_GRACE),
+            deadline,
+        ));
     }));
-    let (display, display_id) = if dispatched {
+    let (display, display_id, activated) = if dispatched {
         // The Tauri main thread keeps servicing its run loop while this
-        // worker waits; the bound covers the ≤5 s in-closure poll plus the
-        // queue hop. Timeout → explicit Unavailable → the ONE-TIME physical
-        // fallback in platform::create_backend. A hand-off that lands after
-        // the timeout is still released (the channel value drops with the
-        // receiver, on this worker thread — see `VdHandle`).
+        // worker waits. Timeout → an explicit `Unavailable`: there is NO
+        // mid-creation physical fallback — the ONE-TIME probe-based decision
+        // already ran in platform::create_backend, and a creation-time
+        // failure is an explicit error the availability snapshot records
+        // (tool.rs create_backend_reporting_availability); it is never a
+        // silent mid-session flip. A hand-off that lands after the timeout
+        // is still released (the channel value drops with the receiver, on
+        // this worker thread — see `VdHandle`).
         match rx.recv_timeout(MAIN_DISPATCH_WAIT) {
             Ok(created) => created?,
             Err(_) => {
@@ -2543,8 +2651,15 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     } else {
         // No app handle stored (creation before setup finished): the same
         // bounded sequence runs right here on the worker thread.
-        create_and_wait(deadline)?
+        create_and_read_id(deadline.min(Instant::now() + DISPLAY_ID_GRACE), deadline)?
     };
+    // Budgeted activation wait on the worker when the closure returned
+    // early: the run loop kept pumping the whole time, and the poll uses
+    // only global CG APIs (the VdHandle contract forbids messaging the
+    // crossed-thread object).
+    if !activated {
+        wait_activation_on_worker(display_id, deadline)?;
+    }
     // Park right of the main display (session scope). Non-fatal: the guard
     // re-checks on every capture, and the display is fully functional
     // wherever it currently sits.
@@ -2560,6 +2675,7 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         display,
         display_id,
         focus_pid: None,
+        session_pids: Vec::new(),
         cursor: None,
         held_buttons: Vec::new(),
         cancel: None,
@@ -2965,6 +3081,78 @@ mod tests {
         assert!(!touching.intersects(vd));
     }
 
+    /// The hit-test's OWNERSHIP scope (the isolation contract, pinned pure):
+    /// a window containing the point is targetable when its pid is one the
+    /// session launched, or its window sits fully inside the display bounds;
+    /// a window that merely INTERSECTS the parked bounds — the shape of a
+    /// user window overhanging from the user's desktop — is never targeted,
+    /// however close to the point, however big the overlap.
+    #[test]
+    fn pid_targeting_is_ownership_scoped() {
+        let vd = CGRect {
+            origin: CGPoint { x: 1440.0, y: 0.0 },
+            size: CGSize {
+                width: 1280.0,
+                height: 800.0,
+            },
+        };
+        let session_app = HitWindow {
+            pid: 101,
+            x: 1500.0,
+            y: 10.0,
+            width: 60.0,
+            height: 40.0,
+            normal_level: true,
+            owner_name: None,
+        };
+        let overhanging_user_window = HitWindow {
+            pid: 202,
+            x: 1400.0,
+            y: 0.0,
+            width: 200.0,
+            height: 100.0,
+            normal_level: true,
+            owner_name: None,
+        };
+        // Fixture sanity: the app is contained; the user window intersects
+        // but is NOT contained (it hangs 40pt into the user's desktop).
+        assert!(session_app.contained_in(vd));
+        assert!(overhanging_user_window.intersects(vd));
+        assert!(!overhanging_user_window.contained_in(vd));
+        let point_inside_both = (1505, 12);
+        // Unknown pid + fully contained → targetable (covers the pid-0
+        // discovery dead end: an app whose pid was never recovered stays
+        // drivable while it lives on the display).
+        assert!(targetable_at(&session_app, point_inside_both, vd, &[]));
+        // Session pid → targetable even when the window is somewhere
+        // transitional (the AX move has not relocated it yet).
+        assert!(targetable_at(
+            &overhanging_user_window,
+            point_inside_both,
+            vd,
+            &[202]
+        ));
+        // The isolation core: unknown pid + merely intersecting → never.
+        assert!(!targetable_at(
+            &overhanging_user_window,
+            point_inside_both,
+            vd,
+            &[]
+        ));
+        // Overlay/high-level windows are never targetable either way.
+        let overlay = HitWindow {
+            pid: 303,
+            x: 1500.0,
+            y: 10.0,
+            width: 60.0,
+            height: 40.0,
+            normal_level: false,
+            owner_name: None,
+        };
+        assert!(!targetable_at(&overlay, point_inside_both, vd, &[]));
+        assert!(!targetable_at(&overlay, point_inside_both, vd, &[303]));
+    }
+
     /// Launch-program classification: `.app` bundles (case-insensitive) go
     /// to `open -a`, plain executables exec directly, empties and NULs are
     /// rejected before they can panic std::process::Command.
@@ -2999,9 +3187,10 @@ mod tests {
         assert!(!owner_matches_program(Some("Safari"), ""));
     }
 
-    /// The BGRA→RGBA row copy is stride-correct (the same pinned bytes as
-    /// the ScreenCaptureKit conversion test, so the two implementations
-    /// cannot drift).
+    /// The SHARED BGRA→RGBA row copy (the ScreenCaptureKit adapter's helper,
+    /// now consumed by the capture path above too) is stride-correct — the
+    /// same pinned bytes as that module's own test, one implementation for
+    /// both stacks.
     #[test]
     fn bgra_to_rgba_handles_stride_and_channel_swap() {
         let src = [
@@ -3009,7 +3198,7 @@ mod tests {
             10, 20, 30, 255, 40, 50, 60, 255, 0x11, 0x22, 0x33, 0x44,
         ];
         let mut dst = vec![0u8; 16];
-        copy_bgra_rows(&mut dst, &src, 2, 12, 2);
+        super::super::super::screen_capture_kit::copy_bgra_to_rgba(&mut dst, &src, 2, 12, 2);
         assert_eq!(
             dst,
             [
@@ -3090,5 +3279,13 @@ mod tests {
         assert!(notes.contains("only when already inside the display's bounds"));
         assert!(notes.contains("attributed to the wrong app"));
         assert!(notes.contains("the pid is reported as 0"));
+        // The grant contract is enforced now (input_pid preflight): the
+        // note states the explicit error, not just "required".
+        assert!(notes.contains("answers an explicit error without"));
+        // The chord layout caveat: positional US codes vs the user's
+        // system-wide layout, with the concrete misfire example.
+        assert!(notes.contains("US-ANSI positional virtual-key codes"));
+        assert!(notes.contains("YOUR current keyboard layout"));
+        assert!(notes.contains("Cmd+A may act as Cmd+Q on AZERTY"));
     }
 }

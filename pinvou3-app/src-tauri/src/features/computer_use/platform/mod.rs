@@ -72,8 +72,8 @@ pub(crate) fn set_main_thread_app_handle(app: AppHandle) {
 /// Hand a task to the application's main thread. Returns `false` when the
 /// app handle is not (yet) stored or the enqueue failed — callers treat that
 /// as "main-thread dispatch unavailable" and run their explicit fallback
-/// (e.g. the macOS virtual display answers Unavailable so the one-time
-/// dispatch picks the physical backend). Linux/Windows call sites ignore it.
+/// (the macOS virtual display runs its whole bounded creation sequence on
+/// the worker thread instead). Linux/Windows call sites ignore it.
 /// The task runs asynchronously: this returns after the ENQUEUE, not after
 /// the task ran; wait-for-completion needs the caller's own channel.
 pub(crate) fn dispatch_to_main_thread(task: Box<dyn FnOnce() + Send>) -> bool {
@@ -94,11 +94,29 @@ pub(crate) fn dispatch_to_main_thread(task: Box<dyn FnOnce() + Send>) -> bool {
 pub(crate) fn create_backend(
     prefer_virtual: bool,
 ) -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> {
+    create_backend_with_decision(prefer_virtual).0
+}
+
+/// [`create_backend`] plus the decision it resolved: the decision happens
+/// BEFORE the build, so even a failed virtual creation reports
+/// `TargetDecision::Virtual` (and a failed physical build reports Physical).
+/// tool.rs's availability-snapshot recorder needs exactly this to attribute
+/// a creation failure to the right target — a failed PHYSICAL build must not
+/// be recorded as "the last virtual session failed to start".
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+pub(crate) fn create_backend_with_decision(
+    prefer_virtual: bool,
+) -> (
+    Result<Box<dyn ComputerUseBackend>, ComputerUseError>,
+    TargetDecision,
+) {
     let availability = virtual_display::probe();
-    match virtual_display::resolve_target(prefer_virtual, &availability) {
+    let decision = virtual_display::resolve_target(prefer_virtual, &availability);
+    let created = match decision {
         TargetDecision::Virtual => virtual_display::create_virtual_backend(),
         TargetDecision::Physical => imp::create_backend(),
-    }
+    };
+    (created, decision)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -131,8 +149,9 @@ mod tests {
     /// No-handle fallback pin: without a stored app handle (test binaries
     /// never run lib.rs setup, and nothing else stores one), the main-thread
     /// dispatch answers `false` — callers must take their explicit fallback
-    /// path (the macOS virtual display answers Unavailable → physical)
-    /// instead of silently dropping a task on the floor.
+    /// path (the macOS virtual display runs its whole bounded creation
+    /// sequence on the worker thread) instead of silently dropping a task
+    /// on the floor.
     #[test]
     fn dispatch_without_an_app_handle_returns_false() {
         assert!(

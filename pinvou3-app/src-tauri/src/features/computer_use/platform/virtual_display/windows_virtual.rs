@@ -63,6 +63,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BUSY, GENERIC_ALL, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM,
 };
+use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BitBlt, CreateCompatibleBitmap,
     CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HBITMAP, HDC,
@@ -92,14 +93,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, ChildWindowFromPoint, FindWindowW, GCL_STYLE, GW_HWNDNEXT, GW_HWNDPREV,
-    GetClassLongW, GetClassNameW, GetCursorPos, GetForegroundWindow, GetParent, GetSystemMetrics,
-    GetTopWindow, GetWindow, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
-    PW_RENDERFULLCONTENT, PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SetCursorPos, SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WindowFromPoint,
+    CS_DBLCLKS, ChildWindowFromPoint, FindWindowW, GA_ROOT, GCL_STYLE, GUITHREADINFO, GW_HWNDNEXT,
+    GetAncestor, GetClassLongW, GetClassNameW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
+    GetSystemMetrics, GetTopWindow, GetWindow, GetWindowRect, GetWindowThreadProcessId,
+    IsWindowVisible, PW_RENDERFULLCONTENT, PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos, SetForegroundWindow, WM_CHAR, WM_KEYDOWN,
+    WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
 
@@ -255,6 +256,29 @@ fn to_wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// The UTF-16 units one character injects as `WM_CHAR` payloads: a BMP
+/// character is one unit, an astral character (emoji) is the full surrogate
+/// pair — a dropped low surrogate would deliver a lone half the target app
+/// renders as garbage or drops. Pure so the injection loop and its pin
+/// share one implementation.
+fn char_utf16_units(character: char) -> (u16, Option<u16>) {
+    let mut units = [0u16; 2];
+    let encoded = character.encode_utf16(&mut units);
+    let first = encoded
+        .next()
+        .expect("any char encodes to at least one unit");
+    let second = encoded.next();
+    (first, second)
+}
+
+/// Chord key order (§6): modifiers lead, the rest keeps the given order.
+/// Pure so the chord path and its pin share one implementation instead of
+/// the test re-deriving the shape (which would stay green if the chord path
+/// stopped partitioning at all).
+fn partition_modifiers_first(keys: &[Key]) -> (Vec<&Key>, Vec<&Key>) {
+    keys.iter().partition(|key| key.is_modifier())
+}
+
 /// The desktop access mask for `CreateDesktopW` (design §6): the narrow set
 /// the desktop's own windows need — deliberately NOT `GENERIC_ALL`.
 fn desktop_access_mask() -> u32 {
@@ -387,15 +411,19 @@ fn multi_click_message(index: u8, down: u32, double: u32, accepts_dblclk: bool) 
     }
 }
 
-/// Whether `target`'s window class registered `CS_DBLCLKS`. A query failure
-/// (returns 0) is treated as DBLCLK-capable — the historical behavior —
-/// rather than silently degrading double-clicks.
+/// Whether `target`'s window class registered `CS_DBLCLKS`. The OS sends
+/// `WM_*BUTTONDBLCLK` only to classes that registered the style, so the
+/// conservative answer for BOTH a query failure (GetClassLongW → 0) and a
+/// genuinely style-0 class is "not DBLCLK-capable": the alternating-down
+/// sequence still delivers the click; posting a DBLCLK message to a class
+/// that never registered it is delivery the app never asked for and never
+/// handles.
 ///
 /// SAFETY: class-style query on a desktop window from the attached worker.
 unsafe fn window_class_accepts_dblclk(target: HWND) -> bool {
     // SAFETY: see the fn contract.
     let style = unsafe { GetClassLongW(target, GCL_STYLE) };
-    style == 0 || (style & CS_DBLCLKS.0) != 0
+    style != 0 && (style & CS_DBLCLKS.0) != 0
 }
 
 /// This crate's [`Key`] → Win32 virtual-key code. EXHAUSTIVE over `Key`
@@ -1343,14 +1371,18 @@ fn capture_thread_main(
 }
 
 /// Visible top-level windows in BOTTOM-TO-TOP order (painter's algorithm).
-/// The Z-walk itself runs TOP-DOWN (`GetTopWindow`, then `GW_HWNDPREV`
-/// toward the bottom) so the `cap` keeps the TOPMOST visible windows when a
-/// pathological window farm exceeds it — those are the active windows the
-/// screenshot is for; a bottom-first cap silently dropped exactly them. The
-/// collected order is reversed before returning, preserving the painter's
-/// algorithm the composite expects (bottom blitted first, top last). The
-/// generated wrappers answer Err where the raw API returns NULL (end of the
-/// Z-walk), so an Err terminates the walk.
+/// The Z-walk itself runs TOP-DOWN (`GetTopWindow`, then `GW_HWNDNEXT`
+/// toward the bottom: GW_HWNDNEXT is the window BELOW in the Z order,
+/// GW_HWNDPREV the window above — above the topmost window there is none,
+/// so a PREV walk from `GetTopWindow` would end after a single window and
+/// the composite would capture just that one over a black fill) so the
+/// `cap` keeps the TOPMOST visible windows when a pathological window farm
+/// exceeds it — those are the active windows the screenshot is for; a
+/// bottom-first cap silently dropped exactly them. The collected order is
+/// reversed before returning, preserving the painter's algorithm the
+/// composite expects (bottom blitted first, top last). The generated
+/// wrappers answer Err where the raw API returns NULL (end of the Z-walk),
+/// so an Err terminates the walk.
 ///
 /// SAFETY: desktop-relative Z-order enumeration from the attached calling
 /// thread; the returned handles are valid at return time (windows may still
@@ -1364,13 +1396,13 @@ unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
         };
         let mut current = top;
         loop {
-            if IsWindowVisible(current).as_bool() {
+            if IsWindowVisible(current).as_bool() && !is_cloaked(current) {
                 out.push(current);
                 if out.len() >= cap {
                     break;
                 }
             }
-            match GetWindow(current, GW_HWNDPREV) {
+            match GetWindow(current, GW_HWNDNEXT) {
                 Ok(previous) => current = previous,
                 Err(_) => break,
             }
@@ -1378,6 +1410,29 @@ unsafe fn walk_visible_toplevels(cap: usize) -> Vec<HWND> {
         out.reverse();
         out
     }
+}
+
+/// Whether the window is cloaked (`DWMWA_CLOAKED`): suspended UWP app
+/// windows answer `IsWindowVisible` = true while owning no rendered
+/// surface, and `PrintWindow` then delivers a blank rectangle into the
+/// composite. Best-effort in the safe-for-coverage direction: a DWM
+/// failure answers "not cloaked" (the pre-check behavior) rather than
+/// skipping a real window.
+///
+/// SAFETY: DWM attribute query on a desktop window from the attached
+/// calling thread.
+unsafe fn is_cloaked(hwnd: HWND) -> bool {
+    let mut cloaked: u32 = 0;
+    // SAFETY: valid out-pointer for the u32 attribute.
+    let _ = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+    cloaked != 0
 }
 
 /// Topmost-to-bottom first visible non-shell window (the keyboard-focus
@@ -1394,6 +1449,7 @@ unsafe fn topmost_visible_app_window() -> Option<HWND> {
         let mut current = top;
         loop {
             if IsWindowVisible(current).as_bool()
+                && !is_cloaked(current)
                 && !is_shell_window_class(&window_class_name(current))
             {
                 return Some(current);
@@ -1422,21 +1478,19 @@ unsafe fn window_class_name(hwnd: HWND) -> String {
     }
 }
 
-/// Top-level ancestor of a window (parent-walk; self-parenting terminates).
+/// Top-level ancestor of a window. `GetAncestor(GA_ROOT)` is the documented
+/// root walk — deliberately NOT `GetParent`, which "despite its name" also
+/// returns the OWNER for an owned top-level window (dialogs, popups, message
+/// boxes): an owner resolution sent dialog chords/focus to the modal's owner
+/// instead of the modal. GA_ROOT returns the window itself for a top-level.
 ///
-/// SAFETY: parent queries on desktop windows from the attached calling
-/// thread; the walk terminates on Err, invalid, or self-parented handles.
+/// SAFETY: ancestor query on desktop windows from the attached calling
+/// thread; a NULL answer (invalid input) falls back to the input handle.
 unsafe fn top_level_of(hwnd: HWND) -> HWND {
-    // SAFETY: see the fn contract.
-    unsafe {
-        let mut current = hwnd;
-        loop {
-            match GetParent(current) {
-                Ok(parent) if !parent.is_invalid() && parent.0 != current.0 => current = parent,
-                _ => return current,
-            }
-        }
-    }
+    // SAFETY: ancestor query on a desktop window from the attached calling
+    // thread.
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    if root.is_invalid() { hwnd } else { root }
 }
 
 // ── backend ─────────────────────────────────────────────────────────────────
@@ -1710,10 +1764,16 @@ impl WindowsVirtualDesktopBackend {
         }
     }
 
-    /// The keyboard target for type/chord paths: the desktop's foreground
-    /// window (the click/focus dance above leaves it there), else the
-    /// topmost visible app window. Errors explicitly when the desktop has
-    /// no drivable window at all.
+    /// The keyboard target for type/chord paths: where REAL keyboard input
+    /// would land right now. The foreground window's own focused control is
+    /// read via `GetGUIThreadInfo` WITHOUT stealing focus first — classic
+    /// frame+child apps keep their focus on a child control, and a posted
+    /// `WM_CHAR` must reach that control, not the frame (a read that runs
+    /// `SetFocus(frame)` first would answer the frame and displace the
+    /// app's focus, which is exactly what a real keystroke never does).
+    /// When the GUI-thread info yields nothing (no focused window on the
+    /// target thread), the legacy dance answers the fallback. Errors
+    /// explicitly when the desktop has no drivable window at all.
     fn keyboard_target(&self) -> Result<HWND, ComputerUseError> {
         let base = {
             // SAFETY: desktop-relative queries on the attached worker.
@@ -1731,7 +1791,36 @@ impl WindowsVirtualDesktopBackend {
                 })?
             }
         };
-        Ok(self.focus_dance(base))
+        // SAFETY: queue attach + GUI-thread info on desktop windows from the
+        // attached worker thread; the detach always runs.
+        unsafe {
+            let top = top_level_of(base);
+            let ours = GetCurrentThreadId();
+            let theirs = GetWindowThreadProcessId(top, None);
+            let attached = if ours != theirs && theirs != 0 {
+                AttachThreadInput(ours, theirs, true).as_bool()
+            } else {
+                false
+            };
+            let mut info = GUITHREADINFO::default();
+            info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+            let real_focus =
+                if GetGUIThreadInfo(theirs, &mut info).is_ok() && !info.hwndFocus.is_invalid() {
+                    Some(info.hwndFocus)
+                } else {
+                    None
+                };
+            if attached {
+                let _ = AttachThreadInput(ours, theirs, false);
+            }
+            match real_focus {
+                Some(focused) => Ok(focused),
+                // No focused window on the target thread: fall back to the
+                // click-path dance (foreground + focus set), which at least
+                // puts the frame on record.
+                None => Ok(self.focus_dance(base)),
+            }
+        }
     }
 
     fn cancelled(&self) -> bool {
@@ -1748,9 +1837,9 @@ impl WindowsVirtualDesktopBackend {
         if keys.is_empty() {
             return Err(ComputerUseError::failed("key chord is empty"));
         }
-        // Modifiers lead, the rest keep the given order.
-        let (modifiers, rest): (Vec<&Key>, Vec<&Key>) =
-            keys.iter().partition(|key| key.is_modifier());
+        // Modifiers lead, the rest keep the given order (§6, shared with the
+        // pin via partition_modifiers_first).
+        let (modifiers, rest) = partition_modifiers_first(keys);
         let ordered: Vec<u16> = modifiers
             .iter()
             .chain(rest.iter())
@@ -1762,7 +1851,17 @@ impl WindowsVirtualDesktopBackend {
         let mut pressed: Vec<u16> = Vec::with_capacity(ordered.len());
         let hold_result = (|| {
             for vk in &ordered {
-                self.post(top, WM_KEYDOWN, usize::from(*vk), key_lparam(false))?;
+                // Real Alt input travels as WM_SYSKEYDOWN/WM_SYSKEYUP (the
+                // system key pair); posting plain WM_KEYDOWN(VK_MENU) made
+                // Alt chords register as ordinary key presses and Alt+F4 /
+                // Alt-menu semantics never fired. Ctrl/Shift chords keep the
+                // plain pair — the system pair is Alt-specific.
+                let (down, up) = if *vk == VK_MENU.0 {
+                    (WM_SYSKEYDOWN, WM_SYSKEYUP)
+                } else {
+                    (WM_KEYDOWN, WM_KEYUP)
+                };
+                self.post(top, down, usize::from(*vk), key_lparam(false))?;
                 pressed.push(*vk);
             }
             let mut remaining = hold;
@@ -1784,7 +1883,12 @@ impl WindowsVirtualDesktopBackend {
         // hold must not strand modifiers).
         let mut release = Ok(());
         for vk in pressed.iter().rev() {
-            if let Err(error) = self.post(top, WM_KEYUP, usize::from(*vk), key_lparam(true)) {
+            let up = if *vk == VK_MENU.0 {
+                WM_SYSKEYUP
+            } else {
+                WM_KEYUP
+            };
+            if let Err(error) = self.post(top, up, usize::from(*vk), key_lparam(true)) {
                 if release.is_ok() {
                     release = Err(error);
                 }
@@ -1885,12 +1989,16 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
             ui_tree: false,
             notes: "windows hidden desktop: input is app-level message injection \
                     (PostMessageW) — apps that ignore synthetic messages cannot be \
-                    driven, and title-bar/system-button (non-client) interactions \
-                    are not injected; capture and input span the session's whole \
-                    virtual screen (every monitor of the hidden-desktop session); \
-                    capture is a per-window composite (a hidden desktop has no DWM), \
-                    so content can lag until the forced redraw lands; verify actions \
-                    with a follow-up screenshot"
+                    driven, title-bar/system-button (non-client) interactions are \
+                    not injected, posted chords do not update the app's async \
+                    key-state table (apps that read modifier state from \
+                    GetKeyState may see unmodified keys), and layered-window \
+                    translucency can print as opaque fringes (the hidden desktop \
+                    has no DWM to blend it); capture and input span the session's \
+                    whole virtual screen (every monitor of the hidden-desktop \
+                    session); capture is a per-window composite (a hidden desktop \
+                    has no DWM), so content can lag until the forced redraw \
+                    lands; verify actions with a follow-up screenshot"
                 .to_string(),
             target: DisplayTarget::Virtual,
             target_note: "isolated hidden Windows desktop — the user's desktop is \
@@ -1969,7 +2077,14 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
             // down (see multi_click_message).
             let message = multi_click_message(index, down, double, accepts_dblclk);
             self.post(target, message, mark, lparam)?;
-            self.post(target, up, 0, lparam)?;
+            // A failed UP must surface the stranded-button fact like the
+            // macOS click path does — "click failed" alone reads as if the
+            // button state is clean.
+            if let Err(error) = self.post(target, up, 0, lparam) {
+                return Err(ComputerUseError::failed(format!(
+                    "{error}; the button may still be pressed"
+                )));
+            }
             if index + 1 < count.max(1) {
                 sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
             }
@@ -2116,9 +2231,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                 // finding: also posting WM_KEYDOWN makes the target's
                 // TranslateMessage generate a second WM_CHAR, doubling
                 // input). Surrogate pairs post both units.
-                let mut units = [0u16; 2];
-                for unit in character.encode_utf16(&mut units) {
-                    self.post(target, WM_CHAR, usize::from(*unit), key_lparam(false))?;
+                let (first, second) = char_utf16_units(character);
+                self.post(target, WM_CHAR, usize::from(first), key_lparam(false))?;
+                if let Some(unit) = second {
+                    self.post(target, WM_CHAR, usize::from(unit), key_lparam(false))?;
                 }
             }
         }
@@ -2471,18 +2587,23 @@ mod tests {
         }
     }
 
-    /// The chord-ordering partition: modifiers lead, plain keys keep their
-    /// relative order (§6 "modifiers sent first").
+    /// The chord-ordering partition runs through the IMPLEMENTATION's shared
+    /// helper (`partition_modifiers_first`, the fn `chord_to` itself uses):
+    /// modifiers lead, plain keys keep their relative order (§6 "modifiers
+    /// sent first"). Driving the impl fn keeps a regression that removes the
+    /// partition from `chord_to` from passing silently.
     #[test]
     fn modifier_partition_orders_modifiers_first() {
         let keys = [Key::Char('s'), Key::Control, Key::Char('a'), Key::Shift];
-        let (modifiers, rest): (Vec<&Key>, Vec<&Key>) =
-            keys.iter().partition(|key| key.is_modifier());
+        let (modifiers, rest) = partition_modifiers_first(&keys);
         let ordered: Vec<Key> = modifiers.into_iter().chain(rest).copied().collect();
         assert_eq!(
             ordered,
             vec![Key::Control, Key::Shift, Key::Char('s'), Key::Char('a')]
         );
+        // The empty edge stays empty (chord_to rejects empty before this).
+        let (modifiers, rest) = partition_modifiers_first(&[]);
+        assert!(modifiers.is_empty() && rest.is_empty());
     }
 
     /// Key-message lParam shapes: down = repeat 1; up = repeat 1 with
@@ -2839,16 +2960,20 @@ mod tests {
         assert_eq!(odd, vec![9, 8, 7, 255, 6, 5, 4, 255, 3, 2, 1, 255]);
     }
 
-    /// WM_CHAR text encoding: BMP chars post one UTF-16 unit, non-BMP chars
-    /// post the surrogate pair (the WM_CHAR wparam is one UTF-16 unit; the
-    /// injection posts `char::encode_utf16(&mut [u16; 2])`'s prefix).
+    /// WM_CHAR text encoding runs through the IMPLEMENTATION's encoder
+    /// (`char_utf16_units`, the fn the injection loop itself calls): a BMP
+    /// char yields exactly one unit, a non-BMP char yields BOTH surrogate
+    /// units, and the pair re-decodes to the original character. Asserting
+    /// on the impl fn (not std's `encode_utf16` directly) keeps a mutation
+    /// that drops the low surrogate — or skips non-BMP characters entirely —
+    /// red instead of silently green.
     #[test]
     fn char_utf16_units_cover_the_surrogate_range() {
-        let mut units = [0u16; 2];
-        let encoded = '中'.encode_utf16(&mut units);
-        assert_eq!(encoded, &[0x4E2D]);
-        let encoded = '\u{1F600}'.encode_utf16(&mut units);
-        assert_eq!(encoded.len(), 2, "non-BMP chars post both surrogate units");
+        assert_eq!(char_utf16_units('a'), (0x61, None));
+        assert_eq!(char_utf16_units('中'), (0x4E2D, None));
+        let (high, low) = char_utf16_units('\u{1F600}');
+        let low = low.expect("an astral char must yield both surrogate units");
+        assert_eq!(String::from_utf16(&[high, low]).as_deref(), Ok("\u{1F600}"));
     }
 
     /// Composite blit offsets on a multi-monitor session: window rects are

@@ -329,7 +329,10 @@ export function ComputerUseDialogs({ slice, copy }) {
               <span className="min-w-0 break-words font-medium">{confirmDetails.description}</span>
             </div>
             <div className="flex gap-2">
-              <span className="shrink-0 opacity-60">{confirmVirtual ? copy.confirmTargetVirtual : copy.confirmTargetPhysical}</span>
+              {/* The target copy is a full localized sentence ("Target: ..."),
+                  not a label/value pair like its sibling rows — so it renders
+                  at normal strength, not dimmed like a bare label. */}
+              <span className="min-w-0 break-words">{confirmVirtual ? copy.confirmTargetVirtual : copy.confirmTargetPhysical}</span>
             </div>
             {confirmRequest.element && (
               <div className="flex gap-2">
