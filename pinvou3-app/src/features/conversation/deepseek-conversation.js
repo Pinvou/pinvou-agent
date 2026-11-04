@@ -1,3 +1,4 @@
+import { recoveryNotice } from './model-recovery.js';
 import {
   countsAsFailedOperation,
   isOperationItemType,
@@ -162,7 +163,7 @@ export function timelineDisplayError(error, options = {}) {
  */
 export function pairDeepSeekTimeline(events = [], options = {}) {
   const ordered = [...events]
-    .filter(event => event && event.turn_id && ['user_start', 'assistant_done'].includes(event.event))
+    .filter(event => event && event.turn_id && ['user_start', 'assistant_done', 'model_recovery'].includes(event.event))
     .sort((left, right) => Number(left.timestamp || 0) - Number(right.timestamp || 0));
   const records = [];
   const byId = new Map();
@@ -184,6 +185,10 @@ export function pairDeepSeekTimeline(events = [], options = {}) {
       byId.set(id, record);
       records.push(record);
     }
+    if (event.event === 'model_recovery') {
+      if (!event.model_recovery?.agent_id) record.modelRecovery = event.model_recovery;
+      continue;
+    }
     if (event.event === 'user_start') {
       record.startedAt = Number(event.timestamp || 0) || event.ts || null;
       if (Number.isSafeInteger(event.ui_turn_index)) record.turnIndex = event.ui_turn_index;
@@ -193,6 +198,9 @@ export function pairDeepSeekTimeline(events = [], options = {}) {
       record.status = normalizeTurnStatus(event.status, true);
       record.error = timelineDisplayError(event.error, options);
       record.userError = timelineUserError(event, options);
+      if (record.status === 'Interrupted' && record.modelRecovery?.state === 'interrupted' && record.userError) {
+        record.userError = { ...record.userError, kind: 'rate_limit', message: recoveryNotice(record.modelRecovery, options.language) || record.userError.message };
+      }
       record.usage = timelineUsage(event.usage);
     }
   }

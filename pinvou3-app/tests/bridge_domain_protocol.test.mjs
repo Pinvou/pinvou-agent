@@ -244,7 +244,10 @@ const expectedProtocolHashes = {
   // command surface unchanged. Recomputed again in round 3: the present_artifact
   // comment now carries the web lane's exact `chat:tool_start` token so both
   // bridge lanes read byte-identically.
-  chat: '44c35fd4781321ce44d8f2c0674ccafdd512233878c7e4f79e259e1bff4e6eba',
+  // Recovery metadata settles at chat:done and notifies after transient updates.
+  // The existing event names/payload transport stay unchanged; callback text
+  // participates in this digest, including those new consumer branches.
+  chat: '286967fbc0db03fd8edf75642b8a603fc882c92655779d0e146dc6053bf6c7e8',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

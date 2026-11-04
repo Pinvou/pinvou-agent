@@ -1208,3 +1208,14 @@ Object.assign(dictEn.uiChat, {
 // restored: baseline catalog descriptions (referenced by the model catalog data)
 Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'Default model for the local service', '高能力模型': 'High-capability model', '快速响应': 'Fast responses', '最新通用模型': 'Latest general-purpose model', '代码场景': 'Coding tasks', '高速代码场景': 'High-speed coding tasks', '稳定可用': 'Stable release', '高性价比': 'Cost-effective', '通用能力': 'General-purpose', '兼容保留': 'Compatibility option', '轻量模型': 'Lightweight model'
 });
+
+Object.assign(dictEn.uiChat, {
+  modelRecoveryWaiting: 'Model service rate limited, {attempt}/{max} attempts. Next attempt: {time}. Use Stop to cancel waiting.',
+  modelRecoveryChildWaiting: 'Model service rate limited, {attempt}/{max} attempts. Next attempt: {time}. Waiting for recovery.',
+  modelRecoveryInterrupted: 'Rate-limit recovery paused; progress saved ({attempt}/{max} attempts). Recovery time: {time}. You can continue when available.',
+  modelRecoveryUnknownTime: 'not provided; continue manually later',
+});
+
+Object.assign(dictEn.uiChat, { modelRecoveryAgent: 'Subtask {agent}: ' });
+
+Object.assign(dictEn.uiChat, { modelRecoveryCancelled: 'Rate-limit waiting cancelled.', modelRecoveryStopped: 'Rate-limit waiting ended. See this turn’s result.' });

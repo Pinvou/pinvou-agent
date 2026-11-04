@@ -1,3 +1,4 @@
+import { upsertRecoveryNotice, settleRecoveryNotices } from '../conversation/model-recovery.js';
 // 代码模块原生（品悟 Engine）会话的本地会话车道。
 //
 // ACP 会话由后端维护 timeline（get_codex_acp_timeline）；原生会话复用主聊天的
@@ -505,6 +506,8 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       return true;
     }
     case 'chat:transient_error': {
+      if (p.model_recovery) return upsertRecoveryNotice(p.model_recovery, p.model_recovery.agent_id ? lane.items : lane.items.slice(currentTurnStart(lane)),
+        (text, extra) => { lane.items.push({ id: nextId(lane), type: 'system', text, ...extra }); }, options.language);
       if (!p.error) return false;
       // Bare-string fallbacks are redacted too (gateway/provider bodies
       // the gate missed must not reach the screen with credentials).
@@ -624,6 +627,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       return true;
     }
     case 'chat:done': {
+      settleRecoveryNotices(lane.items.slice(currentTurnStart(lane)), p.status, p.error, options.language);
       finalizeReasoning(lane);
       finalizeStream(lane);
       // Live-path terminal ratchet: a stop or an error mid-tool never

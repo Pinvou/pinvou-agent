@@ -1088,6 +1088,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
           messages.settleModelServiceErrorNotices(state);
         }
       }
+      window.PinvouModelRecovery?.settleRecoveryEvent(e.payload, state);
       const shellMessages = bridgeMessages();
       if (typeof shellMessages.showShellCleanupFailure === "function") {
         shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
@@ -1310,6 +1311,8 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
         if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
       }
     }
+
+    if (e.payload && e.payload.model_recovery) notify();
   }); });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。

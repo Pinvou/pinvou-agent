@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,7 +14,7 @@ const sharedDir = path.join(temp, 'shared');
 mkdirSync(conversationDir, { recursive: true });
 mkdirSync(sharedDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
-for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
+for (const file of ['conversation-model.js', 'deepseek-conversation.js', 'model-recovery.js']) {
   copyFileSync(
     path.join(root, 'src', 'features', 'conversation', file),
     path.join(conversationDir, file),
@@ -33,6 +33,9 @@ vm.runInThisContext(
   { filename: 'model-service-errors.js' },
 );
 
+copyFileSync(path.join(root, 'src', 'shared', 'i18n.js'), path.join(temp, 'shared', 'i18n.js'));
+cpSync(path.join(root, 'src', 'shared', 'i18n'), path.join(temp, 'shared', 'i18n'), { recursive: true });
+
 try {
   const { pairDeepSeekTimeline, projectDeepSeekConversation } = await import(
     `${pathToFileURL(path.join(conversationDir, 'deepseek-conversation.js')).href}?t=${Date.now()}`
@@ -50,6 +53,18 @@ try {
   } = await import(
     `${pathToFileURL(path.join(conversationDir, 'conversation-model.js')).href}?t=${Date.now()}`
   );
+  const { ensureLanguage } = await import(pathToFileURL(path.join(sharedDir, 'i18n.js')).href);
+  await ensureLanguage('en');
+  const historicalRecovery = pairDeepSeekTimeline([
+    { event: 'user_start', turn_id: 'recovery-turn', timestamp: 1000 },
+    { event: 'model_recovery', turn_id: 'recovery-turn', timestamp: 1001, model_recovery: { state: 'interrupted', attempt: 3, max_attempts: 20, next_retry_at_ms: 1900000000000 } },
+    { event: 'assistant_done', turn_id: 'recovery-turn', timestamp: 1002, status: 'Interrupted', error: 'Rate limit exceeded: fixture' },
+  ], { language: 'en' });
+  assert.equal(historicalRecovery.length, 1);
+  assert.equal(historicalRecovery[0].status, 'Interrupted');
+  assert.ok(historicalRecovery[0].userError.message.includes('3/20'));
+  assert.ok(historicalRecovery[0].modelRecovery.next_retry_at_ms > 0);
+
   assert.equal(externalMarkdownUrl('http://localhost:8080/'), 'http://localhost:8080/');
   assert.equal(externalMarkdownUrl('https://example.com/demo'), 'https://example.com/demo');
   assert.equal(externalMarkdownUrl('javascript:alert(1)'), '');

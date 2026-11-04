@@ -1,5 +1,16 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
+
+> 2026-11-05 review candidate: T6 adds bounded HTTP 429 recovery and Engine
+> checkpoint integration. The public maintenance baseline remains `f1eb10efc`;
+> candidate and published-head alignment are distinct. See the T6 review-candidate
+> entry in [fork-modifications.md](fork-modifications.md). No protected branch or
+> tag is advanced by this local implementation.
+> Registered local candidate: `8f3e80e9b95029303593d66ed8f36049e916fa06`, 87 commits above
+> upstream v0.9.12; tree `9f82668ec1c8447cc535660b0ae1a4667085315c`.
+> Candidate drift: 532 files, +95068/-39676 (net +55392). All figures below
+> labeled 2026-10-28 are the historical published baseline, before this candidate.
+
 > 最后更新：2026-10-28。公开维护头 f1eb10efc 已包含 #114/#125；父仓 gitlink 与公开维护头对齐。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
@@ -7,6 +18,8 @@
 已集成的上游回移及历史溯源见[修改清单](fork-modifications.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756)。公开维护头门禁及第 6 节的明确授权要求继续生效。
 
 ## 0. 当前维护基线与验证边界
+
+Published baseline snapshot (2026-10-28; historical, before the T6 candidate above):
 
 - 当前公开维护头与父仓 gitlink：`f1eb10efcfe2468fde42d1724d7f5f19d54b904c`（2026-10-28）。#114 已合入为 `fe90f72f9`，#125 为 `f1eb10efc`；本轮仅更新父仓引用，没有推进维护分支。
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 86 个提交，r1 `1fafee7e2` 之上 71 个；84 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。

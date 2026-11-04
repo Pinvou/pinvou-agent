@@ -4364,6 +4364,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
           messages.settleModelServiceErrorNotices(state);
         }
       }
+      window.PinvouModelRecovery?.settleRecoveryEvent(e.payload, state);
       const shellMessages = bridgeMessages();
       if (typeof shellMessages.showShellCleanupFailure === "function") {
         shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
@@ -4560,6 +4561,8 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     // 兜底启动检测被绕过/中途删 key 的场景。
     // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
     if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
+
+    if (e.payload && e.payload.model_recovery) notify();
   }); });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
