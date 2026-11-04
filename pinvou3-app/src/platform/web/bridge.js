@@ -2107,11 +2107,11 @@ function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedweb(
     // 缺键按后端 default_true 投影（旧负载不把开关翻成关）。
     state.modeState = mode.ok && mode.value
       ? {
-        mode: mode.value.mode || "yolo",
+        mode: mode.value.mode || "auto",
         multiAgent: !!mode.value.multi_agent,
         askOnGuardrail: mode.value.ask_on_guardrail == null ? true : !!mode.value.ask_on_guardrail,
       }
-      : { mode: "yolo", multiAgent: false, askOnGuardrail: true };
+      : { mode: "auto", multiAgent: false, askOnGuardrail: true };
     state.activePersona = persona.ok && persona.value && !deletedPersonaIds.has(persona.value.id) ? persona.value : null;
     if (snapshot.ok && snapshot.value && Array.isArray(snapshot.value.collections)) {
       applyMountedCollections(snapshot.value);
@@ -5001,7 +5001,9 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
   // 后端 default_true 投影（旧负载不把开关翻成关），读取失败兜底同样按开。
   function mapModeState(ms) {
     return {
-      mode: (ms && ms.mode) || "yolo",
+      // 缺键按保守的 Auto 车道默认显示，绝不谎报 Yolo（round-10 评审与
+      // tauri 车道 round-8 L7-4 同口径）。
+      mode: (ms && ms.mode) || "auto",
       multiAgent: !!(ms && ms.multi_agent),
       askOnGuardrail: !ms || ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
     };
@@ -5028,7 +5030,7 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
     } catch {
       if (seq !== modeSyncSeq) return;
       if (state.activeSessionId !== sid) return;
-      state.modeState = { mode: "yolo", multiAgent: false, askOnGuardrail: true };
+      state.modeState = { mode: "auto", multiAgent: false, askOnGuardrail: true };
     }
   }
 
@@ -5045,12 +5047,17 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
     const d = state.modeDefaults && state.modeDefaults[lane];
     return { mode: d || (boundDraft ? "plan" : "auto"), multiAgent: false, askOnGuardrail: true };
   }
+  // 草稿默认的 epoch 纪律与 tauri 车道同口径（round-8 L7-2 / round-9；web 侧
+  // round-10 评审补齐）：在途读取不得覆盖更新写，写自身响应与草稿显示臂
+  // 都按捕获的 epoch 校验后落地。
+  let modeDefaultsEpoch = 0;
   async function refreshModeDefaults() {
+    const epochAtRead = ++modeDefaultsEpoch;
     try {
       const defaults = await invoke("get_mode_defaults");
-      if (defaults) state.modeDefaults = defaults;
+      if (defaults && epochAtRead === modeDefaultsEpoch) state.modeDefaults = defaults;
     } catch { /* 读取失败保留旧值/缺省，不打扰交互 */ }
-    if (!state.activeSessionId) {
+    if (!state.activeSessionId && epochAtRead === modeDefaultsEpoch) {
       state.modeState = currentDraftModeState();
       notify();
     }
@@ -5074,17 +5081,26 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
   // 草稿态 chip 切换：写本 lane 全局默认（不物化会话——物化时由
   // ensureSession 把 lane 默认应用到新会话）。
   async function setDraftMode(target) {
+    // Any draft-default WRITE invalidates in-flight defaults reads, and the
+    // whole post-await body obeys the captured epoch (round-10 review, the
+    // same staleness discipline the tauri lane adopted): an out-of-order
+    // earlier write's response must not overwrite the fresher default or
+    // flip the draft display back to its target.
+    modeDefaultsEpoch += 1;
+    const epochAtWrite = modeDefaultsEpoch;
     const lane = state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
-      if (defaults) state.modeDefaults = defaults;
-      if (!state.activeSessionId) {
-        state.modeState = {
-          mode: target,
-          multiAgent: !!(state.modeState && state.modeState.multiAgent),
-          // 草稿跟随 lane 全局默认，无会话级子状态：按后端 default_true 投影。
-          askOnGuardrail: true,
-        };
+      if (epochAtWrite === modeDefaultsEpoch) {
+        if (defaults) state.modeDefaults = defaults;
+        if (!state.activeSessionId) {
+          state.modeState = {
+            mode: target,
+            multiAgent: !!(state.modeState && state.modeState.multiAgent),
+            // 草稿跟随 lane 全局默认，无会话级子状态：按后端 default_true 投影。
+            askOnGuardrail: true,
+          };
+        }
       }
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
@@ -5193,7 +5209,7 @@ function stopThinking() { return pinvouSharedweb().stopThinking(); }
     // ask_on_guardrail 缺失按默认开（后端 default_true；旧负载不把开关翻成
     // 关）；multi_agent 缺失 = 负载不携带该字段，保留当前显示值不得误置 false。
     state.modeState = {
-      mode: st.mode || "yolo",
+      mode: st.mode || "auto",
       multiAgent: st.multi_agent === undefined
         ? !!(state.modeState && state.modeState.multiAgent)
         : !!st.multi_agent,

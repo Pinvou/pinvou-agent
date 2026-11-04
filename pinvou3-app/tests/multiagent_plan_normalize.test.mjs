@@ -1613,14 +1613,14 @@ function loadInteractionRuntime() {
     applyAuthoritativeModeState(sid, st) {
       if (sid) modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1;
       if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
-      state.modeState = { mode: st.mode || 'yolo', multiAgent: !!st.multi_agent };
+      state.modeState = { mode: st.mode || 'auto', multiAgent: !!st.multi_agent };
     },
     getBuffer() { return null; },
-    // 与 bridge.js 同构的草稿态显示解析：当前 lane 全局默认，缺省 yolo。
+    // 与 bridge.js 同构的草稿态显示解析：当前 lane 全局默认，未绑定缺省 auto。
     currentDraftModeState() {
       const lane = state.modeLane === 'code' ? 'code' : 'work';
       const d = state.modeDefaults && state.modeDefaults[lane];
-      return { mode: d || 'yolo', multiAgent: false };
+      return { mode: d || 'auto', multiAgent: false };
     },
     flushAssistantMessageToHistory() {},
     resetPendingAssistant() {},
@@ -1757,10 +1757,13 @@ test('lane switch refreshes the draft display; a draft switch writes the current
   const rt = loadInteractionRuntime();
   rt.state.activeSessionId = null;
   rt.state.modeDefaults = { work: 'plan', code: null };
-  // work → code: the draft display changes from work's default plan to
-  // code's default yolo.
+  // work → code: the draft display changes from work's default plan to the
+  // code lane's unset-default fallback. Production currentDraftModeState
+  // falls back to 'auto' for an unbound draft (what the backend resolves for
+  // a fresh unbound plain session) — the historical mock fallback 'yolo' was
+  // the worst-direction shape the round-10 review removed.
   rt.api.setModeLane('code');
-  assert.equal(rt.state.modeState.mode, 'yolo');
+  assert.equal(rt.state.modeState.mode, 'auto');
   rt.api.setModeLane('work');
   assert.equal(rt.state.modeState.mode, 'plan');
   // The historical value 'design' folds into work; there is no separate

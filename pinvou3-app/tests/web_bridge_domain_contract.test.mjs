@@ -218,10 +218,10 @@ invokeResponse = async () => null;
   const source = read('bridge.js');
   for (const anchor of [
     /function mapModeState\(ms\) \{[\s\S]{0,300}?askOnGuardrail: !ms \|\| ms\.ask_on_guardrail == null \? true : !!ms\.ask_on_guardrail/,
-    /state\.modeState = mode\.ok && mode\.value\s*\n\s*\? \{[\s\S]{0,200}?askOnGuardrail: mode\.value\.ask_on_guardrail == null \? true : !!mode\.value\.ask_on_guardrail[\s\S]{0,120}?: \{ mode: "yolo", multiAgent: false, askOnGuardrail: true \}/,
+    /state\.modeState = mode\.ok && mode\.value\s*\n\s*\? \{[\s\S]{0,200}?askOnGuardrail: mode\.value\.ask_on_guardrail == null \? true : !!mode\.value\.ask_on_guardrail[\s\S]{0,120}?: \{ mode: "auto", multiAgent: false, askOnGuardrail: true \}/,
     /function applyModeFromState\(st\) \{[\s\S]{0,400}?askOnGuardrail: st\.ask_on_guardrail == null \? true : !!st\.ask_on_guardrail,/,
     /return \{ mode: d \|\| \(boundDraft \? "plan" : "auto"\), multiAgent: false, askOnGuardrail: true \};/,
-    /catch \{[\s\S]{0,200}?state\.modeState = \{ mode: "yolo", multiAgent: false, askOnGuardrail: true \};/,
+    /catch \{[\s\S]{0,200}?state\.modeState = \{ mode: "auto", multiAgent: false, askOnGuardrail: true \};/,
     /mode: target,\s*\n\s*multiAgent: !!\(state\.modeState && state\.modeState\.multiAgent\),\s*\n\s*\/\/ [^\n]*default_true[\s\S]{0,80}?askOnGuardrail: true,/,
   ]) {
     assert.match(source, anchor, `web mode mapper must keep the ask_on_guardrail projection: ${anchor}`);

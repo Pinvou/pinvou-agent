@@ -374,4 +374,51 @@ assert.match(
   'the failure path must gate its error write on the generation (no painting a newer dialog)',
 );
 
-console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban)');
+// ── round-10: malformed/missing-mode display fallback must stay "auto" ─────────
+// The widest mode is the worst-direction lie: a missing or malformed `mode`
+// on an authoritative payload must display the conservative lane default,
+// never Yolo (round-8 L7-4 adopted this on the tauri lane; the round-10
+// review caught the web lane still carrying "yolo" fallbacks and three test
+// mocks encoding the pre-fix shape). These pins make a silent revert red in
+// whichever lane it lands. (Scheduled-task run-as-Yolo wire inputs and the
+// explicit draft `setDraftMode('yolo')` route are intentional Yolo literals
+// and are deliberately NOT banned.)
+const bridgeDir = path.join(here, '..', 'src', 'platform');
+const fpTauriBridge = fs.readFileSync(path.join(bridgeDir, 'tauri', 'bridge.js'), 'utf8').replace(/\r\n/g, '\n');
+const fpTauriInteraction = fs.readFileSync(path.join(bridgeDir, 'tauri', 'bridge', 'interaction.js'), 'utf8').replace(/\r\n/g, '\n');
+const fpWebBridge = fs.readFileSync(path.join(bridgeDir, 'web', 'bridge.js'), 'utf8').replace(/\r\n/g, '\n');
+const fpSharedHelpers = fs.readFileSync(path.join(here, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8').replace(/\r\n/g, '\n');
+
+// tauri: authoritative convergence + read fallbacks.
+assert.match(fpTauriBridge, /mode: st\.mode \|\| "auto"/,
+  'tauri authoritative fallback must display auto for a missing mode');
+assert.doesNotMatch(fpTauriBridge, /st\.mode \|\| "yolo"/,
+  'tauri authoritative fallback must never fall back to yolo');
+assert.match(fpTauriBridge, /modeState: \{ mode: "auto" \}/,
+  'tauri freshBuffer must initialize the generic default as auto');
+assert.match(fpTauriInteraction, /mode: ms\.mode \|\| "auto"/,
+  'tauri interaction read fallback must display auto');
+assert.doesNotMatch(fpTauriInteraction, /ms\.mode \|\| "yolo"/,
+  'tauri interaction read fallback must never fall back to yolo');
+assert.match(fpTauriInteraction, /\{ mode: "auto", multiAgent: false, askOnGuardrail: true \}/,
+  'tauri interaction absence fallback must be the auto shape');
+
+// web: bootstrap restore, syncModeState catch, mapModeState, authoritative convergence.
+assert.match(fpWebBridge, /: \{ mode: "auto", multiAgent: false, askOnGuardrail: true \}/,
+  'web bootstrap absence fallback must be the auto shape');
+assert.match(fpWebBridge, /mode: \(ms && ms\.mode\) \|\| "auto"/,
+  'web mapModeState fallback must display auto');
+assert.match(fpWebBridge, /mode: st\.mode \|\| "auto"/,
+  'web authoritative convergence fallback must display auto');
+assert.doesNotMatch(fpWebBridge, /\(ms && ms\.mode\) \|\| "yolo"/,
+  'web mapModeState fallback must never fall back to yolo');
+assert.doesNotMatch(fpWebBridge, /st\.mode \|\| "yolo"/,
+  'web authoritative convergence fallback must never fall back to yolo');
+
+// shared: freshBuffer generic default is auto (the draft override remains
+// load-bearing — lane defaults may legitimately be plan/yolo).
+assert.match(fpSharedHelpers, /modeState: \{ mode: "auto" \}/,
+  'shared freshBuffer generic default must be auto');
+
+console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban + fallback-posture pins)');
+

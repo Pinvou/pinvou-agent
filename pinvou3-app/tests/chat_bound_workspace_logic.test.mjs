@@ -130,7 +130,7 @@ function loadFeature(name, contextOverrides, stateOverrides) {
       return { mode: d || (boundDraft ? 'plan' : 'yolo'), multiAgent: false };
     },
     applyAuthoritativeModeState(sid, st) {
-      state.modeState = { mode: st.mode || 'yolo', multiAgent: !!st.multi_agent };
+      state.modeState = { mode: st.mode || 'auto', multiAgent: !!st.multi_agent };
     },
     modeStateEpochs: {},
     bumpModeStateEpoch() {},
