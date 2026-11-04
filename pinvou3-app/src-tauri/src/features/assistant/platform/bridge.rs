@@ -1587,8 +1587,11 @@ impl Pinvou3Bridge {
         // Kimi K3.1 spellings (kimi-k3.1-pro[-highspeed] /
         // k3.1-pro[-highspeed], vendor "kimi") are always-reasoning per the
         // vendor contract: the K3 series resolves depth through the
-        // top-level `reasoning_effort` ladder (low/high/max, default max)
-        // and the K2.x `thinking` parameter is not part of its documented
+        // top-level `reasoning_effort` ladder (low/high/max; the default
+        // for omitted effort is endpoint-specific — `high` on the Kimi
+        // Code coding-plan lane per its models table, `max` on the
+        // platform-API surface) and the K2.x `thinking` parameter is not
+        // part of its documented
         // request contract (models-overview: "参数约束也与 kimi-k3 完全一致";
         // api docs: K3 系列使用顶层 reasoning_effort，不使用 thinking). The
         // base's exact-K3 route shapers only learn bare k3 spellings, so
@@ -1598,7 +1601,9 @@ impl Pinvou3Bridge {
         // field is omitted entirely — omission is the documented-valid form
         // (the probe list mirrors this: image_capability's K3.1 spellings
         // are deliberately outside the explicit-thinking injection list)
-        // and the vendor default (max) applies. Covers both a stored value
+        // and the vendor default applies (endpoint-specific — `high` on
+        // the Kimi Code coding-plan lane, `max` on the platform API).
+        // Covers both a stored value
         // (already dropped by the prefs load normalization, bracket `[1m]`
         // declaration forms included via prefs::is_moonshot_k31_route) and
         // the `_ => Some("high")` default arm below, which re-introduced

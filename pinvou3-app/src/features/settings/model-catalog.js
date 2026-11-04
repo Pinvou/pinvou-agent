@@ -1409,7 +1409,8 @@ const MODEL_CATALOG = {
       // anthropic/claude-opus-5.5, minimax/minimax-m3.1-flash,
       // openai/gpt-5.6-luna, openai/gpt-6.1-sol — all ten have rows here
       // (gpt-6.1-sol, the openai group's own default id, joined in the
-      // 2026-11-05 wave). Plus the
+      // 2026-11-05 wave; the window is a dated record, not a maintained
+      // ranking). Plus the
       // new vendor flagships: note anthropic spells its id with dots
       // (claude-opus-5.5, NOT claude-opus-5-5), minimax/minimax-m3.1-flash
       // (2026-10-19) supersedes m3 in usage while the m3 row stays live.
@@ -2444,11 +2445,11 @@ function moonshotReasoningLadder(model, modelName, genericTiers) {
     // wire correctly today — exposing the generic off/high switch here let
     // users persist a disable shape the vendor rejects (2026-11-04 review).
     // Expose no control instead: the effort field is omitted, which the
-    // vendor documents as valid (可省略) and resolves to the family default
-    // — `high` on the Kimi Code base, `max` on the platform base (CC docs'
-    // effort-mapping table; corrected 2026-11-05 review: the earlier
-    // blanket "default max" was the platform figure). Parked until the
-    // foundation's route shapers cover K3.1 (see the kimi group comments).
+    // vendor documents as valid (可省略) and resolves to the vendor
+    // default — endpoint-specific: `high` per the Kimi Code models table
+    // on this coding-plan lane (`max` is the platform-API surface
+    // wording). Parked until the foundation's route shapers cover K3.1
+    // (see the kimi group comments).
     return null;
   }
   return genericTiers;
