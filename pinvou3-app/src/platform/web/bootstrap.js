@@ -541,6 +541,10 @@
 
     bindNetworkListeners() {
       if (typeof window.addEventListener !== "function") return;
+      // Round-20 复审(披露落树):online/visibilitychange 对 CLOSING
+      // socket 的 cancel-then-noop(取消重连定时器,但对不可取消的
+      // CLOSING 态本身不做任何事)是有意的看门狗设计——CLOSING/CLOSED
+      // 由楔窗口救援路径处理,网络事件不与其竞争(round-15 披露记录)。
       window.addEventListener("online", () => this.handleNetworkBecomeOnline());
       window.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "visible") return;
@@ -570,11 +574,28 @@
       // 救援或事件失败摘除的 socket 上在途的帧仍会在后继周期送达——
       // 晚到的旧 join ack 会把已完成协商的后继打回未协商态(下一个入站
       // 事件撞上 !desktopCapabilitiesReady 被 processRemoteEvent 判成
-      // incompatible_desktop 永久关门),晚到的 endpoint_revoked/error
-      // /endpoint_replaced 会 this.socket.close()/closePermanently 波及
-      // 健康后继。旗标属于当前周期,旧 socket 的帧是纯噪声,连同
-      // liveness 证据一起丢弃(事件分派链在 handleRemoteEvent 内另有
-      // 同一身份门,两道闸口语义一致)。
+      // incompatible_desktop 永久关门),晚到的 error/endpoint_replaced
+      // 会 this.socket.close()/closePermanently 波及健康后继。旗标属于
+      // 当前周期,旧 socket 的帧是纯噪声,连同 liveness 证据一起丢弃
+      // (事件分派链在 handleRemoteEvent 内另有同一身份门,两道闸口语义
+      // 一致)。
+      // Round-20 复审例外:非 TTL 的 endpoint_revoked 是链接级事实——
+      // relay 只在端点被真正吊销/人工撤销后发送,端点 id 由 relay 单调
+      // 铸造,被撤销的端点不可能再 join 成功(只会 endpoint_not_found),
+      // 旧 socket 送达的副本同样为真。整帧按噪声丢弃后,唯一副本落在
+      // 被摘除 socket 的窗口里时,真实撤销退化为 endpoint_not_found 的
+      // 「桌面离线」重试环(该码被客户端有意分类为瞬态),撤销卡片不可
+      // 达。非 TTL 撤销帧旁路身份门直接终态;TTL 臂保持受门——过期的
+      // desktop_offline_ttl_expired 副本会把健康后继打回 desktop_offline
+      // (rejoin 后的新副本自会送达当前 socket)。
+      if (
+        sourceSocket !== this.socket
+        && message.type === "endpoint_revoked"
+        && message.reason !== "desktop_offline_ttl_expired"
+      ) {
+        this.closePermanently("revoked", "此远程控制链接已失效。");
+        return;
+      }
       if (sourceSocket !== this.socket) return;
       // Any parseable inbound frame counts as liveness evidence.
       this.lastInboundAt = Date.now();
