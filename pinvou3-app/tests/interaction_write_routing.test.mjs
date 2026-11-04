@@ -63,7 +63,7 @@ function loadInteractionRuntime() {
     epochTable[sid] = (epochTable[sid] || 0) + 1;
     runSyncMock(sid, function () {
       state.modeState = {
-        mode: st.mode || 'yolo',
+        mode: st.mode || 'auto',
         multiAgent: st.multi_agent === undefined
           ? !!(state.modeState && state.modeState.multiAgent)
           : !!st.multi_agent,
@@ -91,6 +91,14 @@ function loadInteractionRuntime() {
     currentStreamText: '',
     currentStreamId: 0,
     itemIdSeq: 1000,
+    // 草稿态显示解析（与 bridge.js currentDraftModeState 同构，未绑定缺省 auto）：
+    // refreshModeDefaults/setDraftMode 的草稿臂会调用它，缺失会把被测分支打成
+    // ReferenceError 而非断言失败。
+    currentDraftModeState() {
+      const lane = state.modeLane === 'code' ? 'code' : 'work';
+      const d = state.modeDefaults && state.modeDefaults[lane];
+      return { mode: d || 'auto', multiAgent: false };
+    },
     ensureSession: async () => (state.activeSessionId || 'chat-a'),
     sendMessage: async () => {},
     sendMessageToSession: async (sid) => {
@@ -104,6 +112,8 @@ function loadInteractionRuntime() {
     invoke(name, args) {
       calls.push(name);
       runtime.invokeCalls.push({ name, args });
+      const q = runtime.invokeQueue && runtime.invokeQueue[name];
+      if (q && q.length) return q.shift();
       if (deferred[name] && deferred[name].promise) return deferred[name].promise;
       return Promise.resolve({ mode: 'yolo', multi_agent: false });
     },
@@ -312,4 +322,59 @@ test('setAskOnGuardrail 失败重读窗口内落地的 mode_changed 广播存活
     '广播值必须存活：陈旧重读快照被 epoch 校验丢弃（无护栏时被回写为 pre-click 值 false）');
   assert.equal(rt.state.modeState.mode, 'plan', '广播写回的 mode 同样不得被陈旧快照覆盖');
   assert.equal(rt.errorItems.length, 1, '失败提示恰好一条（重读护栏不改变失败路径的回滚与提示）');
+});
+
+// ── round-10 补钉：modeDefaultsEpoch 纪律（round-8 L7-2 / round-9 写响应序）──
+// 在途 get_mode_defaults 与陈旧的 set_mode_default 响应都不得覆盖更新的
+// 草稿默认写。此前的护栏完全无测试：删掉 epoch bump 或两处比较，全套保持绿。
+function microtaskFlush(n = 6) {
+  let p = Promise.resolve();
+  for (let i = 0; i < n; i += 1) p = p.then(() => {});
+  return p;
+}
+
+test('setDraftMode 使在途 get_mode_defaults 失效：陈旧读取不得落盘新写之前的默认值', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null;               // 草稿态
+  rt.state.modeLane = 'work';
+  const staleRead = Promise.withResolvers();
+  const writeResp = Promise.withResolvers();
+  rt.invokeQueue = {
+    get_mode_defaults: [staleRead.promise],
+    set_mode_default: [writeResp.promise],
+  };
+  const readP = rt.api.refreshModeDefaults();    // epochAtRead = 1
+  const writeP = rt.api.setDraftMode('plan');    // 入口 bump → epoch = 2, epochAtWrite = 2
+  await microtaskFlush();                        // 两边都到达各自 await
+  assert.deepEqual(rt.invokeCalls.map((c) => c.name), ['get_mode_defaults', 'set_mode_default'],
+    '前提：在途读与写都已发出');
+  staleRead.resolve({ work: 'yolo', code: 'yolo' });   // 陈旧读先返回
+  await readP;
+  assert.ok(!rt.state.modeDefaults || rt.state.modeDefaults.work !== 'yolo',
+    '陈旧读取不得写入 modeDefaults（写已 bump epoch 使其失效）');
+  assert.ok(!rt.state.modeDefaults || rt.state.modeDefaults.work === undefined,
+    '陈旧读取被整批丢弃，不得部分落地');
+  writeResp.resolve({ work: 'plan', code: 'yolo' });   // 本次写自己的响应（epoch 仍匹配）
+  await writeP;
+  assert.equal(rt.state.modeDefaults.work, 'plan', '写自身的响应按当前 epoch 落地');
+  assert.equal(rt.state.modeState.mode, 'plan', '草稿态显示跟随已提交的写');
+});
+
+test('并发两次 setDraftMode：先落盘的后写生效，陈旧的先写响应不得回写', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null;
+  rt.state.modeLane = 'work';
+  const respA = Promise.withResolvers();
+  const respB = Promise.withResolvers();
+  rt.invokeQueue = { set_mode_default: [respA.promise, respB.promise] };
+  const pa = rt.api.setDraftMode('yolo');        // bump → 1, epochAtWrite = 1
+  const pb = rt.api.setDraftMode('plan');        // bump → 2, epochAtWrite = 2
+  await microtaskFlush();
+  respB.resolve({ work: 'plan', code: 'yolo' }); // 后写先返回
+  respA.resolve({ work: 'yolo', code: 'yolo' }); // 先写后返回（陈旧响应）
+  await Promise.all([pa, pb]);
+  assert.equal(rt.state.modeDefaults.work, 'plan',
+    '后写的默认值必须存活，不得被先写的陈旧响应覆盖');
+  assert.equal(rt.state.modeState.mode, 'plan',
+    '草稿显示停留在后写（陈旧响应的草稿臂同样被 epoch 拦下）');
 });

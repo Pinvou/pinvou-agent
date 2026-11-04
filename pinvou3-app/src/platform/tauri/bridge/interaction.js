@@ -155,13 +155,19 @@ function setModeLane(lane) { return pinvouSharedtauriInteraction().setModeLane(l
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
-      if (defaults && epochAtWrite === modeDefaultsEpoch) state.modeDefaults = defaults;
-      if (boundDraft) state.pendingDraftMode = target;
-      if (!state.activeSessionId) {
-        state.modeState = {
-          mode: target,
-          multiAgent: !!(state.modeState && state.modeState.multiAgent),
-        };
+      // The whole post-await body obeys the epoch, not just the defaults
+      // write (round-10 review): an out-of-order earlier write's response
+      // must not re-pin pendingDraftMode or flip the draft display back to
+      // its target after a fresher write already landed.
+      if (epochAtWrite === modeDefaultsEpoch) {
+        if (defaults) state.modeDefaults = defaults;
+        if (boundDraft) state.pendingDraftMode = target;
+        if (!state.activeSessionId) {
+          state.modeState = {
+            mode: target,
+            multiAgent: !!(state.modeState && state.modeState.multiAgent),
+          };
+        }
       }
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
