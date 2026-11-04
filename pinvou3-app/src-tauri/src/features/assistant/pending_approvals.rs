@@ -15,7 +15,13 @@
 //! `clear_pending` 兜底清空（取消/中断时可能没有逐条决策）；授予/拒绝是
 //! 会话级记忆，**跨 turn 存活**（与 TUI per-session 审批缓存一致：TUI 只在
 //! 换会话/换工作区时清），宿主侧的对应清理点是会话删除（lib.rs 会话清理
-//! 处理器里的 `clear_session`）。
+//! 处理器里的 `clear_session`）。目录重绑的绑定提交点（projects.rs 的
+//! `clear_approval_memory_for_rebound_sessions`）对每个被移动会话推进
+//! **工作区代**（[`advance_workspace_generation`]）并做保留代清理
+//! （[`clear_session_preserving_generation`]，评审 JensenChen28 5764675531
+//! 第一项，机制自 round-2/3 形状按本线重落）：请求/决策写入携带发起时刻的
+//! 代，与已提交代失配即在锁内拒绝——「换工作区即清」之外再加一道版本边界，
+//! 迟交的旧目录决策写不进新目录的记忆。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -45,6 +51,15 @@ pub struct PendingApproval {
     /// 底座 hold 强制弹卡（CW-7495）：即使有会话授予也必须当面请批。
     pub force_prompt: bool,
     pub created_at_ms: u64,
+    /// **发起实例**的工作区代：转发器在其 engine 实例 spawn 时快照（实例的
+    /// 身份属于它的 spawn 时刻），经 [`record`] 在锁内盖章（评审 5764675531，
+    /// 参考 round-4 P2 sub-gap a 的来源语义）。决策写入
+    /// （[`remember_grant`] / [`remember_denial`]）携带它做原子失效比较：
+    /// 落笔时代 ≠ 当前已提交代（重绑的绑定提交点已推进）即整条丢弃——迟交
+    /// 的旧范围决策不得给新代盖章。只派生 `Serialize`：登记纯驻内存、无磁盘
+    /// 存量；决策失败臂的恢复（[`restore_if_generation_is`]）原样带回登记代，
+    /// 恢复后的卡再次决策仍按同一纪元校验。
+    pub request_workspace_generation: Option<u64>,
 }
 
 /// 毫秒级 UNIX 时间戳；时钟回拨只在极端情况下让排序抖动，不值得引入依赖。
@@ -67,6 +82,10 @@ struct ApprovalStore {
     /// 每次变更自增。未来用于「读完列表后注册表是否已变」的陈旧性探测，
     /// 现在只保证任何可观察变更都会推进它。
     generation: u64,
+    /// 会话 → 已提交工作区代（重绑的绑定提交点推进）。缺项 = 未重绑时代
+    /// （None）；[`remember_grant`] / [`remember_denial`] 在同一锁临界区内
+    /// 把写入携带的代与它比对，失配（含 None vs Some(1)）即拒绝不写。
+    workspace_generations: HashMap<String, u64>,
 }
 
 static PENDING: Mutex<Option<ApprovalStore>> = Mutex::new(None);
@@ -76,11 +95,21 @@ fn with_store<T>(f: impl FnOnce(&mut ApprovalStore) -> T) -> T {
     f(guard.get_or_insert_with(ApprovalStore::default))
 }
 
-/// 转发器弹卡时登记。同 approval_id 去重（原位替换）：engine 重放同一审批
-/// 时不得重复出卡，但字段（如 intent_summary）以最新一次为准。
-pub fn record(session_id: &str, approval: PendingApproval) {
+/// 转发器弹卡时登记。`instance_generation` 是**发起实例**的工作区代——
+/// 转发器（每个 engine 化身一个任务）在该实例 spawn 时从
+/// [`workspace_generation`] 快照，不得传「收卡时刻的当前代」（评审
+/// 5764675531，参考 round-4 P2 sub-gap a）：重绑期间越过入口忙闸启动的
+/// turn 仍由旧 cwd 运行时执行，旧实例跨绑定提交点的代推进后弹出的卡若按
+/// 当前代盖章，就把旧目录的请求记到新代名下，用户批准即写入新代记忆。
+/// 同 approval_id 去重（原位替换）：engine 重放同一审批时不得重复出卡，
+/// 但字段（如 intent_summary）以最新一次为准——工作区代同样取最新一次的
+/// 实例代（同一实例重放 = 同一代，仍是新请求语义；engine 审批 id 按实例
+/// 铸造，重建实例不会重放旧 id）。
+pub fn record(session_id: &str, mut approval: PendingApproval, instance_generation: Option<u64>) {
     with_store(|store| {
         store.generation = store.generation.wrapping_add(1);
+        // 请求创建即盖章发起实例的 spawn 代：决策写入以它做原子失效比较。
+        approval.request_workspace_generation = instance_generation;
         let entries = store.by_session.entry(session_id.to_string()).or_default();
         if let Some(existing) = entries
             .iter_mut()
@@ -91,6 +120,29 @@ pub fn record(session_id: &str, approval: PendingApproval) {
         }
         entries.push(approval);
     });
+}
+
+/// 会话当前已提交的工作区代（只读）：转发器在 engine 实例 spawn 时快照为
+/// 该实例的发起代，供 [`record`] 盖章。从未重绑的会话返回 None——与新
+/// 实例的决策写入比较语义一致（None == None）。
+pub fn workspace_generation(session_id: &str) -> Option<u64> {
+    with_store(|store| store.workspace_generations.get(session_id).copied())
+}
+
+/// 推进会话的已提交工作区代，返回推进后的值。调用点是重绑的绑定提交点
+/// （projects.rs 的 `clear_approval_memory_for_rebound_sessions`，紧邻保留
+/// 代清理）：绑定提交即身份切换，旧目录纪元自此关闭——携带旧代的请求卡
+/// 与决策写入在锁内失配被拒。缺失条目视作 0 起步（首次重绑 → 1）。
+pub fn advance_workspace_generation(session_id: &str) -> u64 {
+    with_store(|store| {
+        store.generation = store.generation.wrapping_add(1);
+        let next = store
+            .workspace_generations
+            .entry(session_id.to_string())
+            .or_insert(0);
+        *next = next.wrapping_add(1);
+        *next
+    })
 }
 
 /// `decide_approval` 收口：任何决策（allow / allow_for_session / deny）都先
@@ -218,9 +270,36 @@ pub fn clear_pending_returning_child_ids(session_id: &str) -> Vec<String> {
     })
 }
 
-/// 会话删除/清理时摘除该 session 的全部份额：挂起卡、授予、拒绝。授予/
-/// 拒绝按会话集合化存储，只摘自己的份额，不误撤销他人授予。
+/// 会话删除/清理时摘除该 session 的全部份额：挂起卡、授予、拒绝、工作区代
+/// （完整生命周期重置：删除后重建的同 id 会话重新从「无代」起步）。授予/
+/// 拒绝按会话集合化存储，只摘自己的份额，不误撤销他人授予。身份切换清理
+/// （重绑绑定提交点）**不得**走本函数——清掉代会让旧代决策重新相等（评审
+/// 5764675531），那条路径用 [`clear_session_preserving_generation`]。
 pub fn clear_session(session_id: &str) {
+    with_store(|store| {
+        store.generation = store.generation.wrapping_add(1);
+        store.by_session.remove(session_id);
+        store.workspace_generations.remove(session_id);
+        store.grants.retain(|_, sessions| {
+            sessions.remove(session_id);
+            !sessions.is_empty()
+        });
+        store.denials.retain(|_, sessions| {
+            sessions.remove(session_id);
+            !sessions.is_empty()
+        });
+    });
+}
+
+/// 身份切换清理（重绑绑定提交点的
+/// `clear_approval_memory_for_rebound_sessions`）：回收挂起卡、授予、拒绝的
+/// 存储份额，但**保留工作区代**。这是与 [`clear_session`] 的唯一差别，也是
+/// 评审 5764675531 第一项的修复点：若把代一并清掉，会话回落「无代」，绑定
+/// 提交点推进前盖 None 代的旧决策重新与新状态相等——旧授予复活、迟交的
+/// 旧范围写入又被接受。保留代让旧代永远 miss（重新请批便宜，陈旧的静默
+/// 放行不可接受）；新目录下的决策按存活代照常落笔命中。会话删除路径
+/// （lib.rs）仍走 [`clear_session`] 的完整重置。
+pub fn clear_session_preserving_generation(session_id: &str) {
     with_store(|store| {
         store.generation = store.generation.wrapping_add(1);
         store.by_session.remove(session_id);
@@ -282,15 +361,29 @@ pub fn session_granted(session_id: &str, grouping_key: &str) -> bool {
 }
 
 /// 「本次会话允许」：授予记在 grouping_key 上（覆盖后续旗标变体，v0.8.37）。
-pub fn remember_grant(session_id: &str, grouping_key: &str) {
+/// `origin_generation` 是决策来源的请求工作区代（decide_approval 以登记的
+/// `pending.request_workspace_generation` 落笔）：与当前已提交代在同一把
+/// store 锁内比对，失配（含 None vs Some(1)）即整条拒绝、不写任何记忆
+/// （评审 5764675531 第一项：重绑绑定提交点推进代后，旧成功臂恢复执行的
+/// 迟交写入不得给新代盖章；比对与插入同临界区，无检查-写入窗口）。返回
+/// 是否落笔；`false` 的代价是重新请批一次，静默写错代不可接受。
+pub fn remember_grant(
+    session_id: &str,
+    grouping_key: &str,
+    origin_generation: Option<u64>,
+) -> bool {
     with_store(|store| {
+        if store.workspace_generations.get(session_id).copied() != origin_generation {
+            return false;
+        }
         store.generation = store.generation.wrapping_add(1);
         store
             .grants
             .entry(grouping_key.to_string())
             .or_default()
             .insert(session_id.to_string());
-    });
+        true
+    })
 }
 
 /// 该会话此前是否已拒绝这个确切操作（exact approval_key 命中即拒）。
@@ -305,15 +398,25 @@ pub fn session_denied(session_id: &str, approval_key: &str) -> bool {
 }
 
 /// 「拒绝」记在 exact key 上（#1617：换参数要重新请批，不得连坐）。
-pub fn remember_denial(session_id: &str, approval_key: &str) {
+/// 代校验与 [`remember_grant`] 同款：同一锁临界区内比对来源代，失配即拒绝
+/// 不写（迟交的旧目录拒绝不得跨目录连坐新目录）。
+pub fn remember_denial(
+    session_id: &str,
+    approval_key: &str,
+    origin_generation: Option<u64>,
+) -> bool {
     with_store(|store| {
+        if store.workspace_generations.get(session_id).copied() != origin_generation {
+            return false;
+        }
         store.generation = store.generation.wrapping_add(1);
         store
             .denials
             .entry(approval_key.to_string())
             .or_default()
             .insert(session_id.to_string());
-    });
+        true
+    })
 }
 
 // ===================== 纯决策函数（tri-mode 审批面定序） =====================
@@ -494,6 +597,8 @@ mod tests {
             approval_grouping_key: grouping_key.to_string(),
             force_prompt: false,
             created_at_ms: now_ms(),
+            // record 盖章调用方传入的实例代；None 仅是构造占位。
+            request_workspace_generation: None,
         }
     }
 
@@ -533,6 +638,8 @@ mod tests {
             approval_grouping_key: "group".to_string(),
             force_prompt: true,
             created_at_ms: 1,
+            // 事件载荷走 json! 手工构造（不含代），代只在登记簿 list 面出现。
+            request_workspace_generation: None,
         };
         let payload = approval_required_payload("sess-1", &approval);
         let obj = payload.as_object().expect("payload is a JSON object");
@@ -667,9 +774,9 @@ mod tests {
     #[test]
     fn forkguard_approval_surface_record_dedupes_by_approval_id() {
         let session = isolate("approval-dedupe-test");
-        record(&session, sample("ap-1", "k-1", "g-1"));
-        record(&session, sample("ap-1", "k-1", "g-1"));
-        record(&session, sample("ap-2", "k-2", "g-2"));
+        record(&session, sample("ap-1", "k-1", "g-1"), None);
+        record(&session, sample("ap-1", "k-1", "g-1"), None);
+        record(&session, sample("ap-2", "k-2", "g-2"), None);
         let listed = list(&session);
         assert_eq!(listed.len(), 2, "同 approval_id 登记去重");
         assert_eq!(listed[0].approval_id, "ap-1", "原位替换不打乱顺序");
@@ -677,14 +784,14 @@ mod tests {
         // 原位替换：重复登记覆盖字段。
         let mut replaced = sample("ap-1", "k-1", "g-1");
         replaced.intent_summary = None;
-        record(&session, replaced);
+        record(&session, replaced, None);
         assert!(list(&session)[0].intent_summary.is_none());
     }
 
     #[test]
     fn forkguard_approval_surface_remove_returns_entry_and_cleans_empty_session() {
         let session = isolate("approval-remove-test");
-        record(&session, sample("ap-1", "k-1", "g-1"));
+        record(&session, sample("ap-1", "k-1", "g-1"), None);
         let removed = remove(&session, "ap-1");
         assert_eq!(
             removed.as_ref().map(|entry| entry.approval_id.as_str()),
@@ -701,7 +808,7 @@ mod tests {
     #[test]
     fn forkguard_remove_fenced_returns_atomic_generation_snapshot() {
         let session = isolate("approval-remove-fenced-test");
-        record(&session, sample("ap-f1", "k-f1", "g-f1"));
+        record(&session, sample("ap-f1", "k-f1", "g-f1"), None);
         let (removed, generation_after_remove) = remove_fenced(&session, "ap-f1")
             .expect("fenced removal must find the recorded approval");
         assert_eq!(removed.approval_id, "ap-f1");
@@ -713,7 +820,7 @@ mod tests {
         // Any later observable mutation advances the generation past the
         // snapshot, which is what cancels the decide-approval failure-arm
         // restore (terminal sweep, purge, concurrent decision, new card).
-        record(&session, sample("ap-f2", "k-f2", "g-f2"));
+        record(&session, sample("ap-f2", "k-f2", "g-f2"), None);
         assert_ne!(
             generation(),
             generation_after_remove,
@@ -729,7 +836,7 @@ mod tests {
     #[test]
     fn forkguard_restore_if_generation_is_compares_and_inserts_atomically() {
         let session = isolate("approval-cas-restore-test");
-        record(&session, sample("ap-r1", "k-r1", "g-r1"));
+        record(&session, sample("ap-r1", "k-r1", "g-r1"), None);
         let (pending, snapshot) = remove_fenced(&session, "ap-r1")
             .expect("fenced removal must find the recorded approval");
         // Happy path: no mutation since the removal — the compare-and-insert
@@ -748,7 +855,7 @@ mod tests {
         // closed lifecycle's entry. The CAS rejects it under the same lock
         // as the insertion.
         let (pending, snapshot) = remove_fenced(&session, "ap-r1").expect("second fenced removal");
-        record(&session, sample("ap-r2", "k-r2", "g-r2"));
+        record(&session, sample("ap-r2", "k-r2", "g-r2"), None);
         assert!(
             !restore_if_generation_is(&session, pending, snapshot),
             "a generation advanced after the snapshot must cancel the restore"
@@ -764,7 +871,7 @@ mod tests {
         let other = isolate("approval-scope-other");
         // 授予按 grouping_key：同组变体放行，异组不连坐。
         assert!(!session_granted(&session, "g-write"));
-        remember_grant(&session, "g-write");
+        assert!(remember_grant(&session, "g-write", None));
         assert!(session_granted(&session, "g-write"));
         assert!(
             !session_granted(&session, "g-rm"),
@@ -783,7 +890,7 @@ mod tests {
 
         // 拒绝按 exact approval_key：精确参数硬拒，其它参数重新请批。
         assert!(!session_denied(&session, "k-rm-rf"));
-        remember_denial(&session, "k-rm-rf");
+        assert!(remember_denial(&session, "k-rm-rf", None));
         assert!(session_denied(&session, "k-rm-rf"));
         assert!(
             !session_denied(&session, "k-rm"),
@@ -798,9 +905,9 @@ mod tests {
     #[test]
     fn forkguard_approval_surface_clear_pending_keeps_session_memory() {
         let session = isolate("approval-clear-pending-test");
-        record(&session, sample("ap-1", "k-1", "g-1"));
-        remember_grant(&session, "g-1");
-        remember_denial(&session, "k-1");
+        record(&session, sample("ap-1", "k-1", "g-1"), None);
+        remember_grant(&session, "g-1", None);
+        remember_denial(&session, "k-1", None);
 
         // turn 终态只清挂起卡；授予/拒绝是会话级记忆，跨 turn 存活。
         clear_pending(&session);
@@ -821,10 +928,10 @@ mod tests {
     #[test]
     fn forkguard_approval_surface_terminal_split_returns_child_ids() {
         let session = isolate("approval-terminal-split-test");
-        record(&session, sample("ap-parent-1", "k-1", "g-1"));
+        record(&session, sample("ap-parent-1", "k-1", "g-1"), None);
         let mut child = sample("agent:ag-1:approval:boot-1:1", "k-2", "g-2");
         child.intent_summary = None;
-        record(&session, child);
+        record(&session, child, None);
 
         let child_ids = clear_pending_returning_child_ids(&session);
         assert_eq!(
@@ -839,8 +946,8 @@ mod tests {
         );
 
         // 会话级授予/拒绝记忆不受终态清空影响（与 clear_pending 同语义）。
-        remember_grant(&session, "g-1");
-        remember_denial(&session, "k-1");
+        remember_grant(&session, "g-1", None);
+        remember_denial(&session, "k-1", None);
         clear_pending_returning_child_ids(&session);
         assert!(session_granted(&session, "g-1"), "授予跨 turn 存活");
         assert!(session_denied(&session, "k-1"), "拒绝跨 turn 存活");
@@ -876,10 +983,10 @@ mod tests {
     fn forkguard_approval_surface_clear_session_wipes_memory() {
         let session = isolate("approval-clear-test");
         let other = isolate("approval-clear-other");
-        record(&session, sample("ap-1", "k-1", "g-1"));
-        remember_grant(&session, "g-1");
-        remember_grant(&other, "g-1");
-        remember_denial(&session, "k-1");
+        record(&session, sample("ap-1", "k-1", "g-1"), None);
+        remember_grant(&session, "g-1", None);
+        remember_grant(&other, "g-1", None);
+        remember_denial(&session, "k-1", None);
 
         clear_session(&session);
         assert!(list(&session).is_empty(), "clear_session 清挂起");
@@ -892,6 +999,215 @@ mod tests {
             !session_granted(&other, "g-1"),
             "最后一个授予会话清理后撤销"
         );
+    }
+
+    /// 核心时序（评审 JensenChen28 5764675531 第一项点名，机制自参考线
+    /// round-3 P2 形状按本线重落）：决策写入携带**请求创建时**捕获的工作区
+    /// 代，落笔时代 ≠ 当前已提交代即在 store 锁内被原子拒绝、整条丢弃。
+    /// Source-reachable interleave：A 目录点击 → approve ack 已提交 → IPC
+    /// future 就绪未恢复 → 重绑门空闲 → 绑定移到 B（绑定提交点推进代 + 保留
+    /// 代清理）→ 旧成功臂恢复执行——此刻的落笔若不校验来源代，就会把 A 目录
+    /// 的决策写进 B 的记忆。Mutation（negative-first）：移除 remember_* 的
+    /// 比对臂即核心断言红；移除 advance（代不推进）即「迟交写入被拒」红。
+    #[test]
+    fn forkguard_late_old_scope_decision_is_rejected_after_rebind() {
+        let session = isolate("approval-req-gen-late");
+        // 卡片在 A 目录（无代）弹出：实例 spawn 代快照为 None。
+        record(&session, sample("ap-late", "k-late", "g-late"), None);
+        let origin = list(&session)[0].request_workspace_generation;
+        assert_eq!(origin, None, "A 时代的请求卡携带无代");
+
+        // 重绑的绑定提交点：推进代 + 保留代清理（B 目录纪元开始）。
+        assert_eq!(advance_workspace_generation(&session), 1);
+        clear_session_preserving_generation(&session);
+
+        // 旧成功回调迟交：携带请求时捕获的代，必须被整体拒绝——不得给
+        // 新代（B）盖章。
+        assert!(
+            !remember_grant(&session, "g-late", origin),
+            "旧范围迟交授予必须被拒（重新请批，不静默记到新代名下）"
+        );
+        assert!(
+            !remember_denial(&session, "k-late", origin),
+            "旧范围迟交拒绝必须被拒（不跨目录连坐新目录）"
+        );
+        // 新范围查询：B 的同族请求不得命中 A 时代的迟交决策。
+        assert!(
+            !session_granted(&session, "g-late"),
+            "B 的同族请求不得命中旧范围的迟交授予"
+        );
+        assert!(
+            !session_denied(&session, "k-late"),
+            "B 的同族请求不得命中旧范围的迟交拒绝"
+        );
+
+        // 阴性对照：新实例（B，代 1 spawn）创建的请求照常落笔并命中——
+        // record 盖的是调用方传入的实例代，新实例携带推进后的代。
+        record(&session, sample("ap-b", "k-late", "g-late"), Some(1));
+        let origin_b = list(&session)
+            .iter()
+            .find(|entry| entry.approval_id == "ap-b")
+            .map(|entry| entry.request_workspace_generation)
+            .flatten();
+        assert_eq!(origin_b, Some(1), "record 盖章调用方传入的实例代");
+        assert!(remember_grant(&session, "g-late", origin_b));
+        assert!(session_granted(&session, "g-late"), "当前代决策照常命中");
+        // 代再推进（下一次重绑）+ 保留代清理后，该决策同样失效——有效性
+        // 始终绑定版本；且代必须单调（不得清后重臂，见 identity-switch 测试）。
+        assert_eq!(advance_workspace_generation(&session), 2);
+        clear_session_preserving_generation(&session);
+        assert!(
+            !session_granted(&session, "g-late"),
+            "版本前进 + 份额回收后决策失效"
+        );
+        assert!(
+            !remember_grant(&session, "g-late", Some(1)),
+            "推进后旧代（1）的写入被拒：代单调，不得重臂"
+        );
+        clear_session(&session);
+    }
+
+    /// 挂起卡盖章**发起实例**的 spawn 代，而不是收卡时刻的当前代（评审
+    /// 5764675531，参考 round-4 P2 sub-gap a）。重绑期间越过入口忙闸启动的
+    /// turn 仍由旧 cwd 运行时执行：旧实例跨绑定提交点的代推进后弹出的卡若
+    /// 按收卡时的当前代盖章，用户批准即把旧目录的决策写入新代记忆。登记代
+    /// = 实例 spawn 代后，决策写入按登记代比较，旧实例的卡在新代下整体拒绝
+    /// （fail-safe 重新请批），新实例（新 cwd）的卡照常落笔；决策失败臂的
+    /// 恢复（remove_fenced → restore_if_generation_is）原样带回登记代，恢复
+    /// 后的卡再次决策仍按实例代校验（post-partial-failure recovery 同源
+    /// 覆盖）。Mutation（negative-first）：让 record 忽略 instance_generation、
+    /// 改为盖章收卡时刻的当前代，即第一对与恢复对断言红（forwarder 侧的
+    /// 快照接线另有 source pin）。
+    #[test]
+    fn forkguard_pending_card_stamps_emitting_instance_generation() {
+        let session = isolate("approval-inst-gen");
+        // 旧实例（spawn 于 A 目录、无代）在绑定提交点的代推进之后才弹卡：
+        // 登记携带实例的 spawn 代（None），不是收卡时的当前代。
+        assert_eq!(advance_workspace_generation(&session), 1);
+        record(&session, sample("ap-old", "k-old", "g-old"), None);
+        let stamped = list(&session)[0].request_workspace_generation;
+        assert_eq!(
+            stamped, None,
+            "旧实例的卡必须携带实例的 spawn 代（None），不得按收卡当前代盖章"
+        );
+        // 用户批准该卡：决策写入携带登记代，与当前代不等 → 原子拒绝，
+        // 旧目录的决策不得记到新代名下。
+        assert!(
+            !remember_grant(&session, "g-old", stamped),
+            "旧实例跨推进弹卡的批准必须被拒（重新请批，不静默记到新代名下）"
+        );
+        assert!(
+            !remember_denial(&session, "k-old", stamped),
+            "旧实例跨推进弹卡的拒绝同样被拒"
+        );
+        assert!(
+            !session_granted(&session, "g-old") && !session_denied(&session, "k-old"),
+            "被拒的旧范围写入不得留下任何记忆"
+        );
+
+        // post-partial-failure recovery：决策的 engine 调用失败臂把摘除的
+        // 登记原样放回（remove_fenced → restore_if_generation_is）。恢复后
+        // 的卡必须保留实例代，再决策仍按实例代校验。
+        let (pending, snapshot) = remove_fenced(&session, "ap-old").expect("旧实例的卡仍在登记表");
+        assert_eq!(
+            pending.request_workspace_generation, None,
+            "恢复携带必须原样带回实例代"
+        );
+        assert!(
+            restore_if_generation_is(&session, pending, snapshot),
+            "无并发变更时恢复照常落回"
+        );
+        let restored = list(&session)[0].request_workspace_generation;
+        assert_eq!(restored, None, "恢复后的卡保留实例代");
+        assert!(
+            !remember_grant(&session, "g-old", restored),
+            "恢复后的卡再次决策仍按实例代校验（旧实例代仍被拒）"
+        );
+        clear_session(&session);
+    }
+
+    /// 同 approval_id 重放（原位替换）按**最新一次**盖章实例代：engine 重放
+    /// 同一审批按新请求语义以最新一次的实例代为准，不得保留旧值。同一实例
+    /// 的重放 = 同一代；engine 审批 id 按实例铸造，重建实例不会重放旧 id，
+    /// 新实例的重放携带自己的 spawn 代（与实例来源语义一致）。
+    #[test]
+    fn forkguard_record_replace_recaptures_request_generation() {
+        let session = isolate("approval-req-gen-recapture");
+        record(&session, sample("ap-re", "k-re", "g-re"), None);
+        assert_eq!(list(&session)[0].request_workspace_generation, None);
+        advance_workspace_generation(&session);
+        let mut replay = sample("ap-re", "k-re", "g-re");
+        replay.intent_summary = None;
+        record(&session, replay, Some(1));
+        let entry = &list(&session)[0];
+        assert_eq!(
+            entry.request_workspace_generation,
+            Some(1),
+            "重放按最新一次的实例代盖章"
+        );
+        assert!(entry.intent_summary.is_none(), "其余字段仍以最新一次为准");
+        clear_session(&session);
+    }
+
+    /// 身份切换清理与删除清理的唯一差别（评审 5764675531 第一项）：
+    /// `clear_session_preserving_generation` 回收挂起卡、授予、拒绝，但
+    /// **保留工作区代**——若代被一并清掉，会话回落「无代」，绑定提交点推进
+    /// 前盖 None 代的旧决策重新与新状态相等（旧授予复活、迟交的旧范围写入
+    /// 又被接受）。保留代让旧代永远 miss，新目录下的决策照常落笔命中；
+    /// 同会话他人授予不受影响；随后真正的 `clear_session`（会话删除）仍走
+    /// 完整重置。Mutation（negative-first）：把绑定提交点清理换回
+    /// `clear_session` 即最后一对断言红（projects.rs 的命令层测试从 rebind
+    /// 入口复现同一形态）。
+    #[test]
+    fn forkguard_identity_switch_cleanup_preserves_workspace_generation() {
+        let session = isolate("approval-ws-gen-preserve");
+        let other = isolate("approval-ws-gen-preserve-other");
+        // A 目录（无代）的预重绑决策。
+        assert!(remember_grant(&session, "g-keep", None));
+        assert!(remember_denial(&session, "k-keep", None));
+        assert!(remember_grant(&other, "g-keep", None));
+        assert!(session_granted(&session, "g-keep"));
+
+        // 绑定提交点推进代（B 目录），旧决策 miss（写侧防线：None 代迟交
+        // 写入被拒，不给新代盖章）。
+        assert_eq!(advance_workspace_generation(&session), 1);
+        assert!(!remember_grant(&session, "g-keep", None));
+        assert!(!remember_denial(&session, "k-keep", None));
+
+        // 绑定提交点的身份切换清理：回收条目、保留代。
+        clear_session_preserving_generation(&session);
+        assert!(list(&session).is_empty(), "挂起卡仍被回收");
+        assert!(
+            !session_granted(&session, "g-keep"),
+            "本会话旧授予已被清理摘除，不得复活"
+        );
+        assert!(
+            !session_denied(&session, "k-keep"),
+            "本会话旧拒绝已被清理摘除"
+        );
+        assert!(
+            session_granted(&other, "g-keep"),
+            "他人授予不受本会话清理影响"
+        );
+        // 代存活：None 代（A 时代）的迟交写入被拒，不给新代盖章。
+        assert!(
+            !remember_grant(&session, "g-keep", None),
+            "迟交的旧范围授予必须被拒（代未回落到无代）"
+        );
+        assert!(!session_granted(&session, "g-keep"));
+        // 新目录（代 1）下的决策照常落笔并命中。
+        assert!(remember_grant(&session, "g-keep", Some(1)));
+        assert!(session_granted(&session, "g-keep"));
+        // 真正的会话删除仍是完整重置：删除后重建的同 id 会话从无代重新
+        // 起步（删除语义不回归）。
+        clear_session(&session);
+        assert!(
+            remember_grant(&session, "g-keep", None),
+            "删除清理后同 id 会话从无代重新起步"
+        );
+        assert!(session_granted(&session, "g-keep"));
+        clear_session(&session);
+        clear_session(&other);
     }
 
     /// 处置真值表（定时任务无人值守路径不在此函数，另行短路）。

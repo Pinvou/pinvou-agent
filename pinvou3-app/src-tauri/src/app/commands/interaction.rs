@@ -647,11 +647,22 @@ pub async fn decide_approval(
     // （审批已消费/turn 已中断）时，缓存不得替一次没落地的点击放行后续调用。
     if outcome.is_ok() && decision == "allow_for_session" {
         // 授予记在 lossy grouping_key 上：覆盖后续旗标变体（v0.8.37 语义）。
-        pending_approvals::remember_grant(&session_id, &pending.approval_grouping_key);
+        // 携带登记卡的来源工作区代：重绑推进代后恢复执行的旧成功臂在这里被
+        // 锁内失配拒绝，不得把旧目录的决策写进新代记忆（评审 5764675531）。
+        pending_approvals::remember_grant(
+            &session_id,
+            &pending.approval_grouping_key,
+            pending.request_workspace_generation,
+        );
     }
     if outcome.is_ok() && decision == "deny" {
         // 拒绝记在 exact approval_key 上：换参数要重新请批（#1617 语义）。
-        pending_approvals::remember_denial(&session_id, &pending.approval_key);
+        // 代校验同 remember_grant。
+        pending_approvals::remember_denial(
+            &session_id,
+            &pending.approval_key,
+            pending.request_workspace_generation,
+        );
     }
     // 收敛广播在 engine 调用成功后（与缓存写入同序）：失败不广播——其它表面
     // 的卡保持未决，发起方收到错误提示；摘除的登记已原样放回，重试仍能收口。

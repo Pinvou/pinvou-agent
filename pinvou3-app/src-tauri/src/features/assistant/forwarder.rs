@@ -314,6 +314,17 @@ pub(crate) fn spawn_event_forwarder(
     tauri::async_runtime::spawn(async move {
         let mut tool_inputs: std::collections::HashMap<String, (String, serde_json::Value)> =
             std::collections::HashMap::new();
+        // 本实例的发起工作区代（评审 JensenChen28 5764675531，参考 round-4
+        // P2 sub-gap a 语义）：转发器每个 engine 化身一个任务，spawn 时刻的
+        // 会话代就是该实例的身份代。弹卡登记（ApprovalRequired → record）
+        // 携带它而不是收卡时刻的当前代——重绑期间越过入口忙闸启动的 turn
+        // 仍由旧 cwd 运行时执行，旧实例跨绑定提交点的代推进后弹出的卡若按
+        // 当前代盖章，用户批准就会把旧目录的决策写入新代记忆。决策写入按卡
+        // 的登记代做原子失效比较（remember_grant/denial），旧实例的卡在新
+        // 代下整体拒绝（fail-safe 重新请批），新实例（新 cwd）的卡携带推进
+        // 后的代、照常落笔。
+        let instance_workspace_generation =
+            crate::features::assistant::pending_approvals::workspace_generation(&session_id);
         let mut turn_tracker = TurnCompletionTracker::default();
         let mut scheduled_engine_total_tokens = 0_u64;
         let mut scheduled_persistence_error: Option<String> = None;
@@ -989,10 +1000,14 @@ pub(crate) fn spawn_event_forwarder(
                                     approval_grouping_key: approval_grouping_key.clone(),
                                     force_prompt: approval_force_prompt,
                                     created_at_ms: crate::features::assistant::pending_approvals::now_ms(),
+                                    // 登记代由 record 以第三参盖章：本实例
+                                    // spawn 时快照的发起工作区代，构造侧不填。
+                                    request_workspace_generation: None,
                                 };
                                 crate::features::assistant::pending_approvals::record(
                                     &session_id,
                                     pending.clone(),
+                                    instance_workspace_generation,
                                 );
                                 let payload = crate::features::assistant::pending_approvals::approval_required_payload(&session_id, &pending);
                                 let _ = app.emit("chat:approval_required", payload.clone());
@@ -2372,6 +2387,49 @@ mod transcript_persist_pins {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Review 5764675531 (P2-a, adapted from the reference line's round-4
+    /// sub-gap a pin): the pending-approval card must be stamped with the
+    /// EMITTING INSTANCE's workspace generation — snapshotted from the
+    /// session's committed generation at forwarder (engine-incarnation)
+    /// spawn — not with the current generation at event receipt. A turn that
+    /// started over the rebind's entry gate keeps executing on the old-cwd
+    /// runtime; a card it mints across the bindings-commit advance, stamped
+    /// with the then-current generation, would let the user's approval write
+    /// old-directory memory into the new era. The decision write validates
+    /// against the record's captured generation (remember_grant/denial), so
+    /// the capture source is the whole chain. Mutation: deleting the
+    /// spawn-time snapshot, or passing None at the record site, fails the
+    /// wiring asserts (store-side behavioral coverage in
+    /// pending_approvals::forkguard_pending_card_stamps_emitting_instance_generation).
+    #[test]
+    fn approval_card_stamps_the_instance_spawn_generation() {
+        let body = forwarder_body();
+        let flattened: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        // Exactly one spawn-time snapshot of the session's committed
+        // generation: this is the emitting instance's identity. The snapshot
+        // identifier appears exactly twice — the declaration and the record
+        // argument — so the card registration is provably stamped from the
+        // instance identity (not None, not a receipt-time re-read).
+        assert_eq!(
+            flattened
+                .matches(
+                    "letinstance_workspace_generation=crate::features::assistant::pending_approvals::workspace_generation(&session_id);"
+                )
+                .count(),
+            1,
+            "the forwarder must snapshot the instance's spawn generation exactly once"
+        );
+        assert_eq!(
+            flattened.matches("instance_workspace_generation").count(),
+            2,
+            "the snapshot must flow into the card registration as the record argument"
+        );
+        assert!(
+            flattened.contains("record(&session_id,pending.clone(),instance_workspace_generation,"),
+            "the pending card must be stamped with the instance spawn generation"
+        );
     }
 
     #[test]

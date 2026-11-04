@@ -3008,7 +3008,19 @@ fn metadata_behind_binding(pre_sync: &Path, bound_path: &Path) -> bool {
 /// sessions' grants untouched.
 fn clear_approval_memory_for_rebound_sessions<'a>(rebound_ids: impl Iterator<Item = &'a String>) {
     for session_id in rebound_ids {
-        crate::features::assistant::pending_approvals::clear_session(session_id);
+        // 绑定提交点 = 身份切换点：先推进该会话的工作区代（B 目录纪元的版本
+        // 边界），再在保留代的前提下回收挂起卡 / 授予 / 拒绝份额（评审
+        // JensenChen28 5764675531 第一项；机制自参考线 round-2/3/4 形状按
+        // 本线重落）。顺序不可倒置：先推进后代存活（跨重绑单调递增），迟交
+        // 的旧代写入永远失配被拒；若先做整删式 clear_session 会把代一并清
+        // 掉，会话回落「无代」，推进前盖 None 代的旧决策重新相等——旧授予
+        // 复活、迟交旧范围写入又被接受；清后再推进则让第二次重绑的 Some(1)
+        // 旧卡重新相等（代必须单调，不得重臂）。旁观者 / 同目录会话不在
+        // moved 集合内，不推进、不清理（保留既有同目录 keep 语义）。
+        crate::features::assistant::pending_approvals::advance_workspace_generation(session_id);
+        crate::features::assistant::pending_approvals::clear_session_preserving_generation(
+            session_id,
+        );
     }
 }
 
@@ -4891,14 +4903,15 @@ mod tests {
     /// a matching request executed under the moved directory. Mutation
     /// (negative-first): no-op'ing the `clear_session` call inside
     /// `clear_approval_memory_on_identity_switch` fails the first two
+    #[test]
     fn rebind_identity_switch_clears_session_approval_memory() {
         use crate::features::assistant::pending_approvals as approvals;
         let rebound: Vec<String> = vec!["approval-rebind-switch".to_string()];
         approvals::clear_session("approval-rebind-switch");
         approvals::clear_session("approval-rebind-bystander");
-        approvals::remember_grant("approval-rebind-switch", "shell:11:cargo build");
-        approvals::remember_denial("approval-rebind-switch", "shell:29:rm -rf /tmp/x");
-        approvals::remember_grant("approval-rebind-bystander", "shell:11:cargo build");
+        approvals::remember_grant("approval-rebind-switch", "shell:11:cargo build", None);
+        approvals::remember_denial("approval-rebind-switch", "shell:29:rm -rf /tmp/x", None);
+        approvals::remember_grant("approval-rebind-bystander", "shell:11:cargo build", None);
         assert!(approvals::session_granted(
             "approval-rebind-switch",
             "shell:11:cargo build"
@@ -4929,6 +4942,23 @@ mod tests {
             approvals::session_granted("approval-rebind-bystander", "shell:11:cargo build"),
             "untouched sessions keep their shares"
         );
+        // Identity switch = generation boundary (review 5764675531): the
+        // moved session's workspace generation advanced at the same commit
+        // point, so a late old-era (None) decision write is rejected even
+        // though the grant set was already cleared.
+        assert_eq!(
+            approvals::workspace_generation("approval-rebind-switch"),
+            Some(1),
+            "the binding commit must advance the moved session's workspace generation"
+        );
+        assert!(
+            !approvals::remember_grant("approval-rebind-switch", "shell:11:cargo build", None),
+            "a late old-era (None) decision write must be rejected after the advance"
+        );
+        assert!(
+            approvals::workspace_generation("approval-rebind-bystander").is_none(),
+            "sessions outside the moved set must not advance"
+        );
         approvals::clear_session("approval-rebind-switch");
         approvals::clear_session("approval-rebind-bystander");
     }
@@ -4942,8 +4972,8 @@ mod tests {
     fn rebind_same_directory_commit_keeps_session_approval_memory() {
         use crate::features::assistant::pending_approvals as approvals;
         approvals::clear_session("approval-rebind-same-dir");
-        approvals::remember_grant("approval-rebind-same-dir", "shell:11:cargo build");
-        approvals::remember_denial("approval-rebind-same-dir", "shell:29:rm -rf /tmp/x");
+        approvals::remember_grant("approval-rebind-same-dir", "shell:11:cargo build", None);
+        approvals::remember_denial("approval-rebind-same-dir", "shell:29:rm -rf /tmp/x", None);
 
         // The session is not in the moved set: nothing clears it.
         clear_approval_memory_for_rebound_sessions(Vec::<String>::new().iter());
@@ -4955,6 +4985,13 @@ mod tests {
             "approval-rebind-same-dir",
             "shell:29:rm -rf /tmp/x"
         ));
+        // Same-directory keep semantics extend to the generation: a session
+        // not in the moved set never advances (review 5764675531), so its
+        // no-generation decisions keep comparing equal.
+        assert!(
+            approvals::workspace_generation("approval-rebind-same-dir").is_none(),
+            "an unmoved session must not advance its workspace generation"
+        );
         approvals::clear_session("approval-rebind-same-dir");
     }
 
@@ -4977,7 +5014,7 @@ mod tests {
             .find("clear_approval_memory_for_rebound_sessions(plain_rebind.rebound.iter()")
             .expect("the plain rebound set must be cleared");
         let clear_codex = src
-            .find("clear_approval_memory_for_rebound_sessions(\n        prefix_outcome.affected.iter()")
+            .find("clear_approval_memory_for_rebound_sessions(prefix_outcome.affected.iter()")
             .expect("the codex rebound set must be cleared too");
         let set_ws = src
             .find("sessions.set_workspace(session_id, new_path.clone())")
@@ -5006,15 +5043,24 @@ mod tests {
             .find("fn clear_approval_memory_for_rebound_sessions<")
             .expect("the helper must exist");
         let helper_body = &src[helper..];
+        // Identity switch = generation boundary (review 5764675531): the
+        // helper must advance the session's workspace generation AND clear the
+        // session shares while PRESERVING that generation — a plain
+        // clear_session would reset the era and un-fence pre-rebind decisions,
+        // and clearing before advancing would re-arm the fence so a second
+        // rebind's Some(1) cards compared equal again.
+        let advance_call = helper_body
+            .find("pending_approvals::advance_workspace_generation(session_id)")
+            .expect("the helper must advance the workspace generation at the commit point");
         let clear_call = helper_body
-            .find("pending_approvals::clear_session(session_id)")
-            .expect("the helper must clear through pending_approvals::clear_session");
+            .find("pending_approvals::clear_session_preserving_generation(")
+            .expect("the helper must clear while preserving the advanced generation");
         let loop_head = helper_body
             .find("for session_id in rebound_ids {")
             .expect("the helper must iterate the moved ids");
         assert!(
-            loop_head < clear_call,
-            "the helper must clear inside the moved-id iteration"
+            loop_head < advance_call && advance_call < clear_call,
+            "the helper must advance-then-clear inside the moved-id iteration"
         );
     }
 
