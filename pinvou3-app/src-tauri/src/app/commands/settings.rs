@@ -821,7 +821,10 @@ fn summarize_image_probe_text(text: &str, max_chars: usize) -> String {
 }
 
 fn image_capability_test_payload(model: &str) -> serde_json::Value {
-    // 注意:不得携带 temperature——kimi-for-coding 等模型只接受默认值,显式传会 400。
+    // Note: never carry temperature — models like kimi-for-coding only accept
+    // the default, and an explicit value gets a 400.
+    let needs_reasoning_budget =
+        crate::features::assistant::image_capability::moonshot_model_needs_reasoning_budget(model);
     let thinking_model =
         crate::features::assistant::image_capability::moonshot_model_requires_explicit_thinking(
             model,
@@ -840,18 +843,27 @@ fn image_capability_test_payload(model: &str) -> serde_json::Value {
                 },
             ],
         }],
-        // always-thinking 模型:thinking 输出吃 token,上限用 thinking 档常量;
-        // 其余模型保持 64(回答「红色」绰绰有余)。
-        "max_tokens": if thinking_model {
+        // Always-reasoning models (kimi k3 / K3.1 / kimi-for-coding etc.):
+        // reasoning precedes the answer and is billed against the completion
+        // budget, so the cap uses the reasoning-tier constant; other models
+        // keep 64 (ample for a one-word color answer). Budget selection is
+        // deliberately a separate predicate from the thinking injection
+        // below: K3.1 needs the reasoning budget while its legacy thinking
+        // parameter stays omitted (round-5 review — sharing one boolean
+        // silently dropped the K3.1 probe budget to 64).
+        "max_tokens": if needs_reasoning_budget {
             IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING
         } else {
             IMAGE_CAPABILITY_TEST_MAX_TOKENS
         },
         "stream": false,
     });
-    // always-thinking 模型(kimi-for-coding 等):官方接入要求 thinking 保持开启,
-    // 与 bridge 真实链路同一口径(`moonshot_model_requires_explicit_thinking`)。
-    // 省略该参数网关会拒绝请求,导致识图探测误判为「不支持图片」(2026-08 实测)。
+    // Models whose contract requires the legacy top-level `thinking` field
+    // (kimi-for-coding etc.): same shape as the bridge real send path (see
+    // `moonshot_model_requires_explicit_thinking`). Omitting it gets the
+    // request rejected by the gateway and the probe misreported as
+    // "unsupported" (live-tested 2026-08). K3.1 is deliberately NOT injected
+    // here: its contract is the top-level reasoning_effort ladder.
     if thinking_model {
         payload["thinking"] = serde_json::json!({ "type": "enabled" });
     }
@@ -1624,6 +1636,31 @@ mod tests {
             payload.get("max_tokens").and_then(|v| v.as_u64()),
             Some(IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING as u64)
         );
+        // K3.1 spellings (2026-11-04 round-5 review regression): the probe
+        // budget must ride the reasoning-tier cap while the legacy thinking
+        // parameter stays omitted. The payload used to choose max_tokens
+        // with the thinking predicate, so removing K3.1 from that list
+        // silently dropped the K3.1 probe budget to 64 — reasoning ate the
+        // whole completion budget before the one-word color answer, and the
+        // extractor (final content only) misreported a vision-capable model
+        // as unverified.
+        for name in [
+            "kimi-k3.1-pro",
+            "kimi-k3.1-pro-highspeed",
+            "k3.1-pro",
+            "k3.1-pro-highspeed",
+        ] {
+            let payload = image_capability_test_payload(name);
+            assert!(
+                payload.get("thinking").is_none(),
+                "{name} walks the K3-series omission contract; thinking must stay omitted"
+            );
+            assert_eq!(
+                payload.get("max_tokens").and_then(|v| v.as_u64()),
+                Some(IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING as u64),
+                "{name} is always-reasoning; the probe budget must stay at the reasoning tier"
+            );
+        }
     }
 
     /// 锚定内置测试图是合法 PNG:块 CRC 与 zlib 数据全部有效、64×64 RGB 纯红。

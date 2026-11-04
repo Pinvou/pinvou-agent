@@ -96,6 +96,52 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
     )
 }
 
+/// Moonshot always-reasoning budget predicate (**probe-only** list): models
+/// on this list always reason before answering, the reasoning text precedes
+/// the final answer and is billed against the completion budget, and the
+/// probe extractor only reads the final content — so a 64-token probe cap is
+/// consumed by reasoning before any color answer is produced, and a
+/// vision-capable model gets misreported as unverified. These models probe
+/// with the reasoning-tier cap instead
+/// (`IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING`; live-tested 2026-08
+/// kimi-for-coding / k3). The four K3.1 spellings are on this list per the
+/// same family contract — the models-overview page states both K3.1
+/// variants' parameter constraints are identical to kimi-k3
+/// (platform.kimi.com/docs/api/models-overview) — while they must keep the
+/// legacy `thinking` parameter omitted (see
+/// `moonshot_model_requires_explicit_thinking` above). Bracket `[1m]`
+/// declarations are excluded like k3[1m]: the base fail-closes those as CC
+/// environment conventions, so no probe legitimately reaches the gateway
+/// with them.
+///
+/// This is deliberately a separate predicate from
+/// `moonshot_model_requires_explicit_thinking`: budget selection answers
+/// "is this an always-reasoning family whose reasoning consumes the
+/// completion budget", while thinking-parameter injection answers "does the
+/// legacy `thinking` parameter contract require the field". The two
+/// responsibilities must not share one boolean — sharing one is exactly what
+/// dropped the K3.1 probe budget to 64 in the 2026-11-04 round-4 fix.
+pub fn moonshot_model_needs_reasoning_budget(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "k3" | "k3-256k"
+            | "kimi-k3"
+            | "kimi-k3[1m]"
+            | "kimi-k2.7-code"
+            | "kimi-k2.7-code-highspeed"
+            | "kimi-for-coding"
+            | "kimi-for-coding-highspeed"
+            | "kimi-k2.6"
+            // K3.1 spellings — same spelling set as the VERIFIED/exact
+            // capability tables above (2026-11-04 round-5 review: always
+            // reasoning, reasoning billed against the completion budget).
+            | "kimi-k3.1-pro"
+            | "kimi-k3.1-pro-highspeed"
+            | "k3.1-pro"
+            | "k3.1-pro-highspeed"
+    )
+}
+
 /// 内置已验证能力表:模型名小写后按子串匹配,命中即 Supported。
 /// Inclusion rule: only model families the official docs explicitly describe
 /// as multimodal (checked vendor by vendor against official docs on
@@ -428,6 +474,54 @@ mod tests {
             assert!(
                 !moonshot_model_requires_explicit_thinking(name),
                 "{name} 不应误判为 always-thinking"
+            );
+        }
+    }
+
+    #[test]
+    fn moonshot_reasoning_budget_list_covers_always_reasoning_families() {
+        // Pins the budget predicate independently of the thinking predicate:
+        // budget membership = always-reasoning families (reasoning billed
+        // against the completion budget), NOT the legacy thinking-parameter
+        // contract. All pre-existing thinking-list members keep the
+        // reasoning-tier probe budget, and the four K3.1 spellings join on
+        // the kimi-k3-identical contract (2026-11-04 round-5 review: the
+        // shared-boolean version dropped the K3.1 probe budget to 64).
+        for name in [
+            "k3",
+            "k3-256k",
+            "kimi-k3",
+            "kimi-k3[1m]",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+            "kimi-k2.6",
+            "kimi-k3.1-pro",
+            "kimi-k3.1-pro-highspeed",
+            "k3.1-pro",
+            "k3.1-pro-highspeed",
+            "Kimi-K3.1-Pro",
+        ] {
+            assert!(
+                moonshot_model_needs_reasoning_budget(name),
+                "{name} is an always-reasoning spelling; probe budget must stay at the reasoning tier"
+            );
+        }
+        // The [1m] bracket declarations stay off the budget list (the base
+        // fail-closes them as CC environment conventions, so no probe
+        // legitimately reaches the gateway with them), alongside plain
+        // non-Moonshot misses.
+        for name in [
+            "k3.1-pro[1m]",
+            "kimi-k3.1-pro[1m]",
+            "gpt-4o",
+            "deepseek-v4-pro",
+            "kimi-k2.5",
+        ] {
+            assert!(
+                !moonshot_model_needs_reasoning_budget(name),
+                "{name} must not be given the reasoning-tier probe budget"
             );
         }
     }
