@@ -906,6 +906,11 @@ fn apply_organize_actions(
             // (bounded-read 原语的错误即 path.display()),随 report 载荷
             // 与历史查询出站(Web 允许清单内)前必须折叠存储根——本函数
             // 六个 error 警告臂同口径,与 finish_organize_report 一致。
+            // (Round-19 复审订正:「Display 携带路径」今天对六臂中的四
+            // 臂成立;update 与 merge-update 两臂的错误被 anyhow
+            // `.context` 包过,Display 只渲染最外层 context 文本,路径
+            // 不浮到字面——折叠在其上是纯防御性冗余。两臂保留折叠:裸
+            // io 臂的路径确实会浮出,且新臂落进同形态时无需逐一甄别。)
             warnings.push(format!(
                 "organize: reload stores before applying actions: {}; no action applied",
                 crate::platform::paths::redact_storage_prefix(&error.to_string()),
