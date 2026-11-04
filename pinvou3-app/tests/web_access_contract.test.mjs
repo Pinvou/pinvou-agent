@@ -62,10 +62,22 @@ const hostFilePicker = readSource(
   'utf8',
 );
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
-const commands = fs.readdirSync(commandsRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(commandsRoot, name), 'utf8'))
+// Round-20 复审(S14):聚合此前只覆盖顶层文件,`dependencies/` 子目录被
+// 漏扫。改为递归收集(按完整路径排序,顺序确定性不变)。
+function walkRustSources(rootDir) {
+  const files = [];
+  const visit = dir => {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const full = path.join(dir, name);
+      if (fs.statSync(full).isDirectory()) visit(full);
+      else if (name.endsWith('.rs')) files.push(full);
+    }
+  };
+  visit(rootDir);
+  return files;
+}
+const commands = walkRustSources(commandsRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const remoteControlCommands = readSource(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
 const remoteControlManagerRoot = path.join(
@@ -275,7 +287,10 @@ for (const command of [
 // 聚合(文件顶部已聚合,复用之);正则放宽到任意引号(单引号/模板字符
 // 串)并允许数字段名([a-z0-9_]+),闭合探针实证的三类旁路拼法;注释行
 // 先行剔除,避免文档提及制造幻影断言(幻影方向本就 fail-closed,剔除
-// 只为省掉未来政策化时的假红)。
+// 只为省掉未来政策化时的假红)。Round-20 复审:聚合改为递归
+// (dependencies/ 子目录此前漏扫)并把 features/remote_control/platform
+// 聚合一并纳入扫描(该聚合此前只供其它钉使用);两个新面今日均为零
+// web_access:* 命中,纯前瞻性兜底。
 // 只剔纯注释行(行首即 // 或 /*):含尾注释的代码行必须保留,否则
 // `web_access:x` 字面量藏在行尾注释前的代码里会被整行删掉,扫描反而
 // fail-open(Round-17 订正过的同类)。块注释续行(`* …`)保留——其中的
@@ -285,7 +300,7 @@ function stripPureCommentLines(source) {
     .filter(line => !/^\s*(?:\/\/|\/\*)/.test(line))
     .join('\n');
 }
-for (const source of [remoteControlManager, desktopRemoteControlBridge, commands].map(stripPureCommentLines)) {
+for (const source of [remoteControlManager, desktopRemoteControlBridge, commands, remoteControlPlatform].map(stripPureCommentLines)) {
   for (const match of source.matchAll(/["'`]web_access:([a-z0-9_]+)["'`]/g)) {
     const eventName = `web_access:${match[1]}`;
     assert.equal(allowedEvents.has(eventName), false,
