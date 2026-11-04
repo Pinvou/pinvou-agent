@@ -257,14 +257,21 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // the same 1M window — re-checked 2026-11-03.
     ("k3.1-pro", 1_048_576),
     // muse-spark-1.3 (Meta group headline row, 2026-11-03 refresh):
-    // officially 1,048,576 context per the dev.meta.ai quickstart/models
-    // pages the catalog row cites. No base chain row exists (the base
-    // default is muse-spark-1.2), so without it the engine falls to 128K
-    // while the FE row documents 1M. The dev.meta.ai pages were not
-    // reachable from the dev environment on the 2026-11-03 fix pass —
-    // re-verify against dev.meta.ai when reachable (gpt-6-family
-    // precedent).
+    // officially 1,048,576 context per the dev.meta.ai quickstart, fetched
+    // live 2026-11-04 ("Limits: context 1048576" in the coding-agent setup
+    // block; the models page states the same 1,048,576-token window — this
+    // closes the earlier "re-verify when reachable" TODO). No base chain
+    // row exists (the base default is muse-spark-1.2), so without it the
+    // engine falls to 128K while the FE row documents 1M.
     ("muse-spark-1.3", 1_048_576),
+    // muse-wonder-1.0 (joined the Meta group in the 2026-11-04 fix pass):
+    // the models page positions Muse Wonder as Meta's most capable model
+    // ("Muse Wonder is on Model API") with "a 1,048,576-token context
+    // window"; the base chain has no wonder row at all, so without this
+    // row the engine falls to 128K while the FE row documents 1M. The
+    // models page states no output figure for Wonder, so no output anchor
+    // is invented here.
+    ("muse-wonder-1.0", 1_048_576),
 ];
 
 /// 解析 pinvou3 已知模型的上下文窗口。
@@ -385,19 +392,50 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // cap is registered; the engine still intersects with its 64K
     // automatic-request default, so without these rows the K2-sunset
     // migration target fail-closes to the 8192 uncatalogued guess — an 8×
-    // regression against kimi-k3's catalogued 64K. The bare Kimi Code
+    // regression against the 64K automatic-request cap kimi-k3 rides (its
+    // catalogued figure is 131,072; the engine's 64K request cap is what
+    // the 8× arithmetic compares against). The bare Kimi Code
     // spelling needs its own row (no vendor-prefix tolerance); both
-    // -highspeed spellings ride the suffix tolerance of their rows (same
-    // model per the models-overview page, see the PINVOU_KNOWN comment).
+    // -highspeed spellings ride the suffix tolerance of their rows (the
+    // models-overview page states both K3.1 spellings carry kimi-k3's
+    // constraints verbatim — see the PINVOU_KNOWN comment).
     ("kimi-k3.1-pro", 1_048_576),
     ("k3.1-pro", 1_048_576),
+    // The [1m] bracket declarations of the same models (the ACP datalists'
+    // models1m suggestions: k3.1-pro[1m] / kimi-k3.1-pro[1m] official since
+    // 2026-10-23, kimi-k3[1m] still a live moonshot suggestion):
+    // model_name_matches tolerates dash-suffixes only, so the bracket
+    // spellings miss every row above (the context side survives via the
+    // `1m` substring hint; the output side would fail-close to 8192).
+    // Same models, same documented constraints (models-overview page), so
+    // the same figures apply. k3[1m] deliberately has no row: the base
+    // fail-closes that spelling as a Claude Code convention (config.rs
+    // KIMI_CODE_CLAUDE_ALIAS_GUIDANCE), so it never reaches a real route.
+    ("kimi-k3.1-pro[1m]", 1_048_576),
+    ("k3.1-pro[1m]", 1_048_576),
+    ("kimi-k3[1m]", 1_048_576),
     // muse-spark-1.3: officially 131,072 output per the dev.meta.ai
-    // quickstart/models figures the catalog row cites (unreachable from
-    // the dev environment on the 2026-11-03 fix pass — re-verify when
-    // reachable). Without it the operator-tier quartile branch
+    // quickstart, fetched live 2026-11-04 ("Limits: context 1048576,
+    // output 131072" in the coding-agent setup block — this closes the
+    // earlier "re-verify when reachable" TODO). Without it the
+    // operator-tier quartile branch
     // `(window/4).clamp(1, 8192)` re-clamps the declared 1M window to
     // 8192 — the same truncation this table exists to stop.
     ("muse-spark-1.3", 131_072),
+    // MiniMax-M3.1-Flash (GA 2026-10-19): the protocol API references DO
+    // document the figure — max_completion_tokens: "For MiniMax-M3.1-Flash
+    // and MiniMax-M3 the recommended value is 131072 (128K) and the maximum
+    // is 524288 (512K)" (platform.minimax.io / platform.minimax.cn
+    // api-reference, fetched live 2026-11-04; the earlier "no published
+    // figure" premise was refuted — the figure-free pages were the
+    // overview/FAQ/guide pages, not the API reference, and the base's
+    // bundled snapshot already recorded M3 output 524288). The documented
+    // hard cap is registered per the deepseek-flash precedent; the engine's
+    // 64K automatic-request intersection governs the effective wire cap
+    // exactly as for the K3.1 rows above, so the GA id stops riding the
+    // 8192 uncatalogued fail-close. The retired "-Preview" spelling rides
+    // the suffix tolerance.
+    ("minimax-m3.1-flash", 524_288),
 ];
 
 /// Documented max-output anchors for models the base catalog has no output
@@ -541,6 +579,9 @@ mod tests {
             // default is muse-spark-1.2), so the supplemental row keeps the
             // engine at the documented 1M instead of the 128K fallback.
             ("muse-spark-1.3", 1_048_576),
+            // muse-wonder-1.0 (2026-11-04 fix pass): no base chain row; the
+            // models page documents the 1,048,576-token window.
+            ("muse-wonder-1.0", 1_048_576),
         ] {
             assert_eq!(resolved_context_window(model), Some(expected), "{model}");
         }
@@ -723,18 +764,29 @@ mod tests {
         );
         assert_eq!(resolved_output_limit("k3.1-pro"), Some(1_048_576));
         assert_eq!(resolved_output_limit("k3.1-pro-highspeed"), Some(1_048_576));
+        // The [1m] bracket declarations miss every dash-tolerant row (the
+        // remainder does not start with '-'), so they carry their own rows
+        // (2026-11-04 fix pass); k3[1m] stays unanchored (base fail-closes
+        // it as a CC convention).
+        assert_eq!(resolved_output_limit("kimi-k3.1-pro[1m]"), Some(1_048_576));
+        assert_eq!(resolved_output_limit("k3.1-pro[1m]"), Some(1_048_576));
+        assert_eq!(resolved_output_limit("kimi-k3[1m]"), Some(1_048_576));
+        assert_eq!(resolved_output_limit("k3[1m]"), None);
         // muse-spark-1.3: the documented 131,072 output keeps the declared
         // 1M window from re-clamping to 8192 in the operator quartile
-        // branch.
+        // branch (quickstart figure first-hand verified 2026-11-04).
         assert_eq!(resolved_output_limit("muse-spark-1.3"), Some(131_072));
-        // MiniMax-M3.1-Flash stays deliberately unanchored: no vendor
-        // max-output figure is published anywhere in the official docs
-        // (api-overview / models FAQ / text-generation guide,
-        // re-checked 2026-11-03), and this table registers documented
-        // figures only. It therefore keeps the 8192 fail-close — the
-        // group comment and PR disclose this; this pin makes an invented
-        // figure or a silent anchor visible in review.
-        assert_eq!(resolved_output_limit("minimax-m3.1-flash"), None);
+        // MiniMax-M3.1-Flash: the protocol API references document
+        // "recommended 131072 / maximum 524288" (fetched live 2026-11-04);
+        // the documented hard cap is anchored per the deepseek-flash
+        // precedent (the engine's 64K intersection governs the effective
+        // wire cap). The retired "-Preview" spelling rides the suffix
+        // tolerance.
+        assert_eq!(resolved_output_limit("minimax-m3.1-flash"), Some(524_288));
+        assert_eq!(
+            resolved_output_limit("MiniMax-M3.1-Flash-Preview"),
+            Some(524_288)
+        );
         // Ids the base resolves stay None here: neither matches a table row
         // under model_name_matches ("deepseek-v4-flash" does not carry the
         // "deepseek-flash" row as a dash-suffix prefix; "glm-5.3-flash" is

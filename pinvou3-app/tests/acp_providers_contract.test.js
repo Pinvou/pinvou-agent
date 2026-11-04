@@ -779,7 +779,9 @@ assert.match(PROVIDER_FORM, /changeModel/, '主模型变更必须联动槽位自
 assert.match(PROVIDERS_SECTION, /envEffectiveEntries/, '前端必须消费 envEffectiveEntries');
 assert.match(PROVIDERS_SECTION, /copy\.secretSet/, '凭据类 env 值必须渲染掩码文案');
 
-// 1M 变体：按厂商归属（预设 models1m 字段）、统一小写 [1m]、Kimi Code 仅 k3[1m]
+// 1M 变体：按厂商归属（预设 models1m 字段）、统一小写 [1m]、Kimi Code 为
+// k3.1-pro[1m] + append-only 的 k3[1m]（moonshot 侧另有官方 models1m 建议
+// kimi-k3[1m]——见下方 pin，2026-11-04 修订同步）
 const CATALOG = fs.readFileSync(
   path.join(ROOT, 'src', 'features', 'settings', 'acp-provider-catalog.js'),
   'utf8'
@@ -790,6 +792,13 @@ assert.doesNotMatch(CATALOG, /\[1M\]/, '1M 变体必须统一小写 [1m]');
 assert.ok(
   CATALOG.includes("models1m: ['k3.1-pro[1m]', 'k3[1m]']"),
   'Kimi Code 预设的 1M 变体必须为 k3.1-pro[1m] + append-only 的 k3[1m]'
+);
+// kimi-k3[1m] 是 moonshot 预设的官方 models1m 建议（platform CC 指南仍在
+// 记载，2026-11-04 复核）——探测名单的 kimi-k3[1m] 臂（image_capability.rs）
+// 以本条建议为前提，两侧必须同进退。
+assert.ok(
+  CATALOG.includes("models1m: ['kimi-k3[1m]']"),
+  'moonshot 预设的 1M 变体必须为 kimi-k3[1m]（官方建议；探测名单的同名臂依赖它）'
 );
 assert.ok(
   PROVIDER_FORM.includes('activePreset.models1m'),

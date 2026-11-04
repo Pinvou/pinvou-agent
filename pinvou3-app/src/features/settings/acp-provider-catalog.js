@@ -39,7 +39,10 @@ export const ACP_PROVIDER_PRESETS = [
   // joins above it and gpt-6-sol / gpt-6-luna (GPT-6 family expansion,
   // September 2026) stay. gpt-5.3-codex stays
   // valid for Responses-only ACP hosts (watch item: deprecated on
-  // 2026-10-01, shutdown 2027-04-01 per the OpenAI deprecations page).
+  // 2026-10-01; the "shutdown 2027-04-01" figure from the deprecations page
+  // is unverified — that page has been unreachable from every channel since
+  // the 2026-11-03 refresh, and Azure's own retirement table lists
+  // 2027-08-24 Azure-side).
   { key: 'openai', nameKey: 'presetOpenai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
   // kimi-k3.1-pro / -highspeed (2026-10-23) prepend as the newest flagship
   // tiers; the K2 rows stay (append-only) — the official models page now
@@ -99,8 +102,8 @@ export const ACP_MODEL_PRESETS = [
   // OpenAI (developers.openai.com; gpt-6.1-terra (2026-10-26) is the 6.1
   // efficient tier above the near-Astra flagship gpt-6.1-sol (2026-09-29);
   // the GPT-6 family stays; gpt-5.3-codex is the
-  // current Codex coding model, Responses-only, deprecated 2026-10-01 with
-  // shutdown 2027-04-01)
+  // current Codex coding model, Responses-only, deprecated 2026-10-01 —
+  // see the preset block above for the unverified-shutdown watch item)
   'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2',
   // DeepSeek (deepseek-flash = V4.1-Flash is the current mainline, serving
   // the 1017 snapshot behind the unchanged id since 2026-10-17; per the

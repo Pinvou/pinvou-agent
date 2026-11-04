@@ -556,6 +556,32 @@ mod tests {
             None,
             "unlisted lkeap path must not be identified"
         );
+        // The tokenhub arm is exact-match, so look-alike hosts and paths
+        // must not classify (structural spoof-host pins for the newest
+        // arm, 2026-11-04 fix pass).
+        assert_eq!(
+            identify_coding_plan_endpoint("https://tokenhub.tencentmaas.com.evil.example/plan/v3"),
+            None,
+            "spoofed host suffix must not classify as the tokenhub host"
+        );
+        assert_eq!(
+            identify_coding_plan_endpoint("https://tokenhub.tencentmaas.com/plan/v2"),
+            None,
+            "a different path on the tokenhub host must not classify"
+        );
+        assert_eq!(
+            identify_coding_plan_endpoint("https://tokenhub.tencentmaas.com/plan/v3/extra"),
+            None,
+            "a trailing path segment must not classify"
+        );
+        // Host case is folded before matching (to_ascii_lowercase), the
+        // same rule the frontend endpoint lookup applies since the
+        // 2026-11-04 fix pass; the canonical identity stays lowercase.
+        assert_eq!(
+            identify_coding_plan_endpoint("https://TOKENHUB.TencentMaas.com/plan/v3"),
+            Some(("tencent", "https://tokenhub.tencentmaas.com/plan/v3")),
+            "uppercase-host input must fold to the canonical lowercase identity"
+        );
     }
 
     /// When a user pastes a full chat/completions URL or variants with a

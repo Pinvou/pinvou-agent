@@ -401,11 +401,12 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   // through the gpt-6 prefix.
   assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6.1-terra')), true);
   assert.deepStrictEqual([...(reasoningEffortTiersForModel({ vendor: 'openai', model: 'gpt-6.1-terra' }) || [])], ['low', 'medium', 'high', 'max']);
-  // xAI: the multi-agent 4.20 row joins with no image annotation and no
-  // tier exposure (the base effort gate covers grok-4.6/4.5 only, and the
-  // multi-agent effort semantics differ anyway).
+  // xAI: the multi-agent 4.20 row joins with no tier exposure (the base
+  // effort gate covers grok-4.6/4.5 only, and the multi-agent effort
+  // semantics differ anyway). Image annotation: true since the 2026-11-04
+  // fix pass (detail page states Modalities Text, Image) — pinned in the
+  // new-groups block below.
   assert.strictEqual(isPresetModel(mkCloud('xai', 'xai', 'https://api.x.ai/v1', 'grok-4.20-multi-agent-0309')), true);
-  assert.strictEqual(catalogImageCapableForModel('grok-4.20-multi-agent-0309'), null);
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'xai', vendor: 'xai', model: 'grok-4.20-multi-agent-0309', base_url: 'https://api.x.ai/v1' }), null);
   // Ark Coding Plan: the two retired rows fall to the custom listing and
   // the economy DeepSeek row joins.
@@ -422,10 +423,16 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   // OpenAI-compatible rows classify per vendor with no tier exposure.
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'mistral', 'https://api.mistral.ai/v1', 'codestral-latest')), true);
   assert.strictEqual(catalogImageCapableForModel('mistral-medium-latest'), true);
+  assert.strictEqual(catalogImageCapableForModel('mistral-large-latest'), true, 'annotated per models.dev in the 2026-11-04 fix pass (docs.mistral.ai unreachable)');
+  assert.strictEqual(catalogImageCapableForModel('grok-4.20-multi-agent-0309'), true, 'annotated true in the 2026-11-04 fix pass: the detail page states Modalities Text, Image');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'meta', 'https://api.meta.ai/v1', 'muse-spark-1.3')), true);
   assert.strictEqual(catalogImageCapableForModel('muse-spark-1.3'), true);
-  assert.strictEqual(catalogImageCapableForModel('muse-spark-1.1'), null, 'muse-spark-1.1 stays unannotated (the Rust negative test treats it as Unknown)');
-  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K3')), true);
+  assert.strictEqual(catalogImageCapableForModel('muse-spark-1.1'), true, 'annotated true in the 2026-11-04 fix pass: the models page states all three Muse Spark versions take image input');
+  assert.strictEqual(catalogImageCapableForModel('muse-wonder-1.0'), true, 'wonder joined the group in the 2026-11-04 fix pass');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K2.6')), true, 'together re-lined up to the live serverless catalog in the 2026-11-04 fix pass');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-V4-Pro')), true);
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K3')), false, 'Kimi-K3 is not in Together\'s live serverless catalog (the original lineup row was re-lined up)');
+  assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'kimi-k3.1-pro')), true, 'ark plan overview names kimi-k3.1-pro (2026-11-04 fix pass)');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'groq', 'https://api.groq.com/openai/v1', 'llama-3.3-70b-versatile')), true);
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'mistral', model: 'codestral-latest', base_url: 'https://api.mistral.ai/v1' }), null);
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'meta', model: 'muse-spark-1.3', base_url: 'https://api.meta.ai/v1' }), null);
@@ -1299,25 +1306,112 @@ test('imageCapable annotations cross-check the Rust builtin verified table sourc
   assert.ok(exacts.length > 0, 'an EXACT table that parses to empty means format drift; fix this extractor');
   const backendSupports = id => exacts.includes(id) || substrings.some(entry => id.includes(entry));
   let checked = 0;
+  const backendAdmittedUnannotated = new Set();
   for (const scope of ['local', 'cloud']) {
     for (const group of MODEL_CATALOG[scope] || []) {
       for (const item of group.items || []) {
-        if (item.custom || item.imageCapable === undefined) continue;
+        if (item.custom) continue;
         for (const id of [item.model, ...(item.legacyAliases || [])]) {
           const fe = catalogImageCapableForModel(id);
-          if (fe !== true && fe !== false) continue;
-          checked += 1;
           const be = backendSupports(String(id).toLowerCase());
           if (fe === true) {
+            checked += 1;
             assert.ok(be, `frontend annotates image-capable but backend resolves Unknown: ${group.key}/${id}`);
-          } else {
+          } else if (fe === false) {
+            checked += 1;
             assert.ok(!be, `frontend annotates text-only but backend treats it as image-capable (images would be inlined on send): ${group.key}/${id}`);
+          } else if (be) {
+            // Unannotated rows are no longer skipped wholesale (the r1
+            // blindness complaint — the entries were fixed, the structure
+            // wasn't): an unannotated id that the backend table admits
+            // silently resolves Supported through the "auto" chain. That is
+            // fine per se (the substring/exact entries are vetted), but it
+            // must stay a conscious inventory, not an accident: every such
+            // id is pinned in UNANNOTATED_BACKEND_ADMITTED below, and any
+            // drift on either side forces a decision here.
+            backendAdmittedUnannotated.add(String(id));
           }
         }
       }
     }
   }
   assert.ok(checked >= 60, `parity check coverage is abnormally low (only ${checked} entries); the catalog annotations or alias structure appear to have drifted`);
+  const UNANNOTATED_BACKEND_ADMITTED = [
+    // OpenRouter/aggregator rows whose org-prefixed spelling carries a vetted
+    // substring (gpt-6 / gpt-5.6 / claude-opus-5 / qwen3.8 / glm-5.3-flash /
+    // minimax-m3 / kimi-k3 / kimi-k2.7-code / gemini-4): deployments behind
+    // the platform stay unverified one by one (the rows' own group comments),
+    // while the underlying model family is officially multimodal.
+    'Qwen/Qwen3.8-27B',
+    'anthropic/claude-opus-5.5',
+    'deepseek/deepseek-flash',
+    'doubao-seed-2.0-mini',
+    'doubao-seed-2.1-lite',
+    'doubao-seed-2.1-pro',
+    'google/gemini-4-argon',
+    'minimax/minimax-m3',
+    'minimax/minimax-m3.1-flash',
+    'moonshotai/Kimi-K2.6',
+    'moonshotai/Kimi-K2.7-Code',
+    'moonshotai/kimi-k2.7-code',
+    'moonshotai/kimi-k3.1-pro',
+    'openai/gpt-5.6-luna',
+    'openai/gpt-6-luna',
+    'openai/gpt-6.1-terra',
+    'qwen/qwen3.8-flash',
+    'z-ai/glm-5.3-flash',
+    'zai-org/GLM-5.3-Flash',
+  ];
+  const byStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  assert.deepStrictEqual(
+    [...backendAdmittedUnannotated].sort(byStr),
+    UNANNOTATED_BACKEND_ADMITTED.sort(byStr),
+    'the unannotated-but-backend-admitted inventory drifted: a new id silently resolves Supported through the auto chain (add it here consciously), or a table entry/row spelling changed',
+  );
+  assert.ok(checked >= 60, `parity check coverage is abnormally low (only ${checked} entries); the catalog annotations or alias structure appear to have drifted`);
+});
+
+test('coding-plan endpoint sets cross-check the Rust identify arms (frontend groups must classify where the backend stamps metadata)', () => {
+  // identify_coding_plan_endpoint backfills vendor/coding_plan metadata on
+  // the Rust side; a frontend coding_plan group whose canonical base URL is
+  // absent from the Rust arms would classify in the form but lose the
+  // separate reasoning-field parsing after save (the doc comment on the
+  // function names that failure). Both sides are otherwise hand-pinned; this
+  // is the structural set comparison (the default/baseUrl cross-checks show
+  // the same pattern), added in the 2026-11-04 fix pass.
+  const rustSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src-tauri', 'src', 'platform', 'prefs', 'model.rs'), 'utf8',
+  );
+  const fnStart = rustSrc.indexOf('pub(super) fn identify_coding_plan_endpoint');
+  assert.ok(fnStart > 0, 'identify_coding_plan_endpoint not found; sync this cross-check');
+  const fnBody = rustSrc.slice(fnStart, rustSrc.indexOf('\n}', fnStart));
+  const rustUrls = [...fnBody.matchAll(/"(https:\/\/[^"]+)"/g)].map(m => m[1].toLowerCase());
+  assert.ok(rustUrls.length >= 8, `unexpectedly few Rust arms (${rustUrls.length}); format drift — sync this extractor`);
+  const stripChat = url => url.replace(/\/chat\/completions$/i, '');
+  let checked = 0;
+  for (const group of MODEL_CATALOG.cloud) {
+    if (group.providerKind !== 'coding_plan') continue;
+    const canonical = stripChat(group.baseUrl).toLowerCase();
+    assert.ok(rustUrls.includes(canonical), `frontend coding_plan group ${group.key} canonical base ${canonical} has no Rust identify arm (saved configs would lose vendor/coding_plan metadata)`);
+    checked += 1;
+  }
+  assert.ok(checked >= 6, `coding_plan group coverage abnormally low (${checked}); the catalog structure appears to have drifted`);
+});
+
+test('frontend endpoint classification folds URL case like the Rust identify arms', () => {
+  // URL hosts are case-insensitive (RFC 3986) and the Rust side lowercases
+  // before matching (to_ascii_lowercase), so a stored uppercase-host URL
+  // must classify into the same group here instead of getting Rust metadata
+  // with no frontend group (2026-11-04 fix pass).
+  const mk = base => ({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: base, model: 'kimi-k3' });
+  assert.strictEqual(findCloudProviderForModel(mk('https://tokenhub.tencentmaas.com/plan/v3'))?.key, 'tencent_token_plan');
+  assert.strictEqual(findCloudProviderForModel(mk('https://TOKENHUB.TencentMaas.com/plan/v3'))?.key, 'tencent_token_plan', 'uppercase-host stored URL must classify identically');
+  assert.strictEqual(findCloudProviderForModel(mk('https://Api.Lkeap.Cloud.Tencent.Com/plan/v3'))?.key, 'tencent_token_plan', 'the legacy alias folds case too');
+  // The stored value keeps its original case: display/prefill must not be
+  // rewritten by a classification-only lookup.
+  const original = mk('https://TOKENHUB.TencentMaas.com/plan/v3');
+  assert.strictEqual(findCloudProviderForModel(original)?.baseUrl || 'https://tokenhub.tencentmaas.com/plan/v3', 'https://tokenhub.tencentmaas.com/plan/v3');
+  assert.strictEqual(original.base_url, 'https://TOKENHUB.TencentMaas.com/plan/v3', 'classification must not mutate the stored base_url');
 });
 
 // --- modelDescriptions i18n guardrails ---

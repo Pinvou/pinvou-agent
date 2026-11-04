@@ -87,6 +87,11 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
             | "kimi-k3.1-pro-highspeed"
             | "k3.1-pro[1m]"
             | "kimi-k3.1-pro[1m]"
+            // kimi-k3[1m] stays an official moonshot ACP `models1m`
+            // suggestion (the platform CC guide still documents it,
+            // re-verified 2026-11-04), so a probe can see it — same class
+            // as the K3.1 bracket arms above.
+            | "kimi-k3[1m]"
             | "kimi-k2.7-code"
             | "kimi-k2.7-code-highspeed"
             | "kimi-for-coding"
@@ -199,16 +204,30 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "kimi-k2.6",
     // Meta Model API (2026-11-03 catalog refresh, dev.meta.ai): muse-spark-1.3
     // (the current default) is officially multimodal (text/image/PDF/video
-    // input). The entry is spelled with the full minor version on purpose:
-    // muse-spark-1.1 stays Unknown (the negative test below pins that), and
-    // no per-model modality statement covers it this refresh.
+    // input). muse-spark-1.1 / muse-spark-1.2 / muse-wonder-1.0 joined in
+    // the 2026-11-04 fix pass: the models page states all three Muse Spark
+    // versions take text, image, video, audio, and PDF input (and names 1.1
+    // as a served id in the quickstart troubleshooting), and the Muse Wonder
+    // section lists the same modalities — the earlier "no per-model
+    // modality statement covers 1.1" ground was refuted live. Entries stay
+    // spelled with the full minor version on purpose: the open-weight
+    // "Muse Spark Open" gateway deployments are a different supply chain
+    // and must keep resolving through their own (absent) entries.
     "muse-spark-1.3",
-    // Mistral (2026-11-03 catalog refresh, docs.mistral.ai): the models
-    // overview lists mistral-medium-latest as multimodal and
-    // mistral-small-latest with image understanding; codestral-latest /
-    // mistral-large-latest carry no modality statement and stay Unknown.
+    "muse-spark-1.2",
+    "muse-spark-1.1",
+    "muse-wonder-1.0",
+    // Mistral (2026-11-03 catalog refresh): the models overview lists
+    // mistral-medium-latest as multimodal and mistral-small-latest with
+    // image understanding; codestral-latest carries no modality statement
+    // and stays Unknown. mistral-large-latest joined in the 2026-11-04 fix
+    // pass per models.dev (the base's reference source), which lists its
+    // modalities as text/image/pdf — docs.mistral.ai itself was unreachable
+    // from every channel on both passes, so the annotation is scoped to
+    // that source (re-check at the next refresh).
     "mistral-medium-latest",
     "mistral-small-latest",
+    "mistral-large-latest",
 ];
 
 /// Exact (lowercased equality) entries: short generic ids whose substring
@@ -229,15 +248,24 @@ const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // K3.1 Pro (2026-10-23, kimi.com/code/docs): officially "native vision"
     // like K3, but the bare-id spelling contains no "kimi-k3" substring and
     // a bare "k3.1" or "k3" substring would over-match, so it rides the
-    // exact table like its K3 siblings. The highspeed variant is the same
-    // model — the models-overview page states "同一模型、参数约束完全一致，
-    // 仅输出速度不同" (re-checked 2026-11-03) — so the prefixed
-    // kimi-k3.1-pro-highspeed already resolves Supported through the
-    // "kimi-k3" substring entry, and the bare spelling joins this exact
+    // exact table like its K3 siblings. The highspeed variant carries the
+    // same constraints as the prefixed spelling — the models-overview page
+    // states both K3.1 spellings' "参数约束也与 `kimi-k3` 完全一致"
+    // (identical constraints to kimi-k3; re-checked 2026-11-04 — the
+    // "同一模型、参数约束完全一致，仅输出速度不同" sentence quoted here
+    // earlier is that page's K2.7 Code family wording, not K3.1's) — so the
+    // prefixed kimi-k3.1-pro-highspeed already resolves Supported through
+    // the "kimi-k3" substring entry, and the bare spelling joins this exact
     // table on the same grounds as k3.1-pro (spelling-consistent: both
     // spellings of each tier resolve identically).
     "k3.1-pro",
     "k3.1-pro-highspeed",
+    // The bare [1m] bracket declaration (the ACP datalists' models1m
+    // suggestion): dash-suffix tolerance cannot carry a "[1m]" remainder and
+    // the bare spelling has no "kimi-k3" substring, so unlike the prefixed
+    // forms (which ride the "kimi-k3" substring entry) it needs its own
+    // exact arm. Only the officially documented spellings join.
+    "k3.1-pro[1m]",
     "mimo-v2.5",
     // Tencent Token Plan official hyphenated parallel spelling (same as the
     // frontend minimax-m3 row's legacyAliases): it does not contain the
@@ -363,15 +391,23 @@ mod tests {
             "kimi-k3.1-pro-highspeed",
             "k3.1-pro[1m]",
             "kimi-k3.1-pro[1m]",
+            // Official moonshot ACP models1m suggestion (platform CC
+            // guide, re-verified 2026-11-04).
+            "kimi-k3[1m]",
         ] {
             assert!(
                 moonshot_model_requires_explicit_thinking(name),
                 "{name} 应命中 always-thinking 名单"
             );
         }
-        // k3 rides the effort ladder (off → reasoning_effort:low, never
-        // disabled), so its [1m] declaration must NOT hit the list — pin
-        // the boundary so a copy-paste widening turns red here.
+        // k3[1m] must NOT hit the list, but not because bare k3 rides the
+        // effort ladder — bare k3 IS in the list above. The real ground:
+        // the base fail-closes `k3[1m]` as a Claude Code environment
+        // convention, not an API model id (crates/tui/src/config.rs
+        // KIMI_CODE_CLAUDE_ALIAS_GUIDANCE + validate_kimi_code_api_model_id
+        // rejects it on canonical Kimi Code endpoints), so a probe never
+        // legitimately reaches the gateway with that spelling — an arm
+        // would only legitimize an id the base refuses to send.
         for name in [
             "gpt-4o",
             "deepseek-v4-pro",
@@ -525,12 +561,25 @@ mod tests {
             (ModelPreset::Kimi, "kimi-k3.1-pro-highspeed"),
             (ModelPreset::OpenaiCompatible, "k3.1-pro"),
             (ModelPreset::OpenaiCompatible, "k3.1-pro-highspeed"),
-            // Meta muse-spark-1.3 (dev.meta.ai: text/image/PDF/video) and
-            // the two Mistral multimodal rows (docs.mistral.ai models
-            // overview).
+            // The documented [1m] declarations resolve like their base
+            // spellings (2026-11-04 fix pass: the bracket forms previously
+            // fell to Unknown — the exact table is equality-only and the
+            // prefixed bare forms ride the "kimi-k3" substring).
+            (ModelPreset::OpenaiCompatible, "k3.1-pro[1m]"),
+            (ModelPreset::Kimi, "kimi-k3.1-pro[1m]"),
+            // Meta muse family (dev.meta.ai: the models page states all
+            // three Muse Spark versions and Muse Wonder take
+            // text/image/PDF/video input — 2026-11-04 fix pass; 1.3 was
+            // pinned since the 2026-11-03 refresh) and the
+            // Mistral multimodal rows (mistral-large-latest per models.dev,
+            // the base's reference source — docs.mistral.ai unreachable).
             (ModelPreset::OpenaiCompatible, "muse-spark-1.3"),
+            (ModelPreset::OpenaiCompatible, "muse-wonder-1.0"),
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.2"),
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
             (ModelPreset::OpenaiCompatible, "mistral-medium-latest"),
             (ModelPreset::OpenaiCompatible, "mistral-small-latest"),
+            (ModelPreset::OpenaiCompatible, "mistral-large-latest"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(
@@ -549,8 +598,10 @@ mod tests {
         // - Text-only official models must stay Unknown (qwen3.7-max / glm-5.3 /
         //   glm-5.2 / MiniMax-M2.x per the 2026-09-11 vendor docs);
         // - deepseek-v4-pro is not on the official vision page;
-        // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
-        //   must also resolve to Unknown;
+        // - mimo-v2.5-pro is outside the builtin table and must resolve to
+        //   Unknown (muse-spark-1.1 joined the supported matrix in the
+        //   2026-11-04 fix pass once the models page's all-versions
+        //   modality statement was verified live);
         // - unrelated custom names containing "k3" must not be mismatched by
         //   the substring (bare k3 is now admitted exactly);
         // - third-party gateway snapshot spellings (deepseek-v4-flash-202605
@@ -566,14 +617,12 @@ mod tests {
             (ModelPreset::Minimax, "MiniMax-M2.7"),
             (ModelPreset::Minimax, "MiniMax-M2.7-highspeed"),
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
-            (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
             (ModelPreset::OpenaiCompatible, "k3s-local-text"),
-            // 2026-11-03 conservative boundary pins: the Mistral rows
-            // without a modality statement and unrelated K3.1-suffixed
-            // names must stay Unknown (the exact table admits only the
-            // documented tiers, not suffix families).
+            // 2026-11-03 conservative boundary pins, updated 2026-11-04:
+            // codestral-latest (no modality statement) and unrelated
+            // K3.1-suffixed names must stay Unknown (the exact table
+            // admits only the documented tiers, not suffix families).
             (ModelPreset::OpenaiCompatible, "codestral-latest"),
-            (ModelPreset::OpenaiCompatible, "mistral-large-latest"),
             (ModelPreset::OpenaiCompatible, "k3.1-pro-max"),
         ] {
             let model = saved_model(preset, name);
