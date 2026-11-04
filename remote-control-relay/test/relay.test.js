@@ -246,8 +246,12 @@ function waitForRawClose(sock, timeoutMs = 3000) {
   });
 }
 
-async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl) {
-  const ws = await openSocket(url);
+async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl, wsOptions = {}) {
+  // wsOptions 让个别测试能给桌面 socket 配 maxPayload:两道 frame_too_large
+  // 门测试用它把桌面入站上限配成真实桌面界限,使「桌面不受扰」断言有
+  // 牙齿——若被拒帧仍被转发,桌面侧 1009 关闭即翻红(默认 100 MiB
+  // maxPayload 下该断言结构性不可观察,Round-19 复审)。
+  const ws = await openSocket(url, wsOptions);
   const registered = nextMessage(ws, "desktop_endpoint_registered");
   ws.send(JSON.stringify({
     v: 2,
@@ -2180,7 +2184,9 @@ test("rejects a web frame whose envelope would exceed the desktop bound with fra
   let desktop;
   let web;
   try {
-    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
     const connected = nextMessage(desktop.ws, "web_client_connected");
     web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
     await connected;
@@ -2224,7 +2230,9 @@ test("rejects a web frame whose encoded forward expands past the desktop bound",
   let desktop;
   let web;
   try {
-    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
     const connected = nextMessage(desktop.ws, "web_client_connected");
     web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
     await connected;
@@ -2263,6 +2271,44 @@ test("rejects a web frame whose encoded forward expands past the desktop bound",
     const ready = await readyReceived;
     assert.equal(ready.stream_epoch, "epoch-expansion");
     await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("answers desktop_offline before measuring an oversized frame", async () => {
+  // Round-19 复审:PROTOCOL.md 承诺「桌面断开时先答 desktop_offline,帧
+  // 不被测量也不被转发」——此前无测试钉住,把测量门挪到离线检查之前的
+  // 重构全绿(M5 突变实证)。本测试:桌面 terminate 后,web 送越界帧,
+  // 必须收到 desktop_offline 而非 frame_too_large。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_offlinegate_${Date.now()}`;
+  const accessToken = "access-token-offlinegate-00000000000001";
+  const desktopSecret = "desktop-secret-offlinegate-00000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const offline = nextMessage(web.ws, "desktop_connection_state");
+    desktop.ws.terminate();
+    assert.equal((await offline).status, "offline",
+      "the relay must observe the desktop loss before the oversized frame arrives");
+
+    const pad = "x".repeat(4_150_000);
+    web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", request_id: "req-offline-big", command: "chat", args: { pad } }));
+    const answered = await nextMessage(web.ws, "error");
+    assert.equal(answered.code, "desktop_offline",
+      "a disconnected desktop must be answered desktop_offline before any measurement");
+    assert.equal(web.ws.readyState, web.ws.OPEN,
+      "the offline answer must be informational; the web socket stays open");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
   } finally {
     closeSocket(web?.ws);
     closeSocket(desktop?.ws);
