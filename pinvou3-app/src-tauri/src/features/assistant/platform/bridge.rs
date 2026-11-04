@@ -1598,11 +1598,15 @@ impl Pinvou3Bridge {
         // Covers both a stored value (already dropped by the prefs load
         // normalization) and the `_ => Some("high")` default arm below,
         // which re-introduced the parameter for fresh records (2026-11-04
-        // review). Mirrors prefs::is_moonshot_k31_model and the frontend
-        // isMoonshotK31ModelName tiers exit.
+        // review). The contract attaches via the kimi/moonshot vendor stamp
+        // or the vendor's own official route (legacy migrated records may
+        // carry an empty vendor or the moonshot alias there); unstamped
+        // custom relay endpoints keep their existing contract (mirrors
+        // prefs::is_moonshot_k31_route and the frontend
+        // isMoonshotK31ModelName tiers exit).
         if provider == "moonshot" {
             if let Some(model) = self.effective_model() {
-                if prefs::is_moonshot_k31_model(&model.vendor, &model.model) {
+                if prefs::is_moonshot_k31_route(&model.vendor, &model.base_url, &model.model) {
                     return None;
                 }
             }
@@ -9655,6 +9659,23 @@ mod tests {
         );
         b.prefs.advanced.saved_models[0].vendor = Some("kimi".into());
         assert_eq!(b.request_reasoning_effort(), None);
+
+        // A legacy migrated record with an EMPTY vendor on the official
+        // endpoint is still K3.1: the resolved route plus the model spelling
+        // is the contract, not the vendor stamp (2026-11-04 review round 3).
+        set_active_model(
+            &mut b,
+            ModelPreset::Kimi,
+            "kimi-k3.1-pro-highspeed",
+            "https://api.moonshot.ai/v1",
+            "sk-kimi",
+        );
+        b.prefs.advanced.saved_models[0].vendor = None;
+        assert_eq!(
+            b.request_reasoning_effort(),
+            None,
+            "an empty-vendor record on the official endpoint is still K3.1"
+        );
 
         // Bare kimi-k3 keeps the exact tiered route semantics (effort
         // resolution is untouched for it — off clamps to low on the wire).

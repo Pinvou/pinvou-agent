@@ -382,8 +382,15 @@ async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
         ),
     ] {
         let (base_url, probe, server_task) = start_wire_cap_probe().await;
-        run_turn_against_mock(label, preset, model, &base_url, &project, Some(declared_output))
-            .await;
+        run_turn_against_mock(
+            label,
+            preset,
+            model,
+            &base_url,
+            &project,
+            Some(declared_output),
+        )
+        .await;
         let bodies = probe.bodies.lock().expect("wire-cap bodies").clone();
         server_task.abort();
         assert!(

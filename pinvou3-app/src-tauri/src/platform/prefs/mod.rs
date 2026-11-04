@@ -460,22 +460,42 @@ pub(crate) fn legacy_official_deepseek_base_url(base_url: &str) -> bool {
     normalized == "https://api.deepseek.com"
 }
 
-/// K3.1 family spellings across the kimi catalog groups (moonshot platform +
-/// Kimi Code), case-insensitive: the catalog only produces these exact rows,
-/// but stored prefs keep user-editable strings. Also consumed by the bridge's
+/// K3.1 family spellings on the official Kimi routes (moonshot platform
+/// `https://api.moonshot.ai|cn/v1` and Kimi Code
+/// `https://api.kimi.com/coding/v1`), case-insensitive on the model string.
+/// The contract attaches when the record carries a kimi/moonshot vendor
+/// stamp (the catalog rows stamp "kimi"; test/loopback fixtures ride the
+/// same stamp) OR the base URL resolves to the vendor's own official route
+/// (legacy migrated records may carry an empty vendor or the `moonshot`
+/// alias on those endpoints — 2026-11-04 review round 3). Records with no
+/// stamp on a non-official base are custom relay endpoints and keep their
+/// existing contract (effort passthrough). Also consumed by the bridge's
 /// effort resolution (the send-path default arm must resolve K3.1 to None —
 /// see `request_reasoning_effort_for_provider`).
-pub(crate) fn is_moonshot_k31_model(vendor: &Option<String>, model: &str) -> bool {
-    if !vendor
-        .as_deref()
-        .map_or(false, |value| value.trim().eq_ignore_ascii_case("kimi"))
-    {
+pub(crate) fn is_moonshot_k31_route(vendor: &Option<String>, base_url: &str, model: &str) -> bool {
+    let vendor_stamped = vendor.as_deref().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "kimi" | "moonshot"
+        )
+    });
+    if !vendor_stamped && !is_official_kimi_route_base_url(base_url) {
         return false;
     }
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
         "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "k3.1-pro" | "k3.1-pro-highspeed"
     )
+}
+
+/// The vendor's own K3-family endpoints (mirrors the frontend
+/// `isExactMoonshotPlatformBaseUrl` / `isExactKimiCodeBaseUrl` and the
+/// foundation's exact-route gates).
+fn is_official_kimi_route_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    normalized == "https://api.moonshot.ai/v1"
+        || normalized == "https://api.moonshot.cn/v1"
+        || normalized == "https://api.kimi.com/coding/v1"
 }
 
 pub(crate) fn legacy_local_route_base_url(base_url: &str) -> bool {
@@ -628,9 +648,15 @@ impl SavedModel {
         // "off" saved through the generic off/high switch the catalog used
         // to offer — reaches the generic Moonshot arm and wires an illegal
         // disable shape. Drop the field: the documented omission is valid
-        // and resolves to the vendor default (max). Mirrors the frontend
-        // tiers exit (isMoonshotK31ModelName) added in the same pass.
-        if self.reasoning_effort.is_some() && is_moonshot_k31_model(&self.vendor, &self.model) {
+        // and resolves to the vendor default (max). The contract attaches
+        // via the kimi/moonshot vendor stamp or the vendor's own official
+        // route (legacy migrated records may carry an empty vendor or the
+        // moonshot alias there); unstamped custom relay endpoints keep
+        // their existing contract. Mirrors the frontend tiers exit
+        // (isMoonshotK31ModelName) added in the same pass.
+        if self.reasoning_effort.is_some()
+            && is_moonshot_k31_route(&self.vendor, &self.base_url, &self.model)
+        {
             self.reasoning_effort = None;
         }
     }
@@ -2247,13 +2273,37 @@ mod tests {
             );
         }
 
-        // The same model id without the kimi vendor stamp (a free-text
-        // openai_compatible row) keeps its effort: the contract normalization
-        // only applies where the catalog vendor applies.
-        let mut foreign = base.clone();
-        foreign.vendor = None;
-        foreign.normalize_route_limits();
-        assert_eq!(foreign.reasoning_effort, Some("off".into()));
+        // Legacy migrated records may carry an EMPTY vendor on the official
+        // endpoint: the resolved route plus the model spelling is the
+        // contract, so the drop applies there too (2026-11-04 review
+        // round 3 — the vendor stamp alone missed these).
+        let mut legacy = base.clone();
+        legacy.vendor = None;
+        legacy.normalize_route_limits();
+        assert_eq!(
+            legacy.reasoning_effort, None,
+            "an empty-vendor record on the official moonshot endpoint is still K3.1"
+        );
+        let mut aliased = base.clone();
+        aliased.vendor = Some("moonshot".into());
+        aliased.normalize_route_limits();
+        assert_eq!(
+            aliased.reasoning_effort, None,
+            "the moonshot vendor alias on the official endpoint is still K3.1"
+        );
+
+        // A custom relay endpoint with NO kimi vendor stamp keeps its
+        // existing contract (effort passthrough) — only the vendor's own
+        // routes (or a stamped record) carry the K3.1 thinking rejection.
+        let mut relay = base.clone();
+        relay.vendor = None;
+        relay.base_url = "https://relay.example/v1".into();
+        relay.normalize_route_limits();
+        assert_eq!(
+            relay.reasoning_effort,
+            Some("off".into()),
+            "an unstamped relay endpoint keeps the stored effort (its own contract)"
+        );
 
         // A non-K3.1 kimi record (K3 rides the exact tiered route with its
         // own off→low equivalence) keeps its stored effort.
