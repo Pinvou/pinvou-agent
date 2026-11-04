@@ -2437,17 +2437,24 @@ mod transcript_persist_pins {
         );
     }
 
-    /// Engine-side anchor for the same review chain (P2-b): the identity
-    /// capture must sit in `AppEngine::spawn_for_session`'s await-free sync
-    /// block, materialized after the workspace is fixed
+    /// Engine-side anchor for the same review chain (P2-b as tightened by
+    /// the second round, reviews 5768924092 / 5768948485 P2-a): the
+    /// identity capture must go through the detect-retry protocol
+    /// (`pending_approvals::capture_workspace_identity`) — a single
+    /// `workspace_generation(` read is forbidden because the generation
+    /// store lock and the SessionStore roots lock share no critical
+    /// section, so a rebind commit on another thread can tear a lone
+    /// read pair into "A-directory runtime + B-generation stamp". The
+    /// helper call must sit in `AppEngine::spawn_for_session`'s await-free
+    /// sync block, materialized after the workspace is fixed
     /// (`let workspace = engine_config.workspace.clone()`) and before the
-    /// engine/forwarder spawns, and its value must flow into
-    /// `spawn_event_forwarder`. This ties the capture to the same
-    /// synchronous point as the roots resolution + workspace fixation, so
-    /// the running directory and the generation form one identity snapshot.
-    /// Mutation: deleting the capture (or moving it anywhere after the
-    /// spawn) fails the ordering anchors; the behavioral interleave test in
-    /// pending_approvals covers the store semantics.
+    /// engine/forwarder spawns, must compare against the roots that fed
+    /// `engine_config.workspace` (`identity_expected_roots`), and its
+    /// generation must flow into `spawn_event_forwarder`. Mutation:
+    /// replacing the helper call with a direct `workspace_generation(`
+    /// read fails the no-single-read assert; deleting the capture (or
+    /// moving it anywhere after the spawn) fails the ordering anchors;
+    /// the protocol semantics live in pending_approvals' behavioral tests.
     #[test]
     fn spawn_site_captures_instance_identity_next_to_workspace_fixation() {
         let src = include_str!("engine.rs");
@@ -2474,11 +2481,27 @@ mod transcript_persist_pins {
             .collect::<Vec<_>>()
             .join("\n");
         let flattened: String = body.chars().filter(|c| !c.is_whitespace()).collect();
-        let capture = "letinstance_workspace_generation=crate::features::assistant::pending_approvals::workspace_generation(session_id);";
+        // No direct single generation read may survive in the spawn body:
+        // the capture must run the detect-retry protocol instead (the `::`
+        // guard keeps the `instance_workspace_generation` parameter name
+        // from satisfying the needle).
+        assert_eq!(
+            flattened.matches("::workspace_generation(").count(),
+            0,
+            "spawn_for_session must not single-read workspace_generation; \
+             the identity capture must go through the detect-retry protocol"
+        );
+        let capture = "crate::features::assistant::pending_approvals::capture_workspace_identity(";
         assert_eq!(
             flattened.matches(capture).count(),
             1,
-            "spawn_for_session must capture the instance identity exactly once"
+            "spawn_for_session must capture the instance identity through the \
+             detect-retry helper exactly once"
+        );
+        assert!(
+            flattened.contains("&Some(identity_expected_roots)"),
+            "the protocol must compare against the roots that fed \
+             engine_config.workspace (both tear directions rejected)"
         );
         let fixation = flattened
             .find("letworkspace=engine_config.workspace.clone();")

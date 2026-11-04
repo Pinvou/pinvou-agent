@@ -122,12 +122,16 @@ pub fn record(session_id: &str, mut approval: PendingApproval, instance_generati
     });
 }
 
-/// 会话当前已提交的工作区代（只读）：`AppEngine::spawn_for_session` 在固
-/// 化 `engine_config.workspace` 的同一同步点（roots 解析后的无 await 段）
-/// 调它捕获实例身份代，随 spawn 传给转发器供 [`record`] 盖章——不得在
+/// 会话当前已提交的工作区代（只读）：[`capture_workspace_identity`] 在
+/// `AppEngine::spawn_for_session` 固化 `engine_config.workspace` 的同一
+/// 同步段（roots 解析后的无 await 区间）内用它做前后两次代读取，捕获
+/// 一致的实例身份代，随 spawn 传给转发器供 [`record`] 盖章——不得在
 /// 转发器 async body 首次执行时现读（评审 5766477612/5766212059/
-/// 5766526920：该执行可能已越过重绑绑定提交点的代推进）。从未重绑的会话
-/// 返回 None——与新实例的决策写入比较语义一致（None == None）。
+/// 5766526920：该执行可能已越过重绑绑定提交点的代推进），也不得在
+/// spawn 侧绕过 [`capture_workspace_identity`] 单次现读（评审
+/// 5768924092/5768948485 P2-a 第二轮：单次读取与 roots 解析无共同锁，
+/// 跨线程夹进 rebind 提交即撕裂快照）。从未重绑的会话返回 None——与新
+/// 实例的决策写入比较语义一致（None == None）。
 pub fn workspace_generation(session_id: &str) -> Option<u64> {
     with_store(|store| store.workspace_generations.get(session_id).copied())
 }
@@ -146,6 +150,66 @@ pub fn advance_workspace_generation(session_id: &str) -> u64 {
         *next = next.wrapping_add(1);
         *next
     })
+}
+
+/// 单轮身份捕获失败后的重试上限。4 次全部撕裂 → `Err`（fail-closed：拒绝
+/// 本次 spawn），不无界自旋。
+const CAPTURE_IDENTITY_ATTEMPTS: usize = 4;
+
+/// Spawn 侧工作区身份的**一致性捕获**（检测-重试协议，评审 5768924092 /
+/// 5768948485 P2-a 第二轮）。[`workspace_generation`] 与
+/// `SessionStore::session_roots` 分属两把锁，且两把锁都不跨调用持有：
+/// 单次「读代 → 解析 roots」之间没有共同临界区，无 await 也挡不住其他
+/// 线程——重绑提交点（projects.rs 的
+/// `clear_approval_memory_for_rebound_sessions`）在另一个线程**先落绑定
+/// 写入（换根）再推进代**（swap→advance 次序是该函数注释的既有契约），
+/// 夹进读取窗口即得到撕裂快照：目录 runtime 与代章不同纪元，卡带 B 代
+/// 通过决策比较，A 目录的授权/拒绝写进 B。
+///
+/// 协议：`gen_a = workspace_generation()` → `roots = resolve()` →
+/// `gen_b = workspace_generation()`；`gen_a != gen_b` 判定读取窗口内发生
+/// 了 rebind advance，整轮作废重试。`expected` 是 engine 侧**先前**解析、
+/// 已喂给 `engine_config.workspace` 的同一份 roots；`roots != expected`
+/// 同按撕裂窗口处理——swap→advance 次序下 advance 落地前的「新根+旧代」
+/// 配对代比较检不出来，只能靠 roots 一致性核对拒收（两个方向都拒：
+/// 「旧根+新代」由代比较拒，「新根+旧代」由 roots 比较拒）。协议假设即
+/// 上述 projects.rs 既有契约；残差如实披露：advance 尚未落地时本轮按
+/// roots 漂移重试，全部尝试耗尽 → `Err`，由调用点拒绝本次 spawn（此时
+/// `engine_config.workspace` 仍是旧根，放行即缺陷本身；fail-closed 重复
+/// 询问优于跨纪元写记忆，且既有行为本就如此——advance 前的决策写入同样
+/// 被锁内失配拒绝）。
+///
+/// 返回 `(roots, gen_b)`：roots 仅用于协议比对（与 `expected` 相等才被
+/// 接受），调用点的实际运行目录仍取其先前构造的 workspace；`gen_b` 即
+/// 实例身份代，随 spawn 传给转发器盖章（[`record`]）。
+pub fn capture_workspace_identity<T: PartialEq>(
+    session_id: &str,
+    expected: &T,
+    resolve: impl Fn() -> T,
+) -> Result<(T, Option<u64>), String> {
+    for _ in 0..CAPTURE_IDENTITY_ATTEMPTS {
+        let generation_before = workspace_generation(session_id);
+        let roots = resolve();
+        let generation_after = workspace_generation(session_id);
+        if generation_before != generation_after {
+            // 代在读取窗口内被推进：rebind 的绑定提交点落进两次读取之间，
+            // 整轮快照撕裂，作废重试。
+            continue;
+        }
+        if roots != *expected {
+            // 代未推进但 roots 相对 engine 侧已解析值漂移：swap 已落地、
+            // advance 尚未落地的「新根+旧代」撕裂配对，同按撕裂窗口作废
+            // 重试。
+            continue;
+        }
+        return Ok((roots, generation_after));
+    }
+    Err(format!(
+        "workspace rebind is in flight for session {session_id}: no \
+         consistent workspace identity could be captured across \
+         {CAPTURE_IDENTITY_ATTEMPTS} attempts; refusing this spawn \
+         (fail-closed) — resend the request once the rebind settles"
+    ))
 }
 
 /// `decide_approval` 收口：任何决策（allow / allow_for_session / deny）都先
@@ -1219,6 +1283,127 @@ mod tests {
             "B 实例（当前代）的批准照常落笔"
         );
         assert!(session_granted(&session, "g-b"), "当前代决策照常命中");
+        clear_session(&session);
+    }
+
+    /// 捕获协议（评审 5768924092 / 5768948485 P2-a 第二轮）—— 无并发：
+    /// 一次捕获即成功，返回值 = (roots == expected, 当前 gen_b)。engine
+    /// 侧实际喂 config 的 workspace 不取返回值（与 expected 相等才被
+    /// 接受），gen_b 随 spawn 传给转发器盖章。
+    #[test]
+    fn forkguard_capture_identity_happy_path_single_round() {
+        let session = isolate("capture-happy");
+        let expected = "A-root".to_string();
+        let resolves = std::cell::Cell::new(0usize);
+        let (roots, generation) = capture_workspace_identity(&session, &expected, || {
+            resolves.set(resolves.get() + 1);
+            expected.clone()
+        })
+        .expect("无并发时一次捕获必须成功");
+        assert_eq!(roots, expected, "接受的 roots 必须与 expected 一致");
+        assert_eq!(generation, None, "从未重绑的会话身份代为 None");
+        assert_eq!(resolves.get(), 1, "无并发时协议只走一轮");
+        clear_session(&session);
+    }
+
+    /// 捕获协议 —— **窗口内 advance**（模拟另一线程的重绑提交点落在
+    /// gen_a 与 gen_b 之间）：首轮代前后失配被检出、整轮作废；重试轮闭包
+    /// 不再推进 → 捕获成功。返回的 gen 是推进后的新代（推进是既成事实，
+    /// 协议只保证「代与 roots 同窗一致」），且重试轮数证明撕裂轮没有被
+    /// 静默接受——变异：删掉 gen_a != gen_b 比较臂，本测试的轮数断言红
+    /// （首轮撕裂快照会被直接放行）。
+    #[test]
+    fn forkguard_capture_identity_retries_advance_inside_window() {
+        let session = isolate("capture-window-advance");
+        let expected = "A-root".to_string();
+        let first_round = std::cell::Cell::new(true);
+        let resolves = std::cell::Cell::new(0usize);
+        let (roots, generation) = capture_workspace_identity(&session, &expected, || {
+            resolves.set(resolves.get() + 1);
+            // 首轮模拟另一线程的重绑提交点落进读取窗口：resolve 执行时
+            // 推进代（gen_a 读旧值、gen_b 读新值 → 整轮撕裂）。
+            if first_round.get() {
+                first_round.set(false);
+                advance_workspace_generation(&session);
+            }
+            expected.clone()
+        })
+        .expect("窗口内 advance 首轮检出后，重试轮必须成功");
+        assert_eq!(roots, expected, "重试轮返回的 roots 与 expected 一致");
+        assert_eq!(
+            generation,
+            Some(1),
+            "返回代为推进后的新代（同窗一致的现值，不是撕裂轮的旧值）"
+        );
+        assert_eq!(
+            resolves.get(),
+            2,
+            "撕裂轮必须整轮作废重试（一次检出 + 一次干净轮），不得静默接受首轮"
+        );
+        clear_session(&session);
+    }
+
+    /// 捕获协议 —— **持续 advance**（每一轮的重绑提交点都落进读取窗口，
+    /// 现实对应重绑风暴期间发起的 spawn）：重试上限用尽 → Err，fail-closed
+    /// 拒绝本次 spawn——报错措辞说明重绑进行中无法一致捕获工作区身份。
+    /// 变异：删掉重试上限的 Err 臂（耗尽后照常返回），本测试红。
+    #[test]
+    fn forkguard_capture_identity_exhausts_under_persistent_advance() {
+        let session = isolate("capture-persistent-advance");
+        let expected = "A-root".to_string();
+        let error = capture_workspace_identity(&session, &expected, || {
+            advance_workspace_generation(&session);
+            expected.clone()
+        })
+        .expect_err("持续撕裂必须耗尽重试并 Err（fail-closed 拒绝 spawn）");
+        assert!(
+            error.contains("rebind is in flight"),
+            "报错必须说明重绑进行中无法一致捕获身份：{error}"
+        );
+        clear_session(&session);
+    }
+
+    /// 捕获协议 —— **roots 漂移**（swap→advance 次序下 advance 落地前的
+    /// 「新根+旧代」撕裂配对：代比较检不出来，只能靠 roots 相对 engine
+    /// 侧已解析值的核对拒收）。漂移一轮后回到 expected → 检出 + 重试
+    /// 成功；持续漂移（rebind 已完全落地：旧 expected 永不再现）→ 耗尽
+    /// → Err。两个撕裂方向都被拒：本测试锁「新根+旧代」，窗口 advance
+    /// 用例锁「旧根+新代」。变异：删掉 roots 比较臂，两条断言红。
+    #[test]
+    fn forkguard_capture_identity_rejects_roots_drift() {
+        let session = isolate("capture-roots-drift");
+        let expected = "A-root".to_string();
+        // 漂移一轮：resolve 返回换根后的新 roots（代未推进——advance 尚未
+        // 落地的真实形态），次轮回到 expected → 重试成功。
+        let first_round = std::cell::Cell::new(true);
+        let resolves = std::cell::Cell::new(0usize);
+        let (roots, generation) = capture_workspace_identity(&session, &expected, || {
+            resolves.set(resolves.get() + 1);
+            if first_round.get() {
+                first_round.set(false);
+                "B-root".to_string()
+            } else {
+                expected.clone()
+            }
+        })
+        .expect("漂移轮检出后，回到 expected 的重试轮必须成功");
+        assert_eq!(roots, expected);
+        assert_eq!(generation, None, "漂移轮代未推进，接受轮读得的仍是原代");
+        assert_eq!(
+            resolves.get(),
+            2,
+            "roots 漂移必须按撕裂窗口整轮作废重试，不得静默接受首轮"
+        );
+
+        // 持续漂移：重绑完全落在捕获窗口之前，新根永远不等于 engine 侧
+        // 旧 expected（此时 engine_config.workspace 仍是旧根，放行即
+        // 「A 目录 runtime + B 纪元」本身）→ 耗尽 → Err。
+        let error = capture_workspace_identity(&session, &expected, || "B-root".to_string())
+            .expect_err("持续 roots 漂移必须耗尽重试并 Err");
+        assert!(
+            error.contains("rebind is in flight"),
+            "耗尽报错与代撕裂同口径：{error}"
+        );
         clear_session(&session);
     }
 

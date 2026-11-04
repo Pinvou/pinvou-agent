@@ -1857,6 +1857,10 @@ impl AppEngine {
                 .session_roots(session_id)
                 .with_context(|| format!("resolve managed session roots for {session_id}"))?
         };
+        // 身份捕获的比对基准（下方 capture_workspace_identity）：正是这份
+        // roots 派生 engine_config.workspace，协议据此核对捕获窗口内 roots
+        // 是否被重绑换根（clone 在所有权的 move 之前取下）。
+        let identity_expected_roots = roots.clone();
         if scheduled_profile.is_none() {
             // 仅对可证明由 Pinvou 管理的 session ledger 做旧投影迁移。定时任务
             // 的 execution/ledger 可以是用户选择的自动化工作区，绝不能按文件名
@@ -1942,16 +1946,47 @@ impl AppEngine {
         );
 
         let workspace = engine_config.workspace.clone();
-        // 本实例的发起工作区代（评审 JensenChen28 5766477612、zhuowp
-        // 5766212059/5766526920）：与 roots 解析 / `engine_config.workspace`
-        // 固定落在**同一同步块**（从这里到下方两次 spawn 之间无 await），
-        // 实际运行目录与代次构成同一次身份快照。此前快照在 forwarder 的
-        // async body 首次执行时现读——该执行可能晚于重绑的绑定提交点代
-        // 推进：A 目录冷启动实例会读到 B 代，弹卡与成功决策带 B 代通过
-        // 原子比较，A 的授权/拒绝写入 B。值随 spawn 传给 forwarder，async
-        // body 不再现读（见 forwarder 侧参数与 source pin）。
-        let instance_workspace_generation =
-            crate::features::assistant::pending_approvals::workspace_generation(session_id);
+        // 本实例的发起身份（目录 + 工作区代）必须构成**同一次一致的快照**
+        // （评审 JensenChen28 5768924092、zhuowp 5768948485 P2-a 第二轮）：
+        // 代读取（pending_approvals store 锁）与 roots 解析（SessionStore
+        // 读锁）分属两把锁、都不跨调用持有——上方 roots 解析到本捕获点
+        // 隔着 legacy 清理 / config 构造 / 日志约 90 行同步代码，
+        // 无 await 也挡不住另一线程的重绑提交点（projects.rs
+        // `clear_approval_memory_for_rebound_sessions` 先换根再推进代），
+        // 单次现读会把「A 目录 runtime + B 代章」钉成一张卡，A 的授权/
+        // 拒绝经决策比较写进 B。此前一版注释宣称「同一同步块 = 同一次
+        // 身份快照」是不准确的（无共同锁的两次读取不构成原子快照），本轮
+        // 换成检测-重试协议：`capture_workspace_identity` 在捕获窗口前后
+        // 各读一次代，窗口内检出代推进或 roots 相对 `identity_expected_roots`
+        // （即喂给 engine_config.workspace 的这份）漂移就整轮作废重试，
+        // 两个撕裂方向（旧根+新代 / 新根+旧代）都被拒；重试耗尽 →
+        // fail-closed 拒绝本次 spawn（协议假设 swap 先于 advance 为
+        // projects.rs 既有契约；残差披露见该函数 doc）。值随 spawn 传给
+        // forwarder，async body 不再现读（见 forwarder 侧参数与 source
+        // pin）；forwarder 捕获点经 helper 的钉子锁住本接线形状。
+        let (_, instance_workspace_generation) =
+            crate::features::assistant::pending_approvals::capture_workspace_identity(
+                session_id,
+                &Some(identity_expected_roots),
+                || {
+                    if scheduled_profile.is_some() {
+                        // 与上方 roots 解析同一条定时分支：store 解析失败
+                        // 回退 bridge 同口径，合法回退不得误判成撕裂。
+                        Some(
+                            store
+                                .session_roots(session_id)
+                                .unwrap_or_else(|_| bridge.session_roots(session_id)),
+                        )
+                    } else {
+                        // 普通 Session：store 校验失败 = 会话 ledger 在
+                        // spawn 中途消失，None 对 expected 的失配由协议按
+                        // 撕裂拒收（fail-closed），不引入 panic。
+                        store.session_roots(session_id).ok()
+                    }
+                },
+            )
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("capture consistent workspace identity for {session_id}"))?;
         let handle = spawn_engine(engine_config, &dt_config);
         // Record the provider route this spawn resolved onto the session
         // record. These two fields are not wire-inert diagnostics: the
