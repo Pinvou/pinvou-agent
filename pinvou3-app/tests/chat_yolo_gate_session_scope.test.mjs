@@ -51,11 +51,15 @@ assert.ok(
   `both awaits (binding query + prefs read) must be followed by the ref re-check, found ${rechecks.length}`,
 );
 
-// 4. The confirm card re-checks the captured sid before exitPlanToYolo.
+// 4. The confirm card owns its dialog identity: the post-await generation
+//    check supersedes the old live-active sid re-read (a switch-away always
+//    bumps the generation via the session-switch effect, so a superseded
+//    confirm discards instead of consuming whichever refs are current —
+//    round-8 R8-1).
 assert.match(
   src,
-  /pendingChatYoloSwitchSidRef\.current !== activeSessionIdRef\.current/,
-  'confirm must re-verify the captured sid before exitPlanToYolo',
+  /await bridge\.interaction\.confirmCodeYolo\(\);[\s\S]{0,240}if \(pendingChatYoloDialogGenRef\.current !== genAtConfirm\) \{/,
+  'confirm must re-verify its dialog generation after the save round-trip before any dispatch (round-8 R8-1; supersedes the old live-active sid re-read)',
 );
 assert.match(
   src,
@@ -82,8 +86,8 @@ assert.doesNotMatch(
 //    opens.
 assert.match(
   src,
-  /if \(needsYoloConfirmation\(prefs\)\) \{\s*\n\s*pendingChatYoloSwitchSidRef\.current = gateSid;/,
-  'the confirm card must be driven by needsYoloConfirmation(prefs) and capture the gate sid',
+  /if \(needsYoloConfirmation\(prefs\)\) \{\s*\n[^\n]*\n[^\n]*\n\s*pendingChatYoloDialogGenRef\.current \+= 1;\s*\n\s*pendingChatYoloSwitchSidRef\.current = gateSid;/,
+  'the confirm card must be driven by needsYoloConfirmation(prefs), bump the dialog generation, and capture the gate sid (round-8 R8-1)',
 );
 
 // 8. Decision glue: the catch on binding query failure must fail closed and
@@ -109,8 +113,13 @@ assert.match(
 );
 assert.match(
   src,
+  /await bridge\.interaction\.exitPlanToYolo\(sidAtConfirm\);/,
+  'confirmChatYoloSwitch must pass the captured sid to exitPlanToYolo (captured before the await, round-8 R8-1)',
+);
+assert.doesNotMatch(
+  src,
   /await bridge\.interaction\.exitPlanToYolo\(pendingChatYoloSwitchSidRef\.current\);/,
-  'confirmChatYoloSwitch must pass the captured sid to exitPlanToYolo',
+  'confirmChatYoloSwitch must not re-read the shared sid ref after the await (round-8 R8-1)',
 );
 assert.doesNotMatch(
   src,
@@ -196,12 +205,12 @@ assert.match(
 );
 assert.match(
   src,
-  /bridge\.interaction\.planStuckGo\(action\.itemId, pendingChatYoloSwitchSidRef\.current\)/,
-  'confirmation must dispatch planStuckGo with the captured sid',
+  /bridge\.interaction\.planStuckGo\(actionAtConfirm\.itemId, sidAtConfirm\)/,
+  'confirmation must dispatch planStuckGo with the pre-await captured sid (round-8 R8-1)',
 );
 assert.match(
   src,
-  /useEffect\(\(\) => \{\s*\n\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;/,
+  /useEffect\(\(\) => \{\s*\n(?:[^\n]*\n){0,3}?\s*pendingChatYoloDialogGenRef\.current \+= 1;\s*\n\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;/,
   'session switch must clear the pending action',
 );
 
@@ -271,6 +280,76 @@ assert.match(
   src,
   /await bridge\.interaction\.setSessionMode\(gateSid, 'yolo'\)/,
   'Auto→Yolo must route through the unified set_session_mode with the adjudicated sid',
+);
+
+// ── Round-8 R8-1: the async confirm must own its dialog identity ────────────
+// The save round-trip (`await confirmCodeYolo()`) is the window where the
+// user can switch sessions, cancel, or open another confirm. The unfixed body
+// re-read the shared mutable refs AFTER the await; a superseded confirmation
+// then passed the live-active guard on the NEW session's state and dispatched
+// the newer dialog's not-yet-confirmed planStuckGo. The fix captures
+// (generation, sid, action) before the await, bumps the generation at every
+// invalidation point (gate open / cancel / session switch), and discards a
+// superseded outcome without touching the shared refs, flag, or error state.
+// Negative-first: on the unfixed source the capture pin and the no-reread pin
+// both fail.
+assert.match(
+  src,
+  /const genAtConfirm = pendingChatYoloDialogGenRef\.current;\s*\n\s*const sidAtConfirm = pendingChatYoloSwitchSidRef\.current;\s*\n\s*const actionAtConfirm = pendingChatYoloActionRef\.current;\s*\n\s*try \{\s*\n\s*await bridge\.interaction\.confirmCodeYolo\(\);/,
+  'the confirm must capture (gen, sid, action) before its save round-trip',
+);
+assert.doesNotMatch(
+  src,
+  /const action = pendingChatYoloActionRef\.current;/,
+  'the confirm must not re-read the shared action ref after the await (capture before the await instead)',
+);
+assert.match(
+  src,
+  /await bridge\.interaction\.confirmCodeYolo\(\);[\s\S]{0,240}if \(pendingChatYoloDialogGenRef\.current !== genAtConfirm\) \{[\s\S]{0,420}?return;/,
+  'a superseded confirm outcome must be discarded on the post-await generation check',
+);
+assert.match(
+  src,
+  /if \(needsYoloConfirmation\(prefs\)\) \{[\s\S]{0,240}pendingChatYoloDialogGenRef\.current \+= 1;/,
+  'gate open must bump the dialog generation (a new dialog owns the shared refs)',
+);
+assert.match(
+  src,
+  /onCancel=\{\(\) => \{[\s\S]{0,900}?pendingChatYoloDialogGenRef\.current \+= 1;[\s\S]{0,200}?pendingChatYoloSwitchSidRef\.current = null;[\s\S]{0,200}?pendingChatYoloActionRef\.current = null;/,
+  'cancel must bump the generation and dispose the captured action',
+);
+assert.match(
+  src,
+  /useEffect\(\(\) => \{\s*\n(?:[^\n]*\n){0,4}?[^\n]*R8-1[^\n]*\n\s*pendingChatYoloDialogGenRef\.current \+= 1;\s*\n\s*pendingChatYoloSwitchSidRef\.current = null;/,
+  'the session-switch effect must bump the generation before nulling the refs',
+);
+// Dispatch-origin discipline: the confirm dispatches the SAME command family
+// the click came from (Plan→Yolo exit / Auto→Yolo set_session_mode / draft
+// lane default) using the CAPTURED values, never the post-await refs.
+assert.match(
+  src,
+  /pendingChatYoloActionRef\.current = \{ kind: 'modeChip', via: isPlan \? 'exitPlanToYolo' : 'sessionMode' \};/,
+  'the chip path must preset its dispatch origin for the confirm card',
+);
+assert.match(
+  src,
+  /pendingChatYoloActionRef\.current = \{ kind: 'modeChip', via: 'draftMode' \};/,
+  'the unbound draft path must preset the draft dispatch origin',
+);
+assert.match(
+  src,
+  /else if \(actionAtConfirm && actionAtConfirm\.via === 'sessionMode'\) \{\s*\n\s*await bridge\.interaction\.setSessionMode\(sidAtConfirm, 'yolo'\);/,
+  'the confirm must honor the captured origin (session-mode entries via set_session_mode)',
+);
+assert.match(
+  src,
+  /else if \(actionAtConfirm && actionAtConfirm\.via === 'draftMode'\) \{\s*\n\s*await bridge\.interaction\.setDraftMode\('yolo'\);/,
+  'the confirm must honor the captured origin (draft entries via setDraftMode)',
+);
+assert.match(
+  src,
+  /if \(pendingChatYoloDialogGenRef\.current === genAtConfirm\) \{\s*\n\s*setChatYoloConfirmError\(/,
+  'the failure path must gate its error write on the generation (no painting a newer dialog)',
 );
 
 console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban)');

@@ -2839,6 +2839,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // exitPlanToYolo and flipped a bound session without any card
       // (#445 R9 MAJOR 1).
       const pendingChatYoloActionRef = useRef(null);
+      // Dialog generation for the one-time confirm: bumped every time the
+      // refs are (re)assigned or invalidated — gate open, cancel, and the
+      // session-switch effect. An in-flight confirm captures the generation
+      // before its await and discards its outcome on mismatch, so a save
+      // round-trip can never consume a NEWER dialog's not-yet-confirmed
+      // action (round-8 R8-1: the post-await ref re-read used to let
+      // session A's confirmation dispatch session B's captured action).
+      const pendingChatYoloDialogGenRef = useRef(0);
       // Binding resolution at switch time cannot rely on async state: while a query
       // is in flight a click would see null and skip the gate. Resolve synchronously
       // before the verdict (cache → bridge query) so clicks made while waiting still
@@ -2923,6 +2931,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // Re-check after the second await as well.
           if (gateSid !== activeSessionIdRef.current) return false;
           if (needsYoloConfirmation(prefs)) {
+            // A newly opened dialog owns the shared refs: bump the generation
+            // so any confirm still awaiting its save round-trip discards.
+            pendingChatYoloDialogGenRef.current += 1;
             pendingChatYoloSwitchSidRef.current = gateSid;
             if (!pendingChatYoloActionRef.current) pendingChatYoloActionRef.current = { kind: 'modeChip' };
             setPendingChatYoloSwitch(true);
@@ -3000,7 +3011,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // needsYoloConfirmation 对草稿生效，两车道同约）。
         if (!activeSessionId) {
           if (target !== 'auto' && target !== 'yolo') return;
-          if (target === 'yolo' && !(await chatYoloGateAllows(null))) return;
+          if (target === 'yolo') {
+            // Preset the draft dispatch: if the gate opens its card, the
+            // confirm lands setDraftMode('yolo') (the lane default), not a
+            // session command that would no-op without a sid.
+            pendingChatYoloActionRef.current = { kind: 'modeChip', via: 'draftMode' };
+            if (!(await chatYoloGateAllows(null))) return;
+          }
           await bridge.interaction.setDraftMode(target);
           return;
         }
@@ -3026,6 +3043,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // adjudication is for the session captured at click time, and the
         // final action must not follow a switch-away.
         if (gateSid !== activeSessionIdRef.current) return;
+        // Preset the dispatch origin: if the gate opens its card, the confirm
+        // must dispatch the SAME command family this click came from
+        // (Plan→Yolo exits the plan via exit_plan_to_yolo, Auto→Yolo goes
+        // through set_session_mode) instead of a fixed command — the two
+        // commands are equivalent today, and pinning the origin keeps them
+        // from drifting apart silently.
+        pendingChatYoloActionRef.current = { kind: 'modeChip', via: isPlan ? 'exitPlanToYolo' : 'sessionMode' };
         if (!(await chatYoloGateAllows(gateSid))) return;
         // The final action targets the adjudicated sid explicitly: the ref
         // re-checks only cover this component's awaits, while the bridge's
@@ -3073,30 +3097,49 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         if (chatYoloConfirmBusy) return;
         setChatYoloConfirmBusy(true);
         setChatYoloConfirmError('');
+        // Capture the dialog identity BEFORE the await: the preference save is
+        // exactly the window where the user can switch sessions, cancel, or
+        // open another confirm. The shared mutable refs belong to whichever
+        // dialog opened last — re-reading them after the await let a stale
+        // confirmation consume the newer dialog's not-yet-confirmed action
+        // (round-8 R8-1): A's resolution saw the live-active guard satisfied
+        // by B's own state and dispatched B's captured planStuckGo.
+        const genAtConfirm = pendingChatYoloDialogGenRef.current;
+        const sidAtConfirm = pendingChatYoloSwitchSidRef.current;
+        const actionAtConfirm = pendingChatYoloActionRef.current;
         try {
           await bridge.interaction.confirmCodeYolo();
-          if (pendingChatYoloSwitchSidRef.current !== activeSessionIdRef.current) {
-            // Switched away: just dismiss the card (the global flag is already written;
-            // the target session will not be prompted again after switching back).
-            setPendingChatYoloSwitch(false);
+          if (pendingChatYoloDialogGenRef.current !== genAtConfirm) {
+            // Superseded: this click's dialog is gone (session switch, cancel,
+            // or a newer confirm). The global one-shot flag is already
+            // written; the newer dialog re-confirms on its own click. Discard
+            // without touching the shared refs, flag, or error state — they
+            // belong to the newer dialog now.
             return;
           }
           setPendingChatYoloSwitch(false);
-          // Dispatch on the action captured when the card opened, targeting
-          // the captured sid — never live-active at call time.
-          const action = pendingChatYoloActionRef.current;
           pendingChatYoloActionRef.current = null;
-          if (action && action.kind === 'planStuckGo') {
-            await bridge.interaction.planStuckGo(action.itemId, pendingChatYoloSwitchSidRef.current);
+          // Dispatch on the action captured when THIS card opened, targeting
+          // the captured sid — never the post-await refs, never live-active.
+          if (actionAtConfirm && actionAtConfirm.kind === 'planStuckGo') {
+            await bridge.interaction.planStuckGo(actionAtConfirm.itemId, sidAtConfirm);
+          } else if (actionAtConfirm && actionAtConfirm.via === 'sessionMode') {
+            await bridge.interaction.setSessionMode(sidAtConfirm, 'yolo');
+          } else if (actionAtConfirm && actionAtConfirm.via === 'draftMode') {
+            await bridge.interaction.setDraftMode('yolo');
           } else {
-            await bridge.interaction.exitPlanToYolo(pendingChatYoloSwitchSidRef.current);
+            await bridge.interaction.exitPlanToYolo(sidAtConfirm);
           }
         } catch (e) {
           // No longer fail silently: keep the card open and show the reason inline
           // (matching the code lane; on old backends without confirmCodeYolo the user
-          // must not be left without feedback).
+          // must not be left without feedback). The error write is
+          // generation-gated too — a superseded attempt must not paint its
+          // failure onto the newer dialog.
           console.warn('confirm chat yolo switch failed', e);
-          setChatYoloConfirmError(String(e && e.message || e || 'error'));
+          if (pendingChatYoloDialogGenRef.current === genAtConfirm) {
+            setChatYoloConfirmError(String(e && e.message || e || 'error'));
+          }
         } finally {
           setChatYoloConfirmBusy(false);
         }
@@ -3104,6 +3147,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // Switching sessions invalidates the old session's confirm card and error
       // message.
       useEffect(() => {
+        // The bump discards any confirm still awaiting its save round-trip:
+        // the refs this effect nulls belonged to the previous session's
+        // dialog (round-8 R8-1).
+        pendingChatYoloDialogGenRef.current += 1;
         pendingChatYoloSwitchSidRef.current = null;
         pendingChatYoloActionRef.current = null;
         // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
@@ -4460,6 +4507,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 // session would confirm into the canceled continuation
                 // (mark the plan card handled + send its command). Same
                 // invalidation convention as the session-switch effect above.
+                // The generation bump also discards any confirm still
+                // awaiting its save round-trip (round-8 R8-1).
+                pendingChatYoloDialogGenRef.current += 1;
                 pendingChatYoloSwitchSidRef.current = null;
                 pendingChatYoloActionRef.current = null;
                 setPendingChatYoloSwitch(false);
