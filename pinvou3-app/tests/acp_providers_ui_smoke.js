@@ -429,7 +429,8 @@ async function clickSettingsSection(page, label) {
   rec('⑥.4 1M 变体按厂商过滤（Kimi Code k3.1-pro[1m]/k3[1m]）', await page.evaluate(() => {
     const values = [...document.querySelectorAll('[data-testid^="acp-provider-model-option-"]')]
       .map(option => (option.textContent || '').trim());
-    return values.includes('k3[1m]')
+    return values.includes('k3.1-pro[1m]')
+      && values.includes('k3[1m]')
       && !values.some(value => /\[1M\]/.test(value))
       && !values.includes('deepseek-v4-flash[1m]');
   }));

@@ -455,6 +455,14 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-V4-Pro-0813')), true, 'live serverless catalog row');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K3')), true, 'live serverless catalog row');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'zai-org/GLM-5.3-Flash')), true, 'live serverless catalog row');
+  // Round-4 pins: every remaining live lineup row is pinned positively —
+  // deleting gpt-oss-120b (or any row below) used to stay green because
+  // only 3 of 8 rows were recognized.
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-V4.1-Flash')), true, 'live serverless catalog row');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'zai-org/GLM-5.3')), true, 'live serverless catalog row');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'Qwen/Qwen3.7-Max')), true, 'live serverless catalog row');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'Qwen/Qwen3.6-Plus')), true, 'live serverless catalog row');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'openai/gpt-oss-120b')), true, 'live serverless catalog row');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K2.6')), false, 'removed from serverless 2026-08-19 (deprecations record)');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-V4-Pro')), false, 'removed from serverless 2026-08-27 (deprecations record)');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'openai/gpt-oss-20b')), false, 'removed from serverless 2026-09-15 (deprecations record)');
@@ -1437,7 +1445,7 @@ test('frontend endpoint classification folds URL case like the Rust identify arm
   // The stored value keeps its original case: display/prefill must not be
   // rewritten by a classification-only lookup.
   const original = mk('https://TOKENHUB.TencentMaas.com/plan/v3');
-  assert.strictEqual(findCloudProviderForModel(original)?.baseUrl || 'https://tokenhub.tencentmaas.com/plan/v3', 'https://tokenhub.tencentmaas.com/plan/v3');
+  assert.strictEqual(findCloudProviderForModel(original)?.baseUrl, 'https://tokenhub.tencentmaas.com/plan/v3', 'display keeps the canonical catalog baseUrl (no vacuous fallback)');
   assert.strictEqual(original.base_url, 'https://TOKENHUB.TencentMaas.com/plan/v3', 'classification must not mutate the stored base_url');
 });
 
