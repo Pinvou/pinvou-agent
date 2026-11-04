@@ -1309,7 +1309,10 @@ fn deps_check_reports_the_platform_capability_table() {
     // the CLI boundary maps it to English copy instead of leaking the key —
     // on EVERY platform (the mapping is not cfg-gated), so the assertion is
     // not either (round-37: a macOS-gated assert executed nowhere — CI's
-    // cli-test leg is Linux, macos-cli-check only compiles).
+    // cli-test leg is Linux; macos-cli-check compiles the workspace and, as
+    // of the round-18 fix wave, runs the macOS-gated alias-flag pin via a
+    // filtered cargo test — this assert stays ungated so the Linux leg
+    // executes it).
     assert!(
         !outcome.stdout.contains("email_manual"),
         "the raw email_manual i18n key must not reach CLI output"
