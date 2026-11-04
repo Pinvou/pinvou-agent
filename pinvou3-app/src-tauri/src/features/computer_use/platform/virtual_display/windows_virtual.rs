@@ -1856,10 +1856,10 @@ impl WindowsVirtualDesktopBackend {
                 // Alt chords register as ordinary key presses and Alt+F4 /
                 // Alt-menu semantics never fired. Ctrl/Shift chords keep the
                 // plain pair — the system pair is Alt-specific.
-                let (down, up) = if *vk == VK_MENU.0 {
-                    (WM_SYSKEYDOWN, WM_SYSKEYUP)
+                let down = if *vk == VK_MENU.0 {
+                    WM_SYSKEYDOWN
                 } else {
-                    (WM_KEYDOWN, WM_KEYUP)
+                    WM_KEYDOWN
                 };
                 self.post(top, down, usize::from(*vk), key_lparam(false))?;
                 pressed.push(*vk);
