@@ -263,12 +263,12 @@ fn to_wide(text: &str) -> Vec<u16> {
 /// share one implementation.
 fn char_utf16_units(character: char) -> (u16, Option<u16>) {
     let mut units = [0u16; 2];
+    // `char::encode_utf16` writes into the buffer and returns the FILLED
+    // SLICE (not an iterator): one unit for BMP characters, both surrogate
+    // units for astral ones.
     let encoded = character.encode_utf16(&mut units);
-    let first = encoded
-        .next()
-        .expect("any char encodes to at least one unit");
-    let second = encoded.next();
-    (first, second)
+    let second = encoded.get(1).copied();
+    (encoded[0], second)
 }
 
 /// Chord key order (§6): modifiers lead, the rest keeps the given order.
@@ -2973,7 +2973,10 @@ mod tests {
         assert_eq!(char_utf16_units('中'), (0x4E2D, None));
         let (high, low) = char_utf16_units('\u{1F600}');
         let low = low.expect("an astral char must yield both surrogate units");
-        assert_eq!(String::from_utf16(&[high, low]).as_deref(), Ok("\u{1F600}"));
+        assert_eq!(
+            String::from_utf16(&[high, low]).ok().as_deref(),
+            Some("\u{1F600}")
+        );
     }
 
     /// Composite blit offsets on a multi-monitor session: window rects are
