@@ -9615,7 +9615,9 @@ mod tests {
     /// parameter outright, while the base's exact-K3 shapers only learn bare
     /// k3. The chat request must therefore carry NO reasoning_effort — the
     /// foundation's apply_reasoning_effort early-returns on None and omits
-    /// the thinking key, letting the vendor default (max) apply. Both the
+    /// the thinking key, letting the vendor default apply (endpoint-
+    /// specific: `high` on the Kimi Code coding-plan lane, `max` on the
+    /// platform API). Both the
     /// default arm (`_ => Some("high")`, which re-introduced the parameter
     /// for fresh records) and a legacy stored value must resolve to None.
     #[test]
