@@ -537,10 +537,14 @@ pub async fn organize_memory(
             // Endpoint/credential probing details + storage root must both be
             // scrubbed before this web-visible arm returns (Round-15 复审
             // minor:organize 命令与其他 memory 命令同口径折叠)。
-            crate::platform::paths::redact_storage_prefix(&sanitize_command_error(
+            // Round-20 复审(S10-1):折叠先行——旧序 sanitize→fold 在含
+            // 空白的家目录上会让 redact_secret 的空白分词先吃掉折叠
+            // needle 的后段,盘符+用户名碎片仍以明文出站;先折叠再走统一
+            // secret 扫描,任何形态下都不再泄漏家目录碎片。
+            sanitize_command_error(
                 &format!("organize memory: resolve bridge for {sid}"),
-                format!("{e:#}"),
-            ))
+                crate::platform::paths::redact_storage_prefix(&format!("{e:#}")),
+            )
         })?,
         None => {
             let mut bridge = pool.bridge.clone();
@@ -554,10 +558,12 @@ pub async fn organize_memory(
     let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
         .await
         .map_err(|e| {
-            crate::platform::paths::redact_storage_prefix(&sanitize_command_error(
+            sanitize_command_error(
                 "organize memory",
-                format!("{e:#}"),
-            ))
+                // Round-20 复审(S10-1):同上,折叠先行(空白家目录碎片
+                // 泄漏修复)。
+                crate::platform::paths::redact_storage_prefix(&format!("{e:#}")),
+            )
         })?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store);
     // If the best-effort pre-render already failed, do not let the snapshot
@@ -870,6 +876,74 @@ mod tests {
     use super::*;
     use deepseek_tui::models::{ContentBlock, Message};
 
+    #[test]
+    fn whitespace_home_folds_before_the_secret_scan_so_no_fragment_leaks() {
+        // Round-20 复审(S10-1)行为钉:含空白的家目录上,旧序
+        // sanitize→fold 会让 redact_secret 的空白分词先吃掉折叠 needle
+        // 后段(`...John [REDACTED]` 形态),盘符/用户名碎片以明文出站。
+        // 新序(生产臂)先折叠后扫描:短 token 存活为折叠形态,长 token
+        // 整体 [REDACTED]——两个方向都不再残留家目录碎片。对照腿用旧序
+        // 手工复现泄漏形态(钉住回归的真实形状),删除折叠先行(改回旧
+        // 序)即红。
+        let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
+        let home = base.join("John Doe").join(".pinvou3");
+        std::fs::create_dir_all(&home).unwrap();
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        // 路径一律取 pinvou3_home() 的读数(macOS /tmp 符号链接等规范化差
+        // 异),保证折叠 needle 与 detail 同源。
+        let home_now = crate::platform::paths::pinvou3_home();
+        let detail = format!(
+            "os error 3: {}/sessions2/x.json: No such file or directory",
+            home_now.display()
+        );
+        // 生产新序:折叠先行(sanitize_command_error 内层只做 secret 扫描)。
+        let new_order = sanitize_command_error(
+            "organize memory",
+            crate::platform::paths::redact_storage_prefix(&detail),
+        );
+        assert!(
+            !new_order.contains("John Doe")
+                && !new_order.contains(home_now.display().to_string().as_str()),
+            "the fold-first order must not leak any home fragment, got: {new_order}"
+        );
+        // 对照腿:旧序(sanitize 先行)确实产生碎片泄漏——本测试钉的就是
+        // 该形态不再出现在生产臂。泄漏形状要求空格前段短于内层 secret 的
+        // ≥24 长度族;平台上临时目录本身超长时该形状造不出来(macOS
+        // /var/folders…),跳过对照腿,生产不变式腿照常执行。
+        let pre_space = format!("{}/John", base.display());
+        if pre_space.len() < 24 {
+            let old_order = crate::platform::paths::redact_storage_prefix(&sanitize_command_error(
+                "organize memory",
+                &detail,
+            ));
+            assert!(
+                old_order.contains("John"),
+                "control: the reversed order must reproduce the fragment leak                  shape this pin forbids, got: {old_order}"
+            );
+        }
+
+        // 无空白 home 的常规方向不受影响:折叠形态完整出站。
+        let plain_home = base.join("plainhome").join(".pinvou3");
+        std::fs::create_dir_all(&plain_home).unwrap();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &plain_home) };
+        let plain_now = crate::platform::paths::pinvou3_home();
+        let plain_detail = format!("os error 3: {}/mem/x.json: boom", plain_now.display());
+        let folded = sanitize_command_error(
+            "organize memory",
+            crate::platform::paths::redact_storage_prefix(&plain_detail),
+        );
+        assert!(
+            folded.contains("organize memory: os error 3: ~/.pinvou3/mem/x.json"),
+            "the plain-home fold must survive the secret scan intact, got: {folded}"
+        );
+    }
+
     fn revision_message(role: &str, text: &str) -> Message {
         Message {
             role: role.into(),
@@ -1094,6 +1168,42 @@ mod tests {
     /// `reserve edit_last_turn`:原始链按既定策略只进桌面日志,Web 侧由
     /// 稳定码折叠。逐 `map_err(|e|` 臂取窗口断言,不依赖 rustfmt 的换行
     /// 形态(单行形态计数曾被折叠换行静默绕过——突变复跑实证)。
+    #[test]
+    fn organize_command_arms_fold_before_the_secret_scan() {
+        // Round-20 复审(S10-1)源钉:空白家目录上 sanitize→fold 旧序会
+        // 泄漏家目录碎片(见 whitespace_home 行为钉);生产臂必须折叠先
+        // 行——两臂窗内必须出现「fold 应用于原始 detail」的形态
+        // (`redact_storage_prefix(&format!("{e:#}"))`),且不得再出现旧序
+        // 标记(`redact_storage_prefix(&sanitize_command_error`)。改回旧
+        // 序本钉即红。
+        let source = include_str!("memory.rs");
+        for (needle, label) in [
+            (
+                "organize memory: resolve bridge for {sid}",
+                "the bridge-resolution arm",
+            ),
+            (
+                "organize_memory_with_llm(&bridge, None)",
+                "the organize arm",
+            ),
+        ] {
+            let at = source
+                .find(needle)
+                .unwrap_or_else(|| panic!("{label} must exist"));
+            let arm = &source[at..at + 900];
+            assert!(
+                arm.contains("redact_storage_prefix(&format!(\"{e:#}\"))"),
+                "{label} must apply the fold to the raw error detail \
+                 (fold-before-scan order)"
+            );
+            assert!(
+                !arm.contains("redact_storage_prefix(&sanitize_command_error"),
+                "{label} must not revert to the sanitize-first order that \
+                 leaks home fragments on whitespace homes"
+            );
+        }
+    }
+
     #[test]
     fn web_visible_memory_errors_fold_the_storage_prefix() {
         // 只扫生产半边:include_str 含测试模块自身,断言字面量会污染计数。
