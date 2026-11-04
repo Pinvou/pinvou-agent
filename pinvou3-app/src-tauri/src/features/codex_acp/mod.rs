@@ -20,6 +20,7 @@ mod providers;
 pub(crate) mod reader_window;
 mod resource_ledger;
 mod runtime;
+mod shutdown;
 mod stall;
 mod store;
 pub mod workspace;
@@ -1640,6 +1641,7 @@ enum RuntimeRestart {
 pub struct AcpPool {
     app: AppHandle,
     sessions: Arc<Mutex<HashMap<String, Arc<AcpSession>>>>,
+    shutdown: shutdown::PoolShutdown,
     pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     pending_elicitations: Arc<Mutex<HashMap<String, PendingElicitation>>>,
     agents: SessionAgentStore,
@@ -2091,6 +2093,7 @@ impl AcpPool {
         Ok(Self {
             app,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            shutdown: shutdown::PoolShutdown::default(),
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             pending_elicitations: Arc::new(Mutex::new(HashMap::new())),
             agents,
@@ -4744,6 +4747,10 @@ impl AcpPool {
     /// kill_on_drop 只在 Child drop 时生效，Tauri 退出不保证 drop managed
     /// state，显式 shutdown 兜底防孤儿进程。
     pub async fn shutdown_all(&self) {
+        // Signal before taking the lock: an unpublished startup can own it
+        // while awaiting an unresponsive peer. Cancelling that future drops
+        // its kill_on_drop child and connection shutdown sender first.
+        self.shutdown.cancel();
         let runtimes: Vec<Arc<AcpSession>> = {
             let mut sessions = self.sessions.lock().await;
             // The drain empties the pool, so any crash budget or parked restart
@@ -5147,10 +5154,10 @@ impl AcpPool {
         // Hold the pool-wide sessions lock until replacement insertion
         // completes. A gap during shutdown would let concurrent callers spawn
         // separate children, and the later insert would leak the earlier
-        // runtime. This deliberately blocks ACP entrypoints for every session
-        // during shutdown, the bounded 30-second initialize, and the currently
-        // unbounded session/load and config restoration.
-        let mut sessions = self.sessions.lock().await;
+        // runtime. Other ACP entrypoints wait during initialize/load/config
+        // restoration, but process shutdown cancels admission and startup
+        // before its collector waits for this lock.
+        let mut sessions = self.shutdown.run(self.sessions.lock()).await?;
         match resolve_runtime(&mut sessions, session_id, |runtime| {
             runtime.lifecycle.is_running() && !runtime.restart_requested.load(Ordering::Acquire)
         }) {
@@ -5320,10 +5327,11 @@ impl AcpPool {
             .runtime_generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
-        let runtime = match self
-            .spawn_session(session_id, &operation_id, generation)
-            .await
-        {
+        let spawned = self
+            .shutdown
+            .run(self.spawn_session(session_id, &operation_id, generation))
+            .await?;
+        let runtime = match spawned {
             Ok(runtime) => Arc::new(runtime),
             Err(error) => {
                 // A failed spawn costs a crash-budget slot too: an adapter that

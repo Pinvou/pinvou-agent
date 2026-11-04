@@ -1,3 +1,4 @@
+import { trayLabels } from './tray/ja.js';
 // 日本語 UI 辞書。ensureLanguage("ja") で遅延ロード。en をスプレッドで併合し、
 // ja 固有キーで上書きする(zh の全キーとの整合は tests/ui_language_coverage.test.mjs
 // の parity アサーションが強制)。
@@ -627,7 +628,7 @@ const jaBase = {
 };
 
 // ja 漏翻的 key 回落英文，避免新增文案后显示 undefined
-export const dictJa = { ...dictEn, ...jaBase };
+export const dictJa = { ...dictEn, ...jaBase, tray: trayLabels };
 
 dictJa.uiToolDetails.flow = {
   incomplete:name=>`${name} の接続が未完了`, connected:name=>`${name} に接続済み`, connecting:name=>`${name} に接続中`,

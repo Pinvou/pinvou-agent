@@ -1258,11 +1258,16 @@ pub struct WebSettingsPatch {
 ///
 /// Phase C 会做 in-place engine restart（处理 in-flight turn）。
 #[tauri::command]
-pub async fn update_settings(patch: GeneralSettingsPatch) -> Result<UserPrefs, String> {
+pub async fn update_settings(
+    app: tauri::AppHandle,
+    patch: GeneralSettingsPatch,
+) -> Result<UserPrefs, String> {
     // Round-51 review: the settings transaction holds the cross-process
     // settings.json.lock across keychain I/O — join the blocking body on a
     // spawn_blocking worker like the sibling model commands.
-    join_blocking("update_settings", move || persist_general_settings(patch)).await
+    let prefs = join_blocking("update_settings", move || persist_general_settings(patch)).await?;
+    crate::features::system_tray::refresh_language(&app, prefs.language);
+    Ok(prefs)
 }
 
 fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsPatch) {
