@@ -268,7 +268,8 @@ endpoint replaced" or "endpoint replaced"), and `4003` when revoke or TTL
 expiry tears down the affected client ("endpoint revoked" or "endpoint
 expired"). A client whose socket the Relay terminates abruptly after the WebSocket
 handshake (frame high-water mark, unserializable frame, heartbeat liveness
-kill) observes the implicit `1006` abnormal-closure code on its side. A
+kill), or a receiver protocol violation on a poisoned frame stream) observes
+the implicit `1006` abnormal-closure code on its side. A
 hostile upgrade is rejected before any WebSocket exists: the peer sees a
 failed HTTP upgrade (a 4xx/429/503 banner or a bare destroy), not `1006`.
 

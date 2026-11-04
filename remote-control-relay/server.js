@@ -1398,7 +1398,11 @@ function forwardAuthenticatedMessage(ws, msg) {
         endpoint_id: endpoint.endpoint_id,
         lease_id: endpoint.lease_id,
       }));
-    } catch {
+    } catch (error) {
+      // Round-20 复审(S08):防御路径此前静默——与其它运行时错误同一
+      // [relay-error] 纪律补一行固定前缀日志(该路径今日不可达,一旦
+      // 触发必须能在日志/健康计数侧看见)。
+      console.error(`[relay-error] ${error && error.message ? error.message : error}`);
       send(ws, {
         v: 2,
         type: "error",
