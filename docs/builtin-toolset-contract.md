@@ -126,7 +126,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   `scripts/tests/test_mcp_schema_contract.py`): a tool schema must stay inside the
   shape set the constrained-decoding route's validator (MFJS) actually accepts —
   every `type: array` carries concretely typed `items` (an itemless array completes
-  to `[]` under constrained decoding; the k3 slides incident), every schema node is
+  to `[]` under constrained decoding; the k3 slides incident — historical anchor:
+  the 2026-11-04 retest no longer reproduces the 27-in-a-row `slides:[]` on a
+  fresh single turn, but long-context/multi-turn field loss persists), every schema node is
   a non-empty object with a concrete string `type` (or an `anyOf` union), the root
   is a typed object without composition, no keyword outside MFJS's allowed set
   (`oneOf`, `allOf`, `patternProperties`, `prefixItems`, `contains`,
@@ -140,6 +142,28 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   ≤ 500 total enum values, ≤ 120000 encoded bytes, and an enum above 250 entries
   is further capped at 7500 combined literal bytes) — the validator silently
   drops the whole tool for any of these.
+- **anyOf unions and the per-layout mitigation** (2026-11-04): `anyOf` is a formal
+  MFJS member — the Moonshot walle validator ships `ValidateAnyOf`, and the MFJS
+  tool-schema spec lists the branch rules (each branch carries an explicit
+  `type`, `type` never sits on the `anyOf` level, ≤ 10 branches, ≤ 100 total
+  properties, nesting depth ≤ 5) — and the base pipeline is legalizing
+  root-level `anyOf`; `strict` defaults to true on the constrained route.
+  The pptx `make_pptx` schema is the shipped precedent: `slides.items` is an
+  `anyOf` union of exactly one `type:object` branch per layout whose
+  `required` lists exactly the fields that layout's renderer cannot draw a
+  body without. This is the standing mitigation for constrained decoding's
+  minimal-completion tendency on deep optional-field payloads: the previous
+  flat schema whose only required field was `layout` made Kimi K3 emit
+  layout+title-only pages with every content field dropped (a real user
+  session lost fields on 5 of 7 calls on 2026-11-04), and the per-layout
+  branches were the only fully compliant 10-page deck in the 2026-11-04
+  live probe, at +6% bytes (the all-fields-required control produced blank
+  values and enum guessing at +76% tokens — falsified; `strict:false` had
+  no effect). On the pre-anyOf base the union flattens back to
+  all-optional semantics — the old behavior — so the shape degrades safely
+  backward. The schema guard mirrors the validator at the pinned CodeWhale
+  gitlink: its root-level-`anyOf` ban updates with that gitlink bump, not
+  independently.
 - **Pagination parameters** (existing precedent, mandatory alignment): a bounded
   count parameter (`turn_limit` in `read_session`; `limit` where a listing has
   no other count semantics) + `cursor` (opaque string, server stateless) →
