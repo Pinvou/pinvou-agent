@@ -366,8 +366,15 @@ impl ScheduledChatExecutor {
             Some(Err(error)) => TaskExecutionResult {
                 status: TaskStatus::Failed,
                 result_text: None,
-                // Same redaction discipline as the memory-organize arm: app
-                // error chains can carry store paths and gate details.
+                // Secret-only redaction here, matching what this chain can
+                // actually carry today: ensure_deliverable_target collapses
+                // store-load failures into static text and sidecar error
+                // contexts use bare file names, so no proven absolute-path
+                // carrier exists on this chain. Round-19 复审:此前注释声称
+                // 与本文件 organize 臂同一纪律——失实,organize 臂自
+                // round-18 起额外折叠存储根(其链上的 bounded-read io
+                // Display 确有绝对路径);本臂将来若引入携带路径的错误构造,
+                // 须同步接 redact_storage_prefix(见 organize 臂注释)。
                 error: Some(format!(
                     "scheduled message delivery: {}",
                     crate::platform::credential_store::redact_secret(&format!("{error:#}"))
@@ -1374,10 +1381,11 @@ mod tests {
     /// (其注释还声称与命令层同一处理——命令层自 round-15 起额外折叠存储
     /// 根,注释失实)。organize 的错误链携带 bounded-read 原语的 io
     /// Display(path.display() 的绝对存储路径),run record 经
-    /// `list_scheduled_task_runs` 出站(Web 允许清单内)。行为测试无法在
-    /// 无 AppHandle 的执行器环境构造失败 organize,按本文件 round-15 N10
-    /// 的同一先例钉源码形态;双重边界(先绑生产半边,再绑本臂),删任一
-    /// 层 redact 即红。
+    /// `list_scheduled_task_runs` 出站(Web 允许清单内)。本钉与
+    /// `memory_organize_failure_folds_the_storage_root_in_the_record`
+    /// (Round-19 复审补的行为钉,同一文件内即可构造失败 organize)
+    /// 双重兜底:源码钉锚生产半边与臂内 redact 顺序,删任一层 redact
+    /// 即红;行为钉走真实执行路径断言 record 内容。
     #[test]
     fn memory_organize_failure_reason_folds_the_storage_prefix() {
         let source = include_str!("executor.rs");
@@ -1732,6 +1740,60 @@ mod tests {
         assert!(
             runtime.profiles().is_empty(),
             "failed organize must not leave a session either"
+        );
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_organize_failure_folds_the_storage_root_in_the_record() -> Result<()> {
+        // Round-19 复审 M2:行为钉。round-18 源码钉注释曾声称「无 AppHandle
+        // 无法行为构造失败 organize」——不成立,上一测试的
+        // set_organize_error 就是同一构造。本测试注入携带存储路径的失败,
+        // 断言 run record(经 list_scheduled_task_runs 出站的 Web 可见面)
+        // 落的是折叠后的 ~/.pinvou3 形态而非原始路径。fixture 用短 home:
+        // 内层 redact_secret 的 ≥24 长度族会把长路径先打成 [REDACTED],
+        // 折叠层无从观察;短路径(如真实短安装/短用户名)正是折叠层独力
+        // 兜底的形态。ENV_LOCK 保证 worker 线程读到与本测试构造一致的
+        // PINVOU3_HOME(paths 测试会在同进程并行改写该变量)。
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", "p8") };
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        runtime.set_organize_error(Some(format!(
+            "snapshot load failed: {}",
+            crate::platform::paths::pinvou3_home().join("p").display()
+        )));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Failed);
+        let error = finished
+            .error
+            .as_deref()
+            .expect("failed run carries the error");
+        assert!(
+            error.contains("memory organize: snapshot load failed: ~/.pinvou3/p"),
+            "the run record must carry the folded storage root, got: {error}"
+        );
+        assert!(
+            !error.contains("p8/p"),
+            "the run record must not carry the raw home prefix, got: {error}"
+        );
+        assert!(
+            !error.contains("[REDACTED]"),
+            "the path token must survive the inner secret redaction for the \
+             fold to be the layer under test, got: {error}"
         );
         manager.shutdown();
         Ok(())
