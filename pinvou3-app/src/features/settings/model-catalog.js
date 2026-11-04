@@ -418,8 +418,9 @@ const MODEL_CATALOG = {
       // fall back to the non-thinking K2.8 Preview. kimi-for-coding-highspeed
       // serves K2.7 Code Highspeed at 256K. K3.1 Pro / K3.1 Pro Highspeed
       // (2026-10-23 per the Kimi Code whats-new — the dated launch entry
-      // lives there; the open-platform changelog carries no dated K3.1
-      // entry; re-checked 2026-11-03 against the
+      // lives there; the open-platform changelog has no dated K3.1 launch
+      // entry, only an October 2026 Batch-API support note; re-checked
+      // 2026-11-03 against the
       // models-overview page, which states both spellings carry kimi-k3's
       // constraints verbatim: "参数约束也与 `kimi-k3` 完全一致") are the
       // plan's new
@@ -427,10 +428,16 @@ const MODEL_CATALOG = {
       // video, thinking cannot be disabled (400), effort low/high/max — the
       // officially documented [1m] Claude Code declarations moved to
       // k3.1-pro[1m] (the k3[1m] entry no longer appears on the CC page; the
-      // ACP catalog keeps it as an append-only legacy suggestion). The base's
-      // tiered-effort route only learns bare k3 / k3-256k, so the k3.1 rows
-      // ride the generic off/high thinking switch for now (foundation
-      // follow-up to cover them).
+      // ACP catalog keeps it as an append-only legacy suggestion). The
+      // base's tiered-effort route only learns bare k3 / k3-256k, so the
+      // kimi rows expose no tier control at all: the bare k3.1 spellings
+      // and the documented [1m] declaration forms (k3.1-pro[1m] /
+      // kimi-k3.1-pro[1m], bracket-tolerant in isMoonshotK31ModelName since
+      // the round-4 review) all exit to no ladder — the generic off/high
+      // switch is unreachable for any K3.1 spelling, stored effort is
+      // dropped (frontend normalize + Rust prefs load), and the wire omits
+      // the field so the vendor default (max) applies (foundation
+      // follow-up: teach the base's route shapers the K3.1 spellings).
       items: [
         { model: 'k3.1-pro', imageCapable: true, title: 'k3.1-pro', desc: 'K3.1 Pro 新旗舰，原生视觉，1M 按档开放' },
         { model: 'k3.1-pro-highspeed', imageCapable: true, title: 'k3.1-pro-highspeed', desc: 'K3.1 Pro 高速款' },
@@ -2365,11 +2372,20 @@ function moonshotReasoningLadder(model, modelName, genericTiers) {
 }
 
 // K3.1 family spellings across the kimi groups (platform + Kimi Code).
-// Case-folded: settings only produce these exact rows, but stored prefs are
-// user-editable strings.
+// Case-folded, and bracket-tolerant on the documented `[1m]` 1M declaration
+// forms: k3.1-pro[1m] is the ACP Kimi Code models1m datalist entry and
+// kimi-k3.1-pro[1m] is the direct-platform bracket spelling of the same
+// models, so a stored bracket id must get the same no-control exit as its
+// bare spelling — otherwise the generic off/high ladder would let users
+// persist a disable shape the vendor rejects (2026-11-04 review round 4).
+// Bracket forms of NON-K3.1 ids (k3[1m] / kimi-k3[1m]) strip to non-K3.1
+// spellings and keep their own contracts, mirroring prefs
+// is_moonshot_k31_route.
 function isMoonshotK31ModelName(modelName) {
+  const normalized = String(modelName || '').trim().toLowerCase();
+  const bare = normalized.endsWith('[1m]') ? normalized.slice(0, -4) : normalized;
   return ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'k3.1-pro', 'k3.1-pro-highspeed']
-    .includes(String(modelName || '').trim().toLowerCase());
+    .includes(bare);
 }
 
 // 当前模型是否走底座 always-thinking K3 tiered 路由（档位表为 low/high/max）。

@@ -64,36 +64,29 @@ impl ImageInputMode {
 }
 
 /// Moonshot always-thinking 模型判定(**探测专用**名单,真实链路不需要):
-/// 这些模型官方接入要求 `thinking: {"type":"enabled"}` 保持开启,省略该参数的
-/// 请求会被网关拒绝。真实链路由 bridge `request_reasoning_effort` 默认 high
-/// (底座翻译成 `thinking: {"type":"enabled"}`)天然满足,无名单;探测 payload
-/// 不带 reasoning 设置,必须按本名单显式注入 thinking,否则 kimi-for-coding
-/// 等模型的识图探测会 400 误判(2026-08 kimi-for-coding 实测)。
+/// 名单内的模型官方接入要求 `thinking: {"type":"enabled"}` 保持开启,省略该
+/// 参数的请求会被网关拒绝。真实链路由 bridge `request_reasoning_effort` 默认
+/// high (底座翻译成 `thinking: {"type":"enabled"}`)天然满足,无名单;探测
+/// payload 不带 reasoning 设置,必须按本名单显式注入 thinking,否则
+/// kimi-for-coding 等模型的识图探测会 400 误判(2026-08 kimi-for-coding 实测)。
+///
+/// K3.1 拼写刻意不在名单内(2026-11-04 round-4 review): K3 系列的文档化契约
+/// 是顶层 `reasoning_effort`(low/high/max,默认 max),明确「不使用 K2.x 的
+/// `thinking` 参数」(platform.kimi.com/docs/api/chat);省略即合法形态,与
+/// bridge 发送链路对 K3.1 的省略口径一致。早前「thinking 关不掉 → 省略也被拒」
+/// 的同推把 K2.x 实测的省略拒绝错误外推到了 K3.1;若实测发现网关仍拒绝省略,
+/// 应改为注入顶层 `reasoning_effort` 而非 `thinking`(待有 key 时回归验证)。
 pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
         "k3" | "k3-256k"
             | "kimi-k3"
-            // K3.1 Pro / K3.1 Pro Highspeed (2026-10-23, kimi.com/code/docs
-            // whats-new): the K3.1 generation is thinking-only — requests
-            // that turn thinking off are rejected with 400 — same class as
-            // the bare-K3 ids above. The `[1m]` spellings are the same
-            // models in their documented 1M declaration forms (k3.1-pro[1m]
-            // is the ACP catalog's Kimi Code models1m suggestion;
-            // kimi-k3.1-pro[1m] has no datalist entry — the direct-platform
-            // bracket spelling of the same model; kimi-k3[1m] below is the
-            // moonshot preset's datalist entry);
-            // this list is exact-match, so they need their own arms.
-            | "k3.1-pro"
-            | "k3.1-pro-highspeed"
-            | "kimi-k3.1-pro"
-            | "kimi-k3.1-pro-highspeed"
-            | "k3.1-pro[1m]"
-            | "kimi-k3.1-pro[1m]"
-            // kimi-k3[1m] stays an official moonshot ACP `models1m`
+            // kimi-k3[1m] is the moonshot preset's official `models1m`
             // suggestion (the platform CC guide still documents it,
-            // re-verified 2026-11-04), so a probe can see it — same class
-            // as the K3.1 bracket arms above.
+            // re-verified 2026-11-04) — the bracket declaration form of the
+            // bare kimi-k3 arm above, and this list is exact-match, so it
+            // needs its own arm to probe identically. K3.1 spellings are
+            // deliberately NOT listed: see the K3-series contract note above.
             | "kimi-k3[1m]"
             | "kimi-k2.7-code"
             | "kimi-k2.7-code-highspeed"
@@ -383,24 +376,38 @@ mod tests {
             "kimi-k2.6",
             "K3",
             "k3-256k",
-            // K3.1 generation (thinking-only, 2026-10-23): all four
-            // spellings plus the [1m] declarations — this list is
-            // exact-match, so every spelling needs its own arm (2026-11-03
-            // fix wave; the probe used to omit thinking for the [1m]
-            // forms and misclassify the probe as image-incapable).
+            // Official moonshot ACP models1m suggestion (platform CC
+            // guide, re-verified 2026-11-04) — the bracket declaration form
+            // of the bare kimi-k3 arm above.
+            "kimi-k3[1m]",
+        ] {
+            assert!(
+                moonshot_model_requires_explicit_thinking(name),
+                "{name} 应命中 always-thinking 名单"
+            );
+        }
+        // K3.1 spellings (bare + [1m] declaration forms) deliberately do NOT
+        // hit the list (2026-11-04 round-4 review): the K3-series contract is
+        // the top-level reasoning_effort ladder and the docs state the K2.x
+        // `thinking` parameter is not used at all (platform.kimi.com
+        // docs/api/chat), so the documented-valid probe shape is omission —
+        // the same shape the bridge send path resolves for K3.1. The earlier
+        // "same class as bare-K3" arms extended the K2.x live-tested
+        // omission-rejection to a generation whose docs say otherwise; if a
+        // live probe ever shows the gateway rejecting omission for K3.1 too,
+        // the fix is a top-level reasoning_effort injection, not a thinking
+        // arm.
+        for name in [
             "k3.1-pro",
             "k3.1-pro-highspeed",
             "kimi-k3.1-pro",
             "kimi-k3.1-pro-highspeed",
             "k3.1-pro[1m]",
             "kimi-k3.1-pro[1m]",
-            // Official moonshot ACP models1m suggestion (platform CC
-            // guide, re-verified 2026-11-04).
-            "kimi-k3[1m]",
         ] {
             assert!(
-                moonshot_model_requires_explicit_thinking(name),
-                "{name} 应命中 always-thinking 名单"
+                !moonshot_model_requires_explicit_thinking(name),
+                "{name} 走 K3 系列省略契约,不应注入 thinking"
             );
         }
         // k3[1m] must NOT hit the list, but not because bare k3 rides the

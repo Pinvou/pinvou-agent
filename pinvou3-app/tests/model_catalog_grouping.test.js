@@ -403,6 +403,12 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(reasoningEffortTiersForModel(k31('k3.1-pro-highspeed', 'https://api.kimi.com/coding/v1')), null);
   assert.strictEqual(defaultReasoningEffortForModel(k31('kimi-k3.1-pro', 'https://api.moonshot.cn/v1')), null, 'no machine-written default effort for K3.1 rows');
   assert.strictEqual(normalizeStoredReasoningEffort(k31('kimi-k3.1-pro', 'https://api.moonshot.cn/v1'), 'off'), null, 'a stored off normalizes to unset (field omitted on the wire; vendor default max)');
+  // The documented `[1m]` declaration forms are the same K3.1 models and
+  // ride the same no-control exit (round-4 bracket tolerance); a stored
+  // off picked through the old generic ladder must not survive on them.
+  assert.strictEqual(reasoningEffortTiersForModel(k31('k3.1-pro[1m]', 'https://api.kimi.com/coding/v1')), null, 'k3.1-pro[1m] (ACP models1m entry): no tier control');
+  assert.strictEqual(normalizeStoredReasoningEffort(k31('kimi-k3.1-pro[1m]', 'https://api.moonshot.cn/v1'), 'off'), null, 'the platform [1m] spelling normalizes to unset too');
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(k31('kimi-k3[1m]', 'https://api.moonshot.cn/v1'))], ['off', 'high'], 'kimi-k3[1m] is bare-k3 bracket form, not a K3.1 spelling');
   // The exact-K3 ladder itself is untouched.
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k31('kimi-k3', 'https://api.moonshot.cn/v1'))], ['low', 'high', 'max']);
   // MiniMax: the GA rename carries the retired Preview spelling as a

@@ -509,6 +509,10 @@ async fn k31_normal_chat_wire_body_omits_thinking_and_reasoning_effort() {
     for (label, model) in [
         ("k31-platform", "kimi-k3.1-pro"),
         ("k31-kimi-code", "k3.1-pro-highspeed"),
+        // The documented `[1m]` declaration form (ACP Kimi Code models1m
+        // datalist entry) rides the same omission contract — pin the wire
+        // body, not just the effort resolution (2026-11-04 review round 4).
+        ("k31-kimi-code-1m", "k3.1-pro[1m]"),
     ] {
         let (base_url, probe, server_task) = start_wire_cap_probe().await;
         let engine = boot_wire_cap_engine(

@@ -462,8 +462,10 @@ pub(crate) fn legacy_official_deepseek_base_url(base_url: &str) -> bool {
 
 /// K3.1 family spellings on the official Kimi routes (moonshot platform
 /// `https://api.moonshot.ai|cn/v1` and Kimi Code
-/// `https://api.kimi.com/coding/v1`), case-insensitive on the model string.
-/// The contract attaches when the record carries a kimi/moonshot vendor
+/// `https://api.kimi.com/coding/v1`), case-insensitive on the model string
+/// and bracket-tolerant on the documented `[1m]` 1M declaration suffix
+/// (2026-11-04 review round 4). The contract attaches when the record
+/// carries a kimi/moonshot vendor
 /// stamp (the catalog rows stamp "kimi"; test/loopback fixtures ride the
 /// same stamp) OR the base URL resolves to the vendor's own official route
 /// (legacy migrated records may carry an empty vendor or the `moonshot`
@@ -471,7 +473,8 @@ pub(crate) fn legacy_official_deepseek_base_url(base_url: &str) -> bool {
 /// stamp on a non-official base are custom relay endpoints and keep their
 /// existing contract (effort passthrough). Also consumed by the bridge's
 /// effort resolution (the send-path default arm must resolve K3.1 to None —
-/// see `request_reasoning_effort_for_provider`).
+/// see `request_reasoning_effort_for_provider`) and mirrored by the
+/// frontend `isMoonshotK31ModelName`.
 pub(crate) fn is_moonshot_k31_route(vendor: &Option<String>, base_url: &str, model: &str) -> bool {
     let vendor_stamped = vendor.as_deref().is_some_and(|value| {
         matches!(
@@ -482,8 +485,22 @@ pub(crate) fn is_moonshot_k31_route(vendor: &Option<String>, base_url: &str, mod
     if !vendor_stamped && !is_official_kimi_route_base_url(base_url) {
         return false;
     }
+    // The documented `[1m]` Claude Code declaration forms (k3.1-pro[1m] is
+    // the ACP catalog's Kimi Code models1m suggestion; kimi-k3.1-pro[1m] is
+    // the direct-platform bracket spelling of the same model) are the same
+    // K3.1 models — strip the suffix before the exact match so the contract
+    // covers them too (2026-11-04 review round 4: the bare-only match let a
+    // stored "off" on a bracket spelling wire the vendor-rejected disable
+    // shape). Only the 1M declaration suffix is tolerated; anything else
+    // (versions, quantization tags) stays outside the exact-match contract.
+    // Bracket forms of NON-K3.1 ids (k3[1m] / kimi-k3[1m]) strip to non-K3.1
+    // spellings and keep their own contracts, as before.
+    let normalized = model.trim().to_ascii_lowercase();
+    let bare = normalized
+        .strip_suffix("[1m]")
+        .unwrap_or(normalized.as_str());
     matches!(
-        model.trim().to_ascii_lowercase().as_str(),
+        bare,
         "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "k3.1-pro" | "k3.1-pro-highspeed"
     )
 }
@@ -2263,6 +2280,15 @@ mod tests {
             "k3.1-pro",
             "k3.1-pro-highspeed",
             "KIMI-K3.1-PRO",
+            // The documented `[1m]` 1M declaration forms are the same K3.1
+            // models (k3.1-pro[1m] is the ACP Kimi Code datalist entry;
+            // kimi-k3.1-pro[1m] the direct-platform bracket spelling) — the
+            // stored-effort drop must cover them too, or a stored "off"
+            // picked through the generic ladder would wire the
+            // vendor-rejected disable shape (2026-11-04 review round 4).
+            "k3.1-pro[1m]",
+            "kimi-k3.1-pro[1m]",
+            "K3.1-PRO[1M]",
         ] {
             let mut record = base.clone();
             record.model = spelling.into();
@@ -2291,6 +2317,21 @@ mod tests {
             aliased.reasoning_effort, None,
             "the moonshot vendor alias on the official endpoint is still K3.1"
         );
+
+        // The `[1m]` suffix is only tolerated for K3.1 ids: bracket forms of
+        // NON-K3.1 spellings (k3[1m] / kimi-k3[1m]) strip to non-K3.1 models
+        // and keep their own contract — a stored value survives (2026-11-04
+        // review round 4).
+        for spelling in ["k3[1m]", "kimi-k3[1m]"] {
+            let mut record = base.clone();
+            record.model = spelling.into();
+            record.normalize_route_limits();
+            assert_eq!(
+                record.reasoning_effort,
+                Some("off".into()),
+                "non-K3.1 bracket spelling {spelling} keeps its stored effort"
+            );
+        }
 
         // A custom relay endpoint with NO kimi vendor stamp keeps its
         // existing contract (effort passthrough) — only the vendor's own
