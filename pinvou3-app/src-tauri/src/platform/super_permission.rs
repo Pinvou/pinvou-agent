@@ -77,6 +77,36 @@ pub fn disable() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// 静态 `instruction_block` 锚测试（round-8 L9-1）：四平台每轮 reminder
+    /// 都有锚，唯独这段只渲染一次的静态文案此前无钉——措辞漂移（比如把
+    /// 「YOLO 自动放行」改成与实现相反的语义）将静默过门。钉住三态语义的
+    /// 载重短语（Auto 武装弹卡/未武装按规则拒；YOLO 自动放行 + sudoers
+    /// 底线的开关两态；Plan 只读免关心）。
+    #[test]
+    fn static_instruction_block_pins_the_tri_state_semantics() {
+        let block = instruction_block();
+        assert!(
+            block.contains("Auto 模式下命中本开关的命令,开启「守卫命中时询问」时弹审批卡,否则按规则拒绝"),
+            "the static block must state the Auto armed-card / unarmed-deny split verbatim"
+        );
+        assert!(
+            block.contains("YOLO 模式自动放行"),
+            "the static block must state the Yolo full-auto face"
+        );
+        assert!(
+            block.contains("`visudo` 等 sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时同样弹卡"),
+            "the static block must state the sudoers floor's toggle-dependent face"
+        );
+        assert!(
+            block.contains("Plan 模式只读不执行命令,无需关心此开关"),
+            "the static block must state the Plan read-only exemption"
+        );
+        assert!(
+            block.contains("见每轮对话顶部的 `<system-reminder>`"),
+            "the static block must defer live state to the per-turn reminder"
+        );
+    }
     use super::*;
     use std::sync::{
         Arc,

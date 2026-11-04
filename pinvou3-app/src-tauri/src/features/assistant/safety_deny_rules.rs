@@ -2729,13 +2729,13 @@ mod tests {
     /// Floor lane red immediately.
     #[test]
     fn forkguard_ruleset_profile_floor_count_is_pinned() {
-        let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None);
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        // ENV_LOCK纪律：composition 在取锁之后（exfil_root_targets 读真实
+        // HOME 家族，先构后锁会与并行改 HOME 的测试竞速——round-8 L5-5
+        // 修正为与姊妹 pin 相同的先锁后构顺序）。
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None);
         assert_eq!(
             floor.len(),
             3521,

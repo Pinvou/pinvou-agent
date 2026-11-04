@@ -4485,14 +4485,20 @@ impl EnginePool {
         let pending_injections = self.store.take_pending_turn_injections(session_id);
         let (match_text, engine_content, display_message) =
             assemble_delivery_turn(&content, pending_injections.persona_body());
-        let expert_snapshot = (self.store.mode_state(session_id).multi_agent
+        // One store read feeds the whole delivery: the expert-snapshot
+        // decision and the approval posture must adjudicate against the SAME
+        // mode snapshot — two separate reads could straddle a mode flip and
+        // pair an old expert decision with a new posture (round-8 L4-5
+        // TOCTOU; bounded consequence, one-read-by-construction closes it).
+        let delivery_mode_state = self.store.mode_state(session_id);
+        let expert_snapshot = (delivery_mode_state.multi_agent
             && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
         let expert_candidates = expert_snapshot
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&match_text))
             .unwrap_or_default();
-        let session_mode = self.store.mode_state(session_id).mode;
+        let session_mode = delivery_mode_state.mode;
         // Tri-mode safety (S-1): posture from the session's SerializableMode.
         let approval =
             crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(
@@ -5071,15 +5077,28 @@ impl EnginePool {
         let Some(engine) = self.handle_for(session_id).await else {
             return Ok(());
         };
-        engine
-            .handle
-            .send(Op::SetPermissionRuleset {
+        // Bounded like send_ordinary_disallowed_tools: the send parks on the
+        // engine mailbox's bounded channel, and this future is awaited
+        // directly by the set_session_mode / set_ask_on_guardrail commands —
+        // an unbounded await is the #525/#483 parked-command class (a wedged
+        // engine would hold the flip's caller forever). On timeout the
+        // refresh reports failure honestly; the engine keeps its previous
+        // ruleset until the next refresh trigger, same residual as any
+        // failed send (round-8 L4-4).
+        tokio::time::timeout(
+            TURN_GATE_AWAIT_TIMEOUT,
+            engine.handle.send(Op::SetPermissionRuleset {
                 ruleset: self.session_scope_ruleset_for_engine(session_id, &engine),
-            })
-            .await
-            .context(format!(
-                "refresh_session_permission_ruleset {session_id}: send failed"
-            ))
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!(
+            "refresh_session_permission_ruleset {session_id}: send did not settle within \
+             {TURN_GATE_AWAIT_TIMEOUT:?} (engine may be wedged)"
+        ))?
+        .context(format!(
+            "refresh_session_permission_ruleset {session_id}: send failed"
+        ))
     }
 
     /// Sync a session's live engine with its persisted tri-mode safety state
@@ -5202,6 +5221,22 @@ impl EnginePool {
         // and are unchanged. Folding the merge into the dispatch seam keeps
         // the wiring itself pinned by an executing test (round-31 M9-rust).
         let engine = self.get_or_spawn(session_id).await?;
+        // Tri-mode posture re-carry (round-8 L4-3): Op::EditLastTurn carries
+        // no posture fields, so the replay runs on the engine's STANDING
+        // posture. The per-turn posture self-heal ("next send re-derives")
+        // never engages on this seam — after a failed or lagging hot sync,
+        // an edit-resend would execute the stale posture with no
+        // re-derivation. Re-sync before the op so the standing posture
+        // matches the store: bounded sends (try_send + the timeout-bounded
+        // ruleset refresh), and a failure is logged, not fatal — the edit
+        // itself still goes out on the best-known posture, exactly the
+        // trade the mode-publish path documents.
+        if let Err(error) = self.sync_session_safety_posture(session_id).await {
+            eprintln!(
+                "[engine_pool] edit-resend posture sync for {session_id} failed: {error:#}; \
+                 the resend runs on the engine's standing posture"
+            );
+        }
         // Round-12 (#657) BLOCKER 1: edit-and-resend is an attended seam too
         // and bypasses send_reserved_user_message — restore here as well,
         // after the reservation is acquired (same reasoning as the send
@@ -10328,6 +10363,87 @@ mod scheduled_model_tests {
         assert!(
             one_body.contains("session_scope_ruleset_for_engine(session_id, &engine)"),
             "the one-session refresh must compose for the live engine's lane"
+        );
+    }
+
+    /// Tri-mode posture wiring pin (round-8 L4-1): the four per-turn posture
+    /// derivations, the mode-publish hot sync, and the ChangeMode arming
+    /// carry were the PR's central invariant with zero executable coverage —
+    /// mutation-think: hard-coding any derivation to (true, Auto), deleting
+    /// the sync call, or dropping the ask_on_guardrail field all compiled
+    /// green. Comment-stripped source pins, same discipline as the ruleset
+    /// pins above. The scheduled hard-code is the DOCUMENTED exception and
+    /// is pinned as such (its doc says apply_scheduled_turn_policy
+    /// overrides), so a second undocumented hard-code cannot hide beside it.
+    #[test]
+    fn session_approval_posture_derivations_and_hot_sync_are_wired() {
+        // 1. Attended chat send derives the posture from the session mode.
+        let chat_src = include_str!("../../app/commands/chat.rs");
+        let chat_body = production_body(chat_src, "pub async fn chat(");
+        assert!(
+            chat_body.contains("TurnApprovalPosture::from_serialized_mode("),
+            "the attended chat send must derive the posture from the session's SerializableMode"
+        );
+        assert!(
+            chat_body.contains("approval,"),
+            "the chat send must thread the derived posture into the pool seam"
+        );
+        // 2. accept_plan carries the claimed mode's posture on the wire.
+        let interaction_src = include_str!("../../app/commands/interaction.rs");
+        let accept_body = production_body(interaction_src, "pub async fn accept_plan(");
+        assert!(
+            accept_body.contains("TurnApprovalPosture::from_serialized_mode("),
+            "accept_plan must derive the posture from the claimed mode state"
+        );
+        assert!(
+            accept_body.contains("approval,"),
+            "accept_plan must thread the posture into the pool seam"
+        );
+        // 3. The watcher delivery derives the posture in the pool seam.
+        let pool_src = include_str!("engine_pool.rs");
+        let pool_src = &pool_src[..pool_src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let delivery_body = production_body(pool_src, "pub(crate) async fn deliver_messaging_turn(");
+        assert!(
+            delivery_body.contains("TurnApprovalPosture::from_serialized_mode("),
+            "the watcher delivery must derive the posture from the session mode"
+        );
+        assert!(
+            delivery_body.contains("approval,"),
+            "the delivery must thread the posture into the submission core"
+        );
+        // 4. Mode publish hot-syncs the live engine; failure logs, never swallows
+        //    into a missing broadcast.
+        let publish_body = production_body(interaction_src, "async fn publish_session_mode_change(");
+        assert!(
+            publish_body.contains("sync_engine_safety_posture(session_id, pool)"),
+            "mode publish must hot-sync the engine posture via ChangeMode"
+        );
+        assert!(
+            publish_body.contains("emit_mode_changed("),
+            "mode publish must broadcast the authoritative mode regardless of sync outcome"
+        );
+        // 5. The ChangeMode op carries the arming flag — dropping the field
+        //    would silently disarm every hot sync.
+        let op_body = production_body(pool_src, "fn safety_change_mode_op(");
+        assert!(
+            op_body.contains("ask_on_guardrail: Some(mode_state.ask_on_guardrail)"),
+            "the ChangeMode op must carry the session's arming flag"
+        );
+        // 6. The scheduled/unattended send keeps its DOCUMENTED hard-coded
+        //    (true, Auto) pre-override posture right next to the override
+        //    call — a second undocumented hard-code cannot hide beside it
+        //    without this pin drifting red on the pair.
+        let engine_src = include_str!("engine.rs");
+        let sched_body = production_body(engine_src, "fn profiled_send_op(");
+        assert!(
+            sched_body.contains("auto_approve: true"),
+            "the scheduled send keeps the documented (true, Auto) pre-override posture"
+        );
+        assert!(
+            sched_body.contains("apply_scheduled_turn_policy(&mut op, profile, route, compaction)"),
+            "the scheduled posture must flow through the documented policy override"
         );
     }
 

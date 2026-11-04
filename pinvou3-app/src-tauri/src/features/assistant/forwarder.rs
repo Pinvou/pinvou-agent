@@ -977,31 +977,24 @@ pub(crate) fn spawn_event_forwarder(
                             }
                             ApprovalSurfaceDecision::ShowCard => {
                                 // 登记挂起，供 decide_approval 收口与前端 remount 恢复卡。
+                                // 事件载荷与登记簿同源构造（唯一构造点 + 键集钉，
+                                // round-8 L3-F2）——字段漂移不再是两处手工同步。
+                                let pending = crate::features::assistant::pending_approvals::PendingApproval {
+                                    approval_id: id.clone(),
+                                    tool_name: tool_name.clone(),
+                                    description: description.clone(),
+                                    input: input.clone(),
+                                    intent_summary: intent_summary.clone(),
+                                    approval_key: approval_key.clone(),
+                                    approval_grouping_key: approval_grouping_key.clone(),
+                                    force_prompt: approval_force_prompt,
+                                    created_at_ms: crate::features::assistant::pending_approvals::now_ms(),
+                                };
                                 crate::features::assistant::pending_approvals::record(
                                     &session_id,
-                                    crate::features::assistant::pending_approvals::PendingApproval {
-                                        approval_id: id.clone(),
-                                        tool_name: tool_name.clone(),
-                                        description: description.clone(),
-                                        input: input.clone(),
-                                        intent_summary: intent_summary.clone(),
-                                        approval_key: approval_key.clone(),
-                                        approval_grouping_key: approval_grouping_key.clone(),
-                                        force_prompt: approval_force_prompt,
-                                        created_at_ms: crate::features::assistant::pending_approvals::now_ms(),
-                                    },
+                                    pending.clone(),
                                 );
-                                let payload = json!({
-                                    "session_id": session_id,
-                                    "approval_id": id,
-                                    "tool_name": tool_name,
-                                    "description": description,
-                                    "input": input,
-                                    "intent_summary": intent_summary,
-                                    "approval_key": approval_key,
-                                    "approval_grouping_key": approval_grouping_key,
-                                    "force_prompt": approval_force_prompt,
-                                });
+                                let payload = crate::features::assistant::pending_approvals::approval_required_payload(&session_id, &pending);
                                 let _ = app.emit("chat:approval_required", payload.clone());
                                 crate::features::remote_control::forward_app_event(
                                     &app,

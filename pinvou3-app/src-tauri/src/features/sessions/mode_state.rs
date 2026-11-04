@@ -83,8 +83,12 @@ pub struct SessionModeState {
     /// 会话级"守卫命中时询问"开关（tri-mode 安全模型）。开启时 execpolicy
     /// 拒绝面 / 非旁路 holds / typed ask 命中会升级为审批卡（Ask 姿态天然
     /// 弹卡），关闭时按姿态硬拒。默认取全局 `ask_on_guardrail_default`
-    /// （true），新会话重置。经同一 io 互斥与 mode 一起写 sidecar（存在
-    /// mode 状态里的会话才有独立开关；无条目会话跟随全局默认）。
+    /// （true），新会话重置。独立翻转对**无 mode 条目**的会话同样持久：
+    /// `set_ask_on_guardrail` 会把显式覆盖写进 `_ask_on_guardrail.json`
+    /// 侧车（不铸造 mode 条目），boot 时与内存覆盖镜像合并生效——
+    /// "只有存在 mode 条目的会话才有独立开关"是 PR 前语义，已被
+    /// `ask_on_guardrail_toggle_persists_for_entry_less_sessions` 钉死的
+    /// 现行为取代（round-8 L2-4 文档修正）。
     #[serde(default = "default_true")]
     pub ask_on_guardrail: bool,
     /// accept_plan 后回到的 mode（进入 Plan 前的 mode）。仅驻内存：重启后
@@ -347,11 +351,15 @@ impl SessionStore {
     /// already materialized.
     ///
     /// Instance method (not an associated fn) precisely so the seed cannot
-    /// drift from `code_permission_prefs()`; callers already resolve
-    /// `default_mode` before taking the write lock for the same
-    /// predicate/sidecar reason documented on [`Self::clear_mode_and_persist`]
-    /// — the pref read here is a plain in-memory mirror read under its own
-    /// lock and acquires nothing else.
+    /// drift from `code_permission_prefs()`. Lock discipline, stated as it
+    /// actually is (round-8 L2-1): `clear_mode_and_persist` /
+    /// `set_multi_agent` hoist the seed resolution BEFORE their io lock
+    /// (predicate + sidecar reason, see their docs); `set_mode` /
+    /// `set_mode_and_persist` call this under the io lock — safe today only
+    /// because the seed's predicate reads in-memory state and the pref is a
+    /// plain mirror read, but a predicate that ever re-entered a mode writer
+    /// would self-deadlock on the non-reentrant io mutex. Keep the predicate
+    /// side-effect-free, or hoist the resolution like the persist paths.
     pub(crate) fn mode_state_entry<'m>(
         &self,
         states: &'m mut HashMap<String, SessionModeState>,
@@ -1127,9 +1135,15 @@ impl SessionStore {
         //
         // The map write lands first: a crash between the two writes leaves
         // the conservative `plan` durable without the flag (reads back as
-        // Plan), never an Auto flag over an un-collapsed entry. Both RMWs run
-        // under the caller's io mutex, so the pair cannot interleave with
-        // another mutator's write.
+        // Plan), never an Auto flag over an un-collapsed entry — that is the
+        // AUTO upsert's window. The Plan downshift of a flagged Auto is the
+        // one residual: the shared-map entry already reads `plan` (the
+        // collapse value), so the RMW is a no-op there and the crash window
+        // is the entire companion removal — a stale `true` flag over `plan`
+        // reads back as Auto on a new binary (old binary sees Plan; the
+        // widening stays below Yolo, docs/safety-modes.md §9 old-writer
+        // boundary). Both RMWs run under the caller's io mutex, so the pair
+        // cannot interleave with another mutator's write.
         let mut companion: Vec<(String, bool)> = Vec::with_capacity(upserts.len());
         let mapped: Vec<(String, SerializableMode)> = upserts
             .iter()
@@ -1192,10 +1206,27 @@ impl SessionStore {
     /// the safe degradation, never a silent widening.
     fn read_session_auto_modes() -> std::collections::HashMap<String, bool> {
         let file = crate::platform::paths::sessions_root().join("_session_auto_modes.json");
-        std::fs::read_to_string(file)
-            .ok()
-            .and_then(|content| serde_json::from_str(&content).ok())
-            .unwrap_or_default()
+        match std::fs::read_to_string(&file) {
+            // Absent file = no explicit Auto overrides recorded: the normal
+            // quiet path, not a fault.
+            Err(_) => Default::default(),
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(parsed) => parsed,
+                // Corrupt companion: fail conservative (empty map, every
+                // recorded Auto degrades to Plan) but LOUD, same as the
+                // sibling loaders — silent skips are exactly what makes
+                // "explicitly switched, reverted after restart"
+                // undebuggable (sidecar discipline doc). The write path
+                // quarantines loudly; only the corrupt-before-first-write
+                // window lands here (round-8 L2-2).
+                Err(error) => {
+                    eprintln!(
+                        "[sessions] corrupt _session_auto_modes.json (Auto overrides degrade to Plan): {error}"
+                    );
+                    Default::default()
+                }
+            },
+        }
     }
 
     /// Resolve one map entry against the companion flags: `plan` + `true`

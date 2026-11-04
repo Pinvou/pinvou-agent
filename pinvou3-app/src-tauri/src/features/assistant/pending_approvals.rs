@@ -235,7 +235,9 @@ pub fn clear_session(session_id: &str) {
     });
 }
 
-/// 前端 remount 恢复审批卡用；按 (session, created_at) 排序保证输出稳定。
+/// 进程级全量快照（测试与未来陈旧性探测用，无生产调用方）：真实的
+/// 前端 remount 恢复路径是 `get_pending_approvals` → [`list`]（按会话
+/// 过滤）。按 (session, created_at) 排序保证输出稳定。
 pub fn list_all_sessions() -> Vec<(String, PendingApproval)> {
     let mut all = with_store(|store| {
         store
@@ -395,6 +397,30 @@ pub fn approval_surface_decision(
     }
 }
 
+/// `chat:approval_required` 事件载荷的唯一构造点。字段与
+/// [`PendingApproval`] 一一对应再加 `session_id`（serde camelCase 只用于
+/// remount 读路径；这里的事件面沿用底座事件的 snake_case 键，前端两车道
+/// 与 web 通告都按这套键消费）。此前载荷在转发器手构 `json!`，与本登记簿
+/// 结构形成两处手工同步的形状——评审指出 deny/resolved/mode_changed 三个
+/// 载荷都有键集钉而它没有（round-8 L3-F2），遂收口到同一模式：一个构造点
+/// + 一个键集钉，字段漂移即红。
+pub fn approval_required_payload(
+    session_id: &str,
+    approval: &PendingApproval,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": session_id,
+        "approval_id": approval.approval_id,
+        "tool_name": approval.tool_name,
+        "description": approval.description,
+        "input": approval.input,
+        "intent_summary": approval.intent_summary,
+        "approval_key": approval.approval_key,
+        "approval_grouping_key": approval.approval_grouping_key,
+        "force_prompt": approval.force_prompt,
+    })
+}
+
 /// `chat:guardrail_denied` 事件载荷的唯一构造点。`reason` 是稳定英文键
 /// （[`ApprovalDenyReason::reason_key`]），前端 i18n 据此映射三语文案。
 /// 刻意**不带 tool input 原文**——敏感参数不得进事件流（桌面 emit 与
@@ -420,9 +446,11 @@ pub fn guardrail_denied_payload(
 /// 这两类：确定拒绝的卡仍是活的未决请求（按栅栏恢复可重试），未知终态
 /// 不得恢复活跃决策控件（迟交没有宿主对账事件，恢复即许诺一次可能已被
 /// 消费的决策可以重来）。错误类型在底座 crate 内 pub(crate)，宿主无法按
-/// 类型 downcast，只能按 Display 措辞判定；措辞漂移会让未知终态落回
-/// 确定拒绝臂——恢复可重试的未决卡是旧（不诚实）行为，靠测试钉住契约
-/// 措辞防静默漂移。
+/// 类型 downcast，只能按 Display 措辞判定；底座措辞漂移会让未知终态落回
+/// 确定拒绝臂——恢复可重试的未决卡是旧（不诚实）行为（方向：多恢复、
+/// 不误放行，双栅栏仍在）。宿主测试钉住「分类器 ↔ 措辞字面量」这一侧；
+/// 底座 Display 本身的漂移检测需要底座导出标记常量/类型（CodeWhale#131
+/// 后续项，round-8 L3-F1/L6-F2 如实收窄声明）。
 pub(crate) fn approval_outcome_is_unknown(error: &anyhow::Error) -> bool {
     error
         .to_string()
@@ -489,6 +517,45 @@ mod tests {
             !serialized.contains("input"),
             "deny payload must not carry tool input: {serialized}"
         );
+    }
+
+    /// `chat:approval_required` 载荷键集钉（round-8 L3-F2）：事件面 snake_case
+    /// 键与登记簿结构一一对应；多一个键（泄漏）或少一个键（前端字段缺失）都红。
+    #[test]
+    fn forkguard_approval_required_payload_carries_the_registry_field_set() {
+        let approval = PendingApproval {
+            approval_id: "ap-1".to_string(),
+            tool_name: "write_file".to_string(),
+            description: "describe".to_string(),
+            input: serde_json::json!({"path": "/tmp/x"}),
+            intent_summary: Some("intent".to_string()),
+            approval_key: "key".to_string(),
+            approval_grouping_key: "group".to_string(),
+            force_prompt: true,
+            created_at_ms: 1,
+        };
+        let payload = approval_required_payload("sess-1", &approval);
+        let obj = payload.as_object().expect("payload is a JSON object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "approval_grouping_key",
+                "approval_id",
+                "approval_key",
+                "description",
+                "force_prompt",
+                "input",
+                "intent_summary",
+                "session_id",
+                "tool_name",
+            ],
+            "approval_required payload carries exactly the registry field set: {obj:?}"
+        );
+        assert_eq!(obj["session_id"], "sess-1");
+        assert_eq!(obj["approval_id"], "ap-1");
+        assert_eq!(obj["force_prompt"], true);
     }
 
     /// M5 收敛面：决策终态广播载荷只带定位键 + 决策值（幂等去重靠
