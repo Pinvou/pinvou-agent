@@ -444,12 +444,11 @@ const MODEL_CATALOG = {
       // the round-4 review) all exit to no ladder — the generic off/high
       // switch is unreachable for any K3.1 spelling, stored effort is
       // dropped (frontend normalize + Rust prefs load), and the wire omits
-      // the field, which the vendor documents as valid — on this coding
-      // base the CC docs' effort-mapping table resolves an omitted effort
-      // to the K3.1/K3 default `high` (max is the K2.8-alias default and
-      // the platform base's; wording corrected 2026-11-05 review)
-      // (foundation follow-up: teach the base's route shapers the K3.1
-      // spellings).
+      // the field so the vendor default applies — endpoint-specific: the
+      // Kimi Code models table documents omitted K3.1 effort as `high` on
+      // this coding-plan lane, while the `max` wording on the platform
+      // models-overview page describes the platform-API surface (foundation
+      // follow-up: teach the base's route shapers the K3.1 spellings).
       items: [
         { model: 'k3.1-pro', imageCapable: true, title: 'k3.1-pro', desc: 'K3.1 Pro 新旗舰，原生视觉，1M 按档开放' },
         { model: 'k3.1-pro-highspeed', imageCapable: true, title: 'k3.1-pro-highspeed', desc: 'K3.1 Pro 高速款' },
@@ -1396,19 +1395,22 @@ const MODEL_CATALOG = {
       // re-checked 2026-11-05 against the leaderboard window "Usage data
       // through Nov 3, 2026"): one
       // key, many vendors; ids are org-prefixed (deepseek/deepseek-v4.1-flash)
-      // and rankings shift weekly, so the rows are the current top usage
-      // plus stable vendor flagships — treat them as suggestions, the custom
-      // row covers everything else. This refresh mirrors the weekly top-10
-      // verbatim (#1 deepseek/deepseek-v4.1-flash-1017, #2 z-ai/glm-5.3-flash,
-      // #3 deepseek/deepseek-v4.1-flash, #4 tencent/hy4-preview,
-      // #5 openai/gpt-6-luna, #6 stepfun/step-5-preview,
-      // #7 anthropic/claude-opus-5.5, #8 minimax/minimax-m3.1-flash,
-      // #9 openai/gpt-5.6-luna, #10 openai/gpt-6.1-sol — the 2026-11-03
-      // pass recorded two swapped rank pairs and two ids that sit outside
-      // the weekly list (GLM-5.3 is monthly #10, plain DeepSeek V4 Flash is
-      // not weekly top-10), and missed weekly #10 gpt-6.1-sol, the openai
-      // group's own default id; corrected 2026-11-05 review) plus the
-      // stable vendor flagships: note anthropic spells its id with dots
+      // and rankings shift weekly, so the rows are usage leaders plus
+      // stable vendor flagships — treat them as suggestions, the custom
+      // row covers everything else. No top-ten coverage claim and no
+      // per-row rank badges: the board moves weekly and ids enter and
+      // leave it between refreshes (the 2026-11-03 pass baked rank pairs
+      // into descs and two pairs were already swapped and two ids stale
+      // by the Nov 3 usage data — badges dropped as rot-prone, corrected
+      // 2026-11-05 review). As of that Nov 3 window the weekly top-10 was
+      // deepseek/deepseek-v4.1-flash-1017, z-ai/glm-5.3-flash,
+      // deepseek/deepseek-v4.1-flash, tencent/hy4-preview,
+      // openai/gpt-6-luna, stepfun/step-5-preview,
+      // anthropic/claude-opus-5.5, minimax/minimax-m3.1-flash,
+      // openai/gpt-5.6-luna, openai/gpt-6.1-sol — all ten have rows here
+      // (gpt-6.1-sol, the openai group's own default id, joined in the
+      // 2026-11-05 wave). Plus the
+      // new vendor flagships: note anthropic spells its id with dots
       // (claude-opus-5.5, NOT claude-opus-5-5), minimax/minimax-m3.1-flash
       // (2026-10-19) supersedes m3 in usage while the m3 row stays live.
       // openai/gpt-6.1-terra keeps its row as the efficient-tier flagship
@@ -1431,25 +1433,25 @@ const MODEL_CATALOG = {
       // and none of these rows has one (openrouter/free is the dedicated
       // free-router id).
       items: [
-        { model: 'deepseek/deepseek-v4.1-flash', title: 'deepseek/deepseek-v4.1-flash', desc: '快速响应（用量第三）' },
-        { model: 'deepseek/deepseek-v4.1-flash-1017', title: 'deepseek/deepseek-v4.1-flash-1017', desc: '快速响应（1017 快照，用量第一）' },
+        { model: 'deepseek/deepseek-v4.1-flash', title: 'deepseek/deepseek-v4.1-flash', desc: '快速响应' },
+        { model: 'deepseek/deepseek-v4.1-flash-1017', title: 'deepseek/deepseek-v4.1-flash-1017', desc: '快速响应（1017 快照）' },
         { model: 'deepseek/deepseek-v4-pro', title: 'deepseek/deepseek-v4-pro', desc: '高能力模型' },
         { model: 'deepseek/deepseek-v4-flash', title: 'deepseek/deepseek-v4-flash', desc: '快速响应' },
         { model: 'z-ai/glm-5.3', title: 'z-ai/glm-5.3', desc: '旗舰推理与编码' },
-        { model: 'z-ai/glm-5.3-flash', title: 'z-ai/glm-5.3-flash', desc: '多模态高性价比（用量第二）' },
+        { model: 'z-ai/glm-5.3-flash', title: 'z-ai/glm-5.3-flash', desc: '多模态高性价比' },
         { model: 'qwen/qwen3.8-flash', title: 'qwen/qwen3.8-flash', desc: '快速高性价比' },
         { model: 'moonshotai/kimi-k3.1-pro', title: 'moonshotai/kimi-k3.1-pro', desc: 'Kimi 最新旗舰' },
         { model: 'moonshotai/kimi-k2.7-code', title: 'moonshotai/kimi-k2.7-code', desc: '代码场景' },
-        { model: 'minimax/minimax-m3.1-flash', title: 'minimax/minimax-m3.1-flash', desc: 'MiniMax GA 新旗舰（用量第八）' },
+        { model: 'minimax/minimax-m3.1-flash', title: 'minimax/minimax-m3.1-flash', desc: 'MiniMax GA 新旗舰' },
         { model: 'minimax/minimax-m3', title: 'minimax/minimax-m3', desc: 'MiniMax 上代旗舰' },
-        { model: 'anthropic/claude-opus-5.5', title: 'anthropic/claude-opus-5.5', desc: 'Claude 新一代 Opus（注意点号拼写，用量第七）' },
+        { model: 'anthropic/claude-opus-5.5', title: 'anthropic/claude-opus-5.5', desc: 'Claude 新一代 Opus（注意点号拼写）' },
         { model: 'google/gemini-4-argon', title: 'google/gemini-4-argon', desc: 'Gemini 最新旗舰' },
         { model: 'openai/gpt-6.1-terra', title: 'openai/gpt-6.1-terra', desc: '6.1 高效款' },
-        { model: 'openai/gpt-6.1-sol', title: 'openai/gpt-6.1-sol', desc: '6.1 均衡旗舰（用量第十）' },
-        { model: 'openai/gpt-5.6-luna', title: 'openai/gpt-5.6-luna', desc: '低成本高并发（用量第九）' },
-        { model: 'openai/gpt-6-luna', title: 'openai/gpt-6-luna', desc: '低成本高并发（用量第五）' },
-        { model: 'tencent/hy4-preview', title: 'tencent/hy4-preview', desc: '腾讯 Hy4 预览（用量第四）' },
-        { model: 'stepfun/step-5-preview', title: 'stepfun/step-5-preview', desc: 'StepFun 预览旗舰（用量第六）' },
+        { model: 'openai/gpt-6.1-sol', title: 'openai/gpt-6.1-sol', desc: '6.1 均衡旗舰' },
+        { model: 'openai/gpt-5.6-luna', title: 'openai/gpt-5.6-luna', desc: '低成本高并发' },
+        { model: 'openai/gpt-6-luna', title: 'openai/gpt-6-luna', desc: '低成本高并发' },
+        { model: 'tencent/hy4-preview', title: 'tencent/hy4-preview', desc: '腾讯 Hy4 预览' },
+        { model: 'stepfun/step-5-preview', title: 'stepfun/step-5-preview', desc: 'StepFun 预览旗舰' },
         { model: '', title: '自定义 OpenRouter 模型', desc: '手动填写模型 ID（org/model 格式）', custom: true },
       ],
     },

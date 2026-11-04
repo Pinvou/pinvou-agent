@@ -665,7 +665,14 @@ impl SavedModel {
         // "off" saved through the generic off/high switch the catalog used
         // to offer — reaches the generic Moonshot arm and wires an illegal
         // disable shape. Drop the field: the documented omission is valid
-        // and resolves to the vendor default (max). The contract attaches
+        // and resolves to the vendor default (endpoint-specific — the Kimi
+        // Code models table documents omitted K3.1 effort as `high` on the
+        // coding-plan lane; the models-overview `max` wording is the
+        // platform-API surface). Downgrade note: this drop is one-way —
+        // configs saved by this build no longer carry K3.1 effort, and an
+        // older build reading them sees the field absent and re-applies
+        // its own ladder/default; the previously chosen tier is not
+        // recoverable (nothing corrupts). The contract attaches
         // via the kimi/moonshot vendor stamp or the vendor's own official
         // route (legacy migrated records may carry an empty vendor or the
         // moonshot alias there); unstamped custom relay endpoints keep
