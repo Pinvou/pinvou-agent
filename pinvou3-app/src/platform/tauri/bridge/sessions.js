@@ -897,6 +897,20 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
         state.approvalReplayInFlight.delete(flightKey);
         releaseApprovalReplayPins(sid);
         reclaimApprovalReplayTombstones();
+        // Deferred purge flush (review 5764675531): a buffer reclaim that
+        // arrived while this window was open deferred its terminal-seq entry
+        // deletion (dropping it mid-window would reset the fence under an
+        // in-flight snapshot and let a stale pre-terminal snapshot pass the
+        // default 0 == 0 check on return). The window is closed now — the
+        // in-flight counter is already zeroed above, so the entry can safely
+        // die with the buffer here and a reopen re-arms at 0.
+        if (state.approvalReplayTerminalSeqPurgePending
+          && state.approvalReplayTerminalSeqPurgePending.has(flightKey)) {
+          state.approvalReplayTerminalSeqPurgePending.delete(flightKey);
+          if (state.approvalReplayTerminalSeq) {
+            state.approvalReplayTerminalSeq.delete(flightKey);
+          }
+        }
       } else {
         state.approvalReplayInFlight.set(flightKey, remaining);
       }

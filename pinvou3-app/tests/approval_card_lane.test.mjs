@@ -592,6 +592,160 @@ try {
       }
     }
 
+    // ── reviewer P2（评审 5764675531）：缓冲回收不得在回放窗口开启时重置
+    // 终态代栅栏 ── bridge.js 的 onSessionBufferPurged（LRU evict / delete）
+    // 会调 purgeApprovalReplayTerminalSeq；若该 sid 的 get_pending_approvals
+    // 快照仍在途，直接删条目会把已发生的终态 bump 一并抹掉——会话被逐出后
+    // 重开、代数缺省 0，终态前发出的旧快照（captured fence 0）回程 0==0
+    // 通过，已决审批以活卡插回。修复：窗口在途时暂缓（记入
+    // approvalReplayTerminalSeqPurgePending），sessions.js 在最后一个在途
+    // 回程关窗的 finally 里落地删除。时序复现（Jensen 点名的「终态→LRU
+    // 回收→重开→旧快照返回」），走真实 switchToSessionInternal 重放路径。
+    {
+      const purgeChatEventsSource = read('src', 'shared', 'bridge-shared-helpers.js') + '\n'
+        + read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
+      const purgeWin = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+      vm.runInContext(purgeChatEventsSource, vm.createContext({ window: purgeWin, console, Date, String }),
+        { filename: 'approval-card-lane-chat-events-purge-defer.js' });
+      const purgeListeners = new Map();
+      const purgeState = { activeSessionId: 's1', chatItems: [], messages: [] };
+      const purgeCtx = {
+        state: purgeState,
+        listen(name, handler) { purgeListeners.set(name, handler); },
+        notify() {},
+        invoke: async () => null,
+        turnUsageDirty: {},
+        sessionStates: {},
+        renderMarkdown: text => text,
+        bt: key => key,
+        onSessionEvent(_event, callback) { callback(); },
+        runSyncOnSession(_sessionId, callback) { callback(); },
+        addChatItem(item) { purgeState.chatItems.push(item); },
+        addSystemItem(text) { purgeCtx.addChatItem({ type: 'system', text }); },
+        timeStr: () => '12:00',
+        flushPendingTextBlock() {},
+      };
+      const chatEventsApi = purgeWin.__PINVOU_TAURI_BRIDGE_FEATURES__['chat-events'](purgeCtx);
+      const makePurgeSessionsApi = invokeImpl => {
+        const source = read('src', 'shared', 'bridge-shared-helpers.js') + '\n'
+          + read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
+        const sessionsRoot = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+        vm.runInContext(source, vm.createContext({
+          window: sessionsRoot, globalThis: sessionsRoot, console, Date, String, setTimeout, clearTimeout,
+        }), { filename: 'approval-card-lane-sessions-purge-defer.js' });
+        return sessionsRoot.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions({
+          state: purgeState, // 与 chat-events 共用同一 state：终态代 / 在途计数跨面共享
+          listen: null,
+          notify() {},
+          bt: key => key,
+          timeStr: () => '12:00',
+          invoke: invokeImpl,
+          sessionStates: { s1: { loadedFromDisk: true, messages: [], chatItems: [], artifacts: [] } },
+          runSyncOnSession(_sid, callback) { callback(); },
+          addChatItem(item) { purgeState.chatItems.push(item); },
+          addSystemItem() {},
+          turnUsageDirty: {},
+          scheduledRunSessionOwners: {},
+          personaPlaceholderTitles: {},
+          currentStreamText: '', currentStreamId: 0,
+          pendingAssistantText: '', pendingAssistantBlocks: [],
+          itemIdSeq: 0, toolMeta: {},
+          filterSessionArtifacts: list => list || [],
+          scheduleShellPoll() {},
+          syncModeState: () => Promise.resolve(),
+          syncActivePersona: () => Promise.resolve(),
+          syncMountedCollection: () => Promise.resolve(),
+          loadMemoryOverview: () => Promise.resolve(),
+          reconcileArtifacts() {},
+          resetPendingAssistant() {},
+          rerenderFromMessages() {},
+        });
+      };
+      const resetPurgeReplayState = () => {
+        purgeState.approvalReplayTombstones = new Map();
+        purgeState.approvalReplayPinnedTombstones = new Set();
+        purgeState.approvalReplayInFlight = new Map();
+        purgeState.approvalReplayTerminalSeq = new Map();
+        purgeState.approvalReplayTerminalSeqPurgePending = new Set();
+        purgeState.chatItems.length = 0;
+        purgeState.activeSessionId = null; // 快路径要求目标会话 != 当前会话
+      };
+      const gatedInvoke = gate => async name => {
+        if (name === 'get_pending_approvals') {
+          await gate; // 快照在途：回程时机由测试控制
+          return [{ approvalId: 'ap-stale', toolName: 'shell_exec', description: 'd' }];
+        }
+        return null;
+      };
+      const waitInFlight = async () => {
+        for (let i = 0; i < 200; i++) {
+          if ((purgeState.approvalReplayInFlight.get('s1') || 0) > 0) return;
+          await new Promise(resolve => { setTimeout(resolve, 0); });
+        }
+        assert.ok(false, '快照在途窗口必须已登记（replayPendingApprovals 未进入）');
+      };
+
+      // 核心时序：快照发出（fence 0）→ 终态 bump 0→1 → 在途窗口内 LRU 回收
+      // （条目必须存活）→ 回程 1≠0 整批作废 → 关窗落地暂缓回收 → 重开从 0 重臂。
+      {
+        resetPurgeReplayState();
+        let releaseSnapshot;
+        const gate = new Promise(resolve => { releaseSnapshot = resolve; });
+        const api = makePurgeSessionsApi(gatedInvoke(gate));
+        const switched = api.switchToSessionInternal('s1'); // 不 await：invoke 挂起中
+        await waitInFlight();
+        // 终态推进重放代数 0→1：直接置表（chat:done 监听器的完整 DI 依赖
+        // 已由本文件源码契约钉住，见下方 approvalReplayTerminalSeq anchor；
+        // 这里只关心回收与回程的时序，不重复装载整个终态清扫面）。
+        purgeState.approvalReplayTerminalSeq.set('s1', 1);
+        assert.equal(purgeState.approvalReplayTerminalSeq.get('s1'), 1, '前置：终态已推进重放代数');
+        // 在途窗口内的缓冲回收（模拟 bridge.js onSessionBufferPurged 回调）。
+        chatEventsApi.purgeApprovalReplayTerminalSeq('s1');
+        assert.ok(purgeState.approvalReplayTerminalSeq.has('s1'),
+          '在途窗口内回收必须暂缓：终态代条目存活（不得在快照在途时重置栅栏代数）');
+        assert.ok(purgeState.approvalReplayTerminalSeqPurgePending.has('s1'),
+          '暂缓回收标记在册（关窗后由 sessions.js 落地）');
+        releaseSnapshot(); // 快照回程
+        await switched;
+        assert.ok(!purgeState.chatItems.some(item => item.type === 'approval' && item.approvalId === 'ap-stale'),
+          '终态后的旧快照回程见栅栏 1≠0 整批作废（已决审批不得插回活卡）');
+        assert.ok(!purgeState.approvalReplayInFlight.has('s1'), '窗口已关闭');
+        assert.ok(!purgeState.approvalReplayTerminalSeq.has('s1'),
+          '关窗 finally 落地暂缓回收：条目随缓冲死亡（重开即从 0 重臂）');
+        assert.ok(!purgeState.approvalReplayTerminalSeqPurgePending.has('s1'), '暂缓标记已清');
+      }
+
+      // 负控 1：无在途窗口时回收照旧直删（round-8 L7-3 卫生语义保持）。
+      {
+        resetPurgeReplayState();
+        purgeState.approvalReplayTerminalSeq.set('s1', 1);
+        chatEventsApi.purgeApprovalReplayTerminalSeq('s1');
+        assert.ok(!purgeState.approvalReplayTerminalSeq.has('s1'),
+          '无在途窗口时回收照旧直删（条目不残留）');
+        assert.ok(!purgeState.approvalReplayTerminalSeqPurgePending.has('s1'),
+          '无在途窗口时不得留下暂缓标记');
+      }
+
+      // 负控 2（对照，未修复形态）：在途窗口内条目被直删 → 代数缺省 0，
+      // 与 captured fence 0==0 通过 → 旧快照把已决审批插回活卡。用裸 Map
+      // 操作模拟未修复的回收行为，钉住漏洞机制本身（变异红由提交前临时
+      // 撤销 deferral 分支另证）。
+      {
+        resetPurgeReplayState();
+        let releaseSnapshot;
+        const gate = new Promise(resolve => { releaseSnapshot = resolve; });
+        const api = makePurgeSessionsApi(gatedInvoke(gate));
+        const switched = api.switchToSessionInternal('s1');
+        await waitInFlight();
+        purgeState.approvalReplayTerminalSeq.set('s1', 1); // 终态 bump 0→1
+        purgeState.approvalReplayTerminalSeq.delete('s1'); // 未修复的回收：条目直接死亡
+        releaseSnapshot();
+        await switched;
+        assert.ok(purgeState.chatItems.some(item => item.type === 'approval' && item.approvalId === 'ap-stale'),
+          '对照（未修复形态）：条目被删后代数缺省 0==0，旧快照把已决审批插回活卡');
+      }
+    }
+
     // ── 宿主 P2：未知终态处置（decision "unknown"）——主车道运行时 ──
     // 后端未知终态臂（ack + settle 双窗）摘除登记并广播 resolved-shaped
     // 事件、decision "unknown"。挂载面必须把卡渲染成不可决的未知态
@@ -1197,6 +1351,12 @@ try {
       '512 逐条淘汰必须跳过被在途快照钉住的墓碑');
     assert.match(chatEvents, /approvalReplayTerminalSeq/,
       'chat:done 终态清扫必须推进审批重放代栅栏（sessions.js 消费）');
+    // 评审 5764675531：缓冲回收不得在回放窗口开启时重置终态代栅栏——窗口在途
+    // 时暂缓删除（pending 标记），关窗 finally 落地；无窗口时照旧直删。
+    assert.match(chatEvents, /function purgeApprovalReplayTerminalSeq\(sid\) \{[\s\S]{0,500}?approvalReplayInFlight[\s\S]{0,300}?approvalReplayTerminalSeqPurgePending[\s\S]{0,300}?return;/,
+      '缓冲回收必须在回放窗口在途时暂缓删除终态代条目（迟到快照不得借缺省 0==0 插回活卡）');
+    assert.match(sessionsBridge, /reclaimApprovalReplayTombstones\(\);[\s\S]{0,900}?approvalReplayTerminalSeqPurgePending[\s\S]{0,400}?approvalReplayTerminalSeq\.delete\(flightKey\);/,
+      '关窗 finally 必须落地暂缓的终态代条目删除（窗口已关，条目可安全随缓冲死亡）');
     // native 车道同款栅栏（评审 P3 残留）：bump 在 codex chat:done 终态清扫处，
     // 消费在 CodexAcpView.loadSession 的 get_pending_approvals 重放（该分支的
     // sessionLoadRequestRef 只守会话切换，守不住同会话的 turn 终态）。

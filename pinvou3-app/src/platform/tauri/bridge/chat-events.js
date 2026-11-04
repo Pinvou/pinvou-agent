@@ -1663,9 +1663,28 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
     // approval-replay terminal-seq entry dies with the buffer (the fence
     // only guards a LIVE session's replay; keeping deleted/evicted entries
     // was the one map the purge sweep missed — round-8 L7-3).
+    //
+    // Review 5764675531 (P2): reclaiming must not reset the fence generation
+    // while a replay window is open. If the sid is evicted mid-window and the
+    // entry dies here, a session reopen re-arms the fence at the default 0 —
+    // so a snapshot issued BEFORE the terminal bump (captured fence 0)
+    // returns after the bump and passes the 0 == 0 check, re-inserting a
+    // decided approval as an active card. Defer instead (same cross-module
+    // shared-state convention as approvalReplayInFlight): sessions.js drops
+    // the entry when the last window for this sid closes (flush in
+    // replayPendingApprovals' finally); with no window open the direct
+    // delete keeps the round-8 L7-3 hygiene unchanged.
     function purgeApprovalReplayTerminalSeq(sid) {
+      const key = String(sid);
+      if (state.approvalReplayInFlight && (state.approvalReplayInFlight.get(key) || 0) > 0) {
+        if (!state.approvalReplayTerminalSeqPurgePending) {
+          state.approvalReplayTerminalSeqPurgePending = new Set();
+        }
+        state.approvalReplayTerminalSeqPurgePending.add(key);
+        return;
+      }
       if (state.approvalReplayTerminalSeq) {
-        state.approvalReplayTerminalSeq.delete(String(sid));
+        state.approvalReplayTerminalSeq.delete(key);
       }
     }
     return {
