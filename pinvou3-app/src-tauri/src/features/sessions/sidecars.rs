@@ -214,6 +214,28 @@ where
 /// the durable content (quarantine-then-refuse on corruption), apply `mutate`,
 /// and persist only on a reported change (empty container deletes the file,
 /// pretty JSON via `atomic_write_private`).
+/// Round-9 minor: the shared tri-mode map's absence is normally authoritative
+/// (the mutation path removes the file when its last entry goes away), but a
+/// quarantined parse failure ALSO removes it — that absence is unknown state,
+/// not a statement any writer made. `durable_mode_entry` consults this flag so
+/// a post-quarantine NotFound falls back to the in-memory cache instead of
+/// inventing an absence a headless Plan run would then "repair" by clearing
+/// the session's durable mode (a widening when the resolved default is Yolo).
+/// Process-level and one-way, same fault discipline as the pin reader's
+/// absent-vs-unknown distinction: a stale boot map can only over-protect
+/// until the next restart. Another process's quarantine is invisible here —
+/// single-user desktop, accepted residual.
+pub(crate) static SHARED_MODE_MAP_QUARANTINED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn shared_mode_map_file_name() -> &'static str {
+    "_session_mode_states.json"
+}
+
+pub(crate) fn shared_mode_map_quarantined() -> bool {
+    SHARED_MODE_MAP_QUARANTINED.load(std::sync::atomic::Ordering::Acquire)
+}
+
 fn mutate_json_file<C, F>(file_name: &str, mutate: F, is_empty: impl Fn(&C) -> bool) -> Result<()>
 where
     C: Default + serde::Serialize + serde::de::DeserializeOwned,
@@ -230,6 +252,10 @@ where
             // bricked by the corrupt bytes.
             let note = match crate::platform::filesystem::quarantine_corrupt_file(&file) {
                 Ok(quarantine) => {
+                    if file_name == shared_mode_map_file_name() {
+                        SHARED_MODE_MAP_QUARANTINED
+                            .store(true, std::sync::atomic::Ordering::Release);
+                    }
                     format!("; corrupt bytes quarantined at {}", quarantine.display())
                 }
                 Err(quarantine_error) => format!("; quarantining failed ({quarantine_error})"),

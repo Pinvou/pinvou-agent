@@ -9861,6 +9861,62 @@ fn session_auto_mode_is_downgrade_parseable_via_companion_flag() {
     );
 }
 
+#[test]
+fn mode_pair_crash_after_shared_write_leaves_conservative_plan() {
+    // Round-9 minor 1: the shared→companion write ORDER is the load-bearing
+    // downgrade invariant, but it had no test seam — a reorder to
+    // companion-first kept the whole suite green while flipping the crash
+    // window's residue. The explicit-Auto upsert is the interesting shape:
+    // the crash must leave the collapsed `plan` WITHOUT the companion flag
+    // (reads back as the conservative Plan), never a `true` flag over the
+    // still-seeded Yolo entry (which would boot as Auto — a widening the
+    // user's crashed switch never asked for).
+    let (store, _g) = isolated_store();
+    store
+        .save_session_atomic(&chat_model_session("crash-a".to_string()))
+        .expect("materialize session record");
+    store
+        .set_mode_and_persist("crash-a", SerializableMode::Yolo)
+        .expect("seed a stored Yolo first");
+
+    SessionStore::inject_mode_pair_crash_after_shared_write();
+    store
+        .set_mode_and_persist("crash-a", SerializableMode::Auto)
+        .expect("the simulated crash returns without an error");
+
+    let shared: std::collections::HashMap<String, String> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_mode_states.json"))
+            .expect("the shared map write landed before the crash"),
+    )
+    .expect("shared map parses");
+    assert_eq!(
+        shared.get("crash-a").map(String::as_str),
+        Some("plan"),
+        "the collapsed Auto must be the durable residue of the crash window"
+    );
+    match std::fs::read_to_string(paths::sessions_root().join("_session_auto_modes.json")) {
+        Ok(content) => {
+            let companion: std::collections::HashMap<String, bool> =
+                serde_json::from_str(&content).expect("companion file parses");
+            assert!(
+                !companion.get("crash-a").copied().unwrap_or(false),
+                "the companion flag must not land in the crash window"
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => panic!("companion read failed: {e}"),
+    }
+
+    // Next boot: the crashed window reads back as the conservative Plan —
+    // never the seeded Yolo, never the interrupted Auto.
+    store.load_session_mode_states();
+    assert_eq!(
+        store.durable_mode_entry("crash-a"),
+        Some(SerializableMode::Plan),
+        "the crash window's residue must read back as the conservative Plan"
+    );
+}
+
 /// The pre-tri-mode reader's vocabulary: no Auto variant. Mirrors the enum
 /// shape an old binary compiles (strict snake_case deserialization).
 #[derive(Debug, PartialEq, serde::Deserialize)]

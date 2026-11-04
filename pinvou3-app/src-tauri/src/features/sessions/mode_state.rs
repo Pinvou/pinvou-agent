@@ -33,6 +33,17 @@ use crate::platform::prefs::{CodePermissionPrefs, UserPrefs};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 
+/// Test-only crash seam for the shared→companion sidecar write pair
+/// (round-9 minor 1, mirroring the rebind pair's
+/// `inject_rebind_crash_after_legacy_rewrite`): armed by
+/// [`SessionStore::inject_mode_pair_crash_after_shared_write`], consumed
+/// once by `apply_session_mode_mutation_locked` right after the shared
+/// write lands, simulating a process crash in the load-bearing window.
+/// Production never arms it, so the pair is a no-op there.
+#[cfg(test)]
+static MODE_PAIR_CRASH_AFTER_SHARED_WRITE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 // ── 类型定义（session 域聚合，由 sessions 正式 re-export） ──
 
 /// A knowledge collection mounted into a session with an enabled flag, so the
@@ -248,6 +259,16 @@ fn folded_collections(state: &SessionModeState) -> Vec<MountedCollection> {
 // ── SessionStore 行为 impl ──
 
 impl SessionStore {
+    /// Test-only: arm the crash seam in
+    /// [`Self::apply_session_mode_mutation_locked`] so the next mode-pair
+    /// persist returns right after the shared `_session_mode_states.json`
+    /// write, leaving the companion `_session_auto_modes.json` untouched —
+    /// the exact between-writes crash window whose durable residue the
+    /// write-order invariant constrains.
+    #[cfg(test)]
+    pub(crate) fn inject_mode_pair_crash_after_shared_write() {
+        MODE_PAIR_CRASH_AFTER_SHARED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     /// The session's entry in the durable `_session_mode_states.json`, if any.
     ///
     /// This — not [`Self::mode_state`]'s resolved fallback — is what a failed
@@ -288,8 +309,22 @@ impl SessionStore {
                 }
             }
             // Absent is authoritative — the mutation path removes the file
-            // when its last entry goes away.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            // when its last entry goes away. NOT after a quarantine though
+            // (round-9 minor): quarantining a corrupt parse also removes the
+            // file, and that absence is unknown state, not a statement any
+            // writer made — inventing an absence here lets a headless Plan
+            // run "repair" it by clearing the durable mode, a widening when
+            // the resolved default is Yolo. Same fault discipline as the
+            // durable pin reader: stale cache beats invented absence, and a
+            // one-way process-level quarantine flag keeps the conservative
+            // answer until the next restart.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if crate::features::sessions::sidecars::shared_mode_map_quarantined() {
+                    // fall through to the cache below
+                } else {
+                    return None;
+                }
+            }
             Err(_) => {}
         }
         self.session_mode_states.read().get(id).cloned()
@@ -1168,6 +1203,17 @@ impl SessionStore {
                 changed
             },
         )?;
+        // Test-only crash seam (round-9 minor 1, mirroring the rebind pair's
+        // `inject_rebind_crash_after_legacy_rewrite`): the shared→companion
+        // write order is the load-bearing downgrade invariant — the crash
+        // window must leave the conservative `plan` durable WITHOUT the flag,
+        // never the reverse pair. The seam stops here with the shared write
+        // already on disk so a reorder-to-companion-first regression fails
+        // the crash-window test instead of passing invisibly.
+        #[cfg(test)]
+        if MODE_PAIR_CRASH_AFTER_SHARED_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
         crate::features::sessions::sidecars::mutate_json_map_file(
             "_session_auto_modes.json",
             |entries: &mut std::collections::HashMap<String, bool>| {
@@ -1499,7 +1545,13 @@ impl SessionStore {
     pub(crate) fn persist_accepted_yolo_mode(&self, id: &str) {
         // Tri-mode safety: plan approval returns to the pre-plan mode
         // (fallback Auto), so the persisted value is whatever the in-memory
-        // claim recorded — the function name is historical.
+        // claim recorded — the function name is historical. The claim read
+        // sits INSIDE the io critical section (round-9 minor, same order as
+        // `set_mode`): reading it before the lock let a concurrent set_mode
+        // landing in the read→lock window be overwritten here by the stale
+        // value, both in the mirror and on disk, reopening the session in
+        // its pre-switch mode.
+        let _io = self.session_mode_states_io.lock();
         let accepted_mode = {
             let states = self.mode_states.read();
             states
@@ -1507,7 +1559,6 @@ impl SessionStore {
                 .map(|entry| entry.mode)
                 .unwrap_or(SerializableMode::Auto)
         };
-        let _io = self.session_mode_states_io.lock();
         self.session_mode_states
             .write()
             .insert(id.to_string(), accepted_mode);
