@@ -182,6 +182,10 @@ struct ToolState {
     /// boundaries fall back to the resolved preference (see
     /// [`resolved_display_target`]) instead of guessing.
     display_target: Option<DisplayTarget>,
+    /// Whether the backend's model-facing fidelity note
+    /// (`Capabilities.target_note`) has been surfaced on an action result
+    /// already — once per session, not on every result.
+    target_note_surfaced: bool,
 }
 
 /// The cloneable execution parts (execute is async while backend calls are
@@ -216,7 +220,21 @@ fn create_backend_reporting_availability(
     create: impl FnOnce(bool) -> Result<Box<dyn ComputerUseBackend>, ComputerUseError>,
 ) -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> {
     let created = create(prefer_virtual);
-    shared.refresh_virtual_availability();
+    match &created {
+        // A FAILED virtual creation must not leave the probe's green verdict
+        // in the snapshot: the probe only answers binary/class presence, so
+        // the plain refresh would flip the hint right back to "ready" for a
+        // stack that just demonstrably failed to start. Record the spawn
+        // verdict instead — the next legitimate refresh point (a preference
+        // flip, the next creation, startup replay) re-evaluates it.
+        Err(error) if prefer_virtual => {
+            shared.set_virtual_availability(platform::VirtualAvailabilitySnapshot {
+                state: "unavailable",
+                detail: format!("the last virtual session failed to start: {error}"),
+            });
+        }
+        _ => shared.refresh_virtual_availability(),
+    }
     created
 }
 
@@ -1716,7 +1734,17 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // another session, it times out with an explicit error (InputBusy)
         // instead of waiting unboundedly and silently wedging other sessions
         // (review finding).
-        let _input_guard = (action.class() == ActionClass::Input)
+        //
+        // The exclusivity protects the USER'S physical desktop. A virtual
+        // target's input physically cannot reach it (a private X server
+        // behind a private cookie / pid-targeted CGEvents pinned to
+        // display-bounds-verified windows / messages posted to hidden-desktop
+        // windows), so a resolved virtual target skips the lock: serializing
+        // independent isolated displays would cap process-wide input
+        // throughput and stall a second session up to the timeout for no
+        // safety gain. Unknown target ⇒ lock, the conservative direction.
+        let target_is_virtual = parts.state.lock().display_target == Some(DisplayTarget::Virtual);
+        let _input_guard = (action.class() == ActionClass::Input && !target_is_virtual)
             .then(|| parts.shared.lock_physical_input())
             .transpose()
             .map_err(|rejection| rejection.message())?;
@@ -1730,6 +1758,16 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         if (action.needs_scale_map() || t3_screening_needs_scale_map(&action))
             && parts.state.lock().last_map.is_none()
         {
+            // The target marker must reflect the backend's ONE-TIME creation
+            // decision, not a fresh probe: the probe can flip after creation
+            // (a virtual stack installed mid-app-run), and stamping a
+            // physical session's first screenshot with the virtual marker
+            // would misreport the target. Prime the cache from the backend's
+            // stamped capabilities once, here, so this and every later
+            // boundary read the same decision.
+            if let Ok(capabilities) = parts.backend.capabilities() {
+                cache_display_target(&parts, &capabilities);
+            }
             let auto = capture_and_store(&parts, &workspace).map_err(|e| backend_error_text(&e))?;
             // Route the auto-captured outcome through the SAME shot_result_text
             // path as explicit/follow-up captures (review finding): every
@@ -1925,6 +1963,18 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // The backend's recorded one-time target decision replaces the
         // preference fallback from here on (payloads, audit, markers).
         cache_display_target(&parts, &capabilities);
+        // The per-OS fidelity note (experimental private API, message-level
+        // input, WM-less degradation) is model-facing but had no channel of
+        // its own: surface it ONCE per session on the first action's
+        // warnings, so the model learns the target's limits before it
+        // wonders why an input did not land.
+        {
+            let mut state = parts.state.lock();
+            if !state.target_note_surfaced && !capabilities.target_note.is_empty() {
+                warnings.push(capabilities.target_note.clone());
+                state.target_note_surfaced = true;
+            }
+        }
         match action.class() {
             ActionClass::Input if !capabilities.input => {
                 return Err(format!(
@@ -2773,13 +2823,18 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
 /// Audit for rejected calls (gate rejection / capability rejection): the
 /// action did not run and there is no injection consequence, but the error is
 /// never swallowed silently (fail-open: an append failure only eprintlns).
+/// The record carries the resolved display target like every other
+/// boundary record — both call sites run after the capability read has
+/// cached the backend's decision, so the target is the real one, not the
+/// preference fallback.
 fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, message: &str) {
-    let record = AuditRecord::new(
+    let mut record = AuditRecord::new(
         &parts.session_id,
         action.name(),
         format!("rejected:{reason}"),
-    )
-    .finish("rejected", Some(message.to_string()), 0);
+    );
+    record.with_display_target(resolved_display_target(parts).as_str());
+    let record = record.finish("rejected", Some(message.to_string()), 0);
     match AuditLog::for_session(&parts.session_id) {
         Ok(log) => {
             if let Err(error) = log.append(&record) {

@@ -1257,7 +1257,8 @@ pub fn run() {
                 computer_use_prefs.enabled && features::computer_use::backend_supported(),
             );
             computer_use_shared.set_display_pref(computer_use_prefs.prefer_virtual_display);
-            computer_use_shared.refresh_virtual_availability();
+            // (set_display_pref already refreshed the availability snapshot —
+            // no second probe here.)
             // Main-thread dispatch channel for the platform layer: the macOS
             // virtual display creation hops onto the main run loop through
             // it (linux/windows call sites ignore the helper). Stored once
