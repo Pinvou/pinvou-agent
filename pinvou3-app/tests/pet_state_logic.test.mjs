@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,14 +15,12 @@ mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
 mkdirSync(path.join(dir, 'shared'), { recursive: true });
 copyFileSync(src, tmp);
 copyFileSync(i18nSrc, path.join(dir, 'shared', 'i18n.js'));
-// i18n.js 现按语言拆分(zh 内嵌),临时副本需带上 i18n/ 目录才能解析
-mkdirSync(path.join(dir, 'shared', 'i18n'), { recursive: true });
-for (const f of ['zh.js', 'browser.js']) {
-  copyFileSync(
-    path.join(here, '..', 'src', 'shared', 'i18n', f),
-    path.join(dir, 'shared', 'i18n', f),
-  );
-}
+// Include nested locale imports in the isolated fixture.
+cpSync(
+  path.join(here, '..', 'src', 'shared', 'i18n'),
+  path.join(dir, 'shared', 'i18n'),
+  { recursive: true },
+);
 // zh moved behind i18n.js's lazy loader (startup budget): seed the staged
 // copy synchronously so the imported module reads a filled dict.zh.
 {

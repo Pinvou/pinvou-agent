@@ -1,3 +1,4 @@
+import { trayLabels } from './tray/zh.js';
 // 中文 UI 词典。自启动预算拆分(round-41)起 zh 与 en/ja 一致走惰性装载
 // (ensureLanguage('zh'));各入口经 ensureLanguageWithZhFallback 在首选语言
 // 装载失败时以 zh 兜底。en/ja 对 zh 全部叶子 key 的覆盖由
@@ -181,6 +182,7 @@ const acpProvidersZh = {
 };
 
 export const dictZh = {
+  tray: trayLabels,
   ...browserZh,
         langTag: 'zh',
         acpAgent: 'ACP Agent',
