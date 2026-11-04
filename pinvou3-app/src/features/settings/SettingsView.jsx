@@ -958,7 +958,13 @@ function hasStoredCredential(record) {
         <div className="space-y-4">
           {catalogGroups.map(group => (
             <section key={group.key}>
-              <div className={catalogSectionTitleClass}>{group.providerKind === PROVIDER_KIND_CODING_PLAN ? group.title : presetProviderLabel(group.preset, t)}</div>
+              {/* Header shows the group's own localized title (en/ja via the
+                  providerCatalog overlay, zh via the catalog's inline
+                  titles) — the raw preset label would misbrand every
+                  vendor group riding a shared preset as "OpenAI
+                  Compatible" (2026-11-04 round-4 review; the local group
+                  has no overlay and keeps its localized preset label). */}
+              <div className={catalogSectionTitleClass}>{group.key === 'local' ? presetProviderLabel(group.preset, t) : group.title}</div>
               <div className={catalogGroupClass}>
                 {group.items.map(item => {
                   const active = preset === group.preset && !item.custom && catalogItemMatchesModel(item, model);
