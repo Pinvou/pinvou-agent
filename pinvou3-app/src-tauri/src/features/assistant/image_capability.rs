@@ -126,9 +126,11 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
 /// (platform.kimi.com/docs/api/models-overview) — while they must keep the
 /// legacy `thinking` parameter omitted (see
 /// `moonshot_model_requires_explicit_thinking` above). Bracket `[1m]`
-/// declarations are excluded like k3[1m]: the base fail-closes those as CC
-/// environment conventions, so no probe legitimately reaches the gateway
-/// with them.
+/// declarations are excluded like k3[1m]: they are CC environment
+/// conventions, not API model ids, so no reasoning tier is defined for
+/// them. Note the manual probe posts straight over HTTP — the
+/// foundation-side validator is not in that path — so this list encodes
+/// the API contract rather than filtering what reaches the gateway.
 ///
 /// This is deliberately a separate predicate from
 /// `moonshot_model_requires_explicit_thinking`: budget selection answers
@@ -473,13 +475,15 @@ mod tests {
             );
         }
         // k3[1m] must NOT hit the list, but not because bare k3 rides the
-        // effort ladder — bare k3 IS in the list above. The real ground:
-        // the base fail-closes `k3[1m]` as a Claude Code environment
-        // convention, not an API model id (crates/tui/src/config.rs
+        // effort ladder — bare k3 IS in the list above. The ground is the
+        // API contract: `k3[1m]` is a Claude Code environment convention,
+        // not an API model id (crates/tui/src/config.rs
         // KIMI_CODE_CLAUDE_ALIAS_GUIDANCE + validate_kimi_code_api_model_id
-        // rejects it on canonical Kimi Code endpoints), so a probe never
-        // legitimately reaches the gateway with that spelling — an arm
-        // would only legitimize an id the base refuses to send.
+        // reject it on the foundation's canonical Kimi Code endpoints).
+        // That validator does not sit on this probe's path — the manual
+        // probe posts via reqwest — so an arm would assert a tier the API
+        // contract does not define, not a shield that keeps the string
+        // from reaching the gateway.
         for name in [
             "gpt-4o",
             "deepseek-v4-pro",
@@ -524,10 +528,12 @@ mod tests {
                 "{name} is an always-reasoning spelling; probe budget must stay at the reasoning tier"
             );
         }
-        // The [1m] bracket declarations stay off the budget list (the base
-        // fail-closes them as CC environment conventions, so no probe
-        // legitimately reaches the gateway with them), alongside plain
-        // non-Moonshot misses.
+        // The [1m] bracket declarations stay off the budget list: they are
+        // CC environment conventions rather than API model ids, and the
+        // manual probe posts via reqwest with no foundation-side validator
+        // in between — the list encodes the API contract, it does not
+        // filter what reaches the gateway. Alongside plain non-Moonshot
+        // misses.
         for name in [
             "k3.1-pro[1m]",
             "kimi-k3.1-pro[1m]",
