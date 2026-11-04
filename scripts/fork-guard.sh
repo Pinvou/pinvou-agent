@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 93 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 95 maintenance commits, eleven maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 merged.
-EXPECTED_HEAD="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
-EXPECTED_COMMITS=93
+# Review candidate fix/provider-compat-refresh-20261104 (T11 provider-compat
+# batch + the pptx cross-repo integration test, rebased onto public
+# maintenance CodeWhale#123 e5a8af221) leads the published integration base
+# f1eb10efcfe2468fde42d1724d7f5f19d54b904c (CodeWhale#114 and #125 merged);
+# MAINTENANCE_BASE below stays the published maintenance head until the
+# candidate lands and the gitlink returns to it.
+EXPECTED_HEAD="b0698be2e1d3e444f53cd8a7e3eca5eb4b172097"
+EXPECTED_COMMITS=95
 # Published maintenance base of this integration.
-MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
+MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
 # A review candidate may lead public maintenance; this does not waive the
 # separate public-head gate or change the immutable r3 transition baseline.
@@ -87,10 +92,7 @@ fingerprints=(
   "T2|Interrupted coordination field omissions are recoverable|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_short_coordination_fields_are_inline_or_recoverable"
   "T2|Real taskless gate retains both output streams|CodeWhale/crates/tui/src/tools/tasks.rs|fn forkguard_gate_without_active_task_keeps_both_streams_recoverable"
   "T2|Taskless gate recovery declares producer boundary|CodeWhale/crates/tui/src/tools/tasks.rs|fn forkguard_taskless_gate_recovery_names_returned_summaries"
-  # 2026-11-05 批次：#124 把结构化摘要的恢复 footer 收敛到共享 helper
-  # model_context_recovery_footer（truncate.rs），context.rs 的内联文案随之迁移——
-  # 指纹钉同一文案的真实新位置，主题声明不变。
-  "T2|Engine recovery names the complete returned result|CodeWhale/crates/tui/src/tools/truncate.rs|complete returned tool result at"
+  "T2|Engine recovery names the complete returned result|CodeWhale/crates/tui/src/core/engine/context.rs|complete returned tool result at"
   "T2|Real interrupted child retains checkpoint recovery|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_interrupted_snapshot_preserves_checkpoint_recovery"
   "T2|Complete structured output has no false recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_complete_structured_results_do_not_request_recovery"
   "T2|Structured field omissions retain recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_structured_field_cuts_still_request_recovery"
@@ -394,6 +396,19 @@ fingerprints=(
 
   "T10|Tachyon effort ladder never emits high   |CodeWhale/crates/tui/src/client.rs|fn forkguard_tachyon_effort_ladder_never_emits_high"
   "T10|registered-only Tachyon table survives save |CodeWhale/crates/config/src/tests.rs|fn forkguard_tachyon_only_provider_table_survives_config_store_save"
+
+  # 2026-11-04 批次（T11）：provider 兼容修复，全部是相对上游 f1eb10efc 的行为
+  # 差异——xAI/Moonshot 根级全 object 联合放行、Kimi Code 路由感知 MFJS 白名单
+  # （含嵌套 allOf）、Kimi Code 采样剥离收口到 exact 路由、MiniMax
+  # reasoning_details 网关门控；外加与父仓 pptx per-layout anyOf 新 schema 的
+  # 跨仓集成验证。行为可上游（依据 2026-11-04 官方文档与活体探针），指纹钉各自
+  # 的结果式行为回归与跨仓集成测试名。
+  "T11|xAI 根联合全 object 分支放行       |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn xai_sanitize_passes_root_union_of_object_branches_through"
+  "T11|Moonshot 根级 object 联合放行       |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_passes_root_anyof_of_object_branches_through"
+  "T11|Kimi Code 路由放宽白名单+嵌套 allOf |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_code_route_ships_probe_verified_keywords"
+  "T11|采样剥离收口到 exact Kimi Code 路由 |CodeWhale/crates/tui/src/client/chat.rs|fn kimi_code_fixed_sampling_covers_every_model_id_on_the_route"
+  "T11|MiniMax reasoning_details 网关门控  |CodeWhale/crates/tui/src/client/chat.rs|fn minimax_gateway_route_still_mirrors_thinking_as_reasoning_details"
+  "T11|pptx 新 schema 跨仓集成验证         |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn shipped_pptx_slides_schema_passes_moonshot_validation_on_both_routes"
 
   "APP|unified 2000-step budget default           |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|const HOST_STEP_BUDGET: u32 = 2_000;"
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
