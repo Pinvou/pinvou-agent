@@ -368,9 +368,14 @@ impl ScheduledChatExecutor {
                 result_text: None,
                 // Secret-only redaction here, matching what this chain can
                 // actually carry today: ensure_deliverable_target collapses
-                // store-load failures into static text and sidecar error
-                // contexts use bare file names, so no proven absolute-path
-                // carrier exists on this chain. Round-19 复审:此前注释声称
+                // store-load failures into static text and the per-session
+                // sidecar reads surface only error kinds, so no proven
+                // absolute-path carrier exists on this chain. (Round-20 复审
+                // 订正:此前"sidecar error contexts use bare file names"失实
+                // ——session-agent 索引仓的 SessionAgentStore::load_from 在
+                // 上下文里嵌 path.display();今天不泄漏仅仅因为上面那道收
+                // 敛把它折成了静态文案,若拆掉收敛本臂须像 organize 臂一样
+                // 接 redact_storage_prefix。)Round-19 复审:此前注释声称
                 // 与本文件 organize 臂同一纪律——失实,organize 臂自
                 // round-18 起额外折叠存储根(其链上的 bounded-read io
                 // Display 确有绝对路径);本臂将来若引入携带路径的错误构造,
@@ -564,7 +569,14 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
         return TaskExecutionResult {
             status: TaskStatus::Canceled,
             result_text: None,
-            error: completion.error,
+            // Round-20 复审 MAJOR-2:取消路径携带的引擎错误链同样落 run
+            // record(list_scheduled_task_runs 出站),与 failed( 同一折叠
+            // 口径。
+            error: completion.error.map(|error| {
+                crate::platform::paths::redact_storage_prefix(
+                    &crate::platform::credential_store::redact_secret(&error),
+                )
+            }),
             terminal_reason: TaskTerminalReason::Canceled,
         };
     }
@@ -579,11 +591,13 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
         TurnOutcomeStatus::Failed => TaskExecutionResult {
             status: TaskStatus::Failed,
             result_text: None,
-            error: Some(
-                completion
-                    .error
-                    .unwrap_or_else(|| "Scheduled conversation failed".to_string()),
-            ),
+            error: Some(crate::platform::paths::redact_storage_prefix(
+                &crate::platform::credential_store::redact_secret(
+                    &completion
+                        .error
+                        .unwrap_or_else(|| "Scheduled conversation failed".to_string()),
+                ),
+            )),
             terminal_reason: TaskTerminalReason::Failed,
         },
         TurnOutcomeStatus::Interrupted => unreachable!("handled above"),
@@ -594,7 +608,16 @@ fn failed(error: impl std::fmt::Display) -> TaskExecutionResult {
     TaskExecutionResult {
         status: TaskStatus::Failed,
         result_text: None,
-        error: Some(error.to_string()),
+        // Round-20 复审 MAJOR-2:create_scheduled_run 的最外层 anyhow
+        // context 携带 `<home>/.../scheduled-runs/...` 绝对路径
+        // (sessions/retention.rs),run_turn 错误链同类;run record 经
+        // list_scheduled_task_runs 出站(Web 允许清单内),与上方 organize
+        // 臂同一口径——secret 内层、存储根折叠最外层。organize 臂在本文件
+        // 内自行折叠且不走本 helper(见其双界源钉),其余 failed( 臂此前
+        // 无任何折叠;已折叠文本二次折叠幂等。
+        error: Some(crate::platform::paths::redact_storage_prefix(
+            &crate::platform::credential_store::redact_secret(&error.to_string()),
+        )),
         terminal_reason: TaskTerminalReason::Failed,
     }
 }
@@ -1337,10 +1360,12 @@ mod tests {
     }
 
     /// Review round-15 N10: the delivery-failure reason passes through
-    /// `redact_secret` before it reaches the run record (app error chains
-    /// carry store paths and gate detail) — deleting the call kept every
-    /// behavioral test green, so the call site is pinned textually, the
-    /// same way as the live body above.
+    /// `redact_secret` before it reaches the run record (credential /
+    /// endpoint-probing detail; Round-20 复审订正:旧括注"app error chains
+    /// carry store paths"与本臂自身注释的实勘结论相反——该链今天无已证实
+    /// 的绝对路径载体,折叠存储根不在本臂纪律内) — deleting the call kept
+    /// every behavioral test green, so the call site is pinned textually,
+    /// the same way as the live body above.
     /// Review round-15 N10, rewritten in round-17 M5: the delivery-failure
     /// reason passes through `redact_secret` before it reaches the run
     /// record. The textual pin needs TWO bounds to be mutation-sensitive:
@@ -1797,6 +1822,90 @@ mod tests {
         );
         manager.shutdown();
         Ok(())
+    }
+
+    #[test]
+    fn failed_reason_folds_the_storage_root_like_the_organize_arm() {
+        // Round-20 复审 MAJOR-2 行为钉(单元半):failed( 是
+        // create_session(:505)与 run_turn(:545)错误臂的共同出口——
+        // create_scheduled_run 的最外层 anyhow context 携带绝对存储路径,
+        // 此前该出口无任何折叠。删除 failed( 内的折叠(或内外层序对调)
+        // 本断言即红。
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", "p8") };
+        // 路径 token 保持短于内层 redact_secret 的 ≥24 长度族,让折叠层
+        // 独力可观察(与上方 organize 行为钉同一纪律)。
+        let result = failed(format!(
+            "create scheduled task workspace {}",
+            crate::platform::paths::pinvou3_home()
+                .join("sr/w")
+                .display()
+        ));
+        let error = result.error.expect("failed() must carry the error");
+        assert!(
+            error.contains("create scheduled task workspace ~/.pinvou3/sr/w"),
+            "the failed() exit must fold the storage root outermost, got: {error}"
+        );
+        assert!(
+            !error.contains("p8/sr"),
+            "the failed() exit must not retain the raw home prefix, got: {error}"
+        );
+    }
+
+    #[test]
+    fn completion_error_arms_fold_the_storage_root() {
+        // Round-20 复审 MAJOR-2 行为钉(单元半):map_completion 的
+        // Failed 臂与 Canceled 臂携带引擎错误链,同样落 run record——
+        // 删除任一臂的折叠本测试即红。
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", "p8") };
+        let raw = format!(
+            "turn failed at {}",
+            crate::platform::paths::pinvou3_home()
+                .join("sr/w")
+                .display()
+        );
+        let failed_result = map_completion(completion(
+            "turn_1".to_string(),
+            TurnOutcomeStatus::Failed,
+            Some(raw.clone()),
+            false,
+        ));
+        let failed_error = failed_result
+            .error
+            .expect("failed completion carries the error");
+        assert!(
+            failed_error.contains("turn failed at ~/.pinvou3/sr/w"),
+            "the completion Failed arm must fold the storage root, got: {failed_error}"
+        );
+        assert!(
+            !failed_error.contains("p8/sr"),
+            "the completion Failed arm must not retain the raw home prefix, got: {failed_error}"
+        );
+        let canceled_result = map_completion(completion(
+            "turn_2".to_string(),
+            TurnOutcomeStatus::Completed,
+            Some(raw),
+            true,
+        ));
+        assert_eq!(canceled_result.status, TaskStatus::Canceled);
+        let canceled_error = canceled_result
+            .error
+            .expect("canceled completion carries the error");
+        assert!(
+            canceled_error.contains("~/.pinvou3/sr/w"),
+            "the completion Canceled arm must fold the storage root, got: {canceled_error}"
+        );
+        assert!(
+            !canceled_error.contains("p8/sr"),
+            "the completion Canceled arm must not retain the raw home prefix, got: {canceled_error}"
+        );
     }
 
     #[tokio::test]
