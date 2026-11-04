@@ -1144,9 +1144,23 @@ impl RemoteControlManager {
         // 一次无实际效果的点击显示失败;改回携带空 endpoint_id 的非活跃
         // 信息(与 stop_current 对未激活 endpoint 的返回形状一致)。不发
         // status:没有任何状态变化可推送,设置页以本次返回的载荷合并。
+        // (Round-19 复审 NIT:该前提依赖 endpoint 同样为空——配置文件
+        // 被外部删除而 inner.endpoint 仍在的畸形态下,上面的失效已真实
+        // 翻旗标/清 grant,不推 status 会让 UI 滞留已授权显示到下一次无
+        // 关状态推送。endpoint 在场时补一次状态刷新,空配置正常路径维持
+        // 原样不发。)
         let mut config = match load_config()? {
             Some(config) => config,
             None => {
+                let endpoint_present = {
+                    // 独立块内取放 guard:锁跨不进 emit_status(不可重入
+                    // 锁同线程自锁),也满足上方精确锁区间钉的括号深度判据。
+                    let inner = self.inner.lock();
+                    inner.endpoint.is_some()
+                };
+                if endpoint_present {
+                    self.emit_status();
+                }
                 return Ok(WebAccessInfo {
                     endpoint_id: String::new(),
                     url: String::new(),
@@ -6138,14 +6152,18 @@ mod tests {
             // 弱断言覆盖——把护栏放宽成 `starts_with(PREFIX) ||
             // !error.is_empty()` 这类改写,会把 round-14 记录的同键不同
             // 密钥 fail-closed 边界静默翻成 fail-open,现有断言全绿。按
-            // 逐字节形态钉住护栏与 catch-all 冲突臂。
+            // 逐字节形态钉住护栏与 catch-all 冲突臂。(Round-19 复审:
+            // 护栏 needle 必须含臂 opener `=> {`——裸护栏 needle 是
+            // superstring 盲的,析取加宽 `|| !error.is_empty()` 原样保留
+            // 旧 needle;带上 opener 后任何加宽都在 `=> {` 前插入文本,
+            // 针即失配。)
             assert!(
                 body.contains(
-                    "Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX)"
+                    "Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {"
                 ),
-                "{label} must gate the degrade on the exact shared queue-full prefix; \
-                 widening the guard silently flips the documented conflicting-secret \
-                 fail-closed boundary to fail-open",
+                "{label} must gate the degrade on the exact shared queue-full prefix arm; \
+                 widening the guard (e.g. a disjunctive `||` clause) silently flips the \
+                 documented conflicting-secret fail-closed boundary to fail-open",
             );
             assert!(
                 body.contains("Err(error) => return Err(error),"),
