@@ -1634,6 +1634,24 @@ mod tests {
              reopens the infinite connect→revoke loop while both gate-leg pins \
              stay green"
         );
+        // Round-18 复审:推导行之外还有两处相邻突变现有断言全绿——(a)删掉
+        // 下游消费(`if worker_terminal { ... return; }`),worker 在终态帧
+        // 上永不终止,12s 循环复活;(b)把消费挪到 tx_in 转发之前,manager
+        // 永远看不到终态帧(worker 静默退场,轮换竞态里的迟到终结帧无法
+        // 与帧归属区分)。按「转发先于消费」的顺序钉住两者。
+        let forward = body
+            .find("if tx_in.send(RelayInbound::Message(text.to_string())).await.is_err()")
+            .expect("the terminal frame must still be forwarded to the manager");
+        let consume = body.find("if worker_terminal {").expect(
+            "the worker_terminal derivation must be consumed by the loop's \
+                 terminal return; deleting the consumption lets terminal frames \
+                 pass unacted and resurrects the 12s connect→revoke loop",
+        );
+        assert!(
+            forward < consume,
+            "the terminal frame must be forwarded to the manager BEFORE the worker \
+             terminates; consuming first silently drops the terminal frame"
+        );
     }
 
     /// 接线钉(Round-15 复审 MA5,轻量半):run_loop 的注册类 reject 帧必须
@@ -1662,6 +1680,14 @@ mod tests {
             "run_loop must stamp unscoped registration errors with the endpoint it is \
              registering before forwarding; deleting the call site makes late terminal \
              frames unattributable to the manager's explicit-match gate"
+        );
+        // Round-18 复审:补戳写进 `forwarded` 后,发送臂必须使用补戳后的
+        // 值——把发送回退成裸 `text` 的突变让补戳成为死计算,两处断言
+        // (调用点形态 + 本断言)全绿。按发送实参钉住消费端。
+        assert!(
+            body.contains("RelayInbound::Message(forwarded)"),
+            "the forwarded frame must be the stamped `forwarded` value; reverting \
+             the send to the raw `text` turns the stamp into a dead computation"
         );
     }
 }

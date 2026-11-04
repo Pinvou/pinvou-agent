@@ -5399,9 +5399,20 @@ mod tests {
                     reserved_bytes: 1,
                     total: 1,
                     ready,
-                    last_touched: Instant::now()
-                        - WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW
-                        - std::time::Duration::from_secs(1),
+                    // Round-18 复审:直接相减在单调时钟启动不足 31s 的主机
+                    // (刚开机)上会 panic——测试崩而非断言红,失败语言错
+                    // 误。受检回退:先退窗宽+1s,再退窗边界,都不行就用当
+                    // 前时刻;退化只会让断言以「未超窗」干净失败,永不
+                    // panic。
+                    last_touched: match Instant::now().checked_sub(
+                        WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW
+                            + std::time::Duration::from_secs(1),
+                    ) {
+                        Some(aged_at) => aged_at,
+                        None => Instant::now()
+                            .checked_sub(WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW)
+                            .unwrap_or_else(Instant::now),
+                    },
                 },
             )
         };
@@ -6122,6 +6133,25 @@ mod tests {
             assert!(
                 body.contains("PENDING_REVOCATION_QUEUE_FULL_PREFIX"),
                 "{label} must recognize the shared queue-full prefix and degrade to a log",
+            );
+            // Round-18 复审:护栏与冲突臂的极性此前只由「引用常量 + 无 ?」
+            // 弱断言覆盖——把护栏放宽成 `starts_with(PREFIX) ||
+            // !error.is_empty()` 这类改写,会把 round-14 记录的同键不同
+            // 密钥 fail-closed 边界静默翻成 fail-open,现有断言全绿。按
+            // 逐字节形态钉住护栏与 catch-all 冲突臂。
+            assert!(
+                body.contains(
+                    "Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX)"
+                ),
+                "{label} must gate the degrade on the exact shared queue-full prefix; \
+                 widening the guard silently flips the documented conflicting-secret \
+                 fail-closed boundary to fail-open",
+            );
+            assert!(
+                body.contains("Err(error) => return Err(error),"),
+                "{label} must keep the catch-all conflict arm fail-closed; degrading it \
+                 drops revocation intents for conflicting credentials without any \
+                 durable record",
             );
         }
         // refresh 的提交后回放同样不得楔住 activate(rotation 已提交的
