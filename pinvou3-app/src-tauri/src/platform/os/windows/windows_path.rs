@@ -111,6 +111,13 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // 弟目录其真实内容可能被当作该根交付(lib.rs compose 工作区根)。需要
     // İ 与 i+U+0307 两拼 sibling 同时存在于同一 NTFS 目录——极罕见;完美
     // 模拟 $UpCase 需要 std 之外的简单大小写映射,残留按已接受取舍记录。
+    //
+    // Round-20 复审补录的另两向残留(均 false-split/可用性方向,不产生
+    // false-merge,现网应用产出的拼写不可达):(a)正斜杠设备拼写
+    // (`//?/C:\doc.`、`\?\UNC/server/…`)折叠出的 key 与 plain、与同文件
+    // 的 verbatim key 均不匹配,成为孤儿 key;(b)词中希腊 sigma(ς/σ):
+    // $UpCase 把二者都折到 Σ(同文件),to_lowercase 保持区分,异拼同文件
+    // 在此分裂成不同 key。
     let folded = super::super::interface::volume_fold_spelling(&stripped.replace('\\', "/"));
     if !has_win32_normalization_sensitive_component(path) {
         return folded;
