@@ -520,8 +520,9 @@ impl VirtualX11Backend {
             .spawn()
             .map_err(|error| ComputerUseError::failed(format!("cannot spawn Xvfb: {error}")))?;
         self.xvfb = Some(child);
-        // The child owns fd 3 now; the parent write end is closed when this
-        // local binding is dropped after the display number is read.
+        // The child owns fd 3 now; the parent write end closes when this
+        // function returns, so the display-number read sees prompt EOF if
+        // the server dies before writing.
         Ok(read_end)
     }
 
@@ -576,13 +577,16 @@ impl VirtualX11Backend {
             .env("XAUTHORITY", &self.auth_path)
             // Keep GTK-based WMs (mutter/marco/xfwm4) on the X11 backend.
             .env("GDK_BACKEND", "x11")
+            // Same env discipline as xdotool/opened apps: the WM must not
+            // pick up the host's Wayland session.
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("WAYLAND_SOCKET")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         std_process_group_leader(&mut command);
         match command.spawn() {
             Ok(child) => {
-                let pid = child.id();
                 self.wm = Some(child);
                 // The WM is recorded ONLY via `wm_pid`/the held handle — never
                 // in `children`: the release path winds the children down
@@ -1552,14 +1556,14 @@ impl ComputerUseBackend for VirtualX11Backend {
     /// (backend destruction / session end).
     fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
         let children = std::mem::take(&mut self.children);
-        let count = children.len();
-        kill_verified_children(&children);
+        let killed = kill_verified_children(&children);
         // Empty the recorded list in the pidfile: the pids are dead by our
         // own hand, so a crash sweep must never consider them (pid recycling).
         self.write_pidfile();
         log::info!(
-            "[computer_use] virtual display: released the virtual grant — {count} opened \
-             app(s) wound down; the display itself stays usable"
+            "[computer_use] virtual display: released the virtual grant — {killed} of {} \
+             opened app(s) wound down; the display itself stays usable",
+            children.len()
         );
         Ok(())
     }
@@ -1698,9 +1702,6 @@ impl VirtualX11Backend {
     }
 }
 
-/// The read end of the displayfd socketpair (see the module docs for the
-/// spawn sequence). Stored on the backend so the read can survive across the
-/// spawn helper boundary; dropped together with the Xvfb child.
 /// xdotool button numbers: left=1 middle=2 right=3 (X button mapping).
 fn xdotool_button(button: MouseButton) -> &'static str {
     match button {
@@ -1773,59 +1774,67 @@ fn basename_of(program: &str) -> &str {
 /// alone could take out an unrelated process (worse: its whole process
 /// group, via `kill_pid_tree`'s group kill).
 fn child_identity_matches(record: &ChildRecord) -> bool {
-    child_identity_matches_with(record, process_cmdline)
+    child_identity_matches_with(record, process_argv0)
 }
 
-/// The gate with an injected cmdline lookup (the sweep's testable shape;
+/// The gate with an injected argv[0] lookup (the sweep's testable shape;
 /// the start-time lookup always reads the real /proc).
 fn child_identity_matches_with(
     record: &ChildRecord,
-    cmdline_of: impl Fn(u32) -> Option<String>,
+    argv0_of: impl Fn(u32) -> Option<String>,
 ) -> bool {
     if !process_runs(record.pid) {
         return false;
     }
-    let Some(cmdline) = cmdline_of(record.pid) else {
+    let Some(argv0) = argv0_of(record.pid) else {
         return false;
     };
-    let argv0 = cmdline.split(' ').next().unwrap_or("");
-    basename_of(argv0) == record.program && process_starttime(record.pid) == Some(record.starttime)
+    basename_of(&argv0) == record.program && process_starttime(record.pid) == Some(record.starttime)
 }
 
 /// Kill the recorded `open_app` children whose identity still verifies;
 /// skip-and-log the rest (dead or recycled). Shared by the teardown
 /// (`kill_recorded_processes`) and the release path so EVERY in-process
 /// kill of a recorded child passes the same gate the crash sweep uses.
-fn kill_verified_children(children: &[ChildRecord]) {
+/// Returns the number of children actually killed (skipped records are
+/// not counted, so the caller's wind-down log stays truthful).
+fn kill_verified_children(children: &[ChildRecord]) -> usize {
+    let mut killed = 0;
     for record in children {
         if child_identity_matches(record) {
             kill_pid_tree(record.pid);
-        } else {
+            killed += 1;
+        } else if process_runs(record.pid) {
             log::warn!(
                 "[computer_use] virtual display: recorded child pid {} (program '{}') \
-                 no longer matches its recorded identity (pid recycled or already \
-                 dead?); skipping the kill",
+                 no longer matches its recorded identity (pid recycled?); skipping \
+                 the kill",
+                record.pid,
+                record.program
+            );
+        } else {
+            log::debug!(
+                "[computer_use] virtual display: recorded child pid {} (program '{}') \
+                 already exited; nothing to wind down",
                 record.pid,
                 record.program
             );
         }
     }
+    killed
 }
 
-/// The cmdline of a pid (the kernel's NUL-separated argv, joined with spaces),
-/// or `None` when the process is gone or /proc is unreadable.
-fn process_cmdline(pid: u32) -> Option<String> {
+/// The argv[0] of a pid — the FIRST NUL-terminated token of
+/// `/proc/<pid>/cmdline` — or `None` when the process is gone or /proc is
+/// unreadable. The kernel delimits argv with NULs, so a path containing a
+/// space (`/opt/My App/bin/app`) stays one token; splitting the joined
+/// string on spaces would corrupt exactly those programs.
+fn process_argv0(pid: u32) -> Option<String> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let parts: Vec<String> = raw
+    let first = raw
         .split(|byte: &u8| *byte == 0)
-        .filter(|part| !part.is_empty())
-        .map(|part| String::from_utf8_lossy(part).into_owned())
-        .collect();
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
+        .find(|part| !part.is_empty())?;
+    Some(String::from_utf8_lossy(first).into_owned())
 }
 
 /// Crash-orphan sweep, called ONCE at app setup: every
@@ -1835,13 +1844,13 @@ fn process_cmdline(pid: u32) -> Option<String> {
 /// readable pidfile of ours are NEVER touched (they are not ours), and a
 /// malformed pidfile is left in place with a warning instead of guessed at.
 pub(crate) fn sweep_orphans() {
-    sweep_orphans_with(process_cmdline);
+    sweep_orphans_with(process_argv0);
 }
 
-/// Testable core of [`sweep_orphans`]: the cmdline lookup is injected so the
+/// Testable core of [`sweep_orphans`]: the argv[0] lookup is injected so the
 /// pid-recycling identity gate is pinable with live fixtures (a real `sleep`
 /// child must survive a stale pidfile that claims it as the Xvfb).
-fn sweep_orphans_with(cmdline_of: impl Fn(u32) -> Option<String>) {
+fn sweep_orphans_with(argv0_of: impl Fn(u32) -> Option<String>) {
     let mut root = pinvou3_home();
     for part in VD_ROOT_SUBPATH {
         root.push(part);
@@ -1867,20 +1876,19 @@ fn sweep_orphans_with(cmdline_of: impl Fn(u32) -> Option<String>) {
             continue;
         };
         // Pid-recycling identity gate (MINOR-1): the recorded server/WM pids
-        // are killed only when their cmdline still names the recorded role —
-        // "Xvfb" as argv[0]'s file name for the server, one of our WM
+        // are killed only when their argv[0] still names the recorded role —
+        // "Xvfb" as the file name of the server's argv[0], one of our WM
         // candidates for the WM (the only programs `spawn_wm` ever records
         // there). A mismatch means the pid number was recycled by an
         // unrelated process between the crash and this sweep: skipped and
         // logged, because killing by number alone could take out that
-        // unrelated process. Dead pids fail the same gate (no cmdline) and
-        // are skipped too — killing them would be a no-op anyway.
+        // unrelated process. Dead pids fail the same gate (no /proc entry)
+        // and are skipped too — killing them would be a no-op anyway.
         let matches_role = |pid: u32, role: &str| -> bool {
-            let Some(cmdline) = cmdline_of(pid) else {
+            let Some(argv0) = argv0_of(pid) else {
                 return false;
             };
-            let program = cmdline.split(' ').next().unwrap_or("");
-            let program = basename_of(program);
+            let program = basename_of(&argv0);
             if role == "wm" {
                 WM_CANDIDATES.contains(&program)
             } else {
@@ -1920,7 +1928,7 @@ fn sweep_orphans_with(cmdline_of: impl Fn(u32) -> Option<String>) {
             }
         } else {
             for record in &file.children_detail {
-                if child_identity_matches_with(record, &cmdline_of) {
+                if child_identity_matches_with(record, &argv0_of) {
                     kill_pid_tree(record.pid);
                 } else {
                     log::warn!(
@@ -2127,8 +2135,9 @@ mod tests {
 
     /// The open_app child env pins the EXACT key set: the 8 toolkit/backend
     /// overrides with their exact values, the redirected session-bus address
-    /// (inside the session dir, so a dbus client autolaunches a PRIVATE bus
-    /// there instead of reaching the user's real one), and exactly 2 removals
+    /// (a set-but-unusable address: libdbus/GDBus do NOT autolaunch a private
+    /// bus for it, so bus-dependent features simply see a disconnected bus
+    /// instead of reaching the user's real one), and exactly 2 removals
     /// (the host Wayland session variables); anything else (PATH etc.) is
     /// inherited, so the override map must contain nothing beyond the pinned
     /// keys. XDG_RUNTIME_DIR is deliberately NOT removed (apps need it).
@@ -2373,7 +2382,7 @@ mod tests {
         // The WM-less shape serializes wm_pid as null.
         let value: serde_json::Value = serde_json::to_value(PidFile {
             wm_pid: None,
-            ..file
+            ..file.clone()
         })
         .expect("serialize");
         assert!(value["wm_pid"].is_null());
@@ -2538,13 +2547,13 @@ mod tests {
         let _ = child.wait();
     }
 
-    /// The matching side of the identity gate: with a cmdline lookup that
+    /// The matching side of the identity gate: with an argv[0] lookup that
     /// REPORTS the recorded role for the fixture pid, the live recorded child
     /// (a `sleep` process as group leader, fixture style of
     /// platform::process tests) must die when the sweep reads its pid from a
     /// pidfile, and its dir must be removed.
     #[test]
-    fn sweep_kills_a_live_recorded_child_whose_cmdline_matches() {
+    fn sweep_kills_a_live_recorded_child_whose_argv0_matches() {
         if Command::new("sleep").arg("0").status().is_err() {
             eprintln!("skipping: no `sleep` binary on this platform");
             return;
@@ -2569,14 +2578,14 @@ mod tests {
                 started_at: 0,
             },
         );
-        // The fake lookup simulates a genuine Xvfb cmdline for the fixture
+        // The fake lookup simulates the genuine Xvfb argv[0] for the fixture
         // pid (a real Xvfb cannot be spawned in a unit test); everything else
         // uses the real /proc.
         sweep_orphans_with(|p| {
             if p == pid {
-                Some(format!("Xvfb -displayfd 3 :7 (pid {p})"))
+                Some("Xvfb".to_string())
             } else {
-                process_cmdline(p)
+                process_argv0(p)
             }
         });
         // Poll for the group kill to take effect (SIGKILL is async). The
@@ -2745,6 +2754,30 @@ mod tests {
             "start time is stable across reads"
         );
         assert_eq!(process_starttime(4_000_000_004), None);
+    }
+
+    /// The argv[0] is taken at the kernel's NUL boundary, not at a space:
+    /// a program installed under a path containing a space keeps matching
+    /// its recorded basename (the gate reads argv[0] whole, so `/opt/My
+    /// App/bin/app` matches the record `app`). Pinning this keeps the gate
+    /// from regressing to a space-splitting read that silently skipped
+    /// every kill for such programs.
+    #[test]
+    fn identity_gate_matches_an_argv0_containing_spaces() {
+        let mine = std::process::id();
+        let record = ChildRecord {
+            pid: mine,
+            program: "app".to_string(),
+            starttime: process_starttime(mine).expect("own /proc stat readable"),
+        };
+        assert!(
+            child_identity_matches_with(&record, |_| { Some("/opt/My App/bin/app".to_string()) }),
+            "an argv[0] with spaces must still match its recorded basename"
+        );
+        assert!(
+            !child_identity_matches_with(&record, |_| { Some("/opt/Other/bin/app".to_string()) }),
+            "a different basename must not match"
+        );
     }
 
     /// Directories without OUR pidfile are never touched, and a malformed
