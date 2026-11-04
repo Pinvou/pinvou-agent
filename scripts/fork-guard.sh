@@ -230,6 +230,13 @@ fingerprints=(
   "T2|Narrowed turn keeps the standing baseline |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_a_provenance_narrowed_turn_neither_emits_the_host_line_nor_pollutes_the_baseline"
   "T2|Auto-Review narrowing carries its receipt |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_an_auto_review_turn_narrowed_by_provenance_still_records_its_narrowing"
   "T2|Authority transition model notice line |CodeWhale/crates/tui/src/core/authority.rs|Authority transition (host): {} -> {}; reason: {}"
+  # Round-9 minor: the host-side unknown-outcome classifier matches this
+  # engine Display wording by substring (pending_approvals.rs); if the base
+  # rewords it, unknown outcomes silently flip into the determinate-refusal
+  # arm and a possibly-consumed approval is restored as retryable. This
+  # production-literal fingerprint makes the drift a guard red today (the
+  # CodeWhale#131 follow-up to export a marker constant remains open).
+  "T2|Approval unknown-outcome classifier wording |CodeWhale/crates/tui/src/core/engine/handle.rs|approval decision outcome is unknown"
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
