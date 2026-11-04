@@ -2278,6 +2278,56 @@ test("rejects a web frame whose encoded forward expands past the desktop bound",
   }
 });
 
+test("forwards a near-bound legal web frame to the desktop (positive control against bound drift)", async () => {
+  // Round-20 复审(S09):两条门测试只钉欠阻塞方向(放行超帧=红);
+  // 界限常量向下漂移(误改成 1 MiB ⇒ 所有 1MiB~界限间的合法 web→桌面
+  // 帧被 frame_too_large 拒绝)此前全套件保持绿——没有「接近界限但仍
+  // 合法」的正向对照。发一帧 raw 与转发编码都落在 ingress 上限与桌面
+  // 界限之间的 rpc_request,断言桌面完整收到。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_nearbound_${Date.now()}`;
+  const accessToken = "access-token-nearbound-000000000000001";
+  const desktopSecret = "desktop-secret-nearbound-00000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const base = { v: 2, type: "rpc_request", request_id: "req-nearbound", command: "chat", args: { pad: "" } };
+    const overhead = Buffer.byteLength(JSON.stringify(base));
+    // 目标:转发编码 ≈ 桌面界限 − 16 KiB(转发信封与心跳争用的余量),
+    // raw(ASCII pad,无再编码膨胀)远低于 ingress 上限、又远高于任何
+    // 会被误配的向下漂移界限。
+    const target = 4 * 1024 * 1024 - 64 * 1024 - 16 * 1024;
+    const pad = "x".repeat(target - overhead);
+    const frame = JSON.stringify({ ...base, args: { pad } });
+    const encoded = Buffer.byteLength(JSON.stringify(JSON.parse(frame)));
+    assert.equal(encoded < 4 * 1024 * 1024 - 64 * 1024, true,
+      "the forwarded encoding must stay under the desktop bound");
+    assert.equal(Buffer.byteLength(frame) > 1024 * 1024, true,
+      "the frame must sit far above any plausible drifted-down bound");
+
+    const received = nextMessage(desktop.ws, "rpc_request");
+    web.ws.send(frame);
+    const rpc = await received;
+    assert.equal(rpc.request_id, "req-nearbound",
+      "a near-bound legal frame must reach the desktop intact");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must stay open across the near-bound forward");
+    await expectNoMessage(web.ws, "error");
+    await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
 test("answers desktop_offline before measuring an oversized frame", async () => {
   // Round-19 复审:PROTOCOL.md 承诺「桌面断开时先答 desktop_offline,帧
   // 不被测量也不被转发」——此前无测试钉住,把测量门挪到离线检查之前的
