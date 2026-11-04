@@ -110,12 +110,20 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
   // already-materialized session writes only that session's own record
   // (set_plan_mode_next and other per-session commands no longer leak into
   // globals in the backend).
+  // Draft-defaults writes get an epoch like the session reads: a
+  // get_mode_defaults issued BEFORE an in-flight setDraftMode (or
+  // setMultiAgentMode's draft branch) must not land after it and overwrite
+  // the just-written default with the pre-switch value — same staleness
+  // class the syncModeState epoch guards cover, on the draft surface
+  // (round-8 L7-2; the body's disclosure named only setDraftMode).
+  let modeDefaultsEpoch = 0;
   async function refreshModeDefaults() {
+    const epochAtRead = ++modeDefaultsEpoch;
     try {
       const defaults = await invoke("get_mode_defaults");
-      if (defaults) state.modeDefaults = defaults;
+      if (defaults && epochAtRead === modeDefaultsEpoch) state.modeDefaults = defaults;
     } catch { /* 读取失败保留旧值/缺省，不打扰交互 */ }
-    if (!state.activeSessionId) {
+    if (!state.activeSessionId && epochAtRead === modeDefaultsEpoch) {
       state.modeState = currentDraftModeState();
       notify();
     }
@@ -130,6 +138,9 @@ function setModeLane(lane) { return pinvouSharedtauriInteraction().setModeLane(l
   // materialization (the backend resolves only the code lane default for bound
   // sessions, never the work one).
   async function setDraftMode(target) {
+    // Any draft-default WRITE invalidates in-flight defaults reads (round-8
+    // L7-2 staleness discipline).
+    modeDefaultsEpoch += 1;
     const boundDraft = !!state.draftWorkspacePath;
     // Bound drafts always write the code lane; unbound drafts follow the
     // current lane (two lanes, work/code; design was merged into work, #428).

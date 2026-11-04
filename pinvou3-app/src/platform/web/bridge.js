@@ -5292,8 +5292,11 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
   // composer-controls 的兜底 setSessionMode(null, 'auto') 在 Web 不得变成
   // 可达的进入-Auto 写入。权威写回一律走 applyAuthoritativeModeState（共享
   // epoch 表）；失败按触发会话提示，不回滚乐观值（本命令无乐观翻转）。
-  // 进入 Auto 仍是桌面专属：Web 面的审批卡无法在浏览器决策
-  // （decideApproval 不在 Web 白名单），放行进入会把会话钉死在发送门后。
+  // 进入 Auto 仍是桌面专属：Web 门面不导出 decideApproval（审批卡无
+  // 浏览器决策面），放行进入会把会话钉死在发送门后。（措辞精确化，
+  // round-8 L6-F1：`decide_approval` 命令本身在 access-policy 白名单里
+  // ——那是前向兼容登记；多代理会话另有服务端 denylist。挡的是门面
+  // 导出，不是协议白名单。）
   async function setSessionMode(targetSessionId, mode, askOnGuardrail) {
     const sid = typeof targetSessionId === 'string' && targetSessionId
       ? targetSessionId

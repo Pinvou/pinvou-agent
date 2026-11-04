@@ -1066,6 +1066,13 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
       if (id && typeof chatFeature.purgeSteerState === "function") {
         chatFeature.purgeSteerState(id);
       }
+      // The approval-replay terminal-seq entry dies with the buffer: the
+      // seq fence only guards snapshots against a LIVE session's replay, and
+      // keeping deleted/evicted entries is the one map the purge sweep had
+      // missed (round-8 L7-3).
+      if (id && chatEventsFeature && typeof chatEventsFeature.purgeApprovalReplayTerminalSeq === "function") {
+        chatEventsFeature.purgeApprovalReplayTerminalSeq(id);
+      }
       // The streaming markdown render trailing-edge timers are recorded per
       // sid in a chat-events internal table; cancel them when the buffer is
       // evicted/deleted so a timer cannot fire after the buffer is rebuilt
@@ -1208,7 +1215,11 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
       // multi_agent 缺失（chat:mode_changed 只带 mode/ask_on_guardrail）=
       // 负载不携带该字段，保留该会话当前显示，不得误置 false。
       state.modeState = {
-        mode: st.mode || "yolo",
+        // Malformed payload fallback is "auto", not "yolo": the widest mode
+        // is the worst-direction lie (the same fail-safe direction the
+        // round-2 read fallbacks adopted) — a missing mode must display as
+        // the conservative lane default, never as full-auto (round-8 L7-4).
+        mode: st.mode || "auto",
         multiAgent: st.multi_agent === undefined
           ? !!(state.modeState && state.modeState.multiAgent)
           : !!st.multi_agent,

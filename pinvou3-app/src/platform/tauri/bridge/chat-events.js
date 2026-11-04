@@ -1124,6 +1124,15 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       }
       const approvalSeqMap = state.approvalReplayTerminalSeq;
       approvalSeqMap.set(String(sid), (approvalSeqMap.get(String(sid)) || 0) + 1);
+      // Cap like the tombstone maps (512, oldest-insertion evicted): the seq
+      // map is pure staleness bookkeeping — an evicted session simply
+      // re-arms its replay window at 0 on the next done, which is the same
+      // fresh-lane state a restart would produce (round-8 L7-3: unbounded
+      // growth across app lifetime for sessions that never purge).
+      if (approvalSeqMap.size > 512) {
+        const oldest = approvalSeqMap.keys().next().value;
+        approvalSeqMap.delete(oldest);
+      }
       // Refresh artifacts written in this turn in place when already presented.
       // Add only the first card for artifacts the model did not present, and
       // skip artifacts already presented in this turn or changed repeatedly.
@@ -1650,6 +1659,15 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
     notify();
   });
 
+    // Called from bridge.js on session buffer eviction/deletion: the
+    // approval-replay terminal-seq entry dies with the buffer (the fence
+    // only guards a LIVE session's replay; keeping deleted/evicted entries
+    // was the one map the purge sweep missed — round-8 L7-3).
+    function purgeApprovalReplayTerminalSeq(sid) {
+      if (state.approvalReplayTerminalSeq) {
+        state.approvalReplayTerminalSeq.delete(String(sid));
+      }
+    }
     return {
       authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline,
@@ -1657,6 +1675,7 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
       // the pending trailing edge for that sid
       cancelStreamRenderTimers,
       refreshActiveStreamRender,
+      purgeApprovalReplayTerminalSeq,
     };
   };
 })();

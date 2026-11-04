@@ -265,8 +265,9 @@ assert.match(
   /if \(!sid\) return;/,
   'web setSessionMode must no-op without a session id before any invoke',
 );
-// 13. ChatView：进入 Auto 仍显式挡 Web（Web 面无审批决策面，decideApproval
-//     不在 Web 白名单），Auto→Yolo 走同一命令、在 Web 可达。
+// 13. ChatView：进入 Auto 仍显式挡 Web（Web 门面不导出 decideApproval——
+//     审批卡无浏览器决策面；注意决定命令本身在 access-policy 白名单是前向
+//     兼容登记，挡的是门面导出），Auto→Yolo 走同一命令、在 Web 可达。
 const webAutoEntry = src.slice(
   src.indexOf("if (target === 'auto') {"),
   src.indexOf("if (target !== 'yolo') return;"),

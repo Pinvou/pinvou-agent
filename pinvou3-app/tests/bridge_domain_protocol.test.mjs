@@ -252,7 +252,11 @@ const expectedProtocolHashes = {
   // disposition branch (non-decidable unknown card state) and its captured
   // body carries the tombstone-pinning window comments; event names, invoke
   // shapes and authoritative payload handling remain unchanged.
-  chat: '0b04dad221717ca5d95ee4872a50e9374a215d15e26b51265c49dd2a2cac8142',
+  // Recomputed for round-8: the chat:done listener gains the terminal-seq
+  // 512-cap eviction lines inside its span (in-body change, no new
+  // invoke/listen surface; the purge hook lives in bridge.js's
+  // onSessionBufferPurged, outside the hashed lane files).
+  chat: '3886ac2356ad4e355df023dba80bebfaf9fae1d82d16a07584effba5f8748156',
   // Recomputed for the tri-mode safety surface: chat-events.js gains three
   // listeners — chat:approval_required (approval card projection),
   // chat:guardrail_denied (hard-deny notice) and chat:mode_changed

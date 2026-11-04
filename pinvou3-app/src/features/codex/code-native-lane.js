@@ -658,6 +658,15 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       if (!changed) {
         if (!lane.approvalTombstones) lane.approvalTombstones = new Set();
         lane.approvalTombstones.add(resolvedId);
+        // 512 cap, oldest-insertion evicted — the main lane's tombstone map
+        // is capped the same way and the PR body's "上限 512 逐条淘汰" claim
+        // covers both lanes (round-8 L8-2: the native set was the uncapped
+        // one). The lane rebuilds with its session, so the cap is a
+        // long-session hygiene bound, not a correctness primitive.
+        if (lane.approvalTombstones.size > 512) {
+          const oldest = lane.approvalTombstones.values().next().value;
+          lane.approvalTombstones.delete(oldest);
+        }
       }
       return changed;
     }
