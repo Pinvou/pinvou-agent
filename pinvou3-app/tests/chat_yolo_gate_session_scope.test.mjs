@@ -200,8 +200,8 @@ assert.match(
 );
 assert.match(
   src,
-  /pendingChatYoloActionRef\.current = \{ kind: 'planStuckGo', itemId \};/,
-  'the Go path must record its pending action before adjudicating the gate',
+  /chatYoloGateAllows\(gateSid, \{ kind: 'planStuckGo', itemId \}\)/,
+  'the Go path must pass its pending action explicitly to the gate (no preset/default-fill race)',
 );
 assert.match(
   src,
@@ -327,15 +327,36 @@ assert.match(
 // Dispatch-origin discipline: the confirm dispatches the SAME command family
 // the click came from (Plan→Yolo exit / Auto→Yolo set_session_mode / draft
 // lane default) using the CAPTURED values, never the post-await refs.
+// Round-9 review fix: the action is an explicit gate parameter assigned
+// unconditionally — the old caller-side preset + `if (!ref.current)`
+// default-fill raced a gen-matched in-flight confirm whose success path
+// nulled the ref between preset and fill, arming the NEW dialog with the
+// bare `{ kind: 'modeChip' }` default (no `via`) whose confirm then fell
+// into the exitPlanToYolo branch.
 assert.match(
   src,
-  /pendingChatYoloActionRef\.current = \{ kind: 'modeChip', via: isPlan \? 'exitPlanToYolo' : 'sessionMode' \};/,
-  'the chip path must preset its dispatch origin for the confirm card',
+  /async function chatYoloGateAllows\(gateSid, action\)/,
+  'the gate must take the continue-action as an explicit parameter',
 );
 assert.match(
   src,
-  /pendingChatYoloActionRef\.current = \{ kind: 'modeChip', via: 'draftMode' \};/,
-  'the unbound draft path must preset the draft dispatch origin',
+  /pendingChatYoloSwitchSidRef\.current = gateSid;[\s\S]{0,200}?pendingChatYoloActionRef\.current = action;\s*\n\s*setPendingChatYoloSwitch\(true\);/,
+  'gate open must assign the caller-passed action unconditionally before opening the card',
+);
+assert.doesNotMatch(
+  src,
+  /if \(!pendingChatYoloActionRef\.current\)/,
+  'the default-fill must not come back (a nulled ref mid-race armed the new dialog with the bare default)',
+);
+assert.match(
+  src,
+  /chatYoloGateAllows\(gateSid, \{ kind: 'modeChip', via: isPlan \? 'exitPlanToYolo' : 'sessionMode' \}\)/,
+  'the chip path must pass its dispatch origin explicitly to the gate',
+);
+assert.match(
+  src,
+  /chatYoloGateAllows\(null, \{ kind: 'modeChip', via: 'draftMode' \}\)/,
+  'the unbound draft path must pass the draft dispatch origin explicitly to the gate',
 );
 assert.match(
   src,

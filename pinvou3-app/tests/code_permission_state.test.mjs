@@ -367,6 +367,26 @@ try {
     assert.match(view, /onToggleAskOnGuardrail=\{toggleNativeAskOnGuardrail\}/, 'chip 开关回调接线');
     assert.match(view, /askOnGuardrail: modeState \? modeState\.ask_on_guardrail !== false : true/,
       '控件权威读取按 default_true 缺省，旧后端无此键不把开关翻成关');
+    // round-9（PR #809 评审修复，chat 车道同约）：切会话弃置旧会话的 yolo
+    // 确认卡（确认卡属于弹门时的发起会话，不能被新会话顺手确认）；门在
+    // entry 捕获发起会话（M4）之外再钉来路档位（fromAuto）——确认按发起
+    // 命令族分派，exit_plan_to_yolo 与 set_session_mode('yolo') 今天等价，
+    // 钉住防两条路径日后静默分叉。
+    assert.match(
+      view,
+      /useEffect\(\(\) => \{[^}]*setPendingYoloSwitch\(null\);[^}]*\}, \[activeId\]\);/,
+      '切会话必须弃置旧会话的 yolo 确认卡（chat 车道弃置语义同约）',
+    );
+    assert.match(
+      view,
+      /setPendingYoloSwitch\(\{ draft: !activeId, sid: activeId \|\| null, fromAuto: !isPlan \}\)/,
+      '确认门捕获发起会话 sid 与来路档位（fromAuto 漂移守卫）',
+    );
+    assert.match(
+      view,
+      /performNativeModeSwitch\('yolo', \{ isPlan: !pending\.fromAuto \}, pending\.sid\)/,
+      '确认按来路命令族分派（Plan→exit_plan_to_yolo / Auto→set_session_mode）',
+    );
   }
 
   console.log('code_permission_state: ok');

@@ -988,15 +988,15 @@ try {
     assert.match(handler, /if \(gateSid !== activeSessionIdRef\.current\) return;/, '门后归属复检仍在');
     assert.match(handler, /if \(isPlan\) \{[\s\S]{0,200}?exitPlanToYolo\(gateSid\);[\s\S]{0,200}?\} else if \(typeof bridge\.interaction\.setSessionMode === 'function'\) \{[\s\S]{0,200}?setSessionMode\(gateSid, 'yolo'\);/,
       'Plan 退回 exit_plan_to_yolo；Auto→Yolo 走 set_session_mode，均过同一确认门');
-    assert.match(chatView, /pendingChatYoloActionRef\.current = \{ kind: 'planStuckGo', itemId \};/,
-      'plan-stuck 的 Yolo 继续仍走一次性确认门');
-    // Auto 档继续：goAuto 短路在 pendingChatYoloActionRef 之前（不过门）。
+    assert.match(chatView, /chatYoloGateAllows\(gateSid, \{ kind: 'planStuckGo', itemId \}\)/,
+      'plan-stuck 的 Yolo 继续仍走一次性确认门（动作显式入参）');
+    // Auto 档继续：goAuto 短路在过门调用之前（不过门）。
     const planStuckHandler = chatView.slice(
       chatView.indexOf('async function handlePlanStuckGo'),
       chatView.indexOf('async function confirmChatYoloSwitch'),
     );
     const goAutoAt = planStuckHandler.indexOf("targetMode === 'auto'");
-    const pendingAt = planStuckHandler.indexOf("pendingChatYoloActionRef.current = { kind: 'planStuckGo', itemId };");
+    const pendingAt = planStuckHandler.indexOf("chatYoloGateAllows(gateSid, { kind: 'planStuckGo', itemId })");
     assert.ok(goAutoAt >= 0 && pendingAt > goAutoAt, 'plan-stuck 的 Auto 继续不得记录 Yolo 确认动作');
     // chip 接线：askOnGuardrail + 开关回调 + 草稿态禁用（无会话可写）。
     assert.match(chatView, /askOnGuardrail=\{bs && bs\.modeState \? bs\.modeState\.askOnGuardrail : undefined\}/,
@@ -1042,18 +1042,20 @@ try {
     assert.ok(setSessionAt > draftAt, '草稿分支先于已物化会话的 setSessionMode 路径');
     assert.match(handler, /await bridge\.interaction\.setDraftMode\(target\);/,
       '草稿态 auto/yolo 切换写 lane 全局默认（setDraftMode），不吞没');
-    assert.match(handler, /chatYoloGateAllows\(null\)/,
-      '未绑定草稿点 Yolo 过一次性确认门');
+    assert.match(handler, /chatYoloGateAllows\(null, \{ kind: 'modeChip', via: 'draftMode' \}\)/,
+      '未绑定草稿点 Yolo 过一次性确认门（动作显式入参）');
     assert.match(chatView, /await resolveBindingForGate\(gateSid\);[\s\S]{0,400}?if \(typeof bridge\.interaction\.getCodePermissionPrefs === 'function'\) \{[\s\S]{0,400}?needsYoloConfirmation\(prefs\)/,
       'round-7 P2：门判定不再按目录绑定收窄——未绑定会话同样咨询 prefs（entry-scoped）');
   }
 
   // round-2 M4：codex Yolo 确认门在 entry 捕获发起会话，确认回程切会话也
-  // 落在弹门会话上（live-active 从未见过门卡）。
-  assert.match(codexView, /setPendingYoloSwitch\(\{ draft: !activeId, sid: activeId \|\| null \}\)/,
-    '确认门捕获发起会话 sid');
-  assert.match(codexView, /performNativeModeSwitch\('yolo', \{ isPlan: true \}, pending\.sid\)/,
-    '确认落点钉在弹门会话');
+  // 落在弹门会话上（live-active 从未见过门卡）；round-9 补钉来路档位
+  // （fromAuto）：exit_plan_to_yolo 与 set_session_mode('yolo') 今天等价，
+  // 把 Plan→Yolo 退回与 Auto→Yolo 直达各自钉在发起命令族上防静默分叉。
+  assert.match(codexView, /setPendingYoloSwitch\(\{ draft: !activeId, sid: activeId \|\| null, fromAuto: !isPlan \}\)/,
+    '确认门捕获发起会话 sid 与来路档位');
+  assert.match(codexView, /performNativeModeSwitch\('yolo', \{ isPlan: !pending\.fromAuto \}, pending\.sid\)/,
+    '确认落点钉在弹门会话，并按来路命令族分派');
   assert.match(codexView, /const sid = \(typeof targetSessionId === 'string' && targetSessionId\)\s*\n\s*\? targetSessionId\s*\n\s*: activeId;/,
     'performNativeModeSwitch 支持显式目标会话');
   assert.match(codexView, /const isActiveTarget = sid === activeId;/, '非当前会话目标不刷本会话控件');

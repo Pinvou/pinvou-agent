@@ -1774,7 +1774,10 @@ export function CodexAcpView({
         // M4：门在 entry 捕获发起会话（chat 车道 pendingChatYoloSwitchSidRef
         // 同约）——确认回程可能已切会话，落点必须仍是弹门的那一个，绝不
         // 打到确认时刻的 live-active（那是一个从未见过门的会话）。
-        setPendingYoloSwitch({ draft: !activeId, sid: activeId || null });
+        // fromAuto 钉住来路档位（chat 车道 action.via 同约）：Auto→Yolo
+        // 直达与 Plan→Yolo 退回确认后各自回到发起命令族，防两条等价路径
+        // 日后静默分叉。
+        setPendingYoloSwitch({ draft: !activeId, sid: activeId || null, fromAuto: !isPlan });
         return;
       }
     }
@@ -1864,7 +1867,10 @@ export function CodexAcpView({
       } else {
         // M4：落点钉在弹门时捕获的会话——确认回程切了会话也切的是发起
         // 会话（live-active 从未见过这张门卡，不得被顺带武装成 Yolo）。
-        await performNativeModeSwitch('yolo', { isPlan: true }, pending.sid);
+        // 来路同样钉住（chat 车道 action.via 同约）：exit_plan_to_yolo 与
+        // set_session_mode('yolo') 今天等价，把 Plan→Yolo 退回与 Auto→Yolo
+        // 直达各自钉在发起命令族上，防止两条路径日后静默分叉（漂移守卫）。
+        await performNativeModeSwitch('yolo', { isPlan: !pending.fromAuto }, pending.sid);
       }
     } catch (err) {
       showError(err);
@@ -1872,6 +1878,17 @@ export function CodexAcpView({
       setYoloConfirmBusy(false);
     }
   }
+
+  /// 切会话作废旧会话的 yolo 确认卡（chat 车道 [activeSessionId] effect 同约，
+  /// 弃置语义对齐）：卡属于弹门时的发起会话，切走后留在屏上会被新会话顺手
+  /// 确认——确认虽仍按 M4 钉在发起会话（安全），但用户已弃置该对话，继续
+  /// 武装它与 chat 车道的「切会话即弃卡」不一致。捕获的 sid 就在
+  /// pendingYoloSwitch 里，置 null 一并清掉；本车道确认卡无独立错误/代数
+  /// 状态，无需额外复位。
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
+    setPendingYoloSwitch(null);
+  }, [activeId]);
 
   async function refreshSessions() {
     const next = await listAcpSessions();
