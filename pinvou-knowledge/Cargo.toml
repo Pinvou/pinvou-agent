@@ -47,7 +47,8 @@ anyhow = "1.0"
 # graph also carries a 0.23 copy via pem 4 (rcgen 0.14.10) and reqwest 0.13.
 # Revisit the split once the upstreams realign on one line.
 base64 = "0.22"
-calamine = "0.37"
+# 0.38 修 RUSTSEC-2026-0436（CFB/OLE2 解析器 panic/无界分配），与 pinvou3-app 同步收敛单版本。
+calamine = "0.38"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 encoding_rs = "0.8"
 parking_lot = "0.12"

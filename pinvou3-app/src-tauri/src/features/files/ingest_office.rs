@@ -434,4 +434,37 @@ mod tests {
         assert!(txt.contains("A1: =SUM(1) + 2"), "{txt}");
         assert!(!txt.contains("=SUM(1)\n"), "公式文本不得携带原始换行");
     }
+
+    #[test]
+    fn truncated_cfb_sector_errors_not_panics() {
+        // RUSTSEC-2026-0436 防回归钉：CFB/OLE2 解析器对截断目录扇区曾 panic
+        // （Directory::from_slice 在 <128 字节尾块上读 buf[116..120]），0.38 起改为
+        // 过滤短块返回错误。fixture = 合法头 + FAT 扇区 + 截断到 64 字节的目录
+        // 扇区（共 1088 字节）；calamine >= 0.38 必须返回 Err 而非 panic——若把
+        // calamine 降回 <0.38，本测试红（panic）即提醒不得回退。
+        let mut bytes = vec![0u8; 512 + 512 + 64];
+        // OLE 签名 + 版本 3 + 扇区移位 0x0009(512B) + 微扇区移位 0x0006
+        bytes[0..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+        bytes[26..28].copy_from_slice(&3u16.to_le_bytes());
+        bytes[30..32].copy_from_slice(&0x0009u16.to_le_bytes());
+        bytes[32..34].copy_from_slice(&0x0006u16.to_le_bytes());
+        // 目录起始扇区 = 1；mini FAT 未用；DIFAT 链终止（ENDOFCHAIN）
+        bytes[48..52].copy_from_slice(&1u32.to_le_bytes());
+        bytes[64..68].copy_from_slice(&0u32.to_le_bytes());
+        bytes[68..72].copy_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+        // 头内 DIFAT：仅 [0]=0 指向 FAT 扇区，其余 FREESECT（被 `< DIFSECT` 过滤）
+        bytes[76..80].copy_from_slice(&0u32.to_le_bytes());
+        for cell in bytes[80..512].chunks_exact_mut(4) {
+            cell.copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        }
+        // FAT 扇区（扇区 0）：fats[1] = ENDOFCHAIN 让目录链止于被截断的扇区 1
+        bytes[512..516].copy_from_slice(&0xFFFF_FFFDu32.to_le_bytes());
+        bytes[516..520].copy_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+        for cell in bytes[520..1024].chunks_exact_mut(4) {
+            cell.copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        }
+        // 扇区 1 只有 64 字节（文件到此截断）：<128 字节尾块，旧版在此 panic
+        let result = spreadsheet_text_from_bytes(&bytes, false);
+        assert!(result.is_err(), "截断 CFB 应报错而非成功解析: {result:?}");
+    }
 }
