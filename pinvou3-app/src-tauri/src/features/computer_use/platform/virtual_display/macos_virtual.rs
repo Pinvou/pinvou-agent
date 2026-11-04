@@ -826,6 +826,21 @@ fn pid_at_point(point: (i32, i32), display_bounds: CGRect) -> Option<i32> {
         .map(|window| window.pid)
 }
 
+/// Whether `pid` currently shows an on-screen normal-level window that
+/// intersects the virtual display's bounds — the "still on our display"
+/// check behind the remembered-target verification and the discovery
+/// fallback (a pid whose windows all live elsewhere — the user's desktop —
+/// is never an input target of this backend).
+fn pid_has_window_on_display(pid: i32, display_id: u32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let bounds = CGDisplayBounds(display_id);
+    on_screen_windows()
+        .iter()
+        .any(|window| window.pid == pid && window.normal_level && window.intersects(bounds))
+}
+
 // ---------------------------------------------------------------------------
 // Key tables (exhaustive, US-ANSI kVK virtual keycodes)
 // ---------------------------------------------------------------------------
@@ -1177,10 +1192,13 @@ const WINDOW_MOVE_MARGIN_PX: f64 = 40.0;
 /// cannot report one) by watching for its window to appear.
 const OPEN_PID_DISCOVER_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long an unconfirmed newcomer (owner name does not match the launched
-/// program) is held while discovery keeps looking for the program's own
-/// window. Bounded so the overall budget never extends past
-/// [`OPEN_PID_DISCOVER_TIMEOUT`]; afterwards the first newcomer wins
-/// (residual mis-attribution disclosed in `Capabilities::notes`).
+/// program, but the window IS inside the virtual display's bounds) is held
+/// while discovery keeps looking for the program's own window. Bounded so
+/// the overall budget never extends past [`OPEN_PID_DISCOVER_TIMEOUT`];
+/// afterwards the first IN-BOUNDS newcomer wins (out-of-bounds windows —
+/// the user's own desktop windows — are never claimed by the fallback;
+/// residual mis-attribution among in-bounds windows is disclosed in
+/// `Capabilities::notes`).
 const DISCOVER_NAME_GRACE: Duration = Duration::from_millis(1000);
 
 // ---------------------------------------------------------------------------
@@ -1238,6 +1256,13 @@ impl MacosVirtualDisplayBackend {
     ///   reaches the app the session has been driving).
     /// - Keyboard/wheel actions pass no hit-test point and use the
     ///   last-interacted pid directly (keyboard focus semantics).
+    ///
+    /// The remembered-target fallback re-verifies the pid still shows a
+    /// window INSIDE the virtual display's bounds: a quit app, a window the
+    /// user dragged away, or a mis-attributed discovery must not receive
+    /// input aimed at the virtual session (events are pid-targeted and would
+    /// otherwise land wherever that app currently is — the user's desktop
+    /// included).
     fn input_pid(&self, hit_test: Option<(i32, i32)>) -> Result<i32, ComputerUseError> {
         if let Some(point) = hit_test {
             let bounds = CGDisplayBounds(self.display_id);
@@ -1245,12 +1270,20 @@ impl MacosVirtualDisplayBackend {
                 return Ok(pid);
             }
         }
-        self.focus_pid.ok_or_else(|| {
+        let pid = self.focus_pid.ok_or_else(|| {
             ComputerUseError::unavailable(
                 "no application is available on the virtual display yet; \
                  open an app or click inside it first",
             )
-        })
+        })?;
+        if pid_has_window_on_display(pid, self.display_id) {
+            Ok(pid)
+        } else {
+            Err(ComputerUseError::unavailable(
+                "the target application no longer has a window on the virtual display; \
+                 click inside the display to focus a target first",
+            ))
+        }
     }
 
     /// Forget the keyboard target when an input action failed after being
@@ -1569,7 +1602,8 @@ impl MacosVirtualDisplayBackend {
         let Some(pid) = launched_pid else {
             log::warn!(
                 "[computer_use:macos-vd] launched {program:?} but no new application window \
-                 appeared within the discovery budget; reporting pid 0"
+                 on the virtual display appeared within the discovery budget; reporting \
+                 pid 0"
             );
             return Ok(0);
         };
@@ -1592,17 +1626,24 @@ impl MacosVirtualDisplayBackend {
 
     /// Polls the window list for a normal-level pid not in `known` (the
     /// pre-launch snapshot + our own pid). Bounded. A newcomer whose owner
-    /// name matches `program` is preferred and returned immediately; the
-    /// first newcomer WITHOUT a match is held for [`DISCOVER_NAME_GRACE`] in
-    /// case the program's own (name-confirmed) window arrives right behind
-    /// an unrelated one — afterwards that first newcomer still wins, so a
-    /// rare unrelated window inside the discovery budget can still be
-    /// attributed to the wrong app (disclosed in `Capabilities::notes`).
+    /// name matches `program` is preferred and returned immediately (a
+    /// name match is strong identity; its window may still be outside the
+    /// display bounds — the caller's AX move relocates it). The FALLBACK
+    /// (no name match) only ever claims a newcomer whose window already
+    /// intersects the virtual display's bounds: the user's own windows live
+    /// on displays that do not intersect the virtual one, so a desktop
+    /// window the user happens to open mid-search is never hijacked as the
+    /// input target. When only out-of-bounds unnamed windows appear within
+    /// the budget the answer is None (pid 0 upstream: launched, owner
+    /// unknown — interact via clicks; residual mis-attribution among
+    /// IN-BOUNDS windows is disclosed in `Capabilities::notes`).
     fn discover_new_pid(&self, known: &[i32], program: &str) -> Option<u32> {
         let stem = launched_program_stem(program);
+        let bounds = CGDisplayBounds(self.display_id);
         let deadline = Instant::now() + OPEN_PID_DISCOVER_TIMEOUT;
-        // First name-unconfirmed newcomer and when it was seen (the fallback
-        // answer once the grace expires or the budget runs out).
+        // First name-unconfirmed IN-BOUNDS newcomer and when it was seen
+        // (the fallback answer once the grace expires or the budget runs
+        // out).
         let mut fallback: Option<(u32, Instant)> = None;
         loop {
             for window in on_screen_windows() {
@@ -1617,7 +1658,7 @@ impl MacosVirtualDisplayBackend {
                 if owner_matches_program(window.owner_name.as_deref(), &stem) {
                     return Some(pid);
                 }
-                if fallback.is_none() {
+                if fallback.is_none() && window.intersects(bounds) {
                     fallback = Some((pid, Instant::now()));
                 }
             }
@@ -1763,17 +1804,26 @@ fn released_modifier_key(flag: CGEventFlags) -> Key {
 /// The model-facing target disclosure. A function (not inline text) so the
 /// disclosure test below pins the EXACT strings the backend reports — a
 /// local copy in the test could silently drift from what the model sees.
-/// Self-truthful for macOS: apps opened into the virtual display are not
-/// wound down when a session stops this round; only dropping the backend
-/// (which removes the display) ends them.
+/// Self-truthful for macOS: input and screenshots stay on the virtual
+/// display (the remembered input target is verified to still show a window
+/// inside the display's bounds before every post), but apps opened with
+/// `open` launch into the user's graphics session first and are AX-moved
+/// into the display best-effort — without the Accessibility grant an opened
+/// app's window can stay visible on the user's desktop. Apps opened into
+/// the virtual display are not wound down when a session stops this round;
+/// only dropping the backend (which removes the display) ends them.
 fn capability_target_note() -> String {
-    "experimental isolated virtual display (private macOS API): the user's desktop is \
-     untouched; events are delivered directly to the target app and may not reach every \
-     app (e.g. WebKit content processes on recent macOS may ignore them); if this macOS \
-     lacks the private API the session falls back to your desktop, decided once at \
-     session start; apps opened in the virtual display are not closed when a session \
-     stops — they remain until the virtual display backend is dropped, which is what \
-     removes the display"
+    "experimental isolated virtual display (private macOS API): screenshots and input \
+     stay on the virtual display, and input targets are verified to have a window \
+     inside it; events are delivered directly to the target app and may not reach \
+     every app (e.g. WebKit content processes on recent macOS may ignore them); apps \
+     opened with open launch into the user's graphics session and are moved into the \
+     virtual display best-effort — without the Accessibility grant an opened app's \
+     window may stay visible on the user's desktop (it can be closed by dropping the \
+     backend); if this macOS lacks the private API the session falls back to your \
+     desktop, decided once at session start; apps opened in the virtual display are \
+     not closed when a session stops — they remain until the virtual display backend \
+     is dropped, which is what removes the display"
         .to_string()
 }
 
@@ -1785,7 +1835,9 @@ fn capability_target_note() -> String {
 fn capability_notes() -> String {
     "macos virtual display: coordinates are CGEvent global points relative to the \
      virtual display's own bounds; mouse events target the app under the point and \
-     keyboard events target the last-interacted app; cursor_position reports the last \
+     keyboard events target the last-interacted app, re-verified to still show a \
+     window on the virtual display (a moved-away or quit target answers an error — \
+     click inside the display to focus a new one); cursor_position reports the last \
      point this backend moved to (a virtual display has no cursor of its own), or the \
      display's top-left origin before the first move; Screen Recording + \
      Accessibility grants are required (same as the physical path); typed text \
@@ -1793,9 +1845,11 @@ fn capability_notes() -> String {
      virtual-key table; the capture uses the CGWindowList path, which on Sequoia+ \
      sits behind the periodic keep-allowing-screen-recording confirmation; apps \
      launched with open take a moment before their windows appear, and the pid \
-     reported for such an app is recovered by watching for its new window — in rare \
-     cases an unrelated window appearing during that search is attributed to the \
-     wrong app"
+     reported for such an app is recovered by watching for a new window on the \
+     virtual display (owner-name match preferred, unnamed windows only when already \
+     inside the display's bounds) — in rare cases an unrelated in-bounds window \
+     appearing during that search is attributed to the wrong app, and when no \
+     matching window appears the pid is reported as 0 (interact via clicks)"
         .to_string()
 }
 
@@ -2781,17 +2835,26 @@ mod tests {
     }
 
     /// The capabilities contract text: virtual target, experimental
-    /// disclosure, desktop-untouched promise, the pid-posted-event fidelity
-    /// caveat, and the honesty additions (no wind-down on stop this round;
-    /// the open-pid discovery residual; cursor_position semantics). Pins the
-    /// REAL strings via the shared helpers, so the disclosure cannot drift
-    /// from what the model actually receives.
+    /// disclosure, the in-display guarantees (input/capture, verified
+    /// targets), the launchd/best-effort-move open residual, the
+    /// pid-posted-event fidelity caveat, and the honesty additions (no
+    /// wind-down on stop this round; the open-pid discovery residual;
+    /// cursor_position semantics). Pins the REAL strings via the shared
+    /// helpers, so the disclosure cannot drift from what the model actually
+    /// receives.
     #[test]
     fn capability_notes_disclose_the_target_contract() {
         let note = capability_target_note();
-        assert!(note.contains("user's desktop is untouched"));
+        // In-display guarantees...
+        assert!(note.contains("screenshots and input stay on the virtual display"));
+        assert!(note.contains("verified to have a window inside it"));
         assert!(note.contains("WebKit content processes"));
         assert!(note.contains("falls back to your desktop"));
+        // ...and the honest open residual: launchd starts the app in the
+        // user's session; the AX move is best-effort.
+        assert!(note.contains("launch into the user's graphics session"));
+        assert!(note.contains("moved into the virtual display best-effort"));
+        assert!(note.contains("may stay visible on the user's desktop"));
         // Apps stay after stop; the backend drop (not stop) removes them.
         assert!(note.contains("not closed when a session stops"));
         assert!(note.contains("until the virtual display backend is dropped"));
@@ -2799,8 +2862,14 @@ mod tests {
         // cursor_position is the synthesized pointer (last move, else origin).
         assert!(notes.contains("cursor_position reports the last point this backend moved to"));
         assert!(notes.contains("top-left origin before the first move"));
-        // The open-pid discovery residual is disclosed, not hidden.
-        assert!(notes.contains("watching for its new window"));
+        // The remembered-target re-verification and its recovery hint.
+        assert!(notes.contains("re-verified to still show a window"));
+        assert!(notes.contains("click inside the display to focus a new one"));
+        // The open-pid discovery shape: in-bounds only, name preferred,
+        // pid 0 when nothing matches.
+        assert!(notes.contains("watching for a new window on the virtual display"));
+        assert!(notes.contains("only when already inside the display's bounds"));
         assert!(notes.contains("attributed to the wrong app"));
+        assert!(notes.contains("the pid is reported as 0"));
     }
 }
