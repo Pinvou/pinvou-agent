@@ -262,9 +262,11 @@ for (const command of [
 // event_subscribe 是订阅控制)。结构化扫描 Rust 管理器与 JS 桥里的
 // web_access:* 字面量:任何一个都不允许出现在 Web 策略事件名单里,
 // 新增同名事件即被扫进(此前事件半边没有任何反向钉)。
-// Round-15 复审 M5:命令层(app/commands/remote_control.rs)也emit
-// web_access:* 字面量(转发/状态通道),此前只有 manager 与 JS 桥被扫,
-// 命令层新增同名事件逃过反钉。
+// Round-15 复审 M5:命令层(app/commands/remote_control.rs)一并纳入扫
+// 描。Round-18 复审口径订正:命令层今天是零命中(唯一的 `web_access:`
+// 字样在 :309 的反引号文档注释里,正则不匹配)——本源现在贡献零断言,
+// 属前瞻性兜底:命令层将来若新增同名事件字面量(转发/状态通道),扫描
+// 会立刻把它拦进反钉,而非逃过。
 for (const source of [remoteControlManager, desktopRemoteControlBridge, remoteControlCommands]) {
   for (const match of source.matchAll(/"web_access:([a-z_]+)"/g)) {
     const eventName = `web_access:${match[1]}`;

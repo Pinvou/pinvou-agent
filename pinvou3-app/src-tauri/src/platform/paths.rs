@@ -49,7 +49,10 @@ pub fn redact_storage_prefix(text: &str) -> String {
     // Round-15 复审 F4:Windows 的盘符/用户段大小写不稳定(错误文本里的
     // `c:\users\…` 对 home `C:\Users\…` 此前完全不折叠,绝对路径带过
     // relay)。匹配改为 ASCII 无关大小写;Linux 上大小写敏感文件系统的
-    // 异拼只是显示层过折叠(方向安全),不影响任何路径解析。
+    // 异拼只是显示层过折叠(方向安全),不影响任何路径解析。(Round-18
+    // 复审残留注记:替换在两个方向上都只限 ASCII——PINVOU3_HOME 本身
+    // 含非 ASCII 字母时,错误文本里这些字节层面的异拼仍不折叠; 极罕见
+    // 的安装形态,按已披露残留处理。)
     let folded = replace_ascii_case_insensitive(text, &prefix, "~/.pinvou3");
     if folded == text {
         folded

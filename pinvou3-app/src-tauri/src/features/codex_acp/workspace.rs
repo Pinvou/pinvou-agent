@@ -1121,9 +1121,9 @@ pub(super) fn resolve_workspace_references(
 
 pub fn resolve_workspace_file(root: &Path, relative_path: &str) -> Result<PathBuf> {
     // Round-15 复审(记录桌面豁免):本解析与 resolve_workspace_resource 不做
-    // 凭据组件检查——调用点(open/reveal/resource)全部桌面命令,内容进本
-    // 地外部应用/阅读器而非模型上下文,手机不可达;Web 侧一律走
-    // preview/search/diff 的双腿策略车道。
+    // 凭据组件检查——调用点(open/reveal/resource,以及 open_code_reader
+    // 的非 diff 类型)全部桌面命令,内容进本地外部应用/阅读器而非模型上
+    // 下文,手机不可达;Web 侧一律走 preview/search/diff 的双腿策略车道。
     let relative = normalize_relative_path(relative_path)?;
     resolve_existing_path(root, &relative, false)
 }
