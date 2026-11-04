@@ -1676,6 +1676,43 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
 
+    /// round-10 补钉：windowless 生产者侧此前零钉——删掉两条 boot lane 的
+    /// `mark_windowless_host()` 调用照样编译、全部 windowless 消费者钉保持绿
+    /// （它们守的是 `is_windowless_host()` 的读端），headless/agentic 复用
+    /// 存量 Yolo 会话会静默回到 round-9 P1 的 Floor 化无人值守。两条 boot
+    /// lane（run_windowless_host / run_bare_host）都必须在 claim runtime
+    /// 之后紧邻烙上 boot fact。
+    #[test]
+    fn both_headless_boot_lanes_mark_the_host_windowless() {
+        let source = include_str!("headless_bridge.rs");
+        let stripped: String = source
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let needle = "crate::features::assistant::windowless_host::mark_windowless_host();";
+        let mut search_from = 0;
+        for _ in 0..2 {
+            let at = stripped[search_from..]
+                .find(needle)
+                .expect("each headless boot lane must stamp the windowless boot fact");
+            let absolute = search_from + at;
+            let prefix = &stripped[absolute.saturating_sub(300)..absolute];
+            assert!(
+                prefix.contains("claim_headless_host_runtime()"),
+                "the windowless stamp must sit right after the runtime claim (boot fact before any engine contact)"
+            );
+            search_from = absolute + needle.len();
+        }
+        assert!(
+            stripped[search_from..].contains(needle),
+            "unexpected third windowless stamp (a new boot lane must update this pin)"
+        );
+    }
+
     #[test]
     fn headless_host_denies_the_undrainable_automation_family() {
         let source = include_str!("headless_bridge.rs");

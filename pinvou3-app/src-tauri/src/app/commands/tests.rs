@@ -3543,12 +3543,21 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
         assert!(write_at < publish_at, "{label}: write must precede publish");
     }
 
-    // v3.5（评审 minor-4）：set_plan_mode_next / exit_plan_to_yolo 与
-    // set_session_mode 过同一目标会话存在性门，且门在写库之前——这两个命令
-    // 远程可达，缺门即可为任意 id 铸 mode 条目 + sidecar。
-    for signature in [
-        "pub async fn set_plan_mode_next(",
-        "pub async fn exit_plan_to_yolo(",
+    // v3.5（评审 minor-4）：set_plan_mode_next / exit_plan_to_yolo /
+    // set_session_mode / set_ask_on_guardrail 过同一目标会话存在性门，且门
+    // 在写库之前——这些命令远程可达，缺门即可为任意 id 铸 mode 条目 +
+    // sidecar（round-10 评审：行为测试直调门本身，钉不住接线；本源码循环
+    // 的签名清单此前漏了后两条，删门全绿）。
+    // 各命令自己的持久化写锚点：set_ask_on_guardrail 写 ask 侧车而非 mode
+    // 条目（round-10 评审扩展本循环时按命令族取锚）。
+    for (signature, write_anchor) in [
+        ("pub async fn set_plan_mode_next(", ".set_mode("),
+        ("pub async fn exit_plan_to_yolo(", ".set_mode("),
+        ("pub async fn set_session_mode(", ".set_mode("),
+        (
+            "pub async fn set_ask_on_guardrail(",
+            ".set_ask_on_guardrail(",
+        ),
     ] {
         let body = source
             .split(signature)
@@ -3558,7 +3567,7 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
             .find("ensure_mode_target_session(")
             .unwrap_or_else(|| panic!("{signature}: target-session gate missing"));
         let write_at = body
-            .find(".set_mode(")
+            .find(write_anchor)
             .unwrap_or_else(|| panic!("{signature}: store write missing"));
         assert!(
             gate_at < write_at,

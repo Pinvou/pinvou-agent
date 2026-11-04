@@ -253,6 +253,35 @@ command_protocol!(
     ]
 );
 
+/// round-10 补钉：审批记忆随会话删除清空（claim 2 的唯一实现线）是
+/// composition root 里的一行——`session_purged_hook` 内的
+/// `pending_approvals::clear_session`。钩子机制与 clear_session 行为各有
+/// 行为钉，但这行接线此前删掉全绿。邻座两条 clear（timing/pending_user_input）
+/// 一并钉住，防未来的 hook 体检把审批记忆漏掉。
+#[test]
+fn session_purged_hook_clears_approval_memory() {
+    let app_entrypoint = include_str!("../../lib.rs");
+    // 钩子体内含多层 `);`（邻居 clear 的参数收尾），按首个 `);` 切会截断——
+    // 改取注册点之后的固定窗口。
+    let hook = app_entrypoint
+        .split("register_session_purged_hook(")
+        .nth(1)
+        .expect("the session purged hook must be registered in lib.rs");
+    let body = &hook[..hook.len().min(1500)];
+    assert!(
+        body.contains("crate::features::assistant::pending_approvals::clear_session("),
+        "the purged hook must clear approval memory (grant/denial/pending) for the deleted session"
+    );
+    assert!(
+        body.contains("pending_user_input::clear_session("),
+        "pre-existing neighbor clear (pending_user_input) must stay wired"
+    );
+    assert!(
+        body.contains("timing::clear_session("),
+        "pre-existing neighbor clear (timing) must stay wired"
+    );
+}
+
 #[test]
 fn preinstalled_model_startup_commands_are_not_registered() {
     let app_entrypoint = include_str!("../../lib.rs");
