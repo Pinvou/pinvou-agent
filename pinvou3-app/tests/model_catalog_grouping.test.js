@@ -384,16 +384,27 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   const mkPlan = (vendor, base, model) => mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor, base_url: base, model });
   // Kimi: K3.1 Pro (2026-10-23) is the official flagship and joins both
   // regional groups plus the Kimi Code lane; the preset default stays
-  // kimi-k3 (the base's tiered route only learns bare K3 ids and K3.1 Pro's
-  // thinking cannot be disabled — see the kimi group comment), so the K3.1
-  // rows keep the generic moonshot ladder.
+  // kimi-k3 (the base's tiered route only learns bare K3 ids). K3.1 is
+  // always-reasoning and the vendor rejects thinking:{type:"disabled"}, so
+  // the rows expose NO tier control until the base's exact-K3 shapers learn
+  // the spellings — the stored effort is normalized away and the vendor
+  // default (max) applies (2026-11-04 review: the generic off/high ladder
+  // let users persist a disable shape the vendor rejects).
   assert.strictEqual(isPresetModel(mkCloud('kimi', 'kimi', 'https://api.moonshot.cn/v1', 'kimi-k3.1-pro')), true);
   assert.strictEqual(isPresetModel(mkCloud('kimi', 'kimi', 'https://api.moonshot.ai/v1', 'kimi-k3.1-pro-highspeed')), true);
   assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro')), true);
   assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro-highspeed')), true);
   assert.strictEqual(catalogImageCapableForModel('kimi-k3.1-pro'), true);
   assert.strictEqual(catalogImageCapableForModel('k3.1-pro'), true);
-  assert.deepStrictEqual([...(reasoningEffortTiersForModel({ preset: 'kimi', vendor: 'kimi', model: 'kimi-k3.1-pro', base_url: 'https://api.moonshot.cn/v1' }) || [])], ['off', 'high'], 'K3.1 Pro rides the generic moonshot arm (no exact-route ladder yet; off carries the documented disable-rejected cliff — see the kimi group comment)');
+  const k31 = (model, base) => ({ preset: 'kimi', vendor: 'kimi', model, base_url: base });
+  assert.strictEqual(reasoningEffortTiersForModel(k31('kimi-k3.1-pro', 'https://api.moonshot.cn/v1')), null, 'platform K3.1: no tier control (generic off/high carries the disable-rejected cliff)');
+  assert.strictEqual(reasoningEffortTiersForModel(k31('kimi-k3.1-pro-highspeed', 'https://api.moonshot.ai/v1')), null);
+  assert.strictEqual(reasoningEffortTiersForModel(k31('k3.1-pro', 'https://api.kimi.com/coding/v1')), null, 'Kimi Code K3.1: no tier control');
+  assert.strictEqual(reasoningEffortTiersForModel(k31('k3.1-pro-highspeed', 'https://api.kimi.com/coding/v1')), null);
+  assert.strictEqual(defaultReasoningEffortForModel(k31('kimi-k3.1-pro', 'https://api.moonshot.cn/v1')), null, 'no machine-written default effort for K3.1 rows');
+  assert.strictEqual(normalizeStoredReasoningEffort(k31('kimi-k3.1-pro', 'https://api.moonshot.cn/v1'), 'off'), null, 'a stored off normalizes to unset (field omitted on the wire; vendor default max)');
+  // The exact-K3 ladder itself is untouched.
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(k31('kimi-k3', 'https://api.moonshot.cn/v1'))], ['low', 'high', 'max']);
   // MiniMax: the GA rename carries the retired Preview spelling as a
   // legacyAlias on both regional groups.
   assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimaxi.com/v1', 'MiniMax-M3.1-Flash')), true);
@@ -429,9 +440,18 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(catalogImageCapableForModel('muse-spark-1.3'), true);
   assert.strictEqual(catalogImageCapableForModel('muse-spark-1.1'), true, 'annotated true in the 2026-11-04 fix pass: the models page states all three Muse Spark versions take image input');
   assert.strictEqual(catalogImageCapableForModel('muse-wonder-1.0'), true, 'wonder joined the group in the 2026-11-04 fix pass');
-  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K2.6')), true, 'together re-lined up to the live serverless catalog in the 2026-11-04 fix pass');
-  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-V4-Pro')), true);
-  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K3')), false, 'Kimi-K3 is not in Together\'s live serverless catalog (the original lineup row was re-lined up)');
+  // Together (2026-11-04 review): the lineup cross-checks the live
+  // serverless catalog against the deprecations page — six ids of the
+  // previous lineup carry removal records (DeepSeek-V4-Pro 2026-08-27,
+  // Kimi-K2.6 2026-08-19, Kimi-K2.5 2026-05-21, GLM-5.1 2026-07-10,
+  // GLM-5 2026-06-22, gpt-oss-20b 2026-09-15) and were replaced by
+  // currently-served rows.
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-V4-Pro-0813')), true, 'live serverless catalog row');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K3')), true, 'live serverless catalog row');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'zai-org/GLM-5.3-Flash')), true, 'live serverless catalog row');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K2.6')), false, 'removed from serverless 2026-08-19 (deprecations record)');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'deepseek-ai/DeepSeek-V4-Pro')), false, 'removed from serverless 2026-08-27 (deprecations record)');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'openai/gpt-oss-20b')), false, 'removed from serverless 2026-09-15 (deprecations record)');
   assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'kimi-k3.1-pro')), true, 'ark plan overview names kimi-k3.1-pro (2026-11-04 fix pass)');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'groq', 'https://api.groq.com/openai/v1', 'llama-3.3-70b-versatile')), true);
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'mistral', model: 'codestral-latest', base_url: 'https://api.mistral.ai/v1' }), null);
@@ -1351,8 +1371,8 @@ test('imageCapable annotations cross-check the Rust builtin verified table sourc
     'google/gemini-4-argon',
     'minimax/minimax-m3',
     'minimax/minimax-m3.1-flash',
-    'moonshotai/Kimi-K2.6',
     'moonshotai/Kimi-K2.7-Code',
+    'moonshotai/Kimi-K3',
     'moonshotai/kimi-k2.7-code',
     'moonshotai/kimi-k3.1-pro',
     'openai/gpt-5.6-luna',

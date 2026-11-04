@@ -460,6 +460,22 @@ pub(crate) fn legacy_official_deepseek_base_url(base_url: &str) -> bool {
     normalized == "https://api.deepseek.com"
 }
 
+/// K3.1 family spellings across the kimi catalog groups (moonshot platform +
+/// Kimi Code), case-insensitive: the catalog only produces these exact rows,
+/// but stored prefs keep user-editable strings.
+fn is_moonshot_k31_model(vendor: &Option<String>, model: &str) -> bool {
+    if !vendor
+        .as_deref()
+        .map_or(false, |value| value.trim().eq_ignore_ascii_case("kimi"))
+    {
+        return false;
+    }
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "k3.1-pro" | "k3.1-pro-highspeed"
+    )
+}
+
 pub(crate) fn legacy_local_route_base_url(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
@@ -600,6 +616,20 @@ impl SavedModel {
                 "max" | "maximum" | "xhigh" | "ultra" | "ultracode" => Some("max".to_string()),
                 _ => None,
             };
+        }
+        // Kimi K3.1 spellings (kimi-k3.1-pro[-highspeed] / k3.1-pro[-highspeed]):
+        // the vendor contract is always-reasoning — depth via top-level
+        // reasoning_effort low/high/max, and `thinking:{type:"disabled"}` is
+        // rejected with an error (models-overview: "参数约束也与 kimi-k3 完全
+        // 一致"). The base's exact-K3 route shapers only learn bare k3
+        // spellings, so ANY stored effort for these models — notably an
+        // "off" saved through the generic off/high switch the catalog used
+        // to offer — reaches the generic Moonshot arm and wires an illegal
+        // disable shape. Drop the field: the documented omission is valid
+        // and resolves to the vendor default (max). Mirrors the frontend
+        // tiers exit (isMoonshotK31ModelName) added in the same pass.
+        if self.reasoning_effort.is_some() && is_moonshot_k31_model(&self.vendor, &self.model) {
+            self.reasoning_effort = None;
         }
     }
 
@@ -2166,6 +2196,70 @@ mod tests {
             );
             assert!(loaded.active_model().unwrap().alias.is_none());
         });
+    }
+
+    /// Kimi K3.1 spellings are always-reasoning on the vendor wire (depth
+    /// via top-level reasoning_effort; `thinking:{type:"disabled"}` is
+    /// rejected) and the base's exact-K3 shapers only learn bare k3, so any
+    /// stored effort — notably an "off" saved through the generic off/high
+    /// switch the catalog used to offer — would wire an illegal shape. The
+    /// load-path normalization drops the field (documented omission resolves
+    /// to the vendor default max); non-K3.1 records are untouched.
+    #[test]
+    fn normalize_drops_stored_effort_for_kimi_k31_models() {
+        let base = SavedModel {
+            id: "m1".into(),
+            name: "m1".into(),
+            alias: None,
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: Some("off".into()),
+            model: "kimi-k3.1-pro".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            provider_kind: None,
+            vendor: Some("kimi".into()),
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+
+        for spelling in [
+            "kimi-k3.1-pro",
+            "kimi-k3.1-pro-highspeed",
+            "k3.1-pro",
+            "k3.1-pro-highspeed",
+            "KIMI-K3.1-PRO",
+        ] {
+            let mut record = base.clone();
+            record.model = spelling.into();
+            record.normalize_route_limits();
+            assert_eq!(
+                record.reasoning_effort, None,
+                "stored effort is dropped for K3.1 spelling {spelling}"
+            );
+        }
+
+        // The same model id without the kimi vendor stamp (a free-text
+        // openai_compatible row) keeps its effort: the contract normalization
+        // only applies where the catalog vendor applies.
+        let mut foreign = base.clone();
+        foreign.vendor = None;
+        foreign.normalize_route_limits();
+        assert_eq!(foreign.reasoning_effort, Some("off".into()));
+
+        // A non-K3.1 kimi record (K3 rides the exact tiered route with its
+        // own off→low equivalence) keeps its stored effort.
+        let mut k3 = base.clone();
+        k3.model = "kimi-k3".into();
+        k3.reasoning_effort = Some("off".into());
+        k3.normalize_route_limits();
+        assert_eq!(k3.reasoning_effort, Some("off".into()));
     }
 
     /// LocalVllm no longer forces a 24K output (stays None when not

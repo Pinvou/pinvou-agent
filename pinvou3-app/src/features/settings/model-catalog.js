@@ -1359,33 +1359,37 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.together.xyz/v1',
       // New group in the 2026-11-03 refresh: a mainstream OSS-model hosting
       // platform with a dedicated engine kind (Together) and a plain Bearer
-      // + chat-completions API. The rows mirror the platform's serverless
-      // model pages (docs.together.ai/docs/serverless-models, fetched live
-      // 2026-11-04 — the original 2026-11-03 lineup failed verification
-      // against this very page and was re-lined up: Kimi-K3 / GLM-5.3 /
-      // Muse-Spark-Open / Qwen3.7-Max / DeepSeek-V4-Pro-0813 are not in the
-      // live serverless catalog): each row below is the vendor's current
-      // hosted flagship, spelled verbatim as the page's API Model String.
-      // The page also serves MiniMaxAI/MiniMax-M2.7 (not listed here — it
-      // goes offline 2026-11-18 platform-wide per MiniMax's own notice, see
-      // the minimax groups), Qwen3.5 tiers, coder variants and older
-      // Llama/Gemma/DeepSeek generations. The base URL matches the engine's
-      // provider default (the docs' shared-host value is consistent with it,
-      // though not literally printed on the pages fetched this refresh — a
-      // US-geo variant us-api.together.ai bills +25%). Rows stay
-      // unannotated: gateway deployments are not verified one by one and
-      // their context figures are not mirrored (notably the page serves
-      // DeepSeek-V4-Pro at 512,000 context, not the family's 1M), and no
-      // tier control exists for this vendor.
+      // + chat-completions API. The rows mirror the platform's live
+      // serverless catalog (docs.together.ai/docs/serverless/models,
+      // re-fetched 2026-11-04 review pass) cross-checked against the
+      // deprecations page (docs.together.ai/docs/deprecations). The earlier
+      // "2026-11-04 re-line-up" was verified against neither and shipped six
+      // ids the shared endpoints no longer serve — all six carry removal
+      // records: deepseek-ai/DeepSeek-V4-Pro (2026-08-27),
+      // moonshotai/Kimi-K2.6 (2026-08-19), moonshotai/Kimi-K2.5 (2026-05-21),
+      // zai-org/GLM-5.1 (2026-07-10), zai-org/GLM-5 (2026-06-22),
+      // openai/gpt-oss-20b (2026-09-15); removed ids leave the shared
+      // serverless catalog entirely. Each row below is verbatim from the
+      // live catalog's Chat table. The page also serves MiniMaxAI/
+      // MiniMax-M2.7 (not listed here — it goes offline 2026-11-18
+      // platform-wide per MiniMax's own notice, see the minimax groups),
+      // Qwen3.5/Qwen3.8 tiers, coder variants and older Llama/Gemma
+      // generations. The base URL matches the engine's provider default
+      // (the docs' shared-host value is consistent with it, though not
+      // literally printed on the pages fetched this refresh — a US-geo
+      // variant us-api.together.ai bills +25%). Rows stay unannotated:
+      // gateway deployments are not verified one by one and their context
+      // figures are not mirrored, and no tier control exists for this
+      // vendor.
       items: [
-        { model: 'deepseek-ai/DeepSeek-V4-Pro', title: 'deepseek-ai/DeepSeek-V4-Pro', desc: '高能力模型' },
-        { model: 'moonshotai/Kimi-K2.6', title: 'moonshotai/Kimi-K2.6', desc: 'Kimi 旗舰' },
-        { model: 'moonshotai/Kimi-K2.5', title: 'moonshotai/Kimi-K2.5', desc: 'Kimi 上代旗舰' },
-        { model: 'zai-org/GLM-5.1', title: 'zai-org/GLM-5.1', desc: 'GLM 旗舰' },
-        { model: 'zai-org/GLM-5', title: 'zai-org/GLM-5', desc: 'GLM 上代旗舰' },
-        { model: 'Qwen/Qwen3.6-Plus', title: 'Qwen/Qwen3.6-Plus', desc: '通义旗舰托管版' },
+        { model: 'deepseek-ai/DeepSeek-V4-Pro-0813', title: 'deepseek-ai/DeepSeek-V4-Pro-0813', desc: '高能力模型，1M 上下文' },
+        { model: 'deepseek-ai/DeepSeek-V4.1-Flash', title: 'deepseek-ai/DeepSeek-V4.1-Flash', desc: '高速款，1M 上下文' },
+        { model: 'moonshotai/Kimi-K3', title: 'moonshotai/Kimi-K3', desc: 'Kimi 旗舰，1M 上下文' },
+        { model: 'zai-org/GLM-5.3', title: 'zai-org/GLM-5.3', desc: 'GLM 旗舰' },
+        { model: 'zai-org/GLM-5.3-Flash', title: 'zai-org/GLM-5.3-Flash', desc: 'GLM 高速款' },
+        { model: 'Qwen/Qwen3.7-Max', title: 'Qwen/Qwen3.7-Max', desc: '通义旗舰托管版' },
+        { model: 'Qwen/Qwen3.6-Plus', title: 'Qwen/Qwen3.6-Plus', desc: '通义 1M 托管版' },
         { model: 'openai/gpt-oss-120b', title: 'openai/gpt-oss-120b', desc: '开放权重推理模型' },
-        { model: 'openai/gpt-oss-20b', title: 'openai/gpt-oss-20b', desc: '开放权重轻量推理' },
         { model: '', title: '自定义 Together 模型', desc: '手动填写模型 ID（org/Model 格式）', custom: true },
       ],
     },
@@ -2245,9 +2249,7 @@ function reasoningEffortTiersForModel(model) {
     if (modelName === 'glm-5.1' || modelName === 'glm-5-turbo') return ['off', 'high'];
     return null;
   }
-  if (provider === 'moonshot' && isExactMoonshotK3Route(model, modelName)) {
-    return ['low', 'high', 'max'];
-  }
+  if (provider === 'moonshot') return moonshotReasoningLadder(model, modelName, tiers);
   if (provider === 'minimax') {
     if (!isExactMinimaxChatBaseUrl(baseUrl)) return null;
     if (modelName !== 'minimax-m3') return null;
@@ -2272,6 +2274,36 @@ function isExactMoonshotK3Route(model, modelName) {
   if (modelName === 'kimi-k3') return isExactMoonshotPlatformBaseUrl(baseUrl);
   if (modelName === 'k3' || modelName === 'k3-256k') return isExactKimiCodeBaseUrl(baseUrl);
   return false;
+}
+
+// Moonshot-route tier resolution: the exact-K3 ladder, the K3.1 family's
+// no-control exit, or the provider's generic table.
+function moonshotReasoningLadder(model, modelName, genericTiers) {
+  if (isExactMoonshotK3Route(model, modelName)) return ['low', 'high', 'max'];
+  if (isMoonshotK31ModelName(modelName)) {
+    // K3.1 spellings (kimi-k3.1-pro[-highspeed] on the platform base,
+    // k3.1-pro[-highspeed] on Kimi Code) are always-reasoning: the vendor
+    // contract controls depth via top-level reasoning_effort low/high/max
+    // and rejects thinking:{type:"disabled"} with an error (models-overview:
+    // "参数约束也与 kimi-k3 完全一致"). The base's exact-K3 shapers only
+    // learn bare k3 spellings, so no tier this UI could offer reaches the
+    // wire correctly today — exposing the generic off/high switch here let
+    // users persist a disable shape the vendor rejects (2026-11-04 review).
+    // Expose no control instead: the effort field is omitted, which the
+    // vendor documents as valid (可省略) and resolves to the default max.
+    // Parked until the foundation's route shapers cover K3.1 (see the
+    // kimi group comments).
+    return null;
+  }
+  return genericTiers;
+}
+
+// K3.1 family spellings across the kimi groups (platform + Kimi Code).
+// Case-folded: settings only produce these exact rows, but stored prefs are
+// user-editable strings.
+function isMoonshotK31ModelName(modelName) {
+  return ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'k3.1-pro', 'k3.1-pro-highspeed']
+    .includes(String(modelName || '').trim().toLowerCase());
 }
 
 // 当前模型是否走底座 always-thinking K3 tiered 路由（档位表为 low/high/max）。
