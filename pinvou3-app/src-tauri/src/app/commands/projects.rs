@@ -1651,6 +1651,12 @@ pub async fn rebind_workspace_root(
             .rebind_workspace_prefix(&from_for_agents, &to_for_agents)
             .map_err(|e| format!("rebind_workspace_root: {e:#}"))
     })
+    // 该 `?` 的前提（round-10 评审登记）：今天 rebind_workspace_prefix 的
+    // 错误臂都发生在绑定落盘之前（持久化失败回滚内存记录后报错，
+    // commit_index_rekeys 的索引集恒空），即前缀平移失败 ⇒ 绑定未动，
+    // 提前返回不会跳过下方绑定提交点的审批记忆清理。若未来该函数出现
+    // 「已落盘再失败」的臂，必须把清理挪到本 `?` 之前，否则会重新打开
+    // 旧目录决策应答新目录请求的残路径。
     .await?;
     // Plain-chat binding sidecars (review #463 round-8 B1): the sidecar pass
     // of the batch planned above — the legacy table already carries the

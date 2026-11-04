@@ -290,7 +290,11 @@ impl SessionStore {
     /// for an unreadable file, where a stale answer still beats inventing an
     /// absence.
     pub fn durable_mode_entry(&self, id: &str) -> Option<SerializableMode> {
-        let file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        // Accessor, not the literal: the quarantine flag compares against
+        // `shared_mode_map_file_name()`, so a rename must move both sites
+        // together (round-10 review).
+        let file = crate::platform::paths::sessions_root()
+            .join(crate::features::sessions::sidecars::shared_mode_map_file_name());
         match std::fs::read_to_string(&file) {
             // A parse failure falls through to the cache rather than
             // reporting an absence the file does not actually state.
@@ -1191,7 +1195,7 @@ impl SessionStore {
             })
             .collect();
         crate::features::sessions::sidecars::mutate_json_map_file(
-            "_session_mode_states.json",
+            crate::features::sessions::sidecars::shared_mode_map_file_name(),
             |entries: &mut std::collections::HashMap<String, SerializableMode>| {
                 let mut changed = false;
                 for (id, mode) in &mapped {
@@ -1329,7 +1333,8 @@ impl SessionStore {
     /// this replaced completed the migration implicitly by rewriting the
     /// in-memory map on every save.)
     pub fn load_session_mode_states(&self) {
-        let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        let states_file = crate::platform::paths::sessions_root()
+            .join(crate::features::sessions::sidecars::shared_mode_map_file_name());
         let legacy_file = crate::platform::paths::sessions_root().join("_code_mode_states.json");
         let (source, from_legacy) = if states_file.exists() {
             (states_file, false)
