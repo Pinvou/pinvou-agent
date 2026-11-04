@@ -187,7 +187,8 @@
       // Set on every connect(): wedge-window start for the liveness watchdog.
       this.connectStartedAt = 0;
       // First CLOSING observation by the watchdog (same wedge rescue);
-      // cleared on every connect() and speculative close.
+      // cleared on every connect(), speculative close, and CLOSING/CLOSED
+      // rescue.
       this.closingStartedAt = null;
       this.livenessTimer = null;
       this.pending = new Map();
@@ -434,7 +435,11 @@
       // 本身,与送达路径一致;只有后继自己验证失败(close 先于 join ack
       // 送达)才会计数升级。救援只摘 socket/closingStartedAt——joined/
       // leaseId 等旗标保持旧周期值直到后继 join ack,与「瞬态断线不卸载
-      // UI」的既有设计一致。
+      // UI」的既有设计一致。(Round-18 复审订正:「救援的死一律不计」只
+      // 对投机源 socket 成立;投机周期内被救援的后继(非
+      // speculativeSource)尚未通过 join 验证,其死按 close 处理器同一
+      // 验证分支计一次投机失败——否则全救援拓扑的阶梯永不前进,UI 永远
+      // 停在 connected。下方实现同步。)
       if (
         this.socket.readyState === WebSocket.CLOSING
         || this.socket.readyState === WebSocket.CLOSED
@@ -445,7 +450,19 @@
         }
         if (Date.now() - this.closingStartedAt <= LIVENESS_CONNECT_WEDGE_TIMEOUT_MS) return;
         this.closingStartedAt = null;
+        const rescued = this.socket;
         this.socket = null;
+        // Round-18 复审:救援替代了永远不会送达的 close 事件,因此必须把
+        // close 处理器的验证分支一同带过来——投机周期内被救援摘除的
+        // socket 若不是投机源本身(它是投机重连发出的后继,join ack 尚未
+        // 送达),它的死就是验证失败,必须计入失败阶梯;否则全救援拓扑
+        // (每颗 close 都楔死、永不送达)会让阶梯永远停在 0,UI 永远停留
+        // 在 connected,RPC 全部悬到各自的超时(probe 端到端复现)。计数
+        // 在 scheduleReconnect 之前:清掉 speculativeReconnect 后,本次
+        // 重连的文案不再被投机语义抑制,恢复对用户可见。
+        if (this.speculativeReconnect && rescued !== this.speculativeSource) {
+          this.noteSpeculativeFailure();
+        }
         this.scheduleReconnect("连接已断开，正在重试…");
         return;
       }
@@ -547,6 +564,18 @@
       if (typeof raw !== "string") return;
       let message;
       try { message = JSON.parse(raw); } catch { return; }
+      // Round-18 复审:与 close/error 事件门同一身份契约。周期状态帧
+      // (join ack / desktop_connection_state / desktop_snapshot /
+      // endpoint_revoked / endpoint_replaced / error)此前无身份门:被
+      // 救援或事件失败摘除的 socket 上在途的帧仍会在后继周期送达——
+      // 晚到的旧 join ack 会把已完成协商的后继打回未协商态(下一个入站
+      // 事件撞上 !desktopCapabilitiesReady 被 processRemoteEvent 判成
+      // incompatible_desktop 永久关门),晚到的 endpoint_revoked/error
+      // /endpoint_replaced 会 this.socket.close()/closePermanently 波及
+      // 健康后继。旗标属于当前周期,旧 socket 的帧是纯噪声,连同
+      // liveness 证据一起丢弃(事件分派链在 handleRemoteEvent 内另有
+      // 同一身份门,两道闸口语义一致)。
+      if (sourceSocket !== this.socket) return;
       // Any parseable inbound frame counts as liveness evidence.
       this.lastInboundAt = Date.now();
       switch (message.type) {
