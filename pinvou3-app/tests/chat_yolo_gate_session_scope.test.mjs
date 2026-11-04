@@ -421,4 +421,3 @@ assert.match(fpSharedHelpers, /modeState: \{ mode: "auto" \}/,
   'shared freshBuffer generic default must be auto');
 
 console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban + fallback-posture pins)');
-
