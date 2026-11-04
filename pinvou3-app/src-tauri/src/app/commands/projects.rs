@@ -1667,9 +1667,7 @@ pub async fn rebind_workspace_root(
     // prefix translation (prefix_outcome.affected) and the plain sidecar
     // moves (plain_rebind.rebound) are the moved-this-run populations.
     clear_approval_memory_for_rebound_sessions(plain_rebind.rebound.iter().map(|(sid, _)| sid));
-    clear_approval_memory_for_rebound_sessions(
-        prefix_outcome.affected.iter().map(|(sid, _)| sid),
-    );
+    clear_approval_memory_for_rebound_sessions(prefix_outcome.affected.iter().map(|(sid, _)| sid));
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
     // Round-20 minor 2: plain chats whose sidecar move FAILED must not
     // capture a codex-lane baseline when their metadata sync succeeds —
@@ -3008,9 +3006,7 @@ fn metadata_behind_binding(pre_sync: &Path, bound_path: &Path) -> bool {
 /// semantics (a TUI workspace switch clears the whole grant/denial set,
 /// `apply_workspace_runtime_state`); the per-session shares leave other
 /// sessions' grants untouched.
-fn clear_approval_memory_for_rebound_sessions<'a>(
-    rebound_ids: impl Iterator<Item = &'a String>,
-) {
+fn clear_approval_memory_for_rebound_sessions<'a>(rebound_ids: impl Iterator<Item = &'a String>) {
     for session_id in rebound_ids {
         crate::features::assistant::pending_approvals::clear_session(session_id);
     }
@@ -4903,9 +4899,18 @@ mod tests {
         approvals::remember_grant("approval-rebind-switch", "shell:11:cargo build");
         approvals::remember_denial("approval-rebind-switch", "shell:29:rm -rf /tmp/x");
         approvals::remember_grant("approval-rebind-bystander", "shell:11:cargo build");
-        assert!(approvals::session_granted("approval-rebind-switch", "shell:11:cargo build"));
-        assert!(approvals::session_denied("approval-rebind-switch", "shell:29:rm -rf /tmp/x"));
-        assert!(approvals::session_granted("approval-rebind-bystander", "shell:11:cargo build"));
+        assert!(approvals::session_granted(
+            "approval-rebind-switch",
+            "shell:11:cargo build"
+        ));
+        assert!(approvals::session_denied(
+            "approval-rebind-switch",
+            "shell:29:rm -rf /tmp/x"
+        ));
+        assert!(approvals::session_granted(
+            "approval-rebind-bystander",
+            "shell:11:cargo build"
+        ));
 
         // The binding passes moved these sessions across directories: both
         // faces of the session-level memory must go for every rebound id,
@@ -4942,11 +4947,16 @@ mod tests {
 
         // The session is not in the moved set: nothing clears it.
         clear_approval_memory_for_rebound_sessions(Vec::<String>::new().iter());
-        assert!(approvals::session_granted("approval-rebind-same-dir", "shell:11:cargo build"));
-        assert!(approvals::session_denied("approval-rebind-same-dir", "shell:29:rm -rf /tmp/x"));
+        assert!(approvals::session_granted(
+            "approval-rebind-same-dir",
+            "shell:11:cargo build"
+        ));
+        assert!(approvals::session_denied(
+            "approval-rebind-same-dir",
+            "shell:29:rm -rf /tmp/x"
+        ));
         approvals::clear_session("approval-rebind-same-dir");
     }
-
 
     /// Wiring pin for the same P2 (round-8 R8-2): the approval-memory clear
     /// must sit at the BINDING-MOVE commit point — right after the two
@@ -4999,7 +5009,9 @@ mod tests {
         let clear_call = helper_body
             .find("pending_approvals::clear_session(session_id)")
             .expect("the helper must clear through pending_approvals::clear_session");
-        let loop_head = helper_body.find("for session_id in rebound_ids {").expect("the helper must iterate the moved ids");
+        let loop_head = helper_body
+            .find("for session_id in rebound_ids {")
+            .expect("the helper must iterate the moved ids");
         assert!(
             loop_head < clear_call,
             "the helper must clear inside the moved-id iteration"

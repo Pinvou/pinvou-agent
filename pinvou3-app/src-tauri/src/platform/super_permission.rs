@@ -87,7 +87,9 @@ mod tests {
     fn static_instruction_block_pins_the_tri_state_semantics() {
         let block = instruction_block();
         assert!(
-            block.contains("Auto 模式下命中本开关的命令,开启「守卫命中时询问」时弹审批卡,否则按规则拒绝"),
+            block.contains(
+                "Auto 模式下命中本开关的命令,开启「守卫命中时询问」时弹审批卡,否则按规则拒绝"
+            ),
             "the static block must state the Auto armed-card / unarmed-deny split verbatim"
         );
         assert!(
@@ -95,7 +97,9 @@ mod tests {
             "the static block must state the Yolo full-auto face"
         );
         assert!(
-            block.contains("`visudo` 等 sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时同样弹卡"),
+            block.contains(
+                "`visudo` 等 sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时同样弹卡"
+            ),
             "the static block must state the sudoers floor's toggle-dependent face"
         );
         assert!(

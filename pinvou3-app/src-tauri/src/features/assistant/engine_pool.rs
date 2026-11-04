@@ -5092,10 +5092,12 @@ impl EnginePool {
             }),
         )
         .await
-        .map_err(|_| anyhow::anyhow!(
-            "refresh_session_permission_ruleset {session_id}: send did not settle within \
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "refresh_session_permission_ruleset {session_id}: send did not settle within \
              {TURN_GATE_AWAIT_TIMEOUT:?} (engine may be wedged)"
-        ))?
+            )
+        })?
         .context(format!(
             "refresh_session_permission_ruleset {session_id}: send failed"
         ))
@@ -10404,7 +10406,8 @@ mod scheduled_model_tests {
         let pool_src = &pool_src[..pool_src
             .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
             .expect("the test module marker must exist")];
-        let delivery_body = production_body(pool_src, "pub(crate) async fn deliver_messaging_turn(");
+        let delivery_body =
+            production_body(pool_src, "pub(crate) async fn deliver_messaging_turn(");
         assert!(
             delivery_body.contains("TurnApprovalPosture::from_serialized_mode("),
             "the watcher delivery must derive the posture from the session mode"
@@ -10415,7 +10418,8 @@ mod scheduled_model_tests {
         );
         // 4. Mode publish hot-syncs the live engine; failure logs, never swallows
         //    into a missing broadcast.
-        let publish_body = production_body(interaction_src, "async fn publish_session_mode_change(");
+        let publish_body =
+            production_body(interaction_src, "async fn publish_session_mode_change(");
         assert!(
             publish_body.contains("sync_engine_safety_posture(session_id, pool)"),
             "mode publish must hot-sync the engine posture via ChangeMode"
