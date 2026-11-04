@@ -292,6 +292,7 @@ pub(crate) fn spawn_event_forwarder(
     store: SessionStore,
     bridge: Pinvou3Bridge,
     execution_workspace: PathBuf,
+    instance_workspace_generation: Option<u64>,
     session_id: String,
     turn_events: broadcast::Sender<EngineTurnSignal>,
     scheduled_profile: Option<ScheduledRunProfile>,
@@ -314,17 +315,18 @@ pub(crate) fn spawn_event_forwarder(
     tauri::async_runtime::spawn(async move {
         let mut tool_inputs: std::collections::HashMap<String, (String, serde_json::Value)> =
             std::collections::HashMap::new();
-        // 本实例的发起工作区代（评审 JensenChen28 5764675531，参考 round-4
-        // P2 sub-gap a 语义）：转发器每个 engine 化身一个任务，spawn 时刻的
-        // 会话代就是该实例的身份代。弹卡登记（ApprovalRequired → record）
-        // 携带它而不是收卡时刻的当前代——重绑期间越过入口忙闸启动的 turn
-        // 仍由旧 cwd 运行时执行，旧实例跨绑定提交点的代推进后弹出的卡若按
-        // 当前代盖章，用户批准就会把旧目录的决策写入新代记忆。决策写入按卡
-        // 的登记代做原子失效比较（remember_grant/denial），旧实例的卡在新
-        // 代下整体拒绝（fail-safe 重新请批），新实例（新 cwd）的卡携带推进
-        // 后的代、照常落笔。
-        let instance_workspace_generation =
-            crate::features::assistant::pending_approvals::workspace_generation(&session_id);
+        // 本实例的发起工作区代（评审 JensenChen28 5764675531、zhuowp
+        // 5766212059/5766526920，参考 round-4 P2 sub-gap a 语义）：转发器每
+        // 个 engine 化身一个任务，**spawn 时**由调用方在固化
+        // `engine_config.workspace` 的同一同步点捕获该实例的身份代并随
+        // spawn 传入（参数，上方签名）。async body 不得现读
+        // `workspace_generation`——任务首次执行可能已越过重绑的绑定提交点
+        // 代推进，届时现读会把 A 目录冷启动实例盖成 B 代，弹卡与决策通过
+        // 原子比较，旧目录的授权/拒绝写入新代记忆。弹卡登记
+        // （ApprovalRequired → record）携带传入的身份代；决策写入按卡的
+        // 登记代做原子失效比较（remember_grant/denial），旧实例的卡在新
+        // 代下整体拒绝（fail-safe 重新请批），新实例（新 cwd）的卡携带
+        // 推进后的代、照常落笔。
         let mut turn_tracker = TurnCompletionTracker::default();
         let mut scheduled_engine_total_tokens = 0_u64;
         let mut scheduled_persistence_error: Option<String> = None;
@@ -2389,46 +2391,120 @@ mod transcript_persist_pins {
             .join("\n")
     }
 
-    /// Review 5764675531 (P2-a, adapted from the reference line's round-4
-    /// sub-gap a pin): the pending-approval card must be stamped with the
-    /// EMITTING INSTANCE's workspace generation — snapshotted from the
-    /// session's committed generation at forwarder (engine-incarnation)
-    /// spawn — not with the current generation at event receipt. A turn that
-    /// started over the rebind's entry gate keeps executing on the old-cwd
-    /// runtime; a card it mints across the bindings-commit advance, stamped
-    /// with the then-current generation, would let the user's approval write
-    /// old-directory memory into the new era. The decision write validates
-    /// against the record's captured generation (remember_grant/denial), so
-    /// the capture source is the whole chain. Mutation: deleting the
-    /// spawn-time snapshot, or passing None at the record site, fails the
-    /// wiring asserts (store-side behavioral coverage in
-    /// pending_approvals::forkguard_pending_card_stamps_emitting_instance_generation).
+    /// Review 5764675531 (P2-a) as tightened by 5766477612 / 5766212059 /
+    /// 5766526920 (P2-b): the pending-approval card must be stamped with the
+    /// EMITTING INSTANCE's workspace generation, and that identity must be
+    /// CAPTURED AT THE SPAWN SITE — the same await-free sync block that
+    /// resolves the roots and fixes `engine_config.workspace` in
+    /// `AppEngine::spawn_for_session` — then handed into this forwarder as a
+    /// spawn parameter. The async body must NOT re-read
+    /// `workspace_generation`: its first execution may already be past a
+    /// rebind's binding-commit advance, so a current-read would stamp a
+    /// cold-started A-directory instance with the B generation, pass the
+    /// decision-time comparison, and let A-directory memory land in the B
+    /// era. Mutation: moving the capture back into this async body (the
+    /// defect shape) fails the no-current-read assert and the engine-side
+    /// spawn-site anchor; dropping the parameter breaks the signature and
+    /// record asserts (store-side behavioral coverage in
+    /// pending_approvals::forkguard_pending_card_stamps_emitting_instance_generation
+    /// and forkguard_coldstart_identity_survives_rebind_before_first_mint).
     #[test]
-    fn approval_card_stamps_the_instance_spawn_generation() {
+    fn approval_card_stamps_the_spawn_captured_instance_generation() {
         let body = forwarder_body();
         let flattened: String = body.chars().filter(|c| !c.is_whitespace()).collect();
-        // Exactly one spawn-time snapshot of the session's committed
-        // generation: this is the emitting instance's identity. The snapshot
-        // identifier appears exactly twice — the declaration and the record
-        // argument — so the card registration is provably stamped from the
-        // instance identity (not None, not a receipt-time re-read).
+        // The identity arrives as a spawn parameter, never as a body read:
+        // the async body must contain no `workspace_generation(` call at all
+        // (`instance_workspace_generation` alone does not match this needle,
+        // the `::` guard keeps the parameter name from satisfying it).
         assert_eq!(
-            flattened
-                .matches(
-                    "letinstance_workspace_generation=crate::features::assistant::pending_approvals::workspace_generation(&session_id);"
-                )
-                .count(),
-            1,
-            "the forwarder must snapshot the instance's spawn generation exactly once"
+            flattened.matches("::workspace_generation(").count(),
+            0,
+            "the forwarder async body must not re-read the session generation; \
+             the identity is captured at the spawn site and passed in"
+        );
+        assert!(
+            flattened.contains("instance_workspace_generation:Option<u64>,"),
+            "the forwarder must receive the spawn-site captured identity as a parameter"
         );
         assert_eq!(
             flattened.matches("instance_workspace_generation").count(),
             2,
-            "the snapshot must flow into the card registration as the record argument"
+            "the parameter appears exactly twice: signature and record argument"
         );
         assert!(
             flattened.contains("record(&session_id,pending.clone(),instance_workspace_generation,"),
-            "the pending card must be stamped with the instance spawn generation"
+            "the pending card must be stamped with the spawn-captured instance generation"
+        );
+    }
+
+    /// Engine-side anchor for the same review chain (P2-b): the identity
+    /// capture must sit in `AppEngine::spawn_for_session`'s await-free sync
+    /// block, materialized after the workspace is fixed
+    /// (`let workspace = engine_config.workspace.clone()`) and before the
+    /// engine/forwarder spawns, and its value must flow into
+    /// `spawn_event_forwarder`. This ties the capture to the same
+    /// synchronous point as the roots resolution + workspace fixation, so
+    /// the running directory and the generation form one identity snapshot.
+    /// Mutation: deleting the capture (or moving it anywhere after the
+    /// spawn) fails the ordering anchors; the behavioral interleave test in
+    /// pending_approvals covers the store semantics.
+    #[test]
+    fn spawn_site_captures_instance_identity_next_to_workspace_fixation() {
+        let src = include_str!("engine.rs");
+        let signature = "pub(crate) async fn spawn_for_session(";
+        let start = src.find(signature).expect("spawn_for_session must exist");
+        let rest = &src[start + signature.len()..];
+        let end = [
+            "\n    pub async fn ",
+            "\n    pub fn ",
+            "\n    pub(crate) async fn ",
+            "\n    pub(crate) fn ",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(src.len(), |offset| start + signature.len() + offset);
+        let body: String = src[start..end]
+            .split('\n')
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let flattened: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        let capture = "letinstance_workspace_generation=crate::features::assistant::pending_approvals::workspace_generation(session_id);";
+        assert_eq!(
+            flattened.matches(capture).count(),
+            1,
+            "spawn_for_session must capture the instance identity exactly once"
+        );
+        let fixation = flattened
+            .find("letworkspace=engine_config.workspace.clone();")
+            .expect("workspace fixation must be materialized in spawn_for_session");
+        let engine_spawn = flattened
+            .find("lethandle=spawn_engine(engine_config,&dt_config);")
+            .expect("the engine spawn must stay in the sync block");
+        let capture_at = flattened
+            .find(capture)
+            .expect("the capture statement must exist");
+        assert!(
+            fixation < capture_at && capture_at < engine_spawn,
+            "the identity capture must sit between workspace fixation and the \
+             engine spawn (one await-free sync block)"
+        );
+        assert!(
+            flattened.contains("workspace.clone(),instance_workspace_generation,"),
+            "the captured identity must be handed to the forwarder spawn"
+        );
+        // The whole capture..spawn tail must be await-free so the capture
+        // and the workspace fixation are one atomic snapshot.
+        let tail = &flattened[fixation..engine_spawn];
+        assert!(
+            !tail.contains(".await"),
+            "no await may interleave workspace fixation, the identity capture, \
+             and the spawns"
         );
     }
 

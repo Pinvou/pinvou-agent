@@ -122,9 +122,12 @@ pub fn record(session_id: &str, mut approval: PendingApproval, instance_generati
     });
 }
 
-/// 会话当前已提交的工作区代（只读）：转发器在 engine 实例 spawn 时快照为
-/// 该实例的发起代，供 [`record`] 盖章。从未重绑的会话返回 None——与新
-/// 实例的决策写入比较语义一致（None == None）。
+/// 会话当前已提交的工作区代（只读）：`AppEngine::spawn_for_session` 在固
+/// 化 `engine_config.workspace` 的同一同步点（roots 解析后的无 await 段）
+/// 调它捕获实例身份代，随 spawn 传给转发器供 [`record`] 盖章——不得在
+/// 转发器 async body 首次执行时现读（评审 5766477612/5766212059/
+/// 5766526920：该执行可能已越过重绑绑定提交点的代推进）。从未重绑的会话
+/// 返回 None——与新实例的决策写入比较语义一致（None == None）。
 pub fn workspace_generation(session_id: &str) -> Option<u64> {
     with_store(|store| store.workspace_generations.get(session_id).copied())
 }
@@ -1146,6 +1149,76 @@ mod tests {
             "重放按最新一次的实例代盖章"
         );
         assert!(entry.intent_summary.is_none(), "其余字段仍以最新一次为准");
+        clear_session(&session);
+    }
+
+    /// 冷启动身份快照 vs 绑定提交点推进的**真实交错**（评审 JensenChen28
+    /// 5766477612、zhuowp 5766212059/5766526920，P2-b）：实例身份必须在
+    /// **启动捕获**时定死（AppEngine spawn 链同步段、与 roots/workspace 固
+    /// 定同点——engine/forwarder 两侧 source pin 钉住该接线），本测试驱动
+    /// 「startup 捕获 → rebind 绑定提交点 `advance_workspace_generation` →
+    /// forwarder 首次执行 mint 卡」：启动步走生产同一捕获函数
+    /// `workspace_generation` 取值（不手工捏造旧代），断言卡携带**启动时**
+    /// 捕获的身份代——缺陷形态（async body 首次执行现读）会把卡盖成推进
+    /// 后的新代、通过决策比较、把 A 目录的授权/拒绝写进 B；随后断言旧代
+    /// 决策写入被拒。阴性对照：推进后冷启动的 B 实例经同一捕获函数取得
+    /// 新代，其卡照常落笔命中。Mutation（negative-first）：把捕获挪回
+    /// forwarder async body 现读 → 两侧 source pin 红（本测试锁 store 端
+    /// 语义）；record 改章收卡时刻当前代 → 第一对断言红。
+    #[test]
+    fn forkguard_coldstart_identity_survives_rebind_before_first_mint() {
+        let session = isolate("approval-coldstart-gen");
+        // Startup（A 目录冷启动）：spawn 链同步段经生产捕获函数快照身份代
+        // （从未重绑 → None）。
+        let startup_captured = workspace_generation(&session);
+        assert_eq!(startup_captured, None, "A 纪元冷启动实例身份代为 None");
+
+        // 重绑绑定提交点：推进代（B 纪元开始）。
+        assert_eq!(advance_workspace_generation(&session), 1);
+
+        // Forwarder 首次执行 mint：卡登记携带 spawn 传入的启动身份代，不是
+        // 收卡时刻的当前代——缺陷形态现读会带 Some(1)，A 的决策随之写入 B。
+        record(&session, sample("ap-a", "k-a", "g-a"), startup_captured);
+        let stamped = list(&session)[0].request_workspace_generation;
+        assert_eq!(
+            stamped, startup_captured,
+            "跨推进首次 mint 的卡必须携带启动捕获的身份代"
+        );
+        assert_ne!(
+            stamped,
+            Some(1),
+            "A 实例的卡不得带推进后的 B 代：带 B 代即通过决策比较写入 B"
+        );
+
+        // A 实例卡的用户决策：携带启动旧代 vs 已提交新代 → 原子拒绝，
+        // 不给新代盖章、不落记忆。
+        assert!(
+            !remember_grant(&session, "g-a", stamped),
+            "A 实例（启动代 None）跨推进的批准必须被拒（重新请批）"
+        );
+        assert!(
+            !remember_denial(&session, "k-a", stamped),
+            "A 实例跨推进的拒绝必须被拒（不跨目录连坐）"
+        );
+        assert!(
+            !session_granted(&session, "g-a") && !session_denied(&session, "k-a"),
+            "被拒的旧身份写入不得留下任何记忆"
+        );
+
+        // 阴性对照：重绑后新发送方在 B 目录冷启动，同一捕获函数现读得推进
+        // 后的代；其卡照常落笔并命中（推进不误伤新纪元）。
+        let startup_captured_b = workspace_generation(&session);
+        assert_eq!(
+            startup_captured_b,
+            Some(1),
+            "B 纪元冷启动实例经同一捕获函数取得推进后的代"
+        );
+        record(&session, sample("ap-b", "k-b", "g-b"), startup_captured_b);
+        assert!(
+            remember_grant(&session, "g-b", startup_captured_b),
+            "B 实例（当前代）的批准照常落笔"
+        );
+        assert!(session_granted(&session, "g-b"), "当前代决策照常命中");
         clear_session(&session);
     }
 

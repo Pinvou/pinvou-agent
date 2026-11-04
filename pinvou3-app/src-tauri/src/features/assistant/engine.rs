@@ -1942,6 +1942,16 @@ impl AppEngine {
         );
 
         let workspace = engine_config.workspace.clone();
+        // 本实例的发起工作区代（评审 JensenChen28 5766477612、zhuowp
+        // 5766212059/5766526920）：与 roots 解析 / `engine_config.workspace`
+        // 固定落在**同一同步块**（从这里到下方两次 spawn 之间无 await），
+        // 实际运行目录与代次构成同一次身份快照。此前快照在 forwarder 的
+        // async body 首次执行时现读——该执行可能晚于重绑的绑定提交点代
+        // 推进：A 目录冷启动实例会读到 B 代，弹卡与成功决策带 B 代通过
+        // 原子比较，A 的授权/拒绝写入 B。值随 spawn 传给 forwarder，async
+        // body 不再现读（见 forwarder 侧参数与 source pin）。
+        let instance_workspace_generation =
+            crate::features::assistant::pending_approvals::workspace_generation(session_id);
         let handle = spawn_engine(engine_config, &dt_config);
         // Record the provider route this spawn resolved onto the session
         // record. These two fields are not wire-inert diagnostics: the
@@ -1983,6 +1993,7 @@ impl AppEngine {
             store,
             bridge.clone(),
             workspace.clone(),
+            instance_workspace_generation,
             session_id.to_string(),
             turn_events.clone(),
             scheduled_profile,
