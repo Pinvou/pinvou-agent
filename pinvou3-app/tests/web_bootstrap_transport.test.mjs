@@ -114,6 +114,14 @@ function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test'
     },
   };
   window.window = window;
+  // Round-20 复审:可推进时钟(shim 生产代码读到的 Date)。未推进时逐
+  // 调用透传宿主真实时钟(+偏移),既有夹具行为不变;新夹具用
+  // __clock.advance 整段推进,驱动楔窗口/静默窗判定。此前 clock 型生产
+  // 行(closingStartedAt/lastInboundAt 复位与门序)只能靠夹具手工注值,
+  // 对应突变全绿、行为不可观察(S07 实证)。
+  const clock = { offsetMs: 0 };
+  const shimDate = { now: () => Date.now() + clock.offsetMs };
+  window.__clock = { advance: ms => { clock.offsetMs += ms; } };
   const deterministicMath = Object.create(Math);
   deterministicMath.random = () => 0.5;
 
@@ -148,6 +156,7 @@ function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test'
     Number,
     String,
     Math: deterministicMath,
+    Date: shimDate,
     JSON,
     Error,
     console: {
@@ -158,7 +167,7 @@ function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test'
     queueMicrotask,
   };
   vm.runInNewContext(source, context, { filename: 'platform/web/bootstrap.js' });
-  return { window, document, storage, dispatched, timers, MockWebSocket };
+  return { window, document, storage, dispatched, timers, MockWebSocket, clock };
 }
 
 // 重连退避定时器（<10s）与 30s 看门狗 interval、180s RPC 超时共存于 timers，
@@ -1045,6 +1054,120 @@ async function connectWithCapabilities(events, listener) {
     'a young CLOSING socket must not trigger a reconnect');
 }
 
+// Round-20 复审:connect() 的 closingStartedAt 复位此前是突变空洞——全部
+// young-CLOSING 夹具都在检查前手工注入该字段,删除复位(三个复位点联合
+// 删除)全套件保持绿:陈旧楔钟会让新 socket 的首个 CLOSING 观测被当成
+// 「早已超窗」而立刻被救,新 socket 拿不到自己的完整楔窗口。本夹具让
+// 生产代码自己盖时间戳(不注入):S1 楔死→首观测盖戳→时钟推进超窗→
+// close 事件正常送达摘除→重连定时器触发 S2→S2 楔死→紧接的看门狗 tick
+// 必须按「新 socket 首观测」重新盖戳并返回,而不是拿陈旧戳立即救援。
+// (speculativeClose/rescue 两处复位是 connect 复位的冗余防线;本钉钉住
+// 承载位 connect,联合删除突变的其余位点随之转红。)
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const s1 = env.MockWebSocket.instances[0];
+  s1.open();
+  client.lastInboundAt = Date.now();
+  s1.readyState = 2; // CLOSING:楔口形态,close 事件不送达
+  client._livenessCheck();
+  const stampedAt = client.closingStartedAt;
+  assert.notEqual(stampedAt, null,
+    'the first CLOSING observation must stamp the wedge clock');
+  env.window.__clock.advance(46_000);
+  s1.close(); // close 事件此刻正常送达:摘除 socket,走普通退避重连
+  const reconnect = takeReconnectTimer(env.timers);
+  reconnect.callback();
+  assert.equal(env.MockWebSocket.instances.length, 2,
+    'the reconnect must spawn the successor');
+  const s2 = env.MockWebSocket.instances[1];
+  assert.equal(client.socket, s2, 'the successor must be current');
+  assert.equal(client.closingStartedAt, null,
+    'connect() must give the successor a fresh wedge clock');
+  s2.readyState = 2; // 后继同样楔死
+  client._livenessCheck();
+  assert.equal(client.socket, s2,
+    'a fresh successor must keep its full wedge window (a stale clock must not rescue it instantly)');
+  assert.equal(client.closingStartedAt > stampedAt, true,
+    'the fresh observation must restamp, not inherit the predecessor clock');
+  assert.equal(env.timers.some(timer => timer.delay < 10_000), false,
+    'no instant rescue reconnect may be scheduled for the fresh successor');
+}
+
+// Round-20 复审:门后 liveness 证据更新此前无钉——把 lastInboundAt 更新
+// 提到身份门之前(陈旧帧刷新看门狗时钟的突变)全套件保持绿,一颗被摘除
+// socket 上的在途帧可把静默判定推迟一个静默窗。双向钉:被摘除 socket 的
+// 帧不得刷新;当前 socket 的合法帧照常刷新(正向腿让「更新被删」类突变
+// 也有信号,反向腿才是本钉载荷)。
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const dead = env.MockWebSocket.instances[0];
+  dead.open();
+  client.lastInboundAt = Date.now();
+  dead.readyState = 2;
+  client._livenessCheck();
+  env.window.__clock.advance(46_000);
+  client._livenessCheck(); // 救援:socket 引用置空
+  assert.equal(client.socket, null, 'setup: the wedged socket must be rescued');
+  const t0 = Date.now() - 5;
+  client.lastInboundAt = t0;
+  dead.message({ v: 2, type: 'event', event: 'chat:delta', stream_epoch: 'epoch_dead', seq: 1, payload: { text: 'stale' } });
+  assert.equal(client.lastInboundAt, t0,
+    'a gated stale frame must not refresh liveness evidence');
+  const reconnect = takeReconnectTimer(env.timers);
+  reconnect.callback();
+  const successor = env.MockWebSocket.instances[1];
+  assert.equal(client.socket, successor, 'setup: the successor must be current');
+  successor.message({ v: 2, type: 'event', event: 'chat:delta', stream_epoch: 'epoch_live', seq: 1, payload: { text: 'live' } });
+  assert.ok(client.lastInboundAt > t0,
+    'a current-socket frame must refresh liveness evidence');
+}
+
+// Round-20 复审:非 TTL 的 endpoint_revoked 旁路身份门(链接级事实,
+// 详见 bootstrap.js 门旁注释)。双向钉:(a) 被摘除 socket 上的真实撤销
+// 帧必须终态——此前整帧被门丢弃,唯一副本落在摘除窗口时,撤销退化为
+// endpoint_not_found 的「桌面离线」重试环(该码被有意分类为瞬态,撤销
+// 卡片不可达);(b) 过期的 TTL 臂副本保持受门——放行会把后续健康周期
+// 打回 desktop_offline(rejoin 后的新副本自会送达当前 socket)。
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const dead = env.MockWebSocket.instances[0];
+  dead.open();
+  client.lastInboundAt = Date.now();
+  dead.readyState = 2;
+  client._livenessCheck();
+  env.window.__clock.advance(46_000);
+  client._livenessCheck(); // 救援摘除:socket 引用置空
+  dead.message({ v: 2, type: 'endpoint_revoked', reason: 'manual_revoke' });
+  assert.equal(client.closedPermanently, true,
+    'a real revoke must surface even when its only copy arrives on a detached socket');
+  assert.equal(env.timers.some(timer => timer.delay < 10_000), false,
+    'the revoked terminal state must not schedule reconnects');
+}
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const dead = env.MockWebSocket.instances[0];
+  dead.open();
+  client.lastInboundAt = Date.now();
+  dead.readyState = 2;
+  client._livenessCheck();
+  env.window.__clock.advance(46_000);
+  client._livenessCheck();
+  const statusBefore = client.connectionState.status;
+  dead.message({ v: 2, type: 'endpoint_revoked', reason: 'desktop_offline_ttl_expired' });
+  assert.equal(client.closedPermanently, false,
+    'a stale TTL-expiry copy must stay gated');
+  assert.equal(client.connectionState.status, statusBefore,
+    'the gated TTL copy must not flip the cycle state');
+}
+
 // Round-16 复审 MAJOR-1:救援把 socket 引用摘除后,其 close 事件可能在
 // 后继周期已经 join 协商完成之后才送达。晚到的 close 不得清当前周期的
 // 旗标、不得再排重连、更不得把健康后继打回未协商态(否则下一个入站
@@ -1389,8 +1512,6 @@ async function connectWithCapabilities(events, listener) {
     'the source rescue reconnect must stay suppressed');
 }
 
-// Round-18 复审:周期状态帧此前无身份门——被救援摘除的 socket 上在途的
-// join ack 仍会在后继周期送达,把已完成协商的后继打回未协商态(下一个
 // Round-19 复审:投机周期内的事件失败走 catch 路径时,必须带上与救援
 // /close 处理器同一的验证分支——非投机源 socket 的已证实处理失败计入
 // 阶梯并解除文案抑制;投机源自身仍宽恕(窗口保持、计数 0、文案维持抑
@@ -1477,9 +1598,13 @@ async function connectWithCapabilities(events, listener) {
     'the source failure reconnect stays suppressed');
 }
 
-// 入站事件撞上 !desktopCapabilitiesReady → incompatible_desktop 永久关
-// 门,与 round-16 MAJOR-1 同族);迟到的 endpoint_revoked 会关掉健康后
-// 继。旧 socket 的帧必须整单丢弃。
+// Round-18 复审(Round-20 复审修复此前被 round-19 插入拦腰截断的注释):
+// 周期状态帧此前无身份门——被救援摘除的 socket 上在途的 join ack 仍会
+// 在后继周期送达,把已完成协商的后继打回未协商态(下一个入站事件撞上
+// !desktopCapabilitiesReady → incompatible_desktop 永久关门,与 round-16
+// MAJOR-1 同族);迟到的 error/endpoint_replaced 会 this.socket.close()
+// /closePermanently 波及健康后继(endpoint_revoked 的非 TTL 臂已例外
+// 旁路,见 bootstrap.js 同名注释)。旧 socket 的帧必须整单丢弃。
 {
   const stale = bootClient();
   const staleClient = stale.window.PinvouWebClient;
