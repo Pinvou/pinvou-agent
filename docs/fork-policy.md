@@ -1,5 +1,27 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
+## Local template reasoning candidate (2026-10-28)
+
+Review candidate `2ed7b03b5a87559f84172cfb00100efa2b06af7b` adds six signed
+commits above public maintenance `f1eb10efc` (92 commits above upstream v0.9.12).
+It extends T10 with generic, revision-sourced vLLM template effort facts, with
+[upstream contribution #7125](https://github.com/codewhale-hq/Codewhale/pull/7125)
+and [compatible backport #128](https://github.com/Pinvou/CodeWhale/pull/128).
+The app shares its selectable tiers with the wire shaper and retains provider,
+credential and permission ownership. Details: [local model controls](local-model-reasoning.md).
+
+This is an unmerged review candidate, not a public maintenance-head update or
+release. `pinvou3-clean`, immutable tags and `verify-public-submodule.sh` are
+unchanged; the public-head gate remains a release blocker until the backport
+lands. Existing historical validation receipts do not cover this candidate.
+New behavior tests cover supported tiers, legacy aliases, unaffected routes,
+request-field preservation and bridge credentials. Local native Rust execution
+is unavailable because this Windows host lacks MSVC link.exe; Linux validation
+and CI receipts are tracked separately and must not be replaced by formatting
+or source assertions.
+
+
+
 > 最后更新：2026-10-28。公开维护头 f1eb10efc 已包含 #114/#125；父仓 gitlink 与公开维护头对齐。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)

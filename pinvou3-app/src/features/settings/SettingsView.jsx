@@ -1369,6 +1369,7 @@ function hasStoredCredential(record) {
                         onSelect={setReasoningEffort}
                         pending={probePending}
                         noControlThinking={localNoControlThinking}
+                        localRoute={isLocalCompatible || preset === 'local_vllm'}
                       />
                     </div>
                   </div>
