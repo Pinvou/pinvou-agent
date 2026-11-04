@@ -10444,6 +10444,46 @@ fn set_mode_and_persist_fails_loud_on_a_corrupt_mode_file() {
     );
 }
 
+/// `durable_mode_entry` 的隔离旗回退（round-9 minor；round-10 评审实证该分支
+/// 可整段删除而全套保持绿）：共享表损坏被一次性隔离后，durable 读的 NotFound
+/// 是「未知态」而非任何写者声明的缺席，必须回退 boot 缓存而不是编造缺无——
+/// 否则 headless Plan run 会把 quarantine 后的未知态「修复」成 resolved_default
+/// （resolved 默认比存量宽时是一次静默升宽）。缓存 miss 的 None 依旧合法。
+#[test]
+fn durable_mode_entry_falls_back_to_boot_cache_while_quarantined() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    // 先落一条 durable Yolo（文件 + boot 缓存都有）。
+    store
+        .set_mode("quarantine-cache", SerializableMode::Yolo)
+        .expect("seed the durable entry");
+    assert_eq!(
+        store.durable_mode_entry("quarantine-cache"),
+        Some(SerializableMode::Yolo)
+    );
+    // 损坏共享表 → 一次持久化失败 → 隔离旗置位、损坏文件被挪走。
+    std::fs::write(&file, "{ not json").expect("seed a corrupt mode file");
+    assert!(
+        store
+            .set_mode_and_persist("quarantine-headless", SerializableMode::Plan)
+            .is_err(),
+        "corrupt mode file must fail the durable persist loudly"
+    );
+    assert!(!file.exists(), "the corrupt mode file is quarantined aside");
+    assert!(
+        sidecars::shared_mode_map_quarantined(),
+        "the process-level quarantine flag must be set"
+    );
+    // 隔离后的 durable 读：磁盘缺席是未知态，回退缓存值而不是编造 None。
+    assert_eq!(
+        store.durable_mode_entry("quarantine-cache"),
+        Some(SerializableMode::Yolo),
+        "quarantined absence must fall back to the boot cache, not invent None"
+    );
+    // 缓存 miss 的 None 仍是合法读（不得反过来编造条目）。
+    assert_eq!(store.durable_mode_entry("never-cached"), None);
+}
+
 /// `SessionStore::delete` runs under `scheduled_mutation` (the round-12
 /// serialization fix): without the guard, a persist that loaded its snapshot
 /// before the delete commits would rename the stale transcript back over the

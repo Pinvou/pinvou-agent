@@ -344,12 +344,12 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "chat:approval_resolved",
     "chat:compaction",
     "chat:delta",
+    "chat:mode_changed",
     "chat:reasoning_start",
     "chat:reasoning_delta",
     "chat:reasoning_done",
     "chat:done",
     "chat:guardrail_denied",
-    "chat:mode_changed",
     "chat:steer_committed",
     "chat:steer_dropped",
     "chat:plan_ready",
@@ -3966,6 +3966,35 @@ mod tests {
         assert!(RUST_FORWARDED_EVENTS.contains(&"session:persona_changed"));
         assert!(policy.events.contains("multiagent:agent_progress"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"multiagent:agent_progress"));
+        // round-10 补钉：tri-mode 四事件与审批/模式四命令此前在 JS/Rust 两侧
+        // 均无任何断言——从白名单或转发表删掉任意一条，全套保持绿而 web 的
+        // 通告/补读/收敛面静默死亡（bootstrap 按 policy 过滤事件与命令）。
+        for event in [
+            "chat:approval_required",
+            "chat:approval_resolved",
+            "chat:guardrail_denied",
+            "chat:mode_changed",
+        ] {
+            assert!(
+                policy.events.contains(event),
+                "tri-mode event {event} must stay in the web access policy"
+            );
+            assert!(
+                RUST_FORWARDED_EVENTS.contains(&event),
+                "tri-mode event {event} must stay in the relay forward table"
+            );
+        }
+        for command in [
+            "decide_approval",
+            "get_pending_approvals",
+            "set_session_mode",
+            "set_ask_on_guardrail",
+        ] {
+            assert!(
+                policy.commands.contains(command),
+                "tri-mode command {command} must stay in the web access policy (forward-compat registration)"
+            );
+        }
     }
 
     #[test]
