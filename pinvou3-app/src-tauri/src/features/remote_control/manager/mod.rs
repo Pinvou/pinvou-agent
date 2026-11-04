@@ -1149,9 +1149,18 @@ impl RemoteControlManager {
         // 翻旗标/清 grant,不推 status 会让 UI 滞留已授权显示到下一次无
         // 关状态推送。endpoint 在场时补一次状态刷新,空配置正常路径维持
         // 原样不发。)
-        let mut config = match load_config()? {
-            Some(config) => config,
-            None => {
+        let mut config = match load_config() {
+            Ok(Some(config)) => config,
+            Err(error) => {
+                // Round-20 复审 MINOR:严格读取失败时,上方失效已真实翻旗
+                // 标/清 grant(真实状态变化)——与下方 config-absent 臂的
+                // Round-19 NIT 同一理由,错误返回前补一次状态刷新,避免
+                // UI 滞留已授权显示到下一次无关状态推送。此处无 inner
+                // guard 在持(上方失效块已闭合),不触精确锁区间钉。
+                self.emit_status();
+                return Err(error);
+            }
+            Ok(None) => {
                 let endpoint_present = {
                     // 独立块内取放 guard:锁跨不进 emit_status(不可重入
                     // 锁同线程自锁),也满足上方精确锁区间钉的括号深度判据。
@@ -5484,6 +5493,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn chunk_read_refreshes_last_touched_so_active_downloads_stay_uneligible() {
+        // Round-20 复审 MAJOR-1:30s 活跃窗的承载前提是分块读取在非 eof 臂
+        // 刷新 last_touched(transfer.rs 的逐出谓词注释明言)。行为钉:播种
+        // 一个窗内但早于本次读取的条目,驱动一次非 eof 分块读取,断言条目
+        // 仍在且 last_touched 严格前进(比较而非相减,单调时钟刚启动的主机
+        // 不会 panic)。删除刷新分支的可编译突变此前全套件保持绿(突变实
+        // 证)——读中下载在满槽压力下变得可逐出,恰是该窗要防的回归,本钉
+        // 把它转红。eof 臂「移除条目、不刷新」由既有读测试覆盖。
+        use std::io::Write as _;
+        let mut inner = Inner::default();
+        let marker = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .unwrap_or_else(Instant::now);
+        let file = tempfile::tempfile().expect("tempfile for the download payload");
+        (&file)
+            .write_all(b"0123456789")
+            .expect("seed the payload bytes");
+        inner
+            .web_session_download_order
+            .push_back("download_read".to_string());
+        inner.web_session_downloads.insert(
+            "download_read".to_string(),
+            WebSessionDownload {
+                session_id: "session_a".to_string(),
+                reservation_id: "reservation_read".to_string(),
+                file,
+                reserved_bytes: 10,
+                total: 10,
+                ready: true,
+                last_touched: marker,
+            },
+        );
+        let chunk = transfer::read_web_session_download_chunk(
+            &mut inner,
+            "download_read",
+            "session_a",
+            0,
+            4,
+        )
+        .expect("the seeded entry must serve a chunk");
+        assert!(
+            !chunk.eof,
+            "offset 0/limit 4 of a 10-byte payload is not eof"
+        );
+        let entry = inner
+            .web_session_downloads
+            .get("download_read")
+            .expect("a non-eof read must keep the entry");
+        assert!(
+            entry.last_touched > marker,
+            "a non-eof chunk read must refresh last_touched — the eviction \
+             freshness window is only sound while active reads stay fresh"
+        );
+        assert_eq!(
+            inner.web_session_download_order,
+            ["download_read"],
+            "a non-eof read must not disturb the eviction order"
+        );
+    }
+
     /// 接线钉(Round-16 复审 MAJOR-2):begin 的满槽逐出接线此前测试不可
     /// 见——直接驱动 `begin_web_session_download` 需要 AppHandle(单元
     /// 测试无法构造),唯有的逐出行为钉经 helper 驱动,删除 begin 内的
@@ -6117,6 +6187,51 @@ mod tests {
             failure_arm.contains("self.emit_status();"),
             "the failure arm must re-emit status so the UI shows the truthful \
              still-authorized consent state instead of the optimistic revoked row"
+        );
+        // Round-20 复审(S04):文案断言只证明文本存在,不证明它是被 return
+        // 的 Err——「打印文案后放行成功」的突变(misreport 失败的 persist
+        // 为成功)五条断言全绿。钉住 return Err( 落在失败臂窗口内(if-let
+        // 与文案之间;不做 return↔文案语句级配对——错误文案里自带分号
+        // "persisted; folder",纯文本分号扫描会假红)。
+        let failure_window = &body[failure_arm_start..failure_arm_end];
+        assert!(
+            failure_window.contains("return Err("),
+            "the actionable failure message must be returned as an Err from \
+             inside the persist-failure arm; a log-and-continue mutation \
+             would misreport a failed persist as success"
+        );
+    }
+
+    /// Round-20 复审 MINOR 钉:严格读取失败臂(config 损坏/不可读)此前在
+    /// 内存失效已真实翻旗标/清 grant 后经 `?` 直接返回,无状态刷新——UI
+    /// 滞留已授权显示到下一次无关状态推送(Round-19 NIT 已给 config-absent
+    /// 畸形态补了同一 emit;本钉把损坏形态纳入同一纪律)。源钉:失败臂窗口
+    /// 内必须同时出现错误返回与 emit_status;删除 emit 即红。
+    #[test]
+    fn revoke_strict_load_failure_re_emits_status_before_returning() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn revoke_host_workspace(")
+            .nth(1)
+            .expect("revoke_host_workspace must exist");
+        let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
+        let load_start = body
+            .find("let mut config = match load_config()")
+            .expect("the strict config readback must exist");
+        let load_end = body
+            .find("validate_config(&config)")
+            .expect("the readback match must be followed by validation");
+        let arm = &body[load_start..load_end];
+        assert!(
+            arm.contains("Err(error) => {"),
+            "the strict readback must still return its error: stop/revoke is a \
+             recovery path and a corrupt config must not wedge it"
+        );
+        assert!(
+            arm.contains("self.emit_status();"),
+            "the strict-load failure arm must re-emit status: the invalidation \
+             above already flipped the flag and destroyed grants, so the UI \
+             would hold a stale authorized row until an unrelated push"
         );
     }
 

@@ -385,11 +385,30 @@ fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevoc
             // Round-16 复审:报数之外逐个点名(哪几把凭据还在 relay 侧
             // joinable 是人工清理的输入);截断集 ≤ 待吊销总量,该路径本身
             // 已是异常分支,逐条点名的日志量可接受。
+            // Round-20 复审(S10-2):容量截断先于逐条校验,被点名条目的
+            // endpoint_id 未经字符集校验——ledger 被种植/损坏时控制字符与
+            // ANSI 序列会原样进入桌面日志(日志伪造)。逐条先剪裁到校验
+            // 同款字符集,剪裁有损的条目标注 corrupt。
             let dropped: Vec<String> = ledger
                 .entries
                 .iter()
                 .skip(index)
-                .map(|pending| pending.endpoint_id.clone())
+                .map(|pending| {
+                    let clipped: String = pending
+                        .endpoint_id
+                        .chars()
+                        .filter(|character| {
+                            character.is_ascii_alphanumeric()
+                                || *character == '-'
+                                || *character == '_'
+                        })
+                        .collect();
+                    if clipped == pending.endpoint_id {
+                        clipped
+                    } else {
+                        format!("{clipped}~corrupt")
+                    }
+                })
                 .collect();
             eprintln!(
                 "[web-access] salvage dropped {} pending revocations past the capacity of {} (endpoints stay joinable at the relay until revoked manually): {}",
@@ -904,6 +923,34 @@ pub(super) fn new_stream_epoch() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn salvage_truncation_log_clips_dropped_endpoint_ids_to_the_validated_charset() {
+        // Round-20 复审(S10-2)源钉:容量截断先于逐条校验,被点名条目的
+        // endpoint_id 未经校验——直接点名会把种植的控制字符/ANSI 序列带
+        // 进桌面日志(日志伪造)。截断窗口内必须出现字符集剪裁与
+        // `~corrupt` 标注;回退为裸 clone 点名即红。
+        let source = include_str!("persistence.rs");
+        let start = source
+            .find("salvage dropped {} pending revocations")
+            .expect("the truncation log line must exist");
+        // 窗口下界落到字符边界(本文件含 CJK 注释,裸减 900 会切进多字
+        // 节字符——slice panic 而非断言失败,round-17 的同类教训)。
+        let mut window_start = start.saturating_sub(900);
+        while window_start > 0 && !source.is_char_boundary(window_start) {
+            window_start -= 1;
+        }
+        let window = &source[window_start..start];
+        assert!(
+            window.contains("filter(|character| {"),
+            "dropped endpoint ids must be clipped to the validated charset              before they are named in the log"
+        );
+        assert!(
+            window.contains("~corrupt"),
+            "lossy-clipped ids must be marked corrupt instead of passing \
+             through unvalidated"
+        );
+    }
 
     #[test]
     fn env_url_overrides_are_trimmed_and_fail_safe() {

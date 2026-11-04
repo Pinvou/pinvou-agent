@@ -481,9 +481,14 @@ mod tests {
 
     /// A `last_touched` older than the TTL, without panicking on hosts whose
     /// monotonic clock started less than the TTL ago (fresh boot).
+    /// Round-20 复审(S05):二级回退 `now - WEB_SESSION_TRANSFER_TTL` 在
+    /// 开机不足 TTL 的主机上仍会 panic——与本文件新测试的受检回退同一
+    /// 约定,末级退化到当前时刻:条目按「未过期」处理,断言以干净失败
+    /// (红)替代测试进程崩溃。
     fn expired_last_touched(now: Instant) -> Instant {
         now.checked_sub(WEB_SESSION_TRANSFER_TTL + Duration::from_secs(1))
-            .unwrap_or_else(|| now - WEB_SESSION_TRANSFER_TTL)
+            .or_else(|| now.checked_sub(WEB_SESSION_TRANSFER_TTL))
+            .unwrap_or_else(Instant::now)
     }
     #[cfg(any(
         windows,

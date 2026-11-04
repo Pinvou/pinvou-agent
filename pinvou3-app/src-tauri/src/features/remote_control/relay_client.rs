@@ -1652,6 +1652,19 @@ mod tests {
             "the terminal frame must be forwarded to the manager BEFORE the worker \
              terminates; consuming first silently drops the terminal frame"
         );
+        // Round-20 复审(S04):删除消费块内的 `return;`(Close 照发、循环
+        // 继续跑)的突变此前全部断言保持绿——12s connect→revoke 循环复活。
+        // 钉住消费块内必须仍以 return; 终止(取块首右括号前切片)。
+        let consume_slice = &body[consume..];
+        let consume_block_end = consume_slice
+            .find('}')
+            .expect("the worker_terminal consumption block must be closed by its brace");
+        assert!(
+            consume_slice[..consume_block_end].contains("return;"),
+            "the worker_terminal block must still return after sending Close; \
+             deleting the return keeps the worker looping on terminal frames \
+             and resurrects the 12s connect→revoke loop"
+        );
     }
 
     /// 接线钉(Round-15 复审 MA5,轻量半):run_loop 的注册类 reject 帧必须
