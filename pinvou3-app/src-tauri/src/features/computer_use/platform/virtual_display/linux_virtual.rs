@@ -271,8 +271,9 @@ struct PidFile {
     display: String,
     /// Path of the 0600 Xauthority cookie file in the session dir.
     auth_path: String,
-    /// Group-leader pids of every spawned child: the WM (when present) first,
-    /// then each `open_app` application.
+    /// Group-leader pids of every `open_app` application. The WM is NOT in
+    /// this list — it is `wm_pid`: Stop must not wind the WM down (it is
+    /// part of the display, not an agent-opened app).
     children: Vec<u32>,
     /// Unix seconds when the stack was spawned.
     started_at: u64,
@@ -305,6 +306,9 @@ pub(crate) struct VirtualX11Backend {
     /// The WM binary chosen at creation (re-spawned by lazy restarts).
     wm_program: Option<&'static str>,
     /// Group-leader pids of `open_app` children (mirrored into the pidfile).
+    /// The WM is deliberately absent: `release_os_grant` winds THIS list
+    /// down, and the WM belongs to the display (kept alive across Stop;
+    /// only the teardown paths kill it, via the held `wm` handle).
     children_pids: Vec<u32>,
     /// Request-scoped cancel flag (see the trait docs).
     cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -390,10 +394,9 @@ impl VirtualX11Backend {
         //    (inside spawn_wm).
         self.spawn_wm();
         // 7b. Respawn path only: the apps of the DEAD server died with it (X
-        //    clients cannot survive their server), and the killed previous WM
-        //    is gone too. Prune the verified-dead pids BEFORE the pidfile
-        //    rewrite below, so the crash sweep never targets a since-recycled
-        //    pid number (MINOR-2).
+        //    clients cannot survive their server). Prune the verified-dead
+        //    pids BEFORE the pidfile rewrite below, so the crash sweep never
+        //    targets a since-recycled pid number (MINOR-2).
         self.prune_dead_children();
         self.write_pidfile();
         Ok(())
@@ -504,7 +507,10 @@ impl VirtualX11Backend {
             Ok(child) => {
                 let pid = child.id();
                 self.wm = Some(child);
-                self.record_child_pid(pid);
+                // The WM is recorded ONLY via `wm_pid`/the held handle — never
+                // in `children_pids`: the release path winds the children down
+                // while the WM must stay alive with the display (trait
+                // contract: a re-granted session keeps a managed display).
                 log::info!(
                     "[computer_use] virtual display: window manager '{program}' started on {}",
                     self.display
@@ -1433,9 +1439,10 @@ impl ComputerUseBackend for VirtualX11Backend {
     /// the apps the agent OPENED on the display: they are killed tree-wide
     /// here (`kill_pid_tree`), while Xvfb and the WM stay alive so the
     /// backend honors the trait contract (the next action — including a
-    /// re-granted session — still works without any respawn). Xvfb/WM
-    /// themselves are torn down only by Drop (backend destruction / session
-    /// end).
+    /// re-granted session — still works without any respawn). The WM is not
+    /// in the recorded children list at all (only `wm_pid`), so a release
+    /// cannot touch it; Xvfb/WM themselves are torn down only by Drop
+    /// (backend destruction / session end).
     fn release_os_grant(&mut self) -> Result<(), ComputerUseError> {
         let children = std::mem::take(&mut self.children_pids);
         let count = children.len();
