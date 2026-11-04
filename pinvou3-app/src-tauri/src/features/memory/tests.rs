@@ -3314,7 +3314,11 @@ fn organize_history_readback_folds_legacy_raw_storage_prefixes() {
             "clean warning without any path".to_string(),
         ],
     });
-    write_json_atomic(&super::io::organize_history_path(), &vec![legacy_report]).unwrap();
+    write_json_atomic(
+        &super::io::organize_history_path(),
+        &vec![legacy_report.clone()],
+    )
+    .unwrap();
 
     let history = load_organize_history();
     assert_eq!(history.len(), 1);
@@ -3334,6 +3338,54 @@ fn organize_history_readback_folds_legacy_raw_storage_prefixes() {
     // 读侧折叠幂等:二次读取与首读完全一致(不会出现双重折叠变形)。
     let again = load_organize_history();
     assert_eq!(again[0].warnings, history[0].warnings);
+
+    // Round-20 复审(S11):夹具补一条**已折叠**条目(文件直存)——读侧
+    // 必须原样通过,不得二次折叠或改写(此前该形态只由 transform 级单测
+    // 覆盖,本文件夹具缺位)。
+    let folded_report = serde_json::json!({
+        "started_at": "2026-01-02T00:00:00Z",
+        "finished_at": "2026-01-02T00:00:01Z",
+        "model": "legacy-folded",
+        "scanned": {"preference": 1},
+        "deleted": {},
+        "updated": {},
+        "merged": {},
+        "skipped_sensitive": 0,
+        "no_change": true,
+        "warnings": [
+            "persist organize history: failed writing ~/.pinvou3/user/memory/snapshot.md",
+        ],
+    });
+    write_json_atomic(
+        &super::io::organize_history_path(),
+        &vec![legacy_report.clone(), folded_report.clone()],
+    )
+    .unwrap();
+    let with_folded = load_organize_history();
+    assert_eq!(
+        with_folded[1].warnings[0],
+        "persist organize history: failed writing ~/.pinvou3/user/memory/snapshot.md",
+        "an already-folded stored warning must pass through unchanged"
+    );
+
+    // 下一轮 persist(load→insert→truncate→write)顺带把磁盘文件落成
+    // healed 形态(注释声称的行为此前无断言):persist 后直接读文件字节,
+    // 旧条目的原始绝对路径必须已消失。
+    // persist 的入参不带 raw 警告(命令层在 finish_organize_report 折叠后
+    // 才入 persist;本测试只断言旧条目经「重载即折叠」落盘 healed)。
+    let mut healed_input = folded_report.clone();
+    healed_input["started_at"] = serde_json::json!("2026-01-03T00:00:00Z");
+    let healed = serde_json::from_value::<MemoryOrganizeReport>(healed_input).unwrap();
+    super::organize::persist_organize_report(&healed).unwrap();
+    let on_disk = std::fs::read_to_string(super::io::organize_history_path()).unwrap();
+    assert!(
+        !on_disk.contains(&home.root.display().to_string()),
+        "the next persist must heal legacy raw entries on disk"
+    );
+    assert!(
+        on_disk.contains("persist organize history: failed writing ~/.pinvou3/"),
+        "the healed file must carry the folded form"
+    );
 }
 
 #[tokio::test]

@@ -369,7 +369,10 @@ pub fn load_organize_history() -> Vec<MemoryOrganizeReport> {
         .collect()
 }
 
-fn persist_organize_report(report: &MemoryOrganizeReport) -> std::io::Result<()> {
+// pub(super): tests.rs drives the on-disk heal assertion through this
+// writer (the heal itself rides the folding load_organize_history read
+// above).
+pub(super) fn persist_organize_report(report: &MemoryOrganizeReport) -> std::io::Result<()> {
     let _guard = io::write_lock().lock();
     let mut history = load_organize_history();
     history.insert(0, report.clone());
