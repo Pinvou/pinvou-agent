@@ -1951,6 +1951,98 @@ fn safety_change_mode_op(mode_state: &SessionModeState, allow_shell: bool) -> Op
     }
 }
 
+#[cfg(test)]
+mod safety_change_mode_op_tests {
+    //! Truth-table for the hot-sync op's `allow_shell`/`trust_mode` arms.
+    //! The arms mirror the per-turn send op table
+    //! (`build_send_message_op_with_hooks`) by comment only — a flipped arm
+    //! compiles green and would drift the standing posture from the send
+    //! posture between a sync and the next send. `SerializableMode` never
+    //! produces `Operate`, so the defensive `Operate` arm stays
+    //! comment-mirrored; the two reachable `AppMode::Agent` postures (Auto
+    //! and Yolo) and `Plan` are pinned executing here.
+    use super::*;
+    use crate::core::mode_state::SerializableMode;
+
+    #[test]
+    fn safety_change_mode_op_arms_mirror_the_send_op_table() {
+        let pool_allow_shell = false;
+        let mut state = SessionModeState::default();
+
+        // Yolo → Agent arm: pool allow_shell passes through, trust stays on,
+        // approval params map to (true, Bypass).
+        state.mode = SerializableMode::Yolo;
+        state.ask_on_guardrail = true;
+        let Op::ChangeMode {
+            mode,
+            allow_shell: op_allow_shell,
+            trust_mode,
+            auto_approve,
+            approval_mode,
+            configured_sandbox_mode,
+            ask_on_guardrail,
+        } = safety_change_mode_op(&state, pool_allow_shell)
+        else {
+            panic!("safety_change_mode_op must produce Op::ChangeMode");
+        };
+        assert!(matches!(mode, AppMode::Agent));
+        assert_eq!(
+            op_allow_shell, pool_allow_shell,
+            "Agent arm passes the pool allow_shell through"
+        );
+        assert!(trust_mode, "Agent arm keeps trust_mode on");
+        assert!(auto_approve, "Yolo maps to auto_approve=true");
+        assert!(
+            matches!(approval_mode, deepseek_tui::ApprovalMode::Bypass),
+            "Yolo maps to the Bypass approval posture"
+        );
+        assert!(configured_sandbox_mode.is_none());
+        assert_eq!(
+            ask_on_guardrail,
+            Some(true),
+            "the ask flag rides every sync"
+        );
+
+        // Auto → Agent arm: same shell/trust arms, Suggest posture.
+        state.mode = SerializableMode::Auto;
+        let Op::ChangeMode {
+            auto_approve,
+            approval_mode,
+            ..
+        } = safety_change_mode_op(&state, pool_allow_shell)
+        else {
+            panic!("safety_change_mode_op must produce Op::ChangeMode");
+        };
+        assert!(!auto_approve, "Auto maps to auto_approve=false");
+        assert!(
+            matches!(approval_mode, deepseek_tui::ApprovalMode::Suggest),
+            "Auto maps to the Suggest approval posture"
+        );
+
+        // Plan arm: read-only shell allowance forced on, trust on, Suggest.
+        state.mode = SerializableMode::Plan;
+        let Op::ChangeMode {
+            mode,
+            allow_shell: op_allow_shell,
+            trust_mode,
+            auto_approve,
+            approval_mode,
+            ..
+        } = safety_change_mode_op(&state, pool_allow_shell)
+        else {
+            panic!("safety_change_mode_op must produce Op::ChangeMode");
+        };
+        assert!(matches!(mode, AppMode::Plan));
+        assert!(
+            op_allow_shell,
+            "Plan arm forces allow_shell=true regardless of the pool flag"
+        );
+        assert!(trust_mode, "Plan arm keeps trust_mode on");
+        assert!(!auto_approve);
+        assert!(matches!(approval_mode, deepseek_tui::ApprovalMode::Suggest));
+    }
+}
+
 /// Steer ids are generation-scoped at the pool boundary. The foundation mints
 /// per-handle ordinal ids (`steer-{n}`) whose counter resets whenever an
 /// engine is rebuilt (idle reclaim / model switch), so a raw id is ambiguous

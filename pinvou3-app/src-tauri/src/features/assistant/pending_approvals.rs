@@ -1068,8 +1068,15 @@ mod tests {
             production[sweep..].contains("deny_child_approvals_after_terminal"),
             "the split ids must be routed to the deterministic child denial"
         );
+        let denial_body_start = production
+            .find("fn deny_child_approvals_after_terminal(")
+            .expect("the deterministic child denial function must exist");
+        let denial_body_end = production[denial_body_start + 1..]
+            .find("\nfn ")
+            .map(|offset| denial_body_start + 1 + offset)
+            .unwrap_or(production.len());
         assert!(
-            production.contains("deny_tool_call"),
+            production[denial_body_start..denial_body_end].contains("deny_tool_call"),
             "the denial task must go through the engine deny route (oneshot resolution)"
         );
         assert!(
