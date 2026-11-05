@@ -1161,6 +1161,7 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '最新旗舰，强制思考':'Latest flagship, thinking always on', '旗舰模型，1M 上下文多模态':'Flagship model, 1M context, multimodal',
   '最新旗舰，1M 上下文':'Latest flagship, 1M context',
   'Hy4 预览':'Hy4 preview',
+  'Hy4 套餐模型':'Hy4 plan model',
   '上代旗舰推理（纯文本）':'Previous-generation flagship reasoning (text-only)', '上代快速款':'Previous-generation fast model',
   '正式旗舰，夜间 22:00-08:00 四折（个人版）':'GA flagship, 40% credit cost 22:00-08:00 (personal plan)',
   '轻量兼容款，支持图像输入':'Lightweight compatibility option, image input',

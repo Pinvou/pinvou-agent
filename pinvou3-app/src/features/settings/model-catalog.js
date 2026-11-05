@@ -343,7 +343,8 @@ const MODEL_CATALOG = {
         'https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions',
       ],
       // Row lineup mirrors the live 130060 personal-plan table (re-checked
-      // 2026-11-03; the page updated 2026-10-22). GLM-5 / GLM-5.1 retired
+      // 2026-11-03 and 2026-11-05; the page was re-stamped 2026-11-04 with
+      // the hy4 addition mirrored below). GLM-5 / GLM-5.1 retired
       // 2026-10-09 per announce 2469 (Token Plan users auto-switch to
       // GLM-5.3), so their rows are removed and old configs fall to the
       // custom listing. Two rows the live table added are mirrored:
@@ -367,7 +368,12 @@ const MODEL_CATALOG = {
       // from legacyAliases — live Tencent tables still displaying the id are
       // documentation lag, the announcement governs; deepseek/deepseek-v4-flash
       // survives. The old "high-load" flag on hy4-preview is gone from the
-      // current 130060 table, so the note is dropped. DeepSeek rows are
+      // current 130060 table, so the note is dropped. The 2026-11-04
+      // restamp adds a bare hy4 row alongside hy4-preview — mirrored here
+      // (the table gives no figures for it, so the desc stays minimal);
+      // the same restamp appears to list bare deepseek-v4.1-flash-1017 /
+      // deepseek-v4-pro-0813 ids (single fetch, unconfirmed — left to the
+      // next refresh once the table settles). DeepSeek rows are
       // first-party direct supply without SLA, per 130060.
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: '自动模型，智能路由' },
@@ -383,6 +389,7 @@ const MODEL_CATALOG = {
         { model: 'minimax-m2.7', legacyAliases: ['minimax-m-2-7'], imageCapable: false, title: 'minimax-m2.7', desc: '通用能力，官方将于 2026-11-17 下线' },
         { model: 'hy3', legacyAliases: ['hy3-preview', 'hy3-202608'], title: 'hy3', desc: 'Hy 套餐专属模型' },
         { model: 'hy4-preview', title: 'hy4-preview', desc: 'Hy4 预览' },
+        { model: 'hy4', title: 'hy4', desc: 'Hy4 套餐模型' },
         { model: 'mimo-v2.6-flash', title: 'mimo-v2.6-flash', desc: 'MiMo 全模态轻量款' },
         { model: '', title: '自定义腾讯云 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
       ],
