@@ -56,6 +56,8 @@ use tauri::async_runtime::JoinHandle;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+mod marketplace_uninstall;
+
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnIdentity, TurnLifecycle, TurnReservation,
     bounded_join_detached_on_timeout, dispatch_turn_bound_cancel,
@@ -1786,6 +1788,7 @@ const MAX_COMPACTION_LATCH_AGE: std::time::Duration = std::time::Duration::from_
 #[derive(Clone)]
 pub struct EnginePool {
     entries: Arc<Mutex<HashMap<String, EngineEntry>>>,
+    marketplace_uninstall: marketplace_uninstall::RuntimeMaintenance,
     runtime_model_locks: SessionTurnLocks,
     model_update_revisions: ModelUpdateRevisions,
     mcp_config_revision: Arc<AtomicU64>,
@@ -1988,6 +1991,7 @@ impl EnginePool {
         let bridge = Pinvou3Bridge::boot()?;
         Ok(Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
+            marketplace_uninstall: marketplace_uninstall::RuntimeMaintenance::default(),
             runtime_model_locks: SessionTurnLocks::default(),
             model_update_revisions: ModelUpdateRevisions::default(),
             mcp_config_revision: Arc::new(AtomicU64::new(0)),
@@ -2597,6 +2601,8 @@ impl EnginePool {
         explicit_model_override: Option<SavedModel>,
     ) -> Result<AppEngine> {
         let acquisition_started = Instant::now();
+        // Also exclude UI-only engine bootstraps while an uploaded package moves.
+        let _marketplace_runtime = self.marketplace_uninstall.read().await;
         let runtime_lock_started = Instant::now();
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
@@ -2809,6 +2815,7 @@ impl EnginePool {
             scheduled_unattended,
         )
         .await?;
+        self.marketplace_uninstall.track(&engine.handle);
         let spawn_engine_ms = elapsed_ms(spawn_engine_started);
 
         // Sync is mandatory even when messages is empty: SyncSession not only
@@ -3742,7 +3749,9 @@ impl EnginePool {
         if enabled && !self.swarm_mode_available(session_id) {
             anyhow::bail!("当前会话不支持 Pinvou 蜂群模式");
         }
-        let _reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
+        let _reservation = self
+            .marketplace_uninstall
+            .reserve(&self.turn_lifecycles.for_session(session_id))?;
         let turn_lock = self.turn_locks.for_session(session_id).await;
         let _turn = turn_lock.lock().await;
         self.store.set_multi_agent(session_id, enabled)?;
@@ -3771,7 +3780,9 @@ impl EnginePool {
         if _flag_guard.as_deref().is_some_and(|rewinding| *rewinding) {
             bail!("该会话绑定的项目目录正在回退/回滚，请稍后重试");
         }
-        let mut reservation = self.turn_lifecycles.for_session(session_id).reserve()?;
+        let mut reservation = self
+            .marketplace_uninstall
+            .reserve(&self.turn_lifecycles.for_session(session_id))?;
         let baseline = self.store.load(session_id)?;
         reservation.set_base_transcript_revision(transcript_revision(&baseline.messages)?);
         Ok(reservation)
@@ -4995,6 +5006,9 @@ impl EnginePool {
     /// Manually compacts one session. Engines are spawned lazily, so a session
     /// that has not sent a message since restart has no context to compact.
     pub async fn compact_now(&self, session_id: &str) -> Result<()> {
+        // Compaction has no turn reservation. Publish its in-flight latch
+        // under the same read fence that excludes new engines during uninstall.
+        let _marketplace_runtime = self.marketplace_uninstall.read().await;
         let Some(engine) = self.handle_for(session_id).await else {
             anyhow::bail!("session_engine_not_running");
         };

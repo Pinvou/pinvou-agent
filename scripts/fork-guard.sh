@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 93 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 94 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 merged.
-EXPECTED_HEAD="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
-EXPECTED_COMMITS=93
+# Review candidate for CodeWhale#149; public maintenance remains 11cba403d.
+EXPECTED_HEAD="0022e737445a962a399e4470ad8cb683a07ac899"
+EXPECTED_COMMITS=94
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -70,6 +70,15 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T4|Shutdown joins pending MCP boot without UI delivery|CodeWhale/crates/tui/src/core/engine.rs|async fn shutdown_mcp_pool(&mut self)"
+  "T4|Pending MCP boot cannot outlive shutdown|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_shutdown_waits_for_pending_mcp_boot_without_emitting_events"
+  "T4|Completion observers do not keep an engine alive|CodeWhale/crates/tui/src/core/engine/run_completion.rs|fn forkguard_completion_wait_does_not_retain_engine_handle"
+  "T4|Idle retirement joins the sealed actor and host consumers|CodeWhale/crates/tui/src/core/engine/handle.rs|pub async fn shutdown_when_idle(&self, host_is_idle: impl FnOnce() -> bool)"
+  "T4|Idle retirement preserves autonomous results|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_idle_shutdown_preserves_an_autonomous_turn_before_host_observation"
+  "T4|Cancelled retirement cannot stop a later actor|CodeWhale/crates/tui/src/core/engine/idle_shutdown.rs|fn forkguard_idle_shutdown_cancelled_proposal_does_not_stop_the_actor"
+  "T4|Host terminal completion gates the sealed actor|CodeWhale/crates/tui/src/core/engine/idle_shutdown.rs|fn forkguard_idle_shutdown_checks_host_completion_after_actor_ready"
+  "T4|Child work gates retirement without consuming results|CodeWhale/crates/tui/src/tools/subagent/mod.rs|pub(crate) fn has_live_work_for_session"
+  "T4|Shell work and pending output gate retirement|CodeWhale/crates/tui/src/tools/shell.rs|pub(crate) fn has_live_or_unreported_work_for_session"
   "T2|Test metadata summary loss requests recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_run_tests_metadata_summary_cut_requests_recovery"
   "T2|Child report artifact retains exact bytes and ids|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_report_artifact_keeps_exact_bytes"
   "T2|Deferred subagent report names explicit activation fallback|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn stamp_subagent_summary_truncates_when_over_budget"

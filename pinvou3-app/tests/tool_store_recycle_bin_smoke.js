@@ -76,6 +76,7 @@ function injectSource() {
       list_marketplace_tools:function(){return tools.slice();},
       // 卸载后工具从后端列表消失(真实后端语义:自定义 MCP 卸载删登记,不再列出)。
       uninstall_marketplace_tool:function(args){
+        if(window.__UNINSTALL_ERROR__)throw new Error(window.__UNINSTALL_ERROR__);
         var i=tools.findIndex(function(x){return x.id===args.toolId;});
         if(i>=0)tools.splice(i,1);
         return null;
@@ -85,6 +86,7 @@ function injectSource() {
       // 前端卡片随之卸载——「卸载后无导出按钮」断言依赖这一状态变化。
       list_marketplace_skills:function(){return skills.slice();},
       uninstall_marketplace_skill:function(args){
+        if(window.__UNINSTALL_ERROR__)throw new Error(window.__UNINSTALL_ERROR__);
         var i=skills.findIndex(function(x){return x.id===args.skillId;});
         if(i>=0)skills.splice(i,1);
         return null;
@@ -281,6 +283,26 @@ async function dismiss(page) {
     await sleep(300);
 
     // 4. 上传技能卸载提示「移入回收站」(预置/普通卸载不出现该文案)
+    // Runtime refusals keep the installed card and display recovery guidance.
+    for (const [code, copy] of [
+      ['marketplace_uninstall_busy', '当前无法确认所有任务和待处理工作均已结束'],
+      ['marketplace_uninstall_release_failed', '无法确认插件运行资源已安全释放'],
+    ]) {
+      await page.evaluate((error) => { window.__UNINSTALL_ERROR__ = error; }, code);
+      await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('div')].filter(el =>
+          (el.textContent || '').includes('my-test-skill') && el.querySelector('button'));
+        rows[rows.length - 1]?.querySelector('button').click();
+      });
+      await sleep(600);
+      rec(`upload uninstall refusal ${code} is localized`, await page.evaluate((expected) =>
+        document.body.innerText.includes(expected) && !document.body.innerText.includes('marketplace_uninstall_'), copy));
+      rec(`upload remains installed after ${code}`, await page.evaluate(() =>
+        [...document.querySelectorAll('div')].some(el =>
+          (el.textContent || '').includes('my-test-skill') && el.querySelector('button'))));
+      await dismiss(page);
+    }
+    await page.evaluate(() => { window.__UNINSTALL_ERROR__ = null; });
     await page.evaluate(() => {
       const rows = [...document.querySelectorAll('div')].filter(el =>
         (el.textContent || '').includes('my-test-skill') && el.querySelector('button'));

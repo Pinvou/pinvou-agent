@@ -137,6 +137,10 @@ fn recycle_bin_root() -> PathBuf {
 }
 
 impl RecycleBin {
+    pub(super) fn file_path(&self) -> PathBuf {
+        self.file.clone()
+    }
+
     /// The staged pack dir for `id` while it sits in the recycle bin — the
     /// read-path pack-row shield (round-24 MAJOR 1) needs to recognize a
     /// binned pack the same way the round-23 MINOR 1 shield recognizes an
