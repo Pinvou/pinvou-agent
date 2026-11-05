@@ -917,9 +917,11 @@ pub(crate) fn spawn_event_forwarder(
                 // (see stamp_steer_generation in engine_pool.rs).
                 Event::SteerCommitted { steer_id } => {
                     let steer_id = stamp_steer_generation(steer_id_generation, &steer_id);
-                    // 跨会话消息投递的 steer 在途终局：提交后才落 done 标记
-                    // 并移除 spool 文件（消掉 steer-Ok-后丢失窗口）。经
-                    // steer_outcomes 钩子扇出，assistant 不反向依赖消费方。
+                    // Cross-session steered delivery finalizes in-flight only
+                    // on commit (done marker + spool removal — closes the
+                    // post-steer-Ok loss window). Fanned out through the
+                    // steer_outcomes hook; assistant never depends back on
+                    // the consumer feature.
                     crate::features::assistant::steer_outcomes::resolve_steer_outcome(
                         &steer_id, true,
                     );
@@ -936,7 +938,8 @@ pub(crate) fn spawn_event_forwarder(
                 }
                 Event::SteerDropped { steer_id } => {
                     let steer_id = stamp_steer_generation(steer_id_generation, &steer_id);
-                    // 引擎丢弃 steer：撤销在途注册，消息留在 spool 重投。
+                    // The engine dropped the steer: revoke the in-flight
+                    // registration; the message stays queued for redelivery.
                     crate::features::assistant::steer_outcomes::resolve_steer_outcome(
                         &steer_id, false,
                     );

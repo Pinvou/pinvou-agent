@@ -464,9 +464,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   materially different body); a steer accepted against a mid-turn target can still be
   dropped by the foundation — when that turn is cancelled
   (`chat:steer_dropped`) or when the engine is evicted/rebuilt before the
-  steer lands. Only the cancelled case produces a correlated event — an
-  evict aborts the forwarder before the foundation drains its steers, so no
-  terminal event is forwarded for that case (the round-19 MAJOR-1
+  steer lands. Only the cancelled case reliably produces a correlated
+  event: an evict aborts the forwarder before the foundation drains its
+  steers, so steers still parked at drain time produce no forwarded event —
+  though the evict's cancel-side drop (the turn-interrupt settlement) can
+  race the abort and forward a `chat:steer_dropped`, in which case the file
+  merely re-delivers sooner than the 24h arm below (the round-19 MAJOR-1
   marker-gating follow-up, landed): the done marker and spool removal land
   on `chat:steer_committed`, a dropped steer stays queued and re-delivers
   on the next poll (after ten dropped cycles the file is quarantined), a
