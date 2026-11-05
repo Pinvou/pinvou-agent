@@ -556,7 +556,26 @@ function enforceLazyChunks() {
 // ceiling already sits the next thousand step above the unchanged web
 // entry and stays 128_000. This cap does not promise headroom for
 // unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 486_000;
+//
+// 486_000 → 487_000 desktop only (PR #834 review fix wave, measured per
+// policy): the main-lane manual-compaction entry hardens in the always-
+// mounted chat surface — busy/compacting click gate, session-keyed
+// in-flight state, localized engine-error mapping, and the shared
+// compactingSessions bridge slice. All render-path UI in ChatView; it
+// cannot defer without breaking the composer footer. Same-base build
+// against main@78dcc1c3e measures 485,878 → 486,911 B desktop and
+// 127,596 → 127,839 B web (ChatView rides the chat-view group on web,
+// but the shared slice registry is entry content on both platforms; the
+// +243 B web delta is re-attribution across that boundary). For scale:
+// #833's head alone had already crossed the old 486_000 ceiling at
+// 486,122 B and #834's head measured 486,687 B — CI (node 24) and local
+// (node 26) agreed byte-for-byte on that pre-raise build. The desktop
+// ceiling takes the next thousand step, leaving 89 B headroom at the
+// local node 26 measurement; the web ceiling already sits the next
+// thousand step above the 127,839 B web entry and stays 128_000 (161 B
+// headroom). This cap does not promise headroom for unrelated main
+// changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 487_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {
