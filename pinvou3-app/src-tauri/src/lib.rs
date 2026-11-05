@@ -998,6 +998,17 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
+            // steer 终局消费者装配：跨会话消息投递（features::messaging）的
+            // in-flight 终局落定依赖 forwarder 的 SteerCommitted/SteerDropped
+            // 事件。钩子按方向注入（messaging → assistant），assistant 不反
+            // 向依赖消费方 feature（architecture guard 的 feature 环以此为界）。
+            // 引擎在会话首次发送时才 spawn，此处注册先于任何 steer 事件。
+            if features::assistant::steer_outcomes
+                ::register_steer_resolution_hook(features::messaging::resolve_pending_steer)
+                .is_err()
+            {
+                eprintln!("[pinvou3-app] steer resolution hook registered twice; keeping the first");
+            }
             // The disabled_bundles migration verdict must be frozen here: the
             // broad upgrade signal (settings.json/session dirs exist ⇒ upgrade
             // install) gets polluted by bridge boot's first-startup behavior
