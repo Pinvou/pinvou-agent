@@ -1184,16 +1184,16 @@ impl UserPrefs {
         });
         // The K3.1 stored-effort drop (`normalize_route_limits` nulls the
         // field on any kimi/moonshot-stamped or official-route K3.1 record)
-        // is the same class as the sentinel above: the flag must be recorded
-        // before migrate/normalize rewrite the models, or the save gate sees
-        // no change and a stored K3.1 effort stays on disk forever for
-        // sessions that only ever load. The detection condition must match
-        // the drop arm exactly — a mismatch would either persist spuriously
-        // or leave the stale effort behind.
-        let k31_effort_dropped = prefs.advanced.saved_models.iter().any(|model| {
-            model.reasoning_effort.is_some()
-                && is_moonshot_k31_route(&model.vendor, &model.base_url, &model.model)
-        });
+        // is the same class as the sentinel above — but the flag cannot be
+        // detected from RAW metadata before migrate/normalize run: a
+        // vendorless record on a recognized overseas coding URL or a full
+        // `/chat/completions` URL only acquires its Kimi identity during
+        // `normalize_saved_model_metadata` (2026-11-05 review 5783266663 /
+        // 5783312297), so a raw pre-check misses it and the dropped effort
+        // stays on disk forever for sessions that only ever load. Snapshot
+        // the records before the rewrite pass and detect the actual change
+        // across the normalized result instead.
+        let pre_normalize_saved_models = prefs.advanced.saved_models.clone();
         // The #622 machine-written-local-off migration must persist its
         // marker even when no record matched: "migration ran" is what keeps
         // a later explicitly-saved `off` from being stripped by a
@@ -1209,10 +1209,16 @@ impl UserPrefs {
         // file, where not deleting is the benign orphan direction.
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
+        // Any saved_models drift across the rewrite pass — including a
+        // K3.1 record whose stored effort the drop arm cleared only after
+        // its vendor identity was stamped by the normalizers — counts as a
+        // normalization change (Snapshot comparison; see the comment above
+        // `pre_normalize_saved_models`).
+        let saved_models_changed = prefs.advanced.saved_models != pre_normalize_saved_models;
         let normalization_changed = minimax_endpoint_changed
             || local_model_alias_changed
             || local_output_sentinel_changed
-            || k31_effort_dropped
+            || saved_models_changed
             || local_thinking_default_migrated
             || migration.settings_sanitized
             || memory_policy_changed
@@ -2972,6 +2978,12 @@ mod tests {
     fn load_persists_k31_effort_drop() {
         with_temp_home("pinvou3-prefs-k31-effort-drop", || {
             let mut prefs = UserPrefs::default();
+            // Already-migrated fixture (review 5783312297): the unrelated
+            // #622 migration independently triggers a save, which would let
+            // the disk assertion pass even without the K3.1 drop flag.
+            // Settling it here isolates this regression to the
+            // saved-models drift detection.
+            prefs.local_thinking_default_migrated = true;
             prefs.advanced.saved_models.push(SavedModel {
                 id: "k31-official".into(),
                 name: "K3.1 Official".into(),

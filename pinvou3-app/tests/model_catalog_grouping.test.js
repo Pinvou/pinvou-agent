@@ -1596,8 +1596,16 @@ test('providerCatalog overlays and preset labels for the custom Responses group 
   // zh's providerCatalog is deliberately {} (zh copy lives in the catalog
   // source) — pin the emptiness so a partial zh overlay shadowing catalog
   // titles cannot land silently (the ui_language_coverage zh-leaf walk
-  // cannot flag paths en/ja already cover).
-  const zhSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+  // cannot flag paths en/ja already cover). Line endings are normalized
+  // before matching: a Windows CRLF checkout must not false-fail on the
+  // LF-only newline in the regex (review 5783312297). Determinism caveat:
+  // this reads source files directly, but tests that drive the process-wide
+  // catalog cache cannot be reset by CODEWHALE_HOME alone — an already
+  // initialized cache keeps prior state (retain that distinction when
+  // hardening further).
+  const zhSrc = fs
+    .readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'zh.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
   assert.ok(
     /providerCatalog:\{\},?\n/.test(zhSrc),
     'zh.js providerCatalog must stay {} — zh copy is the catalog inline copy'
