@@ -998,11 +998,14 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
-            // steer 终局消费者装配：跨会话消息投递（features::messaging）的
-            // in-flight 终局落定依赖 forwarder 的 SteerCommitted/SteerDropped
-            // 事件。钩子按方向注入（messaging → assistant），assistant 不反
-            // 向依赖消费方 feature（architecture guard 的 feature 环以此为界）。
-            // 引擎在会话首次发送时才 spawn，此处注册先于任何 steer 事件。
+            // Steer terminal consumer assembly: the in-flight settlement of
+            // cross-session message delivery (features::messaging) is driven
+            // by the forwarder's SteerCommitted/SteerDropped events. The hook
+            // is injected along the dependency direction (messaging →
+            // assistant); assistant never depends back on the consumer
+            // feature (the architecture guard's feature-cycle line). Engines
+            // spawn lazily on a session's first send, so this registration
+            // precedes any steer event.
             if features::assistant::steer_outcomes
                 ::register_steer_resolution_hook(features::messaging::resolve_pending_steer)
                 .is_err()
