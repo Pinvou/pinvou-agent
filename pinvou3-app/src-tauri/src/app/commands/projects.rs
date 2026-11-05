@@ -1647,15 +1647,41 @@ pub async fn rebind_workspace_root(
     let from_for_agents = from.clone();
     let to_for_agents = to_display.clone();
     let prefix_outcome = super::settings::join_blocking("rebind_workspace_root", move || {
-        agents
-            .rebind_workspace_prefix(&from_for_agents, &to_for_agents)
-            .map_err(|e| format!("rebind_workspace_root: {e:#}"))
+        // Single identity boundary (review zhuowp 5780927743 P2): the codex
+        // binding publish and the per-session identity advance + approval
+        // memory clear share ONE approval-store critical section — the same
+        // lock, in the same order, as the spawn-side identity capture
+        // (pending_approvals::capture_workspace_identity). A capture racing
+        // this fence can only observe the complete pre-commit state (old
+        // roots + old generation + old cache) or the complete post-commit
+        // state (new roots + new generation + grants cleared); the
+        // "new roots published, approval memory not yet invalidated" window
+        // of the previous two-step commit is unobservable, so a fresh spawn
+        // in that interval can no longer slip through with a stale cached
+        // grant. Lock-order audit (this round): sessions / codex_acp /
+        // bridge hold no approval-store acquisitions under their locks, so
+        // the pending → SessionStore order here and in the capture has no
+        // reverse path.
+        crate::features::assistant::pending_approvals::commit_rebind_publication(
+            || {
+                agents
+                    .rebind_workspace_prefix(&from_for_agents, &to_for_agents)
+                    .map_err(|e| format!("rebind_workspace_root: {e:#}"))
+            },
+            // The publish result is the lane's Result: a failed publish
+            // moved no bindings (the round-10 precondition documented below),
+            // so the Err arm advances/clears nobody.
+            |outcome| match outcome {
+                Ok(outcome) => outcome.affected.iter().map(|(sid, _)| sid.clone()).collect(),
+                Err(_) => Vec::new(),
+            },
+        )
     })
     // 该 `?` 的前提（round-10 评审登记）：今天 rebind_workspace_prefix 的
     // 错误臂都发生在绑定落盘之前（持久化失败回滚内存记录后报错，
     // commit_index_rekeys 的索引集恒空），即前缀平移失败 ⇒ 绑定未动，
-    // 提前返回不会跳过下方绑定提交点的审批记忆清理。若未来该函数出现
-    // 「已落盘再失败」的臂，必须把清理挪到本 `?` 之前，否则会重新打开
+    // 提前返回不会跳过绑定提交点的审批记忆栅栏。若未来该函数出现
+    // 「已落盘再失败」的臂，必须把栅栏挪到本 `?` 之前，否则会重新打开
     // 旧目录决策应答新目录请求的残路径。
     .await?;
     // Plain-chat binding sidecars (review #463 round-8 B1): the sidecar pass
@@ -1663,17 +1689,21 @@ pub async fn rebind_workspace_root(
     // plan's translations, so a fault here heals forward at the next boot. A
     // sidecar whose write failed stays on disk with the old path, is reported
     // below, and the next run's `from` scan still matches it.
-    let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);
     // Approval-memory isolation at the identity-switch commit point (review
-    // round P2, round-8 R8-2): both binding passes above are the moment a
-    // session's runtime directory actually changes, so the session's grant /
-    // denial memory must drop HERE — not at the metadata sync, where every
-    // failure arm and the pre-sync-unknown branch would otherwise leave
-    // stale pre-rebind decisions answering post-rebind requests. The codex
-    // prefix translation (prefix_outcome.affected) and the plain sidecar
-    // moves (plain_rebind.rebound) are the moved-this-run populations.
-    clear_approval_memory_for_rebound_sessions(plain_rebind.rebound.iter().map(|(sid, _)| sid));
-    clear_approval_memory_for_rebound_sessions(prefix_outcome.affected.iter().map(|(sid, _)| sid));
+    // round P2, round-8 R8-2, single identity boundary per zhuowp
+    // 5780927743): the binding publish is the moment a session's runtime
+    // directory actually changes, so the plain lane fences the publish
+    // together with the per-session identity advance + grant/denial clear in
+    // one approval-store critical section — not at the metadata sync, where
+    // every failure arm and the pre-sync-unknown branch would otherwise
+    // leave stale pre-rebind decisions answering post-rebind requests. The
+    // plain sidecar moves (plain_rebind.rebound) are this lane's
+    // moved-this-run population; the codex population is fenced inside the
+    // join_blocking closure above.
+    let plain_rebind = crate::features::assistant::pending_approvals::commit_rebind_publication(
+        || sessions.apply_rebind_workspace_bindings(plain_plan),
+        |outcome| outcome.rebound.iter().map(|(sid, _)| sid.clone()).collect(),
+    );
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
     // Round-20 minor 2: plain chats whose sidecar move FAILED must not
     // capture a codex-lane baseline when their metadata sync succeeds —
@@ -2987,47 +3017,6 @@ fn metadata_behind_binding(pre_sync: &Path, bound_path: &Path) -> bool {
         .trim_end_matches('/')
         != crate::platform::os::filesystem_path_identity_key(&bound_path.to_string_lossy())
             .trim_end_matches('/')
-}
-
-/// Drop the interactive-approval memory (pending cards, grants, denials) of
-/// every session whose runtime binding THIS RUN moved across the rebind
-/// geometry — the reviewer P2, fixed at the identity-switch commit point
-/// instead of the metadata sync. The session id survives the rebind while its
-/// old run instances are recycled, but the host-side grant/denial cache keys
-/// on the session id alone and the engine mints operation-scoped approval
-/// keys for normal (non-delegated) calls, so a grant or denial decided under
-/// the old directory would silently answer the same operation executed under
-/// the new one. The runtime resolves its workspace through the binding
-/// first, so the binding write IS the identity switch: every later failure
-/// arm (artifact rebase, acp-state, set_workspace) and every pre-sync load
-/// failure leaves the run on the NEW directory with decisions made under the
-/// OLD one, which is why the clear cannot stay in the `set_workspace` Ok arm
-/// (the round-15 fix's residual: partial failures and `pre_sync_workspace ==
-/// None` skipped it). Clearing at the commit point is fail-safe by
-/// construction — re-prompting is cheap, a stale silent approval is not —
-/// and a later step failing cannot un-switch the binding. The run's
-/// from→to geometry cannot be an alias-equal no-op here: same-directory
-/// invocations early-return before the binding passes, so reaching this
-/// point already implies a true identity switch. Mirrors the engine's own
-/// semantics (a TUI workspace switch clears the whole grant/denial set,
-/// `apply_workspace_runtime_state`); the per-session shares leave other
-/// sessions' grants untouched.
-fn clear_approval_memory_for_rebound_sessions<'a>(rebound_ids: impl Iterator<Item = &'a String>) {
-    for session_id in rebound_ids {
-        // 绑定提交点 = 身份切换点：先推进该会话的工作区代（B 目录纪元的版本
-        // 边界），再在保留代的前提下回收挂起卡 / 授予 / 拒绝份额（评审
-        // JensenChen28 5764675531 第一项；机制自参考线 round-2/3/4 形状按
-        // 本线重落）。顺序不可倒置：先推进后代存活（跨重绑单调递增），迟交
-        // 的旧代写入永远失配被拒；若先做整删式 clear_session 会把代一并清
-        // 掉，会话回落「无代」，推进前盖 None 代的旧决策重新相等——旧授予
-        // 复活、迟交旧范围写入又被接受；清后再推进则让第二次重绑的 Some(1)
-        // 旧卡重新相等（代必须单调，不得重臂）。旁观者 / 同目录会话不在
-        // moved 集合内，不推进、不清理（保留既有同目录 keep 语义）。
-        crate::features::assistant::pending_approvals::advance_workspace_generation(session_id);
-        crate::features::assistant::pending_approvals::clear_session_preserving_generation(
-            session_id,
-        );
-    }
 }
 
 fn metadata_rebind_targets(
@@ -4906,9 +4895,12 @@ mod tests {
     /// cache keys on the session id alone, and the engine's normal-call
     /// approval keys are operation-scoped (only delegated child calls carry
     /// the `@root` binding), so a pre-rebind decision would otherwise answer
-    /// a matching request executed under the moved directory. Mutation
-    /// (negative-first): no-op'ing the `clear_session` call inside
-    /// `clear_approval_memory_for_rebound_sessions` fails the first two
+    /// a matching request executed under the moved directory. Driven through
+    /// the production publication fence (`commit_rebind_publication`, the
+    /// single identity boundary of review zhuowp 5780927743) with a no-op
+    /// binding publish standing in for the storage passes. Mutation
+    /// (negative-first): no-op'ing the clear inside the fence fails the
+    /// first two asserts.
     #[test]
     fn rebind_identity_switch_clears_session_approval_memory() {
         use crate::features::assistant::pending_approvals as approvals;
@@ -4935,7 +4927,7 @@ mod tests {
         // faces of the session-level memory must go for every rebound id,
         // and ONLY those (fail-safe: re-prompting is cheap, a stale silent
         // approval is not; other sessions' shares stay untouched).
-        clear_approval_memory_for_rebound_sessions(rebound.iter());
+        approvals::commit_rebind_publication(|| (), |_| rebound.clone());
         assert!(
             !approvals::session_granted("approval-rebind-switch", "shell:11:cargo build"),
             "a pre-rebind grant must not satisfy a matching post-rebind request"
@@ -4970,7 +4962,7 @@ mod tests {
     }
 
     /// Scoping control for the same P2: a session whose binding did NOT move
-    /// this run is simply not in the rebound set, so the helper never touches
+    /// this run is simply not in the rebound set, so the fence never touches
     /// it — the same-directory keep semantics now live in the run gate
     /// (alias-equal from→to early-returns before the binding passes) plus set
     /// membership, not in a per-call identity compare.
@@ -4982,7 +4974,7 @@ mod tests {
         approvals::remember_denial("approval-rebind-same-dir", "shell:29:rm -rf /tmp/x", None);
 
         // The session is not in the moved set: nothing clears it.
-        clear_approval_memory_for_rebound_sessions(Vec::<String>::new().iter());
+        approvals::commit_rebind_publication(|| (), |_| Vec::new());
         assert!(approvals::session_granted(
             "approval-rebind-same-dir",
             "shell:11:cargo build"
@@ -5001,37 +4993,65 @@ mod tests {
         approvals::clear_session("approval-rebind-same-dir");
     }
 
-    /// Wiring pin for the same P2 (round-8 R8-2): the approval-memory clear
-    /// must sit at the BINDING-MOVE commit point — right after the two
-    /// binding passes, before the metadata loop — and the old
+    /// Wiring pin for the same P2 (round-8 R8-2, single identity boundary
+    /// per zhuowp 5780927743): BOTH binding publishes must ride the
+    /// approval-store publication fence (`commit_rebind_publication`) at the
+    /// BINDING-MOVE commit point — before the metadata loop — and the old
     /// metadata-success-gated clear must be gone (it skipped every failure
     /// arm and the unreadable-pre-sync branch, leaving stale pre-rebind
     /// decisions live under the new directory). Source-level like the other
-    /// command-layer probes. Mutation: moving the clear back inside the
-    /// set_workspace Ok arm (or gating it on any metadata success) fails the
-    /// ordering asserts; deleting the helper call pair fails the find.
+    /// command-layer probes. Mutation: unwrapping either publish from its
+    /// fence (or moving it after set_workspace) fails the ordering asserts;
+    /// deleting a fence call fails the find.
     #[test]
     fn rebind_clears_approval_memory_at_the_binding_commit_point() {
         let src = production_source();
-        let plain = src
-            .find("let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);")
-            .expect("the plain binding pass must exist");
-        let clear_plain = src
-            .find("clear_approval_memory_for_rebound_sessions(plain_rebind.rebound.iter()")
-            .expect("the plain rebound set must be cleared");
-        let clear_codex = src
-            .find("clear_approval_memory_for_rebound_sessions(prefix_outcome.affected.iter()")
-            .expect("the codex rebound set must be cleared too");
+        let codex_lane = src
+            .find("let prefix_outcome = super::settings::join_blocking(\"rebind_workspace_root\", move || {")
+            .expect("the codex join_blocking lane must exist");
+        let codex_fence = src
+            .find("pending_approvals::commit_rebind_publication(")
+            .expect("the codex binding publish must be fenced");
+        let plain_fence = src
+            .rfind("pending_approvals::commit_rebind_publication(")
+            .expect("the plain binding publish must be fenced too");
+        let codex_publish = src
+            .find("agents\n                    .rebind_workspace_prefix(")
+            .expect("the codex publish must stay inside its fence closure");
+        let plain_publish = src
+            .find("|| sessions.apply_rebind_workspace_bindings(plain_plan)")
+            .expect("the plain publish must stay inside its fence closure");
+        let plain_rebind_let = src
+            .find("let plain_rebind =")
+            .expect("the plain fence result must bind plain_rebind");
         let set_ws = src
             .find("sessions.set_workspace(session_id, new_path.clone())")
             .expect("set_workspace must exist");
         assert!(
-            plain < clear_plain && clear_plain < set_ws,
-            "the approval-memory clear must sit at the binding commit point, before any metadata step can fail"
+            codex_lane < codex_fence && codex_fence < codex_publish,
+            "the codex binding publish must run inside the publication fence"
         );
         assert!(
-            clear_plain < clear_codex && clear_codex < set_ws,
-            "both moved populations must clear at the commit point"
+            plain_rebind_let < plain_publish,
+            "the plain publish must run inside the publication fence closure"
+        );
+        assert!(
+            codex_fence < plain_fence && plain_fence < set_ws,
+            "both moved populations must fence at the binding commit point, before any metadata step can fail"
+        );
+        let plain_affected = src[plain_fence..]
+            .find("outcome.rebound.iter().map(|(sid, _)| sid.clone()).collect()")
+            .expect("the plain fence must advance/clear the plain rebound set");
+        let codex_affected = src[codex_fence..plain_fence]
+            .find("outcome.affected.iter().map(|(sid, _)| sid.clone()).collect()")
+            .expect("the codex fence must advance/clear the codex affected set");
+        assert!(
+            codex_fence + codex_affected > codex_publish,
+            "the codex fence must derive its moved set from the publish outcome"
+        );
+        assert!(
+            plain_fence + plain_affected > plain_publish,
+            "the plain fence must derive its moved set from the publish outcome"
         );
         assert!(
             !src.contains("clear_approval_memory_on_identity_switch("),
@@ -5045,28 +5065,9 @@ mod tests {
             !src.contains("if let Some(previous_workspace) = &pre_sync_workspace {"),
             "the Ok-arm gate for the removed clear must be gone with it"
         );
-        let helper = src
-            .find("fn clear_approval_memory_for_rebound_sessions<")
-            .expect("the helper must exist");
-        let helper_body = &src[helper..];
-        // Identity switch = generation boundary (review 5764675531): the
-        // helper must advance the session's workspace generation AND clear the
-        // session shares while PRESERVING that generation — a plain
-        // clear_session would reset the era and un-fence pre-rebind decisions,
-        // and clearing before advancing would re-arm the fence so a second
-        // rebind's Some(1) cards compared equal again.
-        let advance_call = helper_body
-            .find("pending_approvals::advance_workspace_generation(session_id)")
-            .expect("the helper must advance the workspace generation at the commit point");
-        let clear_call = helper_body
-            .find("pending_approvals::clear_session_preserving_generation(")
-            .expect("the helper must clear while preserving the advanced generation");
-        let loop_head = helper_body
-            .find("for session_id in rebound_ids {")
-            .expect("the helper must iterate the moved ids");
         assert!(
-            loop_head < advance_call && advance_call < clear_call,
-            "the helper must advance-then-clear inside the moved-id iteration"
+            !src.contains("fn clear_approval_memory_for_rebound_sessions<"),
+            "the two-step helper must be gone: publishes and their identity advance/clear share one fence"
         );
     }
 

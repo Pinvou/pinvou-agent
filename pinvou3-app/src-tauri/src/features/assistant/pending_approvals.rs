@@ -15,13 +15,16 @@
 //! `clear_pending` 兜底清空（取消/中断时可能没有逐条决策）；授予/拒绝是
 //! 会话级记忆，**跨 turn 存活**（与 TUI per-session 审批缓存一致：TUI 只在
 //! 换会话/换工作区时清），宿主侧的对应清理点是会话删除（lib.rs 会话清理
-//! 处理器里的 `clear_session`）。目录重绑的绑定提交点（projects.rs 的
-//! `clear_approval_memory_for_rebound_sessions`）对每个被移动会话推进
+//! 处理器里的 `clear_session`）。目录重绑的绑定提交点（projects.rs 经
+//! [`commit_rebind_publication`]
+//! 发布栅栏）对每个被移动会话推进
 //! **工作区代**（[`advance_workspace_generation`]）并做保留代清理
 //! （[`clear_session_preserving_generation`]，评审 JensenChen28 5764675531
 //! 第一项，机制自 round-2/3 形状按本线重落）：请求/决策写入携带发起时刻的
 //! 代，与已提交代失配即在锁内拒绝——「换工作区即清」之外再加一道版本边界，
-//! 迟交的旧目录决策写不进新目录的记忆。
+//! 迟交的旧目录决策写不进新目录的记忆。绑定写入与推进/清理同处一次临界区
+//! （zhuowp 5780927743 P2 单一身份边界），spawn 侧身份捕获见
+//! [`capture_workspace_identity`]。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -137,7 +140,7 @@ pub fn workspace_generation(session_id: &str) -> Option<u64> {
 }
 
 /// 推进会话的已提交工作区代，返回推进后的值。调用点是重绑的绑定提交点
-/// （projects.rs 的 `clear_approval_memory_for_rebound_sessions`，紧邻保留
+/// （发布栅栏 [`commit_rebind_publication`] 内部同款临界区逻辑，紧邻保留
 /// 代清理）：绑定提交即身份切换，旧目录纪元自此关闭——携带旧代的请求卡
 /// 与决策写入在锁内失配被拒。缺失条目视作 0 起步（首次重绑 → 1）。
 pub fn advance_workspace_generation(session_id: &str) -> u64 {
@@ -156,28 +159,32 @@ pub fn advance_workspace_generation(session_id: &str) -> u64 {
 /// 本次 spawn），不无界自旋。
 const CAPTURE_IDENTITY_ATTEMPTS: usize = 4;
 
-/// Spawn 侧工作区身份的**一致性捕获**（检测-重试协议，评审 5768924092 /
-/// 5768948485 P2-a 第二轮）。[`workspace_generation`] 与
-/// `SessionStore::session_roots` 分属两把锁，且两把锁都不跨调用持有：
-/// 单次「读代 → 解析 roots」之间没有共同临界区，无 await 也挡不住其他
-/// 线程——重绑提交点（projects.rs 的
-/// `clear_approval_memory_for_rebound_sessions`）在另一个线程**先落绑定
-/// 写入（换根）再推进代**（swap→advance 次序是该函数注释的既有契约），
-/// 夹进读取窗口即得到撕裂快照：目录 runtime 与代章不同纪元，卡带 B 代
-/// 通过决策比较，A 目录的授权/拒绝写进 B。
+/// Spawn 侧工作区身份的**一致性捕获**（单一身份边界，评审 zhuowp
+/// 5780927743 P2；检测-重试比对自评审 5768924092 / 5768948485 P2-a 第二轮
+/// 保留）。代读取与 roots 解析分属两把锁（approval store 锁与
+/// `SessionStore` 读路径），若无共同临界区，「读代 → 解析 roots」之间
+/// 夹进 rebind 提交即得到撕裂快照：目录 runtime 与代章不同纪元，卡带 B 代
+/// 通过决策比较，A 目录的授权/拒绝写进 B；且在「新根已发布、代未推进」
+/// 区间里，代次盲的会话授予查找还能复用旧目录的授予。检测-重试只能把
+/// 撕裂窗口收窄，收不掉 swap→advance 两步提交自身的区间。
 ///
-/// 协议：`gen_a = workspace_generation()` → `roots = resolve()` →
-/// `gen_b = workspace_generation()`；`gen_a != gen_b` 判定读取窗口内发生
-/// 了 rebind advance，整轮作废重试。`expected` 是 engine 侧**先前**解析、
-/// 已喂给 `engine_config.workspace` 的同一份 roots；`roots != expected`
-/// 同按撕裂窗口处理——swap→advance 次序下 advance 落地前的「新根+旧代」
-/// 配对代比较检不出来，只能靠 roots 一致性核对拒收（两个方向都拒：
-/// 「旧根+新代」由代比较拒，「新根+旧代」由 roots 比较拒）。协议假设即
-/// 上述 projects.rs 既有契约；残差如实披露：advance 尚未落地时本轮按
-/// roots 漂移重试，全部尝试耗尽 → `Err`，由调用点拒绝本次 spawn（此时
-/// `engine_config.workspace` 仍是旧根，放行即缺陷本身；fail-closed 重复
-/// 询问优于跨纪元写记忆，且既有行为本就如此——advance 前的决策写入同样
-/// 被锁内失配拒绝）。
+/// 本版协议把临界区本身补上：`gen_a` 读取、`resolve()`（SessionStore 读
+/// 路径，加锁次序 approval store → SessionStore）、`gen_b` 读取同处**一次
+/// store 锁临界区**，与重绑发布栅栏（[`commit_rebind_publication`]，同序
+/// 持锁）互斥——捕获要么看到完整的提交前态（旧根+旧代+旧缓存），要么看
+/// 到完整的提交后态（新根+新代+缓存已清），两步提交的中间态不可观测，
+/// 「已发布新根、审批记忆未失效」区间随之消失。
+///
+/// 窗口内比对保留作纵深防御：`gen_a != gen_b` 或 `roots != expected`
+/// （engine 侧**先前**解析、已喂给 `engine_config.workspace` 的同一份
+/// roots——若 rebind 完整落在 engine 侧解析与本次捕获之间，expected 已是
+/// 旧值而捕获只能读到新态）都按撕裂窗口整轮作废重试；全部尝试耗尽 →
+/// `Err`，由调用点拒绝本次 spawn（此时 `engine_config.workspace` 仍是旧
+/// 根，放行即缺陷本身；fail-closed 重复询问优于跨纪元写记忆）。
+///
+/// `resolve` 闭包在 store 锁内执行：闭包体只允许走 SessionStore / bridge
+/// 读路径（加锁次序的下游），不得回调本模块任何取锁函数（std Mutex 不可
+/// 重入，嵌套即自锁）。
 ///
 /// 返回 `(roots, gen_b)`：roots 仅用于协议比对（与 `expected` 相等才被
 /// 接受），调用点的实际运行目录仍取其先前构造的 workspace；`gen_b` 即
@@ -188,18 +195,21 @@ pub fn capture_workspace_identity<T: PartialEq>(
     resolve: impl Fn() -> T,
 ) -> Result<(T, Option<u64>), String> {
     for _ in 0..CAPTURE_IDENTITY_ATTEMPTS {
-        let generation_before = workspace_generation(session_id);
-        let roots = resolve();
-        let generation_after = workspace_generation(session_id);
+        let (generation_before, roots, generation_after) = with_store(|store| {
+            let generation_before = store.workspace_generations.get(session_id).copied();
+            let roots = resolve();
+            let generation_after = store.workspace_generations.get(session_id).copied();
+            (generation_before, roots, generation_after)
+        });
         if generation_before != generation_after {
-            // 代在读取窗口内被推进：rebind 的绑定提交点落进两次读取之间，
-            // 整轮快照撕裂，作废重试。
+            // 纵深防御：同一临界区内代不可能变化（重绑发布栅栏持同一把
+            // 锁）；此臂只防未来有人把读取拆回锁外，整轮作废重试。
             continue;
         }
         if roots != *expected {
-            // 代未推进但 roots 相对 engine 侧已解析值漂移：swap 已落地、
-            // advance 尚未落地的「新根+旧代」撕裂配对，同按撕裂窗口作废
-            // 重试。
+            // 代一致但 roots 相对 engine 侧已解析值漂移：rebind 提交完整
+            // 落在 engine 侧解析与本捕获之间（expected 旧、捕获新），同按
+            // 撕裂窗口作废重试（耗尽即 fail-closed）。
             continue;
         }
         return Ok((roots, generation_after));
@@ -210,6 +220,58 @@ pub fn capture_workspace_identity<T: PartialEq>(
          {CAPTURE_IDENTITY_ATTEMPTS} attempts; refusing this spawn \
          (fail-closed) — resend the request once the rebind settles"
     ))
+}
+
+/// 重绑发布栅栏（单一身份边界，评审 zhuowp 5780927743 P2）：把**绑定写入**
+/// （SessionStore / codex 索引的换根发布）与**同会话的身份推进 + 审批记忆
+/// 清理**（advance + preserve-generation clear）纳入 approval store 锁的
+/// **同一次临界区**。此前两步提交（先发布新根、后 advance+clear）留有
+/// 「新根已发布、审批记忆未失效」区间：该区间内启动的实例两次代读一致、
+/// expected 与 resolved roots 同指新目录，检测-重试协议放行，而代次盲的
+/// 会话授予查找还能复用旧目录的授予——缓存决策逃过失效窗口。
+///
+/// 与 [`capture_workspace_identity`]（同一把锁、同序）互斥后区间不可观测：
+/// 捕获要么完整看到提交前态，要么完整看到提交后态（新根+新代+授予已清，
+/// 旧目录授予无从复用）。加锁次序全程 approval store → 下游
+/// （SessionStore / codex section / fs）：锁序审计（本轮）确认
+/// sessions / codex_acp / bridge 全域无任何持下游锁回调本模块的路径，无
+/// 反向次序、无死锁。栅栏持锁期间审批面短暂停顿＝重绑自身临界区的时长
+/// （与评审处方的 publication/admission 协调一致）；代价是显式的，收益是
+/// 身份切换的原子性。
+///
+/// `publish` 在锁内执行（只允许下游读/写，不得回调本模块）；`affected_ids`
+/// 从发布结果取出被移动会话，逐个 advance + 保留代清理（顺序与既有契约
+/// 一致：先推进后代存活，再清理，迟交旧代写入永远失配）。返回 `publish`
+/// 的结果供调用方继续（报告、metadata 循环等）。
+pub fn commit_rebind_publication<R>(
+    publish: impl FnOnce() -> R,
+    affected_ids: impl FnOnce(&R) -> Vec<String>,
+) -> R {
+    with_store(|store| {
+        let result = publish();
+        for session_id in affected_ids(&result) {
+            // 与 projects.rs 既有契约同序：先推进（B 目录纪元的版本边界），
+            // 再保留代清理（回收挂起卡 / 授予 / 拒绝份额）。顺序不可倒置，
+            // 见 [`advance_workspace_generation`] 与
+            // [`clear_session_preserving_generation`] 的文档。
+            store.generation = store.generation.wrapping_add(1);
+            let next = store
+                .workspace_generations
+                .entry(session_id.clone())
+                .or_insert(0);
+            *next = next.wrapping_add(1);
+            store.by_session.remove(&session_id);
+            store.grants.retain(|_, sessions| {
+                sessions.remove(&session_id);
+                !sessions.is_empty()
+            });
+            store.denials.retain(|_, sessions| {
+                sessions.remove(&session_id);
+                !sessions.is_empty()
+            });
+        }
+        result
+    })
 }
 
 /// 未加栅格的摘除助手（round-8 起 `decide_approval` 走 [`remove_fenced`]，
@@ -363,7 +425,7 @@ pub fn clear_session(session_id: &str) {
 }
 
 /// 身份切换清理（重绑绑定提交点的
-/// `clear_approval_memory_for_rebound_sessions`）：回收挂起卡、授予、拒绝的
+/// `commit_rebind_publication` 发布栅栏）：回收挂起卡、授予、拒绝的
 /// 存储份额，但**保留工作区代**。这是与 [`clear_session`] 的唯一差别，也是
 /// 评审 5764675531 第一项的修复点：若把代一并清掉，会话回落「无代」，绑定
 /// 提交点推进前盖 None 代的旧决策重新与新状态相等——旧授予复活、迟交的
@@ -1351,58 +1413,167 @@ mod tests {
         clear_session(&session);
     }
 
-    /// 捕获协议 —— **窗口内 advance**（模拟另一线程的重绑提交点落在
-    /// gen_a 与 gen_b 之间）：首轮代前后失配被检出、整轮作废；重试轮闭包
-    /// 不再推进 → 捕获成功。返回的 gen 是推进后的新代（推进是既成事实，
-    /// 协议只保证「代与 roots 同窗一致」），且重试轮数证明撕裂轮没有被
-    /// 静默接受——变异：删掉 gen_a != gen_b 比较臂，本测试的轮数断言红
-    /// （首轮撕裂快照会被直接放行）。
+    /// 单一身份边界（评审 zhuowp 5780927743 P2）—— **头号回归**：重绑
+    /// 发布进行中（绑定写入已开始、advance+clear 尚未落地）发起的全新
+    /// spawn 捕获不得观测中间态。此前两步提交在该区间放行捕获（新根 +
+    /// 旧代一致、代次盲授予查找可复用旧目录授予）；栅栏化后捕获与发布
+    /// 持同一把 store 锁，发布阻塞期间捕获只能等——发布完成后捕获看到
+    /// 的必然是**完整提交后态**：新根 == expected、代已推进、旧目录授予
+    /// 已清。变异（红）：把 fence 内的 advance+clear 拆回锁外（或删除
+    /// 清理），本测试的「发布阻塞期间捕获未完成」探测或授予已清断言红。
     #[test]
-    fn forkguard_capture_identity_retries_advance_inside_window() {
+    fn forkguard_capture_during_publication_waits_and_sees_full_post_commit_state() {
+        use std::sync::mpsc;
         let _registry = test_registry_lock();
-        let session = isolate("capture-window-advance");
-        let expected = "A-root".to_string();
-        let first_round = std::cell::Cell::new(true);
-        let resolves = std::cell::Cell::new(0usize);
-        let (roots, generation) = capture_workspace_identity(&session, &expected, || {
-            resolves.set(resolves.get() + 1);
-            // 首轮模拟另一线程的重绑提交点落进读取窗口：resolve 执行时
-            // 推进代（gen_a 读旧值、gen_b 读新值 → 整轮撕裂）。
-            if first_round.get() {
-                first_round.set(false);
-                advance_workspace_generation(&session);
-            }
-            expected.clone()
-        })
-        .expect("窗口内 advance 首轮检出后，重试轮必须成功");
-        assert_eq!(roots, expected, "重试轮返回的 roots 与 expected 一致");
+        let session = isolate("capture-fence-post");
+        remember_grant(&session, "old-root-grant", None);
+        assert!(session_granted(&session, "old-root-grant"));
+        let new_root = "B-root".to_string();
+        let (publish_started, start_rx) = mpsc::channel::<()>();
+        let (release_publish, release_rx) = mpsc::channel::<()>();
+        let (fence_done, fence_done_rx) = mpsc::channel::<()>();
+        let sid = session.clone();
+        let fence = std::thread::spawn(move || {
+            commit_rebind_publication(
+                || {
+                    publish_started.send(()).expect("signal publish start");
+                    // 模拟绑定写入耗时的窗口：advance+clear 尚未落地。
+                    release_rx.recv().expect("release");
+                },
+                move |()| vec![sid],
+            );
+            fence_done.send(()).expect("signal fence done");
+        });
+        start_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("publish started");
+        let (capture_done, capture_done_rx) =
+            mpsc::channel::<Result<(String, Option<u64>), String>>();
+        let sid = session.clone();
+        let expected = new_root.clone();
+        let capture = std::thread::spawn(move || {
+            let outcome = capture_workspace_identity(&sid, &expected, || expected.clone());
+            capture_done.send(outcome).expect("signal capture done");
+        });
+        // 头号探测：发布窗口内捕获不得完成（修复前此处会放行「新根+旧代+
+        // 授予仍在」的中间态）。探测窗过后仍未完成 = 捕获被栅栏挡住。
+        assert!(
+            capture_done_rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "capture must not complete while the rebind publication holds the store lock"
+        );
+        release_publish.send(()).expect("release publish");
+        fence.join().expect("fence thread");
+        fence_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("fence completed");
+        let (roots, generation) = capture_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("capture completes after the fence releases")
+            .expect("post-commit capture must accept the new roots");
+        capture.join().expect("capture thread");
+        assert_eq!(
+            roots, new_root,
+            "post-commit capture resolves the new roots"
+        );
         assert_eq!(
             generation,
             Some(1),
-            "返回代为推进后的新代（同窗一致的现值，不是撕裂轮的旧值）"
+            "post-commit capture stamps the advanced generation, not the stale one"
         );
-        assert_eq!(
-            resolves.get(),
-            2,
-            "撕裂轮必须整轮作废重试（一次检出 + 一次干净轮），不得静默接受首轮"
+        assert!(
+            !session_granted(&session, "old-root-grant"),
+            "the old-root grant must be gone once capture can observe the new roots (no stale grant reuse)"
         );
         clear_session(&session);
     }
 
-    /// 捕获协议 —— **持续 advance**（每一轮的重绑提交点都落进读取窗口，
-    /// 现实对应重绑风暴期间发起的 spawn）：重试上限用尽 → Err，fail-closed
-    /// 拒绝本次 spawn——报错措辞说明重绑进行中无法一致捕获工作区身份。
-    /// 变异：删掉重试上限的 Err 臂（耗尽后照常返回），本测试红。
+    /// 单一身份边界的另一侧：捕获先持锁（resolve 阻塞模拟 SessionStore
+    /// 读路径耗时），发布栅栏只能等——捕获完成后看到的必然是**完整提交
+    /// 前态**（旧根+旧代+授予仍在），发布随后才落地并清理。两个方向合起
+    /// 来钉死「中间态不可观测」。
+    #[test]
+    fn forkguard_capture_before_publication_sees_full_pre_commit_state() {
+        use std::sync::mpsc;
+        let _registry = test_registry_lock();
+        let session = isolate("capture-fence-pre");
+        remember_grant(&session, "pre-root-grant", None);
+        assert!(
+            session_granted(&session, "pre-root-grant"),
+            "seed grant must be live"
+        );
+        let old_root = "A-root".to_string();
+        let (resolve_started, start_rx) = mpsc::channel::<()>();
+        let (release_resolve, release_rx) = mpsc::channel::<()>();
+        let (capture_done, capture_done_rx) =
+            mpsc::channel::<Result<(String, Option<u64>), String>>();
+        let sid = session.clone();
+        let expected = old_root.clone();
+        let capture = std::thread::spawn(move || {
+            let outcome = capture_workspace_identity(&sid, &expected, || {
+                resolve_started.send(()).expect("signal resolve start");
+                release_rx.recv().expect("release");
+                expected.clone()
+            });
+            capture_done.send(outcome).expect("signal capture done");
+        });
+        start_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("resolve started");
+        let (fence_done, fence_done_rx) = mpsc::channel::<()>();
+        let sid = session.clone();
+        let fence = std::thread::spawn(move || {
+            commit_rebind_publication(|| (), move |()| vec![sid]);
+            fence_done.send(()).expect("signal fence done");
+        });
+        assert!(
+            fence_done_rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the publication fence must wait for an in-flight capture to release the store lock"
+        );
+        release_resolve.send(()).expect("release resolve");
+        let (roots, generation) = capture_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("capture completes")
+            .expect("pre-commit capture must accept the old roots");
+        capture.join().expect("capture thread");
+        assert_eq!(roots, old_root, "pre-commit capture resolves the old roots");
+        assert_eq!(
+            generation, None,
+            "pre-commit capture stamps the pre-commit generation"
+        );
+        // 注：捕获完成与断言之间存在固有的竞态——栅栏在捕获释放锁的瞬间即
+        // 获得锁并清理授予，主线程此刻再读授予可能读到清理后的状态，无法无
+        // 缝观察「提交前授予仍在」。授予存活的前态由上方种子断言与本测试的
+        // (旧根, None 代) 捕获结果共同锚定；「授予与发布同临界区清理」由
+        // post-commit 侧用例的全套断言钉死。
+        fence.join().expect("fence thread");
+        fence_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("fence completes after capture releases");
+        assert!(
+            !session_granted(&session, "pre-root-grant"),
+            "the fence clears the seeded grant once it proceeds (post-commit state)"
+        );
+        clear_session(&session);
+    }
+
+    /// 捕获协议 —— **stale expected**（rebind 提交完整落在 engine 侧
+    /// 早期 roots 解析与本捕获之间：expected 已是旧值，捕获只能读到新
+    /// 态——单一临界区不再有窗口内撕裂，此臂拒收的是「提交先于捕获但
+    /// engine_config.workspace 仍是旧根」的既成漂移）：重试上限用尽 →
+    /// Err，fail-closed 拒绝本次 spawn——报错措辞说明重绑进行中无法一致
+    /// 捕获工作区身份。变异：删掉重试上限的 Err 臂（耗尽后照常返回），
+    /// 本测试红。
     #[test]
     fn forkguard_capture_identity_exhausts_under_persistent_advance() {
         let _registry = test_registry_lock();
         let session = isolate("capture-persistent-advance");
         let expected = "A-root".to_string();
-        let error = capture_workspace_identity(&session, &expected, || {
-            advance_workspace_generation(&session);
-            expected.clone()
-        })
-        .expect_err("持续撕裂必须耗尽重试并 Err（fail-closed 拒绝 spawn）");
+        let error = capture_workspace_identity(&session, &expected, || "B-root".to_string())
+            .expect_err("持续漂移必须耗尽重试并 Err（fail-closed 拒绝 spawn）");
         assert!(
             error.contains("rebind is in flight"),
             "报错必须说明重绑进行中无法一致捕获身份：{error}"
@@ -1410,19 +1581,18 @@ mod tests {
         clear_session(&session);
     }
 
-    /// 捕获协议 —— **roots 漂移**（swap→advance 次序下 advance 落地前的
-    /// 「新根+旧代」撕裂配对：代比较检不出来，只能靠 roots 相对 engine
-    /// 侧已解析值的核对拒收）。漂移一轮后回到 expected → 检出 + 重试
-    /// 成功；持续漂移（rebind 已完全落地：旧 expected 永不再现）→ 耗尽
-    /// → Err。两个撕裂方向都被拒：本测试锁「新根+旧代」，窗口 advance
-    /// 用例锁「旧根+新代」。变异：删掉 roots 比较臂，两条断言红。
+    /// 捕获协议 —— **roots 漂移重试机制**（roots 相对 engine 侧已解析值
+    /// 的核对与整轮作废重试）：漂移一轮后回到 expected → 检出 + 重试成功；
+    /// 持续漂移 → 耗尽 → Err。单一临界区下窗口内撕裂已不可构造（栅栏互
+    /// 斥，见上方两个 serialization 用例），本测试钉的是比对臂与重试机制
+    /// 本身。变异：删掉 roots 比较臂，两条断言红。
     #[test]
     fn forkguard_capture_identity_rejects_roots_drift() {
         let _registry = test_registry_lock();
         let session = isolate("capture-roots-drift");
         let expected = "A-root".to_string();
-        // 漂移一轮：resolve 返回换根后的新 roots（代未推进——advance 尚未
-        // 落地的真实形态），次轮回到 expected → 重试成功。
+        // 漂移一轮：resolve 返回与 expected 不符的 roots，次轮回到 expected
+        // → 重试成功（重试机制不死锁、不提前放弃）。
         let first_round = std::cell::Cell::new(true);
         let resolves = std::cell::Cell::new(0usize);
         let (roots, generation) = capture_workspace_identity(&session, &expected, || {

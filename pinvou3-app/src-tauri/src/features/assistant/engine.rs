@@ -1947,21 +1947,20 @@ impl AppEngine {
 
         let workspace = engine_config.workspace.clone();
         // 本实例的发起身份（目录 + 工作区代）必须构成**同一次一致的快照**
-        // （评审 JensenChen28 5768924092、zhuowp 5768948485 P2-a 第二轮）：
-        // 代读取（pending_approvals store 锁）与 roots 解析（SessionStore
-        // 读锁）分属两把锁、都不跨调用持有——上方 roots 解析到本捕获点
-        // 隔着 legacy 清理 / config 构造 / 日志约 90 行同步代码，
-        // 无 await 也挡不住另一线程的重绑提交点（projects.rs
-        // `clear_approval_memory_for_rebound_sessions` 先换根再推进代），
-        // 单次现读会把「A 目录 runtime + B 代章」钉成一张卡，A 的授权/
-        // 拒绝经决策比较写进 B。此前一版注释宣称「同一同步块 = 同一次
-        // 身份快照」是不准确的（无共同锁的两次读取不构成原子快照），本轮
-        // 换成检测-重试协议：`capture_workspace_identity` 在捕获窗口前后
-        // 各读一次代，窗口内检出代推进或 roots 相对 `identity_expected_roots`
-        // （即喂给 engine_config.workspace 的这份）漂移就整轮作废重试，
-        // 两个撕裂方向（旧根+新代 / 新根+旧代）都被拒；重试耗尽 →
-        // fail-closed 拒绝本次 spawn（协议假设 swap 先于 advance 为
-        // projects.rs 既有契约；残差披露见该函数 doc）。值随 spawn 传给
+        // （评审 JensenChen28 5768924092、zhuowp 5768948485 P2-a 第二轮，
+        // 单一身份边界见 zhuowp 5780927743 P2）：`capture_workspace_identity`
+        // 把两次代读取与 roots 解析（下方闭包，SessionStore 读路径）放进
+        // **同一次 pending_approvals store 锁临界区**，与重绑发布栅栏
+        // （projects.rs 经 `commit_rebind_publication`，同序持锁）互斥——
+        // 捕获要么完整看到提交前态（旧根+旧代），要么完整看到提交后态
+        // （新根+新代+授予已清），两步提交的中间态（新根已发布、审批记忆
+        // 未失效）不可观测，区间内启动的实例无从复用旧目录授予。闭包内
+        // `roots != identity_expected_roots`（上方解析、喂给
+        // engine_config.workspace 的同一份）或代前后失配 → 整轮作废重试；
+        // 重试耗尽 → fail-closed 拒绝本次 spawn（覆盖「rebind 完整落在
+        // 上方解析与本捕获之间」的既成漂移；残差披露见该函数 doc）。闭包
+        // 只允许 SessionStore/bridge 读路径（锁序下游），不得回调
+        // pending_approvals 取锁函数（std Mutex 不可重入）。值随 spawn 传给
         // forwarder，async body 不再现读（见 forwarder 侧参数与 source
         // pin）；forwarder 捕获点经 helper 的钉子锁住本接线形状。
         let (_, instance_workspace_generation) =
