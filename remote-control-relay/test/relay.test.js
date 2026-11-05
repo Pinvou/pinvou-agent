@@ -247,10 +247,11 @@ function waitForRawClose(sock, timeoutMs = 3000) {
 }
 
 async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl, wsOptions = {}) {
-  // wsOptions 让个别测试能给桌面 socket 配 maxPayload:两道 frame_too_large
-  // 门测试用它把桌面入站上限配成真实桌面界限,使「桌面不受扰」断言有
-  // 牙齿——若被拒帧仍被转发,桌面侧 1009 关闭即翻红(默认 100 MiB
-  // maxPayload 下该断言结构性不可观察,Round-19 复审)。
+  // wsOptions 让个别测试能给桌面 socket 配 maxPayload:三道 frame_too_large
+  // 门测试(两道超界 + 近界限正控)用它把桌面入站上限配成真实桌面界限,
+  // 使「桌面不受扰」断言有牙齿——若被拒帧仍被转发,桌面侧 1009 关闭即
+  // 翻红(默认 100 MiB maxPayload 下该断言结构性不可观察,Round-19 复审;
+  // 近界限腿 round-20 复审加入,Round-21 复审记数)。
   const ws = await openSocket(url, wsOptions);
   const registered = nextMessage(ws, "desktop_endpoint_registered");
   ws.send(JSON.stringify({

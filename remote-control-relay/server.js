@@ -1401,8 +1401,12 @@ function forwardAuthenticatedMessage(ws, msg) {
     } catch (error) {
       // Round-20 复审(S08):防御路径此前静默——与其它运行时错误同一
       // [relay-error] 纪律补一行固定前缀日志(该路径今日不可达,一旦
-      // 触发必须能在日志/健康计数侧看见)。
-      console.error(`[relay-error] ${error && error.message ? error.message : error}`);
+      // 触发必须能在日志/健康计数侧看见)。Round-21 复审:改为固定词表
+      // token,不插值 error.message——encodeFrame 对 JSON.parse 产物不可
+      // 抛(throwing getter/BigInt/循环引用均造不出),但 frame.js 的复
+      // 用面不排除非 parse 数据;V8 循环结构错误的文案会内嵌用户属性名,
+      // 固定 token 让本行在结构上免于日志伪造(与 :1471/:1335 同款)。
+      console.error("[relay-error] forward_reencode_refused");
       send(ws, {
         v: 2,
         type: "error",

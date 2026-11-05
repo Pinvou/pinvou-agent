@@ -235,7 +235,7 @@ after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
 | Code | Trigger |
 | --- | --- |
 | `bad_json` | A text frame is not valid JSON, repeats the `v` key in any object, or nests any value more than 128 levels deep. |
-| `bad_message` | The parsed frame is not a JSON object. |
+| `bad_message` | The parsed frame is not a JSON object, or a web→desktop frame could not be re-encoded for forwarding (the defensive re-encode catch; the frame is refused and both sockets stay up). |
 | `binary_unsupported` | A binary WebSocket frame arrived. |
 | `frame_too_large` | An authenticated web frame whose forwarded encoding — the exact JSON the Relay would hand the desktop, envelope included — exceeds the desktop's inbound frame bound (4 MiB − 64 KiB). The connection stays open; only the frame is refused. Desktop→web frames are not measured against this bound — the browser has no matching cap. |
 | `unsupported_protocol_version` | `v` is missing or is not `2`. |
@@ -268,7 +268,7 @@ endpoint replaced" or "endpoint replaced"), and `4003` when revoke or TTL
 expiry tears down the affected client ("endpoint revoked" or "endpoint
 expired"). A client whose socket the Relay terminates abruptly after the WebSocket
 handshake (frame high-water mark, unserializable frame, heartbeat liveness
-kill), or a receiver protocol violation on a poisoned frame stream) observes
+kill, or a receiver protocol violation on a poisoned frame stream) observes
 the implicit `1006` abnormal-closure code on its side. A
 hostile upgrade is rejected before any WebSocket exists: the peer sees a
 failed HTTP upgrade (a 4xx/429/503 banner or a bare destroy), not `1006`.
