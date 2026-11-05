@@ -86,10 +86,13 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   page re-verified 2026-11-03: v2.5-pro → v2.6-pro, v2.5 → v2.6-flash) —
 //   the dead v2.5 catalog rows are removed in this refresh.
 // - kimi: kimi-k3.1-pro (2026-10-23) is the official flagship and migration
-//   target, but the preset default stays kimi-k3: the base's tiered-effort
-//   route only learns the bare K3 ids, and K3.1 Pro's thinking cannot be
-//   disabled (the generic off/high ladder would risk wire 400s). See the
-//   kimi group.
+//   target, but the preset default stays kimi-k3 for now. The historical
+//   blocker (the generic off/high ladder risking wire 400s on K3.1) no
+//   longer applies — this refresh removed the ladder from every K3.1 row
+//   entirely — so the flip is a deliberate product decision to land with
+//   re-verified end-to-end behavior, not part of a data refresh (revisit
+//   together with the bare-row restore once the pinned child carries the
+//   replay repair, upstream CodeWhale#137). See the kimi group.
 const MODEL_PRESET_DEFS = {
   local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
   deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-flash' },
@@ -114,10 +117,12 @@ const MODEL_PRESET_DEFS = {
 const PROVIDER_KIND_CODING_PLAN = 'coding_plan';
 const PROVIDER_KIND_OFFICIAL_API = 'official_api';
 const PROVIDER_KIND_CUSTOM = 'custom';
-// 模型拼写约定：凡底座（CodeWhale）route 目录收录的模型，列表项 `model` 一律
-// 优先采用底座 models_dev.bundled.json 目录行的原样拼写，不套大小写规则；
-// 自定义兼容端点（bigmodel.cn Coding Plan、各开放平台、腾讯/阿里 Plan）与
-// modelstudio 目录（qwen_token_plan）的行则保留各自的全小写 wire id。
+// Model spelling convention: for models collected in the base (CodeWhale)
+// route catalog, list items' `model` uses the base models_dev.bundled.json
+// catalog row's exact spelling verbatim, with no case rules applied;
+// custom-compatible-endpoint rows (bigmodel.cn Coding Plan, the various open
+// platforms, Tencent/Alibaba plans) and the modelstudio catalog
+// (qwen_token_plan) keep their own all-lowercase wire ids.
 // z.ai direct's official wire id is confirmed all-lowercase (docs.z.ai API
 // enum, checked 2026-09), so its catalog rows use lowercase and keep the
 // uppercase legacy; the base bundled assets still hold the uppercase rows
@@ -460,9 +465,12 @@ const MODEL_CATALOG = {
         // assistant reasoning_content and the Kimi Code gateway answers
         // 400 (error-reference #missing-reasoning-content-field) —
         // review 5779604267. The prefixed kimi-k3.1-pro[-highspeed] rows
-        // in the China/Global groups stay (they ride the kimi-k3 fallback
-        // and are outside the finding). Restore these two rows once the
-        // gitlink's child learns the bare spellings.
+        // in the China/Global groups stay (they replay assistant
+        // reasoning_content via the generic `kimi-` prefix arm of
+        // `model_supports_reasoning` plus Moonshot's membership in the
+        // replay-accepting providers, so they sit outside the finding).
+        // Restore these two rows once the gitlink's child learns the bare
+        // spellings.
         { model: 'k3', imageCapable: true, title: 'k3', desc: 'K3 长上下文模型' },
         { model: 'k3-256k', imageCapable: true, title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
         { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: 'K2.8 Preview，最高 1M' },
@@ -534,10 +542,12 @@ const MODEL_CATALOG = {
       // new users 2026-10-31 and the official models page plans to take all
       // K2 models offline "by the end of December 2026" — the K2 rows carry
       // the notice and will be re-checked at the next refresh. The preset
-      // default stays kimi-k3: the base's tiered-effort route only learns
-      // bare K3 ids, and K3.1 Pro's thinking cannot be disabled (the generic
-      // off/high ladder would risk wire 400s) — the default moves once the
-      // base covers K3.1 (upstream; see MODEL_PRESET_DEFS).
+      // default stays kimi-k3: the historical blocker (the generic off/high
+      // ladder risking wire 400s) no longer applies since this refresh
+      // removed the ladder from every K3.1 row — the flip is a deliberate
+      // product decision deferred to a re-verified change (revisit with the
+      // bare-row restore once the pinned child carries the replay repair;
+      // see MODEL_PRESET_DEFS).
       items: [
         { model: 'kimi-k3.1-pro', imageCapable: true, title: 'kimi-k3.1-pro', desc: '最新旗舰，原生视觉，1M 上下文' },
         { model: 'kimi-k3.1-pro-highspeed', imageCapable: true, title: 'kimi-k3.1-pro-highspeed', desc: '最新旗舰高速款' },
@@ -834,7 +844,9 @@ const MODEL_CATALOG = {
       // (announce 2469) and deepseek-v4-flash-0731 removal (announce 2496)
       // have no Alibaba equivalent. Gateway deployments are not verified one
       // by one, so glm/deepseek rows stay unannotated (image capability
-      // falls back to the same-id official-group rows). No official
+      // falls back to the same-id official-group rows where one exists — the
+      // glm rows do; the DeepSeek snapshot ids have no same-id row and
+      // resolve to Unknown). No official
       // per-model Responses API support list is published, so no protocol
       // claim is made on the deepseek rows.
       items: [

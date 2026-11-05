@@ -75,7 +75,9 @@ impl ImageInputMode {
 ///
 /// K3.1 spellings are deliberately NOT on this list (2026-11-04 round-4
 /// review): the documented K3-series contract is the top-level
-/// `reasoning_effort` ladder (low/high/max, default max) and the docs state
+/// `reasoning_effort` ladder (low/high/max; the omission default is
+/// endpoint-specific — `high` on the Kimi Code models-table lane, `max` per
+/// the models-overview platform wording) and the docs state
 /// the K2.x `thinking` parameter is not used ("不使用 K2.x 的 `thinking`
 /// 参数", platform.kimi.com/docs/api/chat), so omission is the
 /// documented-valid shape — the same shape the bridge send path resolves for

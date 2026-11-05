@@ -220,8 +220,10 @@ impl ModelPreset {
     /// Checked against the official docs on 2026-10-13 (previous full check
     /// 2026-09-28; the 2026-11-03 catalog refresh re-verified every value
     /// and kept them all — including kimi, which deliberately stays
-    /// kimi-k3 until the base learns the K3.1 exact route; synced in the
-    /// same batch as the frontend model-catalog.js
+    /// kimi-k3: the K3.1 rows carry no tier control, so the historical
+    /// ladder/400 blocker no longer applies and the default flip is a
+    /// deliberate product decision deferred to a re-verified change; synced
+    /// in the same batch as the frontend model-catalog.js
     /// MODEL_PRESET_DEFS). This table is the only hand-written Rust-side
     /// mirror, locked by `default_model_matches_vendor_docs_2026_10_13`.
     pub fn default_model(&self) -> &'static str {
