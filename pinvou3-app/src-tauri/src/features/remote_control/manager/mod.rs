@@ -5559,7 +5559,8 @@ mod tests {
     /// 测试无法构造),唯有的逐出行为钉经 helper 驱动,删除 begin 内的
     /// 接线(或把 `>=` 改成 `>`、或把调用挪到容量检查之后变死代码)全套
     /// 件保持绿(突变实证)。按本模块「helper 级测试钉不住接线点」的既
-    /// 有约定(mod.rs:5530)改用源钉:钉住 if 行与调用的逐字节形态及
+    /// 有约定(同 `rpc_request_lease_gate_is_wired_inside_the_admission_lock`
+    /// 的模块口径)改用源钉:钉住 if 行与调用的逐字节形态及
     /// 「先逐出、后容量门」的顺序。
     #[test]
     fn begin_session_download_wires_the_eviction_before_the_capacity_gate() {
@@ -6206,7 +6207,11 @@ mod tests {
     /// 内存失效已真实翻旗标/清 grant 后经 `?` 直接返回,无状态刷新——UI
     /// 滞留已授权显示到下一次无关状态推送(Round-19 NIT 已给 config-absent
     /// 畸形态补了同一 emit;本钉把损坏形态纳入同一纪律)。源钉:失败臂窗口
-    /// 内必须同时出现错误返回与 emit_status;删除 emit 即红。
+    /// 内必须同时出现错误返回与 emit_status;删除 emit 即红。Round-21
+    /// 复审修正:round-20 版本的窗口横跨 match 双臂,emit 断言被 Ok(None)
+    /// 臂的同类 emit 兜住——单删失败臂的 emit 全套件仍绿(分片双确认的
+    /// 旁路突变),修正为臂界窗(emit 落在 `Err(error) => {` 与
+    /// `return Err(error)` 之间,次序同验)后单删即红。
     #[test]
     fn revoke_strict_load_failure_re_emits_status_before_returning() {
         let source = include_str!("mod.rs");
@@ -6221,17 +6226,71 @@ mod tests {
         let load_end = body
             .find("validate_config(&config)")
             .expect("the readback match must be followed by validation");
-        let arm = &body[load_start..load_end];
+        let match_body = &body[load_start..load_end];
         assert!(
-            arm.contains("Err(error) => {"),
+            match_body.contains("Err(error) => {"),
             "the strict readback must still return its error: stop/revoke is a \
              recovery path and a corrupt config must not wedge it"
         );
+        let err_arm_start = match_body
+            .find("Err(error) => {")
+            .expect("the strict-load failure arm must exist");
+        let err_arm = &match_body[err_arm_start..];
+        let return_pos = err_arm
+            .find("return Err(error)")
+            .expect("the strict-load failure arm must return the error");
+        let err_body = &err_arm[..return_pos];
         assert!(
-            arm.contains("self.emit_status();"),
-            "the strict-load failure arm must re-emit status: the invalidation \
-             above already flipped the flag and destroyed grants, so the UI \
-             would hold a stale authorized row until an unrelated push"
+            err_body.contains("self.emit_status();"),
+            "the strict-load failure arm must re-emit status BEFORE returning: \
+             the invalidation above already flipped the flag and destroyed \
+             grants, so the UI would hold a stale authorized row until an \
+             unrelated push"
+        );
+    }
+
+    /// Round-19 复审 NIT 钉(round-21 复审补:该臂此前无任何钉,整块删除
+    /// 全套件保持绿):config 缺失但内存端点仍在的畸形态——失效块已真实
+    /// 翻旗标/清 grant,条件性补一次状态刷新,避免 UI 滞留已授权显示。
+    /// 源钉:Ok(None) 臂窗口内 `if endpoint_present {` 与其块内
+    /// emit_status 必须共存;删除条件块(或只删 emit)即红。
+    #[test]
+    fn revoke_missing_config_arm_emits_status_when_endpoint_present() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn revoke_host_workspace(")
+            .nth(1)
+            .expect("revoke_host_workspace must exist");
+        let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
+        let load_start = body
+            .find("let mut config = match load_config()")
+            .expect("the strict config readback must exist");
+        let load_end = body
+            .find("validate_config(&config)")
+            .expect("the readback match must be followed by validation");
+        let match_body = &body[load_start..load_end];
+        let ok_arm_start = match_body
+            .find("Ok(None) => {")
+            .expect("the config-absent arm must exist");
+        let ok_arm = &match_body[ok_arm_start..];
+        let return_pos = ok_arm
+            .find("return Ok(WebAccessInfo")
+            .expect("the config-absent arm must return the stopped payload");
+        let ok_body = &ok_arm[..return_pos];
+        let guard_pos = ok_body.find("if endpoint_present {").expect(
+            "the config-absent arm must conditionally refresh status when \
+                 an in-memory endpoint is still alive: the invalidation above \
+                 already flipped the flag, so the UI would hold a stale \
+                 authorized row until an unrelated push",
+        );
+        let guard_tail = &ok_body[guard_pos..];
+        let guard_end = guard_tail
+            .find("}")
+            .expect("the conditional refresh block must close");
+        assert!(
+            guard_tail[..guard_end].contains("self.emit_status();"),
+            "the conditional refresh must emit status inside the \
+             endpoint-present block"
         );
     }
 
