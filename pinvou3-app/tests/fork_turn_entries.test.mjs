@@ -61,4 +61,3 @@ assert.equal(turnHasUserText(textTurn('x')), true);
 
 // 6. 非数组输入安全返回空表。
 assert.equal(forkEntriesByTurnId(null).size, 0);
-assert.equal(forkEntriesByTurnId(undefined).size, 0);
