@@ -35,8 +35,29 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "agent",
     "load_skill",
     "request_user_input",
-    "revert_turn",
+    // Snapshot-based turn rollback is dead in Pinvou: `snapshots_enabled` is
+    // false (app-side code_checkpoints owns rewind), so every call fails with
+    // "0 pre-turn snapshots exist" after paying a one-time base side-repo
+    // init. Keeping it admitted would offer the model a permanently failing
+    // Required-approval tool, so it stays out of the allowlist.
     "todo_write",
+    // The spillover recovery contract: bash/Web overflow footers name
+    // `retrieve_tool_result` directly and `evidence_available` metadata
+    // auto-activates it next turn (base truncate.rs/web_run.rs/fetch_url.rs).
+    // Excluding it used to turn every large-output spill into a 1-2 step
+    // dead end (auto-activation rejected, tool_search scoped to the
+    // retained-out catalog, direct call permission-denied). It is a bounded
+    // read-only evidence reader — the same risk class as `read` — so it is
+    // admitted for the teaching surfaces the base ships.
+    "retrieve_tool_result",
+    // Subagent worker records (roster/takeover/transcript projections) carry
+    // HANDLE_READ_ACTIVATION_HINT teaching the parent to call `handle_read`
+    // for a bounded view of a worker transcript. Excluding it silently
+    // degraded swarm verification to at most two doomed probes per record.
+    // The tool itself is a deferred read-only projection reader registered
+    // unconditionally on the agent surface, so admission alone restores the
+    // documented contract.
+    "handle_read",
     "workflow",
     "tool_search",
     "image_analyze",
@@ -172,5 +193,19 @@ mod tests {
             assert!(super::PINVOU3_ALWAYS_LOADED_TOOLS.contains(&name.as_str()));
             assert!(super::is_pinvou3_allowed(&name));
         }
+    }
+
+    /// Evidence-recovery teaching surfaces must stay reachable, and the
+    /// snapshot-based rollback must stay out: the base spills overflow
+    /// footers and worker-record hints that name these tools verbatim, so
+    /// flipping either side recreates the "prompt says it exists, list says
+    /// it does not" phantom this allowlist exists to prevent.
+    #[test]
+    fn evidence_recovery_is_admitted_and_snapshot_revert_stays_excluded() {
+        assert!(super::is_pinvou3_allowed("retrieve_tool_result"));
+        assert!(super::is_pinvou3_allowed("handle_read"));
+        assert!(!super::is_pinvou3_allowed("revert_turn"));
+        assert!(!super::PINVOU3_ALWAYS_LOADED_TOOLS.contains(&"retrieve_tool_result"));
+        assert!(!super::PINVOU3_ALWAYS_LOADED_TOOLS.contains(&"handle_read"));
     }
 }

@@ -2390,6 +2390,13 @@ impl Pinvou3Bridge {
             session_id: None,
             allow_shell: self.allow_shell(),
             trust_mode: true,
+            // The base NoteTool is stripped by the product allowlist (no
+            // "note" entry), so nothing ever writes this file and no UI
+            // reads it. The field is a non-optional PathBuf upstream, so a
+            // path must be supplied; keep the stable product path and do not
+            // treat `~/.pinvou3/notes.md` as a live feature. Enabling the
+            // tool requires either an allowlist entry plus a UI consumer, or
+            // an upstream surface switch for NoteTool registration.
             notes_path: paths::notes_path(),
             // Work-mode gate: Browser MCP tools are exposed only to assistant Engine
             // sessions. Global mcp.json has no browser entry; this creates a session-specific

@@ -336,9 +336,12 @@ mod tests {
             }
         }
 
-        // The upstream read-only builder registers this compatibility helper,
-        // but Pinvou deliberately excludes it from the product tool policy.
-        assert!(!is_pinvou3_allowed("retrieve_tool_result"));
+        // The upstream read-only builder registers this compatibility helper.
+        // The product allowlist admits it (the spillover recovery footer
+        // teaches it by name), but the eval profiles stay exact read-only
+        // minimal surfaces: eval inputs are untrusted and a stored tool
+        // result must never become an eval-side retrieval channel.
+        assert!(is_pinvou3_allowed("retrieve_tool_result"));
         assert!(!PRODUCT_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
         assert!(!GAIA_OFFLINE_V1_ALLOWED_TOOLS.contains(&"retrieve_tool_result"));
