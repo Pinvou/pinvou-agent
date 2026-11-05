@@ -254,8 +254,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   recycle), the wait is given up after 24h and the message re-delivers; a
   crash loses the in-memory wait entirely, so the queued file re-delivers on
   the first poll after restart — either way possibly duplicating. Quarantine
-  audit lines carry the agent_mail-aligned failure receipt fields (`code` /
-  `retryable:false` / `failed_at`). The delivered text
+  audit lines carry the failure-receipt fields named after the foundation
+  agent_mail receipt (`code` / `retryable:false` / `failed_at`, plus a
+  human `reason` field; the `code` values are messaging-local classes, not
+  agent_mail enum members, so the lines are not deserializable as an
+  agent_mail receipt). The delivered text
   carries a machine-readable sender header block (the session-mention block pattern
   mirrored on receive) that the timeline renders as a sender card and all three
   auto-title paths strip.
@@ -287,10 +290,15 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   consecutive ~1 Hz polls before the removal-streak arm quarantines — the
   round-18 minor-3 precision: "at-least-once" covers a bounded
   ten-duplicate burst; the double-dispatch window attribution (round-21
-  minor 13): an UNKEYED resubmission re-delivers at any latency (a fresh
-  uuid spool name — the ≤30s steer window is irrelevant), while a KEYED
-  resubmission double-dispatches only inside that window and only with a
-  materially different body); a steer accepted against a mid-turn target can still be
+  minor 13, re-scoped when finalization moved to the commit, round-4): an
+  UNKEYED resubmission re-delivers at any latency (a fresh uuid spool name
+  — the steer window is irrelevant), while a KEYED resubmission
+  double-dispatches only while the earlier body's steer is still in
+  flight — a window that used to end at the steer-Ok finalization and now
+  ends at the terminal event, bounded by the 24h commit wait — and only
+  with a materially different body; once the commit's done marker exists,
+  the pre-spool probe answers a keyed retry without spooling); a steer
+  accepted against a mid-turn target can still be
   dropped by the foundation — when that turn is cancelled
   (`chat:steer_dropped`) or when the engine is evicted/rebuilt before the
   steer lands. Only the cancelled case reliably produces a correlated
