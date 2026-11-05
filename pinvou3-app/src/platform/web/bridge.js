@@ -3463,14 +3463,31 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
     }
 
     const preparation = consumeUiTurnState();
-    const accepted = await doSendFor(
-      sid,
-      preparation.payloadText,
-      displayText,
-      attachmentsPayload,
-      meta,
-      preparation.restrictTools,
-    );
+    let accepted;
+    try {
+      accepted = await doSendFor(
+        sid,
+        preparation.payloadText,
+        displayText,
+        attachmentsPayload,
+        meta,
+        preparation.restrictTools,
+      );
+    } catch (error) {
+      // The admission gate THROWS (Auto posture, review zhuowp 5785283622
+      // P2-2) — a rejection here is not the resolved-false path below, and
+      // without this catch the consumed pending task guide / active skill
+      // stayed consumed: retrying under a supported mode then sent only the
+      // visible text without the hidden guide and tool restriction the
+      // task-creation protocol needs. Every throw from doSendFor on this
+      // lane is pre-dispatch (doSendForAdmitted folds dispatch failures
+      // into a resolved false), so restoring is safe; the desktop lane has
+      // always restored in its catch. Rethrow keeps the caller's failure
+      // surface (the gate's per-session deduped notice already landed).
+      restoreUiTurnState(preparation.snapshot);
+      notify();
+      throw error;
+    }
     if (accepted) {
       // Do not clear files selected while the admission RPC was in flight.
       state.attachments = state.attachments.filter(function (attachment) {
