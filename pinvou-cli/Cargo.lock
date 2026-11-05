@@ -7022,6 +7022,7 @@ dependencies = [
  "include_dir",
  "javascriptcore-rs",
  "libc",
+ "liblzma",
  "log",
  "msg_parser",
  "notify",
