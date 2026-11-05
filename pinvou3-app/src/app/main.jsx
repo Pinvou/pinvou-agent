@@ -1029,6 +1029,7 @@ const App = () => {
       const [superPerm, setSuperPerm] = useState(false);
       const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
       const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
+      const [inputNeededNotif, setInputNeededNotif] = useState(defaultTaskCompletedNotif);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
@@ -1275,6 +1276,7 @@ const App = () => {
         }
         const notifications = settings.notifications || {};
         setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
+        setInputNeededNotif(notifications.needs_input !== false && notifications.enabled !== false);
         uiPrefsInitRef.current = true;
       };
       useEffect(() => {
@@ -3414,6 +3416,22 @@ const App = () => {
         }
       }
 
+      // 「需要输入」通知只携带自己的开关；补丁在 Rust 侧按字段合并，
+      // 不会重置总开关与完成通知。
+      async function handleSetInputNeededNotif(enabled) {
+        const nextEnabled = !!enabled;
+        const previousEnabled = inputNeededNotif;
+        setInputNeededNotif(nextEnabled);
+        if (bridge.available) {
+          const saved = await bridge.settings.saveSettings({
+            notifications: { needs_input: nextEnabled },
+          });
+          if (saved === false) {
+            setInputNeededNotif(previousEnabled);
+          }
+        }
+      }
+
       // 侧栏任务列表「按日期折叠」开关:纯 UI 偏好,写 settings.sidebar.date_grouping
       function handleSetSidebarDateGrouping(enabled) {
         if (bridge.available) bridge.settings.saveSettings({ sidebar: { date_grouping: !!enabled } });
@@ -4420,6 +4438,7 @@ const App = () => {
                   language={language} setLanguage={handleSetLanguage}
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                   taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
+                  inputNeededNotif={inputNeededNotif} setInputNeededNotif={handleSetInputNeededNotif}
                   searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                   enabledSearchProviders={enabledSearchProviders}
                   onAddSearchProvider={handleAddSearchProvider}

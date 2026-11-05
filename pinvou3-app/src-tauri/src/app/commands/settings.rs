@@ -1228,6 +1228,16 @@ pub async fn test_image_input_capability(
 /// General settings field patch. Search, pet, the model list and the active model are managed by dedicated
 /// commands and stay out of this protocol, so a caller holding an old full snapshot cannot overwrite values
 /// another operation just wrote.
+/// 通知开关的字段级补丁：部分更新不得把未携带的开关重置回默认值
+/// （整表替换会让「只改 needs_input」的写入把 enabled/task_completed 复位）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationPrefsPatch {
+    pub enabled: Option<bool>,
+    pub task_completed: Option<bool>,
+    pub needs_input: Option<bool>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GeneralSettingsPatch {
@@ -1235,7 +1245,7 @@ pub struct GeneralSettingsPatch {
     pub color_scheme: Option<ColorScheme>,
     pub language: Option<Language>,
     pub memory_enabled: Option<bool>,
-    pub notifications: Option<NotificationPrefs>,
+    pub notifications: Option<NotificationPrefsPatch>,
     pub sidebar: Option<SidebarPrefs>,
     pub chat: Option<ChatPrefs>,
     pub advanced: Option<AdvancedPrefs>,
@@ -1284,7 +1294,17 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
         current.memory_enabled = memory_enabled;
     }
     if let Some(notifications) = patch.notifications {
-        current.notifications = notifications;
+        // Field-level merge: a partial patch (e.g. only `needs_input`) must
+        // not reset the untouched switches to their defaults.
+        if let Some(enabled) = notifications.enabled {
+            current.notifications.enabled = enabled;
+        }
+        if let Some(task_completed) = notifications.task_completed {
+            current.notifications.task_completed = task_completed;
+        }
+        if let Some(needs_input) = notifications.needs_input {
+            current.notifications.needs_input = needs_input;
+        }
     }
     if let Some(sidebar) = patch.sidebar {
         current.sidebar = sidebar;
@@ -1973,6 +1993,32 @@ mod tests {
         assert!(current.pet.enabled);
         assert_eq!(current.advanced.saved_models, saved_models);
         assert_eq!(current.advanced.active_model_id, active_model_id);
+    }
+
+    #[test]
+    fn notification_patch_updates_only_carried_switches() {
+        let mut current = UserPrefs::default();
+        current.notifications.enabled = true;
+        current.notifications.task_completed = true;
+        current.notifications.needs_input = true;
+
+        apply_general_settings_patch(
+            &mut current,
+            GeneralSettingsPatch {
+                notifications: Some(crate::app::commands::settings::NotificationPrefsPatch {
+                    needs_input: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert!(!current.notifications.needs_input);
+        assert!(current.notifications.enabled, "未携带的开关不得被重置");
+        assert!(
+            current.notifications.task_completed,
+            "未携带的开关不得被重置"
+        );
     }
 
     #[test]
