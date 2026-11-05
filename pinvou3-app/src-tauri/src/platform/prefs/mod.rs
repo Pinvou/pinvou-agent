@@ -3910,11 +3910,14 @@ mod tests {
             prefs.notifications.task_completed,
             !cfg!(target_os = "linux")
         );
+        assert_eq!(prefs.notifications.needs_input, !cfg!(target_os = "linux"));
 
         let json = r#"{"notifications":{"task_completed":false}}"#;
         let parsed: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.notifications.enabled, !cfg!(target_os = "linux"));
         assert!(!parsed.notifications.task_completed);
+        // 未携带的 needs_input 同样从平台 Default 补齐，不随部分补丁漂移。
+        assert_eq!(parsed.notifications.needs_input, !cfg!(target_os = "linux"));
     }
 
     #[test]
