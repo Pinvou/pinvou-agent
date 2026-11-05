@@ -585,8 +585,20 @@ function enforceLazyChunks() {
 // thousand step (956 B headroom); the web ceiling stays 128_000 (223 B
 // headroom above the measured web entry). This cap does not promise
 // headroom for unrelated main changes.
+//
+// PR #835 owns the 128_000 → 129_000 web raise (and rides the 488_000
+// desktop ceiling from #834): the session-fork wiring joins the chat
+// surface on both platforms (fork entries, per-turn ordinal plumbing,
+// and the fork handler in ChatView; the archive-import surface lives in
+// the lazily-loaded SettingsView and does not touch the entry). Measured
+// against the pre-rebase feat-manual-compact tip (18e6627cc):
+// 487,840 → 487,840 B desktop (byte-identical — the fork wiring sits
+// inside the desktop entry's existing headroom) and 127,777 → 128,263 B
+// web on the local node 24 toolchain. The web ceiling takes the next
+// thousand step (737 B headroom). This cap does not promise headroom
+// for unrelated main changes.
 export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
-export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
+export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
   return mode === 'web' ? WEB_MAIN_ENTRY_BUDGET_BYTES : MAIN_ENTRY_BUDGET_BYTES;
