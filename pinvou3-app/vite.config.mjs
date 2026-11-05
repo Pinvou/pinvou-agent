@@ -556,7 +556,18 @@ function enforceLazyChunks() {
 // ceiling already sits the next thousand step above the unchanged web
 // entry and stays 128_000. This cap does not promise headroom for
 // unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 486_000;
+//
+// 486_000 → 487_000 desktop only (PR #833 fix wave, measured per policy):
+// the input-needed settings toggle joins the shared startup graph — state,
+// load sync, and one shared save/rollback pipeline for both notification
+// switches (the toggle handler factory replaced the duplicated pair and
+// gave back 62 B; the row's master-derivation rides the lazy SettingsView).
+// Same-base build against 8ca62d4df measures 485,878 → 486,060 B desktop
+// and 127,596 → 127,777 B web on the local node 26 toolchain. The desktop
+// ceiling takes the next thousand step; the web ceiling stays 128_000
+// (223 B headroom above the measured web entry). This cap does not promise
+// headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 487_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {
