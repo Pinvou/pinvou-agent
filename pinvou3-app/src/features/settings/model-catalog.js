@@ -450,8 +450,17 @@ const MODEL_CATALOG = {
       // models-overview page describes the platform-API surface (foundation
       // follow-up: teach the base's route shapers the K3.1 spellings).
       items: [
-        { model: 'k3.1-pro', imageCapable: true, title: 'k3.1-pro', desc: 'K3.1 Pro 新旗舰，原生视觉，1M 按档开放' },
-        { model: 'k3.1-pro-highspeed', imageCapable: true, title: 'k3.1-pro-highspeed', desc: 'K3.1 Pro 高速款' },
+        // k3.1-pro / k3.1-pro-highspeed are deliberately deferred until the
+        // pinned child carries the bare-K3.1 replay repair (upstream
+        // Pinvou/CodeWhale#137): against the current public child the
+        // exact-route exceptions only recognize k3 / k3-256k, so after a
+        // tool call + tool result the second request drops the required
+        // assistant reasoning_content and the Kimi Code gateway answers
+        // 400 (error-reference #missing-reasoning-content-field) —
+        // review 5779604267. The prefixed kimi-k3.1-pro[-highspeed] rows
+        // in the China/Global groups stay (they ride the kimi-k3 fallback
+        // and are outside the finding). Restore these two rows once the
+        // gitlink's child learns the bare spellings.
         { model: 'k3', imageCapable: true, title: 'k3', desc: 'K3 长上下文模型' },
         { model: 'k3-256k', imageCapable: true, title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
         { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: 'K2.8 Preview，最高 1M' },

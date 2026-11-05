@@ -1187,8 +1187,6 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '代码场景；K2 系列已停新用户，官方拟 2026 年 12 月底下线':'Coding tasks; the K2 series closed to new users, slated to go offline end of December 2026',
   '高速代码场景；K2 系列拟 2026 年 12 月底下线':'High-speed coding tasks; the K2 series is slated to go offline end of December 2026',
   '稳定可用；K2 系列拟 2026 年 12 月底下线':'Stable release; the K2 series is slated to go offline end of December 2026',
-  'K3.1 Pro 新旗舰，原生视觉，1M 按档开放':'K3.1 Pro flagship, native vision, 1M gated by plan tier',
-  'K3.1 Pro 高速款':'K3.1 Pro high-speed tier',
   'K2.8 Preview，最高 1M':'K2.8 Preview, up to 1M',
   'K2.7 Code 高速款，256K':'K2.7 Code high-speed tier, 256K',
   'Kimi 编码模型（官方推荐档）':'Kimi coding model (officially recommended tier)',

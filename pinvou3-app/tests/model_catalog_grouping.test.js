@@ -391,12 +391,19 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   // default applies (max on the platform base, high on the Kimi Code base
   // per the CC docs' effort-mapping table) (2026-11-04 review: the generic
   // off/high ladder let users persist a disable shape the vendor rejects).
+  // 2026-11-05 review 5779604267: the BARE Kimi Code rows are deferred —
+  // against the current public child the exact-route exceptions only
+  // recognize k3/k3-256k, so a tool turn on the bare ids drops the
+  // required assistant reasoning_content and the gateway answers 400.
+  // The rows (and their FE imageCapable annotation, which is row-scoped)
+  // return once the pinned child carries the replay repair (upstream
+  // Pinvou/CodeWhale#137); the prefixed platform rows are unaffected.
   assert.strictEqual(isPresetModel(mkCloud('kimi', 'kimi', 'https://api.moonshot.cn/v1', 'kimi-k3.1-pro')), true);
   assert.strictEqual(isPresetModel(mkCloud('kimi', 'kimi', 'https://api.moonshot.ai/v1', 'kimi-k3.1-pro-highspeed')), true);
-  assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro')), true);
-  assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro-highspeed')), true);
+  assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro')), false, 'bare k3.1-pro preset deferred until the child replay repair lands (custom row still permits it)');
+  assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro-highspeed')), false, 'bare k3.1-pro-highspeed preset deferred likewise');
   assert.strictEqual(catalogImageCapableForModel('kimi-k3.1-pro'), true);
-  assert.strictEqual(catalogImageCapableForModel('k3.1-pro'), true);
+  assert.strictEqual(catalogImageCapableForModel('k3.1-pro'), null, 'bare-spelling annotation is row-scoped and returns with the deferred rows');
   const k31 = (model, base) => ({ preset: 'kimi', vendor: 'kimi', model, base_url: base });
   assert.strictEqual(reasoningEffortTiersForModel(k31('kimi-k3.1-pro', 'https://api.moonshot.cn/v1')), null, 'platform K3.1: no tier control (generic off/high carries the disable-rejected cliff)');
   assert.strictEqual(reasoningEffortTiersForModel(k31('kimi-k3.1-pro-highspeed', 'https://api.moonshot.ai/v1')), null);
