@@ -138,6 +138,11 @@ function minimalRpcResult(command, args = {}) {
     case 'web_access_list_sessions':
     case 'web_access_list_archived_sessions':
       return [];
+    // Tri-mode round-12: the first turn materializes its session
+    // (`web_access_create_session`) before the gated `web_access_chat`
+    // send — the retired atomic `web_access_create_session_and_chat`
+    // fast path remains only for the unreachable legacy submission face.
+    case 'web_access_create_session':
     case 'web_access_create_session_and_chat':
       return {
         id: `session-smoke-${Date.now()}`,
@@ -1032,27 +1037,33 @@ async function main() {
       && explicitRpc?.id
       && explicitRpc.client_request_id === explicitRpc.id);
 
-  const firstTurnCommand = 'web_access_create_session_and_chat';
+  // Tri-mode round-12: the first-turn wire contract is materialize-then-gate
+  // — `web_access_create_session` materializes the draft (applying the lane
+  // default), then `web_access_chat` carries the gated first turn through
+  // doSendFor. The retired atomic create-and-chat fast path (its
+  // `first_turn_` request-id vocabulary and its failed-bubble retry button)
+  // is gone from the production send path; these scenarios follow the live
+  // sequence, and a rejected send now removes the optimistic bubble and
+  // posts a turn-error notice (retrying means sending again with a fresh
+  // request id).
+  const createSessionCommand = 'web_access_create_session';
+  const chatSendCommand = 'web_access_chat';
   const optimisticText = '首条消息立即显示测试';
   const firstTurnPayload = `${optimisticText}\n\n---\nPinvou 场景路由测试`;
-  const deferredFirstTurn = desktop.deferNextRpc(firstTurnCommand);
-  await mobilePage.evaluate(
+  const deferredMaterialize = desktop.deferNextRpc(createSessionCommand);
+  const deferredFirstTurn = desktop.deferNextRpc(chatSendCommand);
+  // The live sendMessage awaits materialization inline (no optimistic
+  // early return like the retired fast path), so the send promise must not
+  // be awaited before the deferred desktop responses land.
+  const firstTurnSend = mobilePage.evaluate(
     ({ text, payload }) => window.TauriBridge.chat.sendMessage(text, { pinvouPayloadText: payload }),
     { text: optimisticText, payload: firstTurnPayload },
   );
-  const firstTurnRequest = await deferredFirstTurn.seen;
-  await mobilePage.waitForFunction(text => (
-    document.body.innerText.includes(text)
-      && !!document.querySelector('[data-testid="message-delivery-sending"]')
-      && !document.querySelector('[data-testid="chat-greeting"]')
-  ), { timeout: 5_000 }, optimisticText);
-  record('WebUI 新对话首条消息不等待桌面 RPC 即刻显示',
-    firstTurnRequest.command === firstTurnCommand
-      && /^first_turn_/.test(firstTurnRequest.client_request_id || '')
-      && firstTurnRequest.args?.message === firstTurnPayload);
-
+  const materializeRequest = await deferredMaterialize.seen;
+  record('WebUI 新对话首条消息先物化会话',
+    materializeRequest.command === createSessionCommand);
   const optimisticSessionId = 'session-optimistic-smoke';
-  deferredFirstTurn.respond({
+  deferredMaterialize.respond({
     id: optimisticSessionId,
     title: '新对话',
     created_at: new Date().toISOString(),
@@ -1060,11 +1071,20 @@ async function main() {
     message_count: 0,
     transcript_revision: 'empty-optimistic-revision',
   });
-  await mobilePage.waitForFunction(sessionId => (
-    window.TauriBridge.state.get('sessions').activeSessionId === sessionId
-      && !!document.querySelector('[data-testid="message-delivery-accepted"]')
-  ), { timeout: 5_000 }, optimisticSessionId);
-
+  // The optimistic bubble renders once the session exists (the
+  // materialization leg itself has no UI trace, and the live send path
+  // adds no delivery badge) but before the desktop answers the gated
+  // chat admission.
+  await mobilePage.waitForFunction(text => (
+    document.body.innerText.includes(text)
+      && !document.querySelector('[data-testid="chat-greeting"]')
+  ), { timeout: 5_000 }, optimisticText);
+  const firstTurnRequest = await deferredFirstTurn.seen;
+  record('WebUI 物化后受门发送携带原 payload 与新会话 id',
+    firstTurnRequest.command === chatSendCommand
+      && firstTurnRequest.args?.message === firstTurnPayload
+      && firstTurnRequest.args?.sessionId === optimisticSessionId);
+  deferredFirstTurn.respond({});
   desktop.send({
     type: 'event',
     lease_id: desktop.leaseId,
@@ -1078,6 +1098,14 @@ async function main() {
       base_transcript_revision: 'empty-optimistic-revision',
     },
   });
+  await firstTurnSend;
+  // The authoritative event lands the user item without a delivery badge on
+  // the live send path — acceptance is observable as the bubble in the
+  // now-active session.
+  await mobilePage.waitForFunction((sessionId, text) => (
+    window.TauriBridge.state.get('sessions').activeSessionId === sessionId
+      && document.body.innerText.includes(text)
+  ), { timeout: 5_000 }, optimisticSessionId, optimisticText);
   await mobilePage.waitForFunction(id => {
     const cursor = JSON.parse(sessionStorage.getItem(`pinvou.web.cursor.${id}`) || '{}');
     return cursor.after_seq === 1;
@@ -1090,13 +1118,26 @@ async function main() {
   await mobilePage.evaluate(() => window.TauriBridge.sessions.createNewSession());
   await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
   const failedText = '首条消息失败重试测试';
-  const deferredFailure = desktop.deferNextRpc(firstTurnCommand);
-  await mobilePage.evaluate(text => window.TauriBridge.chat.sendMessage(text), failedText);
+  const deferredMaterialize2 = desktop.deferNextRpc(createSessionCommand);
+  const deferredFailure = desktop.deferNextRpc(chatSendCommand);
+  const failedSend = mobilePage.evaluate(text => window.TauriBridge.chat.sendMessage(text), failedText);
+  const materializeRequest2 = await deferredMaterialize2.seen;
+  const failedSessionId = 'session-failed-smoke';
+  deferredMaterialize2.respond({
+    id: failedSessionId,
+    title: '新对话',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    message_count: 0,
+    transcript_revision: 'empty-failed-revision',
+  });
+
   const failedRequest = await deferredFailure.seen;
 
-  // The previous Session may still stream while the next draft is waiting for
-  // its atomic create-and-chat response. Its background event must not replace
-  // the visible draft working set with a fresh empty buffer.
+  // The previous Session may still stream while the second draft waits for
+  // its gated chat admission. Its background event must not replace the
+  // visible draft working set with a fresh empty buffer. (The chat RPC
+  // arriving proves the optimistic item already rendered.)
   desktop.send({
     type: 'event',
     lease_id: desktop.leaseId,
@@ -1117,40 +1158,52 @@ async function main() {
       userTexts: chat.chatItems
         .filter(item => item && item.type === 'user')
         .map(item => item.text),
-      sending: !!document.querySelector('[data-testid="message-delivery-sending"]'),
       greeting: !!document.querySelector('[data-testid="chat-greeting"]'),
       expectedText: text,
     };
   }, failedText);
   record('旧会话迟到事件不会清空第二个新对话的乐观消息',
-    preservedSecondDraft.activeSessionId === null
+    preservedSecondDraft.activeSessionId === failedSessionId
       && preservedSecondDraft.userTexts.includes(failedText)
-      && preservedSecondDraft.sending
       && !preservedSecondDraft.greeting,
     JSON.stringify(preservedSecondDraft));
 
+  // Rejection under the materialize-then-gate contract: the optimistic
+  // bubble is removed and a turn-error notice is posted.
   deferredFailure.reject('simulated first-turn rejection', 'command_failed');
-  await mobilePage.waitForSelector('[data-testid="message-delivery-failed"] button', { timeout: 5_000 });
+  await failedSend.catch(() => {});
+  await mobilePage.waitForFunction(text => (
+    document.body.innerText.includes('simulated first-turn rejection')
+      && !document.body.innerText.includes(text)
+  ), { timeout: 5_000 }, failedText);
+  record('WebUI 受拒发送移除乐观气泡并落错误通告',
+    failedRequest.args?.sessionId === failedSessionId);
 
-  const deferredRetry = desktop.deferNextRpc(firstTurnCommand);
-  await mobilePage.click('[data-testid="message-delivery-failed"] button');
+  const deferredRetry = desktop.deferNextRpc(chatSendCommand);
+  const retrySend = mobilePage.evaluate(text => window.TauriBridge.chat.sendMessage(text), failedText);
   const retryRequest = await deferredRetry.seen;
-  const retrySessionId = 'session-retry-smoke';
-  deferredRetry.respond({
-    id: retrySessionId,
-    title: '新对话',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    message_count: 0,
-    transcript_revision: 'empty-retry-revision',
+  deferredRetry.respond({});
+  desktop.send({
+    type: 'event',
+    lease_id: desktop.leaseId,
+    event: 'chat:user_message',
+    stream_epoch: streamEpoch,
+    seq: 3,
+    payload: {
+      session_id: failedSessionId,
+      content: failedText,
+      operation: 'append',
+      base_transcript_revision: 'empty-failed-revision',
+    },
   });
-  await mobilePage.waitForFunction(sessionId => (
+  await retrySend.catch(() => {});
+  await mobilePage.waitForFunction((sessionId, text) => (
     window.TauriBridge.state.get('sessions').activeSessionId === sessionId
-      && !!document.querySelector('[data-testid="message-delivery-accepted"]')
-  ), { timeout: 5_000 }, retrySessionId);
-  record('确定性失败保留消息并允许使用新幂等 ID 重试',
-    failedRequest.client_request_id !== retryRequest.client_request_id
-      && /^first_turn_/.test(retryRequest.client_request_id || ''));
+      && document.body.innerText.includes(text)
+  ), { timeout: 5_000 }, failedSessionId, failedText);
+  record('重试发送携带全新幂等请求 ID 且落入同一会话',
+    retryRequest.client_request_id !== failedRequest.client_request_id
+      && retryRequest.args?.sessionId === failedSessionId);
 
   await mobilePage.evaluate(() => window.TauriBridge.sessions.createNewSession());
   await mobilePage.evaluate(async () => {
@@ -1186,12 +1239,11 @@ async function main() {
     window.TauriBridge.state.get('chat').attachments
       .find(attachment => attachment.status === 'ready').result.handle
   ));
-  const deferredBackgroundSuccess = desktop.deferNextRpc(firstTurnCommand);
-  await mobilePage.evaluate(text => window.TauriBridge.chat.sendMessage(text), '切页附件消费测试');
-  const backgroundRequest = await deferredBackgroundSuccess.seen;
-  await mobilePage.evaluate(() => window.TauriBridge.sessions.createNewSession());
-  await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
-  deferredBackgroundSuccess.respond({
+  const deferredBackgroundMaterialize = desktop.deferNextRpc(createSessionCommand);
+  const deferredBackgroundSuccess = desktop.deferNextRpc(chatSendCommand);
+  const backgroundSend = mobilePage.evaluate(text => window.TauriBridge.chat.sendMessage(text), '切页附件消费测试');
+  const backgroundMaterializeRequest = await deferredBackgroundMaterialize.seen;
+  deferredBackgroundMaterialize.respond({
     id: 'session-background-attachment-smoke',
     title: '新对话',
     created_at: new Date().toISOString(),
@@ -1199,6 +1251,11 @@ async function main() {
     message_count: 0,
     transcript_revision: 'empty-background-attachment-revision',
   });
+  const backgroundRequest = await deferredBackgroundSuccess.seen;
+  await mobilePage.evaluate(() => window.TauriBridge.sessions.createNewSession());
+  await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
+  deferredBackgroundSuccess.respond({});
+  await backgroundSend.catch(() => {});
   await mobilePage.waitForFunction(() => (
     window.TauriBridge.state.get('chat').attachments.length === 0
   ), { timeout: 5_000 });
@@ -1208,7 +1265,8 @@ async function main() {
     greeting: !!document.querySelector('[data-testid="chat-greeting"]'),
   }));
   record('首轮发送期间切页不会把已消费附件遗留给新草稿',
-    backgroundRequest.args?.attachmentHandles?.includes(consumedHandle)
+    backgroundMaterializeRequest.command === createSessionCommand
+      && backgroundRequest.args?.attachmentHandles?.includes(consumedHandle)
       && backgroundSuccessState.activeSessionId === null
       && backgroundSuccessState.attachments === 0
       && backgroundSuccessState.greeting,
@@ -1226,25 +1284,25 @@ async function main() {
     lease_id: desktop.leaseId,
     event: 'chat:delta',
     stream_epoch: streamEpoch,
-    seq: 3,
+    seq: 4,
     payload: { session_id: 'webui-smoke', text: 'stream-event-smoke' },
   });
   await mobilePage.waitForFunction(() => window.__webuiSmokeEvents?.length === 1);
   const cursor = await mobilePage.evaluate(id => (
     JSON.parse(sessionStorage.getItem(`pinvou.web.cursor.${id}`) || '{}')
   ), endpointId);
-  assert.deepEqual(cursor, { stream_epoch: streamEpoch, after_seq: 3 });
+  assert.deepEqual(cursor, { stream_epoch: streamEpoch, after_seq: 4 });
 
   const reconnectStart = desktop.messages.length;
   await mobilePage.reload({ waitUntil: 'networkidle0' });
   const resumed = await desktop.waitFor(message => (
     message.type === 'web_client_connected'
       && message.stream_epoch === streamEpoch
-      && message.after_seq === 3
+      && message.after_seq === 4
   ), reconnectStart, 15_000);
   await waitForSharedUi(mobilePage, 390, 844);
   record('事件序号写入游标并在页面重连时续传',
-    resumed.stream_epoch === streamEpoch && resumed.after_seq === 3);
+    resumed.stream_epoch === streamEpoch && resumed.after_seq === 4);
 
   const credentialLeak = relayHttpRequestTargets.find(target => (
     target.includes('#')
