@@ -172,7 +172,9 @@ pub(crate) fn combine_hold_errors(
 /// complete before the non-modifier keys land.
 pub(crate) fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
     let mut ordered = keys.to_vec();
-    ordered.sort_by_key(|key| !matches!(key, Key::Control | Key::Alt | Key::Shift | Key::Meta));
+    // The modifier set is `Key::is_modifier`'s definition — route through it
+    // so a future modifier variant updates every consumer at once.
+    ordered.sort_by_key(|key| !key.is_modifier());
     ordered
 }
 

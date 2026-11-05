@@ -1875,12 +1875,12 @@ function hasStoredCredential(record) {
             </IOSRow>
           )}
           {showWindowsVirtualNote && (
-            <div className={`px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
               {t.uiComputerUse.virtualNoteWindows}
             </div>
           )}
           {showMacosVirtualNote && (
-            <div className={`px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
               {t.uiComputerUse.virtualNoteMacos}
             </div>
           )}

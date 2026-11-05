@@ -35,7 +35,10 @@ use super::super::types::ComputerUseError;
 /// Cheap availability probe for the current platform's virtual display stack:
 /// binary presence on PATH (linux) / private-API class checks (macOS) /
 /// shell-binary presence (Windows — `explorer.exe`). NO side effects, NO
-/// server spawn — it runs on every status read and preference flip.
+/// server spawn — it runs at the refresh points (startup replay, preference
+/// flips, creation reporting); the status command reads the CACHED snapshot
+/// between them (guard.rs `refresh_virtual_availability` documents the
+/// exact points).
 pub(crate) fn probe() -> VirtualAvailability {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     return virtual_imp::probe();

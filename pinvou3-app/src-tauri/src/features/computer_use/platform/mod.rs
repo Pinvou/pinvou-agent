@@ -89,20 +89,14 @@ pub(crate) fn dispatch_to_main_thread(task: Box<dyn FnOnce() + Send>) -> bool {
 /// mid-session): a virtual preference with a green probe builds the virtual
 /// backend, everything else stays physical. **Must be called on computer_use's
 /// dedicated worker thread** (guaranteed by BackendHandle): xcap/enigo/a11y
-/// objects have thread affinity.
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-pub(crate) fn create_backend(
-    prefer_virtual: bool,
-) -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> {
-    create_backend_with_decision(prefer_virtual).0
-}
+/// objects have thread affinity. The decision rides the return value (see
+/// below) because the availability-snapshot recorder needs it: a failed
+/// PHYSICAL build must not be recorded as "the last virtual session failed
+/// to start".
 
-/// [`create_backend`] plus the decision it resolved: the decision happens
-/// BEFORE the build, so even a failed virtual creation reports
-/// `TargetDecision::Virtual` (and a failed physical build reports Physical).
-/// tool.rs's availability-snapshot recorder needs exactly this to attribute
-/// a creation failure to the right target — a failed PHYSICAL build must not
-/// be recorded as "the last virtual session failed to start".
+/// [`create_backend_with_decision`] resolves the decision BEFORE the build,
+/// so even a failed virtual creation reports `TargetDecision::Virtual` (and
+/// a failed physical build reports Physical).
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 pub(crate) fn create_backend_with_decision(
     prefer_virtual: bool,

@@ -1647,4 +1647,61 @@ async function assertEventLessResurfacingRendersPhysical(harness, sharedStatus) 
   await assertEventLessResurfacingRendersPhysical(reconciled, sharedStatus);
 }
 
+// ── 45. an event-less pending grant seeds its target from status truth ──
+// (review finding) A window reloaded with an unanswered grant never saw the
+// grant_required event. The reconciler's grant-true branch now seeds
+// pending.grantTarget from the SAME status payload's per-session display
+// target — server truth for the live request (written once at backend
+// creation), never a previous epoch's event value — so a virtual session's
+// dialog renders the virtual copy instead of the physical copy that
+// promises per-action confirmations a virtual grant structurally never
+// raises. Absent/unknown targets stay fail-neutral physical; a physical
+// truth keeps the plain (no-key) shape, which renders the default copy.
+{
+  const sharedStatus = {
+    enabled: true, granted: false, stopped: false, platform_supported: true,
+    pending_grant: true, session_display_target: 'virtual',
+  };
+  const harness = createHarness({ initialState: { enabled: true }, status: sharedStatus });
+  await harness.feature.refreshStatus('s1');
+  const last = harness.published().at(-1);
+  assert.ok(last.grantRequest, 'the reloaded pending grant must resurface');
+  assert.equal(last.grantRequest.target, 'virtual',
+    'the dialog must render the virtual copy seeded from the status session truth');
+  // The seed dies with the epoch like any event-derived target: after the
+  // grant resolves elsewhere, a fresh event-less request with no session
+  // truth falls back to physical.
+  sharedStatus.pending_grant = false;
+  await harness.feature.refreshStatus('s1');
+  assert.equal(harness.published().at(-1).grantRequest, null,
+    'fixture: the resolved epoch collapsed the dialog');
+  const laterStatus = {
+    enabled: true, granted: false, stopped: false, platform_supported: true,
+    pending_grant: true,
+  };
+  const later = createHarness({ initialState: { enabled: true }, status: laterStatus });
+  await later.feature.refreshStatus('s1');
+  assert.equal(later.published().at(-1).grantRequest.target, undefined,
+    'a session truth without the field stays fail-neutral physical');
+
+  // A concrete physical truth seeds too — but "physical" renders the
+  // default (no-target-key) copy shape.
+  const physical = createHarness({
+    initialState: { enabled: true },
+    status: { ...sharedStatus, pending_grant: true, session_display_target: 'physical' },
+  });
+  await physical.feature.refreshStatus('s1');
+  assert.equal(physical.published().at(-1).grantRequest.target, undefined,
+    'a physical-seeded target renders the default physical copy shape');
+
+  // A carried UNKNOWN target value must not be copied into the request.
+  const unknown = createHarness({
+    initialState: { enabled: true },
+    status: { ...sharedStatus, pending_grant: true, session_display_target: 'weird' },
+  });
+  await unknown.feature.refreshStatus('s1');
+  assert.equal(unknown.published().at(-1).grantRequest.target, undefined,
+    'an unknown session target must stay fail-neutral physical');
+}
+
 console.log('computer use bridge behavior tests passed');

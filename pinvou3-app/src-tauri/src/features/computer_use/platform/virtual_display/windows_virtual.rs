@@ -40,9 +40,10 @@
 //! via the job's `ActiveProcesses` accounting counter — a job handle never
 //! signals on emptying, only on time-limit expiry) → capture thread exit →
 //! restore the worker's desktop → `CloseDesktop`. A `CloseDesktop` that
-//! fails with `ERROR_BUSY` is tolerated and logged: the named desktop is
-//! recovered at the next start (name-based recovery, no pidfile —
-//! `OpenDesktopW` probe at creation).
+//! fails with `ERROR_BUSY` is tolerated and logged: the desktop object is
+//! reclaimed when the process exits (its job's kill-on-close frees the last
+//! references); the creation-time `OpenDesktopW` probe is best-effort
+//! same-pid leftover recovery, not a cross-process mechanism.
 //!
 //! Known fidelity limits (disclosed in `Capabilities`): message-level input
 //! is app-level injection — apps that ignore synthetic messages cannot be
@@ -87,10 +88,10 @@ use windows::Win32::System::Threading::{
     PROCESS_TERMINATE, ResumeThread, STARTUPINFOW, TerminateProcess,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME,
-    VK_INSERT, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4,
-    VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR,
-    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    GetFocus, MAPVK_VK_TO_VSC, MapVirtualKeyW, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN,
+    VK_END, VK_ESCAPE, VK_F1, VK_HOME, VK_INSERT, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_OEM_1,
+    VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS,
+    VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, ChildWindowFromPoint, FindWindowW, GA_ROOT, GCL_STYLE, GUITHREADINFO, GW_HWNDNEXT,
@@ -141,8 +142,11 @@ const SHELL_BACKGROUND_CLASSES: [&str; 2] = ["Progman", "WorkerW"];
 const SHELL_WINDOW_CLASSES: [&str; 3] = ["Progman", "WorkerW", "Shell_TrayWnd"];
 
 /// Hidden desktop name (design §6): fixed prefix + process pid + a
-/// per-process sequence, so concurrent sessions in one process and crashed
-/// runs from previous processes all get distinct, recoverable names.
+/// per-process sequence, so concurrent sessions in one process get distinct
+/// names. The creation-time recovery probe can only ever see a leftover of
+/// THIS pid (name-embedded) — cross-process leftovers are reclaimed by the
+/// kernel when the crashed process's job handles die (kill-on-close), not
+/// by the next start.
 const DESKTOP_NAME_PREFIX: &str = "PinvouAgentDesk-";
 /// Per-process sequence for desktop names.
 static DESKTOP_SEQUENCE: AtomicU32 = AtomicU32::new(0);
@@ -189,11 +193,13 @@ const CAPTURE_REPLY_TIMEOUT_MS: u64 = 5000;
 /// honestly instead of hanging for the timeout every time).
 const CAPTURE_WEDGE_LIMIT: u32 = 2;
 
-/// `open` tool-layer bounds mirrored here (the backend is a second line of
-/// defense behind the tool's own validation).
-const MAX_OPEN_PROGRAM_CHARS: usize = 1024;
-const MAX_OPEN_ARGS: usize = 64;
-const MAX_OPEN_ARG_CHARS: usize = 4096;
+/// `open` tool-layer bounds, REFERENCED (not mirrored) from the tool layer:
+/// a second line of defense behind the tool's own validation that cannot
+/// silently drift when the tool caps change (the Linux/macOS stacks defer
+/// the length checks to the tool layer entirely).
+use crate::features::computer_use::tool::{
+    MAX_OPEN_ARG_CHARS, MAX_OPEN_ARGS, MAX_OPEN_PROGRAM_CHARS,
+};
 
 /// `WM_MOUSEWHEEL`'s one detent in `wParam` high word.
 const WHEEL_DELTA: i32 = 120;
@@ -205,10 +211,11 @@ const MK_MBUTTON: usize = 0x0010;
 /// Cheap availability probe (design §6): the hidden-desktop API set is part
 /// of Win32, so the only hard external dependency is the shell binary the
 /// desktop launches — probe %WINDIR%\explorer.exe (pure stat, no spawn, no
-/// side effects; this runs on every status read, creation happens later via
-/// [`create_backend`]). A miss answers Unavailable so the one-time target
-/// decision falls back to the physical desktop instead of building a session
-/// that fails on its first spawn.
+/// side effects; it runs at the refresh points — startup replay, preference
+/// flips, creation reporting — and status reads consume the cached
+/// snapshot; creation happens later via [`create_backend`]). A miss answers
+/// Unavailable so the one-time target decision falls back to the physical
+/// desktop instead of building a session that fails on its first spawn.
 pub(crate) fn probe() -> VirtualAvailability {
     match explorer_presence() {
         ExplorerPresence::Found => VirtualAvailability::Available,
@@ -339,6 +346,40 @@ fn key_lparam(up: bool) -> isize {
     } else {
         1
     }
+}
+
+/// lParam bit assembly for the KEY messages (pure, so the shape is pinable
+/// without a display): repeat count 1, the scan code at bits 16-23, the
+/// context code at bit 29 (set while Alt is held — every key delivered
+/// during an Alt chord rides it), and the previous-key-state (bit 30) +
+/// transition (bit 31) flags on the UP variant, exactly what real input
+/// carries. A scan code wider than 8 bits masks down (the field is 8 bits).
+fn compose_key_lparam(scan: u32, context: bool, up: bool) -> isize {
+    let mut raw = 1u32 | ((scan & 0xFF) << 16);
+    if context {
+        raw |= 1 << 29;
+    }
+    if up {
+        raw |= 1 << 30 | 1 << 31;
+    }
+    raw as isize
+}
+
+/// Scan code for a virtual-key code (`MapVirtualKeyW`, VK → VSC); 0 when
+/// the key has no scan mapping.
+///
+/// SAFETY: pure translation-table query; no pointers involved.
+unsafe fn vk_scan(vk: u16) -> u32 {
+    // SAFETY: see the fn contract.
+    unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) }
+}
+
+/// The lParam for a key message about `vk` (the WM_KEYDOWN / WM_SYSKEYDOWN /
+/// WM_KEYUP / WM_SYSKEYUP family): real scan code + context bit, unlike the
+/// WM_CHAR posts whose lParam the message loop rarely validates.
+fn key_message_lparam(vk: u16, alt_held: bool, up: bool) -> isize {
+    // SAFETY: pure translation query.
+    compose_key_lparam(unsafe { vk_scan(vk) }, alt_held, up)
 }
 
 /// Pack client coordinates into a mouse-message lParam (both i16).
@@ -497,21 +538,39 @@ fn char_to_vk(c: char) -> Result<u16, ComputerUseError> {
 }
 
 /// Windows command-line quoting: wrap parts with spaces/tabs/quotes (or
-/// empty parts), escape embedded quotes, and double the trailing-backslash
-/// run of quoted parts. The doubling follows the Windows argv rule (per the
-/// command-line parsing documented on GetCommandLine/CommandLineToArgvW):
-/// inside quotes, backslashes directly before a quote character are escape
-/// sequences, so a quoted `C:\dir\` would otherwise turn its CLOSING quote
-/// into a literal backslash-quote and corrupt every following argument.
-/// Bare (unquoted) parts keep their backslashes literal — unquoted
-/// backslashes are not escape sequences, so doubling them would corrupt the
-/// path instead. Best-effort single-level quoting — backslash runs before
-/// EMBEDDED quotes inside a part remain out of scope (the model's `args`
-/// are plain strings; CreateProcessW receives the joined line unparsed).
+/// empty parts), escape embedded quotes, and double EVERY backslash run a
+/// quote closes — embedded or trailing. The doubling is the Windows argv
+/// rule (per the command-line parsing documented on
+/// GetCommandLine/CommandLineToArgvW): inside quotes, backslashes directly
+/// before a quote character are escape sequences (2n backslashes + quote
+/// parse as n literal backslashes + a quote DELIMITER; 2n+1 as n literal
+/// backslashes + a literal quote CHARACTER), so a quoted `C:\dir\` would
+/// otherwise turn its CLOSING quote into a literal backslash-quote and
+/// corrupt every following argument, and a `\"` inside a part would
+/// silently EAT the part's own backslash. Bare (unquoted) parts keep their
+/// backslashes literal — unquoted backslashes are not escape sequences, so
+/// doubling them would corrupt the path instead.
 fn quote_command_line_part(part: &str) -> String {
     if part.is_empty() || part.contains(' ') || part.contains('\t') || part.contains('"') {
         let trailing_backslashes = part.chars().rev().take_while(|&c| c == '\\').count();
-        let mut quoted = part.replace('"', "\\\"");
+        let mut quoted = String::with_capacity(part.len() + 2);
+        for c in part.chars() {
+            if c == '"' {
+                // The backslash run this quote closes is an escape sequence
+                // per the rule above — double it so it stays literal, then
+                // escape the quote itself. (A run before an EMBEDDED quote
+                // that stayed single would be consumed as the quote's own
+                // escape, silently deleting the part's literal backslash.)
+                let run = quoted.chars().rev().take_while(|&c| c == '\\').count();
+                for _ in 0..run {
+                    quoted.push('\\');
+                }
+                quoted.push('\\');
+                quoted.push('"');
+            } else {
+                quoted.push(c);
+            }
+        }
         quoted.push_str(&"\\".repeat(trailing_backslashes));
         format!("\"{quoted}\"")
     } else {
@@ -635,8 +694,8 @@ fn log_desktop_close_error(context: &str, error: windows::core::Error) {
     if error.code() == HRESULT::from_win32(ERROR_BUSY.0) {
         log::warn!(
             "[computer_use][virtual-win] {context}: the desktop is still referenced \
-             (ERROR_BUSY); it is left behind and recovered by the next start's \
-             OpenDesktopW probe"
+             (ERROR_BUSY); it is left behind and reclaimed when the process exits \
+             (the kill-on-close job frees the last references)"
         );
     } else {
         log::warn!("[computer_use][virtual-win] {context}: {error}");
@@ -1536,8 +1595,13 @@ impl WindowsVirtualDesktopBackend {
         let name = desktop_name(sequence);
         let name_wide = to_wide(&name);
 
-        // 1. Name-based orphan recovery (no pidfile on Windows): a desktop
-        //    with our name can only be a previous crashed run's.
+        // 1. Best-effort leftover recovery (no pidfile on Windows): the name
+        //    embeds THIS process's pid + sequence, so a hit can only be a
+        //    same-pid leftover (pid recycling + sequence reset — rare). A
+        //    cross-process leftover is not recoverable this way; it is
+        //    reclaimed by the kernel when the crashed process's job handles
+        //    die (kill-on-close), so this probe is belt-and-braces, not the
+        //    primary reclamation path.
         // SAFETY: probe + bounded kill/close sequence on our own named desktop.
         if let Ok(leftover) =
             // SAFETY: probe for our own uniquely-named crashed-run leftover.
@@ -1707,13 +1771,31 @@ impl WindowsVirtualDesktopBackend {
         Ok(point)
     }
 
+    /// Client coordinates of a screen point relative to `window` (the drag
+    /// path's pinned-target posts need them without re-hit-testing).
+    ///
+    /// SAFETY: coordinate translation on a desktop window from the attached
+    /// worker thread.
+    unsafe fn client_of(window: HWND, x: i32, y: i32) -> (i32, i32) {
+        // SAFETY: see the fn contract.
+        let mut point = POINT { x, y };
+        let _ = unsafe { ScreenToClient(window, &mut point) };
+        (point.x, point.y)
+    }
+
     /// Hit-test: top-level under the screen point (WindowFromPoint, the
     /// z-order-aware counterpart of the walk below), then the
     /// `ChildWindowFromPoint` walk to the deepest child at the point.
-    /// Returns (top-level, deepest, client x, client y) — client coordinates
-    /// relative to the deepest window. `None` when no window is under the
-    /// point. Worker thread only (attached).
-    fn hit_test_at(&self, x: i32, y: i32) -> Option<(HWND, HWND, i32, i32)> {
+    /// Returns (deepest, client x, client y) — client coordinates relative
+    /// to the deepest window. `None` when no window is under the point.
+    /// Worker thread only (attached).
+    ///
+    /// Known shape limit: `ChildWindowFromPoint` returns the first DIRECT
+    /// child whose bounding rect contains the point, without sibling
+    /// occlusion awareness (`WindowFromPoint` above IS z-order-aware) — a
+    /// sibling overlapping a parent's child can be skipped over in the walk.
+    /// Rare (overlapping siblings in one parent); accepted and noted.
+    fn hit_test_at(&self, x: i32, y: i32) -> Option<(HWND, i32, i32)> {
         // SAFETY: desktop-relative queries on the attached worker thread.
         unsafe {
             let top = WindowFromPoint(POINT { x, y });
@@ -1726,7 +1808,7 @@ impl WindowsVirtualDesktopBackend {
                 let _ = ScreenToClient(current, &mut point);
                 let child = ChildWindowFromPoint(current, point);
                 if child.is_invalid() || child.0 == current.0 {
-                    return Some((top, current, point.x, point.y));
+                    return Some((current, point.x, point.y));
                 }
                 current = child;
             }
@@ -1848,20 +1930,29 @@ impl WindowsVirtualDesktopBackend {
         let target = self.keyboard_target()?;
         // SAFETY: parent-walk on a desktop window from the attached worker.
         let top = unsafe { top_level_of(target) };
+        // Real Windows delivers EVERY key pressed while Alt is held as the
+        // system-key pair with the context bit set — not just VK_MENU
+        // itself. It is DefWindowProc's WM_SYSKEYDOWN handler that turns
+        // VK_F4 into SC_CLOSE and Alt+letter into SC_KEYMENU, so a companion
+        // key posted as plain WM_KEYDOWN (the previous shape) made Alt+F4 /
+        // Alt-menu mnemonics never fire even with the Alt itself SYS-shaped.
+        // Chords without Alt keep the plain pair — the system pair is
+        // Alt-specific.
+        let alt_held = ordered.contains(&VK_MENU.0);
+        let (down_message, up_message) = if alt_held {
+            (WM_SYSKEYDOWN, WM_SYSKEYUP)
+        } else {
+            (WM_KEYDOWN, WM_KEYUP)
+        };
         let mut pressed: Vec<u16> = Vec::with_capacity(ordered.len());
         let hold_result = (|| {
             for vk in &ordered {
-                // Real Alt input travels as WM_SYSKEYDOWN/WM_SYSKEYUP (the
-                // system key pair); posting plain WM_KEYDOWN(VK_MENU) made
-                // Alt chords register as ordinary key presses and Alt+F4 /
-                // Alt-menu semantics never fired. Ctrl/Shift chords keep the
-                // plain pair — the system pair is Alt-specific.
-                let down = if *vk == VK_MENU.0 {
-                    WM_SYSKEYDOWN
-                } else {
-                    WM_KEYDOWN
-                };
-                self.post(top, down, usize::from(*vk), key_lparam(false))?;
+                self.post(
+                    top,
+                    down_message,
+                    usize::from(*vk),
+                    key_message_lparam(*vk, alt_held, false),
+                )?;
                 pressed.push(*vk);
             }
             let mut remaining = hold;
@@ -1883,12 +1974,12 @@ impl WindowsVirtualDesktopBackend {
         // hold must not strand modifiers).
         let mut release = Ok(());
         for vk in pressed.iter().rev() {
-            let up = if *vk == VK_MENU.0 {
-                WM_SYSKEYUP
-            } else {
-                WM_KEYUP
-            };
-            if let Err(error) = self.post(top, up, usize::from(*vk), key_lparam(true)) {
+            if let Err(error) = self.post(
+                top,
+                up_message,
+                usize::from(*vk),
+                key_message_lparam(*vk, alt_held, true),
+            ) {
                 if release.is_ok() {
                     release = Err(error);
                 }
@@ -2030,7 +2121,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         unsafe { SetCursorPos(x, y) }.map_err(|error| {
             ComputerUseError::failed(format!("cannot move the hidden desktop's cursor: {error}"))
         })?;
-        let Some((_, target, client_x, client_y)) = self.hit_test_at(x, y) else {
+        let Some((target, client_x, client_y)) = self.hit_test_at(x, y) else {
             return Ok(()); // cursor moved; nothing to notify
         };
         self.post(
@@ -2044,7 +2135,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         let point = self.cursor_point()?;
-        let Some((_, target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
+        let Some((target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop; \
                  move_to a window first",
@@ -2094,7 +2185,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
 
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         let point = self.cursor_point()?;
-        let Some((_, target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
+        let Some((target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop",
             ));
@@ -2106,7 +2197,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         let point = self.cursor_point()?;
-        let Some((_, target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
+        let Some((target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
             // An up with no window under the cursor is a harmless no-op —
             // the emergency release path relies on this being non-fatal.
             return Ok(());
@@ -2118,7 +2209,7 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
     fn drag(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), ComputerUseError> {
         self.move_to(from.0, from.1)?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
-        let Some((_, target, client_x, client_y)) = self.hit_test_at(from.0, from.1) else {
+        let Some((target, client_x, client_y)) = self.hit_test_at(from.0, from.1) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window at the drag start point on the hidden desktop",
             ));
@@ -2131,6 +2222,14 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
             pack_mouse_lparam(client_x, client_y),
         )?;
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
+        // Real drag input is CAPTURED by the window that received the press
+        // (SetCapture semantics): moves and the button-up keep going to the
+        // press target no matter where the pointer travels. Re-hit-testing
+        // each waypoint (the previous shape) delivered moves to whatever
+        // window lies under the point — sliders that track beyond their
+        // bounds, list reorders, and canvas pans crossing into a sibling
+        // window all broke, and the button-up could land on a different
+        // window than the press.
         let move_result = (|| {
             for (x, y) in drag_waypoints(from, to, DRAG_STEPS) {
                 if self.cancelled() {
@@ -2145,51 +2244,48 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                         "cannot move the hidden desktop's cursor during drag: {error}"
                     ))
                 })?;
-                if let Some((_, move_target, move_x, move_y)) = self.hit_test_at(x, y) {
-                    // A held-button move carries the pressed mark, exactly
-                    // like real input.
-                    self.post(
-                        move_target,
-                        WM_MOUSEMOVE,
-                        MK_LBUTTON,
-                        pack_mouse_lparam(move_x, move_y),
-                    )?;
-                }
+                // SAFETY: coordinate translation on a desktop window from
+                // the attached worker.
+                let (move_x, move_y) = unsafe { Self::client_of(target, x, y) };
+                // A held-button move carries the pressed mark, exactly like
+                // real input.
+                self.post(
+                    target,
+                    WM_MOUSEMOVE,
+                    MK_LBUTTON,
+                    pack_mouse_lparam(move_x, move_y),
+                )?;
                 sleep(Duration::from_millis(DRAG_STEP_DELAY_MS));
             }
             Ok(())
         })();
         // The button must be released regardless of whether the path
-        // movement errored.
+        // movement errored — to the press target (capture semantics above).
         // SAFETY: per-desktop cursor move on the attached worker.
         unsafe {
             let _ = SetCursorPos(to.0, to.1);
         }
-        let release = match self.hit_test_at(to.0, to.1) {
-            Some((_, target, client_x, client_y)) => self.post(
-                target,
-                WM_LBUTTONUP,
-                0,
-                pack_mouse_lparam(client_x, client_y),
-            ),
-            None => Err(ComputerUseError::unavailable(
-                "no window at the drag end point; the button-up was not delivered",
-            )),
-        };
+        // SAFETY: coordinate translation on a desktop window from the
+        // attached worker.
+        let (up_x, up_y) = unsafe { Self::client_of(target, to.0, to.1) };
+        let release = self.post(target, WM_LBUTTONUP, 0, pack_mouse_lparam(up_x, up_y));
         combine_drag_errors(move_result, release)
     }
 
     fn scroll(&mut self, direction: ScrollDirection, clicks: u32) -> Result<(), ComputerUseError> {
         let clicks = clicks.min(MAX_SCROLL_CLICKS);
         let point = self.cursor_point()?;
-        let Some((_, target, _, _)) = self.hit_test_at(point.x, point.y) else {
+        let Some((target, _, _)) = self.hit_test_at(point.x, point.y) else {
             return Err(ComputerUseError::unavailable(
                 "there is no window under the cursor on the hidden desktop",
             ));
         };
         let (message, delta) = wheel_message_and_delta(direction);
         // WM_MOUSEWHEEL/WM_MOUSEHWHEEL lParam carries SCREEN coordinates
-        // (unlike the button messages' client coordinates).
+        // (unlike the button messages' client coordinates). The wParam low
+        // word stays 0: real wheel input carries MK_* marks only while
+        // buttons are held, and DefWindowProc bubbles the wheel to the
+        // focus chain regardless of the target depth.
         let lparam = pack_mouse_lparam(point.x, point.y);
         for _ in 0..clicks {
             self.post(target, message, wheel_wparam(delta), lparam)?;
@@ -2398,7 +2494,8 @@ impl Drop for WindowsVirtualDesktopBackend {
             }
         }
         // 5. Close the desktop. ERROR_BUSY is tolerated by design (§6): the
-        //    named desktop is recovered at the next start.
+        //    desktop object is reclaimed when the process exits (the
+        //    kill-on-close job frees the last references).
         if !self.desktop.is_invalid() {
             // SAFETY: close of our own desktop handle.
             if let Err(error) = unsafe { CloseDesktop(self.desktop) } {
@@ -2606,16 +2703,37 @@ mod tests {
         assert!(modifiers.is_empty() && rest.is_empty());
     }
 
-    /// Key-message lParam shapes: down = repeat 1; up = repeat 1 with
-    /// previous-state (bit 30) + transition (bit 31) — what TranslateMessage
-    /// generates for real input.
+    /// Key-message lParam shapes: the pure composer places repeat=1, the
+    /// scan code at bits 16-23, the Alt context bit at 29, and the
+    /// previous-state (bit 30) + transition (bit 31) flags on the UP
+    /// variant — the shape real input carries (DefWindowProc's Alt+F4 /
+    /// menu handling reads WM_SYSKEYDOWN, and scan-validating apps key off
+    /// bits 16-23). The VK→scan translation itself is pinned for one
+    /// well-known key. WINDOWS-CI-ONLY (this whole file is cfg(windows)).
     #[test]
-    fn key_lparam_encodes_down_and_up_bit_shapes() {
-        assert_eq!(key_lparam(false), 1);
-        let up = key_lparam(true) as u32;
+    fn key_lparam_encodes_scan_context_and_up_bits() {
+        assert_eq!(compose_key_lparam(0, false, false), 1);
+        let up = compose_key_lparam(0, false, true) as u32;
         assert_eq!(up & 1, 1, "repeat count stays 1");
         assert_eq!(up >> 30 & 1, 1, "previous key state must be set on up");
         assert_eq!(up >> 31 & 1, 1, "transition flag must be set on up");
+        let with_scan = compose_key_lparam(0x3E, false, false) as u32;
+        assert_eq!(with_scan >> 16 & 0xFF, 0x3E, "scan code rides bits 16-23");
+        let context = compose_key_lparam(0x3E, true, false) as u32;
+        assert_eq!(
+            context >> 29 & 1,
+            1,
+            "Alt-held input must carry the context bit"
+        );
+        assert_eq!(context >> 16 & 0xFF, 0x3E);
+        // A scan value wider than the 8-bit field masks down (bit layout
+        // stays intact for whatever lands above).
+        let masked = compose_key_lparam(0x1_3E, false, false) as u32;
+        assert_eq!(masked >> 16 & 0xFF, 0x3E);
+        assert_eq!(masked >> 24, 0, "nothing leaks beyond the scan field");
+        // The translation the chord path performs: VK_F4 (0x73) → scan
+        // 0x3E on the standard keyboard (SAFETY: pure translation query).
+        assert_eq!(unsafe { vk_scan(0x73) }, 0x3E, "VK_F4 scan code");
     }
 
     /// Return/Tab type runs deliver WM_CHAR with the payload real input
@@ -2820,6 +2938,13 @@ mod tests {
         // Embedded quotes AND a trailing backslash: the quote escapes and
         // the trailing run doubles together.
         assert_eq!(quote_command_line_part(r#"say "hi"\"#), r#""say \"hi\"\\""#);
+        // A backslash directly before an EMBEDDED quote is an escape run
+        // too: it doubles, so the part's literal backslash survives the
+        // parse instead of being consumed as the quote's own escape. Per
+        // the documented rule (3 backslashes + quote = 1 backslash +
+        // literal quote character), `"C:\dir\\\"x"` parses back to the
+        // original `C:\dir\"x`.
+        assert_eq!(quote_command_line_part(r#"C:\dir\"x"#), r#""C:\dir\\\"x""#);
         assert_eq!(
             build_command_line("notepad.exe", &["my file.txt".to_string()]),
             "notepad.exe \"my file.txt\""

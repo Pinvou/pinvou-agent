@@ -367,6 +367,7 @@ export const dictEn = {
           grantTitleVirtual:'The agent requests an isolated virtual display',
           grantDesc:'If you allow it, the agent can see your screen and operate the mouse and keyboard for this session. Only allow this if you trust the current task; consequential actions still ask for confirmation one by one.',
           grantDescVirtual:'If you allow it, the agent works inside an isolated virtual display that never shows on your screen; your own desktop, mouse and keyboard stay untouched for this session. Inside that display there are no per-action confirmations (its apps cannot be screened), and apps the agent launches there run with your account\'s normal file and network access. Only allow this if you trust the current task.',
+          grantMacCaveat:'On this Mac, apps the agent opens start in your session first and are moved into the display best-effort; without the Accessibility permission their windows can stay visible on your desktop.',
           grantAllow:'Allow control for this session',
           grantDeny:'Deny',
           confirmTitle:'Confirm this action',

@@ -123,8 +123,15 @@ export function ComputerUseBanner({ slice, copy }) {
   );
 }
 
-/** Grant dialog (computer_use:grant_required) + per-action confirm dialog. */
-export function ComputerUseDialogs({ slice, copy }) {
+/** Grant dialog (computer_use:grant_required) + per-action confirm dialog.
+ * `virtualDisplayNote` is the semantic capability (`""` | `"windows"` |
+ * `"macos"`): on macOS the virtual grant gets an extra consent line — apps
+ * opened there launch into the user's graphics session first, and without
+ * the Accessibility permission their windows can stay visible on the
+ * user's desktop (the backend's model-facing target note says the same;
+ * the consent copy must not claim more isolation than the stack
+ * delivers). */
+export function ComputerUseDialogs({ slice, copy, virtualDisplayNote = '' }) {
   const view = computerUseConsentView(slice);
   const { pendingAction, actionError, clearActionError, run } = useConsentAction(copy);
   const grantRequest = view.grantRequest;
@@ -268,6 +275,9 @@ export function ComputerUseDialogs({ slice, copy }) {
           <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
             <h3 id="computer-use-grant-title" className="text-[16px] font-semibold mb-2">{grantVirtual ? copy.grantTitleVirtual : copy.grantTitle}</h3>
             <p className="text-[13px] leading-relaxed opacity-80 mb-4">{grantVirtual ? copy.grantDescVirtual : copy.grantDesc}</p>
+            {grantVirtual && virtualDisplayNote === 'macos' && copy.grantMacCaveat && (
+              <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{copy.grantMacCaveat}</p>
+            )}
             {actionError && actionError.stamp === grantRequest.sessionId && (
               <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>
             )}

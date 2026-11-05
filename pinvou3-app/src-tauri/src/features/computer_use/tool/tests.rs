@@ -166,6 +166,10 @@ struct MockState {
     /// default is Physical like every real physical backend; set Virtual to
     /// drive the target-marker/payload scenarios.
     display_target: DisplayTarget,
+    /// The per-OS fidelity note this mock reports (`Capabilities.target_note`
+    /// — empty like the real physical backends; set a sentence to drive the
+    /// once-per-session surfacing scenarios).
+    target_note: String,
     /// Recorded open_app calls (program, args): the execution surface for
     /// the `open` action (the "NOT executed" assertions for other actions
     /// need the same shape here).
@@ -214,6 +218,7 @@ impl Default for MockState {
             capture_error: false,
             type_error: None,
             display_target: DisplayTarget::Physical,
+            target_note: String::new(),
             opened: Vec::new(),
             open_error: None,
             open_pid: 4321,
@@ -259,7 +264,7 @@ impl ComputerUseBackend for MockBackend {
             ui_tree: state.ui_tree_cap,
             notes: "mock".to_string(),
             target: state.display_target,
-            target_note: String::new(),
+            target_note: state.target_note.clone(),
         }
     }
 
@@ -5633,16 +5638,16 @@ fn open_parameter_validation_matches_the_schema_bounds() {
 /// The lazy factory's creation helper refreshes the cached availability
 /// snapshot on BOTH creation outcomes, so a runtime install/removal of the
 /// virtual stack (e.g. `xvfb`) flips the settings hint on the next status
-/// read without a restart. Fresh shared state carries the "not been probed
-/// yet" placeholder; after the helper runs — even when `create` FAILS — a
-/// real probe verdict must have replaced it. The probe verdict itself is
-/// host-dependent (the stack may or may not be installed), but BOTH of its
-/// outcomes differ from the placeholder, so the inequality pins the refresh
-/// deterministically. The pref-off resolution ("disabled" + "") is frozen and
-/// host-independent, so it pins the flip path separately.
+/// read without a restart. The FAILURE arm under an on preference records
+/// the SPAWN VERDICT (deterministic wording, the exact strings below): a
+/// plain probe refresh would flip the hint back to "ready" for a stack
+/// that just demonstrably failed to start, which is the regression this pin
+/// guards. The pref-off resolution ("disabled" + "") is frozen and
+/// host-independent, so it pins the flip path separately. The success arm
+/// falls through to the probe refresh (the verdict rides a real creation).
 #[test]
 fn create_backend_reporting_availability_refreshes_snapshot_on_both_outcomes() {
-    // Failure arm: the placeholder snapshot must still be replaced.
+    // Failure arm: the SPAWN VERDICT, not a probe refresh.
     let shared = ComputerUseShared::new();
     let placeholder = shared.virtual_availability();
     assert_eq!(placeholder.state, "unavailable");
@@ -5663,13 +5668,17 @@ fn create_backend_reporting_availability_refreshes_snapshot_on_both_outcomes() {
     };
     assert!(err.to_string().contains("mock: creation failed"), "{err}");
     let refreshed = shared.virtual_availability();
-    assert!(
-        matches!(refreshed.state, "available" | "unavailable"),
-        "a real refresh resolves to a probe verdict, never a placeholder: {refreshed:?}"
+    assert_eq!(
+        refreshed.state, "unavailable",
+        "a failed virtual creation must record the failure verdict, never the \
+         probe's (possibly green) answer: {refreshed:?}"
     );
-    assert_ne!(
-        refreshed.detail, placeholder.detail,
-        "the placeholder must never survive a refresh (failure arm)"
+    assert!(
+        refreshed
+            .detail
+            .contains("the last virtual session failed to start")
+            && refreshed.detail.contains("mock: creation failed"),
+        "the failure wording must name the virtual spawn verdict: {refreshed:?}"
     );
 
     // The frozen pref-off resolution: deterministic on every host (the
@@ -5682,7 +5691,9 @@ fn create_backend_reporting_availability_refreshes_snapshot_on_both_outcomes() {
     );
     assert_eq!(disabled.detail, "");
 
-    // Success arm: the same refresh rides a successful creation.
+    // Success arm: the same refresh rides a successful creation (probe
+    // verdict; host-dependent, so only the placeholder inequality is pinned
+    // here — the failure arm above carries the deterministic assertions).
     let shared = ComputerUseShared::new();
     let mock = Arc::new(Mutex::new(MockState::default()));
     let backend = create_backend_reporting_availability(&shared, true, |_prefer| {
@@ -5790,6 +5801,85 @@ async fn audit_record_carries_the_display_target() {
         record.display_target.as_deref(),
         Some("physical"),
         "the audit must record the mock's physical target: {records:?}"
+    );
+}
+
+/// A VIRTUAL-target session drives the whole spine: the screenshot receipt
+/// carries the virtual marker, the per-OS fidelity note surfaces exactly
+/// once (and only on a SUCCESSFUL action — a failed first action must not
+/// burn the once-per-session surfacing, since `warnings` never reach the
+/// model on an error return), and the audit records the virtual spelling.
+/// The Physical-mock twins pin the other direction; no other test drives a
+/// Virtual target through the spine at all.
+#[tokio::test]
+async fn virtual_target_session_surfaces_note_markers_and_audit() {
+    let (fixture, _restore) = fixture();
+    {
+        let mut mock = fixture.mock.lock();
+        mock.display_target = DisplayTarget::Virtual;
+        mock.target_note = "per-OS fidelity note".to_string();
+    }
+    fixture.shared.grant_session("s-test");
+
+    // First action FAILS (capture error): the error reaches the model, the
+    // fidelity note must NOT be considered surfaced yet.
+    fixture.mock.lock().capture_error = true;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.expect("screenshot failure is a soft result").content;
+    assert!(
+        !text.contains("per-OS fidelity note"),
+        "a failed action renders no warnings; the note must stay unsurfaced: {text}"
+    );
+
+    // Second action succeeds: the note surfaces WITH the virtual marker, and
+    // the audit records the virtual spelling.
+    fixture.mock.lock().capture_error = false;
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.expect("screenshot").content;
+    assert!(
+        text.contains("warning: per-OS fidelity note"),
+        "the fidelity note must surface on the first successful action: {text}"
+    );
+    assert!(
+        text.contains("[target: isolated virtual display]"),
+        "the receipt must carry the virtual marker: {text}"
+    );
+    let records = read_audit_records(&fixture);
+    let shot = records
+        .iter()
+        .filter(|r| r.action == "screenshot" && r.result == Some("ok".to_string()))
+        .next_back()
+        .expect("the successful screenshot is audited");
+    assert_eq!(
+        shot.display_target.as_deref(),
+        Some("virtual"),
+        "the audit must record the mock's virtual target: {records:?}"
+    );
+
+    // Third action: exactly-once — no repeated note.
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.expect("screenshot").content;
+    assert!(
+        !text.contains("per-OS fidelity note"),
+        "the fidelity note must surface exactly once per session: {text}"
     );
 }
 

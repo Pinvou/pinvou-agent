@@ -187,7 +187,11 @@ fn serial_string() -> String {
 
 /// Effective PPI of the virtual panel: pixels over physical inches
 /// (25.4 mm per inch). Pure so the "≥ 200 PPI so the desktop UI stays
-/// normally sized" decision is pinned by a test.
+/// normally sized" decision is pinned by a test. Test-only: without the
+/// cfg gate the non-test build carries it as dead code, which the hard
+/// `-D warnings` gate would reject on macOS (the Linux gate never sees
+/// this file).
+#[cfg(test)]
 fn effective_ppi(width_px: u32, mm_width: f64) -> f64 {
     if mm_width <= 0.0 {
         return 0.0;
@@ -263,8 +267,10 @@ fn required_selectors() -> Vec<(
 }
 
 /// Cheap availability probe: private class + selector presence only. No side
-/// effects, no display creation (it runs on every status read and preference
-/// flip). Unavailable carries the wording the status surface shows the user.
+/// effects, no display creation (it runs at the refresh points — startup
+/// replay, preference flips, creation reporting; status reads consume the
+/// cached snapshot). Unavailable carries the wording the status surface
+/// shows the user.
 pub(crate) fn probe() -> VirtualAvailability {
     for name in [
         CLASS_VIRTUAL_DISPLAY,
@@ -750,8 +756,8 @@ fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
 /// pool / thread-affinity analysis cannot see through `AnyObject`), but
 /// THIS object is specifically managed:
 /// - created exactly once on the main thread (or the worker thread in the
-///   no-main-dispatch fallback) by [`create_and_wait`], which hands the +1
-///   across the bounded channel INSIDE this wrapper — a single, one-way
+///   no-main-dispatch fallback) by [`create_and_read_id`], which hands the
+///   +1 across the bounded channel INSIDE this wrapper — a single, one-way
 ///   ownership transfer, never shared;
 /// - owned exclusively by one `MacosVirtualDisplayBackend` on the
 ///   computer_use worker thread afterwards; the object is never messaged
@@ -779,7 +785,7 @@ struct VdHandle(Retained<AnyObject>);
 unsafe impl Send for VdHandle {}
 
 impl VdHandle {
-    /// Takes ownership of a +1 raw pointer produced by [`create_and_wait`].
+    /// Takes ownership of a +1 raw pointer produced by [`create_and_read_id`].
     /// Returns None on null (which the creation path never produces — it
     /// only hands out non-null pointers from `Retained::into_raw`).
     fn from_raw(ptr: *mut AnyObject) -> Option<Self> {
@@ -1000,35 +1006,48 @@ fn on_screen_windows() -> Vec<HitWindow> {
 /// Topmost on-screen normal-level window containing the point and belonging
 /// to the virtual display → owning pid. "Belonging" is ownership-scoped, not
 /// bare geometry (the isolation promise is unconditional, so the hit-test
-/// cannot be): the window's pid must be one the session launched
-/// (`session_pids` — includes transitional windows the AX move has not yet
-/// relocated), or the window must sit FULLY INSIDE the display bounds. A
-/// window that merely INTERSECTS the parked bounds is excluded: that is the
-/// shape of a user window overhanging from the user's desktop (partially
-/// dragged off-screen, or restored at a stale position when the display
-/// materialized) — without this scope such a window could win the hit-test
-/// and receive model input on the user's real desktop.
-fn pid_at_point(point: (i32, i32), display_bounds: CGRect, session_pids: &[i32]) -> Option<i32> {
+/// cannot be): the window's pid must be one the session launched WITHIN the
+/// ownership grace (`session_pids` — includes transitional windows the AX
+/// move has not yet relocated), or the window must sit FULLY INSIDE the
+/// display bounds. A window that merely INTERSECTS the parked bounds is
+/// excluded: that is the shape of a user window overhanging from the user's
+/// desktop (partially dragged off-screen, or restored at a stale position
+/// when the display materialized) — without this scope such a window could
+/// win the hit-test and receive model input on the user's real desktop.
+fn pid_at_point(
+    point: (i32, i32),
+    display_bounds: CGRect,
+    session_pids: &[(i32, Instant)],
+) -> Option<i32> {
     on_screen_windows()
         .into_iter()
-        .find(|window| targetable_at(window, point, display_bounds, session_pids))
+        .find(|window| targetable_at(window, point, display_bounds, session_pids, Instant::now()))
         .map(|window| window.pid)
 }
 
 /// The targeting predicate behind [`pid_at_point`] (pure, unit-pinned): a
 /// normal-level window containing the point is targetable when its pid is
-/// one the session launched, or its window sits FULLY inside the display
-/// bounds. Pure so the ownership scope (the isolation contract) is pinable
-/// without a live window list.
+/// one the session launched within [`SESSION_OWNERSHIP_GRACE`] (the AX-move
+/// transition — the window may legitimately sit anywhere while it is being
+/// relocated), or its window sits FULLY inside the display bounds. The
+/// grace is what keeps a session pid from being targetable FOREVER: a
+/// session app that quit frees its pid for recycling, and an exemption
+/// without a deadline would let a recycled pid's window — wherever on the
+/// user's desktop it sits — receive pid-posted input. `now` is injected so
+/// the predicate stays pure (and pinnable without a live window list).
 fn targetable_at(
     window: &HitWindow,
     point: (i32, i32),
     display_bounds: CGRect,
-    session_pids: &[i32],
+    session_pids: &[(i32, Instant)],
+    now: Instant,
 ) -> bool {
+    let session_owned_recently = session_pids.iter().any(|(pid, discovered)| {
+        *pid == window.pid && now.duration_since(*discovered) < SESSION_OWNERSHIP_GRACE
+    });
     window.normal_level
         && window.contains(point.0, point.1)
-        && (session_pids.contains(&window.pid) || window.contained_in(display_bounds))
+        && (session_owned_recently || window.contained_in(display_bounds))
 }
 
 /// Whether `pid` currently shows an on-screen normal-level window that
@@ -1419,6 +1438,15 @@ const OPEN_EXIT_STATUS_BUDGET: Duration = Duration::from_secs(3);
 /// residual mis-attribution among in-bounds windows is disclosed in
 /// `Capabilities::notes`).
 const DISCOVER_NAME_GRACE: Duration = Duration::from_millis(1000);
+/// How long a recorded session pid stays drivable WHEREVER its window is
+/// (the launch + AX-move transition; the direct-exec path waits for the
+/// window and the AX move runs immediately, so this is generous). After
+/// the grace, a session pid's windows must sit inside the display bounds
+/// like every other pid's: a session app that QUIT freed its pid for
+/// recycling, and a deadline-free ownership exemption would let a recycled
+/// pid's window — wherever on the user's desktop it sits — receive
+/// pid-posted input.
+const SESSION_OWNERSHIP_GRACE: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
 // Explicit unsupported answers (v1: no element targeting on virtual targets)
@@ -1454,13 +1482,15 @@ struct MacosVirtualDisplayBackend {
     /// clicks): the keyboard target. Cleared on explicit input failures.
     focus_pid: Option<i32>,
     /// Every pid the session itself launched via `open` (both launch
-    /// channels, recorded at discovery). The hit-test's OWNERSHIP scope:
-    /// these pids are drivable wherever their window currently is (the AX
-    /// move may still be in flight), while unknown pids must keep their
-    /// window fully inside the display bounds to be targeted — a user
-    /// window overhanging from the user's desktop must never win the
-    /// hit-test.
-    session_pids: Vec<i32>,
+    /// channels, recorded at discovery) with its discovery time: the
+    /// hit-test's OWNERSHIP scope is deadline-bound — a fresh session pid
+    /// is drivable wherever its window currently is (the AX move may still
+    /// be in flight), while unknown pids — and session pids past the
+    /// [`SESSION_OWNERSHIP_GRACE`], whose pid the app may since have
+    /// RELEASED for recycling — must keep their window fully inside the
+    /// display bounds to be targeted. A user window overhanging from the
+    /// user's desktop must never win the hit-test.
+    session_pids: Vec<(i32, Instant)>,
     /// The last synthesized point this backend moved to. The virtual
     /// display has NO user cursor (nobody's hand is on it), so
     /// `cursor_position` truthfully reports this synthesized state instead
@@ -1485,11 +1515,14 @@ impl MacosVirtualDisplayBackend {
     ///   last-interacted pid directly (keyboard focus semantics).
     ///
     /// The remembered-target fallback re-verifies the pid still shows a
-    /// window INSIDE the virtual display's bounds: a quit app, a window the
-    /// user dragged away, or a mis-attributed discovery must not receive
-    /// input aimed at the virtual session (events are pid-targeted and would
-    /// otherwise land wherever that app currently is — the user's desktop
-    /// included).
+    /// window touching (intersecting) the virtual display's bounds: a quit
+    /// app, a window the user dragged away, or a mis-attributed discovery
+    /// must not receive input aimed at the virtual session (events are
+    /// pid-targeted and would otherwise land wherever that app currently
+    /// is — the user's desktop included). "Touching" is the honest word:
+    /// the predicate is intersection, so a window the user dragged MOSTLY
+    /// off the display — a sliver still over it — still passes; the
+    /// capability notes state this as "touching it", not "inside it".
     fn input_pid(&self, hit_test: Option<(i32, i32)>) -> Result<i32, ComputerUseError> {
         // CGEventPostToPid needs the same Accessibility TCC grant as the
         // physical backend's CGEventPost — without it WindowServer silently
@@ -1539,28 +1572,51 @@ impl MacosVirtualDisplayBackend {
         }
     }
 
+    /// Targeting resolution with the stale-target cleanup: EVERY entry
+    /// point routes its `input_pid` failure through `clear_focus_on_error`,
+    /// so a stale remembered target clears instead of repeating the same
+    /// error on every action until some unrelated click resets it (the
+    /// contract `scroll` and `chord` already documented — the mouse entry
+    /// points below used to skip it on their early `?` returns).
+    fn input_pid_cleared(&mut self, hit_test: Option<(i32, i32)>) -> Result<i32, ComputerUseError> {
+        match self.input_pid(hit_test) {
+            Ok(pid) => Ok(pid),
+            Err(error) => {
+                self.clear_focus_on_error(&error);
+                Err(error)
+            }
+        }
+    }
+
     /// Session-scope placement guard, piggybacked on every capture (design
-    /// §7): if the virtual display somehow became the main display, joined
-    /// a mirror set, or got OVERLAPPED by a display the user connected or
-    /// moved (all three would put agent content on the user's screen or mix
-    /// the user's windows into captures), re-apply the session-scope
-    /// parking right of all displays — park_right_of_main re-verifies the
-    /// applied layout overlap-free. Bounded and non-fatal (warn only; the
-    /// next capture re-checks).
+    /// §7): if the virtual display somehow became the main display, or got
+    /// OVERLAPPED by a display the user connected or moved (both would put
+    /// agent content on the user's screen or mix the user's windows into
+    /// captures), re-apply the session-scope parking right of all displays —
+    /// park_right_of_main re-verifies the applied layout overlap-free. A
+    /// MIRROR JOIN is detected but NOT repairable by re-parking: a
+    /// placement change does not unjoin an existing mirror set, so the
+    /// hazard (agent content mirrored onto the user's screen) is reported
+    /// loudly instead of pretended away. Bounded and non-fatal (warn only;
+    /// the next capture re-checks).
     fn ensure_parked(&self) {
         let overlapped = other_display_bounds(self.display_id)
             .iter()
             .any(|(_, bounds)| rects_intersect(CGDisplayBounds(self.display_id), *bounds));
-        if CGMainDisplayID() == self.display_id
-            || CGDisplayIsInMirrorSet(self.display_id)
-            || overlapped
-        {
+        let mirrored = CGDisplayIsInMirrorSet(self.display_id);
+        if CGMainDisplayID() == self.display_id || mirrored || overlapped {
             log::warn!(
-                "[computer_use:macos-vd] virtual display became the main display, joined a \
-                 mirror set, or was overlapped by another display; re-applying session-scope \
-                 placement right of all displays"
+                "[computer_use:macos-vd] virtual display placement guard tripped \
+                 (main: {}, mirrored: {mirrored}, overlapped: {overlapped}); {}",
+                CGMainDisplayID() == self.display_id,
+                if mirrored {
+                    "a mirror join cannot be repaired by re-parking — agent content \
+                     may be visible on the user's screen until the mirror is undone"
+                } else {
+                    "re-applying session-scope placement right of all displays"
+                }
             );
-            if let Err(error) = park_right_of_main(self.display_id) {
+            if !mirrored && let Err(error) = park_right_of_main(self.display_id) {
                 log::warn!("[computer_use:macos-vd] re-parking failed: {error}");
             }
         }
@@ -1801,26 +1857,29 @@ impl MacosVirtualDisplayBackend {
     /// Launches `program` inside the virtual display target.
     ///
     /// Return contract (honest): the returned u32 is the owning pid, or 0
-    /// when the launch channel cannot report one. A FAILED launch (a bad
-    /// app name, a missing bundle, a binary that exits without ever showing
-    /// a window) is an explicit `Err`, never a silent `Ok(0)`. `open -a`
-    /// exits without the app pid, so the pid is recovered by watching for a
-    /// NEW pid to appear in the on-screen window list; if none appears
-    /// within [`OPEN_PID_DISCOVER_TIMEOUT`], the app was still launched but
-    /// the owning process cannot be determined yet — the session should
-    /// interact via clicks first (a screenshot after `open` shows the
-    /// result either way).
+    /// when the launch channel cannot report one. A FAILED launch fails
+    /// explicitly, never a silent `Ok(0)`: the direct-exec path detects a
+    /// binary that exits without ever showing a window (`Err`), and the
+    /// `open -a` path reports the launcher's nonzero exit (`Err`). What the
+    /// `open -a` arm CANNOT see is a bundle whose binary crashes
+    /// AFTER the launcher reported success: `open` exits 0 without the app
+    /// pid, pid discovery finds no window within
+    /// [`OPEN_PID_DISCOVER_TIMEOUT`], and the answer is the honest
+    /// "launched, owner unknown" `Ok(0)` — the session should interact via
+    /// clicks first (a screenshot after `open` shows the result either
+    /// way).
     fn launch(&mut self, program: &str, args: &[String]) -> Result<u32, ComputerUseError> {
         let program = validate_program(program)?;
-        let own_pid = i32::try_from(std::process::id()).unwrap_or(0);
-        // Pre-launch pid snapshot (+ our own): what `open -a` pid discovery
-        // subtracts to find the newcomer.
-        let known_pids: Vec<i32> = on_screen_windows()
-            .into_iter()
-            .map(|window| window.pid)
-            .chain(std::iter::once(own_pid))
-            .collect();
         let launched_pid: Option<u32> = if is_app_bundle(program) {
+            // Pre-launch pid snapshot (+ our own): what `open -a` pid
+            // discovery subtracts to find the newcomer. Taken only on this
+            // arm (the direct-exec arm knows its pid from the spawn).
+            let own_pid = i32::try_from(std::process::id()).unwrap_or(0);
+            let known_pids: Vec<i32> = on_screen_windows()
+                .into_iter()
+                .map(|window| window.pid)
+                .chain(std::iter::once(own_pid))
+                .collect();
             // .app bundles: `open -a <path> [--args ...]`. `open --env` is
             // deliberately NOT used: its availability varies across macOS
             // releases and cannot be verified from this codebase — the
@@ -1986,8 +2045,9 @@ impl MacosVirtualDisplayBackend {
         self.focus_pid = Some(pid_i32);
         // Ownership record for the hit-test: this pid is the session's (see
         // `session_pids`) — its windows stay drivable wherever the AX move
-        // has got to.
-        self.session_pids.push(pid_i32);
+        // has got to, until the ownership grace expires (then the display
+        // bounds decide, like for every other pid).
+        self.session_pids.push((pid_i32, Instant::now()));
         Ok(pid)
     }
 
@@ -2175,26 +2235,32 @@ fn released_modifier_key(flag: CGEventFlags) -> Key {
 /// The model-facing target disclosure. A function (not inline text) so the
 /// disclosure test below pins the EXACT strings the backend reports — a
 /// local copy in the test could silently drift from what the model sees.
-/// Self-truthful for macOS: input and screenshots stay on the virtual
-/// display (the remembered input target is verified to still show a window
-/// inside the display's bounds before every post), but apps opened with
-/// `open` launch into the user's graphics session first and are AX-moved
-/// into the display best-effort — without the Accessibility grant an opened
-/// app's window can stay visible on the user's desktop. Apps opened into
-/// the virtual display are not wound down when a session stops this round;
-/// only dropping the backend (which removes the display) ends them.
+/// Self-truthful for macOS: input stays on the virtual display (the
+/// remembered input target is verified to still show a window touching the
+/// display's bounds before every post), screenshots are captured from the
+/// display's own bounds (a window overhanging into them contributes its
+/// pixels — window-level straddle is disclosed, display-level overlap is
+/// verified away at park time), and apps opened with `open` launch into the
+/// user's graphics session first and are AX-moved into the display
+/// best-effort — without the Accessibility grant an opened app's window can
+/// stay visible on the user's desktop. Apps opened into the virtual display
+/// are not wound down when a session stops this round; only dropping the
+/// backend (which removes the display) ends them.
 fn capability_target_note() -> String {
-    "experimental isolated virtual display (private macOS API): screenshots and input \
-     stay on the virtual display, and input targets are verified to have a window \
-     inside it; events are delivered directly to the target app and may not reach \
-     every app (e.g. WebKit content processes on recent macOS may ignore them); apps \
-     opened with open launch into the user's graphics session and are moved into the \
-     virtual display best-effort — without the Accessibility grant an opened app's \
-     window may stay visible on the user's desktop (it can be closed by dropping the \
-     backend); if this macOS lacks the private API the session falls back to your \
-     desktop, decided once at session start; apps opened in the virtual display are \
-     not closed when a session stops — they remain until the virtual display backend \
-     is dropped, which is what removes the display"
+    "experimental isolated virtual display (private macOS API): input stays on the \
+     virtual display and input targets are re-verified to still show a window \
+     touching it before every post; screenshots are captured from the virtual \
+     display's own bounds, so a window overhanging into those bounds contributes \
+     its pixels to the capture; events are delivered directly to the target app \
+     and may not reach every app (e.g. WebKit content processes on recent macOS \
+     may ignore them); apps opened with open launch into the user's graphics \
+     session and are moved into the virtual display best-effort — without the \
+     Accessibility grant an opened app's window may stay visible on the user's \
+     desktop (it can be closed by dropping the backend); if this macOS lacks the \
+     private API the session falls back to your desktop, decided once at session \
+     start; apps opened in the virtual display are not closed when a session \
+     stops — they remain until the virtual display backend is dropped, which is \
+     what removes the display"
         .to_string()
 }
 
@@ -2222,10 +2288,12 @@ fn capability_notes() -> String {
      sits behind the periodic keep-allowing-screen-recording confirmation; apps \
      launched with open take a moment before their windows appear, and the pid \
      reported for such an app is recovered by watching for a new window on the \
-     virtual display (owner-name match preferred, unnamed windows only when already \
-     inside the display's bounds) — in rare cases an unrelated in-bounds window \
-     appearing during that search is attributed to the wrong app, and when no \
-     matching window appears the pid is reported as 0 (interact via clicks)"
+     virtual display (owner-name match preferred — a same-named window the USER \
+     opens during the brief search would be claimed and moved into the virtual \
+     display; unnamed windows only when already inside the display's bounds) — \
+     in rare cases an unrelated in-bounds window appearing during that search \
+     is attributed to the wrong app, and when no matching window appears the \
+     pid is reported as 0 (interact via clicks)"
         .to_string()
 }
 
@@ -2319,7 +2387,7 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
-        let pid = self.input_pid(Some((x, y)))?;
+        let pid = self.input_pid_cleared(Some((x, y)))?;
         let (event_type, button) = move_event_type(&self.held_buttons);
         let posted = self.post_mouse_to_pid(pid, event_type, button, (x, y), 0);
         if posted.is_ok() {
@@ -2332,7 +2400,7 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
 
     fn click(&mut self, button: MouseButton, count: u8) -> Result<(), ComputerUseError> {
         let dest = self.click_destination()?;
-        let pid = self.input_pid(Some(dest))?;
+        let pid = self.input_pid_cleared(Some(dest))?;
         // Settle before the first down (the physical path settles after a
         // move). Note the hit-test in input_pid has ALREADY run above — this
         // settle gives the target app time to process the synthesized
@@ -2383,7 +2451,7 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
 
     fn mouse_down(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         let dest = self.click_destination()?;
-        let pid = self.input_pid(Some(dest))?;
+        let pid = self.input_pid_cleared(Some(dest))?;
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
         let (down, _, _) = cg_mouse_event_types(button);
         let posted = self.post_mouse_to_pid(pid, down, cg_mouse_button(button), dest, 1);
@@ -2401,7 +2469,7 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         let dest = self.click_destination()?;
-        let pid = self.input_pid(Some(dest))?;
+        let pid = self.input_pid_cleared(Some(dest))?;
         let (_, up, _) = cg_mouse_event_types(button);
         let posted = self.post_mouse_to_pid(pid, up, cg_mouse_button(button), dest, 1);
         if posted.is_ok() {
@@ -2418,7 +2486,7 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
         // The window that accepts the press keeps the whole drag even when
         // the path leaves its bounds, so every event of this drag targets
         // the pid under the START point.
-        let drag_pid = self.input_pid(Some(from))?;
+        let drag_pid = self.input_pid_cleared(Some(from))?;
         self.post_mouse_to_pid(drag_pid, CGEventType::MouseMoved, left, from, 0)?;
         self.cursor = Some(from);
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
@@ -3120,24 +3188,47 @@ mod tests {
         assert!(overhanging_user_window.intersects(vd));
         assert!(!overhanging_user_window.contained_in(vd));
         let point_inside_both = (1505, 12);
+        let now = Instant::now();
         // Unknown pid + fully contained → targetable (covers the pid-0
         // discovery dead end: an app whose pid was never recovered stays
         // drivable while it lives on the display).
-        assert!(targetable_at(&session_app, point_inside_both, vd, &[]));
-        // Session pid → targetable even when the window is somewhere
+        assert!(targetable_at(&session_app, point_inside_both, vd, &[], now));
+        // Fresh session pid → targetable even when the window is somewhere
         // transitional (the AX move has not relocated it yet).
         assert!(targetable_at(
             &overhanging_user_window,
             point_inside_both,
             vd,
-            &[202]
+            &[(202, now)],
+            now
         ));
         // The isolation core: unknown pid + merely intersecting → never.
         assert!(!targetable_at(
             &overhanging_user_window,
             point_inside_both,
             vd,
-            &[]
+            &[],
+            now
+        ));
+        // The ownership exemption is DEADLINE-BOUND: past the grace the
+        // session pid's window must sit inside the display like everyone
+        // else's — a quit app's RECYCLED pid (whose new window lives on the
+        // user's desktop) must not stay targetable forever.
+        let stale = now - (SESSION_OWNERSHIP_GRACE + Duration::from_secs(1));
+        assert!(!targetable_at(
+            &overhanging_user_window,
+            point_inside_both,
+            vd,
+            &[(202, stale)],
+            now
+        ));
+        // ...while a contained window stays targetable after the grace.
+        assert!(targetable_at(
+            &session_app,
+            point_inside_both,
+            vd,
+            &[(101, stale)],
+            now
         ));
         // Overlay/high-level windows are never targetable either way.
         let overlay = HitWindow {
@@ -3149,8 +3240,14 @@ mod tests {
             normal_level: false,
             owner_name: None,
         };
-        assert!(!targetable_at(&overlay, point_inside_both, vd, &[]));
-        assert!(!targetable_at(&overlay, point_inside_both, vd, &[303]));
+        assert!(!targetable_at(&overlay, point_inside_both, vd, &[], now));
+        assert!(!targetable_at(
+            &overlay,
+            point_inside_both,
+            vd,
+            &[(303, now)],
+            now
+        ));
     }
 
     /// Launch-program classification: `.app` bundles (case-insensitive) go
@@ -3253,9 +3350,16 @@ mod tests {
     #[test]
     fn capability_notes_disclose_the_target_contract() {
         let note = capability_target_note();
-        // In-display guarantees...
-        assert!(note.contains("screenshots and input stay on the virtual display"));
-        assert!(note.contains("verified to have a window inside it"));
+        // In-display guarantees... ("touching" not "inside": the
+        // re-verification predicate is an intersection, and the copy says
+        // so)
+        assert!(note.contains("input stays on the virtual display"));
+        assert!(note.contains("re-verified to still show a window touching it"));
+        assert!(
+            note.contains("a window overhanging into those bounds contributes its pixels"),
+            "the capture is rect-scoped: an overhanging window's pixels reaching \
+             the capture must be disclosed"
+        );
         assert!(note.contains("WebKit content processes"));
         assert!(note.contains("falls back to your desktop"));
         // ...and the honest open residual: launchd starts the app in the
@@ -3273,10 +3377,15 @@ mod tests {
         // The remembered-target re-verification and its recovery hint.
         assert!(notes.contains("re-verified to still show a window"));
         assert!(notes.contains("click inside the display to focus a new one"));
-        // The open-pid discovery shape: in-bounds only, name preferred,
-        // pid 0 when nothing matches.
+        // The open-pid discovery shape: in-bounds only, name preferred
+        // (with the same-named-user-window residual stated), pid 0 when
+        // nothing matches.
         assert!(notes.contains("watching for a new window on the virtual display"));
         assert!(notes.contains("only when already inside the display's bounds"));
+        assert!(
+            notes.contains("the USER opens during the brief search"),
+            "the name-match residual (a user window can be claimed) must be disclosed"
+        );
         assert!(notes.contains("attributed to the wrong app"));
         assert!(notes.contains("the pid is reported as 0"));
         // The grant contract is enforced now (input_pid preflight): the

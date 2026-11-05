@@ -1985,13 +1985,17 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // input, WM-less degradation) is model-facing but had no channel of
         // its own: surface it ONCE per session on the first action's
         // warnings, so the model learns the target's limits before it
-        // wonders why an input did not land.
-        {
-            let mut state = parts.state.lock();
-            if !state.target_note_surfaced && !capabilities.target_note.is_empty() {
-                warnings.push(capabilities.target_note.clone());
-                state.target_note_surfaced = true;
-            }
+        // wonders why an input did not land. The `surfaced` flag is set only
+        // where the warnings are actually RENDERED (the success return
+        // below): `warnings` never reach the model on an error return, so
+        // flagging at push time could lose the note for the whole session
+        // when the first action fails.
+        let note_pending = {
+            let state = parts.state.lock();
+            !state.target_note_surfaced && !capabilities.target_note.is_empty()
+        };
+        if note_pending {
+            warnings.push(capabilities.target_note.clone());
         }
         match action.class() {
             ActionClass::Input if !capabilities.input => {
@@ -2077,6 +2081,12 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
 
         for warning in &warnings {
             outcome.push_str(&format!("\nwarning: {warning}"));
+        }
+        // The note reached the model with this outcome — exactly-once
+        // guaranteed from here (a first action that failed above left the
+        // flag unset, so the next action retries the surfacing).
+        if note_pending {
+            parts.state.lock().target_note_surfaced = true;
         }
         Ok(outcome)
     })();
@@ -2686,6 +2696,12 @@ impl ToolSpec for ComputerUseTool {
                 let error_text = error.to_string();
                 let mut record = AuditRecord::new(&self.parts.session_id, "unparseable", "n/a");
                 record.with_target(&audit_target);
+                // Display target like every other boundary record (the cache
+                // is unprimed this early, so this is the resolved-preference
+                // answer — the audit vocabulary treats absent/unknown as
+                // distinct, and the resolved preference is what the session
+                // WOULD target).
+                record.with_display_target(resolved_display_target(&self.parts).as_str());
                 let record = record.finish(
                     "rejected",
                     Some(format!(
@@ -2714,37 +2730,39 @@ impl ToolSpec for ComputerUseTool {
         // Capabilities first (review finding: prompting for the grant before
         // reporting the platform unsupported would induce the user to
         // authorize a platform that can never be used, while burning a grant
-        // budget for nothing).
-        if parsed.action.class() == ActionClass::Input {
-            let backend = self.parts.backend.clone();
-            let capabilities = tauri::async_runtime::spawn_blocking(move || backend.capabilities())
-                .await
-                .map_err(|error| {
-                    ToolError::execution_failed(format!("computer use worker join failed: {error}"))
-                })?
-                .map_err(|error| ToolError::execution_failed(backend_error_text(&error)))?;
-            // Cache the backend's recorded target at the earliest read so
-            // the grant payload below (and every later surface) reflects the
-            // backend's actual decision, not the preference fallback.
-            cache_display_target(&self.parts, &capabilities);
-            if !capabilities.input {
-                // Audit the rejected call (review finding: capability
-                // rejections had no trace at all, inconsistent with the
-                // established audit treatment of gate rejections).
-                audit_rejected_call(
-                    &self.parts,
-                    &parsed.action,
-                    "capability:input-unsupported",
-                    &format!(
-                        "input injection is unsupported on this platform/session ({})",
-                        capabilities.notes
-                    ),
-                );
-                return Ok(ToolResult::error(format!(
+        // budget for nothing). The read covers EVERY action class — its
+        // target cache is what the consent gate's grant event and the
+        // rejected-call audits below report, so a first-action Observe
+        // rejection carries the backend's recorded decision instead of the
+        // live probe's answer (which a mid-run stack install could flip).
+        let backend = self.parts.backend.clone();
+        let capabilities = tauri::async_runtime::spawn_blocking(move || backend.capabilities())
+            .await
+            .map_err(|error| {
+                ToolError::execution_failed(format!("computer use worker join failed: {error}"))
+            })?
+            .map_err(|error| ToolError::execution_failed(backend_error_text(&error)))?;
+        // Cache the backend's recorded target at the earliest read so
+        // the grant payload below (and every later surface) reflects the
+        // backend's actual decision, not the preference fallback.
+        cache_display_target(&self.parts, &capabilities);
+        if parsed.action.class() == ActionClass::Input && !capabilities.input {
+            // Audit the rejected call (review finding: capability
+            // rejections had no trace at all, inconsistent with the
+            // established audit treatment of gate rejections).
+            audit_rejected_call(
+                &self.parts,
+                &parsed.action,
+                "capability:input-unsupported",
+                &format!(
                     "input injection is unsupported on this platform/session ({})",
                     capabilities.notes
-                )));
-            }
+                ),
+            );
+            return Ok(ToolResult::error(format!(
+                "input injection is unsupported on this platform/session ({})",
+                capabilities.notes
+            )));
         }
 
         // Consent gate (synchronous fast path; emits an event on rejection).
@@ -2848,11 +2866,10 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
 /// action did not run and there is no injection consequence, but the error is
 /// never swallowed silently (fail-open: an append failure only eprintlns).
 /// The record carries the resolved display target like every other
-/// boundary record. The target is the backend's recorded decision when the
-/// capability read has already primed the cache (every Input-class path);
-/// Observe-class gate rejections fire before any capability read, so those
-/// records carry the probe/preference fallback answer — good enough for an
-/// action that never executed, and honestly the best available answer.
+/// boundary record. The target is the backend's recorded decision: the
+/// early capability read in `execute` primes the cache for EVERY action
+/// class before the gates, so even a first-action rejection reports the
+/// backend's actual decision rather than the live probe's answer.
 fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, message: &str) {
     let mut record = AuditRecord::new(
         &parts.session_id,

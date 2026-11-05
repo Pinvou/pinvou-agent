@@ -260,6 +260,21 @@
         if (raw.pending_grant && !pending.grant) {
           pending.grant = true;
           pending.grantAt = Date.now();
+          // Seed the request's target from the SAME status payload's
+          // per-session display target (server truth for the live pending
+          // grant, written once at backend creation — never a previous
+          // epoch's event value). Without it, a reload/event-less
+          // resurfacing renders the PHYSICAL grant copy for a virtual
+          // session: copy that promises per-action confirmations the
+          // virtual target structurally never raises. A stale epoch cannot
+          // leak through this path (the value comes from the live status,
+          // not from a remembered event), and only concrete
+          // "virtual"/"physical" values are copied (fail-neutral: absent,
+          // null, or unknown targets leave the physical fallback).
+          const sessionTarget = sessionDisplayTargetPatch(raw);
+          if (sessionTarget && sessionTarget.sessionDisplayTarget) {
+            pending.grantTarget = sessionTarget.sessionDisplayTarget;
+          }
         } else if (
           !raw.pending_grant &&
           pending.grant &&
@@ -268,12 +283,10 @@
           pending.grant = false;
           // The epoch's target dies with it (review finding): a stale
           // grantTarget must not survive into the next grant epoch. The
-          // reconcile-true branch above does NOT write a target (that is the
-          // event's job), so an event-less resurfacing of a later request
-          // would otherwise rebuild buildGrantRequest with the PREVIOUS
-          // epoch's target and render the wrong (e.g. virtual) dialog copy;
-          // with the key gone, buildGrantRequest renders the fail-neutral
-          // physical copy.
+          // reconcile-true branch now SEEDS a fresh target from the live
+          // status's session truth, so an event-less resurfacing renders
+          // the right dialog copy instead of the fail-neutral physical
+          // default.
           delete pending.grantTarget;
         }
       }
