@@ -433,10 +433,13 @@ impl ScheduledChatExecutor {
                 // 还有 bounded-read 原语的 io Display(path.display() 的绝对
                 // 存储路径,来自 refresh_recent_work_expiry / snapshot load
                 // 的 context)——run record 经 list_scheduled_task_runs 出站
-                // (Web 允许清单内),与命令层同一口径折叠存储根。
-                error: Some(crate::platform::paths::redact_storage_prefix(&format!(
+                // (Web 允许清单内),与命令层同一口径折叠存储根。Round-21
+                // 复审:与命令层 S10-1 同序修正为先折叠后扫描——secret 先行
+                // 的旧序在含空白的家目录上会让 ≥24 长度族先吃掉折叠 needle
+                // (round-20 源钉 arm<fold<secret 钉住的正是该漏洞序)。
+                error: Some(crate::platform::credential_store::redact_secret(&format!(
                     "memory organize: {}",
-                    crate::platform::credential_store::redact_secret(&format!("{error:#}"))
+                    crate::platform::paths::redact_storage_prefix(&format!("{error:#}"))
                 ))),
                 terminal_reason: TaskTerminalReason::Failed,
             },
@@ -476,11 +479,19 @@ impl TaskExecutor for ScheduledChatExecutor {
                     .await;
             }
             ScheduledTaskKindLookup::Unsupported(raw) => {
+                // Round-21 复审:kind 字段是 app-owned-but-not-trusted 的
+                // sidecar 状态(上方声明两处),Debug 展开的原始字节此前
+                // 未经折叠/扫描直达 Web 可见的 run record——本文件错误构造
+                // 的统一纪律(先折叠后扫描)在此同样适用;良性 kind 经两
+                // 层 no-op 后仍原样可读。
+                let detail = format!(
+                    "unsupported scheduled task kind {raw:?}; update the app or recreate the task"
+                );
                 return TaskExecutionResult {
                     status: TaskStatus::Failed,
                     result_text: None,
-                    error: Some(format!(
-                        "unsupported scheduled task kind {raw:?}; update the app or recreate the task"
+                    error: Some(crate::platform::credential_store::redact_secret(
+                        &crate::platform::paths::redact_storage_prefix(&detail),
                     )),
                     terminal_reason: TaskTerminalReason::Failed,
                 };
@@ -571,10 +582,12 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
             result_text: None,
             // Round-20 复审 MAJOR-2:取消路径携带的引擎错误链同样落 run
             // record(list_scheduled_task_runs 出站),与 failed( 同一折叠
-            // 口径。
+            // 口径。Round-21 复审:口径统一为先折叠后扫描(下方 failed(
+            // 同批修正)——secret 先行会在含空白的家目录上让 ≥24 长度族
+            // 先吃掉折叠 needle(记忆命令臂 S10-1 实证形态)。
             error: completion.error.map(|error| {
-                crate::platform::paths::redact_storage_prefix(
-                    &crate::platform::credential_store::redact_secret(&error),
+                crate::platform::credential_store::redact_secret(
+                    &crate::platform::paths::redact_storage_prefix(&error),
                 )
             }),
             terminal_reason: TaskTerminalReason::Canceled,
@@ -591,8 +604,8 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
         TurnOutcomeStatus::Failed => TaskExecutionResult {
             status: TaskStatus::Failed,
             result_text: None,
-            error: Some(crate::platform::paths::redact_storage_prefix(
-                &crate::platform::credential_store::redact_secret(
+            error: Some(crate::platform::credential_store::redact_secret(
+                &crate::platform::paths::redact_storage_prefix(
                     &completion
                         .error
                         .unwrap_or_else(|| "Scheduled conversation failed".to_string()),
@@ -612,11 +625,16 @@ fn failed(error: impl std::fmt::Display) -> TaskExecutionResult {
         // context 携带 `<home>/.../scheduled-runs/...` 绝对路径
         // (sessions/retention.rs),run_turn 错误链同类;run record 经
         // list_scheduled_task_runs 出站(Web 允许清单内),与上方 organize
-        // 臂同一口径——secret 内层、存储根折叠最外层。organize 臂在本文件
-        // 内自行折叠且不走本 helper(见其双界源钉),其余 failed( 臂此前
-        // 无任何折叠;已折叠文本二次折叠幂等。
-        error: Some(crate::platform::paths::redact_storage_prefix(
-            &crate::platform::credential_store::redact_secret(&error.to_string()),
+        // 臂同一口径。Round-21 复审:口径修正为先折叠后扫描(fold 内层、
+        // secret 外层)——round-20 的 secret 内层序正是记忆命令臂 S10-1
+        // 实证过的泄漏形态:含空白的家目录上 ≥24 长度族会先吃掉折叠
+        // needle,盘符/用户名碎片明文出站;fold 先行让 needle 完整存活,
+        // 折叠后文本再过扫描(短 token 存活为折叠形态,长 token 整体
+        // [REDACTED],两个方向都不残留家目录碎片)。organize 臂在本文件
+        // 内自行折叠且不走本 helper(见其双界源钉);已折叠文本二次折叠
+        // 幂等。
+        error: Some(crate::platform::credential_store::redact_secret(
+            &crate::platform::paths::redact_storage_prefix(&error.to_string()),
         )),
         terminal_reason: TaskTerminalReason::Failed,
     }
@@ -1410,7 +1428,12 @@ mod tests {
     /// `memory_organize_failure_folds_the_storage_root_in_the_record`
     /// (Round-19 复审补的行为钉,同一文件内即可构造失败 organize)
     /// 双重兜底:源码钉锚生产半边与臂内 redact 顺序,删任一层 redact
-    /// 即红;行为钉走真实执行路径断言 record 内容。
+    /// 即红;行为钉走真实执行路径断言 record 内容。Round-21 复审:顺序
+    /// 断言翻转为 fold 先行(secret 外层、fold 内层)——round-20 版本
+    /// 钉住的 arm<fold<secret 恰是 S10-1 实证过的漏洞序,本钉此前在
+    /// 保护错误方向;空白 home 行为钉
+    /// (`memory_organize_failure_folds_before_the_secret_scan_on_whitespace_homes`)
+    /// 给顺序补上行为级红。
     #[test]
     fn memory_organize_failure_reason_folds_the_storage_prefix() {
         let source = include_str!("executor.rs");
@@ -1428,19 +1451,21 @@ mod tests {
         let arm = body
             .find("Err(error) => TaskExecutionResult")
             .expect("the failure arm present");
+        let secret = body
+            .find("redact_secret(&format!(")
+            .expect("the failure reason must still pass through redact_secret");
         let fold = body
-            .find("crate::platform::paths::redact_storage_prefix(&format!(")
+            .find("crate::platform::paths::redact_storage_prefix(&format!(\"{error:#}\"))")
             .expect(
                 "the failure reason must fold the storage root via redact_storage_prefix; \
                  io error Displays carry the absolute path",
             );
-        let secret = body
-            .find("redact_secret(&format!(\"{error:#}\"))")
-            .expect("the failure reason must still pass through redact_secret");
         assert!(
-            arm < fold && fold < secret,
-            "the fold wraps the secret redaction inside the failure arm (outer \
-             redact_storage_prefix, inner redact_secret)"
+            arm < secret && secret < fold,
+            "the fold must run BEFORE the secret scan (outer redact_secret over \
+             inner redact_storage_prefix): scan-then-fold lets the >=24-char \
+             secret family destroy the fold needle on whitespace-containing \
+             homes and leak a drive+username fragment (the S10-1 shape)"
         );
     }
 
@@ -1824,13 +1849,125 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn memory_organize_failure_folds_before_the_secret_scan_on_whitespace_homes() -> Result<()>
+    {
+        // Round-21 复审(S10-1 补齐)行为钉:含空白的家目录上,secret 先行
+        // 的旧序会让 ≥24 长度族的空白分词吃掉折叠 needle(`...John
+        // [REDACTED]` 形态),盘符/用户名碎片明文落 run record。生产臂
+        // (round-21 起与命令层同序)先折叠后扫描:折叠形态的短 token 存活
+        // 为 ~/.pinvou3 形态,长 token 整体 [REDACTED]——两个方向都不残留
+        // 家目录碎片。对照腿用旧序手工复现泄漏形状(空白前段短于 ≥24 族时
+        // 可构造;临时目录本身超长的平台跳过对照腿,生产不变式腿照常执行)。
+        // 把顺序改回 secret 先行即红。ENV_LOCK 保证 worker 线程读到与本测试
+        // 构造一致的 PINVOU3_HOME。
+        let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
+        let home = base.join("John Doe").join(".pinvou3");
+        std::fs::create_dir_all(&home).unwrap();
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        // 路径一律取 pinvou3_home() 的读数(macOS /tmp 符号链接等规范化差
+        // 异),保证折叠 needle 与注入的失败 detail 同源。尾段补足到 ≥24
+        // 含数字+字母,让旧序的 ≥24 族必定命中(泄漏形状与临时目录长度
+        // 无关)。
+        let home_now = crate::platform::paths::pinvou3_home();
+        let detail = format!(
+            "snapshot load failed: {}/sessions2/x.json12345678901234567890123456789",
+            home_now.display()
+        );
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        runtime.set_organize_error(Some(detail));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Failed);
+        let error = finished
+            .error
+            .as_deref()
+            .expect("failed run carries the error");
+        assert!(
+            !error.contains("John") && !error.contains("Doe"),
+            "fold-first must not leak any home fragment onto the web-visible \
+             run record, got: {error}"
+        );
+        assert!(
+            error.contains("memory organize: "),
+            "the failure arm must still format the organize context, got: {error}"
+        );
+
+        // 对照腿:旧序(secret 先行)确实产生碎片泄漏——本测试钉的就是该
+        // 形态不再出现在生产臂。空白前段(temp/jd<pid>/John)短于 ≥24 族
+        // 时形状可复现;平台上临时目录本身超长时跳过(macOS /var/folders…),
+        // 与 memory.rs 同名钉的既有口径一致。
+        let pre_space = format!("{}/John", base.display());
+        if pre_space.len() < 24 {
+            let leaked = crate::platform::paths::redact_storage_prefix(
+                &crate::platform::credential_store::redact_secret(&format!(
+                    "memory organize: snapshot load failed: {}/sessions2/x.json12345678901234567890123456789",
+                    home_now.display()
+                )),
+            );
+            assert!(
+                leaked.contains("John"),
+                "control: the reversed order must reproduce the fragment-leak \
+                 shape this pin forbids, got: {leaked}"
+            );
+        }
+
+        // 短尾段腿:折叠形态完整出站(折叠层在扫描前已把家目录替换干净)。
+        let plain_detail = format!(
+            "snapshot load failed: {}/mem/x.json: boom",
+            home_now.display()
+        );
+        let plain_runtime = Arc::new(ScriptedRuntime::new([]));
+        plain_runtime.set_organize_error(Some(plain_detail));
+        let plain_executor = Arc::new(
+            ScheduledChatExecutor::new(plain_runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
+        );
+        let (_plain_root, plain_manager) = manager_with_executor(plain_executor).await?;
+        let plain_queued = plain_manager.add_task(request("organize memory")).await?;
+        let plain_finished = wait_for_terminal_state(
+            &plain_manager,
+            &plain_queued.id,
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
+        let plain_error = plain_finished
+            .error
+            .as_deref()
+            .expect("failed run carries the error");
+        assert!(
+            plain_error.contains("memory organize: snapshot load failed: ~/.pinvou3/mem/x.json"),
+            "the short folded tail must survive the secret scan intact, got: {plain_error}"
+        );
+        plain_manager.shutdown();
+        manager.shutdown();
+        Ok(())
+    }
+
     #[test]
     fn failed_reason_folds_the_storage_root_like_the_organize_arm() {
         // Round-20 复审 MAJOR-2 行为钉(单元半):failed( 是
         // create_session(:505)与 run_turn(:545)错误臂的共同出口——
         // create_scheduled_run 的最外层 anyhow context 携带绝对存储路径,
-        // 此前该出口无任何折叠。删除 failed( 内的折叠(或内外层序对调)
-        // 本断言即红。
+        // 此前该出口无任何折叠。删除 failed( 内的折叠本断言即红。
+        // (Round-21 复审修正:round-20 注释声称「内外层序对调本断言即红」
+        // 不成立——短 home 下两层 token 都短于 ≥24 族,对调是字节级 no-op,
+        // 顺序由源钉
+        // memory_organize_failure_reason_folds_the_storage_prefix 与空白
+        // home 行为钉守护。)
         let (_env_guard, _env_restore) =
             crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
@@ -1847,7 +1984,7 @@ mod tests {
         let error = result.error.expect("failed() must carry the error");
         assert!(
             error.contains("create scheduled task workspace ~/.pinvou3/sr/w"),
-            "the failed() exit must fold the storage root outermost, got: {error}"
+            "the failed() exit must fold the storage root before the secret scan, got: {error}"
         );
         assert!(
             !error.contains("p8/sr"),
