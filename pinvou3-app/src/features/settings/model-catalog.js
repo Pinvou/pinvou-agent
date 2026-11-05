@@ -93,6 +93,19 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   re-verified end-to-end behavior, not part of a data refresh (revisit
 //   together with the bare-row restore once the pinned child carries the
 //   replay repair, upstream CodeWhale#137). See the kimi group.
+// - vendors considered and deliberately skipped (round-8 review: kept
+//   here so the decision survives outside the review record): Ollama
+//   Cloud (base has a dedicated kind + exact route, but the bridge lacks
+//   a vendor→ollama arm — follow-up material, same class as the four new
+//   groups' generic-openai stamps), Baidu Qianfan (base kind exists but
+//   its default base URL matches no official host — upstream fix first),
+//   Azure OpenAI (resource/deployment setup shape; endpoint auth not
+//   verified this run), AWS Bedrock / Vertex express (ephemeral/OAuth
+//   keys unfit for a key-based desktop preset), Tencent Hunyuan
+//   (duplicated by the TokenHub groups), iFlytek Spark (tier
+//   consolidation, dying), and LongCat / StepFun / Novita / Cerebras /
+//   NVIDIA NIM / Fireworks / SenseNova / Ant Ling (niche, duplicative,
+//   or unverifiable GA).
 const MODEL_PRESET_DEFS = {
   local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
   deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-flash' },
@@ -1041,6 +1054,14 @@ const MODEL_CATALOG = {
         { model: 'doubao-seed-2.1-lite', title: 'doubao-seed-2.1-lite', desc: '轻量模型' },
         { model: 'doubao-seed-2.0-mini', title: 'doubao-seed-2.0-mini', desc: '轻量模型' },
         { model: 'kimi-k3', title: 'kimi-k3', desc: 'Kimi 上代旗舰' },
+        // Round-8 disclosure: this Volcengine-hosted K3.1 row keeps the
+        // volcengine effort ladder (FE and Rust parity holds — the vendor
+        // stamp is doubao, the route is Volcengine's, so the Moonshot
+        // K3.1 no-control / effort-drop contract deliberately does not
+        // attach here). Whether Volcengine's gateway tolerates every
+        // ladder shape on its K3.1 deployment is unverified live (no
+        // Volcengine key in this environment) — watch item for the next
+        // refresh.
         { model: 'kimi-k3.1-pro', title: 'kimi-k3.1-pro', desc: 'Kimi K3.1 旗舰（套餐页 1M 名单）' },
         { model: 'kimi-k2.8-preview', title: 'kimi-k2.8-preview', desc: '代码场景' },
         { model: 'glm-5.3', legacyAliases: ['glm-latest'], title: 'glm-5.3', desc: '旗舰推理与编码' },
@@ -1230,18 +1251,25 @@ const MODEL_CATALOG = {
       // checked 2026-11-03): gemini-3.6-flash
       // retires 2026-11-19 (successor 3.8-flash; 16 days out) and
       // gemini-3.7-flash retires 2027-01-28, while the Gemini API
-      // deprecations page still announces no shutdown dates — the rows scope
+      // deprecations page announced no shutdown dates for the 3.x rows at
+      // the 2026-11-03 fetch (2026-11-06 re-check: still true per-row for
+      // 3.6-flash / 3.7-flash — the page's new 2.5-generation dates below
+      // do not touch them) — the rows scope
       // the dates to Vertex. gemini-3.5-flash-lite is Stable on the Gemini
       // API (Vertex floor "2027-07 or later"); gemini-3.1-pro-preview demotes
       // to the previous flagship preview (gemini-3-pro-preview was retired
       // on 2026-03-09). Thinking cannot be turned off for the
       // Gemini 3 family on the OpenAI-compatible layer. (An earlier draft
       // recorded a "Nov 2 changelog entry deprecating gemini-2.5-pro /
-      // gemini-2.5-flash effective 2026-12-01 with auto-routing" — the
-      // live changelog carries no such entry under any fetch variant as of
-      // the 2026-11-05 review, and the deprecations page says "No shutdown
-      // date announced" for both, so the sentence is dropped as
-      // unverifiable.) gemini-3-flash-preview is live
+      // gemini-2.5-flash effective 2026-12-01 with auto-routing" — dropped
+      // on 2026-11-05 because the deprecations page then said "No shutdown
+      // date announced" for both. Round-8 re-verification 2026-11-06: BOTH
+      // the deprecations and models pages now document the deprecation —
+      // effective December 1, 2026 with auto-routing (gemini-2.5-pro →
+      // gemini-3.8-flash, gemini-2.5-flash → gemini-3.5-flash-lite) — so
+      // the page state behind the drop was a misread and the facts are
+      // restored here. No catalog row changes: the 2.5 ids were never
+      // listed.) gemini-3-flash-preview is live
       // on the models page's preview table and stays uncataloged (preview
       // churn; gemini-3.1-pro-preview is kept because the deprecations page
       // names it as gemini-3-pro-preview's replacement).
@@ -1527,11 +1555,18 @@ const MODEL_CATALOG = {
       // snapshot that still listed the six retired ids above through
       // 2026-11-04 (the earlier "fetched live" verification hit the stale
       // one); it now 308-redirects to the canonical page, so both paths
-      // agree (re-checked 2026-11-05). The base URL matches the engine's
+      // agree (re-checked 2026-11-05; the canonical Chat table re-matched
+      // the eight rows plus the curated-out enumeration below on
+      // 2026-11-06, round-8 review). The base URL matches the engine's
       // provider default
       // (the docs' shared-host value is consistent with it, though not
       // literally printed on the pages fetched this refresh — a US-geo
-      // variant us-api.together.ai bills +25%). Rows stay image-unannotated
+      // variant us-api.together.ai bills +25%). Default drift (upstream
+      // follow-up, same class as the Mistral/Meta ones): the engine's
+      // DEFAULT_TOGETHER_MODEL is "deepseek-ai/DeepSeek-V4-Pro"
+      // (provider_defaults.rs) — exactly one of the six ids with removal
+      // records above (2026-08-27); the rows stay explicit-id, so
+      // app-side resolution is unaffected. Rows stay image-unannotated
       // (gateway deployments are not verified one by one); their context
       // figures appear in the descs verbatim from the live docs page but
       // are not mirrored into the engine table, and no tier control exists
