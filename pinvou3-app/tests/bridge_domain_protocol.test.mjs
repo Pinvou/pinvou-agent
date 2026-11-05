@@ -437,8 +437,12 @@ const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'listen').map(call => `shared/bridge-shared-helpers.js:listen:${call}`),
 ];
 const sharedBaseHash = crypto.createHash('sha256').update(sharedBaseSignatures.join('\n')).digest('hex');
-if (!expectedSharedBaseHash) console.log(`sharedBase: ${sharedBaseHash} (${sharedBaseSignatures.length} signatures)`);
-else assert.equal(sharedBaseHash, expectedSharedBaseHash, 'shared bridge payload protocol changed');
+// Round-21 复审:与上方 domain 表同一 fail-closed 口径——这里的
+// console.log-and-pass 骨架在 expectedSharedBaseHash 被临时清空时会把
+// shared base 静默解除钉住;expectedSharedBaseHash 是非空字面量,改断言
+// 后该形状不再存在。取新哈希时把 expected 置为旧值跑一次即可读出。
+assert.ok(expectedSharedBaseHash, 'the shared base hash must stay pinned');
+assert.equal(sharedBaseHash, expectedSharedBaseHash, 'shared bridge payload protocol changed');
 
 const featureRegistry = new Proxy({}, {
   get() {
