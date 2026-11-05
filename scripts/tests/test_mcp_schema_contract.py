@@ -42,7 +42,11 @@ mirroring the engine pipeline at the pinned CodeWhale gitlink
 - "type" is a single concrete string (or absent in favor of anyOf with
   union-only siblings); a surviving keyword must be admissible for its
   node's type (default on an array or enum/default on an object is
-  InvalidKeywordValue); required names unique declared properties; a
+  InvalidKeywordValue — document-precise note 2026-11-05: the
+  specification itself types `default` as Any with "这儿不做类型检查，
+  需要调用者自行保证其值类型内容和所在位置期望的内容相匹配", so these
+  per-type rules are the engine's own stricter policy, mirrored exactly);
+  required names unique declared properties; a
   keyword explicitly present with a null value counts as present-and-invalid
   (never "absent"); the root is a typed object without composition (the
   Tool Use guide: "The root of `parameters` must be an `object`", and
@@ -51,18 +55,16 @@ mirroring the engine pipeline at the pinned CodeWhale gitlink
   engine-side on the strict face of the conflicting documents and this
   guard stays red on it, a false alarm in the safe direction)
   (platform.kimi.ai/docs/api/tool-use.md, fetched 2026-11-05);
-- the resource budgets hold (anyOf ≤ 10 branches, ≤ 100 total properties,
-  property depth ≤ 5, ≤ 500 total enum values, ≤ 64 structural depth,
-  ≤ 120000 encoded bytes, enums above 250 entries capped at 7500 combined
-  literal bytes). These budgets are the CodeWhale engine's own stricter
-  MFJS mirror policy — the walle source defaults are MaxAnyOfItems=500,
-  MaxTotalPropertiesKeysNum=3000, MaxSchemaDepth=30 (verified against
-  MoonshotAI/walle upstream main on 2026-11-05, cited for contrast only) —
-  so loosening one means changing the CodeWhale constants, not waiting for
-  Moonshot. The 2026-11-04 probe observations (root unions, pattern/format/
-  $schema/prefixItems/exclusive bounds/nested allOf accepted with 200 on
-  the coding endpoint) are recorded observations and never widen this
-  contract.
+- the resource budgets hold (anyOf ≤ 500 branches, ≤ 3000 total
+  properties, property depth ≤ 30, ≤ 1000 total enum values, ≤ 64
+  structural depth, ≤ 120000 encoded bytes, enums above 250 entries capped
+  at 75000 combined literal bytes). These budgets are aligned to the walle
+  conf.go source defaults (source comparison, not a document clause,
+  2026-11-05) — loosening one means changing the CodeWhale constants and
+  this mirror in lockstep, not waiting for Moonshot. The 2026-11-04 probe
+  observations (root unions, pattern/format/$schema/prefixItems/exclusive
+  bounds/nested allOf accepted with 200 on the coding endpoint) are
+  recorded observations and never widen this contract.
 
 All bundled servers are currently compliant, so if the guard itself breaks
 the smoke stays green (against compliant schemas a broken guard is exactly
@@ -77,10 +79,12 @@ exclusiveMinimum/exclusiveMaximum, contains, propertyNames,
 not/if/then/else, dependentSchemas, draft-07 dependencies, unevaluated*,
 contentSchema), the per-type/budget deviations, the explicit-null keyword
 values, the homogeneous-enum type mismatches, and the reviewer
-counterexamples (array default, object enum/default, eleven-branch anyOf,
+counterexamples (array default, object enum/default, 501-branch anyOf,
 null keyword values, oversized enum literals) must be red; advisory
 keywords (stripped then passed, even malformed), stripped unsupported
-enums, typed enums, typed unions within every budget, and the real pptx
+enums, typed enums, typed unions within every budget, bare type:object
+nodes (green: the engine repairs them, and the mirror counts the injected
+properties toward the byte budget), and the real pptx
 schema must be green. Every recursion lane that survives (properties,
 additionalProperties, items, anyOf branches, $defs) has a red case pinning
 it: the walker's recursion is not decorative, every lane is consumed by an
@@ -379,8 +383,16 @@ class SchemaContractWalkerTest(unittest.TestCase):
 
     def test_anyof_type_sibling_is_red(self):
         # MFJS allows only description beside anyOf (title is advisory and
-        # stripped before the sibling check): a typed node with a union is
-        # InvalidKeywordValue, not an intersection.
+        # stripped before the sibling check). The ENGINE actually passes
+        # this shape: sanitize_for_kimi pushes the parent's "type" down
+        # into the union branches, removes it from the parent, and drops
+        # the bare-object-injected empty properties — the wire arrives as
+        # a plain typeless anyOf the validator accepts. The mirror keeps
+        # it red DELIBERATELY: the engine's rewrite is invisible to a
+        # guard that sees the pre-sanitization schema, and a typed sibling
+        # at an anyOf level is exactly the drift the per-layout pptx
+        # branches must not regress into — a red here is the mirror being
+        # stricter than the engine, not an engine-behavior claim.
         message = _contract_message(
             {"type": "object",
              "properties": {"x": {"type": "object", "anyOf": [{"type": "string"}]}}})
@@ -676,9 +688,14 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIn("unique declared properties", message)
 
     def test_required_without_properties_is_red(self):
+        # Still red under the bare-object injection: the engine would fully
+        # repair this shape (inject "properties": {}, prune the dangling
+        # "a" via prune_dangling_required, then drop the emptied required),
+        # so the mirror is deliberately stricter here — a schema bug this
+        # visible must be fixed at the source, not silently repaired.
         message = _contract_message({"type": "object", "required": ["a"]})
         self.assertIsNotNone(message)
-        self.assertIn("requires a properties object", message)
+        self.assertIn("required must name unique declared properties", message)
 
     def test_properties_must_be_object_is_red(self):
         # A list at the properties keyword itself previously fell out of the
@@ -749,24 +766,25 @@ class SchemaContractWalkerTest(unittest.TestCase):
     # pin and its boundary stays green.
 
     def test_anyof_branch_budget_is_enforced(self):
-        branches = [{"type": "string"}] * 11
+        # Budget aligned to the walle conf.go source default
+        # (MaxAnyOfItems=500; source comparison, not a document clause,
+        # 2026-11-05): 501 branches are red, 500 stay green.
+        branches = [{"type": "string"}] * 501
         message = _contract_message({"type": "object", "properties": {"x": {"anyOf": branches}}})
         self.assertIsNotNone(message)
-        self.assertIn("at most 10", message)
+        self.assertIn("at most 500", message)
         self.assertIsNone(_contract_message(
-            {"type": "object", "properties": {"x": {"anyOf": branches[:10]}}}))
+            {"type": "object", "properties": {"x": {"anyOf": branches[:500]}}}))
 
     def test_anyof_items_of_typed_object_branches_with_required_is_green(self):
         # The per-layout mitigation shape (pptx slides.items, 2026-11-04):
         # an items anyOf whose branches are explicit type:object nodes with
         # their own properties and required. MFJS legalizes this union
-        # (ValidateAnyOf; the rules the engine enforces here — explicit
-        # branch types, no type sibling at the anyOf level, the 10/100/5
-        # budgets — are the CodeWhale mirror's own policy, deliberately
-        # stricter than the walle upstream defaults of 500 branches / 3000
-        # properties / 30 depth, verified against walle main on
-        # 2026-11-05), so the guard must stay green — the constrained
+        # (ValidateAnyOf), so the guard must stay green — the constrained
         # decoder reads each branch's required as the fields it must fill.
+        # The resource budgets it rides are aligned to the walle conf.go
+        # source defaults (source comparison, not a document clause,
+        # 2026-11-05): 500 branches / 3000 properties / depth 30.
         branches = [
             {"type": "object",
              "properties": {"layout": {"type": "string", "enum": ["cover"]},
@@ -786,8 +804,9 @@ class SchemaContractWalkerTest(unittest.TestCase):
     def test_property_budget_accumulates_across_anyof_branches(self):
         # Branch-duplicated property names count toward the whole-document
         # properties budget (the validator's MfjsValidationState accumulates
-        # across every node): ten branches of eleven properties each exceed
-        # the 100 budget even though no single branch does.
+        # across every node): 274 branches of eleven properties each exceed
+        # the aligned 3000 budget (walle conf.go MaxTotalPropertiesKeysNum,
+        # source comparison 2026-11-05) even though no single branch does.
         def branch(prefix):
             return {"type": "object",
                     "properties": {f"{prefix}{index}": {"type": "string"}
@@ -795,66 +814,76 @@ class SchemaContractWalkerTest(unittest.TestCase):
                     "required": [f"{prefix}0"]}
         message = _contract_message(
             {"type": "object",
-             "properties": {"x": {"anyOf": [branch(f"b{i}_") for i in range(10)]}}})
+             "properties": {"x": {"anyOf": [branch(f"b{i}_") for i in range(274)]}}})
         self.assertIsNotNone(message)
-        self.assertIn("exceed the MFJS budget of 100", message)
-        # Ten properties per branch (100 total, top-level property included)
-        # stays inside the budget.
+        self.assertIn("exceed the MFJS budget of 3000", message)
+        # Ten properties per branch (2740 total, top-level property
+        # included) stays inside the budget.
         def slim_branch(prefix):
-            props = {f"{prefix}{index}": {"type": "string"} for index in range(9)}
+            props = {f"{prefix}{index}": {"type": "string"} for index in range(10)}
             return {"type": "object", "properties": props,
                     "required": [f"{prefix}0"]}
         self.assertIsNone(_contract_message(
             {"type": "object",
-             "properties": {"x": {"anyOf": [slim_branch(f"b{i}_") for i in range(10)]}}}))
+             "properties": {"x": {"anyOf": [slim_branch(f"b{i}_") for i in range(274)]}}}))
 
     def test_total_properties_budget_is_enforced(self):
+        # Aligned to the walle conf.go source default
+        # (MaxTotalPropertiesKeysNum=3000, source comparison 2026-11-05).
         def schema_with(count):
             return {"type": "object",
                     "properties": {f"p{index}": {"type": "string"}
                                    for index in range(count)}}
-        message = _contract_message(schema_with(101))
+        message = _contract_message(schema_with(3001))
         self.assertIsNotNone(message)
-        self.assertIn("exceed the MFJS budget of 100", message)
-        self.assertIsNone(_contract_message(schema_with(100)))
+        self.assertIn("exceed the MFJS budget of 3000", message)
+        self.assertIsNone(_contract_message(schema_with(3000)))
 
     def test_property_depth_budget_is_enforced(self):
+        # Aligned to the walle conf.go source default (MaxSchemaDepth=30,
+        # source comparison 2026-11-05).
         def nested(depth):
             node = {"type": "string"}
             for _ in range(depth):
                 node = {"type": "object", "properties": {"inner": node}}
             return node
-        message = _contract_message(nested(6))
+        message = _contract_message(nested(31))
         self.assertIsNotNone(message)
-        self.assertIn("nesting deeper than 5", message)
-        self.assertIsNone(_contract_message(nested(5)))
+        self.assertIn("nesting deeper than 30", message)
+        self.assertIsNone(_contract_message(nested(30)))
 
     def test_total_enum_budget_is_enforced(self):
-        enum = [f"v{index}" for index in range(501)]
+        # Aligned to the walle conf.go source default (1000 total enum
+        # values, source comparison 2026-11-05).
+        enum = [f"v{index}" for index in range(1001)]
         message = _contract_message(
             {"type": "object", "properties": {"e": {"type": "string", "enum": enum}}})
         self.assertIsNotNone(message)
-        self.assertIn("exceed the MFJS budget of 500", message)
+        self.assertIn("exceed the MFJS budget of 1000", message)
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"e": {"type": "string", "enum": enum[:1000]}}}))
 
     def test_enum_literal_length_budget_is_enforced(self):
         # validate_mfjs_enum's conditional budget: an enum with more than 250
-        # entries may not carry more than 7500 combined literal bytes. 251
-        # distinct 100-character values sit below the 500-value and
-        # 120000-byte caps, so only this budget rejects them.
-        enum = [f"{index:03d}" + "x" * 97 for index in range(251)]
+        # entries may not carry more than 75000 combined literal bytes
+        # (aligned to the walle conf.go source default, source comparison
+        # 2026-11-05). 751 distinct 100-character values sit below the
+        # 1000-value and 120000-byte caps, so only this budget rejects them.
+        enum = [f"{index:03d}" + "x" * 97 for index in range(751)]
         message = _contract_message(
             {"type": "object", "properties": {"e": {"type": "string", "enum": enum}}})
         self.assertIsNotNone(message)
         self.assertIn("literal bytes", message)
-        self.assertIn("above 250 entries at 7500", message)
-        # Both sides of the length boundary at 251 entries: exactly 7500
-        # (250 * 29 + 250) stays green, one more byte goes red.
+        self.assertIn("above 250 entries at 75000", message)
+        # Both sides of the length boundary at 251 entries: exactly 75000
+        # (250 * 29 + 67750) stays green, one more byte goes red.
         def enum_at(last_len):
             values = ["x" * 29] * 250 + ["y" * last_len]
             return {"type": "object",
                     "properties": {"e": {"type": "string", "enum": values}}}
-        self.assertIsNone(_contract_message(enum_at(250)))
-        message = _contract_message(enum_at(251))
+        self.assertIsNone(_contract_message(enum_at(67750)))
+        message = _contract_message(enum_at(67751))
         self.assertIsNotNone(message)
         self.assertIn("literal bytes", message)
 
@@ -869,6 +898,38 @@ class SchemaContractWalkerTest(unittest.TestCase):
         schema = {"type": "object",
                   "properties": {"d": {"type": "string",
                                        "description": "x" * (smoke._MFJS_MAX_SCHEMA_BYTES + 100)}}}
+        message = _contract_message(schema)
+        self.assertIsNotNone(message)
+        self.assertIn("over the MFJS budget of", message)
+
+    def test_bare_object_is_green_with_injected_properties(self):
+        # A bare {"type":"object"} node is legal: the engine injects an empty
+        # "properties" map on it (inject_properties_on_bare_objects) and the
+        # injected node passes the validator.
+        self.assertIsNone(_contract_message(
+            {"type": "object", "properties": {"o": {"type": "object"}},
+             "additionalProperties": {"type": "object"}}))
+
+    def test_bare_object_injection_counts_toward_byte_budget(self):
+        # E19-class boundary (differential review M): the engine injects
+        # "properties": {} on every bare type:object node (+16 encoded bytes
+        # each) EARLY in the pipeline, and the later strips never remove the
+        # injected key — so the bytes the validator counts include the
+        # injection. A mirror that measured the un-injected encoding passed
+        # a schema the engine rejects: 1000 bare objects fit 120000 bytes
+        # raw (119,973) but encode to 135,973 injected — ResourceLimit-
+        # Exceeded. The mirror must measure post-injection and go red here.
+        props = {f"p{index:04d}": {"type": "object"} for index in range(1000)}
+        props["pad"] = {"type": "string", "description": "x" * 93900}
+        schema = {"type": "object", "properties": props}
+        encoded = len(json.dumps(
+            schema, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        self.assertLess(encoded, smoke._MFJS_MAX_SCHEMA_BYTES,
+                        "fixture must fit the byte budget un-injected")
+        self.assertGreater(encoded + 16 * 1000, smoke._MFJS_MAX_SCHEMA_BYTES,
+                           "fixture must exceed it once the injection is counted")
+        # The 1001 properties stay inside the aligned 3000 budget, so the
+        # byte budget is the only offender.
         message = _contract_message(schema)
         self.assertIsNotNone(message)
         self.assertIn("over the MFJS budget of", message)
@@ -900,7 +961,8 @@ class SchemaContractWalkerTest(unittest.TestCase):
         branches = items.get("anyOf")
         self.assertIsInstance(branches, list)
         self.assertEqual(len(branches), 10,
-                         "one branch per layout; an 11th also exceeds the anyOf budget")
+                         "one branch per layout; the count is the layout set, "
+                         "not a budget boundary (the aligned anyOf budget is 500)")
         layouts = []
         for index, branch in enumerate(branches):
             self.assertEqual(branch.get("type"), "object",
@@ -926,9 +988,10 @@ class SchemaContractWalkerTest(unittest.TestCase):
         # whole-document properties total is what the budget sees. Measure
         # it the way the guard's _MfjsBudget does (every properties dict,
         # recursed through anyOf/items/additionalProperties) and pin it
-        # inside the budget: at the 2026-11-04 shape it is 47 of 100 —
-        # headroom for ~5 more layouts at most, after which a branch merge
-        # or a budget widening is required, not silent growth.
+        # inside the budget: at the 2026-11-04 shape it is 47 of the
+        # aligned 3000 (walle conf.go source default, 2026-11-05) — the
+        # binding constraint on the union is the layout count, not any
+        # budget; this pin stays as the drift guard, not silent growth.
         def count(node):
             total = 0
             if not isinstance(node, dict):

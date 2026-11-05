@@ -140,11 +140,15 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   equivalent to `true`)**"), so the schema is enforced on the wire, not
   advisory. Base rules: every `type: array` carries concretely typed `items`,
   every schema node is a non-empty object with a concrete string `type` or an
-  `anyOf` union, a surviving keyword must be admissible for its node's type
-  (`default` only on scalars — never on `array`/`object`; `enum` only on
-  `string`/`number`/`integer`), `required` names unique declared properties,
-  enum/default literals match their node's type, and a keyword explicitly
-  present with a null value is present-and-invalid, never absent. On top of
+  `anyOf` union, `required` names unique declared properties, and a keyword
+  explicitly present with a null value is present-and-invalid, never absent.
+  Document-precise note on `default` (2026-11-05): the specification types it
+  as Any — "**类型**: Any……这儿不做类型检查，需要调用者自行保证其值类型内
+  容和所在位置期望的内容相匹配" (any position, any value, no type check) — so
+  the engine's per-type admissibility (`default` only on scalars — never on
+  `array`/`object`; `enum` only on `string`/`number`/`integer`; enum/default
+  literals matching the node's type) is the engine's own stricter policy that
+  the schema guard mirrors deliberately, not a documented rule. On top of
   the documents:
   - **Advisory keywords are stripped, not shipped** (2026-11-05): `title`,
     `$comment`, `$id` and the bound keywords (`minLength`/`maxLength`,
@@ -172,15 +176,25 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
     at a parameters root; on the conflicting documents the strict face wins,
     so a root `oneOf`/`anyOf`/`allOf` is flattened engine-side (required
     groups merge — the pre-2026-11-04 behavior) and the schema guard stays
-    red on one. Keep `parameters` a plain typed object.
-  - **Resource budgets are the engine's own stricter policy** (declared, not
-    negotiated): `anyOf` ≤ 10 branches, ≤ 100 total properties, property
-    depth ≤ 5, ≤ 500 total enum values, ≤ 120000 encoded bytes, and an enum
-    above 250 entries is further capped at 7500 combined literal bytes. The
-    walle source defaults (MaxAnyOfItems=500, MaxTotalPropertiesKeysNum=3000,
-    MaxSchemaDepth=30; verified against MoonshotAI/walle upstream main on
-    2026-11-05) are cited for contrast only — loosening a budget means
-    changing the CodeWhale mirror constants, not waiting for Moonshot.
+    red on one. Keep `parameters` a plain typed object. The Moonshot ban has
+    no Anthropic counterpart: Anthropic `input_schema` is sent as documented
+    — "A JSON Schema object defining the expected parameters for the tool"
+    (https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use,
+    fetched 2026-11-05; the same documents carry no root-composition ban) —
+    so the Anthropic line applies no root-union strip (the previously
+    applied strip had no documented basis and was dropped 2026-11-05).
+  - **Resource budgets are aligned to the walle conf.go source defaults**
+    (source comparison, not a document clause; 2026-11-05): `anyOf` ≤ 500
+    branches, ≤ 3000 total properties, property depth ≤ 30, ≤ 1000 total
+    enum values, ≤ 120000 encoded bytes, and an enum above 250 entries is
+    further capped at 75000 combined literal bytes (the encoded-bytes
+    budget and the enum-length entry threshold are unchanged). These were
+    previously the engine's own stricter mirror policy (10/100/5/500/7500);
+    aligning them to the walle source constants (`MaxAnyOfItems=500`,
+    `MaxTotalPropertiesKeysNum=3000`, `MaxSchemaDepth=30`, verified against
+    MoonshotAI/walle upstream main 2026-11-05) removes the divergence —
+    loosening a budget further means changing the CodeWhale constants and
+    the mirror script in lockstep, not waiting for Moonshot.
   - **Probe records are observations, never authority**: the 2026-11-04 live
     probes (a root union and the unlisted keywords accepted with 200 on the
     coding endpoint) and the k3 `slides:[]` history (27-in-a-row; the
@@ -203,9 +217,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   fully compliant 10-page deck, at +6% bytes, against an
   all-fields-required control falsified at +76% tokens with `strict:false`
   having no effect) is an observation recorded alongside, not the shipping
-  basis. The union uses the branch budget to the last slot (10 of 10):
-  adding an 11th layout means merging branches, widening the CodeWhale
-  mirror budget, or both — deliberately. On the pre-anyOf base the union
+  basis. The resource budgets no longer bound the union: they are aligned
+  to the walle conf.go source defaults (2026-11-05 — 500 branches / 3000
+  properties / depth 30), so the union's real ceiling is the layout count
+  and adding an 11th layout is an ordinary branch addition reviewed on its
+  own merits. On the pre-anyOf base the union
   flattens back to all-optional semantics — the old behavior — so the shape
   degrades safely backward. The schema guard mirrors the engine pipeline at
   the pinned CodeWhale gitlink; its rules update with that gitlink bump,

@@ -178,19 +178,50 @@ def content_json(response: dict) -> dict:
 #     surviving enum's values must still match its node's type.
 #   - The fail-closed set keeps the whole-tool drop: pattern, format,
 #     $schema, prefixItems, exclusive bounds, nested allOf, oneOf, and every
-#     other unlisted keyword has no removal equivalent ("暂不支持使用
-#     prefixItems 或 unevaluatedItems 等方式模拟实现元组（Tuple）", "暂不
-#     支持如 exclusiveMinimum，exclusiveMaximum，minContains, maxContains
-#     等复杂校验定义", "暂不支持 Meta-Schemas"), and a silent drop is the
-#     same failure for every deviation (MissingType / UnsupportedKeyword /
-#     InvalidSchemaNode) — how #683 lost evaluate_script. $ref/$dynamicRef/
-#     $recursiveRef stay banned beyond the document's own $ref support
-#     because this guard cannot follow the target and the shape underneath
-#     would go uninspected.
+#     other unlisted keyword ("暂不支持使用 prefixItems 或 unevaluatedItems
+#     等方式模拟实现元组（Tuple）", "暂不支持如 exclusiveMinimum，
+#     exclusiveMaximum，minContains, maxContains 等复杂校验定义", "暂不支持
+#     Meta-Schemas"), and a silent drop is the same failure for every
+#     deviation (MissingType / UnsupportedKeyword / InvalidSchemaNode) — how
+#     #683 lost evaluate_script. The MIRROR IS DELIBERATELY STRICTER THAN
+#     THE ENGINE on the union keywords: the engine does have partial
+#     equivalents this guard refuses to rely on — a single-branch nested
+#     allOf/oneOf collapses into its parent (collapse_single_element_
+#     unions), a nested oneOf converts to anyOf (normalize_kimi_
+#     compatibility), and root unions flatten wholesale — so only a
+#     MULTI-branch nested allOf genuinely fails closed engine-side
+#     (UnsupportedNestedAllOf). The mirror red-flags every oneOf/allOf form
+#     because the engine's rewrites are invisible to a guard that only sees
+#     the pre-sanitization schema; a red here is conservative, not an
+#     engine-behavior claim. $ref/$dynamicRef/$recursiveRef stay banned
+#     beyond the document's own $ref support because this guard cannot
+#     follow the target and the shape underneath would go uninspected (the
+#     engine inlines a root $ref before validation — same conservative
+#     posture: the mirror flags what the engine rewrites).
 #   - Every schema position holds an object; boolean and list values are
-#     InvalidSchemaNode, empty nodes are MissingType (the engine repairs
-#     exactly the items:{} shape, nothing else — the guard keeps flagging
-#     it, a false alarm in the safe direction).
+#     InvalidSchemaNode, empty nodes are MissingType. THE ENGINE REPAIRS
+#     MORE THAN items:{} — this mirror deliberately flags the whole repair
+#     class instead of replicating it: remove_empty_mfjs_items_schemas
+#     removes an items:{} keyword entirely (JSON Schema's "items
+#     unconstrained"), ensure_properties_object replaces a non-object
+#     properties with {} at the root, prune_dangling_required strips
+#     required entries that name no declared property (and drops an emptied
+#     required), drop_dependent_keywords strips dependentSchemas/
+#     dependentRequired with a prompt note, inline_internal_kimi_root_ref
+#     inlines a root $ref, and an empty additionalProperties:{} is legal
+#     engine-side (the validator's allow-empty arm). The guard keeps
+#     flagging all of these: a red here is a false alarm in the safe
+#     direction, pointing at shapes the engine silently rewrites.
+#   - Bare type:object nodes are REPAIRED, not flagged: the engine injects
+#     "properties": {} on every node whose type is exactly the string
+#     "object" and that carries neither a properties nor an
+#     additionalProperties key (inject_properties_on_bare_objects, early in
+#     sanitize(); the injected key is never removed downstream). The mirror
+#     replicates the injection BEFORE measuring the encoded-byte budget —
+#     skipping it made the byte check a false green for exactly the shapes
+#     the injection inflates (1000 bare objects fit 120000 bytes raw but
+#     encode to ~136KB injected: ResourceLimitExceeded engine-side, green
+#     mirror-side).
 #   - "type", where present, must be a single concrete string: list-typed
 #     ("type": ["array"]), non-string, and unknown values arrive typeless
 #     through the engine's string-only sanitizer and die with MissingType.
@@ -198,7 +229,12 @@ def content_json(response: dict) -> dict:
 #     admissible for its node's type (mfjs_keyword_allowed_for_type):
 #     `default` on an array or `enum`/`default` on an object is
 #     InvalidKeywordValue; enum/default literals match their node's type;
-#     required names unique declared properties.
+#     required names unique declared properties. Document-precise note
+#     (2026-11-05): the specification itself types `default` as Any with
+#     "这儿不做类型检查，需要调用者自行保证其值类型内容和所在位置期望的
+#     内容相匹配" — any position, any value, no type check; the per-type
+#     placement and literal-match rules are the ENGINE's own stricter
+#     policy, mirrored exactly and kept despite the wider document face.
 #   - The parameters root must be a typed object without composition
 #     (RootMustBeObject, the Tool Use root rule). A root union is flattened
 #     engine-side — on the conflicting documents the strict face wins
@@ -206,22 +242,21 @@ def content_json(response: dict) -> dict:
 #     it at a parameters root) — so the guard's root ban stays red on a
 #     root union: a false alarm in the safe direction that still matches
 #     the pinned engine's flattened wire shape.
-#   - Resource budgets are mirrored exactly (anyOf ≤ 10 branches, ≤ 100
-#     total properties, property depth ≤ 5, ≤ 500 total enum values, ≤ 64
+#   - Resource budgets are mirrored exactly (anyOf ≤ 500 branches, ≤ 3000
+#     total properties, property depth ≤ 30, ≤ 1000 total enum values, ≤ 64
 #     structural depth, ≤ 120000 encoded bytes, enums above 250 entries
-#     capped at 7500 combined literal bytes) — ResourceLimitExceeded drops
-#     the tool like every other deviation. These budgets are the CodeWhale
-#     engine's own stricter MFJS mirror policy; the walle source defaults
-#     (MaxAnyOfItems=500, MaxTotalPropertiesKeysNum=3000, MaxSchemaDepth=30)
-#     are cited for contrast only (verified against MoonshotAI/walle
-#     upstream main on 2026-11-05) — loosening one means changing the
-#     CodeWhale constants, not waiting for Moonshot.
+#     capped at 75000 combined literal bytes) — ResourceLimitExceeded drops
+#     the tool like every other deviation. Aligned to the walle conf.go
+#     source defaults (source comparison, not a document clause,
+#     2026-11-05); loosening one means changing the CodeWhale constants and
+#     this mirror in lockstep, not waiting for Moonshot.
 #   - anyOf keeps only the union's own siblings (description; root $defs)
-#     and every branch is walked and concretely typed; branch budget ≤ 10
-#     and the whole-document properties total (branch-duplicated names
-#     accumulate) ≤ 100 are what make the pptx per-layout union the widest
-#     legal mitigation shape; $defs interiors are walked so an unreferenced
-#     definition is no blind spot ($defs is root-only).
+#     and every branch is walked and concretely typed; the aligned branch
+#     budget (500) and properties total (3000) leave the pptx per-layout
+#     union (10 branches, 47 properties) far inside the budgets — the
+#     union's real ceiling is the layout count, not the budget;
+#     $defs interiors are walked so an unreferenced definition is no blind
+#     spot ($defs is root-only).
 #
 # Background kept as observation record (the k3 slides:[] incident): with
 # `type: "array"` and no items, constrained decoding completes the parameter
@@ -253,7 +288,9 @@ _MFJS_ALLOWED_KEYWORDS = frozenset((
 # schema carrying them is compliant here because on the constrained route
 # they never reach the validator, while other providers still receive the
 # full schema. Everything unlisted and unstrippable (pattern, format,
-# $schema, prefixItems, exclusive bounds, nested allOf, oneOf) fails closed.
+# $schema, prefixItems, exclusive bounds, oneOf, allOf) fails closed here
+# — see the fail-closed bullet above for the engine's partial equivalents
+# the mirror deliberately does not rely on.
 _MFJS_ADVISORY_KEYWORDS = (
     "title", "$comment", "$id", "minLength", "maxLength",
     "minimum", "maximum", "minItems", "maxItems",
@@ -352,6 +389,31 @@ def _strip_mfjs_unsupported_enum_values(schema):
     return node
 
 
+def _inject_properties_on_bare_objects(node):
+    """Mirror of inject_properties_on_bare_objects (schema_sanitize.rs),
+    applied in place BEFORE the encoded-bytes budget is measured: a schema
+    node whose "type" is exactly the string "object" and that carries
+    neither a "properties" nor an "additionalProperties" key (presence, any
+    value) gains an empty "properties" map (+16 encoded bytes per bare
+    object). The engine runs this pass early in its sanitize() recursion
+    and the later strips and repairs never remove the injected key, so the
+    wire bytes the validator counts include it — measuring the un-injected
+    encoding let a schema the engine rejects pass as a false green (1000
+    bare objects fit 120000 bytes raw but exceed it injected). The engine
+    recurses over the WHOLE value tree (every dict value and array element,
+    enum/default data positions included); so does this."""
+    if isinstance(node, dict):
+        if (node.get("type") == "object"
+                and "properties" not in node
+                and "additionalProperties" not in node):
+            node["properties"] = {}
+        for value in node.values():
+            _inject_properties_on_bare_objects(value)
+    elif isinstance(node, list):
+        for value in node:
+            _inject_properties_on_bare_objects(value)
+
+
 # Per-type keyword admissibility, mirroring mfjs_keyword_allowed_for_type in
 # schema_sanitize.rs exactly: a keyword surviving the whitelist is still
 # InvalidKeywordValue when its node's type does not admit it — `default` on
@@ -368,16 +430,22 @@ _MFJS_KEYWORDS_FOR_TYPE = {
     "null": ("default",),
 }
 # Resource budgets, mirroring the validator constants exactly
-# (ResourceLimitExceeded raise sites in schema_sanitize.rs).
-_MFJS_MAX_ANY_OF_ITEMS = 10
-_MFJS_MAX_OBJECT_DEPTH = 5
-_MFJS_MAX_TOTAL_PROPERTIES = 100
-_MFJS_MAX_TOTAL_ENUM_VALUES = 500
+# (ResourceLimitExceeded raise sites in schema_sanitize.rs). Aligned to the
+# walle conf.go source defaults (source comparison, not a document clause,
+# 2026-11-05): MaxAnyOfItems=500, MaxTotalPropertiesKeysNum=3000,
+# MaxSchemaDepth=30, 1000 total enum values, 75000 enum literal bytes; the
+# encoded-bytes budget (120000) and the enum-length entry threshold (250)
+# stay unchanged. Loosening one means changing the CodeWhale constants and
+# this mirror in lockstep.
+_MFJS_MAX_ANY_OF_ITEMS = 500
+_MFJS_MAX_OBJECT_DEPTH = 30
+_MFJS_MAX_TOTAL_PROPERTIES = 3000
+_MFJS_MAX_TOTAL_ENUM_VALUES = 1000
 # validate_mfjs_enum's conditional literal budget: an enum with more than 250
-# entries may not carry more than 7500 combined literal bytes (str::len for
+# entries may not carry more than 75000 combined literal bytes (str::len for
 # strings, serde to_string() length for the numeric literals).
 _MFJS_ENUM_LENGTH_CHECK_THRESHOLD = 250
-_MFJS_MAX_ENUM_STRING_LENGTH = 7_500
+_MFJS_MAX_ENUM_STRING_LENGTH = 75_000
 _MFJS_MAX_SCHEMA_BYTES = 120_000
 _MFJS_MAX_STRUCTURAL_DEPTH = 64
 _MFJS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
@@ -424,7 +492,10 @@ class _MfjsBudget:
         self.total_enum_values = 0
         self.properties_budget_reported = False
         self.enum_budget_reported = False
-        # serde_json::to_vec(parameters).len() at the validator's entry.
+        # serde_json::to_vec(parameters).len() at the validator's entry —
+        # measured on the POST-INJECTION tree: the engine's bare-object
+        # injection runs before validation and nothing downstream removes
+        # the injected key, so the wire bytes include it.
         self.encoded_bytes = len(json.dumps(
             root, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
@@ -680,11 +751,14 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
     matrix stays green (this file's unit tests can only pin the walker's
     internals, not the call site itself). The walk mirrors the engine's
     full pipeline: the advisory-keyword and unsupported-enum strips run
-    first (exactly the engine's pre-validation transforms), then the
-    walker's whole rule set applies to what the Moonshot wire would carry —
-    shape, per-type keyword admissibility, enum/default value typing,
-    required⊆properties, and the resource budgets — so a schema this guard
-    accepts is not one the validator would drop.
+    first, the bare-object properties injection is replicated on the same
+    tree BEFORE the byte budget is measured (exactly the engine's
+    pre-validation transforms; the engine injects early and nothing
+    downstream removes the injected key), then the walker's whole rule set
+    applies to what the Moonshot wire would carry — shape, per-type keyword
+    admissibility, enum/default value typing, required⊆properties, and the
+    resource budgets — so a schema this guard accepts is not one the
+    validator would drop.
     """
     offenders: list[str] = []
     for tool in tools:
@@ -695,6 +769,10 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
             continue
         wire_schema = _strip_mfjs_unsupported_enum_values(
             _strip_mfjs_advisory_keywords(schema))
+        # The engine injects "properties": {} on bare type:object nodes
+        # early and nothing downstream removes the key, so the byte budget
+        # below must see the injected encoding (E19 parity).
+        _inject_properties_on_bare_objects(wire_schema)
         budget = _MfjsBudget(wire_schema)
         if budget.encoded_bytes > _MFJS_MAX_SCHEMA_BYTES:
             offenders.append(

@@ -696,14 +696,14 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
 # title 因此退出该两分支 required)。2026-11-04 活体探针 A2:本形态是唯一一次 10 页构成完全达标,
 # 字节成本 +6%;对照组"全字段塞 required"= 模型填空值+乱选 enum(+76%
 # token,证伪)。walle 校验器已把 anyOf 列为正式成员(上游 ValidateAnyOf);
-# 而"分支须显式 type:object、type 不与 anyOf 同层、anyOf ≤10 分支、全文档
-# properties 总数 ≤100、嵌套深度 ≤5"是 CodeWhale 引擎镜像自定的更严策略
-# (f1eb10efc 起即有;walle 上游默认 MaxAnyOfItems=500、
-# MaxTotalPropertiesKeysNum=3000、MaxSchemaDepth=30,且 lite 接受 type 与
-# anyOf 同层 —— 2026-11-05 对 MoonshotAI/walle 上游 main 实抓核实),放宽
-# 需改 CodeWhale 镜像常量而非等 Moonshot。本 schema 恰好用满 10 分支,
-# 处置路径:父仓未来新增版式时,提升 CodeWhale 镜像预算或裁剪 fixture
-# (合并版式分支),并随 T11 登记同步。旧底座会把 anyOf 展平成
+# 而"分支须显式 type:object、type 不与 anyOf 同层"是 CodeWhale 引擎镜像
+# 自定的更严策略(f1eb10efc 起即有;walle lite 接受 type 与 anyOf 同层
+# —— 2026-11-05 对 MoonshotAI/walle 上游 main 实抓核实)。资源预算已于
+# 2026-11-05 对齐 walle conf.go 源默认(anyOf ≤500、properties 总数 ≤3000、
+# 嵌套深度 ≤30、enum 值 ≤1000、enum 字面量 ≤75000 字节;编码字节 120000 与
+# 枚举长度检查阈值 250 不变;源码对照,非文档条款),放宽需改 CodeWhale
+# 常量并同步父仓镜像脚本。本 schema 10 分支、47 个 properties,远在预算
+# 内:新增版式直接加分支即可,并随 T11 登记同步。旧底座会把 anyOf 展平成
 # 单对象:required 交集退化为 ["layout"],即"其余字段全部可选"的旧行为,
 # 不会更糟,安全向后兼容。
 def _slides_item_branch(layout, layout_label, required, blurb, fields):

@@ -277,11 +277,12 @@ def test_slides_schema_items_pin():
     assert "type" not in items, "anyOf must not share its level with type, got keys %r" % sorted(items)
     branches = items.get("anyOf")
     assert isinstance(branches, list) and branches, "items must be an anyOf union, got %r" % branches
-    # One branch per layout; exactly 10 also pins the MFJS anyOf budget
-    # boundary (an 11th layout branch would be dropped whole-tool on the
-    # constrained route — ResourceLimitExceeded).
+    # One branch per layout. The count is the layout set, NOT a budget
+    # boundary: the constrained-route resource budgets are aligned to the
+    # walle conf.go source defaults since 2026-11-05 (anyOf ≤ 500 branches,
+    # ≤ 3000 properties, depth ≤ 30), so 10 branches sit far inside them.
     assert len(branches) == len(server.LAYOUTS), \
-        "one branch per layout (%d), got %d (MFJS caps anyOf at 10 branches)" % (len(server.LAYOUTS), len(branches))
+        "one branch per layout (%d), got %d" % (len(server.LAYOUTS), len(branches))
     # Per-branch required = exactly the fields the renderer reads and draws
     # a blank body without; pure-decoration fields stay optional (the probe's
     # all-fields-required control produced blank values + enum guessing).
