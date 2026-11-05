@@ -39,6 +39,7 @@
 //! external call paths unchanged.
 
 pub(crate) mod diagnostics;
+mod fork;
 mod import;
 mod injections;
 pub(crate) mod mode_state;

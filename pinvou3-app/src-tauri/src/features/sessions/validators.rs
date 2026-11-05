@@ -18,7 +18,15 @@ use deepseek_tui::session_manager::SessionManager;
 /// fail-closed rule the GUI path applies), through the `features::sessions`
 /// re-export. The GUI itself keeps calling the crate-private path.
 pub fn validate_session_id(id: &str) -> Result<()> {
-    validate_id_charset(id, "session")
+    validate_id_charset(id, "session")?;
+    // 底座保留名（session_manager.rs `SESSION_BOOT_OWNERS_STEM`，其
+    // validated_session_id 同样拒绝）：`sessions/session_boot_owners.json`
+    // 是 boot-owners 注册表而非会话记录；不拒绝则导入/直存可以整个覆盖
+    // 注册表，静默清空 boot-ownership 声明。
+    if id == "session_boot_owners" {
+        bail!("Session id '{id}' collides with a reserved sessions file");
+    }
+    Ok(())
 }
 
 /// The URL-safe charset check shared by every id kind in this store: non-empty
