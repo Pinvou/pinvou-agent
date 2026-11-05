@@ -516,7 +516,9 @@ super-permission pkexec toggle.
   wave the macOS-gated production alias-flag pin also EXECUTES there via a
   filtered `cargo test` run with a zero-match guard (mirroring the Windows
   leg's `run_filtered` pattern; before that the leg was compile-only, and
-  the pin's round-16 review finding N3 was exactly that gap). Windows-gated
+  the gap — a macOS-gated test that compiled on no CI leg at all — was the
+  round-16 follow-up review's finding, fixed by the round-18 wave).
+  Windows-gated
   CLI tests are the same case and DO execute: the `windows-rust-test` regression leg
   runs the `windows_batch_tests` BatBadBut hardening pin, the adapter-gaia
   Windows `FileIdentity` tests, the adapter-gaia Windows ACL privacy
