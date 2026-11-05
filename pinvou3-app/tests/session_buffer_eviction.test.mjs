@@ -78,6 +78,7 @@ function loadTauriSessionsFeature(overrides) {
     busy: false,
     thinking: false,
     tokens: { input: 0, max: 0 },
+    compactingSessions: {},
     turnTimeline: [],
     activeTurnTimelineId: null,
     personaEvents: [],
@@ -304,6 +305,28 @@ test('tauri LRU capacity eviction keeps personaPlaceholderTitles; real deletion 
   api.purgeSessionBuffer('s1');
   assert.equal(personaPlaceholderTitles.s1, undefined,
     'real session deletion must clean the placeholder-title marker');
+});
+
+test('tauri compaction in-flight flag cleaned on eviction and real deletion', () => {
+  // Unlike personaPlaceholderTitles, the compactingSessions flag has no
+  // rehydration story: a stale flag would keep the ctx-compact entry
+  // disabled for a buffer that no longer exists.
+  const { api, state } = loadTauriSessionsFeature();
+  api.switchActiveTo('s1', null);
+  state.compactingSessions.s1 = true; // chat:compaction start landed for s1
+  state.composerDraft = 'd1';
+  for (let i = 2; i <= 33; i++) {
+    api.switchActiveTo(`s${i}`, null);
+    state.composerDraft = `d${i}`;
+  }
+  assert.equal(state.compactingSessions.s1, undefined,
+    'capacity eviction must clean the compaction in-flight flag together with the buffer');
+
+  api.switchActiveTo('s1', null); // rebuild (flag cannot reappear, but be explicit)
+  state.compactingSessions.s1 = true;
+  api.purgeSessionBuffer('s1');
+  assert.equal(state.compactingSessions.s1, undefined,
+    'real session deletion must clean the compaction in-flight flag');
 });
 
 test('web personaPlaceholderTitles cleaned only on real deletion (source contract)', () => {
