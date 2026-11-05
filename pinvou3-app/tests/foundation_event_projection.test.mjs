@@ -26,6 +26,7 @@ const state = {
   messages: [],
   tokens: { input: 0, max: 0 },
   thinking: { active: false },
+  compactingSessions: {},
 };
 const copy = {
   compactCancel: 'Context compaction canceled',
@@ -65,7 +66,12 @@ const emit = (name, payload) => listeners.get(name)({
   payload: { session_id: 'session-1', ...payload },
 });
 
+emit('chat:compaction', { id: 'compact-1', phase: 'start', message: 'Manual context compaction started' });
+assert.equal(state.compactingSessions['session-1'], true,
+  'compaction start must raise the per-session in-flight flag');
 emit('chat:compaction', { id: 'compact-1', phase: 'cancel', auto: true, message: 'interrupted' });
+assert.equal(state.compactingSessions['session-1'], undefined,
+  'compaction cancel terminal must clear the in-flight flag');
 const cancelNotice = state.chatItems.at(-1);
 assert.equal(cancelNotice.type, 'system');
 assert.equal(cancelNotice.compactPhase, 'cancel');
