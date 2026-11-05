@@ -7,7 +7,9 @@ use tauri_plugin_notification::NotificationExt;
 const TASK_COMPLETED_TITLE: &str = "任务已完成";
 const TASK_COMPLETED_BODY: &str = "任务已成功完成。您可以在编辑器中查看结果。";
 const INPUT_NEEDED_TITLE: &str = "需要你的输入";
-const INPUT_NEEDED_BODY: &str = "任务正在等待你的回复，点击打开品悟继续。";
+// 桌面通知没有接点击动作(native builder 未注册 on_action,notify-send 结构性
+// 不上报点击),文案不得承诺点击行为。
+const INPUT_NEEDED_BODY: &str = "任务正在等待你的回复，请打开品悟继续。";
 
 #[derive(Default)]
 pub struct NotificationState {
@@ -186,6 +188,19 @@ mod tests {
             )
             .unwrap();
             assert!(!needs_input_enabled());
+
+            // 主开关关时不得放行（对齐 task_completion_enabled 的兄弟用例）。
+            std::fs::write(
+                &settings,
+                r#"{"notifications":{"enabled":false,"needs_input":true}}"#,
+            )
+            .unwrap();
+            assert!(!needs_input_enabled());
+
+            std::fs::write(&settings, r#"{"notifications":{"enabled":true}}"#).unwrap();
+            // 缺失的 needs_input 从结构体 Default 补齐（Linux 默认关、macOS/Windows 默认开）：
+            // 钉住 Linux 的 opt-in 默认，防止默认被改成无条件开启。
+            assert_eq!(needs_input_enabled(), !cfg!(target_os = "linux"));
 
             std::fs::write(&settings, r#"{"notifications":{"needs_input":true}}"#).unwrap();
             // 缺失的 enabled 从结构体 Default 补齐（Linux 默认关、macOS/Windows 默认开）。
