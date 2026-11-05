@@ -1,22 +1,69 @@
 """Unit tests for the model-visible schema guard in mcp-server-contract-smoke.
 
-The guard (check_schema_contract/_walk_tool_schema) runs inside the CI
-fast-gate's mcp-server-contract-smoke.py, shape-checking every bundled
-server's tools/list result against the MFJS shape set verified from the
-validator source (CodeWhale schema_sanitize.rs): every schema position holds
-an object, "type" is a single concrete MFJS string (or absent in favor of
-anyOf with union-only siblings), no keyword outside MFJS's allowed set
-survives, a surviving keyword must be admissible for its node's type
-(default on an array or enum/default on an object is InvalidKeywordValue),
-enum/default literals match their node's type, required names declared
-properties, bounds match their type and a keyword that is explicitly present
-with a null value counts as present-and-invalid (never "absent"), and the
-validator's resource budgets (anyOf ≤ 10 branches, ≤ 100 total properties,
-property depth ≤ 5, ≤ 500 total enum values, ≤ 64 structural depth, ≤ 120000
-encoded bytes, enums above 250 entries capped at 7500 combined literal
-bytes) hold —
-the validator drops the whole tool for any of these, so a bundled server
-that ships one loses that tool silently on the constrained-decoding route.
+Policy (ruling of 2026-11-05): the published Moonshot documents are the
+sole shipping basis for the constrained-decoding wire — a live probe may
+only ever tighten it, never widen it. The guard (check_schema_contract/
+_walk_tool_schema) runs inside the CI fast-gate's
+mcp-server-contract-smoke.py, shape-checking every bundled server's
+tools/list result against exactly the keyword set those documents list,
+mirroring the engine pipeline at the pinned CodeWhale gitlink
+(schema_sanitize.rs):
+
+- the whitelist is the MFJS specification's supported set, exactly — its
+  字段定义 sections enumerate description, default, anyOf, properties,
+  additionalProperties, items, type, enum, required, plus $defs/$ref under
+  restricted support ("$defs 必须定义在 schema 的根级别 (root level)；$ref
+  仅支持引用本文档内部的 subschema") — and its closing clause is the
+  authority for everything else: "若官方规范中的某些概念、关键字或特性在
+  本文档中未被提及，则表示当前 MFJS 尚未提供官方支持……我们不保证它们能在
+  最终的结构化输出中产生稳定、符合预期的结果" (mfjs-spec.zh.md, fetched
+  2026-11-05);
+- the advisory keywords the document cannot express (title, $comment, $id,
+  minLength, maxLength, minimum, maximum, minItems, maxItems — the
+  annotation group is named outright: "暂不支持 title、$comment 等描述性
+  元数据") are STRIPPED before validation, engine-side
+  (strip_mfjs_advisory_keywords) and in this mirror: removal is either
+  semantics-lossless (annotations) or loses only soft constraints (bounds),
+  so the tool still ships and the Moonshot wire carries only the documented
+  set — a schema carrying them is green here, not red, while other
+  providers keep receiving the full schema (malformed advisory values are
+  stripped too: kimi_parameters_strips_bounds_instead_of_rejecting_them);
+- the fail-closed set keeps the whole-tool drop: pattern, format, $schema,
+  prefixItems, exclusive bounds, nested allOf, oneOf, and every other
+  unlisted keyword has no removal equivalent ("暂不支持使用 prefixItems 或
+  unevaluatedItems 等方式模拟实现元组", "暂不支持如 exclusiveMinimum，
+  exclusiveMaximum，minContains, maxContains 等复杂校验定义") and the
+  validator silently drops the tool (UnsupportedKeyword / MissingType /
+  InvalidSchemaNode) — how #683 lost evaluate_script;
+- an enum whose values are not homogeneous float/int/str scalars is
+  stripped ("枚举值我们只支持基础类型中的 float, int 和 str……并且不支持
+  混合类型 (List 中的每个枚举值的类型必须相同，如不可以 str + int)");
+  a surviving enum's values must still match its node's type;
+- "type" is a single concrete string (or absent in favor of anyOf with
+  union-only siblings); a surviving keyword must be admissible for its
+  node's type (default on an array or enum/default on an object is
+  InvalidKeywordValue); required names unique declared properties; a
+  keyword explicitly present with a null value counts as present-and-invalid
+  (never "absent"); the root is a typed object without composition (the
+  Tool Use guide: "The root of `parameters` must be an `object`", and
+  strict defaults to true — "true (default, omitting is equivalent to
+  true)" — so the schema is enforced on the wire; a root union is flattened
+  engine-side on the strict face of the conflicting documents and this
+  guard stays red on it, a false alarm in the safe direction)
+  (platform.kimi.ai/docs/api/tool-use.md, fetched 2026-11-05);
+- the resource budgets hold (anyOf ≤ 10 branches, ≤ 100 total properties,
+  property depth ≤ 5, ≤ 500 total enum values, ≤ 64 structural depth,
+  ≤ 120000 encoded bytes, enums above 250 entries capped at 7500 combined
+  literal bytes). These budgets are the CodeWhale engine's own stricter
+  MFJS mirror policy — the walle source defaults are MaxAnyOfItems=500,
+  MaxTotalPropertiesKeysNum=3000, MaxSchemaDepth=30 (verified against
+  MoonshotAI/walle upstream main on 2026-11-05, cited for contrast only) —
+  so loosening one means changing the CodeWhale constants, not waiting for
+  Moonshot. The 2026-11-04 probe observations (root unions, pattern/format/
+  $schema/prefixItems/exclusive bounds/nested allOf accepted with 200 on
+  the coding endpoint) are recorded observations and never widen this
+  contract.
+
 All bundled servers are currently compliant, so if the guard itself breaks
 the smoke stays green (against compliant schemas a broken guard is exactly
 as silent as a good one) — only the direct unit tests here turn red when
@@ -24,14 +71,17 @@ the guard rots. Both directions are pinned: the incident shape (itemless
 array), items:{}, untyped items, tuple items, boolean schemas, list-typed /
 non-string / unknown "type" values, typeless annotation-only nodes,
 non-object schema values, $ref/$dynamicRef/$recursiveRef, empty or
-sibling-polluted anyOf, non-root $defs/$id, every non-MFJS keyword
-(oneOf, allOf, patternProperties, prefixItems, contains, propertyNames,
+sibling-polluted anyOf, non-root $defs, every fail-closed keyword (oneOf,
+allOf, patternProperties, prefixItems, pattern, format, $schema,
+exclusiveMinimum/exclusiveMaximum, contains, propertyNames,
 not/if/then/else, dependentSchemas, draft-07 dependencies, unevaluated*,
 contentSchema), the per-type/budget deviations, the explicit-null keyword
-values, and the reviewer counterexamples (array default, object enum/default,
-eleven-branch anyOf, null keyword values, oversized enum literals)
-must be red; typed enums, typed unions within every budget, and the real
-pptx schema must be green. Every recursion lane that survives (properties,
+values, the homogeneous-enum type mismatches, and the reviewer
+counterexamples (array default, object enum/default, eleven-branch anyOf,
+null keyword values, oversized enum literals) must be red; advisory
+keywords (stripped then passed, even malformed), stripped unsupported
+enums, typed enums, typed unions within every budget, and the real pptx
+schema must be green. Every recursion lane that survives (properties,
 additionalProperties, items, anyOf branches, $defs) has a red case pinning
 it: the walker's recursion is not decorative, every lane is consumed by an
 assertion. The wiring (the call site itself) is pinned by
@@ -328,8 +378,9 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIn("non-empty branch list", message)
 
     def test_anyof_type_sibling_is_red(self):
-        # MFJS allows only title/description beside anyOf: a typed node with
-        # a union is InvalidKeywordValue, not an intersection.
+        # MFJS allows only description beside anyOf (title is advisory and
+        # stripped before the sibling check): a typed node with a union is
+        # InvalidKeywordValue, not an intersection.
         message = _contract_message(
             {"type": "object",
              "properties": {"x": {"type": "object", "anyOf": [{"type": "string"}]}}})
@@ -461,11 +512,15 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIn("'enum'", message)
 
     def test_enum_value_type_mismatch_is_red(self):
+        # A homogeneous scalar enum survives the strip, so the validator's
+        # enum/type match still drops the tool on a mismatch (the mixed
+        # ["a", 1] shape is stripped away before this check runs — see the
+        # strip pins below).
         message = _contract_message(
             {"type": "object",
-             "properties": {"e": {"type": "string", "enum": ["a", 1]}}})
+             "properties": {"e": {"type": "integer", "enum": ["a", "b"]}}})
         self.assertIsNotNone(message)
-        self.assertIn("do not all match type \"string\"", message)
+        self.assertIn('do not all match type "integer"', message)
 
     def test_default_value_type_mismatch_is_red(self):
         message = _contract_message(
@@ -474,28 +529,143 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("default does not match type \"string\"", message)
 
-    def test_typed_enum_default_and_bounds_stay_green(self):
+    # ── Advisory-keyword strip pins (2026-11-05 document-precise rewrite):
+    # the specification's field set has no title/$comment/$id and no bound
+    # keywords, and the engine strips them from the wire before validation
+    # instead of dropping the tool — so the mirror strips too (strip-then-
+    # pass), and the remaining documented keywords are still validated. Each
+    # of these was red under the pre-strip mirror that validated the
+    # advisory keywords as if the document listed them.
+
+    def test_mixed_kind_enum_is_stripped_and_green(self):
+        # "并且不支持混合类型 (List 中的每个枚举值的类型必须相同，如不可以
+        # str + int)": the enum is removed, the tool ships.
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"e": {"type": "string", "enum": ["a", 1]}}}))
+
+    def test_non_scalar_and_empty_enums_are_stripped_and_green(self):
+        # bool/null/object/array values sit outside "float, int 和 str":
+        # the keyword is removed (an unconstrained node stays shippable).
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {
+                 "flag": {"type": "boolean", "enum": [False]},
+                 "nullish": {"type": "null", "enum": [None]},
+                 "obj": {"type": "object",
+                         "properties": {"a": {"type": "string"}},
+                         "enum": [{"a": 1}]},
+                 "arr": {"type": "array", "items": {"type": "string"},
+                         "enum": [["a"]]},
+                 "empty": {"type": "string", "enum": []},
+             }}))
+        # An enum-only node keeps no type after the strip: MissingType,
+        # exactly the baseline behavior — the strip never invents a type.
+        message = _contract_message(
+            {"type": "object", "properties": {"leaf": {"enum": ["a", 1]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("empty schema node", message)
+
+    def test_serde_kind_mix_enum_is_stripped_homogeneous_stays_green(self):
+        # The homogeneity split follows serde kinds, not JSON values:
+        # 1 (Integer) and 2.5 (Number) are different kinds and the enum is
+        # stripped; [1, 2] and [0.5, 1.5] are homogeneous and survive into
+        # the validator's own enum/type match.
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {
+                 "mixed": {"type": "number", "enum": [1, 2.5]},
+                 "ints": {"type": "integer", "enum": [1, 2]},
+                 "floats": {"type": "number", "enum": [0.5, 1.5]},
+             }}))
+
+    def test_advisory_keywords_are_stripped_not_shipped(self):
+        # The advisory set is exactly the nine keywords the engine removes
+        # (title, $comment, $id, minLength, maxLength, minimum, maximum,
+        # minItems, maxItems); everything else on these nodes is documented
+        # (enum/default/description) and still validated after the strip.
         self.assertIsNone(_contract_message(
             {"type": "object",
              "properties": {"s": {"type": "string", "default": "x", "enum": ["x"],
-                                  "minLength": 1, "maxLength": 5},
+                                  "minLength": 1, "maxLength": 5, "title": "S"},
                             "i": {"type": "integer", "default": 3, "enum": [3],
                                   "minimum": -3, "maximum": 9},
                             "a": {"type": "array", "items": {"type": "string"},
                                   "minItems": 1, "maxItems": 5},
-                            "b": {"type": "boolean", "default": False}}}))
+                            "b": {"type": "boolean", "default": False},
+                            "c": {"type": "string", "$comment": "hint",
+                                  "$id": "https://example.invalid/s"}}}))
 
-    def test_bounds_type_and_range_deviations_are_red(self):
+    def test_malformed_advisory_bounds_are_stripped_not_rejected(self):
+        # The engine strips the bound keywords before validating any value
+        # (kimi_parameters_strips_bounds_instead_of_rejecting_them), so a
+        # malformed bound — foreign type placement, out-of-range literal,
+        # inverted range, explicit null — loses only the soft constraint
+        # and the tool ships. Red under the pre-strip mirror that validated
+        # bound values as if the document listed them.
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {
+                 "a": {"type": "array", "items": {"type": "string"},
+                       "minLength": 1},
+                 "s": {"type": "string", "minLength": -1},
+                 "n": {"type": "number", "minimum": 5, "maximum": 1},
+                 "z": {"type": "number", "minimum": None},
+                 "t": {"type": "string", "minLength": None, "maxLength": 5},
+             }}))
+
+    def test_malformed_annotation_is_stripped_and_description_still_checked(self):
+        # Annotations are stripped wholesale (values included), so a
+        # non-string title ships; description is a documented keyword and
+        # its string typing still drops the tool.
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"x": {"type": "string", "title": 5}}}))
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"x": {"type": "string", "description": 5}}})
+        self.assertIsNotNone(message)
+        self.assertIn("description must be a string", message)
+
+    def test_non_root_dollar_id_is_stripped_and_green(self):
+        # The advisory strip removes $id at every position, so the old
+        # "$defs/$id outside the root" red no longer fires for $id; only
+        # $defs keeps a root-only rule.
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"x": {"$id": "https://example.invalid/x",
+                                  "type": "string"}}}))
+
+    def test_document_named_fail_closed_keywords_are_red(self):
+        # The specification names these groups outright: format under the
+        # annotation ban ("也不支持 format 格式注解字段"), exclusive bounds
+        # under the complex-validation ban ("暂不支持如 exclusiveMinimum，
+        # exclusiveMaximum，minContains, maxContains 等复杂校验定义");
+        # pattern has no removal equivalent and fails closed with them.
         message = _contract_message(
             {"type": "object",
              "properties": {
-                 "a": {"type": "array", "items": {"type": "string"}, "minLength": 1},
-                 "s": {"type": "string", "minLength": -1},
-                 "n": {"type": "number", "minimum": 5, "maximum": 1}}})
+                 "p": {"type": "string", "pattern": "^a"},
+                 "f": {"type": "string", "format": "date-time"},
+                 "e": {"type": "integer", "exclusiveMinimum": 0,
+                       "exclusiveMaximum": 10},
+             }})
         self.assertIsNotNone(message)
-        self.assertIn("minLength/maxLength require type \"string\"", message)
-        self.assertIn("out-of-range literal", message)
-        self.assertIn("minimum must not exceed maximum", message)
+        for keyword in ("pattern", "format", "exclusiveMinimum",
+                        "exclusiveMaximum"):
+            self.assertIn(f"'{keyword}'", message)
+
+    def test_dollar_schema_keyword_is_red(self):
+        # Meta-Schemas are unsupported outright ("暂不支持 Meta-Schemas");
+        # the closing clause fail-closes the keyword.
+        message = _contract_message(
+            {"type": "object",
+             "properties": {
+                 "x": {"type": "string",
+                       "$schema": "https://json-schema.org/draft/2020-12/schema"}}})
+        self.assertIsNotNone(message)
+        self.assertIn("unsupported keyword", message)
+        self.assertIn("$schema", message)
 
     def test_required_must_name_unique_declared_properties(self):
         message = _contract_message(
@@ -541,13 +711,6 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("root must be type \"object\"", message)
 
-    def test_annotation_must_be_string_is_red(self):
-        message = _contract_message(
-            {"type": "object",
-             "properties": {"x": {"type": "string", "title": 5}}})
-        self.assertIsNotNone(message)
-        self.assertIn("title must be a string", message)
-
     # ── Explicit-null keyword values (round 8): the validator's keyword arms
     # are presence-aware (obj.get(k) + is_some), so a keyword explicitly
     # present with a null value is a present-and-invalid value — it never
@@ -577,26 +740,9 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("required must be a list", message)
 
-    def test_null_numeric_bound_is_red(self):
-        message = _contract_message(
-            {"type": "object",
-             "properties": {"n": {"type": "number", "minimum": None}}})
-        self.assertIsNotNone(message)
-        self.assertIn("out-of-range literal", message)
-
-    def test_null_string_bound_beside_valid_bound_is_red(self):
-        # The lo-is-None trap specifically: one valid bound must not let a
-        # present null partner pass as the "absent" side of the pair.
-        schema = {"type": "object",
-                  "properties": {"s": {"type": "string",
-                                       "minLength": None, "maxLength": 5}}}
-        message = _contract_message(schema)
-        self.assertIsNotNone(message)
-        self.assertIn("out-of-range literal", message)
-        self.assertIsNone(_contract_message(
-            {"type": "object",
-             "properties": {"s": {"type": "string",
-                                  "minLength": 1, "maxLength": 5}}}))
+    # (The round-8 null-bound pins moved into the strip block above: a
+    # bound keyword is stripped before any value is validated, so an
+    # explicit null inside an advisory keyword can no longer be red.)
 
     # ── Resource budgets (round 7, P2-3): ResourceLimitExceeded drops the
     # tool exactly like every other deviation, so each budget needs a red
