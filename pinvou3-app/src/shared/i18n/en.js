@@ -1011,6 +1011,8 @@ Object.assign(dictEn.uiToolStore, {
   recycleRestored:name=>`"${name}" restored`, recycleRestoredCredentials:name=>`"${name}" restored. Its credentials were removed on uninstall—please fill them in again.`, recyclePurged:name=>`"${name}" permanently deleted`,
   recycleExport:'Export', recycleExportUnavailable:'Package files are missing and cannot be exported', recycleExported:name=>`Exported as ${name}`,
   movedToRecycleBinQuoted:name=>`"${name}" uninstalled and moved to the recycle bin`,
+  uninstallBusy:'Tasks or pending work may still be active. Finish or pause them, then retry uninstalling the uploaded plugin.',
+  uninstallReleaseFailed:'Safe release of plugin runtime resources could not be confirmed. Uninstall was stopped. Retry shortly; if it still fails, exit the app and make sure the plugin processes have exited.',
 });
 
 Object.assign(dictEn, {

@@ -599,9 +599,15 @@ pub async fn uninstall_marketplace_tool(
     tool_id: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
+    let worker_pool = pool.inner().clone();
+    let runtime = tokio::runtime::Handle::current();
     // The sync body includes scope-file RMW that can block on the
     // cross-process flock (#515): keep it off the executor.
-    tokio::task::spawn_blocking(move || uninstall_marketplace_tool_sync(&tool_id))
+    tokio::task::spawn_blocking(move || {
+        uninstall_marketplace_tool_sync_with_upload_preflight(&tool_id, || {
+            runtime.block_on(worker_pool.prepare_upload_uninstall())
+        })
+    })
         .await
         // The join-failure copy matches the neighboring commands' 任务执行失败
         // siblings.
@@ -618,7 +624,15 @@ pub async fn uninstall_marketplace_tool(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), String> {
+    uninstall_marketplace_tool_sync_with_upload_preflight(tool_id, || Ok(()))
+}
+
+fn uninstall_marketplace_tool_sync_with_upload_preflight<G>(
+    tool_id: &str,
+    upload_preflight: impl FnOnce() -> Result<G, String>,
+) -> Result<(), String> {
     // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
     // §3.1): fail fast at the command layer with a user-facing error; the
     // manager layer `MarketplaceManager::uninstall` carries the same guard
@@ -739,9 +753,10 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
     // Stranded leftover entries fail closed and do NOT converge via
     // install/uninstall — the deny-list composer's next full-list save
     // rewrites the file.
-    mgr.uninstall(tool_id)?;
+    mgr.uninstall_with_upload_preflight(tool_id, upload_preflight)?;
     Ok(())
 }
+
 // ---------------------------------------------------------------------------
 // 技能市场（与工具市场并列：工具=MCP server，技能=SKILL.md 目录落 bundle/skills/）
 // ---------------------------------------------------------------------------
@@ -1246,9 +1261,15 @@ pub async fn uninstall_marketplace_skill(
     skill_id: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || uninstall_marketplace_skill_sync(&skill_id))
-        .await
-        .map_err(|e| format!("任务执行失败: {e}"))??;
+    let worker_pool = pool.inner().clone();
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        uninstall_marketplace_skill_sync_with_upload_preflight(&skill_id, || {
+            runtime.block_on(worker_pool.prepare_upload_uninstall())
+        })
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))??;
     // 卸载影响两个 scope 的启用集：重写在线会话的组合目录。
     // The deny list is snapshot state in live engines, and uninstall (unlike
     // ima_logout) keeps the package's keyring credentials: a skill owning a
@@ -1258,7 +1279,15 @@ pub async fn uninstall_marketplace_skill(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
+    uninstall_marketplace_skill_sync_with_upload_preflight(skill_id, || Ok(()))
+}
+
+fn uninstall_marketplace_skill_sync_with_upload_preflight<G>(
+    skill_id: &str,
+    upload_preflight: impl FnOnce() -> Result<G, String>,
+) -> Result<(), String> {
     // The by-hand lane must not delete a live
     // claimant's companion dir. `uninstall_locked`'s candidate scan finds
     // `bundles/<pkg>/skills/<name>` and deletes it, and the strip below
@@ -1285,7 +1314,7 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     // erase THAT pack's consent rows.
     let owner = crate::features::marketplace::scope::resolve_pack_owner_id(skill_id);
     let torn_down = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-        .uninstall(skill_id)?;
+        .uninstall_with_upload_preflight(skill_id, upload_preflight)?;
     if !torn_down {
         // Vacuous skill uninstall (no record, nothing on disk): keep the deny
         // entries — the concurrent-install rationale is single-sourced on
@@ -1596,6 +1625,10 @@ pub async fn export_plugin_spec(app: tauri::AppHandle) -> Result<bool, String> {
         .map_err(|error| format!("spec_export_write_failed: {error}"))?;
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "marketplace/uninstall_native_tests.rs"]
+mod uninstall_native_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2570,6 +2603,25 @@ mod tests {
             assert!(
                 skill_dir.join("SKILL.md").is_file(),
                 "前置：companion 已落盘"
+            );
+
+            let mcp_before = std::fs::read(crate::platform::paths::mcp_config_path()).unwrap();
+            let error = uninstall_marketplace_tool_sync_with_upload_preflight("up-cmd", || {
+                Err::<(), String>("marketplace_uninstall_release_failed".into())
+            })
+            .unwrap_err();
+            assert_eq!(error, "marketplace_uninstall_release_failed");
+            assert!(skill_dir.join("SKILL.md").is_file());
+            assert!(pkg_dir_exists("up-cmd"));
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("up-cmd")
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                std::fs::read(crate::platform::paths::mcp_config_path()).unwrap(),
+                mcp_before
             );
 
             uninstall_marketplace_tool_sync("up-cmd").expect("命令路径卸载应成功");

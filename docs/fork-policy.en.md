@@ -1,5 +1,21 @@
 # Pinvou CodeWhale Fork Policy
 
+## Review candidate: uploaded-plugin resource retirement
+
+This draft parent candidate pins `0022e737445a962a399e4470ad8cb683a07ac899` from
+[CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149), one commit above public maintenance
+`11cba403d` (94 candidate commits above v0.9.12; the published baseline below
+remains at 93). The core commit has the exact previously reviewed source tree;
+no additional foundation behavior is introduced during PR preparation.
+
+Only the review branch is published. `pinvou3-clean` and immutable tags are not
+advanced. `verify-public-submodule.sh` still requires the parent gitlink to
+equal the public maintenance head, so that merge prerequisite is intentionally
+not satisfied by the candidate branch. Keep the parent PR draft until #149
+lands, align to its actual public merged commit, and rerun the applicable gates.
+The following baseline inventory records the published state before this
+candidate, not a claim that the dependency has already merged.
+
 > Updated: 2026-11-05. Public maintenance 11cba403d contains #114/#125 plus #123/#124/#129/#131/#133/#134/#135; parent gitlink follows the public maintenance head.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 

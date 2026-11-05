@@ -1013,6 +1013,8 @@ Object.assign(dictJa.uiToolStore, {
   recycleRestored:name=>`「${name}」を復元しました`, recycleRestoredCredentials:name=>`「${name}」を復元しました。認証情報はアンインストール時に削除されているため、再度入力してください。`, recyclePurged:name=>`「${name}」を完全に削除しました`,
   recycleExport:'エクスポート', recycleExportUnavailable:'パッケージファイルが見つからないためエクスポートできません', recycleExported:name=>`${name} としてエクスポートしました`,
   movedToRecycleBinQuoted:name=>`「${name}」をアンインストールし、ごみ箱に移動しました`,
+  uninstallBusy:'タスクや未処理の作業が終了したことを確認できないため、アップロードしたプラグインをアンインストールできません。タスクを完了または一時停止してから再試行してください。',
+  uninstallReleaseFailed:'プラグインの実行リソースが安全に解放されたことを確認できないため、アンインストールを中止しました。しばらくしてから再試行してください。失敗が続く場合は、アプリを終了し、プラグインのプロセスが終了したことを確認してください。',
 });
 
 Object.assign(dictJa, {

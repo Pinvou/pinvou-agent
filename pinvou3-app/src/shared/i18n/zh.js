@@ -1054,6 +1054,8 @@ Object.assign(dictZh.uiToolStore, {
   recycleRestored:name=>`已恢复「${name}」`, recycleRestoredCredentials:name=>`已恢复「${name}」；凭据已在卸载时删除，请重新填写。`, recyclePurged:name=>`已彻底删除「${name}」`,
   recycleExport:'导出', recycleExportUnavailable:'包文件已缺失，无法导出', recycleExported:name=>`已导出为 ${name}`,
   movedToRecycleBinQuoted:name=>`已卸载「${name}」，移入回收站`,
+  uninstallBusy:'当前无法确认所有任务和待处理工作均已结束，暂时无法卸载上传插件。请完成或暂停任务后重试。',
+  uninstallReleaseFailed:'无法确认插件运行资源已安全释放，已中止卸载。请稍后重试；若仍失败，请退出应用并确认插件进程已退出。',
 });
 
 
