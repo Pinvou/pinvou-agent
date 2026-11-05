@@ -285,9 +285,12 @@ def test_slides_schema_items_pin():
     # Per-branch required = exactly the fields the renderer reads and draws
     # a blank body without; pure-decoration fields stay optional (the probe's
     # all-fields-required control produced blank values + enum guessing).
+    # 2026-11-05 required 终审裁决:required 只许"留空=业务异常"。agenda/end
+    # 的渲染端对空标题有语义完整兜底(目录/谢谢),空标题产出业务完整页,
+    # title 退出分支 required;其余 8 分支不变。
     expected_required = {
         "cover": ["layout", "title"],
-        "agenda": ["layout", "title", "items"],
+        "agenda": ["layout", "items"],
         "section": ["layout", "title"],
         "bullets": ["layout", "title", "bullets"],
         "two_col": ["layout", "title", "left", "right"],
@@ -295,7 +298,7 @@ def test_slides_schema_items_pin():
         "chart": ["layout", "title", "categories", "series"],
         "table": ["layout", "title", "headers", "rows"],
         "image": ["layout", "title"],
-        "end": ["layout", "title"],
+        "end": ["layout"],
     }
     seen = []
     for i, branch in enumerate(branches):

@@ -691,7 +691,9 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
 # 不复现 —— 但长上下文/多轮失败锚定下的字段丢失仍真实存在。
 # 缓解手段 = per-layout anyOf:每分支显式 type:object、layout enum 收敛为
 # 单值(选分支即选版式)、required 只放该版式渲染函数会读且缺了会出空白
-# 正文的字段。2026-11-04 活体探针 A2:本形态是唯一一次 10 页构成完全达标,
+# 正文的字段(2026-11-05 required 终审裁决:留空=业务异常才许 required;
+# agenda/end 空标题有语义完整兜底「目录」/「谢谢」,产出业务完整页,
+# title 因此退出该两分支 required)。2026-11-04 活体探针 A2:本形态是唯一一次 10 页构成完全达标,
 # 字节成本 +6%;对照组"全字段塞 required"= 模型填空值+乱选 enum(+76%
 # token,证伪)。walle 校验器已把 anyOf 列为正式成员(上游 ValidateAnyOf);
 # 而"分支须显式 type:object、type 不与 anyOf 同层、anyOf ≤10 分支、全文档
@@ -707,9 +709,11 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
 def _slides_item_branch(layout, layout_label, required, blurb, fields):
     """构造 slides.items 的一个版式分支:显式 type:object + 该版式自己的 required。
 
-    required 只收渲染函数会读、缺了会出空白正文的字段;纯装饰字段(如
+    required 只收渲染函数会读、缺了会出空白正文的字段(2026-11-05 终审
+    裁决单一标准:留空=业务异常才许 required);纯装饰字段(如
     cover 的 subtitle/date、two_col 的栏标题)保持可选,避免把受限解码的
-    最小补全倾向逼成填空值(探针对照组已证伪)。
+    最小补全倾向逼成填空值(探针对照组已证伪)。agenda/end 的空标题渲染端
+    兜底为「目录」/「谢谢」,业务完整,不进 required。
     """
     properties = {
         "layout": {
@@ -759,8 +763,8 @@ _SLIDES_ITEMS_ANY_OF = [
         },
     ),
     _slides_item_branch(
-        "agenda", "目录页", ["layout", "title", "items"],
-        "目录页:必填 items(章节条目数组,最多 6 条)",
+        "agenda", "目录页", ["layout", "items"],
+        "目录页:必填 items(章节条目数组,最多 6 条);title 可选,缺省「目录」",
         {
             "title": _SLIDE_TITLE,
             "items": dict(_ITEMS_LEAF, description="章节条目数组(最多 6 条):字符串,或 {num, label}"),
@@ -851,8 +855,8 @@ _SLIDES_ITEMS_ANY_OF = [
         },
     ),
     _slides_item_branch(
-        "end", "结尾页", ["layout", "title"],
-        "结尾页:必填 title(如「谢谢」);subtitle 可选",
+        "end", "结尾页", ["layout"],
+        "结尾页:layout 即完整,标题缺省「谢谢」;subtitle 可选",
         {
             "title": _SLIDE_TITLE,
             "subtitle": {"type": "string", "description": "副标题"},
@@ -879,10 +883,9 @@ TOOL_DEFS = [{
                 "description": (
                     "deck 的 slides 数组。每页一个对象,`layout` 选版式,并**按版式填该分支"
                     "required 的正文字段**(agenda/bullets/two_col/kpi/chart/table 缺正文"
-                    "字段会得到空白正文页;cover/section/image/end 仅 title 即完整)。"
-                    "每版式的必填字段已写进对应分支的 required:\n"
+                    "字段会得到空白正文页)。每版式的必填字段已写进对应分支的 required:\n"
                     "- cover: {title}(subtitle/date 可选)\n"
-                    "- agenda: {title, items}  章节条目数组\n"
+                    "- agenda: {items}  章节条目数组;title 可选,缺省「目录」\n"
                     "- section: {title}  ← 章节分隔页\n"
                     "- bullets: {title, bullets}  要点数组\n"
                     "- two_col: {title, left, right}(leftTitle/rightTitle 可选)\n"
@@ -890,7 +893,7 @@ TOOL_DEFS = [{
                     "- chart: {title, chartType?, categories, series}\n"
                     "- table: {title, headers, rows}\n"
                     "- image: {title}(image/bullets/caption 可选)\n"
-                    "- end: {title}(subtitle 可选)  ← 结尾页\n"
+                    "- end: layout 即完整(subtitle 可选;标题缺省「谢谢」)  ← 结尾页\n"
                     "正文版式(agenda/bullets/two_col/kpi/chart/table)要有真实内容/数据,不要只放标题。"
                 ),
                 # Per-layout anyOf:每版式一分支,分支 required 即该版式语义必填
