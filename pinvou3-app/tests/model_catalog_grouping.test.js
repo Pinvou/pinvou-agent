@@ -493,6 +493,23 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'openai/gpt-oss-20b')), false, 'removed from serverless 2026-09-15 (deprecations record)');
   assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'kimi-k3.1-pro')), true, 'ark plan overview names kimi-k3.1-pro (2026-11-04 fix pass)');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'groq', 'https://api.groq.com/openai/v1', 'llama-3.3-70b-versatile')), true);
+  // Round-8 lineup pins: these rows had no positive pin and deleting them
+  // stayed green (the shared-vendor kimi groups cannot be pinned through
+  // isPresetModel — vendor-first classification hits the sibling group —
+  // so the group objects are pinned directly; groq's other rows were
+  // simply unpinned).
+  const groqGroup = MODEL_CATALOG.cloud.find(group => group.key === 'groq');
+  assert.ok(groqGroup, 'groq group present');
+  for (const id of ['llama-3.1-8b-instant', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b']) {
+    assert.ok(groqGroup.items.some(item => item.model === id), `groq lineup must keep ${id} (silent deletions must stay red)`);
+  }
+  for (const key of ['kimi', 'kimi_global']) {
+    const kimiGroup = MODEL_CATALOG.cloud.find(group => group.key === key);
+    assert.ok(kimiGroup, `${key} group present`);
+    for (const id of ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed']) {
+      assert.ok(kimiGroup.items.some(item => item.model === id), `${key} lineup must keep ${id} (silent deletions must stay red)`);
+    }
+  }
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'mistral', model: 'codestral-latest', base_url: 'https://api.mistral.ai/v1' }), null);
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'meta', model: 'muse-spark-1.3', base_url: 'https://api.meta.ai/v1' }), null);
   // DeepSeek mainline: the 1017 snapshot serves behind the unchanged
@@ -1616,6 +1633,12 @@ test('providerCatalog overlays and preset labels for the custom Responses group 
   // green). customModelTitles intentionally covers a subset of groups (the
   // rest fall back to the generic template), so the all-groups scan above
   // does not apply to it — the 2026-11-03 groups are pinned explicitly.
+  // Round-8 reverse direction (mirrors the providerCatalog guard): every
+  // customModelTitles key must map to a live catalog group — a group
+  // removed from the catalog must not leave dead title rows behind.
+  const liveGroupKeys = new Set(
+    ['local', 'cloud'].flatMap(scope => (MODEL_CATALOG[scope] || []).map(group => group.key)),
+  );
   for (const file of ['en.js', 'ja.js', 'zh.js']) {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', file), 'utf8');
     assert.ok(/modelPresetOpenaiResponses:\s*'[^']+'/.test(src), `${file} is missing the modelPresetOpenaiResponses label`);
@@ -1624,7 +1647,41 @@ test('providerCatalog overlays and preset labels for the custom Responses group 
     for (const group of ['openai_responses', 'mistral', 'meta', 'together', 'groq']) {
       assert.ok(new RegExp(`${group}:'[^']+'`).test(titles[1]), `${file} customModelTitles is missing the ${group} row`);
     }
+    for (const keyMatch of titles[1].matchAll(/([A-Za-z0-9_]+):'/g)) {
+      assert.ok(
+        liveGroupKeys.has(keyMatch[1]),
+        `${file} customModelTitles carries the dead key ${keyMatch[1]} — no catalog group with that key exists`
+      );
+    }
   }
+});
+
+test('K3.1 contract spellings match across the Rust prefs matcher and the frontend helper (is_moonshot_k31_route ↔ isMoonshotK31ModelName)', () => {
+  // The K3.1 no-tier contract is one contract mirrored in two languages:
+  // prefs/mod.rs gates the stored-effort drop and the bridge wire omission,
+  // model-catalog.js gates the tier control and the frontend drop. Each
+  // side's spelling list is independently pinned, but a spelling added on
+  // one side only would pass both suites while the contract splits — so
+  // extract the exact-match literals from both sources and compare them
+  // mechanically (same technique as the image-table and Responses-wire
+  // cross-language guards).
+  const rustSrc = fs.readFileSync(
+    path.join(__dirname, '..', 'src-tauri', 'src', 'platform', 'prefs', 'mod.rs'), 'utf8',
+  );
+  const rustStart = rustSrc.indexOf('pub(crate) fn is_moonshot_k31_route(');
+  assert.notStrictEqual(rustStart, -1, 'prefs matcher moved — update this guard');
+  const rustBody = rustSrc.slice(rustStart, rustSrc.indexOf('\n}', rustStart)).replace(/\/\/[^\n]*/g, '');
+  const rustSpellings = [...rustBody.matchAll(/"([^"]*k3\.1[^"]*)"/g)].map(m => m[1]).sort((a, b) => a.localeCompare(b));
+
+  const jsSrc = fs.readFileSync(srcPath, 'utf8');
+  const jsStart = jsSrc.indexOf('function isMoonshotK31ModelName(');
+  assert.notStrictEqual(jsStart, -1, 'frontend helper moved — update this guard');
+  const jsBody = jsSrc.slice(jsStart, jsSrc.indexOf('\n}', jsStart));
+  const jsSpellings = [...jsBody.matchAll(/'([^']*k3\.1[^']*)'/g)].map(m => m[1]).sort((a, b) => a.localeCompare(b));
+
+  assert.strictEqual(rustSpellings.length, 4, `rust spellings parsed: ${rustSpellings.join(', ')}`);
+  assert.strictEqual(jsSpellings.length, 4, `js spellings parsed: ${jsSpellings.join(', ')}`);
+  assert.deepStrictEqual(jsSpellings, rustSpellings);
 });
 
 test('OpenAI Responses wire 谓词的前缀集跨语言一致（bridge.rs ↔ model-catalog.js）', () => {
