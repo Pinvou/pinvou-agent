@@ -1662,27 +1662,43 @@ pub async fn rebind_workspace_root(
         // bridge hold no approval-store acquisitions under their locks, so
         // the pending → SessionStore order here and in the capture has no
         // reverse path.
+        // Partial publication (review 5784078802): the lane CAN fail after
+        // bindings are durably published (the divergence-repair persist arm
+        // rolls back only the re-keyed records, so earlier index-pass moves
+        // stay effective). The typed `RebindPrefixError` carries that
+        // published population, and the fence derives the moved set from
+        // BOTH arms — on the failure arm the advance/clear runs INSIDE this
+        // critical section, before the formatted Err returns and the rebind
+        // gate unlocks. The String mapping therefore stays OUTSIDE the
+        // fence: a blanket `map_err` on the publish closure would strip the
+        // typed population back off the failure.
         crate::features::assistant::pending_approvals::commit_rebind_publication(
             || {
                 agents
                     .rebind_workspace_prefix(&from_for_agents, &to_for_agents)
-                    .map_err(|e| format!("rebind_workspace_root: {e:#}"))
             },
-            // The publish result is the lane's Result: a failed publish
-            // moved no bindings (the round-10 precondition documented below),
-            // so the Err arm advances/clears nobody.
             |outcome| match outcome {
                 Ok(outcome) => outcome.affected.iter().map(|(sid, _)| sid.clone()).collect(),
-                Err(_) => Vec::new(),
+                Err(error) => error
+                    .downcast_ref::<crate::features::codex_acp::RebindPrefixError>()
+                    .map(|typed| {
+                        typed
+                            .published_affected
+                            .iter()
+                            .map(|(sid, _)| sid.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             },
         )
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))
     })
-    // 该 `?` 的前提（round-10 评审登记）：今天 rebind_workspace_prefix 的
-    // 错误臂都发生在绑定落盘之前（持久化失败回滚内存记录后报错，
-    // commit_index_rekeys 的索引集恒空），即前缀平移失败 ⇒ 绑定未动，
-    // 提前返回不会跳过绑定提交点的审批记忆栅栏。若未来该函数出现
-    // 「已落盘再失败」的臂，必须把栅栏挪到本 `?` 之前，否则会重新打开
-    // 旧目录决策应答新目录请求的残路径。
+    // Partial-publication arm (review 5784078802; supersedes the round-10
+    // premise that every Err arm fires before any binding reaches disk):
+    // a failure here has already run the identity advance/clear for the
+    // published population inside the fence above, so this early return
+    // cannot skip the binding-commit-point invalidation — a session moved
+    // and persisted before the failure keeps no old-directory grant.
     .await?;
     // Plain-chat binding sidecars (review #463 round-8 B1): the sidecar pass
     // of the batch planned above — the legacy table already carries the
@@ -5069,6 +5085,204 @@ mod tests {
             !src.contains("fn clear_approval_memory_for_rebound_sessions<"),
             "the two-step helper must be gone: publishes and their identity advance/clear share one fence"
         );
+    }
+
+    /// Wiring pin for the partial-publication P2 (review 5784078802): the
+    /// codex prefix lane's typed failure must ride the publication fence —
+    /// the fence derives the moved set from BOTH arms (the typed
+    /// `RebindPrefixError` carries the durably published population, whose
+    /// advance/clear runs inside the fence's critical section before the
+    /// failure returns and the rebind gate unlocks), and the String mapping
+    /// sits AFTER the fence so the error reaches the caller contract
+    /// un-flattened. Source-level like the other command-layer probes.
+    /// Mutation: re-broadening the lane error back into a blanket `map_err`
+    /// on the publish closure fails the ordering assert (the typed
+    /// population would be stripped before the fence sees it); deleting the
+    /// typed Err arm of the moved-set match fails the finds.
+    #[test]
+    fn rebind_partial_failure_arm_invalidates_before_returning() {
+        let src = production_source();
+        let fence = src
+            .find("pending_approvals::commit_rebind_publication(")
+            .expect("the codex publish must ride the publication fence");
+        let body = &src[fence..];
+        let err_arm = body
+            .find("Err(error) => error")
+            .expect("the moved set must come from the typed error arm too");
+        let downcast = err_arm
+            + body[err_arm..]
+                .find("downcast_ref::<crate::features::codex_acp::RebindPrefixError>()")
+                .expect(
+                    "the fence must downcast the typed error (plain anyhow failures clear nothing)",
+                );
+        let _published = err_arm
+            + body[err_arm..]
+                .find("published_affected")
+                .expect("the typed error must contribute its published population to the fence");
+        let string_map = body
+            .find(".map_err(|e| format!(\"rebind_workspace_root: {e:#}\"))")
+            .expect("the String mapping must exist for the caller contract");
+        assert!(
+            err_arm < downcast && downcast < string_map,
+            "the typed error must reach the fence BEFORE the String flattening (the fence clears the published population inside its critical section)"
+        );
+        assert!(
+            !src.contains("clear_approval_memory_for_published_rebind"),
+            "the post-join downcast helper must stay gone: the fence clears inside its own critical section"
+        );
+        assert!(
+            !src.contains("let prefix_join = tauri::async_runtime::spawn_blocking(move || {"),
+            "the unfenced blocking join must not come back"
+        );
+    }
+
+    /// Review 5784078802 (P2), production flow: S1 (matching index+sidecar
+    /// under A) is moved and durably published, THEN S2's divergence-repair
+    /// persist fails and the whole codex prefix call reports Err. The
+    /// command layer runs the SAME publication fence as the success path —
+    /// the fence invalidates exactly the published population carried by
+    /// the typed error before the failure returns — asserting S1 cannot
+    /// reuse the grant remembered under A (the grant must be gone and the
+    /// generation advanced, so fresh startups resolve B unfenced), while S2
+    /// (whose re-key rolled back, effective binding unchanged) keeps its
+    /// shares. Mutation: dropping the typed Err arm of the fence's moved-set
+    /// match (mapping every Err to an empty set, the pre-fix shape) reds the
+    /// S1 grant/generation asserts below.
+    #[test]
+    fn rebind_partial_failure_invalidates_the_published_population() {
+        use crate::features::assistant::pending_approvals as approvals;
+        let base = unique_dir("partial-pub");
+        for dir in ["from", "to", "elsewhere"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        let from = canonical_form(&base.join("from"));
+        let to = canonical_form(&base.join("to"));
+        let elsewhere = canonical_form(&base.join("elsewhere"));
+        let agents_dir = base.join("agents");
+        let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
+
+        // S1: matching index + sidecar at A — a normal rebind member whose
+        // index move the first persist commits durably.
+        agents
+            .bind_code_native_session(
+                "partial-pub-s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                vec![from.clone()],
+            )
+            .unwrap();
+        // S2: index at T (outside A), sidecar stranded at A — the
+        // divergence shape the repair pass re-keys onto B.
+        agents
+            .bind_code_native_session(
+                "partial-pub-s2",
+                CodexWorkspaceKind::Project,
+                Some(elsewhere.clone()),
+                vec![elsewhere.clone()],
+            )
+            .unwrap();
+        let s2_sidecar = agents_dir.join("sessions").join("partial-pub-s2");
+        std::fs::create_dir_all(&s2_sidecar).unwrap();
+        std::fs::write(
+            s2_sidecar.join("code-session.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 2,
+                "workspace_kind": "project",
+                "workspace_path": from.to_string_lossy(),
+                "workspace_roots": [from.to_string_lossy()],
+                "explicit_ancestor_roots": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        seed_agent_owner(&agents_dir, "partial-pub-s1");
+        seed_agent_owner(&agents_dir, "partial-pub-s2");
+
+        // Approval memory remembered under A: S1 holds a grant, S2 a
+        // bystander share that must survive (its effective binding never
+        // moved). Generations start unset, mirroring a pre-rebind session.
+        approvals::clear_session("partial-pub-s1");
+        approvals::clear_session("partial-pub-s2");
+        approvals::remember_grant("partial-pub-s1", "shell:11:cargo build", None);
+        approvals::remember_grant("partial-pub-s2", "shell:11:cargo test", None);
+        assert!(approvals::session_granted(
+            "partial-pub-s1",
+            "shell:11:cargo build"
+        ));
+        assert!(approvals::session_granted(
+            "partial-pub-s2",
+            "shell:11:cargo test"
+        ));
+
+        // The index-pass persist (first) succeeds so S1's move to B is
+        // durable; the divergence-repair persist (second) fails.
+        agents.inject_persist_failure_after_skips(1);
+
+        // The production error arm — the SAME wiring as the command's codex
+        // lane: the typed result rides the publication fence, whose
+        // advance/clear covers the published population carried by the
+        // typed error INSIDE its critical section, before the failure
+        // returns and the rebind gate unlocks.
+        let published = crate::features::assistant::pending_approvals::commit_rebind_publication(
+            || agents.rebind_workspace_prefix(&from, &to),
+            |outcome| match outcome {
+                Ok(outcome) => outcome.affected.iter().map(|(sid, _)| sid.clone()).collect(),
+                Err(error) => error
+                    .downcast_ref::<crate::features::codex_acp::RebindPrefixError>()
+                    .map(|typed| {
+                        typed
+                            .published_affected
+                            .iter()
+                            .map(|(sid, _)| sid.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            },
+        );
+        published
+            .err()
+            .expect("the armed divergence-repair persist failure must fail the run");
+
+        // S1's A-era grant must not survive the identity switch: cleared,
+        // generation advanced, and a late old-era (None) write rejected.
+        assert!(
+            !approvals::session_granted("partial-pub-s1", "shell:11:cargo build"),
+            "a grant remembered under A must not answer a request after S1 durably moved to B"
+        );
+        assert_eq!(
+            approvals::workspace_generation("partial-pub-s1"),
+            Some(1),
+            "the published move must advance S1's workspace generation even on the failure arm"
+        );
+        assert!(
+            !approvals::remember_grant("partial-pub-s1", "shell:11:cargo build", None),
+            "a late old-era (None) grant write must be rejected after the advance"
+        );
+        // S2's re-key rolled back: its effective binding (the index, at T)
+        // never moved, so its share stays and no generation advanced.
+        assert!(
+            approvals::session_granted("partial-pub-s2", "shell:11:cargo test"),
+            "a session whose re-key rolled back keeps its shares — its effective binding is unchanged"
+        );
+        assert_eq!(
+            approvals::workspace_generation("partial-pub-s2"),
+            None,
+            "a session excluded from the published population must not advance"
+        );
+        // The durable state matches what was invalidated: S1's index move
+        // survived the error, S2's index stayed at T.
+        assert_eq!(
+            agents.get("partial-pub-s1").workspace_path.as_deref(),
+            Some(to.as_path())
+        );
+        assert_eq!(
+            agents.get("partial-pub-s2").workspace_path.as_deref(),
+            Some(elsewhere.as_path())
+        );
+
+        approvals::clear_session("partial-pub-s1");
+        approvals::clear_session("partial-pub-s2");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Round-26 MAJOR-4: the eviction-tail refusal glue — a refused or

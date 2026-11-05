@@ -143,8 +143,8 @@ pub use runtime::version_at_least;
 use runtime::{ResolvedCodex, codex_version, probe_codex_runtime};
 use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
 pub use store::{
-    AgentBackend, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
-    validate_codex_project_workspace,
+    AgentBackend, CodexWorkspaceKind, RebindPrefixError, RebindWorkspacePrefixOutcome,
+    SessionAgentStore, validate_codex_project_workspace,
 };
 
 /// How long a store's cross-process section lock waits for a peer's
