@@ -439,7 +439,18 @@
       // 对投机源 socket 成立;投机周期内被救援的后继(非
       // speculativeSource)尚未通过 join 验证,其死按 close 处理器同一
       // 验证分支计一次投机失败——否则全救援拓扑的阶梯永不前进,UI 永远
-      // 停在 connected。下方实现同步。)
+      // 停在 connected。下方实现同步。)(Round-21 复审 reconciliation:
+      // 「救援只摘 socket/closingStartedAt、其余旗标保持旧值」与事件失败
+      // catch 路径(reset joined/desktopOnline/desktopCapabilitiesReady/
+      // leaseId 四旗,其注释称残留为跨周期泄漏)是有意分歧,不是疏漏:
+      // catch 路径发生在已投递的事件把周期状态污染之后,重置是止损;救
+      // 援发生在无投递事件的静默楔口,保留 UI/协商稳定是既有设计。代价
+      // 的诚实记录:后继 socket OPEN 到 join ack 之间的窗口里 sendJoined/
+      // sendRpc 闸门仍按旧周期开着——桌面在线时 relay 重打 lease_id,流
+      // 程不受影响;桌面离线时该窗口的 RPC 会收到 desktop_offline 并落进
+      // catch-all error 分支(UI 翻出错误、RPC 等满超时而非排队 flush)
+      // ——窗口一周期一次、下一周期 join ack 后闭合,按已接受取舍记录;
+      // 两种路径的对齐是行为变更,若做须带各自的楔口回归钉。)
       if (
         this.socket.readyState === WebSocket.CLOSING
         || this.socket.readyState === WebSocket.CLOSED
