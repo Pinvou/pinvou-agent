@@ -1392,6 +1392,7 @@ test('imageCapable annotations cross-check the Rust builtin verified table sourc
     'moonshotai/kimi-k3.1-pro',
     'openai/gpt-5.6-luna',
     'openai/gpt-6-luna',
+    'openai/gpt-6.1-sol',
     'openai/gpt-6.1-terra',
     'qwen/qwen3.8-flash',
     'z-ai/glm-5.3-flash',

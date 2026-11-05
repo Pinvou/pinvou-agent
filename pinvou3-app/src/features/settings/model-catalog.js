@@ -1374,19 +1374,29 @@ const MODEL_CATALOG = {
       vendor: 'openrouter',
       baseUrl: 'https://openrouter.ai/api/v1',
       // OpenRouter (openrouter.ai/docs + rankings + GET /api/v1/models,
-      // re-checked 2026-11-03): one
+      // re-checked 2026-11-05 against the leaderboard window "Usage data
+      // through Nov 3, 2026"): one
       // key, many vendors; ids are org-prefixed (deepseek/deepseek-v4.1-flash)
       // and rankings shift weekly, so the rows are the current top usage
       // plus stable vendor flagships — treat them as suggestions, the custom
-      // row covers everything else. This refresh syncs the weekly-usage
-      // top-10 (DeepSeek V4.1 Flash #1/#3, GLM-5.3-Flash #2, GPT-6 Luna #4,
-      // Tencent Hy4 Preview #5, Claude Opus 5.5 #6, Step 5 Preview #7,
-      // MiniMax M3.1 Flash #8, GLM-5.3 #9, DeepSeek V4 Flash #10) plus the
-      // new vendor flagships: note anthropic spells its id with dots
+      // row covers everything else. This refresh mirrors the weekly top-10
+      // verbatim (#1 deepseek/deepseek-v4.1-flash-1017, #2 z-ai/glm-5.3-flash,
+      // #3 deepseek/deepseek-v4.1-flash, #4 tencent/hy4-preview,
+      // #5 openai/gpt-6-luna, #6 stepfun/step-5-preview,
+      // #7 anthropic/claude-opus-5.5, #8 minimax/minimax-m3.1-flash,
+      // #9 openai/gpt-5.6-luna, #10 openai/gpt-6.1-sol — the 2026-11-03
+      // pass recorded two swapped rank pairs and two ids that sit outside
+      // the weekly list (GLM-5.3 is monthly #10, plain DeepSeek V4 Flash is
+      // not weekly top-10), and missed weekly #10 gpt-6.1-sol, the openai
+      // group's own default id; corrected 2026-11-05 review) plus the
+      // stable vendor flagships: note anthropic spells its id with dots
       // (claude-opus-5.5, NOT claude-opus-5-5), minimax/minimax-m3.1-flash
-      // (2026-10-19) supersedes m3 in usage while the m3 row stays live,
-      // and openai/gpt-6.1-terra is the trending newcomer. Rows stay
-      // unannotated: deployments
+      // (2026-10-19) supersedes m3 in usage while the m3 row stays live.
+      // openai/gpt-6.1-terra keeps its row as the efficient-tier flagship
+      // (the "trending #1" note the 2026-11-03 pass recorded matches
+      // nothing on the live page — trending #1 is Particle-1 and #2 is
+      // GPT-6.1 Terra Pro, a separate id left to the next refresh). Rows
+      // stay unannotated: deployments
       // behind the aggregator are not verified one by one, and their
       // per-deployment context figures are likewise not mirrored (the
       // engine keeps its conservative fallback for these ids). The engine
@@ -1397,12 +1407,13 @@ const MODEL_CATALOG = {
       // but not `reasoning_effort` in supported_parameters, so the passthrough
       // is a no-op there (minimax-m3.1-flash DOES list reasoning_effort —
       // live models API re-check 2026-11-04, correcting the earlier "minimax
-      // pair" wording). Never auto-append `:free`: the docs return 404 for
-      // base ids without a dedicated :free entry and none of these rows has
-      // one (openrouter/free is the dedicated free-router id).
+      // pair" wording). Never auto-append `:free`: the API returns 404 for
+      // base ids without a dedicated :free entry (the docs document this)
+      // and none of these rows has one (openrouter/free is the dedicated
+      // free-router id).
       items: [
-        { model: 'deepseek/deepseek-v4.1-flash', title: 'deepseek/deepseek-v4.1-flash', desc: '快速响应（用量第一）' },
-        { model: 'deepseek/deepseek-v4.1-flash-1017', title: 'deepseek/deepseek-v4.1-flash-1017', desc: '快速响应（1017 快照）' },
+        { model: 'deepseek/deepseek-v4.1-flash', title: 'deepseek/deepseek-v4.1-flash', desc: '快速响应（用量第三）' },
+        { model: 'deepseek/deepseek-v4.1-flash-1017', title: 'deepseek/deepseek-v4.1-flash-1017', desc: '快速响应（1017 快照，用量第一）' },
         { model: 'deepseek/deepseek-v4-pro', title: 'deepseek/deepseek-v4-pro', desc: '高能力模型' },
         { model: 'deepseek/deepseek-v4-flash', title: 'deepseek/deepseek-v4-flash', desc: '快速响应' },
         { model: 'z-ai/glm-5.3', title: 'z-ai/glm-5.3', desc: '旗舰推理与编码' },
@@ -1410,15 +1421,16 @@ const MODEL_CATALOG = {
         { model: 'qwen/qwen3.8-flash', title: 'qwen/qwen3.8-flash', desc: '快速高性价比' },
         { model: 'moonshotai/kimi-k3.1-pro', title: 'moonshotai/kimi-k3.1-pro', desc: 'Kimi 最新旗舰' },
         { model: 'moonshotai/kimi-k2.7-code', title: 'moonshotai/kimi-k2.7-code', desc: '代码场景' },
-        { model: 'minimax/minimax-m3.1-flash', title: 'minimax/minimax-m3.1-flash', desc: 'MiniMax GA 新旗舰' },
+        { model: 'minimax/minimax-m3.1-flash', title: 'minimax/minimax-m3.1-flash', desc: 'MiniMax GA 新旗舰（用量第八）' },
         { model: 'minimax/minimax-m3', title: 'minimax/minimax-m3', desc: 'MiniMax 上代旗舰' },
-        { model: 'anthropic/claude-opus-5.5', title: 'anthropic/claude-opus-5.5', desc: 'Claude 官方默认推荐（注意点号拼写）' },
+        { model: 'anthropic/claude-opus-5.5', title: 'anthropic/claude-opus-5.5', desc: 'Claude 新一代 Opus（注意点号拼写，用量第七）' },
         { model: 'google/gemini-4-argon', title: 'google/gemini-4-argon', desc: 'Gemini 最新旗舰' },
-        { model: 'openai/gpt-6.1-terra', title: 'openai/gpt-6.1-terra', desc: '6.1 高效款（趋势第一）' },
-        { model: 'openai/gpt-5.6-luna', title: 'openai/gpt-5.6-luna', desc: '低成本高并发' },
-        { model: 'openai/gpt-6-luna', title: 'openai/gpt-6-luna', desc: '低成本高并发（用量第四）' },
-        { model: 'tencent/hy4-preview', title: 'tencent/hy4-preview', desc: '腾讯 Hy4 预览（用量第五）' },
-        { model: 'stepfun/step-5-preview', title: 'stepfun/step-5-preview', desc: 'StepFun 预览旗舰（用量第七）' },
+        { model: 'openai/gpt-6.1-terra', title: 'openai/gpt-6.1-terra', desc: '6.1 高效款' },
+        { model: 'openai/gpt-6.1-sol', title: 'openai/gpt-6.1-sol', desc: '6.1 均衡旗舰（用量第十）' },
+        { model: 'openai/gpt-5.6-luna', title: 'openai/gpt-5.6-luna', desc: '低成本高并发（用量第九）' },
+        { model: 'openai/gpt-6-luna', title: 'openai/gpt-6-luna', desc: '低成本高并发（用量第五）' },
+        { model: 'tencent/hy4-preview', title: 'tencent/hy4-preview', desc: '腾讯 Hy4 预览（用量第四）' },
+        { model: 'stepfun/step-5-preview', title: 'stepfun/step-5-preview', desc: 'StepFun 预览旗舰（用量第六）' },
         { model: '', title: '自定义 OpenRouter 模型', desc: '手动填写模型 ID（org/model 格式）', custom: true },
       ],
     },
