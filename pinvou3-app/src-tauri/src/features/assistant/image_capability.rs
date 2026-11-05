@@ -232,9 +232,12 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // understanding (volcengine docs 82379/1330310, 2026-09-11), so admitting
     // the whole family is justified.
     "doubao-seed",
-    // MiniMax: M3 and the newer M3.1-Flash-Preview support image (and video)
-    // input, M2.x does not, so the bare minimax substring must not be used
-    // (official docs, re-checked 2026-09-28). "minimax-m3" covers both.
+    // MiniMax: M3 and the newer M3.1 generation (GA id MiniMax-M3.1-Flash
+    // since the 2026-11-03 rename; the retired -Preview spelling survives
+    // as the row's legacyAlias for stored configs) support image (and
+    // video) input, M2.x does not, so the bare minimax substring must not
+    // be used (official docs, re-checked 2026-09-28). "minimax-m3" covers
+    // both spellings.
     "minimax-m3",
     // Zhipu: GLM-5.3-Flash is natively multimodal; glm-5.3 / glm-5.2 are
     // text-only, so the glm-5.3 prefix cannot be used as one substring
@@ -262,32 +265,6 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "kimi-k3",
     "kimi-k2.7-code",
     "kimi-k2.6",
-    // Meta Model API (2026-11-03 catalog refresh, dev.meta.ai): muse-spark-1.3
-    // (the current default) is officially multimodal (text/image/PDF/video
-    // input). muse-spark-1.1 / muse-spark-1.2 / muse-wonder-1.0 joined in
-    // the 2026-11-04 fix pass: the models page states all three Muse Spark
-    // versions take text, image, video, audio, and PDF input (and names 1.1
-    // as a served id in the quickstart troubleshooting), and the Muse Wonder
-    // section lists the same modalities — the earlier "no per-model
-    // modality statement covers 1.1" ground was refuted live. Entries stay
-    // spelled with the full minor version on purpose: the open-weight
-    // "Muse Spark Open" gateway deployments are a different supply chain
-    // and must keep resolving through their own (absent) entries.
-    "muse-spark-1.3",
-    "muse-spark-1.2",
-    "muse-spark-1.1",
-    "muse-wonder-1.0",
-    // Mistral (2026-11-03 catalog refresh): the models overview lists
-    // mistral-medium-latest as multimodal and mistral-small-latest with
-    // image understanding; codestral-latest carries no modality statement
-    // and stays Unknown. mistral-large-latest joined in the 2026-11-04 fix
-    // pass per models.dev (the base's reference source), which lists its
-    // modalities as text/image/pdf — docs.mistral.ai itself was unreachable
-    // from every channel on both passes, so the annotation is scoped to
-    // that source (re-check at the next refresh).
-    "mistral-medium-latest",
-    "mistral-small-latest",
-    "mistral-large-latest",
 ];
 
 /// Exact (lowercased equality) entries: short generic ids whose substring
@@ -338,6 +315,39 @@ const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // (api-docs.deepseek.com/news260910, checked 2026-09-11).
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    // Meta Model API (2026-11-03 catalog refresh, dev.meta.ai): muse-spark-1.3
+    // (the current default) is officially multimodal (text/image/PDF/video
+    // input). muse-spark-1.1 / muse-spark-1.2 / muse-wonder-1.0 joined in
+    // the 2026-11-04 fix pass: the models page states all three Muse Spark
+    // versions take text, image, video, audio, and PDF input (and names 1.1
+    // as a served id in the quickstart troubleshooting), and the Muse Wonder
+    // section lists the same modalities — the earlier "no per-model
+    // modality statement covers 1.1" ground was refuted live. Exact
+    // equality (2026-11-05 review move: these are fully version-pinned
+    // ids, and the open-weight "Muse Spark Open" gateway deployments are a
+    // different supply chain that must keep resolving through its own
+    // (absent) entries — a substring entry would have admitted any
+    // deployment id embedding the base spelling, defeating that boundary;
+    // the same deepseek-v4-flash snapshot precedent as above).
+    "muse-spark-1.3",
+    "muse-spark-1.2",
+    "muse-spark-1.1",
+    "muse-wonder-1.0",
+    // Mistral (2026-11-03 catalog refresh): the models overview lists
+    // mistral-medium-latest as multimodal and mistral-small-latest with
+    // image understanding; codestral-latest carries no modality statement
+    // and stays Unknown. mistral-large-latest joined in the 2026-11-04 fix
+    // pass per models.dev (the base's reference source), which lists its
+    // modalities as text/image/pdf — docs.mistral.ai itself was unreachable
+    // from every channel on both passes, so the annotation is scoped to
+    // that source (re-check at the next refresh). Exact equality like the
+    // muse rows (2026-11-05 review): version-pinned ids; Mistral's dated
+    // snapshot spellings (mistral-medium-2312 style) do not embed the
+    // -latest suffix, so nothing real is lost and extended third-party
+    // spellings stay Unknown.
+    "mistral-medium-latest",
+    "mistral-small-latest",
+    "mistral-large-latest",
 ];
 
 /// 内置表查询:模型名(小写化)是否命中已验证多模态条目。
@@ -748,6 +758,10 @@ mod tests {
             // codestral-latest (no modality statement) and unrelated
             // K3.1-suffixed names must stay Unknown (the exact table
             // admits only the documented tiers, not suffix families).
+            // 2026-11-05 review: the muse rows moved to the exact table,
+            // so the "Muse Spark Open" deployment spellings they must not
+            // absorb are pinned here.
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.3-open"),
             (ModelPreset::OpenaiCompatible, "codestral-latest"),
             (ModelPreset::OpenaiCompatible, "k3.1-pro-max"),
         ] {
