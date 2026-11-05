@@ -643,7 +643,7 @@ impl SessionStore {
         {
             let mut m = self.mode_states.write();
             for id in ids {
-                if sessions_dir.join(format!("{id}.json")).is_file() {
+                if !session_record_absent_for_sweep(&sessions_dir, &id) {
                     // 同 set_multi_agent：物化条目用解析出的默认 mode，
                     // 避免 or_default() 把 code 会话翻成 Yolo。
                     self.mode_state_entry(&mut m, &id, self.resolved_default_mode(&id))
@@ -1380,7 +1380,7 @@ impl SessionStore {
         let sessions_dir = crate::platform::paths::sessions_root();
         let ghost_ids: Vec<String> = modes
             .keys()
-            .filter(|id| !sessions_dir.join(format!("{id}.json")).is_file())
+            .filter(|id| session_record_absent_for_sweep(&sessions_dir, id))
             .cloned()
             .collect();
         if !ghost_ids.is_empty() {
@@ -1702,7 +1702,7 @@ impl SessionStore {
         let sessions_dir = crate::platform::paths::sessions_root();
         let ghost_ids: Vec<String> = overrides
             .keys()
-            .filter(|id| !sessions_dir.join(format!("{id}.json")).is_file())
+            .filter(|id| session_record_absent_for_sweep(&sessions_dir, id))
             .cloned()
             .collect();
         if !ghost_ids.is_empty() {
@@ -1779,5 +1779,46 @@ impl SessionStore {
             || self.code_permission.write().ask_on_guardrail_default = enabled,
         )?;
         Ok(self.code_permission_prefs_view())
+    }
+}
+
+/// Boot 清扫的存在性判定（round-11 评审）：与
+/// `SessionStore::durable_session_record_is_absent` 同一纪律——只有 NotFound
+/// 才算「会话记录已删」，任何瞬时 stat 故障（EIO/EACCES/ENOTDIR）按存活处理
+/// （unknown is never absent in a destructive path）。`Path::is_file()` 对一切
+/// stat 故障都返回 false，会把活会话的显式 mode / ask 侧车当幽灵删掉。
+fn session_record_absent_for_sweep(sessions_dir: &std::path::Path, id: &str) -> bool {
+    matches!(
+        std::fs::metadata(sessions_dir.join(format!("{id}.json"))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+#[cfg(test)]
+mod sweep_probe_tests {
+    use super::session_record_absent_for_sweep;
+
+    /// NotFound → 幽灵（可清扫）；记录存在 → 存活；瞬时 stat 故障 → 按存活
+    /// 处理（fail-closed：清扫宁漏不误删）。ENOTDIR 形状用「sessions_dir
+    /// 本身是一个文件」确定性构造。
+    #[test]
+    fn sweep_absence_probe_is_not_found_only() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-sweep-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root");
+        std::fs::write(root.join("live.json"), b"{}").expect("live record");
+        let not_a_dir = root.join("not-a-dir.json");
+        std::fs::write(&not_a_dir, b"").expect("stat-fault fixture");
+
+        assert!(session_record_absent_for_sweep(&root, "ghost000000000000"));
+        assert!(!session_record_absent_for_sweep(&root, "live"));
+        assert!(!session_record_absent_for_sweep(&not_a_dir, "live"));
+        std::fs::remove_dir_all(&root).ok();
     }
 }
