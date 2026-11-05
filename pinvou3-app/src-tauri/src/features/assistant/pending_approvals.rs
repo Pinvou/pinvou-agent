@@ -920,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn forkguard_restore_if_generation_is_compares_and_inserts_atomically() {
+    fn forkguard_stale_restore_after_interleaved_mutation_is_refused() {
         let _registry = test_registry_lock();
         let session = isolate("approval-cas-restore-test");
         record(&session, sample("ap-r1", "k-r1", "g-r1"), None);
@@ -941,6 +941,14 @@ mod tests {
         // could advance it in between and the stale restore resurrected a
         // closed lifecycle's entry. The CAS rejects it under the same lock
         // as the insertion.
+        //
+        // Naming honesty (round-11 review mutation probe): this sequential
+        // test cannot observe a lock split INSIDE restore_if_generation_is —
+        // splitting the compare and the insert into two acquisitions yields
+        // identical outcomes here, so atomicity itself is not what this test
+        // pins. What it pins is the refuse-on-interleaved-mutation CAS
+        // contract; the two-acquisition anti-pattern is pinned textually in
+        // `decide_approval_side_effect_ordering_is_pinned`'s negative assert.
         let (pending, snapshot) = remove_fenced(&session, "ap-r1").expect("second fenced removal");
         record(&session, sample("ap-r2", "k-r2", "g-r2"), None);
         assert!(
