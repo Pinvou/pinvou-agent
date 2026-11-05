@@ -1182,6 +1182,18 @@ impl UserPrefs {
         let local_output_sentinel_changed = prefs.advanced.saved_models.iter().any(|model| {
             model.preset == ModelPreset::LocalVllm && model.max_output_tokens == Some(24_576)
         });
+        // The K3.1 stored-effort drop (`normalize_route_limits` nulls the
+        // field on any kimi/moonshot-stamped or official-route K3.1 record)
+        // is the same class as the sentinel above: the flag must be recorded
+        // before migrate/normalize rewrite the models, or the save gate sees
+        // no change and a stored K3.1 effort stays on disk forever for
+        // sessions that only ever load. The detection condition must match
+        // the drop arm exactly — a mismatch would either persist spuriously
+        // or leave the stale effort behind.
+        let k31_effort_dropped = prefs.advanced.saved_models.iter().any(|model| {
+            model.reasoning_effort.is_some()
+                && is_moonshot_k31_route(&model.vendor, &model.base_url, &model.model)
+        });
         // The #622 machine-written-local-off migration must persist its
         // marker even when no record matched: "migration ran" is what keeps
         // a later explicitly-saved `off` from being stripped by a
@@ -1200,6 +1212,7 @@ impl UserPrefs {
         let normalization_changed = minimax_endpoint_changed
             || local_model_alias_changed
             || local_output_sentinel_changed
+            || k31_effort_dropped
             || local_thinking_default_migrated
             || migration.settings_sanitized
             || memory_policy_changed
@@ -2943,6 +2956,114 @@ mod tests {
                 .find(|model| model["id"] == "custom-explicit")
                 .expect("custom on disk");
             assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
+            // PINVOU3_HOME restoration and temporary home reclamation are
+            // handled by `with_temp_home`'s Drop (also on assertion/panic
+            // paths); no hand-written restore block here.
+        });
+    }
+
+    /// The K3.1 stored-effort drop must persist through a load-only session,
+    /// not just the next explicit save: the drop flag feeds the
+    /// `normalization_changed` gate like every other load-path rewrite
+    /// (2026-11-05 review M1). One official-route K3.1 record (empty vendor —
+    /// the migrated-record shape) must lose the effort on disk; one unstamped
+    /// relay record carrying the same model id must keep its effort verbatim.
+    #[test]
+    fn load_persists_k31_effort_drop() {
+        with_temp_home("pinvou3-prefs-k31-effort-drop", || {
+            let mut prefs = UserPrefs::default();
+            prefs.advanced.saved_models.push(SavedModel {
+                id: "k31-official".into(),
+                name: "K3.1 Official".into(),
+                alias: None,
+                preset: ModelPreset::Kimi,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                // A stored tier the older builds could write: the vendor
+                // rejects the shape for K3.1, so the drop must clear it and
+                // the load lane must persist the cleared value.
+                reasoning_effort: Some("off".into()),
+                model: "kimi-k3.1-pro".into(),
+                base_url: "https://api.moonshot.cn/v1".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            });
+            prefs.advanced.saved_models.push(SavedModel {
+                id: "k31-relay".into(),
+                name: "K3.1 Relay".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                // The unstamped-relay passthrough negative: same model id on
+                // a custom endpoint keeps the contract it was saved with.
+                reasoning_effort: Some("high".into()),
+                model: "kimi-k3.1-pro".into(),
+                base_url: "https://relay.example.com/v1".into(),
+                provider_kind: Some(MODEL_PROVIDER_KIND_CUSTOM.into()),
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            });
+            prefs.advanced.active_model_id = Some("k31-official".into());
+            let path = super::super::paths::settings_path();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&prefs).expect("serialize k31 prefs"),
+            )
+            .expect("write k31 prefs");
+
+            let loaded = UserPrefs::load();
+            let official = loaded
+                .model_by_id("k31-official")
+                .expect("official k31 model");
+            assert_eq!(
+                official.reasoning_effort, None,
+                "the in-memory stored K3.1 effort must already be dropped"
+            );
+            let relay = loaded.model_by_id("k31-relay").expect("relay k31 model");
+            assert_eq!(
+                relay.reasoning_effort,
+                Some("high".into()),
+                "the unstamped relay record must keep its effort passthrough"
+            );
+
+            // Key assertion: the drop was written back to disk (not just
+            // changed in memory) by the load-only session.
+            let persisted: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
+                    .expect("parse migrated prefs");
+            let models = persisted["advanced"]["saved_models"]
+                .as_array()
+                .expect("saved_models array");
+            let official_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "k31-official")
+                .expect("official k31 on disk");
+            assert!(
+                official_on_disk["reasoning_effort"].is_null(),
+                "the on-disk stored K3.1 effort must be cleared by the load-only session, got {}",
+                official_on_disk["reasoning_effort"]
+            );
+            let relay_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "k31-relay")
+                .expect("relay k31 on disk");
+            assert_eq!(relay_on_disk["reasoning_effort"], "high");
             // PINVOU3_HOME restoration and temporary home reclamation are
             // handled by `with_temp_home`'s Drop (also on assertion/panic
             // paths); no hand-written restore block here.
