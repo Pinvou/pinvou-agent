@@ -180,11 +180,14 @@ pub fn moonshot_model_needs_reasoning_budget(model: &str) -> bool {
     )
 }
 
-/// xAI's documented always-reasoning families need the same probe-budget
-/// upgrade as the Moonshot K3-family: reasoning is billed against the
-/// completion budget (the identical mechanism the K3.1 fix documents), so
-/// a 64-token probe reports a vision-capable model as unsupported when
-/// reasoning alone exhausts the cap. Documented grounds (docs.x.ai,
+/// xAI's documented always-reasoning families get the same probe-budget
+/// upgrade as the Moonshot K3-family as a DEFENSIVE choice: the vendors'
+/// docs state reasoning is billed against the completion budget (the same
+/// mechanism the K3.1 fix documents), so a 64-token probe could report a
+/// vision-capable model as unsupported when reasoning alone exhausts the
+/// cap. That failure mode is a mechanism-based expectation, not an
+/// observed endpoint behavior — kept defensive pending endpoint-specific
+/// confirmation (see the closing note). Documented grounds (docs.x.ai,
 /// re-checked 2026-11-03/04, round-8 review): grok-4.7 — "reasoning cannot
 /// be turned off" (the model page documents the low/medium/high/xhigh
 /// ladder, not a disable); grok-4.20-0309-reasoning — the reasoning
@@ -607,9 +610,10 @@ mod tests {
     #[test]
     fn xai_reasoning_budget_list_covers_always_reasoning_families() {
         // Round-8 review: the xAI rows the catalog annotates image-capable
-        // must probe at the reasoning tier like the K3.1 arms — their docs
-        // state reasoning cannot be disabled, so a 64-token probe lets
-        // reasoning eat the completion budget and misreport unsupported.
+        // probe at the reasoning tier like the K3.1 arms — defensively: the
+        // docs state reasoning cannot be disabled, so a 64-token probe
+        // could let reasoning eat the completion budget and misreport
+        // unsupported (endpoint allocation unconfirmed; no live probe).
         for name in [
             "grok-4.7",
             "Grok-4.7",
