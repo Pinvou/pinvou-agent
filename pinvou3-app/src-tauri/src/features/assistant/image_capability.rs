@@ -159,13 +159,16 @@ pub fn moonshot_model_needs_reasoning_budget(model: &str) -> bool {
             | "kimi-for-coding"
             | "kimi-for-coding-highspeed"
             | "kimi-k2.6"
-            // K3.1 spellings — same spelling set as the VERIFIED/exact
-            // capability tables above (2026-11-04 round-5 review: always
-            // reasoning, reasoning billed against the completion budget),
-            // plus their reachable `[1m]` composites (2026-11-05 review:
-            // k3.1-pro[1m] is the documented Kimi Code declaration and the
-            // ACP datalist entry; the composites must probe identically to
-            // their bare forms).
+            // K3.1 spellings — mostly the same spelling set as the
+            // VERIFIED/exact capability tables above (2026-11-04 round-5
+            // review: always reasoning, reasoning billed against the
+            // completion budget), plus their reachable `[1m]` composites
+            // (2026-11-05 review: k3.1-pro[1m] is the documented Kimi Code
+            // declaration and the ACP datalist entry; the composites must
+            // probe identically to their bare forms). The two highspeed
+            // `[1m]` composites deliberately go beyond the capability-table
+            // spellings: budget membership only needs the reachable stored
+            // forms, and over-covering is the safe direction.
             | "kimi-k3.1-pro"
             | "kimi-k3.1-pro-highspeed"
             | "k3.1-pro"
@@ -174,6 +177,29 @@ pub fn moonshot_model_needs_reasoning_budget(model: &str) -> bool {
             | "kimi-k3.1-pro[1m]"
             | "k3.1-pro-highspeed[1m]"
             | "kimi-k3.1-pro-highspeed[1m]"
+    )
+}
+
+/// xAI's documented always-reasoning families need the same probe-budget
+/// upgrade as the Moonshot K3-family: reasoning is billed against the
+/// completion budget (the identical mechanism the K3.1 fix documents), so
+/// a 64-token probe reports a vision-capable model as unsupported when
+/// reasoning alone exhausts the cap. Documented grounds (docs.x.ai,
+/// re-checked 2026-11-03/04, round-8 review): grok-4.7 — "reasoning cannot
+/// be turned off" (the model page documents the low/medium/high/xhigh
+/// ladder, not a disable); grok-4.20-0309-reasoning — the reasoning
+/// variant of the 4.20 family; grok-4.20-multi-agent-0309 —
+/// `reasoning.effort` controls the parallel-agent count, so reasoning is
+/// always on (the row deliberately gets no tier UI). Exact ids on purpose:
+/// the wider `grok` capability substring stays a family admission, and
+/// grok-4.5/4.6 expose documented effort ladders whose omitted-effort
+/// default behavior is not documented the same way — they stay on the
+/// plain probe budget until a live probe can verify them (no key available
+/// in this environment; same pending live re-check as the K3.1 arms).
+pub fn xai_model_needs_reasoning_budget(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "grok-4.7" | "grok-4.20-0309-reasoning" | "grok-4.20-multi-agent-0309"
     )
 }
 
@@ -570,6 +596,41 @@ mod tests {
         for name in ["k3[1m]", "gpt-4o", "deepseek-v4-pro", "kimi-k2.5"] {
             assert!(
                 !moonshot_model_needs_reasoning_budget(name),
+                "{name} must not be given the reasoning-tier probe budget"
+            );
+        }
+    }
+
+    #[test]
+    fn xai_reasoning_budget_list_covers_always_reasoning_families() {
+        // Round-8 review: the xAI rows the catalog annotates image-capable
+        // must probe at the reasoning tier like the K3.1 arms — their docs
+        // state reasoning cannot be disabled, so a 64-token probe lets
+        // reasoning eat the completion budget and misreport unsupported.
+        for name in [
+            "grok-4.7",
+            "Grok-4.7",
+            " grok-4.7 ",
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-multi-agent-0309",
+        ] {
+            assert!(
+                xai_model_needs_reasoning_budget(name),
+                "{name} is a documented always-reasoning id; probe budget must stay at the reasoning tier"
+            );
+        }
+        // The non-reasoning sibling and the ladder-documented rows stay on
+        // the plain probe budget (see the predicate's doc comment for the
+        // 4.5/4.6 open question).
+        for name in [
+            "grok-4.20-0309-non-reasoning",
+            "grok-4.6",
+            "grok-4.5",
+            "grok-build-0.1",
+            "grok-3",
+        ] {
+            assert!(
+                !xai_model_needs_reasoning_budget(name),
                 "{name} must not be given the reasoning-tier probe budget"
             );
         }

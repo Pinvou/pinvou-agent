@@ -824,7 +824,10 @@ fn image_capability_test_payload(model: &str) -> serde_json::Value {
     // Note: never carry temperature — models like kimi-for-coding only accept
     // the default, and an explicit value gets a 400.
     let needs_reasoning_budget =
-        crate::features::assistant::image_capability::moonshot_model_needs_reasoning_budget(model);
+        crate::features::assistant::image_capability::moonshot_model_needs_reasoning_budget(model)
+            || crate::features::assistant::image_capability::xai_model_needs_reasoning_budget(
+                model,
+            );
     let thinking_model =
         crate::features::assistant::image_capability::moonshot_model_requires_explicit_thinking(
             model,
@@ -843,10 +846,11 @@ fn image_capability_test_payload(model: &str) -> serde_json::Value {
                 },
             ],
         }],
-        // Always-reasoning models (kimi k3 / K3.1 / kimi-for-coding etc.):
-        // reasoning precedes the answer and is billed against the completion
-        // budget, so the cap uses the reasoning-tier constant; other models
-        // keep 64 (ample for a one-word color answer). Budget selection is
+        // Always-reasoning models (kimi k3 / K3.1 / kimi-for-coding, and
+        // xAI's documented always-on grok-4.7 / grok-4.20 rows): reasoning
+        // precedes the answer and is billed against the completion budget,
+        // so the cap uses the reasoning-tier constant; other models keep 64
+        // (ample for a one-word color answer). Budget selection is
         // deliberately a separate predicate from the thinking injection
         // below: K3.1 needs the reasoning budget while its legacy thinking
         // parameter stays omitted (round-5 review — sharing one boolean
@@ -1651,9 +1655,13 @@ mod tests {
             "k3.1-pro-highspeed",
             // Reachable [1m] composites (2026-11-05 review): the budget
             // predicate includes them and the thinking-omission contract is
-            // the same shape.
+            // the same shape. Round-8 review: all 8 spellings are pinned at
+            // the payload level (the two highspeed `[1m]` composites were
+            // previously predicate-level only).
             "k3.1-pro[1m]",
             "kimi-k3.1-pro[1m]",
+            "k3.1-pro-highspeed[1m]",
+            "kimi-k3.1-pro-highspeed[1m]",
         ] {
             let payload = image_capability_test_payload(name);
             assert!(
@@ -1664,6 +1672,26 @@ mod tests {
                 payload.get("max_tokens").and_then(|v| v.as_u64()),
                 Some(IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING as u64),
                 "{name} is always-reasoning; the probe budget must stay at the reasoning tier"
+            );
+        }
+        // Round-8 review: xAI's documented always-reasoning rows ride the
+        // same reasoning-tier probe budget (no thinking injection — the
+        // xAI contract is the top-level reasoning.effort, which the probe
+        // omits like the send path).
+        for name in [
+            "grok-4.7",
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-multi-agent-0309",
+        ] {
+            let payload = image_capability_test_payload(name);
+            assert!(
+                payload.get("thinking").is_none(),
+                "{name} must not carry a legacy thinking field"
+            );
+            assert_eq!(
+                payload.get("max_tokens").and_then(|v| v.as_u64()),
+                Some(IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING as u64),
+                "{name} is documented always-reasoning; the probe budget must stay at the reasoning tier"
             );
         }
     }
