@@ -1027,9 +1027,13 @@ const App = () => {
         }
       }, [language]);
       const [superPerm, setSuperPerm] = useState(false);
-      const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
-      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
-      const [inputNeededNotif, setInputNeededNotif] = useState(defaultTaskCompletedNotif);
+      // 桌面通知两开关的初始默认 = 平台主开关默认（对齐 Rust NotificationPrefs::default）。
+      const defaultDesktopNotificationSwitch = platformCapabilities.taskCompletionNotificationsDefault !== false;
+      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultDesktopNotificationSwitch);
+      // inputNeededNotif 保存「needs_input 持久意图」；生效显示在 SettingsView
+      // 按 intent && taskCompletedNotif 派生——任务完成开关是主开关（载荷携带
+      // enabled），派生让主开关开→关→开的两个方向都不撒谎。
+      const [inputNeededNotif, setInputNeededNotif] = useState(defaultDesktopNotificationSwitch);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
@@ -1276,7 +1280,9 @@ const App = () => {
         }
         const notifications = settings.notifications || {};
         setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
-        setInputNeededNotif(notifications.needs_input !== false && notifications.enabled !== false);
+        // 只回填持久意图、不折叠 enabled：主开关的生效性由显示层派生；
+        // 若在这里折叠 enabled，主开关关→开后就无法恢复已持久化的 needs_input。
+        setInputNeededNotif(notifications.needs_input !== false);
         uiPrefsInitRef.current = true;
       };
       useEffect(() => {
@@ -3402,35 +3408,34 @@ const App = () => {
         invokeTauri('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
       }
 
-      async function handleSetTaskCompletedNotif(enabled) {
-        const nextEnabled = !!enabled;
-        const previousEnabled = taskCompletedNotif;
-        setTaskCompletedNotif(nextEnabled);
-        if (bridge.available) {
-          const saved = await bridge.settings.saveSettings({
-            notifications: { enabled: nextEnabled, task_completed: nextEnabled },
-          });
-          if (saved === false) {
-            setTaskCompletedNotif(previousEnabled);
+      // 通知开关共用一条保存管道：乐观置位 → saveSettings，失败回滚。
+      // 任务完成开关同时是桌面通知主开关（载荷携带 enabled）；「需要输入」
+      // 只携带自己的开关，Rust 侧按字段合并，不会重置其余开关。
+      function makeNotifToggle(getCurrent, setCurrent, payloadFor) {
+        return async (enabled) => {
+          const nextEnabled = !!enabled;
+          const previousEnabled = getCurrent();
+          setCurrent(nextEnabled);
+          if (bridge.available) {
+            const saved = await bridge.settings.saveSettings({
+              notifications: payloadFor(nextEnabled),
+            });
+            if (saved === false) {
+              setCurrent(previousEnabled);
+            }
           }
-        }
+        };
       }
-
-      // 「需要输入」通知只携带自己的开关；补丁在 Rust 侧按字段合并，
-      // 不会重置总开关与完成通知。
-      async function handleSetInputNeededNotif(enabled) {
-        const nextEnabled = !!enabled;
-        const previousEnabled = inputNeededNotif;
-        setInputNeededNotif(nextEnabled);
-        if (bridge.available) {
-          const saved = await bridge.settings.saveSettings({
-            notifications: { needs_input: nextEnabled },
-          });
-          if (saved === false) {
-            setInputNeededNotif(previousEnabled);
-          }
-        }
-      }
+      const handleSetTaskCompletedNotif = makeNotifToggle(
+        () => taskCompletedNotif,
+        setTaskCompletedNotif,
+        (nextEnabled) => ({ enabled: nextEnabled, task_completed: nextEnabled }),
+      );
+      const handleSetInputNeededNotif = makeNotifToggle(
+        () => inputNeededNotif,
+        setInputNeededNotif,
+        (nextEnabled) => ({ needs_input: nextEnabled }),
+      );
 
       // 侧栏任务列表「按日期折叠」开关:纯 UI 偏好,写 settings.sidebar.date_grouping
       function handleSetSidebarDateGrouping(enabled) {
