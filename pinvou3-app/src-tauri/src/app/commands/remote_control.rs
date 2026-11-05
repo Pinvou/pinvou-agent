@@ -121,6 +121,7 @@ pub(super) enum WebSessionOperation {
     ReadConversationAttachmentChunk,
     ReadArtifactChunk,
     ArtifactAccess,
+    ListHostFiles,
 }
 
 impl WebSessionOperation {
@@ -136,6 +137,7 @@ impl WebSessionOperation {
             Self::ReadConversationAttachmentChunk => "read_conversation_attachment_chunk",
             Self::ReadArtifactChunk => "read_artifact_chunk",
             Self::ArtifactAccess => "artifact_access",
+            Self::ListHostFiles => "list_host_files",
         }
     }
 }
@@ -357,6 +359,12 @@ pub struct WebHostFileListing {
 /// Browse the desktop host filesystem for the WebUI file picker. Directory
 /// mode may request an opaque workspace capability for the validated current
 /// directory; native host paths are never accepted by ACP Web RPCs.
+///
+/// Errors fold to the stable `web_session_list_host_files_failed` wire code
+/// like every sibling lane (round-21 复审 M3):`list_host_files` 的错误臂
+/// 携带桌面绝对路径——path 缺省时默认枚举 `$HOME`,canonical 化臂也会
+/// 回显桌面解析路径——裸 `?` 直传会把这些细节经 bridge/relay 送到手机侧。
+/// 原始链只落桌面日志(`web_operation_result` 的 log::warn)。
 #[tauri::command]
 pub fn web_access_list_host_files(
     path: Option<String>,
@@ -368,7 +376,10 @@ pub fn web_access_list_host_files(
     // 即 main,放行);此 gate 拦截的是桌面辅助 WebView 直接 invoke 浏览
     // $HOME 的路径。
     require_main_webview(&window)?;
-    let listing = file_access::list_host_files(path)?;
+    let listing = web_session_result(
+        WebSessionOperation::ListHostFiles,
+        file_access::list_host_files(path),
+    )?;
     let workspace_handle = issue_workspace_handle
         .unwrap_or(false)
         .then(|| manager.issue_web_workspace_grant(&listing.path))
@@ -2081,6 +2092,15 @@ mod tests {
         assert_eq!(
             web_session_result(WebSessionOperation::ResetAuxSession, error).unwrap_err(),
             "web_session_reset_aux_session_failed"
+        );
+        // Round-21 复审 M3:the phone file picker's browse lane carries
+        // desktop-absolute paths in its native error arms (the $HOME default
+        // when `path` is absent, and the canonicalized-path arm of
+        // validate_browsable_path) — it folds through the same funnel; the
+        // raw chain is desktop-log-only.
+        assert_eq!(
+            web_session_result(WebSessionOperation::ListHostFiles, error).unwrap_err(),
+            "web_session_list_host_files_failed"
         );
     }
 
