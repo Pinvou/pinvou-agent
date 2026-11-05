@@ -2284,7 +2284,9 @@ mod tests {
     /// stored effort — notably an "off" saved through the generic off/high
     /// switch the catalog used to offer — would wire an illegal shape. The
     /// load-path normalization drops the field (documented omission resolves
-    /// to the vendor default max); non-K3.1 records are untouched.
+    /// to the endpoint-specific vendor default — `high` on the Kimi Code
+    /// coding lane, `max` on the platform-API surface); non-K3.1 records are
+    /// untouched.
     #[test]
     fn normalize_drops_stored_effort_for_kimi_k31_models() {
         let base = SavedModel {
@@ -3031,6 +3033,34 @@ mod tests {
                 has_secret: false,
                 credential_action: None,
             });
+            prefs.advanced.saved_models.push(SavedModel {
+                id: "k31-suffixed".into(),
+                name: "K3.1 Suffixed Route".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                // The raw URL carries the full endpoint path users paste;
+                // the drop arm only matches after provider-metadata
+                // normalization strips the suffix, so this shape is the one
+                // the removed raw pre-check missed (round-8 review) — the
+                // snapshot-diff detection must keep covering it, and this
+                // pins the strip_chat_completions_suffix integration into
+                // normalize_provider_metadata (previously untested).
+                reasoning_effort: Some("off".into()),
+                model: "kimi-k3.1-pro".into(),
+                base_url: "https://api.moonshot.cn/v1/chat/completions".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            });
             prefs.advanced.active_model_id = Some("k31-official".into());
             let path = super::super::paths::settings_path();
             std::fs::write(
@@ -3052,6 +3082,17 @@ mod tests {
                 relay.reasoning_effort,
                 Some("high".into()),
                 "the unstamped relay record must keep its effort passthrough"
+            );
+            let suffixed = loaded
+                .model_by_id("k31-suffixed")
+                .expect("suffixed k31 model");
+            assert_eq!(
+                suffixed.reasoning_effort, None,
+                "the suffixed official-route record must drop in memory"
+            );
+            assert_eq!(
+                suffixed.base_url, "https://api.moonshot.cn/v1",
+                "the suffix must be stripped by provider-metadata normalization"
             );
 
             // Key assertion: the drop was written back to disk (not just
@@ -3076,6 +3117,14 @@ mod tests {
                 .find(|model| model["id"] == "k31-relay")
                 .expect("relay k31 on disk");
             assert_eq!(relay_on_disk["reasoning_effort"], "high");
+            let suffixed_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "k31-suffixed")
+                .expect("suffixed k31 on disk");
+            assert!(
+                suffixed_on_disk["reasoning_effort"].is_null(),
+                "the on-disk suffixed-record effort must be cleared by the load-only session"
+            );
             // PINVOU3_HOME restoration and temporary home reclamation are
             // handled by `with_temp_home`'s Drop (also on assertion/panic
             // paths); no hand-written restore block here.
