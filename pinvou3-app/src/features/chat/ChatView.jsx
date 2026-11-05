@@ -3109,7 +3109,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // cleared in the finally below alongside the state reset).
         if (chatYoloConfirmBusyRef.current) return;
         chatYoloConfirmBusyRef.current = true;
-        if (chatYoloConfirmBusy) return;
+        if (chatYoloConfirmBusy) {
+          // Stale-state arm (round-11 review): the previous attempt's finally
+          // already released the ref synchronously and queued the state reset
+          // that has not committed yet — no attempt is in flight. Release the
+          // latch here; leaving it set strands the confirm button with
+          // nothing left to clear it (dead until remount).
+          chatYoloConfirmBusyRef.current = false;
+          return;
+        }
         setChatYoloConfirmBusy(true);
         setChatYoloConfirmError('');
         // Capture the dialog identity BEFORE the await: the preference save is
