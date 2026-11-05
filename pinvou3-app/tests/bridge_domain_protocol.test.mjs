@@ -244,7 +244,12 @@ const expectedProtocolHashes = {
   // command surface unchanged. Recomputed again in round 3: the present_artifact
   // comment now carries the web lane's exact `chat:tool_start` token so both
   // bridge lanes read byte-identically.
-  chat: '44c35fd4781321ce44d8f2c0674ccafdd512233878c7e4f79e259e1bff4e6eba',
+  // Recomputed for the PR #834 fix wave: the chat:compaction listener body
+  // maintains the compactingSessions in-flight flag (start set / terminal
+  // clear) and consumes the done payload's post_tokens to refresh the usage
+  // line. Event names, invoke shapes and the payload contract unchanged; the
+  // web twin carries the identical body.
+  chat: '61654440f6c940d4fdc550f7972d8f3614c44e884985f5e453fdcab17a626765',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

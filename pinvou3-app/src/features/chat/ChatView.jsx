@@ -1175,21 +1175,33 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
       // 手动压缩入口：点击 ctx 用量行触发 compact_now。进行中/结果由
       // chat:compaction 系统项呈现（与代码车道共享同一事件流，桥接层已
-      // 渲染 compactStart/Done/Cancel），命令本身失败（如引擎未运行）时
-      // 经队列动作错误条提示。
-      const [manualCompacting, setManualCompacting] = useState(false);
+      // 渲染 compactStart/Done/Cancel）。命令本身只把 Op 入队即返回：轮次
+      // 进行中压缩会排队到轮末才跑，所以 busy（当前会话 turn）与
+      // compactingSessions（桥接层 chat:compaction start→终态在途标记，与
+      // 代码车道 lane.compacting 同机制）都必须禁用入口，否则点击在轮末前
+      // 无任何反馈，且按钮复位后重复点击会重复入队压缩。按会话记录手动
+      // 入队中的 sid（ChatView 切会话不 remount，见上方 keyed-state 约定），
+      // A 会话入队中不误禁 B 会话。
+      const [manualCompactingSessionId, setManualCompactingSessionId] = useState(null);
+      const compactingActive = !!(activeSessionId && bs && bs.compactingSessions && bs.compactingSessions[activeSessionId]);
+      const ctxCompactInFlight = compactingActive || manualCompactingSessionId === activeSessionId;
       const handleManualCompact = useCallback(async () => {
-        if (manualCompacting || !activeSessionId) return;
-        setManualCompacting(true);
+        const sid = activeSessionId;
+        if (!sid || manualCompactingSessionId === sid || compactingActive || busy) return;
+        setManualCompactingSessionId(sid);
         try {
-          await invokeTauri('compact_now', { sessionId: activeSessionId });
+          await invokeTauri('compact_now', { sessionId: sid });
         } catch (err) {
-          const detail = String((err && err.message) || err || 'unknown error');
-          flashQueuedNotice(activeSessionId, { text: `${t.compactFailNotice}: ${detail}` });
+          const raw = String(err && err.message ? err.message : err || '');
+          // 引擎懒启动，重启后未发过消息的会话没有可压缩的上下文——与代码
+          // 车道一致，把该错误映射为本地化指引文案而不是裸错误链。
+          const detail = raw.includes('session_engine_not_running') ? t.uiCodex.nativeCompactInactive : raw;
+          flashQueuedNotice(sid, { text: `${t.uiCodex.compactFail}: ${detail}` });
         } finally {
-          setManualCompacting(false);
+          // 只清自己这轮：终态前 compactingActive 已由 chat:compaction 接管禁用
+          setManualCompactingSessionId(current => (current === sid ? null : current));
         }
-      }, [manualCompacting, activeSessionId, flashQueuedNotice, t]);
+      }, [manualCompactingSessionId, compactingActive, busy, activeSessionId, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
@@ -4380,12 +4392,17 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 ctxPct >= 0.9 ? 'text-[#C5221F] dark:text-[#F28B82]'
                 : ctxPct >= 0.75 ? 'text-[#B06000] dark:text-[#F9AB00]'
                 : 'text-[#9AA0A6] dark:text-[#5F6368]'}`}>
-                <button type="button" onClick={handleManualCompact} disabled={manualCompacting} title={t.compactNowTip}
-                  className="inline-flex items-center gap-1 hover:underline underline-offset-2 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
-                  {manualCompacting ? (
-                    <>{t.compactingNow}</>
-                  ) : (
-                    <>{t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%</>
+                <button
+                  type="button"
+                  data-testid="chat-ctx-compact"
+                  onClick={handleManualCompact}
+                  disabled={busy || ctxCompactInFlight}
+                  title={ctxCompactInFlight ? t.compactingNow : t.compactNowTip}
+                  className="inline-flex items-center gap-1 hover:underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity">
+                  {ctxCompactInFlight ? t.compactingNow : (
+                    <>
+                      {t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+                    </>
                   )}
                 </button>
               </div>

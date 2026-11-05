@@ -139,6 +139,7 @@ function isProtectedScheduledBuffer(id, buf) { return pinvouSharedtauriSessions(
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete state.compactingSessions[id];
       // personaPlaceholderTitles is lightweight session metadata (the marker
       // for placeholder titles that auto-rename may override); rehydration
       // never restores it, so capacity eviction must keep it and only real
@@ -171,6 +172,7 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
       if (!stashEvictedSessionDraft(id, buf)) continue; // draft cannot be safely retained; keep the buffer
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete state.compactingSessions[id];
       // personaPlaceholderTitles survives capacity eviction (see the comment
       // at the scheduled eviction site); only purgeSessionBuffer (real
       // deletion) cleans it.
@@ -185,6 +187,7 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
     delete evictedSessionDrafts[id];
     if (onSessionBufferPurged) onSessionBufferPurged(id, "delete");
     delete turnUsageDirty[id];
+    delete state.compactingSessions[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
     if (state.scheduledRunContext && state.scheduledRunContext.sessionId === id) {
