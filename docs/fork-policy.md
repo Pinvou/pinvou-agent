@@ -1,17 +1,13 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
+> Updated: 2026-11-05. T6 review candidate `19132162830b38aba7d900ef806427171d9203ef` integrates
+> public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e` and the rate-limit review fixes.
+> Candidate: 96 commits above upstream v0.9.12; tree `12a8be1ad97b7724618760ee3393c637633fb929`.
+> Candidate drift: 548 files, +123354/-50026 (net +73328).
+> Protected maintenance and immutable tags are unchanged. Published-head equality
+> remains a separate merge gate; the parent review gitlink is not maintenance.
+> See [the T6 register](fork-modifications.md#t6-review-candidate-bounded-model-rate-limit-recovery-2026-11-05).
 
-> 2026-11-05 review candidate: T6 adds bounded HTTP 429 recovery and Engine
-> checkpoint integration. The public maintenance baseline remains `f1eb10efc`;
-> candidate and published-head alignment are distinct. See the T6 review-candidate
-> entry in [fork-modifications.md](fork-modifications.md). No protected branch or
-> tag is advanced by this local implementation.
-> Registered local candidate: `8f3e80e9b95029303593d66ed8f36049e916fa06`, 87 commits above
-> upstream v0.9.12; tree `9f82668ec1c8447cc535660b0ae1a4667085315c`.
-> Candidate drift: 532 files, +95068/-39676 (net +55392). All figures below
-> labeled 2026-10-28 are the historical published baseline, before this candidate.
-
-> 最后更新：2026-10-28。公开维护头 f1eb10efc 已包含 #114/#125；父仓 gitlink 与公开维护头对齐。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
@@ -19,12 +15,12 @@
 
 ## 0. 当前维护基线与验证边界
 
-Published baseline snapshot (2026-10-28; historical, before the T6 candidate above):
+Published maintenance snapshot (2026-11-05; ancestor of the T6 candidate):
 
-- 当前公开维护头与父仓 gitlink：`f1eb10efcfe2468fde42d1724d7f5f19d54b904c`（2026-10-28）。#114 已合入为 `fe90f72f9`，#125 为 `f1eb10efc`；本轮仅更新父仓引用，没有推进维护分支。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 86 个提交，r1 `1fafee7e2` 之上 71 个；84 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- Public maintenance: `11cba403dc6bd6ca5c4dca55042785b03449ac8e`, including #123/#124/#129/#131/#133/#134/#135. The current candidate gitlink is recorded above.
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 93 个提交，r1 `1fafee7e2` 之上 78 个；91 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：525 files, +91397/-39288，净增 52109；255 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：540 files, +119210/-49666，净增 69544；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
