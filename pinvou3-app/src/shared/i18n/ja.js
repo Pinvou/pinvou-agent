@@ -473,6 +473,7 @@ const jaBase = {
         feedbackBodyRequired: '内容を入力してください。', feedbackUnsupportedFile: '対応していない添付形式です。',
         feedbackTooManyFiles: '添付は最大 5 件です。', feedbackPickUnavailable: 'ファイル選択を利用できません。',
         chatGreeting: 'こんにちは、今日は何をしましょうか？', artifacts: '成果物とコード', placeholder: 'PINVOU に質問またはコマンドを入力', disclaimer: 'PINVOU は不正確な情報を生成する可能性があります。必ずご確認ください。', ctxUsage: 'コンテキスト',
+        compactNowTip: 'コンテキストを圧縮してウィンドウ領域を解放', compactingNow: '圧縮中…', compactFailNotice: 'コンテキスト圧縮に失敗しました',
         chatInputLimitReached: n => `${n} 文字の上限に達しました。これ以上入力できません。`,
         searchPlaceholder: 'チャットを検索', searchNoResults: '一致するチャットがありません', searchDateAll: 'すべて',
         searchBatchManage: '一括選択', searchBatchDone: '完了', searchSelectAll: 'すべて選択', searchSelectedCount: n => `${n} 件を選択中`,
