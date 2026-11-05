@@ -1173,6 +1173,23 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [queuedEditCandidate, queued, activeSessionId, t, flashQueuedNotice]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
+      // 手动压缩入口：点击 ctx 用量行触发 compact_now。进行中/结果由
+      // chat:compaction 系统项呈现（与代码车道共享同一事件流，桥接层已
+      // 渲染 compactStart/Done/Cancel），命令本身失败（如引擎未运行）时
+      // 经队列动作错误条提示。
+      const [manualCompacting, setManualCompacting] = useState(false);
+      const handleManualCompact = useCallback(async () => {
+        if (manualCompacting || !activeSessionId) return;
+        setManualCompacting(true);
+        try {
+          await invokeTauri('compact_now', { sessionId: activeSessionId });
+        } catch (err) {
+          const detail = String((err && err.message) || err || 'unknown error');
+          flashQueuedNotice(activeSessionId, { text: `${t.compactFailNotice}: ${detail}` });
+        } finally {
+          setManualCompacting(false);
+        }
+      }, [manualCompacting, activeSessionId, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
@@ -4363,7 +4380,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 ctxPct >= 0.9 ? 'text-[#C5221F] dark:text-[#F28B82]'
                 : ctxPct >= 0.75 ? 'text-[#B06000] dark:text-[#F9AB00]'
                 : 'text-[#9AA0A6] dark:text-[#5F6368]'}`}>
-                {t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+                <button type="button" onClick={handleManualCompact} disabled={manualCompacting} title={t.compactNowTip}
+                  className="inline-flex items-center gap-1 hover:underline underline-offset-2 disabled:opacity-60 disabled:cursor-not-allowed transition-opacity">
+                  {manualCompacting ? (
+                    <>{t.compactingNow}</>
+                  ) : (
+                    <>{t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%</>
+                  )}
+                </button>
               </div>
             )}
             <div className="flex items-center justify-center mt-3">
