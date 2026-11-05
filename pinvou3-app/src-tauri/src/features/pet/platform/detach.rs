@@ -260,7 +260,7 @@ pub fn create_detached_at(
 
 /// 主窗口外接矩形是否包含全局点 (px,py)。拿不到主窗口几何 → 视为不包含(倾向于建窗)。
 fn main_window_contains(app: &AppHandle, px: i32, py: i32) -> bool {
-    if let Some(w) = app.get_webview_window("main") {
+    if let Some(w) = app.get_window("main") {
         if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
             return point_in_rect(px, py, pos.x, pos.y, size.width as i32, size.height as i32);
         }

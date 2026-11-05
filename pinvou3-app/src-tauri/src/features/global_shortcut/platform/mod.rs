@@ -18,7 +18,7 @@ use tauri::{AppHandle, Manager};
 /// own reveal (frontend mount or the 8s fallback), mirroring the established
 /// second-instance defer contract.
 pub(super) fn bring_main_window_to_front(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_window("main") else {
         log::debug!("global shortcut trigger ignored: main window is gone");
         return;
     };
@@ -39,7 +39,7 @@ pub(super) fn bring_main_window_to_front(app: &AppHandle) {
 /// the main thread (dispatched by `handle_triggered`), so these calls execute
 /// right after the present inside `activate_main_window` above.
 #[cfg(target_os = "linux")]
-fn raise_after_present(window: &tauri::WebviewWindow) {
+fn raise_after_present(window: &tauri::Window) {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// How long the transient always-on-top stays before being cleared: long
@@ -76,7 +76,7 @@ fn raise_after_present(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn raise_after_present(window: &tauri::WebviewWindow) {
+fn raise_after_present(window: &tauri::Window) {
     // activate_main_window already did show + unminimize + set_focus; the
     // focus-steal workaround is a Mutter/X11 problem only.
     let _ = window;

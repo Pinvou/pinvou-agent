@@ -14,6 +14,6 @@ pub(crate) fn resize_pet_window(
 
 pub(crate) fn prepare_main_focus_raise(_app: &tauri::AppHandle) {}
 
-pub(crate) fn finish_main_focus_raise(window: &tauri::WebviewWindow) {
+pub(crate) fn finish_main_focus_raise(window: &tauri::Window) {
     let _ = window.set_always_on_top(false);
 }

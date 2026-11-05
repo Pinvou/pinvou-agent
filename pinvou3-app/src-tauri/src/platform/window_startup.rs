@@ -24,7 +24,7 @@ fn should_fallback_reveal(visible_after_wait: bool) -> bool {
 
 #[cfg(target_os = "linux")]
 fn present_linux_main_window(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     // Owned marks: both are captured by the 'static main-thread closure
     // below, so borrowed parameters cannot outlive this frame (E0521).
     success_mark: String,
@@ -68,7 +68,7 @@ fn present_linux_main_window(
 
 /// Reveal only the Linux main window that the platform overlay creates hidden.
 /// The cfg gate keeps other platforms behaviorally unchanged.
-pub fn reveal_startup_window(window: tauri::WebviewWindow) -> Result<bool, String> {
+pub fn reveal_startup_window(window: tauri::Window) -> Result<bool, String> {
     #[cfg(target_os = "linux")]
     {
         if window.label() != "main" {
@@ -108,7 +108,7 @@ pub fn reveal_startup_window(window: tauri::WebviewWindow) -> Result<bool, Strin
 /// was attempted (Linux: enqueued to the GTK main loop or run inline, possibly
 /// failing) or the platform presents unconditionally. `false` therefore means
 /// "not deferred", not "the window is up".
-pub(crate) fn activate_main_window(window: tauri::WebviewWindow, source: &str) -> bool {
+pub(crate) fn activate_main_window(window: tauri::Window, source: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
         let startup_ready = MAIN_WINDOW_STARTUP_READY.load(Ordering::Acquire);
@@ -160,7 +160,7 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow, source: &str) -
 pub(crate) fn arm_hidden_main_window_fallback(app: &tauri::AppHandle) {
     #[cfg(target_os = "linux")]
     {
-        let Some(window) = app.get_webview_window("main") else {
+        let Some(window) = app.get_window("main") else {
             return;
         };
         if window.is_visible().unwrap_or(true) {
