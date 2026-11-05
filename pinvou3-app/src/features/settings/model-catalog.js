@@ -409,9 +409,12 @@ const MODEL_CATALOG = {
       // became K2.8 Preview on 2026-09-11 (kimi.com/code/docs models page),
       // so the old "standard coding model, smaller context" framing is gone;
       // the 1M window is available from the plan's lowest coding tier (the
-      // CC docs' tier table lists 1048576 already at Andante — the "Pro 及
-      // 以上支持 1M" gate on the models page attaches to the k3.1-pro / k3
-      // rows, not this alias; corrected 2026-11-04 review), the default
+      // models table shows kimi-for-coding available from Andante+ (老套餐)
+      // / Plus+ (新套餐) with its context cell reading 最高 `1048576`
+      // unqualified — the "Pro 及以上支持 1M" gate attaches to the
+      // k3.1-pro / k3 rows, not this alias; wording corrected 2026-11-05
+      // review: no tier table prints the 1048576 figure, the reading
+      // composes the availability and context cells), the default
       // effort is max, and unknown ids silently
       // fall back to the non-thinking K2.8 Preview. kimi-for-coding-highspeed
       // serves K2.7 Code Highspeed at 256K. K3.1 Pro / K3.1 Pro Highspeed
@@ -434,8 +437,12 @@ const MODEL_CATALOG = {
       // the round-4 review) all exit to no ladder — the generic off/high
       // switch is unreachable for any K3.1 spelling, stored effort is
       // dropped (frontend normalize + Rust prefs load), and the wire omits
-      // the field so the vendor default (max) applies (foundation
-      // follow-up: teach the base's route shapers the K3.1 spellings).
+      // the field, which the vendor documents as valid — on this coding
+      // base the CC docs' effort-mapping table resolves an omitted effort
+      // to the K3.1/K3 default `high` (max is the K2.8-alias default and
+      // the platform base's; wording corrected 2026-11-05 review)
+      // (foundation follow-up: teach the base's route shapers the K3.1
+      // spellings).
       items: [
         { model: 'k3.1-pro', imageCapable: true, title: 'k3.1-pro', desc: 'K3.1 Pro 新旗舰，原生视觉，1M 按档开放' },
         { model: 'k3.1-pro-highspeed', imageCapable: true, title: 'k3.1-pro-highspeed', desc: 'K3.1 Pro 高速款' },
@@ -913,9 +920,10 @@ const MODEL_CATALOG = {
       preset: 'doubao',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'doubao',
-      // Official figures re-checked 2026-11-03 (docs.volcengine.com/ark
-      // model list, live page stamped updated 2026-11-02; release
-      // announcements 1159178):
+      // Official figures re-checked 2026-11-03 and re-verified 2026-11-05
+      // (docs.volcengine.com/ark model list, live page stamped updated
+      // 2026-11-02 at the first check and 2026-11-03 at the re-check;
+      // release announcements 1159178):
       // doubao-seed-evolving is still the officially recommended
       // Coding/Agent model — a permanent Model ID whose underlying version
       // auto-updates ("版本升级自动生效，通过统一 Model ID 调用"; the docs
@@ -972,8 +980,10 @@ const MODEL_CATALOG = {
       // 2026-10-28 14:00 (UTC+8; closed to new plan users 2026-10-13,
       // migrate to kimi-k3) and minimax-m3 went offline 2026-11-02 14:00
       // (migrate to doubao-seed-evolving / kimi-k3) — both are absent from
-      // the quick start's switchable list (the plan-overview page still
-      // displays both with 即将下线 badges), and their old configs fall to
+      // the quick start's switchable list (the plan-overview page displayed
+      // both with 即将下线 badges as of the 2026-11-03 check; the page was
+      // re-stamped 2026-11-04 and no longer shows them), and their old
+      // configs fall to
       // the custom listing (endpoint classification is URL-based and
       // unaffected). One row is added: deepseek-v4.1-flash-economy, present
       // on the live plan list (its PAYG counterpart snapshot is
@@ -983,9 +993,13 @@ const MODEL_CATALOG = {
       // the 1M-context support list ("doubao-seed-evolving、glm-5.3、
       // glm-5.3-flash、kimi-k3.1-pro、kimi-k3、kimi-k2.8-preview、… 支持 1M
       // 上下文窗口") and in a dated paid activity ("2026年10月24日…至
-      // 2026年11月9日…活动期间，Coding Plan 中 Kimi-K3.1-Pro 的可用量…5 折")
+      // 2026年11月9日…活动期间，Coding Plan 中 Kimi-K3.1-Pro 的可用量，与
+      // Agent Plan 5 折抵扣活动期间相当" — quota equivalence to a
+      // half-price period, not a literal 50% discount; quote completed
+      // 2026-11-05 review)
       // — and the quick start's switchable list the rows mirror lists it
-      // too (the page was updated 2026-11-02; the earlier "the list still
+      // too (the page was updated 2026-11-02 and re-stamped 2026-11-04
+      // with the list unchanged; the earlier "the list still
       // lags behind and does not list it" premise no longer holds — the
       // row is double-confirmed on both pages as of the 2026-11-04 review).
       // Whether plan-side kimi-k3 now aliases the new K3.1 snapshot
@@ -1178,11 +1192,13 @@ const MODEL_CATALOG = {
       // API (Vertex floor "2027-07 or later"); gemini-3.1-pro-preview demotes
       // to the previous flagship preview (gemini-3-pro-preview was retired
       // on 2026-03-09). Thinking cannot be turned off for the
-      // Gemini 3 family on the OpenAI-compatible layer. The Nov 2 changelog
-      // entry (visible on the check date) additionally deprecates
-      // gemini-2.5-pro / gemini-2.5-flash effective 2026-12-01 with
-      // auto-routing to gemini-3.8-flash / gemini-3.5-flash-lite — recorded
-      // though the group carries no 2.5 rows. gemini-3-flash-preview is live
+      // Gemini 3 family on the OpenAI-compatible layer. (An earlier draft
+      // recorded a "Nov 2 changelog entry deprecating gemini-2.5-pro /
+      // gemini-2.5-flash effective 2026-12-01 with auto-routing" — the
+      // live changelog carries no such entry under any fetch variant as of
+      // the 2026-11-05 review, and the deprecations page says "No shutdown
+      // date announced" for both, so the sentence is dropped as
+      // unverifiable.) gemini-3-flash-preview is live
       // on the models page's preview table and stays uncataloged (preview
       // churn; gemini-3.1-pro-preview is kept because the deprecations page
       // names it as gemini-3-pro-preview's replacement).
@@ -1484,19 +1500,25 @@ const MODEL_CATALOG = {
       // free rows' fixed ones — the docs define it by billing/limits, not
       // "acceleration"), and the two Pro/ rows below are kept for existing
       // configs even though they have left the public plaza — the official
-      // API reference names the Pro/ prefix on sibling ids (Pro/zai-org/
-      // GLM-4.7 in its examples; Pro/zai-org/GLM-5 and Pro/deepseek-ai/
-      // DeepSeek-V3.2 in the enable_thinking list) but neither of these two
-      // exact ids any more (the earlier "the official API doc still name
-      // them" citation was over-broad, corrected 2026-11-04 review). Since
-      // 2026-10-21 deepseek-ai/DeepSeek-V4.1-Flash serves the
-      // 1017 snapshot in place (wire id unchanged, vision, 1M) — unlike
-      // OpenRouter, which lists -1017 as a separate id. The engine has
+      // API reference names exactly these two ids on its reasoning_effort
+      // parameter ("该字段适用于 Pro/deepseek-ai/DeepSeek-V4、
+      // deepseek-ai/DeepSeek-V4-Flash 以及 Pro/zai-org/GLM-5.2"), so the
+      // kept rows are doc-covered (the 2026-11-04 citation naming sibling
+      // ids GLM-4.7/GLM-5/DeepSeek-V3.2 matched no live page; corrected
+      // 2026-11-05 review). deepseek-ai/DeepSeek-V4.1-Flash serves the
+      // upstream 1017 snapshot in place (wire id unchanged, vision, 1M —
+      // the upgrade and native vision are confirmed on the official
+      // release-notes overview; no official record dates the switch, so
+      // the earlier "since 2026-10-21" is dropped; re-verify at the next
+      // refresh) — unlike OpenRouter, which lists -1017 as a separate id.
+      // The engine has
       // dedicated siliconflow kinds (thinking toggle at off via
       // enable_thinking; low/medium/high collapse to high; the chat API
       // documents reasoning_effort (high|max, low/medium mapped to high)
-      // scoped to deepseek-ai/DeepSeek-V4-Flash only — the earlier
-      // "DeepSeek/GLM rows" scope overclaimed; corrected 2026-11-04
+      // scoped to the three ids it names — Pro/deepseek-ai/DeepSeek-V4,
+      // deepseek-ai/DeepSeek-V4-Flash and Pro/zai-org/GLM-5.2; the earlier
+      // "DeepSeek/GLM rows" scope overclaimed and the 2026-11-04
+      // "V4-Flash only" correction underclaimed; corrected again 2026-11-05
       // review), exposed via REASONING_EFFORT_TIERS. Rows stay unannotated:
       // deployments behind the platform are not verified one by one, and
       // their per-deployment context figures are likewise not mirrored (the
@@ -2374,9 +2396,11 @@ function moonshotReasoningLadder(model, modelName, genericTiers) {
     // wire correctly today — exposing the generic off/high switch here let
     // users persist a disable shape the vendor rejects (2026-11-04 review).
     // Expose no control instead: the effort field is omitted, which the
-    // vendor documents as valid (可省略) and resolves to the default max.
-    // Parked until the foundation's route shapers cover K3.1 (see the
-    // kimi group comments).
+    // vendor documents as valid (可省略) and resolves to the family default
+    // — `high` on the Kimi Code base, `max` on the platform base (CC docs'
+    // effort-mapping table; corrected 2026-11-05 review: the earlier
+    // blanket "default max" was the platform figure). Parked until the
+    // foundation's route shapers cover K3.1 (see the kimi group comments).
     return null;
   }
   return genericTiers;

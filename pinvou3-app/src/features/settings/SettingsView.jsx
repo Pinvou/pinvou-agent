@@ -962,8 +962,12 @@ function hasStoredCredential(record) {
                   providerCatalog overlay, zh via the catalog's inline
                   titles) — the raw preset label would misbrand every
                   vendor group riding a shared preset as "OpenAI
-                  Compatible" (2026-11-04 round-4 review; the local group
-                  has no overlay and keeps its localized preset label). */}
+                  Compatible" (2026-11-04 round-4 review). The local group
+                  also has en/ja overlays but keeps its localized preset
+                  label on purpose: the overlay titles drop the (default)
+                  marker the preset label carries (本地模型（默认）), and
+                  the marker matters (corrected 2026-11-05 review — the
+                  earlier "no overlay" note was wrong). */}
               <div className={catalogSectionTitleClass}>{group.key === 'local' ? presetProviderLabel(group.preset, t) : group.title}</div>
               <div className={catalogGroupClass}>
                 {group.items.map(item => {

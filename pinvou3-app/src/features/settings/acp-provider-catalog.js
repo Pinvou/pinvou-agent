@@ -39,15 +39,22 @@ export const ACP_PROVIDER_PRESETS = [
   // joins above it and gpt-6-sol / gpt-6-luna (GPT-6 family expansion,
   // September 2026) stay. gpt-5.3-codex stays
   // valid for Responses-only ACP hosts (watch item: deprecated on
-  // 2026-10-01; the "shutdown 2027-04-01" figure from the deprecations page
-  // is unverified — that page has been unreachable from every channel since
-  // the 2026-11-03 refresh, and Azure's own retirement table lists
-  // 2027-08-24 Azure-side).
+  // 2026-10-01; the "shutdown 2027-04-01" figure — this file's 2026-11-03
+  // pass could not reach the deprecations page, while the 2026-11-04 pass
+  // reports it reachable again and confirming the date (see the openai
+  // group comment in model-catalog.js); Azure's own retirement table lists
+  // 2027-08-24 Azure-side. Conflicting observations — re-verify at the
+  // next refresh).
   { key: 'openai', nameKey: 'presetOpenai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
   // kimi-k3.1-pro / -highspeed (2026-10-23) prepend as the newest flagship
   // tiers; the K2 rows stay (append-only) — the official models page now
   // plans the whole K2 series to go offline end of December 2026.
   { key: 'moonshot', nameKey: 'presetMoonshot', name: 'Moonshot Kimi', baseUrl: 'https://api.moonshot.cn/v1', baseUrlAnthropic: 'https://api.moonshot.cn/anthropic', wireApi: 'kimi', models: ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed'], models1m: ['kimi-k3[1m]'] },
+  // The moonshot side's only documented [1m] declaration is kimi-k3[1m]
+  // (the platform CC guide still documents it, re-verified 2026-11-04);
+  // the K3.1 [1m] declaration is a Kimi Code page artifact (see kimi-code
+  // below) — no platform-side kimi-k3.1-pro[1m] spelling exists to
+  // suggest, so none is invented.
   // 注意：models 为**发送给 API 的模型 ID**（官方配置中 models."kimi-code/k3"
   // 表名的 kimi-code/ 前缀是别名，实际请求的 model 字段是无前缀的 "k3"）。
   // Kimi Code's officially documented [1m] declarations moved to

@@ -1192,7 +1192,7 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   'K2.7 Code 高速款，256K':'K2.7 Code high-speed tier, 256K',
   'Kimi 编码模型（官方推荐档）':'Kimi coding model (officially recommended tier)',
   'GA 新旗舰（2026-10-19），高效多模态':'GA flagship (2026-10-19), efficient multimodal',
-  '通用能力，官方将于 2026-11-17 下线':'General-purpose; retires on 2026-11-17 per the official table',
+  '通用能力，官方将于 2026-11-17 下线':'General-purpose; retires on 2026-11-17',
   '经济款，生成略慢':'Economy tier, slightly slower generation',
   '快速响应（1017 快照）':'Fast responses (1017 snapshot)',
   '快速响应，原厂升级 1017 快照':'Fast responses, upgraded in place to the 1017 snapshot',
