@@ -252,7 +252,10 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
   持久；legacy `_code_mode_states.json` 在新文件缺席时迁移并立即落盘）。每次
   会话内切换只写该会话记录；全局车道默认只由草稿态显式切换写（two-lane
   semantics：`set_mode_default` 写 settings.json 的 `mode_defaults.work` /
-  `code_permission.last_mode`，会话内切换不回流全局）。
+  `code_permission.last_mode`，会话内切换不回流全局）。保存失败沿命令返回
+  路径以 `Err` 传播（评审 JensenChen28 5780647695）：桥/前端保持权威态并
+  显式报错，不得把旧默认当成功收下的同时把芯片画成 target——否则物化出的
+  会话按旧档运行而 UI 显示已切换。
 - **`pre_plan_mode`（批准方案 ≠ 批准全自动）**：进入 Plan 时记录来时 mode，
   accept_plan 后回到它（fallback Auto）并经同一发布序列热同步；仅驻内存——
   重启后的 Plan 会话经 `resolved_default_mode` 重新解析，不把进程相对值钉进

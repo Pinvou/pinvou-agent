@@ -2773,7 +2773,9 @@ mod tests {
         use crate::core::mode_state::{ModeLane, SerializableMode};
         let _home = TempHome::new();
         let store = store_with_requester();
-        store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
+        store
+            .set_mode_default(ModeLane::Work, SerializableMode::Plan)
+            .expect("persist lane default");
         apply_work_lane_mode_default(&store, "reqsrc01", None);
         assert_eq!(
             store.mode_state("reqsrc01").mode,

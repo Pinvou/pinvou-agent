@@ -3352,6 +3352,39 @@ fn settings_transaction_commands_join_off_the_runtime() {
     );
 }
 
+/// The draft-default switch must PROPAGATE the persistence failure to the
+/// wire (review JensenChen28 5780647695 + zhuowp 5780927743 second finding):
+/// the log-only tolerance answered `Ok(stale defaults)`, so both IPC
+/// bridges filed the old default while the frontend drew the draft chip as
+/// the target — the switch was never durable and a session materialized
+/// afterwards ran the OLD posture. The store-level behavior lives in
+/// sessions tests (`set_mode_default_persist_failure_propagates_and_keeps_mirror`);
+/// this pins the command-layer wiring — the `?` on the store call inside
+/// the join closure, comment-stripped, from a file that cannot match its
+/// own needle (same rules as the settings-transaction join pin above).
+/// Mutation (red): dropping the `?` (log-only form) fails the assert.
+#[test]
+fn set_mode_default_command_propagates_persist_failure() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let interaction = code(include_str!("interaction.rs"));
+    let join = interaction
+        .find("join_blocking(\"set_mode_default\"")
+        .expect("the set_mode_default command must join its settings transaction");
+    let body = &interaction[join..];
+    assert!(
+        body.contains("store.set_mode_default(lane, mode)?;"),
+        "set_mode_default must propagate the persist failure with `?` (no Ok(stale defaults) answer)"
+    );
+}
+
 /// The set_global_shortcut_config committed-persist arm must compose the
 /// wire result from the PERSISTED prefs, not the apply outcome (review
 /// round 3, both lanes): a disabled save's outcome carries no accelerator,

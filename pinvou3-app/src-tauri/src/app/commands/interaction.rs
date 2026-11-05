@@ -98,7 +98,13 @@ pub async fn set_mode_default(
     // the draft-state switch persists through the settings transaction.
     let store = store.inner().clone();
     super::settings::join_blocking("set_mode_default", move || {
-        store.set_mode_default(lane, mode);
+        // Persistence failure propagates (review JensenChen28 5780647695):
+        // returning Ok(stale defaults) made both bridges file the old
+        // default while drawing the draft chip as the target — the switch
+        // was never durable and a session materialized later under the OLD
+        // default. The frontend catch keeps the authoritative state and
+        // surfaces the error instead of drawing the target.
+        store.set_mode_default(lane, mode)?;
         Ok(store.mode_defaults())
     })
     .await

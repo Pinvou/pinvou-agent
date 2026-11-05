@@ -5079,10 +5079,14 @@ fn code_session_default_follows_code_lane_default() {
     assert!(store.code_permission_prefs().last_mode.is_none());
     // A draft-state write of the code lane global default → new code
     // sessions' defaults follow; existing sessions are unaffected.
-    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("persist lane default");
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Yolo);
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
-    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect("persist lane default");
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
 }
 
@@ -5094,7 +5098,9 @@ fn code_session_default_follows_code_lane_default() {
 #[test]
 fn code_permission_prefs_view_folds_auto_companion_flag() {
     let (store, _g) = isolated_store();
-    store.set_mode_default(ModeLane::Code, SerializableMode::Auto);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Auto)
+        .expect("persist lane default");
     // 原始镜像：legacy 字段永不携带 "auto"（companion-flag 磁盘形状）。
     assert!(store.code_permission_prefs().last_mode.is_none());
     assert!(store.code_permission_prefs().last_mode_auto);
@@ -5103,10 +5109,106 @@ fn code_permission_prefs_view_folds_auto_companion_flag() {
     assert_eq!(view.last_mode, Some(SerializableMode::Auto));
     assert!(view.last_mode_auto);
     // legacy 写入（Plan/Yolo）原样透传，旗随之清除。
-    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect("persist lane default");
     let view = store.code_permission_prefs_view();
     assert_eq!(view.last_mode, Some(SerializableMode::Plan));
     assert!(!view.last_mode_auto);
+}
+
+/// Persist-failure propagation (review JensenChen28 5780647695 + zhuowp
+/// 5780927743 second finding): a failed settings write must reach the
+/// command layer as `Err`. The log-only tolerance answered
+/// `Ok(stale defaults)`, so both IPC bridges filed the old default while
+/// the draft chip was already drawn as the target — a session materialized
+/// afterwards ran the OLD backend posture while the UI claimed the switch
+/// landed. The in-memory mirror must also stay untouched (post_commit
+/// never runs on a failed save), and a successful write after recovery
+/// lands normally (control arm — the success-path behavior is unchanged).
+/// Mutation (red): reverting set_mode_default to the log-only form fails
+/// the expect_err.
+#[test]
+fn set_mode_default_persist_failure_propagates_and_keeps_mirror() {
+    let (store, _g) = isolated_store();
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("control write succeeds");
+    // settings.json becomes a directory: save_unlocked must fail (the lock
+    // file is a sibling, so this is a genuine persistence failure, not a
+    // lock-acquisition failure).
+    let settings = crate::platform::paths::settings_path();
+    std::fs::remove_file(&settings).ok();
+    std::fs::create_dir_all(&settings).expect("blocker fixture");
+    let error = store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect_err("a failed settings save must propagate to the command layer");
+    assert!(
+        error.contains("save settings failed"),
+        "the propagated error must be the persistence failure itself: {error}"
+    );
+    // 镜像不发布：本 run 答的仍是上一次成功提交的值（与磁盘一致）。
+    assert_eq!(
+        store.mode_defaults().code,
+        Some(SerializableMode::Yolo),
+        "a failed save must leave the authoritative mirror untouched"
+    );
+    // 恢复写路径后成功提交照常（对照臂：成功路径行为不变）。
+    std::fs::remove_dir_all(&settings).ok();
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect("recovered write succeeds");
+    assert_eq!(store.mode_defaults().code, Some(SerializableMode::Plan));
+}
+
+/// Effective execution mode projection (review zhuowp 5780927743 third
+/// finding): `post_accept_mode` must mirror `claim_pending_plan`'s restore
+/// line — a Plan entered from Auto resumes Auto (the web face must refuse
+/// such accepts BEFORE a turn opens: it has no approval-card surface), a
+/// Plan entered from Yolo resumes Yolo, and the rebooted-Plan shape
+/// (pre_plan_mode None) falls back to Auto. Mutation (red): returning
+/// `self.mode` unconditionally (ignoring pre_plan_mode) fails the first
+/// and third asserts.
+#[test]
+fn post_accept_mode_mirrors_claim_restore() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["pam-1"]);
+    store
+        .set_mode("pam-1", SerializableMode::Auto)
+        .expect("auto");
+    store
+        .set_mode("pam-1", SerializableMode::Plan)
+        .expect("plan");
+    assert_eq!(
+        store.mode_state("pam-1").post_accept_mode(),
+        SerializableMode::Auto,
+        "a Plan entered from Auto must project Auto as the post-accept mode"
+    );
+    store
+        .set_mode("pam-1", SerializableMode::Yolo)
+        .expect("yolo");
+    assert_eq!(
+        store.mode_state("pam-1").post_accept_mode(),
+        SerializableMode::Yolo,
+        "a non-Plan mode projects itself"
+    );
+    store
+        .set_mode("pam-1", SerializableMode::Plan)
+        .expect("plan");
+    assert_eq!(
+        store.mode_state("pam-1").post_accept_mode(),
+        SerializableMode::Yolo,
+        "a Plan entered from Yolo must project Yolo"
+    );
+    // Rebooted Plan session: the restored entry carries pre_plan_mode = None
+    // and claim falls back to Auto — the projection must say the same.
+    let mut restored = store.mode_state("pam-1");
+    restored.pre_plan_mode = None;
+    assert_eq!(
+        restored.post_accept_mode(),
+        SerializableMode::Auto,
+        "a Plan without a remembered origin must fall back to Auto"
+    );
 }
 
 /// Tri-mode (M2) end-to-end: an explicit Auto lane default persists via the
@@ -5117,13 +5219,17 @@ fn code_permission_prefs_view_folds_auto_companion_flag() {
 #[test]
 fn set_mode_default_auto_persists_via_companion_flag_and_keeps_settings_legacy_parseable() {
     let (store, _g) = isolated_store();
-    store.set_mode_default(ModeLane::Work, SerializableMode::Auto);
+    store
+        .set_mode_default(ModeLane::Work, SerializableMode::Auto)
+        .expect("persist lane default");
     assert_eq!(
         store.mode_defaults().work,
         Some(SerializableMode::Auto),
         "the view folds the companion flag back to Some(Auto)"
     );
-    store.set_mode_default(ModeLane::Code, SerializableMode::Auto);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Auto)
+        .expect("persist lane default");
     assert_eq!(store.mode_defaults().code, Some(SerializableMode::Auto));
     // Code-session resolution reads the companion flag, not a lost legacy
     // value; the unbound-plain default is unchanged.
@@ -5160,7 +5266,9 @@ fn set_mode_default_auto_persists_via_companion_flag_and_keeps_settings_legacy_p
     // Explicit Plan/Yolo choices clear the companion flag and return to the
     // legacy vocabulary (the work lane's Auto choice is untouched — per-lane
     // independence).
-    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("persist lane default");
     let raw = std::fs::read_to_string(crate::platform::paths::settings_path())
         .expect("read settings.json");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("settings.json parses");
@@ -5181,7 +5289,9 @@ fn set_mode_default_auto_persists_via_companion_flag_and_keeps_settings_legacy_p
     );
     assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
     // Reboot: the Auto choice survives via the companion flags.
-    store.set_mode_default(ModeLane::Work, SerializableMode::Auto);
+    store
+        .set_mode_default(ModeLane::Work, SerializableMode::Auto)
+        .expect("persist lane default");
     let reopened = reopen_store(&store).expect("reboot");
     assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Auto));
 }
@@ -5214,12 +5324,16 @@ fn workspace_bound_plain_session_defaults_to_plan_like_code() {
     );
 
     // The code lane's global default applies to bound plain sessions as well.
-    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("persist lane default");
     assert_eq!(
         store.mode_state(&bound.metadata.id).mode,
         SerializableMode::Yolo
     );
-    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect("persist lane default");
 
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
@@ -5356,8 +5470,12 @@ fn mode_lane_defaults_round_trip_and_validate() {
     let (store, _g) = isolated_store();
     assert_eq!(store.mode_defaults().work, None);
     assert_eq!(store.mode_defaults().code, None);
-    store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
-    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    store
+        .set_mode_default(ModeLane::Work, SerializableMode::Plan)
+        .expect("persist lane default");
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("persist lane default");
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
     assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
     // Persisted to settings.json + the mirror restored after restart.

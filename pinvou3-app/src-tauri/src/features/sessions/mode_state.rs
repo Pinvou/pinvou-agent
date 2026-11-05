@@ -164,6 +164,26 @@ impl Default for SessionModeState {
 }
 
 impl SessionModeState {
+    /// The execution mode an `accept_plan` on this state would resume into
+    /// (`claim_pending_plan`'s restore projection: `pre_plan_mode`, falling
+    /// back to Auto — tri-mode safety, "approving a plan approves the work,
+    /// not full-auto permission"). Mirrors the claim line exactly, including
+    /// the rebooted-Plan fallback (a restored session has `pre_plan_mode =
+    /// None` and accepts into Auto). Surfaced on the `get_mode_state` view
+    /// so the web face can refuse an accept whose effective execution mode
+    /// is Auto BEFORE a turn opens (review zhuowp 5780927743 third: the
+    /// plan-mode admission guard only read the current `mode == "plan"` and
+    /// waved a card through that then executed under Auto — a posture the
+    /// web face cannot serve, since it has no approval-card decision
+    /// surface).
+    pub fn post_accept_mode(&self) -> SerializableMode {
+        if self.mode == SerializableMode::Plan {
+            self.pre_plan_mode.unwrap_or(SerializableMode::Auto)
+        } else {
+            self.mode
+        }
+    }
+
     /// A fresh mode-state entry for a session being materialized NOW (the
     /// `mode_state` fallback, `mode_state_entry`, and every `or_insert_with`
     /// mint site). Identical to [`Default::default`] except the per-session
@@ -1498,9 +1518,17 @@ impl SessionStore {
     /// sessions never touch this). Persists settings.json in a field-level
     /// transaction and publishes the in-memory mirror inside the same
     /// critical section (post_commit — mirror and disk stay totally ordered
-    /// against concurrent transactions); a write failure only logs and leaves
-    /// both untouched (same tolerance as set_mode).
-    pub fn set_mode_default(&self, lane: ModeLane, mode: SerializableMode) {
+    /// against concurrent transactions). A write failure returns `Err` and
+    /// leaves both untouched — the failure MUST reach the command layer
+    /// (review JensenChen28 5780647695 + zhuowp 5780927743 second): the
+    /// log-only tolerance left the caller answering `Ok(stale defaults)`,
+    /// so both IPC bridges stored the old default while the draft chip was
+    /// already drawn as the target — a later session materialized with the
+    /// OLD backend default while the UI claimed the switch landed. Unlike
+    /// `set_mode` (session-local, lenient), this value drives the
+    /// draft→session admission posture, so the caller decides the user
+    /// face: keep the authoritative state and surface the error.
+    pub fn set_mode_default(&self, lane: ModeLane, mode: SerializableMode) -> Result<(), String> {
         // Tri-mode (M2): `Auto` never enters the legacy `last_mode`/`work`
         // vocabulary — a pre-tri-mode binary parsing the unknown enum variant
         // fails the WHOLE settings.json (every unrelated preference falls
@@ -1517,9 +1545,10 @@ impl SessionStore {
         // 镜像发布走 post_commit（round-11 评审）：与 confirm_code_yolo /
         // set_ask_on_guardrail_default 同一临界区语义——锁外先写镜像时，两笔
         // 交错事务的镜像/磁盘会各停在不同提交上，读分裂直到重启。提交失败
-        // 时镜像不发布（本 run 答陈旧值直到下次成功提交，与磁盘一致），
-        // 容忍度不变：只记日志。
-        if let Err(error) = UserPrefs::update_transaction_with_post_commit(
+        // 时镜像不发布（本 run 答陈旧值直到下次成功提交，与磁盘一致）；
+        // 失败沿命令返回路径传播（评审 5780647695），桥/前端失败时保持权
+        // 威态并显式报错，而不是把旧默认当成功收下、同时把芯片画成 target。
+        UserPrefs::update_transaction_with_post_commit(
             move |prefs| {
                 match lane {
                     ModeLane::Code => {
@@ -1545,9 +1574,12 @@ impl SessionStore {
                     md.work = legacy;
                 }
             },
-        ) {
+        )
+        .map(|_| ())
+        .map_err(|error| {
             eprintln!("[sessions] persist mode default for {lane:?} failed: {error}");
-        }
+            error
+        })
     }
 
     /// After the accept flow (`claim_pending_plan` switching to Yolo) is
