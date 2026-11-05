@@ -125,10 +125,15 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
 /// variants' parameter constraints are identical to kimi-k3
 /// (platform.kimi.com/docs/api/models-overview) — while they must keep the
 /// legacy `thinking` parameter omitted (see
-/// `moonshot_model_requires_explicit_thinking` above). Bracket `[1m]`
-/// declarations are excluded like k3[1m]: they are CC environment
-/// conventions, not API model ids, so no reasoning tier is defined for
-/// them. Note the manual probe posts straight over HTTP — the
+/// `moonshot_model_requires_explicit_thinking` above). Reachable `[1m]`
+/// composites are on this list so they probe identically to their bare
+/// forms: kimi-k3[1m] (the moonshot preset's models1m suggestion) and the
+/// four K3.1 `[1m]` spellings (k3.1-pro[1m] is the documented Kimi Code
+/// declaration and the ACP datalist entry; the prefixed composites are
+/// tolerated stored forms — re-verified 2026-11-05). The unreachable
+/// k3[1m] spelling stays excluded: the base's Kimi Code alias guidance
+/// fail-closes that id, so no meaningful probe reaches the budget
+/// question. Note the manual probe posts straight over HTTP — the
 /// foundation-side validator is not in that path — so this list encodes
 /// the API contract rather than filtering what reaches the gateway.
 ///
@@ -152,11 +157,19 @@ pub fn moonshot_model_needs_reasoning_budget(model: &str) -> bool {
             | "kimi-k2.6"
             // K3.1 spellings — same spelling set as the VERIFIED/exact
             // capability tables above (2026-11-04 round-5 review: always
-            // reasoning, reasoning billed against the completion budget).
+            // reasoning, reasoning billed against the completion budget),
+            // plus their reachable `[1m]` composites (2026-11-05 review:
+            // k3.1-pro[1m] is the documented Kimi Code declaration and the
+            // ACP datalist entry; the composites must probe identically to
+            // their bare forms).
             | "kimi-k3.1-pro"
             | "kimi-k3.1-pro-highspeed"
             | "k3.1-pro"
             | "k3.1-pro-highspeed"
+            | "k3.1-pro[1m]"
+            | "kimi-k3.1-pro[1m]"
+            | "k3.1-pro-highspeed[1m]"
+            | "kimi-k3.1-pro-highspeed[1m]"
     )
 }
 
@@ -532,25 +545,25 @@ mod tests {
             "k3.1-pro",
             "k3.1-pro-highspeed",
             "Kimi-K3.1-Pro",
+            // Reachable [1m] composites probe identically to their bare
+            // forms (2026-11-05 review): k3.1-pro[1m] is the documented Kimi
+            // Code declaration and the ACP datalist entry; the prefixed
+            // composites are tolerated stored forms.
+            "k3.1-pro[1m]",
+            "kimi-k3.1-pro[1m]",
+            "k3.1-pro-highspeed[1m]",
+            "kimi-k3.1-pro-highspeed[1m]",
         ] {
             assert!(
                 moonshot_model_needs_reasoning_budget(name),
                 "{name} is an always-reasoning spelling; probe budget must stay at the reasoning tier"
             );
         }
-        // The [1m] bracket declarations stay off the budget list: they are
-        // CC environment conventions rather than API model ids, and the
-        // manual probe posts via reqwest with no foundation-side validator
-        // in between — the list encodes the API contract, it does not
-        // filter what reaches the gateway. Alongside plain non-Moonshot
-        // misses.
-        for name in [
-            "k3.1-pro[1m]",
-            "kimi-k3.1-pro[1m]",
-            "gpt-4o",
-            "deepseek-v4-pro",
-            "kimi-k2.5",
-        ] {
+        // k3[1m] stays off the budget list: it is a declaration form the
+        // base's Kimi Code alias guidance fail-closes (not an API model
+        // id), so no meaningful probe reaches the budget question.
+        // Alongside plain non-Moonshot misses.
+        for name in ["k3[1m]", "gpt-4o", "deepseek-v4-pro", "kimi-k2.5"] {
             assert!(
                 !moonshot_model_needs_reasoning_budget(name),
                 "{name} must not be given the reasoning-tier probe budget"

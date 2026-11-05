@@ -2372,6 +2372,13 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Kimi, "kimi-k2.7-code", 262_144),
             (ModelPreset::Kimi, "kimi-k2.7-code-highspeed", 262_144),
             (ModelPreset::Kimi, "kimi-k2.6", 262_144),
+            // The K3.1 flagship rows (2026-11-03 refresh): officially 1M
+            // ("K3 系列模型均支持 1,048,576 tokens 上下文窗口",
+            // platform.kimi.com pricing); carried by the PINVOU_OVERRIDES
+            // entries — listed here so the settings-page rows stay covered
+            // by this charter (2026-11-05 review).
+            (ModelPreset::Kimi, "kimi-k3.1-pro", 1_048_576),
+            (ModelPreset::Kimi, "kimi-k3.1-pro-highspeed", 1_048_576),
             // The Kimi Coding Plan rides the openai_compatible preset. Bare
             // kimi-for-coding serves K2.8 Preview since 2026-09 (officially
             // 1M on every plan tier), corrected by the PINVOU_OVERRIDES entry;
@@ -2405,6 +2412,11 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
                 "MiniMax-M3.1-Flash-Preview",
                 1_000_000,
             ),
+            // The GA spelling (2026-10-19 rename; the Preview id survives as
+            // a legacyAlias) resolves through the same suffix-tolerant row —
+            // listed here so the settings-page row stays covered by this
+            // charter (2026-11-05 review).
+            (ModelPreset::Minimax, "MiniMax-M3.1-Flash", 1_000_000),
             (ModelPreset::Minimax, "MiniMax-M2.7", 204_800),
             (ModelPreset::Minimax, "MiniMax-M2.7-highspeed", 204_800),
             (ModelPreset::Minimax, "MiniMax-M2.5", 204_800),
@@ -2455,6 +2467,15 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // settings-page row is covered by this charter too, same as the
             // opus-5-5 precedent below).
             (ModelPreset::Qwen, "qwen3.5-plus", 1_000_000),
+            // The 2026-11-03 Token Plan / Coding Plan additions: the 1017
+            // flash snapshot rides the base v4 heuristic (1M); hy4 /
+            // hy4-preview carry no official per-model context figures, and
+            // kimi-k2.5 has no base row — all three fall to the preset
+            // fallback like the auto row (2026-11-05 review pins).
+            (ModelPreset::Qwen, "deepseek-v4.1-flash-1017", 1_000_000),
+            (ModelPreset::Qwen, "hy4", 131_072),
+            (ModelPreset::Qwen, "hy4-preview", 131_072),
+            (ModelPreset::Qwen, "kimi-k2.5", 131_072),
             // Doubao: evolving is already 1M; the 2-1 -260628 generation and
             // the 2-0 snapshots are officially 256k, while the -260915
             // snapshots moved to 1024k (volcengine 1330310, re-checked
@@ -2513,6 +2534,15 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
                 1_000_000,
             ),
             (ModelPreset::OpenaiCompatible, "ark-code-latest", 131_072),
+            // deepseek-v4.1-flash-economy (2026-11-03 plan addition, on the
+            // live 1M list): rides the base v4 heuristic like its sibling
+            // above — listed here so the settings-page row stays covered by
+            // this charter (2026-11-05 review).
+            (
+                ModelPreset::OpenaiCompatible,
+                "deepseek-v4.1-flash-economy",
+                1_000_000,
+            ),
             // OpenAI 兼容示例：gpt-5.6 全系 1.05M
             (ModelPreset::OpenaiCompatible, "gpt-5.6-terra", 1_050_000),
             (ModelPreset::OpenaiCompatible, "gpt-5.6-luna", 1_050_000),
@@ -2533,6 +2563,12 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // table correcting it to 1M, otherwise the engine falls to 128K
             // and diverges from the monitor page's prefs substring fallback.
             (ModelPreset::Xai, "grok-4.20-reasoning", 1_000_000),
+            // grok-4.20-multi-agent-0309 (2026-11-03 refresh, 1M per the
+            // model detail page): the base 2M row above cannot suffix-match
+            // this id, so the override table corrects it — listed here so
+            // the settings-page row stays covered by this charter
+            // (2026-11-05 review).
+            (ModelPreset::Xai, "grok-4.20-multi-agent-0309", 1_000_000),
             // The base known table only has bare "grok-build" → 512K, which
             // misses the -0.1 wire id; the core::model_context override table
             // corrects it to the official docs.x.ai 256K (matching the catalog desc).
@@ -2546,6 +2582,14 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // base gpt-6 row); official 1,050,000 per their model pages.
             (ModelPreset::Openai, "gpt-6-sol", 1_050_000),
             (ModelPreset::Openai, "gpt-6-luna", 1_050_000),
+            // The 6.1 generation (2026-11-03 refresh; sol is the preset
+            // default since the 2026-11-05 resync): same family 1,050,000 /
+            // 128,000 anchors (Azure Foundry capability table, updated
+            // 2026-10-29) carried by the PINVOU_OVERRIDES /
+            // PINVOU_DOCUMENTED_OUTPUT rows — listed here so the
+            // settings-page rows stay covered by this charter.
+            (ModelPreset::Openai, "gpt-6.1-sol", 1_050_000),
+            (ModelPreset::Openai, "gpt-6.1-terra", 1_050_000),
             (ModelPreset::Gemini, "gemini-3.8-flash", 1_048_576),
             // The 2026-10-13 GA flagship joins the catalog: the base gemini
             // exact rows stop at 3.7/3.1 (no gemini-4 row), so the
@@ -2554,6 +2598,57 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // checked 2026-10-14); listed here so the settings-page row is
             // covered by this charter too.
             (ModelPreset::Gemini, "gemini-4-argon", 1_048_576),
+            // The Kimi Code K3.1 spellings (2026-11-03 refresh; the Kimi
+            // Coding Plan rides the openai_compatible preset) resolve 1M via
+            // the override rows, and their `[1m]` composites via the 1M
+            // hint — listed here so the settings-page/ACP-datalist rows
+            // stay covered by this charter (2026-11-05 review). The two
+            // bare preset rows were deferred from the catalog on
+            // 2026-11-05 until the pinned child carries the bare-K3.1
+            // replay repair (upstream #137), but the ids stay reachable
+            // through the ACP kimi-code preset and the custom entry, so
+            // the resolution anchors keep their charter coverage.
+            (ModelPreset::OpenaiCompatible, "k3.1-pro", 1_048_576),
+            (
+                ModelPreset::OpenaiCompatible,
+                "k3.1-pro-highspeed",
+                1_048_576,
+            ),
+            (ModelPreset::OpenaiCompatible, "k3.1-pro[1m]", 1_048_576),
+            (
+                ModelPreset::OpenaiCompatible,
+                "kimi-k3.1-pro[1m]",
+                1_048_576,
+            ),
+            // Meta Model API rows (2026-11-03 refresh): muse-spark-1.1/1.2
+            // ride the base rows (1M); muse-spark-1.3 / muse-wonder-1.0 have
+            // no base rows and ride the override entries (1,048,576 per
+            // models.dev/live docs) — listed here so the settings-page rows
+            // stay covered by this charter (2026-11-05 review).
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.1", 1_000_000),
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.2", 1_000_000),
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.3", 1_048_576),
+            (ModelPreset::OpenaiCompatible, "muse-wonder-1.0", 1_048_576),
+            // Mistral / new-group rows (2026-11-03 refresh): the base
+            // registry resolves the -latest rows (262,144) and codestral
+            // (256,000) — listed here so the settings-page rows stay
+            // covered by this charter (2026-11-05 review).
+            (
+                ModelPreset::OpenaiCompatible,
+                "mistral-medium-latest",
+                262_144,
+            ),
+            (
+                ModelPreset::OpenaiCompatible,
+                "mistral-small-latest",
+                262_144,
+            ),
+            (
+                ModelPreset::OpenaiCompatible,
+                "mistral-large-latest",
+                262_144,
+            ),
+            (ModelPreset::OpenaiCompatible, "codestral-latest", 256_000),
             // Anthropic models covered by the base catalog (haiku 200K) and the
             // PINVOU_OVERRIDES entries (opus-5 / fable-5-1 both 1M) go through
             // resolved_context_window; preset fallbacks are covered by the prefs

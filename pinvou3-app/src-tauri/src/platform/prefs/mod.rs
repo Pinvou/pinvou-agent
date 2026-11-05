@@ -474,7 +474,7 @@ pub(crate) fn legacy_official_deepseek_base_url(base_url: &str) -> bool {
 /// existing contract (effort passthrough). Also consumed by the bridge's
 /// effort resolution (the send-path default arm must resolve K3.1 to None —
 /// see `request_reasoning_effort_for_provider`) and mirrored by the
-/// frontend `isMoonshotK31ModelName`.
+/// frontend `isMoonshotK31ModelName` + `moonshotK31ContractAttaches`.
 pub(crate) fn is_moonshot_k31_route(vendor: &Option<String>, base_url: &str, model: &str) -> bool {
     let vendor_stamped = vendor.as_deref().is_some_and(|value| {
         matches!(
@@ -485,13 +485,15 @@ pub(crate) fn is_moonshot_k31_route(vendor: &Option<String>, base_url: &str, mod
     if !vendor_stamped && !is_official_kimi_route_base_url(base_url) {
         return false;
     }
-    // The documented `[1m]` Claude Code declaration forms (k3.1-pro[1m] is
-    // the ACP catalog's Kimi Code models1m suggestion; kimi-k3.1-pro[1m] is
-    // the direct-platform bracket spelling of the same model) are the same
-    // K3.1 models — strip the suffix before the exact match so the contract
-    // covers them too (2026-11-04 review round 4: the bare-only match let a
-    // stored "off" on a bracket spelling wire the vendor-rejected disable
-    // shape). Only the 1M declaration suffix is tolerated; anything else
+    // The `[1m]` declaration forms (k3.1-pro[1m] is the documented Kimi Code
+    // Claude Code declaration and the ACP catalog's Kimi Code models1m
+    // suggestion; kimi-k3.1-pro[1m] is its prefixed-platform composite — no
+    // platform page declares that spelling, re-verified 2026-11-05) are the
+    // same K3.1 models — strip the suffix before the exact match so the
+    // contract covers them too (2026-11-04 review round 4: the bare-only
+    // match let a stored "off" on a bracket spelling wire the
+    // vendor-rejected disable shape). Only the 1M declaration suffix is
+    // tolerated; anything else
     // (versions, quantization tags) stays outside the exact-match contract.
     // Bracket forms of NON-K3.1 ids (k3[1m] / kimi-k3[1m]) strip to non-K3.1
     // spellings and keep their own contracts, as before.
@@ -507,7 +509,14 @@ pub(crate) fn is_moonshot_k31_route(vendor: &Option<String>, base_url: &str, mod
 
 /// The vendor's own K3-family endpoints (mirrors the frontend
 /// `isExactMoonshotPlatformBaseUrl` / `isExactKimiCodeBaseUrl` and the
-/// foundation's exact-route gates).
+/// foundation's exact-route gates). The normalization here is deliberately
+/// looser than the frontend mirror (all trailing slashes stripped and the
+/// whole URL lowercased, vs the frontend's single-slash strip and
+/// scheme/authority-only case folding), so the Rust attach set is a
+/// superset of the FE one: the FE can only hide the tier control for a
+/// record this side also treats, never the reverse — and the wire arm keys
+/// off this same predicate, so no illegal shape can slip through either
+/// way.
 fn is_official_kimi_route_base_url(base_url: &str) -> bool {
     let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
     normalized == "https://api.moonshot.ai/v1"
@@ -2287,11 +2296,11 @@ mod tests {
             "k3.1-pro",
             "k3.1-pro-highspeed",
             "KIMI-K3.1-PRO",
-            // The documented `[1m]` 1M declaration forms are the same K3.1
-            // models (k3.1-pro[1m] is the ACP Kimi Code datalist entry;
-            // kimi-k3.1-pro[1m] the direct-platform bracket spelling) — the
-            // stored-effort drop must cover them too, or a stored "off"
-            // picked through the generic ladder would wire the
+            // The `[1m]` declaration forms are the same K3.1 models
+            // (k3.1-pro[1m] is the documented Kimi Code declaration and the
+            // ACP Kimi Code datalist entry; kimi-k3.1-pro[1m] its prefixed
+            // composite) — the stored-effort drop must cover them too, or a
+            // stored "off" picked through the generic ladder would wire the
             // vendor-rejected disable shape (2026-11-04 review round 4).
             "k3.1-pro[1m]",
             "kimi-k3.1-pro[1m]",
@@ -2352,6 +2361,21 @@ mod tests {
             Some("off".into()),
             "an unstamped relay endpoint keeps the stored effort (its own contract)"
         );
+
+        // The vendor STAMP arm alone (non-official base) also carries the
+        // contract — the main loop above exercises stamp+route combined, so
+        // pin the stamp arm in isolation, including the case/whitespace
+        // folding of the stamp value (2026-11-05 review).
+        for vendor_stamp in ["kimi", "Kimi", "MOONSHOT", " moonshot "] {
+            let mut stamped_relay = base.clone();
+            stamped_relay.vendor = Some(vendor_stamp.into());
+            stamped_relay.base_url = "https://relay.example/v1".into();
+            stamped_relay.normalize_route_limits();
+            assert_eq!(
+                stamped_relay.reasoning_effort, None,
+                "a kimi-stamped relay record drops the stored K3.1 effort (stamp arm alone; vendor {vendor_stamp:?})"
+            );
+        }
 
         // A non-K3.1 kimi record (K3 rides the exact tiered route with its
         // own off→low equivalence) keeps its stored effort.

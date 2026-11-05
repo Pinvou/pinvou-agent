@@ -125,12 +125,15 @@ test('z.ai coding catalog rows move to the official lowercase spelling; legacy u
   assert.strictEqual(isPresetModel(mkZaiPaas('GLM-5-Turbo')), false, 'the z.ai paas GLM-5-Turbo row is deleted; falls back to custom');
 });
 test('Tencent Coding Plan collapses to tc-code-latest; retired ids fall back to custom (announce 2469)', () => {
-  // The live 130092 table still displays glm-5 with its now-past-due
-  // retirement notice; announce 2469 (GLM-5 / GLM-5-Turbo / GLM-5.1 offline
-  // Beijing time 2026-10-09 00:00, Coding Plan users auto-switch to Auto) is
-  // the authoritative record, so the glm-5 row is removed and
-  // old glm-5 / glm-5-0 configs fall back to custom. kimi-k2.5 was retired
-  // platform-wide on 2026-08-31 (announce 2414) and removed from the catalog.
+  // The live 130092 plan-model table carries only the Auto row
+  // (re-checked 2026-11-04; it previously still displayed glm-5 with its
+  // now-past-due retirement notice); announce 2469 (GLM-5 / GLM-5-Turbo /
+  // GLM-5.1 offline Beijing time 2026-10-09 00:00, Coding Plan users
+  // auto-switch to Auto) is the authoritative record, so the glm-5 row is
+  // removed and old glm-5 / glm-5-0 configs fall back to custom. kimi-k2.5
+  // was retired from this plan and removed from the catalog (it is
+  // re-mirrored on the Alibaba Coding Plan group, which serves it on its
+  // own infrastructure).
   const base = 'https://api.lkeap.cloud.tencent.com/coding/v3';
   const mkPlan = model => mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: base, model });
   assert.strictEqual(isPresetModel(mkPlan('tc-code-latest')), true, 'tc-code-latest');
@@ -163,7 +166,7 @@ test('Tencent Token Plan is a separate catalog: distinguished from Coding Plan b
     'deepseek-v4-pro-202606', 'deepseek/deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro',
     'deepseek-v4-flash-202605', 'deepseek/deepseek-v4-flash',
     'minimax-m3', 'minimax-m-3-0', 'minimax-m2.7', 'minimax-m-2-7',
-    'hy3', 'hy3-preview', 'hy3-202608', 'hy4-preview',
+    'hy3', 'hy3-preview', 'hy3-202608', 'hy4', 'hy4-preview',
     'mimo-v2.6-flash',
   ];
   for (const model of planModels) {
@@ -426,6 +429,11 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k31Relay(''))], ['off', 'high'], 'unstamped relay keeps the generic ladder (Rust passthrough parity)');
   assert.strictEqual(reasoningEffortTiersForModel(k31Relay('kimi')), null, 'vendor-stamped relay attaches the K3.1 no-control contract');
   assert.strictEqual(reasoningEffortTiersForModel(k31Relay('moonshot')), null, 'the moonshot alias attaches too');
+  // The official-route arm in isolation (cleared vendor + official base)
+  // also attaches — pinned so a one-sided FE edit of the route arm cannot
+  // slip through (the Rust arm is pinned Rust-side; 2026-11-05 review).
+  assert.strictEqual(reasoningEffortTiersForModel({ preset: 'kimi', vendor: '', model: 'kimi-k3.1-pro', base_url: 'https://api.moonshot.cn/v1' }), null, 'cleared vendor on the official moonshot route attaches the no-control contract');
+  assert.strictEqual(normalizeStoredReasoningEffort({ preset: 'kimi', vendor: '', model: 'k3.1-pro', base_url: 'https://api.kimi.com/coding/v1' }, 'off'), null, 'cleared vendor on the official Kimi Code route normalizes the stored effort away');
   // The exact-K3 ladder itself is untouched.
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k31('kimi-k3', 'https://api.moonshot.cn/v1'))], ['low', 'high', 'max']);
   // MiniMax: the GA rename carries the retired Preview spelling as a

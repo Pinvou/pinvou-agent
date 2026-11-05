@@ -80,8 +80,10 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // generation is officially 1M context / 128K output per the vendor's
     // model pages (the Haiku 5.5 model page states "a 1M token context
     // window, and up to 128k output tokens"; the overview comparison table
-    // documents the 5 generation only — citation corrected 2026-11-05
-    // review; the Anthropic preset fallback meters non-haiku at 1M). Same
+    // documents the same figures for the whole 5.5 generation — attribution
+    // re-verified first-hand 2026-11-05, the same-day "5 generation only"
+    // correction was itself wrong; the Anthropic preset fallback meters
+    // non-haiku at 1M). Same
     // trap claude-fable-5-1 hit; model_name_matches also tolerates future
     // -date/snapshot suffixes.
     ("claude-sonnet-5-5", 1_000_000),
@@ -140,7 +142,7 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // without it the engine falls to 128K and diverges from the monitor
     // page's Openai preset fallback. Official context is 1,050,000 per the
     // Azure Foundry capability table (gpt-6.1-sol, 2026-09-29; page updated
-    // 2026-10-08). Openai preset default since 2026-10-13, so this row is
+    // 2026-10-29). Openai preset default since 2026-10-13, so this row is
     // load-bearing for `resolved_context_window(default_model())` (the
     // engine-side resolution has no prefs fallback — see the monitor
     // `preset_default_models_resolve_engine_context_window` test).
@@ -342,9 +344,10 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // claude-sonnet-5-5 / claude-haiku-5-5: Max Output 128K per the
     // vendor's model pages (the Haiku 5.5 model page states "a 1M token
     // context window, and up to 128k output tokens" — checked 2026-10-13;
-    // the 2026-11-05 review corrected the earlier attribution to the
-    // models-overview comparison table, which documents the 5 generation
-    // only; the exact-match base output table stops at claude-sonnet-5
+    // the models-overview comparison table also documents the same 1M/128K
+    // figures for the whole 5.5 generation (attribution re-verified
+    // first-hand 2026-11-05, the same-day "5 generation only" correction
+    // was itself wrong); the exact-match base output table stops at claude-sonnet-5
     // / claude-haiku-4-5). Without these rows the route output fact stays
     // Unverified at the 64K automatic-request floor; the intersection keeps
     // the effective cap at 64K — this anchors the documented fact and its

@@ -1649,6 +1649,11 @@ mod tests {
             "kimi-k3.1-pro-highspeed",
             "k3.1-pro",
             "k3.1-pro-highspeed",
+            // Reachable [1m] composites (2026-11-05 review): the budget
+            // predicate includes them and the thinking-omission contract is
+            // the same shape.
+            "k3.1-pro[1m]",
+            "kimi-k3.1-pro[1m]",
         ] {
             let payload = image_capability_test_payload(name);
             assert!(

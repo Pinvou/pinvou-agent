@@ -30,7 +30,9 @@ export const ACP_PROVIDER_PRESETS = [
   // claude-opus-5-5 (2026-09-22) prepended as the newest Opus generation
   // ("performs at the level of Claude Fable 5.1 on most work and costs 40%
   // less to run than Opus 5") — the overview's own recommendation sentence
-  // names Claude Opus 5, so no official "start with 5.5" quote exists;
+  // says verbatim "start with Claude Opus 5.5 for most workloads"
+  // (re-verified first-hand 2026-11-05; the same-day pass that denied the
+  // sentence was itself wrong and is reverted);
   // no entry below is ever removed (the contract test pins the required
   // subset of these ids).
   // sonnet-5-5 (2026-09-28) / haiku-5-5 (2026-10-07) were inserted as the
@@ -106,8 +108,9 @@ export const ACP_PROVIDER_PRESETS = [
 export const ACP_MODEL_PRESETS = [
   // Anthropic (platform.claude.com; opus-5-5 (2026-09-22) is the newest
   // Opus generation (Fable 5.1-level at 40% less than Opus 5 per its
-  // announcement — the overview's own recommendation sentence names
-  // Opus 5), fable-5-1 the highest-capability tier;
+  // announcement — the overview's recommendation sentence says verbatim
+  // "start with Claude Opus 5.5 for most workloads", re-verified first-hand
+  // 2026-11-05), fable-5-1 the highest-capability tier;
   // sonnet-5-5 shipped 2026-09-28 and haiku-5-5 on 2026-10-07)
   'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5',
   // OpenAI (developers.openai.com; gpt-6.1-terra (2026-10-26) is the 6.1

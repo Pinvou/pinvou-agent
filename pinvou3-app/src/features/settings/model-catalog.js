@@ -74,10 +74,12 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   see the anthropic group.
 // - minimax: MiniMax-M3 stays the default; the official docs posted an
 //   M2.5/M2.7 retirement notice (new-user cutoff 2026-10-19, offline
-//   2026-11-18, requests auto-route to M3.1 Flash with the old names kept as
-//   compatibility entries — platform.minimax.cn models faq, re-verified
-//   2026-11-03); MiniMax-M3.1-Flash went GA on 2026-10-19 and is PAYG-served
-//   (the "-Preview" id appears in no official listing any more); see the minimax group.
+//   2026-11-18; M Plan + Token Plan users' requests auto-route to M3.1 Flash
+//   with the old names kept as compatibility entries, while PAYG users keep
+//   direct M2.x access until 11-18 — platform.minimax.cn models faq,
+//   re-verified 2026-11-03); MiniMax-M3.1-Flash went GA on 2026-10-19 and is
+//   PAYG-served (the "-Preview" id appears in no official listing any more);
+//   see the minimax group.
 // - mimo: mimo-v2.6-pro (2026-09-22 release) stays the default; the v2.5
 //   family auto-routed to its v2.6 successors from 2026-10-14 18:00 (UTC+8)
 //   and the old ids hard-fail since 2026-10-21 10:00 (mimo.mi.com deprecation
@@ -652,8 +654,9 @@ const MODEL_CATALOG = {
       // differently — the OpenAI-protocol reference this group rides says
       // "The `adaptive` default applies to every model here" with M3's
       // `disabled` skipping thinking, while the Anthropic-protocol reference
-      // documents the default off — thinking.type=disabled is accepted in
-      // both). MiniMax-M3.1-Flash went GA on
+      // documents the default off for M3 (thinking.type=disabled is accepted
+      // for M3 on both protocols; MiniMax-M3.1-Flash rejects it on the
+      // Anthropic protocol with 400 — see below). MiniMax-M3.1-Flash went GA on
       // 2026-10-19 (official "MiniMax M3.1 Flash" post) and is now
       // PAYG-served (CNY 1.00/4.00 per Mtok) — the "-Preview" id appears in
       // no official listing any more (treated as retired; not independently
@@ -1115,11 +1118,12 @@ const MODEL_CATALOG = {
       // haiku-5-5): claude-opus-5-5 (released 2026-09-22, "performs at the
       // level of Claude Fable 5.1 on most work and costs 40% less to run
       // than Opus 5") stays the default pick as the newest Opus generation —
-      // the live overview recommends Claude Opus 5 verbatim ("start with
-      // Claude Opus 5 for complex agentic coding and enterprise work"), so
-      // the "start with Claude Opus 5.5 for most workloads" sentence the
-      // 2026-11-03 pass attributed to it matches no live page and is
-      // dropped (corrected 2026-11-05 review); claude-fable-5-1 remains the
+      // the live overview recommends it verbatim ("If you're unsure which
+      // model to use, start with Claude Opus 5.5 for most workloads. Use
+      // Claude Fable 5.1 for demanding reasoning and long-horizon agentic
+      // work" — re-verified first-hand 2026-11-05; the same-day pass that
+      // called this sentence nonexistent was itself wrong and is reverted);
+      // claude-fable-5-1 remains the
       // highest-capability tier for demanding reasoning and long-horizon
       // agentic work.
       // claude-fable-5 and claude-opus-5 are both still Active (the
@@ -1136,11 +1140,11 @@ const MODEL_CATALOG = {
       // docs facts (the Haiku 5.5 model page states "a 1M token context
       // window, and up to 128k output tokens"; the same figures anchor the
       // rows in core::model_context) — the overview comparison table
-      // documents the 5 generation only (Fable 5 / Opus 5 / Sonnet 5 at
-      // 1M/128k, Haiku 4.5 at 200K/64K) and carries no 5.5 column, so the
-      // earlier "whole 5.5 generation per the comparison table" attribution
-      // was wrong (corrected 2026-11-05 review; re-verify sonnet-5-5 /
-      // fable-5-1 on their own model pages at the next refresh).
+      // documents the same figures for the whole 5.5 generation (Fable 5.1 /
+      // Opus 5.5 / Sonnet 5.5 / Haiku 5.5, each 1M context / 128K output;
+      // the page carries no 200K/64K figures at all — re-verified first-hand
+      // 2026-11-05; the same-day "documents the 5 generation only"
+      // retraction was itself wrong and is reverted).
       // Microsoft Foundry's (Azure) retirement schedule lists
       // claude-haiku-4-5 at 2026-11-15 (unchanged this refresh) —
       // while Anthropic's own
@@ -1315,16 +1319,17 @@ const MODEL_CATALOG = {
       // announcement) and mistral-small-latest (native text+image — its
       // figures match the current Small 4 generation, 256k context) are
       // multimodal. Sources reconciled in the 2026-11-04 fix pass:
-      // docs.mistral.ai was unreachable from every channel on both passes
-      // (still TLS-broken on the 2026-11-04 review), so the generation
-      // state comes from the 2026-11-01 Wayback snapshot of the official
-      // models overview plus mistral.ai/news announcements. The row descs
-      // deliberately carry no context figures: models.dev (the base's
-      // reference source, whose engine registry resolves these ids) lists
-      // medium/large at 262,144, but no official Mistral page confirms any
-      // figure for these ids, so none is claimed (the earlier
-      // models.dev-sourced figures were dropped in the 2026-11-04 round-4
-      // accuracy pass; re-check at the next refresh). models.dev also
+      // docs.mistral.ai was unreachable from every channel on both
+      // 2026-11-04 passes (it became readable again via the reader channel
+      // on 2026-11-05), so the 2026-11-04 generation state came from the
+      // 2026-11-01 Wayback snapshot of the official models overview plus
+      // mistral.ai/news announcements. The row descs deliberately carry no
+      // context figures: models.dev (the base's reference source, whose
+      // engine registry resolves these ids) lists medium/large at 262,144,
+      // but no official Mistral page confirms a figure for the -latest
+      // medium/large rows, so none is claimed for them (the earlier
+      // models.dev-sourced figures were dropped in the 2026-11-04 accuracy
+      // pass; re-check at the next refresh). models.dev also
       // lists mistral-large-latest modalities text/image/pdf, so its row
       // is annotated true "per models.dev" (weakly sourced — soften/
       // re-check at the next refresh). Generation state: mistral-medium-3-5
@@ -1336,8 +1341,11 @@ const MODEL_CATALOG = {
       // annotated 已弃用 (still served until retirement per the deprecated
       // table; the current Large 4 preview wire id is unverifiable without
       // an API key and is not cataloged; codestral 25.08 remains the
-      // current coding model — no official context figure, so its desc
-      // carries none). No effort/tier control exists in the
+      // current coding model — its official page documents Context 128k
+      // (the 256k models.dev codestral rows are stale 25.01-era figures;
+      // re-verified 2026-11-05), and the desc stays deliberately
+      // figure-free as an underclaim until the -latest rows get a full
+      // live-page pass). No effort/tier control exists in the
       // base for this vendor, so no tier UI is exposed. Default drift
       // (upstream follow-up, same class as the Meta muse-spark-1.2 one):
       // the base's DEFAULT_MISTRAL_MODEL is "mistral-code-latest"
@@ -1424,9 +1432,10 @@ const MODEL_CATALOG = {
       // (claude-opus-5.5, NOT claude-opus-5-5), minimax/minimax-m3.1-flash
       // (2026-10-19) supersedes m3 in usage while the m3 row stays live.
       // openai/gpt-6.1-terra keeps its row as the efficient-tier flagship
-      // (the "trending #1" note the 2026-11-03 pass recorded matches
-      // nothing on the live page — trending #1 is Particle-1 and #2 is
-      // GPT-6.1 Terra Pro, a separate id left to the next refresh). Rows
+      // (the "trending #1" note the 2026-11-03 pass recorded matched
+      // nothing verifiable and is dropped; the trending board rotates
+      // within days, so no trending ranks are quoted here — re-checked
+      // 2026-11-05). Rows
       // stay unannotated: deployments
       // behind the aggregator are not verified one by one, and their
       // per-deployment context figures are likewise not mirrored (the
@@ -1492,7 +1501,8 @@ const MODEL_CATALOG = {
       // (deepseek-ai/DeepSeek-V4.1-Flash-1017, MiniMaxAI/MiniMax-M3.1-Flash,
       // Qwen/Qwen3.7-Plus, Qwen/Qwen3.8-Flash, Qwen/Qwen3.5-9B,
       // meta-models/Muse-Glimmer-30B, meta-models/Muse-Spark-Open-816B-A42B,
-      // nvidia/NVIDIA-Nemotron-3.5-Super-VL, reflection/Beam-1.0,
+      // nvidia/NVIDIA-Nemotron-3.5-Super-VL, moonshotai/Kimi-K3.1-Pro,
+      // reflection/Beam-1.0-501B-A23B,
       // Prism-ML/Ternary-Bonsai-27B, together/Tev1-4B-experimental,
       // zai-org/GLM-5.2) are a deliberate curated-out subset — the
       // flagship-selection frame excludes them and the custom row covers
@@ -1500,16 +1510,19 @@ const MODEL_CATALOG = {
       // coder variants / older Llama-Gemma generations" sentence described
       // the OLD page's inventory — corrected 2026-11-04 review.) Verify
       // only against docs.together.ai/docs/serverless/models: the legacy
-      // URL docs.together.ai/docs/serverless-models is a stale deployed
-      // snapshot that still lists the six retired ids above — both URLs
-      // answer on 2026-11-04, and the earlier "fetched live" verification
-      // hit the stale one. The base URL matches the engine's provider default
+      // URL docs.together.ai/docs/serverless-models was a stale deployed
+      // snapshot that still listed the six retired ids above through
+      // 2026-11-04 (the earlier "fetched live" verification hit the stale
+      // one); it now 308-redirects to the canonical page, so both paths
+      // agree (re-checked 2026-11-05). The base URL matches the engine's
+      // provider default
       // (the docs' shared-host value is consistent with it, though not
       // literally printed on the pages fetched this refresh — a US-geo
-      // variant us-api.together.ai bills +25%). Rows stay unannotated:
-      // gateway deployments are not verified one by one and their context
-      // figures are not mirrored, and no tier control exists for this
-      // vendor.
+      // variant us-api.together.ai bills +25%). Rows stay image-unannotated
+      // (gateway deployments are not verified one by one); their context
+      // figures appear in the descs verbatim from the live docs page but
+      // are not mirrored into the engine table, and no tier control exists
+      // for this vendor.
       items: [
         { model: 'deepseek-ai/DeepSeek-V4-Pro-0813', title: 'deepseek-ai/DeepSeek-V4-Pro-0813', desc: '高能力模型，1M 上下文' },
         { model: 'deepseek-ai/DeepSeek-V4.1-Flash', title: 'deepseek-ai/DeepSeek-V4.1-Flash', desc: '高速款，1M 上下文' },
@@ -1575,6 +1588,10 @@ const MODEL_CATALOG = {
         { model: 'zai-org/GLM-5.3-Flash', title: 'zai-org/GLM-5.3-Flash', desc: '多模态高性价比' },
         { model: 'Pro/zai-org/GLM-5.2', title: 'Pro/zai-org/GLM-5.2', desc: '上代旗舰（Pro 档）' },
         { model: 'moonshotai/Kimi-K2.7-Code', title: 'moonshotai/Kimi-K2.7-Code', desc: '代码场景' },
+        // Qwen3.8-27B (CN pricing ¥3/¥12) joins alongside — the platform did
+        // NOT rename the prior id: Qwen3.6-27B is still a live, separately
+        // priced row (¥3/¥18), kept here only as a legacyAlias so stored
+        // configs classify to this row (2026-11-05 review precision fix).
         { model: 'Qwen/Qwen3.8-27B', legacyAliases: ['Qwen/Qwen3.6-27B'], title: 'Qwen/Qwen3.8-27B', desc: '通用能力' },
         { model: '', title: '自定义硅基流动模型', desc: '手动填写模型 ID（org/Model 格式）', custom: true },
       ],
@@ -1613,9 +1630,10 @@ const MODEL_CATALOG = {
       // key, so their exact wire ids stay unverified. The two Pro/ rows
       // below are NOT global-plaza listings: they are the same
       // API-reference keeps as the CN group (they have left the public
-      // plazas; kept for existing configs — the official API reference
-      // names the Pro/ prefix on sibling ids but no longer these two exact
-      // ids, the same corrected citation the CN group carries). Only the
+      // plazas; kept for existing configs — the official CN API reference
+      // names exactly these two Pro/ ids on its reasoning_effort parameter,
+      // the same citation the CN group carries; re-verified first-hand
+      // 2026-11-05). Only the
       // unprefixed deepseek-ai/DeepSeek-V4-Pro
       // / -V4-Flash and moonshotai/Kimi-K2.7-Code rows are verified shared
       // between both plazas.
@@ -1950,6 +1968,12 @@ const REASONING_EFFORT_TIERS = {
   // off/low/medium/high.
   openrouter: ['off', 'low', 'medium', 'high'],
   // anthropic native：off 不注入（等价默认），暴露 low/medium/high/max。
+  // The vendor's effort docs also list an `xhigh` tier for every 5.x model,
+  // but the base's Messages effort mapper collapses "xhigh" into "max"
+  // (client/anthropic.rs: "max"|"xhigh"|"highest" => "max"), so an exposed
+  // xhigh would be indistinguishable from max on the wire — conservative
+  // subset disclosed; needs an upstream mapper split first (2026-11-05
+  // review).
   anthropic: ['low', 'medium', 'high', 'max'],
   // openai: only gpt-5.x reasoning-family models get the base injection;
   // off=none. The max tier sends "max" for the gpt-5.6
@@ -2465,12 +2489,14 @@ function moonshotReasoningLadder(model, modelName, genericTiers) {
 }
 
 // K3.1 family spellings across the kimi groups (platform + Kimi Code).
-// Case-folded, and bracket-tolerant on the documented `[1m]` 1M declaration
-// forms: k3.1-pro[1m] is the ACP Kimi Code models1m datalist entry and
-// kimi-k3.1-pro[1m] is the direct-platform bracket spelling of the same
-// models, so a stored bracket id must get the same no-control exit as its
-// bare spelling — otherwise the generic off/high ladder would let users
-// persist a disable shape the vendor rejects (2026-11-04 review round 4).
+// Case-folded, and bracket-tolerant on the `[1m]` 1M declaration forms:
+// k3.1-pro[1m] is the documented Kimi Code Claude Code declaration (the
+// ACP Kimi Code models1m datalist entry mirrors it), while
+// kimi-k3.1-pro[1m] is its prefixed-platform composite — no platform page
+// declares that spelling, but a stored bracket id must get the same
+// no-control exit as its bare spelling either way, otherwise the generic
+// off/high ladder would let users persist a disable shape the vendor
+// rejects (2026-11-04 review round 4).
 // Bracket forms of NON-K3.1 ids (k3[1m] / kimi-k3[1m]) strip to non-K3.1
 // spellings and keep their own contracts, mirroring prefs
 // is_moonshot_k31_route.
