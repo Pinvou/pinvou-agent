@@ -374,7 +374,9 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   默认播种回归；前端 lane 覆盖三态芯片、开关与 ApprovalCard。
 - **登记**：fork-guard 的 `EXPECTED_HEAD`/`EXPECTED_COMMITS` 与指纹表
   （`scripts/fork-guard.sh`）、`docs/fork-modifications.md` T2 增补随本 PR
-  Stage-4 提交落地；底座候选期登记与 gitlink 重钉按 fork-policy 的过渡期口径。
+  Stage-4 提交落地；CodeWhale#131 已以 squash `e2a0e14fd` 合入公开维护分支，
+  gitlink 与 `EXPECTED_HEAD` 已重钉到维护头 `11cba403d`（候选期登记口径见
+  `docs/fork-modifications.md` 的 2026-10-31 消费基线节）。
 
 ## 9. 已知边界
 
