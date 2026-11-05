@@ -821,13 +821,13 @@ assert.doesNotMatch(
 // counts as an intentional shrink and must explicitly update this list.
 const ACP_REQUIRED_MODELS = {
   anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
-  openai: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.6-terra'],
-  moonshot: ['kimi-k3', 'kimi-k2.7-code'],
-  'kimi-code': ['k3', 'k3-256k'],
+  openai: ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-5.6-terra'],
+  moonshot: ['kimi-k3.1-pro', 'kimi-k3', 'kimi-k2.7-code'],
+  'kimi-code': ['k3.1-pro', 'k3', 'k3-256k'],
   deepseek: ['deepseek-flash', 'deepseek-v4-flash'],
   zhipu: ['glm-5.3', 'glm-5.3-flash'],
   qwen: ['qwen3.8-max', 'qwen3.8-flash'],
-  minimax: ['MiniMax-M3'],
+  minimax: ['MiniMax-M3.1-Flash', 'MiniMax-M3'],
   xai: ['grok-4.6', 'grok-4.20-reasoning', 'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning'],
 };
 for (const [presetKey, required] of Object.entries(ACP_REQUIRED_MODELS)) {
@@ -851,8 +851,9 @@ assert.ok(CATALOG.includes('export const ACP_MODEL_PRESETS'), 'the ACP catalog s
 const FLAT_MODELS_SECTION = CATALOG.slice(CATALOG.indexOf('export const ACP_MODEL_PRESETS'));
 for (const id of [
   'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5',
-  'claude-fable-5-1', 'gpt-6.1-sol', 'gpt-6-astra', 'deepseek-flash', 'kimi-k3', 'glm-5.3',
-  'qwen3.8-max', 'MiniMax-M3', 'grok-4.6', 'grok-4.20-reasoning',
+  'claude-fable-5-1', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'deepseek-flash', 'kimi-k3',
+  'kimi-k3.1-pro', 'glm-5.3',
+  'qwen3.8-max', 'MiniMax-M3.1-Flash', 'MiniMax-M3', 'grok-4.6', 'grok-4.20-reasoning',
   'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-build-0.1',
 ]) {
   assert.ok(
