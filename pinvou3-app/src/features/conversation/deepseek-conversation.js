@@ -296,6 +296,17 @@ function transferSteeredRunTerminals(turns) {
 }
 
 /**
+ * 是否构成一个可计序号的用户 turn。Rust 侧 fork/rewind 用底座
+ * `user_turn_prompt_indices`（Editable 分类）计 turn：纯图片（无文本块）的
+ * user message 不占序号。前端入口表（分叉/回退）必须用同一口径跳过这类
+ * turn，否则序号错位——轻则多报一轮的拒绝错误，重则把「从此轮分叉」静默
+ * 变成全量分支（把后续 turn 也带进新分支）。
+ */
+export function turnHasUserText(turn) {
+  return Boolean(turn && turn.userItem && String(turn.userItem.text || '').trim());
+}
+
+/**
  * DeepSeek-TUI 仍以原 chatItems / SavedSession 为事实源；这里只做只读投影，
  * 不改变底座消息、工具、记忆、产物或计划卡的存储格式。
  */

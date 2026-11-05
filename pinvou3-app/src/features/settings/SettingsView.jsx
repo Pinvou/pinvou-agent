@@ -7,6 +7,7 @@ import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { copyClipboardText } from '../../shared/clipboard.js';
 import { pathBasename } from '../../shared/path-utils.js';
+import { invokeTauri } from '../../platform/tauri/client.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
 import {
   MODEL_PRESET_DEFS, PROVIDER_KIND_CODING_PLAN, PROVIDER_KIND_OFFICIAL_API, PROVIDER_KIND_CUSTOM,
@@ -1964,8 +1965,30 @@ function hasStoredCredential(record) {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, inputNeededNotif, setInputNeededNotif, importingSessions, onImportSessionArchive, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, inputNeededNotif, setInputNeededNotif, setSettingsToast, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
+      // 会话备份导入（export_session 的逆操作）：命令侧自开文件对话框，用户
+      // 取消返回 null；结果按 imported/skipped_existing/failed 组 toast。
+      // 处理器住在懒加载的 SettingsView 里（不再占主入口 chunk）。
+      const [importingSessions, setImportingSessions] = useState(false);
+      const handleImportSessionArchive = useCallback(async () => {
+        if (!bridge.available || importingSessions) return;
+        setImportingSessions(true);
+        try {
+          const result = await invokeTauri('import_session_archive');
+          if (!result) return;
+          setSettingsToast(t.uiSettings.importSessionsDone(
+            (result.imported || []).length,
+            (result.skipped_existing || []).length,
+            (result.failed || []).length,
+          ));
+        } catch (error) {
+          console.warn('import session archive failed', error);
+          setSettingsToast(t.uiSettings.importSessionsFailed);
+        } finally {
+          setImportingSessions(false);
+        }
+      }, [importingSessions, setSettingsToast, t]);
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
       const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
@@ -2571,11 +2594,11 @@ function hasStoredCredential(record) {
           )}
           {/* 会话备份导入：桌面独占（web 车道无文件对话框，也不该触及宿主
               会话存储），放在通用页尾部与导出入口（侧栏会话菜单）互为闭环。 */}
-          {!isWeb && onImportSessionArchive && (
+          {!isWeb && setSettingsToast && (
             <IOSSection title={t.uiSettings.sessionsSection}>
               <IOSRow label={t.uiSettings.importSessionsArchive} desc={t.uiSettings.importSessionsDesc}>
                 <button type="button" data-testid="settings-import-sessions" disabled={importingSessions}
-                  onClick={onImportSessionArchive}
+                  onClick={handleImportSessionArchive}
                   className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${importingSessions ? 'opacity-60 cursor-not-allowed' : ''} ${actionButton('blue')}`}>
                   {importingSessions ? t.uiSettings.importingSessions : t.uiSettings.importSessionsArchive}
                 </button>
