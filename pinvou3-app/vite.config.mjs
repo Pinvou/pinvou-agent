@@ -612,8 +612,18 @@ function enforceLazyChunks() {
 // compaction sequence instead of two wall-clock/flag arms (−34 B
 // desktop) → 487,776 B desktop (224 B headroom under the 488_000
 // ceiling, no re-cut needed).
+//
+// PR #835 owns the 128_000 → 129_000 web raise (and rides the 488_000
+// desktop ceiling from #834): the session-fork wiring joins the chat
+// surface on both platforms (fork entries, per-turn ordinal plumbing,
+// and the fork handler in ChatView; the archive-import surface lives in
+// the lazily-loaded SettingsView and does not touch the entry). Measured
+// on the post-rebase feat-manual-compact tip (60d4f3796): web entry
+// 128,263 B on the local node 24 toolchain (737 B headroom under the
+// 129_000 ceiling). This cap does not promise headroom for unrelated
+// main changes.
 export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
-export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
+export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
   return mode === 'web' ? WEB_MAIN_ENTRY_BUDGET_BYTES : MAIN_ENTRY_BUDGET_BYTES;
