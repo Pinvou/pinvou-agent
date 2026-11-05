@@ -65,8 +65,10 @@ export const ACP_PROVIDER_PRESETS = [
   // k3.1-pro[1m] (2026-10-23; the official Claude Code page names
   // k3.1-pro / k3.1-pro[1m]); the earlier k3[1m] declaration no longer
   // appears there but stays as an append-only legacy suggestion.
-  // kimi-for-coding still serves K2.8 Preview with tier-gated 1M and
-  // declares no [1m] variant — none may be invented.
+  // kimi-for-coding serves K2.8 Preview; the current coding-plan table
+  // lists its 1M from the plan's lowest tier (the Pro-and-above gate
+  // attaches to k3.1-pro/k3, not this alias) and it declares no [1m]
+  // variant — none may be invented.
   // The overseas Anthropic-compatible base URL is https://api.kimi.ai/coding
   // (domestic: api.kimi.com/coding, kimi.com/code/docs, 2026-09-28); the
   // preset ships the domestic value only, and overseas-key users must

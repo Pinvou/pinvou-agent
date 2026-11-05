@@ -151,10 +151,13 @@ struct WireCapEngine {
     provider_kind: deepseek_tui::config::ApiProvider,
 }
 
-/// `expected_declared_output` 为 `Some` 时钉住引擎收到的路由申报
-/// （PINVOU_DOCUMENTED_OUTPUT 的表行值）；`None` 跳过该锚点断言，供申报值
-/// 依赖进程级底座目录缓存、非本回归主题的用例（K3.1 钢丝省略）复用同一
-/// 引导缝。`customize_model` 在装配前微调 SavedModel（vendor / 存储档位）。
+/// With `expected_declared_output` set to `Some`, pin the route declaration
+/// the engine actually receives (the `PINVOU_DOCUMENTED_OUTPUT` table-row
+/// value); `None` skips that anchor assertion so cases whose declared value
+/// depends on the process-wide foundation catalog cache — and are not the
+/// subject of this regression (the K3.1 wire omission) — can reuse the same
+/// boot seam. `customize_model` tweaks the SavedModel before assembly
+/// (vendor / stored effort tier).
 async fn boot_wire_cap_engine(
     label: &str,
     preset: crate::platform::prefs::ModelPreset,

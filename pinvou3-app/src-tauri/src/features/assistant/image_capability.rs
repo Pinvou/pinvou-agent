@@ -130,12 +130,14 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
 /// forms: kimi-k3[1m] (the moonshot preset's models1m suggestion) and the
 /// four K3.1 `[1m]` spellings (k3.1-pro[1m] is the documented Kimi Code
 /// declaration and the ACP datalist entry; the prefixed composites are
-/// tolerated stored forms — re-verified 2026-11-05). The unreachable
-/// k3[1m] spelling stays excluded: the base's Kimi Code alias guidance
-/// fail-closes that id, so no meaningful probe reaches the budget
-/// question. Note the manual probe posts straight over HTTP — the
-/// foundation-side validator is not in that path — so this list encodes
-/// the API contract rather than filtering what reaches the gateway.
+/// tolerated stored forms — re-verified 2026-11-05). The k3[1m] spelling
+/// stays excluded: it is a Kimi Code alias-guidance declaration, not an
+/// API model id (the vendor's error reference distinguishes Claude Code
+/// declarations from API model ids), so the API contract defines no
+/// budget tier for it. The manual probe posts straight over HTTP — no
+/// foundation-side validator sits in that path — so nothing here filters
+/// what reaches the gateway; the list encodes the contract, and a raw
+/// bracket id that does reach the gateway is the API's rejection domain.
 ///
 /// This is deliberately a separate predicate from
 /// `moonshot_model_requires_explicit_thinking`: budget selection answers

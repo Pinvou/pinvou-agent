@@ -1339,8 +1339,9 @@ const MODEL_CATALOG = {
       // (mistral-large-latest → mistral-large-2512 in the base pricing
       // alias map) point at the deprecated generations, so those rows are
       // annotated 已弃用 (still served until retirement per the deprecated
-      // table; the current Large 4 preview wire id is unverifiable without
-      // an API key and is not cataloged; codestral 25.08 remains the
+      // table; the Large 4 preview wire id is now printed on the public
+      // official page — 2026-11-05 review observation, re-verify the exact
+      // spelling at the next refresh before cataloging it; codestral 25.08 remains the
       // current coding model — its official page documents Context 128k
       // (the 256k models.dev codestral rows are stale 25.01-era figures;
       // re-verified 2026-11-05), and the desc stays deliberately
