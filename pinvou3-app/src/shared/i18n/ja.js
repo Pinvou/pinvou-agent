@@ -591,7 +591,7 @@ const jaBase = {
         
         stuckPlanPre: '⚠️ Plan モードで AI が', stuckPlanPost: 'を呼びましたがホワイトリストでブロックされました。Plan モードは議論専用です。選択肢は 2 つ:',
         handled: '処理済み',
-        stuckReplan: '📋 AI にプランを出し直させる',  stuckGo: 'そのまま実行（プランを省略）',
+        stuckReplan: '📋 AI にプランを出し直させる',
         stuckGoAuto: '続行 (Auto)', stuckGoYolo: '続行 (Yolo)',
         approvalTitle: '承認が必要なツール呼び出し', approvalIntent: 'モデルの意図',
         approvalAllow: '許可', approvalAllowSession: 'このセッションでは許可', approvalDeny: '拒否',

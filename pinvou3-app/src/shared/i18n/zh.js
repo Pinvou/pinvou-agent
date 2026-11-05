@@ -594,7 +594,7 @@ export const dictZh = {
 
         stuckPlanPre: '⚠️ AI 在 Plan 模式调用了', stuckPlanPost: '但被白名单挡掉。Plan 模式只能讨论方案,不能动手。给你两个出路:',
         handled: '已处理',
-        stuckReplan: '📋 让 AI 重出方案',  stuckGo: '直接动手(跳过方案)',
+        stuckReplan: '📋 让 AI 重出方案',
         stuckGoAuto: '继续 (Auto)', stuckGoYolo: '继续 (Yolo)',
         approvalTitle: '需要你审批的工具调用', approvalIntent: '模型意图',
         approvalAllow: '允许', approvalAllowSession: '本会话允许', approvalDeny: '拒绝',

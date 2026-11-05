@@ -592,7 +592,7 @@ export const dictEn = {
 
         stuckPlanPre: '⚠️ In Plan mode the AI called', stuckPlanPost: 'but the whitelist blocked it. Plan mode is discussion-only. Two ways out:',
         handled: 'Handled',
-        stuckReplan: '📋 Ask AI to re-plan',  stuckGo: 'Just do it (skip planning)',
+        stuckReplan: '📋 Ask AI to re-plan',
         stuckGoAuto: 'Continue (Auto)', stuckGoYolo: 'Continue (Yolo)',
         approvalTitle: 'Tool call awaiting your approval', approvalIntent: 'Model intent',
         approvalAllow: 'Allow', approvalAllowSession: 'Allow for this session', approvalDeny: 'Deny',

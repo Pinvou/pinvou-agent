@@ -5223,6 +5223,10 @@ function stopThinking() { return pinvouSharedweb().stopThinking(); }
   // 散点直写漏 bump 一处，就重现「旧读取覆盖权威值」竞态。
   function applyAuthoritativeModeState(sid, st) {
     modeSyncSeq += 1;
+    // 离开 Auto 即解锁下一次拦截通告（与 chat:mode_changed 事件臂同口径）：
+    // 本地权威写回（set_session_mode / exit_plan_to_yolo / accept_plan 等）
+    // 也算「离开 Auto」，事件负载丢失时本地写回仍解锁，不再依赖单一事件面。
+    if (!st || st.mode !== "auto") webAutoSendNoticeSids.delete(String(sid));
     runOnSession(sid, function () { applyModeFromState(st); });
   }
 
