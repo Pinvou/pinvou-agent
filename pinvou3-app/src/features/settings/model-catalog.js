@@ -1097,11 +1097,16 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.anthropic.com/v1',
       // Official figures re-checked 2026-11-03 (platform.claude.com models
       // overview + deprecations + anthropic.com news; no new model since
-      // haiku-5-5): claude-opus-5-5 (released 2026-09-22, "costs 40% less to
-      // run than Opus 5") keeps
-      // the default recommendation ("start with Claude Opus 5.5 for most
-      // workloads"); claude-fable-5-1 remains the highest-capability tier
-      // for demanding reasoning and long-horizon agentic work.
+      // haiku-5-5): claude-opus-5-5 (released 2026-09-22, "performs at the
+      // level of Claude Fable 5.1 on most work and costs 40% less to run
+      // than Opus 5") stays the default pick as the newest Opus generation —
+      // the live overview recommends Claude Opus 5 verbatim ("start with
+      // Claude Opus 5 for complex agentic coding and enterprise work"), so
+      // the "start with Claude Opus 5.5 for most workloads" sentence the
+      // 2026-11-03 pass attributed to it matches no live page and is
+      // dropped (corrected 2026-11-05 review); claude-fable-5-1 remains the
+      // highest-capability tier for demanding reasoning and long-horizon
+      // agentic work.
       // claude-fable-5 and claude-opus-5 are both still Active (the
       // deprecations table's floors read "not sooner than" 2027-06-09 and
       // 2027-07-24; the earlier "both Legacy" label misread the table —
@@ -1111,9 +1116,16 @@ const MODEL_CATALOG = {
       // and claude-haiku-5-5 shipped 2026-10-07 ("the cheapest, fastest, and
       // most capable small model we've ever released"; priced 90% below
       // Haiku 4.5 for requests up to 100K tokens, 50% below above that);
-      // claude-sonnet-5 demotes to the previous generation. The whole 5.5
-      // generation is officially 1M context / 128K max output per the
-      // models-overview comparison table, anchored in core::model_context.
+      // claude-sonnet-5 demotes to the previous generation. Spec anchoring:
+      // the 5.5 generation's 1M context / 128K output figures are per-model
+      // docs facts (the Haiku 5.5 model page states "a 1M token context
+      // window, and up to 128k output tokens"; the same figures anchor the
+      // rows in core::model_context) — the overview comparison table
+      // documents the 5 generation only (Fable 5 / Opus 5 / Sonnet 5 at
+      // 1M/128k, Haiku 4.5 at 200K/64K) and carries no 5.5 column, so the
+      // earlier "whole 5.5 generation per the comparison table" attribution
+      // was wrong (corrected 2026-11-05 review; re-verify sonnet-5-5 /
+      // fable-5-1 on their own model pages at the next refresh).
       // Microsoft Foundry's (Azure) retirement schedule lists
       // claude-haiku-4-5 at 2026-11-15 (unchanged this refresh) —
       // while Anthropic's own
@@ -1145,7 +1157,7 @@ const MODEL_CATALOG = {
       // imply servability the docs don't grant (framing re-verified
       // 2026-11-03).
       items: [
-        { model: 'claude-opus-5-5', imageCapable: true, title: 'claude-opus-5-5', desc: '官方默认推荐，复杂 Agent 编码' },
+        { model: 'claude-opus-5-5', imageCapable: true, title: 'claude-opus-5-5', desc: '新一代 Opus，对标 Fable 5.1，较 Opus 5 降本 40%' },
         { model: 'claude-sonnet-5-5', imageCapable: true, title: 'claude-sonnet-5-5', desc: '新均衡款，较 Sonnet 5 快 30%+，至多省 30%' },
         { model: 'claude-fable-5-1', imageCapable: true, title: 'claude-fable-5-1', desc: '最强旗舰，高难推理与长程 Agent' },
         { model: 'claude-fable-5', imageCapable: true, title: 'claude-fable-5', desc: '上代旗舰，兼容保留' },

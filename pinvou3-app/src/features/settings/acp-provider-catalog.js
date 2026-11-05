@@ -27,8 +27,10 @@
 // nameKey: i18n 键（`uiAcpProviders` 下），展示名按当前语言查表；`name` 仅作
 // 缺失 key 时的兜底回退，不直接渲染。
 export const ACP_PROVIDER_PRESETS = [
-  // claude-opus-5-5 (2026-09-22) prepended as the official default
-  // recommendation ("start with Claude Opus 5.5 for most workloads");
+  // claude-opus-5-5 (2026-09-22) prepended as the newest Opus generation
+  // ("performs at the level of Claude Fable 5.1 on most work and costs 40%
+  // less to run than Opus 5") — the overview's own recommendation sentence
+  // names Claude Opus 5, so no official "start with 5.5" quote exists;
   // no entry below is ever removed (the contract test pins the required
   // subset of these ids).
   // sonnet-5-5 (2026-09-28) / haiku-5-5 (2026-10-07) were inserted as the

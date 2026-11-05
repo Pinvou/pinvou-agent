@@ -1171,7 +1171,7 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '低价高效':'Low-cost and efficient',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 family flagship, reasoning and coding',
   '最强旗舰，高难推理与长程 Agent':'Strongest flagship, hard reasoning and long-running agents',
-  '官方默认推荐，复杂 Agent 编码':'Official default recommendation, complex agentic coding',
+  '新一代 Opus，对标 Fable 5.1，较 Opus 5 降本 40%':'Newest-generation Opus: at Fable 5.1 level, 40% cheaper than Opus 5',
   '新均衡款，较 Sonnet 5 快 30%+，至多省 30%':'New balanced tier: 30%+ faster than Sonnet 5, up to 30% cheaper',
   '上代旗舰，兼容保留':'Previous-generation flagship, kept for compatibility',
   '上代均衡款，兼容保留':'Previous balanced tier, kept for compatibility',
