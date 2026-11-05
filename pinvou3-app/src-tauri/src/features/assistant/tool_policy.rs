@@ -17,6 +17,18 @@
 /// 进度工具必须是 v0.9.12 canonical 模型可见名 `todo_write`；`work_update` /
 /// `checklist_write` / `update_plan` 是隐藏的 replay 兼容别名（`model_visible()`
 /// 为 false，不会出现在模型目录），写进白名单只是死条目。
+///
+/// Known taught-but-excluded residuals (disclosed, not oversights): the
+/// base `agent` description offers the `Run` tool (`action="verifiers"`)
+/// as an alternative to `type=test`, and the goal surfaces teach
+/// `create_goal` / `update_goal`; none of them is admitted, so a model
+/// following those names ends in the usual excluded-tool dead end. This is
+/// accepted today because `type=test` is the primary route the same sentence
+/// leads with, and the goal surfaces (bare `/goal` slash briefs and
+/// goal-continuation prompts) are unreachable from this host — the GUI never
+/// sets goals and slash briefs are not dispatched here. If either surface
+/// becomes reachable, admit or gate the names in the same change: the same
+/// phantom rule that drove the evidence-recovery admissions applies.
 pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "bash",
     "read",
@@ -35,11 +47,14 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "agent",
     "load_skill",
     "request_user_input",
-    // Snapshot-based turn rollback is dead in Pinvou: `snapshots_enabled` is
-    // false (app-side code_checkpoints owns rewind), so every call fails with
-    // "0 pre-turn snapshots exist" after paying a one-time base side-repo
-    // init. Keeping it admitted would offer the model a permanently failing
-    // Required-approval tool, so it stays out of the allowlist.
+    // Snapshot-based turn rollback is dead in Pinvou parent sessions:
+    // `snapshots_enabled` is false (app-side code_checkpoints owns rewind),
+    // so every call fails with "0 pre-turn snapshots exist" after paying a
+    // one-time base side-repo init. Keeping it admitted would offer the
+    // model a permanently failing Required-approval tool, so it stays out
+    // of the allowlist. (Subagent children inherit the full base registry
+    // and are not gated by this list, so they still see the tool; that
+    // asymmetry is foundation-level and stays with upstream.)
     "todo_write",
     // The spillover recovery contract: bash/Web overflow footers name
     // `retrieve_tool_result` directly and `evidence_available` metadata

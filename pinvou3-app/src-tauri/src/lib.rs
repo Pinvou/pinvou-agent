@@ -2376,6 +2376,10 @@ mod tool_allowlist_contract {
             // false (app-side code_checkpoints owns rewind); admitting it
             // would offer a permanently failing Required-approval tool.
             "revert_turn",
+            // Taught by the base `agent` description as an alternative to
+            // `type=test` (the `Run` tool with action="verifiers");
+            // deliberately excluded, with the residual probe disclosed in
+            // tool_policy.rs.
             "Run",
             "tasks",
             "automation",
