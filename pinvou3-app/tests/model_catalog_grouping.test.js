@@ -453,8 +453,8 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   // Ark Coding Plan: the two retired rows fall to the custom listing and
   // the economy DeepSeek row joins.
   const arkBase = 'https://ark.cn-beijing.volces.com/api/coding/v3';
-  assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'kimi-k2.7-code')), false, 'kimi-k2.7-code went offline 2026-10-28 (docs 2578680); row removed');
-  assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'minimax-m3')), false, 'minimax-m3 went offline 2026-11-02 (docs 2578680); row removed');
+  assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'kimi-k2.7-code')), false, 'kimi-k2.7-code went offline 2026-10-28 (docs 2578687 personal-plan notice, 2578680 enterprise twin); row removed');
+  assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'minimax-m3')), false, 'minimax-m3 went offline 2026-11-02 (docs 2578687 personal-plan notice, 2578680 enterprise twin); row removed');
   assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'deepseek-v4.1-flash-economy')), true);
   // Tencent Token Plan: the migrated tokenhub host classifies like the
   // legacy lkeap alias (the plan table itself gained no new text rows this
@@ -1568,6 +1568,40 @@ test('providerCatalog overlays and preset labels for the custom Responses group 
       assert.ok(entry[3].trim(), `${file} ${group} overlay desc must be non-empty`);
     }
   }
+  // Reverse direction (2026-11-05 review M3): every overlay entry in en/ja
+  // must map to a live catalog group — a group removed from the catalog
+  // would otherwise leave its overlay behind as a dead key forever, which
+  // the forward scan above cannot see. `local` is allowed: the forward scan
+  // exempts it, but its overlay entry may legitimately exist.
+  const allCatalogKeys = new Set(
+    Object.values(MODEL_CATALOG)
+      .flat()
+      .map(group => group.key)
+      .filter(Boolean)
+  );
+  for (const file of ['en.js', 'ja.js']) {
+    const block = extractProviderCatalog(file);
+    const overlayKeys = [...block.matchAll(/(?:^|[,{])\s*([A-Za-z0-9_]+):\{title:'/g)].map(m => m[1]);
+    assert.ok(
+      overlayKeys.length >= catalogKeys.length,
+      `${file} overlay key count regressed: ${overlayKeys.length} (expected >= ${catalogKeys.length})`
+    );
+    for (const key of overlayKeys) {
+      assert.ok(
+        allCatalogKeys.has(key),
+        `${file} providerCatalog carries the dead overlay key ${key} — no catalog group with that key exists`
+      );
+    }
+  }
+  // zh's providerCatalog is deliberately {} (zh copy lives in the catalog
+  // source) — pin the emptiness so a partial zh overlay shadowing catalog
+  // titles cannot land silently (the ui_language_coverage zh-leaf walk
+  // cannot flag paths en/ja already cover).
+  const zhSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+  assert.ok(
+    /providerCatalog:\{\},?\n/.test(zhSrc),
+    'zh.js providerCatalog must stay {} — zh copy is the catalog inline copy'
+  );
   // The preset label and customModelTitles rows must exist in all three
   // dictionaries (the sub-label assertions above use stub dictionaries, so a
   // simultaneous deletion from all three real dicts would otherwise stay

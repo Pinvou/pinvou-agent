@@ -524,7 +524,14 @@ async fn k31_normal_chat_wire_body_omits_thinking_and_reasoning_effort() {
             model,
             &base_url,
             &project,
-            None,
+            // Pin the documented output declaration at the route level too
+            // (2026-11-05 review): the anchors are unit-pinned in
+            // core::model_context, but nothing asserted they survive into
+            // the engine config for the K3.1 spellings. The route carries
+            // 1,048,576 minus the 1,024 context reservation
+            // (`route_limits_for_model` clamps output to context − 1_024
+            // when the documented output equals the context window).
+            Some(1_047_552),
             |saved| {
                 // Catalog rows stamp the vendor; the bridge routes by it
                 // (vendor "kimi" → moonshot) and recognizes the K3.1 family
