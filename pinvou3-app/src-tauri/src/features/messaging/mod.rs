@@ -74,16 +74,24 @@
 //!   former loss trigger now degrades to at-least-once redelivery
 //!   (possibly duplicating; the drop channel is cycle-bounded, the
 //!   never-arriving-event channel rate-bounded by the 24h give-up) instead
-//!   of silent loss. Two disclosures: a steer whose file the pending-file
+//!   of silent loss. Three disclosures: a steer whose file the pending-file
 //!   ceiling quarantines mid-wait ends as quarantined evidence plus audit
-//!   lines — never finalized and never re-delivered, though the steered
-//!   body itself already landed in the target's turn (the ceiling's
-//!   declared discipline — not a redelivery channel); and the drop-cycle
+//!   lines — never finalized and never re-delivered, whether or not the
+//!   steered body already landed in the target's turn (if it did,
+//!   re-delivery would only duplicate it; if the engine later drops the
+//!   steer, the body never landed and the quarantine + audit trail is the
+//!   only trace — the ceiling's declared discipline, not a redelivery
+//!   channel); and the drop-cycle
 //!   counter is per-process, same
-//!   as `RetryState` — a restart re-buys the budget. If even the commit's
-//!   done-marker write fails (read-only spool root), the registration
-//!   stays armed so the poll cannot loop redeliveries at full cadence —
-//!   the wait then expires at the 24h rate.
+//!   as `RetryState` — a restart re-buys the budget. The finalizer also
+//!   writes the done marker on the terminal event without consulting the
+//!   forwarder's transcript-persistence outcome: a failed session persist
+//!   at commit time already loses the whole turn for every message in it
+//!   (redelivery could not restore the turn context), but the landed
+//!   marker then also suppresses this body's keyed retries. If BOTH the
+//!   commit's done-marker write AND the spool removal fail (read-only
+//!   spool root), the registration stays armed so the poll cannot loop
+//!   redeliveries at full cadence — the wait then expires at the 24h rate.
 //! - **Retry budget is per-process**: `RetryState` lives in memory, so a
 //!   watcher restart gives a permanently-failing file a fresh attempt budget
 //!   (a crash loop re-buys ~10 attempts per boot — bounded by boot cadence).
@@ -517,8 +525,9 @@ fn pending_steers() -> &'static std::sync::Mutex<HashMap<String, PendingSteerDel
 
 /// Terminal events that beat the registry insert. `pool.steer` returning Ok
 /// and the watcher inserting the pending entry are not atomic across tasks:
-/// a busy target drains steers on every stream event, so the terminal event
-/// can fire while `process_spool_file` is still between the steer call and
+/// a busy target drains steers at every step boundary (after each tool
+/// result, before the next model call), so the terminal event can fire
+/// while `process_spool_file` is still between the steer call and
 /// the insert (the post-delivery re-verify sits in between). A miss used to
 /// be treated as an unknown-id no-op and the late insert stranded the file
 /// for the full [`STEER_COMMIT_WAIT`] before a guaranteed duplicate; the
@@ -617,16 +626,28 @@ fn steer_drop_limit_reached(name: &str) -> bool {
         >= MAX_STEER_DROP_CYCLES
 }
 
-/// The poll's skip decision for a file with an armed steer. `false` = a
-/// live in-flight steer is holding the file (skip, budget frozen); `true`
-/// = nothing armed for this path, or the armed entry is STALE — the queued
-/// content was replaced under it (a keyed retry re-spooled the same
-/// deterministic name mid-strand), so the registration is revoked here and
-/// the new body delivers instead of freezing behind the old wait. The
-/// content compare mirrors the commit arm's verify: semantically-equal
-/// records (fresh created_at/titles only) keep the file held, a
-/// materially-different body releases it.
-fn pending_steer_released(path: &Path) -> bool {
+/// The poll's skip decision for a file with an armed steer.
+enum PendingSteerSkip {
+    /// Nothing armed for this path.
+    NotArmed,
+    /// A live in-flight steer is holding the file (skip, budget frozen).
+    Held,
+    /// The armed entry was STALE — the queued content was replaced under it
+    /// (a keyed retry re-spooled the same deterministic name mid-strand) —
+    /// and has been revoked here. The newest body delivers this pass; the
+    /// caller clears the inherited attempt budget with it.
+    ReleasedStale,
+}
+
+/// For READABLE content the compare mirrors the commit arm's verify:
+/// semantically-equal records (fresh created_at/titles only) keep the file
+/// held, a materially-different body releases it. On an unreadable or
+/// over-cap read the two directions deliberately diverge — the release path
+/// holds (the terminal event or the 24h expiry resolves the wait; the
+/// conservative choice never re-delivers a possibly-committed body), while
+/// the commit verify treats it as replaced (fail-closed: never write a
+/// marker or remove content the finalizer cannot vouch for).
+fn pending_steer_released(path: &Path) -> PendingSteerSkip {
     let peeked = {
         let pending = pending_steers().lock().unwrap_or_else(|p| p.into_inner());
         pending
@@ -635,7 +656,7 @@ fn pending_steer_released(path: &Path) -> bool {
             .map(|(id, entry)| (id.clone(), entry.original.clone()))
     };
     let Some((steer_id, original)) = peeked else {
-        return true;
+        return PendingSteerSkip::NotArmed;
     };
     // No map lock is held across the read: a terminal event may consume the
     // entry concurrently, and a stale remove here is a harmless no-op.
@@ -652,8 +673,9 @@ fn pending_steer_released(path: &Path) -> bool {
              releasing the stale registration so the newest body delivers",
             path
         );
+        return PendingSteerSkip::ReleasedStale;
     }
-    replaced
+    PendingSteerSkip::Held
 }
 
 /// Give up timed-out in-flight steers: the entry is dropped, the file stays
@@ -805,9 +827,14 @@ pub fn resolve_pending_steer(steer_id: &str, committed: bool) {
                 if let Err(unlink_error) =
                     std::fs::remove_file(done_dir().join(format!("{stem}.json")))
                 {
+                    // Same consequence statement as the Done arm's unlink
+                    // failure: the surviving marker will suppress the newest
+                    // body as already-delivered until the marker's retention
+                    // prune — bounded, but lossy for the newer content.
                     log::warn!(
                         "[messaging] failed to drop the stale done marker for {stem:?} \
-                         after steer commit: {unlink_error}"
+                         after steer commit: {unlink_error} (the newest body will read \
+                         as already-delivered until the marker's retention prune)"
                     );
                 }
             }
@@ -902,9 +929,10 @@ fn audit_delivery(
         "chars": message.text.trim().chars().count(),
     });
     // The pool-stamped id is what later correlates this line with its
-    // terminal disposition (chat:steer_committed / steer_dropped) — without
-    // it a "steered" line cannot be told apart from a lost one in the
-    // ledger.
+    // terminal disposition (chat:steer_committed / steer_dropped, in the
+    // app-event/log stream — the disposition itself is never appended to
+    // this ledger) — without it a "steered" line cannot be told apart from
+    // a lost one.
     if let DeliveryOutcome::Steered(steer_id) = outcome {
         detail["steer_id"] = serde_json::json!(steer_id);
     }
@@ -1175,7 +1203,7 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
                 // Steer accepted, transcript commit pending: register the
                 // in-flight delivery BEFORE the audit appends. The engine
                 // can commit within milliseconds (busy targets drain steers
-                // on every stream event), so every operation shaved off this
+                // at every step boundary), so every operation shaved off this
                 // gap shrinks the late-terminal-event window; writing the
                 // done marker here would keep the drop/crash loss window in
                 // place — the exact silent-loss channel this pipeline
@@ -1269,6 +1297,13 @@ fn read_bounded(path: &Path) -> Option<Vec<u8>> {
 /// field on both sides (absent becomes null too) and compare. Unparseable
 /// (hostile surgery) compares unequal — the re-queue path.
 fn spool_records_equal(a: &[u8], b: &[u8]) -> bool {
+    // Steady-state fast path: the armed compare runs every poll pass and is
+    // almost always byte-identical (nothing replaced the file). A memcmp
+    // answers it without the two full JSON parses the semantic compare pays;
+    // byte-equality trivially implies record equality.
+    if a == b {
+        return true;
+    }
     let (Ok(mut a), Ok(mut b)) = (
         serde_json::from_slice::<serde_json::Value>(a),
         serde_json::from_slice::<serde_json::Value>(b),
@@ -1620,7 +1655,13 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         // A deterministically dropping target would otherwise loop the file
         // at the poll cadence forever (steer → drop → re-steer, no budget
         // charge): after MAX_STEER_DROP_CYCLES dropped cycles the file is
-        // quarantined like any other exhausted failure class.
+        // quarantined like any other exhausted failure class. The verdict is
+        // identity-level (keyed by spool NAME, like RetryState): a
+        // materially-different same-name re-spool landing between the tenth
+        // drop and this pass is quarantined untried under the identity's
+        // drop history — evidence preserved in failed/ and audited, the
+        // same over-quarantine direction the retain-to-listed prune above
+        // accepted for re-spools.
         if steer_drop_limit_reached(&name) {
             let record = read_record_for_audit(&path);
             // Same doctrine as the Retry/Poison exhaustion arms: clear the
@@ -1642,6 +1683,13 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 );
                 clear_steer_drop_cycles(&name);
                 retries.clear(&name);
+                // Mirror the ceiling arm: a mid-delivery re-steer can arm a
+                // fresh registration between a drop's revocation and its
+                // cycle charge landing at the limit, so the quarantined file
+                // can hold a live entry. Leaving it armed would strand the
+                // wait for the 24h expiry and mislabel the terminal event
+                // ("replaced mid-steer") for a file that was quarantined.
+                cancel_pending_steer_path(&path);
             }
             continue;
         }
@@ -1650,8 +1698,16 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         // no backoff advance) — unless the queued content was replaced under
         // the stale registration, in which case the registration is revoked
         // and the newest body delivers instead of freezing behind the wait.
-        if !pending_steer_released(&path) {
-            continue;
+        match pending_steer_released(&path) {
+            PendingSteerSkip::Held => continue,
+            // Round-5 m1: a stale release means a materially-different body
+            // replaced the armed one. The inherited attempt budget belongs
+            // to the OLD body's failures — carrying it here could quarantine
+            // the newest body after a single failed attempt of its own, the
+            // exact verdict-carryover the exhaustion arm's replaced guard
+            // forbids. The fresh body starts a full attempt series.
+            PendingSteerSkip::ReleasedStale => retries.clear(&name),
+            PendingSteerSkip::NotArmed => {}
         }
         if !retries.due(&name) {
             continue;
@@ -1706,6 +1762,12 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         );
                         retries.clear(&name);
                         clear_steer_drop_cycles(&name);
+                        // Defensive parity with the ceiling arm: an armed
+                        // entry is not reachable here today (an armed file
+                        // skips delivery entirely), but this guard exists
+                        // for surprise panics — strand-proof the arm the
+                        // same way instead of trusting the invariant.
+                        cancel_pending_steer_path(&path);
                     }
                 }
                 continue;
@@ -2081,6 +2143,24 @@ mod spool_pipeline_tests {
         }
     }
 
+    /// A delivery whose side effect deletes a LATER-sorted spool file, so
+    /// the poll's own per-file `!path.exists()` arm fires mid-pass (the
+    /// vanished-between-read_dir-and-processing case no direct setup can
+    /// reach).
+    struct DeletingDelivery {
+        victim: &'static str,
+        outcome: DeliveryOutcome,
+        calls: Rc<RefCell<usize>>,
+    }
+
+    impl SpoolDelivery for DeletingDelivery {
+        async fn deliver(&self, _message: &SpooledMessage) -> Result<DeliveryOutcome> {
+            *self.calls.borrow_mut() += 1;
+            std::fs::remove_file(spool_root().join(self.victim)).unwrap();
+            Ok(self.outcome.clone())
+        }
+    }
+
     fn sessions_store() -> crate::features::sessions::SessionStore {
         crate::features::sessions::SessionStore::boot_for_process_startup().expect("store")
     }
@@ -2407,8 +2487,9 @@ mod spool_pipeline_tests {
         let audit =
             std::fs::read_to_string(exec_root.join("workflow_audit.jsonl")).unwrap_or_default();
         assert!(
-            audit.contains("\"steer_id\"") && audit.contains("steer-9@7"),
-            "the steered delivery audit line must carry the steer id: {audit}"
+            audit.contains("\"steer_id\":\"steer-9@7\""),
+            "the steered delivery audit line must carry the steer id pair (a loose \
+             two-contains would pass with the id in any other field): {audit}"
         );
 
         // The commit arrives: done marker + removal, registration cleared.
@@ -2571,6 +2652,20 @@ mod spool_pipeline_tests {
         );
         assert!(spool.join("late.json").exists(), "the file re-queues");
         assert!(!done_dir().join("late.json").exists(), "no marker on drop");
+        // Round-5 pin: the inline settle must flow through the same drop arm
+        // as the direct event — a shortcut that disarms without charging
+        // would re-open the unbounded drop loop for exactly the drops that
+        // beat the insert.
+        assert_eq!(
+            steer_drop_cycles()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get("late.json")
+                .copied(),
+            Some(1),
+            "the buffered drop must charge the drop-cycle budget through the \
+             same finalizer"
+        );
     }
 
     /// While a steer is in flight the poll must not touch the file at all —
@@ -2742,7 +2837,9 @@ mod spool_pipeline_tests {
         resolve_pending_steer("steer-4@2", true);
         assert!(
             done_dir().join("lock.json").exists(),
-            "the marker must be written before the removal attempt"
+            "the marker survives the failed removal (the end state cannot \
+             distinguish the write order — the source pin commits to \
+             marker-before-removal)"
         );
         assert!(
             spool.join("lock.json").exists(),
@@ -2769,6 +2866,8 @@ mod spool_pipeline_tests {
         let store = sessions_store();
         let spool = spool_root();
         std::fs::create_dir_all(&spool).unwrap();
+        let exec_root = store.session_roots("tgt0001").expect("roots").execution;
+        std::fs::create_dir_all(&exec_root).unwrap();
         std::fs::write(spool.join("zzz.json"), record_json("zzz", Some("k-zzz"))).unwrap();
         let delivery = FakeDelivery {
             outcome: Ok(DeliveryOutcome::Steered("steer-2@8".to_string())),
@@ -2810,6 +2909,14 @@ mod spool_pipeline_tests {
         assert!(
             !is_pending_steer_path(&spool.join("zzz.json")),
             "the ceiling quarantine must disarm the in-flight registration"
+        );
+        // Round-5 pin: the ceiling line carries its receipt code (two of the
+        // six quarantine sites were asserted before; this is a third).
+        let audit =
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl")).unwrap_or_default();
+        assert!(
+            audit.contains("\"code\":\"pending_file_ceiling_exceeded\""),
+            "the ceiling quarantine audit line must carry its receipt code: {audit}"
         );
         // The terminal event for the disarmed id must not resurrect
         // anything: the commit resolves to a no-op (recorded late, expired).
@@ -3033,6 +3140,196 @@ mod spool_pipeline_tests {
         );
     }
 
+    /// Round-5 m1 pin: the attempt budget the OLD body accumulated must not
+    /// ride along through a stale release — the newest body is a different
+    /// message and would be quarantined after a single failed attempt of
+    /// its own (the exact verdict-carryover the exhaustion arm's replaced
+    /// guard forbids). Deletion mutant: without the release-site clear, the
+    /// seeded 9 attempts + 1 real failure hit the limit and quarantine.
+    #[tokio::test]
+    async fn stale_release_gives_the_newest_body_a_fresh_attempt_budget() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("bud.json"), record_json("bud", Some("k-bud"))).unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-16@6".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let outcome = process_spool_file(
+            &spool.join("bud.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut Default::default(),
+            &mut None,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::PendingSteer(..)));
+
+        // The old body burned 9 attempts before its steered delivery
+        // succeeded; a keyed retry then re-spooled a materially-different
+        // body under the same name.
+        let mut retries = RetryState::default();
+        retries.attempts.insert(
+            "bud.json".to_string(),
+            (MAX_DELIVERY_ATTEMPTS - 1, Instant::now()),
+        );
+        let replacement = record_json("bud", Some("k-bud")).replace("正文", "更正后的正文");
+        std::fs::write(spool.join("bud.json"), replacement).unwrap();
+
+        let poll_delivery = FakeDelivery {
+            outcome: Err("transient".to_string()),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        process_pending_spool(
+            &poll_delivery,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(
+            *poll_delivery.calls.borrow(),
+            1,
+            "the released body must deliver this pass"
+        );
+        assert!(
+            !failed_dir().join("bud.json").exists(),
+            "one failed attempt of its own must not quarantine the newest body"
+        );
+        let attempts = retries.attempts.get("bud.json").map(|(count, _)| *count);
+        assert_eq!(
+            attempts,
+            Some(1),
+            "the release must clear the inherited budget; the failure starts a \
+             fresh series at 1"
+        );
+    }
+
+    /// A semantically-equal keyed retry (fresh created_at only) must keep
+    /// the file held behind the in-flight steer on the release path too —
+    /// byte-comparing here would release and deliver a duplicate of the
+    /// committed-pending body. Mutation pin for the second round-5 compare
+    /// site (the Done arm's twin covers the first).
+    #[tokio::test]
+    async fn semantically_equal_retry_stays_held_while_pending() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("hold2.json"),
+            record_json("hold2", Some("k-hold2")),
+        )
+        .unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-17@7".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let outcome = process_spool_file(
+            &spool.join("hold2.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut Default::default(),
+            &mut None,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::PendingSteer(..)));
+
+        // Same key, same text — only created_at is re-minted.
+        let fresh = record_json("hold2", Some("k-hold2")).replace(
+            "\"created_at\":\"2026-09-28T00:00:00Z\"",
+            "\"created_at\":\"2026-09-28T00:00:01Z\"",
+        );
+        assert_ne!(fresh, record_json("hold2", Some("k-hold2")));
+        std::fs::write(spool.join("hold2.json"), fresh).unwrap();
+
+        let poll_delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Dispatched),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &poll_delivery,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(
+            *poll_delivery.calls.borrow(),
+            0,
+            "a semantically-equal re-spool must stay held behind the in-flight steer"
+        );
+        assert!(is_pending_steer_path(&spool.join("hold2.json")));
+        assert!(spool.join("hold2.json").exists());
+    }
+
+    /// A file deleted between read_dir and its turn must be disarmed by the
+    /// poll's vanished arm in the SAME pass — registration revoked, drop
+    /// bookkeeping cleared — instead of stranding until the 24h expiry.
+    /// Mutation pin: deleting either call in the vanished arm ships green
+    /// without this test (the file is invisible to the listing-based
+    /// prunes, so only this arm can clean up).
+    #[tokio::test]
+    async fn vanished_file_disarms_the_registration_in_the_same_pass() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("b.json"), record_json("b", Some("k-b"))).unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-18@8".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let outcome = process_spool_file(
+            &spool.join("b.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut Default::default(),
+            &mut None,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::PendingSteer(..)));
+        record_steer_drop_cycle("b.json");
+
+        // "a.json" sorts first: its delivery deletes "b.json" mid-pass, so
+        // the loop reaches an already-vanished file.
+        std::fs::write(spool.join("a.json"), record_json("a", Some("k-a"))).unwrap();
+        let poll_delivery = DeletingDelivery {
+            victim: "b.json",
+            outcome: DeliveryOutcome::Dispatched,
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &poll_delivery,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert!(
+            !is_pending_steer_path(&spool.join("b.json")),
+            "the vanished file's registration must be disarmed the same pass"
+        );
+        assert!(
+            steer_drop_cycles()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get("b.json")
+                .is_none(),
+            "the vanished arm clears the drop-cycle bookkeeping"
+        );
+    }
+
     /// The expiry give-up only fires if the production poll actually calls
     /// the prune — `expired_pending_steer_gives_up_and_redelivers` calls
     /// the injectable helper directly, so deleting the call site at the
@@ -3088,8 +3385,17 @@ mod spool_pipeline_tests {
             dropped_arm > committed_arm,
             "the dropped arm must follow the committed arm"
         );
+        // Round-5 M1: the dropped span must END at the next event arm — the
+        // old shape ran to the end of production, where unrelated `, false`
+        // literals (set_compaction_in_flight and friends) satisfied the
+        // needle, so a dropped-arm-ONLY flip shipped the whole suite green
+        // with drops finalized as commits.
+        let dropped_end = production[dropped_arm + "Event::SteerDropped".len()..]
+            .find("Event::")
+            .map(|offset| dropped_arm + "Event::SteerDropped".len() + offset)
+            .unwrap_or(production.len());
         let committed_span = &production[committed_arm..dropped_arm];
-        let dropped_span = &production[dropped_arm..];
+        let dropped_span = &production[dropped_arm..dropped_end];
         assert!(
             committed_span
                 .match_indices("resolve_steer_outcome(")

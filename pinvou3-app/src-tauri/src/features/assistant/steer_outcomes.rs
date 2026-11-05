@@ -4,12 +4,13 @@
 //! The forwarder calls [`resolve_steer_outcome`] on the event; the consumer
 //! (the in-flight terminal settlement of cross-session message delivery)
 //! is injected at startup assembly via [`register_steer_resolution_hook`].
-//! The dependency direction stays `consumer → assistant` (the consumer
-//! depends on this module); assistant never depends back on a consumer
-//! feature — the architecture guard's feature-cycle check draws the line
-//! here. One in-process hook is enough: the only consumer today is
-//! `features::messaging`; a second consumer would upgrade the fn pointer
-//! to a Vec broadcast (the registration site already rejects duplicates).
+//! The dependency direction stays `consumer → assistant` — wiring is the
+//! lib.rs fn-pointer injection, and assistant holds no code reference to
+//! any consumer feature (the architecture guard's feature-cycle check
+//! draws the line here). One in-process hook is enough: the only consumer
+//! today is `features::messaging`; a second consumer would upgrade the fn
+//! pointer to a Vec broadcast (the registration site already rejects
+//! duplicates).
 
 use std::sync::OnceLock;
 
@@ -27,9 +28,12 @@ pub fn register_steer_resolution_hook(hook: SteerResolutionHook) -> Result<(), (
 
 /// Fan a steer terminal out: committed=true = the engine wrote it into the
 /// transcript; false = the engine dropped it (turn termination /
-/// withdrawal / generation invalidation). Silent when unregistered — that
-/// holds outside the assembled app only (lib.rs registers the messaging
-/// finalizer during startup, before any engine can spawn).
+/// withdrawal / generation invalidation). Silent when unregistered — safe
+/// because pending registrations only exist where the delivery watcher
+/// runs: the GUI process registers this hook during startup and is the
+/// only place that spawns the watcher (the headless host boots engines
+/// but never spawns one, so its steers have no registry entry to
+/// finalize).
 pub fn resolve_steer_outcome(steer_id: &str, committed: bool) {
     if let Some(hook) = STEER_RESOLUTION_HOOK.get() {
         hook(steer_id, committed);
@@ -39,16 +43,26 @@ pub fn resolve_steer_outcome(steer_id: &str, committed: bool) {
 #[cfg(test)]
 mod tests {
     use super::resolve_steer_outcome;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Registration gate: the first registrant wins and duplicates are
     /// rejected (a silent overwrite would swap consumers — assembly errors
-    /// must be visible).
+    /// must be visible). The consumer also records the arguments: an
+    /// inversion inside [`resolve_steer_outcome`] (hook(.., !committed))
+    /// previously shipped the entire suite green — every behavioral test
+    /// drives the messaging finalizer directly and bypasses this fan-out,
+    /// so the argument passthrough is only observable here (round-5 M2).
     #[test]
     fn hook_registration_accepts_first_and_rejects_rest() {
         static CALLS: AtomicUsize = AtomicUsize::new(0);
-        fn consumer(_steer_id: &str, _committed: bool) {
+        static FORWARDED: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
+        fn consumer(steer_id: &str, committed: bool) {
             CALLS.fetch_add(1, Ordering::SeqCst);
+            FORWARDED
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((steer_id.to_string(), committed));
         }
         fn second(_steer_id: &str, _committed: bool) {
             unreachable!("the second hook must never be installed");
@@ -69,5 +83,16 @@ mod tests {
         // the get()==None short-circuit.
         resolve_steer_outcome("steer-2@0", false);
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        // The fan-out must forward (id, committed) verbatim — no inversion,
+        // no id swap (round-5 M2).
+        let forwarded = FORWARDED.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(
+            forwarded.as_slice(),
+            &[
+                ("steer-1@0".to_string(), true),
+                ("steer-2@0".to_string(), false)
+            ][..],
+            "resolve_steer_outcome must forward (steer_id, committed) to the hook verbatim"
+        );
     }
 }

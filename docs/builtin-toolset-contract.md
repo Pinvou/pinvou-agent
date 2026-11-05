@@ -424,7 +424,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   arrives while the app keeps running (a forwarder aborted by an engine
   recycle), the wait is given up after 24h and the message re-delivers; a
   crash loses the in-memory wait entirely, so the queued file re-delivers on
-  the first poll after restart — either way possibly duplicating. Quarantine
+  the first poll after restart — either way possibly duplicating. (One
+  carve-out to that re-delivery doctrine: a steered file that the
+  pending-file ceiling quarantines mid-wait is disarmed instead of
+  re-queuing — it is never finalized and never re-delivered, whether or
+  not the steered body already landed; the quarantine evidence + audit
+  trail is the only trace.) Quarantine
   audit lines carry the failure-receipt fields named after the foundation
   agent_mail receipt (`code` / `retryable:false` / `failed_at`, plus a
   human `reason` field; the `code` values are messaging-local classes, not
@@ -464,10 +469,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   minor 13, re-scoped when finalization moved to the commit, round-4): an
   UNKEYED resubmission re-delivers at any latency (a fresh uuid spool name
   — the steer window is irrelevant), while a KEYED resubmission
-  double-dispatches only while the earlier body's steer is still in
-  flight — a window that used to end at the steer-Ok finalization and now
-  ends at the terminal event, bounded by the 24h commit wait — and only
-  with a materially different body; once the commit's done marker exists,
+  double-dispatches while the earlier body's steer is still in flight (a
+  window that used to end at the steer-Ok finalization and now ends at
+  the terminal event, bounded by the 24h commit wait) or after a give-up
+  expiry removed the registration marker-less — and only with a
+  materially different body; once the commit's done marker exists,
   the pre-spool probe answers a keyed retry without spooling); a steer
   accepted against a mid-turn target can still be
   dropped by the foundation — when that turn is cancelled
@@ -490,7 +496,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   at-least-once redelivery (possibly duplicating) instead of silent loss; a
   macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
-  double-deliver, and the replaced-after-delivery arm can then erase the
+  double-deliver — since commit-time finalization that double-delivery
+  window spans the whole commit wait (the queued file carries no marker
+  until the winning instance's terminal event), not just one poll tick —
+  and the replaced-after-delivery arm can then erase the
   winning instance's done marker — plugin-level upstream, the marker
   interplay is disclosed here (round-19 minor 15); a send against an
   ACP/code target — keyed or not (the round-18 minor-17 correction: this
