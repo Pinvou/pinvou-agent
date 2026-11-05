@@ -23,14 +23,14 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 - `allowed_tools` 同时约束首轮目录、`tool_search` 结果和实际执行，不在白名单中的工具不能通过搜索重新激活。
 - `disallowed_tools` 只能继续收窄白名单；模式差量、连接器停用集和运行期空态均走这条通道，下轮请求生效。
 - Plan / Agent / Operate 的注册面和 sandbox 仍由 CodeWhale 决定。白名单允许一个工具或工具族，不代表每种模式都注册其全部写操作。
-- `PINVOU3_ALWAYS_LOADED_TOOLS` 现有 12 项（`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`，另有 5 个 `mcp_app-automations_*` 定时任务工具——共享指令直接点名该 MCP 工具族），均要求首轮直接可见；其余允许工具可按底座策略延迟加载。
+- `PINVOU3_ALWAYS_LOADED_TOOLS` 现有 13 项（`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`、`mcp_pinvou3_present_artifact`，另有 5 个 `mcp_app-automations_*` 定时任务工具——共享指令直接点名该 MCP 工具族），均要求首轮直接可见；其余允许工具可按底座策略延迟加载。
 
 关键实现：
 
 | 职责 | 文件 |
 |---|---|
 | Pinvou 正向白名单 | `pinvou3-app/src-tauri/src/features/assistant/tool_policy.rs` |
-| 白名单正反向测试 | `pinvou3-app/src-tauri/src/lib.rs`（`mod tool_allowlist_contract`，约 :2263-2481）、`pinvou3-app/src-tauri/src/features/assistant/multiagent_regression_tests.rs`（真实 bridge 回合目录逐项校验，约 :503-513） |
+| 白名单正反向测试 | `pinvou3-app/src-tauri/src/lib.rs`（`mod tool_allowlist_contract`，约 :2279-2510）、`pinvou3-app/src-tauri/src/features/assistant/multiagent_regression_tests.rs`（真实 bridge 回合目录逐项校验，约 :503-513） |
 | 模式能力静态表 | `pinvou3-app/src-tauri/src/features/assistant/session_policy.rs` 的 `MODE_TABLE` |
 | 模式与动态拒绝整形 | `pinvou3-app/src-tauri/src/features/assistant/session_policy.rs`、`features/assistant/platform/bridge.rs::shape_disallowed_tools` |
 | 能力包与 scope 治理 | `docs/capability-governance.md` |
@@ -60,7 +60,7 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 - 持久终端五个工具使用精确名而非 `terminal/*`：避免未来新增的执行原语仅凭共享前缀就自动穿透产品白名单（`tool_policy.rs:13-15` 注释；反向测试断言 `terminal/future-capability` 被拒，lib.rs）。
 - 大小写不敏感使隐藏回放名 `Bash` 能命中 `bash` 规则、在历史回放中继续可执行（新会话目录只教 canonical `bash`）；`File` 没有任何可命中的规则、不可执行（lib.rs `tool_allowlist_contract` 的对应断言）。
 
-`PINVOU3_ALWAYS_LOADED_TOOLS`（`tool_policy.rs:141-157`）现有 12 项：`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`，以及底座共享指令直接点名的 5 个 `mcp_app-automations_*` 定时任务工具。这些工具要求首轮直接可见，不能依赖模型先调用 `tool_search`（always-load 只影响延迟加载，不绕过 `disallowed`，拒绝优先）。
+`PINVOU3_ALWAYS_LOADED_TOOLS`（`tool_policy.rs:141-157`）现有 13 项：`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`、`mcp_pinvou3_present_artifact`，以及底座共享指令直接点名的 5 个 `mcp_app-automations_*` 定时任务工具。这些工具要求首轮直接可见，不能依赖模型先调用 `tool_search`（always-load 只影响延迟加载，不绕过 `disallowed`，拒绝优先）。
 
 新增白名单项必须同步更新白名单正反向测试（lib.rs `tool_allowlist_contract`、`multiagent_regression_tests.rs`）和 fork guard。
 
@@ -152,6 +152,6 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 | 2026-08-11 | 升级 CodeWhale v0.9.5：切换到 canonical family、`allowed_tools` 正向白名单和单一 `disallowed_tools` 差量通道；旧 8 项 include 被等价迁移，不再作为模型侧工具名维护。 |
 | 2026-08-14 | 退役无运行时写入者的能力档案，模式架构差量收敛为 `MODE_TABLE`；plain 放开 `Git` family，外部能力默认姿态改由按模式 scope 管理。 |
 | 2026-09-09 | 升级 CodeWhale v0.9.12（gitlink `pinvou-v0.9.12-r1-18-g92427bd8d`）：产品工具面迁移到 model-visible canonical 名称——`bash`/`read`/`write`/`edit` 小契约、`list_dir`/`file_search`/`grep_files` 重新独立发布、`terminal/*` 精确名五件套；`Bash`/`File` 退为隐藏 replay 兼容名；白名单与正反向测试同步重写。见 `docs/codewhale-upgrade-0.9.5-to-0.9.12.md`（§4"主应用改造"）。 |
-| 2026-11-05 | v0.9.12 白名单组成变更（随 #832）：准入证据恢复对 `retrieve_tool_result` / `handle_read`（底座溢出尾行与 worker 记录按名点教，见 §2）；移除死条目 `revert_turn`（`snapshots_enabled=false` 使每次调用在支付一次 side-repo init 后恒败，回退由应用侧 `rewind_to_turn` 承接）。同批披露同类残留：`Run`（`agent` 描述括注）与 `create_goal` / `update_goal`（goal 面）仍不在白名单，披露见 `tool_policy.rs`。 |
+| 2026-11-05 | v0.9.12 白名单组成变更（随 #832）：准入证据恢复对 `retrieve_tool_result` / `handle_read`（底座溢出尾行与 worker 记录按名点教，见 §2）；移除死条目 `revert_turn`（`snapshots_enabled=false` 使每次调用在支付一次 side-repo init 后恒败，回退由应用侧 `rewind_to_turn` 承接）。同批披露同类残留：`Run`（`agent` 描述括注）与 `create_goal` / `update_goal`（goal 面）仍不在白名单，披露见 `tool_policy.rs`；`notes_path` 死链经注释披露（NoteTool 被白名单剥离，父会话永不写、UI 不读；子代理注册面不受白名单约束仍可写，见 `bridge.rs`）。 |
 
 每次 CodeWhale 升级都必须重新核对 canonical 名称、各模式注册面、首轮/延迟加载策略、前端历史回放兼容和本文档；不能只凭旧工具名相同就判定行为等价。
