@@ -63,11 +63,14 @@ const hostFilePicker = readSource(
 );
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
 // Round-20 复审(S14):聚合此前只覆盖顶层文件,`dependencies/` 子目录被
-// 漏扫。改为递归收集(按完整路径排序,顺序确定性不变)。
+// 漏扫。改为递归收集(按完整路径排序,顺序确定性不变)。Round-21 复审:
+// readdirSync 的默认 sort 触发 unicorn/require-array-sort-compare(CI
+// frontend-test 自 round-20 wave 起红)——改用显式比较器,不再依赖
+// 元素恰为字符串的隐式行为。
 function walkRustSources(rootDir) {
   const files = [];
   const visit = dir => {
-    for (const name of fs.readdirSync(dir).sort()) {
+    for (const name of fs.readdirSync(dir).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
       const full = path.join(dir, name);
       if (fs.statSync(full).isDirectory()) visit(full);
       else if (name.endsWith('.rs')) files.push(full);
@@ -88,10 +91,11 @@ const remoteControlManagerRoot = path.join(
   'remote_control',
   'manager',
 );
-const remoteControlManager = fs.readdirSync(remoteControlManagerRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(remoteControlManagerRoot, name), 'utf8'))
+// Round-21 复审:两个聚合也走 walkRustSources 递归——manager/、platform/
+// 今天是平铺目录,未来出现子目录时非递归枚举会静默漏扫(commands 的
+// S14 同类)。平铺时 DFS 顺序与旧的名字排序一致,现有断言不受影响。
+const remoteControlManager = walkRustSources(remoteControlManagerRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const remoteControlPlatformRoot = path.join(
   root,
@@ -101,10 +105,8 @@ const remoteControlPlatformRoot = path.join(
   'remote_control',
   'platform',
 );
-const remoteControlPlatform = fs.readdirSync(remoteControlPlatformRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(remoteControlPlatformRoot, name), 'utf8'))
+const remoteControlPlatform = walkRustSources(remoteControlPlatformRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const settingsView = readSource(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const artifactsPanel = readSource(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
@@ -1186,6 +1188,11 @@ assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 // Round-15 复审 M2:下限 >=4 会容忍删掉 8 个卫兵中的 4 个仍全绿;收敛
 // 为精确计数,新增卫兵时随钉更新(与本文件其他精确计数钉同约定)。
+// Round-21 复审(已披露盲区):本 census 只数两种「纯」卫兵形态
+// (`!canMutateToolStore` 与 `|| busyRef.current` 两款);复合谓词卫兵
+// (`|| !somethingElse`,现存 5 处)、花括号形态(`{ return; }`)不在
+// 数内;且计数是全文件的,一处删除另一处新增会正负相抵。新卫兵用这些
+// 形态落地时需要另行钉住,不能指望本计数兜底。
 assert.equal(
   (toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length,
   8,
