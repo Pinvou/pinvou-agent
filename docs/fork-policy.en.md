@@ -1,6 +1,6 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-11-03. The public maintenance head f1eb10efc is unmoved (contains #114/#125); this tree's parent gitlink and `EXPECTED_HEAD` lead the public maintenance head and point at the review candidate eea741fcd (CodeWhale#131), to be re-pinned once #131 lands.
+> Updated: 2026-11-05. Public maintenance 11cba403d contains #114/#125 plus #123/#124/#129/#131/#133/#134/#135; parent gitlink follows the public maintenance head.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 Integrated upstream backport and historical provenance: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756). The public maintenance gate and section 6 authorization requirement continue to apply.

@@ -63,7 +63,8 @@ OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体
   内存切换已生效，落盘只做尽力持久化；**开关翻转（`set_ask_on_guardrail`）
   则先落盘后发布**——侧车 RMW 成功之前不写条目与覆盖镜像，任何读侧都不会
   看到盘上不存在的值（fail-consistent；失败路径没有回滚动作：内存从未离开
-  调用前状态）。中断写入留不下截断文件，损坏文件在装载时静默跳过。
+  调用前状态）。中断写入留不下截断文件，损坏文件在装载时记录错误日志后
+  按保守默认跳过（不静默）。
   会话删除/驱逐时侧车条目随保留策略一并清除。
 - lane 全局默认（settings.json `mode_defaults.work` /
   `code_permission.last_mode`）**永不写入 `"auto"` 字面量**：显式 Auto 选择
@@ -74,8 +75,10 @@ OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体
   Plan（更严方向的陈旧）；work 车道 `work` 保持 None → 未绑定 plain 会话落
   旧默认 **Yolo 全自动（更宽方向）**：一次显式 Auto 全局默认在降级运行的
   窗口内被静默放宽，恢复新二进制即复原，无持久丢失。
-- 写路径统一过存在性门（id 形状 + 会话存在，`ensure_mode_target_session`），
-  防 IPC 直调给任意 id 铸条目/写侧车。
+- 写路径统一过存在性门（id 形状 + 会话存在，`ensure_mode_target_session`：
+  `set_plan_mode_next`/`exit_plan_to_yolo`/`set_session_mode`/`set_ask_on_guardrail`
+  四条命令），防 IPC 直调给任意 id 铸条目/写侧车；`accept_plan` 不走该门，
+  由 plan 票据（`claim_pending_plan`）约束到真实挂起方案，同样不铸任意条目。
 
 ### 3.2 传播与武装
 
@@ -181,7 +184,7 @@ ApprovalCard 三个决策走 `decide_approval` 命令（`app/commands/interactio
 | 决策 | 缓存作用域 | 语义 |
 |---|---|---|
 | 允许（allow） | 无 | 仅此一次 |
-| 本会话允许（allow_for_session） | lossy `approval_grouping_key` | 覆盖后续旗标变体（v0.8.37 语义；round-11 评审措辞精确化：词表命令按旗标变体归族，词表外的 shell 命令按基础词归族——同一基础词的**全部操作数变体**同族，路径承载面（文件写/patch 族）则按完整输入哈希归族，故敏感路径不会被词表外命令的宽族误放行） |
+| 本会话允许（allow_for_session） | lossy `approval_grouping_key` | 覆盖后续旗标变体（v0.8.37 语义；round-11 评审措辞精确化：词表命令按旗标变体归族，词表外的 shell 命令按基础词归族——同一基础词的**全部操作数变体**同族，路径承载面按更窄键归族——文件写按完整输入哈希、patch 族按触达路径集合哈希 + 主根——故敏感路径不会被词表外命令的宽族误放行） |
 | 拒绝（deny） | exact `approval_key` | 换一个参数要重新请批，不连坐（#1617 语义） |
 
 任何决策都先校验 decision 值（摘除登记不可逆，非法值原样 Err 不留痕迹），再
@@ -193,7 +196,7 @@ TUI 的作用域语义且**按会话隔离**（跨会话不得互相放行/连�
 ### 4.3 登记簿生命周期
 
 - 全部驻内存：进程重启后 engine lazy spawn，缓存随进程消亡，无需持久化。
-  turn 终态 `clear_pending` 兜底清空该会话的**挂起卡**（取消/中断时可能没有
+  turn 终态 `clear_pending_returning_child_ids` 兜底清空该会话的**挂起卡**（取消/中断时可能没有
   逐条决策）；授予/拒绝是**会话级记忆，跨 turn 存活**（「本会话允许」的语义，
   与 TUI 一致：TUI 只在换会话/换工作区时清），随会话删除在会话清理处理器经
   `clear_session` 摘除。前端 turn 终态同步把未决策的审批卡就地落为终态
@@ -323,13 +326,17 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   Auto-Review 窄化降级携带结构化回执），逐条钉住上述五个武装面、
   Auto-Review/Never 恒拒、授予缓存不可静默消费武装 hold、composer 不武装、
   子代理两个镜像面、transition 渲染/折叠/预览一致与武装不可回滚。
-  forkguard 行为名总数 255 → 279；门禁命令
+  forkguard 行为名总数 255 → 279（候选头口径）；重钉后的维护头
+  `11cba403d` 全库普查为 **301**（增量来自随 #123/#124/#129/#133/#134/#135
+  合入的既有钉，非 #131 自身）；门禁命令
   `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`
   （复审修复五头 `1785dae15` 实测 264 过 / 0 挂，既有 fail-closed pin 原样绿；
+  维护头实测 285 过 / 0 挂；
   协议 crate 71/0 含新增遗留 ChangeMode 载荷 serde 钉）。
-  计数口径（round-8 L10-5）：279 是**行为名**普查（`forkguard_*` 独立测试名，
+  计数口径（round-8 L10-5）：279 是候选头**行为名**普查（`forkguard_*` 独立测试名，
   同名多处出现计一），264 是该头**实测通过的测试用例数**（一个行为名可派生
-  多个用例/参数化，且 24 条候选新增钉在该头已含），两数不必相等。
+  多个用例/参数化，且 24 条候选新增钉在该头已含），两数不必相等；301/285 为
+  重钉后维护头的同口径普查与实测。
   24 条逐名：
   `forkguard_armed_full_access_forced_hold_resolves_to_prompt`、
   `forkguard_armed_full_access_hold_prompts_instead_of_blocking`、
