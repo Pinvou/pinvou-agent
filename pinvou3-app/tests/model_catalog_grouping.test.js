@@ -388,8 +388,9 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   // always-reasoning and the vendor rejects thinking:{type:"disabled"}, so
   // the rows expose NO tier control until the base's exact-K3 shapers learn
   // the spellings — the stored effort is normalized away and the vendor
-  // default (max) applies (2026-11-04 review: the generic off/high ladder
-  // let users persist a disable shape the vendor rejects).
+  // default applies (max on the platform base, high on the Kimi Code base
+  // per the CC docs' effort-mapping table) (2026-11-04 review: the generic
+  // off/high ladder let users persist a disable shape the vendor rejects).
   assert.strictEqual(isPresetModel(mkCloud('kimi', 'kimi', 'https://api.moonshot.cn/v1', 'kimi-k3.1-pro')), true);
   assert.strictEqual(isPresetModel(mkCloud('kimi', 'kimi', 'https://api.moonshot.ai/v1', 'kimi-k3.1-pro-highspeed')), true);
   assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro')), true);
@@ -409,6 +410,15 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(reasoningEffortTiersForModel(k31('k3.1-pro[1m]', 'https://api.kimi.com/coding/v1')), null, 'k3.1-pro[1m] (ACP models1m entry): no tier control');
   assert.strictEqual(normalizeStoredReasoningEffort(k31('kimi-k3.1-pro[1m]', 'https://api.moonshot.cn/v1'), 'off'), null, 'the platform [1m] spelling normalizes to unset too');
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k31('kimi-k3[1m]', 'https://api.moonshot.cn/v1'))], ['off', 'high'], 'kimi-k3[1m] is bare-k3 bracket form, not a K3.1 spelling');
+  // FE/Rust attachment parity (2026-11-05 review): the no-control exit
+  // attaches via the kimi/moonshot vendor stamp OR the official route —
+  // a hand-edited preset-kimi record with a cleared vendor on a custom
+  // relay keeps the generic ladder (Rust's unstamped-relay passthrough),
+  // while the same relay stamped kimi/moonshot stays no-control.
+  const k31Relay = (vendor) => ({ preset: 'kimi', vendor, model: 'kimi-k3.1-pro', base_url: 'https://relay.example/v1' });
+  assert.deepStrictEqual([...reasoningEffortTiersForModel(k31Relay(''))], ['off', 'high'], 'unstamped relay keeps the generic ladder (Rust passthrough parity)');
+  assert.strictEqual(reasoningEffortTiersForModel(k31Relay('kimi')), null, 'vendor-stamped relay attaches the K3.1 no-control contract');
+  assert.strictEqual(reasoningEffortTiersForModel(k31Relay('moonshot')), null, 'the moonshot alias attaches too');
   // The exact-K3 ladder itself is untouched.
   assert.deepStrictEqual([...reasoningEffortTiersForModel(k31('kimi-k3', 'https://api.moonshot.cn/v1'))], ['low', 'high', 'max']);
   // MiniMax: the GA rename carries the retired Preview spelling as a

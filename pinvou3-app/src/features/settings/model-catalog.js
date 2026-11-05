@@ -2415,9 +2415,24 @@ function isExactMoonshotK3Route(model, modelName) {
 
 // Moonshot-route tier resolution: the exact-K3 ladder, the K3.1 family's
 // no-control exit, or the provider's generic table.
+// Mirrors prefs::is_moonshot_k31_route's attachment rule: the K3.1
+// no-control contract attaches via the kimi/moonshot vendor stamp OR the
+// vendor's own official route base URL. `reasoningProviderForModel` also
+// resolves 'moonshot' from preset 'kimi' alone, so a hand-edited record
+// (preset kimi, vendor cleared, custom relay base) would otherwise hide
+// the effort control and wipe a stored value the engine keeps in
+// passthrough — the FE now applies the same attachment rule as the Rust
+// load path (2026-11-05 review parity fix).
+function moonshotK31ContractAttaches(model) {
+  const vendor = String((model && model.vendor) || '').trim().toLowerCase();
+  if (vendor === 'kimi' || vendor === 'moonshot') return true;
+  const baseUrl = (model && (model.base_url || model.baseUrl)) || '';
+  return isExactMoonshotPlatformBaseUrl(baseUrl) || isExactKimiCodeBaseUrl(baseUrl);
+}
+
 function moonshotReasoningLadder(model, modelName, genericTiers) {
   if (isExactMoonshotK3Route(model, modelName)) return ['low', 'high', 'max'];
-  if (isMoonshotK31ModelName(modelName)) {
+  if (isMoonshotK31ModelName(modelName) && moonshotK31ContractAttaches(model)) {
     // K3.1 spellings (kimi-k3.1-pro[-highspeed] on the platform base,
     // k3.1-pro[-highspeed] on Kimi Code) are always-reasoning: the vendor
     // contract controls depth via top-level reasoning_effort low/high/max

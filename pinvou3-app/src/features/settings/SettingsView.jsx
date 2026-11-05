@@ -166,9 +166,24 @@ function hasStoredCredential(record) {
           </span>
         );
       }
-      const src = BRAND_ICON_BY_PRESET[preset] || (vendor && BRAND_ICON_BY_VENDOR[vendor]);
+      // Vendor-stamped rows must not inherit the shared preset's mark: the
+      // vendors added in the 2026-11-03 catalog refresh (mistral/meta/
+      // together/groq) and the aggregators (openrouter/siliconflow) ride
+      // preset openai_compatible and otherwise wear the OpenAI logo
+      // (2026-11-05 review) — a vendor stamp without a brand mark gets the
+      // neutral Globe tile instead, and the preset brand only wins when no
+      // vendor stamp exists (plain openai_compatible relays).
+      const vendorMark = vendor && BRAND_ICON_BY_VENDOR[vendor];
+      if (vendor && !vendorMark) {
+        return (
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/[0.18] dark:text-[#64B5F6]`}>
+            <Globe size={compact ? 17 : 19} strokeWidth={2.2} />
+          </span>
+        );
+      }
+      const src = vendorMark || BRAND_ICON_BY_PRESET[preset];
       if (!src) return null;
-      const darkBacked = preset === 'kimi';
+      const darkBacked = preset === 'kimi' || vendor === 'kimi';
       return (
         <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : ('bg-white border border-black/[0.08] dark:border-transparent')}`}>
           <img src={src} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
