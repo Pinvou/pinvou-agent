@@ -394,14 +394,18 @@ impl SessionStore {
     ///
     /// Instance method (not an associated fn) precisely so the seed cannot
     /// drift from `code_permission_prefs()`. Lock discipline, stated as it
-    /// actually is (round-8 L2-1): `clear_mode_and_persist` /
-    /// `set_multi_agent` hoist the seed resolution BEFORE their io lock
+    /// actually is (round-8 L2-1; corrected round-11): `clear_mode_and_persist`
+    /// / `set_multi_agent` hoist the seed resolution BEFORE their io lock
     /// (predicate + sidecar reason, see their docs); `set_mode` /
-    /// `set_mode_and_persist` call this under the io lock — safe today only
-    /// because the seed's predicate reads in-memory state and the pref is a
-    /// plain mirror read, but a predicate that ever re-entered a mode writer
-    /// would self-deadlock on the non-reentrant io mutex. Keep the predicate
-    /// side-effect-free, or hoist the resolution like the persist paths.
+    /// `set_mode_and_persist` do not route through this helper — they mint
+    /// inline in `set_mode_in_memory` — while THIS helper's callers (the
+    /// loaders and `set_multi_agent`) resolve the seed either before or
+    /// without the io lock. The seed is safe today only because the
+    /// predicate reads in-memory state plus one workspace-sidecar read and
+    /// the pref is a plain mirror read, but a predicate that ever re-entered
+    /// a mode writer would self-deadlock on the non-reentrant io mutex. Keep
+    /// the predicate side-effect-free, or hoist the resolution like the
+    /// persist paths.
     pub(crate) fn mode_state_entry<'m>(
         &self,
         states: &'m mut HashMap<String, SessionModeState>,
@@ -1491,10 +1495,11 @@ impl SessionStore {
 
     /// An explicit draft-state switch writes the matching lane's global
     /// default mode (two-lane semantics: switches in already-materialized
-    /// sessions never touch this). Updates the in-memory mirror first
-    /// (effective immediately for this run), then persists settings.json in a
-    /// field-level transaction; a write failure only logs (same tolerance as
-    /// set_mode).
+    /// sessions never touch this). Persists settings.json in a field-level
+    /// transaction and publishes the in-memory mirror inside the same
+    /// critical section (post_commit — mirror and disk stay totally ordered
+    /// against concurrent transactions); a write failure only logs and leaves
+    /// both untouched (same tolerance as set_mode).
     pub fn set_mode_default(&self, lane: ModeLane, mode: SerializableMode) {
         // Tri-mode (M2): `Auto` never enters the legacy `last_mode`/`work`
         // vocabulary — a pre-tri-mode binary parsing the unknown enum variant
@@ -1509,31 +1514,38 @@ impl SessionStore {
             Some(mode)
         };
         let auto_flag = mode == SerializableMode::Auto;
-        match lane {
-            ModeLane::Code => {
-                let mut cp = self.code_permission.write();
-                cp.last_mode_auto = auto_flag;
-                cp.last_mode = legacy;
-            }
-            ModeLane::Work => {
-                let mut md = self.mode_defaults.write();
-                md.work_auto = auto_flag;
-                md.work = legacy;
-            }
-        }
-        if let Err(error) = UserPrefs::update_transaction(|prefs| {
-            match lane {
+        // 镜像发布走 post_commit（round-11 评审）：与 confirm_code_yolo /
+        // set_ask_on_guardrail_default 同一临界区语义——锁外先写镜像时，两笔
+        // 交错事务的镜像/磁盘会各停在不同提交上，读分裂直到重启。提交失败
+        // 时镜像不发布（本 run 答陈旧值直到下次成功提交，与磁盘一致），
+        // 容忍度不变：只记日志。
+        if let Err(error) = UserPrefs::update_transaction_with_post_commit(
+            move |prefs| {
+                match lane {
+                    ModeLane::Code => {
+                        prefs.code_permission.last_mode_auto = auto_flag;
+                        prefs.code_permission.last_mode = legacy;
+                    }
+                    ModeLane::Work => {
+                        prefs.mode_defaults.work_auto = auto_flag;
+                        prefs.mode_defaults.work = legacy;
+                    }
+                }
+                Ok(())
+            },
+            move || match lane {
                 ModeLane::Code => {
-                    prefs.code_permission.last_mode_auto = auto_flag;
-                    prefs.code_permission.last_mode = legacy;
+                    let mut cp = self.code_permission.write();
+                    cp.last_mode_auto = auto_flag;
+                    cp.last_mode = legacy;
                 }
                 ModeLane::Work => {
-                    prefs.mode_defaults.work_auto = auto_flag;
-                    prefs.mode_defaults.work = legacy;
+                    let mut md = self.mode_defaults.write();
+                    md.work_auto = auto_flag;
+                    md.work = legacy;
                 }
-            }
-            Ok(())
-        }) {
+            },
+        ) {
             eprintln!("[sessions] persist mode default for {lane:?} failed: {error}");
         }
     }
