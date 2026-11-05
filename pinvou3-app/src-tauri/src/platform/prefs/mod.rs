@@ -805,17 +805,20 @@ pub struct AdvancedPrefs {
 pub struct NotificationPrefs {
     pub enabled: bool,
     pub task_completed: bool,
+    /// 模型经 request_user_input 等待用户回复时弹系统通知。
+    pub needs_input: bool,
 }
 
 impl Default for NotificationPrefs {
     fn default() -> Self {
         // Linux desktop notification portals vary widely by distro/session.
-        // Keep task completion notifications opt-in there, while preserving
-        // the previous default on Windows/macOS.
+        // Keep desktop notifications opt-in there, while preserving the
+        // previous default on Windows/macOS.
         let enabled = !cfg!(target_os = "linux");
         Self {
             enabled,
             task_completed: enabled,
+            needs_input: enabled,
         }
     }
 }

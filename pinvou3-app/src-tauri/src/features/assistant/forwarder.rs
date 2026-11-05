@@ -727,6 +727,13 @@ pub(crate) fn spawn_event_forwarder(
                             "chat:user_input_required",
                             payload,
                         );
+                        // 后台挂起等待回复时弹桌面通知（可在设置中关闭）；
+                        // 无人值守定时分支已在上方取消输入，不会走到这里。
+                        crate::features::assistant::engine_support::maybe_notify_input_needed(
+                            &app,
+                            &session_id,
+                            &id,
+                        );
                     }
                 }
                 Event::SessionUpdated {

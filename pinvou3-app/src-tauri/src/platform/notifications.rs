@@ -6,6 +6,8 @@ use tauri_plugin_notification::NotificationExt;
 
 const TASK_COMPLETED_TITLE: &str = "任务已完成";
 const TASK_COMPLETED_BODY: &str = "任务已成功完成。您可以在编辑器中查看结果。";
+const INPUT_NEEDED_TITLE: &str = "需要你的输入";
+const INPUT_NEEDED_BODY: &str = "任务正在等待你的回复，点击打开品悟继续。";
 
 #[derive(Default)]
 pub struct NotificationState {
@@ -43,54 +45,72 @@ struct NotificationPrefsOnly {
     notifications: crate::platform::prefs::NotificationPrefs,
 }
 
-pub fn task_completion_enabled() -> bool {
-    let prefs = std::fs::read_to_string(crate::platform::paths::settings_path())
+fn read_notification_prefs() -> NotificationPrefsOnly {
+    std::fs::read_to_string(crate::platform::paths::settings_path())
         .ok()
         .and_then(|raw| serde_json::from_str::<NotificationPrefsOnly>(&raw).ok())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+pub fn task_completion_enabled() -> bool {
+    let prefs = read_notification_prefs();
     prefs.notifications.enabled && prefs.notifications.task_completed
 }
 
+pub fn needs_input_enabled() -> bool {
+    let prefs = read_notification_prefs();
+    prefs.notifications.enabled && prefs.notifications.needs_input
+}
+
 pub fn notify_task_completed(app: &AppHandle) {
+    notify_desktop(
+        app,
+        TASK_COMPLETED_TITLE,
+        TASK_COMPLETED_BODY,
+        "task completion",
+    );
+}
+
+pub fn notify_input_needed(app: &AppHandle) {
+    notify_desktop(app, INPUT_NEEDED_TITLE, INPUT_NEEDED_BODY, "input needed");
+}
+
+fn notify_desktop(app: &AppHandle, title: &str, body: &str, kind: &str) {
     #[cfg(target_os = "linux")]
     {
-        if let Err(e) = send_notify_send() {
+        if let Err(e) = send_notify_send(title, body) {
             eprintln!(
-                "[pinvou3-app] notify-send task completion notification failed: {e}; trying native notification"
+                "[pinvou3-app] notify-send {kind} notification failed: {e}; trying native notification"
             );
-            if let Err(native) = send_native_notification(app) {
-                eprintln!("[pinvou3-app] native task completion notification failed: {native}");
+            if let Err(native) = send_native_notification(app, title, body) {
+                eprintln!("[pinvou3-app] native {kind} notification failed: {native}");
             }
         }
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        if let Err(e) = send_native_notification(app) {
-            eprintln!("[pinvou3-app] native task completion notification failed: {e}");
+        if let Err(e) = send_native_notification(app, title, body) {
+            eprintln!("[pinvou3-app] native {kind} notification failed: {e}");
         }
     }
 }
 
-fn send_native_notification(app: &AppHandle) -> Result<(), String> {
+fn send_native_notification(app: &AppHandle, title: &str, body: &str) -> Result<(), String> {
     app.notification()
         .builder()
-        .title(TASK_COMPLETED_TITLE)
-        .body(TASK_COMPLETED_BODY)
+        .title(title)
+        .body(body)
         .show()
         .map_err(|e| e.to_string())
 }
 
 #[cfg(target_os = "linux")]
-fn send_notify_send() -> Result<(), String> {
+fn send_notify_send(title: &str, body: &str) -> Result<(), String> {
     use std::process::Command;
 
-    crate::platform::os::spawn_detached_and_reap(
-        Command::new("notify-send")
-            .arg(TASK_COMPLETED_TITLE)
-            .arg(TASK_COMPLETED_BODY),
-    )
-    .map_err(|e| e.to_string())
+    crate::platform::os::spawn_detached_and_reap(Command::new("notify-send").arg(title).arg(body))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -150,6 +170,33 @@ mod tests {
             )
             .unwrap();
             assert!(task_completion_enabled());
+        });
+    }
+
+    #[test]
+    fn needs_input_enabled_follows_settings_switch() {
+        with_temp_pinvou3_home("needs-input-switch", |root| {
+            let settings = root.join("settings.json");
+
+            assert_eq!(needs_input_enabled(), !cfg!(target_os = "linux"));
+
+            std::fs::write(
+                &settings,
+                r#"{"notifications":{"enabled":true,"needs_input":false}}"#,
+            )
+            .unwrap();
+            assert!(!needs_input_enabled());
+
+            std::fs::write(&settings, r#"{"notifications":{"needs_input":true}}"#).unwrap();
+            // 缺失的 enabled 从结构体 Default 补齐（Linux 默认关、macOS/Windows 默认开）。
+            assert_eq!(needs_input_enabled(), !cfg!(target_os = "linux"));
+
+            std::fs::write(
+                &settings,
+                r#"{"notifications":{"enabled":true,"needs_input":true}}"#,
+            )
+            .unwrap();
+            assert!(needs_input_enabled());
         });
     }
 
