@@ -575,8 +575,18 @@ function enforceLazyChunks() {
 // thousand step above the 127,839 B web entry and stays 128_000 (161 B
 // headroom). This cap does not promise headroom for unrelated main
 // changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 487_000;
-export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
+//
+// 487_000 → 488_000 desktop and 128_000 → 129_000 web (PR #835, measured
+// per policy): the session fork / archive import wiring joins the entry on
+// both platforms (main.jsx import surface is entry content; the ChatView
+// additions ride the desktop entry and the web chat-view group boundary).
+// Same-base build against the PR #834 fix-wave tip (18e6627cc) measures
+// 486,911 → 487,840 B desktop and 127,839 → 128,263 B web. Both ceilings
+// take the next thousand step, leaving 160 B desktop and 737 B web
+// headroom at the local node 26 measurement. This cap does not promise
+// headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
+export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
   return mode === 'web' ? WEB_MAIN_ENTRY_BUDGET_BYTES : MAIN_ENTRY_BUDGET_BYTES;
