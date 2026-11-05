@@ -23,6 +23,46 @@ pub(super) fn wrap_system_reminder(body: &str, content: &str) -> String {
     format!("<system-reminder>\n{body}\n</system-reminder>\n\n{content}")
 }
 
+/// Dedup key a global desktop notification is filed under. The `':'` is
+/// load-bearing: `NotificationState::should_notify` prunes by the session
+/// prefix before the first colon, so the key must keep the session id and
+/// the event id separable.
+fn desktop_notification_key(session_id: &str, event_id: &str) -> String {
+    format!("{session_id}:{event_id}")
+}
+
+/// Shared tail of the global desktop-notification pipeline, in gate order:
+/// aux exclusion → per-kind pref gate (`check_enabled` runs only here, so
+/// aux sessions never pay the settings-file read) → per-session dedup →
+/// benchmark/eval suppression → send. Both notification kinds name no
+/// session, which is what the aux gate protects.
+fn maybe_send_desktop_notification(
+    app: &AppHandle,
+    session_id: &str,
+    notify_key: String,
+    check_enabled: impl FnOnce() -> bool,
+    send: fn(&AppHandle),
+) {
+    if !global_desktop_notification_in_scope(session_id) {
+        return;
+    }
+    if !check_enabled() {
+        return;
+    }
+    let notification_state = app
+        .try_state::<crate::platform::notifications::NotificationState>()
+        .map(|state| state.should_notify(notify_key));
+    #[cfg(feature = "benchmark-hooks")]
+    let should_notify = notification_state.unwrap_or_else(|| {
+        !crate::features::assistant::timing::eval_observation_enabled(session_id)
+    });
+    #[cfg(not(feature = "benchmark-hooks"))]
+    let should_notify = notification_state.unwrap_or(true);
+    if should_notify {
+        send(app);
+    }
+}
+
 pub(super) fn maybe_notify_task_completed(
     app: &AppHandle,
     session_id: &str,
@@ -33,26 +73,14 @@ pub(super) fn maybe_notify_task_completed(
     if status != TurnOutcomeStatus::Completed || error.is_some() {
         return;
     }
-    if !global_desktop_notification_in_scope(session_id) {
-        return;
-    }
-    if !crate::platform::notifications::task_completion_enabled() {
-        return;
-    }
     let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
-    let notify_key = format!("{session_id}:{key}");
-    let notification_state = app
-        .try_state::<crate::platform::notifications::NotificationState>()
-        .map(|state| state.should_notify(notify_key));
-    #[cfg(feature = "benchmark-hooks")]
-    let should_notify = notification_state.unwrap_or_else(|| {
-        !crate::features::assistant::timing::eval_observation_enabled(session_id)
-    });
-    #[cfg(not(feature = "benchmark-hooks"))]
-    let should_notify = notification_state.unwrap_or(true);
-    if should_notify {
-        crate::platform::notifications::notify_task_completed(app);
-    }
+    maybe_send_desktop_notification(
+        app,
+        session_id,
+        desktop_notification_key(session_id, &key),
+        crate::platform::notifications::task_completion_enabled,
+        crate::platform::notifications::notify_task_completed,
+    );
 }
 
 /// Desktop notification when the engine parks on `request_user_input`: the
@@ -62,25 +90,13 @@ pub(super) fn maybe_notify_task_completed(
 /// fires for sessions with a human operator. Eval hosts suppress it the same
 /// way as completion notifications (observation runs must stay quiet).
 pub(super) fn maybe_notify_input_needed(app: &AppHandle, session_id: &str, input_id: &str) {
-    if !global_desktop_notification_in_scope(session_id) {
-        return;
-    }
-    if !crate::platform::notifications::needs_input_enabled() {
-        return;
-    }
-    let notify_key = format!("{session_id}:{input_id}");
-    let notification_state = app
-        .try_state::<crate::platform::notifications::NotificationState>()
-        .map(|state| state.should_notify(notify_key));
-    #[cfg(feature = "benchmark-hooks")]
-    let should_notify = notification_state.unwrap_or_else(|| {
-        !crate::features::assistant::timing::eval_observation_enabled(session_id)
-    });
-    #[cfg(not(feature = "benchmark-hooks"))]
-    let should_notify = notification_state.unwrap_or(true);
-    if should_notify {
-        crate::platform::notifications::notify_input_needed(app);
-    }
+    maybe_send_desktop_notification(
+        app,
+        session_id,
+        desktop_notification_key(session_id, input_id),
+        crate::platform::notifications::needs_input_enabled,
+        crate::platform::notifications::notify_input_needed,
+    );
 }
 
 /// Whether a turn of this session may raise a global desktop notification
@@ -339,7 +355,21 @@ pub(super) fn scheduled_tool_should_auto_approve(
 
 #[cfg(test)]
 mod tests {
-    use super::global_desktop_notification_in_scope;
+    use super::{desktop_notification_key, global_desktop_notification_in_scope};
+
+    #[test]
+    fn desktop_notification_key_keeps_session_and_event_separable() {
+        // NotificationState::should_notify prunes by the prefix before the
+        // first ':' — a separator drop (or a session-only key) would make
+        // every session share one dedup slot and let one event suppress
+        // another's notification. Pin the shape at the only key builder.
+        let key = desktop_notification_key("0123456789abcdef", "turn_ab12cd34");
+        assert_eq!(
+            key.split_once(':'),
+            Some(("0123456789abcdef", "turn_ab12cd34")),
+            "the dedup key must keep the session id separable from the event id",
+        );
+    }
 
     #[test]
     fn desktop_notifications_exclude_aux_sessions() {
