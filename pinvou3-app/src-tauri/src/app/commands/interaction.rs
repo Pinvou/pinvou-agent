@@ -72,7 +72,8 @@ pub async fn confirm_code_yolo(
 
 /// The per-lane (work/code) global default modes. Fetched at startup / on
 /// entering the draft state to drive the draft-state chip; None = the lane
-/// was never explicitly chosen (defaults code→plan, work→yolo).
+/// was never explicitly chosen (defaults code→plan, work→Auto for new
+/// unbound plain sessions — see `resolved_default_mode`).
 #[tauri::command]
 pub async fn get_mode_defaults(
     store: State<'_, SessionStore>,
@@ -119,9 +120,18 @@ pub async fn set_plan_mode_next(
     app: AppHandle,
 ) -> Result<SessionModeState, String> {
     ensure_mode_target_session("set_plan_mode_next", &session_id, &store)?;
-    store
-        .set_mode(&session_id, SerializableMode::Plan)
-        .map_err(|error| format!("set_plan_mode_next({session_id}): {error:#}"))?;
+    let store = store.inner().clone();
+    // The mode write RMWs the sidecar files (fsync-heavy) under a std Mutex
+    // — join it on a blocking worker instead of parking this runtime
+    // worker, like accept_plan's commit and the settings family.
+    let sid = session_id.clone();
+    let worker_store = store.clone();
+    super::settings::join_blocking("set_plan_mode_next", move || {
+        worker_store
+            .set_mode(&sid, SerializableMode::Plan)
+            .map_err(|error| format!("set_plan_mode_next({sid}): {error:#}"))
+    })
+    .await?;
     publish_session_mode_change(&session_id, &store, &pool, &app).await
 }
 
@@ -138,9 +148,17 @@ pub async fn exit_plan_to_yolo(
     app: AppHandle,
 ) -> Result<SessionModeState, String> {
     ensure_mode_target_session("exit_plan_to_yolo", &session_id, &store)?;
-    store
-        .set_mode(&session_id, SerializableMode::Yolo)
-        .map_err(|error| format!("exit_plan_to_yolo({session_id}): {error:#}"))?;
+    let store = store.inner().clone();
+    // Same blocking-worker join as set_plan_mode_next: the sidecar RMW is
+    // file I/O under a std Mutex and need not park this runtime worker.
+    let sid = session_id.clone();
+    let worker_store = store.clone();
+    super::settings::join_blocking("exit_plan_to_yolo", move || {
+        worker_store
+            .set_mode(&sid, SerializableMode::Yolo)
+            .map_err(|error| format!("exit_plan_to_yolo({sid}): {error:#}"))
+    })
+    .await?;
     publish_session_mode_change(&session_id, &store, &pool, &app).await
 }
 
@@ -703,21 +721,40 @@ pub async fn set_session_mode(
     app: AppHandle,
 ) -> Result<SessionModeState, String> {
     ensure_mode_target_session("set_session_mode", &session_id, &store)?;
-    store
-        .set_mode(&session_id, mode)
-        .map_err(|error| format!("set_session_mode({session_id}): {error:#}"))?;
+    let store = store.inner().clone();
+    // The mode + ask writes each RMW the sidecar files (fsync-heavy) under
+    // a std Mutex — join them on a blocking worker instead of parking this
+    // runtime worker, like accept_plan's commit and the settings family.
+    let sid = session_id.clone();
+    super::settings::join_blocking("set_session_mode", {
+        let store = store.clone();
+        let sid = sid.clone();
+        move || {
+            store
+                .set_mode(&sid, mode)
+                .map_err(|error| format!("set_session_mode({sid}): {error:#}"))
+        }
+    })
+    .await?;
     // ask 半段失败不吞掉 mode 半段：mode 已落库并生效，发布序列照走（广播
     // 携带权威状态，其它表面/窗口收敛到已生效的 mode），ask 错误大声记日志
     // 并回传——命令失败但切换半落地时，前端按广播收敛芯片而不是回滚一个
     // 实际已持久化的 mode。
     let mut ask_error = None;
     if let Some(enabled) = ask_on_guardrail {
-        if let Err(error) = store.set_ask_on_guardrail(&session_id, enabled) {
-            let rendered = format!("set_session_mode({session_id}): ask_on_guardrail: {error:#}");
+        let store = store.clone();
+        let sid = sid.clone();
+        if let Err(error) = super::settings::join_blocking("set_session_mode:ask", move || {
+            store
+                .set_ask_on_guardrail(&sid, enabled)
+                .map_err(|error| format!("set_session_mode({sid}): ask_on_guardrail: {error:#}"))
+        })
+        .await
+        {
             eprintln!(
-                "[commands] {rendered} (mode already persisted; broadcasting authoritative state)"
+                "[commands] {error} (mode already persisted; broadcasting authoritative state)"
             );
-            ask_error = Some(rendered);
+            ask_error = Some(error);
         }
     }
     let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
@@ -740,9 +777,17 @@ pub async fn set_ask_on_guardrail(
     app: AppHandle,
 ) -> Result<SessionModeState, String> {
     ensure_mode_target_session("set_ask_on_guardrail", &session_id, &store)?;
-    store
-        .set_ask_on_guardrail(&session_id, enabled)
-        .map_err(|error| format!("set_ask_on_guardrail({session_id}): {error:#}"))?;
+    let store = store.inner().clone();
+    // Same blocking-worker join as set_session_mode: the sidecar RMW is
+    // file I/O under a std Mutex and need not park this runtime worker.
+    let sid = session_id.clone();
+    let worker_store = store.clone();
+    super::settings::join_blocking("set_ask_on_guardrail", move || {
+        worker_store
+            .set_ask_on_guardrail(&sid, enabled)
+            .map_err(|error| format!("set_ask_on_guardrail({sid}): {error:#}"))
+    })
+    .await?;
     publish_session_mode_change(&session_id, &store, &pool, &app).await
 }
 
