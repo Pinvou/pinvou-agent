@@ -112,12 +112,35 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // İ 与 i+U+0307 两拼 sibling 同时存在于同一 NTFS 目录——极罕见;完美
     // 模拟 $UpCase 需要 std 之外的简单大小写映射,残留按已接受取舍记录。
     //
-    // Round-20 复审补录的另两向残留(均 false-split/可用性方向,不产生
-    // false-merge,现网应用产出的拼写不可达):(a)正斜杠设备拼写
-    // (`//?/C:\doc.`、`\?\UNC/server/…`)折叠出的 key 与 plain、与同文件
-    // 的 verbatim key 均不匹配,成为孤儿 key;(b)词中希腊 sigma(ς/σ):
-    // $UpCase 把二者都折到 Σ(同文件),to_lowercase 保持区分,异拼同文件
-    // 在此分裂成不同 key。
+    // Round-20 复审补录的另两向残留(false-split/可用性方向为主,现网
+    // 应用产出的拼写不可达):(a)正斜杠设备拼写(`//?/C:\doc.`、
+    // `\?\UNC/server/…`)折叠出的 key 与 plain、与同文件的 verbatim key
+    // 均不匹配,成为孤儿 key;(b)希腊 sigma(ς/σ,任意位置——`to_lower-
+    // case` 另有词末 Σ→ς 的 SpecialCasing 规则,净效果与本记录一致,同为
+    // false-split;$UpCase 同款等价对如 µ/μ→Μ 亦同属此类):$UpCase 把
+    // 二者都折到 Σ(同文件),to_lowercase 保持区分,异拼同文件在此分裂
+    // 成不同 key。
+    //
+    // Round-21 复审修正:上面的「不产生 false-merge」对归一化敏感路径上
+    // 的设备拼写族不成立——`//?/` 与 `\\.\` 拼写(反斜杠形态以外)不命中
+    // verbatim 前缀识别(ASCII 小写化匹配要求反斜杠),落入 plain 臂:
+    // `//?/C:\doc.`(敏感,句点被剥离)与 `//?/C:\doc`(Win32 把 `/` 折成
+    // `\` 后即字面 `\\?\C:\doc` = plain `C:\doc`,不敏感)同键——两个真实
+    // 不同文件 false-merge,爆炸半径与上方 İ 残留相同(其一内容可在另一
+    // 的授予根下交付)。缓解:现网应用只产出 canonicalize 的 `\\?\` 拼写,
+    // `//?/`/`\\.\` 不可达;且需 `doc.` 与字面 `doc` 兄弟同目录共存(极罕
+    // 见)。同类:`\\.\C:\doc.` 与 `\\.\C:\doc`(`.` 组件被排除在敏感判定
+    // 外,设备命名空间走 plain 臂)。记录为已接受的文档化残留,不在本波
+    // 修(constant-前缀识别的扩展是行为变更,需独立评估)。
+    //
+    // 另一 false-split(round-21 复审补录,无方向性风险):点/空格结尾组
+    // 件后随 `..` 导航时,逐组件剥离与 Win32 的先解析后剥离不一致——
+    // `C:\doc.\..\doc\f.txt`(Win32 解析为 `C:\doc\f.txt`)键出
+    // `c:/doc/../doc/f.txt`,而其已解析 plain 拼写键出 `c:/doc/f.txt`,同
+    // 文件双 key。方向是 fail-closed(重复 key → 重复授权/去重 miss,无
+    // 旁路),形状罕见;本波补行为钉
+    // `dotted_component_navigation_keys_to_the_normalized_form` 把现状
+    // 锁住。
     let folded = super::super::interface::volume_fold_spelling(&stripped.replace('\\', "/"));
     if !has_win32_normalization_sensitive_component(path) {
         return folded;
@@ -555,6 +578,14 @@ fn path_starts_with_case_insensitive(path: &Path, base: &Path) -> bool {
 }
 
 fn normalized_path_key(path: &Path) -> String {
+    // Round-21 复审(残余记录,原 body 未注明):本匹配器用 to_ascii_lower-
+    // case,不接 volume_fold_* 共享折叠表——base 含非 ASCII 大小写等价字
+    // 符($UpCase 等价:K Kelvin、ſ、ı 等)时 under-match,敏感根排除方向
+    // fail-open。缓解:调用方在上游先 canonicalize(file_ingest 的根与候
+    // 选都过 canonicalize;canonicalize 失败的候选更早被可读性门拒绝),
+    // canonicalize 成功会重新显露真实拼写,故该形态在现网调用路径不可达。
+    // 与 identity-key 的 İ 残留同一族:完美模拟 $UpCase 需要 std 之外的
+    // 简单大小写映射;扩展为共享折叠表是行为变更,按已接受取舍记录。
     path.to_string_lossy()
         .replace('\\', "/")
         .trim_end_matches('/')
@@ -830,6 +861,18 @@ mod tests {
             filesystem_path_identity_key(r"C:\Users\p\ıd_rsa"),
             filesystem_path_identity_key(r"C:\Users\p\ID_RSA"),
             "dotless-i folds to I under $UpCase, matching the volume-fold primitive"
+        );
+        // Round-21 复审:点/空格结尾组件后随 `..` 导航的已知 false-split
+        // (上方函数注释「另一 false-split」段的现状锁):逐组件剥离保留
+        // `..`,键为 `c:/doc/../doc/f.txt`;Win32 先解析后剥离的真实形态是
+        // `C:\doc\f.txt`(键 `c:/doc/f.txt`)——同文件双 key,fail-closed
+        // 方向。本钉锁住现状(改键策略是行为变更,须有意识地翻红本钉),
+        // 不把它当恒真契约。
+        assert_eq!(
+            filesystem_path_identity_key(r"C:\doc.\..\doc\f.txt"),
+            "c:/doc/../doc/f.txt",
+            "the dotted-component + `..` shape keys per-component (documented \
+             false-split residual; changing the strategy is a behavior change)"
         );
         // Separators and case fold exactly as before the prefix stripping.
         assert_eq!(

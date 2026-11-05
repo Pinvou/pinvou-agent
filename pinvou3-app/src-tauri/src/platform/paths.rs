@@ -58,7 +58,15 @@ pub fn redact_storage_prefix(text: &str) -> String {
     // UNC 家目录的 verbatim-UNC 规范化拼写(`\\?\UNC\server\share\…`,
     // canonicalize 类构造才产生)都不含 needle 原文,不折叠;两者在本
     // PR 前的逐字节 replace 下同样漏,非回归。已核当前错误构造器无一
-    // 产生这两种拼写;未来引入 canonicalize 类构造时须同步扩 needle。)
+    // 产生这两种拼写;未来引入 canonicalize 类构造时须同步扩 needle。
+    // Round-21 复审补记第三类同层残留:PINVOU3_HOME 为相对值(如测试
+    // 的 `p8`、畸形部署的裸目录名)时 needle 就是该相对串,不含分隔符的
+    // 文本中任何相同子串都会被过折叠(display-safe 的过宽方向,与上方
+    // Linux 大小写过折叠同族);needle 为空已在上方拦截,截断风险无。
+    // 另记于此而非调用点:redact_storage_prefix 只折 `~/.pinvou3` 存储
+    // 根,不折用户 `$HOME` 本身——`list_host_files` 缺省枚举 `$HOME` 的
+    // 错误臂在 round-21(M3)改走命令层稳定码折叠,依赖本原语兜 `$HOME`
+    // 的用法兜不住,必须走稳定码。)
     let folded = replace_ascii_case_insensitive(text, &prefix, "~/.pinvou3");
     if folded == text {
         folded
