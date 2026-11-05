@@ -1,5 +1,49 @@
 # CodeWhale Fork 修改清单
 
+## Pending review: safe engine resource retirement (T4)
+
+The community uploaded-plugin uninstall fix pairs a local application overlay
+with generic CodeWhale lifetime corrections on registered baseline `11cba403d`:
+
+- Join the existing MCP boot worker before closing transports, without draining
+  UI progress into a stopped consumer. A late handshake cannot outlive shutdown.
+- Completion futures own only their receipt, without retaining the handle,
+  operation sender or event queue.
+- A private capacity-one lifecycle channel requests idle retirement on the
+  canonical actor. A ready/commit handshake prevents a cancelled proposal from
+  causing a later shutdown. All actor wait branches serve it. Retirement checks
+  existing goal, advisor ownership, child and shell state plus queued delivery;
+  it adds no advisor state, wire `Op`, protocol field or remote/model command.
+  Hosts must fence new submissions; busy engines preserve their accepted work.
+  A synchronous host predicate runs after actor readiness and before commit,
+  so dequeued events still undergoing host persistence or terminal delivery
+  prevent retirement without closing the cached actor.
+
+The application owns uninstall policy, lock ordering and transaction lifetime.
+An app-side event snapshot cannot establish the actor's atomic idle boundary;
+the narrow lifetime interface avoids cancelling an unobserved autonomous turn.
+This reusable correction belongs upstream. Existing wire parity stays unchanged.
+
+Behavior tests include `forkguard_shutdown_waits_for_pending_mcp_boot_without_emitting_events`,
+`forkguard_completion_wait_does_not_retain_engine_handle`, the owning
+`idle_shutdown` tests (including
+`forkguard_idle_shutdown_checks_host_completion_after_actor_ready`), and
+`forkguard_idle_shutdown_preserves_an_autonomous_turn_before_host_observation`.
+The latter uses a controlled injected model, preserves the completed result and
+snapshot, then retires normally. See [the application contract](upload-plugin-uninstall.md).
+
+The parent review candidate pins CodeWhale commit `0022e737445a962a399e4470ad8cb683a07ac899`
+from [CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149). Its tree is byte-identical to the
+v3-reviewed core tree `63a400c6c8dcb47769f1bef4c0b189c129297aa6`.
+The application runtime source is unchanged from that review; this delivery
+step records the committed dependency and updates review-head metadata only.
+
+Public maintenance remains `11cba403d`. The parent PR stays draft until the
+dependency lands; then align its gitlink/register to the actual public merged
+commit and run the applicable final-SHA gates. The public-head verifier and
+immutable tags are unchanged. Local receipts do not establish clean committed
+product-build, merge or release eligibility.
+
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
