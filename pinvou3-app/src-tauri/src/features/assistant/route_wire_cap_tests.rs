@@ -151,20 +151,16 @@ struct WireCapEngine {
     provider_kind: deepseek_tui::config::ApiProvider,
 }
 
-/// With `expected_declared_output` set to `Some`, pin the route declaration
-/// the engine actually receives (the `PINVOU_DOCUMENTED_OUTPUT` table-row
-/// value); `None` skips that anchor assertion so cases whose declared value
-/// depends on the process-wide foundation catalog cache — and are not the
-/// subject of this regression (the K3.1 wire omission) — can reuse the same
-/// boot seam. `customize_model` tweaks the SavedModel before assembly
-/// (vendor / stored effort tier).
+/// `expected_declared_output` pins the route declaration the engine actually
+/// receives (the `PINVOU_DOCUMENTED_OUTPUT` table-row value). `customize_model`
+/// tweaks the SavedModel before assembly (vendor / stored effort tier).
 async fn boot_wire_cap_engine(
     label: &str,
     preset: crate::platform::prefs::ModelPreset,
     model: &str,
     base_url: &str,
     project: &Path,
-    expected_declared_output: Option<u64>,
+    expected_declared_output: u64,
     customize_model: impl FnOnce(&mut crate::platform::prefs::SavedModel),
 ) -> WireCapEngine {
     let mut bridge =
@@ -197,15 +193,13 @@ async fn boot_wire_cap_engine(
     let dt_config = bridge.build_dt_config();
     let provider_kind = dt_config.api_provider();
     let engine_config = bridge.build_engine_config_for_session("wire-cap-session");
-    if let Some(expected_declared_output) = expected_declared_output {
-        assert_eq!(
-            engine_config
-                .active_route_limits
-                .and_then(|limits| limits.output_tokens),
-            Some(expected_declared_output),
-            "{label}: the engine config must carry the documented output declaration"
-        );
-    }
+    assert_eq!(
+        engine_config
+            .active_route_limits
+            .and_then(|limits| limits.output_tokens),
+        Some(expected_declared_output),
+        "{label}: the engine config must carry the documented output declaration"
+    );
     let mut engine_config = engine_config;
     engine_config.snapshots_enabled = false;
     engine_config.terminal_chrome_enabled = false;
@@ -263,7 +257,7 @@ async fn run_turn_against_mock(
     model: &str,
     base_url: &str,
     project: &Path,
-    expected_declared_output: Option<u64>,
+    expected_declared_output: u64,
 ) {
     let engine = boot_wire_cap_engine(
         label,
@@ -385,15 +379,7 @@ async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
         ),
     ] {
         let (base_url, probe, server_task) = start_wire_cap_probe().await;
-        run_turn_against_mock(
-            label,
-            preset,
-            model,
-            &base_url,
-            &project,
-            Some(declared_output),
-        )
-        .await;
+        run_turn_against_mock(label, preset, model, &base_url, &project, declared_output).await;
         let bodies = probe.bodies.lock().expect("wire-cap bodies").clone();
         server_task.abort();
         assert!(
@@ -439,7 +425,7 @@ async fn engine_self_started_edit_resend_keeps_declared_output_on_the_wire() {
         "deepseek-flash",
         &base_url,
         &project,
-        Some(384_000),
+        384_000,
         |_| {},
     )
     .await;
@@ -531,7 +517,7 @@ async fn k31_normal_chat_wire_body_omits_thinking_and_reasoning_effort() {
             // 1,048,576 minus the 1,024 context reservation
             // (`route_limits_for_model` clamps output to context − 1_024
             // when the documented output equals the context window).
-            Some(1_047_552),
+            1_047_552,
             |saved| {
                 // Catalog rows stamp the vendor; the bridge routes by it
                 // (vendor "kimi" → moonshot) and recognizes the K3.1 family
