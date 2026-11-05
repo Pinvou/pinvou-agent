@@ -721,6 +721,28 @@ pub(crate) fn spawn_event_forwarder(
                                 );
                             }
                         });
+                    } else if crate::features::assistant::windowless_host::is_windowless_host() {
+                        // round-11 评审：与上方 ApprovalRequired 的 windowless 臂
+                        // 同一收口——windowless 宿主（headless / 基准 / 评测
+                        // boot lane）没有可应答 typed ask 的人，登记 pending 并
+                        // 发输入确认事件只会把无人值守任务钉到整任务超时（run
+                        // 报 timeout 而不是可解释结果）。语义同 safety-modes §5
+                        // 「windowless 宿主确定性 decline」：底座把取消收口为
+                        // 工具结果，模型可改道继续，任务得以完成（fail-safe
+                        // 方向）。不登记 pending、不发事件：无人可答的确认卡
+                        // 不得铸造。
+                        eprintln!(
+                            "[pinvou3-app] declining user input id={} (windowless host has no input consumer)",
+                            id
+                        );
+                        let h = approve_handle.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = h.cancel_user_input(id).await {
+                                eprintln!(
+                                    "[pinvou3-app] windowless user-input decline failed: {error:#}"
+                                );
+                            }
+                        });
                     } else {
                         // 普通对话继续交给前端或远程控制端处理。登记 pending，
                         // 供前端 remount 后经 get_pending_user_inputs 恢复确认卡。

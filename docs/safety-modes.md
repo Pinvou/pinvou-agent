@@ -129,8 +129,12 @@ OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体
   一律确定性 decline（deny，fail-safe；force_prompt hold 同样 decline——它
   请求的正是人，而这里没有人），不登记 pending、不弹审批事件；模型看到拒绝
   可改道，任务得以完成。定时无人值守臂保留在先（任务保存策略的非 force 确定性
-  放行不变）。未来若为 headless 显式接入决策工作流（如 runtime 决策 API），
-  该臂需随之收敛为「显式连接的消费者」判定。
+  放行不变）。**typed ask（`request_user_input`）同臂收口（round-11 评审）**：
+  `Event::UserInputRequired` 在 windowless 宿主上同样确定性取消
+  （cancel_user_input，底座收口为工具结果），不登记 pending、不发
+  `chat:user_input_required`——否则无人可答的输入卡把 agentic run 钉到整任务
+  超时（报 timeout 而非可解释结果）。未来若为 headless 显式接入决策工作流
+  （如 runtime 决策 API），该臂需随之收敛为「显式连接的消费者」判定。
 - **composer `!` 不武装**：用户手敲的命令输入即批准（#5191），typed deny 仍
   硬拒，execpolicy/sandbox 仍是硬边界；武装只作用于模型来源调用。
 - **子代理镜像主线**：继承 auto-approve 的子代理对 delegated typed-ask 也
