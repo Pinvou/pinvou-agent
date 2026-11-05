@@ -2374,9 +2374,10 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Kimi, "kimi-k2.6", 262_144),
             // The K3.1 flagship rows (2026-11-03 refresh): officially 1M
             // ("K3 系列模型均支持 1,048,576 tokens 上下文窗口",
-            // platform.kimi.com pricing); carried by the PINVOU_OVERRIDES
-            // entries — listed here so the settings-page rows stay covered
-            // by this charter (2026-11-05 review).
+            // platform.kimi.com pricing); carried by the PINVOU_KNOWN
+            // supplemental rows — listed here so the settings-page rows stay covered
+            // by this charter (2026-11-05 review; table attribution fixed in
+            // the round-8 review).
             (ModelPreset::Kimi, "kimi-k3.1-pro", 1_048_576),
             (ModelPreset::Kimi, "kimi-k3.1-pro-highspeed", 1_048_576),
             // The Kimi Coding Plan rides the openai_compatible preset. Bare
@@ -2473,8 +2474,12 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // kimi-k2.5 has no base row — all three fall to the preset
             // fallback like the auto row (2026-11-05 review pins).
             (ModelPreset::Qwen, "deepseek-v4.1-flash-1017", 1_000_000),
-            (ModelPreset::Qwen, "hy4", 131_072),
-            (ModelPreset::Qwen, "hy4-preview", 131_072),
+            // hy4 / hy4-preview are tencent_token_plan rows whose group
+            // preset is openai_compatible (the Qwen attribution in the
+            // 2026-11-05 pins was a mislabel; the pinned value matches both
+            // presets' fallback, fixed round-8 review).
+            (ModelPreset::OpenaiCompatible, "hy4", 131_072),
+            (ModelPreset::OpenaiCompatible, "hy4-preview", 131_072),
             (ModelPreset::Qwen, "kimi-k2.5", 131_072),
             // Doubao: evolving is already 1M; the 2-1 -260628 generation and
             // the 2-0 snapshots are officially 256k, while the -260915
@@ -2600,7 +2605,8 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Gemini, "gemini-4-argon", 1_048_576),
             // The Kimi Code K3.1 spellings (2026-11-03 refresh; the Kimi
             // Coding Plan rides the openai_compatible preset) resolve 1M via
-            // the override rows, and their `[1m]` composites via the 1M
+            // the PINVOU_KNOWN supplemental rows, and their `[1m]` composites
+            // via the 1M
             // hint — listed here so the settings-page/ACP-datalist rows
             // stay covered by this charter (2026-11-05 review). The two
             // bare preset rows were deferred from the catalog on

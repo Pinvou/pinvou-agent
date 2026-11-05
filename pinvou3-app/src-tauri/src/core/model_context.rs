@@ -334,7 +334,8 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     ("gpt-6-luna", 128_000),
     ("gpt-6-astra", 128_000),
     // gpt-6.1-sol: officially documented Max Output Tokens 128,000 on the
-    // same Azure capability table as above (page updated 2026-10-08) — a
+    // same Azure capability table as above (page updated 2026-10-29 — the
+    // 2026-10-08 stamp in earlier revisions drifted; round-8 review) — a
     // first-party official figure, unlike the corroborated gpt-6 rows above.
     ("gpt-6.1-sol", 128_000),
     // gpt-6.1-terra rides the same family capability table (added to the
@@ -831,6 +832,10 @@ mod tests {
             Some(1_048_576)
         );
         assert_eq!(resolved_context_window("k3.1-pro[1m]"), Some(1_048_576));
+        // Round-8 pin: kimi-k3[1m] (the moonshot preset's models1m
+        // suggestion) rides the same hint — it had no direct context pin,
+        // so a kimi-3-specific hint narrowing could silently drop it.
+        assert_eq!(resolved_context_window("kimi-k3[1m]"), Some(1_048_576));
         assert_eq!(
             resolved_context_window("gpt-5.6-sol"),
             deepseek_tui::models::context_window_for_model("gpt-5.6-sol")
