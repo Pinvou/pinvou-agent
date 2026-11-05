@@ -717,6 +717,92 @@ pub(super) fn create_session_record(
     Ok(session.metadata)
 }
 
+/// 从第 `keep_turns` 轮末尾分叉出新会话（无损 what-if 分支）。
+///
+/// 原会话与其在跑引擎完全不动：新会话以全新 session id 落盘，携带源会话
+/// 前 `keep_turns` 轮消息（`keep_turns == 当前总轮数` 即全量分支），血缘经
+/// [`SessionMetadata::mark_forked_from`] 记入 `parent_session_id`。
+///
+/// 刻意不随克隆走的内容：artifacts（实体存放在源会话 artifacts 目录，复制
+/// 记录会形成跨会话指针）、journal/leaf 兼容投影（messages 是非 journal
+/// 会话的规范载体，陈旧 journal 会在加载时复活被截掉的消息）、成本快照与
+/// token/时长累计（新分支尚未产生消耗，保留会虚报）。审批凭据随克隆保留
+/// （crate 私有字段无法清除；审批历史属于对话内容，分叉分支继承它符合语义）。
+/// 新会话引擎按既有 lazy respawn 路径在首次发送时注水，无需在此触碰 pool。
+#[tauri::command]
+pub async fn fork_session(
+    session_id: String,
+    keep_turns: u32,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<SessionMetadata, String> {
+    // 快照一致性：turn 进行中 messages/metadata 仍被 forwarder 更新，分叉会
+    // 携带半轮状态；与 rewind_to_turn 同一口径先拒绝。
+    if pool.is_turn_active(&session_id) {
+        return Err("会话正在执行，请等当前轮结束再分叉".to_string());
+    }
+    let store_inner = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        fork_session_record(&store_inner, &session_id, keep_turns)
+    })
+    .await
+    .map_err(|error| format!("fork_session: 任务失败: {error}"))?
+    .map_err(|error| format!("fork_session: {error:#}"))
+}
+
+fn fork_session_record(
+    store: &SessionStore,
+    session_id: &str,
+    keep_turns: u32,
+) -> anyhow::Result<SessionMetadata> {
+    if store.is_scheduled_session(session_id)? {
+        anyhow::bail!("定时任务运行会话不支持分叉");
+    }
+    // aux 是主会话的受限只读旁路（ADR-0024），分叉语义未定义，如实拒绝。
+    if crate::features::sessions::validators::is_aux_session_id(session_id) {
+        anyhow::bail!("辅助对话不支持分叉");
+    }
+    let source = store.load(session_id)?;
+    let turn_prompt_indices: Vec<usize> = source
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| deepseek_tui::is_user_turn_prompt(message))
+        .map(|(index, _)| index)
+        .collect();
+    let total_turns = turn_prompt_indices.len();
+    let keep = keep_turns as usize;
+    if keep > total_turns {
+        anyhow::bail!("会话当前只有 {total_turns} 轮，无法分叉到第 {keep_turns} 轮末尾");
+    }
+    // keep == total_turns：全量分支（切点即末尾）。
+    let cut = if keep == total_turns {
+        source.messages.len()
+    } else {
+        turn_prompt_indices[keep]
+    };
+
+    let mut forked = source.clone();
+    forked.metadata.id = crate::features::sessions::validators::generate_session_id();
+    forked.metadata.mark_forked_from(&source.metadata);
+    // 血缘计数取实际捕获的消息数：metadata.message_count 由引擎路径维护，
+    // 直存/外部改写的记录可能滞后，以 messages 为准。
+    forked.metadata.forked_from_message_count = Some(source.messages.len());
+    forked.metadata.created_at = chrono::Utc::now();
+    forked.metadata.updated_at = chrono::Utc::now();
+    forked.messages.truncate(cut);
+    forked.metadata.message_count = forked.messages.len();
+    // 新分支尚未产生消耗：成本/token/时长归零（血缘里已记录来源）。
+    forked.metadata.cost = Default::default();
+    forked.metadata.total_tokens = 0;
+    forked.metadata.cumulative_turn_secs = 0;
+    forked.artifacts = Vec::new();
+    forked.journal = None;
+    forked.leaf_id = None;
+    store.save(&forked)?;
+    Ok(forked.metadata)
+}
+
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
@@ -1392,6 +1478,34 @@ pub async fn export_session(
         compressed_bytes: summary.compressed_bytes(),
         session_id: summary.session_id,
     }))
+}
+
+/// 导入会话归档（`export_session` 的逆操作）：弹文件选择框，把选中的
+/// tar.xz 归档（或裸 session .json）装回会话存储。已存在的 id 跳过；
+/// 结果按 imported / skipped_existing / failed 三类返回给前端组 toast。
+/// 用户取消选择返回 None。
+#[tauri::command]
+pub async fn import_session_archive(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+) -> Result<Option<crate::features::sessions::SessionImportSummary>, String> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("Session archive", &["tar.xz", "json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|error| format!("resolve_import_path_failed: {error}"))?;
+    let store = store.inner().clone();
+    let summary = tokio::task::spawn_blocking(move || store.import_archive(&path))
+        .await
+        .map_err(|error| format!("session_import_task_failed: {error}"))?
+        .map_err(|error| format!("session_import_failed: {error:#}"))?;
+    Ok(Some(summary))
 }
 
 /// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。
@@ -2317,4 +2431,144 @@ fn first_send_title_source_strips_message_then_mention() {
         "真正的正文",
         "both blocks strip outermost-first, leaving the body"
     );
+}
+
+#[cfg(test)]
+mod fork_import_tests {
+    use super::fork_session_record;
+    use crate::features::sessions::SessionStore;
+    use deepseek_tui::models::{ContentBlock, Message, Role};
+
+    /// 与 features::sessions::tests::isolated_store 同一隔离模式
+    /// （test_support::locked_env 串行化 PINVOU3_HOME；守卫持锁到测试结束）。
+    fn isolated_store() -> (
+        SessionStore,
+        std::sync::MutexGuard<'static, ()>,
+        crate::platform::test_support::EnvRestore,
+    ) {
+        let (lock, env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-fork-import-test-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: test_support::locked_env 持锁；env 写入进程内串行。
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        (
+            SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot"),
+            lock,
+            env,
+        )
+    }
+
+    fn turn_prompt(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn assistant_text(text: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn fork_truncates_at_turn_boundary_and_records_lineage() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let mut session = store.load(&source.metadata.id).expect("load");
+        session.metadata.title = "源会话".into();
+        // 3 个用户 turn（prompt/assistant 对 + 尾部 prompt）。
+        session.messages = vec![
+            turn_prompt("第一轮"),
+            assistant_text("回复一"),
+            turn_prompt("第二轮"),
+            assistant_text("回复二"),
+            turn_prompt("第三轮"),
+        ];
+        store.save(&session).expect("seed messages");
+
+        // fork_session_record 返回 anyhow::Result；非 String 路径直接 expect。
+        let forked = fork_session_record(&store, &source.metadata.id, 2).expect("fork");
+        assert_ne!(forked.id, source.metadata.id);
+        assert_eq!(
+            forked.parent_session_id.as_deref(),
+            Some(source.metadata.id.as_str()),
+            "lineage must point at the source session"
+        );
+        assert_eq!(forked.forked_from_message_count, Some(5));
+        assert_eq!(forked.message_count, 4, "kept turns 1-2 inclusive");
+        assert_eq!(forked.title, "源会话", "fork keeps the sibling title");
+        assert_eq!(forked.total_tokens, 0, "fresh branch has not spent tokens");
+
+        let reloaded = store.load(&forked.id).expect("load forked");
+        assert_eq!(reloaded.messages.len(), 4);
+        assert_eq!(
+            reloaded.messages[3].role,
+            Role::Assistant,
+            "cut lands after the kept turn's reply"
+        );
+
+        let original = store.load(&source.metadata.id).expect("reload source");
+        assert_eq!(
+            original.messages.len(),
+            5,
+            "fork must not mutate the source session"
+        );
+    }
+
+    #[test]
+    fn fork_rejects_out_of_range_turn_and_scheduled_sessions() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let error = fork_session_record(&store, &source.metadata.id, 1)
+            .expect_err("0-turn session cannot fork past its end");
+        assert!(error.to_string().contains("轮"), "{error:#}");
+    }
+
+    #[test]
+    fn import_round_trips_export_and_skips_existing_id() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let mut session = store.load(&source.metadata.id).expect("load");
+        session.messages = vec![turn_prompt("导入往返"), assistant_text("回复")];
+        store.save(&session).expect("seed messages");
+
+        let archive = std::env::temp_dir().join(format!(
+            "pinvou3-import-roundtrip-{}-{}.tar.xz",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        store
+            .export_archive(&source.metadata.id, &archive, false)
+            .expect("export");
+
+        // 同 id 已存在 → 跳过，不重复导入。
+        let summary = store.import_archive(&archive).expect("import");
+        assert!(summary.imported.is_empty(), "id already exists");
+        assert_eq!(summary.skipped_existing, vec![source.metadata.id.clone()]);
+
+        // 删源后重导 → 装回。
+        store.delete(&source.metadata.id).expect("delete source");
+        let summary = store.import_archive(&archive).expect("re-import");
+        assert_eq!(summary.imported, vec![source.metadata.id.clone()]);
+        let restored = store.load(&source.metadata.id).expect("restored");
+        assert_eq!(restored.messages.len(), 2);
+        let _ = std::fs::remove_file(&archive);
+    }
 }

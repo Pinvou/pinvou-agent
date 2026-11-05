@@ -1964,7 +1964,7 @@ function hasStoredCredential(record) {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, inputNeededNotif, setInputNeededNotif, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, inputNeededNotif, setInputNeededNotif, importingSessions, onImportSessionArchive, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
@@ -2561,6 +2561,19 @@ function hasStoredCredential(record) {
               )}
             </div>
           </section>
+          )}
+          {/* 会话备份导入：桌面独占（web 车道无文件对话框，也不该触及宿主
+              会话存储），放在通用页尾部与导出入口（侧栏会话菜单）互为闭环。 */}
+          {!isWeb && onImportSessionArchive && (
+            <IOSSection title={t.uiSettings.sessionsSection}>
+              <IOSRow label={t.uiSettings.importSessionsArchive} desc={t.uiSettings.importSessionsDesc}>
+                <button type="button" data-testid="settings-import-sessions" disabled={importingSessions}
+                  onClick={onImportSessionArchive}
+                  className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${importingSessions ? 'opacity-60 cursor-not-allowed' : ''} ${actionButton('blue')}`}>
+                  {importingSessions ? t.uiSettings.importingSessions : t.uiSettings.importSessionsArchive}
+                </button>
+              </IOSRow>
+            </IOSSection>
           )}
         </>
         );
