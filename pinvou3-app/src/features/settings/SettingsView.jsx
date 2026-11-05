@@ -2520,8 +2520,15 @@ function hasStoredCredential(record) {
             <IOSRow label={t.uiSettings.taskNotice} desc={t.uiSettings.taskNoticeDesc}>
               <IOSSwitch checked={taskCompletedNotif} onChange={setTaskCompletedNotif} />
             </IOSRow>
+            {/* 任务完成开关是主开关（载荷携带 enabled）。「需要输入」的生效显示
+                按 intent && 主开关派生，主开关关闭时禁用本行——否则开关会在
+                主开关关闭时显示开启却永不触发（Rust 侧 enabled && needs_input）。 */}
             <IOSRow label={t.uiSettings.inputNotice} desc={t.uiSettings.inputNoticeDesc}>
-              <IOSSwitch checked={inputNeededNotif} onChange={setInputNeededNotif} />
+              <IOSSwitch
+                checked={inputNeededNotif && taskCompletedNotif}
+                disabled={!taskCompletedNotif}
+                onChange={setInputNeededNotif}
+              />
             </IOSRow>
           </IOSSection>
           )}
