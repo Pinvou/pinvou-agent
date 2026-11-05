@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 99 maintenance commits, eleven maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 108 maintenance commits, eleven maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,13 +10,22 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # batch + the pptx cross-repo integration test, rewritten on 2026-11-05 to
 # the document-precise MFJS keyword set — route tiers deleted, root unions
 # flattened again, advisory keywords/unsupported enums stripped before
-# validation — rebased onto public maintenance CodeWhale#123 e5a8af221)
+# validation — rebased onto public maintenance CodeWhale#123 e5a8af221,
+# then extended the same day by the nine-commit optimality + required
+# audit wave: MFJS default ships verbatim on any node, the mirrored
+# budgets align to the walle validator defaults, scalar consts translate
+# through the enum strip, Anthropic input_schema ships verbatim on all
+# four Messages lanes, the DeepSeek strict pipeline acts only on official
+# family routes, digit-led Moonshot tool names get the documented _
+# prefix, todo item status defaults out of required, and the pptx fixture
+# is re-exported from the current parent server with per-branch required
+# groups pinned in the sentinel test)
 # leads the published integration base
 # f1eb10efcfe2468fde42d1724d7f5f19d54b904c (CodeWhale#114 and #125 merged);
 # MAINTENANCE_BASE below stays the published maintenance head until the
 # candidate lands and the gitlink returns to it.
-EXPECTED_HEAD="f4023ffce6e44a7b6e2bad0491df171818a38693"
-EXPECTED_COMMITS=99
+EXPECTED_HEAD="18f4ef9448841a9a82b552c01c710ae08740e633"
+EXPECTED_COMMITS=108
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -426,6 +435,27 @@ fingerprints=(
   "T11|采样剥离覆盖海外 api.kimi.ai host  |CodeWhale/crates/tui/src/client/chat.rs|fn kimi_code_fixed_sampling_covers_the_overseas_api_kimi_ai_endpoint"
   "T11|MiniMax reasoning_details 网关门控  |CodeWhale/crates/tui/src/client/chat.rs|fn minimax_gateway_route_still_mirrors_thinking_as_reasoning_details"
   "T11|pptx 文档集跨仓集成哨兵            |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn shipped_pptx_slides_schema_passes_moonshot_validation_on_the_document_set"
+
+  # 2026-11-05 最优性修复+required 终审波（f4023ffce → 18f4ef944，9 个提交）：
+  # default 按文档任意节点逐字放行；引擎镜像预算对齐 walle 校验器默认
+  # （500/3000/30/1000/75000，源码对照声明）；bool/null const 经既有 enum
+  # 剥除管线标量化存活；Anthropic 四条 Messages 线 input_schema 逐字透传
+  # （放弃无文档依据的根展平）；DeepSeek strict 管线收口官方家族路由、
+  # 可选属性剔除+description 注记、非数值 const 落 documented enum；
+  # Moonshot 数字开头工具名补 _ 前缀；todo item status 退出 required
+  # （执行端默认 pending 佐证）；pptx fixture 自当前父仓 server.py 重导出，
+  # 全分支 required 组钉死断言并入上方既有跨仓哨兵测试（指纹不增条）。
+  "T11|MFJS default 任意节点逐字放行          |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_ships_default_on_any_node_without_type_check"
+  "T11|镜像预算对齐 walle 默认（anyOf 500 常量）|CodeWhale/crates/tui/src/tools/schema_sanitize.rs|const MFJS_MAX_ANY_OF_ITEMS: usize = 500;"
+  "T11|预算贴界双向钉（对齐值发、越界拒）      |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_enforces_anyof_and_aggregate_resource_limits"
+  "T11|bool/null const 经 enum 剥除标量化存活  |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_scalarizes_bool_and_null_const_through_the_enum_strip"
+  "T11|Anthropic input_schema 逐字透传不展平   |CodeWhale/crates/tui/src/client/anthropic.rs|fn anthropic_wire_ships_input_schema_verbatim_without_root_flattening"
+  "T11|strict 可选属性剔除并回注 description   |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn strict_sanitize_removes_optional_properties_and_reports_them"
+  "T11|strict 非数值 const 落 documented enum |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn strict_sanitize_lands_non_numeric_const_on_the_documented_enum"
+  "T11|strict 管线收口官方 DeepSeek 家族路由   |CodeWhale/crates/tui/src/config/tests.rs|fn strict_pipeline_scope_is_official_deepseek_family_routes"
+  "T11|strict doctor 自定义端点判出界         |CodeWhale/crates/tui/src/lib.rs|fn strict_tool_mode_doctor_marks_custom_endpoint_as_out_of_scope"
+  "T11|Moonshot 数字开头工具名补 _ 前缀        |CodeWhale/crates/tui/src/client/chat.rs|fn moonshot_wire_prefixes_digit_led_tool_names_to_the_documented_pattern"
+  "T11|todo status 退出 required 默认 pending  |CodeWhale/crates/tui/src/tools/todo.rs|fn todo_item_status_is_optional_with_a_pending_default"
 
   "APP|unified 2000-step budget default           |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|const HOST_STEP_BUDGET: u32 = 2_000;"
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
