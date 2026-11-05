@@ -2860,18 +2860,30 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // Auto 档显式拒绝；通告先落再拒绝：经 runSyncOnSession 落到 sid 自己的
   // buffer，后台重试也标注正确的会话；throw 继续走调用方既有的失败面。
   // get_mode_state 失败 fail-open 放行（事后通告仍是竞态兜底）。
-  async function webAutoAdmissionGate(sid, admitted) {
+  // opts.requireExecutablePostAccept（zhuowp 5780927743 第三条）：受理面
+  // 还须校验**将生效的执行模式**——accept_plan 开 turn 后恢复 pre_plan_mode
+  // （缺省回退 Auto，重启过的 Plan 会话同此回退）；从 Auto 进入的 Plan 卡
+  // mode === "plan" 门检放行、却以 Auto 执行，而审批卡在 Web 面无决策面。
+  // 后端 get_mode_state 投影 post_accept_mode（claim 恢复行的镜像），命中
+  // Auto 走与当前档 Auto 拒绝完全同一张拒绝面（通告去重共用）。
+  function webAutoNoticeAndThrow(sid) {
+    runSyncOnSession(sid, function () {
+      if (webAutoSendNoticeSids.has(sid)) return;
+      webAutoSendNoticeSids.set(sid, true);
+      if (webAutoSendNoticeSids.size > WEB_AUTO_SEND_NOTICE_CAP) {
+        webAutoSendNoticeSids.delete(webAutoSendNoticeSids.keys().next().value);
+      }
+      addSystemItem(bt("webAutoSendBlocked"));
+    });
+    throw new Error(bt("webAutoSendBlocked"));
+  }
+  async function webAutoAdmissionGate(sid, admitted, opts) {
     const modeState = await invoke("get_mode_state", { sessionId: sid }).catch(function () { return null; });
     if (modeState && modeState.mode === "auto") {
-      runSyncOnSession(sid, function () {
-        if (webAutoSendNoticeSids.has(sid)) return;
-        webAutoSendNoticeSids.set(sid, true);
-        if (webAutoSendNoticeSids.size > WEB_AUTO_SEND_NOTICE_CAP) {
-          webAutoSendNoticeSids.delete(webAutoSendNoticeSids.keys().next().value);
-        }
-        addSystemItem(bt("webAutoSendBlocked"));
-      });
-      throw new Error(bt("webAutoSendBlocked"));
+      webAutoNoticeAndThrow(sid);
+    }
+    if (modeState && opts && opts.requireExecutablePostAccept && modeState.post_accept_mode === "auto") {
+      webAutoNoticeAndThrow(sid);
     }
     return admitted();
   }
@@ -5242,9 +5254,15 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
     // 执行。plan 卡虽诞生于 Plan 档,桌面把会话切进 Auto 后,残留的可点卡在
     // Web 仍会无门起轮——受理前解析姿态,Auto 显式拒绝（通告去重面共用,
     // 拒绝必须可观察）,get_mode_state 失败 fail-open 放行。
+    // requireExecutablePostAccept（zhuowp 5780927743 第三条）：mode === "auto"
+    // 只拦「当前档是 Auto」；从 Auto 进入的 Plan 卡当前档是 plan、门检放行,
+    // 但 accept_plan 开 turn 后恢复 pre_plan_mode（缺省回退 Auto）—— 卡以
+    // Auto 执行而审批卡在 Web 面无决策面。故 acceptPlan 额外校验后端投影
+    // post_accept_mode（claim 恢复行的镜像）,将回退 Auto 的接受显式拒绝,
+    // 与既有 Auto 拒绝面（通告去重共用）完全一致,且不开 turn。
     return webAutoAdmissionGate(sid, function () {
       return acceptPlanAdmitted(sid, itemId, planMarkdown, echo, planId);
-    });
+    }, { requireExecutablePostAccept: true });
   }
   async function acceptPlanAdmitted(sid, itemId, planMarkdown, echo, planId) {
     const planTicket = String(planId || "").trim();

@@ -262,7 +262,11 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
   sidecar。headless 路径（`set_mode_and_persist`）要求落盘成功，Plan → Yolo
   的重开漂移按失败 run 处理。首次模式写入即 Plan 的未物化会话，铸条目按
   `resolved_default_mode` 解析（而非历史 Yolo 哨兵），accept 回到 chip 显示
-  过的默认（Auto）——有行为测试钉。
+  过的默认（Auto）——有行为测试钉。Web 面受理 accept_plan 前校验**将恢复
+  的执行模式**（`get_mode_state` 投影 `post_accept_mode`，claim 恢复行的
+  镜像）：将回退 Auto 的接受显式拒绝且不开 turn（评审 zhuowp 5780927743
+  第三条；从 Auto 进入的 Plan 卡 mode === "plan" 门检放行却以 Auto 执行，
+  而审批卡在 Web 面无决策面）。
 - **`SerializableMode::Auto` 向后兼容（降级数据保全，评审 P2）**：旧侧车里
   的 `"plan"/"yolo"` 照常反序列化；**共享表永不写 `"auto"` 字面量**——与
   settings.json 车道的 `*_auto` 伴随旗同一纪律：显式 Auto 选择折叠为

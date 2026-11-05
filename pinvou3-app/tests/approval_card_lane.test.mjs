@@ -1323,16 +1323,30 @@ try {
     // 事后通告不是完成态；姿态命令失败不拦发送（fail-open，通告兜底）。
     assert.match(web, /invoke\("get_mode_state", \{ sessionId: sid \}\)/,
       'web 发送受理前必须解析会话姿态');
-    assert.match(web, /modeState && modeState\.mode === "auto"[\s\S]{0,700}webAutoSendBlocked/,
-      'Auto 姿态必须在受理前显式拒绝（webAutoSendBlocked 三语文案）');
+    assert.match(web, /modeState && modeState\.mode === "auto"[\s\S]{0,200}webAutoNoticeAndThrow\(sid\);/,
+      'Auto 姿态必须在受理前显式拒绝（经共享拒绝助手，webAutoSendBlocked 三语文案）');
     const blockedHits = (web.match(/webAutoSendBlocked:/g) || []).length;
     assert.ok(blockedHits >= 3, `webAutoSendBlocked 文案必须三语齐备（实得 ${blockedHits} 处）`);
     assert.match(web, /function doSendForAdmitted\(/,
       '发送主体必须拆出为 doSendForAdmitted（姿态门先行，不重构调用方）');
     // 拒绝必须自带用户面（评审回执）：Auto 门只 throw 不落通告时，composer
-    // 路径与后台 flushQueued 都表现为静默不动。
-    assert.match(web, /if \(modeState && modeState\.mode === "auto"\) \{[\s\S]{0,700}?runSyncOnSession\(sid, function \(\) \{[\s\S]{0,500}?addSystemItem\(bt\("webAutoSendBlocked"\)\);[\s\S]{0,150}?throw new Error\(bt\("webAutoSendBlocked"\)\);/,
-      'Auto 门拒绝必须先经 runSyncOnSession 落系统通告再 throw（按 sid 路由,后台 flush 重试也标注正确会话）');
+    // 路径与后台 flushQueued 都表现为静默不动。通告/throw 收口到共享助手
+    // （zhuowp 5780927743 第三条起 acceptPlan 的 post-accept-Auto 臂复用同一
+    // 拒绝面），两个门检臂都必须经它先落系统通告再 throw（按 sid 路由,后台
+    // flush 重试也标注正确会话）。
+    assert.match(web, /function webAutoNoticeAndThrow\(sid\) \{[\s\S]{0,500}?runSyncOnSession\(sid, function \(\) \{[\s\S]{0,400}?addSystemItem\(bt\("webAutoSendBlocked"\)\);[\s\S]{0,200}?throw new Error\(bt\("webAutoSendBlocked"\)\);/,
+      '姿态门拒绝必须经共享助手先 runSyncOnSession 落系统通告再 throw（按 sid 路由,后台 flush 重试也标注正确会话）');
+    assert.match(web, /if \(modeState && modeState\.mode === "auto"\) \{\s*\n\s*webAutoNoticeAndThrow\(sid\);/,
+      '当前档 Auto 门检必须走共享拒绝助手');
+    // zhuowp 5780927743 第三条：acceptPlan 受理前还须校验将生效的执行模式
+    // （pre_plan_mode 回退，含重启过的 Plan 会话的 Auto 缺省）——从 Auto 进入
+    // 的 Plan 卡 mode === "plan" 门检放行、却以 Auto 执行，而审批卡在 Web 面
+    // 无决策面。门经后端投影 post_accept_mode 拒绝，且只对 acceptPlan 开
+    // （doSendFor/editLastTurn 的当前档语义不变）。
+    assert.match(web, /opts && opts\.requireExecutablePostAccept && modeState\.post_accept_mode === "auto"[\s\S]{0,200}?webAutoNoticeAndThrow\(sid\);/,
+      'acceptPlan 必须校验 post_accept_mode（将恢复的执行模式）并走同一拒绝面');
+    assert.match(web, /async function acceptPlan\(itemId, planMarkdown, echo, planId\) \{[\s\S]{0,900}?return webAutoAdmissionGate\(sid, function \(\) \{\s*\n\s*return acceptPlanAdmitted\(sid, itemId, planMarkdown, echo, planId\);\s*\n\s*\}, \{ requireExecutablePostAccept: true \}\);/,
+      'acceptPlan 必须携带 requireExecutablePostAccept 进入姿态门');
     assert.match(web, /webAutoSendNoticeSids = new Map\(\)/,
       'Auto 拦截通告必须按 sid 去重（flushQueued 每 turn-end 重试,不去重会逐轮刷屏）');
     assert.match(web, /webAutoSendNoticeSids\.size > WEB_AUTO_SEND_NOTICE_CAP/,

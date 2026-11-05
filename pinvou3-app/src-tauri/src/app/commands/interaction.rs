@@ -29,6 +29,15 @@ pub struct SessionModeStateView {
     /// Swarm-regime scope (scheduled sessions excluded) so the toggle hides
     /// where the engine would never honor the lifted caps.
     multi_agent_available: bool,
+    /// The execution mode an `accept_plan` on this state would resume into
+    /// (`claim_pending_plan`'s restore: pre_plan_mode, fallback Auto —
+    /// including the rebooted-Plan fallback). Review zhuowp 5780927743
+    /// third: the web acceptPlan face previously gated only on the CURRENT
+    /// mode (`mode === "plan"` passed) and a card entered from Auto then
+    /// executed under Auto, a posture the web face cannot serve (no
+    /// approval-card decision surface). The gate now reads this projection
+    /// and refuses such accepts with the same face as its Auto rejection.
+    post_accept_mode: SerializableMode,
 }
 
 #[tauri::command]
@@ -37,8 +46,10 @@ pub async fn get_mode_state(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeStateView, String> {
+    let state = store.mode_state(&session_id);
     Ok(SessionModeStateView {
-        state: store.mode_state(&session_id),
+        post_accept_mode: state.post_accept_mode(),
+        state,
         multi_agent_available: pool.swarm_mode_available(&session_id),
     })
 }
