@@ -513,6 +513,13 @@ impl SessionStore {
         self.persist_then_reconcile(session, "session save")
     }
 
+    /// 会话存储根目录（`~/.pinvou3/sessions/`）。供 archive 导入这类
+    /// 兄弟模块按 id 探测记录/artifacts 目录使用；字段 `manager` 保持
+    /// store.rs 私有。
+    pub(crate) fn sessions_dir(&self) -> PathBuf {
+        self.manager.sessions_dir().to_path_buf()
+    }
+
     /// Deleting races with the read-modify-write persist paths
     /// (`set_title`/`update_messages`/`save`): without the same
     /// `scheduled_mutation` guard, a persist that loaded its snapshot before

@@ -1639,6 +1639,35 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+      // 「从此轮分叉」入口表：turn id → keepTurns（1-based，含当前轮）。
+      // 序号口径与 rewindEntriesByTurnId 一致（仅计带 userItem 的 turn），
+      // Rust 侧用同一 is_user_turn_prompt 谓词切消息。
+      const [forkBusy, setForkBusy] = useState(false);
+      const forkEntries = useMemo(() => {
+        const entries = new Map();
+        let ordinal = 0;
+        for (const turn of conversationProjection.turns || []) {
+          if (!turn || !turn.userItem || turn.id == null) continue;
+          ordinal += 1;
+          entries.set(turn.id, ordinal);
+        }
+        return entries;
+      }, [conversationProjection]);
+      const handleForkTurn = useCallback(async (turnId, keepTurns) => {
+        if (forkBusy || !activeSessionId || busy || !bridge.available) return;
+        setForkBusy(true);
+        try {
+          const forked = await invokeTauri('fork_session', { sessionId: activeSessionId, keepTurns });
+          if (forked && forked.id) {
+            await bridge.sessions.switchToSession(forked.id);
+          }
+        } catch (err) {
+          const detail = String((err && err.message) || err || 'unknown error');
+          flashQueuedNotice(activeSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
+        } finally {
+          setForkBusy(false);
+        }
+      }, [forkBusy, activeSessionId, busy, flashQueuedNotice, t]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -3787,6 +3816,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
                     onRetry={isMultiAgentReadOnly ? undefined : retryLastTurn}
+                    forkEntries={forkEntries}
+                    onForkTurn={isMultiAgentReadOnly ? undefined : handleForkTurn}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}

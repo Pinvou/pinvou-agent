@@ -166,6 +166,9 @@ unicode-normalization = "0.1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
+# 会话归档导入（import_session_archive）的 xz 解码；与底座 session_export
+# 的编码端同用 liblzma static（版本对齐，复用同一锁定版本）。
+liblzma = { version = "0.4", features = ["static"] }
 
 # Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"
