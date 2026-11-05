@@ -784,8 +784,8 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       return item && item.type === "approval" && item.approvalId === approvalId;
     });
   }
-  // 审批重放墓碑（评审 P2，与 chat-events.js 同键同界）：重放的
-  // A get_pending_approvals snapshot may have raced a resolution from
+  // Replay tombstones (review P2; same key and bound as chat-events.js): a
+  // get_pending_approvals snapshot may have raced a resolution from
   // another surface - the live chat:approval_resolved that found no card
   // left a tombstone blocking the stale snapshot from re-inserting the
   // decided approval as an active card. Key includes the sid. Beyond-cap

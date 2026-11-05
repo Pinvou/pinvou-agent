@@ -181,7 +181,7 @@ ApprovalCard 三个决策走 `decide_approval` 命令（`app/commands/interactio
 | 决策 | 缓存作用域 | 语义 |
 |---|---|---|
 | 允许（allow） | 无 | 仅此一次 |
-| 本会话允许（allow_for_session） | lossy `approval_grouping_key` | 覆盖后续旗标变体（v0.8.37 语义） |
+| 本会话允许（allow_for_session） | lossy `approval_grouping_key` | 覆盖后续旗标变体（v0.8.37 语义；round-11 评审措辞精确化：词表命令按旗标变体归族，词表外的 shell 命令按基础词归族——同一基础词的**全部操作数变体**同族，路径承载面（文件写/patch 族）则按完整输入哈希归族，故敏感路径不会被词表外命令的宽族误放行） |
 | 拒绝（deny） | exact `approval_key` | 换一个参数要重新请批，不连坐（#1617 语义） |
 
 任何决策都先校验 decision 值（摘除登记不可逆，非法值原样 Err 不留痕迹），再

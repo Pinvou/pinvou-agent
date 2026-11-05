@@ -456,7 +456,10 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   // The gap spans the whole spawn + SyncSession block, so code and comment
   // bytes ride along (engine cold-start phase timing is inserted between the
   // declaration and the EngineEntry insert). Keep headroom: this pins
-  // "computed once at spawn and recorded", not byte distance.
+  // "computed once at spawn and recorded", not byte distance. Distance
+  // 3200 → 4800 (round-11 review: measured 3148 at origin/main → 4088 at
+  // this head; the tri-mode spawn-site profile derivation widened the span —
+  // still far tighter than the sibling 12,000-gap pins in this file).
   assert.match(
     poolSource,
     /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,4800}spawned_at_ms,/,
@@ -502,6 +505,10 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
     /build_multi_agent_dt_config[\s\S]{0,500}config\.fleet = Some\(snapshot\.fleet_config\(\)\.clone\(\)\)[\s\S]{0,12000}resolve_multi_agent_runtime_route_for_model/,
     '多智能体启动和每轮 route 都必须通过底座原生 fleet.profiles 注入专家',
   );
+  // Same 3200 → 4800 reset as the spawn-distance pin above: the span now
+  // covers the build_engine_config_for_multi_agent → _with_profile
+  // indirection added by this PR's profile-aware spawn seam (measured 4088
+  // at this head; the semantic chain itself is unchanged).
   assert.match(
     assistantBridgeSource,
     /build_engine_config_for_multi_agent[\s\S]{0,4800}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
