@@ -246,13 +246,16 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   the steer/dispatch through the engine pool, so the persistence actor's
   last-writer-wins snapshots can never clobber an external edit. A steered
   delivery stays queued until the engine reports `SteerCommitted` for it — the
-  keyed done marker and the spool-file removal land on commit, while a dropped
-  steer re-queues the message for redelivery (at-least-once; the steer-accept
-  moment no longer finalizes). If no terminal event ever arrives (a forwarder
-  aborted by an engine recycle, or a crash before injection), the wait is
-  given up after 24h and the message re-queues the same way, possibly
-  duplicating. Quarantine audit lines carry the agent_mail-aligned failure
-  receipt fields (`code` / `retryable:false` / `failed_at`). The delivered text
+  done marker and the spool-file removal land on commit (the marker is what a
+  keyed retry consults for dedup), while a dropped steer leaves the file
+  queued and re-delivers on the next poll, bounded: after ten dropped cycles
+  the file is quarantined (`steer_drop_limit`). If no terminal event ever
+  arrives while the app keeps running (a forwarder aborted by an engine
+  recycle), the wait is given up after 24h and the message re-delivers; a
+  crash loses the in-memory wait entirely, so the queued file re-delivers on
+  the first poll after restart — either way possibly duplicating. Quarantine
+  audit lines carry the agent_mail-aligned failure receipt fields (`code` /
+  `retryable:false` / `failed_at`). The delivered text
   carries a machine-readable sender header block (the session-mention block pattern
   mirrored on receive) that the timeline renders as a sender card and all three
   auto-title paths strip.
@@ -290,15 +293,20 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   materially different body); a steer accepted against a mid-turn target can still be
   dropped by the foundation — when that turn is cancelled
   (`chat:steer_dropped`) or when the engine is evicted/rebuilt before the
-  steer lands — and the spool now correlates both terminal events (the
-  round-19 MAJOR-1 follow-up, landed): the keyed done-marker and spool
-  removal land on `chat:steer_committed`, a dropped steer re-queues the
-  message, and a terminal event that never arrives (forwarder aborted by a
-  recycle, crash before injection — the former zero-trace loss channel
-  where a keyed retry was answered "delivered" from a marker written at
-  steer-Ok) is given up after 24h and re-queued; every former loss trigger
-  now degrades to at-least-once redelivery (possibly duplicating) instead
-  of silent loss; a macOS two-instance startup race (the single-instance
+  steer lands. Only the cancelled case produces a correlated event — an
+  evict aborts the forwarder before the foundation drains its steers, so no
+  terminal event is forwarded for that case (the round-19 MAJOR-1
+  marker-gating follow-up, landed): the done marker and spool removal land
+  on `chat:steer_committed`, a dropped steer stays queued and re-delivers
+  on the next poll (after ten dropped cycles the file is quarantined), a
+  terminal event that never arrives while the app keeps running (forwarder
+  aborted by a recycle) is given up after 24h and re-delivers, and a crash
+  loses the in-memory wait entirely — the queued file re-delivers on the
+  first poll after restart (this replaces the former zero-trace loss
+  channel where a keyed retry was answered "delivered" from a marker
+  written at steer-Ok); every former loss trigger now degrades to
+  at-least-once redelivery (possibly duplicating) instead of silent loss; a
+  macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
   double-deliver, and the replaced-after-delivery arm can then erase the
   winning instance's done marker — plugin-level upstream, the marker

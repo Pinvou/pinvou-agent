@@ -54,8 +54,8 @@ mod tests {
         );
         resolve_steer_outcome("steer-1@0", true);
         assert_eq!(CALLS.load(Ordering::SeqCst), 1);
-        // 未注册路径的静默语义由 OnceLock 全局态覆盖：同一进程内的
-        // 后续 resolve 继续走首个消费者。
+        // 注册后同一进程内无法再单测"无钩子静默"分支（OnceLock 全局
+        // 生效，先注册者常驻）——该分支由 get()==None 的短路保证。
         resolve_steer_outcome("steer-2@0", false);
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
     }
