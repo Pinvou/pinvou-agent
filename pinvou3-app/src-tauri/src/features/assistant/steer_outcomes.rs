@@ -18,16 +18,18 @@ type SteerResolutionHook = fn(&str, bool);
 static STEER_RESOLUTION_HOOK: OnceLock<SteerResolutionHook> = OnceLock::new();
 
 /// Register the steer terminal consumer. Only the first registration wins;
-/// a duplicate is an assembly error (fail-loud instead of a silent
-/// overwrite) — startup assembly must call this exactly once.
+/// a duplicate is rejected instead of silently overwriting (the registry
+/// refuses it and the registration site logs the refusal loudly — startup
+/// assembly must call this exactly once).
 pub fn register_steer_resolution_hook(hook: SteerResolutionHook) -> Result<(), ()> {
     STEER_RESOLUTION_HOOK.set(hook).map_err(|_| ())
 }
 
 /// Fan a steer terminal out: committed=true = the engine wrote it into the
 /// transcript; false = the engine dropped it (turn termination /
-/// withdrawal / generation invalidation). Silent when unregistered — a
-/// session's steer events have no cross-session consumer today.
+/// withdrawal / generation invalidation). Silent when unregistered — that
+/// holds outside the assembled app only (lib.rs registers the messaging
+/// finalizer during startup, before any engine can spawn).
 pub fn resolve_steer_outcome(steer_id: &str, committed: bool) {
     if let Some(hook) = STEER_RESOLUTION_HOOK.get() {
         hook(steer_id, committed);
