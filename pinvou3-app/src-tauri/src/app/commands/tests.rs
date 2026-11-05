@@ -3775,4 +3775,19 @@ fn mode_changed_payload_contract_is_pinned() {
     let payload = mode_changed_payload("s-conv", SerializableMode::Auto, true);
     assert_eq!(payload["mode"], "auto");
     assert_eq!(payload["ask_on_guardrail"], true);
+    // Round-11: key-set parity with the approval payloads' exact pins — value
+    // drift was already caught above, but adding an extraneous key stayed
+    // green. The wire contract is exactly these three fields.
+    let mut keys: Vec<&str> = payload
+        .as_object()
+        .expect("mode_changed payload must be an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["ask_on_guardrail", "mode", "session_id"],
+        "the mode_changed payload key set is the contract: no extra fields"
+    );
 }

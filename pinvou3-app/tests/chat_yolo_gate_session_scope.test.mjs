@@ -420,4 +420,43 @@ assert.doesNotMatch(fpWebBridge, /st\.mode \|\| "yolo"/,
 assert.match(fpSharedHelpers, /modeState: \{ mode: "auto" \}/,
   'shared freshBuffer generic default must be auto');
 
+// ── round-11: pin gaps closed by the fresh-review mutation probes ──────────────
+// 1) tauri unbound-draft landing fallback: flipping `boundDraft ? "plan" : "auto"`
+//    to "yolo" kept the whole node battery green (round-11 mutation probe) — the
+//    display-fallback pins above cover only the malformed-payload arms, not this
+//    lane-default arm of the same conservative-posture surface.
+assert.match(
+  fpTauriBridge,
+  /return \{ mode: d \|\| \(boundDraft \? "plan" : "auto"\), multiAgent: false \};/,
+  'tauri unbound-draft fallback must land on the conservative auto default',
+);
+// 2) ChatView confirm latch: the stale-state early return must release the ref —
+//    a click landing between the previous attempt's finally (sync ref release)
+//    and the queued state commit otherwise latches it true with nothing left to
+//    clear the button (dead confirm until remount).
+assert.match(
+  src,
+  /if \(chatYoloConfirmBusy\) \{[\s\S]{0,600}?chatYoloConfirmBusyRef\.current = false;\s*\n\s*return;\s*\n\s*\}/,
+  'the confirm latch must be released on the stale-state arm (dead-button guard)',
+);
+// 3) web mode-defaults epoch discipline (round-10 parity code; the round-11
+//    review found no pin drove it — deleting either guard kept the suite green;
+//    the runtime regressions cover the tauri harness only). Pin the entry bump
+//    and both epoch validations: defaults write + draft display arm.
+assert.match(
+  fpWebBridge,
+  /async function setDraftMode\(target\) \{[\s\S]{0,600}?modeDefaultsEpoch \+= 1;\s*\n\s*const epochAtWrite = modeDefaultsEpoch;/,
+  'web setDraftMode must bump the epoch at entry and capture it before the await',
+);
+assert.match(
+  fpWebBridge,
+  /async function refreshModeDefaults\(\) \{[\s\S]{0,160}?const epochAtRead = \+\+modeDefaultsEpoch;[\s\S]{0,200}?epochAtRead === modeDefaultsEpoch\) state\.modeDefaults = defaults;/,
+  'web refreshModeDefaults must validate the epoch before writing defaults',
+);
+assert.match(
+  fpWebBridge,
+  /if \(!state\.activeSessionId && epochAtRead === modeDefaultsEpoch\) \{\s*\n\s*state\.modeState = currentDraftModeState\(\);/,
+  'web draft display arm must be gated on the captured epoch',
+);
+
 console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban + fallback-posture pins)');

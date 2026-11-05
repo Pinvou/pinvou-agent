@@ -387,6 +387,25 @@ try {
       /performNativeModeSwitch\('yolo', \{ isPlan: !pending\.fromAuto \}, pending\.sid\)/,
       '确认按来路命令族分派（Plan→exit_plan_to_yolo / Auto→set_session_mode）',
     );
+    // round-10 parity 的钉缺口（round-11 评审）：codex 车道的确认卡代数纪律与
+    // chat 车道同构（chat 车道 6 钉、codex 车道 0 钉——删掉任一 guard 全套
+    // 测试保持绿）。钉住三件套：门开推进代数、切会话推进代数、确认回程
+    // 代数不匹配整单作废（不清对话框、不继续旧确认）。
+    assert.match(
+      view,
+      /pendingYoloDialogGenRef\.current \+= 1;\s*\n\s*setPendingYoloSwitch\(\{ draft: !activeId, sid: activeId \|\| null, fromAuto: !isPlan \}\)/,
+      '打开确认门必须推进对话框代数（genAtConfirm 捕获基线）',
+    );
+    assert.match(
+      view,
+      /useEffect\(\(\) => \{\s*\n\s*pendingYoloDialogGenRef\.current \+= 1;/,
+      '切会话必须推进对话框代数（弃置在途确认，chat 车道同约）',
+    );
+    assert.match(
+      view,
+      /const genAtConfirm = pendingYoloDialogGenRef\.current;[\s\S]{0,400}?if \(pendingYoloDialogGenRef\.current !== genAtConfirm\) return;/,
+      '确认回程代数不匹配必须整单作废（不清对话框、不继续旧确认）',
+    );
   }
 
   console.log('code_permission_state: ok');
