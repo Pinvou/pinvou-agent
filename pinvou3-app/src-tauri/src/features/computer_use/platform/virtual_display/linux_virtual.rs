@@ -49,8 +49,10 @@
 //! disk. The NORMAL teardown avoids this: the held Xvfb/WM handles get a
 //! SIGTERM-first wind-down ([`Self::kill_recorded_processes`] →
 //! `terminate_then_kill`), an X server exiting on SIGTERM removes its
-//! own socket, and the sweep kills are SIGTERM-first too (liveness observed
-//! via /proc). Only a kill that actually ends in SIGKILL — TERM ignored or
+//! own socket, and the sweep's recorded Xvfb/WM kills are SIGTERM-first too
+//! (liveness observed via /proc; the open_app children are group-SIGKILLed
+//! outright on every path). Only a kill that actually ends in SIGKILL — TERM
+//! ignored or
 //! the grace expired — can still strand a socket.
 //!
 //! Crash/lifecycle contract (design §5/§9):
@@ -64,7 +66,6 @@
 //!   fallback decision itself stays a creation-time-only concern (§9).
 
 use std::io::{ErrorKind, Read as _};
-use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -149,6 +150,11 @@ const SWEEP_TERM_GRACE: Duration = Duration::from_millis(500);
 const WM_CHECK_GRACE: Duration = Duration::from_secs(3);
 /// fd 3 read chunk; the display number line is a handful of bytes.
 const DISPLAYFD_CHUNK: usize = 16;
+/// Bound on the displayfd read buffer: Xvfb writes exactly `"%d\n"` (a few
+/// bytes), so anything larger is not a writer worth buffering — the deadline
+/// below cannot fire while a hostile/buggy writer keeps producing bytes
+/// without a newline.
+const DISPLAYFD_MAX_OUTPUT: usize = 64;
 /// Cap for error-message subprocess stderr excerpts.
 const STDERR_EXCERPT_CHARS: usize = 200;
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -206,10 +212,7 @@ fn find_on_path_full(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
-        let Ok(metadata) = std::fs::metadata(&candidate) else {
-            continue;
-        };
-        if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+        if crate::platform::filesystem::is_executable_file(&candidate) {
             return Some(candidate);
         }
     }
@@ -261,8 +264,9 @@ fn generate_cookie() -> Result<[u8; 16], ComputerUseError> {
 
 /// The machine hostname as the Xauthority `FamilyLocal` address. Falls back to
 /// the empty address on failure (the server matches entries by name+data only,
-/// so a spawn still works; Xlib clients would then fail to select the entry
-/// and the readiness poll turns that into an explicit Unavailable).
+/// so a cookie-carrying client still authenticates — the readiness poll keeps
+/// working; it is the Xlib-file-reading consumers, xdotool and opened apps,
+/// that would fail to select the entry and answer explicit errors).
 fn local_hostname() -> String {
     let mut buffer = vec![0u8; 256];
     // SAFETY: gethostname writes at most buffer.len() bytes into the buffer
@@ -601,8 +605,8 @@ impl VirtualX11Backend {
         // without the flag exit on the unknown option; the management check
         // below downgrades to the honest WM-less state instead of keeping a
         // non-functional WM.
-        if program == "mutter" {
-            command.arg("--x11");
+        for arg in wm_spawn_args(program) {
+            command.arg(arg);
         }
         command
             .env("DISPLAY", &self.display)
@@ -645,6 +649,10 @@ impl VirtualX11Backend {
                     "[computer_use] virtual display: window manager '{program}' failed to start \
                      ({error}); continuing without a WM"
                 );
+                // Symmetric with the vanished-binary path above: a WM that
+                // cannot spawn must not keep `wm_program` claiming a managed
+                // display (and re-attempting on every lazy respawn).
+                self.wm_program = None;
             }
         }
     }
@@ -821,15 +829,15 @@ impl VirtualX11Backend {
             AUTH_PROTOCOL_NAME,
             &self.cookie,
         );
-        std::fs::write(&self.auth_path, entry).map_err(|error| {
-            ComputerUseError::failed(format!(
-                "cannot write the virtual display Xauthority file: {error}"
-            ))
-        })?;
-        std::fs::set_permissions(&self.auth_path, std::fs::Permissions::from_mode(0o600)).map_err(
+        // Same primitive as the pidfile (tmp+fsync+rename, 0600 by
+        // construction): the secret-bearing file never carries a
+        // creation-mode window, and the rewrite with the real display
+        // number cannot leave a truncated auth DB for a server that loads
+        // `-auth` while the placeholder entry is being replaced.
+        crate::platform::filesystem::atomic_write_private(&self.auth_path, &entry).map_err(
             |error| {
                 ComputerUseError::failed(format!(
-                    "cannot restrict the virtual display Xauthority file: {error}"
+                    "cannot write the virtual display Xauthority file: {error}"
                 ))
             },
         )
@@ -1067,14 +1075,34 @@ fn apply_open_env(command: &mut Command, display: &str, auth_path: &Path, sessio
         "DBUS_SESSION_BUS_ADDRESS",
         format!("unix:path={}", session_dir.join("bus").display()),
     );
-    // Wayland escape hatches: removing the two env vars is NOT sufficient by
-    // itself — a raw libwayland client with no WAYLAND_DISPLAY falls back to
-    // the DEFAULT socket name (`wayland-0`) inside XDG_RUNTIME_DIR, i.e. the
-    // user's compositor. The toolkit overrides above (GDK/QT/SDL/OZONE)
-    // cover the mainstream stacks; a raw-libwayland app could still land a
-    // window on the user's desktop. Disclosed in the capabilities notes.
+    // Wayland escape hatches: removing the session variables is NOT
+    // sufficient by itself — a raw libwayland client with no WAYLAND_DISPLAY
+    // falls back to the DEFAULT socket name (`wayland-0`) inside
+    // XDG_RUNTIME_DIR, i.e. the user's compositor. The toolkit overrides
+    // above (GDK/QT/SDL/OZONE) cover the mainstream stacks;
+    // MOZ_ENABLE_WAYLAND and XDG_SESSION_TYPE are removed alongside so a
+    // Gecko-based app cannot override the toolkit decision (a Firefox
+    // launched with MOZ_ENABLE_WAYLAND=1 inherited would prefer Wayland and
+    // land its window on the user's desktop even with the X11 overrides
+    // set); a raw-libwayland app could still land a window on the user's
+    // desktop. Disclosed in the capabilities notes.
     command.env_remove("WAYLAND_DISPLAY");
     command.env_remove("WAYLAND_SOCKET");
+    command.env_remove("MOZ_ENABLE_WAYLAND");
+    command.env_remove("XDG_SESSION_TYPE");
+}
+
+/// The extra argv a WM candidate needs. `mutter` ≥ 3.30 defaults to its
+/// Wayland-compositor mode when invoked bare; `--x11` selects the X11
+/// window-manager mode this stack needs (see the spawn-site comment for the
+/// full failure shape). Pure so the exact spawn argv is unit-pinned —
+/// dropping the flag is what silently disabled WM management on GNOME while
+/// every other check stayed green (the display itself keeps working).
+fn wm_spawn_args(program: &str) -> &'static [&'static str] {
+    match program {
+        "mutter" => &["--x11"],
+        _ => &[],
+    }
 }
 
 /// `open_app` program validation, mirroring the tool-layer bounds
@@ -1306,6 +1334,17 @@ fn read_display_number(mut stream: &UnixStream) -> Result<u16, ComputerUseError>
             }
             Ok(n) => {
                 buffer.extend_from_slice(&chunk[..n]);
+                // Xvfb writes exactly "%d\n"; anything longer than a display
+                // number is not a writer we should keep buffering from (the
+                // deadline below only fires on WouldBlock/TimedOut, so a
+                // newline-less gusher would otherwise grow the buffer
+                // unboundedly past it).
+                if buffer.len() > DISPLAYFD_MAX_OUTPUT {
+                    return Err(ComputerUseError::failed(
+                        "the Xvfb displayfd output is unreasonably large; \
+                         refusing to buffer it",
+                    ));
+                }
                 if buffer.contains(&b'\n') {
                     break;
                 }
@@ -1407,8 +1446,8 @@ impl ComputerUseBackend for VirtualX11Backend {
              down the apps opened on the virtual display, except an app that detaches \
              into its own session (daemonize/setsid) escapes even that group kill; \
              apps opened there may still reach shared session services of the user's \
-             login session that the environment cannot redirect (e.g. audio via the \
-             runtime-dir sockets), their D-Bus session bus is disconnected \
+             login session that the environment cannot redirect (e.g. audio and \
+             camera via the runtime-dir sockets), their D-Bus session bus is disconnected \
              (bus-dependent features fail rather than getting a private bus), and an \
              app speaking raw Wayland (beyond the redirected toolkits) could still \
              reach the user's compositor through the default runtime-dir socket"
@@ -1421,11 +1460,13 @@ impl ComputerUseBackend for VirtualX11Backend {
             notes: notes.join("; "),
             target: DisplayTarget::Virtual,
             target_note: format!(
-                "isolated virtual display (Xvfb {}): the user's desktop is unaffected — \
-                 screenshots, input and apps (via open) all stay inside the virtual \
-                 screen; stopping the session closes the apps opened on it, and those \
-                 apps run with normal user file and network access and may reach \
-                 shared session services (e.g. audio) unless their environment is \
+                "isolated virtual display (Xvfb {}): screenshots and input stay inside \
+                 the virtual screen, and apps (via open) stay inside it too unless such \
+                 an app speaks raw Wayland directly (beyond the redirected toolkits), \
+                 in which case its window could reach the user's compositor; stopping \
+                 the session closes the apps opened on it, and those apps run with \
+                 normal user file and network access and may reach shared session \
+                 services (e.g. audio and camera) unless their environment is \
                  scrubbed",
                 if self.display.is_empty() {
                     "screen"
@@ -1496,6 +1537,15 @@ impl ComputerUseBackend for VirtualX11Backend {
     }
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
+        // Emergency cleanup posts MouseUp control requests for unpressed
+        // buttons; on a dead server those must stay the harmless no-op that
+        // contract promises — lazily respawning a whole Xvfb stack (seconds
+        // of spawn work, on a detached thread) to deliver an up for a button
+        // a fresh server cannot have held helps nothing. A live server keeps
+        // the normal path (including the dead-WM flip in the entry check).
+        if !self.server_alive() {
+            return Ok(());
+        }
         self.ensure_server()?;
         let result = self
             .run_xdotool(
@@ -2155,8 +2205,11 @@ fn sweep_orphans_with(argv0_of: impl Fn(u32) -> Option<String>) {
             term_then_kill_orphan(pid);
         }
         // The open_app children carry per-child identity since the pidfile
-        // gained `children_detail` (program basename + kernel start time):
-        // the kill fires only on a full match. A pidfile from an older build
+        // gained `children_detail`: the kill fires on the verified KERNEL
+        // START TIME — the recorded basename is diagnostic only (an exec'd
+        // shell child keeps its pid and start time through exec, so a
+        // changed name is logged but never skips the kill). A pidfile from
+        // an older build
         // (children without detail) cannot be verified — those kills are
         // SKIPPED, the safe direction: killing by number alone could take
         // out an unrelated recycled process. Unverifiable dirs still get
@@ -2431,7 +2484,15 @@ mod tests {
             "open env must not set anything beyond the pinned keys: {set:?}"
         );
         removed.sort();
-        assert_eq!(removed, vec!["WAYLAND_DISPLAY", "WAYLAND_SOCKET"]);
+        assert_eq!(
+            removed,
+            vec![
+                "MOZ_ENABLE_WAYLAND",
+                "WAYLAND_DISPLAY",
+                "WAYLAND_SOCKET",
+                "XDG_SESSION_TYPE"
+            ]
+        );
     }
 
     /// Audit-redaction pin (MAJOR-A): a failed `type` invocation reports the
@@ -2725,6 +2786,103 @@ mod tests {
         drop(write);
         let error = read_display_number(&read).unwrap_err();
         assert!(error.to_string().contains("closed the display fd"));
+    }
+
+    // ---- WM lifecycle pins (spawn argv + dead-WM wind-down) ----
+
+    /// An already-exited child (exits within milliseconds of spawn; the
+    /// verify loop's 100 ms ticks absorb the exec window).
+    fn exited_child() -> Child {
+        Command::new("true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn true")
+    }
+
+    fn backend_with_wm(child: Option<Child>, dir: &Path) -> VirtualX11Backend {
+        VirtualX11Backend {
+            session_dir: dir.to_path_buf(),
+            cookie: [0u8; 16],
+            hostname: "host".to_string(),
+            auth_path: dir.join("auth"),
+            display: ":99".to_string(),
+            xvfb: None,
+            wm: child,
+            wm_program: Some("mutter"),
+            children: Vec::new(),
+            xdotool_path: PathBuf::from("/usr/bin/xdotool"),
+            cancel: None,
+        }
+    }
+
+    /// The spawn argv is pinned per candidate: mutter — and only mutter —
+    /// gets `--x11` (its ≥3.30 bare default is the Wayland-compositor mode,
+    /// which never manages this display on an X host and nests against the
+    /// user's session on a Wayland host). Dropping the flag is the exact
+    /// regression that silently disabled WM management on GNOME while every
+    /// other check stayed green.
+    #[test]
+    fn wm_spawn_args_pin_the_x11_flag_for_mutter_only() {
+        assert_eq!(wm_spawn_args("mutter"), &["--x11"]);
+        for candidate in ["openbox", "xfwm4", "marco", "fluxbox", "i3"] {
+            assert!(
+                wm_spawn_args(candidate).is_empty(),
+                "{candidate} must not gain flags meant for mutter"
+            );
+        }
+    }
+
+    /// A WM that dies BEFORE taking management must be wound down and the
+    /// managed-display claim dropped: `wm_program` back to None, the held
+    /// handle released, and the pidfile rewrite must stop listing the WM —
+    /// the same honest WM-less degradation as an absent candidate.
+    #[test]
+    fn verify_wm_management_winds_down_a_wm_that_died_before_managing() {
+        let home = IsolatedHome::take("wm-winddown");
+        let dir = home.vd_root().join("wm-winddown-session");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let mut backend = backend_with_wm(Some(exited_child()), &dir);
+        backend.verify_wm_management("mutter");
+        assert_eq!(
+            backend.wm_program, None,
+            "a dead WM must not keep the managed-display claim"
+        );
+        assert!(backend.wm.is_none(), "the dead WM handle must be dropped");
+        let raw = std::fs::read_to_string(dir.join(PIDFILE_NAME)).expect("pidfile");
+        let file: PidFile = serde_json::from_str(&raw).expect("parse pidfile");
+        assert_eq!(
+            file.wm_pid, None,
+            "the wound-down WM must disappear from the pidfile"
+        );
+    }
+
+    /// A WM that died between actions flips the claim at the entry check
+    /// too (`detect_dead_wm`): same honest degradation, same pidfile prune.
+    #[test]
+    fn detect_dead_wm_flips_the_claim_and_prunes_the_pidfile() {
+        let home = IsolatedHome::take("wm-dead-flip");
+        let dir = home.vd_root().join("wm-dead-session");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let mut backend = backend_with_wm(Some(exited_child()), &dir);
+        // The child exits within milliseconds of spawn; wait for the exit so
+        // the single-shot dead-check below observes it deterministically.
+        for _ in 0..200 {
+            if matches!(
+                backend.wm.as_mut().expect("wm held").try_wait(),
+                Ok(Some(_))
+            ) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        backend.detect_dead_wm();
+        assert_eq!(backend.wm_program, None);
+        assert!(backend.wm.is_none());
+        let raw = std::fs::read_to_string(dir.join(PIDFILE_NAME)).expect("pidfile");
+        let file: PidFile = serde_json::from_str(&raw).expect("parse pidfile");
+        assert_eq!(file.wm_pid, None);
     }
 
     // ---- crash-orphan sweep (fixture: fake dirs + real child processes) ----
@@ -3338,6 +3496,7 @@ mod tests {
 mod xvfb_live_tests {
     use super::test_support::IsolatedHome;
     use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
 
     /// The live gate: `#[ignore]` is only the conventional guard; this env
     /// variable is the explicit opt-in (the tests spawn a real display server
@@ -3489,7 +3648,11 @@ mod xvfb_live_tests {
             "{}",
             capabilities.target_note
         );
-        assert!(capabilities.target_note.contains("desktop is unaffected"));
+        assert!(
+            capabilities
+                .target_note
+                .contains("stay inside the virtual screen")
+        );
 
         // Session dir artifacts: pidfile (immediately after spawn), 0600
         // Xauthority, no WM on this machine.

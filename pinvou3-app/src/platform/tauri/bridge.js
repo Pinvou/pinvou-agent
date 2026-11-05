@@ -214,10 +214,10 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       // load_platform_capabilities corrects the slice.
       globalShortcutsAvailable: false,
       // Semantic selector for the computer-use virtual-display note row
-      // ("" | "windows" | "macos"). Fail-closed "": no per-platform note
-      // renders until load_platform_capabilities answers with the compiled
-      // target's selector — the notes are desktop product copy, so the web
-      // lane (which never loads the Tauri command) simply keeps "".
+      // ("windows" | "macos" | "linux"). Fail-closed "": no per-platform
+      // note renders until load_platform_capabilities answers with the
+      // compiled target's selector — the notes are desktop product copy, so
+      // the web lane (which never loads the Tauri command) simply keeps "".
       virtualDisplayNote: "",
     },
     settings: null,

@@ -6,8 +6,12 @@
 //! launched into it, and all input is delivered **per-process** via
 //! `CGEventPostToPid` — never a global `CGEventPost` at `kCGHIDEventTap`,
 //! which would move the user's real cursor (forbidden for this target).
-//! The user's physical session is never touched; teardown releases the
-//! display object and the display disappears asynchronously.
+//! The user's physical session is never DRIVEN (input is pid-posted, capture
+//! is display-id-pinned); apps opened with `open` launch into the user's
+//! graphics session first and are AX-moved in best-effort. Teardown releases
+//! the display object and the display disappears asynchronously — opened
+//! apps are NOT terminated: they keep running, and their windows relocate to
+//! the remaining displays when the virtual display disappears.
 //!
 //! Private API: `CGVirtualDisplay` / `CGVirtualDisplayDescriptor` /
 //! `CGVirtualDisplaySettings` / `CGVirtualDisplayMode` are NOT bound by any
@@ -799,7 +803,8 @@ impl Drop for VdHandle {
     fn drop(&mut self) {
         log::info!(
             "[computer_use:macos-vd] releasing the virtual display (it disappears \
-             asynchronously; the user's desktop is unaffected)"
+             asynchronously; opened apps are not terminated — they keep running \
+             and their windows relocate to remaining displays)"
         );
         // The inner Retained's Drop runs objc_release here; nothing further.
     }
@@ -2047,6 +2052,11 @@ impl MacosVirtualDisplayBackend {
         // `session_pids`) — its windows stay drivable wherever the AX move
         // has got to, until the ownership grace expires (then the display
         // bounds decide, like for every other pid).
+        // Prune inert entries (past the ownership grace) so the vec stays
+        // bounded by live grace windows instead of growing with every open
+        // (the predicate itself treats stale entries as unknown pids).
+        self.session_pids
+            .retain(|(_, at)| at.elapsed() < SESSION_OWNERSHIP_GRACE);
         self.session_pids.push((pid_i32, Instant::now()));
         Ok(pid)
     }
@@ -2120,6 +2130,12 @@ impl MacosVirtualDisplayBackend {
         // by the CFRetained; callable on any thread (without the
         // Accessibility grant the later reads error — handled below).
         let app = unsafe { AXUIElement::new_application(pid) };
+        // Bound the synchronous AX IPC on THIS element the same way the
+        // physical backend bounds ui_tree/focused_element (2 s, failures
+        // ignored = the default timeout): a hung target app must not drag
+        // the best-effort move out to the ~6 s default per call.
+        // SAFETY: plain attribute setter; failures fall back to the default.
+        let _ = unsafe { app.set_messaging_timeout(2.0_f32) };
         let windows_name = NSString::from_str("AXWindows");
         let mut raw: *const CFType = std::ptr::null();
         // SAFETY: attribute is an NSString toll-free bridged to CFString;
@@ -2244,23 +2260,27 @@ fn released_modifier_key(flag: CGEventFlags) -> Key {
 /// user's graphics session first and are AX-moved into the display
 /// best-effort — without the Accessibility grant an opened app's window can
 /// stay visible on the user's desktop. Apps opened into the virtual display
-/// are not wound down when a session stops this round; only dropping the
-/// backend (which removes the display) ends them.
+/// are not wound down this round: neither Stop nor dropping the backend
+/// (which removes the display) terminates them — they keep running, and
+/// their windows move to remaining displays when the display disappears.
 fn capability_target_note() -> String {
     "experimental isolated virtual display (private macOS API): input stays on the \
      virtual display and input targets are re-verified to still show a window \
-     touching it before every post; screenshots are captured from the virtual \
-     display's own bounds, so a window overhanging into those bounds contributes \
-     its pixels to the capture; events are delivered directly to the target app \
-     and may not reach every app (e.g. WebKit content processes on recent macOS \
-     may ignore them); apps opened with open launch into the user's graphics \
-     session and are moved into the virtual display best-effort — without the \
-     Accessibility grant an opened app's window may stay visible on the user's \
-     desktop (it can be closed by dropping the backend); if this macOS lacks the \
-     private API the session falls back to your desktop, decided once at session \
-     start; apps opened in the virtual display are not closed when a session \
-     stops — they remain until the virtual display backend is dropped, which is \
-     what removes the display"
+     touching it before every post (a just-opened app keeps a short ownership \
+     grace in which its window is drivable wherever it sits — including \
+     overhanging onto the user's desktop — before the display-bounds rule \
+     applies to it too); screenshots are captured from the virtual display's \
+     own bounds, so a window overhanging into those bounds contributes its \
+     pixels to the capture; events are delivered directly to the target app \
+     and may not reach every app (e.g. WebKit content processes on recent \
+     macOS may ignore them); apps opened with open launch into the user's \
+     graphics session and are moved into the virtual display best-effort — \
+     without the Accessibility grant an opened app's window may stay visible \
+     on the user's desktop; if this macOS lacks the private API the session \
+     falls back to your desktop, decided once at session start; apps opened \
+     in the virtual display are NOT closed when a session stops or when the \
+     backend is dropped — they keep running, and when the virtual display \
+     disappears their windows move to the remaining displays"
         .to_string()
 }
 
@@ -2271,10 +2291,13 @@ fn capability_target_note() -> String {
 /// attributed to the wrong app).
 fn capability_notes() -> String {
     "macos virtual display: coordinates are CGEvent global points relative to the \
-     virtual display's own bounds; mouse events target the app under the point and \
-     keyboard events target the last-interacted app, re-verified to still show a \
-     window on the virtual display (a moved-away or quit target answers an error — \
-     click inside the display to focus a new one); cursor_position reports the last \
+     virtual display's own bounds; mouse events target the targetable app at \
+     the point (windows outside this session's scope — e.g. a user window \
+     overhanging the parked display — are never targeted; the targetable \
+     window below such a cover receives the event) and keyboard events target \
+     the last-interacted app, re-verified to still show a window on the \
+     virtual display (a moved-away or quit target answers an error — click \
+     inside the display to focus a new one); cursor_position reports the last \
      point this backend moved to (a virtual display has no cursor of its own), or the \
      display's top-left origin before the first move; Screen Recording and \
      Accessibility grants are required (input answers an explicit error without \
@@ -2286,14 +2309,16 @@ fn capability_notes() -> String {
      so prefer named keys (Enter, arrows, F-keys) or typed text where possible; \
      the capture uses the CGWindowList path, which on Sequoia+ \
      sits behind the periodic keep-allowing-screen-recording confirmation; apps \
-     launched with open take a moment before their windows appear, and the pid \
+     launched with open take a moment before their windows appear, arguments \
+     passed with open apply only on a fresh launch (opening an already-running \
+     app just activates it and drops the arguments), and the pid \
      reported for such an app is recovered by watching for a new window on the \
      virtual display (owner-name match preferred — a same-named window the USER \
      opens during the brief search would be claimed and moved into the virtual \
-     display; unnamed windows only when already inside the display's bounds) — \
-     in rare cases an unrelated in-bounds window appearing during that search \
-     is attributed to the wrong app, and when no matching window appears the \
-     pid is reported as 0 (interact via clicks)"
+     display; unnamed windows only when their window already overlaps the \
+     display's bounds) — in rare cases an unrelated in-bounds window appearing \
+     during that search is attributed to the wrong app, and when no matching \
+     window appears the pid is reported as 0 (interact via clicks)"
         .to_string()
 }
 
@@ -2416,8 +2441,16 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
         let mut result = Ok(());
         for i in 0..rounds {
             let click_state = i64::from(i) + 1;
-            let posted = self.post_mouse_to_pid(pid, down, cg_button, dest, click_state);
-            if posted.is_ok() && we_pressed {
+            // A failed DOWN is answered directly (the physical backend
+            // propagates it before attempting any release): posting an up
+            // for a button that was never pressed hands the app a spurious
+            // release, and the old shape then blamed "the mouse button may
+            // still be pressed" for a press that never happened.
+            if let Err(error) = self.post_mouse_to_pid(pid, down, cg_button, dest, click_state) {
+                result = Err(error);
+                break;
+            }
+            if we_pressed {
                 self.held_buttons.push(button);
             }
             // A stranded down (up failed twice) must never be silent — the
@@ -3367,9 +3400,12 @@ mod tests {
         assert!(note.contains("launch into the user's graphics session"));
         assert!(note.contains("moved into the virtual display best-effort"));
         assert!(note.contains("may stay visible on the user's desktop"));
-        // Apps stay after stop; the backend drop (not stop) removes them.
-        assert!(note.contains("not closed when a session stops"));
-        assert!(note.contains("until the virtual display backend is dropped"));
+        // Apps stay after stop AND after the backend drop; the drop only
+        // removes the display (surviving windows relocate to remaining
+        // displays — nothing terminates them this round).
+        assert!(note.contains("NOT closed when a session stops or when the backend is dropped"));
+        assert!(note.contains("they keep running"));
+        assert!(note.contains("their windows move to the remaining displays"));
         let notes = capability_notes();
         // cursor_position is the synthesized pointer (last move, else origin).
         assert!(notes.contains("cursor_position reports the last point this backend moved to"));
@@ -3377,11 +3413,11 @@ mod tests {
         // The remembered-target re-verification and its recovery hint.
         assert!(notes.contains("re-verified to still show a window"));
         assert!(notes.contains("click inside the display to focus a new one"));
-        // The open-pid discovery shape: in-bounds only, name preferred
-        // (with the same-named-user-window residual stated), pid 0 when
-        // nothing matches.
+        // The open-pid discovery shape: overlap-only for unnamed windows,
+        // name preferred (with the same-named-user-window residual stated),
+        // pid 0 when nothing matches.
         assert!(notes.contains("watching for a new window on the virtual display"));
-        assert!(notes.contains("only when already inside the display's bounds"));
+        assert!(notes.contains("only when their window already overlaps the display's bounds"));
         assert!(
             notes.contains("the USER opens during the brief search"),
             "the name-match residual (a user window can be claimed) must be disclosed"

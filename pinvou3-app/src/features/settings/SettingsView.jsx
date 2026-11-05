@@ -1700,7 +1700,7 @@ function hasStoredCredential(record) {
       const [virtualError, setVirtualError] = useState('');
       const virtualFlightRef = useRef({ busy: false, settledAt: 0 });
       // Per-platform note rows: gated on the dedicated semantic capability
-      // `virtualDisplayNote` ("" | "windows" | "macos" from
+      // `virtualDisplayNote` ("windows" | "macos" | "linux" from
       // get_platform_capabilities) — the capability is the semantic source;
       // an older proxy that keyed these rows off the dependency-installer
       // bits (usesBundledDependencyInstaller / usesHomebrewDependencyInstaller)
@@ -1710,6 +1710,8 @@ function hasStoredCredential(record) {
         && platformCapabilities?.virtualDisplayNote === 'windows';
       const showMacosVirtualNote = !!computerUse.enabled
         && platformCapabilities?.virtualDisplayNote === 'macos';
+      const showLinuxVirtualNote = !!computerUse.enabled
+        && platformCapabilities?.virtualDisplayNote === 'linux';
       // An emergency stop latches `stopped` without touching the toggle: the
       // switch still reads ON but every consent surface is dead until the
       // user toggles off and back on (set_enabled's re-enable is the only
@@ -1882,6 +1884,11 @@ function hasStoredCredential(record) {
           {showMacosVirtualNote && (
             <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
               {t.uiComputerUse.virtualNoteMacos}
+            </div>
+          )}
+          {showLinuxVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteLinux}
             </div>
           )}
         </IOSSection>

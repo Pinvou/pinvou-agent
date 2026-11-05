@@ -30,12 +30,10 @@ pub(crate) struct DesktopCapabilities {
     /// must not offer the feature.
     pub(crate) global_shortcuts_available: bool,
     /// Semantic selector for the computer-use virtual-display fidelity note
-    /// ("windows" | "macos" | ""): the platform whose note row the settings
-    /// page should show, "" where none applies (Linux runs the real Xvfb
-    /// stack and has no per-platform caveat copy). Deliberately its own
-    /// capability — the frontend must not proxy the dependency-installer
-    /// bits for it, since installer semantics and this note can change
-    /// independently.
+    /// ("windows" | "macos" | "linux"): the platform whose note row the
+    /// settings page should show. Deliberately its own capability — the
+    /// frontend must not proxy the dependency-installer bits for it, since
+    /// installer semantics and this note can change independently.
     pub(crate) virtual_display_note: &'static str,
 }
 
@@ -84,6 +82,8 @@ pub(crate) fn current() -> DesktopCapabilities {
             "windows"
         } else if cfg!(target_os = "macos") {
             "macos"
+        } else if cfg!(target_os = "linux") {
+            "linux"
         } else {
             ""
         },
@@ -201,19 +201,25 @@ mod tests {
     }
 
     /// The virtual-display note selector is a frozen three-value vocabulary
-    /// ("windows" | "macos" | ""): the frontend gates its settings note rows
-    /// on exact equality, so any other spelling would silently hide every
-    /// note, and an empty string must mean "no note platform" (Linux runs
-    /// the real Xvfb stack and has no per-platform caveat copy). Host-pinned
-    /// against the compiled target; the other arms are covered by the
-    /// cross-target compile checks.
+    /// ("windows" | "macos" | "linux"): the frontend gates its settings note
+    /// rows and per-platform consent caveats on exact equality, so any other
+    /// spelling would silently hide every note. Host-pinned against the
+    /// compiled target; the other arms are covered by the cross-target
+    /// compile checks.
     #[test]
     fn virtual_display_note_tracks_the_compiled_target() {
         assert!(
-            matches!(current().virtual_display_note, "" | "windows" | "macos"),
+            matches!(
+                current().virtual_display_note,
+                "" | "windows" | "macos" | "linux"
+            ),
             "the note selector must stay inside the frozen vocabulary"
         );
-        if cfg!(any(target_os = "windows", target_os = "macos")) {
+        if cfg!(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux"
+        )) {
             assert!(
                 !current().virtual_display_note.is_empty(),
                 "a note platform must name itself, got {:?}",

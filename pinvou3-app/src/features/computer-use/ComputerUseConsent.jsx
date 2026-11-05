@@ -124,13 +124,14 @@ export function ComputerUseBanner({ slice, copy }) {
 }
 
 /** Grant dialog (computer_use:grant_required) + per-action confirm dialog.
- * `virtualDisplayNote` is the semantic capability (`""` | `"windows"` |
- * `"macos"`): on macOS the virtual grant gets an extra consent line — apps
- * opened there launch into the user's graphics session first, and without
- * the Accessibility permission their windows can stay visible on the
- * user's desktop (the backend's model-facing target note says the same;
- * the consent copy must not claim more isolation than the stack
- * delivers). */
+ * `virtualDisplayNote` is the semantic capability (`"windows"` | `"macos"` |
+ * `"linux"`): platforms whose stack carries an isolation residual get an
+ * extra consent line under the virtual grant — macOS: apps opened there
+ * launch into the user's graphics session first, and without the
+ * Accessibility permission their windows can stay visible on the user's
+ * desktop; Linux: a raw-Wayland app could still render on the user's screen
+ * (the backend's model-facing target note says the same; the consent copy
+ * must not claim more isolation than the stack delivers). */
 export function ComputerUseDialogs({ slice, copy, virtualDisplayNote = '' }) {
   const view = computerUseConsentView(slice);
   const { pendingAction, actionError, clearActionError, run } = useConsentAction(copy);
@@ -277,6 +278,9 @@ export function ComputerUseDialogs({ slice, copy, virtualDisplayNote = '' }) {
             <p className="text-[13px] leading-relaxed opacity-80 mb-4">{grantVirtual ? copy.grantDescVirtual : copy.grantDesc}</p>
             {grantVirtual && virtualDisplayNote === 'macos' && copy.grantMacCaveat && (
               <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{copy.grantMacCaveat}</p>
+            )}
+            {grantVirtual && virtualDisplayNote === 'linux' && copy.grantLinuxCaveat && (
+              <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{copy.grantLinuxCaveat}</p>
             )}
             {actionError && actionError.stamp === grantRequest.sessionId && (
               <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>

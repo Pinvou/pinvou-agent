@@ -89,14 +89,16 @@ pub(crate) fn dispatch_to_main_thread(task: Box<dyn FnOnce() + Send>) -> bool {
 /// mid-session): a virtual preference with a green probe builds the virtual
 /// backend, everything else stays physical. **Must be called on computer_use's
 /// dedicated worker thread** (guaranteed by BackendHandle): xcap/enigo/a11y
-/// objects have thread affinity. The decision rides the return value (see
-/// below) because the availability-snapshot recorder needs it: a failed
-/// PHYSICAL build must not be recorded as "the last virtual session failed
-/// to start".
-
+/// objects have thread affinity. The decision rides the return value because
+/// the availability-snapshot recorder needs it: a failed PHYSICAL build must
+/// not be recorded as "the last virtual session failed to start".
 /// [`create_backend_with_decision`] resolves the decision BEFORE the build,
 /// so even a failed virtual creation reports `TargetDecision::Virtual` (and
-/// a failed physical build reports Physical).
+/// a failed physical build reports Physical). Both cfg sides expose the SAME
+/// name and signature so the unconditional call site compiles everywhere —
+/// on an unsupported OS the decision degrades to Physical per the snapshot
+/// rule (an unavailable probe keeps the physical arm) and the build answers
+/// the explicit Unsupported error.
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 pub(crate) fn create_backend_with_decision(
     prefer_virtual: bool,
@@ -114,16 +116,22 @@ pub(crate) fn create_backend_with_decision(
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-pub(crate) fn create_backend(
+pub(crate) fn create_backend_with_decision(
     prefer_virtual: bool,
-) -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> {
-    // No physical backend exists for this OS; the preference never matters
-    // here, but consume the argument so both signatures stay aligned.
+) -> (
+    Result<Box<dyn ComputerUseBackend>, ComputerUseError>,
+    TargetDecision,
+) {
+    // No physical or virtual backend exists for this OS; the preference
+    // never matters here.
     let _ = prefer_virtual;
-    Err(ComputerUseError::unsupported(
-        "computer_use",
-        "no computer use backend exists for this operating system",
-    ))
+    (
+        Err(ComputerUseError::unsupported(
+            "computer_use",
+            "no computer use backend exists for this operating system",
+        )),
+        TargetDecision::Physical,
+    )
 }
 
 /// Whether the current OS has a computer_use backend implementation (the platform

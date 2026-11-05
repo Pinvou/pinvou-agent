@@ -382,6 +382,23 @@ fn key_message_lparam(vk: u16, alt_held: bool, up: bool) -> isize {
     compose_key_lparam(unsafe { vk_scan(vk) }, alt_held, up)
 }
 
+/// The (down, up) message pair for a key press: EVERY key pressed while Alt
+/// is held rides the WM_SYSKEYDOWN/WM_SYSKEYUP pair with the context bit —
+/// not just VK_MENU itself. DefWindowProc's WM_SYSKEYDOWN handler is what
+/// turns VK_F4 into SC_CLOSE and Alt+letter into SC_KEYMENU, so a companion
+/// key posted as plain WM_KEYDOWN (the pre-fix shape) made Alt+F4 and
+/// Alt-menu mnemonics never fire even with the Alt itself SYS-shaped.
+/// Chords without Alt keep the plain pair — the system pair is Alt-specific.
+/// Pure so the selection is unit-pinned: reverting a companion key to the
+/// plain pair must fail a test, not pass every CI leg silently.
+fn key_message_pair(alt_held: bool) -> (u32, u32) {
+    if alt_held {
+        (WM_SYSKEYDOWN, WM_SYSKEYUP)
+    } else {
+        (WM_KEYDOWN, WM_KEYUP)
+    }
+}
+
 /// Pack client coordinates into a mouse-message lParam (both i16).
 fn pack_mouse_lparam(x: i32, y: i32) -> isize {
     (((y as u16 as u32) << 16) | (x as u16 as u32)) as isize
@@ -1043,14 +1060,17 @@ struct CaptureJob {
 /// SAFETY (Send): `HDESK` is a kernel object handle; handles are process-wide
 /// tokens that may legally be used from any thread (the API set this module
 /// uses — `SetThreadDesktop`, `CloseDesktop`, `EnumDesktopWindows` — takes
-/// them as values). The wrapper transfers ownership to the capture thread,
-/// which is its only user after the move; the creating thread never touches
-/// the handle again (Drop tears down via the backend's own field).
+/// them as values). The wrapper lets the capture thread attach the desktop:
+/// ownership is SEQUENCED, not exclusive — the backend field holds the same
+/// handle value and closes it in `Drop`, which is safe because the capture
+/// thread finishes its bounded attach work (joined at teardown) before
+/// `Drop` can run.
 struct SendableDesktop(HDESK);
 
 // SAFETY: HDESK is a kernel object handle — a process-wide token usable from
-// any thread; the move transfers exclusive ownership to the capture thread
-// (the creator never touches the handle afterwards).
+// any thread; the copy in the moved wrapper is used only for the bounded
+// attach at thread start, which completes before the backend's `Drop` joins
+// the capture thread and closes the same handle value.
 unsafe impl Send for SendableDesktop {}
 
 /// Pooled GDI objects for the composite capture, owned by the capture thread
@@ -1860,18 +1880,35 @@ impl WindowsVirtualDesktopBackend {
         let base = {
             // SAFETY: desktop-relative queries on the attached worker.
             let foreground = unsafe { GetForegroundWindow() };
-            if !foreground.is_invalid() {
-                foreground
+            let foreground_app = if !foreground.is_invalid() {
+                // The shell windows (Progman/WorkerW/Shell_TrayWnd) are
+                // excluded here exactly as in the fallback walk below: right
+                // after the blank-shell start, explorer's Progman HOLDS
+                // foreground on the hidden desktop, and an unchecked
+                // foreground return posted the keystrokes into the shell and
+                // reported success — the honest "no window has keyboard
+                // focus" error never got a chance to fire.
+                let class = unsafe { window_class_name(foreground) };
+                if !class.is_empty() && is_shell_window_class(&class) {
+                    None
+                } else {
+                    Some(foreground)
+                }
             } else {
-                // SAFETY: same.
-                unsafe { topmost_visible_app_window() }.ok_or_else(|| {
+                None
+            };
+            foreground_app
+                .or_else(|| {
+                    // SAFETY: same.
+                    unsafe { topmost_visible_app_window() }
+                })
+                .ok_or_else(|| {
                     ComputerUseError::unavailable(
                         "no window on the hidden desktop has keyboard focus; \
                          click a window (or open an app with the open action) \
                          before typing",
                     )
                 })?
-            }
         };
         // SAFETY: queue attach + GUI-thread info on desktop windows from the
         // attached worker thread; the detach always runs.
@@ -1939,11 +1976,7 @@ impl WindowsVirtualDesktopBackend {
         // Chords without Alt keep the plain pair — the system pair is
         // Alt-specific.
         let alt_held = ordered.contains(&VK_MENU.0);
-        let (down_message, up_message) = if alt_held {
-            (WM_SYSKEYDOWN, WM_SYSKEYUP)
-        } else {
-            (WM_KEYDOWN, WM_KEYUP)
-        };
+        let (down_message, up_message) = key_message_pair(alt_held);
         let mut pressed: Vec<u16> = Vec::with_capacity(ordered.len());
         let hold_result = (|| {
             for vk in &ordered {
@@ -2235,7 +2268,8 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                 if self.cancelled() {
                     return Err(ComputerUseError::unavailable(
                         "drag was cancelled (caller timeout or stop); the button \
-                         is released and the pointer stays at the last waypoint",
+                         is released and the hidden desktop's cursor ends at \
+                         the drop point",
                     ));
                 }
                 // SAFETY: per-desktop cursor move on the attached worker.
@@ -2734,6 +2768,27 @@ mod tests {
         // The translation the chord path performs: VK_F4 (0x73) → scan
         // 0x3E on the standard keyboard (SAFETY: pure translation query).
         assert_eq!(unsafe { vk_scan(0x73) }, 0x3E, "VK_F4 scan code");
+    }
+
+    /// The Alt-chord message-pair selection (companion of the lparam pin
+    /// above): EVERY key of an Alt chord — companions included — must ride
+    /// the WM_SYSKEYDOWN/WM_SYSKEYUP pair, and a chord without Alt must keep
+    /// the plain pair (the system pair is Alt-specific). Reverting a
+    /// companion key to plain WM_KEYDOWN (the pre-fix shape that made
+    /// Alt+F4/Alt-menu mnemonics never fire) must fail here, not pass every
+    /// CI leg silently. WINDOWS-CI-ONLY (this whole file is cfg(windows)).
+    #[test]
+    fn key_message_pair_pins_the_sys_shape_while_alt_is_held() {
+        assert_eq!(
+            key_message_pair(true),
+            (WM_SYSKEYDOWN, WM_SYSKEYUP),
+            "Alt-held chords must use the system key pair for every key"
+        );
+        assert_eq!(
+            key_message_pair(false),
+            (WM_KEYDOWN, WM_KEYUP),
+            "chords without Alt must keep the plain key pair"
+        );
     }
 
     /// Return/Tab type runs deliver WM_CHAR with the payload real input

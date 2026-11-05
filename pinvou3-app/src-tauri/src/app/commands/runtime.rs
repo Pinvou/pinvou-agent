@@ -198,7 +198,7 @@ mod platform_capability_tests {
                 value
                     .get("virtualDisplayNote")
                     .and_then(|note| note.as_str()),
-                Some("") | Some("windows") | Some("macos")
+                Some("") | Some("windows") | Some("macos") | Some("linux")
             ),
             "virtualDisplayNote must stay in the frozen vocabulary: {value}"
         );

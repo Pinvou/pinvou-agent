@@ -123,9 +123,11 @@ pub struct AuditRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Which display the action targeted: "virtual" (isolated virtual
-    /// display) or "physical" (the user's desktop). Absent on records that
-    /// never reach a backend decision (parse rejections before capability
-    /// reads). Named `display_target` because the plain `target` JSON key is
+    /// display) or "physical" (the user's desktop). Set on every production
+    /// record — including parse rejections and gate rejections, where the
+    /// answer is the session's registered target or, before that exists,
+    /// the resolved preference (None only on the doc test's bare record).
+    /// Named `display_target` because the plain `target` JSON key is
     /// already the action-target summary above (frozen JSONL contract).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_target: Option<String>,

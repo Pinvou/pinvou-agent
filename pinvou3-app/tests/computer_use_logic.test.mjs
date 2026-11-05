@@ -609,6 +609,8 @@ const dialogCopy = {
   grantTitleVirtual: 'Grant an isolated virtual display',
   grantDesc: 'desc',
   grantDescVirtual: 'The agent works in an isolated virtual display, not on your screen.',
+  grantMacCaveat: 'On this Mac, opened apps can stay visible on your desktop without the Accessibility permission.',
+  grantLinuxCaveat: 'On Linux, a raw-Wayland app could still show its window on your screen.',
   grantAllow: 'Allow',
   grantDeny: 'Deny',
   unreadableTarget: '【読み取れないターゲット】',
@@ -645,8 +647,8 @@ try {
   const runtime = createReactRuntime();
   globalThis.__pinvouConsentReact = runtime;
   let tree = null;
-  const render = (slice) => {
-    tree = runtime.render(ComputerUseDialogs, { slice, copy: dialogCopy });
+  const render = (slice, virtualDisplayNote) => {
+    tree = runtime.render(ComputerUseDialogs, { slice, copy: dialogCopy, virtualDisplayNote });
     return tree;
   };
   // Drives the promise chain inside useConsentAction's run() to completion
@@ -831,6 +833,34 @@ try {
     'the physical title must not leak into the virtual dialog');
   assert.ok(findByTestId(tree, 'computer-use-grant-allow'), 'the Allow button stays');
   assert.ok(findByTestId(tree, 'computer-use-grant-deny'), 'the Deny button stays');
+  // Per-platform caveats under the virtual grant: the macOS/Linux fidelity
+  // notes render on their platform and nowhere else — a platform without a
+  // residual ("windows") or an unknown capability (undefined) renders
+  // neither line (no wrong-platform copy, fail-neutral hiding).
+  tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } }, 'macos');
+  grantText = allText(tree);
+  assert.ok(grantText.includes(dialogCopy.grantMacCaveat),
+    'the macOS caveat renders on macos');
+  assert.equal(grantText.includes(dialogCopy.grantLinuxCaveat), false,
+    'the Linux caveat must not render on macos');
+  tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } }, 'linux');
+  grantText = allText(tree);
+  assert.ok(grantText.includes(dialogCopy.grantLinuxCaveat),
+    'the Linux caveat renders on linux');
+  assert.equal(grantText.includes(dialogCopy.grantMacCaveat), false,
+    'the macOS caveat must not render on linux');
+  tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } }, 'windows');
+  grantText = allText(tree);
+  assert.equal(grantText.includes(dialogCopy.grantMacCaveat), false,
+    'no caveat on windows');
+  assert.equal(grantText.includes(dialogCopy.grantLinuxCaveat), false,
+    'no caveat on windows');
+  tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } });
+  grantText = allText(tree);
+  assert.equal(grantText.includes(dialogCopy.grantMacCaveat), false,
+    'no caveat when the capability is unknown');
+  assert.equal(grantText.includes(dialogCopy.grantLinuxCaveat), false,
+    'no caveat when the capability is unknown');
   tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1' } });
   grantText = allText(tree);
   assert.ok(grantText.includes(dialogCopy.grantTitle),

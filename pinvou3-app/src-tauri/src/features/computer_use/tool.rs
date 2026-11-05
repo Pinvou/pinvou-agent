@@ -878,12 +878,18 @@ fn target_marker(target: DisplayTarget) -> &'static str {
 
 /// The resolved display target for this session: the backend's recorded
 /// one-time creation decision once capabilities have been read (cached in
-/// [`ToolState`]), else the resolved preference against the cheap probe —
-/// the same rule the creation-time decision uses, so the pre-first-read
-/// answer agrees with what the backend WILL record. Used by the payload /
-/// audit / screenshot-marker boundaries.
+/// [`ToolState`]), else the session's registered target — written at
+/// creation, BEFORE any audit record can exist, so a preference or probe
+/// flip between creation and the first capability read cannot make an
+/// error-path record mislabel a live virtual session. The preference+probe
+/// re-derivation below is the last resort for records outside a registered
+/// session (the same rule the creation-time decision uses). Used by the
+/// payload / audit / screenshot-marker boundaries.
 fn resolved_display_target(parts: &Parts) -> DisplayTarget {
     if let Some(target) = parts.state.lock().display_target {
+        return target;
+    }
+    if let Some(target) = parts.shared.session_target(&parts.session_id) {
         return target;
     }
     let availability = platform::probe_virtual_display();
