@@ -884,7 +884,10 @@ mod tests {
         // 新序(生产臂)先折叠后扫描:短 token 存活为折叠形态,长 token
         // 整体 [REDACTED]——两个方向都不再残留家目录碎片。对照腿用旧序
         // 手工复现泄漏形态(钉住回归的真实形状),删除折叠先行(改回旧
-        // 序)即红。
+        // 序)即红。残余注记(round-21 复审):折叠先行会把以家目录开头的
+        // 无空白长 token 缩短(~/.pinvou3 起头)——恰长 ≥24(含数字+字母)
+        // 的该类 token 缩短后可能跌破族阈值逃过扫描;方向上这是把旧序的
+        // 必然碎片泄漏换成更窄的掩蔽残留,非前缀文本的扫描不受影响。
         let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
         let home = base.join("John Doe").join(".pinvou3");
         std::fs::create_dir_all(&home).unwrap();
@@ -1173,7 +1176,7 @@ mod tests {
         // Round-20 复审(S10-1)源钉:空白家目录上 sanitize→fold 旧序会
         // 泄漏家目录碎片(见 whitespace_home 行为钉);生产臂必须折叠先
         // 行——两臂窗内必须出现「fold 应用于原始 detail」的形态
-        // (`redact_storage_prefix(&format!("{e:#}"))`),且不得再出现旧序
+        // (`redact_storage_prefix(&format!(`),且不得再出现旧序
         // 标记(`redact_storage_prefix(&sanitize_command_error`)。改回旧
         // 序本钉即红。
         let source = include_str!("memory.rs");
@@ -1193,13 +1196,21 @@ mod tests {
             // 窗口上界向前扩 400 字节并落到字符边界:旧序突变
             // (redact_storage_prefix(&sanitize_command_error(…) )的标记位
             // 于 needle 之前,不含前文的窗口会漏看它(F6 突变实证)。
+            // Round-21 复审:下界同样向后扩 900 字节并落字符边界——上界
+            // 撞进多字节字符时切片会 panic(编译崩而非断言红),与 siblings
+            // 同一约束;顺带把必需字面量里的闭包参数拼写解耦(按 M6b 口径
+            // `|e|` 不属于被钉契约,改名为 `|error|` 不得假红)。
             let mut window_lo = at.saturating_sub(400);
             while window_lo > 0 && !source.is_char_boundary(window_lo) {
                 window_lo -= 1;
             }
-            let arm = &source[window_lo..at + 900];
+            let mut window_hi = (at + 900).min(source.len());
+            while window_hi > window_lo && !source.is_char_boundary(window_hi) {
+                window_hi -= 1;
+            }
+            let arm = &source[window_lo..window_hi];
             assert!(
-                arm.contains("redact_storage_prefix(&format!(\"{e:#}\"))"),
+                arm.contains("redact_storage_prefix(&format!("),
                 "{label} must apply the fold to the raw error detail \
                  (fold-before-scan order)"
             );

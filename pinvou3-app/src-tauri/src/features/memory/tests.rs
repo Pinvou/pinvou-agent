@@ -4554,11 +4554,22 @@ fn organize_apply_warnings_fold_the_storage_prefix() {
         .find("fn apply_organize_actions(")
         .expect("apply_organize_actions must exist");
     let body = &production[start..];
-    let end = ["\nfn ", "\npub fn "]
-        .iter()
-        .filter_map(|marker| body.find(marker))
-        .min()
-        .unwrap_or(body.len());
+    // Round-21 复审:补齐后续项标记——apply_organize_actions 与 census
+    // 计数窗之间夹着 enum OrganizeDeleteOutcome 等项,原标记表只认 fn,
+    // 窗口会越过函数体落到后续项(今天无害,项内出现 `redact_storage_
+    // prefix(&` 时计数即失真)。
+    let end = [
+        "\nfn ",
+        "\npub fn ",
+        "\nenum ",
+        "\nstruct ",
+        "\nimpl ",
+        "\nasync fn ",
+    ]
+    .iter()
+    .filter_map(|marker| body.find(marker))
+    .min()
+    .unwrap_or(body.len());
     let body = &body[..end];
     let code = body
         .lines()
