@@ -244,7 +244,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   writes the target's session file directly: the MCP server validates and spools
   (`~/.pinvou3/messaging/spool/<spool-id>.json`), and an app-side Rust watcher performs
   the steer/dispatch through the engine pool, so the persistence actor's
-  last-writer-wins snapshots can never clobber an external edit. The delivered text
+  last-writer-wins snapshots can never clobber an external edit. A steered
+  delivery stays queued until the engine reports `SteerCommitted` for it — the
+  done marker (and the spool-file removal) land on commit, while a dropped steer
+  re-queues the message for redelivery (at-least-once; the steer-accept moment no
+  longer finalizes). Quarantine audit lines carry the agent_mail-aligned failure
+  receipt fields (`code` / `retryable:false` / `failed_at`). The delivered text
   carries a machine-readable sender header block (the session-mention block pattern
   mirrored on receive) that the timeline renders as a sender card and all three
   auto-title paths strip.

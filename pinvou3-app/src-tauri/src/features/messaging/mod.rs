@@ -377,18 +377,21 @@ fn done_dir() -> PathBuf {
 }
 
 /// Delivery outcome (audit + log).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryOutcome {
-    /// Target was mid-turn: injected at the next step boundary.
-    Steered,
+    /// Target was mid-turn: injected at the next step boundary. Carries the
+    /// pool-stamped steer id — the spool file stays queued until the engine
+    /// reports SteerCommitted for it (resolve_pending_steer), closing the
+    /// steer-Ok-then-drop/crash loss window.
+    Steered(String),
     /// Target was idle or not loaded: a new turn was dispatched.
     Dispatched,
 }
 
 impl DeliveryOutcome {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
-            DeliveryOutcome::Steered => "steered",
+            DeliveryOutcome::Steered(_) => "steered",
             DeliveryOutcome::Dispatched => "dispatched",
         }
     }
@@ -436,19 +439,19 @@ pub async fn deliver_spooled_message(
 /// pinnable without a live `EnginePool` — swapping the outcomes, deleting
 /// the fallback leg or the timeout wrappers previously shipped the whole
 /// matrix green.
-async fn steer_then_dispatch<SteerF, DispatchF, SteerFut, DispatchFut, S>(
+async fn steer_then_dispatch<SteerF, DispatchF, SteerFut, DispatchFut>(
     steer: SteerF,
     dispatch: DispatchF,
 ) -> Result<DeliveryOutcome>
 where
     SteerF: FnOnce() -> SteerFut,
-    SteerFut: std::future::Future<Output = Result<S>>,
+    SteerFut: std::future::Future<Output = Result<String>>,
     DispatchF: FnOnce() -> DispatchFut,
     DispatchFut: std::future::Future<Output = Result<()>>,
 {
     let steered = tokio::time::timeout(DELIVERY_TIMEOUT, steer()).await;
     match steered {
-        Ok(Ok(_)) => Ok(DeliveryOutcome::Steered),
+        Ok(Ok(steer_id)) => Ok(DeliveryOutcome::Steered(steer_id)),
         Ok(Err(steer_error)) => {
             // The dispatch path re-checks deletion/lifecycle gates itself
             // (send_reserved_user_message loads the store under the turn
@@ -462,6 +465,127 @@ where
             }
         }
         Err(_) => bail!("steer timed out after {DELIVERY_TIMEOUT:?} (engine wedged?)"),
+    }
+}
+
+/// steer-Ok 之后、终局事件之前的在途投递。spool 文件保留在队列里，
+/// `SteerCommitted` 才落 done 标记并移除——steer 被引擎丢弃（turn 终止/
+/// 撤销/代际失效）或进程在提交前崩溃时，消息回到队列重新投递（at-least-once），
+/// 而不是像旧实现那样在 steer-Ok 瞬间就标 done、把后续丢失窗口永久关死。
+struct PendingSteerDelivery {
+    spool_path: PathBuf,
+    original: std::sync::Arc<Vec<u8>>,
+    message: SpooledMessage,
+    armed_at: std::time::Instant,
+}
+
+/// steer 终局等待上限。正常提交是即时的（turn 边界/下一 step）；超时意味着
+/// 终局事件永远不会来（forwarder 中止、引擎被回收且 Drop 通知丢失）——届时
+/// 放弃等待、文件留在队列重新投递（可能重复，好过丢失）。
+const STEER_COMMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+static PENDING_STEERS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, PendingSteerDelivery>>,
+> = std::sync::OnceLock::new();
+
+fn pending_steers()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, PendingSteerDelivery>> {
+    PENDING_STEERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 该 spool 文件是否有一笔 steer 在途（在途期间轮询跳过，预算冻结）。
+fn is_pending_steer_path(path: &Path) -> bool {
+    pending_steers()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+        .any(|entry| entry.spool_path == path)
+}
+
+/// 丢弃在途注册（文件被替换时的撤销；文件留给轮询按新 body 处理）。
+fn cancel_pending_steer(steer_id: &str) {
+    pending_steers()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(steer_id);
+}
+
+/// 放弃超时的在途 steer：条目删除，文件留在 spool，下轮正常重投。
+fn prune_expired_pending_steers() {
+    pending_steers()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|steer_id, entry| {
+            if entry.armed_at.elapsed() < STEER_COMMIT_WAIT {
+                return true;
+            }
+            log::warn!(
+                "[messaging] steer {steer_id} never reached a terminal event within \
+                 {STEER_COMMIT_WAIT:?}; giving up the wait and re-queuing the spool file"
+            );
+            false
+        });
+}
+
+/// steer 终局解析：forwarder 在 `chat:steer_committed`（committed=true）/
+/// `chat:steer_dropped`（committed=false）事件处调用。
+///
+/// committed：先写 done 标记再删 spool 文件——删除失败时标记仍保证 keyed
+/// 重试不会二次投递（轮询的 already_delivered_skip 分支会补审计并补删）。
+/// dropped：只撤销注册，文件留在队列按原节奏重投。未注册的 id（无在途
+/// 投递）静默返回——前端 chip 等事件同样消费它，这里不是唯一消费者。
+pub fn resolve_pending_steer(steer_id: &str, committed: bool) {
+    let Some(entry) = pending_steers()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(steer_id)
+    else {
+        return;
+    };
+    if !committed {
+        log::info!(
+            "[messaging] steer {steer_id} was dropped by the engine; \
+             {:?} stays queued for redelivery",
+            entry.spool_path
+        );
+        return;
+    }
+    let unchanged = read_bounded(&entry.spool_path)
+        .map(|current| spool_records_equal(&current, &entry.original))
+        .unwrap_or(false);
+    if !unchanged {
+        // 在途期间文件被替换：不做终态处置，丢掉注册让轮询按新 body 处理
+        // （与 Processed::Done 的 replace 语义一致，防止旧 body 的终局
+        // 处置吞掉新 body）。
+        log::warn!(
+            "[messaging] steer {steer_id} committed but {:?} was replaced mid-steer; \
+             leaving the newest body for the next poll",
+            entry.spool_path
+        );
+        return;
+    }
+    if entry.message.idempotency_key.is_some() {
+        let _ = std::fs::create_dir_all(done_dir());
+        if let Some(stem) = entry.spool_path.file_stem().and_then(|s| s.to_str()) {
+            if let Err(error) = std::fs::write(done_dir().join(format!("{stem}.json")), b"") {
+                log::warn!(
+                    "[messaging] done marker write failed for {stem:?} after steer commit \
+                     (a keyed retry will re-deliver): {error}"
+                );
+            }
+        }
+    }
+    match std::fs::remove_file(&entry.spool_path) {
+        Ok(()) => {}
+        Err(error) => {
+            // 无 done 标记的 unkeyed 消息此时会整条重投（重复投递）；
+            // 大声说出来而不是假装无事发生。
+            log::warn!(
+                "[messaging] steer {steer_id} committed but {:?} could not be removed \
+                 (unkeyed redelivery may duplicate): {error}",
+                entry.spool_path
+            );
+        }
     }
 }
 
@@ -484,7 +608,7 @@ fn audit_root_for(roots: &crate::features::sessions::SessionRoots) -> std::path:
 fn audit_delivery(
     store: &crate::features::sessions::SessionStore,
     message: &SpooledMessage,
-    outcome: DeliveryOutcome,
+    outcome: &DeliveryOutcome,
 ) {
     let detail = serde_json::json!({
         "tool": MESSAGING_TOOL_FULL_NAME,
@@ -519,19 +643,20 @@ fn audit_delivery(
 fn audit_quarantine(
     store: &crate::features::sessions::SessionStore,
     message: Option<&SpooledMessage>,
+    code: &str,
     reason: &str,
 ) {
+    // 失败收据字段与底座 agent_mail 的 failure receipt 对齐：
+    // code（机读失败类别）/ retryable（隔离即终态，恒 false）/ failed_at。
     let Some(message) = message else { return };
     if check_participant_id(Some(&message.to_session), "target").is_err() {
         return;
     }
-    let detail = serde_json::json!({
-        "tool": MESSAGING_TOOL_FULL_NAME,
-        "to_session": message.to_session,
-        "from_session": message.from_session,
-        "outcome": "quarantined",
-        "reason": reason,
-    });
+    let mut detail = quarantine_detail(code, reason);
+    detail["tool"] = serde_json::json!(MESSAGING_TOOL_FULL_NAME);
+    detail["to_session"] = serde_json::json!(message.to_session);
+    detail["from_session"] = serde_json::json!(message.from_session);
+    detail["outcome"] = serde_json::json!("quarantined");
     if let Ok(roots) = store.session_roots(&message.to_session) {
         crate::features::assistant::audit::append(
             &audit_root_for(&roots),
@@ -540,6 +665,18 @@ fn audit_quarantine(
             detail,
         );
     }
+}
+
+/// 失败收据基底字段：code（机读失败类别）/ retryable（隔离即终态，恒
+/// false）/ failed_at（RFC3339）。与底座 agent_mail 的 failure receipt
+/// 语义对齐；审计行里再叠 tool/to_session/from_session/outcome/reason。
+fn quarantine_detail(code: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "code": code,
+        "retryable": false,
+        "failed_at": chrono::Utc::now().to_rfc3339(),
+        "reason": reason,
+    })
 }
 
 /// Re-derive the sender title from the live store: the spooled `from_title`
@@ -590,6 +727,7 @@ fn rederive_sender_title(
 /// destroyed under the old body's verdict. `Poison` carries `None` only for
 /// dispositions that fired before any read succeeded (stat/size caps) —
 /// those have no reference to re-verify against.
+#[derive(Debug)]
 enum Processed {
     /// Delivered (or already-delivered skip); the file can be removed.
     Done(std::sync::Arc<Vec<u8>>),
@@ -597,6 +735,10 @@ enum Processed {
     Poison(Option<std::sync::Arc<Vec<u8>>>, anyhow::Error),
     /// Transient delivery failure: retry with backoff.
     Retry(std::sync::Arc<Vec<u8>>, anyhow::Error),
+    /// steer 已被引擎接受，等待 SteerCommitted/SteerDropped 终局（注册表
+    /// 已登记）；文件保留在 spool，预算冻结，终局由 resolve_pending_steer
+    /// 驱动。
+    PendingSteer(std::sync::Arc<Vec<u8>>, String),
 }
 
 /// Process one spool file: read → validate → deliver. The spool identity is
@@ -724,7 +866,7 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
                 // The record was replaced mid-delivery: re-queue the NEW
                 // bytes (the delivery that just landed was the old body —
                 // audited below so the trail shows both).
-                audit_delivery(store, &message, outcome);
+                audit_delivery(store, &message, &outcome);
                 return Processed::Retry(
                     std::sync::Arc::clone(&original),
                     anyhow::anyhow!(
@@ -732,7 +874,26 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
                     ),
                 );
             }
-            audit_delivery(store, &message, outcome);
+            audit_delivery(store, &message, &outcome);
+            if let DeliveryOutcome::Steered(steer_id) = outcome {
+                // steer 已被引擎接受但尚未入转录：文件留在 spool，注册在途
+                // 等终局事件（resolve_pending_steer）落 done 标记。此时写
+                // done 标记会把丢弃/崩溃窗口永久关死（正是本次要消掉的
+                // 最大丢信窗口）。
+                pending_steers()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(
+                        steer_id.clone(),
+                        PendingSteerDelivery {
+                            spool_path: path.to_path_buf(),
+                            original: std::sync::Arc::clone(&original),
+                            message,
+                            armed_at: std::time::Instant::now(),
+                        },
+                    );
+                return Processed::PendingSteer(std::sync::Arc::clone(&original), steer_id);
+            }
             if message.idempotency_key.is_some() {
                 let _ = std::fs::create_dir_all(done_dir());
                 // Round-11 minor 2: a silent marker-write failure means the
@@ -1026,6 +1187,8 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
     skip_audited: &mut std::collections::HashSet<String>,
 ) {
     let root = spool_root();
+    // 在途 steer 的等待上限先清理：超时条目放弃等待，文件留在队列重投。
+    prune_expired_pending_steers();
     let Ok(entries) = std::fs::read_dir(&root) else {
         return; // no spool directory yet = nothing was ever sent
     };
@@ -1076,6 +1239,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     audit_quarantine(
                         store,
                         Some(record),
+                        "pending_file_ceiling_exceeded",
                         &format!("pending-file ceiling {MAX_PENDING_FILES} exceeded"),
                     );
                 }
@@ -1117,6 +1281,11 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         // inherit the old count and could quarantine after one failure.
         if !path.exists() {
             retries.clear(&name);
+            continue;
+        }
+        // steer 在途：文件保留在队列等待终局事件，本轮跳过（预算冻结，
+        // 既不重投也不推进 backoff）。
+        if is_pending_steer_path(&path) {
             continue;
         }
         if !retries.due(&name) {
@@ -1167,6 +1336,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         audit_quarantine(
                             store,
                             record.as_ref(),
+                            "panic_attempt_limit",
                             &format!("delivery panicked {count} times"),
                         );
                         retries.clear(&name);
@@ -1280,6 +1450,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                                 audit_quarantine(
                                     store,
                                     record.as_ref(),
+                                    "removal_attempt_limit",
                                     &format!("removal failed {fails} times: {error}"),
                                 );
                                 retries.clear(&name);
@@ -1307,8 +1478,22 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 // append a "quarantined" line it never earned.
                 if quarantine(&path) {
                     log::warn!("[messaging] quarantining {:?}: {error:#}", name);
-                    audit_quarantine(store, record.as_ref(), &format!("{error:#}"));
+                    audit_quarantine(
+                        store,
+                        record.as_ref(),
+                        "poison_record",
+                        &format!("{error:#}"),
+                    );
                 }
+            }
+            Processed::PendingSteer(_original, steer_id) => {
+                // 注册已在 process_spool_file 内完成；这里只保持静默——
+                // 文件留在 spool，终局由 resolve_pending_steer 驱动，
+                // 轮询经 is_pending_steer_path 跳过该文件。
+                log::debug!(
+                    "[messaging] {:?} steered as {steer_id}; waiting for the terminal event",
+                    name
+                );
             }
             Processed::Retry(original, error) => {
                 let count = retries.record(&name);
@@ -1344,6 +1529,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         audit_quarantine(
                             store,
                             record.as_ref(),
+                            "delivery_attempt_limit",
                             &format!("delivery failed after {count} attempts: {error:#}"),
                         );
                         retries.clear(&name);
@@ -1510,7 +1696,7 @@ mod spool_pipeline_tests {
         async fn deliver(&self, _message: &SpooledMessage) -> Result<DeliveryOutcome> {
             *self.calls.borrow_mut() += 1;
             match &self.outcome {
-                Ok(outcome) => Ok(*outcome),
+                Ok(outcome) => Ok(outcome.clone()),
                 Err(error) => bail!("{error}"),
             }
         }
@@ -1731,18 +1917,22 @@ mod spool_pipeline_tests {
     #[tokio::test]
     async fn steer_success_steers_without_dispatch() {
         let steered = steer_then_dispatch(
-            || async { Ok(()) },
+            || async { Ok("steer-1@0".to_string()) },
             || async { Err(anyhow::anyhow!("dispatch must not run")) },
         )
         .await
         .expect("steer success delivers");
-        assert!(matches!(steered, DeliveryOutcome::Steered));
+        assert_eq!(
+            steered,
+            DeliveryOutcome::Steered("steer-1@0".to_string()),
+            "steer id must survive the seam for pending registration"
+        );
     }
 
     #[tokio::test]
     async fn steer_failure_falls_back_to_dispatch() {
         let steered = steer_then_dispatch(
-            || async { Err::<(), _>(anyhow::anyhow!("idle: no live engine")) },
+            || async { Err::<String, _>(anyhow::anyhow!("idle: no live engine")) },
             || async { Ok(()) },
         )
         .await
@@ -1753,7 +1943,7 @@ mod spool_pipeline_tests {
     #[tokio::test]
     async fn dispatch_failure_surfaces_both_legs() {
         let error = steer_then_dispatch(
-            || async { Err::<(), _>(anyhow::anyhow!("idle: no live engine")) },
+            || async { Err::<String, _>(anyhow::anyhow!("idle: no live engine")) },
             || async { Err(anyhow::anyhow!("target session is gone")) },
         )
         .await
@@ -1771,14 +1961,14 @@ mod spool_pipeline_tests {
     #[tokio::test(start_paused = true)]
     async fn wedged_legs_time_out() {
         let error = steer_then_dispatch(
-            || std::future::pending::<Result<()>>(),
+            || std::future::pending::<Result<String>>(),
             || std::future::pending::<Result<()>>(),
         )
         .await
         .expect_err("a wedged steer times out");
         assert!(error.to_string().contains("steer timed out"), "{error:#}");
         let error = steer_then_dispatch(
-            || async { Err::<(), _>(anyhow::anyhow!("idle")) },
+            || async { Err::<String, _>(anyhow::anyhow!("idle")) },
             || std::future::pending::<Result<()>>(),
         )
         .await
@@ -1786,6 +1976,118 @@ mod spool_pipeline_tests {
         assert!(
             error.to_string().contains("dispatch timed out"),
             "{error:#}"
+        );
+    }
+
+    /// steer-Ok 不再立即终态：文件留在 spool、注册在途，SteerCommitted 到达
+    /// 才写 done 标记并移除（消掉 steer-Ok-后丢失窗口的回归钉）。
+    #[tokio::test]
+    async fn steered_delivery_waits_for_commit_before_finalizing() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("steer.json"),
+            record_json("steer", Some("k-steer")),
+        )
+        .unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-9@7".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let store = sessions_store();
+        let mut skip_audited = Default::default();
+        let outcome = process_spool_file(
+            &spool.join("steer.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut skip_audited,
+            &mut None,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Processed::PendingSteer(..)),
+            "steered delivery must hold the file: {outcome:?}"
+        );
+        assert!(spool.join("steer.json").exists(), "file stays queued");
+        assert!(
+            !done_dir().join("steer.json").exists(),
+            "done marker must not land before the commit"
+        );
+        assert!(is_pending_steer_path(&spool.join("steer.json")));
+
+        // 提交到达：done 标记 + 移除，注册清空。
+        resolve_pending_steer("steer-9@7", true);
+        assert!(done_dir().join("steer.json").exists(), "marker on commit");
+        assert!(!spool.join("steer.json").exists(), "file removed on commit");
+        assert!(!is_pending_steer_path(&spool.join("steer.json")));
+    }
+
+    /// 引擎丢弃 steer（turn 终止/撤销/代际失效）：文件回到队列按原节奏
+    /// 重投，绝不写 done 标记。
+    #[tokio::test]
+    async fn dropped_steer_requeues_without_done_marker() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("drop.json"), record_json("drop", Some("k-drop"))).unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-3@2".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let store = sessions_store();
+        let outcome = process_spool_file(
+            &spool.join("drop.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut Default::default(),
+            &mut None,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::PendingSteer(..)));
+
+        resolve_pending_steer("steer-3@2", false);
+        assert!(spool.join("drop.json").exists(), "re-queued for redelivery");
+        assert!(!done_dir().join("drop.json").exists(), "no marker on drop");
+        assert!(!is_pending_steer_path(&spool.join("drop.json")));
+    }
+
+    /// 在途期间 spool 文件被替换（keyed 重试落新 body）：旧 body 的提交
+    /// 终局不得吞掉新 body——不写标记不移除，注册撤销，新 body 下轮投递。
+    #[tokio::test]
+    async fn commit_does_not_finalize_a_replaced_body() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("swap.json"), record_json("swap", Some("k-swap"))).unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-5@1".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let store = sessions_store();
+        let outcome = process_spool_file(
+            &spool.join("swap.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut Default::default(),
+            &mut None,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::PendingSteer(..)));
+
+        let replacement = record_json("swap", Some("k-swap")).replace("正文", "更正后的正文");
+        std::fs::write(spool.join("swap.json"), replacement).unwrap();
+        resolve_pending_steer("steer-5@1", true);
+        assert!(
+            spool.join("swap.json").exists(),
+            "the newest body stays queued"
+        );
+        assert!(
+            !done_dir().join("swap.json").exists(),
+            "the stale commit must not mark the replaced body delivered"
         );
     }
 
@@ -2006,7 +2308,7 @@ mod spool_pipeline_tests {
         let ledger = crate::platform::paths::session_workspace_dir("tgt0001");
         std::fs::create_dir_all(&ledger).unwrap();
         let message: SpooledMessage = serde_json::from_str(&record_json("b1", None)).unwrap();
-        audit_delivery(&store, &message, DeliveryOutcome::Dispatched);
+        audit_delivery(&store, &message, &DeliveryOutcome::Dispatched);
         assert!(
             ledger.join("workflow_audit.jsonl").exists(),
             "the audit line lands in the private ledger root"
@@ -2074,8 +2376,11 @@ mod spool_pipeline_tests {
         // UNKEYED: no done-marker, so the Done arm's removal is the only
         // dedup the file has — exactly the Windows-lock shape.
         std::fs::write(spool.join("locked.json"), record_json("locked", None)).unwrap();
+        // Dispatched (not Steered): the test targets the Done arm's removal
+        // streak; a steered delivery now holds the file pending commit and
+        // never reaches the removal arm.
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Dispatched),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
@@ -2139,7 +2444,7 @@ mod spool_pipeline_tests {
         std::fs::create_dir_all(done_dir()).unwrap();
         std::fs::write(done_dir().join("locked.json"), b"").unwrap();
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Steered("steer-1@0".to_string())),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
@@ -2419,8 +2724,10 @@ mod spool_pipeline_tests {
             bytes
         };
 
+        // Dispatched (not Steered): the assertions below target the Done /
+        // Poison size arms; a steered delivery would hold the file pending.
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Dispatched),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut skip_audited = std::collections::HashSet::new();
@@ -2474,8 +2781,11 @@ mod spool_pipeline_tests {
         let spool = spool_root();
         std::fs::create_dir_all(&spool).unwrap();
         std::fs::write(spool.join("abc.json"), record_json("abc", Some("k1"))).unwrap();
+        // Dispatched (not Steered): the Done arm's removal + marker semantics
+        // are the test subject; a steered delivery holds the file pending
+        // commit by design now.
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Dispatched),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
@@ -2548,7 +2858,7 @@ mod spool_pipeline_tests {
         crate::features::marketplace::builtin::set_feature_enabled("session-messaging", false)
             .expect("disable session-messaging");
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Steered("steer-1@0".to_string())),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
@@ -2596,7 +2906,7 @@ mod spool_pipeline_tests {
         impl SpoolDelivery for Capturing {
             async fn deliver(&self, message: &SpooledMessage) -> Result<DeliveryOutcome> {
                 self.texts.lock().unwrap().push(message.delivered_text());
-                Ok(DeliveryOutcome::Steered)
+                Ok(DeliveryOutcome::Steered("steer-1@0".to_string()))
             }
         }
         let cap = Capturing {
@@ -2635,7 +2945,7 @@ mod spool_pipeline_tests {
         std::fs::create_dir_all(done_dir()).unwrap();
         std::fs::write(done_dir().join("dup.json"), b"").unwrap();
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Steered("steer-1@0".to_string())),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
@@ -2718,7 +3028,7 @@ mod spool_pipeline_tests {
         )
         .unwrap();
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Steered("steer-1@0".to_string())),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
@@ -2786,7 +3096,7 @@ mod spool_pipeline_tests {
         std::fs::create_dir_all(&spool).unwrap();
         std::fs::write(spool.join("big.json"), vec![b'x'; 65 * 1024]).unwrap();
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Steered("steer-1@0".to_string())),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
@@ -2853,7 +3163,7 @@ mod spool_pipeline_tests {
         crate::features::marketplace::builtin::set_feature_enabled("session-messaging", false)
             .expect("disable session-messaging");
         let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
+            outcome: Ok(DeliveryOutcome::Steered("steer-1@0".to_string())),
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
