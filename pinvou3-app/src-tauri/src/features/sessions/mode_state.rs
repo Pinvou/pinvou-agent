@@ -1842,9 +1842,12 @@ fn session_record_absent_for_sweep(sessions_dir: &std::path::Path, id: &str) -> 
 mod sweep_probe_tests {
     use super::session_record_absent_for_sweep;
 
-    /// NotFound → 幽灵（可清扫）；记录存在 → 存活；瞬时 stat 故障 → 按存活
-    /// 处理（fail-closed：清扫宁漏不误删）。ENOTDIR 形状用「sessions_dir
-    /// 本身是一个文件」确定性构造。
+    /// NotFound → 幽灵（可清扫）；记录存在 → 存活；其余 stat 故障 → 按存活
+    /// 处理（fail-closed：清扫宁漏不误删）。非 NotFound 故障臂用含 NUL 的
+    /// 会话 id 确定性构造：std 在进入平台分发前拒绝路径中的 NUL（两个平台
+    /// 同为 InvalidInput）——ENOTDIR 形状（「sessions_dir 本身是一个文件」）
+    /// 是 POSIX 专属的，Windows 把「路径组件是文件」映射为 NotFound，无法在
+    /// 该平台表达同一故障。
     #[test]
     fn sweep_absence_probe_is_not_found_only() {
         let root = std::env::temp_dir().join(format!(
@@ -1857,12 +1860,13 @@ mod sweep_probe_tests {
         ));
         std::fs::create_dir_all(&root).expect("temp root");
         std::fs::write(root.join("live.json"), b"{}").expect("live record");
-        let not_a_dir = root.join("not-a-dir.json");
-        std::fs::write(&not_a_dir, b"").expect("stat-fault fixture");
 
         assert!(session_record_absent_for_sweep(&root, "ghost000000000000"));
         assert!(!session_record_absent_for_sweep(&root, "live"));
-        assert!(!session_record_absent_for_sweep(&not_a_dir, "live"));
+        assert!(!session_record_absent_for_sweep(
+            &root,
+            "transient\u{0}fault"
+        ));
         std::fs::remove_dir_all(&root).ok();
     }
 }

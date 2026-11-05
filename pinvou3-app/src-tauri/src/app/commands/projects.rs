@@ -5226,7 +5226,11 @@ mod tests {
         let published = crate::features::assistant::pending_approvals::commit_rebind_publication(
             || agents.rebind_workspace_prefix(&from, &to),
             |outcome| match outcome {
-                Ok(outcome) => outcome.affected.iter().map(|(sid, _)| sid.clone()).collect(),
+                Ok(outcome) => outcome
+                    .affected
+                    .iter()
+                    .map(|(sid, _)| sid.clone())
+                    .collect(),
                 Err(error) => error
                     .downcast_ref::<crate::features::codex_acp::RebindPrefixError>()
                     .map(|typed| {
