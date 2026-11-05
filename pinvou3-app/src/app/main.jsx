@@ -2885,28 +2885,6 @@ const App = () => {
         if (isCodexSession) await refreshCodexSessions().catch(() => {});
       }, [codexSessions, refreshCodexSessions]);
 
-      // 会话备份导入（export_session 的逆操作）：命令侧自开文件对话框，
-      // 用户取消返回 null；结果按 imported/skipped_existing/failed 组 toast。
-      const [importingSessions, setImportingSessions] = useState(false);
-      const handleImportSessionArchive = useCallback(async () => {
-        if (!bridge.available || importingSessions) return;
-        setImportingSessions(true);
-        try {
-          const result = await invokeTauri('import_session_archive');
-          if (!result) return;
-          setSettingsToast(t.uiSettings.importSessionsDone(
-            (result.imported || []).length,
-            (result.skipped_existing || []).length,
-            (result.failed || []).length,
-          ));
-        } catch (error) {
-          console.warn('import session archive failed', error);
-          setSettingsToast(t.uiSettings.importSessionsFailed);
-        } finally {
-          setImportingSessions(false);
-        }
-      }, [importingSessions, t]);
-
       // The archive confirmation needs the session title: read through a
       // latest-ref so the callback itself stays stable and the RecentItem
       // memo is not defeated by this prop on every render.
@@ -4474,7 +4452,7 @@ const App = () => {
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                   taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
                   inputNeededNotif={inputNeededNotif} setInputNeededNotif={handleSetInputNeededNotif}
-                  importingSessions={importingSessions} onImportSessionArchive={handleImportSessionArchive}
+                  setSettingsToast={setSettingsToast}
                   searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                   enabledSearchProviders={enabledSearchProviders}
                   onAddSearchProvider={handleAddSearchProvider}

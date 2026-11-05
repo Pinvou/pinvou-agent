@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invokeTauri as invoke } from '../../platform/tauri/client.js';
 import { canInvoke } from '../../shared/platform.js';
+import { turnHasUserText } from '../conversation/deepseek-conversation.js';
 
 /**
  * checkpoint 列表 → Map<turnNumber, checkpoint>。
@@ -68,7 +69,10 @@ export function rewindEntriesByTurnId(turns, checkpoints) {
   const byTurn = checkpointMapByTurn(list);
   let ordinal = 0;
   for (const turn of turns || []) {
-    if (!turn || !turn.userItem || turn.id == null) continue;
+    // 纯图片 turn 不占序号：Rust rewind_to_turn 用底座 era 口径
+    // （user_turn_prompt_indices，Editable 分类）计 turn，与 fork 同口径；
+    // 前端不跳过会把「第 N 轮」整体错位（turnHasUserText 详见投影模块）。
+    if (!turn || turn.id == null || !turnHasUserText(turn)) continue;
     ordinal += 1;
     const checkpoint = byTurn.get(ordinal) || null;
     entries.set(turn.id, {
