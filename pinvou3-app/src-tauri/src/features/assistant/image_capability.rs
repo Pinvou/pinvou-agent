@@ -192,10 +192,13 @@ pub fn moonshot_model_needs_reasoning_budget(model: &str) -> bool {
 /// `reasoning.effort` controls the parallel-agent count, so reasoning is
 /// always on (the row deliberately gets no tier UI). Exact ids on purpose:
 /// the wider `grok` capability substring stays a family admission, and
-/// grok-4.5/4.6 expose documented effort ladders whose omitted-effort
-/// default behavior is not documented the same way — they stay on the
-/// plain probe budget until a live probe can verify them (no key available
-/// in this environment; same pending live re-check as the K3.1 arms).
+/// grok-4.5/4.6 stay on the plain probe budget as a DEFENSIVE choice
+/// pending endpoint-specific confirmation — the official reasoning guide
+/// actually groups 4.7/4.6/4.5 under one reasoning contract with a high
+/// default (2026-11-05 review), but billing documentation alone does not
+/// establish how this endpoint allocates max_tokens, and no live probe is
+/// available in this environment to confirm either direction. Keeping
+/// other variants unverified is reasonable.
 pub fn xai_model_needs_reasoning_budget(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
