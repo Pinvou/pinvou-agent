@@ -33,7 +33,7 @@ pub(super) fn maybe_notify_task_completed(
     if status != TurnOutcomeStatus::Completed || error.is_some() {
         return;
     }
-    if !task_completion_notify_in_scope(session_id) {
+    if !global_desktop_notification_in_scope(session_id) {
         return;
     }
     if !crate::platform::notifications::task_completion_enabled() {
@@ -55,13 +55,41 @@ pub(super) fn maybe_notify_task_completed(
     }
 }
 
-/// Whether a finished turn of this session may raise the global "task
-/// completed" desktop notification. Aux side-chat turns are excluded
-/// (round-26 minor M3): the notification names no session, so an aux reply
-/// finishing while its main task still runs would pop an indistinguishable
-/// "completed" for a task that never finished — the same global-side-effect
-/// class as the round-15 memory-review exclusion (forwarder.rs).
-fn task_completion_notify_in_scope(session_id: &str) -> bool {
+/// Desktop notification when the engine parks on `request_user_input`: the
+/// model is blocked until the user answers, and without this the only signal
+/// lives inside the app window. The unattended-scheduled path cancels the
+/// input before reaching the forwarder's interactive branch, so this only
+/// fires for sessions with a human operator. Eval hosts suppress it the same
+/// way as completion notifications (observation runs must stay quiet).
+pub(super) fn maybe_notify_input_needed(app: &AppHandle, session_id: &str, input_id: &str) {
+    if !global_desktop_notification_in_scope(session_id) {
+        return;
+    }
+    if !crate::platform::notifications::needs_input_enabled() {
+        return;
+    }
+    let notify_key = format!("{session_id}:{input_id}");
+    let notification_state = app
+        .try_state::<crate::platform::notifications::NotificationState>()
+        .map(|state| state.should_notify(notify_key));
+    #[cfg(feature = "benchmark-hooks")]
+    let should_notify = notification_state.unwrap_or_else(|| {
+        !crate::features::assistant::timing::eval_observation_enabled(session_id)
+    });
+    #[cfg(not(feature = "benchmark-hooks"))]
+    let should_notify = notification_state.unwrap_or(true);
+    if should_notify {
+        crate::platform::notifications::notify_input_needed(app);
+    }
+}
+
+/// Whether a turn of this session may raise a global desktop notification
+/// (task-completed or input-needed — both name no session). Aux side-chat
+/// turns are excluded (round-26 minor M3): an aux notification popping while
+/// its main task still runs would be indistinguishable from the main task's
+/// own notification — the same global-side-effect class as the round-15
+/// memory-review exclusion (forwarder.rs).
+fn global_desktop_notification_in_scope(session_id: &str) -> bool {
     crate::features::sessions::aux_side_effect_exclusion(session_id)
 }
 
@@ -311,12 +339,14 @@ pub(super) fn scheduled_tool_should_auto_approve(
 
 #[cfg(test)]
 mod tests {
-    use super::task_completion_notify_in_scope;
+    use super::global_desktop_notification_in_scope;
 
     #[test]
-    fn task_completion_notification_excludes_aux_sessions() {
-        assert!(!task_completion_notify_in_scope("aux-0123456789abcdef"));
-        assert!(task_completion_notify_in_scope("0123456789abcdef"));
-        assert!(task_completion_notify_in_scope("sched-daily-report"));
+    fn desktop_notifications_exclude_aux_sessions() {
+        assert!(!global_desktop_notification_in_scope(
+            "aux-0123456789abcdef"
+        ));
+        assert!(global_desktop_notification_in_scope("0123456789abcdef"));
+        assert!(global_desktop_notification_in_scope("sched-daily-report"));
     }
 }
