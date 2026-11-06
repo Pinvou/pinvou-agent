@@ -314,10 +314,11 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for turn rewind"))?;
 
-        // 与 code_checkpoints::count_user_turns 同一谓词，保证「第 N 轮」在快照、
-        // 截断、UI 三处口径一致。era 口径（user_turn_prompt_indices）比单消息
-        // is_user_turn_prompt 多计入历史里粘贴的压缩摘要头 turn——底座文档明确
-        // host turn 编号应统一读这一个列表（fork 分叉同一口径）。
+        // 与 code_checkpoints::count_user_turns 同一口径（其内部同为底座 era
+        // 形 user_turn_prompt_indices），保证「第 N 轮」在快照、截断、UI 三处
+        // 口径一致。era 口径比单消息 is_user_turn_prompt 多计入 post-provenance
+        // 历史里粘贴的压缩摘要头 turn——底座文档明确 host turn 编号应统一读
+        // 这一个列表（fork 分叉同一口径）。
         let turn_prompt_indices: Vec<usize> =
             deepseek_tui::user_turn_prompt_indices(&session.messages);
         let total_turns = turn_prompt_indices.len() as u32;
