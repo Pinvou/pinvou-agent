@@ -253,8 +253,11 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // "1M token context window" ("100 万 token 上下文窗口"); the base kimi
     // rows stop at k3/k2.x exact ids that cannot cover the k3.1 wire id.
     ("kimi-k3.1-pro", 1_048_576),
-    // Kimi Code group spelling of the same model (the primary row id of the
-    // kimi_coding_plan catalog group). model_name_matches has no
+    // Kimi Code group spelling of the same model (the bare rows left the
+    // kimi_coding_plan catalog group in the round-5 deferral — the pinned
+    // child's replay gate does not yet recognize K3.1, see that group's
+    // deferral comment — but ACP datalist / stored / custom configs still
+    // carry them). model_name_matches has no
     // vendor-prefix tolerance, so the kimi-k3.1-pro row above cannot carry
     // it, and the base kimi-code arms are exact "k3" / "k3-256k" only —
     // without this row the bare spelling resolves None → the engine falls
@@ -400,7 +403,10 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // flashx wire id, so it resolves None. The dot spelling cannot
     // suffix-inherit the dash rows under model_name_matches either.
     ("glm-5.3-flashx", 131_072),
-    // Kimi K3.1 Pro (2026-10-23 flagship, both catalog spellings): the
+    // Kimi K3.1 Pro (2026-10-23 flagship, all four K3.1 spellings — the
+    // settings catalog now rides the prefixed/bracket forms after the
+    // round-5 bare-row deferral, the bare forms stay reachable through the
+    // ACP datalist and custom entry): the
     // official API docs document max_completion_tokens "默认为 131072，最大
     // 可设置为 1048576" for the whole K3 series incl. the highspeed variant
     // (platform.kimi.com/docs/api/chat, re-checked 2026-11-03). The hard
