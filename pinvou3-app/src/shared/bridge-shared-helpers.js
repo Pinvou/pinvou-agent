@@ -3083,7 +3083,7 @@
   function dismissPinvouReview() {
     // 关窗即解召唤守卫:否则若在 await 期间被关(切 session 等路径),会留下"窗没了但
     // pinvouSummoning 仍 held"的死区——重复点品/悟在守卫处(summonPinvou 开头)被吞,要等
-    // 整个直连 vLLM 调用(≤30s)返回才解锁。in-flight 结果靠 summonPinvou 内 `if (state.pinvouModal)` 守卫自然丢弃。
+    // 整个直连模型调用(本地 5-30s,云端思考模型最长 180s 超时)返回才解锁。in-flight 结果靠 summonPinvou 内 `if (state.pinvouModal)` 守卫自然丢弃。
     state.pinvouModal = null;
     state.pinvouSummoning = false;
     notify();
