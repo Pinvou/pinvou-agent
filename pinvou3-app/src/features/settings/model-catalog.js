@@ -391,9 +391,11 @@ const MODEL_CATALOG = {
       // current 130060 table, so the note is dropped. The 2026-11-04
       // restamp adds a bare hy4 row alongside hy4-preview — mirrored here
       // (the table gives no figures for it, so the desc stays minimal);
-      // the same restamp appears to list bare deepseek-v4.1-flash-1017 /
-      // deepseek-v4-pro-0813 ids (single fetch, unconfirmed — left to the
-      // next refresh once the table settles). DeepSeek rows are
+      // the same restamp lists bare deepseek-v4.1-flash-1017 /
+      // deepseek-v4-pro-0813 ids (single fetch flagged unconfirmed at the
+      // 2026-11-04 restamp; confirmed live 2026-11-06 — the restamped table
+      // lists both; mirroring them as standalone rows stays at the next
+      // refresh). DeepSeek rows are
       // first-party direct supply without SLA, per 130060.
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: '自动模型，智能路由' },
@@ -425,7 +427,10 @@ const MODEL_CATALOG = {
       vendor: 'kimi',
       baseUrl: 'https://api.kimi.com/coding/v1',
       // The overseas Kimi Code plan serves https://api.kimi.ai/coding/v1
-      // (kimi.com/code/docs, checked 2026-09-28; re-checked 2026-11-03);
+      // (the Kimi Code docs, checked 2026-09-28; re-checked 2026-11-03;
+      // refreshed 2026-11-06 — the bare kimi.com/code/docs host now 302s
+      // to the chat homepage, the docs live at www.kimi.com/code/docs/
+      // with content pages under /code/docs/kimi-code/);
       // registered as an
       // alias so saved configs classify into this group — note the alias
       // only classifies; the exact-route K3 effort gate still pins
@@ -433,7 +438,7 @@ const MODEL_CATALOG = {
       // tiers until the base learns the new host.
       endpointAliases: ['https://api.kimi.com/coding/v1/chat/completions', 'https://api.kimi.ai/coding/v1'],
       // kimi-for-coding is a stable alias whose underlying model rolls: it
-      // became K2.8 Preview on 2026-09-11 (kimi.com/code/docs models page),
+      // became K2.8 Preview on 2026-09-11 (www.kimi.com/code/docs/kimi-code/models.html),
       // so the old "standard coding model, smaller context" framing is gone;
       // the 1M window is available from the plan's lowest coding tier (the
       // models table shows kimi-for-coding available from Andante+ (老套餐)
@@ -1026,7 +1031,9 @@ const MODEL_CATALOG = {
       // both numeric ids stopped resolving under product 85508 by the
       // 2026-11-06 re-check; the live content is the slug page
       // volcengine.com/docs/ark/coding-plan-personal-model-deprecation,
-      // stamped 2026-11-03, enterprise twin stamped 2026-10-19):
+      // stamped 2026-11-03; the enterprise twin was stamped 2026-10-19 at
+      // the 2026-11-03 fetch and re-stamped 2026-11-04 by the 2026-11-06
+      // re-check — the notice itself is unchanged):
       // kimi-k2.7-code went offline
       // 2026-10-28 14:00 (UTC+8; closed to new plan users 2026-10-13,
       // migrate to kimi-k3) and minimax-m3 went offline 2026-11-02 14:00
@@ -1366,8 +1373,11 @@ const MODEL_CATALOG = {
       // 2026-11-03): Mistral is the major European first-party vendor with a
       // dedicated engine kind (provider_kind Mistral) and a plain
       // Bearer + chat-completions API, so it rides the generic OpenAI
-      // wire with the vendor stamped for classification. Rows mirror the
-      // live models overview: codestral-latest is the dedicated coding
+      // wire with the vendor stamped for classification. Row ids are the
+      // models.dev mistral provider spellings (re-checked live 2026-11-06:
+      // the official models overview no longer prints the -latest ids — it
+      // shows versioned ids only, so the overview no longer grounds the
+      // id list): codestral-latest is the dedicated coding
       // model; mistral-medium-latest (multimodal per the official Medium 3
       // announcement) and mistral-small-latest (native text+image — its
       // figures match the current Small 4 generation, 256k context) are
