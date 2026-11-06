@@ -907,6 +907,19 @@ pub(crate) fn spawn_event_forwarder(
                 // (see stamp_steer_generation in engine_pool.rs).
                 Event::SteerCommitted { steer_id } => {
                     let steer_id = stamp_steer_generation(steer_id_generation, &steer_id);
+                    // Cross-session steered delivery finalizes in-flight only
+                    // on commit (done marker + spool removal — closes the
+                    // post-steer-Ok loss window). Fanned out through the
+                    // steer_outcomes hook; assistant never depends back on
+                    // the consumer feature. The hook runs INLINE on this
+                    // event loop and performs bounded spool IO (two capped
+                    // reads + marker write + removal, ~µs–ms on a healthy
+                    // fs) before the emit — accepted: steer terminals are
+                    // rare and one forwarder per engine keeps the stall
+                    // scoped to that engine.
+                    crate::features::assistant::steer_outcomes::resolve_steer_outcome(
+                        &steer_id, true,
+                    );
                     let payload = json!({
                         "session_id": session_id,
                         "steer_id": steer_id,
@@ -920,6 +933,11 @@ pub(crate) fn spawn_event_forwarder(
                 }
                 Event::SteerDropped { steer_id } => {
                     let steer_id = stamp_steer_generation(steer_id_generation, &steer_id);
+                    // The engine dropped the steer: revoke the in-flight
+                    // registration; the message stays queued for redelivery.
+                    crate::features::assistant::steer_outcomes::resolve_steer_outcome(
+                        &steer_id, false,
+                    );
                     let payload = json!({
                         "session_id": session_id,
                         "steer_id": steer_id,

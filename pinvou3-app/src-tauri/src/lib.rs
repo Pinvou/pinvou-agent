@@ -998,6 +998,30 @@ pub fn run() {
         })
         .setup(|app| {
             startup::mark("setup:start");
+            // Steer terminal consumer assembly: the in-flight settlement of
+            // cross-session message delivery (features::messaging) is driven
+            // by the forwarder's SteerCommitted/SteerDropped events. The hook
+            // is injected along the dependency direction (messaging →
+            // assistant); assistant never depends back on the consumer
+            // feature (the architecture guard's feature-cycle line). Engines
+            // spawn lazily on a session's first send, so this registration
+            // precedes any steer event.
+            if features::assistant::steer_outcomes
+                ::register_steer_resolution_hook(features::messaging::resolve_pending_steer)
+                .is_err()
+            {
+                // Same best-effort stderr shape as the plugin-attach arm
+                // below: `eprintln!` panics when the stderr write fails
+                // (no console on packaged Windows) and a panic inside setup
+                // takes boot down. The branch is unreachable today (single
+                // registration site above), but it must stay harmless — the
+                // module doc's "logs the refusal" only holds if this write
+                // cannot take the process down.
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[pinvou3] steer resolution hook registered twice; keeping the first"
+                );
+            }
             // The disabled_bundles migration verdict must be frozen here: the
             // broad upgrade signal (settings.json/session dirs exist ⇒ upgrade
             // install) gets polluted by bridge boot's first-startup behavior

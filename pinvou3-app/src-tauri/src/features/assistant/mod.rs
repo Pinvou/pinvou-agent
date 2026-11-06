@@ -16,6 +16,7 @@ pub(crate) mod safety_deny_rules;
 pub mod session_policy;
 pub(crate) mod shell_output;
 pub(crate) mod skill_materialization;
+pub(crate) mod steer_outcomes;
 pub(crate) mod swarm;
 pub(crate) mod timing;
 pub(crate) mod tool_policy;
