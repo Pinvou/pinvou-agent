@@ -1154,6 +1154,33 @@ impl SessionStore {
                 "rollback of the aux record failed",
             ));
         }
+        // Creation-time posture init (review JensenChen28 5801173510): an
+        // aux id without its own mode-state record resolves through
+        // `resolved_default_mode` to the unbound-plain default Auto — the
+        // one posture the web admission gate refuses (the web face has no
+        // approval-card surface), and the aux lane has no mode control of
+        // its own (the panel never activates the session, so the parent's
+        // mode chip cannot reach it): a default-created aux dead-ended on
+        // its first send with no reachable recovery. Pin the entry at
+        // creation — after every rollback point above, so a rolled-back
+        // create never leaves a mode record for a dead aux id. The posture
+        // is the parent's current effective mode at creation time; when
+        // that is Auto (the fallback resolution, or an explicit desktop
+        // choice the web face still cannot serve), substitute the safe tier
+        // Plan — the read-only posture every face serves (the aux panel is
+        // a restrictTools question-only lane, which Plan matches). Explicit
+        // Plan/Yolo parents are inherited verbatim (Yolo is the parent's own
+        // confirmed opt-out, mirrored to its side panel). `set_mode` is the
+        // interactive lenient lane (best-effort persist, like every mode
+        // chip write): a failed sidecar write keeps the in-memory pin for
+        // this process; the panel's restart re-creates with a fresh pin.
+        let aux_mode = match self.mode_state(parent_id).mode {
+            SerializableMode::Auto => SerializableMode::Plan,
+            supported => supported,
+        };
+        if let Err(error) = self.set_mode(&id, aux_mode) {
+            eprintln!("[sessions] pin aux session mode failed: {error:#}");
+        }
         Ok(session.metadata)
     }
 

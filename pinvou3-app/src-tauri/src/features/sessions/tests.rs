@@ -6309,6 +6309,94 @@ fn delete_main_session_cascades_to_aux_session() {
     );
 }
 
+/// Creation-time aux posture init (review JensenChen28 5801173510): an aux
+/// record without its own mode-state entry resolves through
+/// `resolved_default_mode` to the unbound-plain default Auto — the one
+/// posture the web admission gate refuses (the web face has no
+/// approval-card surface), and the aux lane has no mode control of its own,
+/// so a default-created aux dead-ended on its first send. Creation pins the
+/// parent's current effective mode, substituting the safe tier Plan when
+/// that posture is Auto; explicit Plan/Yolo parents are inherited verbatim.
+/// The pin is the session's own durable record: it survives a reboot and is
+/// visible through the same `mode_state` projection the web gate reads
+/// (`get_mode_state`).
+#[test]
+fn aux_session_mode_is_pinned_at_creation() {
+    let (store, _g) = isolated_store();
+
+    // Default parent (no explicit mode record → the Auto fallback): the aux
+    // must not borrow the posture the web face cannot serve — it gets the
+    // safe tier Plan, so the default create → first send chain passes the
+    // web admission gate without any manual mode assignment.
+    let main_auto = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create auto parent");
+    let aux_auto = store
+        .create_aux_session(&main_auto.metadata.id)
+        .expect("create aux of default parent");
+    assert_eq!(
+        store.mode_state(&main_auto.metadata.id).mode,
+        SerializableMode::Auto,
+        "precondition: an untouched parent resolves the Auto fallback"
+    );
+    assert_eq!(
+        store.mode_state(&aux_auto.id).mode,
+        SerializableMode::Plan,
+        "a default-created aux must be pinned to the safe tier, not the Auto fallback"
+    );
+
+    // Explicit parent postures the web face serves are inherited verbatim
+    // (Yolo is the parent's own confirmed opt-out mirrored to its side
+    // panel; Plan is read-only).
+    let main_yolo = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create yolo parent");
+    store
+        .set_mode(&main_yolo.metadata.id, SerializableMode::Yolo)
+        .expect("set parent yolo");
+    let aux_yolo = store
+        .create_aux_session(&main_yolo.metadata.id)
+        .expect("create aux of yolo parent");
+    assert_eq!(
+        store.mode_state(&aux_yolo.id).mode,
+        SerializableMode::Yolo,
+        "an explicit Yolo parent's aux inherits the parent posture"
+    );
+
+    let main_plan = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create plan parent");
+    store
+        .set_mode(&main_plan.metadata.id, SerializableMode::Plan)
+        .expect("set parent plan");
+    let aux_plan = store
+        .create_aux_session(&main_plan.metadata.id)
+        .expect("create aux of plan parent");
+    assert_eq!(
+        store.mode_state(&aux_plan.id).mode,
+        SerializableMode::Plan,
+        "an explicit Plan parent's aux inherits the parent posture"
+    );
+
+    // The pin is durable and does not depend on the creating process: a
+    // rebooted store reports the same pinned postures (the reuse leg of
+    // get_or_create_aux_session returns the record untouched, so the pin
+    // never re-resolves afterwards).
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(
+        reopened.mode_state(&aux_auto.id).mode,
+        SerializableMode::Plan
+    );
+    assert_eq!(
+        reopened.mode_state(&aux_yolo.id).mode,
+        SerializableMode::Yolo
+    );
+    assert_eq!(
+        reopened.mode_state(&aux_plan.id).mode,
+        SerializableMode::Plan
+    );
+}
+
 /// A failed aux cascade delete aborts the whole delete (round-26 minor
 /// M11): when the aux record's deletion fails before anything commits, the
 /// `?` at the cascade leg must surface the error and leave BOTH records on
