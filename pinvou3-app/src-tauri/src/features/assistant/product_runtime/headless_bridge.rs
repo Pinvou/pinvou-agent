@@ -1707,9 +1707,17 @@ mod tests {
             );
             search_from = absolute + needle.len();
         }
-        assert!(
-            stripped[search_from..].contains(needle),
-            "unexpected third windowless stamp (a new boot lane must update this pin)"
+        // The needle literal declared in THIS test survives stripping as a
+        // third occurrence, so a "no further occurrence" substring check is
+        // vacuous (round-13 review: a simulated third real stamp kept the
+        // old `contains` arm green). Count exactly: two real stamps + this
+        // test's own declaration — a new boot lane (or a removed stamp)
+        // must update this pin, and now it actually fails.
+        assert_eq!(
+            stripped.matches(needle).count(),
+            3,
+            "the windowless stamp count changed (two boot lanes + this pin's own needle \
+             literal); a new boot lane or a removed stamp must update this pin"
         );
     }
 

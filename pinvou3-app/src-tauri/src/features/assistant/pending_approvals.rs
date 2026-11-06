@@ -233,9 +233,14 @@ pub fn capture_workspace_identity<T: PartialEq>(
 /// 与 [`capture_workspace_identity`]（同一把锁、同序）互斥后区间不可观测：
 /// 捕获要么完整看到提交前态，要么完整看到提交后态（新根+新代+授予已清，
 /// 旧目录授予无从复用）。加锁次序全程 approval store → 下游
-/// （SessionStore / codex section / fs）：锁序审计（本轮）确认
-/// sessions / codex_acp / bridge 全域无任何持下游锁回调本模块的路径，无
-/// 反向次序、无死锁。栅栏持锁期间审批面短暂停顿＝重绑自身临界区的时长
+/// （SessionStore / codex section / fs）。锁序审计（本轮，精确口径）：
+/// codex_acp 与 bridge 全域无任何持下游锁回调本模块的路径；sessions 侧是
+/// **单向**嵌套——`SessionStore::delete` 全程持 `scheduled_mutation`，其
+/// purge hook 在该锁内取本模块的 store 锁（lib.rs 的 `clear_session`）。
+/// 因此安全不变量是「publish/resolve 闭包内不得再取 `scheduled_mutation`
+/// 或任何 sessions 锁」（三个闭包均已核实只走 `session_workspaces` /
+/// codex section / fs / 只读路径），保持该方向单向即无 AB-BA、无死锁。
+/// 栅栏持锁期间审批面短暂停顿＝重绑自身临界区的时长
 /// （与评审处方的 publication/admission 协调一致）；代价是显式的，收益是
 /// 身份切换的原子性。
 ///
@@ -250,9 +255,13 @@ pub fn commit_rebind_publication<R>(
     with_store(|store| {
         let result = publish();
         for session_id in affected_ids(&result) {
-            // 与 projects.rs 既有契约同序：先推进（B 目录纪元的版本边界），
-            // 再保留代清理（回收挂起卡 / 授予 / 拒绝份额）。顺序不可倒置，
-            // 见 [`advance_workspace_generation`] 与
+            // 与 projects.rs 既有契约同形：先推进（B 目录纪元的版本边界），
+            // 再保留代清理（回收挂起卡 / 授予 / 拒绝份额）。同一次临界区内
+            // 两步互换行为等价——真正的承载性不变量是清理必须是**保留代**的
+            // 变体而非整删式 `clear_session`（代回落无代会让推进前的旧决策
+            // 重新相等），该不变量由
+            // `forkguard_identity_switch_cleanup_preserves_workspace_generation`
+            // 钉住；参见 [`advance_workspace_generation`] 与
             // [`clear_session_preserving_generation`] 的文档。
             store.generation = store.generation.wrapping_add(1);
             let next = store
@@ -348,6 +357,20 @@ pub fn restore_if_generation_is(
         entries.push(approval);
         true
     })
+}
+
+/// Test-only: the registry + `generation` are process-global singletons, so
+/// ALL tests that touch them must serialize on ONE shared lock. This
+/// crate-visible accessor is that lock; this module's `test_registry_lock`
+/// delegates to it, and sibling-module tests (projects.rs's rebind fences)
+/// take it directly — two separate statics would not exclude each other
+/// (round-13 review flagged the residual cross-module race window).
+#[cfg(test)]
+pub(crate) fn test_registry_lock_for_sibling_tests() -> std::sync::MutexGuard<'static, ()> {
+    static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    REGISTRY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// Current store generation (see [`ApprovalStore::generation`]). Read-side
@@ -725,10 +748,9 @@ mod tests {
     /// `restore_if_generation_is` 与 `pending_card_stamps` 两条）。凡触碰注册
     /// 表的测试先取本锁串行化；纯载荷构造/源码钉测试不需要。
     fn test_registry_lock() -> std::sync::MutexGuard<'static, ()> {
-        static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        REGISTRY_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+        // Same lock as the sibling accessor: one registry, one serialization
+        // point (round-13 review).
+        super::test_registry_lock_for_sibling_tests()
     }
 
     fn sample(approval_id: &str, approval_key: &str, grouping_key: &str) -> PendingApproval {
@@ -1485,6 +1507,32 @@ mod tests {
         assert!(
             !session_granted(&session, "old-root-grant"),
             "the old-root grant must be gone once capture can observe the new roots (no stale grant reuse)"
+        );
+        clear_session(&session);
+    }
+
+    /// 发布栅栏还推进**全局** restore 代（`remove_fenced` 快照 /
+    /// `restore_if_generation_is` 比较的那一个计数器）。round-13 评审：
+    /// 其余测试只断言 per-session `workspace_generations`，删掉栅栏内的
+    /// 全局 bump 全绿——本钉把「重绑提交点作废在途的卡恢复句柄」钉住：
+    /// 摘卡得到的恢复句柄在重绑发布后必须失配被拒（迟到的失败臂恢复不得
+    /// 把旧目录纪元的卡插回）。
+    #[test]
+    fn forkguard_publication_bumps_the_global_restore_generation() {
+        let _registry = test_registry_lock();
+        let session = isolate("rebind-global-gen");
+        record(
+            &session,
+            sample("global-gen-card", "k-global-gen", "g-global-gen"),
+            None,
+        );
+        let (removed, snapshot_generation) = remove_fenced(&session, "global-gen-card")
+            .expect("the card must be removed with a restore handle");
+        commit_rebind_publication(|| (), |_| vec![session.clone()]);
+        assert!(
+            !restore_if_generation_is(&session, removed, snapshot_generation),
+            "a pre-rebind card-removal restore handle must be refused after the publication \
+             bump (the failure arm must not resurrect the old-directory card)"
         );
         clear_session(&session);
     }

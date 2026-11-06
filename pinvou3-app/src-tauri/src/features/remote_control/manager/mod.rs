@@ -113,6 +113,7 @@ const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "compact_now",
     "decide_approval",
     "discard_plan",
+    "web_access_set_codex_acp_mode",
     "edit_last_turn",
     "exit_plan_to_yolo",
     "set_ask_on_guardrail",
@@ -4695,6 +4696,13 @@ mod tests {
             "decide_approval",
             "set_session_mode",
             "set_ask_on_guardrail",
+            // Round-13 review (consistency): the ACP lane's posture command
+            // is inert for multi-agent sessions today (the pool reconfigures
+            // through set_multi_agent_mode, not the ACP mode), but it is the
+            // same permission-changing class as set_session_mode — keep the
+            // "web is read-only on multi-agent execution surfaces" promise
+            // total instead of relying on today's invalid combination.
+            "web_access_set_codex_acp_mode",
         ] {
             assert!(
                 super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),

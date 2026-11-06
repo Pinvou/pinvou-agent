@@ -5013,6 +5013,46 @@ fn retention_purge_also_updates_multi_agent_flags() {
     );
 }
 
+/// Round-13 review: the ask-on-guardrail override purge block inside
+/// `purge_session_side_maps` had no test — deleting the block (or dropping
+/// the durable mutation call) compiled green, silently reopening the
+/// recycled-id re-arm hazard the block's own comment warns about. Mirror of
+/// the multi-agent sibling above: toggle persists durably → purge wipes the
+/// in-memory override AND the `_ask_on_guardrail.json` sidecar entry.
+#[test]
+fn retention_purge_also_updates_ask_on_guardrail_overrides() {
+    let (store, _guard) = isolated_store();
+    let chat = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = chat.metadata.id.clone();
+    // Persist an explicit override (the default is `true`, so flip OFF to
+    // make the sidecar entry observable).
+    store
+        .set_ask_on_guardrail(&id, false)
+        .expect("persist ask override");
+    let file = paths::sessions_root().join("_ask_on_guardrail.json");
+    assert!(
+        file.is_file(),
+        "the explicit override must reach the sidecar"
+    );
+    assert!(
+        !store.mode_state(&id).ask_on_guardrail,
+        "the pre-purge override must read back OFF"
+    );
+
+    store.purge_session_side_maps(std::slice::from_ref(&id));
+
+    assert!(
+        store.mode_state(&id).ask_on_guardrail,
+        "内存中的显式覆盖必须随 purge 一并清除（回收 id 回落全局默认 true）"
+    );
+    assert!(
+        !file.exists(),
+        "自动清理后 _ask_on_guardrail.json 不得残留幽灵 id"
+    );
+}
+
 #[test]
 fn retention_purge_notifies_session_purged_hooks() {
     let (store, _guard) = isolated_store();

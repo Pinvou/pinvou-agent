@@ -310,6 +310,17 @@ impl SessionStore {
     /// for an unreadable file, where a stale answer still beats inventing an
     /// absence.
     pub fn durable_mode_entry(&self, id: &str) -> Option<SerializableMode> {
+        // The shared-map + companion read pair must be atomic against the
+        // writers: every mutator RMWs the two files under
+        // `session_mode_states_io` (`apply_session_mode_mutation_locked`'s
+        // caller contract), and this reader is the one consumer that
+        // re-persists what it read (headless `PlanModeRestore`). Without the
+        // lock a read straddling the Auto upsert's two writes resolves the
+        // stale arm, and a failed run then restore-persists the pre-switch
+        // mode over the user's fresher choice (round-13 review). Short
+        // two-file read; writers already tolerate blocking on this mutex.
+        // No internal caller holds it (grep: only the leaf writers do).
+        let _io = self.session_mode_states_io.lock();
         // Accessor, not the literal: the quarantine flag compares against
         // `shared_mode_map_file_name()`, so a rename must move both sites
         // together (round-10 review).
@@ -1844,10 +1855,11 @@ mod sweep_probe_tests {
 
     /// NotFound → 幽灵（可清扫）；记录存在 → 存活；其余 stat 故障 → 按存活
     /// 处理（fail-closed：清扫宁漏不误删）。非 NotFound 故障臂用含 NUL 的
-    /// 会话 id 确定性构造：std 在进入平台分发前拒绝路径中的 NUL（两个平台
-    /// 同为 InvalidInput）——ENOTDIR 形状（「sessions_dir 本身是一个文件」）
-    /// 是 POSIX 专属的，Windows 把「路径组件是文件」映射为 NotFound，无法在
-    /// 该平台表达同一故障。
+    /// 会话 id 确定性构造：std 在各平台自己的路径转换里拒绝内部 NUL（Unix
+    /// 走 `run_with_cstr`、Windows 走 WTF-8→UTF-16 的 `to_u16s`，两处都在
+    /// 任何 OS 调用之前产出 `InvalidInput`）——ENOTDIR 形状（「sessions_dir
+    /// 本身是一个文件」）是 POSIX 专属的，Windows 把「路径组件是文件」映射
+    /// 为 NotFound，无法在该平台表达同一故障。
     #[test]
     fn sweep_absence_probe_is_not_found_only() {
         let root = std::env::temp_dir().join(format!(

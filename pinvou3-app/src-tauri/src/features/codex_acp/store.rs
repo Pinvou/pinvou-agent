@@ -1998,7 +1998,18 @@ impl SessionAgentStore {
                 drop(records);
                 return Err(anyhow::Error::new(RebindPrefixError {
                     published_affected,
-                    message: format!("rebind divergence-repair persist failed: {error:#}"),
+                    // Round-13 review: carry the stale-sidecar disclosure
+                    // through the failure too — the sidecar/retry passes ran
+                    // BEFORE this arm, so sessions whose rewrite (and retry)
+                    // failed are already durably stale under `from` even
+                    // though the run aborts here. Dropping the list narrowed
+                    // the failure report; a rerun still converges them via
+                    // the on-disk prefix scan.
+                    message: format!(
+                        "rebind divergence-repair persist failed: {error:#}; {} moved-session \
+                         sidecar(s) already final-stale (rerun converges them)",
+                        sidecar_final_stale.len()
+                    ),
                 }));
             }
         }
@@ -4171,6 +4182,26 @@ mod tests {
         .unwrap();
         touch_owner_record(&store.path, "s1");
         touch_owner_record(&store.path, "s2");
+        // S3: an ORPHAN — sidecar at `from`, owner record present, no INDEX
+        // record (the never-indexed / index-lost shape the rewrite pass
+        // still serves through its owner gate). The sidecar IS its binding,
+        // so its rewrite is durable publication exactly like the index pass
+        // (round-13 review: the failure-arm filter's orphan disjunct had no
+        // test — deleting `|| !records.contains_key(..)` dropped s3 from the
+        // invalidation set and stayed green).
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "s3"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(from.clone()),
+                workspace_roots: vec![from.clone()],
+                explicit_ancestor_roots: Vec::new(),
+                bound_at: None,
+            },
+        )
+        .unwrap();
+        touch_owner_record(&store.path, "s3");
 
         // The index-pass persist (first) succeeds so s1's move is durable;
         // the divergence-repair persist (second) fails.
@@ -4184,8 +4215,12 @@ mod tests {
             .expect("a post-publication failure must stay typed");
         assert_eq!(
             typed.published_affected,
-            vec![("s1".to_string(), to.clone())],
-            "only the durably published index move rides the error — not the failed re-key"
+            vec![
+                ("s1".to_string(), to.clone()),
+                ("s3".to_string(), to.clone())
+            ],
+            "the durably published index move AND the orphan's sidecar-owned move ride the \
+             error — not the failed re-key"
         );
 
         // The published binding survives the error (resolver reads the
@@ -4200,6 +4235,13 @@ mod tests {
             Some(elsewhere.as_path()),
             "the divergence re-key rolled back — s2's effective binding is unchanged"
         );
+        // The orphan's binding IS the sidecar, already rewritten to `to`
+        // before the failure — it must ride the typed error so the command
+        // layer invalidates it (its old-directory grant would otherwise
+        // answer new-directory requests).
+        let s3_sidecar =
+            read_code_session_sidecar(&store.path, "s3").expect("orphan s3's sidecar must exist");
+        assert_eq!(s3_sidecar.workspace_path.as_deref(), Some(to.as_path()));
 
         fs::remove_dir_all(&root).unwrap();
     }

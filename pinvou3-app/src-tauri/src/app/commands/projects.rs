@@ -1658,10 +1658,19 @@ pub async fn rebind_workspace_root(
         // "new roots published, approval memory not yet invalidated" window
         // of the previous two-step commit is unobservable, so a fresh spawn
         // in that interval can no longer slip through with a stale cached
-        // grant. Lock-order audit (this round): sessions / codex_acp /
-        // bridge hold no approval-store acquisitions under their locks, so
-        // the pending → SessionStore order here and in the capture has no
-        // reverse path.
+        // grant. Lock-order audit (this round, precise): codex_acp and the
+        // bridge hold no approval-store acquisitions under their locks; the
+        // sessions side is ONE-directional — `SessionStore::delete` holds
+        // `scheduled_mutation` across its purge hook, which acquires the
+        // approval-store lock (lib.rs `pending_approvals::clear_session`).
+        // The safety property is therefore "no path acquires
+        // `scheduled_mutation` (or any sessions lock) while INSIDE a
+        // publish/resolve closure" — verified for all three closures here
+        // and in the capture (they take only `session_workspaces` /
+        // codex-section / fs / read-path locks). Keep that direction
+        // one-way: a closure that calls a `scheduled_mutation`-taking
+        // SessionStore method would complete an AB-BA against a concurrent
+        // session delete.
         // Partial publication (review 5784078802): the lane CAN fail after
         // bindings are durably published (the divergence-repair persist arm
         // rolls back only the re-keyed records, so earlier index-pass moves
@@ -1716,10 +1725,21 @@ pub async fn rebind_workspace_root(
     // plain sidecar moves (plain_rebind.rebound) are this lane's
     // moved-this-run population; the codex population is fenced inside the
     // join_blocking closure above.
-    let plain_rebind = crate::features::assistant::pending_approvals::commit_rebind_publication(
-        || sessions.apply_rebind_workspace_bindings(plain_plan),
-        |outcome| outcome.rebound.iter().map(|(sid, _)| sid.clone()).collect(),
-    );
+    // Round-13 review: the plain lane joins the codex lane's blocking-worker
+    // discipline — the publish is per-session fsync'd file I/O under the
+    // global approval-store mutex, and inlining it parked a runtime worker
+    // AND froze the whole approval surface for the duration. The fence and
+    // its critical section are unchanged; only the worker moves.
+    let plain_store = sessions.inner().clone();
+    let plain_rebind = super::settings::join_blocking("rebind_workspace_root_plain", move || {
+        Ok::<_, String>(
+            crate::features::assistant::pending_approvals::commit_rebind_publication(
+                || plain_store.apply_rebind_workspace_bindings(plain_plan),
+                |outcome| outcome.rebound.iter().map(|(sid, _)| sid.clone()).collect(),
+            ),
+        )
+    })
+    .await?;
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
     // Round-20 minor 2: plain chats whose sidecar move FAILED must not
     // capture a codex-lane baseline when their metadata sync succeeds —
@@ -4938,6 +4958,9 @@ mod tests {
     #[test]
     fn rebind_identity_switch_clears_session_approval_memory() {
         use crate::features::assistant::pending_approvals as approvals;
+        // Registry + generation are process-global: serialize against this
+        // module's own probes (same lock, round-13 review).
+        let _registry = approvals::test_registry_lock_for_sibling_tests();
         let rebound: Vec<String> = vec!["approval-rebind-switch".to_string()];
         approvals::clear_session("approval-rebind-switch");
         approvals::clear_session("approval-rebind-bystander");
@@ -5003,6 +5026,7 @@ mod tests {
     #[test]
     fn rebind_same_directory_commit_keeps_session_approval_memory() {
         use crate::features::assistant::pending_approvals as approvals;
+        let _registry = approvals::test_registry_lock_for_sibling_tests();
         approvals::clear_session("approval-rebind-same-dir");
         approvals::remember_grant("approval-rebind-same-dir", "shell:11:cargo build", None);
         approvals::remember_denial("approval-rebind-same-dir", "shell:29:rm -rf /tmp/x", None);
@@ -5047,7 +5071,7 @@ mod tests {
             .find("pending_approvals::commit_rebind_publication(")
             .expect("the codex binding publish must be fenced");
         let plain_fence = src
-            .find("let plain_rebind = crate::features::assistant::pending_approvals::commit_rebind_publication(")
+            .find("let plain_rebind = super::settings::join_blocking(\"rebind_workspace_root_plain\", move || {")
             .expect("the plain binding publish must be fenced too");
         // Round CR 5798123981: a third production fence now exists — the
         // recovery repair (stranded-index re-key) rides the same boundary;
@@ -5059,7 +5083,7 @@ mod tests {
             .find("agents\n                    .rebind_workspace_prefix(")
             .expect("the codex publish must stay inside its fence closure");
         let plain_publish = src
-            .find("|| sessions.apply_rebind_workspace_bindings(plain_plan)")
+            .find("|| plain_store.apply_rebind_workspace_bindings(plain_plan)")
             .expect("the plain publish must stay inside its fence closure");
         let plain_rebind_let = src
             .find("let plain_rebind =")
@@ -5175,6 +5199,7 @@ mod tests {
     #[test]
     fn rebind_partial_failure_invalidates_the_published_population() {
         use crate::features::assistant::pending_approvals as approvals;
+        let _registry = approvals::test_registry_lock_for_sibling_tests();
         let base = unique_dir("partial-pub");
         for dir in ["from", "to", "elsewhere"] {
             std::fs::create_dir_all(base.join(dir)).unwrap();

@@ -760,18 +760,22 @@ pub async fn set_session_mode(
     let mut ask_error = None;
     if let Some(enabled) = ask_on_guardrail {
         let store = store.clone();
-        let sid = sid.clone();
+        let value = sid.clone();
         if let Err(error) = super::settings::join_blocking("set_session_mode:ask", move || {
             store
-                .set_ask_on_guardrail(&sid, enabled)
-                .map_err(|error| format!("set_session_mode({sid}): ask_on_guardrail: {error:#}"))
+                .set_ask_on_guardrail(&value, enabled)
+                .map_err(|error| format!("ask_on_guardrail: {error:#}"))
         })
         .await
         {
+            // stderr 会随启动日志落盘：消息不带会话 id（本 PR 自订的
+            // cleartext-logging 纪律，见 `mode_state.rs` 同款注释）；sid
+            // 只进回传给调用方的 Err，那里是调用方自己的展示面。
             eprintln!(
-                "[commands] {error} (mode already persisted; broadcasting authoritative state)"
+                "[commands] set_session_mode: {error} (mode already persisted; broadcasting \
+                 authoritative state)"
             );
-            ask_error = Some(error);
+            ask_error = Some(format!("set_session_mode({sid}): {error}"));
         }
     }
     let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
@@ -844,9 +848,13 @@ async fn publish_session_mode_change(
     app: &AppHandle,
 ) -> Result<SessionModeState, String> {
     if let Err(error) = sync_engine_safety_posture(session_id, pool).await {
+        // 不带会话 id（cleartext-logging 纪律），且如实声明自愈边界：逐轮
+        // send op 只重导出 mode/approval 姿态；ask 旗标只在 `Op::ChangeMode`
+        // 上携带，要等下一次 mode/ask 写或 respawn 才重新武装。
         eprintln!(
-            "[commands] publish_session_mode_change({session_id}): engine posture sync failed \
-             (next send re-derives from the store): {error:#}"
+            "[commands] publish_session_mode_change: engine posture sync failed (mode/approval \
+             posture re-derives on the next send; the ask flag re-arms on the next mode/ask \
+             write or respawn): {error:#}"
         );
     }
     let state = store.mode_state(session_id);
@@ -892,4 +900,95 @@ pub(super) fn mode_changed_payload(
         "mode": mode,
         "ask_on_guardrail": ask_on_guardrail,
     })
+}
+
+#[cfg(test)]
+mod get_mode_state_view_wire_tests {
+    //! Round-13 review (M-5): the `post_accept_mode` IPC seam had no test
+    //! that bites — the projection was store-tested and the web gate test
+    //! MOCKED `get_mode_state`, so deleting the wire field (or renaming it
+    //! via a serde attribute) kept the whole suite green while the web
+    //! acceptPlan gate silently lost its input (`undefined !== "auto"` never
+    //! fires). This pin joins the two halves: the serialized VIEW must carry
+    //! the exact snake_case wire field, alongside the flattened state keys,
+    //! with the claim-mirroring values.
+
+    use super::*;
+
+    fn view_for(state: SessionModeState) -> serde_json::Value {
+        let multi_agent_available = false;
+        serde_json::to_value(&SessionModeStateView {
+            post_accept_mode: state.post_accept_mode(),
+            state,
+            multi_agent_available,
+        })
+        .expect("the view must serialize")
+    }
+
+    #[test]
+    fn post_accept_mode_is_on_the_wire_with_exact_keys() {
+        // Plan entered from nothing (rebooted-Plan fallback): the gate must
+        // see `post_accept_mode === "auto"` even though `mode === "plan"`.
+        let mut state = SessionModeState::default();
+        state.mode = SerializableMode::Plan;
+        state.pre_plan_mode = None;
+        let value = view_for(state);
+        assert_eq!(
+            value.get("post_accept_mode"),
+            Some(&serde_json::json!("auto")),
+            "the web acceptPlan gate reads `post_accept_mode` off this exact snake_case wire \
+             field; a rename or omission silently voids the gate"
+        );
+        assert_eq!(
+            value.get("mode"),
+            Some(&serde_json::json!("plan")),
+            "the current mode stays `plan` — the gate needs BOTH fields to distinguish the \
+             accept-resume posture"
+        );
+
+        // Plan entered from Yolo resumes Yolo.
+        let mut state = SessionModeState::default();
+        state.mode = SerializableMode::Plan;
+        state.pre_plan_mode = Some(SerializableMode::Yolo);
+        assert_eq!(
+            view_for(state).get("post_accept_mode"),
+            Some(&serde_json::json!("yolo"))
+        );
+
+        // A non-Plan state projects itself (the gate's second leg).
+        let mut state = SessionModeState::default();
+        state.mode = SerializableMode::Auto;
+        assert_eq!(
+            view_for(state).get("post_accept_mode"),
+            Some(&serde_json::json!("auto"))
+        );
+    }
+
+    #[test]
+    fn view_keys_are_the_flattened_state_plus_the_two_extras() {
+        let mut state = SessionModeState::default();
+        state.mode = SerializableMode::Plan;
+        let state_keys = serde_json::to_value(&state)
+            .expect("state serializes")
+            .as_object()
+            .expect("state is an object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let view_keys = view_for(state)
+            .as_object()
+            .expect("view is an object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut expected = state_keys;
+        expected.insert("multi_agent_available".to_string());
+        expected.insert("post_accept_mode".to_string());
+        assert_eq!(
+            view_keys, expected,
+            "the view's wire keys must be exactly the flattened state keys plus \
+             `multi_agent_available` and `post_accept_mode` (snake_case) — a serde rename or \
+             an un-flattened shape breaks the web/desktop readers"
+        );
+    }
 }

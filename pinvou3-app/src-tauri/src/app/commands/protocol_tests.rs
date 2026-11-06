@@ -267,7 +267,18 @@ fn session_purged_hook_clears_approval_memory() {
         .split("register_session_purged_hook(")
         .nth(1)
         .expect("the session purged hook must be registered in lib.rs");
-    let body = &hook[..hook.len().min(1500)];
+    // Round-13: floor the fixed window to a char boundary — lib.rs carries
+    // multibyte comments, and a blind byte slice would panic with an opaque
+    // "not a char boundary" instead of a real assertion if a future edit
+    // straddles the offset.
+    let window_end = hook.len().min(1500);
+    let window_end = hook
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|i| *i <= window_end)
+        .last()
+        .unwrap_or(0);
+    let body = &hook[..window_end];
     assert!(
         body.contains("crate::features::assistant::pending_approvals::clear_session("),
         "the purged hook must clear approval memory (grant/denial/pending) for the deleted session"
