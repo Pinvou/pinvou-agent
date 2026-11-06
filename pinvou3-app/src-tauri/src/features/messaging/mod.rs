@@ -563,13 +563,8 @@ fn late_terminal_events() -> &'static std::sync::Mutex<HashMap<String, (Instant,
 /// duplicate). Sharing the peek's critical section serializes the pair
 /// against the inserter. Lock order registry → late map; no path acquires
 /// them in reverse.
-fn pending_entry_or_late_record(
-    steer_id: &str,
-    committed: bool,
-) -> Option<PendingSteerDelivery> {
-    let pending = pending_steers()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+fn pending_entry_or_late_record(steer_id: &str, committed: bool) -> Option<PendingSteerDelivery> {
+    let pending = pending_steers().lock().unwrap_or_else(|p| p.into_inner());
     if let Some(entry) = pending.get(steer_id).cloned() {
         return Some(entry);
     }
@@ -3473,7 +3468,10 @@ mod spool_pipeline_tests {
         let committed_span = &production[committed_arm..dropped_arm];
         let dropped_span = &production[dropped_arm..dropped_end];
         assert!(
-            committed_span.match_indices("resolve_steer_outcome(").count() == 1
+            committed_span
+                .match_indices("resolve_steer_outcome(")
+                .count()
+                == 1
                 && call_window_contains(committed_span, "resolve_steer_outcome(", ", true"),
             "the SteerCommitted arm must fan out resolve_steer_outcome(.., true)"
         );
@@ -3493,7 +3491,10 @@ mod spool_pipeline_tests {
     #[test]
     fn the_resolution_hook_is_registered_to_the_messaging_finalizer() {
         let source = include_str!("../../lib.rs");
-        let production = comment_stripped_production(source, "#[cfg(test)]");
+        // lib.rs carries cfg(test) helper items before the setup closure, so
+        // the production slice cuts at the top-level test MODULE instead.
+        let production =
+            comment_stripped_production(source, "#[cfg(test)]\nmod startup_order_contract");
         assert!(
             call_window_contains(
                 &production,
