@@ -89,6 +89,9 @@ const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
 /// Coding Plan 2026-11-06 实测悟镜头 63s 才返回，30s 必超时），放宽到 180s
 /// 给思考模型留余量，同时不让挂起的请求把弹窗锁死太久。
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
+// 编译期钉：30s 墙正是本常量修掉的回归（k3 实测 45–63s），静默回退必须编译红
+// 而不是用户红。
+const _: () = assert!(DEFAULT_TIMEOUT.as_secs() == 180);
 
 /// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂 2 万字级长会话
 /// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§6）。
@@ -562,7 +565,16 @@ async fn model_review(
         .text;
         return parse_model_review(&content).context("parse Pinvou review");
     }
-    let mut body = review_request_body(&model_name, &prompt, user_content, max_tokens);
+    // Token 上限字段同样镜像引擎（review_max_tokens_field 文档注）：换名集合里的
+    // 路由发 max_completion_tokens，其余保持 max_tokens。
+    let max_tokens_field = review_max_tokens_field(&provider, &base_url, &model_name);
+    let mut body = review_request_body(
+        &model_name,
+        &prompt,
+        user_content,
+        max_tokens,
+        max_tokens_field,
+    );
     apply_review_thinking_controls(&mut body, preset, &provider, &base_url, &model_name);
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(url).bearer_auth(bridge.api_key()),
@@ -599,16 +611,24 @@ async fn model_review(
 /// algorithm as the main turn — a hard-coded constant drifted the moment a
 /// thinking-on budget was needed: the old 1600 was consumed entirely by k3
 /// reasoning tokens, content empty, finish_reason=length, 2026-11-06).
-/// Thinking controls (never disable; lowest tier) are layered on by
-/// `apply_review_thinking_controls`.
-fn review_request_body(model: &str, prompt: &str, user_content: &str, max_tokens: u32) -> Value {
+/// `max_tokens_field` is the caller's `review_max_tokens_field` decision —
+/// the engine swaps the field to `max_completion_tokens` on four route
+/// classes and the review must not mismatch them. Thinking controls (never
+/// disable; lowest tier) are layered on by `apply_review_thinking_controls`.
+fn review_request_body(
+    model: &str,
+    prompt: &str,
+    user_content: &str,
+    max_tokens: u32,
+    max_tokens_field: &'static str,
+) -> Value {
     json!({
         "model": model,
         "messages": [
             { "role": "system", "content": prompt },
             { "role": "user", "content": user_content }
         ],
-        "max_tokens": max_tokens,
+        (max_tokens_field): max_tokens,
         "stream": false,
         // 根治偶发非法 JSON(qwen36 长输出漏逗号/字符串内未转义引号,实测 line N col M 解析炸):
         // vLLM guided decoding token 级保证输出合法 JSON 语法,不靠事后 find('{')..rfind('}') 补救。
@@ -628,18 +648,141 @@ fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
         .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default())
 }
 
-/// 品/悟审查的思考档位写入（2026-11-06 产品决策）：**思考永不关闭**，与本地路由
-/// 同一处理（`bridge::request_reasoning_effort` + `core::always_thinking`）——
-/// 取线材能表达的最低思考档；只有开/关的家族显式选开。线材形状对齐底座
-/// `apply_reasoning_effort` 的 low 档翻译（CodeWhale crates/tui/src/client.rs）；
-/// 偏离处均有注释并逐字注明底座依据，不是"逐字翻译"：
+/// Byte-for-byte mirror of the foundation's exact-route predicate
+/// `is_exact_https_route`（CodeWhale crates/config/src/provider.rs）: scheme
+/// and host compare ASCII case-insensitively, the path is case-sensitive, and
+/// exactly one trailing slash is insignificant（端口属于 authority，故
+/// `ollama.com:443` 是另一 authority）。
+fn is_exact_https_host_path(base_url: &str, host: &str, path: &str) -> bool {
+    let trimmed = base_url.trim();
+    let trimmed = trimmed.strip_suffix('/').unwrap_or(trimmed);
+    trimmed
+        .split_once("://")
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+        .and_then(|(_, rest)| rest.split_once('/'))
+        .is_some_and(|(url_host, url_path)| url_host.eq_ignore_ascii_case(host) && url_path == path)
+}
+
+/// Moonshot 的两个 K3 路由（底座 config.rs 守卫逐字镜像）：Kimi Code 会员端点
+/// 是精确 `api.kimi.com/coding/v1`；直连按量平台是精确 `api.moonshot.ai|cn /v1`。
+fn is_exact_kimi_code_route(base_url: &str) -> bool {
+    is_exact_https_host_path(base_url, "api.kimi.com", "coding/v1")
+}
+
+fn is_exact_moonshot_platform_route(base_url: &str) -> bool {
+    is_exact_https_host_path(base_url, "api.moonshot.ai", "v1")
+        || is_exact_https_host_path(base_url, "api.moonshot.cn", "v1")
+}
+
+/// 底座 `modelstudio_model_is_thinking_only`（client/chat.rs）名单逐字镜像：
+/// 这些 dashscope 托管 id 没有 enable/disable 控制——"at best ignored and at
+/// worst a 400"。名单在底座按 Modelstudio 身份路由限定；第一方 Kimi 路由上
+/// 同一批 id 反而**要求** `thinking: enabled`（image_capability #3024），所以
+/// 审查只对被拒组合（dashscope × 名单 id）跳过字段。
+fn modelstudio_model_is_thinking_only(model: &str) -> bool {
+    let lowered = model.trim().to_ascii_lowercase();
+    matches!(
+        lowered.as_str(),
+        "qwen3.8-max"
+            | "qwen3.8-max-preview"
+            | "kimi-k2.7-code"
+            | "kimi/kimi-k2.7-code"
+            | "kimi/kimi-k2.7-code-highspeed"
+    )
+}
+
+/// 底座 `model_is_openai_reasoning_family`（config/models.rs）逐字镜像：
+/// gpt-5.5[-pro]（含日期快照）、gpt-5.6 系、codex 名单。引擎的
+/// `apply_openai_reasoning_effort` 恰好对这批型号在 OpenAI chat 线写
+/// `reasoning_effort`。
+fn openai_reasoning_family_model(model_lower: &str) -> bool {
+    fn has_date_snapshot_suffix(model_lower: &str, prefix: &str) -> bool {
+        let Some(rest) = model_lower.strip_prefix(prefix) else {
+            return false;
+        };
+        let bytes = rest.as_bytes();
+        bytes.len() == 10
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(idx, byte)| idx == 4 || idx == 7 || byte.is_ascii_digit())
+    }
+    matches!(model_lower, "gpt-5.5" | "gpt-5.5-pro")
+        || has_date_snapshot_suffix(model_lower, "gpt-5.5-")
+        || has_date_snapshot_suffix(model_lower, "gpt-5.5-pro-")
+        || matches!(
+            model_lower,
+            "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna"
+        )
+        || matches!(
+            model_lower,
+            "gpt-5-codex"
+                | "gpt-5.1-codex"
+                | "gpt-5.1-codex-mini"
+                | "gpt-5.1-codex-max"
+                | "gpt-5.2-codex"
+                | "gpt-5.3-codex"
+                | "codex-gpt-5.5"
+                | "chatgpt-gpt-5.5"
+                | "gpt-5.5-codex"
+                | "gpt-5.5-codex-preview"
+                | "codex-gpt-5.5-preview"
+                | "chatgpt-gpt-5.5-preview"
+        )
+}
+
+/// 引擎 Chat Completions 线的 token 上限字段换名（`apply_provider_token_limit`，
+/// CodeWhale client/chat.rs）逐字镜像：四类路由发 `max_completion_tokens` 而非
+/// `max_tokens`——XiaomiMimo、OpenAI 推理家族、精确 MiniMax-M3 第一方路由、直连
+/// Moonshot K3。Kimi Code 会员端点（api.kimi.com/coding/v1）**不在**换名集合：
+/// 2026-09-30 实测线材就是 `max_tokens`。审查镜像同一换名，一次性请求才与主对话
+/// 逐字节同线（旧线在所有路由都发 `max_tokens`，对这些路由是静默错配）。
+fn review_max_tokens_field(provider: &str, base_url: &str, model: &str) -> &'static str {
+    let model_lower = model.trim().to_ascii_lowercase();
+    let direct_moonshot_k3 = (provider == "moonshot" || provider == "kimi")
+        && is_exact_moonshot_platform_route(base_url)
+        && model_lower == "kimi-k3";
+    let exact_minimax_m3 = provider == "minimax"
+        && (is_exact_https_host_path(base_url, "api.minimax.io", "v1")
+            || is_exact_https_host_path(base_url, "api.minimaxi.com", "v1"))
+        && model_lower == "minimax-m3";
+    if provider == "xiaomi-mimo"
+        || (provider == "openai" && openai_reasoning_family_model(&model_lower))
+        || direct_moonshot_k3
+        || exact_minimax_m3
+    {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    }
+}
+
+/// 品/悟审查的思考档位写入（2026-11-06 产品决策；2026-11-07 评审补齐 K3 双路由、
+/// OpenAI/xAI 推理家族与 env-pin 折叠组）：**思考永不关闭**，与本地路由同一处理
+/// （`bridge::request_reasoning_effort` + `core::always_thinking`）——取线材能表达
+/// 的最低思考档；只有开/关的家族显式选开。线材形状对齐底座两层
+/// （`apply_reasoning_effort` 通用层 + `apply_route_reasoning_controls` 路由层，
+/// CodeWhale crates/tui/src/client.rs、client/chat.rs）；偏离处均有注释并逐字注明
+/// 底座依据，不是"逐字翻译"：
+/// - K3 双路由特例（先于通用 Kimi 臂；底座用路由层在通用臂之后改写同一线材，
+///   这里直接归类、字段只写一次，线材等价）：
+///   Kimi Code 会员端点（精确 api.kimi.com/coding/v1 × k3|k3-256k）发嵌套
+///   `thinking:{enabled,effort:low}`（`apply_kimi_code_k3_reasoning_effort`）；
+///   直连按量平台（精确 api.moonshot.ai|cn /v1 × kimi-k3）always-thinking、只接受
+///   顶层 `reasoning_effort`，发 `reasoning_effort=low` 且不发 `thinking`
+///   （`apply_direct_moonshot_k3_reasoning_effort`："a generic Moonshot `thinking`
+///   payload is not truthful for this route"；服务端缺省档是 max，漏发档位 = 档位
+///   漂移到 max）。
 /// - vLLM/Tachyon/本地：`chat_template_kwargs.enable_thinking=true` +
 ///   `reasoning_effort=low`（引擎本地路由同款）；always-thinking 知识表 NoControl
 ///   模型（qwen3-thinking/deepseek-r1/kimi-k2.7/minimax-m2）native 思考，不发字段。
 /// - Ollama：本地 `think=true`（boolean think 线，最低思考档=开；对无思考模型是硬
 ///   400，引擎本地路由已按 #622 接受同一取舍）。托管 `https://ollama.com/v1` 在引擎
 ///   侧升级为 OllamaCloud，用 `reasoning_effort` 线（config provider.rs
-///   `is_exact_ollama_cloud_route`）——这里按同一精确主机判定分流。
+///   `is_exact_ollama_cloud_route`）——这里用逐字镜像的精确判定分流（scheme/host
+///   大小写不敏感、path 大小写敏感）。
 /// - DeepSeek：`reasoning_effort=low` + `thinking.enabled`（deepseek_effort 表 Low 档）。
 ///   注意 `response_format=json_object` × thinking 常开这一组合未实测（旧线是
 ///   thinking 关 + json_object；k3 的组合不迁移）；若网关拒绝，以 HTTP 错误浮出。
@@ -648,12 +791,13 @@ fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
 ///   同口径）；线材只有开/关 → 选开。旧逻辑对 api.kimi.com（嗅探簇外）发零控制只是
 ///   "碰巧开着"，k2.5/k2.6 则被显式关掉——两者都由本臂统一为显式开。`provider=="kimi"`
 ///   现网由 `DEEPSEEK_PROVIDER` env 覆盖产生（vendor 归一把 kimi 折到 moonshot），
-///   保留以防漂移。
+///   保留以防漂移。**例外**：Kimi 身份 × dashscope 托管 × thinking-only 名单 id 的
+///   组合发零字段（名单见 helper 注；其余组合保持与引擎通用 Moonshot 臂同线材）。
 /// - Qwen/dashscope：`enable_thinking=true`（只有开/关 → 选开；审查线 stream=false
 ///   上开思考未实测，网关若拒绝会以 HTTP 错误浮出而非静默）。**例外**：底座
-///   `modelstudio_model_is_thinking_only`（client/chat.rs）列为"拒绝 enable/disable
-///   控制"的型号（qwen3.8-max[+preview]、kimi-k2.7-code 系）不发任何字段——对它们
-///   开关字段至多被忽略、至坏 400（qwen3.8-max 正是 Qwen preset 默认型号）。
+///   `modelstudio_model_is_thinking_only` 名单 id（qwen3.8-max[+preview]、
+///   kimi-k2.7-code 系）不发任何字段——对它们开关字段至多被忽略、至坏 400
+///   （qwen3.8-max 正是 Qwen preset 默认型号）。
 /// - Doubao/Volces：`reasoning_effort=high` + `thinking.enabled`（底座把 low/medium
 ///   折叠为 high——自家档位线材未验证，保守沿用同一折叠）。
 /// - GLM/z.ai：`thinking.enabled + clear_thinking=false`。Mimo：`thinking.enabled`。
@@ -664,10 +808,22 @@ fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
 ///   不 split 时 M2 的 reasoning 会混进 content 破坏解析，故全 Minimax 线保留。
 /// - OpenRouter 系（openrouter/orcarouter/novita/together）：
 ///   `reasoning_effort=low` + `thinking.enabled`（底座 low 档同款，client.rs）。
-/// - SiliconFlow 系（siliconflow/siliconflow-cn）：`reasoning_effort=high` +
-///   `thinking.enabled`（底座把 low 折叠为 high，同 Volces 家族）。
-/// - 其余（OpenAI 官方 chat 线/未知网关）：线材不表达档位，思考型模型 native 开 →
-///   不发字段。
+/// - SiliconFlow 系（siliconflow/siliconflow-cn）与同折叠组 sglang/deepinfra/
+///   atlascloud（底座 client.rs 同一臂）：`reasoning_effort=high` +
+///   `thinking.enabled`。
+/// - env-pin 家族（`DEEPSEEK_PROVIDER` 原样直通 provider 字符串，底座
+///   ApiProvider::parse 按 config/provider.rs kind registry 认这些 slug）：
+///   arcee/huggingface `reasoning_effort=low`；fireworks `reasoning_effort=high`；
+///   nvidia/nim `chat_template_kwargs{thinking:true,reasoning_effort:"high"}`——
+///   各自与底座 client.rs 同名臂同款。审查发零控制 = 主对话思考而审查静默关思考，
+///   与聚合商臂同一违背。
+/// - OpenAI 推理家族（provider=="openai" × gpt-5.5[+日期快照]/gpt-5.6 系/codex
+///   名单）：`reasoning_effort=low`（底座 `apply_openai_reasoning_effort` low 档
+///   同款；名单逐字镜像 `model_is_openai_reasoning_family`）。非推理家族
+///   （gpt-4o、gpt-6-sol 等）与未知网关：线材不表达档位，思考 native 开 → 不发字段。
+/// - xAI：grok-4.5|4.6 在精确 api.x.ai/v1 端点收顶层档位 → `reasoning_effort=low`
+///   （底座 `apply_xai_grok_4_6_reasoning_effort`；grok-4.7——Xai preset 默认——
+///   不收档位，两端都不发；非第一方网关两端也都不发）。
 /// - **Anthropic 例外**：preset Anthropic 在 `model_review` 里走 Messages 直连，
 ///   不经本函数、当前不发思考字段——主对话 Messages adapter 会在 low 档写
 ///   `thinking:{enabled,budget_tokens}`/`{adaptive}`（client/anthropic.rs），省略
@@ -690,18 +846,9 @@ fn apply_review_thinking_controls(
     // always-thinking 知识表（NoControl 不发字段，其余最低档 low）。
     if is_local_route {
         if provider == "ollama" {
-            // 底座 config provider.rs `is_exact_ollama_cloud_route`/`is_exact_https_route`：
-            // scheme/host 大小写不敏感、path "v1" 大小写敏感精确、只剥一个尾斜杠，
-            // http 降级与邻近路径都不算托管云。
-            let trimmed = base_url.trim();
-            let trimmed = trimmed.strip_suffix('/').unwrap_or(trimmed);
-            let is_cloud_route = trimmed
-                .strip_prefix("https://")
-                .and_then(|rest| rest.split_once('/'))
-                .is_some_and(|(host, path)| {
-                    host.eq_ignore_ascii_case("ollama.com") && path == "v1"
-                });
-            if is_cloud_route {
+            // 底座 config provider.rs `is_exact_ollama_cloud_route`/`is_exact_https_route`
+            // 的逐字镜像判定：http 降级、邻近路径、端口变体都不算托管云。
+            if is_exact_https_host_path(base_url, "ollama.com", "v1") {
                 body["reasoning_effort"] = json!("low");
             } else {
                 body["think"] = json!(true);
@@ -725,13 +872,35 @@ fn apply_review_thinking_controls(
         body["thinking"] = json!({ "type": "enabled" });
         return;
     }
-    if provider == "moonshot"
+    // K3 双路由特例：底座在通用臂之后以路由层剥离/改写同一线材，这里先归类、
+    // 字段只写一次。归族条件与下方通用 Kimi 臂一致（含 URL 嗅探——路由方言跟
+    // 端点走，与 preset/provider 身份无关）。
+    let kimi_family = provider == "moonshot"
         || provider == "kimi"
         || preset == ModelPreset::Kimi
         || base.contains("moonshot.cn")
         || base.contains("moonshot.ai")
-        || base.contains("api.kimi.com")
-    {
+        || base.contains("api.kimi.com");
+    if kimi_family {
+        if is_exact_kimi_code_route(base_url)
+            && matches!(model.trim().to_ascii_lowercase().as_str(), "k3" | "k3-256k")
+        {
+            body["thinking"] = json!({ "type": "enabled", "effort": "low" });
+            return;
+        }
+        if is_exact_moonshot_platform_route(base_url)
+            && model.trim().eq_ignore_ascii_case("kimi-k3")
+        {
+            body["reasoning_effort"] = json!("low");
+            return;
+        }
+    }
+    if kimi_family {
+        // dashscope 托管 × thinking-only 名单 id 拒绝开关字段——仅该组合跳过；
+        // 第一方 Kimi 路由上同一批 id 仍显式开（image_capability #3024）。
+        if base.contains("dashscope.aliyuncs.com") && modelstudio_model_is_thinking_only(model) {
+            return;
+        }
         body["thinking"] = json!({ "type": "enabled" });
         return;
     }
@@ -739,15 +908,7 @@ fn apply_review_thinking_controls(
         // 底座 chat.rs `modelstudio_model_is_thinking_only`：这些型号没有
         // enable/disable 控制，"at best ignored and at worst a 400"——不发任何
         // 字段（native always-on）。
-        let lowered = model.trim().to_ascii_lowercase();
-        if matches!(
-            lowered.as_str(),
-            "qwen3.8-max"
-                | "qwen3.8-max-preview"
-                | "kimi-k2.7-code"
-                | "kimi/kimi-k2.7-code"
-                | "kimi/kimi-k2.7-code-highspeed"
-        ) {
+        if modelstudio_model_is_thinking_only(model) {
             return;
         }
         body["enable_thinking"] = json!(true);
@@ -784,8 +945,8 @@ fn apply_review_thinking_controls(
         return;
     }
     // 聚合商家族：底座 low 档实发字段（client.rs OpenRouter/Novita/Together 臂
-    // `reasoning_effort`+`thinking enabled`；SiliconFlow 臂 low→`high`+enabled）——
-    // 审查若发零控制，主对话思考而审查静默关思考，违背"永不关闭"。
+    // `reasoning_effort`+`thinking enabled`）——审查若发零控制，主对话思考而审查
+    // 静默关思考，违背"永不关闭"。
     if matches!(
         provider,
         "openrouter" | "orcarouter" | "novita" | "together"
@@ -794,9 +955,45 @@ fn apply_review_thinking_controls(
         body["thinking"] = json!({ "type": "enabled" });
         return;
     }
-    if matches!(provider, "siliconflow" | "siliconflow-cn") {
+    // SiliconFlow 与底座同一折叠组（client.rs 同一臂：Siliconflow/SiliconflowCn/
+    // Sglang/Volcengine/Deepinfra/Atlascloud → low/medium 折叠为 high+enabled）；
+    // sglang/deepinfra/atlascloud 仅经 DEEPSEEK_PROVIDER env 可达，同防漂移保留。
+    if matches!(
+        provider,
+        "siliconflow" | "siliconflow-cn" | "sglang" | "deepinfra" | "atlascloud"
+    ) {
         body["reasoning_effort"] = json!("high");
         body["thinking"] = json!({ "type": "enabled" });
+        return;
+    }
+    if matches!(provider, "arcee" | "huggingface") {
+        body["reasoning_effort"] = json!("low");
+        return;
+    }
+    if provider == "fireworks" {
+        body["reasoning_effort"] = json!("high");
+        return;
+    }
+    if matches!(provider, "nim" | "nvidia" | "nvidia_nim") {
+        body["chat_template_kwargs"] = json!({ "thinking": true, "reasoning_effort": "high" });
+        return;
+    }
+    // OpenAI 推理家族（见 helper 注）：底座对这批型号在 chat 线写 effort，审查
+    // 发零控制即静默档位漂移（非 never-off 违背——native 缺省开——但违背"最低档"
+    // 契约）。OpenaiCompatible preset 默认型号 gpt-5.6-terra 正在此名单。
+    if provider == "openai" && openai_reasoning_family_model(&model.trim().to_ascii_lowercase()) {
+        body["reasoning_effort"] = json!("low");
+        return;
+    }
+    // xAI grok-4.5|4.6 精确第一方端点（底座同款守卫）；grok-4.7 不收档位。
+    if (provider == "xai" || preset == ModelPreset::Xai)
+        && is_exact_https_host_path(base_url, "api.x.ai", "v1")
+        && matches!(
+            model.trim().to_ascii_lowercase().as_str(),
+            "grok-4.5" | "grok-4.6"
+        )
+    {
+        body["reasoning_effort"] = json!("low");
         return;
     }
 }
@@ -1068,19 +1265,118 @@ mod tests {
     /// 引擎本地处理（always_thinking 归一）一致。
     #[test]
     fn review_thinking_controls_pick_lowest_tier_never_off() {
-        // Kimi Coding Plan k3（api.kimi.com 在旧嗅探簇外）：开/关选开 → thinking enabled。
+        // Kimi Code 会员 K3（精确 api.kimi.com/coding/v1 × k3|k3-256k）：嵌套
+        // effort 线（底座 apply_kimi_code_k3_reasoning_effort），无顶层档位；
+        // 尾斜杠按底座语义忽略。
         let mut k3 = json!({});
         apply_review_thinking_controls(
             &mut k3,
             ModelPreset::OpenaiCompatible,
             "moonshot",
+            "https://api.kimi.com/coding/v1/",
+            "k3",
+        );
+        assert_eq!(
+            k3["thinking"],
+            json!({ "type": "enabled", "effort": "low" }),
+            "k3: {k3}"
+        );
+        assert!(
+            k3.get("reasoning_effort").is_none(),
+            "Kimi Code K3 用嵌套 effort,不吃顶层档位: {k3}"
+        );
+
+        // 直连按量平台 K3（精确 api.moonshot.cn|ai /v1 × kimi-k3）：always-thinking
+        // 路由只收顶层 reasoning_effort → low，且**不发 thinking**（底座
+        // apply_direct_moonshot_k3_reasoning_effort；Kimi preset 默认路由走这里）。
+        let mut k3direct = json!({});
+        apply_review_thinking_controls(
+            &mut k3direct,
+            ModelPreset::OpenaiCompatible,
+            "moonshot",
+            "https://api.moonshot.cn/v1",
+            "kimi-k3",
+        );
+        assert_eq!(k3direct["reasoning_effort"], json!("low"), "{k3direct}");
+        assert!(
+            k3direct.get("thinking").is_none(),
+            "直连 K3 不吃 thinking 字段: {k3direct}"
+        );
+        // scheme/host 大小写不敏感（底座 is_exact_https_route 同款）仍是直连 K3。
+        let mut k3direct_case = json!({});
+        apply_review_thinking_controls(
+            &mut k3direct_case,
+            ModelPreset::OpenaiCompatible,
+            "moonshot",
+            "HTTPS://API.Moonshot.CN/v1",
+            "kimi-k3",
+        );
+        assert_eq!(
+            k3direct_case["reasoning_effort"],
+            json!("low"),
+            "{k3direct_case}"
+        );
+        // 同平台 URL × "k3"（非平台型号名）：落通用 Kimi 臂显式开（底座直连守卫
+        // 同样只认 kimi-k3）。
+        let mut k3platform_nonk3 = json!({});
+        apply_review_thinking_controls(
+            &mut k3platform_nonk3,
+            ModelPreset::OpenaiCompatible,
+            "moonshot",
+            "https://api.moonshot.cn/v1",
+            "k3",
+        );
+        assert_eq!(
+            k3platform_nonk3["thinking"],
+            json!({ "type": "enabled" }),
+            "{k3platform_nonk3}"
+        );
+
+        // Kimi 身份 × dashscope × thinking-only 名单 id：被拒组合 → 零字段。
+        let mut kimi_dashscope_thinking_only = json!({});
+        apply_review_thinking_controls(
+            &mut kimi_dashscope_thinking_only,
+            ModelPreset::Kimi,
+            "moonshot",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "kimi-k2.7-code",
+        );
+        assert!(
+            kimi_dashscope_thinking_only
+                .as_object()
+                .expect("body object")
+                .is_empty(),
+            "dashscope thinking-only id 拒绝开关字段: {kimi_dashscope_thinking_only}"
+        );
+
+        // URL-only 归族不能漏：api.kimi.com 会员端点在无 vendor/preset 线索时
+        // 仍走嵌套 effort 线（k3 首报路由的纯 URL 形态）。
+        let mut k3_url_only = json!({});
+        apply_review_thinking_controls(
+            &mut k3_url_only,
+            ModelPreset::OpenaiCompatible,
+            "openai",
             "https://api.kimi.com/coding/v1",
             "k3",
         );
-        assert_eq!(k3["thinking"], json!({ "type": "enabled" }), "k3: {k3}");
-        assert!(
-            k3.get("reasoning_effort").is_none(),
-            "Kimi chat 线不表达档位: {k3}"
+        assert_eq!(
+            k3_url_only["thinking"],
+            json!({ "type": "enabled", "effort": "low" }),
+            "{k3_url_only}"
+        );
+        // moonshot.cn URL-only（provider/preset 都不带家族信息时）归 Kimi 臂。
+        let mut moonshot_cn_url = json!({});
+        apply_review_thinking_controls(
+            &mut moonshot_cn_url,
+            ModelPreset::OpenaiCompatible,
+            "openai",
+            "https://api.moonshot.cn/v1",
+            "kimi-k2.6",
+        );
+        assert_eq!(
+            moonshot_cn_url["thinking"],
+            json!({ "type": "enabled" }),
+            "{moonshot_cn_url}"
         );
 
         // Kimi 官方端点 k2.6（旧逻辑被显式关思考）：现在同样显式开。
@@ -1093,6 +1389,22 @@ mod tests {
             "kimi-k2.6",
         );
         assert_eq!(k26["thinking"], json!({ "type": "enabled" }), "k2.6: {k26}");
+
+        // Tachyon 本地（probed local kind）：可控模型最低档同 vLLM 形状。
+        let mut tachyon = json!({});
+        apply_review_thinking_controls(
+            &mut tachyon,
+            ModelPreset::OpenaiCompatible,
+            "tachyon",
+            "http://127.0.0.1:8718/v1",
+            "qwen36_35b_256k",
+        );
+        assert_eq!(
+            tachyon["chat_template_kwargs"],
+            json!({ "enable_thinking": true }),
+            "{tachyon}"
+        );
+        assert_eq!(tachyon["reasoning_effort"], json!("low"), "{tachyon}");
 
         // vLLM 本地可控模型：enable_thinking=true + reasoning_effort=low（引擎本地同款）。
         let mut vllm = json!({});
@@ -1188,6 +1500,26 @@ mod tests {
         assert!(
             ollama_lookalike.get("reasoning_effort").is_none(),
             "{ollama_lookalike}"
+        );
+
+        // 底座 is_exact_https_route 的 scheme/host 大小写不敏感："HTTPS://" + 大写
+        // 主机仍是托管云（旧实现的 strip_prefix("https://") 在此漂移为本地线）。
+        let mut ollama_cloud_case = json!({});
+        apply_review_thinking_controls(
+            &mut ollama_cloud_case,
+            ModelPreset::OpenaiCompatible,
+            "ollama",
+            "HTTPS://OLLAMA.COM/v1",
+            "qwen3:8b",
+        );
+        assert_eq!(
+            ollama_cloud_case["reasoning_effort"],
+            json!("low"),
+            "{ollama_cloud_case}"
+        );
+        assert!(
+            ollama_cloud_case.get("think").is_none(),
+            "{ollama_cloud_case}"
         );
 
         // DeepSeek：档位表 Low 档（reasoning_effort=low + thinking enabled）。
@@ -1427,6 +1759,133 @@ mod tests {
             "{siliconflow}"
         );
 
+        // 底座同一折叠组的其余成员（sglang/deepinfra/atlascloud，env-pin 可达）：
+        // low 同样折叠为 high+enabled。
+        for provider in ["sglang", "deepinfra", "atlascloud"] {
+            let mut collapse = json!({});
+            apply_review_thinking_controls(
+                &mut collapse,
+                ModelPreset::OpenaiCompatible,
+                provider,
+                "https://gateway.example/v1",
+                "some-model",
+            );
+            assert_eq!(
+                collapse["reasoning_effort"],
+                json!("high"),
+                "{provider}: {collapse}"
+            );
+            assert_eq!(
+                collapse["thinking"],
+                json!({ "type": "enabled" }),
+                "{provider}: {collapse}"
+            );
+        }
+
+        // env-pin 家族（底座 client.rs 同名臂同款）：arcee/huggingface 只发
+        // effort；fireworks 只发 high；nvidia-nim 走 chat_template_kwargs。
+        let mut arcee = json!({});
+        apply_review_thinking_controls(
+            &mut arcee,
+            ModelPreset::OpenaiCompatible,
+            "arcee",
+            "https://gateway.example/v1",
+            "some-model",
+        );
+        assert_eq!(arcee["reasoning_effort"], json!("low"), "{arcee}");
+        assert!(arcee.get("thinking").is_none(), "{arcee}");
+        let mut fireworks = json!({});
+        apply_review_thinking_controls(
+            &mut fireworks,
+            ModelPreset::OpenaiCompatible,
+            "fireworks",
+            "https://gateway.example/v1",
+            "some-model",
+        );
+        assert_eq!(fireworks["reasoning_effort"], json!("high"), "{fireworks}");
+        assert!(fireworks.get("thinking").is_none(), "{fireworks}");
+        let mut nim = json!({});
+        apply_review_thinking_controls(
+            &mut nim,
+            ModelPreset::OpenaiCompatible,
+            "nim",
+            "https://gateway.example/v1",
+            "some-model",
+        );
+        assert_eq!(
+            nim["chat_template_kwargs"],
+            json!({ "thinking": true, "reasoning_effort": "high" }),
+            "{nim}"
+        );
+
+        // OpenAI 推理家族（OpenaiCompatible preset 默认型号 gpt-5.6-terra 正在
+        // 名单）：effort=low，无 thinking 字段；codex 名单一并钉住。
+        for model in ["gpt-5.6-terra", "gpt-5.5-codex", "gpt-5.5-2026-01-01"] {
+            let mut openai_reasoning = json!({});
+            apply_review_thinking_controls(
+                &mut openai_reasoning,
+                ModelPreset::OpenaiCompatible,
+                "openai",
+                "https://api.openai.com/v1",
+                model,
+            );
+            assert_eq!(
+                openai_reasoning["reasoning_effort"],
+                json!("low"),
+                "{model}: {openai_reasoning}"
+            );
+            assert!(
+                openai_reasoning.get("thinking").is_none(),
+                "{model}: {openai_reasoning}"
+            );
+        }
+
+        // xAI grok-4.5|4.6 在精确第一方端点收档位；grok-4.7（Xai preset 默认）
+        // 与非第一方网关两端都不发。
+        let mut grok45 = json!({});
+        apply_review_thinking_controls(
+            &mut grok45,
+            ModelPreset::Xai,
+            "xai",
+            "https://api.x.ai/v1",
+            "grok-4.5",
+        );
+        assert_eq!(grok45["reasoning_effort"], json!("low"), "{grok45}");
+        assert!(grok45.get("thinking").is_none(), "{grok45}");
+        let mut grok46 = json!({});
+        apply_review_thinking_controls(
+            &mut grok46,
+            ModelPreset::OpenaiCompatible,
+            "xai",
+            "https://api.x.ai/v1",
+            "grok-4.6",
+        );
+        assert_eq!(grok46["reasoning_effort"], json!("low"), "{grok46}");
+        let mut grok47 = json!({});
+        apply_review_thinking_controls(
+            &mut grok47,
+            ModelPreset::Xai,
+            "xai",
+            "https://api.x.ai/v1",
+            ModelPreset::Xai.default_model(),
+        );
+        assert!(
+            grok47.as_object().expect("body object").is_empty(),
+            "grok-4.7 不收档位: {grok47}"
+        );
+        let mut grok_gateway = json!({});
+        apply_review_thinking_controls(
+            &mut grok_gateway,
+            ModelPreset::Xai,
+            "xai",
+            "https://gateway.example/v1",
+            "grok-4.5",
+        );
+        assert!(
+            grok_gateway.as_object().expect("body object").is_empty(),
+            "非第一方 xAI 网关不发 grok 字段: {grok_gateway}"
+        );
+
         // URL 嗅探变体（provider/preset 都不带家族信息时归臂不能漏）。
         let mut deepseek_url = json!({});
         apply_review_thinking_controls(
@@ -1494,7 +1953,7 @@ mod tests {
 
     #[test]
     fn review_request_body_mirrors_engine_wire_no_temperature() {
-        let body = review_request_body("k3", "sys prompt", "user content", 8192);
+        let body = review_request_body("k3", "sys prompt", "user content", 8192, "max_tokens");
         assert!(
             body.get("temperature").is_none(),
             "aux review body must mirror the engine wire (no temperature): a \
@@ -1508,12 +1967,74 @@ mod tests {
             "预算透传 max_tokens 参数(主对话同款算法值,由 \
              main_wire_max_output_tokens 计算),不得在 builder 内硬编码"
         );
+        assert!(
+            body.get("max_completion_tokens").is_none(),
+            "换名集合之外的路由必须仍发 max_tokens(Kimi Code 会员端点 \
+             2026-09-30 实测线材): {body}"
+        );
         assert_eq!(body["stream"], false);
         assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "sys prompt");
         assert_eq!(body["messages"][1]["role"], "user");
         assert_eq!(body["messages"][1]["content"], "user content");
+
+        // 换名集合路由：字段名换为 max_completion_tokens 且不再发 max_tokens
+        // (引擎 apply_provider_token_limit 同款移除语义)。
+        let swapped = review_request_body(
+            "kimi-k3",
+            "sys prompt",
+            "user content",
+            8192,
+            "max_completion_tokens",
+        );
+        assert_eq!(swapped["max_completion_tokens"], json!(8192), "{swapped}");
+        assert!(
+            swapped.get("max_tokens").is_none(),
+            "换名路由不得同时携带旧字段名: {swapped}"
+        );
+    }
+
+    /// 引擎 token 上限字段换名判定逐字钉（`apply_provider_token_limit` 四类：
+    /// XiaomiMimo / OpenAI 推理家族 / 精确 MiniMax-M3 路由 / 直连 Moonshot K3）；
+    /// Kimi Code 会员端点（api.kimi.com/coding/v1）明确**不**换——那是
+    /// 2026-09-30 实测过的 `max_tokens` 线。
+    #[test]
+    fn review_max_tokens_field_mirrors_engine_swap() {
+        assert_eq!(
+            review_max_tokens_field("moonshot", "https://api.moonshot.cn/v1", "kimi-k3"),
+            "max_completion_tokens"
+        );
+        assert_eq!(
+            review_max_tokens_field("moonshot", "https://api.moonshot.cn/v1", "kimi-k2.6"),
+            "max_tokens"
+        );
+        assert_eq!(
+            review_max_tokens_field("moonshot", "https://api.kimi.com/coding/v1", "k3"),
+            "max_tokens",
+            "Kimi Code 会员端点不换字段名(实测线材钉)"
+        );
+        assert_eq!(
+            review_max_tokens_field("openai", "https://api.openai.com/v1", "gpt-5.6-terra"),
+            "max_completion_tokens"
+        );
+        assert_eq!(
+            review_max_tokens_field("openai", "https://api.openai.com/v1", "gpt-4o"),
+            "max_tokens"
+        );
+        assert_eq!(
+            review_max_tokens_field("xiaomi-mimo", "https://api.xiaomimimo.com/v1", "mimo-pro"),
+            "max_completion_tokens"
+        );
+        assert_eq!(
+            review_max_tokens_field("minimax", "https://api.minimaxi.com/v1", "MiniMax-M3"),
+            "max_completion_tokens"
+        );
+        assert_eq!(
+            review_max_tokens_field("minimax", "https://gateway.example/v1", "MiniMax-M3"),
+            "max_tokens",
+            "MiniMax 换名只在精确第一方路由"
+        );
     }
 
     /// Pin the call site, not just the builder: the builder pin above goes
