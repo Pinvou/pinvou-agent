@@ -9,14 +9,36 @@
 //! `docs/code-mode-改动随对话回退-设计.md` §3「移植时的修正」）。
 
 use deepseek_tui::is_user_turn_prompt;
-use deepseek_tui::models::Message;
+use deepseek_tui::models::{ContentBlock, Message, Role};
 
 /// 会话日志中的真实用户 turn 数（不含 tool_result 与运行时内部信封）。
 /// checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时调用）。
+/// 步数预算通知判定（评审 r10 M3）：底座把 soft landing / exhaustion 两条通知
+/// 以 ExternalUser provenance 落盘（engine.rs 硬编码，上游待修），谓词将其
+/// 误计为用户 turn。识别前缀与前端双 bridge / code 车道同款镜像——所有
+/// 计数/截断定位点（本计数、rewind.rs 的边界枚举与 undo 计数）必须共用本
+/// 谓词，否则 keepTurns 口径分叉。
+pub fn is_step_budget_notification(message: &Message) -> bool {
+    if message.role != Role::User {
+        return false;
+    }
+    let Some(ContentBlock::Text { text, .. }) = message.content.first() else {
+        return false;
+    };
+    text.starts_with("Step budget soft landing:")
+        || text.starts_with("Your model-step budget was exhausted")
+}
+
+/// 单条消息是否计为一个用户 turn（快照序号、回退预检、调和门与截断边界的
+/// 统一口径：is_user_turn_prompt 且非步数预算通知）。
+pub(crate) fn counts_as_user_turn(message: &Message) -> bool {
+    is_user_turn_prompt(message) && !is_step_budget_notification(message)
+}
+
 pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
     messages
         .iter()
-        .filter(|message| is_user_turn_prompt(message))
+        .filter(|message| counts_as_user_turn(message))
         .count() as u32
 }
 
@@ -40,7 +62,6 @@ pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deepseek_tui::models::ContentBlock;
 
     fn text_message(role: &str, text: &str) -> Message {
         Message {
@@ -125,5 +146,49 @@ mod tests {
         // doc promises Err on deserialization failure).
         let invalid = vec![serde_json::json!({ "role": 42 })];
         assert!(count_user_turns_in_json(&invalid).is_err());
+    }
+
+    /// 工作车道附件-only 发送的真实落盘形态必须计为用户 turn（评审 M1 对齐 pin）。
+    /// 两个附件构造器（`prepare_native_user_message_in_dir` /
+    /// `build_message_with_attachments_in_dir`）对空草稿文本也总是生成非空包装段
+    /// （"---\n用户附上了以下文件:\n\n…"），引擎 `user_content_blocks` 把该完整
+    /// 文本作为第一个 Text 块落盘、ImageUrl 与 turn_meta 随后追加。因此工作车道
+    /// 的附件-only 轮次在 `classify_user_turn_prompt` 下是 Editable——后端计数
+    /// **包含**它们，与前端 `rewindEntriesByTurnId` 逐 userItem 计数对齐（若任
+    /// 一侧改变——比如包装文本被剥离、该形态退化成上面的裸 ImageUrl fixture——
+    /// 本 pin 与 image-only fixture 的计数差即暴露错位）。
+    #[test]
+    fn attachment_wrapped_image_turn_counts_as_user_turn() {
+        let wrapper = "---\n用户附上了以下文件:\n\n### shot.png (image, 12345 bytes)\n\
+                       [Attached image: /ws/attachments/shot.png]\n\n---\n";
+        let wrapped = Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: wrapper.to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ImageUrl {
+                    image_url: deepseek_tui::models::ImageUrlContent {
+                        url: "file:///ws/attachments/shot.png".to_string(),
+                    },
+                },
+            ],
+        };
+        assert!(is_user_turn_prompt(&wrapped));
+        assert_eq!(count_user_turns(std::slice::from_ref(&wrapped)), 1);
+
+        // 对照组：同一张图去掉包装文本（CLI 车道的裸形态）不计——证明两个
+        // fixture 之间隔着的正是构造器的包装文本，而非图片块本身。
+        let bare = Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![ContentBlock::ImageUrl {
+                image_url: deepseek_tui::models::ImageUrlContent {
+                    url: "file:///ws/attachments/shot.png".to_string(),
+                },
+            }],
+        };
+        assert!(!is_user_turn_prompt(&bare));
+        assert_eq!(count_user_turns(std::slice::from_ref(&bare)), 0);
     }
 }

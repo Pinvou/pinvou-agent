@@ -238,13 +238,22 @@ const expectedProtocolHashes = {
   // chat:transcript_committed guard clause in the same body (chat-events.js).
   // Event names, invoke shapes and authoritative payload handling remain
   // unchanged; publication timing is intentional.
+  // Recomputed for the r41 minor-1 pre-swap invalidation: the chat:compaction
+  // handler now computes the shrink/ownership classification AND drops the
+  // cached buffer BEFORE onSessionEvent (inside runSyncOnSession's swap the
+  // invalidation's active leg would clear a background working set's array
+  // references — notices pushed into detached arrays). Same event set, no new
+  // invoke/listen entries — only the captured handler body changed.
   // Recomputed for the repo-wide stale-comment cleanup: wording-only comment
   // edits inside the captured chat-events.js listener spans (stale tool_start
   // line number, three deleted English captions) — chat.js spans and the
   // command surface unchanged. Recomputed again in round 3: the present_artifact
   // comment now carries the web lane's exact `chat:tool_start` token so both
   // bridge lanes read byte-identically.
-  chat: '44c35fd4781321ce44d8f2c0674ccafdd512233878c7e4f79e259e1bff4e6eba',
+  // Recomputed once more for the r42 minor-9 boolean-contract gate on the
+  // compaction front arm (reload success gate on the compaction notice).
+  chat: '1e3a147cd2ef6fd2a5acda8966190ba37b53f57603cc847977f0a8319fee7a01',
+
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -475,6 +484,12 @@ for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
   assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
+// r42 minor 10: the r8 incident class - a Proxy-stub surface cannot notice a
+// dropped factory-return entry. This suite executes the REAL bridge factory,
+// so asserting the callable pins the chat-side notice landing pad the same
+// way the sessions twins are pinned by session_nav_race.
+assert.equal(typeof api.chat.addSystemItem, 'function',
+  'chat factory must export callable addSystemItem (r8 incident class / r42 minor 10)');
 assert.equal(api.getState, undefined, 'flat state facade must not return');
 
 function sourceFiles(directory) {
