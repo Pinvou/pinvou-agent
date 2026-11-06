@@ -938,7 +938,7 @@ function ConversationTurnView({
   onOpenResource,
   agentLabel = 'Agent',
   assistantAvatar,
-  forkEntries,
+  forkOrdinal = null,
   onForkTurn,
   copy,
 }) {
@@ -1055,11 +1055,11 @@ function ConversationTurnView({
                 onRetry={retryHandler}
               />
             )}
-            {/* 从此轮分叉：无损 what-if 分支入口（forkEntries 由宿主按
-                turn 序号构建；命令在 Rust 侧落盘新会话并切过去）。 */}
-            {onForkTurn && forkEntries && forkEntries.has(turn.id) && (
+            {/* 从此轮分叉：无损 what-if 分支入口（forkOrdinal 由宿主按
+                turn 序号换算的稳定原始值；命令在 Rust 侧落盘新会话并切过去）。 */}
+            {onForkTurn && forkOrdinal != null && (
               <button type="button" data-testid="conversation-fork-turn"
-                onClick={() => onForkTurn(turn.id, forkEntries.get(turn.id))}
+                onClick={() => onForkTurn(turn.id, forkOrdinal)}
                 title={c.forkTurnTip}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:text-gray-600 hover:bg-black/5 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-white/10 transition-colors">
                 <GitBranch size={12} />
@@ -1271,6 +1271,12 @@ export function ConversationTimeline({
     virtualizer.measure();
   }, [conversationKey, virtualizer]);
 
+  // forkEntries（Map）不随 props 下发到每个 turn：新 Map 身份会让 memo
+  // 比较器全数失配，一次入口表更新即整条时间线重渲。这里把它解出，换算成
+  // 每个 turn 的稳定原始值 forkOrdinal（number|null，Object.is 稳定）。
+  const { forkEntries: forkEntriesProp, ...turnProps } = props;
+  const forkOrdinalFor = (turn) => (forkEntriesProp ? (forkEntriesProp.get(turn.id) ?? null) : null);
+
   if (!virtualized) {
     return (
       <>
@@ -1280,7 +1286,8 @@ export function ConversationTimeline({
             {/* Regenerate targets the newest turn only, so older turns never render a retry control. */}
             <ConversationTurn
               turn={turn}
-              {...props}
+              {...turnProps}
+              forkOrdinal={forkOrdinalFor(turn)}
               virtualized={false}
               onRetry={index === turns.length - 1 ? props.onRetry : undefined}
             />
@@ -1312,7 +1319,8 @@ export function ConversationTimeline({
         {beforeTurn}
         <ConversationTurn
           turn={turn}
-          {...props}
+          {...turnProps}
+          forkOrdinal={forkOrdinalFor(turn)}
           virtualized
           onRetry={virtualRow.index === turns.length - 1 ? props.onRetry : undefined}
         />
@@ -1334,7 +1342,8 @@ export function ConversationTimeline({
         {renderBeforeTurn?.(liveTurn, liveTurnIndex)}
         <ConversationTurn
           turn={liveTurn}
-          {...props}
+          {...turnProps}
+          forkOrdinal={forkOrdinalFor(liveTurn)}
           virtualized
           onRetry={liveTurnIndex === turns.length - 1 ? props.onRetry : undefined}
         />

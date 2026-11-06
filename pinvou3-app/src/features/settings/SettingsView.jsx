@@ -2006,6 +2006,8 @@ function hasStoredCredential(record) {
             (result.imported || []).length,
             (result.skipped_existing || []).length,
             (result.failed || []).length,
+            // 部分导入（缺 artifacts）计数：Rust SessionImportSummary.artifacts_failed。
+            (result.artifacts_failed || []).length,
           ));
         } catch (error) {
           console.warn('import session archive failed', error);

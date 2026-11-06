@@ -18,10 +18,10 @@ const checkpoints = readFileSync(new URL('../src/features/codex/checkpoints.js',
 {
   const at = settings.indexOf("await invokeTauri('import_session_archive')");
   assert.notStrictEqual(at, -1, 'SettingsView must invoke import_session_archive');
-  const body = settings.slice(Math.max(0, at - 400), at + 500);
+  const body = settings.slice(Math.max(0, at - 400), at + 700);
   assert.ok(body.includes('if (!bridge.available || importingSessions) return;'), 'handler must guard bridge availability and re-entry');
   assert.ok(body.includes('if (!result) return;'), 'user cancel (null) must return silently');
-  assert.ok(body.includes('t.uiSettings.importSessionsDone(') && body.includes('result.skipped_existing'), 'success toast must compose imported/skipped/failed counts');
+  assert.ok(body.includes('t.uiSettings.importSessionsDone(') && body.includes('result.skipped_existing') && body.includes('result.artifacts_failed'), 'success toast must compose imported/skipped/failed counts plus the partial (missing-artifacts) count');
   assert.ok(body.includes('t.uiSettings.importSessionsFailed'), 'failure must surface the localized failed toast');
   assert.ok(!main.includes('import_session_archive'), 'main entry must not carry the import surface (entry-budget ledger policy)');
 }
@@ -52,13 +52,28 @@ assert.match(
 );
 assert.match(
   chatView,
-  /onForkTurn=\{!bridge\.available \|\| isMultiAgentReadOnly \? undefined : handleForkTurn\}/,
-  'fork handler must be withheld on web and multi-agent read-only lanes',
+  /canInvoke\('fork_session'\)/,
+  'fork support must be gated through canInvoke (web access-policy refusal must hide the entry, not error on click)',
 );
 assert.match(
   chatView,
-  /invokeTauri\('fork_session', \{ sessionId: activeSessionId, keepTurns \}\)/,
-  'fork handler must pass the 1-based keepTurns ordinal',
+  /!activeSessionId\.startsWith\('sched-'\)/,
+  'scheduled-run sessions must not render fork entries (Rust refuses them unconditionally)',
+);
+assert.match(
+  chatView,
+  /onForkTurn=\{!forkSupported \|\| isMultiAgentReadOnly \? undefined : handleForkTurn\}/,
+  'fork handler must be withheld when unsupported and on multi-agent read-only lanes',
+);
+assert.match(
+  chatView,
+  /invokeTauri\('fork_session', \{ sessionId: sourceSessionId, keepTurns \}\)/,
+  'fork handler must pass the 1-based keepTurns ordinal for the captured source session',
+);
+assert.match(
+  chatView,
+  /activeSessionIdRef\.current === sourceSessionId/,
+  'auto-switch must fire only while the user is still on the source session',
 );
 assert.match(
   chatView,
@@ -69,8 +84,13 @@ assert.match(
 // 4. 时间线按钮：只有处理器与入口表同时在场才渲染，testid 稳定。
 assert.match(
   timeline,
-  /\{onForkTurn && forkEntries && forkEntries\.has\(turn\.id\) && \(\s*<button type="button" data-testid="conversation-fork-turn"/,
-  'fork button must be gated on handler + entry and keep its testid',
+  /\{onForkTurn && forkOrdinal != null && \(\s*<button type="button" data-testid="conversation-fork-turn"/,
+  'fork button must be gated on handler + per-turn ordinal and keep its testid',
+);
+assert.match(
+  timeline,
+  /const \{ forkEntries: forkEntriesProp, \.\.\.turnProps \} = props;/,
+  'the fork map must not ride into per-turn props (memo comparator churn)',
 );
 
 // 5. 序号口径：分叉表与回退表共享 turnHasUserText（纯图片 turn 不占序号，
