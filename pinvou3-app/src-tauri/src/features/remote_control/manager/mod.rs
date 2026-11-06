@@ -6283,7 +6283,8 @@ mod tests {
     /// 纪律——此前裸 `?` 直传,无状态刷新、无内存回锁,错误文本也不提
     /// folder consent;UI 滞留已授权行(与 strict-load/missing-config 臂
     /// 同族)。钉住臂 opener(裸 `?` 回退即红)、回锁 Needle(删除即红)
-    /// 与 emit 先于构造错误的顺序(块删除/顺序对调即红)。
+    /// 与 emit 先于构造错误的顺序(块删除/顺序对调即红)。Round-23 复审
+    /// 补钉 emit 的无条件位置:挪进条件回锁块内的突变此前保持全绿。
     #[test]
     fn revoke_validation_failure_re_latches_and_emits() {
         let source = include_str!("mod.rs");
@@ -6307,6 +6308,28 @@ mod tests {
         assert!(
             relatch_pos < emit_pos,
             "the re-latch must precede the status refresh so the emitted              payload shows the truthful still-authorized state"
+        );
+        // Round-23 复审 MINOR:emit 的无条件位置此前未被钉——把 emit 挪进
+        // `if remains_enabled {` 块内的突变保持全绿,配置损坏但磁盘未授权
+        // 的形状会静默失去状态刷新(落盘失败臂的既有同形缺口)。emit 必须
+        // 位于条件回锁块之外:从块 opener 到 emit 的切片花括号必须配平,
+        // 块内挪动即失配变红。(切片当前为纯代码;花括号计数口径与精确锁
+        // 区间钉相同——字符串/注释内的花括号属漂移脆弱面,按已披露残留。)
+        let if_pos = arm_body
+            .find("if remains_enabled {")
+            .expect("the conditional re-latch block must exist");
+        let between = &arm_body[if_pos..emit_pos];
+        assert_eq!(
+            between.matches('{').count(),
+            between.matches('}').count(),
+            "the status refresh must sit outside the conditional re-latch \
+             block: both shapes (disk still authorized / config invalid) \
+             must refresh the emitted state"
+        );
+        assert_eq!(
+            arm_body.matches("self.emit_status();").count(),
+            1,
+            "the arm must keep exactly one unconditional status refresh"
         );
         assert!(
             arm_body.contains("did not take effect; folder consent stays enabled on disk"),
