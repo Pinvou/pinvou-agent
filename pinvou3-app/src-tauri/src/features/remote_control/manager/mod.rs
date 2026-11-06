@@ -1178,7 +1178,37 @@ impl RemoteControlManager {
                 });
             }
         };
-        validate_config(&config)?;
+        validate_config(&config).map_err(|error| {
+            // Round-22 复审 MINOR:校验失败臂与落盘失败臂同一纪律——
+            // durable 侧未动,而内存已被上方失效块清旗标;内存若停在已撤
+            // 销一侧,后续 benign start/enable 会从磁盘重建授权而毫无同意
+            // 手势(与 Round-15 复审 MA1 同一复活面)。磁盘 latch 仍授权
+            // 时回锁旗标、刷新状态,错误明说撤权未生效;磁盘本未授权时
+            // 撤权已实质达成,只需刷新状态再报配置损坏。此处无 inner
+            // guard 在持,不触精确锁区间钉。
+            let remains_enabled = config.allow_host_workspace;
+            if remains_enabled {
+                {
+                    let mut inner = self.inner.lock();
+                    if let Some(endpoint) = inner.endpoint.as_mut() {
+                        endpoint.config.allow_host_workspace = true;
+                    }
+                }
+            }
+            self.emit_status();
+            // 文案刻意不复用落盘失败臂的错误短语——那串短语是既有行为钉
+            // (revoke_persist_failure_re_latches…)失败臂窗口的终止
+            // needle,这里复用会把它的窗口切片反转发红;两臂本就是不同
+            // 失败形状,文案分开也更准确。(注释本身也不得复现该短语,
+            // 否则 find() 命中的就是注释——本钉所防御的注释注入面。)
+            if remains_enabled {
+                format!(
+                    "host-workspace revocation did not take effect; folder consent stays enabled on disk: {error}"
+                )
+            } else {
+                format!("host-workspace revocation found an invalid persisted config: {error}")
+            }
+        })?;
         let latched = config.allow_host_workspace;
         if latched {
             config.allow_host_workspace = false;
@@ -6246,6 +6276,41 @@ mod tests {
              the invalidation above already flipped the flag and destroyed \
              grants, so the UI would hold a stale authorized row until an \
              unrelated push"
+        );
+    }
+
+    /// Round-22 复审 MINOR 源钉:validate_config 失败臂与落盘失败臂同一
+    /// 纪律——此前裸 `?` 直传,无状态刷新、无内存回锁,错误文本也不提
+    /// folder consent;UI 滞留已授权行(与 strict-load/missing-config 臂
+    /// 同族)。钉住臂 opener(裸 `?` 回退即红)、回锁 Needle(删除即红)
+    /// 与 emit 先于构造错误的顺序(块删除/顺序对调即红)。
+    #[test]
+    fn revoke_validation_failure_re_latches_and_emits() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn revoke_host_workspace(")
+            .nth(1)
+            .expect("revoke_host_workspace must exist");
+        let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
+        let arm_start = body
+            .find("validate_config(&config).map_err(|error| {")
+            .expect("the validation failure must be handled at the arm, not                      propagated with a bare `?` (the memory side was already                      invalidated above; the UI must not hold a stale                      authorized row)");
+        let arm = &body[arm_start..];
+        let arm_end = arm.find("})?;").expect("the map_err arm must close");
+        let arm_body = &arm[..arm_end];
+        let relatch_pos = arm_body
+            .find("endpoint.config.allow_host_workspace = true;")
+            .expect("the validation failure arm must re-latch the in-memory                      consent flag to the disk side when the disk latch is                      still authorized (same resurrection face as the                      persist-failure arm)");
+        let emit_pos = arm_body.find("self.emit_status();").expect(
+            "the validation failure arm must refresh status before                      returning",
+        );
+        assert!(
+            relatch_pos < emit_pos,
+            "the re-latch must precede the status refresh so the emitted              payload shows the truthful still-authorized state"
+        );
+        assert!(
+            arm_body.contains("did not take effect; folder consent stays enabled on disk"),
+            "the error must say the revocation did not take effect when the              disk latch is still authorized"
         );
     }
 
