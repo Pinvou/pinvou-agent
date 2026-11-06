@@ -66,7 +66,11 @@ pub fn redact_storage_prefix(text: &str) -> String {
     // 另记于此而非调用点:redact_storage_prefix 只折 `~/.pinvou3` 存储
     // 根,不折用户 `$HOME` 本身——`list_host_files` 缺省枚举 `$HOME` 的
     // 错误臂在 round-21(M3)改走命令层稳定码折叠,依赖本原语兜 `$HOME`
-    // 的用法兜不住,必须走稳定码。)
+    // 的用法兜不住,必须走稳定码。Round-22 复审补记第四类同层残留:
+    // needle 在读取时取自当前 PINVOU3_HOME——此前家目录下落盘的旧警告
+    // (home 迁移/数据目录还原后仍在 20 条历史窗口内)不再含当前
+    // needle,读回折叠救不了它们;触发面窄(需家目录变更 + 旧条目存
+    // 活),泄漏是失效的旧路径,按已披露残留处理。)
     let folded = replace_ascii_case_insensitive(text, &prefix, "~/.pinvou3");
     if folded == text {
         folded

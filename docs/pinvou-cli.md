@@ -512,12 +512,13 @@ super-permission pkexec toggle.
   pid is dead; Windows has no kill()-style liveness probe, so its debris
   remains until manually removed (round-45 review).
 - macOS-only runtime branches of the CLI (ASR status lanes, vendored locks)
-  are compile-checked by CI (`macos-cli-check`), and since the round-18 fix
-  wave the macOS-gated production alias-flag pin also EXECUTES there via a
-  filtered `cargo test` run with a zero-match guard (mirroring the Windows
-  leg's `run_filtered` pattern; before that the leg was compile-only, and
-  the gap — a macOS-gated test that compiled on no CI leg at all — was the
-  round-16 follow-up review's finding, fixed by the round-18 wave).
+  are compile-checked by CI (`macos-cli-check`), and a filtered
+  `cargo test` run with a zero-match guard executes the macOS-gated
+  production alias-flag pin there (mirroring the Windows leg's
+  `run_filtered` pattern; before that the leg was compile-only, and the
+  gap — a macOS-gated test that compiled on no CI leg at all — was the
+  round-16 follow-up review's finding, closed by the filtered-run step
+  recorded in the PR description).
   Windows-gated
   CLI tests are the same case and DO execute: the `windows-rust-test` regression leg
   runs the `windows_batch_tests` BatBadBut hardening pin, the adapter-gaia

@@ -52,9 +52,11 @@ const INBOUND_CHANNEL_CAPACITY: usize = 32;
 /// must ride along with such a deployment (round-5 review: the old comment
 /// justified the bound by the wrong direction; round-6 review: the 16 MiB
 /// figure is the relay's server-side clamp, not a PROTOCOL.md number;
-/// round-21 review: PROTOCOL.md now documents that clamp and this byte
-/// equality with the relay's `DESKTOP_MAX_FRAME_BYTES` explicitly — the
-/// operative contract is the equality, not the proxy-variance wording).
+/// round-21 review: PROTOCOL.md now documents that clamp and the
+/// 4 MiB − 64 KiB bound (server.js names its copy DESKTOP_MAX_FRAME_BYTES;
+/// the byte equality is verified by the relay gate tests from both
+/// directions) — the operative contract is the equality, not the
+/// proxy-variance wording).
 const MAX_INBOUND_TEXT_BYTES: usize = (4 * 1024 * 1024) - (64 * 1024);
 const OUTBOUND_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 // Stream resets are tiny control messages. Keeping at most one in-flight and

@@ -408,9 +408,12 @@ fn resolve_session_artifact(
     // Disclosed asymmetry (Round-15 复审 F3; Round-17 复审订正注释归属——
     // 这条披露属于本 session-artifact 车道,不是 check_sensitive_path,后
     // 者是带系统前缀腿的完整镜像):this lane deliberately keeps the
-    // credential-component legs WITHOUT the system-prefix leg (caller-side
-    // containment proves the target is inside session storage; the checks
-    // below run after that containment). The upstream
+    // credential-component legs WITHOUT the system-prefix leg (containment
+    // is proven inside resolve_session_artifact itself — the sessions-root
+    // strip and session/area validation further down this function refuse
+    // any target outside session storage before the file is read or
+    // written — so this gate needs only the component legs; the checks
+    // immediately below run BEFORE that containment). The upstream
     // list widening that added `/var/root/` therefore widens the documented
     // root-install divergence (GUI refuses every artifact under a root home
     // via `check_sensitive_components`, this CLI lane still serves them)

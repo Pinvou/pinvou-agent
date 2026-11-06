@@ -4557,7 +4557,10 @@ fn organize_apply_warnings_fold_the_storage_prefix() {
     // Round-21 复审:补齐后续项标记——apply_organize_actions 与 census
     // 计数窗之间夹着 enum OrganizeDeleteOutcome 等项,原标记表只认 fn,
     // 窗口会越过函数体落到后续项(今天无害,项内出现 `redact_storage_
-    // prefix(&` 时计数即失真)。
+    // prefix(&` 时计数即失真)。Round-22 复审记拼写缺口为已知残留:
+    // `pub enum `/`pub struct `/`pub(crate) fn `/`const `/`static `/`
+    // type ` 不在表内——本函数身后恰为裸 `enum` 故今日精确;截断时逐
+    // 前缀断言 panic(响亮失败而非静默漏计),新增后续项时须同步扩表。
     let end = [
         "\nfn ",
         "\npub fn ",

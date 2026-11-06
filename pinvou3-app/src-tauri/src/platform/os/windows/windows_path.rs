@@ -138,9 +138,10 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // `C:\doc.\..\doc\f.txt`(Win32 解析为 `C:\doc\f.txt`)键出
     // `c:/doc/../doc/f.txt`,而其已解析 plain 拼写键出 `c:/doc/f.txt`,同
     // 文件双 key。方向是 fail-closed(重复 key → 重复授权/去重 miss,无
-    // 旁路),形状罕见;本波补行为钉
-    // `dotted_component_navigation_keys_to_the_normalized_form` 把现状
-    // 锁住。
+    // 旁路),形状罕见;本波在
+    // identity_key_folds_verbatim_prefixes_to_the_plain_spelling 内补一
+    // 条该形状的断言(C:\doc.\..\doc\f.txt 键出保留 `..` 的
+    // c:/doc/../doc/f.txt)把现状锁住——策略一改即红。
     let folded = super::super::interface::volume_fold_spelling(&stripped.replace('\\', "/"));
     if !has_win32_normalization_sensitive_component(path) {
         return folded;
