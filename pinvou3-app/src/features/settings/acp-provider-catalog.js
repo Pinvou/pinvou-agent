@@ -42,13 +42,13 @@ export const ACP_PROVIDER_PRESETS = [
   // prepended as the new near-Astra flagship; gpt-6.1-terra (2026-10-26)
   // joins above it and gpt-6-sol / gpt-6-luna (GPT-6 family expansion,
   // September 2026) stay. gpt-5.3-codex stays
-  // valid for Responses-only ACP hosts (watch item: deprecated on
-  // 2026-10-01; the "shutdown 2027-04-01" figure — this file's 2026-11-03
-  // pass could not reach the deprecations page, while the 2026-11-04 pass
-  // reports it reachable again and confirming the date (see the openai
-  // group comment in model-catalog.js); Azure's own retirement table lists
-  // 2027-08-24 Azure-side. Conflicting observations — re-verify at the
-  // next refresh).
+  // valid for Responses-only ACP hosts until removal (deprecated on
+  // 2026-10-01; this file's 2026-11-03 pass could not reach the
+  // deprecations page, and the referenced openai group comment in
+  // model-catalog.js records it reachable again on 2026-11-04 confirming
+  // API removal 2027-04-01 with six months' notice — that comment
+  // resolves this file's earlier conflicting-observations watch item;
+  // Azure's own retirement table lists 2027-08-24 Azure-side).
   { key: 'openai', nameKey: 'presetOpenai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
   // kimi-k3.1-pro / -highspeed (2026-10-23) prepend as the newest flagship
   // tiers; the K2 rows stay (append-only) — the official models page now
@@ -69,6 +69,14 @@ export const ACP_PROVIDER_PRESETS = [
   // lists its 1M from the plan's lowest tier (the Pro-and-above gate
   // attaches to k3.1-pro/k3, not this alias) and it declares no [1m]
   // variant — none may be invented.
+  // The bare k3.1-pro / -highspeed rows are deliberately retained here
+  // although the catalog's kimi_coding_plan group deferred them (replay
+  // gate, see that group's comment): ACP presets feed only external
+  // Claude Code/Codex-style clients through the provider form, whose
+  // official pages document these ids — the engine-side replay 400 does
+  // not govern this lane (cross-reference added 2026-11-06 round-11 so a
+  // future refresh neither re-imports the deferral nor flags these rows
+  // as an oversight).
   // The overseas Anthropic-compatible base URL is https://api.kimi.ai/coding
   // (domestic: api.kimi.com/coding, kimi.com/code/docs, 2026-09-28); the
   // preset ships the domestic value only, and overseas-key users must

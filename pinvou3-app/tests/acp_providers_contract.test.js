@@ -826,7 +826,7 @@ const ACP_REQUIRED_MODELS = {
   anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
   openai: ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-5.6-terra'],
   moonshot: ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3', 'kimi-k2.7-code'],
-  'kimi-code': ['k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k'],
+  'kimi-code': ['k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed'],
   deepseek: ['deepseek-flash', 'deepseek-v4-flash'],
   zhipu: ['glm-5.3', 'glm-5.3-flash'],
   qwen: ['qwen3.8-max', 'qwen3.8-flash'],
@@ -855,7 +855,7 @@ const FLAT_MODELS_SECTION = CATALOG.slice(CATALOG.indexOf('export const ACP_MODE
 for (const id of [
   'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5',
   'claude-fable-5-1', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'deepseek-flash', 'kimi-k3',
-  'kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'k3.1-pro', 'k3.1-pro-highspeed', 'glm-5.3',
+  'kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed', 'glm-5.3',
   'qwen3.8-max', 'MiniMax-M3.1-Flash', 'MiniMax-M3', 'grok-4.6', 'grok-4.20-reasoning',
   'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-build-0.1',
 ]) {
