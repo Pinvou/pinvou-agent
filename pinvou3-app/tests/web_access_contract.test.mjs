@@ -758,6 +758,8 @@ assert.doesNotMatch(hostFilePicker, /currentWorkspaceHandle/,
   'browsing never carries a workspace handle, so no stale-handle fallback path may remain');
 assert.match(hostFilePicker, /localizedPickerError/,
   'both the listing and confirm-mint failures must map stable authorization codes to localized copy');
+assert.match(hostFilePicker, /web_session_list_host_files_failed[\s\S]{0,200}labels\.listingFailed/,
+  'the round-21 stable browse/mint failure code must map to localized picker copy, not render as a bare code');
 assert.match(hostFilePicker,
   /(?:var|const|let) confirmedGeneration = loadGeneration;[\s\S]{0,900}if \(disposed \|\| confirmedGeneration !== loadGeneration\) return;/,
   'a late confirm-mint failure must not touch the UI after the picker closed or a newer listing rendered');
