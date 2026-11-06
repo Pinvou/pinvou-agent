@@ -23,14 +23,14 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 - `allowed_tools` 同时约束首轮目录、`tool_search` 结果和实际执行，不在白名单中的工具不能通过搜索重新激活。
 - `disallowed_tools` 只能继续收窄白名单；模式差量、连接器停用集和运行期空态均走这条通道，下轮请求生效。
 - Plan / Agent / Operate 的注册面和 sandbox 仍由 CodeWhale 决定。白名单允许一个工具或工具族，不代表每种模式都注册其全部写操作。
-- `PINVOU3_ALWAYS_LOADED_TOOLS` 现有 12 项（`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`，另有 5 个 `mcp_app-automations_*` 定时任务工具——共享指令直接点名该 MCP 工具族），均要求首轮直接可见；其余允许工具可按底座策略延迟加载。
+- `PINVOU3_ALWAYS_LOADED_TOOLS` 现有 13 项（`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`、`mcp_pinvou3_present_artifact`，另有 5 个 `mcp_app-automations_*` 定时任务工具——共享指令直接点名该 MCP 工具族），均要求首轮直接可见；其余允许工具可按底座策略延迟加载。
 
 关键实现：
 
 | 职责 | 文件 |
 |---|---|
 | Pinvou 正向白名单 | `pinvou3-app/src-tauri/src/features/assistant/tool_policy.rs` |
-| 白名单正反向测试 | `pinvou3-app/src-tauri/src/lib.rs`（`mod tool_allowlist_contract`，约 :2263-2481）、`pinvou3-app/src-tauri/src/features/assistant/multiagent_regression_tests.rs`（真实 bridge 回合目录逐项校验，约 :503-513） |
+| 白名单正反向测试 | `pinvou3-app/src-tauri/src/lib.rs`（`mod tool_allowlist_contract`，约 :2279-2510）、`pinvou3-app/src-tauri/src/features/assistant/multiagent_regression_tests.rs`（真实 bridge 回合目录逐项校验，约 :503-513） |
 | 模式能力静态表 | `pinvou3-app/src-tauri/src/features/assistant/session_policy.rs` 的 `MODE_TABLE` |
 | 模式与动态拒绝整形 | `pinvou3-app/src-tauri/src/features/assistant/session_policy.rs`、`features/assistant/platform/bridge.rs::shape_disallowed_tools` |
 | 能力包与 scope 治理 | `docs/capability-governance.md` |
@@ -38,7 +38,7 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 
 ## 2. Pinvou 正向白名单
 
-`PINVOU3_ALLOWED_TOOLS`（`tool_policy.rs:20-73`）当前允许 32 项，与 v0.9.12 模型可见目录逐字对应：
+`PINVOU3_ALLOWED_TOOLS`（`tool_policy.rs:32-109`）当前允许 33 项，与 v0.9.12 模型可见目录逐字对应：
 
 | 类别 | 名称 | 说明 |
 |---|---|---|
@@ -47,7 +47,8 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 | 保留的 action family | `Git`、`Web` | 仍以 `action` 参数分派子动作（`status`/`diff`/…、`search`/`fetch`） |
 | 持久终端 | `terminal/run`、`terminal/send`、`terminal/wait`、`terminal/cancel`、`terminal/reset` | 精确名五件套，原因见下 |
 | 协作与工作流 | `agent`、`workflow` | 子 agent 与工作流入口 |
-| 交互与状态 | `request_user_input`、`revert_turn`、`todo_write` | `todo_write` 是唯一模型可见的 canonical 进度工具 |
+| 证据恢复 | `retrieve_tool_result`、`handle_read` | 底座溢出恢复尾行与 `evidence_available` 元数据按名点教前者（次轮自动激活），子代理 worker 记录经 `HANDLE_READ_ACTIVATION_HINT` 点教后者；两者均为 deferred 只读证据读取器，准入即恢复契约且不增首轮目录（#832） |
+| 交互与状态 | `request_user_input`、`todo_write` | `todo_write` 是唯一模型可见的 canonical 进度工具；快照式 `revert_turn` 在本宿主恒败（`snapshots_enabled=false`，回退由应用侧 `rewind_to_turn` 承接），已随 #832 移出白名单 |
 | 技能与发现 | `load_skill`、`tool_search` | 仍受技能组合目录与底座延迟加载规则约束 |
 | 视觉与知识 | `image_analyze`、`kb_search`、`kb_open_source` | 知识工具还受索引/语义引擎就绪状态约束 |
 | 注册面与原生直调 | `registry_sync`、`start_registry_mcp_server`、`ima_openapi`、`computer_use` | 前两个是 registry-first 注入指令点名优先调用的模型侧工具（缺席会使模型被指示调用清单外工具）；`ima_openapi` 是 ima 技能直调的原生工具，包卸载/停用时经 ownership 表并入 `disallowed_tools`（deny 优先）；`computer_use` 经 `computer_use::TOOL_NAME` 常量准入，功能开关关闭时由引擎禁用清单隐藏、consent guard 拒绝调用 |
@@ -59,7 +60,7 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 - 持久终端五个工具使用精确名而非 `terminal/*`：避免未来新增的执行原语仅凭共享前缀就自动穿透产品白名单（`tool_policy.rs:13-15` 注释；反向测试断言 `terminal/future-capability` 被拒，lib.rs）。
 - 大小写不敏感使隐藏回放名 `Bash` 能命中 `bash` 规则、在历史回放中继续可执行（新会话目录只教 canonical `bash`）；`File` 没有任何可命中的规则、不可执行（lib.rs `tool_allowlist_contract` 的对应断言）。
 
-`PINVOU3_ALWAYS_LOADED_TOOLS`（`tool_policy.rs:105-119`）现有 12 项：`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`，以及底座共享指令直接点名的 5 个 `mcp_app-automations_*` 定时任务工具。这些工具要求首轮直接可见，不能依赖模型先调用 `tool_search`（always-load 只影响延迟加载，不绕过 `disallowed`，拒绝优先）。
+`PINVOU3_ALWAYS_LOADED_TOOLS`（`tool_policy.rs:141-157`）现有 13 项：`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`、`mcp_pinvou3_present_artifact`，以及底座共享指令直接点名的 5 个 `mcp_app-automations_*` 定时任务工具。这些工具要求首轮直接可见，不能依赖模型先调用 `tool_search`（always-load 只影响延迟加载，不绕过 `disallowed`，拒绝优先）。
 
 新增白名单项必须同步更新白名单正反向测试（lib.rs `tool_allowlist_contract`、`multiagent_regression_tests.rs`）和 fork guard。
 
@@ -75,7 +76,7 @@ v0.9.12 的模型侧名称以 model-visible canonical 名称为准（§2 白名�
 | `terminal/run` 等 | 持久终端工具 | 精确名五件套，见 §2 |
 | `todo_write` | 进度工具 | 唯一模型可见的 canonical 进度名 |
 
-其余模型可见工具（`agent`、`workflow`、`load_skill`、`tool_search`、`request_user_input`、`revert_turn`、`image_analyze`、`kb_search`、`kb_open_source`、`registry_sync`、`start_registry_mcp_server`、`ima_openapi`、`computer_use`、MCP 资源工具等）直接使用各自名称，无家族/别名分化。
+其余模型可见工具（`agent`、`workflow`、`load_skill`、`tool_search`、`request_user_input`、`retrieve_tool_result`、`handle_read`、`image_analyze`、`kb_search`、`kb_open_source`、`registry_sync`、`start_registry_mcp_server`、`ima_openapi`、`computer_use`、MCP 资源工具等）直接使用各自名称，无家族/别名分化。
 
 **隐藏 replay 兼容名**（`model_visible=false`，不进模型目录，不得写入产品白名单、提示词或新文档）：
 
@@ -151,5 +152,6 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 | 2026-08-11 | 升级 CodeWhale v0.9.5：切换到 canonical family、`allowed_tools` 正向白名单和单一 `disallowed_tools` 差量通道；旧 8 项 include 被等价迁移，不再作为模型侧工具名维护。 |
 | 2026-08-14 | 退役无运行时写入者的能力档案，模式架构差量收敛为 `MODE_TABLE`；plain 放开 `Git` family，外部能力默认姿态改由按模式 scope 管理。 |
 | 2026-09-09 | 升级 CodeWhale v0.9.12（gitlink `pinvou-v0.9.12-r1-18-g92427bd8d`）：产品工具面迁移到 model-visible canonical 名称——`bash`/`read`/`write`/`edit` 小契约、`list_dir`/`file_search`/`grep_files` 重新独立发布、`terminal/*` 精确名五件套；`Bash`/`File` 退为隐藏 replay 兼容名；白名单与正反向测试同步重写。见 `docs/codewhale-upgrade-0.9.5-to-0.9.12.md`（§4"主应用改造"）。 |
+| 2026-11-05 | v0.9.12 白名单组成变更（随 #832）：准入证据恢复对 `retrieve_tool_result` / `handle_read`（底座溢出尾行与 worker 记录按名点教，见 §2）；移除死条目 `revert_turn`（`snapshots_enabled=false` 使每次调用在支付一次 side-repo init 后恒败，回退由应用侧 `rewind_to_turn` 承接）。同批披露同类残留：`Run`（`agent` 描述括注）与 `create_goal` / `update_goal`（goal 面）仍不在白名单，披露见 `tool_policy.rs`；`notes_path` 死链经注释披露（NoteTool 被白名单剥离，父会话永不写、UI 不读；子代理注册面不受白名单约束仍可写，见 `bridge.rs`）。 |
 
 每次 CodeWhale 升级都必须重新核对 canonical 名称、各模式注册面、首轮/延迟加载策略、前端历史回放兼容和本文档；不能只凭旧工具名相同就判定行为等价。

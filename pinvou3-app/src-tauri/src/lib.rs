@@ -2349,7 +2349,12 @@ mod tool_allowlist_contract {
             "todo_write",
             "tool_search",
             "request_user_input",
-            "revert_turn",
+            // The base spillover footer and subagent worker records teach
+            // these two by name (retrieve_tool_result auto-activation,
+            // HANDLE_READ_ACTIVATION_HINT); excluding them recreates the
+            // phantom the allowlist exists to prevent.
+            "retrieve_tool_result",
+            "handle_read",
             "kb_search",
             "kb_open_source",
             "mcp_weather_get_weather",
@@ -2367,6 +2372,14 @@ mod tool_allowlist_contract {
         }
 
         for excluded in [
+            // Snapshot-based turn rollback is dead with `snapshots_enabled`
+            // false (app-side code_checkpoints owns rewind); admitting it
+            // would offer a permanently failing Required-approval tool.
+            "revert_turn",
+            // Taught by the base `agent` description as an alternative to
+            // `type=test` (the `Run` tool with action="verifiers");
+            // deliberately excluded, with the residual probe disclosed in
+            // tool_policy.rs.
             "Run",
             "tasks",
             "automation",

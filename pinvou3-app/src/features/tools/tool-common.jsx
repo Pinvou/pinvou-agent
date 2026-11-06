@@ -123,6 +123,7 @@ const tc = (t) => (t && t.uiToolCommon) || zhDict().uiToolCommon || t || {};
     // 批量出方案的 checklist_write/todo_write/update_plan 不在此列（它们走方案卡）。
     const QUIET_TOOLS = new Set([
       'read', 'read_file', 'list_dir', 'grep_files', 'file_search', 'glob',
+      'retrieve_tool_result', 'handle_read',
       'checklist_update', 'todo_update', 'checklist_add', 'todo_add', 'checklist_list', 'todo_list',
     ]);
 
