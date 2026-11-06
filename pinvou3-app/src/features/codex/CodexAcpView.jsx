@@ -1833,6 +1833,11 @@ export function CodexAcpView({
       } else if (target === 'auto') {
         // Auto（tri-mode 逐项审批档）：无一次性确认门（门只对 yolo）。
         // 统一走 set_session_mode（后端热同步安全姿态并广播 chat:mode_changed）。
+        // Web 面 parity（ChatView 同款，round-14）：Web 没有审批卡面，Auto
+        // 会话的首发会被 webAutoAdmissionGate 拒绝——Auto 行在 Web 上禁用
+        // （芯片行禁用 + 这里兜底拒绝写），避免经代码页把原生会话切成
+        // Web 面无法服务的 Auto 死路。
+        if (isWeb) return;
         await invoke('set_session_mode', { sessionId: sid, mode: 'auto' });
       }
       if (isActiveTarget) await refreshNativeControls(sid);
@@ -4520,6 +4525,7 @@ export function CodexAcpView({
                         askOnGuardrail={nativeAskOnGuardrail}
                         askToggleDisabled={!activeId}
                         onToggleAskOnGuardrail={toggleNativeAskOnGuardrail}
+                        autoRowDisabled={!!isWeb && !!activeId}
                       />
                       {nativeModelChoices.length > 0 && (
                         <ComposerModelSelector
