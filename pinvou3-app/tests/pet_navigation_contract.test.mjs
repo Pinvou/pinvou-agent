@@ -51,7 +51,7 @@ assert.match(petWindow, /invoke\(['"]set_pet_activity_visible['"]/);
 assert.match(petWindow, /listen\(['"]pet:session_unavailable['"]/);
 
 assert.match(rustPetWindow, /pub async fn open_main_from_pet/);
-assert.match(rustPetWindow, /get_webview_window\(['"]main['"]\)/);
+assert.match(rustPetWindow, /get_window\(['"]main['"]\)/);
 assert.match(rustPetWindow, /pet:navigation_pending/);
 assert.match(rustPetWindow, /platform::prepare_main_focus_raise\(&app\)/);
 assert.match(

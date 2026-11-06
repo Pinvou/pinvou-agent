@@ -105,7 +105,7 @@ fn try_install(app: &tauri::AppHandle, language: Language) -> anyhow::Result<()>
 }
 
 fn show_main(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         crate::platform::window_startup::activate_main_window(window, "system_tray");
     }
 }

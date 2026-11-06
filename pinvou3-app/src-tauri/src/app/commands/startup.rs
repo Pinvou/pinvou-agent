@@ -9,5 +9,5 @@ sync_command_passthrough!(
 );
 sync_command_passthrough!(
     window_startup_domain,
-    reveal_startup_window(window: tauri::WebviewWindow) -> Result<bool, String>
+    reveal_startup_window(window: tauri::Window) -> Result<bool, String>
 );
