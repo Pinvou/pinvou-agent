@@ -6,9 +6,11 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 merged.
-EXPECTED_HEAD="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
-EXPECTED_COMMITS=93
+# Registered head: candidate Pinvou/CodeWhale#150 (route output budget
+# exposure) leading maintenance base 11cba403d; collapses to the public
+# maintenance head once #150 merges.
+EXPECTED_HEAD="5c093b5d4a9571ae67a63dd5fcccf51ba989c60d"
+EXPECTED_COMMITS=94
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.

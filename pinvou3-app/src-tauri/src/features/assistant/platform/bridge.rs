@@ -2058,7 +2058,10 @@ impl Pinvou3Bridge {
     /// fill-gap facts for models the base chain doesn't catalogue, replacing
     /// the base's 8192 uncatalogued guess (base-catalogued models stay on
     /// the base's Documented path — the anchor declines for them).
-    fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
+    pub(crate) fn route_limits_for_model(
+        &self,
+        model: &str,
+    ) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
         let inferred_context = crate::core::model_context::resolved_context_window(model);
@@ -2152,6 +2155,26 @@ impl Pinvou3Bridge {
             output_tokens: output_tokens.map(u64::from),
         };
         limits.has_known_limit().then_some(limits)
+    }
+
+    /// The `max_tokens` the main turn puts on the wire for this route — the
+    /// route-effective request cap computed by the foundation
+    /// (`route_effective_max_output_tokens`: explicit overrides, compatibility
+    /// ceilings, route limits, and the route window intersected, with the wire
+    /// model normalized exactly as the transport does). Single source for
+    /// host-issued one-shot calls (the Pinvou review summon): they must carry
+    /// the same budget as the main conversation instead of hard-coding a
+    /// constant and drifting from the engine — the same rule
+    /// `context_input_budget_for_route` was published for on the input side.
+    pub(crate) fn main_wire_max_output_tokens(&self, model: &str) -> u32 {
+        let config = self.build_dt_config();
+        let provider = config.api_provider();
+        deepseek_tui::core::engine::route_effective_max_output_tokens(
+            provider,
+            &self.base_url(),
+            model,
+            self.route_limits_for_model(model),
+        )
     }
 
     /// Context window of the current active route (carried to the frontend by
@@ -6706,6 +6729,51 @@ mod tests {
         assert_eq!(
             t_c, 105_722,
             "the 256K/65536 profile's Compact threshold must stay stable at 105722"
+        );
+    }
+
+    /// The Pinvou review summon must put the SAME max_tokens on the wire as
+    /// the main turn for the same route: `main_wire_max_output_tokens` →
+    /// foundation `route_effective_max_output_tokens` (the identical chain the
+    /// engine's client walks). Pin the k3/Kimi Coding Plan value so the two
+    /// paths cannot silently drift apart: the base catalogue documents k3's
+    /// default generation ceiling (131072) → requested cap min(API_MAX 65536)
+    /// = 65536; k3 is a membership id (RouteDeclaredUnknown → no compat clamp)
+    /// and the host route declares no output cap. The review's old hard-coded
+    /// budget was 1600 — consumed entirely by k3 reasoning tokens (content
+    /// empty, finish_reason=length, 2026-11-06) — and even the interim 8192
+    /// hard-code was 8× under the main wire. If the foundation budget chain
+    /// changes this value, update the pin together with the main-turn wire.
+    #[test]
+    fn main_wire_max_output_tokens_matches_engine_budget_for_k3() {
+        let (_lock, _env) = locked_env(&[
+            "CODEWHALE_MAX_OUTPUT_TOKENS",
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "DEEPSEEK_PROVIDER",
+            "PINVOU3_MAX_OUTPUT_TOKENS",
+        ]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
+
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "k3",
+            "https://api.kimi.com/coding/v1",
+            "k",
+        );
+        bridge.prefs.advanced.saved_models[0].provider_kind = Some("coding_plan".to_string());
+        assert_eq!(
+            bridge.main_wire_max_output_tokens(&bridge.model()),
+            65_536,
+            "k3 主对话线材预算=目录 documented 131072 min API_MAX 65536;审查必须发同一个值"
         );
     }
 

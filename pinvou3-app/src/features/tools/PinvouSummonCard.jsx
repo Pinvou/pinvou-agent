@@ -143,9 +143,10 @@ const PinvouRows = ({ review, t, role }) => {
   );
 };
 
-// Review loading state: local models take 5-30s and online models are usually
-// faster. Show an iOS activity spinner, an elapsed timer and reassuring copy so
-// the wait does not feel stuck.
+// Review loading state: local models take 5-30s and online reasoning models
+// (thinking not disableable, e.g. Kimi k3) can take a minute or two. Show an
+// iOS activity spinner, an elapsed timer and reassuring copy so the wait does
+// not feel stuck.
 const PinvouLoading = ({ isWu, isDark, t, isLocal }) => {
   const [secs, setSecs] = useState(0);
   useEffect(() => {
@@ -234,10 +235,10 @@ export function PinvouSummonModal({ item, theme, t, isLocal }) {
          style={{ background: theme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
          onClick={() => { if (!item.loading) bridge.interaction.dismissPinvouReview(); }}>
       {/* Backdrop clicks cannot close the modal while loading: the summon call
-          (direct to the model, 5-30s) is still running and its guard is held, so
-          an accidental close would look like "flashes and ignores the next
-          click for a while". Locking keeps the spinner visible until a result or
-          error arrives. */}
+          (direct to the model; up to 3min on cloud reasoning models) is still
+          running and its guard is held, so an accidental close would look like
+          "flashes and ignores the next click for a while". Locking keeps the
+          spinner visible until a result or error arrives. */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the top-right close button (a real button below) */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
       <div className="relative w-full max-w-[720px] overflow-hidden bg-white dark:bg-[#1C1C1E] rounded-[20px] shadow-[0_20px_60px_rgba(0,0,0,0.28)] ts-modal-in"
