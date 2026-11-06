@@ -232,7 +232,23 @@ class SimulatedDesktop {
 
   deferNextRpc(command) {
     let resolveSeen;
-    const seen = new Promise(resolve => { resolveSeen = resolve; });
+    let failSeen;
+    const seen = new Promise((resolve, reject) => {
+      resolveSeen = value => { clearTimeout(timer); resolve(value); };
+      failSeen = reject;
+    });
+    // Bound the wait: every other wait in this file carries an explicit
+    // timeout, and an unbounded `seen` is the exact round-12 hang class — a
+    // regression that aborts the send closure before the command reaches the
+    // desktop left the runner pending forever, so CI reported a bare
+    // 25-minute job timeout instead of the failing journey. Fail loudly at
+    // the same 10s budget SimulatedDesktop.waitFor uses; a resolve settles
+    // first and clears the timer, and the pre-attached catch keeps an
+    // unused deferred from surfacing an unhandled rejection.
+    const timeoutMs = 10_000;
+    let timer = setTimeout(() => failSeen(new Error(
+      `${command}: the desktop never saw the deferred rpc within ${timeoutMs}ms — the send leg likely aborted before dispatch (fail loudly instead of hanging the runner)`)), timeoutMs);
+    seen.catch(() => {});
     const deferred = { command, request: null, resolveSeen };
     this.deferredRpc.set(command, deferred);
     return {
@@ -602,7 +618,14 @@ async function main() {
     await waitFor(() => rowNames().includes('D:'));
     const rootsAfterUp = rowNames();
     document.querySelector('.pinvou-host-picker-actions .pinvou-host-picker-button').click();
-    await pickerPromise;
+    // Bound the hand-back like every wait here: a picker whose selection
+    // event never resolves must fail this journey, not hang the evaluate
+    // (and with it the whole runner — the round-12 hang class).
+    await Promise.race([
+      pickerPromise,
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error('host file picker never resolved after selection')), 10_000)),
+    ]);
     return { homeLabel, rootNames, driveNames, rootsAfterUp };
   });
   record('远程文件选择器动态列出盘符，盘根目录上一级返回此电脑',
