@@ -31,13 +31,13 @@
 |---|---|---|---|---|
 | Plan | `AppMode::Plan`（底座只读归一：禁 shell、只读 sandbox、只读工具集） | 只读拦截（既有） | 同左 | 拦截；审批事件到达即异常，防御性硬拒（`plan_mode`） |
 | Auto | `Agent` + `(false, Suggest)` | 弹卡 | 自主守卫面在引擎门内静默硬拒（开关 OFF = 不武装；该转换只覆盖 tri-mode 自主守卫面，不产生审批事件，因此**没有** `chat:guardrail_denied`——该通告只覆盖宿主审批面的拒绝，见 §4.1） | 逐次审批卡；工作区内文件写走底座 #5185 carve-out 免卡，只读命令走 readonly 分类免卡 |
+| Yolo | `Agent` + `(true, Bypass)` | 弹卡 | 硬拒 + 通告（`guardrail_ask_off`） | 免卡（历史 Yolo 行为） |
 
 注意（评审 P3，开表面化）：开关 OFF 并不把 Auto 变成「无提示」——**既有**
 的 Suggest 逐项 Ask 面（普通可提示工具）、仓库法则（repository-law）提示与
 sandbox 升级提示在不武装时照常弹出；被开关转换的只有本 PR 新增的自主守卫
 面（底线守卫命中从「弹卡等真人」改为「静默硬拒」）。上表「守卫命中（开关
 OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体提示面。
-| Yolo | `Agent` + `(true, Bypass)` | 弹卡 | 硬拒 + 通告（`guardrail_ask_off`） | 免卡（历史 Yolo 行为） |
 
 - Auto 是新工作车道（未绑定 plain 会话）的默认；code 会话与绑定工作区的 plain
   会话默认跟随 `code_permission.last_mode`（从未用过 → Plan）。安全姿态跟随
@@ -400,9 +400,12 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
 - **Web 端显式不支持审批卡**：四类事件已进 Relay 转发白名单
   （`src/platform/web/access-policy.json`：approval_required /
   approval_resolved / guardrail_denied / mode_changed）。Web bridge 不渲染
-  审批卡（无 `decide_approval` 接线；access-policy 的命令白名单是前向兼容
-  登记，Web 端今天没有调用者）——桌面双车道（原生 + 代码）才是本 PR 的
-  产品面。**审批请求在 Web 端不是静默的**：`chat:approval_required` 显式落
+  审批卡：`decide_approval` 在 access-policy 是前向兼容登记，Web 桥面没有
+  导出、今天没有调用者（round-13 评审更正：`set_session_mode` 与
+  `get_pending_approvals` 自 round-9 起已有 Web 调用方——会话物化的车道
+  默认落点与 bootstrap 补读在途审批；`set_ask_on_guardrail` 仍是前向兼容
+  登记）——桌面双车道（原生 + 代码）才是审批决策的产品面。**审批请求在
+  Web 端不是静默的**：`chat:approval_required` 显式落
   一条三语系统通告（unsupported-capability 信号），`chat:guardrail_denied`
   照稳定键映射三语文案，`chat:mode_changed` 走权威收敛点让芯片跟随；一个
   等待审批的 turn 在 Web 端表现为「看得见原因的等待」（桌面决策或 Web 用户
