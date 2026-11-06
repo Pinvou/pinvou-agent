@@ -1,23 +1,25 @@
-//! 原生 code 会话 turn 计数口径：直接复用底座 `is_user_turn_prompt`。
+//! 原生 code 会话 turn 计数口径：底座 era 形 `user_turn_prompt_indices`。
 //!
 //! tool_result 与运行时内部信封同样以 `role = "user"` 落盘，按 role 计数会把
 //! 它们误算成用户 turn（feat 分支 `32b5fdf9e` 的 turn 号错位 bug 即源于此）。
-//! 正确口径由 fork 提交 `8cc61b609` 在 `CodeWhale/crates/tui/src/runtime_handoff.rs`
-//! 提供并根级重导出，本分支已合入该 gitlink（merge pr-320），故不再 vendored
-//! 副本。同口径使用方：底座 `Op::EditLastTurn`、store 落盘兜底
-//! `persist_admitted_chat_display`、本模块 turn 计数（设计文档
-//! `docs/code-mode-改动随对话回退-设计.md` §3「移植时的修正」）。
+//! 底座文档（`CodeWhale/crates/tui/src/runtime_handoff.rs`
+//! `user_turn_prompt_indices` 契约）明确：host turn 编号、回退切点与 turn
+//! 计数都应统一读 era 形列表——单消息 `is_user_turn_prompt` 逐条分类会漏计
+//! post-provenance 历史里粘贴的压缩摘要头 turn。sessions 侧 rewind/fork
+//! （`features::sessions`）同样读这一个列表，checkpoint 序号必须与之同口径，
+//! 否则「第 N 轮」在 checkpoint 卡片与回退/分叉入口之间整体错位。设计文档
+//! `docs/code-mode-改动随对话回退-设计.md` §3「移植时的修正」。
 
-use deepseek_tui::is_user_turn_prompt;
 use deepseek_tui::models::Message;
+use deepseek_tui::user_turn_prompt_indices;
 
-/// 会话日志中的真实用户 turn 数（不含 tool_result 与运行时内部信封）。
-/// checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时调用）。
+/// 会话日志中的真实用户 turn 数（不含 tool_result、运行时内部信封、纯图片
+/// turn 与 pre-provenance 历史里的压缩摘要头 turn——与底座 Editable 分类
+/// 同口径）。checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时
+/// 调用）。era 由传入的完整消息列表推导；对被截段的 `removed_messages`
+/// 切片，era 取切片自身（通常不含 provenance 载体，退回宽松口径）。
 pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
-    messages
-        .iter()
-        .filter(|message| is_user_turn_prompt(message))
-        .count() as u32
+    user_turn_prompt_indices(messages).len() as u32
 }
 
 /// Exact user-turn count over raw JSON messages. Headless callers (the CLI)
@@ -25,16 +27,15 @@ pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
 /// before deserialization; the CLI previously approximated the count from
 /// the role + tool_result shape, which over-counts messages the engine does
 /// not treat as prompts (image-only turns) and could wedge the
-/// `checkpoints rewind` precheck. Each message is deserialized and run
-/// through the exact same predicate as `count_user_turns`, so the two sides
-/// can no longer drift.
+/// `checkpoints rewind` precheck. Every message is deserialized and the
+/// whole array run through the exact same era-form predicate as
+/// `count_user_turns`, so the two sides can no longer drift.
 pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, serde_json::Error> {
-    let mut total = 0u32;
+    let mut parsed = Vec::with_capacity(messages.len());
     for value in messages {
-        let message: Message = serde_json::from_value(value.clone())?;
-        total += count_user_turns(std::slice::from_ref(&message));
+        parsed.push(serde_json::from_value::<Message>(value.clone())?);
     }
-    Ok(total)
+    Ok(count_user_turns(&parsed))
 }
 
 #[cfg(test)]
@@ -88,6 +89,29 @@ mod tests {
             tool_result_message(),
         ];
         assert_eq!(count_user_turns(&messages), 2);
+    }
+
+    /// era 口径：pre-provenance 历史（无 provenance 载体）里粘贴的压缩摘要头
+    /// turn 按宽松口径读作已保存摘要，不计入 turn 数——与 sessions 侧
+    /// rewind/fork 同为 `user_turn_prompt_indices`，三处口径一致。
+    #[test]
+    fn count_user_turns_skips_pasted_summary_header_in_pre_provenance_history() {
+        // 底座 COMPACTION_SUMMARY_MARKER（history_recognition.rs:20，该模块
+        // 私有，测试以字面量钉住契约）。
+        const COMPACTION_SUMMARY_MARKER: &str =
+            "Another language model started to solve this problem";
+        let messages = vec![
+            text_message("user", "第一轮"),
+            text_message("assistant", "答"),
+            text_message("user", COMPACTION_SUMMARY_MARKER),
+            text_message("user", "第二轮"),
+        ];
+        assert_eq!(
+            count_user_turns(&messages),
+            2,
+            "pasted summary-header turn must not count in a pre-provenance history"
+        );
+        assert_eq!(count_user_turns(&messages[..1]), 1);
     }
 
     /// The JSON entry point and the in-memory slice must agree: after a
