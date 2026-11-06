@@ -481,6 +481,19 @@ impl SessionStore {
     ) -> Result<deepseek_tui::session_export::SessionArchiveSummary> {
         validate_session_id(id)?;
         let session = self.load(id)?;
+        if include_artifacts {
+            // 闭合导出→导入循环：导入侧对成员名 fail-closed（`:` 分量挡
+            // Windows 盘符/ADS，`\` 归一化防改名），exporter 本身不校验
+            // 文件名——凡导入必拒/必改名的文件在此处先行失败并指名，归档
+            // 永不产出「导出成功、导入必拒」的产物。目录不存在（Ok(None)）
+            // 即无可扫描，直接放行。
+            if let Some(dir) = deepseek_tui::session_export::session_artifacts_dir(
+                self.manager.sessions_dir(),
+                id,
+            )? {
+                super::import::ensure_artifacts_exportable(&dir)?;
+            }
+        }
         // write_session_archive takes the session-store ROOT since the
         // engine-side confinement rework: it derives, validates and confines
         // the artifacts dir itself (invalid ids and links under the store are
