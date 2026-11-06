@@ -189,9 +189,33 @@ function minimalRpcResult(command, args = {}) {
     case 'session_mounted_collection':
       return null;
     default:
-      if (/^(list_|kb_collection_list$|kb_documents$)/.test(command)) return [];
-      if (/^(get_|read_)/.test(command)) return null;
-      return { ok: true };
+      if (/^(list_|web_access_list_|kb_collection_list$|kb_documents$)/.test(command)) return [];
+      if (/^(get_|read_|web_access_get_|web_access_read_)/.test(command)) return null;
+      // Round-13 review: unknown WRITE commands must not silently succeed —
+      // a masked `{ok:true}` default is the same masking class the round-12
+      // rework fixed for `web_access_create_session` (a whitelisted but
+      // unmodeled command sailed through green). Enumerate the two
+      // fire-and-forget writers the journeys exercise (the send result is
+      // binary-accepted and unused — doSendForAdmitted ignores it; the
+      // discard is await-free cleanup); anything else is a sim gap and must
+      // fail loudly, not answer ok.
+      if (command === 'web_access_chat') return { ok: true };
+      if (command === 'web_access_discard_attachment') return { ok: true };
+      // Fire-and-forget authority-sync telemetry (post-admission, result
+      // unused); surfaced by this fail-loud arm on its first run.
+      if (command === 'record_authority_sync_diagnostics') return { ok: true };
+      // Read-side status probes that predate the get_/read_ naming (each
+      // surfaced by this arm on first run): skills availability per channel
+      // and the tool inventory.
+      if (/_skills_state$/.test(command)) return { ready: false };
+      // Knowledge-collection reads (the singular `session_mounted_collection`
+      // case above returns null; the boot snapshot plural rides the same
+      // read semantics).
+      if (/^session_mounted_collections?/.test(command)) return null;
+      if (command === 'tool_search') return [];
+      throw new Error(
+        `webui smoke sim: unmodeled RPC command "${command}" — add an explicit case or a justified fire-and-forget entry`,
+      );
   }
 }
 
