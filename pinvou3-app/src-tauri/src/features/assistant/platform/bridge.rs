@@ -6585,6 +6585,20 @@ mod tests {
 
     #[test]
     fn api_key_requirement_allows_only_vllm_or_loopback_without_key() {
+        // Lock the DEEPSEEK_* env: `api_key_required` resolves `base_url()`,
+        // and `base_url()` reads `DEEPSEEK_BASE_URL` FIRST — a concurrent
+        // env-writing test (e.g. the multiagent spawn probe pointing it at
+        // its loopback server) made the cloud arm read a loopback URL and
+        // flip the `api_key_required()` assertion. Both the unlocked reader
+        // and the writer predate the tri-mode PR (round-13 battery hit it in
+        // two consecutive runs); the lock gives this reader the same
+        // serialization + restoration the route-limits test got.
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         assert!(base_url_uses_loopback("http://localhost:8000/v1"));
         assert!(base_url_uses_loopback("http://localhost.:8000/v1"));
         assert!(base_url_uses_loopback("http://127.0.0.42:8000/v1"));
