@@ -3083,7 +3083,10 @@
   function dismissPinvouReview() {
     // 关窗即解召唤守卫:否则若在 await 期间被关(切 session 等路径),会留下"窗没了但
     // pinvouSummoning 仍 held"的死区——重复点品/悟在守卫处(summonPinvou 开头)被吞,要等
-    // 整个直连模型调用(本地 5-30s,云端思考模型最长 180s 超时)返回才解锁。in-flight 结果靠 summonPinvou 内 `if (state.pinvouModal)` 守卫自然丢弃。
+    // 整个直连模型调用(本地 5-30s,云端思考模型最长 180s 超时)返回才解锁。注意关窗
+    // 不取消后端请求:Rust 侧无 abort 通道,调用会跑完;返回后 summonPinvou 内
+    // `if (state.pinvouModal)` 只丢弃弹窗更新,recordPinvouReview 在该守卫之前执行,
+    // 结果仍会写入 sidecar。
     state.pinvouModal = null;
     state.pinvouSummoning = false;
     notify();
