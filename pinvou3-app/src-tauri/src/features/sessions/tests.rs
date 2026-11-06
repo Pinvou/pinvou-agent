@@ -22,7 +22,7 @@ use std::sync::Arc;
 // Crate-visible helpers exercised directly by the suite (not re-exported by
 // the facade because they are internal collaboration seams).
 use super::scheduled::ScheduledProfileRegistry;
-use super::store::{HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
+use super::store::{AUX_SESSION_TITLE, HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
 use super::validators::generate_session_id;
 
 /// RAII teardown for `isolated_store`. Field order is drop order: env is
@@ -6394,6 +6394,86 @@ fn aux_session_mode_is_pinned_at_creation() {
     assert_eq!(
         reopened.mode_state(&aux_plan.id).mode,
         SerializableMode::Plan
+    );
+}
+
+/// Legacy aux records (review JensenChen28 5802339766): aux conversations
+/// materialized by pre-tri-mode builds carry no mode-state record at all,
+/// and the web admission gate refuses the resulting Auto resolution with no
+/// aux mode control to escape it — the only recovery this PR originally
+/// offered was the panel's restart, which deletes the old transcript. The
+/// reuse leg of `get_or_create_aux_session` must initialize the missing
+/// record on reuse (Auto substituted with the safe tier Plan, and the pin
+/// must survive a reboot through the same projection the web gate reads),
+/// while an existing durable entry — a pin inherited from a since-switched
+/// parent — is an explicit choice and is returned verbatim.
+#[test]
+fn aux_mode_pin_initializes_legacy_record_on_reuse() {
+    let (store, _g) = isolated_store();
+
+    // A pre-tri-mode record: build the aux the old create path built — the
+    // same derived id and record shape, minus the posture pin.
+    let parent = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create parent");
+    let aux_id = SessionStore::aux_session_id_for(&parent.metadata.id);
+    let mut legacy = create_saved_session_with_id_and_mode(
+        aux_id.clone(),
+        &[],
+        &parent.metadata.model,
+        &parent.metadata.workspace,
+        0,
+        None,
+        None,
+    );
+    legacy.metadata.title = AUX_SESSION_TITLE.to_string();
+    store.save(&legacy).expect("persist the legacy aux record");
+    assert_eq!(
+        store.mode_state(&aux_id).mode,
+        SerializableMode::Auto,
+        "precondition: a legacy record without a mode entry resolves the Auto fallback"
+    );
+
+    // Reuse (not create — the record loads) initializes the missing entry;
+    // the default parent's Auto is substituted with the safe tier Plan, the
+    // same substitution the creation-time pin applies.
+    let reused = store
+        .get_or_create_aux_session(&parent.metadata.id)
+        .expect("reuse the legacy aux record");
+    assert_eq!(reused.id, aux_id, "reuse must return the existing record");
+    assert_eq!(
+        store.mode_state(&aux_id).mode,
+        SerializableMode::Plan,
+        "a legacy aux record must be pinned to the safe tier on reuse"
+    );
+
+    // The init is durable: a rebooted store reports the same pinned posture
+    // through the projection the web admission gate reads.
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(reopened.mode_state(&aux_id).mode, SerializableMode::Plan);
+
+    // An existing durable entry is never re-resolved: an aux pinned Yolo by
+    // a since-switched parent keeps the explicit posture on reuse.
+    let yolo_parent = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create yolo parent");
+    store
+        .set_mode(&yolo_parent.metadata.id, SerializableMode::Yolo)
+        .expect("set parent yolo");
+    store
+        .create_aux_session(&yolo_parent.metadata.id)
+        .expect("create pinned aux");
+    let aux_yolo = SessionStore::aux_session_id_for(&yolo_parent.metadata.id);
+    store
+        .set_mode(&yolo_parent.metadata.id, SerializableMode::Plan)
+        .expect("switch the parent away from yolo");
+    store
+        .get_or_create_aux_session(&yolo_parent.metadata.id)
+        .expect("reuse the pinned aux record");
+    assert_eq!(
+        store.mode_state(&aux_yolo).mode,
+        SerializableMode::Yolo,
+        "a durable aux entry is an existing choice and must survive a parent mode switch"
     );
 }
 

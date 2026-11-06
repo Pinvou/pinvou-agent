@@ -1154,34 +1154,92 @@ impl SessionStore {
                 "rollback of the aux record failed",
             ));
         }
-        // Creation-time posture init (review JensenChen28 5801173510): an
-        // aux id without its own mode-state record resolves through
-        // `resolved_default_mode` to the unbound-plain default Auto — the
-        // one posture the web admission gate refuses (the web face has no
-        // approval-card surface), and the aux lane has no mode control of
-        // its own (the panel never activates the session, so the parent's
-        // mode chip cannot reach it): a default-created aux dead-ended on
-        // its first send with no reachable recovery. Pin the entry at
-        // creation — after every rollback point above, so a rolled-back
-        // create never leaves a mode record for a dead aux id. The posture
-        // is the parent's current effective mode at creation time; when
-        // that is Auto (the fallback resolution, or an explicit desktop
-        // choice the web face still cannot serve), substitute the safe tier
-        // Plan — the read-only posture every face serves (the aux panel is
-        // a restrictTools question-only lane, which Plan matches). Explicit
-        // Plan/Yolo parents are inherited verbatim (Yolo is the parent's own
-        // confirmed opt-out, mirrored to its side panel). `set_mode` is the
-        // interactive lenient lane (best-effort persist, like every mode
-        // chip write): a failed sidecar write keeps the in-memory pin for
-        // this process; the panel's restart re-creates with a fresh pin.
+        // Creation-time posture init (review JensenChen28 5801173510) — the
+        // last statement after every rollback point above, so a rolled-back
+        // create never leaves a mode record for a dead aux id. Full posture
+        // semantics on [`Self::pin_aux_mode_from_parent`].
+        self.pin_aux_mode_from_parent(&id, parent_id);
+        Ok(session.metadata)
+    }
+
+    /// Creation/reuse-time posture init for auxiliary chat sessions (review
+    /// JensenChen28 5801173510 + 5802339766): an aux id without its own
+    /// mode-state record resolves through `resolved_default_mode` to the
+    /// unbound-plain default Auto — the one posture the web admission gate
+    /// refuses (the web face has no approval-card surface), and the aux lane
+    /// has no mode control of its own (the panel never activates the
+    /// session, so the parent's mode chip cannot reach it): a default aux
+    /// dead-ended on its first send with no reachable recovery. The posture
+    /// is the parent's current effective mode at pin time; when that is
+    /// Auto (the fallback resolution, or an explicit desktop choice the web
+    /// face still cannot serve), substitute the safe tier Plan — the
+    /// read-only posture every face serves (the aux panel is a
+    /// restrictTools question-only lane, which Plan matches). Explicit
+    /// Plan/Yolo parents are inherited verbatim (Yolo is the parent's own
+    /// confirmed opt-out, mirrored to its side panel).
+    ///
+    /// `set_mode` is the interactive lenient lane (best-effort persist,
+    /// like every mode chip write): a failed sidecar write keeps the
+    /// in-memory pin for this process, and — because the reuse leg of
+    /// [`Self::get_or_create_aux_session`] re-pins while the durable record
+    /// is still missing — the next panel open retries the write, so the
+    /// persist-failure residual self-heals instead of surviving a restart
+    /// as a web dead-end. The unused-result binding is the `must_use`
+    /// contract only: `set_mode` is `Ok` by construction and logs persist
+    /// failures itself (boot-log discipline keeps session ids off stderr).
+    fn pin_aux_mode_from_parent(&self, aux_id: &str, parent_id: &str) {
         let aux_mode = match self.mode_state(parent_id).mode {
             SerializableMode::Auto => SerializableMode::Plan,
             supported => supported,
         };
-        if let Err(error) = self.set_mode(&id, aux_mode) {
-            eprintln!("[sessions] pin aux session mode failed: {error:#}");
+        let _ = self.set_mode(aux_id, aux_mode);
+    }
+
+    /// Confirmed-absent probe for the reuse leg of the aux mode pin (review
+    /// JensenChen28 5802339766): aux records materialized by pre-tri-mode
+    /// builds carry no mode-state record at all, and the web face refuses
+    /// the resulting Auto resolution with no aux mode control to escape it
+    /// — the only recovery this PR originally offered was the panel's
+    /// restart, which deletes the old transcript. The reuse leg therefore
+    /// initializes the missing record, but only on a CONFIRMED absence,
+    /// with the same discipline as [`Self::durable_session_record_is_absent`]
+    /// and `session_record_absent_for_sweep`: unknown is never absent in a
+    /// write path. A transient sidecar fault, a parse failure, or a
+    /// quarantine (a corrupt-parse quarantine also removes the file, so
+    /// that absence states nothing any writer asserted — the same
+    /// distinction [`Self::durable_mode_entry`] draws) all skip the init;
+    /// the next panel open retries, so skipping self-heals. A durable
+    /// entry — including a Yolo pin inherited from a since-switched parent
+    /// — is an existing choice and is never re-resolved here.
+    fn durable_aux_mode_record_confirmed_absent(&self, id: &str) -> bool {
+        // Single-file read, but under the same mutex as the mutators so the
+        // probe cannot straddle a mutation's RMW sequence
+        // (`durable_mode_entry` holds it for the same reason).
+        let _io = self.session_mode_states_io.lock();
+        // Accessor, not the literal: the quarantine flag compares against
+        // `shared_mode_map_file_name()`, so a rename must move both sites
+        // together (round-10 review).
+        let file = crate::platform::paths::sessions_root()
+            .join(crate::features::sessions::sidecars::shared_mode_map_file_name());
+        match std::fs::read_to_string(&file) {
+            Ok(content) => match serde_json::from_str::<
+                std::collections::HashMap<String, SerializableMode>,
+            >(&content)
+            {
+                Ok(entries) => !entries.contains_key(id),
+                // A parse failure is unknown state, not an absence.
+                Err(_) => false,
+            },
+            // Absent is authoritative — the mutation path removes the file
+            // when its last entry goes away — but NOT after a quarantine
+            // (round-9 minor): quarantining a corrupt parse also removes the
+            // file, and that absence is unknown state, not a statement any
+            // writer made.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                !crate::features::sessions::sidecars::shared_mode_map_quarantined()
+            }
+            Err(_) => false,
         }
-        Ok(session.metadata)
     }
 
     /// Get-or-create for the derived aux id: the record exists and loads →
@@ -1199,7 +1257,19 @@ impl SessionStore {
         ensure_parent_can_own_aux(parent_id)?;
         let aux_id = Self::aux_session_id_for(parent_id);
         match self.load(&aux_id) {
-            Ok(aux) => Ok(aux.metadata),
+            Ok(aux) => {
+                // Legacy-compat posture init (review JensenChen28 5802339766):
+                // the creation-time pin only covers aux records this binary
+                // creates; a pre-tri-mode record carries no mode-state entry
+                // and still dead-ends the web face on its first send. See
+                // [`Self::durable_aux_mode_record_confirmed_absent`] for the
+                // confirmed-absence discipline and
+                // [`Self::pin_aux_mode_from_parent`] for the posture rule.
+                if self.durable_aux_mode_record_confirmed_absent(&aux_id) {
+                    self.pin_aux_mode_from_parent(&aux_id, parent_id);
+                }
+                Ok(aux.metadata)
+            }
             Err(error) if is_not_found_error(&error) => self.create_aux_session(parent_id),
             Err(error) => Err(error).with_context(|| "load the aux session of this task"),
         }
