@@ -2733,42 +2733,61 @@ impl ToolSpec for ComputerUseTool {
             }
         };
 
-        // Capabilities first (review finding: prompting for the grant before
-        // reporting the platform unsupported would induce the user to
-        // authorize a platform that can never be used, while burning a grant
-        // budget for nothing). The read covers EVERY action class — its
+        // Capabilities BEFORE the gate for Input actions (review finding:
+        // prompting for the grant before reporting the platform unsupported
+        // would induce the user to authorize a platform that can never be
+        // used, while burning a grant budget for nothing) — the read's
         // target cache is what the consent gate's grant event and the
-        // rejected-call audits below report, so a first-action Observe
-        // rejection carries the backend's recorded decision instead of the
-        // live probe's answer (which a mid-run stack install could flip).
-        let backend = self.parts.backend.clone();
-        let capabilities = tauri::async_runtime::spawn_blocking(move || backend.capabilities())
-            .await
-            .map_err(|error| {
-                ToolError::execution_failed(format!("computer use worker join failed: {error}"))
-            })?
-            .map_err(|error| ToolError::execution_failed(backend_error_text(&error)))?;
-        // Cache the backend's recorded target at the earliest read so
-        // the grant payload below (and every later surface) reflects the
-        // backend's actual decision, not the preference fallback.
-        cache_display_target(&self.parts, &capabilities);
-        if parsed.action.class() == ActionClass::Input && !capabilities.input {
-            // Audit the rejected call (review finding: capability
-            // rejections had no trace at all, inconsistent with the
-            // established audit treatment of gate rejections).
-            audit_rejected_call(
-                &self.parts,
-                &parsed.action,
-                "capability:input-unsupported",
-                &format!(
+        // rejected-call audits below report, so a rejection carries the
+        // backend's recorded decision instead of the live probe's answer
+        // (which a mid-run stack install could flip). Observe actions read
+        // AFTER the gate, inside `run`: the capability read constructs the
+        // backend (a real side effect — on a virtual-target host it spawns
+        // the whole display stack), and a stale-engine Observe call must
+        // not boot that stack just to be told the feature is off; its
+        // rejection audit carries the resolved-preference answer like every
+        // other pre-backend boundary record (see audit.rs).
+        let input_class = parsed.action.class() == ActionClass::Input;
+        if input_class {
+            let backend = self.parts.backend.clone();
+            let read = tauri::async_runtime::spawn_blocking(move || backend.capabilities())
+                .await
+                .map_err(|error| {
+                    // The read itself failed (worker gone / backend start
+                    // failed): the call dies here without reaching run()'s
+                    // audit, so leave the trace the audit discipline
+                    // promises instead of a silent short-circuit.
+                    let text = format!("computer use worker join failed: {error}");
+                    audit_failed_call(&self.parts, &parsed.action, &text);
+                    ToolError::execution_failed(text)
+                })?
+                .map_err(|error| {
+                    let text = backend_error_text(&error);
+                    audit_failed_call(&self.parts, &parsed.action, &text);
+                    ToolError::execution_failed(text)
+                })?;
+            // Cache the backend's recorded target at the earliest read so
+            // the grant payload below (and every later surface) reflects
+            // the backend's actual decision, not the preference fallback.
+            cache_display_target(&self.parts, &read);
+            if !read.input {
+                // Audit the rejected call (review finding: capability
+                // rejections had no trace at all, inconsistent with the
+                // established audit treatment of gate rejections).
+                audit_rejected_call(
+                    &self.parts,
+                    &parsed.action,
+                    "capability:input-unsupported",
+                    &format!(
+                        "input injection is unsupported on this platform/session ({})",
+                        read.notes
+                    ),
+                );
+                return Ok(ToolResult::error(format!(
                     "input injection is unsupported on this platform/session ({})",
-                    capabilities.notes
-                ),
-            );
-            return Ok(ToolResult::error(format!(
-                "input injection is unsupported on this platform/session ({})",
-                capabilities.notes
-            )));
+                    read.notes
+                )));
+            }
         }
 
         // Consent gate (synchronous fast path; emits an event on rejection).
@@ -2892,6 +2911,28 @@ fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, 
         }
         Err(error) => {
             eprintln!("[computer_use] audit log unavailable for rejected call: {error}");
+        }
+    }
+}
+
+/// Audit a call that failed BEFORE `run()`'s per-call audit record exists —
+/// a pre-gate capability-read failure (backend start failed, worker died).
+/// The record is an `error` (the call was not refused by a gate — it
+/// failed), with the display target from the resolved-preference fallback
+/// (no backend exists yet, so there is no recorded decision to consult).
+/// Fail-open like every audit append: a write failure warns, never blocks.
+fn audit_failed_call(parts: &Parts, action: &ComputerUseAction, message: &str) {
+    let mut record = AuditRecord::new(&parts.session_id, action.name(), "pre-run");
+    record.with_display_target(resolved_display_target(parts).as_str());
+    let record = record.finish("error", Some(message.to_string()), 0);
+    match AuditLog::for_session(&parts.session_id) {
+        Ok(log) => {
+            if let Err(error) = log.append(&record) {
+                eprintln!("[computer_use] failed-call audit append failed: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("[computer_use] audit log unavailable for failed call: {error}");
         }
     }
 }

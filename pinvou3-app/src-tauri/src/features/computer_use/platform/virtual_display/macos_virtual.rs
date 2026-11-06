@@ -1055,21 +1055,32 @@ fn targetable_at(
         && (session_owned_recently || window.contained_in(display_bounds))
 }
 
-/// Whether `pid` currently shows an on-screen normal-level window that
-/// intersects the virtual display's bounds — the "still on our display"
-/// check behind the remembered-target verification and the discovery
-/// fallback. Remembered targets are always session pids (recorded at
-/// `open`), and `pid_has_window_on_display` only ever answers for a pid the
-/// session already decided to target — a pid whose windows all live
-/// elsewhere (the user's desktop) is never an input target of this backend.
-fn pid_has_window_on_display(pid: i32, display_id: u32) -> bool {
+/// Whether `pid` currently shows an on-screen normal-level window that the
+/// OWNERSHIP rules make drivable on the virtual display — the check behind
+/// the remembered-target verification (focus pid and held press pids). The
+/// ownership scope mirrors the hit-test's [`targetable_at`] minus the
+/// point-in-window part: a session pid within its
+/// [`SESSION_OWNERSHIP_GRACE`] may keep its window anywhere intersecting
+/// the display (the AX move may still be in flight), while everything else —
+/// unknown pids AND session pids past the grace, whose pid the app may
+/// since have RELEASED for recycling — must keep a window FULLY inside the
+/// display bounds. Without the deadline the exemption would be forever: a
+/// recycled pid's window, wherever on the user's desktop it sits, could
+/// pass the old bare-intersection check and receive pid-posted input.
+fn pid_has_window_on_display(pid: i32, display_id: u32, session_pids: &[(i32, Instant)]) -> bool {
     if pid <= 0 {
         return false;
     }
     let bounds = CGDisplayBounds(display_id);
-    on_screen_windows()
-        .iter()
-        .any(|window| window.pid == pid && window.normal_level && window.intersects(bounds))
+    let now = Instant::now();
+    let within_grace = session_pids.iter().any(|(recorded, discovered)| {
+        *recorded == pid && now.duration_since(*discovered) < SESSION_OWNERSHIP_GRACE
+    });
+    on_screen_windows().iter().any(|window| {
+        window.pid == pid
+            && window.normal_level
+            && (within_grace && window.intersects(bounds) || window.contained_in(bounds))
+    })
 }
 
 /// Whether `pid` currently owns ANY on-screen normal-level window, on any
@@ -1505,6 +1516,14 @@ struct MacosVirtualDisplayBackend {
     /// use the Dragged event types while held — same fix as the physical
     /// backend).
     held_buttons: Vec<MouseButton>,
+    /// The pid each held button was pressed against, in press order
+    /// (`mouse_down` records, `mouse_up` consumes): the window that accepts
+    /// a press keeps the whole gesture, so a manual
+    /// down → move → up composition pins to the press pid instead of
+    /// re-hit-testing its way onto a different window (the `drag` action
+    /// pins the same way). Mirrors `held_buttons` (entries are pushed and
+    /// removed together).
+    held_pids: Vec<(MouseButton, i32)>,
     /// Cancel flag set after the caller times out (see the trait contract).
     cancel: Option<Arc<AtomicBool>>,
 }
@@ -1520,14 +1539,17 @@ impl MacosVirtualDisplayBackend {
     ///   last-interacted pid directly (keyboard focus semantics).
     ///
     /// The remembered-target fallback re-verifies the pid still shows a
-    /// window touching (intersecting) the virtual display's bounds: a quit
-    /// app, a window the user dragged away, or a mis-attributed discovery
-    /// must not receive input aimed at the virtual session (events are
-    /// pid-targeted and would otherwise land wherever that app currently
-    /// is — the user's desktop included). "Touching" is the honest word:
-    /// the predicate is intersection, so a window the user dragged MOSTLY
-    /// off the display — a sliver still over it — still passes; the
-    /// capability notes state this as "touching it", not "inside it".
+    /// window the ownership rules make drivable on the virtual display
+    /// ([`Self::reverified_target_pid`]): a quit app, a window the user
+    /// dragged away, or a mis-attributed discovery must not receive input
+    /// aimed at the virtual session (events are pid-targeted and would
+    /// otherwise land wherever that app currently is — the user's desktop
+    /// included). For a session pid within its grace the predicate is
+    /// intersection ("touching" — a window the user dragged MOSTLY off the
+    /// display still passes; the capability notes state this as "touching
+    /// it", not "inside it"); past the grace the same deadline the hit-test
+    /// applies kicks in and the window must sit fully inside the display
+    /// bounds, so a recycled pid can never pass on a stray user window.
     fn input_pid(&self, hit_test: Option<(i32, i32)>) -> Result<i32, ComputerUseError> {
         // CGEventPostToPid needs the same Accessibility TCC grant as the
         // physical backend's CGEventPost — without it WindowServer silently
@@ -1551,8 +1573,19 @@ impl MacosVirtualDisplayBackend {
                  open an app or click inside it first",
             )
         })?;
-        if pid_has_window_on_display(pid, self.display_id) {
-            Ok(pid)
+        self.reverified_target_pid(pid)
+    }
+
+    /// The ownership-scoped re-verification of a remembered target pid (the
+    /// focus pid and held press pids): the pid must still show a normal-level
+    /// window the ownership rules make drivable — a session pid within its
+    /// grace may keep its window anywhere intersecting the display (the AX
+    /// move may still be in flight), while everything else (unknown pids AND
+    /// session pids past the grace) must keep a window fully inside the
+    /// display bounds. See [`pid_has_window_on_display`].
+    fn reverified_target_pid(&self, remembered: i32) -> Result<i32, ComputerUseError> {
+        if pid_has_window_on_display(remembered, self.display_id, &self.session_pids) {
+            Ok(remembered)
         } else {
             Err(ComputerUseError::unavailable(
                 "the target application no longer has a window on the virtual display; \
@@ -1698,12 +1731,13 @@ impl MacosVirtualDisplayBackend {
 
     /// One modifier press (down=true) / release (down=false) carrying the
     /// accumulated mask. NOTE: posted as a keyDown/keyUp
-    /// (`CGEventCreateKeyboardEvent`), NOT a FlagsChanged event — the doc
-    /// previously claimed FlagsChanged, which the event factory here does
+    /// (`CGEventCreateKeyboardEvent`), NOT a FlagsChanged event — an earlier
+    /// doc draft claimed FlagsChanged, which the event factory here does
     /// not produce. Chords still work because the non-modifier keys carry
     /// the flag mask themselves; a lone-modifier hold (hold_key with only
     /// modifiers) may not register in apps tracking the FlagsChanged event
-    /// type — hardware-validation-gated, disclosed in the module doc.
+    /// type — moot in practice, because the tool layer rejects
+    /// modifier-only chords at parse time.
     fn post_modifier(
         &self,
         pid: i32,
@@ -1736,8 +1770,9 @@ impl MacosVirtualDisplayBackend {
 
     /// Presses all chord keys (modifiers first), holds for `hold` in
     /// cancel-checked slices, then releases in reverse. Modifier keys are
-    /// pressed via FlagsChanged events carrying the accumulated mask;
-    /// character keys carry the mask on their down/up events.
+    /// pressed as keyDown/keyUp events carrying the accumulated flag mask
+    /// (NOT FlagsChanged — see [`Self::post_modifier`]); character keys
+    /// carry the mask on their down/up events.
     fn chord(&mut self, keys: &[Key], hold: Duration) -> Result<(), ComputerUseError> {
         // Map the whole chord first, then press (mapping failures must not
         // strand pressed modifiers — same rollback discipline as the
@@ -1920,11 +1955,20 @@ impl MacosVirtualDisplayBackend {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        log::warn!(
-                            "[computer_use:macos-vd] cannot read the launcher's exit \
-                             status: {error}"
-                        );
-                        break;
+                        // The launcher's exit status is unreadable, so the
+                        // FAILED-launch honesty contract cannot be evaluated:
+                        // fail explicitly (with a detached reaper for the
+                        // child) instead of degrading to pid discovery that
+                        // could report a false "launched, pid 0".
+                        let _ = std::thread::Builder::new()
+                            .name("computer-use-open-reaper".to_string())
+                            .spawn(move || {
+                                let _ = child.wait();
+                            });
+                        return Err(ComputerUseError::failed(format!(
+                            "open: cannot read the launcher's exit status ({error}); \
+                             the launch could not be verified"
+                        )));
                     }
                 }
                 if Instant::now() >= deadline {
@@ -1987,11 +2031,21 @@ impl MacosVirtualDisplayBackend {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        log::warn!(
-                            "[computer_use:macos-vd] cannot read the launched program's \
-                             exit status: {error}"
-                        );
-                        break;
+                        // The exit status is unreadable, so the honesty
+                        // contract ("exited without a window" is an explicit
+                        // error, never a silent success) cannot be evaluated:
+                        // hand the child to a detached reaper and fail
+                        // explicitly instead of degrading to the
+                        // launch-and-pray path.
+                        let _ = std::thread::Builder::new()
+                            .name("computer-use-open-reaper".to_string())
+                            .spawn(move || {
+                                let _ = child.wait();
+                            });
+                        return Err(ComputerUseError::failed(format!(
+                            "open: cannot read the launched program's exit status \
+                             ({error}); the launch could not be verified"
+                        )));
                     }
                 }
                 if Instant::now() >= deadline {
@@ -2266,15 +2320,19 @@ fn released_modifier_key(flag: CGEventFlags) -> Key {
 fn capability_target_note() -> String {
     "experimental isolated virtual display (private macOS API): input stays on the \
      virtual display and input targets are re-verified to still show a window \
-     touching it before every post (a just-opened app keeps a short ownership \
+     touching it before every post (a just-opened app keeps a one-minute ownership \
      grace in which its window is drivable wherever it sits — including \
      overhanging onto the user's desktop — before the display-bounds rule \
      applies to it too); screenshots are captured from the virtual display's \
      own bounds, so a window overhanging into those bounds contributes its \
-     pixels to the capture; events are delivered directly to the target app \
+     pixels to the capture, and if the display joins a mirror set mid-session \
+     the captures may show the user's desktop and agent content may be visible \
+     on the user's screen until the mirror is undone; events are delivered \
+     directly to the target app \
      and may not reach every app (e.g. WebKit content processes on recent \
      macOS may ignore them); apps opened with open launch into the user's \
-     graphics session and are moved into the virtual display best-effort — \
+     graphics session and their FRONT window is moved into the virtual display \
+     best-effort — an app's other windows may stay outside, and \
      without the Accessibility grant an opened app's window may stay visible \
      on the user's desktop; if this macOS lacks the private API the session \
      falls back to your desktop, decided once at session start; apps opened \
@@ -2412,7 +2470,21 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
     }
 
     fn move_to(&mut self, x: i32, y: i32) -> Result<(), ComputerUseError> {
-        let pid = self.input_pid_cleared(Some((x, y)))?;
+        // While a button is held, the move belongs to the window that
+        // accepted the press (real mouse semantics; the `drag` action pins
+        // the same way) — re-hit-testing the waypoint would re-target the
+        // gesture onto whatever window lies under it.
+        let pressed_pid = self.held_pids.last().map(|&(_, pid)| pid);
+        let pid = match pressed_pid {
+            Some(remembered) => match self.reverified_target_pid(remembered) {
+                Ok(pid) => pid,
+                Err(error) => {
+                    self.clear_focus_on_error(&error);
+                    return Err(error);
+                }
+            },
+            None => self.input_pid_cleared(Some((x, y)))?,
+        };
         let (event_type, button) = move_event_type(&self.held_buttons);
         let posted = self.post_mouse_to_pid(pid, event_type, button, (x, y), 0);
         if posted.is_ok() {
@@ -2491,6 +2563,7 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
         if posted.is_ok() {
             if !self.held_buttons.contains(&button) {
                 self.held_buttons.push(button);
+                self.held_pids.push((button, pid));
             }
             self.focus_pid = Some(pid);
             self.cursor = Some(dest);
@@ -2502,11 +2575,31 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
         let dest = self.click_destination()?;
-        let pid = self.input_pid_cleared(Some(dest))?;
+        // The up goes to the pid that accepted the press (the window that
+        // accepts a press keeps the whole gesture): a manual
+        // down → up composition must not re-hit-test its way onto a
+        // different window than the one holding the synthetic press.
+        let pressed_pid = self
+            .held_pids
+            .iter()
+            .rev()
+            .find(|(held, _)| *held == button)
+            .map(|&(_, pid)| pid);
+        let pid = match pressed_pid {
+            Some(remembered) => match self.reverified_target_pid(remembered) {
+                Ok(pid) => pid,
+                Err(error) => {
+                    self.clear_focus_on_error(&error);
+                    return Err(error);
+                }
+            },
+            None => self.input_pid_cleared(Some(dest))?,
+        };
         let (_, up, _) = cg_mouse_event_types(button);
         let posted = self.post_mouse_to_pid(pid, up, cg_mouse_button(button), dest, 1);
         if posted.is_ok() {
             self.held_buttons.retain(|held| *held != button);
+            self.held_pids.retain(|(held, _)| *held != button);
         } else if let Err(error) = &posted {
             self.clear_focus_on_error(error);
         }
@@ -2520,12 +2613,24 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
         // the path leaves its bounds, so every event of this drag targets
         // the pid under the START point.
         let drag_pid = self.input_pid_cleared(Some(from))?;
-        self.post_mouse_to_pid(drag_pid, CGEventType::MouseMoved, left, from, 0)?;
+        // A failed preliminary move is answered directly (the same cleanup
+        // discipline as the move/click paths) — no press, no waypoints, no
+        // orphan release follows it.
+        if let Err(error) = self.post_mouse_to_pid(drag_pid, CGEventType::MouseMoved, left, from, 0)
+        {
+            self.clear_focus_on_error(&error);
+            return Err(error);
+        }
         self.cursor = Some(from);
         sleep(Duration::from_millis(CLICK_SETTLE_MS));
-        let press = self.post_mouse_to_pid(drag_pid, down, left, from, 1);
-        if press.is_ok() && !self.held_buttons.contains(&MouseButton::Left) {
+        // A failed DOWN is answered directly (the same discipline as click):
+        // the old shape swallowed the press error and kept posting waypoints
+        // and a release for a button that was never pressed — the action
+        // could report a successful drag whose press never happened.
+        self.post_mouse_to_pid(drag_pid, down, left, from, 1)?;
+        if !self.held_buttons.contains(&MouseButton::Left) {
             self.held_buttons.push(MouseButton::Left);
+            self.held_pids.push((MouseButton::Left, drag_pid));
         }
         sleep(Duration::from_millis(DRAG_PRESS_SETTLE_MS));
         // Track the last waypoint actually posted: the release must land
@@ -2554,6 +2659,8 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
         let release = self.post_mouse_to_pid(drag_pid, up, left, release_at, 1);
         if release.is_ok() {
             self.held_buttons.retain(|held| *held != MouseButton::Left);
+            self.held_pids
+                .retain(|(held, _)| *held != MouseButton::Left);
             self.cursor = Some(release_at);
             if result.is_ok() {
                 self.focus_pid = Some(drag_pid);
@@ -2779,6 +2886,7 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         session_pids: Vec::new(),
         cursor: None,
         held_buttons: Vec::new(),
+        held_pids: Vec::new(),
         cancel: None,
     }))
 }
@@ -3393,13 +3501,29 @@ mod tests {
             "the capture is rect-scoped: an overhanging window's pixels reaching \
              the capture must be disclosed"
         );
+        assert!(
+            note.contains("joins a mirror set mid-session"),
+            "the mirror-join residual (user pixels reach the capture, agent \
+             content reaches the user's screen) must be disclosed"
+        );
         assert!(note.contains("WebKit content processes"));
         assert!(note.contains("falls back to your desktop"));
         // ...and the honest open residual: launchd starts the app in the
-        // user's session; the AX move is best-effort.
+        // user's session; the AX move is best-effort and FRONT-WINDOW-ONLY
+        // (an app's other windows may stay outside).
         assert!(note.contains("launch into the user's graphics session"));
         assert!(note.contains("moved into the virtual display best-effort"));
+        assert!(
+            note.contains("FRONT window"),
+            "the AX move relocates only the app's front window; the scope must \
+             be disclosed"
+        );
         assert!(note.contains("may stay visible on the user's desktop"));
+        assert!(
+            note.contains("one-minute ownership grace"),
+            "the grace is 60 seconds — the note must not undersell it as \
+             momentary"
+        );
         // Apps stay after stop AND after the backend drop; the drop only
         // removes the display (surviving windows relocate to remaining
         // displays — nothing terminates them this round).

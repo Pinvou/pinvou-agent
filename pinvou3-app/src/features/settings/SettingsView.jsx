@@ -1705,13 +1705,13 @@ function hasStoredCredential(record) {
       // an older proxy that keyed these rows off the dependency-installer
       // bits (usesBundledDependencyInstaller / usesHomebrewDependencyInstaller)
       // broke the moment installer semantics changed, so it is gone. Static
-      // product notes, shown only while the feature toggle is on.
-      const showWindowsVirtualNote = !!computerUse.enabled
-        && platformCapabilities?.virtualDisplayNote === 'windows';
-      const showMacosVirtualNote = !!computerUse.enabled
-        && platformCapabilities?.virtualDisplayNote === 'macos';
-      const showLinuxVirtualNote = !!computerUse.enabled
-        && platformCapabilities?.virtualDisplayNote === 'linux';
+      // product notes about the stack's real fidelity/lifecycle shape — they
+      // render whenever this platform has a note (not only while the feature
+      // toggle is on), so the absolute-sounding virtual hint above never
+      // stands on the page without its platform caveat next to it.
+      const showWindowsVirtualNote = platformCapabilities?.virtualDisplayNote === 'windows';
+      const showMacosVirtualNote = platformCapabilities?.virtualDisplayNote === 'macos';
+      const showLinuxVirtualNote = platformCapabilities?.virtualDisplayNote === 'linux';
       // An emergency stop latches `stopped` without touching the toggle: the
       // switch still reads ON but every consent surface is dead until the
       // user toggles off and back on (set_enabled's re-enable is the only

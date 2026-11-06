@@ -202,9 +202,12 @@ fn find_on_path(name: &str) -> bool {
 
 /// The same PATH walk returning the RESOLVED path of the first executable
 /// match. Spawning goes through this resolved path — never through a bare
-/// name — so the app's own PATH additions (connector asset dirs, npm shims,
-/// user-local bin dirs) cannot silently substitute our tool binaries: the
-/// binary that answered the probe is exactly the binary that gets spawned.
+/// name — so there is no exec-time PATH re-search: probe and spawn share
+/// this one walk, and the resolved path is re-verified executable at spawn
+/// resolution. This is PATH-ENTRY identity (the app's own prepended user
+/// dirs are searched first): swapping the FILE at the resolved path between
+/// resolution and exec would require write access to its directory, which
+/// is already same-user privilege.
 fn find_on_path_full(name: &str) -> Option<PathBuf> {
     if name.is_empty() || name.contains('/') {
         return None;
@@ -428,6 +431,18 @@ impl VirtualX11Backend {
     /// respawn-path failure so the next lazy attempt can reuse it; the
     /// creation path cleans it up via Drop).
     fn spawn_stack(&mut self) -> Result<(), ComputerUseError> {
+        // The exit-time sweep removes the session dir while this worker may
+        // still be serving an action; a respawn into a removed dir would
+        // strand unrecorded processes (the pidfile write fails warn-only,
+        // and the next startup sweep deliberately skips pidfile-less dirs).
+        // Failing the action explicitly is the honest outcome of an app
+        // that is shutting down anyway.
+        if !self.session_dir.exists() {
+            return Err(ComputerUseError::failed(
+                "the virtual display session dir is gone (the app is shutting \
+                 down); not respawning the display stack",
+            ));
+        }
         if let Err(error) = self.spawn_stack_inner() {
             self.kill_recorded_processes();
             return Err(error);
@@ -472,8 +487,10 @@ impl VirtualX11Backend {
         //    respawn path this also kills + reaps the previous WM handle
         //    (inside spawn_wm).
         self.spawn_wm();
-        // 7b. Respawn path only: the apps of the DEAD server died with it (X
-        //    clients cannot survive their server). Prune the verified-dead
+        // 7b. Respawn path only: the apps of the DEAD server are gone with
+        //    it (mainstream toolkits exit when they lose their X connection;
+        //    raw-X11 stragglers stay recorded and are wind down later by the
+        //    identity-gated kill paths). Prune the verified-dead
         //    pids BEFORE the pidfile rewrite below, so the crash sweep never
         //    targets a since-recycled pid number (MINOR-2).
         self.prune_dead_children();
@@ -580,7 +597,10 @@ impl VirtualX11Backend {
         // A lazy respawn leaves the previous WM handle behind, pointing at
         // the dead server. Kill and reap it BEFORE the overwrite: a bare
         // `self.wm = Some(child)` would drop the old Child un-waited and leak
-        // it as a zombie (MINOR-2).
+        // it as a zombie (MINOR-2). This one kill is immediate SIGKILL
+        // rather than the TERM-first wind-down (the WM is already dead — its
+        // handle answered try_wait — and only the X server owns socket
+        // cleanup, which this path never touches).
         if let Some(mut old) = self.wm.take() {
             kill_pid_tree(old.id());
             let _ = old.wait_timeout(REAP_GRACE);
@@ -932,12 +952,17 @@ impl VirtualX11Backend {
 
     /// Wrap an action failure: when the Xvfb process is gone, the failure IS
     /// the server death — answer the explicit `Failed` contract (the next
-    /// action performs the one lazy respawn).
+    /// action performs the one lazy respawn). The message also states that
+    /// the opened apps died with the server (X clients cannot rely on their
+    /// server surviving — mainstream toolkits exit on connection loss), so
+    /// the model re-opens what it needs instead of discovering an empty
+    /// desktop through screenshots.
     fn classify_failure(&mut self, error: ComputerUseError) -> ComputerUseError {
         if !self.server_alive() {
             return ComputerUseError::failed(format!(
                 "{error}; the isolated virtual display server (Xvfb) has exited — \
-                 the next action will attempt one automatic restart"
+                 the next action will attempt one automatic restart, and any apps \
+                 opened on the display are gone; open them again before interacting"
             ));
         }
         error
@@ -1004,13 +1029,30 @@ impl VirtualX11Backend {
 /// Render the xdotool argv for an error message. Execution errors land
 /// verbatim in the audit JSONL error field, so for `type` invocations the
 /// text argument (potentially a typed secret, one call at a time) is replaced
-/// by a length-only marker (`<N chars redacted>`); every other command keeps
-/// its args visible (coordinates, button numbers, keysyms — nothing
-/// sensitive). Pure so the redaction shape is unit-pinned without a display.
+/// by a length-only marker (`<N chars redacted>`), and for the
+/// `key`/`keydown`/`keyup` family the chord string is masked the same way:
+/// letters/digits ride it as their own keysym names (`p+a+s+s`), so a chord
+/// used to spell out a secret character by character would otherwise leak
+/// through a failing execution. The fixed multi-character vocabulary
+/// (Return, F5, period, …) stays readable for debugging. Every other command
+/// keeps its args visible (coordinates, button numbers — nothing sensitive).
+/// Pure so the redaction shape is unit-pinned without a display.
 fn render_xdotool_args_for_error(args: &[String]) -> String {
-    if args.first().map(String::as_str) != Some("type") {
-        return args.join(" ");
+    match args.first().map(String::as_str) {
+        Some("type") => render_type_args_for_error(args),
+        Some("key") | Some("keydown") | Some("keyup") => args
+            .iter()
+            .map(|arg| mask_single_char_keysyms(arg))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => args.join(" "),
     }
+}
+
+/// The `type`-specific half of [`render_xdotool_args_for_error`]: everything
+/// after `--` (or, defensively, after the subcommand) collapses to the
+/// length-only marker.
+fn render_type_args_for_error(args: &[String]) -> String {
     let text_chars: usize = match args.iter().position(|arg| arg == "--") {
         Some(index) => args[index + 1..]
             .iter()
@@ -1025,6 +1067,33 @@ fn render_xdotool_args_for_error(args: &[String]) -> String {
     let mut parts: Vec<&str> = args[..head_len].iter().map(String::as_str).collect();
     parts.push(&marker);
     parts.join(" ")
+}
+
+/// Mask every single-character alphanumeric keysym in a chord string
+/// (`p+a+s+s` → `<1 char>+<1 char>+<1 char>+<1 char>`): those are exactly the
+/// character-key names that can spell out typed text. Punctuation rides word
+/// names (`period`, `exclam`, …) and named keys stay whole.
+fn mask_single_char_keysyms(arg: &str) -> String {
+    if !arg.contains('+') {
+        return mask_keysym_part(arg).to_string();
+    }
+    arg.split('+')
+        .map(mask_keysym_part)
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+fn mask_keysym_part(part: &str) -> &str {
+    let single = part.chars().count() == 1;
+    let alphanumeric = part
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric());
+    if single && alphanumeric {
+        "<1 char>"
+    } else {
+        part
+    }
 }
 
 /// The backend dies: kill everything recorded, then remove the session dir.
@@ -1393,6 +1462,12 @@ fn fresh_session_dir() -> Result<PathBuf, ComputerUseError> {
         match std::fs::create_dir(&dir) {
             Ok(()) => {
                 try_make_private_dir(&dir).map_err(|error| {
+                    // A chmod failure must not leak the empty dir: Drop never
+                    // runs for an unconstructed backend and the sweep
+                    // deliberately skips pidfile-less dirs, so nothing else
+                    // would ever remove it (the leak class the constructor
+                    // comment names).
+                    let _ = std::fs::remove_dir(&dir);
                     ComputerUseError::failed(format!(
                         "cannot restrict the virtual display session dir: {error}"
                     ))
@@ -1438,7 +1513,9 @@ impl ComputerUseBackend for VirtualX11Backend {
         // redirection (audio via the user's runtime-dir sockets); the D-Bus
         // session bus is DISABLED for opened apps (an explicitly-set dead
         // address does not autolaunch a private bus — bus-dependent features
-        // fail); and a raw-libwayland client could still escape through the
+        // fail); the machine-wide system bus has no env redirection at all
+        // and stays reachable (polkit still gates privileged operations);
+        // and a raw-libwayland client could still escape through the
         // default `wayland-0` socket in the kept XDG_RUNTIME_DIR — stated,
         // not hidden.
         notes.push(
@@ -1448,7 +1525,9 @@ impl ComputerUseBackend for VirtualX11Backend {
              apps opened there may still reach shared session services of the user's \
              login session that the environment cannot redirect (e.g. audio and \
              camera via the runtime-dir sockets), their D-Bus session bus is disconnected \
-             (bus-dependent features fail rather than getting a private bus), and an \
+             (bus-dependent features fail rather than getting a private bus) while the \
+             machine-wide D-Bus system bus stays reachable (polkit still gates \
+             privileged operations), and an \
              app speaking raw Wayland (beyond the redirected toolkits) could still \
              reach the user's compositor through the default runtime-dir socket"
                 .to_string(),
@@ -1789,6 +1868,18 @@ impl ComputerUseBackend for VirtualX11Backend {
             &self.auth_path,
             &self.session_dir,
         );
+        // Stdio hygiene (the Xvfb/WM/xdotool spawns all bound theirs): an
+        // opened app holding the engine's inherited stdout/stderr write end
+        // would delay upstream EOF/liveness detection indefinitely and a
+        // verbose app would write into the engine's journal.
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // GUI apps expect the home directory as their working directory, not
+        // wherever the engine happened to start; relative arguments resolve
+        // against it.
+        command.current_dir(crate::platform::paths::user_home_dir());
         std_process_group_leader(&mut command);
         let mut child = command.spawn().map_err(|error| {
             ComputerUseError::failed(format!("open: cannot spawn {program}: {error}"))
@@ -2079,8 +2170,11 @@ fn terminate_then_kill(child: &mut Child, grace: Duration) {
 /// cannot, and the sweep also runs against still-live sessions at app exit.
 /// `kill_pid_tree` (SIGKILL, group-wide) follows only if the grace expires.
 /// Callers MUST have verified both identity halves (role + recorded start
-/// time) before firing this.
-fn term_then_kill_orphan(pid: u32) {
+/// time) before firing this, and the post-grace SIGKILL re-verifies the
+/// recorded start time: the grace loop only re-checks liveness, so an
+/// orphan that exits mid-grace and has its pid recycled before the
+/// deadline would otherwise hand the group kill to an innocent process.
+fn term_then_kill_orphan(pid: u32, recorded_starttime: Option<u64>) {
     // SAFETY: plain kill(2) with a constant signal on a role- and
     // start-time-verified recorded pid; ESRCH (already gone) is fine.
     let _ = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
@@ -2091,19 +2185,31 @@ fn term_then_kill_orphan(pid: u32) {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    if recorded_starttime.is_none() || process_starttime(pid) != recorded_starttime {
+        log::warn!(
+            "[computer_use] virtual display: recorded pid {pid} no longer matches its \
+             recorded kernel start time after the SIGTERM grace (pid recycled?); \
+             skipping the kill",
+        );
+        return;
+    }
     kill_pid_tree(pid);
 }
 
 /// The argv[0] of a pid — the FIRST NUL-terminated token of
-/// `/proc/<pid>/cmdline` — or `None` when the process is gone or /proc is
-/// unreadable. The kernel delimits argv with NULs, so a path containing a
-/// space (`/opt/My App/bin/app`) stays one token; splitting the joined
-/// string on spaces would corrupt exactly those programs.
+/// `/proc/<pid>/cmdline` — or `None` when the process is gone, /proc is
+/// unreadable, or argv[0] is EMPTY (a process that deliberately blanks
+/// argv[0] presents no name: `None` keeps the sweep's role gate fail-closed
+/// instead of falling through to a later argv entry). The kernel delimits
+/// argv with NULs, so a path containing a space (`/opt/My App/bin/app`)
+/// stays one token; splitting the joined string on spaces would corrupt
+/// exactly those programs.
 fn process_argv0(pid: u32) -> Option<String> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let first = raw
-        .split(|byte: &u8| *byte == 0)
-        .find(|part| !part.is_empty())?;
+    let first = raw.split(|byte: &u8| *byte == 0).next()?;
+    if first.is_empty() {
+        return None;
+    }
     Some(String::from_utf8_lossy(first).into_owned())
 }
 
@@ -2202,7 +2308,7 @@ fn sweep_orphans_with(argv0_of: impl Fn(u32) -> Option<String>) {
                 );
                 continue;
             }
-            term_then_kill_orphan(pid);
+            term_then_kill_orphan(pid, recorded_starttime);
         }
         // The open_app children carry per-child identity since the pidfile
         // gained `children_detail`: the kill fires on the verified KERNEL
@@ -2498,8 +2604,11 @@ mod tests {
     /// Audit-redaction pin (MAJOR-A): a failed `type` invocation reports the
     /// text argument length-only — the typed text itself (a possible secret)
     /// must never appear in the error text, which lands verbatim in the audit
-    /// JSONL. Other commands keep their args visible (coordinates, button
-    /// numbers, keysyms — nothing sensitive).
+    /// JSONL. The `key`/`keydown`/`keyup` family masks single-character
+    /// alphanumeric keysyms the same way (a chord can spell out a secret one
+    /// character at a time) while keeping the fixed vocabulary readable.
+    /// Other commands keep their args visible (coordinates, button
+    /// numbers — nothing sensitive).
     #[test]
     fn xdotool_error_renders_typed_text_redacted() {
         // The exact shape type_text builds: `type --delay 12 -- <chunk>`.
@@ -2534,8 +2643,39 @@ mod tests {
             render_xdotool_args_for_error(&mouse),
             "mousemove --sync 10 20"
         );
+        // The key family masks single-character alphanumeric keysyms (they
+        // can spell out typed text) but keeps the fixed vocabulary whole.
         let key = vec!["key".to_string(), "ctrl+s".to_string()];
-        assert_eq!(render_xdotool_args_for_error(&key), "key ctrl+s");
+        let rendered = render_xdotool_args_for_error(&key);
+        assert_eq!(rendered, "key ctrl+<1 char>", "{rendered}");
+        assert!(
+            !rendered.contains('s'),
+            "the chord letter leaked: {rendered}"
+        );
+        // keydown/keyup (hold_key's argv shape) mask identically; a
+        // multi-character name like Return or period stays readable.
+        let keydown = vec![
+            "keydown".to_string(),
+            "p".to_string(),
+            "a".to_string(),
+            "Return".to_string(),
+        ];
+        assert_eq!(
+            render_xdotool_args_for_error(&keydown),
+            "keydown <1 char> <1 char> Return"
+        );
+        let keyup = vec![
+            "keyup".to_string(),
+            "Return".to_string(),
+            "a".to_string(),
+            "p".to_string(),
+        ];
+        assert_eq!(
+            render_xdotool_args_for_error(&keyup),
+            "keyup Return <1 char> <1 char>"
+        );
+        let punctuation = vec!["key".to_string(), "period".to_string()];
+        assert_eq!(render_xdotool_args_for_error(&punctuation), "key period");
     }
 
     /// Acceptance-order pin (MAJOR-B): the type_text acceptance path splits
@@ -2883,6 +3023,54 @@ mod tests {
         let raw = std::fs::read_to_string(dir.join(PIDFILE_NAME)).expect("pidfile");
         let file: PidFile = serde_json::from_str(&raw).expect("parse pidfile");
         assert_eq!(file.wm_pid, None);
+    }
+
+    /// The dead-server `mouse_up` stays the harmless no-op the
+    /// emergency-cleanup contract promises — the release/stop paths lean on
+    /// it after a server crash, and an up for a button a fresh server cannot
+    /// have held must not lazily respawn the whole Xvfb stack (seconds of
+    /// spawn work on a detached thread). Mutation pin (R6): removing the
+    /// `server_alive` short-circuit turns this into a respawn attempt, and
+    /// the session dir below deliberately does not exist so that attempt
+    /// answers the explicit session-dir-gone error instead of booting a real
+    /// server inside a unit test.
+    #[test]
+    fn mouse_up_on_a_dead_server_is_a_noop_without_a_respawn() {
+        let home = IsolatedHome::take("mouseup-dead-server");
+        let mut backend = VirtualX11Backend {
+            session_dir: home.vd_root().join("vanished-session"),
+            cookie: [0u8; 16],
+            hostname: "host".to_string(),
+            auth_path: home.vd_root().join("vanished-auth"),
+            display: ":99".to_string(),
+            xvfb: Some(exited_child()),
+            wm: None,
+            wm_program: None,
+            children: Vec::new(),
+            xdotool_path: PathBuf::from("/usr/bin/xdotool"),
+            cancel: None,
+        };
+        // The child exits within milliseconds of spawn; wait for the exit so
+        // the dead-server short-circuit below observes it deterministically.
+        for _ in 0..200 {
+            if matches!(
+                backend.xvfb.as_mut().expect("server held").try_wait(),
+                Ok(Some(_))
+            ) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let result = backend.mouse_up(MouseButton::Left);
+        assert!(
+            result.is_ok(),
+            "the emergency-cleanup up must stay a harmless no-op: {result:?}"
+        );
+        assert!(
+            !backend.server_alive(),
+            "the dead server must not have been respawned by mouse_up"
+        );
+        let _ = backend.xvfb.take().expect("server held").wait();
     }
 
     // ---- crash-orphan sweep (fixture: fake dirs + real child processes) ----

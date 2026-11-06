@@ -94,14 +94,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, ChildWindowFromPoint, FindWindowW, GA_ROOT, GCL_STYLE, GUITHREADINFO, GW_HWNDNEXT,
-    GetAncestor, GetClassLongW, GetClassNameW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
-    GetSystemMetrics, GetTopWindow, GetWindow, GetWindowRect, GetWindowThreadProcessId,
-    IsWindowVisible, PW_RENDERFULLCONTENT, PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos, SetForegroundWindow, WM_CHAR, WM_KEYDOWN,
-    WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WindowFromPoint,
+    CS_DBLCLKS, CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, ChildWindowFromPointEx, FindWindowW, GA_ROOT,
+    GCL_STYLE, GUITHREADINFO, GW_HWNDNEXT, GetAncestor, GetClassLongW, GetClassNameW, GetCursorPos,
+    GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics, GetTopWindow, GetWindow,
+    GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, PW_RENDERFULLCONTENT, PostMessageW,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos,
+    SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
 
@@ -350,12 +351,18 @@ fn key_lparam(up: bool) -> isize {
 
 /// lParam bit assembly for the KEY messages (pure, so the shape is pinable
 /// without a display): repeat count 1, the scan code at bits 16-23, the
-/// context code at bit 29 (set while Alt is held — every key delivered
-/// during an Alt chord rides it), and the previous-key-state (bit 30) +
-/// transition (bit 31) flags on the UP variant, exactly what real input
-/// carries. A scan code wider than 8 bits masks down (the field is 8 bits).
-fn compose_key_lparam(scan: u32, context: bool, up: bool) -> isize {
+/// extended-key flag at bit 24 (set for the navigation cluster, whose real
+/// input always carries it — apps distinguishing navigation from
+/// numpad/number-row keys read it), the context code at bit 29 (set while
+/// Alt is held — every key delivered during an Alt chord rides it), and the
+/// previous-key-state (bit 30) + transition (bit 31) flags on the UP
+/// variant, exactly what real input carries. A scan code wider than 8 bits
+/// masks down (the field is 8 bits).
+fn compose_key_lparam(scan: u32, extended: bool, context: bool, up: bool) -> isize {
     let mut raw = 1u32 | ((scan & 0xFF) << 16);
+    if extended {
+        raw |= 1 << 24;
+    }
     if context {
         raw |= 1 << 29;
     }
@@ -363,6 +370,31 @@ fn compose_key_lparam(scan: u32, context: bool, up: bool) -> isize {
         raw |= 1 << 30 | 1 << 31;
     }
     raw as isize
+}
+
+/// Whether `vk` is one of the extended keys whose real-input lParam carries
+/// bit 24: the navigation cluster (the same VK also exists on the numpad, so
+/// real input distinguishes them by this bit) plus the right-hand
+/// Ctrl/Alt. The model's chord vocabulary only ever produces the
+/// navigation cluster from this set (chords name `Control`/`Alt`, which map
+/// to the shared left-side VKs), but the bit is carried for every key it
+/// applies to, matching real input. Pure, unit-pinned.
+fn key_is_extended(vk: u16) -> bool {
+    // The VK_* constants are typed newtypes, not bare u16 patterns — the
+    // set rides in a const table.
+    const EXTENDED_KEYS: [u16; 10] = [
+        VK_LEFT.0,
+        VK_RIGHT.0,
+        VK_UP.0,
+        VK_DOWN.0,
+        VK_HOME.0,
+        VK_END.0,
+        VK_PRIOR.0,
+        VK_NEXT.0,
+        VK_INSERT.0,
+        VK_DELETE.0,
+    ];
+    EXTENDED_KEYS.contains(&vk)
 }
 
 /// Scan code for a virtual-key code (`MapVirtualKeyW`, VK → VSC); 0 when
@@ -375,11 +407,12 @@ unsafe fn vk_scan(vk: u16) -> u32 {
 }
 
 /// The lParam for a key message about `vk` (the WM_KEYDOWN / WM_SYSKEYDOWN /
-/// WM_KEYUP / WM_SYSKEYUP family): real scan code + context bit, unlike the
-/// WM_CHAR posts whose lParam the message loop rarely validates.
+/// WM_KEYUP / WM_SYSKEYUP family): real scan code + extended-key bit +
+/// context bit, unlike the WM_CHAR posts whose lParam the message loop
+/// rarely validates.
 fn key_message_lparam(vk: u16, alt_held: bool, up: bool) -> isize {
     // SAFETY: pure translation query.
-    compose_key_lparam(unsafe { vk_scan(vk) }, alt_held, up)
+    compose_key_lparam(unsafe { vk_scan(vk) }, key_is_extended(vk), alt_held, up)
 }
 
 /// The (down, up) message pair for a key press: EVERY key pressed while Alt
@@ -397,6 +430,17 @@ fn key_message_pair(alt_held: bool) -> (u32, u32) {
     } else {
         (WM_KEYDOWN, WM_KEYUP)
     }
+}
+
+/// The window a chord's key messages target (pure, unit-pinned — HWND is a
+/// transparent handle wrapper for this comparison). While Alt is held the
+/// system pair must reach the top-level frame's DefWindowProc (the
+/// SC_CLOSE/SC_KEYMENU synthesis lives there); a plain pair is ordinary
+/// keyboard input, which Windows delivers to the FOCUS window — posting it
+/// to the frame makes frame-routed apps (Notepad's frame dispatches to
+/// DefWindowProc) silently drop it while PostMessageW reports success.
+fn chord_post_target(focus: HWND, top: HWND, alt_held: bool) -> HWND {
+    if alt_held { top } else { focus }
 }
 
 /// Pack client coordinates into a mouse-message lParam (both i16).
@@ -720,34 +764,49 @@ fn log_desktop_close_error(context: &str, error: windows::core::Error) {
 }
 
 /// Attach the CURRENT thread to the hidden desktop and verify the switch via
-/// `GetThreadDesktop` comparison (design §6 discipline). Returns the
-/// thread's previous desktop for restoration.
+/// `GetThreadDesktop` (design §6 discipline). The caller must have read the
+/// thread's REAL previous desktop (via [`current_thread_desktop`]) BEFORE
+/// `CreateDesktopW` — that call assigns the new desktop to the calling
+/// thread (MSDN), so a "previous" read taken here afterwards would answer
+/// with the hidden desktop itself and restore nothing.
 ///
 /// SAFETY: the caller guarantees this thread owns no windows/hooks — a
 /// thread with window/hook ownership cannot switch desktops, and the
 /// backend worker (per BackendHandle) and a fresh capture thread both do.
-unsafe fn attach_thread_to_desktop(desktop: HDESK) -> Result<HDESK, ComputerUseError> {
+unsafe fn attach_thread_to_desktop(desktop: HDESK) -> Result<(), ComputerUseError> {
     // SAFETY: thread-info queries + a desktop switch; see the fn contract.
     unsafe {
-        let tid = GetCurrentThreadId();
-        let previous = GetThreadDesktop(tid).map_err(|error| {
-            ComputerUseError::failed(format!("cannot read the thread's desktop: {error}"))
-        })?;
         SetThreadDesktop(desktop).map_err(|error| {
             ComputerUseError::unavailable(format!(
                 "cannot attach the thread to the hidden desktop: {error}"
             ))
         })?;
-        let current = GetThreadDesktop(tid).map_err(|error| {
+        let current = GetThreadDesktop(GetCurrentThreadId()).map_err(|error| {
             ComputerUseError::failed(format!("cannot verify the thread's desktop: {error}"))
         })?;
         if current.0 != desktop.0 {
-            let _ = SetThreadDesktop(previous);
             return Err(ComputerUseError::unavailable(
                 "the hidden desktop attachment did not take effect (GetThreadDesktop mismatch)",
             ));
         }
-        Ok(previous)
+        Ok(())
+    }
+}
+
+/// The calling thread's CURRENT desktop handle — the real "previous" desktop
+/// for a later restore, which must be read BEFORE `CreateDesktopW` (that
+/// call assigns the new desktop to the calling thread, so a read taken
+/// afterwards would answer with the new desktop itself). The handle is a
+/// pseudo one (`GetThreadDesktop`'s output needs no `CloseDesktop`, per
+/// MSDN).
+///
+/// SAFETY: thread-info query; no pointers involved.
+unsafe fn current_thread_desktop() -> Result<HDESK, ComputerUseError> {
+    // SAFETY: see the fn contract.
+    unsafe {
+        GetThreadDesktop(GetCurrentThreadId()).map_err(|error| {
+            ComputerUseError::failed(format!("cannot read the thread's desktop: {error}"))
+        })
     }
 }
 
@@ -1371,13 +1430,21 @@ fn capture_thread_main(
 ) {
     let desktop = desktop.0;
     // SAFETY: fresh thread, no windows/hooks owned (module doc discipline).
-    let previous = match unsafe { attach_thread_to_desktop(desktop) } {
+    // The REAL previous desktop is read BEFORE the attach (on a fresh thread
+    // this is the default desktop; the restore below is what keeps the
+    // exit-time association honest).
+    let previous = match unsafe { current_thread_desktop() } {
         Ok(previous) => previous,
         Err(error) => {
             let _ = ready.send(Err(error));
             return;
         }
     };
+    // SAFETY: fresh thread, no windows/hooks owned (module doc discipline).
+    if let Err(error) = unsafe { attach_thread_to_desktop(desktop) } {
+        let _ = ready.send(Err(error));
+        return;
+    }
     // SAFETY: pure metric query on the attached capture thread.
     let initial_rect = unsafe { desktop_virtual_screen_rect() };
     if initial_rect.width <= 0 || initial_rect.height <= 0 {
@@ -1638,12 +1705,21 @@ impl WindowsVirtualDesktopBackend {
             unsafe { recover_leftover_desktop(&name, leftover) }
         } // absent: nothing to recover
 
+        // The worker's REAL previous desktop, read BEFORE CreateDesktopW:
+        // that call assigns the new desktop to the calling thread (MSDN), so
+        // a read taken afterwards would answer with the hidden desktop
+        // itself — the recorded "previous" would restore nothing (the Drop
+        // restore would re-assign the hidden desktop and report success).
+        // SAFETY: thread-info query on this worker thread (no windows yet).
+        let original_desktop = unsafe { current_thread_desktop() }?;
+
         // 2. Fresh desktop (also covers the rare recovery close-busy race:
         //    CreateDesktopW on an existing name opens the existing object).
-        // SAFETY: flags/mask per design §6; lpsa None → the desktop gets the
-        // creating process's DEFAULT DACL (not the window station's — other
-        // same-user processes can still open it by name, which is the model
-        // here: isolation by unique naming, not a security boundary).
+        // SAFETY: flags/mask per design §6; lpsa None → the desktop inherits
+        // its security descriptor from the parent window station (MSDN).
+        // WinSta0's DACL grants the interactive user broad access, so other
+        // same-user processes can still open it by name — which is the model
+        // here: isolation by unique naming, not a security boundary.
         let desktop = unsafe {
             CreateDesktopW(
                 PCWSTR(name_wide.as_ptr()),
@@ -1665,16 +1741,17 @@ impl WindowsVirtualDesktopBackend {
             job: HANDLE(std::ptr::null_mut()),
             capture_tx: None,
             capture_thread: None,
-            worker_original_desktop: None,
+            worker_original_desktop: Some(original_desktop),
             cancel: None,
             capture_wedges: 0,
         };
 
         // 3. Attach the worker thread (this thread — BackendHandle runs the
-        //    factory on the dedicated worker, which owns no windows).
+        //    factory on the dedicated worker, which owns no windows); the
+        //    real original desktop was already recorded above.
         // SAFETY: the worker thread owns no windows/hooks (contract).
         unsafe {
-            backend.worker_original_desktop = Some(attach_thread_to_desktop(desktop)?);
+            attach_thread_to_desktop(desktop)?;
         }
 
         // 4. Kill-on-close job (NO JOB_OBJECT_UILIMIT_* — BSOD caveat).
@@ -1805,12 +1882,15 @@ impl WindowsVirtualDesktopBackend {
 
     /// Hit-test: top-level under the screen point (WindowFromPoint, the
     /// z-order-aware counterpart of the walk below), then the
-    /// `ChildWindowFromPoint` walk to the deepest child at the point.
-    /// Returns (deepest, client x, client y) — client coordinates relative
-    /// to the deepest window. `None` when no window is under the point.
-    /// Worker thread only (attached).
+    /// `ChildWindowFromPointEx` walk to the deepest child at the point,
+    /// skipping hidden and disabled children (plain `ChildWindowFromPoint`
+    /// is CWP_ALL semantics and hands the click to an invisible placeholder
+    /// control — `WindowFromPoint` above skips them, and so does real
+    /// input). Returns (deepest, client x, client y) — client coordinates
+    /// relative to the deepest window. `None` when no window is under the
+    /// point. Worker thread only (attached).
     ///
-    /// Known shape limit: `ChildWindowFromPoint` returns the first DIRECT
+    /// Known shape limit: `ChildWindowFromPointEx` returns the first DIRECT
     /// child whose bounding rect contains the point, without sibling
     /// occlusion awareness (`WindowFromPoint` above IS z-order-aware) — a
     /// sibling overlapping a parent's child can be skipped over in the walk.
@@ -1826,7 +1906,8 @@ impl WindowsVirtualDesktopBackend {
             loop {
                 let mut point = POINT { x, y };
                 let _ = ScreenToClient(current, &mut point);
-                let child = ChildWindowFromPoint(current, point);
+                let child =
+                    ChildWindowFromPointEx(current, point, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED);
                 if child.is_invalid() || child.0 == current.0 {
                     return Some((current, point.x, point.y));
                 }
@@ -1948,10 +2029,15 @@ impl WindowsVirtualDesktopBackend {
             .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
 
-    /// Press the chord on the keyboard target's top-level window (accelerator
-    /// messages must reach the top-level), hold for `hold`, release in
-    /// reverse. Modifiers first (§6); the whole chord is mapped before
-    /// anything is pressed (a mapping failure presses nothing).
+    /// Press the chord on the keyboard target: the Alt-held system pair goes
+    /// to the target's top-level window (DefWindowProc's SC_CLOSE /
+    /// SC_KEYMENU synthesis lives there), the plain pair goes to the focused
+    /// control — ordinary keyboard input is delivered to the focus window,
+    /// and posting it to the frame makes frame-routed apps (Notepad's frame
+    /// dispatches to DefWindowProc) silently drop it while PostMessageW
+    /// reports success. Hold for `hold`, release in reverse to the SAME
+    /// window the presses went to. Modifiers first (§6); the whole chord is
+    /// mapped before anything is pressed (a mapping failure presses nothing).
     fn chord_to(&mut self, keys: &[Key], hold: Duration) -> Result<(), ComputerUseError> {
         if keys.is_empty() {
             return Err(ComputerUseError::failed("key chord is empty"));
@@ -1964,9 +2050,9 @@ impl WindowsVirtualDesktopBackend {
             .chain(rest.iter())
             .map(|key| key_to_vk(**key))
             .collect::<Result<_, _>>()?;
-        let target = self.keyboard_target()?;
+        let focus = self.keyboard_target()?;
         // SAFETY: parent-walk on a desktop window from the attached worker.
-        let top = unsafe { top_level_of(target) };
+        let top = unsafe { top_level_of(focus) };
         // Real Windows delivers EVERY key pressed while Alt is held as the
         // system-key pair with the context bit set — not just VK_MENU
         // itself. It is DefWindowProc's WM_SYSKEYDOWN handler that turns
@@ -1977,11 +2063,12 @@ impl WindowsVirtualDesktopBackend {
         // Alt-specific.
         let alt_held = ordered.contains(&VK_MENU.0);
         let (down_message, up_message) = key_message_pair(alt_held);
+        let post_target = chord_post_target(focus, top, alt_held);
         let mut pressed: Vec<u16> = Vec::with_capacity(ordered.len());
         let hold_result = (|| {
             for vk in &ordered {
                 self.post(
-                    top,
+                    post_target,
                     down_message,
                     usize::from(*vk),
                     key_message_lparam(*vk, alt_held, false),
@@ -2003,12 +2090,13 @@ impl WindowsVirtualDesktopBackend {
             }
             Ok(())
         })();
-        // Release in reverse regardless of how the hold went (a cancelled
-        // hold must not strand modifiers).
+        // Release in reverse to the SAME window the presses went to,
+        // regardless of how the hold went (a cancelled hold must not strand
+        // modifiers).
         let mut release = Ok(());
         for vk in pressed.iter().rev() {
             if let Err(error) = self.post(
-                top,
+                post_target,
                 up_message,
                 usize::from(*vk),
                 key_message_lparam(*vk, alt_held, true),
@@ -2118,7 +2206,17 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                     key-state table (apps that read modifier state from \
                     GetKeyState may see unmodified keys), and layered-window \
                     translucency can print as opaque fringes (the hidden desktop \
-                    has no DWM to blend it); capture and input span the session's \
+                    has no DWM to blend it); key chords press US-layout key \
+                    positions, so an app running a non-US keyboard layout may \
+                    resolve a chord to a different character than a US layout \
+                    would (typed text is not affected — it is delivered as text); \
+                    apps that delegate their launch to a system broker (e.g. a \
+                    calculator stub activating a store app) get their real \
+                    process created OUTSIDE the session's job object — such apps \
+                    are not contained by the session and are not terminated with \
+                    it; the session's first action can take several seconds \
+                    while the hidden desktop and its shell start; capture and \
+                    input span the session's \
                     whole virtual screen (every monitor of the hidden-desktop \
                     session); capture is a per-window composite (a hidden desktop \
                     has no DWM), so content can lag until the forced redraw \
@@ -2738,36 +2836,90 @@ mod tests {
     }
 
     /// Key-message lParam shapes: the pure composer places repeat=1, the
-    /// scan code at bits 16-23, the Alt context bit at 29, and the
-    /// previous-state (bit 30) + transition (bit 31) flags on the UP
-    /// variant — the shape real input carries (DefWindowProc's Alt+F4 /
-    /// menu handling reads WM_SYSKEYDOWN, and scan-validating apps key off
-    /// bits 16-23). The VK→scan translation itself is pinned for one
-    /// well-known key. WINDOWS-CI-ONLY (this whole file is cfg(windows)).
+    /// scan code at bits 16-23, the extended-key flag at bit 24, the Alt
+    /// context bit at 29, and the previous-state (bit 30) + transition
+    /// (bit 31) flags on the UP variant — the shape real input carries
+    /// (DefWindowProc's Alt+F4 / menu handling reads WM_SYSKEYDOWN, and
+    /// scan-validating apps key off bits 16-23). The VK→scan translation
+    /// itself is pinned for one well-known key. WINDOWS-CI-ONLY (this whole
+    /// file is cfg(windows)).
     #[test]
-    fn key_lparam_encodes_scan_context_and_up_bits() {
-        assert_eq!(compose_key_lparam(0, false, false), 1);
-        let up = compose_key_lparam(0, false, true) as u32;
+    fn key_lparam_encodes_scan_extended_context_and_up_bits() {
+        assert_eq!(compose_key_lparam(0, false, false, false), 1);
+        let up = compose_key_lparam(0, false, false, true) as u32;
         assert_eq!(up & 1, 1, "repeat count stays 1");
         assert_eq!(up >> 30 & 1, 1, "previous key state must be set on up");
         assert_eq!(up >> 31 & 1, 1, "transition flag must be set on up");
-        let with_scan = compose_key_lparam(0x3E, false, false) as u32;
+        let with_scan = compose_key_lparam(0x3E, false, false, false) as u32;
         assert_eq!(with_scan >> 16 & 0xFF, 0x3E, "scan code rides bits 16-23");
-        let context = compose_key_lparam(0x3E, true, false) as u32;
+        let context = compose_key_lparam(0x3E, false, true, false) as u32;
         assert_eq!(
             context >> 29 & 1,
             1,
             "Alt-held input must carry the context bit"
         );
         assert_eq!(context >> 16 & 0xFF, 0x3E);
+        // The extended-key flag (bit 24) rides when the key is one of the
+        // navigation cluster, and only then — real input for those keys
+        // always carries it (the same VK exists on the numpad, so apps
+        // distinguish by this bit).
+        let extended = compose_key_lparam(0x48, true, false, false) as u32;
+        assert_eq!(extended >> 24 & 1, 1, "bit 24 must carry the extended flag");
+        let plain = compose_key_lparam(0x3E, false, false, false) as u32;
+        assert_eq!(plain >> 24 & 1, 0, "non-extended keys must not set bit 24");
         // A scan value wider than the 8-bit field masks down (bit layout
         // stays intact for whatever lands above).
-        let masked = compose_key_lparam(0x1_3E, false, false) as u32;
+        let masked = compose_key_lparam(0x1_3E, false, false, false) as u32;
         assert_eq!(masked >> 16 & 0xFF, 0x3E);
-        assert_eq!(masked >> 24, 0, "nothing leaks beyond the scan field");
+        assert_eq!(masked >> 25, 0, "nothing leaks beyond the extended flag");
         // The translation the chord path performs: VK_F4 (0x73) → scan
         // 0x3E on the standard keyboard (SAFETY: pure translation query).
         assert_eq!(unsafe { vk_scan(0x73) }, 0x3E, "VK_F4 scan code");
+    }
+
+    /// The extended-key set is exactly the navigation cluster (plus the
+    /// right-hand modifiers the chord vocabulary never produces): arrows,
+    /// Home/End/Prior/Next, Insert/Delete ride bit 24; letters, digits,
+    /// Enter, and the shared left-side modifiers do not.
+    #[test]
+    fn key_is_extended_pins_the_navigation_cluster() {
+        for vk in [
+            VK_LEFT.0,
+            VK_RIGHT.0,
+            VK_UP.0,
+            VK_DOWN.0,
+            VK_HOME.0,
+            VK_END.0,
+            VK_PRIOR.0,
+            VK_NEXT.0,
+            VK_INSERT.0,
+            VK_DELETE.0,
+        ] {
+            assert!(
+                key_is_extended(vk),
+                "VK {vk:#x} must carry the extended flag"
+            );
+        }
+        for vk in [VK_RETURN.0, VK_CONTROL.0, VK_MENU.0, VK_SPACE.0, VK_TAB.0] {
+            assert!(
+                !key_is_extended(vk),
+                "VK {vk:#x} must not carry the extended flag"
+            );
+        }
+    }
+
+    /// The chord post target: the Alt-held system pair goes to the
+    /// top-level frame (DefWindowProc's SC_CLOSE/SC_KEYMENU synthesis lives
+    /// there), the plain pair goes to the focused control — ordinary
+    /// keyboard input is delivered to the focus window, and posting it to
+    /// the frame makes frame-routed apps silently drop it while PostMessageW
+    /// reports success. WINDOWS-CI-ONLY (this whole file is cfg(windows)).
+    #[test]
+    fn chord_post_target_pins_focus_for_plain_and_top_for_alt() {
+        let focus = HWND(0x1 as _);
+        let top = HWND(0x2 as _);
+        assert_eq!(chord_post_target(focus, top, false), focus);
+        assert_eq!(chord_post_target(focus, top, true), top);
     }
 
     /// The Alt-chord message-pair selection (companion of the lparam pin

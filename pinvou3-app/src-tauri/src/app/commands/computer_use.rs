@@ -340,8 +340,11 @@ pub async fn computer_use_set_enabled(
 /// failed write must not leave the in-memory flag diverged), then the
 /// in-memory mirror — which also refreshes the cached availability snapshot
 /// (the probe is cheap: binary/class presence only, never a server spawn) —
-/// then a state-changed broadcast so every window re-renders its
-/// virtual-display hint immediately. NO disallow-list refresh: this
+/// then a state-changed broadcast so every window with an active session
+/// re-renders its virtual-display hint immediately (the broadcast carries
+/// no session id; the frontend listener skips windows that cannot resolve
+/// one, and those pick the change up on their next status read — e.g. the
+/// settings page's mount poll). NO disallow-list refresh: this
 /// preference changes WHERE future sessions run, not which tools are
 /// visible. No consent sweep rides the flip: live sessions keep their
 /// already-created backend (the fallback decision is one-time, at creation
