@@ -543,6 +543,10 @@ async fn model_review(
     let max_tokens = bridge.main_wire_max_output_tokens(&model_name);
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
+    // 已知缺口（"永不关闭"口径未覆盖，见 apply_review_thinking_controls 文档尾）：
+    // 这里不发思考字段——省略即思考关（fable/mythos/opus-5/sonnet-5/haiku-5 之外
+    // 无 adaptive 默认）。底座 Messages adapter 的 low 档 shaper 未公开；宿主侧
+    // 手抄型号启发会再造漂移面，待底座暴露后补齐。
     if preset == ModelPreset::Anthropic {
         let content = crate::core::model_endpoint::post_anthropic_messages(
             &client,
@@ -626,26 +630,49 @@ fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
 
 /// 品/悟审查的思考档位写入（2026-11-06 产品决策）：**思考永不关闭**，与本地路由
 /// 同一处理（`bridge::request_reasoning_effort` + `core::always_thinking`）——
-/// 取线材能表达的最低思考档；只有开/关的家族显式选开。线材形状逐字对齐底座
-/// `apply_reasoning_effort` 的 low 档翻译（CodeWhale crates/tui/src/client.rs）：
+/// 取线材能表达的最低思考档；只有开/关的家族显式选开。线材形状对齐底座
+/// `apply_reasoning_effort` 的 low 档翻译（CodeWhale crates/tui/src/client.rs）；
+/// 偏离处均有注释并逐字注明底座依据，不是"逐字翻译"：
 /// - vLLM/Tachyon/本地：`chat_template_kwargs.enable_thinking=true` +
 ///   `reasoning_effort=low`（引擎本地路由同款）；always-thinking 知识表 NoControl
 ///   模型（qwen3-thinking/deepseek-r1/kimi-k2.7/minimax-m2）native 思考，不发字段。
-/// - Ollama：`think=true`（boolean think 线，最低思考档=开；对无思考模型是硬 400，
-///   引擎本地路由已按 #622 接受同一取舍）。
+/// - Ollama：本地 `think=true`（boolean think 线，最低思考档=开；对无思考模型是硬
+///   400，引擎本地路由已按 #622 接受同一取舍）。托管 `https://ollama.com/v1` 在引擎
+///   侧升级为 OllamaCloud，用 `reasoning_effort` 线（config provider.rs
+///   `is_exact_ollama_cloud_route`）——这里按同一精确主机判定分流。
 /// - DeepSeek：`reasoning_effort=low` + `thinking.enabled`（deepseek_effort 表 Low 档）。
+///   注意 `response_format=json_object` × thinking 常开这一组合未实测（旧线是
+///   thinking 关 + json_object；k3 的组合不迁移）；若网关拒绝，以 HTTP 错误浮出。
 /// - Kimi 全家族（moonshot/kimi provider、Kimi preset、moonshot.cn|.ai、api.kimi.com）：
 ///   `thinking.enabled`——官方接入要求思考常开（底座 #3024、image_capability 名单
 ///   同口径）；线材只有开/关 → 选开。旧逻辑对 api.kimi.com（嗅探簇外）发零控制只是
-///   "碰巧开着"，k2.5/k2.6 则被显式关掉——两者都由本臂统一为显式开。
+///   "碰巧开着"，k2.5/k2.6 则被显式关掉——两者都由本臂统一为显式开。`provider=="kimi"`
+///   现网由 `DEEPSEEK_PROVIDER` env 覆盖产生（vendor 归一把 kimi 折到 moonshot），
+///   保留以防漂移。
 /// - Qwen/dashscope：`enable_thinking=true`（只有开/关 → 选开；审查线 stream=false
-///   上开思考未实测，网关若拒绝会以 HTTP 错误浮出而非静默）。
+///   上开思考未实测，网关若拒绝会以 HTTP 错误浮出而非静默）。**例外**：底座
+///   `modelstudio_model_is_thinking_only`（client/chat.rs）列为"拒绝 enable/disable
+///   控制"的型号（qwen3.8-max[+preview]、kimi-k2.7-code 系）不发任何字段——对它们
+///   开关字段至多被忽略、至坏 400（qwen3.8-max 正是 Qwen preset 默认型号）。
 /// - Doubao/Volces：`reasoning_effort=high` + `thinking.enabled`（底座把 low/medium
 ///   折叠为 high——自家档位线材未验证，保守沿用同一折叠）。
 /// - GLM/z.ai：`thinking.enabled + clear_thinking=false`。Mimo：`thinking.enabled`。
-/// - Minimax：`reasoning_split=true`（M2 always-thinking 无控制，native 开）。
+/// - Minimax：`reasoning_split=true`（M2 always-thinking 无控制，native 开）。这是
+///   **审查线特例**，不是底座主对话线材的逐字翻译：底座只在精确 M3 路由写
+///   `reasoning_split`（且思考档配 `thinking:adaptive`，client/chat.rs
+///   `apply_minimax_route_reasoning_controls`）；审查是非流式 + json 解析，
+///   不 split 时 M2 的 reasoning 会混进 content 破坏解析，故全 Minimax 线保留。
+/// - OpenRouter 系（openrouter/orcarouter/novita/together）：
+///   `reasoning_effort=low` + `thinking.enabled`（底座 low 档同款，client.rs）。
+/// - SiliconFlow 系（siliconflow/siliconflow-cn）：`reasoning_effort=high` +
+///   `thinking.enabled`（底座把 low 折叠为 high，同 Volces 家族）。
 /// - 其余（OpenAI 官方 chat 线/未知网关）：线材不表达档位，思考型模型 native 开 →
-///   不发字段。Anthropic preset 在 `model_review` 里走 Messages 直连，不经本函数。
+///   不发字段。
+/// - **Anthropic 例外**：preset Anthropic 在 `model_review` 里走 Messages 直连，
+///   不经本函数、当前不发思考字段——主对话 Messages adapter 会在 low 档写
+///   `thinking:{enabled,budget_tokens}`/`{adaptive}`（client/anthropic.rs），省略
+///   即思考关。底座 shaper 未公开、宿主侧手抄型号启发等于再造漂移面；按"永不关闭"
+///   口径补齐它属后续底座暴露工作（见 PR body 披露），本函数不撒谎称已覆盖。
 fn apply_review_thinking_controls(
     body: &mut Value,
     preset: ModelPreset,
@@ -653,16 +680,32 @@ fn apply_review_thinking_controls(
     base_url: &str,
     model: &str,
 ) {
-    let base = base_url.trim().to_ascii_lowercase();
+    let base = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
     let is_local_route = provider == "vllm"
         || provider == "tachyon"
         || provider == "ollama"
         || preset == ModelPreset::LocalVllm;
-    // 本地路由：与引擎本地处理完全一致——ollama 只有 boolean think；vLLM/Tachyon 走
+    // 本地路由：与引擎本地处理完全一致——本地 ollama 只有 boolean think；托管
+    // ollama.com/v1 在引擎侧是 OllamaCloud（reasoning_effort 线）；vLLM/Tachyon 走
     // always-thinking 知识表（NoControl 不发字段，其余最低档 low）。
     if is_local_route {
         if provider == "ollama" {
-            body["think"] = json!(true);
+            // 底座 config provider.rs `is_exact_ollama_cloud_route`/`is_exact_https_route`：
+            // scheme/host 大小写不敏感、path "v1" 大小写敏感精确、只剥一个尾斜杠，
+            // http 降级与邻近路径都不算托管云。
+            let trimmed = base_url.trim();
+            let trimmed = trimmed.strip_suffix('/').unwrap_or(trimmed);
+            let is_cloud_route = trimmed
+                .strip_prefix("https://")
+                .and_then(|rest| rest.split_once('/'))
+                .is_some_and(|(host, path)| {
+                    host.eq_ignore_ascii_case("ollama.com") && path == "v1"
+                });
+            if is_cloud_route {
+                body["reasoning_effort"] = json!("low");
+            } else {
+                body["think"] = json!(true);
+            }
             return;
         }
         match crate::core::always_thinking::always_thinking_spec(model) {
@@ -693,10 +736,25 @@ fn apply_review_thinking_controls(
         return;
     }
     if preset == ModelPreset::Qwen || base.contains("dashscope.aliyuncs.com") {
+        // 底座 chat.rs `modelstudio_model_is_thinking_only`：这些型号没有
+        // enable/disable 控制，"at best ignored and at worst a 400"——不发任何
+        // 字段（native always-on）。
+        let lowered = model.trim().to_ascii_lowercase();
+        if matches!(
+            lowered.as_str(),
+            "qwen3.8-max"
+                | "qwen3.8-max-preview"
+                | "kimi-k2.7-code"
+                | "kimi/kimi-k2.7-code"
+                | "kimi/kimi-k2.7-code-highspeed"
+        ) {
+            return;
+        }
         body["enable_thinking"] = json!(true);
         return;
     }
     if preset == ModelPreset::Doubao
+        || provider == "volcengine"
         || base.contains("volces.com")
         || base.contains("volcengine")
         || base.contains("byteplus.com")
@@ -705,19 +763,40 @@ fn apply_review_thinking_controls(
         body["thinking"] = json!({ "type": "enabled" });
         return;
     }
-    if preset == ModelPreset::Glm || base.contains("bigmodel.cn") || base.contains("z.ai") {
+    if preset == ModelPreset::Glm
+        || provider == "zai"
+        || base.contains("bigmodel.cn")
+        || base.contains("z.ai")
+    {
         body["thinking"] = json!({ "type": "enabled", "clear_thinking": false });
         return;
     }
-    if preset == ModelPreset::Mimo || base.contains("xiaomimimo.com") {
+    if preset == ModelPreset::Mimo || provider == "xiaomi-mimo" || base.contains("xiaomimimo.com") {
         body["thinking"] = json!({ "type": "enabled" });
         return;
     }
     if preset == ModelPreset::Minimax
+        || provider == "minimax"
         || base.contains("minimax.chat")
         || base.contains("minimaxi.com")
     {
         body["reasoning_split"] = json!(true);
+        return;
+    }
+    // 聚合商家族：底座 low 档实发字段（client.rs OpenRouter/Novita/Together 臂
+    // `reasoning_effort`+`thinking enabled`；SiliconFlow 臂 low→`high`+enabled）——
+    // 审查若发零控制，主对话思考而审查静默关思考，违背"永不关闭"。
+    if matches!(
+        provider,
+        "openrouter" | "orcarouter" | "novita" | "together"
+    ) {
+        body["reasoning_effort"] = json!("low");
+        body["thinking"] = json!({ "type": "enabled" });
+        return;
+    }
+    if matches!(provider, "siliconflow" | "siliconflow-cn") {
+        body["reasoning_effort"] = json!("high");
+        body["thinking"] = json!({ "type": "enabled" });
         return;
     }
 }
@@ -1076,6 +1155,41 @@ mod tests {
         );
         assert_eq!(ollama["think"], json!(true), "{ollama}");
 
+        // Ollama 托管云（精确 https://ollama.com/v1）：引擎升级为 OllamaCloud，
+        // 用 reasoning_effort 线而非 think（config provider.rs is_exact_ollama_cloud_route）。
+        let mut ollama_cloud = json!({});
+        apply_review_thinking_controls(
+            &mut ollama_cloud,
+            ModelPreset::OpenaiCompatible,
+            "ollama",
+            "https://ollama.com/v1/",
+            "qwen3:8b",
+        );
+        assert_eq!(
+            ollama_cloud["reasoning_effort"],
+            json!("low"),
+            "{ollama_cloud}"
+        );
+        assert!(
+            ollama_cloud.get("think").is_none(),
+            "托管云不吃本地 boolean think: {ollama_cloud}"
+        );
+
+        // 底座 is_exact_https_route 的 path 大小写敏感："V1" 不是托管云 → 本地 think 线。
+        let mut ollama_lookalike = json!({});
+        apply_review_thinking_controls(
+            &mut ollama_lookalike,
+            ModelPreset::OpenaiCompatible,
+            "ollama",
+            "https://ollama.com/V1",
+            "qwen3:8b",
+        );
+        assert_eq!(ollama_lookalike["think"], json!(true), "{ollama_lookalike}");
+        assert!(
+            ollama_lookalike.get("reasoning_effort").is_none(),
+            "{ollama_lookalike}"
+        );
+
         // DeepSeek：档位表 Low 档（reasoning_effort=low + thinking enabled）。
         let mut deepseek = json!({});
         apply_review_thinking_controls(
@@ -1103,6 +1217,24 @@ mod tests {
             "qwen3.6-plus",
         );
         assert_eq!(qwen["enable_thinking"], json!(true), "{qwen}");
+
+        // Qwen thinking-only 型号（底座 modelstudio_model_is_thinking_only 名单，
+        // qwen3.8-max 是 Qwen preset 默认）：拒绝 enable/disable 控制 → 不发任何字段。
+        let mut qwen_thinking_only = json!({});
+        apply_review_thinking_controls(
+            &mut qwen_thinking_only,
+            ModelPreset::Qwen,
+            "openai",
+            ModelPreset::Qwen.default_base_url(),
+            "qwen3.8-max",
+        );
+        assert!(
+            qwen_thinking_only
+                .as_object()
+                .expect("body object")
+                .is_empty(),
+            "thinking-only qwen 拒绝开关字段: {qwen_thinking_only}"
+        );
 
         // Doubao/Volces：底座把 low 折叠为 high + enabled。
         let mut doubao = json!({});
@@ -1198,6 +1330,165 @@ mod tests {
             responses_qwen["enable_thinking"],
             json!(true),
             "{responses_qwen}"
+        );
+
+        // Vendor 归一家族：provider 字符串直接归臂（OpenaiCompatible preset +
+        // 非可嗅探网关也要与底座同线材，review/mod.rs 各臂 provider 匹配）。
+        let mut zai_vendor = json!({});
+        apply_review_thinking_controls(
+            &mut zai_vendor,
+            ModelPreset::OpenaiCompatible,
+            "zai",
+            "https://gateway.example/v1",
+            "glm-5.1",
+        );
+        assert_eq!(
+            zai_vendor["thinking"],
+            json!({ "type": "enabled", "clear_thinking": false }),
+            "{zai_vendor}"
+        );
+        let mut volcengine_vendor = json!({});
+        apply_review_thinking_controls(
+            &mut volcengine_vendor,
+            ModelPreset::OpenaiCompatible,
+            "volcengine",
+            "https://gateway.example/v1",
+            "doubao-pro",
+        );
+        assert_eq!(
+            volcengine_vendor["reasoning_effort"],
+            json!("high"),
+            "{volcengine_vendor}"
+        );
+        assert_eq!(
+            volcengine_vendor["thinking"],
+            json!({ "type": "enabled" }),
+            "{volcengine_vendor}"
+        );
+        let mut minimax_vendor = json!({});
+        apply_review_thinking_controls(
+            &mut minimax_vendor,
+            ModelPreset::OpenaiCompatible,
+            "minimax",
+            "https://gateway.example/v1",
+            "MiniMax-M3",
+        );
+        assert_eq!(
+            minimax_vendor["reasoning_split"],
+            json!(true),
+            "{minimax_vendor}"
+        );
+        let mut mimo_vendor = json!({});
+        apply_review_thinking_controls(
+            &mut mimo_vendor,
+            ModelPreset::OpenaiCompatible,
+            "xiaomi-mimo",
+            "https://gateway.example/v1",
+            "mimo-pro",
+        );
+        assert_eq!(
+            mimo_vendor["thinking"],
+            json!({ "type": "enabled" }),
+            "{mimo_vendor}"
+        );
+
+        // 聚合商家族：底座 low 档实发（OpenRouter 臂 effort low+enabled；
+        // SiliconFlow 臂 low→high+enabled），审查发零控制=静默关思考。
+        let mut openrouter = json!({});
+        apply_review_thinking_controls(
+            &mut openrouter,
+            ModelPreset::OpenaiCompatible,
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            "deepseek/deepseek-chat-v4",
+        );
+        assert_eq!(openrouter["reasoning_effort"], json!("low"), "{openrouter}");
+        assert_eq!(
+            openrouter["thinking"],
+            json!({ "type": "enabled" }),
+            "{openrouter}"
+        );
+        let mut siliconflow = json!({});
+        apply_review_thinking_controls(
+            &mut siliconflow,
+            ModelPreset::OpenaiCompatible,
+            "siliconflow-cn",
+            "https://api.siliconflow.cn/v1",
+            "deepseek-ai/DeepSeek-V4",
+        );
+        assert_eq!(
+            siliconflow["reasoning_effort"],
+            json!("high"),
+            "{siliconflow}"
+        );
+        assert_eq!(
+            siliconflow["thinking"],
+            json!({ "type": "enabled" }),
+            "{siliconflow}"
+        );
+
+        // URL 嗅探变体（provider/preset 都不带家族信息时归臂不能漏）。
+        let mut deepseek_url = json!({});
+        apply_review_thinking_controls(
+            &mut deepseek_url,
+            ModelPreset::OpenaiCompatible,
+            "openai",
+            "https://api.deepseek.com/v1",
+            "deepseek-v4-pro",
+        );
+        assert_eq!(
+            deepseek_url["reasoning_effort"],
+            json!("low"),
+            "{deepseek_url}"
+        );
+        assert_eq!(
+            deepseek_url["thinking"],
+            json!({ "type": "enabled" }),
+            "{deepseek_url}"
+        );
+        let mut moonshot_ai_url = json!({});
+        apply_review_thinking_controls(
+            &mut moonshot_ai_url,
+            ModelPreset::OpenaiCompatible,
+            "openai",
+            "https://api.moonshot.ai/v1",
+            "kimi-k2.6",
+        );
+        assert_eq!(
+            moonshot_ai_url["thinking"],
+            json!({ "type": "enabled" }),
+            "{moonshot_ai_url}"
+        );
+        let mut minimaxi_url = json!({});
+        apply_review_thinking_controls(
+            &mut minimaxi_url,
+            ModelPreset::OpenaiCompatible,
+            "openai",
+            "https://api.minimaxi.com/v1",
+            "MiniMax-M2.5",
+        );
+        assert_eq!(
+            minimaxi_url["reasoning_split"],
+            json!(true),
+            "{minimaxi_url}"
+        );
+        let mut byteplus_url = json!({});
+        apply_review_thinking_controls(
+            &mut byteplus_url,
+            ModelPreset::OpenaiCompatible,
+            "openai",
+            "https://ark.ap-southeast.byteplus.com/api/v3",
+            "doubao-pro",
+        );
+        assert_eq!(
+            byteplus_url["reasoning_effort"],
+            json!("high"),
+            "{byteplus_url}"
+        );
+        assert_eq!(
+            byteplus_url["thinking"],
+            json!({ "type": "enabled" }),
+            "{byteplus_url}"
         );
     }
 
