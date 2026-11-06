@@ -248,9 +248,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   delivery stays queued until the engine reports `SteerCommitted` for it — the
   done marker and the spool-file removal land on commit (the marker is what a
   keyed retry consults for dedup), while a dropped steer leaves the file
-  queued and re-delivers on the next poll, bounded per process (a watcher
-  restart re-buys the cycle budget, the same per-process doctrine as the
-  retry budget disclosed below): after ten dropped cycles
+  queued and re-delivers on the next poll — or later in the same pass, when
+  the drop lands ahead of the file's sorted position — bounded per process
+  (a watcher restart re-buys the cycle budget, the same per-process
+  doctrine as the retry budget disclosed below): after ten dropped cycles
   the file is quarantined (`steer_drop_limit`). If no terminal event ever
   arrives while the app keeps running (a forwarder aborted by an engine
   recycle), the wait is given up after 24h and the message re-delivers; a
@@ -297,17 +298,27 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   consecutive ~1 Hz polls before the removal-streak arm quarantines — the
   round-18 minor-3 precision: "at-least-once" covers a bounded
   ten-duplicate burst; the double-dispatch window attribution (round-21
-  minor 13, re-scoped when finalization moved to the commit, round-4): an
+  minor 13, re-scoped when finalization moved to the commit, round-4; the
+  mid-delivery-replacement sub-arm re-scoped again, round-7): an
   UNKEYED resubmission re-delivers at any latency (a fresh uuid spool name
-  — the steer window is irrelevant), while a KEYED resubmission
-  double-dispatches while the earlier body's steer is still in flight (a
-  window that used to end at the steer-Ok finalization and now ends at
-  the terminal event, bounded by the 24h commit wait) with a materially
-  different body — the stale-release gate answers semantically-equal
-  bodies without spooling — and unconditionally once a give-up expiry
-  removed the registration marker-less (the prune writes no marker, so
-  there is no gate left to consult); once the commit's done marker exists,
-  the pre-spool probe answers a keyed retry without spooling); a steer
+  — the steer window is irrelevant), while a KEYED resubmission always
+  re-spools into the same pending file (the server has no visibility into
+  the armed registration — only a landed done marker suppresses the spool
+  write), and what happens then depends on the compare: a materially
+  different body is caught by the delivering pass's post-delivery
+  re-verify, which re-queues it before any registration exists — the old
+  body's terminal event then ends nothing app-side (it is buffered as late
+  and ages out), so that double-dispatch window ends when the newest
+  body's own delivery lands, one retry backoff later (5-60s) — not at the
+  terminal event and not the 24h wait; a semantically-equal body re-spools
+  too but is held by the poll's stale-release gate without re-dispatching
+  (the dedup happens at hold time, not spool time) until the earlier
+  body's terminal event finalizes — that is the window bounded by the 24h
+  commit wait; and a keyed resubmission double-dispatches unconditionally
+  once a give-up expiry removed the registration marker-less (the prune
+  writes no marker, so there is no gate left to consult); once the
+  commit's done marker exists, the pre-spool probe answers a keyed retry
+  without spooling); a steer
   accepted against a mid-turn target can still be
   dropped by the foundation — when that turn is cancelled
   (`chat:steer_dropped`) or when the engine is evicted/rebuilt before the
@@ -327,7 +338,8 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   channel where a keyed retry was answered "delivered" from a marker
   written at steer-Ok); every former loss trigger now degrades to
   at-least-once redelivery (possibly duplicating) instead of silent loss,
-  save the ceiling carve-out above; a
+  save the two quarantine carve-outs above (the pending-file ceiling, and
+  the ten-cycle `steer_drop_limit` quarantine); a
   macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
   double-deliver — since commit-time finalization that double-delivery
