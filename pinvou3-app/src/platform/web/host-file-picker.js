@@ -20,7 +20,7 @@
     thisComputer: "此电脑", home: "用户目录", emptyFolder: "此目录中没有可选内容",
     loadFailed: function (err) { return "读取失败：" + err; },
     workspaceNotAuthorized: "请先在桌面端允许远程访问本机目录",
-    listingFailed: "读取桌面端文件列表失败,请重试。",
+    listingFailed: "读取桌面端文件列表失败，请重试。",
     alreadyOpen: "已有文件选择器正在打开",
   };
 

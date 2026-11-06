@@ -815,6 +815,7 @@ cancel: 'キャンセル', chooseThisFolder: 'このフォルダーを選択', c
 currentFolder: path => `現在のフォルダー：${path}`, selectedCount: n => `${n} 件選択中`,
 thisComputer: 'この PC', home: 'ホーム', emptyFolder: 'このフォルダーに選択できる項目はありません',
 loadFailed: err => `読み込みに失敗しました：${err}`, workspaceNotAuthorized: '先にデスクトップでローカルフォルダーへの遠隔アクセスを許可してください', alreadyOpen: 'ファイル選択ダイアログはすでに開いています',
+listingFailed: 'デスクトップのファイル一覧の読み込みに失敗しました。もう一度お試しください。',
   },
   webClientErrors: {
 stateNotReady: '遠隔操作の状態が未準備のため、デスクトップのイベントを処理できません',

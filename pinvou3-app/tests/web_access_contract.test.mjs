@@ -788,6 +788,16 @@ for (const label of [
 ]) {
   assert.equal(i18n.includes(label), true, `missing localized host workspace error: ${label}`);
 }
+// Round-23 复审 MINOR:listingFailed 此前只存在于 picker 内置的中文兜底
+// 表——en/ja 词典没有该键,全部语言都渲染中文兜底。三语键存在性与
+// workspaceNotAuthorized 同一口径钉死;词典删键即红。
+for (const label of [
+  'Listing desktop files failed. Please try again.',
+  'デスクトップのファイル一覧の読み込みに失敗しました。もう一度お試しください。',
+  '读取桌面端文件列表失败，请重试。',
+]) {
+  assert.equal(i18n.includes(label), true, `missing localized host file listing failure: ${label}`);
+}
 assert.match(appMain, /PinvouHostFilePickerStrings\s*=\s*misc\.hostFilePicker/,
   'the active locale must reach the Web host picker error branch');
 assert.match(remoteControlCommands,
