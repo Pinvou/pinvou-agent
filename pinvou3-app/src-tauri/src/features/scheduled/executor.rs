@@ -490,9 +490,7 @@ impl TaskExecutor for ScheduledChatExecutor {
                 return TaskExecutionResult {
                     status: TaskStatus::Failed,
                     result_text: None,
-                    error: Some(crate::platform::credential_store::redact_secret(
-                        &crate::platform::paths::redact_storage_prefix(&detail),
-                    )),
+                    error: Some(fold_then_redact(&detail)),
                     terminal_reason: TaskTerminalReason::Failed,
                 };
             }
@@ -585,11 +583,7 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
             // 口径。Round-21 复审:口径统一为先折叠后扫描(下方 failed(
             // 同批修正)——secret 先行会在含空白的家目录上让 ≥24 长度族
             // 先吃掉折叠 needle(记忆命令臂 S10-1 实证形态)。
-            error: completion.error.map(|error| {
-                crate::platform::credential_store::redact_secret(
-                    &crate::platform::paths::redact_storage_prefix(&error),
-                )
-            }),
+            error: completion.error.map(|error| fold_then_redact(&error)),
             terminal_reason: TaskTerminalReason::Canceled,
         };
     }
@@ -604,17 +598,30 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
         TurnOutcomeStatus::Failed => TaskExecutionResult {
             status: TaskStatus::Failed,
             result_text: None,
-            error: Some(crate::platform::credential_store::redact_secret(
-                &crate::platform::paths::redact_storage_prefix(
-                    &completion
-                        .error
-                        .unwrap_or_else(|| "Scheduled conversation failed".to_string()),
-                ),
+            error: Some(fold_then_redact(
+                &completion
+                    .error
+                    .unwrap_or_else(|| "Scheduled conversation failed".to_string()),
             )),
             terminal_reason: TaskTerminalReason::Failed,
         },
         TurnOutcomeStatus::Interrupted => unreachable!("handled above"),
     }
+}
+
+/// Run-record 错误出站的统一纪律(round-21 复审 MAJOR-2 定序,round-22
+/// 复审 m1/m2 收拢为单 helper):先折叠存储根,再对折叠后文本做 secret
+/// 扫描——旧序(secret 先行)在含空白的家目录上会让 ≥24 长度族的空白
+/// 分词吃掉折叠 needle(`...John [REDACTED]` 形态),盘符/用户名碎片
+/// 明文落 Web 可见的 run record。顺序写死在本 helper 内,臂级重新内联
+/// 旧序会被 census 钉拦下;空白 home 行为牙见
+/// failed_folds_before_the_secret_scan_on_whitespace_homes。已折叠文本
+/// 二次折叠幂等。organize 臂(format! 前缀拼接)与 secret-only 的
+/// delivery 臂不走本 helper(各有独立源钉),census 钉死全文件拼写数。
+fn fold_then_redact(raw: &str) -> String {
+    crate::platform::credential_store::redact_secret(
+        &crate::platform::paths::redact_storage_prefix(raw),
+    )
 }
 
 fn failed(error: impl std::fmt::Display) -> TaskExecutionResult {
@@ -625,17 +632,10 @@ fn failed(error: impl std::fmt::Display) -> TaskExecutionResult {
         // context 携带 `<home>/.../scheduled-runs/...` 绝对路径
         // (sessions/retention.rs),run_turn 错误链同类;run record 经
         // list_scheduled_task_runs 出站(Web 允许清单内),与上方 organize
-        // 臂同一口径。Round-21 复审:口径修正为先折叠后扫描(fold 内层、
-        // secret 外层)——round-20 的 secret 内层序正是记忆命令臂 S10-1
-        // 实证过的泄漏形态:含空白的家目录上 ≥24 长度族会先吃掉折叠
-        // needle,盘符/用户名碎片明文出站;fold 先行让 needle 完整存活,
-        // 折叠后文本再过扫描(短 token 存活为折叠形态,长 token 整体
-        // [REDACTED],两个方向都不残留家目录碎片)。organize 臂在本文件
-        // 内自行折叠且不走本 helper(见其双界源钉);已折叠文本二次折叠
-        // 幂等。
-        error: Some(crate::platform::credential_store::redact_secret(
-            &crate::platform::paths::redact_storage_prefix(&error.to_string()),
-        )),
+        // 臂同一口径。Round-21 复审定序为先折叠后扫描,Round-22 复审
+        // (m1/m2)把该纪律收拢进 fold_then_redact——臂级顺序漂移在
+        // 结构上不可能;空白 home 行为牙与本臂的 helper 接线各有独立钉。
+        error: Some(fold_then_redact(&error.to_string())),
         terminal_reason: TaskTerminalReason::Failed,
     }
 }
@@ -1957,6 +1957,92 @@ mod tests {
         Ok(())
     }
 
+    /// Round-22 复审(m1/m2)census 钉:四个 run-record 错误臂统一经
+    /// fold_then_redact 折叠(secret-only 的 delivery 臂与自带 format!
+    /// 前缀的 organize 臂除外)。全文件生产半边的两个原语拼写数钉死:
+    /// 新错误臂若内联旧序或绕开 helper,census 计数即变红,作者必须
+    /// 显式并入 helper(census 盲区:改写拼写——如 use 引入短名——不
+    /// 计数;组织形态改变时由编译器与行为钉兜底)。
+    #[test]
+    fn run_record_fold_census_routes_through_the_helper() {
+        let source = include_str!("executor.rs");
+        let production = source
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("executor.rs must keep its tests behind #[cfg(test)]");
+        assert_eq!(
+            production
+                .matches("crate::platform::credential_store::redact_secret(")
+                .count(),
+            3,
+            "exactly the helper, the organize arm and the secret-only delivery \
+             arm may scan; new error arms must route through fold_then_redact"
+        );
+        assert_eq!(
+            production
+                .matches("crate::platform::paths::redact_storage_prefix(")
+                .count(),
+            2,
+            "exactly the helper and the organize arm may fold; new error arms \
+             must route through fold_then_redact"
+        );
+    }
+
+    /// Round-22 复审(m1)行为钉:failed() 出口的空白 home 顺序牙——
+    /// 此前只有 organize 臂有(本臂单元钉的短 home 下两序字节相同,顺序
+    /// 回归无信号,突变实证 323 全绿)。直接驱动 failed():生产 helper
+    /// (先折叠后扫描)两个方向都不残留家目录碎片;对照腿用旧序手工
+    /// 复现泄漏形状,临时目录超长的平台跳过对照腿(与 organize 钉同
+    /// 口径)。改回旧序或绕开 helper 内联均红。
+    #[test]
+    fn failed_folds_before_the_secret_scan_on_whitespace_homes() {
+        let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
+        let home = base.join("John Doe").join(".pinvou3");
+        std::fs::create_dir_all(&home).unwrap();
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let home_now = crate::platform::paths::pinvou3_home();
+        let detail = format!(
+            "create_scheduled_run: {}/scheduled-runs/r.json12345678901234567890123456789",
+            home_now.display()
+        );
+        let error = failed(&detail).error.expect("failed() carries the error");
+        assert!(
+            !error.contains("John") && !error.contains("Doe"),
+            "fold-first must not leak any home fragment onto the web-visible \
+             run record, got: {error}"
+        );
+
+        // 对照腿:旧序(secret 先行)确实产生碎片泄漏(空白前段短于
+        // ≥24 族时可构造;临时目录超长的平台造不出,跳过)。
+        let pre_space = format!("{}/John", base.display());
+        if pre_space.len() < 24 {
+            let leaked = crate::platform::paths::redact_storage_prefix(
+                &crate::platform::credential_store::redact_secret(&detail),
+            );
+            assert!(
+                leaked.contains("John"),
+                "control: the reversed order must reproduce the fragment-leak \
+                 shape this pin forbids, got: {leaked}"
+            );
+        }
+
+        // 短尾段腿:折叠形态完整出站(折叠层在扫描前已替换干净)。
+        let plain = failed(format!(
+            "create_scheduled_run: {}/mem/x.json: boom",
+            home_now.display()
+        ))
+        .error
+        .expect("failed() carries the error");
+        assert!(
+            plain.contains("~/.pinvou3/mem/x.json"),
+            "the short folded tail must survive the secret scan intact, got: {plain}"
+        );
+    }
+
     #[test]
     fn failed_reason_folds_the_storage_root_like_the_organize_arm() {
         // Round-20 复审 MAJOR-2 行为钉(单元半):failed( 是
@@ -1964,10 +2050,11 @@ mod tests {
         // create_scheduled_run 的最外层 anyhow context 携带绝对存储路径,
         // 此前该出口无任何折叠。删除 failed( 内的折叠本断言即红。
         // (Round-21 复审修正:round-20 注释声称「内外层序对调本断言即红」
-        // 不成立——短 home 下两层 token 都短于 ≥24 族,对调是字节级 no-op,
-        // 顺序由源钉
-        // memory_organize_failure_reason_folds_the_storage_prefix 与空白
-        // home 行为钉守护。)
+        // 不成立——短 home 下两层 token 都短于 ≥24 族,对调是字节级
+        // no-op。Round-22 复审(m1):顺序牙由 fold_then_redact helper
+        // census 钉与本文件
+        // failed_folds_before_the_secret_scan_on_whitespace_homes 行为钉
+        // 提供,本钉只负责折叠层存在性。)
         let (_env_guard, _env_restore) =
             crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
