@@ -63,8 +63,11 @@ OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体
   内存切换已生效，落盘只做尽力持久化；**开关翻转（`set_ask_on_guardrail`）
   则先落盘后发布**——侧车 RMW 成功之前不写条目与覆盖镜像，任何读侧都不会
   看到盘上不存在的值（fail-consistent；失败路径没有回滚动作：内存从未离开
-  调用前状态）。中断写入留不下截断文件，损坏文件在装载时记录错误日志后
-  按保守默认跳过（不静默）。
+  调用前状态）。尽力持久化的失败方向不对称：**降宽切换（Yolo→Plan/Auto）
+  落盘失败时，当次进程内芯片与引擎姿态仍为已收窄档，但重启后按持久化的
+  更宽档恢复**（升宽切换失败只会保守）——这是交互车道的既定取舍，
+  headless 计划路径走 `set_mode_and_persist` 的严格档。中断写入留不下截断
+  文件，损坏文件在装载时记录错误日志后按保守默认跳过（不静默）。
   会话删除/驱逐时侧车条目随保留策略一并清除。
 - lane 全局默认（settings.json `mode_defaults.work` /
   `code_permission.last_mode`）**永不写入 `"auto"` 字面量**：显式 Auto 选择
@@ -218,8 +221,8 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
 
 | 档 | 服务车道 | 规模 | 组成 |
 |---|---|---|---|
-| Full | Plan / Auto（及一切无会话信息的调用方默认） | 8,729 条 | never-sensible 底线族 + 敏感族（逐文件凭据销毁、exfil 直传、持久化、sudo 等），与 pre-profile 组成逐字节一致（快照测试钉） |
-| Floor | Yolo | 3,521 条 | 只保留 never-sensible 底线族，敏感族缺位 |
+| Full | Plan / Auto（及一切无会话信息的调用方默认） | 8,736 条 | never-sensible 底线族 + 敏感族（逐文件凭据销毁、exfil 直传、持久化、sudo 等），与 pre-profile 组成逐字节一致（快照测试钉） |
+| Floor | Yolo | 3,528 条 | 只保留 never-sensible 底线族，敏感族缺位 |
 
 - **profile 只选择组装哪些规则族，绝不改写规则串、绝不 Deny→Ask 改标**：每条
   发出的规则保持 typed `Deny`，命中的族在一切审批姿态下照旧短路。武装会话对
@@ -383,8 +386,9 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   full_is_the_pinned_composition` / `_floor_keeps_floor_drops_sensitive` /
   `_sudo_toggle_interplay_unchanged` / `_floor_engine_behavior` /
   `_engine_lane_forces_full_for_unattended_runs` / `_floor_count_is_pinned`
-  （Full 8,729 沿用既有 `rule_snapshot_is_stable` 快照，Floor 3,521 新钉；
-  车道矩阵另有专测），加 sessions/commands 域的开关持久化与
+  （Full 8,736 沿用既有 `rule_snapshot_is_stable` 快照——round-13 的
+  resolved-home 尾斜杠 exfil 面补 7 条后由 8,729 重钉，Floor 3,528 同批由
+  3,521 重钉；车道矩阵另有专测），加 sessions/commands 域的开关持久化与
   默认播种回归；前端 lane 覆盖三态芯片、开关与 ApprovalCard。
 - **登记**：fork-guard 的 `EXPECTED_HEAD`/`EXPECTED_COMMITS` 与指纹表
   （`scripts/fork-guard.sh`）、`docs/fork-modifications.md` T2 增补随本 PR
@@ -394,6 +398,16 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
 
 ## 9. 已知边界
 
+- **辅助对话（aux）的模式初始化与 Web 准入**：aux 车道没有自己的模式控制
+  （面板从不激活会话，父会话的模式芯片到不了它），其模式记录在创建与复用
+  两个入口按父会话当期有效档初始化（Auto 以安全档 Plan 替代——Web 准入门
+  拒绝的姿态；显式 Plan/Yolo 原样继承，Yolo aux 经门放行——aux 车道本身
+  强制零工具）。pre-tri-mode 时代物化的 aux 记录在首次复用时补初始化，且
+  只对「确认缺席」的记录生效：瞬时读故障、解析损坏、隔离态一律跳过（unknown
+  is never absent in a write path），下次打开面板自愈；已有持久档（含从
+  已切换父会话继承的 Yolo 钉）是既有选择，复用永不重解析。补初始化走
+  `set_mode` 的尽力持久化档，落盘失败由下一次复用重试闭合（评审
+  JensenChen28 5801173510 + 5802339766）。
 - **旧写者不能把带旗会话改选为 Plan**：`plan`+伴随旗的读回一律按显式
   Auto 升级（旧格式无法区分「坍缩 Auto」与旧版显式 Plan，见第 6 节的
   兼容决策）；这是有意封存的互操作边界，不是缺陷。

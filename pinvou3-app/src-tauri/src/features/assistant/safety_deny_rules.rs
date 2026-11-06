@@ -213,7 +213,9 @@
 //!   Mainstream denies none of them; the blanket `ssh-keygen` word denied
 //!   legitimate key generation.
 //!
-//! The final count is 8,729 rules. v3.4 (the second review fix round)
+//! The final count is 8,736 rules (round-13's resolved-home trailing-slash
+//! exfil face added the +7 spellings over the older 8,729 narration; this
+//! doc line moves with the snapshot pins). v3.4 (the second review fix round)
 //! closed the whole-home exfiltration hole — the destroy face has carried
 //! the bare home roots since v3.1 but the upload face enumerated only
 //! credential paths, so `scp -r ~ host:` exfiltrated the home root past
@@ -2733,9 +2735,11 @@ mod tests {
     }
 
     /// Tri-mode profile seam, pinned Floor count: the Floor (Yolo lane)
-    /// composition is pinned at exactly 3,521 rules (the documented count in
-    /// `docs/safety-modes.md`; the Full profile pins 8,729 in
-    /// `rule_snapshot_is_stable`). Same host-independent test composition as
+    /// composition is pinned at exactly 3,528 rules (the documented count in
+    /// `docs/safety-modes.md`; the Full profile pins 8,736 in
+    /// `rule_snapshot_is_stable` — both counts moved +7 with round-13's
+    /// resolved-home trailing-slash exfil face over the older 3,521/8,729
+    /// narration). Same host-independent test composition as
     /// the Full pin: sudo state injected off, no Windows real-home prefix.
     /// Pinning the exact number turns any silent family drop/addition in the
     /// Floor lane red immediately.
