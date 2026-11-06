@@ -347,10 +347,12 @@ earlier raw-bytes-plus-headroom approximation let crafted frames through.)
   problems (`relay_state_load_failed ...`, the over-size line, or the
   non-regular-file line), and bind failures (`listen_failed code=<errno>`).
   No startup report echoes a filesystem path, the offending value, or the
-  bind address. Three runtime events share the same fixed-line discipline and
+  bind address. Four runtime events share the same fixed-line discipline and
   leave the process up: `websocket_protocol_violation code=<ws error code>`
   (a contained per-socket protocol violation), `revocation_persist_failed
-  code=<errno>`, and `revocation_unexpected_failure`.
+  code=<errno>`, `revocation_unexpected_failure`, and
+  `forward_reencode_refused` (a web forward whose re-serialized encoding
+  exceeds the desktop bound is refused without touching the desktop).
 - After the handlers are installed at the very end of startup, `SIGINT` and
   `SIGTERM` terminate all WebSocket clients without a close handshake (peers
   observe an abnormal closure) and exit the process with code 0; in-flight
