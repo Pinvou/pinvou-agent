@@ -66,14 +66,19 @@ const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
 // 漏扫。改为递归收集(按完整路径排序,顺序确定性不变)。Round-21 复审:
 // readdirSync 的默认 sort 触发 unicorn/require-array-sort-compare(CI
 // frontend-test 自 round-20 wave 起红)——改用显式比较器,不再依赖
-// 元素恰为字符串的隐式行为。
+// 元素恰为字符串的隐式行为。Round-22 复审:改走 readdirSync 的
+// withFileTypes(Dirent.isDirectory 为 lstat 语义)——statSync 会跟随
+// 目录符号链接,三个扫描根下一旦出现链接目录就会跨树递归(假红)甚至
+// 成环;与 bridge_domain_protocol 套件的 sourceFiles 同款形态。
 function walkRustSources(rootDir) {
   const files = [];
   const visit = dir => {
-    for (const name of fs.readdirSync(dir).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
-      const full = path.join(dir, name);
-      if (fs.statSync(full).isDirectory()) visit(full);
-      else if (name.endsWith('.rs')) files.push(full);
+    for (const entry of fs
+      .readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (entry.name.endsWith('.rs')) files.push(full);
     }
   };
   visit(rootDir);
