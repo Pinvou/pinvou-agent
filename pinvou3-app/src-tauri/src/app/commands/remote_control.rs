@@ -1949,17 +1949,37 @@ mod tests {
         // (枚举 + grant 铸造)都出现,contains 对单腿回退是盲的(round-22
         // 复审的突变 A——只回退一条腿——原样保绿)。两条腿的
         // web_session_result 接线按计数钉死:删掉任一腿计数即变 1。
+        // Round-23 复审:计数前先滤除纯注释行,终止符表补齐
+        // `#[tauri::command]`/`fn ` 与兄弟循环同表——「单腿回退 + 窗内
+        // 注释提及 `web_session_result(`」的补偿突变此前保持全绿(注释把
+        // 计数补回 2;行级 marker 钉不受影响,它断言的是接线的存在性而非
+        // 计数)。(行首过滤口径:行尾 `//` 与块注释内的提及仍能掩护,按
+        // 已披露残留。)
         {
             let start = source
                 .find("pub fn web_access_list_host_files(")
                 .expect("web_access_list_host_files must exist");
             let body = &source[start..];
-            let end = ["\npub async fn ", "\npub fn ", "\n#[cfg(test)]"]
-                .iter()
-                .filter_map(|delimiter| body.find(delimiter))
-                .min()
-                .expect("web_access_list_host_files body must be terminated");
-            let leg_folds = body[..end].matches("web_session_result(").count();
+            let end = [
+                "\n#[tauri::command]",
+                "\n#[cfg(test)]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\nfn ",
+            ]
+            .iter()
+            .filter_map(|delimiter| body.find(delimiter))
+            .min()
+            .expect("web_access_list_host_files body must be terminated");
+            let counted = body[..end]
+                .lines()
+                .filter(|line| {
+                    let trimmed = line.trim_start();
+                    !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let leg_folds = counted.matches("web_session_result(").count();
             assert_eq!(
                 leg_folds, 2,
                 "both legs of web_access_list_host_files (the listing and the \

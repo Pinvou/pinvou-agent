@@ -1213,6 +1213,20 @@ mod tests {
                 window_hi -= 1;
             }
             let arm = &source[window_lo..window_hi];
+            // Round-23 复审:窗口先滤除纯注释行再断言——「折叠删掉、窗口
+            // 内的注释提及 needle」的补偿突变在兄弟钉上曾突变实证(round-16
+            // M6a),本钉此前不过滤,窗内已有的注释块能吸收字面量而保持全
+            // 绿。(口径注记与 web_visible 钉相同:行首判定——行尾 `//`
+            // 注释与块注释内的提及仍能掩护,彻底闭合需字符串感知的词法扫
+            // 描,按已披露残留处理。)
+            let arm = arm
+                .lines()
+                .filter(|line| {
+                    let trimmed = line.trim_start();
+                    !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             assert!(
                 arm.contains("redact_storage_prefix(&format!("),
                 "{label} must apply the fold to the raw error detail \

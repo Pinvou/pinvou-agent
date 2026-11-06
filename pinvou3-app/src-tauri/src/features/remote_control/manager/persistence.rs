@@ -941,6 +941,18 @@ mod tests {
             window_start -= 1;
         }
         let window = &source[window_start..start];
+        // Round-23 复审:窗口先滤除纯注释行再断言——剪裁/标注删掉后,窗口
+        // 内注释提及同一字面量即可补偿(兄弟钉的突变实证类,round-16
+        // M6a)。(行首过滤口径:行尾 `//` 与块注释内的提及仍能掩护,按已
+        // 披露残留。)
+        let window = window
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             window.contains("filter(|character| {"),
             "dropped endpoint ids must be clipped to the validated charset              before they are named in the log"
