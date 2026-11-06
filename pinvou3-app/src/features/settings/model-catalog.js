@@ -463,7 +463,7 @@ const MODEL_CATALOG = {
       // k3.1-pro[1m] (the k3[1m] entry no longer appears on the CC page; the
       // ACP catalog keeps it as an append-only legacy suggestion). The
       // base's tiered-effort route only learns bare k3 / k3-256k, so the
-      // kimi rows expose no tier control at all: the bare k3.1 spellings
+      // K3.1 rows expose no tier control at all: the bare k3.1 spellings
       // and the documented [1m] declaration forms (k3.1-pro[1m] /
       // kimi-k3.1-pro[1m], bracket-tolerant in isMoonshotK31ModelName since
       // the round-4 review) all exit to no ladder — the generic off/high
@@ -704,8 +704,12 @@ const MODEL_CATALOG = {
       // same page's "retired" table already lists M2.x, and PAYG price rows
       // are gone — treat them as end-of-sale with the 11-18 wire cutoff).
       // The whole M2.x family is text-only with thinking always on. The
-      // official China docs' primary endpoint is api.minimax.cn (now the only
-      // documented host, with an /anthropic variant);
+      // official China docs' primary endpoint is api.minimax.cn (the only
+      // host the CN docs document, with an /anthropic variant); the
+      // international docs (platform.minimax.io, re-checked 2026-11-06
+      // round-11) still document api.minimax.io as their API host, so of
+      // the base gate's two pinned hosts only api.minimaxi.com is now
+      // undocumented;
       // api.minimaxi.com still answers (live probes 2026-11-04 round-4
       // review: chat/completions answers 401 with body status 1004
       // auth-failed, the legacy text endpoint answers 200 with the same
@@ -719,18 +723,23 @@ const MODEL_CATALOG = {
       // app-side alone would silently drop the M3 tier UI).
       // Output-cap disclosure (2026-11-04 fix pass): the protocol API
       // references (platform.minimax.io / platform.minimax.cn
-      // api-reference, re-verified live 2026-11-04) DO publish the figure —
+      // api-reference, re-verified live 2026-11-04) carried the figure —
       // max_completion_tokens: "For MiniMax-M3.1-Flash and MiniMax-M3 the
       // recommended value is 131072 (128K) and the maximum is 524288
-      // (512K)". The earlier "no published max-output figure" premise here
-      // was refuted (the figure-free pages cited were the overview/FAQ/
-      // guide pages, not the API reference), as was the "sibling M3 caps at
-      // 64K" contrast (the base's bundled snapshot records M3 output
-      // 524288). The documented hard cap is anchored in
-      // core::model_context (the deepseek-flash precedent: register the
-      // documented maximum; the engine's 64K automatic-request intersection
-      // governs the effective wire cap exactly as for kimi-k3.1-pro), so
-      // the GA id no longer rides the 8192 uncatalogued fail-close.
+      // (512K)" (that fetch also refuted the earlier "no published
+      // max-output figure" premise — the figure-free pages cited then were
+      // the overview/FAQ/guide pages — and the "sibling M3 caps at 64K"
+      // contrast; the base's bundled snapshot records M3 output 524288).
+      // The 2026-11-06 round-11 re-check found the figure on NO current
+      // MiniMax docs page any more (both protocol refs CN+EN, api-overview,
+      // text-ai-sdk, guides, models, release-notes, FAQ, pricing, blog),
+      // so the citation rests on the 2026-11-04 fetch alone — re-verify at
+      // the next refresh. The 524288 anchor stays in core::model_context
+      // as the app-side registered cap (the deepseek-flash precedent:
+      // register the documented maximum; the engine's 64K
+      // automatic-request intersection governs the effective wire cap
+      // exactly as for kimi-k3.1-pro), so the GA id no longer rides the
+      // 8192 uncatalogued fail-close.
       // International and China use separate account/key systems.
       endpointAliases: ['https://api.minimax.cn/v1'],
       items: [
@@ -1442,7 +1451,10 @@ const MODEL_CATALOG = {
       // most capable model ("Muse Wonder is on Model API and in Muse
       // Code"; the coding-agents guides use `muse-wonder-1.0`), and it had
       // been missing from the lineup without disclosure. muse-spark-1.3 is
-      // the current default model: 1,048,576 context / 131,072 output,
+      // the vendor's current default model (the engine's DEFAULT_META_MODEL
+      // still carries muse-spark-1.2 — upstream default drift, same class
+      // as the Mistral/Together ones; rows are explicit-id so nothing
+      // resolves differently): 1,048,576 context / 131,072 output,
       // officially multimodal (text/image/PDF/video input; the quickstart
       // states "context 1048576, output 131072" and modalities verbatim —
       // re-verified live 2026-11-04, closing the earlier "re-verify when
@@ -1918,7 +1930,11 @@ function catalogItemMatchesModel(item, model) {
 // kimi-k3.1-pro / k3.1-pro and both highspeed spellings (whats-new
 // 2026-10-23: native vision incl. video; the highspeed variant carries
 // identical constraints to kimi-k3 per the models-overview page — the
-// page's "same model" sentence is its K2.7 Code wording, not K3.1's),
+// page's "same model" sentence is its K2.7 Code wording, not K3.1's;
+// the bare k3.1-pro spellings left the kimi_coding_plan group again in
+// the round-9 review pending the base's replay repair — they reach
+// stored configs through the Rust builtin table, not a FE row; see the
+// kimi_coding_plan group comment),
 // MiniMax-M3.1-Flash (GA
 // 2026-10-19; rides the "minimax-m3" substring entry), gpt-6.1-terra
 // (2026-10-26), muse-spark-1.3 (dev.meta.ai: text/image/PDF/video) and

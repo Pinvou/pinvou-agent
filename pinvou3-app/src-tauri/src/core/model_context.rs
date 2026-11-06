@@ -59,8 +59,10 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // resolves None → the engine falls to 128K, while the monitor page has the
     // prefs "grok-4.20" substring fallback of 1M — the two diverge, hence the
     // same-value override (re-checked as 1M on the docs.x.ai model page on
-    // 2026-09-11). Note this entry also matches the -0309- spellings via
-    // suffix tolerance; both values are identical, so there is no conflict.
+    // 2026-09-11). The -0309- spellings carry their own same-value rows
+    // below, so nothing resolves through this entry (an earlier note
+    // claiming suffix tolerance also matched them was wrong — corrected
+    // 2026-11-06).
     ("grok-4.20-reasoning", 1_000_000),
     // The base known table only lists claude-fable-5 exactly; claude-fable-5-1
     // would miss and fall to the "unknown-name claude wildcard 200K" fallback;
@@ -162,7 +164,10 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // Azure Foundry capability table (page updated 2026-10-29). Known-table
     // placement per the round-9 review (the base chain has no gpt-6-family
     // row — the OVERRIDES contract reserves that table for base-catalogued
-    // rows whose value lags); without it the engine falls to 128K and
+    // rows whose value lags; several older OVERRIDES rows are fill-gap
+    // placements that predate this wording — moving them to KNOWN is
+    // follow-up material, and both tables resolve identically while the
+    // base misses); without it the engine falls to 128K and
     // diverges from the monitor page's Openai preset fallback of 1.05M.
     ("gpt-6.1-terra", 1_050_000),
     // The Kimi K3 direct-platform model is officially rated at 1M tokens
@@ -447,19 +452,23 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // `(window/4).clamp(1, 8192)` re-clamps the declared 1M window to
     // 8192 — the same truncation this table exists to stop.
     ("muse-spark-1.3", 131_072),
-    // MiniMax-M3.1-Flash (GA 2026-10-19): the protocol API references DO
-    // document the figure — max_completion_tokens: "For MiniMax-M3.1-Flash
-    // and MiniMax-M3 the recommended value is 131072 (128K) and the maximum
-    // is 524288 (512K)" (platform.minimax.io / platform.minimax.cn
-    // api-reference, fetched live 2026-11-04; the earlier "no published
-    // figure" premise was refuted — the figure-free pages were the
-    // overview/FAQ/guide pages, not the API reference, and the base's
-    // bundled snapshot already recorded M3 output 524288). The documented
-    // hard cap is registered per the deepseek-flash precedent; the engine's
-    // 64K automatic-request intersection governs the effective wire cap
-    // exactly as for the K3.1 rows above, so the GA id stops riding the
-    // 8192 uncatalogued fail-close. The retired "-Preview" spelling rides
-    // the suffix tolerance.
+    // MiniMax-M3.1-Flash (GA 2026-10-19): the protocol API references
+    // carried the figure at the 2026-11-04 fetch — max_completion_tokens:
+    // "For MiniMax-M3.1-Flash and MiniMax-M3 the recommended value is
+    // 131072 (128K) and the maximum is 524288 (512K)" (platform.minimax.io
+    // / platform.minimax.cn api-reference; that fetch also refuted the
+    // earlier "no published figure" premise — the figure-free pages were
+    // the overview/FAQ/guide pages — and the base's bundled snapshot
+    // already records M3 output 524288). The 2026-11-06 round-11 re-check
+    // found the figure on NO current MiniMax docs page any more (both
+    // protocol refs CN+EN, api-overview, text-ai-sdk, guides, models,
+    // release-notes, FAQ, pricing, blog), so the citation rests on the
+    // 2026-11-04 fetch alone — re-verify at the next refresh. The 524288
+    // anchor stays registered as the app-side cap per the deepseek-flash
+    // precedent; the engine's 64K automatic-request intersection governs
+    // the effective wire cap exactly as for the K3.1 rows above, so the GA
+    // id stops riding the 8192 uncatalogued fail-close. The retired
+    // "-Preview" spelling rides the suffix tolerance.
     ("minimax-m3.1-flash", 524_288),
 ];
 
@@ -806,12 +815,13 @@ mod tests {
         // figure would put it on the 64K-intersection chain unanchored —
         // pin the None so a future corrupted row is caught.
         assert_eq!(resolved_output_limit("muse-wonder-1.0"), None);
-        // MiniMax-M3.1-Flash: the protocol API references document
-        // "recommended 131072 / maximum 524288" (fetched live 2026-11-04);
-        // the documented hard cap is anchored per the deepseek-flash
-        // precedent (the engine's 64K intersection governs the effective
-        // wire cap). The retired "-Preview" spelling rides the suffix
-        // tolerance.
+        // MiniMax-M3.1-Flash: "recommended 131072 / maximum 524288" was
+        // fetched live from the protocol API references on 2026-11-04; the
+        // 2026-11-06 round-11 re-check found the figure on no current
+        // MiniMax page any more, so the anchor stays as the app-side
+        // registered cap per the deepseek-flash precedent (the engine's
+        // 64K intersection governs the effective wire cap). The retired
+        // "-Preview" spelling rides the suffix tolerance.
         assert_eq!(resolved_output_limit("minimax-m3.1-flash"), Some(524_288));
         assert_eq!(
             resolved_output_limit("MiniMax-M3.1-Flash-Preview"),
