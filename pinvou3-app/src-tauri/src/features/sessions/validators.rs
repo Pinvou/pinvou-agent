@@ -11,6 +11,12 @@ use anyhow::{Result, bail};
 use deepseek_tui::models::SystemPrompt;
 use deepseek_tui::session_manager::SessionManager;
 
+/// 底座保留的 sessions 根文件名 stem（`session_manager.rs`
+/// `SESSION_BOOT_OWNERS_STEM`）：`sessions/<stem>.json` 是 boot-owners
+/// 注册表而非会话记录。单一事实源——导入/直存路径的保留名拒绝一律引用
+/// 本常量，避免两处字面量漂移。
+pub(crate) const RESERVED_SESSION_ID_STEM: &str = "session_boot_owners";
+
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
 /// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
 /// `pub` for the pinvou-cli `projects` family: the rebind orphan probe
@@ -19,11 +25,14 @@ use deepseek_tui::session_manager::SessionManager;
 /// re-export. The GUI itself keeps calling the crate-private path.
 pub fn validate_session_id(id: &str) -> Result<()> {
     validate_id_charset(id, "session")?;
-    // 底座保留名（session_manager.rs `SESSION_BOOT_OWNERS_STEM`，其
-    // validated_session_id 同样拒绝）：`sessions/session_boot_owners.json`
-    // 是 boot-owners 注册表而非会话记录；不拒绝则导入/直存可以整个覆盖
-    // 注册表，静默清空 boot-ownership 声明。
-    if id == "session_boot_owners" {
+    // 底座保留名：`sessions/session_boot_owners.json` 是 boot-owners 注册表
+    // 而非会话记录；不拒绝则导入/直存可以整个覆盖注册表，静默清空
+    // boot-ownership 声明。大小写不敏感——charset 允许大写，而注册表文件名
+    // 在大小写不敏感文件系统（APFS/NTFS）上与 `SESSION_BOOT_OWNERS.json`
+    // 是同一文件；`sched-`/`aux-` 前缀门（is_sched_session_id /
+    // is_aux_session_id）已是同一别名击穿口径，保留名必须同等待遇。
+    // （底座 validated_session_id 的精确匹配是上游待同步项；本守卫先行。）
+    if id.eq_ignore_ascii_case(RESERVED_SESSION_ID_STEM) {
         bail!("Session id '{id}' collides with a reserved sessions file");
     }
     Ok(())
