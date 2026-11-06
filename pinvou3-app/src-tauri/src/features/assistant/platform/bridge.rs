@@ -2166,6 +2166,10 @@ impl Pinvou3Bridge {
     /// the same budget as the main conversation instead of hard-coding a
     /// constant and drifting from the engine — the same rule
     /// `context_input_budget_for_route` was published for on the input side.
+    /// Floor behavior for uncatalogued ids on official endpoints: the
+    /// compatibility ceiling falls back to `Uncatalogued(8192)` (so an unknown
+    /// gateway model gets 8192, not the old hard-coded 1600); the foundation
+    /// floors the final value at 1.
     pub(crate) fn main_wire_max_output_tokens(&self, model: &str) -> u32 {
         let config = self.build_dt_config();
         let provider = config.api_provider();
@@ -6737,8 +6741,10 @@ mod tests {
     /// foundation `route_effective_max_output_tokens` (the identical chain the
     /// engine's client walks). Pin the k3/Kimi Coding Plan value so the two
     /// paths cannot silently drift apart: the base catalogue documents k3's
-    /// default generation ceiling (131072) → requested cap min(API_MAX 65536)
-    /// = 65536; k3 is a membership id (RouteDeclaredUnknown → no compat clamp)
+    /// default generation ceiling (131072), the compatibility ceiling applies
+    /// as OutputCeilingSource::Documented (route_budget.rs `output_ceiling_source`
+    /// reads the static k3 row; `RouteDeclaredUnknown` is the kimi-for-coding
+    /// family path, not bare "k3") → requested cap min(API_MAX 65536) = 65536,
     /// and the host route declares no output cap. The review's old hard-coded
     /// budget was 1600 — consumed entirely by k3 reasoning tokens (content
     /// empty, finish_reason=length, 2026-11-06) — and even the interim 8192
@@ -6769,7 +6775,12 @@ mod tests {
             "https://api.kimi.com/coding/v1",
             "k",
         );
+        // 生产线材归一：coding-plan 端点被识别为 vendor kimi → provider()
+        // "moonshot"（prefs/model.rs identify_coding_plan_endpoint）→ 底座
+        // ApiProvider::Moonshot。fixture 必须走同一条 Moonshot 链，别钉在
+        // Openai 直通链上（两条链当前同值，但钉住生产线材才有防漂移意义）。
         bridge.prefs.advanced.saved_models[0].provider_kind = Some("coding_plan".to_string());
+        bridge.prefs.advanced.saved_models[0].vendor = Some("kimi".to_string());
         assert_eq!(
             bridge.main_wire_max_output_tokens(&bridge.model()),
             65_536,
