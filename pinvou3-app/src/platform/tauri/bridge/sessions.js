@@ -393,9 +393,9 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSes
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
-    // freshBuffer's modeState is the generic default (yolo); the draft
-    // display must be overridden with this lane's global default (the work
-    // lane's last_mode).
+    // freshBuffer's modeState is the generic default (auto, tri-mode); the
+    // draft display must be overridden with this lane's global default (the
+    // work lane's last_mode).
     state.modeState = currentDraftModeState();
     notify();
   }

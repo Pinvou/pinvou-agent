@@ -287,6 +287,41 @@ test('planStuckGoAuto 成功后才落 resolved 并发补充指令', async () => 
   assert.ok(rt.calls.includes('sendMessageToSession:chat-a'), '成功后发补充指令');
 });
 
+// ── 在途防重入（decideApproval 同款闩）：等待窗口横跨后端往返，双击的第
+// 二次点击若放行会派发重复的切换命令，并把补充指令重复排队成独立 turn。
+test('planStuckGoAuto 在途闩：双击的第二次点击不派发重复切换与重复补充指令', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.chatItems.push({ id: 79, type: 'planStuck', resolved: false, cardState: 'active' });
+  const setMode = rt.defer('set_session_mode');
+  const first = rt.api.planStuckGoAuto(79, 'chat-a');
+  const second = rt.api.planStuckGoAuto(79, 'chat-a'); // 首次仍在途
+  setMode.resolve({ mode: 'auto', multi_agent: false });
+  await first;
+  await second;
+  const switches = rt.invokeCalls.filter(c => c.name === 'set_session_mode');
+  assert.equal(switches.length, 1, '在途窗口内的双击只允许一次 set_session_mode');
+  const sends = rt.calls.filter(c => c === 'sendMessageToSession:chat-a');
+  assert.equal(sends.length, 1, '补充指令恰好一条（放行第二次点击会排队成重复 turn）');
+});
+
+// 旧形态先 resolved:true 再 await exit_plan_to_yolo（无 try/catch）：切换被
+// 拒时卡片已被剥掉动作、异常成为 onClick 上的 unhandled rejection。与
+// planStuckGoAuto 的评审 P2 形态对齐：提交后才落已处理，失败恢复可点。
+test('planStuckGo 切换失败不落 resolved：卡保持可重试并定向提示', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.chatItems.push({ id: 80, type: 'planStuck', resolved: false, cardState: 'active' });
+  const exit = rt.defer('exit_plan_to_yolo');
+  const p = rt.api.planStuckGo(80, 'chat-a');
+  exit.reject(new Error('engine gone'));
+  await p;
+  const item = rt.state.chatItems.find(i => i.id === 80);
+  assert.equal(item.resolved, false, '切换失败不得把卡标成已处理（旧形态先标已处理再裸 await）');
+  assert.equal(item.submitting, false, '失败后在途闩必须释放（卡可重试）');
+  assert.ok(rt.errorItems.length >= 1, '失败必须落系统提示');
+  assert.ok(!rt.calls.some(c => String(c).startsWith('sendMessageToSession')),
+    '切换失败后不得继续发补充指令');
+});
+
 test('setAskOnGuardrail 失败后重读 get_mode_state 收敛权威态', async () => {
   const rt = loadInteractionRuntime();
   const setAsk = rt.defer('set_ask_on_guardrail');

@@ -170,17 +170,22 @@ for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['
   );
 }
 
-// The bridge's planStuckGo must accept an explicit target session and pass the same sid to exitPlanToYolo.
+// The bridge's planStuckGo must accept an explicit target session and target
+// the yolo exit at the same adjudicated sid. The tauri lane invokes
+// exit_plan_to_yolo directly (the shared exitPlanToYolo wrapper swallows
+// failures internally, and planStuckGo's commit-marking needs the rejection
+// to keep the card actionable); the web lane still routes through the
+// wrapper. Either shape must carry the captured sid.
 for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['web bridge.js', webBridge]]) {
   assert.match(
     bridgeSrc,
     /async function planStuckGo\(itemId, targetSessionId\)/,
     `${label} planStuckGo must accept the adjudicated session id`,
   );
-  const body = bridgeSrc.slice(bridgeSrc.indexOf('async function planStuckGo'), bridgeSrc.indexOf('async function planStuckGo') + 1200);
+  const body = bridgeSrc.slice(bridgeSrc.indexOf('async function planStuckGo'), bridgeSrc.indexOf('async function planStuckGo') + 2000);
   assert.match(
     body,
-    /await exitPlanToYolo\(sid\)/,
+    /await (exitPlanToYolo\(sid\)|invoke\("exit_plan_to_yolo", \{ sessionId: sid \}\))/,
     `${label} planStuckGo must target exitPlanToYolo at the adjudicated sid`,
   );
 }

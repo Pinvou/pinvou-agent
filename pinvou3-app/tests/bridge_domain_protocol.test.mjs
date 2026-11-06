@@ -313,7 +313,12 @@ const expectedProtocolHashes = {
   // Recomputed for the review-P3 reconcile: the set_ask_on_guardrail failure
   // path re-reads the existing get_mode_state command to converge the chip
   // to the persisted source of truth (no new command or event surface).
-  interaction: 'fdaa57e25a1601ca6154042c2be56c60472bd68ee85638656120d4f41376b1b4',
+  // Recomputed for the plan-stuck commit-marking + in-flight latch: both Go
+  // paths latch on a synchronous submitting flag, and planStuckGo now
+  // invokes the existing exit_plan_to_yolo command directly (the shared
+  // exitPlanToYolo wrapper swallows failures, which commit-marking must
+  // observe) — no new command or event surface.
+  interaction: '5345757ac633c2fa3b89126a2e16cdce30a88dc8041b7a543114cff4ad8c9c7a',
   // Recomputed for the shared-helper dedup (see batch note above).
   knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +

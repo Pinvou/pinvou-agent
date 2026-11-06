@@ -599,6 +599,9 @@ const ToolOutput = ({ item, t }) => {
     const PlanStuckCard = ({ item, t, onGo }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const done = item.resolved;
+      // 在途防重入：宿主桥在等待窗口内置 submitting（decideApproval 同款），
+      // 按钮在此禁用——双击的第二次点击不再派发重复的模式切换/补充指令。
+      const pending = !!item.submitting;
       // tri-mode：Auto 选项只在宿主支持 planStuckGoAuto 时渲染——旧后端上
       // 回退 planStuckGo 会打着 Auto 标签切到 Yolo（语义谎言），藏掉才是
       // 诚实降级（只剩 ⚡ Yolo 一个选项）。
@@ -614,11 +617,11 @@ const ToolOutput = ({ item, t }) => {
             <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
+              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly || pending} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
               {goAutoAvailable ? (
-                <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={goAuto}>{t.stuckGoAuto}</button>
+                <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly || pending} onClick={goAuto}>{t.stuckGoAuto}</button>
               ) : null}
-              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={goYolo}>⚡ {t.stuckGoYolo}</button>
+              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly || pending} onClick={goYolo}>⚡ {t.stuckGoYolo}</button>
             </div>
           )}
         </div>

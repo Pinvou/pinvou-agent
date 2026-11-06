@@ -446,8 +446,32 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
-    patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo(sid);
+    // 在途防重入 + 提交后才落已处理（与下方 planStuckGoAuto 同一纪律，评审
+    // P2 形态对齐）：等待窗口横跨一次后端往返，没有同步闩时第二次点击会派发
+    // 重复的模式切换/重复的补充指令 turn。旧形态先 resolved:true 再 await——
+    // exitPlanToYolo 被拒时卡片已被剥掉动作且异常无人接（onClick 上的
+    // unhandled rejection）；失败现在恢复可点并定向提示。
+    let stuck = null;
+    runSyncOnSession(sid, function () {
+      stuck = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "planStuck" && candidate.id === itemId;
+      }) || null;
+    });
+    if (stuck && stuck.submitting) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
+    try {
+      // Direct invoke (planStuckGoAuto 同款): the shared exitPlanToYolo
+      // wrapper swallows failures internally (exitPlanFailed system item),
+      // so a rejected switch is undetectable through it — commit-marking
+      // needs the rejection to keep the card actionable.
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) {
+      patchItemByIdFor(sid, itemId, { submitting: false });
+      addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();
+      return;
+    }
+    patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
@@ -464,15 +488,26 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
-    // Mark handled only after the switch commits (reviewer P2): marking up
-    // front let a rejected set_session_mode return leave the card "handled"
-    // with its actions already stripped — a failed operation with no retry
-    // path. The catch keeps the card actionable and surfaces the error.
+    // 在途防重入（decideApproval/setMultiAgentMode 同款）：mark handled only
+    // after the switch commits (reviewer P2) 的等待窗口横跨一次热同步往返，
+    // 没有同步闩时第二次点击会派发重复的 set_session_mode 和重复排队的补充
+    // 指令 turn。The catch keeps the card actionable and surfaces the error.
+    let stuck = null;
+    runSyncOnSession(sid, function () {
+      stuck = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "planStuck" && candidate.id === itemId;
+      }) || null;
+    });
+    if (stuck && stuck.submitting) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
       const st = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });
       applyAuthoritativeModeState(sid, st);
-      patchItemByIdFor(sid, itemId, { resolved: true }); notify();
-    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); notify(); return; }
+      patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
+    } catch (e) {
+      patchItemByIdFor(sid, itemId, { submitting: false });
+      addSystemItemFor(sid, bt("switchModeFailed") + e); notify(); return;
+    }
     try { await sendMessageToSession(sid, bt("planStuckGoPrompt")); }
     catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
   }
