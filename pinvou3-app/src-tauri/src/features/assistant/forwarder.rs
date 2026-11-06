@@ -911,7 +911,12 @@ pub(crate) fn spawn_event_forwarder(
                     // on commit (done marker + spool removal — closes the
                     // post-steer-Ok loss window). Fanned out through the
                     // steer_outcomes hook; assistant never depends back on
-                    // the consumer feature.
+                    // the consumer feature. The hook runs INLINE on this
+                    // event loop and performs bounded spool IO (two capped
+                    // reads + marker write + removal, ~µs–ms on a healthy
+                    // fs) before the emit — accepted: steer terminals are
+                    // rare and one forwarder per engine keeps the stall
+                    // scoped to that engine.
                     crate::features::assistant::steer_outcomes::resolve_steer_outcome(
                         &steer_id, true,
                     );
