@@ -167,7 +167,10 @@ where
         } else {
             PRELOCKED_WRITES.with(|slot| *slot.borrow_mut() = Some(keys.clone()));
             let _scope = RestoreScope;
-            f.take().expect("write-set body runs once")()
+            let run = f
+                .take()
+                .ok_or_else(|| "marketplace write-set body already consumed".to_string())?;
+            run()
         }
     }
     acquire(&data_paths, &keys, &mut Some(f))
