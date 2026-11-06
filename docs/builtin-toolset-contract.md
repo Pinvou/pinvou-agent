@@ -248,7 +248,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   delivery stays queued until the engine reports `SteerCommitted` for it — the
   done marker and the spool-file removal land on commit (the marker is what a
   keyed retry consults for dedup), while a dropped steer leaves the file
-  queued and re-delivers on the next poll, bounded: after ten dropped cycles
+  queued and re-delivers on the next poll, bounded per process (a watcher
+  restart re-buys the cycle budget, the same per-process doctrine as the
+  retry budget disclosed below): after ten dropped cycles
   the file is quarantined (`steer_drop_limit`). If no terminal event ever
   arrives while the app keeps running (a forwarder aborted by an engine
   recycle), the wait is given up after 24h and the message re-delivers; a
@@ -256,7 +258,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   the first poll after restart — either way possibly duplicating. (One
   carve-out to that re-delivery doctrine: a steered file that the
   pending-file ceiling quarantines mid-wait is disarmed instead of
-  re-queuing — it is never finalized and never re-delivered, whether or
+  re-queuing — it is never delivered and never re-delivered, whether or
   not the steered body already landed; the quarantine evidence + audit
   trail is the only trace.) Quarantine
   audit lines carry the failure-receipt fields named after the foundation
@@ -300,9 +302,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   — the steer window is irrelevant), while a KEYED resubmission
   double-dispatches while the earlier body's steer is still in flight (a
   window that used to end at the steer-Ok finalization and now ends at
-  the terminal event, bounded by the 24h commit wait) or after a give-up
-  expiry removed the registration marker-less — and only with a
-  materially different body; once the commit's done marker exists,
+  the terminal event, bounded by the 24h commit wait) with a materially
+  different body — the stale-release gate answers semantically-equal
+  bodies without spooling — and unconditionally once a give-up expiry
+  removed the registration marker-less (the prune writes no marker, so
+  there is no gate left to consult); once the commit's done marker exists,
   the pre-spool probe answers a keyed retry without spooling); a steer
   accepted against a mid-turn target can still be
   dropped by the foundation — when that turn is cancelled
@@ -322,7 +326,8 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   first poll after restart (this replaces the former zero-trace loss
   channel where a keyed retry was answered "delivered" from a marker
   written at steer-Ok); every former loss trigger now degrades to
-  at-least-once redelivery (possibly duplicating) instead of silent loss; a
+  at-least-once redelivery (possibly duplicating) instead of silent loss,
+  save the ceiling carve-out above; a
   macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
   double-deliver — since commit-time finalization that double-delivery
