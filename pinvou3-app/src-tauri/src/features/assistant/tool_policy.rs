@@ -17,6 +17,18 @@
 /// 进度工具必须是 v0.9.12 canonical 模型可见名 `todo_write`；`work_update` /
 /// `checklist_write` / `update_plan` 是隐藏的 replay 兼容别名（`model_visible()`
 /// 为 false，不会出现在模型目录），写进白名单只是死条目。
+///
+/// Known taught-but-excluded residuals (disclosed, not oversights): the
+/// base `agent` description offers the `Run` tool (`action="verifiers"`)
+/// as an alternative to `type=test`, and the goal surfaces teach
+/// `create_goal` / `update_goal`; none of them is admitted, so a model
+/// following those names ends in the usual excluded-tool dead end. This is
+/// accepted today because `type=test` is the primary route the same sentence
+/// leads with, and the goal surfaces (bare `/goal` slash briefs and
+/// goal-continuation prompts) are unreachable from this host — the GUI never
+/// sets goals and slash briefs are not dispatched here. If either surface
+/// becomes reachable, admit or gate the names in the same change: the same
+/// phantom rule that drove the evidence-recovery admissions applies.
 pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "bash",
     "read",
@@ -35,8 +47,32 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
     "agent",
     "load_skill",
     "request_user_input",
-    "revert_turn",
+    // Snapshot-based turn rollback is dead in Pinvou parent sessions:
+    // `snapshots_enabled` is false (app-side code_checkpoints owns rewind),
+    // so every call fails with "0 pre-turn snapshots exist" after paying a
+    // one-time base side-repo init. Keeping it admitted would offer the
+    // model a permanently failing Required-approval tool, so it stays out
+    // of the allowlist. (Subagent children inherit the full base registry
+    // and are not gated by this list, so they still see the tool; that
+    // asymmetry is foundation-level and stays with upstream.)
     "todo_write",
+    // The spillover recovery contract: bash/Web overflow footers name
+    // `retrieve_tool_result` directly and `evidence_available` metadata
+    // auto-activates it next turn (base truncate.rs/web_run.rs/fetch_url.rs).
+    // Excluding it used to turn every large-output spill into a 1-2 step
+    // dead end (auto-activation rejected, tool_search scoped to the
+    // retained-out catalog, direct call permission-denied). It is a bounded
+    // read-only evidence reader — the same risk class as `read` — so it is
+    // admitted for the teaching surfaces the base ships.
+    "retrieve_tool_result",
+    // Subagent worker records (roster/takeover/transcript projections) carry
+    // HANDLE_READ_ACTIVATION_HINT teaching the parent to call `handle_read`
+    // for a bounded view of a worker transcript. Excluding it silently
+    // degraded swarm verification to at most two doomed probes per record.
+    // The tool itself is a deferred read-only projection reader registered
+    // unconditionally on the agent surface, so admission alone restores the
+    // documented contract.
+    "handle_read",
     "workflow",
     "tool_search",
     "image_analyze",
@@ -172,5 +208,19 @@ mod tests {
             assert!(super::PINVOU3_ALWAYS_LOADED_TOOLS.contains(&name.as_str()));
             assert!(super::is_pinvou3_allowed(&name));
         }
+    }
+
+    /// Evidence-recovery teaching surfaces must stay reachable, and the
+    /// snapshot-based rollback must stay out: the base spills overflow
+    /// footers and worker-record hints that name these tools verbatim, so
+    /// flipping either side recreates the "prompt says it exists, list says
+    /// it does not" phantom this allowlist exists to prevent.
+    #[test]
+    fn evidence_recovery_is_admitted_and_snapshot_revert_stays_excluded() {
+        assert!(super::is_pinvou3_allowed("retrieve_tool_result"));
+        assert!(super::is_pinvou3_allowed("handle_read"));
+        assert!(!super::is_pinvou3_allowed("revert_turn"));
+        assert!(!super::PINVOU3_ALWAYS_LOADED_TOOLS.contains(&"retrieve_tool_result"));
+        assert!(!super::PINVOU3_ALWAYS_LOADED_TOOLS.contains(&"handle_read"));
     }
 }

@@ -2390,6 +2390,17 @@ impl Pinvou3Bridge {
             session_id: None,
             allow_shell: self.allow_shell(),
             trust_mode: true,
+            // The base NoteTool is stripped from parent sessions by the
+            // product allowlist (no "note" entry), so the parent can never
+            // write this file and no UI reads it. Subagent children inherit
+            // the ungated base registry and could still write it (the same
+            // parent/child asymmetry disclosed for `revert_turn` in
+            // `tool_policy.rs`). The field is a non-optional PathBuf
+            // upstream, so a path must be supplied; keep the stable product
+            // path and do not treat `~/.pinvou3/notes.md` as a live feature.
+            // Enabling the tool requires either an allowlist entry plus a UI
+            // consumer, or an upstream surface switch for NoteTool
+            // registration.
             notes_path: paths::notes_path(),
             // Work-mode gate: Browser MCP tools are exposed only to assistant Engine
             // sessions. Global mcp.json has no browser entry; this creates a session-specific

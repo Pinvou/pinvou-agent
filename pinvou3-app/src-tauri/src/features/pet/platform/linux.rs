@@ -21,7 +21,7 @@ pub(crate) fn prepare_main_focus_raise(app: &tauri::AppHandle) {
     }
 }
 
-pub(crate) fn finish_main_focus_raise(window: &tauri::WebviewWindow) {
+pub(crate) fn finish_main_focus_raise(window: &tauri::Window) {
     use std::sync::atomic::AtomicU64;
 
     const HOLD_MS: u64 = 180;

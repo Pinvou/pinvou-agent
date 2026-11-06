@@ -562,7 +562,7 @@ pub async fn open_main_from_pet(
     // 不可见——X11 上 show/set_focus 被 WM 拒绝时用户只看到"点了没反应"。
     eprintln!("[pet nav] open_main_from_pet invoked");
     let main = app
-        .get_webview_window("main")
+        .get_window("main")
         .ok_or_else(|| "main window not found".to_string())
         .map_err(|error| {
             eprintln!("[pet nav] {error}");
