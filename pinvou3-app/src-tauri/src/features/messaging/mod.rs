@@ -66,7 +66,8 @@
 //!   after `MAX_STEER_DROP_CYCLES` dropped cycles the file is
 //!   quarantined), a terminal event that never arrives while the app keeps
 //!   running (the forwarder aborted by an engine recycle) is given up
-//!   after `STEER_COMMIT_WAIT` (24h) and re-delivers, and a crash loses
+//!   after `STEER_COMMIT_WAIT` (24h of awake time — `Instant` pauses
+//!   during system sleep) and re-delivers, and a crash loses
 //!   the in-memory wait entirely — the queued file re-delivers on the
 //!   first poll after restart. The old zero-trace loss channel —
 //!   done-marker written at steer-Ok, so a crash before injection was
@@ -74,10 +75,11 @@
 //!   former loss trigger now degrades to at-least-once redelivery
 //!   (possibly duplicating; the drop channel is cycle-bounded, the
 //!   never-arriving-event channel rate-bounded by the 24h give-up) instead
-//!   of silent loss. Three disclosures: a steer whose file the pending-file
-//!   ceiling quarantines mid-wait ends as quarantined evidence plus audit
-//!   lines — never finalized and never re-delivered, whether or not the
-//!   steered body already landed in the target's turn (if it did,
+//!   of silent loss — except where the disclosures below narrow that to a
+//!   non-redelivery disposition. Three disclosures: a steer whose file the
+//!   pending-file ceiling quarantines mid-wait ends as quarantined evidence
+//!   plus audit lines — never delivered and never re-delivered, whether or
+//!   not the steered body already landed in the target's turn (if it did,
 //!   re-delivery would only duplicate it; if the engine later drops the
 //!   steer, the body never landed and the quarantine + audit trail is the
 //!   only trace — the ceiling's declared discipline, not a redelivery
@@ -86,8 +88,9 @@
 //!   as `RetryState` — a restart re-buys the budget. The finalizer also
 //!   writes the done marker on the terminal event without consulting the
 //!   forwarder's transcript-persistence outcome: a failed session persist
-//!   at commit time already loses the whole turn for every message in it
-//!   (redelivery could not restore the turn context), but the landed
+//!   can lose the turn's transcript (the forwarder retries the full
+//!   snapshot on the next event, but a failure that outlasts the session
+//!   never lands it), and the landed
 //!   marker then also suppresses this body's keyed retries. If BOTH the
 //!   commit's done-marker write AND the spool removal fail (read-only
 //!   spool root), the registration stays armed so the poll cannot loop
@@ -512,7 +515,9 @@ struct PendingSteerDelivery {
 /// is immediate (turn boundary / next step); a timeout means the event is
 /// never coming (the forwarder aborted with an engine recycle, or the Drop
 /// notification was lost) — the wait is abandoned and the file re-queues
-/// (possibly duplicating, better than losing).
+/// (possibly duplicating, better than losing). Measured with `Instant`, so
+/// the wait counts AWAKE time — a system sleep pauses the clock and
+/// postpones the expiry by the slept duration.
 const STEER_COMMIT_WAIT: Duration = Duration::from_secs(24 * 3600);
 
 static PENDING_STEERS: std::sync::OnceLock<
@@ -534,7 +539,11 @@ fn pending_steers() -> &'static std::sync::Mutex<HashMap<String, PendingSteerDel
 /// finalizer now records such misses here and the insert path re-checks and
 /// finalizes inline. Interactive-chip steers miss the registry too, but
 /// their ids can never be claimed by a later spool delivery (steer ids are
-/// minted from per-incarnation counters), so their entries just age out.
+/// unique per process — the pool stamps each engine's raw ordinal with the
+/// engine's incarnation counter, so a rebuild never re-mints a live id),
+/// so their entries just age out.
+///
+/// The TTL is `Instant`-based too: awake time only.
 const LATE_TERMINAL_TTL: Duration = Duration::from_secs(60);
 
 static LATE_TERMINAL_EVENTS: std::sync::OnceLock<
@@ -545,12 +554,31 @@ fn late_terminal_events() -> &'static std::sync::Mutex<HashMap<String, (Instant,
     LATE_TERMINAL_EVENTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-fn record_late_terminal_event(steer_id: &str, committed: bool) {
+/// Peek the pending registration, or — when nothing is armed — buffer the
+/// terminal event for the insert path to claim. The registry lock is held
+/// ACROSS the late-map insert: a peek-miss followed by a separate record
+/// step could interleave with the inserter's insert-then-take and strand
+/// the event in the buffer (the id is never re-minted, so no later insert
+/// would claim it — the armed wait would degrade to the 24h give-up plus a
+/// duplicate). Sharing the peek's critical section serializes the pair
+/// against the inserter. Lock order registry → late map; no path acquires
+/// them in reverse.
+fn pending_entry_or_late_record(
+    steer_id: &str,
+    committed: bool,
+) -> Option<PendingSteerDelivery> {
+    let pending = pending_steers()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some(entry) = pending.get(steer_id).cloned() {
+        return Some(entry);
+    }
     let mut late = late_terminal_events()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     late.retain(|_, (armed_at, _)| armed_at.elapsed() < LATE_TERMINAL_TTL);
     late.insert(steer_id.to_string(), (Instant::now(), committed));
+    None
 }
 
 /// Claim a terminal event that arrived before this steer's registration.
@@ -643,8 +671,10 @@ enum PendingSteerSkip {
 /// semantically-equal records (fresh created_at/titles only) keep the file
 /// held, a materially-different body releases it. On an unreadable or
 /// over-cap read the two directions deliberately diverge — the release path
-/// holds (the terminal event or the 24h expiry resolves the wait; the
-/// conservative choice never re-delivers a possibly-committed body), while
+/// holds (the terminal event or the 24h expiry resolves the wait; this arm
+/// itself never releases a body it cannot read, so a possibly-committed
+/// body is not re-delivered on a guess — the expiry's re-queue below still
+/// bounds the wait), while
 /// the commit verify treats it as replaced (fail-closed: never write a
 /// marker or remove content the finalizer cannot vouch for).
 fn pending_steer_released(path: &Path) -> PendingSteerSkip {
@@ -731,24 +761,26 @@ fn prune_expired_pending_steers() {
 /// consumers drive the same events — with one exception: a terminal event
 /// that arrives BEFORE this steer's registry insert (the insert sits behind
 /// the post-delivery re-verify; the engine can commit within milliseconds
-/// of the steer) is buffered via `record_late_terminal_event` so the
+/// of the steer) is buffered by the miss arm of `pending_entry_or_late_record` so the
 /// insert can finalize inline. dropped: the registration is revoked and a
 /// drop cycle is charged; the file stays queued and re-delivers on the next
 /// pass (bounded by `MAX_STEER_DROP_CYCLES`). If BOTH the marker write and
 /// the removal fail (a read-only spool root), the registration stays armed —
 /// consuming it there would let the poll re-deliver at full cadence with no
 /// budget charged anywhere; the armed wait instead expires at the 24h rate.
+///
+/// The tail between the peek and the consume is not atomic and relies on
+/// the foundation's exactly-one-terminal-event-per-id guarantee (a settled
+/// id can never re-emit — the foundation's settle abandons the id
+/// atomically) plus the single registration site: the finalizer never runs
+/// twice concurrently for one id.
 pub fn resolve_pending_steer(steer_id: &str, committed: bool) {
     // Peek instead of remove: the committed path must keep the entry armed
     // until the marker exists (see the doc comment) — the armed entry is
-    // what keeps the poll's hands off the file during verify/marker.
-    let Some(entry) = pending_steers()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(steer_id)
-        .cloned()
-    else {
-        record_late_terminal_event(steer_id, committed);
+    // what keeps the poll's hands off the file during verify/marker. The
+    // miss arm buffers the event under the SAME critical section (see
+    // `pending_entry_or_late_record`).
+    let Some(entry) = pending_entry_or_late_record(steer_id, committed) else {
         return;
     };
     if !committed {
@@ -774,7 +806,10 @@ pub fn resolve_pending_steer(steer_id: &str, committed: bool) {
     // still destroyed untried, and the stem-scoped marker written for the
     // old body would answer its retries "delivered" for the marker's
     // retention horizon — the same acknowledged residual the Done arm
-    // documents at its own removal.
+    // documents at its own removal. A crash between the marker write and
+    // the re-verify enters the same suppression by process death instead:
+    // after restart the surviving marker answers the newest body
+    // "delivered" and the skip arm removes it untried.
     let unchanged = read_bounded(&entry.spool_path)
         .map(|current| spool_records_equal(&current, &entry.original))
         .unwrap_or(false);
@@ -783,11 +818,19 @@ pub fn resolve_pending_steer(steer_id: &str, committed: bool) {
         // or a ceiling quarantine moved it away): no terminal disposition,
         // drop the registration and let the poll handle whatever is queued
         // (same replace semantics as Processed::Done, so the old body's
-        // finalization cannot swallow the new body).
+        // finalization cannot swallow the new body). The drop-cycle series
+        // still resolves here: committed=true means the engine DID write
+        // the old body, so the steer→drop→re-steer loop the counter bounds
+        // ended in a commit — the same resolution as the post-marker
+        // replacement arm and the success path; the newest body starts a
+        // fresh series instead of inheriting the old one.
         pending_steers()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(steer_id);
+        if let Some(name) = entry.spool_path.file_name().and_then(|n| n.to_str()) {
+            clear_steer_drop_cycles(name);
+        }
         log::warn!(
             "[messaging] steer {steer_id} committed but {:?} no longer matches the \
              steered body; leaving the queue to the newest content",
@@ -1894,10 +1937,15 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 // was being judged — quarantine only the file that was
                 // actually read and rejected.
                 if replaced_since_first_read(&path, original.as_ref()) {
-                    // The budget clears for the newest body (same semantics
-                    // as the Retry arm's replaced branch).
+                    // The retry budget clears for the newest body (same
+                    // semantics as the Retry arm's replaced branch). The
+                    // drop-cycle series deliberately does NOT: neither a
+                    // commit nor a landed move resolved the old body, so
+                    // its drop history stays an unresolved identity-level
+                    // record — the newest body inherits it per the same
+                    // over-quarantine doctrine the stale-release path and
+                    // the drop-limit gate disclose.
                     retries.clear(&name);
-                    clear_steer_drop_cycles(&name);
                     log::warn!(
                         "[messaging] {:?} was replaced during processing; re-queuing the \
                          newest body instead of quarantining: {error:#}",
