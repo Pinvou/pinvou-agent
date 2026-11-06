@@ -593,18 +593,18 @@ const ToolOutput = ({ item, t }) => {
     // ==========================================
     // tri-mode：继续的两个出路拆成 Auto（逐项审批，默认主按钮，不经 Yolo
     // 确认门）与 Yolo（全自动，仍走 ChatView 的一次性确认门）。onGo 收
-    // (itemId, targetMode)；无 onGo 的旧宿主回退 bridge 直调（yolo 默认）。
+    // (itemId, targetMode)。round-13 review：无 onGo 的旧宿主 bridge 直调
+    // 回退已删——它绕过宿主的 Yolo 确认门（#445 R9 MAJOR-1 的原始形状），
+    // 且当前唯一渲染点（ChatView）恒传 onGo；未来新宿主必须经宿主门进。
     const PlanStuckCard = ({ item, t, onGo }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const done = item.resolved;
       // tri-mode：Auto 选项只在宿主支持 planStuckGoAuto 时渲染——旧后端上
       // 回退 planStuckGo 会打着 Auto 标签切到 Yolo（语义谎言），藏掉才是
       // 诚实降级（只剩 ⚡ Yolo 一个选项）。
-      const goAutoAvailable = !!(bridge.interaction && typeof bridge.interaction.planStuckGoAuto === 'function');
-      const goYolo = () => (onGo ? onGo(item.id, 'yolo') : bridge.interaction.planStuckGo(item.id));
-      const goAuto = () => (onGo
-        ? onGo(item.id, 'auto')
-        : bridge.interaction.planStuckGoAuto(item.id));
+      const goAutoAvailable = !!(onGo && bridge.interaction && typeof bridge.interaction.planStuckGoAuto === 'function');
+      const goYolo = () => onGo(item.id, 'yolo');
+      const goAuto = () => onGo(item.id, 'auto');
       return (
         <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
           <div className={`text-[13px] leading-relaxed mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>

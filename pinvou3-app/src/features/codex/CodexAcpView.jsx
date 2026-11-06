@@ -1168,6 +1168,11 @@ export function CodexAcpView({
   // 确认（M4 落点仍安全，这里收窄的是「顺手武装已弃置会话 + 吞掉新卡」）。
   const pendingYoloDialogGenRef = useRef(0);
   const [yoloConfirmBusy, setYoloConfirmBusy] = useState(false);
+  // Same-tick latch (round-13 review, chat 车道 chatYoloConfirmBusyRef 同款):
+  // state commits one render late — two clicks inside one commit frame both
+  // pass the `yoloConfirmBusy` check and dispatch duplicate invokes. The ref
+  // flips synchronously at entry and releases in finally.
+  const yoloConfirmBusyRef = useRef(false);
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
@@ -1862,7 +1867,9 @@ export function CodexAcpView({
   /// 确认卡【确认】：写全局 yolo 确认标志，成功后继续被中断的切换。
   async function confirmPendingYoloSwitch() {
     const pending = pendingYoloSwitch;
-    if (!pending || yoloConfirmBusy) return;
+    if (!pending || yoloConfirmBusy || yoloConfirmBusyRef.current) return;
+    // 同 tick 双击第二击在此被拦（ref 同步翻转早于 state 提交一帧）。
+    yoloConfirmBusyRef.current = true;
     setYoloConfirmBusy(true);
     const genAtConfirm = pendingYoloDialogGenRef.current;
     try {
@@ -1885,6 +1892,7 @@ export function CodexAcpView({
     } catch (err) {
       showError(err);
     } finally {
+      yoloConfirmBusyRef.current = false;
       setYoloConfirmBusy(false);
     }
   }
@@ -3506,6 +3514,13 @@ export function CodexAcpView({
       await invoke('decide_approval', { sessionId: sid, approvalId, decision });
       markNativeApprovalResolved(sid, approvalId, decision);
     } catch (err) {
+      // Round-13 review (parity with the main lane's decideApproval): the
+      // failure is recorded on the ORIGINATING lane regardless of which
+      // session is now active — gating the only feedback on
+      // `sid === activeIdRef.current` dropped a failed interaction entirely
+      // when the user switched away mid-decision. The toast still fires when
+      // the user is watching this lane.
+      appendNativeSystemItem(getNativeLane(sid), `${codexCopy.nativeApprovalDecisionFailed}${err && err.message ? err.message : err}`);
       if (sid === activeIdRef.current) showError(err);
     } finally {
       if (card) card.submitting = false;

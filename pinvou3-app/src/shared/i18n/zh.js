@@ -92,6 +92,7 @@ const codexZh = {
   nativePlanApproved:'✅ 已批准', nativePlanDiscarded:'🚪 已放弃此方案',
   nativePlanSuperseded:'📜 已被新方案覆盖', nativePlanHistorical:'📜 历史方案',
   nativePlanAcceptFailed:'⚠️ accept_plan 失败: ', nativePlanDiscardFailed:'⚠️ discard_plan 失败: ',
+  nativeApprovalDecisionFailed:'⚠️ 审批决策失败: ',
   // tri-mode 审批卡终态 / 守卫硬拒通知（reason 稳定键在前端按键映射）。
   nativeApprovalAllowed:'✅ 已允许', nativeApprovalAllowedSession:'✅ 本会话允许', nativeApprovalDenied:'🚫 已拒绝', nativeApprovalCancelled:'✕ 已取消', nativeApprovalShowFullInput:'查看完整输入',
   nativeApprovalOutcomeUnknown:'⚠️ 结果未知——请以会话中的实际执行结果为准',
@@ -213,6 +214,7 @@ export const dictZh = {
         kbMount: '知识库', kbMountTitle: '管理本对话挂载的知识集', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，前往「知识库」创建或连接', kbMountRemove: '移除全部', kbMountRemoveOne: '移除此知识集', kbMountEnable: '启用', kbMountDisable: '停用', kbMountEnabled: '已启用', kbMountDisabled: '已停用', kbMountCount: n => `${n} 个知识库`,  kbMountNoModel: '需先安装 Embedding 模型：前往「知识库 → 本地知识库」下载后即可挂载', kbMountNotReady: 'Embedding 模型正在加载或加载失败，暂时无法挂载知识集',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
         modeAuto: 'Auto', modeAutoDesc: '普通操作逐项询问确认，工作区内文件写入免确认',
+        modeAutoUnsupportedHint: 'Web 端无审批决策面，已物化会话不支持切换到 Auto',
         modeAskOnGuardrail: '守卫命中时询问', modeAskOnGuardrailDesc: '关闭后守卫命中将直接拒绝，不再弹卡询问',
         modeYoloConfirmTitle: '切换到 YOLO 模式？', modeYoloConfirmBody: '该模式下模型将对你的项目目录全自动读写、可执行 shell 命令，无逐步审批。', modeYoloConfirmHint: '确认后全局记住，以后切换不再提示。', modeYoloConfirmOk: '确认切换', modeYoloConfirmCancel: '取消',
  

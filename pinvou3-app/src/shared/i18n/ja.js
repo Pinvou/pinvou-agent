@@ -91,6 +91,7 @@ const codexJa = {
   nativePlanApproved:'✅ 承認済み', nativePlanDiscarded:'🚪 プランを破棄',
   nativePlanSuperseded:'📜 新しいプランで上書きされました', nativePlanHistorical:'📜 過去のプラン',
   nativePlanAcceptFailed:'⚠️ accept_plan に失敗: ', nativePlanDiscardFailed:'⚠️ discard_plan に失敗: ',
+  nativeApprovalDecisionFailed:'⚠️ 承認判断に失敗: ',
   // tri-mode 承認カードの終状態 / ガードレール拒否通知（安定 reason キーをフロント側で対応付け）。
   nativeApprovalAllowed:'✅ 許可済み', nativeApprovalAllowedSession:'✅ このセッションでは許可済み', nativeApprovalDenied:'🚫 拒否済み', nativeApprovalCancelled:'✕ キャンセル済み', nativeApprovalShowFullInput:'入力全文を表示',
   nativeApprovalOutcomeUnknown:'⚠️ 結果不明 - セッションでの実際の結果を確認してください',
@@ -211,6 +212,7 @@ const jaBase = {
         kbMount: 'ナレッジ', kbMountTitle: 'このチャットのコレクションを管理', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ナレッジ」で作成または接続してください', kbMountRemove: 'すべて解除', kbMountRemoveOne: 'このコレクションを解除', kbMountEnable: '有効化', kbMountDisable: '無効化', kbMountEnabled: '有効', kbMountDisabled: '無効', kbMountCount: n => `${n} 個のナレッジ`,  kbMountNoModel: 'まず「ナレッジ → ローカル知識」で Embedding モデルをインストールするとリンクできます', kbMountNotReady: 'Embedding モデルを読み込み中、または読み込みに失敗したため、まだリンクできません',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
         modeAuto: 'Auto', modeAutoDesc: '通常操作は都度確認、ワークスペース内のファイル書き込みは確認なし',
+        modeAutoUnsupportedHint: 'Web 面には承認判断面がないため、実体化済みセッションは Auto に切り替えられません',
         modeAskOnGuardrail: 'ガードレール命中時に確認', modeAskOnGuardrailDesc: 'オフにするとガードレール命中時はカードを出さず直接拒否されます',
         modeYoloConfirmTitle: 'YOLO モードに切り替えますか？', modeYoloConfirmBody: 'このモードでは、モデルがプロジェクトディレクトリを全自動で読み書きし、shell コマンドを実行できます。段階的な承認はありません。', modeYoloConfirmHint: '確認後はグローバルに記憶され、今後は表示されません。', modeYoloConfirmOk: '確認', modeYoloConfirmCancel: 'キャンセル',
          

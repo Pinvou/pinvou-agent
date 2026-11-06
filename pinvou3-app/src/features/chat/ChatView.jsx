@@ -4416,6 +4416,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     askOnGuardrail={bs && bs.modeState ? bs.modeState.askOnGuardrail : undefined}
                     askToggleDisabled={!activeSessionId
                       || !(bridge.interaction && typeof bridge.interaction.setAskOnGuardrail === 'function')}
+                    autoRowDisabled={!!isWeb && !!activeSessionId}
                     onToggleAskOnGuardrail={handleToggleAskOnGuardrail} />
                   {/* Scheduled run conversations expose no swarm toggle:
                       the backend's swarm_mode_available excludes them (the

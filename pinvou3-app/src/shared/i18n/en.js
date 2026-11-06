@@ -91,6 +91,7 @@ const codexEn = {
   nativePlanApproved:'✅ Approved', nativePlanDiscarded:'🚪 Plan discarded',
   nativePlanSuperseded:'📜 Superseded by a newer plan', nativePlanHistorical:'📜 Past plan',
   nativePlanAcceptFailed:'⚠️ accept_plan failed: ', nativePlanDiscardFailed:'⚠️ discard_plan failed: ',
+  nativeApprovalDecisionFailed:'⚠️ approval decision failed: ',
   // tri-mode approval card terminal states / guardrail hard-deny notice (reason keys mapped on the frontend).
   nativeApprovalAllowed:'✅ Allowed', nativeApprovalAllowedSession:'✅ Allowed for this session', nativeApprovalDenied:'🚫 Denied', nativeApprovalCancelled:'✕ Cancelled', nativeApprovalShowFullInput:'Show full input',
   nativeApprovalOutcomeUnknown:'⚠️ Outcome unknown - check the session for the actual result',
@@ -212,6 +213,7 @@ export const dictEn = {
         kbMount: 'Knowledge', kbMountTitle: 'Manage collections attached to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create or connect one in Knowledge', kbMountRemove: 'Remove all', kbMountRemoveOne: 'Remove this collection', kbMountEnable: 'Enable', kbMountDisable: 'Disable', kbMountEnabled: 'Enabled', kbMountDisabled: 'Disabled', kbMountCount: n => `${n} knowledge bases`,  kbMountNoModel: 'Install the embedding model first (Knowledge → Local Knowledge) to attach a local collection', kbMountNotReady: 'The embedding model is still loading or failed to load, so collections cannot be attached yet',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
         modeAuto: 'Auto', modeAutoDesc: 'Asks per ordinary operation; workspace file writes skip confirmation',
+        modeAutoUnsupportedHint: 'The web face has no approval decision surface; a materialized session cannot switch to Auto',
         modeAskOnGuardrail: 'Ask on guardrail hits', modeAskOnGuardrailDesc: 'When off, guardrail hits are denied outright without prompting',
         modeYoloConfirmTitle: 'Switch to YOLO mode?', modeYoloConfirmBody: 'In this mode the model reads and writes your project directory fully automatically and can run shell commands, without step-by-step approvals.', modeYoloConfirmHint: 'Remembered globally once confirmed — you will not be asked again.', modeYoloConfirmOk: 'Confirm', modeYoloConfirmCancel: 'Cancel',
  

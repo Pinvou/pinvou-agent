@@ -293,7 +293,7 @@ const ComposerKbSelector = ({
 // ReadOnly+只读工具集，调 update_plan 出方案卡决策）。Auto/Yolo 激活时附
 // 会话级「守卫命中时询问」开关（askOnGuardrail；代码车道经显式 prop + 回调，
 // 聊天车道读 bs.modeState）。切换逻辑搬自旧 ModeHeader。
-const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, askOnGuardrail: askOnGuardrailProp, askToggleDisabled: askToggleDisabledProp, onSwitch, onToggleAskOnGuardrail }) => {
+const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, askOnGuardrail: askOnGuardrailProp, askToggleDisabled: askToggleDisabledProp, autoRowDisabled: autoRowDisabledProp, onSwitch, onToggleAskOnGuardrail }) => {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   // 显式会话态驱动（代码车道）优先；否则读 bridge 聊天 active 的 mode/busy。
@@ -350,7 +350,10 @@ const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, askO
               </span>
               {activeMode === 'yolo' && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
             </button>
-            <button type="button" onClick={() => switchTo('auto')} className={optCls}>
+            <button type="button" onClick={() => switchTo('auto')}
+              disabled={!!autoRowDisabledProp}
+              title={autoRowDisabledProp ? t.modeAutoUnsupportedHint : undefined}
+              className={`${optCls} ${autoRowDisabledProp ? 'opacity-50 cursor-not-allowed' : ''}`}>
               <span className="flex flex-col items-start min-w-0">
                 <span className="font-semibold">{t.modeAuto}</span>
                 <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modeAutoDesc}</span>

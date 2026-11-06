@@ -2461,7 +2461,15 @@ async function expand(page) {
   await sleep(300);
   const chipMenu = await page.evaluate(() => {
     const txt = document.body.innerText;
-    return { yoloDesc: txt.includes('直接动手执行'), planDesc: txt.includes('先出方案') };
+    return {
+      yoloDesc: txt.includes('直接动手执行'),
+      // Round-13 review: the label claimed tri-state + ask-toggle coverage
+      // without asserting them — pin the Auto menu entry and the ask-toggle
+      // row (rendered while the menu is open, activeMode !== 'plan').
+      autoDesc: txt.includes('逐项询问确认'),
+      planDesc: txt.includes('先出方案'),
+      askToggle: !!document.querySelector('[data-testid="ask-on-guardrail-toggle"]'),
+    };
   });
   await clickText(page, 'Plan');
   await sleep(700);
@@ -2469,7 +2477,7 @@ async function expand(page) {
     const b = document.querySelector('[title^="切换工作模式"]');
     return b ? (b.getAttribute('title') || '').trim() : '';
   });
-  rec('⑥ chip 渲染+三态下拉+ask开关+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.planDesc && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
+  rec('⑥ chip 渲染+三态下拉+ask开关+点Plan切到Plan', chip.found && /YOLO/.test(chip.label || '') && chipMenu.yoloDesc && chipMenu.autoDesc && chipMenu.planDesc && chipMenu.askToggle && /Plan/.test(afterLabel), JSON.stringify({ ...chip, ...chipMenu, afterLabel }));
 
   // Switching the permission mode affects subsequent turns only. The active
   // streaming turn must not be cancelled, and later deltas must remain visible.
