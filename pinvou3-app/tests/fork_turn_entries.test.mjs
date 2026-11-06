@@ -59,5 +59,27 @@ assert.equal(turnHasUserText(textTurn('x')), true);
   assert.equal(entries.get('t2'), 3);
 }
 
-// 6. 非数组输入安全返回空表。
+// 6'. 压缩摘要头 turn 不占序号：会话内压缩的 stamped 载体（底座两个 era
+// 口径都是 runtime-owned）与用户粘贴的摘要头（pre-provenance 宽松口径读作
+// 已保存摘要）在 Rust user_turn_prompt_indices 下都不计入；前端若计入，
+// 每个压缩过的会话序号整体 +1——轻则多报拒绝，重则把分叉点漂移成全量
+// 分支。标记字面量镜像自底座 history_recognition.rs。
+{
+  const current = 'Another language model started to solve this problem';
+  const legacy = 'Conversation Summary (Auto-Generated)';
+  const turns = [
+    textTurn('t1'),
+    { id: 'carrier', userItem: { type: 'user', text: `${current} ...summary body` } },
+    textTurn('t2'),
+    { id: 'pasted', userItem: { type: 'user', text: `${legacy}\n\nold format` } },
+    textTurn('t3'),
+  ];
+  const entries = forkEntriesByTurnId(turns);
+  assert.equal(entries.has('carrier'), false, 'stamped carrier must not render a fork entry');
+  assert.equal(entries.has('pasted'), false, 'pasted summary header must not render a fork entry');
+  assert.equal(entries.get('t2'), 2, 't2 is ordinal 2 (header turns skipped)');
+  assert.equal(entries.get('t3'), 3);
+}
+
+// 7. 非数组输入安全返回空表。
 assert.equal(forkEntriesByTurnId(null).size, 0);

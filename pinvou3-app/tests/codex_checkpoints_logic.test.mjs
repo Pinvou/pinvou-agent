@@ -171,6 +171,25 @@ const userTurn = id => ({ id, userItem: { type: 'user', text: `第${id}轮` } })
   assert.equal(entries.get('t3').checkpoint.id, 'c2');
 }
 
+// 压缩摘要头 turn（stamped 载体/粘贴的摘要头）同样不占序号：与纯图片同属
+// 底座 Editable 分类的排除面（turnHasUserText 共用口径）。计入会让每个
+// 压缩过的会话 checkpoint 序号整体 +1、卡片落到错误的轮次。
+{
+  const current = 'Another language model started to solve this problem';
+  const turns = [
+    userTurn('t1'),
+    { id: 'carrier', userItem: { type: 'user', text: `${current} ...summary` } },
+    userTurn('t2'),
+  ];
+  const entries = rewindEntriesByTurnId(turns, [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+  ]);
+  assert.equal(entries.has('carrier'), false, 'summary-header turn must not render an entry');
+  assert.equal(entries.get('t2').keepTurns, 1, 't2 is ordinal 2 (carrier skipped)');
+  assert.equal(entries.get('t2').checkpoint.id, 'c2');
+}
+
 // ── 联调 Bug A：列表竞态导致变体误判 ────────────────────────────────
 // 复现：turn 3 进行中（或完成但未重拉）时列表停在 [c1,c2] → t3 边界误判为
 // 「仅回退对话」；turn 完成（busy→idle）重拉拿到 [c1,c2,c3] 后收敛为全量回退。

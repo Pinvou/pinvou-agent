@@ -10,7 +10,7 @@ import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { boundDraftNoticeMode as boundDraftNoticeModeOf } from './bound-draft-mode.js';
 import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
-import { can, isWeb } from '../../shared/platform.js';
+import { can, canInvoke, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
@@ -1626,29 +1626,44 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
       // 「从此轮分叉」入口表：turn id → keepTurns（1-based，含当前轮）。
       // 序号口径与 rewindEntriesByTurnId 一致，与 Rust fork_session 的底座
-      // user_turn_prompt_indices（Editable 分类）对齐：纯图片 turn 不占序号
+      // user_turn_prompt_indices（Editable 分类）对齐：纯图片 turn 与压缩
+      // 摘要头 turn（含会话内压缩的 stamped 载体）不占序号
       // （forkEntriesByTurnId / turnHasUserText）。turn 进行中（busy）整表
-      // 隐藏：Rust 端忙碌门会拒绝一切分叉，按钮此时是纯 no-op。
-      const [forkBusy, setForkBusy] = useState(false);
+      // 隐藏：Rust 端忙碌门拒绝 turn 内分叉；compaction 与 rewind 同口径
+      // 不占 turn 预约，期间分叉照常放行（快照取落盘记录的原子读，
+      // 见 features/sessions/fork.rs）。scheduled 运行会话（Rust 侧拒绝）
+      // 与 web 车道（命令不在 access-policy，canInvoke 返回 false）不提供
+      // 入口——入口不应以「点击必报错」的形态存在。
+      const forkSupported = !!(
+        activeSessionId
+        && !activeSessionId.startsWith('sched-')
+        && bridge.available
+        && canInvoke('fork_session')
+      );
+      const [forkBusyFor, setForkBusyFor] = useState(null);
       const forkEntries = useMemo(
-        () => forkEntriesByTurnId(conversationProjection.turns),
-        [conversationProjection],
+        () => (forkSupported ? forkEntriesByTurnId(conversationProjection.turns) : null),
+        [forkSupported, conversationProjection.turns],
       );
       const handleForkTurn = useCallback(async (turnId, keepTurns) => {
-        if (forkBusy || !activeSessionId || busy || !bridge.available) return;
-        setForkBusy(true);
+        if (!forkSupported || busy || (forkBusyFor && forkBusyFor === activeSessionId)) return;
+        const sourceSessionId = activeSessionId;
+        setForkBusyFor(sourceSessionId);
         try {
-          const forked = await invokeTauri('fork_session', { sessionId: activeSessionId, keepTurns });
-          if (forked && forked.id) {
+          const forked = await invokeTauri('fork_session', { sessionId: sourceSessionId, keepTurns });
+          if (forked && forked.id && activeSessionIdRef.current === sourceSessionId) {
+            // 仅当用户仍停留在源会话时自动切换；分叉落盘的窗口内用户已
+            // 切走则不打断其导航——新分支经 session:list_changed 去抖进入
+            // 侧栏，仍可从列表进入。
             await bridge.sessions.switchToSession(forked.id);
           }
         } catch (err) {
           const detail = String((err && err.message) || err || 'unknown error');
-          flashQueuedNotice(activeSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
+          flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
         } finally {
-          setForkBusy(false);
+          setForkBusyFor(null);
         }
-      }, [forkBusy, activeSessionId, busy, flashQueuedNotice, t]);
+      }, [forkSupported, forkBusyFor, activeSessionId, busy, flashQueuedNotice, t]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -3798,7 +3813,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     followOutputRef={autoScrollRef}
                     onRetry={isMultiAgentReadOnly ? undefined : retryLastTurn}
                     forkEntries={busy ? undefined : forkEntries}
-                    onForkTurn={!bridge.available || isMultiAgentReadOnly ? undefined : handleForkTurn}
+                    onForkTurn={!forkSupported || isMultiAgentReadOnly ? undefined : handleForkTurn}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}
