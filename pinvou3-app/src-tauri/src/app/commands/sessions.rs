@@ -1105,7 +1105,13 @@ pub async fn delete_session(
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
     }
-    result
+    // Round-22 复审 MAJOR-3:本命令在 Web 允许清单内,出口一次性折叠全部
+    // 内层错误链(kind 判定、级联删除、Agent 映射清理、定时联动删除)——
+    // store/retention 链携带 `<home>/...` 绝对路径(`write session {}`
+    // 等 context),裸传会经 bridge/relay 落到手机侧;损坏的
+    // session-agents.json 会让每次删除都稳定命中该形状。非路径细节
+    // (not found 等)保留。
+    result.map_err(|error| crate::platform::paths::redact_storage_prefix(&error))
 }
 
 #[cfg(test)]
@@ -1410,7 +1416,14 @@ pub async fn rename_session(
     }
     store
         .set_title(&id, title)
-        .map_err(|e| format!("rename_session({id}): {e:#}"))?;
+        // Round-22 复审 MAJOR-3:web-allowlisted 命令,store 链携带存储
+        // 绝对路径(retention.rs 的 `write session {}` context),先折叠
+        // 再出站;非路径细节保留。
+        .map_err(|e| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "rename_session({id}): {e:#}"
+            ))
+        })?;
     emit_session_event(&app, "session:list_changed", &id, "renamed");
     Ok(())
 }
@@ -1432,15 +1445,15 @@ pub async fn set_session_pinned(
         ));
     }
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
-    store
-        .load(&id)
-        .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
+    store.load(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("set_session_pinned({id}): {e:#}"))
+    })?;
     // Report a refused/failed persist instead of swallowing it: the list is
     // re-read from the durable file, so a silently dropped write shows the
     // user their pin reverting with no explanation.
-    store
-        .set_pinned(&id, pinned)
-        .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
+    store.set_pinned(&id, pinned).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("set_session_pinned({id}): {e:#}"))
+    })?;
     let action = if pinned { "pinned" } else { "unpinned" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
@@ -1461,12 +1474,12 @@ pub async fn set_session_archived(
         ));
     }
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
-    store
-        .load(&id)
-        .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
-    store
-        .set_hidden(&id, archived)
-        .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
+    store.load(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("set_session_archived({id}): {e:#}"))
+    })?;
+    store.set_hidden(&id, archived).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("set_session_archived({id}): {e:#}"))
+    })?;
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
@@ -1605,9 +1618,64 @@ pub async fn save_session_artifacts(
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     ensure_chat_session(&store, &id, "save_session_artifacts")?;
-    store
-        .update_artifacts(&id, paths)
-        .map_err(|e| format!("save_session_artifacts: {e:#}"))
+    store.update_artifacts(&id, paths).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("save_session_artifacts: {e:#}"))
+    })
+}
+
+/// Round-22 复审 MAJOR-3 源钉:五个 web-allowlisted session 突变命令的
+/// 出站错误链必须折叠存储根——store/retention 链携带 `<home>/...` 绝对
+/// 路径(损坏的 session-agents.json 会让每次删除稳定命中),删除任一
+/// 折叠即红。窗口以下一个命令体为界,测试模块不会混入。
+#[cfg(test)]
+#[test]
+fn web_session_mutations_fold_storage_prefixes() {
+    let source = include_str!("sessions.rs");
+    for (fn_name, marker) in [
+        (
+            "pub async fn delete_session(",
+            // 出口一次性折叠(覆盖全部内层臂)。
+            "redact_storage_prefix(&error)",
+        ),
+        (
+            "pub async fn rename_session(",
+            "redact_storage_prefix(&format!(",
+        ),
+        (
+            "pub async fn set_session_pinned(",
+            "redact_storage_prefix(&format!(",
+        ),
+        (
+            "pub async fn set_session_archived(",
+            "redact_storage_prefix(&format!(",
+        ),
+        (
+            "pub async fn save_session_artifacts(",
+            "redact_storage_prefix(&format!(",
+        ),
+    ] {
+        let start = source
+            .find(fn_name)
+            .unwrap_or_else(|| panic!("{fn_name} must exist"));
+        let body = &source[start..];
+        let end = [
+            "\n#[tauri::command]",
+            "\n#[cfg(test)]",
+            "\npub async fn ",
+            "\npub fn ",
+            "\nfn ",
+        ]
+        .iter()
+        .filter_map(|delimiter| body.find(delimiter))
+        .min()
+        .unwrap_or_else(|| panic!("{fn_name} body must be terminated"));
+        let body = &body[..end];
+        assert!(
+            body.contains(marker),
+            "{fn_name} must fold storage-root paths out of its web-visible \
+             error chain ({marker})"
+        );
+    }
 }
 
 /// Shared skeleton for the two position-keyed sidecar normalizers
