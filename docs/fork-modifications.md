@@ -70,10 +70,10 @@
 
 ## 0. 当前状态（2026-11-06）
 
-- 候选期登记头与父仓 gitlink：`5c093b5d4a9571ae67a63dd5fcccf51ba989c60d`（2026-11-06，[Pinvou/CodeWhale#150](https://github.com/Pinvou/CodeWhale/pull/150) 待合）。该提交（`feat(engine): expose route output budget to hosts`）把 `core::engine::route_effective_max_output_tokens` 与输入侧先例 `context_input_budget_for_route` 同型公开，供宿主一次性调用（品悟召唤检阅）复用与主对话完全相同的 `max_tokens` 预算链，不再硬编码漂移；纯 API 暴露、零行为变更、无可回馈口径的行为差异。维护基 `11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05，含 #115–#122、#114/#125 与 #123/#124/#129/#131/#133/#134/#135）仍为其祖先；#150 合入后候选即公开维护头，gitlink 与登记同步收敛。
+- 候选期登记头与父仓 gitlink：`d0322fd0e34b55d089b59da4192ea98972d4f5ec`（2026-11-06，[Pinvou/CodeWhale#150](https://github.com/Pinvou/CodeWhale/pull/150) 待合；评审中把首版 `5c093b5d4` 在 PR 分支内修订为本头——修正 engine.rs 的 rustfmt use 排序、补 wrapper-vs-transport 同链 parity 测试与 doc，仍为单提交）。该提交（`feat(engine): expose route output budget to hosts`）把 `core::engine::route_effective_max_output_tokens` 与输入侧先例 `context_input_budget_for_route` 同型公开，供宿主一次性调用（品悟召唤检阅）复用与主对话完全相同的 `max_tokens` 预算链，不再硬编码漂移；纯 API 暴露、零行为变更、无可回馈口径的行为差异。维护基 `11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05，含 #115–#122、#114/#125 与 #123/#124/#129/#131/#133/#134/#135）仍为其祖先；#150 合入后候选即公开维护头，gitlink 与登记同步收敛。**#150 合入前 `verify-public-submodule.sh`（公开可达门禁）对候选 gitlink 红是预期状态**——登记头=候选头只是 `fork-guard.sh` 本地拓扑层的口径，不替代、不放宽公开门禁。
 - 实测历史（新头）：上游 v0.9.12 `dcd4c200f` 之上 94 个提交，r1 `1fafee7e2` 之上 79 个；92 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。`scripts/fork-guard.sh` 的 `EXPECTED_HEAD`/`EXPECTED_COMMITS=94` 即登记值。
-- 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。候选期门禁按「登记头=候选头」口径执行，r3 标签验证未放宽。
-- 实测 drift（基线 `11cba403d`）：540 files, +119210/-49666，净增 69544；候选提交另加 +21/-0（两个文件，无新 `forkguard_*` 行为名，独立名仍为 301，登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。候选期 r3 标签验证未放宽。
+- 实测 drift（基线 `11cba403d`）：540 files, +119210/-49666，净增 69544；候选提交另加 +72/-0（两个文件：engine.rs +3、engine/context.rs +69，含 parity 测试；无新 `forkguard_*` 行为名，独立名仍为 301，登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
