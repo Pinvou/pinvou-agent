@@ -1813,9 +1813,27 @@ pub async fn rebind_workspace_root(
         let agents = acp_pool.agents().clone();
         let stranded_for_repair = stranded.clone();
         let repaired_ids = super::settings::join_blocking("rebind_workspace_root", move || {
-            agents
-                .repair_stranded_index_records(&stranded_for_repair)
-                .map_err(|e| format!("rebind_workspace_root: {e:#}"))
+            // Authority-retirement boundary at the recovery repair (review
+            // 5798123981): the stranded re-key is an effective workspace
+            // publication — the runtime resolver reads the index, so the
+            // re-key moves the session's effective execution directory onto
+            // the sidecar's target. Every effective publication retires the
+            // previous workspace's approval authority, so the repair rides
+            // the same publication fence (identity advance + preserve-
+            // generation clear in one approval-store critical section) as the
+            // codex and plain binding lanes above. Unlike the prefix lane's
+            // typed failure, a persist failure here rolls back every re-key
+            // (commit_index_rekeys restores all mutated records), so the
+            // failure arm publishes nothing and contributes an empty set —
+            // no typed population rides this error.
+            crate::features::assistant::pending_approvals::commit_rebind_publication(
+                || agents.repair_stranded_index_records(&stranded_for_repair),
+                |outcome| match outcome {
+                    Ok(repaired) => repaired.clone(),
+                    Err(_) => Vec::new(),
+                },
+            )
+            .map_err(|e| format!("rebind_workspace_root: {e:#}"))
         })
         .await?;
         // SF-C (review #463 round-15): the repair re-keys the index onto the
@@ -5029,8 +5047,14 @@ mod tests {
             .find("pending_approvals::commit_rebind_publication(")
             .expect("the codex binding publish must be fenced");
         let plain_fence = src
-            .rfind("pending_approvals::commit_rebind_publication(")
+            .find("let plain_rebind = crate::features::assistant::pending_approvals::commit_rebind_publication(")
             .expect("the plain binding publish must be fenced too");
+        // Round CR 5798123981: a third production fence now exists — the
+        // recovery repair (stranded-index re-key) rides the same boundary;
+        // its wiring is pinned separately by
+        // stranded_repair_publish_rides_the_authority_retirement_fence, so
+        // this pin re-anchors the plain fence on its own lane instead of
+        // "last fence in the file", which the repair fence displaced.
         let codex_publish = src
             .find("agents\n                    .rebind_workspace_prefix(")
             .expect("the codex publish must stay inside its fence closure");
@@ -5287,6 +5311,177 @@ mod tests {
         approvals::clear_session("partial-pub-s1");
         approvals::clear_session("partial-pub-s2");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Review 5798123981 (P2), production flow: the recovery repair — the
+    /// stranded-index re-key — is an effective workspace publication. The
+    /// runtime resolver reads the index, so re-keying the stranded record
+    /// onto the sidecar's target moves the session's effective execution
+    /// directory from the stale intermediate target (`to`) to the repaired
+    /// one (`to2`), and the same authority-retirement boundary as the normal
+    /// binding lanes must fire: the grant remembered in the stranded era
+    /// must not answer a request served at the repaired target. Driven
+    /// through the publication fence exactly as the command wires it.
+    /// Mutation: deriving an empty moved set (or skipping the fence's
+    /// advance/clear) keeps the `to`-era grant and the unadvanced generation,
+    /// reding the asserts below; unwrapping the production repair from its
+    /// fence is owned by
+    /// stranded_repair_publish_rides_the_authority_retirement_fence.
+    #[test]
+    fn stranded_repair_publication_retires_previous_workspace_authority() {
+        use crate::features::assistant::pending_approvals as approvals;
+        let base = unique_dir("stranded-repair");
+        for dir in ["to", "to2"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        let to = canonical_form(&base.join("to"));
+        let to2 = canonical_form(&base.join("to2"));
+        let agents_dir = base.join("agents");
+        let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
+
+        // The strand shape, constructed directly (same as the store-level
+        // recovery test): index record at the stale intermediate target `to`
+        // — what the resolver serves during the strand — and the sidecar at
+        // the real target `to2`. Persisted, mirroring the run-1/run-2
+        // recovery history that strands the record between prefix scans.
+        agents
+            .bind_code_native_session(
+                "stranded-repair-s1",
+                CodexWorkspaceKind::Project,
+                Some(to.clone()),
+                vec![to.clone()],
+            )
+            .unwrap();
+        seed_agent_owner(&agents_dir, "stranded-repair-s1");
+        std::fs::write(
+            agents_dir
+                .join("sessions")
+                .join("stranded-repair-s1")
+                .join("code-session.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 2,
+                "workspace_kind": "project",
+                "workspace_path": to2.to_string_lossy(),
+                "workspace_roots": [to2.to_string_lossy()],
+                "explicit_ancestor_roots": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // The stranded-era authority the CR posits: a grant (and its memory
+        // companion) remembered while the session effectively served `to`,
+        // with no generation recorded — run 2's fence skipped this session
+        // because its divergence re-key rolled back.
+        approvals::clear_session("stranded-repair-s1");
+        approvals::clear_session("stranded-repair-bystander");
+        approvals::remember_grant("stranded-repair-s1", "shell:11:cargo build", None);
+        approvals::remember_grant("stranded-repair-bystander", "shell:11:cargo test", None);
+        assert!(approvals::session_granted(
+            "stranded-repair-s1",
+            "shell:11:cargo build"
+        ));
+        assert!(
+            approvals::workspace_generation("stranded-repair-s1").is_none(),
+            "precondition: the strand history must have left the session unadvanced"
+        );
+
+        // The production wiring: the repair publish rides the publication
+        // fence; the moved set is exactly what the repair actually re-keyed.
+        let repaired = crate::features::assistant::pending_approvals::commit_rebind_publication(
+            || {
+                agents.repair_stranded_index_records(&[(
+                    "stranded-repair-s1".to_string(),
+                    to2.clone(),
+                )])
+            },
+            |outcome| match outcome {
+                Ok(repaired) => repaired.clone(),
+                Err(_) => Vec::new(),
+            },
+        )
+        .expect("the strand repair publish must succeed");
+        assert_eq!(repaired, vec!["stranded-repair-s1".to_string()]);
+
+        // The re-key is durable at the repaired target: the resolver now
+        // serves `to2`, which is why the authority had to retire.
+        assert_eq!(
+            agents.get("stranded-repair-s1").workspace_path.as_deref(),
+            Some(to2.as_path()),
+            "the repair must have re-keyed the index onto the sidecar target"
+        );
+
+        // The `to`-era grant must not answer a `to2`-era request, the
+        // identity advanced at the same commit point, and a late old-era
+        // (None) decision write is rejected.
+        assert!(
+            !approvals::session_granted("stranded-repair-s1", "shell:11:cargo build"),
+            "a grant remembered in the stranded era must not survive the repair publication"
+        );
+        assert_eq!(
+            approvals::workspace_generation("stranded-repair-s1"),
+            Some(1),
+            "the repair publication must advance the repaired session's workspace generation"
+        );
+        assert!(
+            !approvals::remember_grant("stranded-repair-s1", "shell:11:cargo build", None),
+            "a late old-era (None) grant write must be rejected after the advance"
+        );
+        // A session the repair never re-keyed keeps its share.
+        assert!(
+            approvals::session_granted("stranded-repair-bystander", "shell:11:cargo test"),
+            "untouched sessions keep their shares"
+        );
+
+        approvals::clear_session("stranded-repair-s1");
+        approvals::clear_session("stranded-repair-bystander");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Wiring pin for the same review 5798123981: the recovery repair must
+    /// ride the approval-store publication fence inside its blocking lane —
+    /// the publish runs in the fence closure, the moved set is derived from
+    /// the repair outcome (the empty rollback arm documents that a persist
+    /// failure publishes nothing, unlike the prefix lane's typed error), and
+    /// the String mapping stays outside the fence. Source-level like the
+    /// other command-layer probes. Mutation: unwrapping the repair publish
+    /// from its fence (a bare `repair_stranded_index_records` call in the
+    /// blocking closure, the pre-fix shape) fails the first ordering assert;
+    /// widening the failure arm to the detected strand list would fail the
+    /// rollback-arm find (it would clear sessions the repair never re-keyed).
+    #[test]
+    fn stranded_repair_publish_rides_the_authority_retirement_fence() {
+        let src = production_source();
+        let lane = src
+            .find("let repaired_ids = super::settings::join_blocking(\"rebind_workspace_root\", move || {")
+            .expect("the stranded-repair blocking lane must exist");
+        let fence = src[lane..]
+            .find("pending_approvals::commit_rebind_publication(")
+            .expect("the recovery repair must ride the publication fence");
+        let publish = src[lane..]
+            .find(".repair_stranded_index_records(&stranded_for_repair)")
+            .expect("the repair publish must exist");
+        let ok_arm = src[lane..]
+            .find("Ok(repaired) => repaired.clone()")
+            .expect("the moved set must come from the actually re-keyed ids");
+        let rollback_arm = src[lane..]
+            .find("Err(_) => Vec::new()")
+            .expect("a rolled-back repair must publish nothing");
+        let string_map = src[lane..]
+            .find(".map_err(|e| format!(\"rebind_workspace_root: {e:#}\"))")
+            .expect("the String mapping must stay for the caller contract");
+        assert!(
+            fence < publish,
+            "the repair publish must run inside the fence closure"
+        );
+        assert!(
+            fence < ok_arm && fence < rollback_arm,
+            "both arms of the moved-set match must feed the fence"
+        );
+        assert!(
+            fence < string_map,
+            "the String mapping must sit after the fence (same contract as the codex lane)"
+        );
     }
 
     /// Round-26 MAJOR-4: the eviction-tail refusal glue — a refused or
