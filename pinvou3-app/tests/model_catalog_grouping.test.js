@@ -1399,6 +1399,7 @@ test('imageCapable annotations cross-check the Rust builtin verified table sourc
   const backendSupports = id => exacts.includes(id) || substrings.some(entry => id.includes(entry));
   let checked = 0;
   const backendAdmittedUnannotated = new Set();
+  const feFalseAnnotated = new Set();
   for (const scope of ['local', 'cloud']) {
     for (const group of MODEL_CATALOG[scope] || []) {
       for (const item of group.items || []) {
@@ -1411,6 +1412,7 @@ test('imageCapable annotations cross-check the Rust builtin verified table sourc
             assert.ok(be, `frontend annotates image-capable but backend resolves Unknown: ${group.key}/${id}`);
           } else if (fe === false) {
             checked += 1;
+            feFalseAnnotated.add(String(id));
             assert.ok(!be, `frontend annotates text-only but backend treats it as image-capable (images would be inlined on send): ${group.key}/${id}`);
           } else if (be) {
             // Unannotated rows are no longer skipped wholesale (the r1
@@ -1463,6 +1465,33 @@ test('imageCapable annotations cross-check the Rust builtin verified table sourc
     'the unannotated-but-backend-admitted inventory drifted: a new id silently resolves Supported through the auto chain (add it here consciously), or a table entry/row spelling changed',
   );
   assert.ok(checked >= 60, `parity check coverage is abnormally low (only ${checked} entries); the catalog annotations or alias structure appear to have drifted`);
+  // The false side of the annotation set gets the same snapshot treatment as
+  // the unannotated inventory: a `false` annotation is load-bearing (it
+  // blocks the form's image toggle on text-only rows), but dropping one does
+  // not trip any assertion above — the id merely stops being checked and the
+  // per-row loop stays green. Pin the deduped id set so a deleted (or newly
+  // added) text-only annotation forces a conscious decision here
+  // (2026-11-06 review).
+  const FALSE_ANNOTATED_INVENTORY = [
+    'GLM-5.2',
+    'MiniMax-M2.5',
+    'MiniMax-M2.5-highspeed',
+    'MiniMax-M2.7',
+    'MiniMax-M2.7-highspeed',
+    'deepseek-v4-pro',
+    'glm-5-2',
+    'glm-5-3',
+    'glm-5.2',
+    'glm-5.3',
+    'minimax-m-2-7',
+    'minimax-m2.7',
+    'qwen3.7-max',
+  ];
+  assert.deepStrictEqual(
+    [...feFalseAnnotated].sort(byStr),
+    FALSE_ANNOTATED_INVENTORY.sort(byStr),
+    'the text-only (imageCapable:false) annotation inventory drifted: a false annotation was dropped or added — a dropped one silently re-enables the image toggle for a text-only row',
+  );
 });
 
 test('coding-plan endpoint sets cross-check the Rust identify arms (frontend groups must classify where the backend stamps metadata)', () => {
@@ -1618,6 +1647,17 @@ test('providerCatalog overlays and preset labels for the custom Responses group 
     assert.ok(
       overlayKeys.length >= catalogKeys.length,
       `${file} overlay key count regressed: ${overlayKeys.length} (expected >= ${catalogKeys.length})`
+    );
+    // The `local` group is exempt from the forward scan (SettingsView renders
+    // its header via the preset label, not this overlay), so the scans above
+    // cannot see its entry at all: deleting providerCatalog.local would stay
+    // green until some header switches to the localized overlay for the
+    // local group (exactly what the round-4 change did for every non-local
+    // group) and silently serves zh copy to en/ja users. Pin its presence
+    // explicitly (2026-11-06 review).
+    assert.ok(
+      /(?:^|[,{])\s*local:\{title:'([^']+)',desc:'([^']+)'\}/.test(block),
+      `${file} providerCatalog must keep the local:{title,desc} overlay entry (unconsumed today, but deleting it pre-regresses the localized-header path)`
     );
     for (const key of overlayKeys) {
       assert.ok(
