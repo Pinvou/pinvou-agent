@@ -114,6 +114,15 @@ const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "decide_approval",
     "discard_plan",
     "web_access_set_codex_acp_mode",
+    // Round-14 review (same-class twins of the two entries above): the ACP
+    // config option IS the mode write path (the saved-mode restore drives
+    // posture through set_config_option with option id "mode"), and
+    // web_access_respond_codex_acp_permission is the direct decide_approval
+    // analog. Both are inert for multi-agent sessions today (a session is
+    // never both multi-agent and external ACP) — denylisted for the same
+    // "keep the promise total" reason as web_access_set_codex_acp_mode.
+    "web_access_set_codex_acp_config_option",
+    "web_access_respond_codex_acp_permission",
     "edit_last_turn",
     "exit_plan_to_yolo",
     "set_ask_on_guardrail",
@@ -4703,6 +4712,13 @@ mod tests {
             // "web is read-only on multi-agent execution surfaces" promise
             // total instead of relying on today's invalid combination.
             "web_access_set_codex_acp_mode",
+            // Round-14 review (same-class twins): the ACP config option IS
+            // the mode write path (saved-mode restore drives posture through
+            // set_config_option with option id "mode"), and
+            // web_access_respond_codex_acp_permission is the direct
+            // decide_approval analog. Same inertness, same rationale.
+            "web_access_set_codex_acp_config_option",
+            "web_access_respond_codex_acp_permission",
         ] {
             assert!(
                 super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
