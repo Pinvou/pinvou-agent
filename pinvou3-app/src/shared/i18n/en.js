@@ -1218,7 +1218,7 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   'Kimi K3.1 旗舰（套餐页 1M 名单）':'Kimi K3.1 flagship (on the plan 1M-context list)',
   'Kimi 旗舰，1M 上下文':'Kimi flagship, 1M context',
   'GLM 旗舰':'GLM flagship',
-  'GLM 高速款':'GLM High-speed tier',
+  'GLM 高速款':'GLM high-speed tier',
   '通义 1M 托管版':'Hosted Qwen, 1M context',
   '高能力模型，1M 上下文':'High-capability model, 1M context',
   '高速款，1M 上下文':'High-speed tier, 1M context',
