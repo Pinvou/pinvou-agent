@@ -3,9 +3,13 @@
 //! 原地截断并备份被截段，fork 不动源会话、另存新支。
 //!
 //! 切点口径与 rewind 同源：底座 [`deepseek_tui::user_turn_prompt_indices`]
-//! 的 era 口径（比单消息 [`deepseek_tui::is_user_turn_prompt`] 多计入历史
-//! 里粘贴的压缩摘要头 turn——底座文档明确 host 编号应统一读这一个列表，
-//! 前端投影对这类 turn 也计 userItem，两侧因此一致）。
+//! 的 era 口径（比单消息 [`deepseek_tui::is_user_turn_prompt`] 多计入
+//! post-provenance 历史里粘贴的压缩摘要头 turn——底座文档明确 host 编号应
+//! 统一读这一个列表）。前端入口表（forkEntriesByTurnId）以
+//! `turnHasUserText` 同步跳过摘要头 turn：pre-provenance 历史（用户把压缩
+//! 摘要粘进新会话的常见场景）里两侧都不计，post-provenance 历史里粘贴的
+//! 摘要头前端少计一格（后端 era 会计入），属已知残留——真正的修法是把
+//! 序号由后端下发，见 forkTurnEntries.js 注释。
 //!
 //! 刻意不随克隆走的内容：artifacts（实体存放在源会话 artifacts 目录，复制
 //! 记录会形成跨会话指针）、journal/leaf 兼容投影（messages 是非 journal
@@ -15,10 +19,16 @@
 //! 属于对话内容，分叉分支继承它符合语义）、`work_state`（todos/plan 侧栏
 //! 状态）与 `context_references`（后者的 message_index 可能指向被截掉的
 //! 消息，消费方按索引越界如实降级）、`archived`/`spawn_depth`（UI 不可达
-//! archived 会话分叉；仅 IPC 直调会得到同样 archived 的分支）、源会话标题。
-//! 每会话侧车（模型覆盖 set_session_model_id、mode_state）按 id 键存，不会
-//! 跟随分叉——新分支以默认模型/模式注水。新会话引擎按既有 lazy respawn
-//! 路径在首次发送时接管，无需在此触碰 pool。
+//! archived 会话分叉；仅 IPC 直调会得到同样 archived 的分支）、源会话标题，
+//! 以及记录内的 `model`/`model_provider`/`mode` 快照字段——它们只是元数据
+//! 陈述，桌面端每会话模型覆盖（set_session_model_id）与 mode_state 是按 id
+//! 键存的侧车，不会跟随分叉，新分支实际以默认模型/模式注水。新会话引擎按
+//! 既有 lazy respawn 路径在首次发送时接管，无需在此触碰 pool。
+//!
+//! 注意：`store.save` 落盘后附带保留预算清扫（`persist_then_reconcile`），
+//! 若 store 超预算，最旧的记录——可能是刚分叉的源会话——会被清扫驱逐；
+//! 与任何新建会话同语义，非 fork 特有，但「从某会话分叉可能清掉它」值得
+//! 知晓。
 
 use anyhow::Result;
 use chrono::Utc;
@@ -29,9 +39,10 @@ use super::SessionStore;
 
 impl SessionStore {
     /// 从第 `keep_turns` 轮末尾分叉出新会话，返回新会话的 metadata。
-    /// `keep_turns == 当前总轮数` 即全量分支（切点即末尾）；`keep_turns == 0`
-    /// 得到仅携带源会话前导（实践中为空）的空分支，与 rewind 的 N=0 口径
-    /// 一致；超过当前轮数如实报错。
+    /// `keep_turns == 当前总轮数`（总轮数 > 0）即全量分支（切点即末尾）；
+    /// `keep_turns == 0` 得到仅携带源会话前导（实践中为空）的空分支，与
+    /// rewind 的 N=0 口径一致；0 轮会话无可分叉内容，如实报错（rewind 对
+    /// 0 轮同样拒绝）；超过当前轮数如实报错。
     pub(crate) fn fork_session_record(
         &self,
         session_id: &str,
@@ -48,6 +59,9 @@ impl SessionStore {
         let turn_prompt_indices = user_turn_prompt_indices(&source.messages);
         let total_turns = turn_prompt_indices.len();
         let keep = keep_turns as usize;
+        if total_turns == 0 {
+            anyhow::bail!("会话当前没有可分叉的用户 turn，无法分叉（共 0 轮）");
+        }
         if keep > total_turns {
             anyhow::bail!("会话当前只有 {total_turns} 轮，无法分叉到第 {keep_turns} 轮末尾");
         }
@@ -58,12 +72,17 @@ impl SessionStore {
             turn_prompt_indices[keep]
         };
 
-        let mut forked = source.clone();
+        // 血缘数据在 move 前捕获，整条记录按值接管：整份深拷贝只为了改几
+        // 个字段再截断不值得（大会话上 clone 让峰值内存近乎翻倍），克隆
+        // 语义（源不动、新支另存）由「先捕获后改写、只写新 id 文件」保持。
+        let parent_metadata = source.metadata.clone();
+        let captured_message_count = source.messages.len();
+        let mut forked = source;
         forked.metadata.id = super::validators::generate_session_id();
-        forked.metadata.mark_forked_from(&source.metadata);
+        forked.metadata.mark_forked_from(&parent_metadata);
         // 血缘计数取实际捕获的消息数：metadata.message_count 由引擎路径维护，
         // 直存/外部改写的记录可能滞后，以 messages 为准。
-        forked.metadata.forked_from_message_count = Some(source.messages.len());
+        forked.metadata.forked_from_message_count = Some(captured_message_count);
         forked.metadata.created_at = Utc::now();
         forked.metadata.updated_at = Utc::now();
         forked.messages.truncate(cut);
@@ -187,6 +206,28 @@ mod tests {
         assert!(error.to_string().contains("轮"), "{error:#}");
     }
 
+    /// 0 轮会话（无 era 可计用户 turn）无可分叉内容：keep=0 与 keep>0 一律
+    /// 如实拒绝，不得触发 keep==total 的全量分支腿把整条记录当「空分支」。
+    #[test]
+    fn fork_rejects_zero_turn_session() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let mut session = store.load(&source.metadata.id).expect("load");
+        session.messages = vec![assistant_text("只有助手消息，没有用户 turn")];
+        store.save(&session).expect("seed");
+        for keep in [0u32, 1] {
+            let error = store
+                .fork_session_record(&source.metadata.id, keep)
+                .expect_err("0-turn session must refuse fork");
+            assert!(error.to_string().contains("0 轮"), "keep={keep}: {error:#}");
+        }
+        // 源会话不被半成品污染。
+        let original = store.load(&source.metadata.id).expect("reload");
+        assert_eq!(original.messages.len(), 1);
+    }
+
     #[test]
     fn fork_rejects_scheduled_and_aux_sessions() {
         let (store, _lock, _env) = isolated_store();
@@ -223,6 +264,10 @@ mod tests {
         // 会在加载时复活被截掉的消息，见模块文档）。
         session.metadata.total_tokens = 1234;
         session.metadata.cumulative_turn_secs = 96;
+        session.metadata.cost.session_cost_usd = 1.25;
+        session.metadata.cost.session_cost_cny = 9.0;
+        session.metadata.cost.subagent_cost_usd = 0.5;
+        session.metadata.cost.subagent_cost_cny = 3.5;
         let mut journal = SessionJournal::new();
         journal.append_message(turn_prompt("journal 载体"));
         session.journal = Some(journal);
@@ -236,6 +281,17 @@ mod tests {
         assert_eq!(
             forked.cumulative_turn_secs, 0,
             "fresh branch has no turn time"
+        );
+        // SessionCostSnapshot 无 PartialEq：逐字段断言四个成本项全部归零。
+        assert_eq!(forked.cost.session_cost_usd, 0.0, "usd must reset");
+        assert_eq!(forked.cost.session_cost_cny, 0.0, "cny must reset");
+        assert_eq!(
+            forked.cost.subagent_cost_usd, 0.0,
+            "subagent usd must reset"
+        );
+        assert_eq!(
+            forked.cost.subagent_cost_cny, 0.0,
+            "subagent cny must reset"
         );
         // 落盘记录不得携带源会话的 journal/leaf（load 时的 ensure_journal 会
         // 从 messages 重建投影，内存断言探不到磁盘上的陈旧投影——陈旧投影
