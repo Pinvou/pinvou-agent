@@ -282,6 +282,14 @@ export function ComputerUseDialogs({ slice, copy, virtualDisplayNote = '' }) {
             {grantVirtual && virtualDisplayNote === 'linux' && copy.grantLinuxCaveat && (
               <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{copy.grantLinuxCaveat}</p>
             )}
+            {/* R7: on a KNOWN platform the caveat rows carry the real
+                isolation limits. When the capability is absent/unknown
+                (platform capabilities failed to load), the base copy would
+                otherwise claim absolute isolation unqualified — render the
+                generic honesty line instead. */}
+            {grantVirtual && virtualDisplayNote !== 'macos' && virtualDisplayNote !== 'linux' && virtualDisplayNote !== 'windows' && copy.grantUnknownPlatformCaveat && (
+              <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{copy.grantUnknownPlatformCaveat}</p>
+            )}
             {actionError && actionError.stamp === grantRequest.sessionId && (
               <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>
             )}

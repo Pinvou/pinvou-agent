@@ -2166,11 +2166,13 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         ComputerUseAction::MouseMove { x, y } | ComputerUseAction::ElementAtPoint { x, y } => {
             record.with_target(&format!("({x}, {y})"));
         }
-        // open: the program name only — args can embed long paths/content,
-        // the arg COUNT is already in the model-facing receipt, and the
-        // display_target field carries the which-display answer.
-        ComputerUseAction::Open { program, args } => {
-            record.with_target(&format!("open {program} with {} args", args.len()));
+        // open: the program name is model-supplied FREE TEXT, so — like
+        // chords and typed text — it never enters the audit (a secret can be
+        // chunk-spelled across open calls the same way it can across chord
+        // chunks). The arg COUNT and the display_target field carry the
+        // audit story; the model-facing receipt still names the program.
+        ComputerUseAction::Open { args, .. } => {
+            record.with_target(&format!("open with {} args", args.len()));
         }
         _ => {}
     }
@@ -2582,7 +2584,12 @@ impl ToolSpec for ComputerUseTool {
          When the app reports an isolated virtual display is in use (see the \
          [target: …] line on every screenshot), everything you do happens on that \
          isolated display and the user's real desktop is untouched — launch apps \
-         there with `open` and work freely. When the target is the user's real \
+         there with `open` and work freely; this isolation is subject to the \
+         platform residuals the target note discloses (e.g. on macOS an app \
+         you just opened passes through the user's desktop while it is being \
+         moved in), and per-action screening does NOT run on the isolated \
+         display (nothing there can be a user-facing control the user did not \
+         grant). When the target is the user's real \
          desktop, every action is visible to the user: minimize disruption, keep \
          actions to the minimum the task needs, and say what you are about to do \
          before doing it. \
@@ -2918,8 +2925,10 @@ fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, 
 /// Audit a call that failed BEFORE `run()`'s per-call audit record exists —
 /// a pre-gate capability-read failure (backend start failed, worker died).
 /// The record is an `error` (the call was not refused by a gate — it
-/// failed), with the display target from the resolved-preference fallback
-/// (no backend exists yet, so there is no recorded decision to consult).
+/// failed), with the display target from the same resolution chain as
+/// `run()` (cached backend decision → session registry row → the
+/// preference+probe fallback, so a prior successful action still pins this
+/// record to the session's real target).
 /// Fail-open like every audit append: a write failure warns, never blocks.
 fn audit_failed_call(parts: &Parts, action: &ComputerUseAction, message: &str) {
     let mut record = AuditRecord::new(&parts.session_id, action.name(), "pre-run");

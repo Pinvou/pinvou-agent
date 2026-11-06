@@ -507,10 +507,11 @@ impl VirtualX11Backend {
                 "cannot create the Xvfb displayfd socketpair: {error}"
             ))
         })?;
-        // Spawn the RESOLVED probe path, never a bare name: the first PATH
-        // hit the probe verified is the server that runs (see
-        // find_on_path_full). A vanished binary answers explicitly instead
-        // of falling through to exec's PATH search.
+        // Spawn the RESOLVED probe path, never a bare name: the spawn and the
+        // probe run the SAME full PATH walk (see find_on_path_full), so under
+        // a stable PATH the binary that answered the probe is the binary that
+        // runs. A vanished binary answers explicitly instead of falling
+        // through to exec's PATH search.
         let xvfb_path = find_on_path_full("Xvfb").ok_or_else(|| {
             ComputerUseError::unavailable(
                 missing_required_binaries(find_on_path).unwrap_or_else(|| {
@@ -789,8 +790,10 @@ impl VirtualX11Backend {
     /// Serialize the current process state into `<session dir>/pidfile.json`.
     /// Best-effort everywhere: a pidfile write failure must not kill a working
     /// session (the crash-sweep record is lost for THIS session only, and the
-    /// warning makes the loss visible). The `xvfb_pid = 0` shape never reaches
-    /// disk in practice: every write happens after a successful Xvfb spawn.
+    /// warning makes the loss visible). The `xvfb_pid = 0` shape (no held
+    /// Xvfb — e.g. after a death observation dropped the handle and a later
+    /// release rewrote the pidfile) is harmless on disk: the sweep's role
+    /// gate reads `/proc/0/cmdline`, fails, and skips.
     fn write_pidfile(&self) {
         let file = PidFile {
             xvfb_pid: self.xvfb.as_ref().map(Child::id).unwrap_or(0),
@@ -901,11 +904,28 @@ impl VirtualX11Backend {
 
     /// Cheap server liveness probe: `try_wait` on the held Xvfb child (reaps
     /// the zombie as a side effect). An errored wait counts as dead.
+    ///
+    /// A death observation DROPS the held handle: `try_wait` released the
+    /// zombie, so the pid is free for kernel recycling and the handle no
+    /// longer pins it. Keeping it would let the teardown kills
+    /// ([`Self::kill_recorded_processes`] → `terminate_then_kill`) fire by
+    /// number against a process that merely inherited the pid. The pidfile
+    /// keeps the recorded identity for the crash sweep, which verifies the
+    /// role and start time through `/proc` before any signal and skips a
+    /// dead pid safely.
     fn server_alive(&mut self) -> bool {
-        match self.xvfb.as_mut() {
-            Some(child) => !matches!(child.try_wait(), Ok(Some(_)) | Err(_)),
-            None => false,
+        let dead = match self.xvfb.as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(Some(_)) | Err(_)),
+            // No held handle = no live server (the drop happens at the death
+            // observation below; callers treat this as the respawn/death
+            // contract requires).
+            None => true,
+        };
+        if dead && self.xvfb.is_some() {
+            log::warn!("[computer_use] virtual display: the Xvfb server exited");
+            self.xvfb = None;
         }
+        !dead
     }
 
     /// Entry check for every action: when the server died since the last
@@ -971,8 +991,11 @@ impl VirtualX11Backend {
     /// Kill everything recorded in the backend (children → WM → Xvfb), reap
     /// the held child handles, and clear the records. Child kills go through
     /// the pid-recycling identity gate (a number alone is not an identity);
-    /// the WM/Xvfb kills are exempt (their pids were never released for
-    /// recycling — they are still our held handles). The WM/Xvfb get a
+    /// the WM/Xvfb kills are exempt because a HELD handle keeps its pid
+    /// pinned — the kernel releases the pid only when the zombie is reaped,
+    /// and [`Self::server_alive`] drops the handle at that exact moment, so
+    /// a handle that reaches this fn was alive at the last observation and
+    /// its (unreaped) zombie pins the pid in between. The WM/Xvfb get a
     /// SIGTERM-first wind-down: an X server that exits on SIGTERM removes its
     /// own `/tmp/.X11-unix/X{n}` socket, which a SIGKILLed server cannot (the
     /// sweep kills are SIGTERM-first too, via /proc liveness — see the module
@@ -1520,8 +1543,9 @@ impl ComputerUseBackend for VirtualX11Backend {
         // not hidden.
         notes.push(
             "stopping the session (Stop button, grant revoke, master switch off) winds \
-             down the apps opened on the virtual display, except an app that detaches \
-             into its own session (daemonize/setsid) escapes even that group kill; \
+             down the apps opened on the virtual display, except an app that \
+             daemonizes into a brand-new session (double-fork) escapes even that \
+             group kill; \
              apps opened there may still reach shared session services of the user's \
              login session that the environment cannot redirect (e.g. audio and \
              camera via the runtime-dir sockets), their D-Bus session bus is disconnected \
@@ -1882,7 +1906,10 @@ impl ComputerUseBackend for VirtualX11Backend {
         command.current_dir(crate::platform::paths::user_home_dir());
         std_process_group_leader(&mut command);
         let mut child = command.spawn().map_err(|error| {
-            ComputerUseError::failed(format!("open: cannot spawn {program}: {error}"))
+            // The program name is model free text — never echo it into an
+            // error (it lands in the audit log with the record; same contract
+            // as the chord/typed-text redaction).
+            ComputerUseError::failed(format!("open: cannot spawn the requested program: {error}"))
         })?;
         let pid = child.id();
         // Detached reaper (the pidfile contract needs the pid, which
@@ -1898,16 +1925,24 @@ impl ComputerUseBackend for VirtualX11Backend {
         {
             // Thread-spawn failure dropped the closure that owned the Child
             // handle: without this fallback the app pid lingers as an
-            // unreaped zombie forever. Kill it and reap synchronously by pid.
+            // unreaped zombie forever. Kill it and reap with a BOUNDED wait
+            // (a SIGKILL-unresponsive D-state child must not park the
+            // session's worker thread; the leftover zombie is harmless —
+            // the init reaper collects it when this process exits).
             log::warn!(
                 "[computer_use] virtual display: cannot spawn the open_app reaper thread \
                  ({error}); killing and reaping the app synchronously"
             );
             kill_pid_tree(pid);
-            // SAFETY: waitpid reaps OUR child after the SIGKILL above; the
-            // status pointer is null (ignored), no memory is touched.
-            unsafe {
-                libc::waitpid(pid as i32, std::ptr::null_mut(), 0);
+            let deadline = Instant::now() + REAP_GRACE;
+            while Instant::now() < deadline {
+                // SAFETY: WNOHANG waitpid reaps OUR child after the SIGKILL
+                // above; the status pointer is null (ignored), no memory is
+                // touched. A non-zero return means "not reaped yet".
+                if unsafe { libc::waitpid(pid as i32, std::ptr::null_mut(), libc::WNOHANG) } > 0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
         self.record_child(program, pid);
@@ -2146,11 +2181,16 @@ fn kill_verified_children(children: &[ChildRecord]) -> usize {
 /// Graceful wind-down for a HELD child handle (the WM / Xvfb at teardown):
 /// SIGTERM first — an X server exiting on SIGTERM removes its own
 /// `/tmp/.X11-unix/X{n}` socket, which a SIGKILLed server cannot — then
-/// SIGKILL via `kill_pid_tree` only if the grace expires. The handle was
-/// never released for recycling, so the signal targets our own child.
+/// SIGKILL via `kill_pid_tree` only if the grace expires. The caller's
+/// invariant: a held handle whose death has been OBSERVED (reaped) is
+/// dropped by [`VirtualX11Backend::server_alive`], so any handle reaching
+/// this fn was alive at the last observation; until its zombie is reaped
+/// (here, by `try_wait`) the kernel still pins the pid, and the signal
+/// targets our own child — never a recycled number.
 fn terminate_then_kill(child: &mut Child, grace: Duration) {
     // SAFETY: plain kill(2) with a constant signal on our own recorded
-    // child; ESRCH (already gone) is fine to ignore.
+    // child (see the caller invariant above); ESRCH (already gone) is fine
+    // to ignore.
     let _ = unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
     let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
@@ -2930,6 +2970,19 @@ mod tests {
 
     // ---- WM lifecycle pins (spawn argv + dead-WM wind-down) ----
 
+    /// Panic-safety guard for the live `sleep` fixtures: the sweep tests
+    /// spawn real `sleep 30` group leaders and clean them up at the end of
+    /// the test body — an assertion failure would otherwise leak the live
+    /// process past the test binary. The guard's kill is ESRCH-safe, so the
+    /// tests' own end-of-body `kill_pid_tree` + `wait` stay untouched.
+    struct KillOnDrop(u32);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            kill_pid_tree(self.0);
+        }
+    }
+
     /// An already-exited child (exits within milliseconds of spawn; the
     /// verify loop's 100 ms ticks absorb the exec window).
     fn exited_child() -> Child {
@@ -3070,7 +3123,56 @@ mod tests {
             !backend.server_alive(),
             "the dead server must not have been respawned by mouse_up"
         );
-        let _ = backend.xvfb.take().expect("server held").wait();
+        // R7: the death observation dropped the reaped handle, so no later
+        // kill path can fire by number against a recycled pid.
+        assert!(
+            backend.xvfb.is_none(),
+            "a reaped Xvfb handle must not stay held (pid no longer pinned)"
+        );
+    }
+
+    /// Mutation pin (R7 MAJOR-1): once a death observation reaps the Xvfb
+    /// zombie, the held handle no longer pins the pid — the kernel released
+    /// it for recycling. `server_alive` must drop the handle at that exact
+    /// moment so [`Self::kill_recorded_processes`]'s by-number wind-down can
+    /// never signal a pid an unrelated process now owns. Before the fix, the
+    /// handle stayed `Some` here and the teardown kills fired on it blindly.
+    #[test]
+    fn server_alive_drops_a_reaped_xvfb_handle() {
+        let home = IsolatedHome::take("reaped-handle-drop");
+        let mut backend = VirtualX11Backend {
+            session_dir: home.vd_root().join("vanished-session"),
+            cookie: [0u8; 16],
+            hostname: "host".to_string(),
+            auth_path: home.vd_root().join("vanished-auth"),
+            display: ":99".to_string(),
+            xvfb: Some(exited_child()),
+            wm: None,
+            wm_program: None,
+            children: Vec::new(),
+            xdotool_path: PathBuf::from("/usr/bin/xdotool"),
+            cancel: None,
+        };
+        // Wait for the exit so the first observation deterministically reaps.
+        for _ in 0..200 {
+            if matches!(
+                backend.xvfb.as_mut().expect("server held").try_wait(),
+                Ok(Some(_))
+            ) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !backend.server_alive(),
+            "the reaped server must be observed dead"
+        );
+        assert!(
+            backend.xvfb.is_none(),
+            "the reaped handle must be dropped, not kept for the kill paths"
+        );
+        // And the answer stays stable (no handle, no respawn attempt here).
+        assert!(!backend.server_alive());
     }
 
     // ---- crash-orphan sweep (fixture: fake dirs + real child processes) ----
@@ -3128,6 +3230,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         write_pidfile(
             &session,
             &PidFile {
@@ -3173,6 +3276,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         write_pidfile(
             &session,
             &PidFile {
@@ -3247,6 +3351,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         let starttime = process_starttime(pid).expect("fixture /proc stat readable");
         write_pidfile(
             &session,
@@ -3307,6 +3412,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         let starttime = process_starttime(pid).expect("fixture /proc stat readable");
         write_pidfile(
             &session,
@@ -3356,6 +3462,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         write_pidfile(
             &session,
             &PidFile {
@@ -3403,6 +3510,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         let starttime = process_starttime(pid).expect("fixture /proc stat readable");
         write_pidfile(
             &session,
@@ -3454,6 +3562,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         let starttime = process_starttime(pid).expect("fixture /proc stat readable");
         write_pidfile(
             &session,
@@ -3509,6 +3618,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         let starttime = process_starttime(pid).expect("fixture /proc stat readable");
         write_pidfile(
             &session,
@@ -3555,6 +3665,7 @@ mod tests {
         std_process_group_leader(&mut command);
         let mut child = command.spawn().expect("spawn sleep fixture");
         let pid = child.id();
+        let _leak_guard = KillOnDrop(pid);
         write_pidfile(
             &session,
             &PidFile {
@@ -3677,9 +3788,12 @@ mod tests {
 /// PINVOU3_CU_XVFB_LIVE=1 cargo test --lib computer_use -- --ignored --test-threads=1
 /// ```
 ///
-/// The tests pass WM-less by design (no window manager is installed on the
-/// dev machine), which exercises the optional-WM path. They skip (early
-/// return, not fail) when the gate is unset or Xvfb/xdotool are missing.
+/// WM presence is machine state, not a test given: the tests run on BOTH
+/// shapes — a WM-less box exercises the optional-WM path, a WM-equipped box
+/// additionally asserts the recorded `wm_pid` dies with the session. They
+/// skip (early return, not fail) when the gate is unset or Xvfb/xdotool are
+/// missing; the app-dependent assertions additionally skip without
+/// `xmessage`, while the teardown/residue assertions always run.
 #[cfg(test)]
 mod xvfb_live_tests {
     use super::test_support::IsolatedHome;
@@ -3809,6 +3923,45 @@ mod xvfb_live_tests {
         serde_json::from_str(&text).expect("parse the pidfile")
     }
 
+    /// Teardown + residue assertions shared by the full-cycle test and its
+    /// xmessage-less skip path: process death (Xvfb, recorded WM, optional
+    /// app), session dir + cookie removal, and the zero-new-socket pin. The
+    /// app-independent assertions MUST run on every machine shape — a
+    /// machine without `xmessage` would otherwise never exercise them.
+    fn assert_teardown_leaves_no_residue(
+        backend: VirtualX11Backend,
+        pidfile: &PidFile,
+        sockets_before: &[String],
+        app_pid: Option<u32>,
+    ) {
+        let session_dir = backend.session_dir.clone();
+        let auth_path = backend.auth_path.clone();
+        let xvfb_pid = pidfile.xvfb_pid;
+        let wm_pid = pidfile.wm_pid;
+        drop(backend);
+        wait_until_gone(xvfb_pid, "the Xvfb server");
+        if let Some(wm) = wm_pid {
+            wait_until_gone(wm, "the window manager");
+        }
+        if let Some(app) = app_pid {
+            wait_until_gone(app, "the opened xmessage");
+        }
+        assert!(
+            !session_dir.exists(),
+            "the session dir must be removed on drop"
+        );
+        assert!(!auth_path.exists(), "the cookie file must be gone");
+        // Socket residue: the teardown's SIGTERM-first wind-down must let the
+        // server clean its own `/tmp/.X11-unix/X{n}` — the directory listing
+        // must come back exactly as it was before the spawn.
+        assert!(
+            x11_unix_sockets() == sockets_before,
+            "teardown must leave zero new X11 unix sockets: before {sockets_before:?} \
+             after {:?}",
+            x11_unix_sockets()
+        );
+    }
+
     /// Full cycle: probe → spawn → readiness → open `xmessage ok` →
     /// screenshot (1280x800, non-black) → move + click verified via an
     /// EXTERNAL xdotool against the same display/auth → scroll → type →
@@ -3875,11 +4028,21 @@ mod xvfb_live_tests {
         assert!(pidfile.children.is_empty(), "no app children yet");
 
         // open an app into the virtual display (xmessage is WM-less-safe).
-        // Portability: xmessage may be missing (no `x11-apps` package) —
-        // skip the app-dependent assertions rather than failing.
+        // Portability: xmessage may be missing (no `x11-apps` package) — the
+        // app-dependent assertions skip, but the teardown + residue
+        // assertions below are app-independent and MUST still run.
         if !find_on_path("xmessage") {
-            eprintln!("skipping: xmessage is not installed on this machine");
-            drop(backend);
+            eprintln!(
+                "skipping: xmessage is not installed on this machine; running the \
+                 app-independent teardown + residue assertions only"
+            );
+            let pidfile = read_pidfile(&session_dir);
+            assert_eq!(
+                pidfile.children,
+                Vec::<u32>::new(),
+                "no app children without an open"
+            );
+            assert_teardown_leaves_no_residue(backend, &pidfile, &sockets_before, None);
             return;
         }
         let app_pid = backend
@@ -3957,28 +4120,7 @@ mod xvfb_live_tests {
         // removed, no process residue. The WM (when this machine has one)
         // must die with the session too — recorded `wm_pid`, SIGTERM-first
         // wind-down.
-        let xvfb_pid = pidfile.xvfb_pid;
-        let wm_pid = pidfile.wm_pid;
-        drop(backend);
-        wait_until_gone(xvfb_pid, "the Xvfb server");
-        if let Some(wm) = wm_pid {
-            wait_until_gone(wm, "the window manager");
-        }
-        wait_until_gone(app_pid, "the opened xmessage");
-        assert!(
-            !session_dir.exists(),
-            "the session dir must be removed on drop"
-        );
-        assert!(!auth_path.exists(), "the cookie file must be gone");
-        // Socket residue: the teardown's SIGTERM-first wind-down must let the
-        // server clean its own `/tmp/.X11-unix/X{n}` — the directory listing
-        // must come back exactly as it was before the spawn.
-        assert!(
-            x11_unix_sockets() == sockets_before,
-            "teardown must leave zero new X11 unix sockets: before {sockets_before:?} \
-             after {:?}",
-            x11_unix_sockets()
-        );
+        assert_teardown_leaves_no_residue(backend, &pidfile, &sockets_before, Some(app_pid));
     }
 
     /// Respawn-after-server-kill: kill the Xvfb under the backend; the NEXT

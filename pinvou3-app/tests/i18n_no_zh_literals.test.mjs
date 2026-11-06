@@ -24,6 +24,10 @@ const files = [
   // Computer-use consent surfaces (virtual-display wave): every string comes
   // from uiComputerUse in shared/i18n (zh/en/ja), including the virtual
   // banner note (bannerNoteVirtual) and the target-aware dialog copy.
+  // Scope of the pin below: this scanner enforces the CJK-IDEOGRAPH half of
+  // that claim (quoted [\u4e00-\u9fff] literals); a hardcoded English or
+  // kana-only literal here would pass it — full parity is the i18n key
+  // tests' job.
   'src/features/computer-use/ComputerUseConsent.jsx',
   // Pure view-function logic for the same feature: carries no UI copy.
   'src/features/computer-use/computer-use-logic.js',

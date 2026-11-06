@@ -1152,8 +1152,8 @@ pub struct ComputerUseShared {
     /// Cached global availability snapshot ("available" | "unavailable" |
     /// "disabled" + detail) resolved from the preference and the cheap
     /// platform probe. Refresh points: startup replay, the preference
-    /// command, and after a (linux) backend creation reports. The probe is
-    /// binary/class presence only — never a server spawn.
+    /// command, and after a backend creation reports on every platform. The
+    /// probe is binary/class presence only — never a server spawn.
     virtual_availability: RwLock<VirtualAvailabilitySnapshot>,
     /// Per-session display-target registry: session id → the target its
     /// backend was created for (set at backend creation, cleared at tool

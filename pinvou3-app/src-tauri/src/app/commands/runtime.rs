@@ -59,7 +59,7 @@ pub struct PlatformCapabilities {
     pub local_embed_supported: bool,
     pub global_shortcuts_available: bool,
     /// Semantic selector for the computer-use virtual-display note row
-    /// ("windows" | "macos" | "", serialized camelCase as
+    /// ("windows" | "macos" | "linux" | "", serialized camelCase as
     /// `virtualDisplayNote`). Its own capability, not an installer-bit
     /// proxy: the note and the dependency installers can change
     /// independently.

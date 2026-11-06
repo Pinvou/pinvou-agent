@@ -290,9 +290,11 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The display target is absent on records that never reached a backend
-    /// decision (parse rejections / pre-capability gate rejections), so the
-    /// JSONL stays honest about what was actually known when.
+    /// A bare record that never passed through `with_display_target` omits
+    /// the field entirely (serde skip), so the JSONL stays honest about what
+    /// was actually known when. (Production records DO carry the target from
+    /// the first field onward — including parse and gate rejections — see
+    /// the field doc; this pin only freezes the bare-record serde shape.)
     #[test]
     fn display_target_is_omitted_until_recorded() {
         let (dir, log) = temp_log();

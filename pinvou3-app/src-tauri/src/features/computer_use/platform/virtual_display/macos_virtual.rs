@@ -68,7 +68,11 @@
 //! normal-level window under the point whose pid the session launched or
 //! whose window sits fully inside the display bounds (hit-tested via
 //! `CGWindowListCopyWindowInfo` — an ownership-scoped geometry test: a user
-//! window merely overhanging the parked bounds is never targeted); keyboard
+//! window merely overhanging the parked bounds is never targeted). One
+//! bounded exception: during the ~5 s `open` discovery budget, an unnamed
+//! in-bounds NEWCOMER window can be claimed by intersects (not containment)
+//! as a last resort — if that newcomer is the user's overhanging window it
+//! is briefly drivable (disclosed in the operational notes). Keyboard
 //! events target the last-interacted pid (`open` and successful clicks set
 //! it; explicit failures clear it). Every input entry point preflights the
 //! Accessibility TCC grant (the physical backend's required-for-correctness
@@ -632,6 +636,14 @@ fn other_display_bounds(except: u32) -> Vec<(u32, CGRect)> {
     let error =
         unsafe { CGGetActiveDisplayList(displays.len() as u32, displays.as_mut_ptr(), &mut count) };
     if error != CGError::Success {
+        // Say so: an unreadable list reads as "no other displays", which
+        // makes the park-time overlap verification pass vacuously — a
+        // genuine overlap would be neither repaired nor reported.
+        log::warn!(
+            "[computer_use][virtual-mac] cannot read the active display list \
+             (CGError {error:?}); overlap checks fall back to main-only and \
+             pass vacuously"
+        );
         return Vec::new();
     }
     let count = usize::try_from(count).unwrap_or(0).min(displays.len());
@@ -1521,8 +1533,10 @@ struct MacosVirtualDisplayBackend {
     /// a press keeps the whole gesture, so a manual
     /// down → move → up composition pins to the press pid instead of
     /// re-hit-testing its way onto a different window (the `drag` action
-    /// pins the same way). Mirrors `held_buttons` (entries are pushed and
-    /// removed together).
+    /// pins the same way). NOT a strict mirror of `held_buttons`: a
+    /// single atomic `click` pushes/pops `held_buttons` alone (never
+    /// `held_pids`); the pid list only records presses that outlive their
+    /// action (`mouse_down`/`drag`).
     held_pids: Vec<(MouseButton, i32)>,
     /// Cancel flag set after the caller times out (see the trait contract).
     cancel: Option<Arc<AtomicBool>>,
@@ -2332,7 +2346,9 @@ fn capability_target_note() -> String {
      and may not reach every app (e.g. WebKit content processes on recent \
      macOS may ignore them); apps opened with open launch into the user's \
      graphics session and their FRONT window is moved into the virtual display \
-     best-effort — an app's other windows may stay outside, and \
+     best-effort — an app's other windows may stay outside, a window larger \
+     than the display cannot sit fully inside it (such an app becomes \
+     undrivable once its one-minute ownership grace expires), and \
      without the Accessibility grant an opened app's window may stay visible \
      on the user's desktop; if this macOS lacks the private API the session \
      falls back to your desktop, decided once at session start; apps opened \
@@ -2590,6 +2606,14 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
                 Ok(pid) => pid,
                 Err(error) => {
                     self.clear_focus_on_error(&error);
+                    // The press target is gone (app quit / window closed):
+                    // no future `mouse_up` can ever deliver this up, so
+                    // keeping the held entries would strand THIS button —
+                    // every later `move_to`/`mouse_up` would keep failing
+                    // against the dead remembered pid. Consume the held
+                    // state here; the error still reports the real failure.
+                    self.held_buttons.retain(|held| *held != button);
+                    self.held_pids.retain(|(held, _)| *held != button);
                     return Err(error);
                 }
             },
@@ -2626,8 +2650,13 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
         // A failed DOWN is answered directly (the same discipline as click):
         // the old shape swallowed the press error and kept posting waypoints
         // and a release for a button that was never pressed — the action
-        // could report a successful drag whose press never happened.
-        self.post_mouse_to_pid(drag_pid, down, left, from, 1)?;
+        // could report a successful drag whose press never happened. The
+        // failure goes through the same stale-target cleanup as every other
+        // gesture error path.
+        if let Err(error) = self.post_mouse_to_pid(drag_pid, down, left, from, 1) {
+            self.clear_focus_on_error(&error);
+            return Err(error);
+        }
         if !self.held_buttons.contains(&MouseButton::Left) {
             self.held_buttons.push(MouseButton::Left);
             self.held_pids.push((MouseButton::Left, drag_pid));
@@ -3290,6 +3319,63 @@ mod tests {
         assert!(!touching.intersects(vd));
     }
 
+    /// R7 pin: the CGRect-taking strict-intersection predicate used by the
+    /// park-time overlap verification and the capture guard. It must stay
+    /// EDGE-EXCLUSIVE (a display parked flush against another's right edge
+    /// is adjacent, not overlapping) — a silently added `<=` would re-allow
+    /// flush parking and the drift would be invisible to every other test.
+    #[test]
+    fn rects_intersect_is_edge_exclusive() {
+        let main = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize {
+                width: 1440.0,
+                height: 900.0,
+            },
+        };
+        // Flush right of the main display: adjacent, NOT overlapping.
+        let parked = CGRect {
+            origin: CGPoint { x: 1440.0, y: 0.0 },
+            size: CGSize {
+                width: 1280.0,
+                height: 800.0,
+            },
+        };
+        assert!(
+            !rects_intersect(main, parked),
+            "flush parking must not count as overlap"
+        );
+        // Flush below: also adjacent.
+        let below = CGRect {
+            origin: CGPoint { x: 0.0, y: 900.0 },
+            ..parked
+        };
+        assert!(!rects_intersect(main, below));
+        // One pixel of real overlap: intersecting.
+        let intruding = CGRect {
+            origin: CGPoint { x: 1439.0, y: 0.0 },
+            ..parked
+        };
+        assert!(rects_intersect(main, intruding));
+        // Disjoint and contained shapes.
+        let far = CGRect {
+            origin: CGPoint {
+                x: 5000.0,
+                y: 5000.0,
+            },
+            ..parked
+        };
+        assert!(!rects_intersect(main, far));
+        let inside = CGRect {
+            origin: CGPoint { x: 10.0, y: 10.0 },
+            size: CGSize {
+                width: 5.0,
+                height: 5.0,
+            },
+        };
+        assert!(rects_intersect(main, inside));
+    }
+
     /// The hit-test's OWNERSHIP scope (the isolation contract, pinned pure):
     /// a window containing the point is targetable when its pid is one the
     /// session launched, or its window sits fully inside the display bounds;
@@ -3523,6 +3609,14 @@ mod tests {
             note.contains("one-minute ownership grace"),
             "the grace is 60 seconds — the note must not undersell it as \
              momentary"
+        );
+        // R7: the oversized-window residual — the AX move sets position
+        // only, so a window larger than the display can never sit fully
+        // inside the display-bounds rule and becomes undrivable after the
+        // grace. The note must say so.
+        assert!(
+            note.contains("undrivable once its one-minute ownership grace"),
+            "the oversized-window consequence must be disclosed"
         );
         // Apps stay after stop AND after the backend drop; the drop only
         // removes the display (surviving windows relocate to remaining

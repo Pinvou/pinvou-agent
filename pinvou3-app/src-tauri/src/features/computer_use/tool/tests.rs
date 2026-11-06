@@ -5883,11 +5883,15 @@ async fn virtual_target_session_surfaces_note_markers_and_audit() {
     );
 }
 
-/// The `open` receipt records the program name (never the args) in the
-/// audit target summary — args can embed long paths; the count rides the
-/// result text, the audit keeps the bounded line.
+/// The `open` audit target stays free-text-free: the program name is
+/// model-supplied and a secret can be chunk-spelled across open calls
+/// (`open "p"`, `open "a"`, …), exactly the channel the chord redaction
+/// exists to keep closed — so the audit records only the arg count and the
+/// display target; the model-facing receipt still names the program.
+/// Mutation pin (R7 MAJOR-3): reverting to `open {program} with {n} args`
+/// fails the first assertion.
 #[tokio::test]
-async fn open_audit_target_names_the_program_only() {
+async fn open_audit_target_withholds_the_model_free_text() {
     let (fixture, _restore) = fixture();
     fixture.shared.grant_session("s-test");
     let _ = fixture
@@ -5903,12 +5907,12 @@ async fn open_audit_target_names_the_program_only() {
         .find(|r| r.action == "open")
         .expect("the open call is audited");
     let target = record.target.clone().unwrap_or_default();
-    assert!(
-        target.contains("open xeyes"),
-        "the audit target must name the program: {target}"
+    assert_eq!(
+        target, "open with 2 args",
+        "the audit target must carry only the count, never the program text: {target}"
     );
     assert!(
-        !target.contains("-a"),
-        "args must not ride the audit target line: {target}"
+        !target.contains("xeyes") && !target.contains("-a"),
+        "neither the program nor the args may ride the audit target line: {target}"
     );
 }

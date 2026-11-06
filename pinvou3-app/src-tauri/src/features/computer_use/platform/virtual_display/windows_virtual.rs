@@ -434,11 +434,14 @@ fn key_message_pair(alt_held: bool) -> (u32, u32) {
 
 /// The window a chord's key messages target (pure, unit-pinned — HWND is a
 /// transparent handle wrapper for this comparison). While Alt is held the
-/// system pair must reach the top-level frame's DefWindowProc (the
-/// SC_CLOSE/SC_KEYMENU synthesis lives there); a plain pair is ordinary
+/// system pair goes to the top-level frame so frame-routed SC_CLOSE /
+/// SC_KEYMENU handling (app menus, Alt+F4) fires; a plain pair is ordinary
 /// keyboard input, which Windows delivers to the FOCUS window — posting it
 /// to the frame makes frame-routed apps (Notepad's frame dispatches to
 /// DefWindowProc) silently drop it while PostMessageW reports success.
+/// Trade-off: apps whose focused child implements its own system-key
+/// handling (MDI child system menus) see SYS chords on the frame instead
+/// of the child.
 fn chord_post_target(focus: HWND, top: HWND, alt_held: bool) -> HWND {
     if alt_held { top } else { focus }
 }
@@ -1314,6 +1317,10 @@ impl GdiPool {
                     );
                 }
                 if !self.ensure_tmp_bitmap(w, h) {
+                    log::warn!(
+                        "[computer_use][virtual-win] capture: cannot size the tmp bitmap \
+                         for a window; that window is ABSENT from this frame"
+                    );
                     continue;
                 }
                 let flags = print_flags_for_class(&class);
@@ -1321,7 +1328,13 @@ impl GdiPool {
                     && PrintWindow(hwnd, self.tmp_dc, 0) == 0
                 {
                     // Window refuses PrintWindow entirely; skip without failing
-                    // the whole frame (the rest still composites).
+                    // the whole frame (the rest still composites) — but say so:
+                    // a silently-absent window would read as a successful
+                    // capture of content that is not there.
+                    log::warn!(
+                        "[computer_use][virtual-win] capture: a window refused \
+                         PrintWindow; that window is ABSENT from this frame"
+                    );
                     continue;
                 }
                 let _ = BitBlt(
@@ -2030,8 +2043,8 @@ impl WindowsVirtualDesktopBackend {
     }
 
     /// Press the chord on the keyboard target: the Alt-held system pair goes
-    /// to the target's top-level window (DefWindowProc's SC_CLOSE /
-    /// SC_KEYMENU synthesis lives there), the plain pair goes to the focused
+    /// to the target's top-level window so frame-routed SC_CLOSE /
+    /// SC_KEYMENU handling fires, the plain pair goes to the focused
     /// control — ordinary keyboard input is delivered to the focus window,
     /// and posting it to the frame makes frame-routed apps (Notepad's frame
     /// dispatches to DefWindowProc) silently drop it while PostMessageW
@@ -2416,8 +2429,10 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         // WM_MOUSEWHEEL/WM_MOUSEHWHEEL lParam carries SCREEN coordinates
         // (unlike the button messages' client coordinates). The wParam low
         // word stays 0: real wheel input carries MK_* marks only while
-        // buttons are held, and DefWindowProc bubbles the wheel to the
-        // focus chain regardless of the target depth.
+        // buttons are held. Delivery nuance: WM_MOUSEWHEEL is bubbled to
+        // ancestors by DefWindowProc, so a deep child target still reaches
+        // a scrollable parent — WM_MOUSEHWHEEL is NOT bubbled, so a deep
+        // child that does not handle it silently drops the event.
         let lparam = pack_mouse_lparam(point.x, point.y);
         for _ in 0..clicks {
             self.post(target, message, wheel_wparam(delta), lparam)?;
@@ -2909,8 +2924,8 @@ mod tests {
     }
 
     /// The chord post target: the Alt-held system pair goes to the
-    /// top-level frame (DefWindowProc's SC_CLOSE/SC_KEYMENU synthesis lives
-    /// there), the plain pair goes to the focused control — ordinary
+    /// top-level frame (frame-routed SC_CLOSE/SC_KEYMENU handling),
+    /// the plain pair goes to the focused control — ordinary
     /// keyboard input is delivered to the focus window, and posting it to
     /// the frame makes frame-routed apps silently drop it while PostMessageW
     /// reports success. WINDOWS-CI-ONLY (this whole file is cfg(windows)).

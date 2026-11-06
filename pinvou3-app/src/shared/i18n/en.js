@@ -370,6 +370,7 @@ export const dictEn = {
           grantDescVirtual:'If you allow it, the agent works inside an isolated virtual display that never shows on your screen; your own desktop, mouse and keyboard stay untouched for this session. Inside that display there are no per-action confirmations (its apps cannot be screened), and apps the agent launches there run with your account\'s normal file and network access. Only allow this if you trust the current task.',
           grantMacCaveat:'On this Mac, apps the agent opens start in your session first and are moved into the display best-effort; without the Accessibility permission their windows can stay visible on your desktop, and apps opened there keep running after the session ends.',
           grantLinuxCaveat:'On Linux, a rare app that speaks raw Wayland directly (outside the common toolkits) could still show its window on your screen.',
+          grantUnknownPlatformCaveat:'This platform\'s isolation limits could not be verified — an app the agent opens there may briefly appear on your screen.',
           grantAllow:'Allow control for this session',
           grantDeny:'Deny',
           confirmTitle:'Confirm this action',

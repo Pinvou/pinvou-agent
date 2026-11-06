@@ -611,6 +611,7 @@ const dialogCopy = {
   grantDescVirtual: 'The agent works in an isolated virtual display, not on your screen.',
   grantMacCaveat: 'On this Mac, opened apps can stay visible on your desktop without the Accessibility permission.',
   grantLinuxCaveat: 'On Linux, a raw-Wayland app could still show its window on your screen.',
+  grantUnknownPlatformCaveat: "This platform's isolation limits could not be verified — an opened app may briefly appear on your screen.",
   grantAllow: 'Allow',
   grantDeny: 'Deny',
   unreadableTarget: '【読み取れないターゲット】',
@@ -852,15 +853,23 @@ try {
   tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } }, 'windows');
   grantText = allText(tree);
   assert.equal(grantText.includes(dialogCopy.grantMacCaveat), false,
-    'no caveat on windows');
+    'no mac caveat on windows');
   assert.equal(grantText.includes(dialogCopy.grantLinuxCaveat), false,
-    'no caveat on windows');
+    'no linux caveat on windows');
+  assert.equal(grantText.includes(dialogCopy.grantUnknownPlatformCaveat), false,
+    'the unknown-platform honesty line must not render on a KNOWN platform');
+  // R7: an unknown/absent capability previously left the base copy claiming
+  // absolute isolation with no qualification — the generic honesty line now
+  // renders instead of the platform caveats (the security surface must not
+  // over-claim when the platform's real limits are unverified).
   tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } });
   grantText = allText(tree);
   assert.equal(grantText.includes(dialogCopy.grantMacCaveat), false,
-    'no caveat when the capability is unknown');
+    'no platform caveat when the capability is unknown');
   assert.equal(grantText.includes(dialogCopy.grantLinuxCaveat), false,
-    'no caveat when the capability is unknown');
+    'no platform caveat when the capability is unknown');
+  assert.ok(grantText.includes(dialogCopy.grantUnknownPlatformCaveat),
+    'the unknown-platform honesty line renders when the capability is unknown');
   tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1' } });
   grantText = allText(tree);
   assert.ok(grantText.includes(dialogCopy.grantTitle),
