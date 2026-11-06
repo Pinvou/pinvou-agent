@@ -1168,6 +1168,32 @@ async function connectWithCapabilities(events, listener) {
     'the gated TTL copy must not flip the cycle state');
 }
 
+// Round-22 复审:终态已确立后(closedPermanently)旁路停步——
+// closePermanently 状态上幂等,但晚到的非 TTL 撤销副本会重入它:重复
+// 派发连接事件、把已确立的终态卡片(endpoint_replaced 的「已在另一台
+// 浏览器中打开」)覆盖成撤销文案。守卫一行;删除守卫本 fixture 红
+// (重复派发与卡片翻转都被断言)。
+{
+  const env = bootClient();
+  const client = env.window.PinvouWebClient;
+  await client.policyPromise;
+  const dead = env.MockWebSocket.instances[0];
+  dead.open();
+  client.lastInboundAt = Date.now();
+  dead.message({ v: 2, type: 'endpoint_replaced' });
+  assert.equal(client.closedPermanently, true,
+    'fixture: the replaced terminal card must be established first');
+  const eventsBefore = env.dispatched.filter(event => event.type === 'pinvou:web-connection').length;
+  const statusAfterTerminal = client.connectionState.status;
+  dead.message({ v: 2, type: 'endpoint_revoked', reason: 'manual_revoke' });
+  assert.equal(
+    env.dispatched.filter(event => event.type === 'pinvou:web-connection').length,
+    eventsBefore,
+    'a late non-TTL revoke must not re-dispatch the terminal connection event');
+  assert.equal(client.connectionState.status, statusAfterTerminal,
+    'a late non-TTL revoke must not overwrite the established terminal card');
+}
+
 // Round-16 复审 MAJOR-1:救援把 socket 引用摘除后,其 close 事件可能在
 // 后继周期已经 join 协商完成之后才送达。晚到的 close 不得清当前周期的
 // 旗标、不得再排重连、更不得把健康后继打回未协商态(否则下一个入站

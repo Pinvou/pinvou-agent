@@ -599,6 +599,13 @@
       // 达。非 TTL 撤销帧旁路身份门直接终态;TTL 臂保持受门——过期的
       // desktop_offline_ttl_expired 副本会把健康后继打回 desktop_offline
       // (rejoin 后的新副本自会送达当前 socket)。
+      // Round-22 复审:终态已确立后(closedPermanently)旁路必须停步——
+      // this.socket 已为 null,其余晚到帧都被下方身份门丢弃,唯独本旁路
+      // 会重入 closePermanently:重复派发连接事件(自恢复监听方)并把
+      // 已确立的终态卡片(如 endpoint_replaced 的「已在另一台浏览器中
+      // 打开」)覆盖成撤销文案。closePermanently 状态上幂等,故仅是
+      // 事件噪声/卡片翻转,不是稳定性缺陷;一行守卫关掉。
+      if (this.closedPermanently) return;
       if (
         sourceSocket !== this.socket
         && message.type === "endpoint_revoked"
