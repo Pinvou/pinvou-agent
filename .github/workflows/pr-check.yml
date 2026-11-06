@@ -3196,10 +3196,15 @@ jobs:
       # saved only on the main push (PRs and Merge Queue runs restore through
       # rust-cache's prefix fallback), the key stays separate from the
       # siblings, and the pinvou-cli workspace target dir is cached like
-      # macos-rust-check caches src-tauri. A check-only target dir carries
-      # rmeta-size artifacts and no linked test binaries, so the link-time
-      # runner deaths behind the cli-test/rust-test cache-targets directive
-      # cannot recur here.
+      # macos-rust-check caches src-tauri. The original rationale — a
+      # check-only target dir carries rmeta-size artifacts and no linked
+      # test binaries — stopped being literally true when the macOS-gated
+      # pin step below started linking one filtered lib test binary into
+      # this dir (round-22 review). That binary is single-crate sized, not
+      # the cli-test-suite scale whose link-time runner deaths motivated
+      # cache-targets: false elsewhere, so target caching is kept
+      # deliberately; revisit that choice if this leg gains more test
+      # steps.
       # Round-48 review: `cache-on-failure` matches macos-rust-check (its
       # anti-death-loop rationale: save-on-success-only + eviction left a
       # failed main push with a cold cache namespace). Without it a failed
