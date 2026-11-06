@@ -29,11 +29,19 @@ pub fn register_steer_resolution_hook(hook: SteerResolutionHook) -> Result<(), (
 /// Fan a steer terminal out: committed=true = the engine wrote it into the
 /// transcript; false = the engine dropped it (turn termination /
 /// withdrawal / generation invalidation). Silent when unregistered — safe
-/// because pending registrations only exist where the delivery watcher
-/// runs: the GUI process registers this hook during startup and is the
-/// only place that spawns the watcher (the headless host boots engines
-/// but never spawns one, so its steers have no registry entry to
-/// finalize).
+/// because the registry only arms entries inside the delivery watcher's
+/// poll, and the watcher is spawned exactly once, in the GUI Builder's
+/// setup, right next to the hook registration this module exposes. The
+/// windowless/headless host DOES build an engine pool and its forwarders
+/// run, but its Builder registers neither this hook nor a delivery
+/// watcher and hosts no steer initiator (no invoke handler, no scheduled
+/// runtime), so no registry entry can exist there and the fan-out is an
+/// empty no-op. Residual risk to keep in mind when extending hosts: a
+/// future lane that spawns the delivery watcher WITHOUT registering this
+/// hook would strand every steered file at the 24h `STEER_COMMIT_WAIT`
+/// before a duplicate — the messaging suite's lib.rs source pin binds the
+/// registration to the finalizer, and the watcher's sole spawn site is
+/// audited by the same pin's slice.
 pub fn resolve_steer_outcome(steer_id: &str, committed: bool) {
     if let Some(hook) = STEER_RESOLUTION_HOOK.get() {
         hook(steer_id, committed);
