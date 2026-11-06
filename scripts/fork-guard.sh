@@ -1,16 +1,33 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 93 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 108 maintenance commits, eleven maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 merged.
-EXPECTED_HEAD="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
-EXPECTED_COMMITS=93
+# Review candidate fix/provider-compat-refresh-20261104 (T11 provider-compat
+# batch + the pptx cross-repo integration test, rewritten on 2026-11-05 to
+# the document-precise MFJS keyword set — route tiers deleted, root unions
+# flattened again, advisory keywords/unsupported enums stripped before
+# validation — rebased onto public maintenance CodeWhale#123 e5a8af221,
+# then extended the same day by the nine-commit optimality + required
+# audit wave: MFJS default ships verbatim on any node, the mirrored
+# budgets align to the walle validator defaults, scalar consts translate
+# through the enum strip, Anthropic input_schema ships verbatim on all
+# four Messages lanes, the DeepSeek strict pipeline acts only on official
+# family routes, digit-led Moonshot tool names get the documented _
+# prefix, todo item status defaults out of required, and the pptx fixture
+# is re-exported from the current parent server with per-branch required
+# groups pinned in the sentinel test)
+# leads the published integration base
+# f1eb10efcfe2468fde42d1724d7f5f19d54b904c (CodeWhale#114 and #125 merged);
+# MAINTENANCE_BASE below stays the published maintenance head until the
+# candidate lands and the gitlink returns to it.
+EXPECTED_HEAD="18f4ef9448841a9a82b552c01c710ae08740e633"
+EXPECTED_COMMITS=108
 # Published maintenance base of this integration.
-MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
+MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
 # A review candidate may lead public maintenance; this does not waive the
 # separate public-head gate or change the immutable r3 transition baseline.
@@ -87,10 +104,7 @@ fingerprints=(
   "T2|Interrupted coordination field omissions are recoverable|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_short_coordination_fields_are_inline_or_recoverable"
   "T2|Real taskless gate retains both output streams|CodeWhale/crates/tui/src/tools/tasks.rs|fn forkguard_gate_without_active_task_keeps_both_streams_recoverable"
   "T2|Taskless gate recovery declares producer boundary|CodeWhale/crates/tui/src/tools/tasks.rs|fn forkguard_taskless_gate_recovery_names_returned_summaries"
-  # 2026-11-05 批次：#124 把结构化摘要的恢复 footer 收敛到共享 helper
-  # model_context_recovery_footer（truncate.rs），context.rs 的内联文案随之迁移——
-  # 指纹钉同一文案的真实新位置，主题声明不变。
-  "T2|Engine recovery names the complete returned result|CodeWhale/crates/tui/src/tools/truncate.rs|complete returned tool result at"
+  "T2|Engine recovery names the complete returned result|CodeWhale/crates/tui/src/core/engine/context.rs|complete returned tool result at"
   "T2|Real interrupted child retains checkpoint recovery|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_interrupted_snapshot_preserves_checkpoint_recovery"
   "T2|Complete structured output has no false recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_complete_structured_results_do_not_request_recovery"
   "T2|Structured field omissions retain recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_structured_field_cuts_still_request_recovery"
@@ -394,6 +408,54 @@ fingerprints=(
 
   "T10|Tachyon effort ladder never emits high   |CodeWhale/crates/tui/src/client.rs|fn forkguard_tachyon_effort_ladder_never_emits_high"
   "T10|registered-only Tachyon table survives save |CodeWhale/crates/config/src/tests.rs|fn forkguard_tachyon_only_provider_table_survives_config_store_save"
+
+  # 2026-11-05 批次（T11 续）：provider 兼容按"文档为唯一放行依据、探针仅
+  # 观测"整体改写（CodeWhale 20bcaceef/3368038d0/c898bd793/f4023ffce）。
+  # 回退：Moonshot 根级联合放行（恢复展平，Tool Use 文档 root 必须 object
+  # 的严格面）与 KimiParameterRoute 路由分档（探针关键字白名单撤销，
+  # Moonshot 全路由单一管线）。保留：xAI 全 object 根联合放行、嵌套
+  # anyOf、采样剥离路由级双 host（api.kimi.com/api.kimi.ai，文档背书
+  # "omit them from requests"）、MiniMax reasoning_details 网关门控。
+  # 新增：文档精确关键字集（字段定义 9 + $defs/$ref 受限支持）为唯一
+  # 白名单；咨询关键字（title/$comment/$id + 6 个 min/max 边界）与非
+  # 同型 enum 发送前剥除；pattern/format/$schema/prefixItems/exclusive*/
+  # 嵌套 allOf 维持整工具剔除。指纹钉各自的结果式行为回归与 pptx 跨仓
+  # 集成哨兵（fixture 已随 3368038d0 换为 wire 关键字矩阵钉法）。
+  "T11|xAI 根联合全 object 分支放行       |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn xai_sanitize_passes_root_union_of_object_branches_through"
+  "T11|Moonshot 根联合恢复展平（单测）     |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_add_type_to_oneof_root"
+  "T11|Moonshot 根联合恢复展平（wire 端到端）|CodeWhale/crates/tui/src/client/chat.rs|fn kimi_chat_flattens_root_union_of_object_branches"
+  "T11|文档精确白名单探针关键字全路由 fail-closed|CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn probe_observed_keywords_fail_closed_on_every_route"
+  "T11|探针观测关键字不上线                |CodeWhale/crates/tui/src/client/chat.rs|fn probe_observed_keywords_never_reach_the_wire"
+  "T11|咨询关键字剥除不落地（单测）        |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn advisory_keywords_are_stripped_not_shipped"
+  "T11|咨询关键字剥除不落地（wire）        |CodeWhale/crates/tui/src/client/chat.rs|fn advisory_keywords_are_stripped_from_the_wire"
+  "T11|非同型 enum 剥除工具存活           |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn unsupported_enum_values_are_stripped_and_tool_survives"
+  "T11|畸形边界剥除而非拒收               |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_strips_bounds_instead_of_rejecting_them"
+  "T11|海外 .ai 路由同守文档白名单        |CodeWhale/crates/tui/src/client/chat.rs|fn overseas_kimi_ai_endpoint_keeps_the_document_parameter_whitelist"
+  "T11|采样剥离收口到 exact Kimi Code 路由 |CodeWhale/crates/tui/src/client/chat.rs|fn kimi_code_fixed_sampling_covers_every_model_id_on_the_route"
+  "T11|采样剥离覆盖海外 api.kimi.ai host  |CodeWhale/crates/tui/src/client/chat.rs|fn kimi_code_fixed_sampling_covers_the_overseas_api_kimi_ai_endpoint"
+  "T11|MiniMax reasoning_details 网关门控  |CodeWhale/crates/tui/src/client/chat.rs|fn minimax_gateway_route_still_mirrors_thinking_as_reasoning_details"
+  "T11|pptx 文档集跨仓集成哨兵            |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn shipped_pptx_slides_schema_passes_moonshot_validation_on_the_document_set"
+
+  # 2026-11-05 最优性修复+required 终审波（f4023ffce → 18f4ef944，9 个提交）：
+  # default 按文档任意节点逐字放行；引擎镜像预算对齐 walle 校验器默认
+  # （500/3000/30/1000/75000，源码对照声明）；bool/null const 经既有 enum
+  # 剥除管线标量化存活；Anthropic 四条 Messages 线 input_schema 逐字透传
+  # （放弃无文档依据的根展平）；DeepSeek strict 管线收口官方家族路由、
+  # 可选属性剔除+description 注记、非数值 const 落 documented enum；
+  # Moonshot 数字开头工具名补 _ 前缀；todo item status 退出 required
+  # （执行端默认 pending 佐证）；pptx fixture 自当前父仓 server.py 重导出，
+  # 全分支 required 组钉死断言并入上方既有跨仓哨兵测试（指纹不增条）。
+  "T11|MFJS default 任意节点逐字放行          |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_ships_default_on_any_node_without_type_check"
+  "T11|镜像预算对齐 walle 默认（anyOf 500 常量）|CodeWhale/crates/tui/src/tools/schema_sanitize.rs|const MFJS_MAX_ANY_OF_ITEMS: usize = 500;"
+  "T11|预算贴界双向钉（对齐值发、越界拒）      |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_enforces_anyof_and_aggregate_resource_limits"
+  "T11|bool/null const 经 enum 剥除标量化存活  |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn kimi_parameters_scalarizes_bool_and_null_const_through_the_enum_strip"
+  "T11|Anthropic input_schema 逐字透传不展平   |CodeWhale/crates/tui/src/client/anthropic.rs|fn anthropic_wire_ships_input_schema_verbatim_without_root_flattening"
+  "T11|strict 可选属性剔除并回注 description   |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn strict_sanitize_removes_optional_properties_and_reports_them"
+  "T11|strict 非数值 const 落 documented enum |CodeWhale/crates/tui/src/tools/schema_sanitize.rs|fn strict_sanitize_lands_non_numeric_const_on_the_documented_enum"
+  "T11|strict 管线收口官方 DeepSeek 家族路由   |CodeWhale/crates/tui/src/config/tests.rs|fn strict_pipeline_scope_is_official_deepseek_family_routes"
+  "T11|strict doctor 自定义端点判出界         |CodeWhale/crates/tui/src/lib.rs|fn strict_tool_mode_doctor_marks_custom_endpoint_as_out_of_scope"
+  "T11|Moonshot 数字开头工具名补 _ 前缀        |CodeWhale/crates/tui/src/client/chat.rs|fn moonshot_wire_prefixes_digit_led_tool_names_to_the_documented_pattern"
+  "T11|todo status 退出 required 默认 pending  |CodeWhale/crates/tui/src/tools/todo.rs|fn todo_item_status_is_optional_with_a_pending_default"
 
   "APP|unified 2000-step budget default           |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|const HOST_STEP_BUDGET: u32 = 2_000;"
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
