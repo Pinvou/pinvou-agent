@@ -499,10 +499,10 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'kimi-k3.1-pro')), true, 'ark plan overview names kimi-k3.1-pro (2026-11-04 fix pass)');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'groq', 'https://api.groq.com/openai/v1', 'llama-3.3-70b-versatile')), true);
   // Round-8 lineup pins: these rows had no positive pin and deleting them
-  // stayed green (the shared-vendor kimi groups cannot be pinned through
-  // isPresetModel — vendor-first classification hits the sibling group —
-  // so the group objects are pinned directly; groq's other rows were
-  // simply unpinned).
+  // stayed green (a row-scoped isPresetModel pin cannot distinguish a
+  // shared-vendor sibling from the group it names once another group keeps
+  // the same id, so the group objects are pinned directly; groq's other
+  // rows were simply unpinned).
   const groqGroup = MODEL_CATALOG.cloud.find(group => group.key === 'groq');
   assert.ok(groqGroup, 'groq group present');
   for (const id of ['llama-3.1-8b-instant', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b']) {

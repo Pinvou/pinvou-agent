@@ -2634,9 +2634,10 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             ),
             // Meta Model API rows (2026-11-03 refresh): muse-spark-1.1/1.2
             // ride the base rows (1M); muse-spark-1.3 / muse-wonder-1.0 have
-            // no base rows and ride the override entries (1,048,576 per
-            // models.dev/live docs) — listed here so the settings-page rows
-            // stay covered by this charter (2026-11-05 review).
+            // no base rows and ride the PINVOU_KNOWN supplemental entries
+            // (1,048,576 per models.dev/live docs) — listed here so the
+            // settings-page rows stay covered by this charter
+            // (2026-11-05 review; table name corrected 2026-11-06).
             (ModelPreset::OpenaiCompatible, "muse-spark-1.1", 1_000_000),
             (ModelPreset::OpenaiCompatible, "muse-spark-1.2", 1_000_000),
             (ModelPreset::OpenaiCompatible, "muse-spark-1.3", 1_048_576),
