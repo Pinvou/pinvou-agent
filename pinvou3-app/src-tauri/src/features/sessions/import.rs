@@ -1,3 +1,4 @@
+// architecture-guard: allow-target-cfg -- the only #[cfg(target_os)] uses below gate POSIX-only test fixtures (unix symlinks and ':' filenames cannot be created on Windows); no production platform selection lives in this file.
 //! 会话归档导入：把 `export_session` 产出的 tar.xz（或裸 session .json）
 //! 重新装回会话存储，闭合导出/导入循环。
 //!

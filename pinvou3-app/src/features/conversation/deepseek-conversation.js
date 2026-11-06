@@ -321,7 +321,7 @@ const COMPACTION_SUMMARY_MARKERS = [
 export function turnHasUserText(turn) {
   const text = String((turn && turn.userItem && turn.userItem.text) || '').trim();
   if (!text) return false;
-  return !COMPACTION_SUMMARY_MARKERS.some(marker => text.startsWith(marker));
+  return COMPACTION_SUMMARY_MARKERS.every(marker => !text.startsWith(marker));
 }
 
 /**
