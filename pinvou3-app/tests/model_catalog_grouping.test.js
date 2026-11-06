@@ -450,7 +450,9 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   // Completions, normal agent calls carry client tools, and the image
   // probe posts /chat/completions with max_tokens. It returns when the
   // base learns a compatible supported path; the custom row still
-  // permits manual ids. The base effort gate covers grok-4.6/4.5 only.
+  // permits manual ids. The base effort gate covers grok-4.6/4.5 only,
+  // and the multi-agent effort semantics differ anyway, so the id keeps
+  // no tier exposure while deferred.
   assert.strictEqual(isPresetModel(mkCloud('xai', 'xai', 'https://api.x.ai/v1', 'grok-4.20-multi-agent-0309')), false, 'multi-agent preset deferred: built-in xai wire is Chat Completions + client tools + max_tokens, all excluded by the official multi-agent guide');
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'xai', vendor: 'xai', model: 'grok-4.20-multi-agent-0309', base_url: 'https://api.x.ai/v1' }), null);
   // Ark Coding Plan: the two retired rows fall to the custom listing and
@@ -512,6 +514,17 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
     for (const id of ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed']) {
       assert.ok(kimiGroup.items.some(item => item.model === id), `${key} lineup must keep ${id} (silent deletions must stay red)`);
     }
+  }
+  // Round-9 lineup pins: qwen_token_plan is official_api, so the coding-plan
+  // endpoint-set parity guard does not cover it and it had zero row/host
+  // pins — a silent row deletion or a baseUrl typo stayed green (the
+  // same shared-vendor reasoning that pinned groq and the kimi groups
+  // above).
+  const qwenTokenGroup = MODEL_CATALOG.cloud.find(group => group.key === 'qwen_token_plan');
+  assert.ok(qwenTokenGroup, 'qwen_token_plan group present');
+  assert.strictEqual(qwenTokenGroup.baseUrl, 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'qwen_token_plan host must stay the official token-plan endpoint');
+  for (const id of ['deepseek-v4.1-flash-1017', 'deepseek-v4.1-flash', 'qwen3.8-max', 'qwen3.8-flash']) {
+    assert.ok(qwenTokenGroup.items.some(item => item.model === id), `qwen_token_plan lineup must keep ${id} (silent deletions must stay red)`);
   }
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'mistral', model: 'codestral-latest', base_url: 'https://api.mistral.ai/v1' }), null);
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'meta', model: 'muse-spark-1.3', base_url: 'https://api.meta.ai/v1' }), null);
@@ -911,7 +924,7 @@ test('reasoningEffortTiersForModel 按 provider 暴露有实际区别的档位',
   const volcengine = { preset: 'doubao', vendor: 'doubao', model: 'doubao-seed-evolving' };
   assert.deepStrictEqual(tiers(volcengine), ['off', 'high', 'max']);
   // xiaomi-mimo：只有 thinking 开关（off/enabled），off/high 两档
-  const mimo = { preset: 'mimo', vendor: 'mimo', model: 'mimo-v2.5-pro' };
+  const mimo = { preset: 'mimo', vendor: 'mimo', model: 'mimo-v2.6-pro' };
   assert.deepStrictEqual(tiers(mimo), ['off', 'high']);
   // 本地 loopback OpenAI 兼容端点：探测后走 Ollama think 开关 / vLLM 档位，提供四档
   const localOllama = { preset: 'openai_compatible', model: 'qwen3:8b', base_url: 'http://127.0.0.1:11434/v1' };

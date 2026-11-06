@@ -133,6 +133,13 @@ export const ACP_MODEL_PRESETS = [
   // kimi-k2.7-code targets coding and the whole K2 series is slated to go
   // offline end of December 2026)
   'kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed',
+  // Kimi Code coding-plan lane (kimi.com/code; mirrors the kimi-code
+  // preset's per-preset list above — the flat fallback previously carried
+  // only the moonshot spellings, so a Kimi Code user lost the bare-lane
+  // suggestions in the datalist fallback; k3.1-pro (2026-10-23) is the
+  // flagship, kimi-for-coding serves K2.8 Preview at up to 1M, and
+  // kimi-for-coding-highspeed is the K2.7 Code 256K fast tier)
+  'k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed',
   // Zhipu GLM (docs.bigmodel.cn; glm-5.3 is the current flagship,
   // glm-5.3-flashx the multimodal speed tier)
   'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6', 'glm-4.7-flash',

@@ -298,10 +298,10 @@ const MODEL_CATALOG = {
     //   (image) input, so no imageCapable flags here.
     // - Token Plan: https://cloud.tencent.com/document/product/1823/130119
     //   (re-checked 2026-11-03; both 130119 and the 130060 plan overview were
-    //   updated 2026-10-22) — the platform migrated off the lkeap domain per
-    //   announce 101147 (the intl mirror's id; the CN announcement list
-    //   carries the same notice as 2287, whose series also records the old
-    //   platform's API shutdown 2026-09-30): the docs now document only
+    //   updated 2026-10-22) — the platform migrated off the lkeap domain
+    //   per the TokenHub migration guide (docs 131382; the migration
+    //   announce link 101147 no longer resolves as of the 2026-11-06
+    //   re-check — its content lives in 131382 now): the docs now document only
     //   https://tokenhub.tencentmaas.com/plan/v3, plus an Anthropic
     //   /plan/anthropic endpoint and a /plan/v3/responses Responses surface
     //   (both unused by this repo's OpenAI route). The group default moves to
@@ -583,12 +583,16 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.moonshot.ai/v1',
       // Mirror of the China group (separate account/key system); the
       // platform.kimi.ai docs list the same lineup (re-checked 2026-11-03).
-      // The highspeed K3.1 variant is the same model with identical
-      // constraints (see the China group comment).
+      // The highspeed K3.1 variant carries identical constraints to
+      // kimi-k3 per the models-overview page (same 1M window and native
+      // vision; see the China group comment — the page's "same model"
+      // sentence is its K2.7 Code wording, not K3.1's). kimi-k3 stays the
+      // shared preset-level add-form default (MODEL_PRESET_DEFS), so its
+      // row carries the same （当前默认） marker as the China group.
       items: [
         { model: 'kimi-k3.1-pro', imageCapable: true, title: 'kimi-k3.1-pro', desc: '最新旗舰，原生视觉，1M 上下文' },
         { model: 'kimi-k3.1-pro-highspeed', imageCapable: true, title: 'kimi-k3.1-pro-highspeed', desc: '最新旗舰高速款' },
-        { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: '上代旗舰，1M 上下文' },
+        { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: '上代旗舰（当前默认），1M 上下文' },
         { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 2026 年 12 月底下线' },
         { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 2026 年 12 月底下线' },
         { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用；K2 系列拟 2026 年 12 月底下线' },
@@ -1017,9 +1021,13 @@ const MODEL_CATALOG = {
       // page also documents an Anthropic-compatible
       // https://ark.cn-beijing.volces.com/api/coding endpoint, unused by
       // this repo's OpenAI route. Two rows are removed in this refresh per
-      // the Ark Agent/Coding Plan deprecation notice (docs 2578687, live
-      // page stamped 2026-11-03; the enterprise-plan twin 2578680 stamped
-      // 2026-10-19): kimi-k2.7-code went offline
+      // the Ark Agent/Coding Plan deprecation notice (the personal-plan
+      // notice recorded as docs 2578687, the enterprise twin as 2578680 —
+      // both numeric ids stopped resolving under product 85508 by the
+      // 2026-11-06 re-check; the live content is the slug page
+      // volcengine.com/docs/ark/coding-plan-personal-model-deprecation,
+      // stamped 2026-11-03, enterprise twin stamped 2026-10-19):
+      // kimi-k2.7-code went offline
       // 2026-10-28 14:00 (UTC+8; closed to new plan users 2026-10-13,
       // migrate to kimi-k3) and minimax-m3 went offline 2026-11-02 14:00
       // (migrate to doubao-seed-evolving / kimi-k3) — both are absent from
@@ -1301,10 +1309,13 @@ const MODEL_CATALOG = {
       // xhigh, reasoning cannot be turned off); grok-4.6 demotes to the
       // previous generation. The grok-4.7 detail page and the September
       // release notes document its low/medium/high/xhigh ladder (the
-      // reasoning guide's summary table still lists only grok-4.6 /
-      // grok-4.5 / the multi-agent row — the earlier attribution of the
-      // 4.7 ladder to that guide was wrong, corrected 2026-11-04 review),
-      // while the guide's caveat still bounds xhigh to "grok-4.6 and later"
+      // reasoning guide's summary table listed only grok-4.6 / grok-4.5 /
+      // the multi-agent row at the 2026-11-04 check — the earlier
+      // attribution of the 4.7 ladder to that guide was wrong, corrected
+      // in that review; the guide has since been updated and its summary
+      // table now includes a grok-4.7 row too, re-checked live
+      // 2026-11-06), while the guide's caveat still bounds xhigh to
+      // "grok-4.6 and later"
       // for the older rows
       // (grok-4.5 requests with xhigh are treated as high) — the app follows
       // the caveat and keeps
@@ -1490,7 +1501,16 @@ const MODEL_CATALOG = {
       // but not `reasoning_effort` in supported_parameters, so the passthrough
       // is a no-op there (minimax-m3.1-flash DOES list reasoning_effort —
       // live models API re-check 2026-11-04, correcting the earlier "minimax
-      // pair" wording). Never auto-append `:free`: the API returns 404 for
+      // pair" wording). Ladder-vs-metadata nuance (round-9 review, live
+      // models API 2026-11-06): the shared off/low/medium/high ladder is
+      // wider than some rows' own `reasoning` metadata — moonshotai/
+      // kimi-k3.1-pro advertises supported_efforts max/high/low/none (no
+      // `medium`; disable rides effort `none`, not a thinking.disabled
+      // shape) and minimax-m3.1-flash is mandatory:true (no `none` effort,
+      // so `off` cannot be honored by that deployment). The ladder is the
+      // aggregator-wide contract OpenRouter exposes; treat per-row
+      // metadata as the finer truth when a request errors. Never
+      // auto-append `:free`: the API returns 404 for
       // base ids without a dedicated :free entry (the docs document this)
       // and none of these rows has one (openrouter/free is the dedicated
       // free-router id).
@@ -1529,7 +1549,10 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.together.xyz/v1',
       // New group in the 2026-11-03 refresh: a mainstream OSS-model hosting
       // platform with a dedicated engine kind (Together) and a plain Bearer
-      // + chat-completions API. The rows mirror the platform's live
+      // + chat-completions API. The vendor stamp has no dedicated bridge
+      // arm yet, so requests ride the generic `openai` engine wire (the
+      // same disclosure class as groq below and the skipped Ollama Cloud
+      // entry in the header). The rows mirror the platform's live
       // serverless catalog (docs.together.ai/docs/serverless/models,
       // re-fetched 2026-11-04 review pass) cross-checked against the
       // deprecations page (docs.together.ai/docs/deprecations). The earlier
@@ -1662,7 +1685,9 @@ const MODEL_CATALOG = {
       // additionally lists Kimi-K3, MiniMax-M3, Qwen3.8-2.4T-A95B, dated
       // DeepSeek V4 variants (V4-Pro-0813 / V4-Flash-0731 / V4-Flash-Vision-
       // Exp), gemma-4 and gpt-oss rows, while the CN-only Qwen/Qwen3.8-27B
-      // is absent from the global plaza. Of the global-only rows, three
+      // is absent from the global plaza. Of the global-plaza rows outside
+      // the verified-shared subset (three of them also appear, same wire
+      // ids, in the CN group below), these three
       // joined below in the 2026-11-04 fix pass (deepseek-ai/DeepSeek-V4.1-
       // Flash — the current Flash mainline, which global users would
       // otherwise miss behind the older DeepSeek-V4-Flash name: the global
@@ -1712,7 +1737,10 @@ const MODEL_CATALOG = {
       // New group in the 2026-11-03 refresh (console.groq.com docs,
       // checked 2026-11-03): the low-latency inference platform, already a
       // base setup template and an ACP preset — this group brings the model
-      // catalog to parity. Plain Bearer + chat completions. The production
+      // catalog to parity. Plain Bearer + chat completions. The vendor
+      // stamp has no dedicated bridge arm yet, so requests ride the
+      // generic `openai` engine wire (same disclosure as the together
+      // group above). The production
       // catalog is narrow (Llama + gpt-oss rows) and the llama rows are
       // tagged Enterprise on the live models page — console.groq.com/docs/
       // deprecations records the reason: the two llama ids were deprecated
@@ -1878,14 +1906,18 @@ function catalogItemMatchesModel(item, model) {
 // reasoning benchmark), and gemini-4-argon (GA 2026-10-13; model page
 // lists text/image/video/audio/PDF inputs); the 2026-11-03 refresh adds
 // kimi-k3.1-pro / k3.1-pro and both highspeed spellings (whats-new
-// 2026-10-23: native vision incl. video; the highspeed variant is the
-// same model per the models-overview page), MiniMax-M3.1-Flash (GA
+// 2026-10-23: native vision incl. video; the highspeed variant carries
+// identical constraints to kimi-k3 per the models-overview page — the
+// page's "same model" sentence is its K2.7 Code wording, not K3.1's),
+// MiniMax-M3.1-Flash (GA
 // 2026-10-19; rides the "minimax-m3" substring entry), gpt-6.1-terra
 // (2026-10-26), muse-spark-1.3 (dev.meta.ai: text/image/PDF/video) and
 // mistral-medium-latest / mistral-small-latest (docs.mistral.ai models
 // overview) — all annotated true on the same public-fact basis. The
 // 2026-11-04 fix pass adds grok-4.20-multi-agent-0309 (detail page:
-// Text, Image), mistral-large-latest (per models.dev — docs.mistral.ai
+// Text, Image — the row left the catalog again in the round-9 review
+// over the Chat Completions wire incompatibility; see the xai group
+// comment), mistral-large-latest (per models.dev — docs.mistral.ai
 // unreachable), and the whole Meta Muse family (muse-wonder-1.0 /
 // muse-spark-1.2 / muse-spark-1.1: the models page states all three
 // Muse Spark versions take text/image/video/audio/PDF, and Wonder's
@@ -2510,6 +2542,15 @@ function isExactMoonshotK3Route(model, modelName) {
 // the effort control and wipe a stored value the engine keeps in
 // passthrough — the FE now applies the same attachment rule as the Rust
 // load path (2026-11-05 review parity fix).
+// Known residual corner (Rust-superset direction): the Rust route arm
+// lowercases the whole URL and strips all trailing slashes while this FE
+// mirror folds case on scheme/authority only, so a stamp-less record
+// whose official URL differs by path case or an extra slash attaches on
+// the Rust side (stored effort dropped, wire omission active) while the
+// FE still renders the generic ladder — any tier picked there is dropped
+// again on the next load/save. Deliberate (the reverse — FE hiding a
+// contract Rust treats — must never happen); a freshly picked tier
+// silently vanishing is the accepted cosmetic cost (round-9 review).
 function moonshotK31ContractAttaches(model) {
   const vendor = String((model && model.vendor) || '').trim().toLowerCase();
   if (vendor === 'kimi' || vendor === 'moonshot') return true;

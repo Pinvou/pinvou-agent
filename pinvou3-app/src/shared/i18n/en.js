@@ -1183,7 +1183,6 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '最新旗舰，原生视觉，1M 上下文':'Latest flagship, native vision, 1M context',
   '最新旗舰高速款':'Latest flagship high-speed tier',
   '上代旗舰（当前默认），1M 上下文':'Previous-generation flagship (current default), 1M context',
-  '上代旗舰，1M 上下文':'Previous-generation flagship, 1M context',
   '代码场景；K2 系列已停新用户，官方拟 2026 年 12 月底下线':'Coding tasks; the K2 series closed to new users, slated to go offline end of December 2026',
   '高速代码场景；K2 系列拟 2026 年 12 月底下线':'High-speed coding tasks; the K2 series is slated to go offline end of December 2026',
   '稳定可用；K2 系列拟 2026 年 12 月底下线':'Stable release; the K2 series is slated to go offline end of December 2026',

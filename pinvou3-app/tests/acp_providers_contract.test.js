@@ -779,26 +779,29 @@ assert.match(PROVIDER_FORM, /changeModel/, '主模型变更必须联动槽位自
 assert.match(PROVIDERS_SECTION, /envEffectiveEntries/, '前端必须消费 envEffectiveEntries');
 assert.match(PROVIDERS_SECTION, /copy\.secretSet/, '凭据类 env 值必须渲染掩码文案');
 
-// 1M 变体：按厂商归属（预设 models1m 字段）、统一小写 [1m]、Kimi Code 为
-// k3.1-pro[1m] + append-only 的 k3[1m]（moonshot 侧另有官方 models1m 建议
-// kimi-k3[1m]——见下方 pin，2026-11-04 修订同步）
+// 1M variants: vendor-scoped via the per-preset models1m field, uniformly
+// lowercase [1m]; Kimi Code carries k3.1-pro[1m] + the append-only k3[1m]
+// (the moonshot side additionally carries the official models1m suggestion
+// kimi-k3[1m] — see the pin below; revised in sync 2026-11-04)
 const CATALOG = fs.readFileSync(
   path.join(ROOT, 'src', 'features', 'settings', 'acp-provider-catalog.js'),
   'utf8'
 );
-assert.doesNotMatch(CATALOG, /\[1M\]/, '1M 变体必须统一小写 [1m]');
-// 2026-10-23 起，官方 Claude Code 页面的 [1m] 声明移到 k3.1-pro[1m]；旧的
-// k3[1m] 不再出现在官方页面，但按 append-only 保留为存量建议。
+assert.doesNotMatch(CATALOG, /\[1M\]/, '1M variants must be uniformly lowercase [1m]');
+// Since 2026-10-23 the official Claude Code page declares the [1m] form on
+// k3.1-pro[1m]; the old k3[1m] no longer appears on the official page but
+// is kept append-only as a stored-config suggestion.
 assert.ok(
   CATALOG.includes("models1m: ['k3.1-pro[1m]', 'k3[1m]']"),
-  'Kimi Code 预设的 1M 变体必须为 k3.1-pro[1m] + append-only 的 k3[1m]'
+  'Kimi Code preset 1M variants must be k3.1-pro[1m] + the append-only k3[1m]'
 );
-// kimi-k3[1m] 是 moonshot 预设的官方 models1m 建议（platform CC 指南仍在
-// 记载，2026-11-04 复核）——探测名单的 kimi-k3[1m] 臂（image_capability.rs）
-// 以本条建议为前提，两侧必须同进退。
+// kimi-k3[1m] is the moonshot preset's official models1m suggestion (still
+// documented on the platform CC guide, re-checked 2026-11-04) — the
+// kimi-k3[1m] arm of the probe list (image_capability.rs) presupposes this
+// entry, so the two sides must move together.
 assert.ok(
   CATALOG.includes("models1m: ['kimi-k3[1m]']"),
-  'moonshot 预设的 1M 变体必须为 kimi-k3[1m]（官方建议；探测名单的同名臂依赖它）'
+  'moonshot preset 1M variants must be kimi-k3[1m] (official suggestion; the probe list has a same-named arm that depends on it)'
 );
 assert.ok(
   PROVIDER_FORM.includes('activePreset.models1m'),
@@ -822,8 +825,8 @@ assert.doesNotMatch(
 const ACP_REQUIRED_MODELS = {
   anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
   openai: ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'gpt-5.6-terra'],
-  moonshot: ['kimi-k3.1-pro', 'kimi-k3', 'kimi-k2.7-code'],
-  'kimi-code': ['k3.1-pro', 'k3', 'k3-256k'],
+  moonshot: ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3', 'kimi-k2.7-code'],
+  'kimi-code': ['k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k'],
   deepseek: ['deepseek-flash', 'deepseek-v4-flash'],
   zhipu: ['glm-5.3', 'glm-5.3-flash'],
   qwen: ['qwen3.8-max', 'qwen3.8-flash'],
@@ -852,7 +855,7 @@ const FLAT_MODELS_SECTION = CATALOG.slice(CATALOG.indexOf('export const ACP_MODE
 for (const id of [
   'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5',
   'claude-fable-5-1', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra', 'deepseek-flash', 'kimi-k3',
-  'kimi-k3.1-pro', 'glm-5.3',
+  'kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'k3.1-pro-highspeed', 'glm-5.3',
   'qwen3.8-max', 'MiniMax-M3.1-Flash', 'MiniMax-M3', 'grok-4.6', 'grok-4.20-reasoning',
   'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-build-0.1',
 ]) {
