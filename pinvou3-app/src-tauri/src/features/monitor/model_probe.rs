@@ -2654,6 +2654,12 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
                 "mistral-large-latest",
                 262_144,
             ),
+            // codestral-latest: the charter mirrors what the engine actually
+            // resolves (models.dev 256K). Note the catalog's mistral comment
+            // records the official codestral page documenting Context 128k
+            // and calls the models.dev figure stale 25.01-era — the pin is
+            // the engine-resolution truth, not an endorsement of that figure;
+            // both sides carry re-verify flags for the next refresh.
             (ModelPreset::OpenaiCompatible, "codestral-latest", 256_000),
             // Anthropic models covered by the base catalog (haiku 200K) and the
             // PINVOU_OVERRIDES entries (opus-5 / fable-5-1 both 1M) go through

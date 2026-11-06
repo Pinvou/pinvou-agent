@@ -2326,6 +2326,11 @@ mod tests {
             "k3.1-pro[1m]",
             "kimi-k3.1-pro[1m]",
             "K3.1-PRO[1M]",
+            // The highspeed [1m] composites (round-9 review: the loop
+            // previously covered only the two non-highspeed composites;
+            // the matcher handles them via the same single-suffix strip).
+            "k3.1-pro-highspeed[1m]",
+            "kimi-k3.1-pro-highspeed[1m]",
         ] {
             let mut record = base.clone();
             record.model = spelling.into();

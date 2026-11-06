@@ -53,12 +53,6 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // override table (the catalog desc is already annotated as 1M).
     ("grok-4.20-0309-reasoning", 1_000_000),
     ("grok-4.20-0309-non-reasoning", 1_000_000),
-    // grok-4.20-multi-agent-0309 (catalog row since the 2026-11-03 refresh,
-    // docs.x.ai pricing table) is also officially 1M; its distinct spelling
-    // matches neither sibling row nor any base entry, so without this row
-    // the engine would fall to 128K while the monitor's Xai "grok-4.20"
-    // substring fallback shows 1M — the divergence the rows above correct.
-    ("grok-4.20-multi-agent-0309", 1_000_000),
     // The ACP preset keeps the pre-retirement legacy spelling
     // grok-4.20-reasoning (an append-only legacy datalist option); the base
     // known table only recognizes the -0309- spelling, so the old spelling
@@ -147,13 +141,6 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // engine-side resolution has no prefs fallback — see the monitor
     // `preset_default_models_resolve_engine_context_window` test).
     ("gpt-6.1-sol", 1_050_000),
-    // gpt-6.1-terra (2026-10-26, developers.openai.com changelog/models) is
-    // the 6.1 efficient tier: same family figures as the rows above
-    // (1,050,000 context / 128,000 output per the Azure Foundry capability
-    // table). No base gpt-6-family row exists, so without it the engine
-    // falls to 128K and diverges from the monitor page's Openai preset
-    // fallback of 1.05M — same anchor logic as its siblings.
-    ("gpt-6.1-terra", 1_050_000),
 ];
 
 /// pinvou3 supplemental table: applies only when the base chain (catalog /
@@ -161,6 +148,23 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
 /// PINVOU_OVERRIDES it is consulted after the base, so it only fills gaps and
 /// never overrides values.
 const PINVOU_KNOWN: &[(&str, u32)] = &[
+    // grok-4.20-multi-agent-0309 (docs.x.ai detail page, 1M) rides here, not
+    // PINVOU_OVERRIDES (round-9 review placement): the base chain has no row
+    // for the id at all, which is this table's contract, and a future
+    // upstream row then wins automatically. The id left the settings
+    // catalog in the round-9 review (Chat Completions wire incompatibility
+    // — see the xai group comment) but stored/custom configs can still
+    // carry it; without a row here the engine would fall to 128K while the
+    // monitor's Xai "grok-4.20" substring fallback shows 1M.
+    ("grok-4.20-multi-agent-0309", 1_000_000),
+    // gpt-6.1-terra (2026-10-26, developers.openai.com changelog/models) is
+    // the 6.1 efficient tier: 1,050,000 context / 128,000 output per the
+    // Azure Foundry capability table (page updated 2026-10-29). Known-table
+    // placement per the round-9 review (the base chain has no gpt-6-family
+    // row — the OVERRIDES contract reserves that table for base-catalogued
+    // rows whose value lags); without it the engine falls to 128K and
+    // diverges from the monitor page's Openai preset fallback of 1.05M.
+    ("gpt-6.1-terra", 1_050_000),
     // The Kimi K3 direct-platform model is officially rated at 1M tokens
     // (platform.kimi.com/docs/models).
     ("kimi-k3", 1_048_576),
@@ -415,8 +419,10 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // The [1m] bracket declarations of the same models (the ACP datalists'
     // models1m suggestions carry k3.1-pro[1m] on the Kimi Code preset and
     // kimi-k3[1m] on the moonshot preset; kimi-k3.1-pro[1m] has no datalist
-    // entry — it is the direct-platform bracket spelling of the same model,
-    // covered defensively alongside them):
+    // entry — it is the prefixed-platform composite of the same model, no
+    // platform page declares that spelling, and it is covered defensively
+    // alongside the documented forms; round-9 wording fix aligning with the
+    // prefs/FE comments):
     // model_name_matches tolerates dash-suffixes only, so the bracket
     // spellings miss every row above (the context side survives via the
     // `1m` substring hint; the output side would fail-close to 8192).

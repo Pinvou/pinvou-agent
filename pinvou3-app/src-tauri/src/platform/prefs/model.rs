@@ -254,7 +254,9 @@ impl ModelPreset {
             // `engine_route_provider`), and the id keeps the existing
             // `gpt-6` prefix of `openai_responses_wire_model`. Per the Azure
             // Foundry capability table (learn.microsoft.com Azure OpenAI
-            // models page, updated 2026-10-08) it serves 1,050,000 context /
+            // models page, ms.date 2026-09-21 / updated 2026-10-29 — the
+            // round-8 drift fix reached the other mirrors but missed this
+            // one; corrected round-9) it serves 1,050,000 context /
             // 128,000 max output with function calling on the Responses API
             // only, and OpenAI's latest-model reference ranks it
             // "Near-Astra performance for complex work at a lower cost" — the
