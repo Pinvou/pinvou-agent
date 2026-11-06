@@ -1067,27 +1067,38 @@ pub(crate) mod tests {
     /// 折叠是展示层安全方向,见 sibling 钉)。
     #[test]
     fn redact_storage_prefix_matches_case_insensitively() {
-        crate::platform::test_support::with_temp_home("paths-redact-case", || {
-            let root = pinvou3_home();
-            let lower = format!(
-                "{}\\user\\memory\\x.json",
-                root.display().to_string().to_ascii_lowercase()
-            );
-            assert!(
-                redact_storage_prefix(&lower).starts_with("~/.pinvou3"),
-                "a case-variant absolute path must fold"
-            );
-            let mixed = format!("{}\\User\\MEMORY\\x.json", root.display());
-            assert!(
-                redact_storage_prefix(&mixed).starts_with("~/.pinvou3"),
-                "a mixed-case spelling must fold"
-            );
-            assert_eq!(
-                redact_storage_prefix("no path here"),
-                "no path here",
-                "non-prefix text stays untouched"
-            );
-        });
+        // Round-23 复审探针实锤:家目录此前派生自 temp_dir(),大小写牙齿
+        // 继承 TMPDIR 的拼写——Linux CI 的 /tmp 全小写,lower 与 needle
+        // 逐字节相等,回退字节精确 replace 的突变让包括本钉在内的全部
+        // redact 钉保持全绿(Windows 回归腿的过滤器不含本模块,该维度
+        // 在任何 CI 腿上都未被真正执行;同一突变在 TMPDIR 含大写时本钉
+        // 即红,机制确认)。家目录改为固定混合大小写拼写:ENV_LOCK 下直
+        // 设,pinvou3_home 对 env 值做纯字符串处理,无需落盘,牙齿不再
+        // 依赖平台临时目录的拼写。
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let root = std::env::temp_dir().join("PathsRedactCaseHome");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let root = pinvou3_home();
+        let lower = format!(
+            "{}\\user\\memory\\x.json",
+            root.display().to_string().to_ascii_lowercase()
+        );
+        assert!(
+            redact_storage_prefix(&lower).starts_with("~/.pinvou3"),
+            "a case-variant absolute path must fold"
+        );
+        let mixed = format!("{}\\User\\MEMORY\\x.json", root.display());
+        assert!(
+            redact_storage_prefix(&mixed).starts_with("~/.pinvou3"),
+            "a mixed-case spelling must fold"
+        );
+        assert_eq!(
+            redact_storage_prefix("no path here"),
+            "no path here",
+            "non-prefix text stays untouched"
+        );
     }
     #[test]
     fn redact_storage_prefix_passes_already_folded_text_through() {
