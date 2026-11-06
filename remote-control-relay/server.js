@@ -1487,8 +1487,11 @@ wss.on("connection", (ws, req) => {
   // (round-11 review).
   ws.on("error", (error) => {
     relayStats.receiverErrorTerminations += 1;
+    // Round-22 复审:按 code 记录(与上方 protocol-violation 臂同一
+    // 固定 token 口径),不插值 error.message——ws Receiver 错误文案
+    // 今日虽是固定英文+数字,固定 code 让该纪律不再依赖这一前提。
     console.error(
-      `[relay] receiver error on ${ws.role || "unknown"} socket: ${error && error.message ? error.message : error}`,
+      `[relay] receiver error on ${ws.role || "unknown"} socket: code=${error && error.code ? error.code : "unknown"}`,
     );
     terminateDestination(ws);
   });
