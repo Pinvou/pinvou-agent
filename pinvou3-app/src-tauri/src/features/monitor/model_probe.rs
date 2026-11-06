@@ -2570,9 +2570,13 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Xai, "grok-4.20-reasoning", 1_000_000),
             // grok-4.20-multi-agent-0309 (2026-11-03 refresh, 1M per the
             // model detail page): the base 2M row above cannot suffix-match
-            // this id, so the override table corrects it — listed here so
-            // the settings-page row stays covered by this charter
-            // (2026-11-05 review).
+            // this id; the anchor lives in the core::model_context
+            // PINVOU_KNOWN table (round-9 placement — the base chain has no
+            // row for the id at all). The settings-page row was deferred in
+            // the round-9 review (the official multi-agent guide excludes
+            // the Chat Completions wire this app rides — see the xai group
+            // comment); the charter entry stays for stored/custom configs
+            // that still carry the id.
             (ModelPreset::Xai, "grok-4.20-multi-agent-0309", 1_000_000),
             // The base known table only has bare "grok-build" → 512K, which
             // misses the -0.1 wire id; the core::model_context override table
@@ -2590,8 +2594,10 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // The 6.1 generation (2026-11-03 refresh; sol is the preset
             // default since the 2026-11-05 resync): same family 1,050,000 /
             // 128,000 anchors (Azure Foundry capability table, updated
-            // 2026-10-29) carried by the PINVOU_OVERRIDES /
-            // PINVOU_DOCUMENTED_OUTPUT rows — listed here so the
+            // 2026-10-29) carried by the core::model_context anchor rows
+            // (sol in PINVOU_OVERRIDES, terra in PINVOU_KNOWN per the
+            // round-9 placement; both outputs in
+            // PINVOU_DOCUMENTED_OUTPUT) — listed here so the
             // settings-page rows stay covered by this charter.
             (ModelPreset::Openai, "gpt-6.1-sol", 1_050_000),
             (ModelPreset::Openai, "gpt-6.1-terra", 1_050_000),
