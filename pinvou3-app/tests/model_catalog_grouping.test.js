@@ -443,12 +443,15 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   // through the gpt-6 prefix.
   assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6.1-terra')), true);
   assert.deepStrictEqual([...(reasoningEffortTiersForModel({ vendor: 'openai', model: 'gpt-6.1-terra' }) || [])], ['low', 'medium', 'high', 'max']);
-  // xAI: the multi-agent 4.20 row joins with no tier exposure (the base
-  // effort gate covers grok-4.6/4.5 only, and the multi-agent effort
-  // semantics differ anyway). Image annotation: true since the 2026-11-04
-  // fix pass (detail page states Modalities Text, Image) — pinned in the
-  // new-groups block below.
-  assert.strictEqual(isPresetModel(mkCloud('xai', 'xai', 'https://api.x.ai/v1', 'grok-4.20-multi-agent-0309')), true);
+  // xAI: the multi-agent 4.20 row is deferred (2026-11-06, reviews
+  // 5797337483 / 5797506975): its native workflow needs the multi-agent
+  // guide's contract (no Chat Completions, no client-side/custom tools,
+  // no max_tokens), while the built-in xai provider is fixed Chat
+  // Completions, normal agent calls carry client tools, and the image
+  // probe posts /chat/completions with max_tokens. It returns when the
+  // base learns a compatible supported path; the custom row still
+  // permits manual ids. The base effort gate covers grok-4.6/4.5 only.
+  assert.strictEqual(isPresetModel(mkCloud('xai', 'xai', 'https://api.x.ai/v1', 'grok-4.20-multi-agent-0309')), false, 'multi-agent preset deferred: built-in xai wire is Chat Completions + client tools + max_tokens, all excluded by the official multi-agent guide');
   assert.strictEqual(reasoningEffortTiersForModel({ preset: 'xai', vendor: 'xai', model: 'grok-4.20-multi-agent-0309', base_url: 'https://api.x.ai/v1' }), null);
   // Ark Coding Plan: the two retired rows fall to the custom listing and
   // the economy DeepSeek row joins.
@@ -466,7 +469,7 @@ test('2026-11-03 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'mistral', 'https://api.mistral.ai/v1', 'codestral-latest')), true);
   assert.strictEqual(catalogImageCapableForModel('mistral-medium-latest'), true);
   assert.strictEqual(catalogImageCapableForModel('mistral-large-latest'), true, 'annotated per models.dev in the 2026-11-04 fix pass (docs.mistral.ai unreachable)');
-  assert.strictEqual(catalogImageCapableForModel('grok-4.20-multi-agent-0309'), true, 'annotated true in the 2026-11-04 fix pass: the detail page states Modalities Text, Image');
+  assert.strictEqual(catalogImageCapableForModel('grok-4.20-multi-agent-0309'), null, 'multi-agent row deferred 2026-11-06 (reviews 5797337483 / 5797506975): the row-scoped Text/Image annotation returns with the row');
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'meta', 'https://api.meta.ai/v1', 'muse-spark-1.3')), true);
   assert.strictEqual(catalogImageCapableForModel('muse-spark-1.3'), true);
   assert.strictEqual(catalogImageCapableForModel('muse-spark-1.1'), true, 'annotated true in the 2026-11-04 fix pass: the models page states all three Muse Spark versions take image input');

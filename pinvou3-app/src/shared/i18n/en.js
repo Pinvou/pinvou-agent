@@ -1202,7 +1202,6 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '6.1 均衡旗舰':'GPT-6.1 balanced flagship',
   '已弃用，自动路由至 3.8-flash；Vertex 端 2027-01-28 下线':'Deprecated; auto-routes to 3.8-flash; retires on Vertex on 2027-01-28',
   '上代稳定 Flash；Vertex 端 2026-11-19 下线':'Previous-generation stable Flash; retires on Vertex on 2026-11-19',
-  '4.20 多智能体，1M 上下文（effort 控制并行数）':'4.20 multi-agent, 1M context (effort controls parallel-agent count)',
   '编码特化模型':'Coding-specialized model',
   '轻量款，支持图像理解':'Lightweight tier with image understanding',
   '当前默认，1M 上下文多模态':'Current default, 1M context, multimodal',

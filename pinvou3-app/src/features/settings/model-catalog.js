@@ -42,7 +42,7 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // - xai: grok-4.7 still holds the official "coding/agent recommended" slot
 //   (docs.x.ai models page re-verified 2026-11-03: "For everything else,
 //   including code, use Grok 4.7"); no newer model exists on the public API
-//   (the grok-4.20-multi-agent-0309 row below is a 4.20-generation variant,
+//   (the deferred grok-4.20-multi-agent-0309 is a 4.20-generation variant,
 //   not a newer model).
 // - openai: gpt-6.1-sol takes the default (2026-10-13): OpenAI's own
 //   latest-model reference ranks gpt-6-astra for the most demanding work and
@@ -1310,30 +1310,32 @@ const MODEL_CATALOG = {
       // the caveat and keeps
       // exposing low/medium/high for grok-4.5, matching the base's downgrade.
       // The grok-4.20-0309-* and grok-build-0.1 detail pages all state
-      // text, image → text, so image capability is annotated; the 4.20
-      // family also lists grok-4.20-multi-agent-0309 (1M), added below with
-      // its distinct semantics — there reasoning.effort controls the
-      // parallel-agent count (4/16), not reasoning depth. Its image
-      // modality IS documented on the model detail page (docs.x.ai/
-      // developers/models/grok-4.20-multi-agent-0309: "Modalities: Text,
-      // Image" at a glance, plus the 1M context figure; re-checked
-      // 2026-11-04 fix pass — the earlier "not documented" reading was
-      // taken before the detail page was reachable), so the row is
-      // annotated true like its siblings; the Rust "grok" substring entry
-      // already admitted it, so the FE row previously resolved auto while
-      // the wire inlined images — annotated true closes that divergence.
+      // text, image → text, so image capability is annotated.
+      // grok-4.20-multi-agent-0309 (detail page: "Modalities: Text, Image",
+      // re-checked 2026-11-04 fix pass — the earlier "not documented"
+      // reading was taken before the detail page was reachable) is
+      // deliberately deferred — see the comment at its former slot below.
       // Note: the base's effort injection (apply_xai_grok_4_6_reasoning_effort)
       // covers only grok-4.6 / grok-4.5, so grok-4.7 gets no tier UI until
       // the base learns it (docs explicitly document the 4.7 ladder —
-      // foundation follow-up), and the multi-agent row deliberately gets
-      // none.
+      // foundation follow-up).
       items: [
         { model: 'grok-4.7', imageCapable: true, title: 'grok-4.7', desc: '旗舰，编码与 Agent 默认推荐' },
         { model: 'grok-4.6', imageCapable: true, title: 'grok-4.6', desc: '上代旗舰，编码与 Agent' },
         { model: 'grok-4.5', imageCapable: true, title: 'grok-4.5', desc: '上代旗舰，编码与 Agent' },
         { model: 'grok-4.20-0309-reasoning', imageCapable: true, title: 'grok-4.20-0309-reasoning', desc: '4.20 推理，1M 上下文' },
         { model: 'grok-4.20-0309-non-reasoning', imageCapable: true, title: 'grok-4.20-0309-non-reasoning', desc: '4.20 非推理，1M 上下文' },
-        { model: 'grok-4.20-multi-agent-0309', imageCapable: true, title: 'grok-4.20-multi-agent-0309', desc: '4.20 多智能体，1M 上下文（effort 控制并行数）' },
+        // grok-4.20-multi-agent-0309 is deliberately deferred (reviews
+        // 5797337483 / 5797506975, 2026-11-06): its native workflow is the
+        // multi-agent variant, whose official guide excludes Chat
+        // Completions, client-side/custom tools and max_tokens — while a
+        // saved entry here resolves to the built-in xai provider whose
+        // wire policy is Fixed(ChatCompletions) (child config provider.rs
+        // wire_policy default; no Xai override), normal agent calls carry
+        // client tools, and the image probe posts /chat/completions with
+        // max_tokens. Restore once the base learns a compatible supported
+        // path (e.g. Responses for xAI); the Rust side stays for stored
+        // configs, and the custom row still permits manual ids.
         { model: 'grok-4.3', imageCapable: true, title: 'grok-4.3', desc: '快速可靠，强工具调用' },
         { model: 'grok-build-0.1', imageCapable: true, title: 'grok-build-0.1', desc: '代码 Agent，256K 上下文' },
         { model: '', title: '自定义 Grok 模型', desc: '手动填写模型 ID', custom: true },
@@ -1857,9 +1859,10 @@ function catalogItemMatchesModel(item, model) {
 // the whole current Claude family, all
 // of Gemini, every annotated Grok catalog row (grok-4.5 /
 // grok-4.20-0309-*, whose detail pages state
-// text, image → text; grok-4.20-multi-agent-0309 joined on 2026-11-03
-// unannotated and was annotated true in the 2026-11-04 fix pass once its
-// detail page became reachable — "Modalities: Text, Image"), the
+// text, image → text; grok-4.20-multi-agent-0309 was annotated true in
+// the 2026-11-04 fix pass (detail page: "Modalities: Text, Image") and
+// its preset row is deferred as of 2026-11-06 (reviews 5797337483 /
+// 5797506975 — the row-scoped annotation returns with the row)), the
 // GPT-5.x/6 rows, kimi-k3 / k2.7-code(-highspeed) / k2.6 and the
 // Kimi Code rows, deepseek-flash(V4.1), MiniMax-M3, qwen3.8-max/3.8-flash/
 // 3.7-plus/3.7-flash/3.6-flash, the eight Doubao rows (including the
