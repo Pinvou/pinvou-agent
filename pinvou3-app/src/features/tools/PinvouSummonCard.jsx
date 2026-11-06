@@ -245,8 +245,10 @@ export function PinvouSummonModal({ item, theme, t, isLocal }) {
            onClick={(event) => event.stopPropagation()}
            style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
         {/* The close button is always present (including while loading): during
-            loading it cancels the wait and closes; the guard discards the
-            in-flight result. */}
+            loading it hides the modal and releases the summon guard. It does
+            not cancel the backend request — the direct-to-model call runs to
+            its timeout and its result is still recorded to the review ledger
+            even though the modal is gone. */}
         <button type="button" onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} aria-label={t.pvSkip}
           className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
           <X size={16} />

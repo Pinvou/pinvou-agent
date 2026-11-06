@@ -1042,7 +1042,9 @@ fn memory_review_reasoning_dialect(
         }
         ModelPreset::Minimax => ReasoningDialect::Minimax,
         ModelPreset::Kimi => {
-            // Wave 3 统一：使用共享的 kimi_supports_disabled_thinking（与 review 一致）。
+            // Wave 3 统一：使用共享的 kimi_supports_disabled_thinking（memory/voice
+            // 共用；review 自 2026-11-06 起改走永不关闭的
+            // features/review::apply_review_thinking_controls，不再经本模块）。
             // 原 memory 用 model.contains("k2.6")||model.contains("kimi-k2") 门控更宽，
             // 统一后 kimi-k2.5 也被正确识别，k2.7/thinking 变体被正确排除。
             if kimi_supports_disabled_thinking(model) {

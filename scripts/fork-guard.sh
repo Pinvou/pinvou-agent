@@ -364,10 +364,11 @@ fingerprints=(
   "APP|Shell 任务按稳定来源对账         |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn forkguard_shell_monitor_assigns_identical_commands_by_stable_origin"
   "APP|GUI export reuses base session_export |pinvou3-app/src-tauri/src/features/sessions/store.rs|deepseek_tui::session_export::write_session_archive("
   "APP|GUI export store contract regression  |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_session_archive_export_via_store_keeps_full_context"
-  # --fast runs only the fingerprint layer (CI's sole entry point), but
-  # renaming a pinned test is exactly the shape it cannot see: this
-  # source-level fingerprint pulls the existence of the "no tool-call cap
-  # pinned test" into the sub-second layer — a rename or deletion turns red
+  # --fast runs Layer 0 (registered-head topology) plus the fingerprint layer
+  # (CI's sole entry point), but renaming a pinned test is exactly the shape
+  # the fingerprint layer cannot see: this source-level fingerprint pulls the
+  # existence of the "no tool-call cap pinned test" into the sub-second layer
+  # — a rename or deletion turns red
   # immediately; whether it actually executes is still verified at compile
   # level by the layer-3 run_pinned_cap_test.
   "APP|engine config no-tool-call-cap pinned test |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_has_no_tool_call_cap"
