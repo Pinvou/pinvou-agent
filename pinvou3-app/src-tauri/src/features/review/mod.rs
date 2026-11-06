@@ -85,8 +85,10 @@ const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
   "coverage": [{"dimension":"维度名","coverage":"weak|missing","severity":"high|medium|low","text":"缺/薄弱在哪","suggestion":"建议补什么"}]
 }"#;
 
-/// 本地审查实测 5–19s，旧版 5s 必挂；放宽到 30s（设计 §3 的 5–30s 预期）。
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 本地审查实测 5–19s，旧版 5s 必挂；30s 又被云端思考模型击穿（k3/Kimi
+/// Coding Plan 2026-11-06 实测悟镜头 63s 才返回，30s 必超时），放宽到 180s
+/// 给思考模型留余量，同时不让挂起的请求把弹窗锁死太久。
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂 2 万字级长会话
 /// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§6）。
@@ -534,6 +536,11 @@ async fn model_review(
         Some(suffix) => format!("{prompt}{suffix}"),
         None => prompt.to_string(),
     };
+    // 输出预算与主对话同一算法(2026-11-06 产品决策):走
+    // `main_wire_max_output_tokens`(底座 route-effective cap,含 explicit
+    // override/兼容上限/route 事实/窗口裁剪),不再硬编码——思考常开后预算必须
+    // 容得下 reasoning tokens,硬编码值会随模型漂移。
+    let max_tokens = bridge.main_wire_max_output_tokens(&model_name);
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
     if preset == ModelPreset::Anthropic {
@@ -544,15 +551,15 @@ async fn model_review(
             &model_name,
             &prompt,
             user_content,
-            1600,
+            max_tokens,
             bridge.opencode_conversation_key("model-review"),
         )
         .await?
         .text;
         return parse_model_review(&content).context("parse Pinvou review");
     }
-    let mut body = review_request_body(&model_name, &prompt, user_content);
-    apply_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
+    let mut body = review_request_body(&model_name, &prompt, user_content, max_tokens);
+    apply_review_thinking_controls(&mut body, preset, &provider, &base_url, &model_name);
     let resp = crate::core::model_endpoint::with_opencode_session_header(
         client.post(url).bearer_auth(bridge.api_key()),
         &base_url,
@@ -583,15 +590,21 @@ async fn model_review(
 /// gateways that pin sampling server-side (Kimi Coding Plan, live-probed
 /// 2026-09-30: "invalid temperature: only 1 is allowed for this model"; the
 /// image-capability probe hit the same constraint on 2026-08). Single source
-/// so the wire-drift budget stays testable.
-fn review_request_body(model: &str, prompt: &str, user_content: &str) -> Value {
+/// so the wire-drift budget stays testable. `max_tokens` is the caller's
+/// route-effective budget (`bridge::main_wire_max_output_tokens`, the same
+/// algorithm as the main turn — a hard-coded constant drifted the moment a
+/// thinking-on budget was needed: the old 1600 was consumed entirely by k3
+/// reasoning tokens, content empty, finish_reason=length, 2026-11-06).
+/// Thinking controls (never disable; lowest tier) are layered on by
+/// `apply_review_thinking_controls`.
+fn review_request_body(model: &str, prompt: &str, user_content: &str, max_tokens: u32) -> Value {
     json!({
         "model": model,
         "messages": [
             { "role": "system", "content": prompt },
             { "role": "user", "content": user_content }
         ],
-        "max_tokens": 1600,
+        "max_tokens": max_tokens,
         "stream": false,
         // 根治偶发非法 JSON(qwen36 长输出漏逗号/字符串内未转义引号,实测 line N col M 解析炸):
         // vLLM guided decoding token 级保证输出合法 JSON 语法,不靠事后 find('{')..rfind('}') 补救。
@@ -611,59 +624,101 @@ fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
         .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default())
 }
 
-fn apply_review_reasoning_controls(
+/// 品/悟审查的思考档位写入（2026-11-06 产品决策）：**思考永不关闭**，与本地路由
+/// 同一处理（`bridge::request_reasoning_effort` + `core::always_thinking`）——
+/// 取线材能表达的最低思考档；只有开/关的家族显式选开。线材形状逐字对齐底座
+/// `apply_reasoning_effort` 的 low 档翻译（CodeWhale crates/tui/src/client.rs）：
+/// - vLLM/Tachyon/本地：`chat_template_kwargs.enable_thinking=true` +
+///   `reasoning_effort=low`（引擎本地路由同款）；always-thinking 知识表 NoControl
+///   模型（qwen3-thinking/deepseek-r1/kimi-k2.7/minimax-m2）native 思考，不发字段。
+/// - Ollama：`think=true`（boolean think 线，最低思考档=开；对无思考模型是硬 400，
+///   引擎本地路由已按 #622 接受同一取舍）。
+/// - DeepSeek：`reasoning_effort=low` + `thinking.enabled`（deepseek_effort 表 Low 档）。
+/// - Kimi 全家族（moonshot/kimi provider、Kimi preset、moonshot.cn|.ai、api.kimi.com）：
+///   `thinking.enabled`——官方接入要求思考常开（底座 #3024、image_capability 名单
+///   同口径）；线材只有开/关 → 选开。旧逻辑对 api.kimi.com（嗅探簇外）发零控制只是
+///   "碰巧开着"，k2.5/k2.6 则被显式关掉——两者都由本臂统一为显式开。
+/// - Qwen/dashscope：`enable_thinking=true`（只有开/关 → 选开；审查线 stream=false
+///   上开思考未实测，网关若拒绝会以 HTTP 错误浮出而非静默）。
+/// - Doubao/Volces：`reasoning_effort=high` + `thinking.enabled`（底座把 low/medium
+///   折叠为 high——自家档位线材未验证，保守沿用同一折叠）。
+/// - GLM/z.ai：`thinking.enabled + clear_thinking=false`。Mimo：`thinking.enabled`。
+/// - Minimax：`reasoning_split=true`（M2 always-thinking 无控制，native 开）。
+/// - 其余（OpenAI 官方 chat 线/未知网关）：线材不表达档位，思考型模型 native 开 →
+///   不发字段。Anthropic preset 在 `model_review` 里走 Messages 直连，不经本函数。
+fn apply_review_thinking_controls(
     body: &mut Value,
     preset: ModelPreset,
     provider: &str,
     base_url: &str,
     model: &str,
 ) {
-    crate::core::reasoning_dialect::apply_reasoning_dialect_controls(
-        body,
-        review_reasoning_dialect(preset, provider, base_url, model),
-    );
-}
-
-fn review_reasoning_dialect(
-    preset: ModelPreset,
-    provider: &str,
-    base_url: &str,
-    model: &str,
-) -> crate::core::reasoning_dialect::ReasoningDialect {
-    use crate::core::reasoning_dialect::{
-        ReasoningDialect, kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
-    };
-    if provider == "vllm" || provider == "tachyon" || preset == ModelPreset::LocalVllm {
-        return ReasoningDialect::VllmChatTemplate;
-    }
-    if provider == "deepseek" || preset == ModelPreset::Deepseek {
-        return ReasoningDialect::ThinkingDisabled;
-    }
-
-    match preset {
-        ModelPreset::Kimi => {
-            if kimi_supports_disabled_thinking(model) {
-                ReasoningDialect::ThinkingDisabled
-            } else {
-                ReasoningDialect::None
+    let base = base_url.trim().to_ascii_lowercase();
+    let is_local_route = provider == "vllm"
+        || provider == "tachyon"
+        || provider == "ollama"
+        || preset == ModelPreset::LocalVllm;
+    // 本地路由：与引擎本地处理完全一致——ollama 只有 boolean think；vLLM/Tachyon 走
+    // always-thinking 知识表（NoControl 不发字段，其余最低档 low）。
+    if is_local_route {
+        if provider == "ollama" {
+            body["think"] = json!(true);
+            return;
+        }
+        match crate::core::always_thinking::always_thinking_spec(model) {
+            Some(crate::core::always_thinking::AlwaysThinkingSpec::NoControl) => return,
+            _ => {
+                body["chat_template_kwargs"] = json!({ "enable_thinking": true });
+                body["reasoning_effort"] = json!("low");
+                return;
             }
         }
-        ModelPreset::Qwen => ReasoningDialect::QwenEnableThinking,
-        ModelPreset::Doubao | ModelPreset::Glm | ModelPreset::Mimo => {
-            ReasoningDialect::ThinkingDisabled
-        }
-        ModelPreset::Minimax => ReasoningDialect::Minimax,
-        ModelPreset::OpenaiCompatible
-        | ModelPreset::LocalVllm
-        | ModelPreset::Deepseek
-        | ModelPreset::Openai
-        // Custom Responses endpoints only switch the main-session engine
-        // route; review aux calls stay single-shot Chat Completions (no
-        // tool calls), so resolution falls back to URL/model-name sniffing.
-        | ModelPreset::OpenaiResponses
-        | ModelPreset::Anthropic
-        | ModelPreset::Gemini
-        | ModelPreset::Xai => reasoning_dialect_from_base_url(base_url, model),
+    }
+    if provider == "deepseek"
+        || preset == ModelPreset::Deepseek
+        || base.contains("api.deepseek.com")
+    {
+        body["reasoning_effort"] = json!("low");
+        body["thinking"] = json!({ "type": "enabled" });
+        return;
+    }
+    if provider == "moonshot"
+        || provider == "kimi"
+        || preset == ModelPreset::Kimi
+        || base.contains("moonshot.cn")
+        || base.contains("moonshot.ai")
+        || base.contains("api.kimi.com")
+    {
+        body["thinking"] = json!({ "type": "enabled" });
+        return;
+    }
+    if preset == ModelPreset::Qwen || base.contains("dashscope.aliyuncs.com") {
+        body["enable_thinking"] = json!(true);
+        return;
+    }
+    if preset == ModelPreset::Doubao
+        || base.contains("volces.com")
+        || base.contains("volcengine")
+        || base.contains("byteplus.com")
+    {
+        body["reasoning_effort"] = json!("high");
+        body["thinking"] = json!({ "type": "enabled" });
+        return;
+    }
+    if preset == ModelPreset::Glm || base.contains("bigmodel.cn") || base.contains("z.ai") {
+        body["thinking"] = json!({ "type": "enabled", "clear_thinking": false });
+        return;
+    }
+    if preset == ModelPreset::Mimo || base.contains("xiaomimimo.com") {
+        body["thinking"] = json!({ "type": "enabled" });
+        return;
+    }
+    if preset == ModelPreset::Minimax
+        || base.contains("minimax.chat")
+        || base.contains("minimaxi.com")
+    {
+        body["reasoning_split"] = json!(true);
+        return;
     }
 }
 
@@ -929,25 +984,40 @@ fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
 mod tests {
     use super::*;
 
+    /// 思考永不关闭（2026-11-06 产品决策）：各家族落到最低思考档/显式开。
+    /// 线材形状逐字对齐底座 `apply_reasoning_effort` 的 low 档翻译；本地路由与
+    /// 引擎本地处理（always_thinking 归一）一致。
     #[test]
-    fn review_reasoning_controls_match_provider() {
-        let mut deepseek = json!({});
-        apply_review_reasoning_controls(
-            &mut deepseek,
-            ModelPreset::Deepseek,
-            "deepseek",
-            ModelPreset::Deepseek.default_base_url(),
-            "deepseek-v4-pro",
+    fn review_thinking_controls_pick_lowest_tier_never_off() {
+        // Kimi Coding Plan k3（api.kimi.com 在旧嗅探簇外）：开/关选开 → thinking enabled。
+        let mut k3 = json!({});
+        apply_review_thinking_controls(
+            &mut k3,
+            ModelPreset::OpenaiCompatible,
+            "moonshot",
+            "https://api.kimi.com/coding/v1",
+            "k3",
         );
-        assert_eq!(
-            deepseek["thinking"],
-            json!({ "type": "disabled" }),
-            "DeepSeek official API needs the top-level thinking disable field"
+        assert_eq!(k3["thinking"], json!({ "type": "enabled" }), "k3: {k3}");
+        assert!(
+            k3.get("reasoning_effort").is_none(),
+            "Kimi chat 线不表达档位: {k3}"
         );
-        assert!(deepseek.get("chat_template_kwargs").is_none());
 
+        // Kimi 官方端点 k2.6（旧逻辑被显式关思考）：现在同样显式开。
+        let mut k26 = json!({});
+        apply_review_thinking_controls(
+            &mut k26,
+            ModelPreset::Kimi,
+            "moonshot",
+            ModelPreset::Kimi.default_base_url(),
+            "kimi-k2.6",
+        );
+        assert_eq!(k26["thinking"], json!({ "type": "enabled" }), "k2.6: {k26}");
+
+        // vLLM 本地可控模型：enable_thinking=true + reasoning_effort=low（引擎本地同款）。
         let mut vllm = json!({});
-        apply_review_reasoning_controls(
+        apply_review_thinking_controls(
             &mut vllm,
             ModelPreset::LocalVllm,
             "vllm",
@@ -956,15 +1026,184 @@ mod tests {
         );
         assert_eq!(
             vllm["chat_template_kwargs"],
-            json!({ "enable_thinking": false }),
-            "vLLM needs chat_template_kwargs to disable thinking"
+            json!({ "enable_thinking": true }),
+            "vLLM 最低档=思考开+low: {vllm}"
         );
-        assert!(vllm.get("thinking").is_none());
+        assert_eq!(vllm["reasoning_effort"], json!("low"));
+        assert!(
+            vllm.get("thinking").is_none(),
+            "vLLM 不吃 Anthropic 形状: {vllm}"
+        );
+
+        // 本地 kimi-k3（Tiers）：最低档 low，同 vLLM 形状。
+        let mut k3local = json!({});
+        apply_review_thinking_controls(
+            &mut k3local,
+            ModelPreset::LocalVllm,
+            "vllm",
+            ModelPreset::LocalVllm.default_base_url(),
+            "kimi-k3",
+        );
+        assert_eq!(k3local["reasoning_effort"], json!("low"), "{k3local}");
+        assert_eq!(
+            k3local["chat_template_kwargs"]["enable_thinking"],
+            json!(true),
+            "{k3local}"
+        );
+
+        // 本地 always-thinking NoControl（qwen3-thinking）：native 思考，不发字段。
+        let mut nocontrol = json!({});
+        apply_review_thinking_controls(
+            &mut nocontrol,
+            ModelPreset::LocalVllm,
+            "vllm",
+            ModelPreset::LocalVllm.default_base_url(),
+            "qwen3-thinking-2507",
+        );
+        assert!(
+            nocontrol.as_object().expect("body object").is_empty(),
+            "NoControl 不发任何思考字段: {nocontrol}"
+        );
+
+        // Ollama：boolean think 线，最低思考档=开。
+        let mut ollama = json!({});
+        apply_review_thinking_controls(
+            &mut ollama,
+            ModelPreset::OpenaiCompatible,
+            "ollama",
+            "http://127.0.0.1:11434/v1",
+            "qwen3:8b",
+        );
+        assert_eq!(ollama["think"], json!(true), "{ollama}");
+
+        // DeepSeek：档位表 Low 档（reasoning_effort=low + thinking enabled）。
+        let mut deepseek = json!({});
+        apply_review_thinking_controls(
+            &mut deepseek,
+            ModelPreset::Deepseek,
+            "deepseek",
+            ModelPreset::Deepseek.default_base_url(),
+            "deepseek-v4-pro",
+        );
+        assert_eq!(deepseek["reasoning_effort"], json!("low"), "{deepseek}");
+        assert_eq!(
+            deepseek["thinking"],
+            json!({ "type": "enabled" }),
+            "{deepseek}"
+        );
+        assert!(deepseek.get("chat_template_kwargs").is_none());
+
+        // Qwen/dashscope：开/关选开。
+        let mut qwen = json!({});
+        apply_review_thinking_controls(
+            &mut qwen,
+            ModelPreset::Qwen,
+            "openai",
+            ModelPreset::Qwen.default_base_url(),
+            "qwen3.6-plus",
+        );
+        assert_eq!(qwen["enable_thinking"], json!(true), "{qwen}");
+
+        // Doubao/Volces：底座把 low 折叠为 high + enabled。
+        let mut doubao = json!({});
+        apply_review_thinking_controls(
+            &mut doubao,
+            ModelPreset::Doubao,
+            "openai",
+            ModelPreset::Doubao.default_base_url(),
+            ModelPreset::Doubao.default_model(),
+        );
+        assert_eq!(doubao["reasoning_effort"], json!("high"), "{doubao}");
+        assert_eq!(doubao["thinking"], json!({ "type": "enabled" }), "{doubao}");
+        let mut volces = json!({});
+        apply_review_thinking_controls(
+            &mut volces,
+            ModelPreset::OpenaiCompatible,
+            "openai",
+            "https://ark.cn-beijing.volces.com/api/v3",
+            "doubao-pro",
+        );
+        assert_eq!(volces["reasoning_effort"], json!("high"), "{volces}");
+        assert_eq!(volces["thinking"], json!({ "type": "enabled" }), "{volces}");
+
+        // GLM/z.ai、Mimo：显式 enabled（GLM 带 clear_thinking=false）。
+        let mut glm = json!({});
+        apply_review_thinking_controls(
+            &mut glm,
+            ModelPreset::OpenaiCompatible,
+            "openai",
+            "https://open.bigmodel.cn/api/paas/v4",
+            "glm-5.1",
+        );
+        assert_eq!(
+            glm["thinking"],
+            json!({ "type": "enabled", "clear_thinking": false }),
+            "{glm}"
+        );
+        let mut mimo = json!({});
+        apply_review_thinking_controls(
+            &mut mimo,
+            ModelPreset::Mimo,
+            "openai",
+            ModelPreset::Mimo.default_base_url(),
+            ModelPreset::Mimo.default_model(),
+        );
+        assert_eq!(mimo["thinking"], json!({ "type": "enabled" }), "{mimo}");
+
+        // Minimax：M2 always-thinking 无控制 → native 开；reasoning_split 保持内容洁净。
+        let mut minimax = json!({});
+        apply_review_thinking_controls(
+            &mut minimax,
+            ModelPreset::Minimax,
+            "openai",
+            ModelPreset::Minimax.default_base_url(),
+            "MiniMax-M3",
+        );
+        assert_eq!(minimax["reasoning_split"], json!(true), "{minimax}");
+        assert!(
+            minimax.get("thinking").is_none(),
+            "Minimax 不发关字段: {minimax}"
+        );
+
+        // OpenAI 官方 chat 线与未知网关：线材不表达档位 → 不发字段。
+        for (base_url, model) in [
+            ("https://api.openai.com/v1", "gpt-4o"),
+            ("https://api.openai.com/v1", "gpt-6-sol"),
+            ("https://gateway.example/v1", "some-model"),
+        ] {
+            let mut plain = json!({});
+            apply_review_thinking_controls(
+                &mut plain,
+                ModelPreset::OpenaiCompatible,
+                "openai",
+                base_url,
+                model,
+            );
+            assert!(
+                plain.as_object().expect("body object").is_empty(),
+                "{base_url}/{model} 不应发思考字段: {plain}"
+            );
+        }
+
+        // Custom Responses preset 只切主会话路由，审查仍走单发 Chat：按 URL/模型归族。
+        let mut responses_qwen = json!({});
+        apply_review_thinking_controls(
+            &mut responses_qwen,
+            ModelPreset::OpenaiResponses,
+            "openai",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "qwen3.6-flash",
+        );
+        assert_eq!(
+            responses_qwen["enable_thinking"],
+            json!(true),
+            "{responses_qwen}"
+        );
     }
 
     #[test]
     fn review_request_body_mirrors_engine_wire_no_temperature() {
-        let body = review_request_body("k3", "sys prompt", "user content");
+        let body = review_request_body("k3", "sys prompt", "user content", 8192);
         assert!(
             body.get("temperature").is_none(),
             "aux review body must mirror the engine wire (no temperature): a \
@@ -972,7 +1211,12 @@ mod tests {
              live 2026-09-30: only 1 is allowed for this model"
         );
         assert_eq!(body["model"], "k3");
-        assert_eq!(body["max_tokens"], 1600);
+        assert_eq!(
+            body["max_tokens"],
+            json!(8192),
+            "预算透传 max_tokens 参数(主对话同款算法值,由 \
+             main_wire_max_output_tokens 计算),不得在 builder 内硬编码"
+        );
         assert_eq!(body["stream"], false);
         assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["messages"][0]["role"], "system");
@@ -1002,117 +1246,15 @@ mod tests {
             "model_review must build its one-shot body via review_request_body"
         );
         assert!(
+            region.contains("main_wire_max_output_tokens("),
+            "the review max_tokens must come from the bridge's main-wire budget \
+             (the same algorithm as the main conversation); re-inlining a \
+             constant here drifts from the engine — the old hard-coded 1600 \
+             was consumed entirely by k3 reasoning tokens (2026-11-06)"
+        );
+        assert!(
             !region.contains("\"temperature\""),
             "the review request region must not re-inline a temperature field"
-        );
-    }
-
-    #[test]
-    fn review_reasoning_controls_cover_builtin_presets() {
-        let mut qwen = json!({});
-        apply_review_reasoning_controls(
-            &mut qwen,
-            ModelPreset::Qwen,
-            "openai",
-            ModelPreset::Qwen.default_base_url(),
-            "qwen3.6-plus",
-        );
-        assert_eq!(qwen["enable_thinking"], json!(false));
-
-        for preset in [ModelPreset::Doubao, ModelPreset::Glm, ModelPreset::Mimo] {
-            let mut body = json!({});
-            apply_review_reasoning_controls(
-                &mut body,
-                preset,
-                "openai",
-                preset.default_base_url(),
-                preset.default_model(),
-            );
-            assert_eq!(body["thinking"], json!({ "type": "disabled" }));
-        }
-
-        let mut minimax = json!({});
-        apply_review_reasoning_controls(
-            &mut minimax,
-            ModelPreset::Minimax,
-            "openai",
-            ModelPreset::Minimax.default_base_url(),
-            "MiniMax-M3",
-        );
-        assert_eq!(minimax["thinking"], json!({ "type": "disabled" }));
-        assert_eq!(minimax["reasoning_split"], json!(true));
-
-        let mut kimi = json!({});
-        apply_review_reasoning_controls(
-            &mut kimi,
-            ModelPreset::Kimi,
-            "moonshot",
-            ModelPreset::Kimi.default_base_url(),
-            "kimi-k2.6",
-        );
-        assert_eq!(kimi["thinking"], json!({ "type": "disabled" }));
-
-        let mut kimi_thinking_only = json!({});
-        apply_review_reasoning_controls(
-            &mut kimi_thinking_only,
-            ModelPreset::Kimi,
-            "moonshot",
-            ModelPreset::Kimi.default_base_url(),
-            "kimi-k2.7-code",
-        );
-        assert!(kimi_thinking_only.get("thinking").is_none());
-    }
-
-    #[test]
-    fn review_reasoning_controls_infer_known_openai_compatible_base_urls() {
-        assert_eq!(
-            review_reasoning_dialect(
-                ModelPreset::OpenaiCompatible,
-                "openai",
-                "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "qwen3.6-flash",
-            ),
-            crate::core::reasoning_dialect::ReasoningDialect::QwenEnableThinking
-        );
-        assert_eq!(
-            review_reasoning_dialect(
-                ModelPreset::OpenaiCompatible,
-                "openai",
-                "https://open.bigmodel.cn/api/paas/v4",
-                "glm-5.1",
-            ),
-            crate::core::reasoning_dialect::ReasoningDialect::ThinkingDisabled
-        );
-        assert_eq!(
-            review_reasoning_dialect(
-                ModelPreset::OpenaiCompatible,
-                "openai",
-                "https://api.openai.com/v1",
-                "gpt-4o",
-            ),
-            crate::core::reasoning_dialect::ReasoningDialect::None
-        );
-        // The custom Responses preset rides the same URL-sniff fallback:
-        // review's single-shot calls stay plain Chat (no tools), so the
-        // dialect follows the endpoint/model, not the preset (the compiler
-        // only pins arm exhaustiveness — this pins the semantics).
-        assert_eq!(
-            review_reasoning_dialect(
-                ModelPreset::OpenaiResponses,
-                "openai",
-                "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "qwen3.6-flash",
-            ),
-            crate::core::reasoning_dialect::ReasoningDialect::QwenEnableThinking
-        );
-        assert_eq!(
-            review_reasoning_dialect(
-                ModelPreset::OpenaiResponses,
-                "openai",
-                "https://api.openai.com/v1",
-                "gpt-6-sol",
-            ),
-            crate::core::reasoning_dialect::ReasoningDialect::None
         );
     }
 
