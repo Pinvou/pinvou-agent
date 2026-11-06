@@ -73,7 +73,9 @@ function loadTauriInteraction(invokeResponder) {
       const boundDraft = !!state.draftWorkspacePath;
       const lane = boundDraft || state.modeLane === 'code' ? 'code' : 'work';
       const d = state.modeDefaults && state.modeDefaults[lane];
-      return { mode: d || (boundDraft ? 'plan' : 'yolo'), multiAgent: false };
+      // 与两座生产桥同构（tauri bridge.js / web bridge.js）：未绑定草稿缺省
+      // auto——yolo 兜底会把失败臂的显示面钉在不安全的档上。
+      return { mode: d || (boundDraft ? 'plan' : 'auto'), multiAgent: false };
     },
     applyAuthoritativeModeState(sid, st) {
       state.modeState = { mode: st.mode || 'auto', multiAgent: !!st.multi_agent };

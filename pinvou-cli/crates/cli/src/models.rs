@@ -2832,9 +2832,12 @@ fn mode_str(mode: Option<SerializableMode>) -> String {
         || "none".to_owned(),
         |mode| match mode {
             SerializableMode::Plan => "plan".to_owned(),
-            // Unreachable through the settings getters (the legacy field
-            // never stores Auto; the effective getter reports the companion
-            // flag instead) - this arm only keeps the match exhaustive.
+            // Reachable through the settings getters: a settings.json holding
+            // the legacy-field `"auto"` literal (a hand edit, or a file
+            // written by this PR's own dev builds) parses leniently to
+            // `Some(Auto)`, and reporting "auto" is the truth. First-party
+            // writers never store Auto in the legacy field (the effective
+            // getter reports the companion flag instead).
             SerializableMode::Auto => "auto".to_owned(),
             SerializableMode::Yolo => "yolo".to_owned(),
         },
