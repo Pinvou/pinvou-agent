@@ -2124,6 +2124,34 @@ mod spool_pipeline_tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    /// Round-6 hardening for the source pins: strip whole-line comments from
+    /// the production slice, so a decoy needle inside a comment can no
+    /// longer satisfy a `contains`/count assert. `until` is the marker that
+    /// starts the test module (or `#[cfg(test)]` in foreign files).
+    fn comment_stripped_production(source: &str, until: &str) -> String {
+        let end = source.find(until).unwrap_or(source.len());
+        source[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The call-window argument bind shared by the wiring pins: from the
+    /// needle to its call's closing paren, the argument literal must appear
+    /// INSIDE the call (a decoy `, true` elsewhere in the arm — comment or
+    /// code — satisfies a span-wide `contains`, not this).
+    fn call_window_contains(haystack: &str, needle: &str, arg: &str) -> bool {
+        let Some(start) = haystack.find(needle) else {
+            return false;
+        };
+        let window = &haystack[start..];
+        match window.find(')') {
+            Some(end) => window[..end].contains(arg),
+            None => false,
+        }
+    }
+
     /// RAII temp PINVOU3_HOME; the ENV_LOCK guard is held across awaits —
     /// safe on the current-thread test runtime, and other suites' env use is
     /// serialized by the same lock.
@@ -3386,10 +3414,7 @@ mod spool_pipeline_tests {
     #[test]
     fn expired_steer_prune_is_wired_into_the_poll() {
         let source = include_str!("mod.rs");
-        let test_module = source
-            .find("mod spool_pipeline_tests")
-            .expect("test module");
-        let production = &source[..test_module];
+        let production = comment_stripped_production(source, "mod spool_pipeline_tests");
         let occurrences = production
             .match_indices("prune_expired_pending_steers()")
             .count();
@@ -3410,11 +3435,14 @@ mod spool_pipeline_tests {
     /// `resolve_steer_outcome(.., false)` for SteerDropped, and swapping
     /// those two literals used to pass this pin (its needle stopped at the
     /// open paren) while committing drops and re-queueing commits.
+    /// Round-6 hardening: the argument now binds INSIDE the call (window to
+    /// the closing paren) on comment-stripped source — a flipped literal
+    /// can no longer be rescued by a decoy `, true` elsewhere in the span,
+    /// in code or in a comment.
     #[test]
     fn steer_terminal_arms_forward_to_the_resolution_hook() {
         let source = include_str!("../assistant/forwarder.rs");
-        let test_module = source.find("#[cfg(test)]").expect("assistant test module");
-        let production = &source[..test_module];
+        let production = comment_stripped_production(source, "#[cfg(test)]");
         let occurrences = production
             .match_indices("steer_outcomes::resolve_steer_outcome(")
             .count();
@@ -3445,16 +3473,13 @@ mod spool_pipeline_tests {
         let committed_span = &production[committed_arm..dropped_arm];
         let dropped_span = &production[dropped_arm..dropped_end];
         assert!(
-            committed_span
-                .match_indices("resolve_steer_outcome(")
-                .count()
-                == 1
-                && committed_span.contains(", true"),
+            committed_span.match_indices("resolve_steer_outcome(").count() == 1
+                && call_window_contains(committed_span, "resolve_steer_outcome(", ", true"),
             "the SteerCommitted arm must fan out resolve_steer_outcome(.., true)"
         );
         assert!(
             dropped_span.match_indices("resolve_steer_outcome(").count() == 1
-                && dropped_span.contains(", false"),
+                && call_window_contains(dropped_span, "resolve_steer_outcome(", ", false"),
             "the SteerDropped arm must fan out resolve_steer_outcome(.., false)"
         );
     }
@@ -3462,12 +3487,18 @@ mod spool_pipeline_tests {
     /// ... and the hook must be registered to the messaging finalizer at
     /// startup — deregistering it (or pointing it anywhere else) defeats the
     /// finalizer with the suite green, exactly like a deleted call site.
+    /// Round-6 hardening: the consumer binds INSIDE the registration call's
+    /// paren window on comment-stripped source, so a decoy comment naming
+    /// the finalizer no longer satisfies the pin.
     #[test]
     fn the_resolution_hook_is_registered_to_the_messaging_finalizer() {
         let source = include_str!("../../lib.rs");
+        let production = comment_stripped_production(source, "#[cfg(test)]");
         assert!(
-            source.contains(
-                "register_steer_resolution_hook(features::messaging::resolve_pending_steer)"
+            call_window_contains(
+                &production,
+                "register_steer_resolution_hook(",
+                "features::messaging::resolve_pending_steer"
             ),
             "lib.rs setup must register the messaging finalizer as the steer \
              resolution hook"
@@ -3511,6 +3542,105 @@ mod spool_pipeline_tests {
         );
     }
 
+    /// Round-6 (L5): the finalizer's miss arm must record the buffered
+    /// terminal event while STILL holding the registry lock — a peek-miss
+    /// whose record runs after the lock drops can interleave with the
+    /// inserter's insert-then-take and strand the event in the buffer (the
+    /// id is never re-minted, so the armed wait degrades to the 24h give-up
+    /// plus a duplicate). No single-threaded behavioral test can interleave
+    /// that window, so pin the helper's shape: both locks inside one
+    /// critical section, no release or early-return between them.
+    #[test]
+    fn the_late_record_shares_the_registry_lock_with_the_peek() {
+        let source = include_str!("mod.rs");
+        let production = comment_stripped_production(source, "mod spool_pipeline_tests");
+        let helper = production
+            .find("fn pending_entry_or_late_record")
+            .expect("the shared-lock peek/record helper");
+        let body = &production[helper..];
+        let body_end = body.find("\nfn ").unwrap_or(body.len());
+        let body = &body[..body_end];
+        let pending_lock = body.find("pending_steers()").expect("the registry lock");
+        let late_lock = body
+            .find("late_terminal_events()")
+            .expect("the late-map lock inside the same critical section");
+        assert!(
+            late_lock > pending_lock,
+            "the late map must be locked after the registry (lock order)"
+        );
+        let between = &body[pending_lock..late_lock];
+        assert!(
+            !between.contains("return None") && !between.contains("drop("),
+            "the registry critical section must stay held until the late-map \
+             lock is taken — an event recorded after the peek returns can \
+             strand in the buffer"
+        );
+        let finalizer = production
+            .find("pub fn resolve_pending_steer")
+            .expect("the finalizer");
+        assert!(
+            production[finalizer..].contains("pending_entry_or_late_record(steer_id, committed)"),
+            "the finalizer's peek/record must go through the shared-lock helper"
+        );
+    }
+
+    /// Round-6 (L15/L7): every quarantine site's receipt code must be
+    /// emitted verbatim — a rename would orphan the machine-readable trail
+    /// the contract doc promises, and three of the six codes had no test
+    /// binding at all.
+    #[test]
+    fn quarantine_receipt_codes_are_emitted_verbatim() {
+        let source = include_str!("mod.rs");
+        let production = comment_stripped_production(source, "mod spool_pipeline_tests");
+        for code in [
+            "pending_file_ceiling_exceeded",
+            "steer_drop_limit",
+            "panic_attempt_limit",
+            "removal_attempt_limit",
+            "poison_record",
+            "delivery_attempt_limit",
+        ] {
+            assert!(
+                production.contains(&format!("\"{code}\"")),
+                "the quarantine receipt code {code:?} must be emitted \
+                 verbatim in production"
+            );
+        }
+    }
+
+    /// Round-6 (L3/L2): the Poison replaced branch must NOT clear the
+    /// identity's drop-cycle series — neither a commit nor a landed move
+    /// resolved the old body, so its drop history is an unresolved
+    /// identity-level record the newest body inherits (the same
+    /// over-quarantine doctrine the stale-release path and the drop-limit
+    /// gate disclose). The committed arm's replacement branches are the
+    /// opposite and DO clear — the commit resolves the series.
+    #[test]
+    fn poison_replaced_branch_keeps_the_identity_drop_history() {
+        let source = include_str!("mod.rs");
+        let production = comment_stripped_production(source, "mod spool_pipeline_tests");
+        let poison_arm = production
+            .find("Processed::Poison(original, error) => {")
+            .expect("the Poison arm");
+        let after_replaced_branch = production[poison_arm..]
+            .find("let record = read_record_for_audit")
+            .expect("the post-branch audit read");
+        let replaced_branch = &production[poison_arm..poison_arm + after_replaced_branch];
+        assert!(
+            replaced_branch.contains("was replaced during processing"),
+            "precondition: the span covers the Poison replaced branch"
+        );
+        assert!(
+            replaced_branch.contains("retries.clear(&name)"),
+            "the replaced branch still resets the attempt budget"
+        );
+        assert!(
+            !replaced_branch.contains("clear_steer_drop_cycles"),
+            "the Poison replaced branch must keep the identity's drop-cycle \
+             series (unresolved replacement inherits, per doctrine)"
+        );
+    }
+
     /// Round-4 minor: the drop-cycle bookkeeping prunes to the poll's
     /// listing like `RetryState` — a same-identity re-spool after an
     /// external delete must not inherit the previous body's partial budget.
@@ -3547,6 +3677,147 @@ mod spool_pipeline_tests {
         assert!(
             !steer_drop_limit_reached("ghost.json"),
             "the unlisted ghost identity must be pruned with the listing"
+        );
+    }
+
+    /// Round-6 (L2): the committed arm's PRE-marker replacement branch must
+    /// clear the drop-cycle series — committed=true means the engine wrote
+    /// the old body, so the steer→drop→re-steer loop the counter bounds
+    /// ended in a commit, exactly like the success path and the post-marker
+    /// replacement arm. Leaving the count armed would quarantine the newest
+    /// body after a single drop of its own (the old body's history
+    /// carries over).
+    #[test]
+    fn committed_arm_clears_the_series_on_a_pre_marker_replacement() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let name = "pre-marker-swap.json";
+        let path = spool.join(name);
+        let body = record_json(name, None);
+        std::fs::write(&path, &body).unwrap();
+        for _ in 0..3 {
+            record_steer_drop_cycle(name);
+        }
+        pending_steers()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                "steer-pre@1".to_string(),
+                PendingSteerDelivery {
+                    spool_path: path.clone(),
+                    original: std::sync::Arc::new(body.into_bytes()),
+                    armed_at: Instant::now(),
+                },
+            );
+        // A materially-different keyed retry replaces the file before the
+        // marker write — the pre-marker replacement branch fires.
+        std::fs::write(&path, record_json(name, Some("replaced-key"))).unwrap();
+        resolve_pending_steer("steer-pre@1", true);
+        assert!(
+            !is_pending_steer_path(&path),
+            "the pre-marker replacement branch must disarm the registration"
+        );
+        assert!(
+            steer_drop_cycles()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(name)
+                .is_none(),
+            "the commit resolves the series even on a pre-marker replacement — \
+             the newest body must start a fresh drop-cycle budget"
+        );
+    }
+
+    /// Round-6 (L9): the marker-fails-but-removal-succeeds exit of the
+    /// committed arm must still consume the registration and clear the
+    /// series (marker_landed=false + removed=true skips the both-fail
+    /// freeze) — that path had no pin, so an early-return mutant shipped
+    /// green with the entry armed until the 24h expiry.
+    #[test]
+    #[cfg(unix)]
+    fn committed_arm_consumes_the_entry_when_only_the_marker_write_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let name = "marker-fail.json";
+        let path = spool.join(name);
+        let body = record_json(name, None);
+        std::fs::write(&path, &body).unwrap();
+        record_steer_drop_cycle(name);
+        pending_steers()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                "steer-mf@1".to_string(),
+                PendingSteerDelivery {
+                    spool_path: path.clone(),
+                    original: std::sync::Arc::new(body.into_bytes()),
+                    armed_at: Instant::now(),
+                },
+            );
+        // The done dir unwritable: the marker write fails while the spool
+        // removal succeeds (the exact one-leg-failed combination).
+        let done = done_dir();
+        std::fs::create_dir_all(&done).unwrap();
+        let mut perms = std::fs::metadata(&done).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(&done, perms).unwrap();
+        resolve_pending_steer("steer-mf@1", true);
+        // Restore first so the suite's own cleanup can run.
+        let mut perms = std::fs::metadata(&done).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&done, perms).unwrap();
+        assert!(
+            !path.exists(),
+            "the spool removal must still land when only the marker write failed"
+        );
+        assert!(
+            !is_pending_steer_path(&path),
+            "the registration must be consumed on the marker-fail exit"
+        );
+        assert!(
+            steer_drop_cycles()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(name)
+                .is_none(),
+            "the commit clears the drop-cycle series on the marker-fail exit"
+        );
+    }
+
+    /// Round-6 (L9): the late-event map's TTL must be enforced on BOTH
+    /// sweep sites — the record-time retain and the poll-cadence prune.
+    /// Without clock injection a mutant that never ages entries shipped the
+    /// suite green (the map is memory-bounded, so nothing else observes it).
+    #[test]
+    fn late_terminal_events_age_out_on_both_sweep_sites() {
+        let aged = Instant::now() - LATE_TERMINAL_TTL - Duration::from_secs(1);
+        {
+            let mut late = late_terminal_events()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            late.insert("aged@1".to_string(), (aged, true));
+            late.insert("aged@2".to_string(), (aged, false));
+        }
+        // The record-time retain: an expired entry drops before the insert.
+        pending_entry_or_late_record("fresh@1", false);
+        assert!(
+            !late_terminal_events()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_key("aged@1"),
+            "the record-time retain must drop expired entries"
+        );
+        // The poll-cadence prune: the same sweep runs off the poll.
+        prune_expired_pending_steers();
+        assert!(
+            !late_terminal_events()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_key("aged@2"),
+            "the poll-cadence prune must drop expired entries"
         );
     }
 
@@ -4195,7 +4466,9 @@ mod spool_pipeline_tests {
     /// without a literal anchor any drift (10→10 000, 200→201) ships the
     /// suite green, because the surrounding fixtures derive from the
     /// constants. (Round-2 review: RETENTION, the backoff pair and the
-    /// 64 KiB block cap had the same constant-derived-fixture shape.)
+    /// 64 KiB block cap had the same constant-derived-fixture shape.
+    /// Round-6 review: the pending ceiling and the spool read cap had the
+    /// same hole — fixtures derive from them too.)
     #[test]
     fn disclosed_constants_are_pinned_to_their_literals() {
         assert_eq!(MAX_DELIVERY_ATTEMPTS, 10);
@@ -4206,6 +4479,8 @@ mod spool_pipeline_tests {
         assert_eq!(STEER_COMMIT_WAIT, Duration::from_secs(24 * 3600));
         assert_eq!(LATE_TERMINAL_TTL, Duration::from_secs(60));
         assert_eq!(MAX_STEER_DROP_CYCLES, 10);
+        assert_eq!(MAX_PENDING_FILES, 256);
+        assert_eq!(MAX_SPOOL_FILE_BYTES, 64 * 1024);
         use crate::features::sessions::MAX_SESSION_BLOCK_JSON_LINE;
         assert_eq!(MAX_SESSION_BLOCK_JSON_LINE, 64 * 1024);
     }
@@ -4637,8 +4912,10 @@ mod spool_pipeline_tests {
         let audit = exec_root.join("workflow_audit.jsonl");
         let content = std::fs::read_to_string(&audit).unwrap_or_default();
         assert!(
-            content.contains("\"session_message\"") && content.contains("\"quarantined\""),
-            "the poison disposition must be audited: {content}"
+            content.contains("\"session_message\"")
+                && content.contains("\"quarantined\"")
+                && content.contains("\"poison_record\""),
+            "the poison disposition must be audited with its receipt code: {content}"
         );
     }
 
