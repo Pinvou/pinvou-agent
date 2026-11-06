@@ -1420,8 +1420,10 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       }
     });
     // 无未决卡可落：决议来自快照在途窗口里的另一表面。留下墓碑，
-    // 在途快照回程不得把这个已决审批当活卡插回。
-    if (!changed) tombstoneApproval(p.session_id, approvalId);
+    // 在途快照回程不得把这个已决审批当活卡插回。负载缺 session_id 的
+    // 畸形载荷按 no-op 处理（round-13 review：undefined 键永远匹配不上
+    // 重放路径的 sid 键，墓碑写了也是死条目）。
+    if (!changed && p.session_id) tombstoneApproval(p.session_id, approvalId);
     if (changed) notify();
   }); });
 

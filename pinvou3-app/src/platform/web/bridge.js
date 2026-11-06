@@ -2854,11 +2854,14 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // 再提示一次。
   const webAutoSendNoticeSids = new Map();
   const WEB_AUTO_SEND_NOTICE_CAP = 512;
-  // 姿态门共用骨架（doSendFor / acceptPlan / editLastTurn，评审 P2 补口）：
-  // 三者同为执行轮受理面——accept_plan 与 edit_last_turn 和 web_access_chat
+  // 姿态门共用骨架（doSendFor / acceptPlan / editLastTurn，评审 P2 补口；
+  // aux 聊天受理面自 round-13 评审起同门——aux 会话按未绑定 plain 解析、
+  // 默认 Auto，同样是 Web 无审批决策面的执行轮受理面）：
+  // 四者同为执行轮受理面——accept_plan 与 edit_last_turn 和 web_access_chat
   // 一样受理新一轮执行（多代理拒发清单亦把 edit_last_turn 归为执行类）。
   // Auto 档显式拒绝；通告先落再拒绝：经 runSyncOnSession 落到 sid 自己的
-  // buffer，后台重试也标注正确的会话；throw 继续走调用方既有的失败面。
+  // buffer，后台重试也标注正确的会话；throw 继续走调用方既有的失败面
+  // （aux 面板渲染本地化 sendFailed 拷贝）。
   // get_mode_state 失败 fail-open 放行（事后通告仍是竞态兜底）。
   // opts.requireExecutablePostAccept（zhuowp 5780927743 第三条）：受理面
   // 还须校验**将生效的执行模式**——accept_plan 开 turn 后恢复 pre_plan_mode
@@ -3061,7 +3064,17 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // text never reached the user on either lane.
   function auxChatSendDispatch(sid, message) {
     return IS_WEB
-      ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
+      // Round-13 review (M-4): the aux panel is a fourth turn-start surface
+      // and was the only one bypassing the Auto admission gate — an `aux-`
+      // session resolves like an unbound plain session (backend default
+      // Auto), so a panel chat could open a turn in exactly the posture the
+      // gate exists to refuse (the web face has no approval-card surface).
+      // Same gate, same deduped notice; the throw surfaces through the
+      // panel's existing sendFailed copy. The desktop arm keeps direct
+      // dispatch (cards are servable there).
+      ? webAutoAdmissionGate(sid, function () {
+          return invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true });
+        })
       : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
   }
   const auxChatShared = window.PinvouBridgeShared.create("auxChat", {
@@ -4161,9 +4174,20 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       toolName: tool,
     });
   }); });
+  // chat:guardrail_denied 通告按稳定键去重（round-13 review）：同会话同工具
+  // 同理由的拒绝在重连重放/remount 重灌下只落一条——与上方 approval_required
+  // 的去重同形同界（后端 deny 载荷携带稳定键，payload 无 approval id）。
+  const webGuardrailNoticeKeys = new Map();
+  const WEB_GUARDRAIL_NOTICE_CAP = 512;
   listen("chat:guardrail_denied", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     const reason = String(p.reason || "");
+    const dedupKey = String(p.session_id || "") + "\u0000" + String(p.tool_name || "") + "\u0000" + reason;
+    if (webGuardrailNoticeKeys.has(dedupKey)) return;
+    webGuardrailNoticeKeys.set(dedupKey, true);
+    if (webGuardrailNoticeKeys.size > WEB_GUARDRAIL_NOTICE_CAP) {
+      webGuardrailNoticeKeys.delete(webGuardrailNoticeKeys.keys().next().value);
+    }
     const reasonText = reason === "session_denied" ? bt("toolGuardrailDeniedSessionDenied")
       : reason === "plan_mode" ? bt("toolGuardrailDeniedPlan")
       : reason === "guardrail_ask_off" ? bt("toolGuardrailDeniedAskOff")
@@ -4181,7 +4205,14 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     // 离开 Auto 即解锁下一次拦截通告（doSendFor 的 webAutoSendNoticeSids 按
     // sid 去重）：同会话再次进 Auto 后,下一次被拦发送允许再提示一次。负载缺
     // mode 按 applyModeFromState 的权威兜底口径视为非 Auto。
-    if (p.mode !== "auto") webAutoSendNoticeSids.delete(String(p.session_id));
+    if (p.mode !== "auto") {
+      webAutoSendNoticeSids.delete(String(p.session_id));
+      // Round-13 review: a gate-refused queue head stays parked until the
+      // next turn-end; escaping Auto is exactly the moment it becomes
+      // sendable, so flush now instead of waiting for an unrelated trigger.
+      // flushQueued self-guards (busy/remote-turn) and re-gates each head.
+      flushQueued(String(p.session_id));
+    }
     notify();
   }); });
 
@@ -4260,6 +4291,13 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     }, function () {
       // fail-open：补读失败不落任何用户可见内容,等 live 事件兜底。
     }).then(function () {
+      delete webPendingApprovalsInFlight[sid];
+    }, function () {
+      // Round-13 review: the success handler can itself throw (notify()
+      // deliberately rethrows subscriber errors) — without this rejection
+      // twin the cleanup fulfillment handler is skipped and the in-flight
+      // flag leaks permanently, disabling replay (incl. the markRemoteTurn
+      // busy restore) for the session.
       delete webPendingApprovalsInFlight[sid];
     });
   }

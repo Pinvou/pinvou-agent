@@ -496,18 +496,24 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
   }
   // 会话级「守卫命中时询问」开关：乐观翻转（后端要热同步底座安全姿态，可能
   // 耗时），失败按触发会话回滚并提示（setMultiAgentMode 同款乐观模式）。
+  // 乐观写走 runSyncOnSession(sid)：显式 sid 参数也合法（非仅 live-active），
+  // 裸全局写会在「渲染镜像滞后一拍的切换窗口」里把翻转落到新会话的面上
+  // （round-13 review）。
   async function setAskOnGuardrail(targetSessionId, enabled) {
     const sid = typeof targetSessionId === 'string' && targetSessionId
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
-    const previousAsk = (state.modeState && state.modeState.askOnGuardrail) !== false;
-    bumpModeStateEpoch(sid);
-    state.modeState = {
-      mode: (state.modeState && state.modeState.mode) || "auto",
-      multiAgent: !!(state.modeState && state.modeState.multiAgent),
-      askOnGuardrail: !!enabled,
-    };
+    let previousAsk = true;
+    runSyncOnSession(sid, function () {
+      previousAsk = (state.modeState && state.modeState.askOnGuardrail) !== false;
+      bumpModeStateEpoch(sid);
+      state.modeState = {
+        mode: (state.modeState && state.modeState.mode) || "auto",
+        multiAgent: !!(state.modeState && state.modeState.multiAgent),
+        askOnGuardrail: !!enabled,
+      };
+    });
     notify();
     try {
       const st = await invoke("set_ask_on_guardrail", { sessionId: sid, enabled: !!enabled });

@@ -902,8 +902,8 @@ try {
   assert.match(interaction, /async function setAskOnGuardrail\(targetSessionId, enabled\)/, '会话级守卫询问开关');
   assert.match(interaction, /invoke\("set_ask_on_guardrail", \{ sessionId: sid, enabled: !!enabled \}\)/,
     '守卫询问开关 invoke 形状（显式 sessionId）');
-  assert.match(interaction, /const previousAsk = \(state\.modeState && state\.modeState\.askOnGuardrail\) !== false;/,
-    '乐观翻转前必须记录旧值（失败回滚用，setMultiAgentMode 同款）');
+  assert.match(interaction, /let previousAsk = true;\s*runSyncOnSession\(sid, function \(\) \{\s*previousAsk = \(state\.modeState && state\.modeState\.askOnGuardrail\) !== false;/,
+    '乐观翻转前必须在触发会话的 runSyncOnSession 内记录旧值（失败回滚用；round-13：乐观写不得落裸全局面）');
   // reviewer P3：失败权威复核必须带 epoch 校验——重读发出到返回之间若落到
   // 更新的权威写回/广播（applyAuthoritativeModeState 统一 bump 共享 epoch
   // 表），本次读取已陈旧，应用它会覆盖更新的权威状态；丢弃后回滚值兜底
@@ -1124,8 +1124,8 @@ try {
   }
 
   // composer chip：三档选项（Yolo→Auto→Plan，从最宽松到最严格）+ 仅非 Plan 档显示守卫开关。
-  assert.match(composerControls, /switchTo\('yolo'\)[\s\S]{0,600}?switchTo\('auto'\)[\s\S]{0,600}?switchTo\('plan'\)/,
-    '下拉顺序 Yolo → Auto → Plan（从最宽松到最严格）');
+  assert.match(composerControls, /switchTo\('yolo'\)[\s\S]{0,900}?switchTo\('auto'\)[\s\S]{0,900}?switchTo\('plan'\)/,
+    '下拉顺序 Yolo → Auto → Plan（从最宽松到最严格；round-13 的 Auto 行 disabled/title 属性加宽了窗口）');
   assert.match(composerControls, /const showAskToggle = activeMode !== 'plan';/, '守卫开关只在 Auto/Yolo 档显示');
   assert.match(composerControls, /const askOnGuardrail = \(askOnGuardrailProp === undefined \|\| askOnGuardrailProp === null\)\s*\n\s*\? \(\(ms && ms\.askOnGuardrail\) !== false\)/,
     '展示值缺省按开（旧快照无此键不翻成关）');
@@ -1351,8 +1351,8 @@ try {
       'Auto 拦截通告必须按 sid 去重（flushQueued 每 turn-end 重试,不去重会逐轮刷屏）');
     assert.match(web, /webAutoSendNoticeSids\.size > WEB_AUTO_SEND_NOTICE_CAP/,
       'Auto 拦截通告去重必须有界（512 最旧逐出,同 webApprovalNoticeIds 口径）');
-    assert.match(web, /if \(p\.mode !== "auto"\) webAutoSendNoticeSids\.delete\(String\(p\.session_id\)\);/,
-      '会话离开 Auto（chat:mode_changed）必须清除该 sid 的拦截通告去重（下次进 Auto 允许再提示一次）');
+    assert.match(web, /if \(p\.mode !== "auto"\) \{\s*webAutoSendNoticeSids\.delete\(String\(p\.session_id\)\);[\s\S]{0,500}?flushQueued\(String\(p\.session_id\)\);/,
+      '会话离开 Auto（chat:mode_changed）必须清除该 sid 的拦截通告去重并冲队首（round-13：被拒队首在可发时立即重试）');
     // 新加入的 Web 客户端补看在途审批：chat:approval_required 不重放,新标签页/
     // 新光标加入必须经会话历史首次加载补读一次 get_pending_approvals；
     // 列表非空 ⇒ 有 turn 在等审批,用 markRemoteTurn 复原 busy 面让停止键

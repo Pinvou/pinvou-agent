@@ -261,7 +261,13 @@ const expectedProtocolHashes = {
   // 512-cap eviction lines inside its span (in-body change, no new
   // invoke/listen surface; the purge hook lives in bridge.js's
   // onSessionBufferPurged, outside the hashed lane files).
-  chat: '3886ac2356ad4e355df023dba80bebfaf9fae1d82d16a07584effba5f8748156',
+  // Recomputed for round-13: in-body changes only — the aux-chat dispatch
+  // wraps its web arm in the shared Auto admission gate, the
+  // chat:guardrail_denied listener gains the stable-key replay dedup, the
+  // chat:mode_changed handler flushes the queued head on escaping Auto, and
+  // the pending-approvals replay cleanup gains a rejection twin. No new
+  // command or event surface.
+  chat: 'ce61c1c4c35e43edb4586cae7e95d375318f008fe006dbbea2b1c560e31ad81a',
   // Recomputed for the tri-mode safety surface: chat-events.js gains three
   // listeners — chat:approval_required (approval card projection),
   // chat:guardrail_denied (hard-deny notice) and chat:mode_changed
@@ -445,7 +451,11 @@ const expectedProtocolHashes = {
   // Round-11 review: first registration — the web lane's invoke/listen
   // surface (whole web/bridge.js file, see webWireSurface above). A span
   // change in the web bridge now reddens this pin like the tauri domains.
-  webWireSurface: '06f757e166963055b5a27abcc39f208ebbd627eee71faa89a4ff387113cbc15d',};
+  // Recomputed for round-13: in-body changes only (aux dispatch wraps the
+  // web arm in the shared admission gate; guardrail notice replay dedup;
+  // queued-head flush on leaving Auto; replay-cleanup rejection twin). No
+  // new command or event surface.
+  webWireSurface: '69e7e48b2a0d1b8da4f64cfc443ebe0cc68a0d1eb9bda73993f7e0033cb4eb83',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {
