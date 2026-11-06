@@ -3258,6 +3258,10 @@ jobs:
               echo "FAIL: filter '$*' had failing tests" >&2
               exit 1
             }
+            grep -qE '^test result: ok\. [1-9][0-9]* passed' "$log" || {
+              echo "FAIL: filter '$*' executed 0 tests (an ignored-only run must not pass the guard)" >&2
+              exit 1
+            }
           }
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked system_prefix_hits_run_through_the_production_alias_flag
           echo "MACOS_CLI_TIMING step=cli-macos-tests elapsed_seconds=$((SECONDS-started)) status=0"
@@ -3269,7 +3273,8 @@ jobs:
   # deepin beige glibc-2.38 sysroot 把三个 workspace 对
   # loongarch64-unknown-linux-gnu 类型检查一遍,让目标专属 cfg/依赖/链接
   # 约束在 PR 上就红,而不是等下一次 VERSION push 的发布构建才炸。
-  # 与 macos-cli-check 同类:compile-only(check 不链接,不产出安装包)。
+  # compile-only(check 不链接,不产出安装包;macos-cli-check 现已链接并
+  # 执行 macOS 专属钉,与本 leg 的纯类型检查不再是同一类)。
   rust-loongarch64-check:
     name: rust-loongarch64-check
     needs: changes
