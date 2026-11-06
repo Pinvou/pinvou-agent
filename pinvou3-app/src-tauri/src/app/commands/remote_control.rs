@@ -1945,6 +1945,28 @@ mod tests {
                 "{fn_name} must fold its errors at the command boundary ({marker})"
             );
         }
+        // Round-22 复审 MAJOR-1 补强:list_host_files 的行级 marker 在两腿
+        // (枚举 + grant 铸造)都出现,contains 对单腿回退是盲的(round-22
+        // 复审的突变 A——只回退一条腿——原样保绿)。两条腿的
+        // web_session_result 接线按计数钉死:删掉任一腿计数即变 1。
+        {
+            let start = source
+                .find("pub fn web_access_list_host_files(")
+                .expect("web_access_list_host_files must exist");
+            let body = &source[start..];
+            let end = ["\npub async fn ", "\npub fn ", "\n#[cfg(test)]"]
+                .iter()
+                .filter_map(|delimiter| body.find(delimiter))
+                .min()
+                .expect("web_access_list_host_files body must be terminated");
+            let leg_folds = body[..end].matches("web_session_result(").count();
+            assert_eq!(
+                leg_folds, 2,
+                "both legs of web_access_list_host_files (the listing and the \
+                 grant mint) must fold through web_session_result; a single-leg \
+                 revert previously kept every suite green (executed mutant)"
+            );
+        }
     }
 
     #[test]
