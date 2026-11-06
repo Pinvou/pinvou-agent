@@ -1193,18 +1193,22 @@ mod tests {
             let at = source
                 .find(needle)
                 .unwrap_or_else(|| panic!("{label} must exist"));
-            // 窗口上界向前扩 400 字节并落到字符边界:旧序突变
-            // (redact_storage_prefix(&sanitize_command_error(…) )的标记位
-            // 于 needle 之前,不含前文的窗口会漏看它(F6 突变实证)。
-            // Round-21 复审:下界同样向后扩 900 字节并落字符边界——上界
-            // 撞进多字节字符时切片会 panic(编译崩而非断言红),与 siblings
-            // 同一约束;顺带把必需字面量里的闭包参数拼写解耦(按 M6b 口径
-            // `|e|` 不属于被钉契约,改名为 `|error|` 不得假红)。
+            // 窗口下界 window_lo 向 needle 前方扩 400 字节并落到字符边
+            // 界:旧序突变(redact_storage_prefix(&sanitize_command_error
+            // (…))的标记位于 needle 之前,不含前文的窗口会漏看它(F6
+            // 突变实证)。Round-21 复审:上界 window_hi 同样扩并落字符边
+            // 界——撞进多字节字符时切片会 panic(编译崩而非断言红),与
+            // siblings 同一约束;顺带把必需字面量里的闭包参数拼写解耦
+            // (按 M6b 口径 `|e|` 不属于被钉契约,改名为 `|error|` 不得
+            // 假红)。Round-22 复审(m4):上界从 +900 收紧到 +500——两
+            // 臂自身的 fold 都在 needle 后 +310 以内,而 +900 已把相邻臂
+            // 的 fold(bridge needle 起约 +832)也扫进窗口,删掉本臂自己的
+            // fold 会被邻臂补偿而漏报;+500 保留自身 fold 余量并排除邻臂。
             let mut window_lo = at.saturating_sub(400);
             while window_lo > 0 && !source.is_char_boundary(window_lo) {
                 window_lo -= 1;
             }
-            let mut window_hi = (at + 900).min(source.len());
+            let mut window_hi = (at + 500).min(source.len());
             while window_hi > window_lo && !source.is_char_boundary(window_hi) {
                 window_hi -= 1;
             }

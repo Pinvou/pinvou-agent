@@ -6410,6 +6410,25 @@ mod tests {
                  drops revocation intents for conflicting credentials without any \
                  durable record",
             );
+            // Round-22 复审(m5):两条 contains 不看臂序——guard 臂与
+            // catch-all 臂对调后编译照过,queue-full 错误改道 fail-closed
+            // 冲突臂返回,stop/refresh 楔死复活而两条 needle 原样在场。
+            // 按位置钉住 guard 先于 catch-all(与本测试已有的 entry/
+            // tolerate 顺序断言同一风格)。
+            let guard_at = body
+                .find("Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {")
+                .expect("guard needle pinned above");
+            let catchall_at = body
+                .find("Err(error) => return Err(error),")
+                .expect("catch-all needle pinned above");
+            assert!(
+                guard_at < catchall_at,
+                "{label} must match the queue-full guard arm before the \
+                 catch-all conflict arm: swapping the two arms compiles and \
+                 routes queue-full errors into the fail-closed conflict \
+                 return, resurrecting the stop/refresh wedge with both \
+                 needles still present"
+            );
         }
         // refresh 的提交后回放同样不得楔住 activate(rotation 已提交的
         // 半提交窗口不得以失败上报)。
