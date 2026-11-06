@@ -778,6 +778,10 @@ pub fn web_access_cancel_session_download(
 /// 桌面绝对路径(`path {} is not a file`/`is not readable` 回显解析拼写,
 /// symlink 别名会回显真实目标),裸 `?` 直传会把这些细节连同中文原文经
 /// bridge/relay 落到手机侧的附件 chip 上。原始链只落桌面日志。
+///
+/// Round-23 复审补记(消费端):折叠码在 ACP 通道经受控错误正则落通用
+/// 失败文案;web 聊天附件 chip 亦渲染通用失败文案——桌面聊天对敏感路径
+/// 拒绝的具体文案刻意不跨 relay(隐私正向),消费端未做特判。
 #[tauri::command]
 pub async fn web_access_ingest_file(
     path: String,
@@ -795,6 +799,11 @@ pub async fn web_access_ingest_file(
 /// directory, run through the shared ingest pipeline, and come back as the same
 /// opaque `WebAttachmentSummary` the host-file flow returns. Nothing survives
 /// past attachment consumption, eviction, or endpoint teardown.
+///
+/// Round-23 复审补录:本命令的 append 臂与 ingest 侧的 cache 臂(manager
+/// 文本)仍以原始单语言(zh)文本出站——与 round-22 已披露的 tasks.rs
+/// CRUD 族同一疾病类(无路径、先于本链存在),按既定 follow-up 车道
+/// 处理,不在本链夹带。
 #[tauri::command]
 pub async fn web_access_upload_attachment_chunk(
     upload_id: String,

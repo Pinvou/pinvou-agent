@@ -916,7 +916,9 @@ mod tests {
         // 对照腿:旧序(sanitize 先行)确实产生碎片泄漏——本测试钉的就是
         // 该形态不再出现在生产臂。泄漏形状要求空格前段短于内层 secret 的
         // ≥24 长度族;平台上临时目录本身超长时该形状造不出来(macOS
-        // /var/folders…),跳过对照腿,生产不变式腿照常执行。
+        // /var/folders…),对照腿跳过,且那里空白前段自身已入 ≥24 族、两序
+        // 产出相同——生产不变式腿对该平台上的顺序回归同样无信号,顺序
+        // 牙齿依赖 Linux CI 的短 /tmp(round-23 复审口径注记)。
         let pre_space = format!("{}/John", base.display());
         if pre_space.len() < 24 {
             let old_order = crate::platform::paths::redact_storage_prefix(&sanitize_command_error(

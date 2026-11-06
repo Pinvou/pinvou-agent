@@ -1780,6 +1780,11 @@ pub async fn save_session_pinvou_scene_events(
     events: serde_json::Value,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    // Round-23 复审口径注记:本命令与 get_session_pinvou_scene_events、
+    // list_workspace_files 的裸 `?` 错误出口同族——当前可达的错误构造器
+    // (sidecar 的 std io Display / 固定 id 文本)均不内嵌路径,故未折叠
+    // (与 executor 交付臂的既定口径一致):未来任何内嵌绝对路径的错误
+    // 构造函数加入这些链时,必须同步接 redact_storage_prefix 折叠。
     ensure_chat_session(&store, &session_id, "save_session_pinvou_scene_events")?;
     let normalized = normalize_pinvou_scene_events(events)?;
     let path = crate::platform::paths::session_pinvou_scene_events(&session_id);

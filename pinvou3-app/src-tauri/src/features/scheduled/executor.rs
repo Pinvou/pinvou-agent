@@ -1858,7 +1858,10 @@ mod tests {
         // (round-21 起与命令层同序)先折叠后扫描:折叠形态的短 token 存活
         // 为 ~/.pinvou3 形态,长 token 整体 [REDACTED]——两个方向都不残留
         // 家目录碎片。对照腿用旧序手工复现泄漏形状(空白前段短于 ≥24 族时
-        // 可构造;临时目录本身超长的平台跳过对照腿,生产不变式腿照常执行)。
+        // 可构造;临时目录本身超长的平台(macOS /var/folders…)跳过对照腿,
+        // 且那里空白前段自身已入 ≥24 族、两序产出相同——生产不变式腿在该
+        // 平台上对顺序回归无信号,顺序牙齿依赖 Linux CI 的短 /tmp;
+        // round-23 复审口径注记)。
         // 把顺序改回 secret 先行即红。ENV_LOCK 保证 worker 线程读到与本测试
         // 构造一致的 PINVOU3_HOME。
         let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));

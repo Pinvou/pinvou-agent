@@ -112,6 +112,12 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // İ 与 i+U+0307 两拼 sibling 同时存在于同一 NTFS 目录——极罕见;完美
     // 模拟 $UpCase 需要 std 之外的简单大小写映射,残留按已接受取舍记录。
     //
+    // Round-23 复审补录:同一 false-merge 族还有两名成员——Kelvin 符号
+    // U+212A 小写为 `k`、ẞ(U+1E9E)小写为 ß,均与既有拼写同键而 $UpCase
+    // 视为不同文件(方向同 İ:over-fold;同样需对应异拼 sibling 同目录
+    // 共存,极罕见)。由上一句的通用 $UpCase 取舍覆盖,此处点名以与
+    // round-21 的残余点名口径一致。
+    //
     // Round-20 复审补录的另两向残留(false-split/可用性方向为主,现网
     // 应用产出的拼写不可达):(a)正斜杠设备拼写(`//?/C:\doc.`、
     // `\?\UNC/server/…`)折叠出的 key 与 plain、与同文件的 verbatim key
