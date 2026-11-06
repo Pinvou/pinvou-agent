@@ -3800,9 +3800,11 @@ mod spool_pipeline_tests {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             late.insert("aged@1".to_string(), (aged, true));
-            late.insert("aged@2".to_string(), (aged, false));
         }
         // The record-time retain: an expired entry drops before the insert.
+        // (It sweeps EVERY expired entry, so the prune-time fixture below is
+        // seeded only after this call — otherwise this retain would retire
+        // it first and the prune assert would pass vacuously.)
         pending_entry_or_late_record("fresh@1", false);
         assert!(
             !late_terminal_events()
@@ -3811,6 +3813,12 @@ mod spool_pipeline_tests {
                 .contains_key("aged@1"),
             "the record-time retain must drop expired entries"
         );
+        {
+            let mut late = late_terminal_events()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            late.insert("aged@2".to_string(), (aged, false));
+        }
         // The poll-cadence prune: the same sweep runs off the poll.
         prune_expired_pending_steers();
         assert!(
