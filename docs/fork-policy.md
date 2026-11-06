@@ -1,6 +1,6 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-11-05。公开维护头 11cba403d 已包含 #114/#125 与 #123/#124/#129/#131/#133/#134/#135；父仓 gitlink 与公开维护头对齐。
+> 最后更新：2026-11-07。公开维护头 11cba403d 已包含 #114/#125 与 #123/#124/#129/#131/#133/#134/#135；候选期（2026-11-06 起）父仓 gitlink 跟随候选 [CodeWhale#150](https://github.com/Pinvou/CodeWhale/pull/150) 头（见 §0），#150 squash 合入后与公开维护头收敛。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
@@ -9,7 +9,7 @@
 ## 0. 当前维护基线与验证边界
 
 - 当前公开维护头：`11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`。
-- 候选期（2026-11-06 起）：候选 [Pinvou/CodeWhale#150](https://github.com/Pinvou/CodeWhale/pull/150)（`d0322fd0e34b55d089b59da4192ea98972d4f5ec`，输出预算 API 暴露，领先于维护基 `11cba403d`）待合。#150 合入前，携带该候选 gitlink 的父仓 PR 里，公开可达门禁（`verify-public-submodule.sh`）保持红是预期状态；候选合入、`pinjou3-clean` 前进到该头后，父仓 gitlink、登记（fork-modifications §0）与本节同步收敛为同一 commit。公开门禁要求 gitlink 等于维护头的口径未放宽。
+- 候选期（2026-11-06 起）：候选 [Pinvou/CodeWhale#150](https://github.com/Pinvou/CodeWhale/pull/150)（`c997d2ec0d0f02b56024fa8040d6faf2bd8d6da0`，输出预算 API 暴露，领先于维护基 `11cba403d`）待合；候选分支评审中两次原地修订（`5c093b5d4`→`d0322fd0e`→`c997d2ec0`），登记头随之重钉。#150 合入前，携带该候选 gitlink 的父仓 PR 里，公开可达门禁（`verify-public-submodule.sh`）保持红是预期状态。**#150 以 squash 方式合入时公开头是合入时刻新生成的 commit**（底座 #123–#135 均为 squash 合入），届时父仓 gitlink、登记（fork-modifications §0）与本节须最后一次重钉到该合入头并收敛。公开门禁要求 gitlink 等于维护头的口径未放宽。
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 93 个提交，r1 `1fafee7e2` 之上 78 个；91 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
 - 实测 drift：540 files, +119210/-49666，净增 69544；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
