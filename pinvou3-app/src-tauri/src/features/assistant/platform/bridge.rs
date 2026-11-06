@@ -1586,15 +1586,17 @@ impl Pinvou3Bridge {
     fn request_reasoning_effort_for_provider(&self, provider: &str) -> Option<String> {
         // Kimi K3.1 spellings (kimi-k3.1-pro[-highspeed] /
         // k3.1-pro[-highspeed], vendor "kimi") are always-reasoning per the
-        // vendor contract: the K3 series resolves depth through the
-        // top-level `reasoning_effort` ladder (low/high/max; the default
-        // for omitted effort is endpoint-specific — `high` on the Kimi
-        // Code coding-plan lane per its models table, `max` on the
-        // platform-API surface) and the K2.x `thinking` parameter is not
-        // part of its documented
-        // request contract (models-overview: "参数约束也与 kimi-k3 完全一致";
-        // api docs: K3 系列使用顶层 reasoning_effort，不使用 thinking). The
-        // base's exact-K3 route shapers only learn bare k3 spellings, so
+        // vendor contract: on the platform API lane the K3 series resolves
+        // depth through the top-level `reasoning_effort` ladder (low/high/
+        // max; the default for omitted effort is endpoint-specific — `high`
+        // on the Kimi Code coding-plan lane per its models table, `max` on
+        // the platform-API surface) and the K2.x `thinking` parameter is
+        // not part of the K3.1 request contract (models-overview:
+        // "参数约束也与 kimi-k3 完全一致"; api docs: K3 系列使用顶层
+        // reasoning_effort，不使用 thinking — the engine's separate Kimi
+        // Code k3/k3-256k shaper dialect wires a nested thinking shape and
+        // learns none of the K3.1 ids). The base's exact-K3 route shapers
+        // only learn bare k3 spellings, so
         // any effort resolved here falls to the generic Moonshot arm and
         // wires a `thinking` shape outside that documented contract — no
         // `thinking` shape is known-valid for K3.1. Resolve to None so the
@@ -1612,12 +1614,18 @@ impl Pinvou3Bridge {
         // official route (legacy migrated records may carry an empty vendor
         // or the moonshot alias there); unstamped custom relay endpoints
         // keep their existing contract (mirrors prefs::is_moonshot_k31_route
-        // and the frontend isMoonshotK31ModelName tiers exit).
-        if provider == "moonshot" {
-            if let Some(model) = self.effective_model() {
-                if prefs::is_moonshot_k31_route(&model.vendor, &model.base_url, &model.model) {
-                    return None;
-                }
+        // and the frontend isMoonshotK31ModelName tiers exit). The arm keys
+        // off that shared predicate alone — not the resolved provider
+        // (round-9 review): a route-attached record whose resolved provider
+        // is not "moonshot" (empty vendor + openai_compatible preset on an
+        // official platform host) must resolve None like every other
+        // attached record; the old provider gate let the `_ =>
+        // Some("high")` default arm contradict the resolve-to-None contract
+        // at the DtConfig level (wire-inert today — the engine writes no
+        // effort on the plain-openai dialect — but a latent drift).
+        if let Some(model) = self.effective_model() {
+            if prefs::is_moonshot_k31_route(&model.vendor, &model.base_url, &model.model) {
+                return None;
             }
         }
         // "Local route": the vllm/ollama/tachyon providers. When the openai
@@ -9754,6 +9762,32 @@ mod tests {
             b.request_reasoning_effort(),
             Some("high".to_string()),
             "no kimi vendor stamp → outside the K3.1 contract"
+        );
+
+        // Round-9 review: the route arm must attach WITHOUT the resolved
+        // provider gate. An empty-vendor openai_compatible record on the
+        // official platform host resolves provider "openai", but the
+        // contract attaches via prefs::is_moonshot_k31_route's route arm —
+        // the old provider gate let the `_ => Some("high")` default arm
+        // contradict the resolve-to-None contract for exactly this shape
+        // (wire-inert today, latent drift).
+        set_active_model(
+            &mut b,
+            ModelPreset::OpenaiCompatible,
+            "kimi-k3.1-pro",
+            "https://api.moonshot.cn/v1",
+            "sk-kimi",
+        );
+        b.prefs.advanced.saved_models[0].vendor = None;
+        assert_eq!(
+            b.provider(),
+            "openai",
+            "the resolved provider is openai — this shape is about the route arm"
+        );
+        assert_eq!(
+            b.request_reasoning_effort(),
+            None,
+            "route-attached K3.1 resolves None regardless of the resolved provider"
         );
     }
 

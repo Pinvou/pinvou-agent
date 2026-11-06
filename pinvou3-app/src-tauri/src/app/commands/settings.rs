@@ -1677,9 +1677,13 @@ mod tests {
         // Round-8 review: xAI's documented always-reasoning rows ride the
         // same reasoning-tier probe budget (no thinking injection — the
         // xAI contract is the top-level reasoning.effort, which the probe
-        // omits like the send path).
+        // omits like the send path). Round-9 review: grok-4.5/4.6 join the
+        // budget list (their detail pages document the effort ladder with a
+        // high default and the guide's "cannot be disabled" covers them).
         for name in [
             "grok-4.7",
+            "grok-4.6",
+            "grok-4.5",
             "grok-4.20-0309-reasoning",
             "grok-4.20-multi-agent-0309",
         ] {

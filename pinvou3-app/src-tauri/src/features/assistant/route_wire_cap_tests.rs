@@ -282,7 +282,7 @@ async fn run_turn_against_mock(
     drive_wire_cap_turn_to_completion(label, &engine, op).await;
     engine.engine_run.abort();
     eprintln!(
-        "PROBE[{label}] model={model} api_provider={:?} declared_output={expected_declared_output:?}",
+        "PROBE[{label}] model={model} api_provider={:?} declared_output={expected_declared_output}",
         engine.provider_kind
     );
 }

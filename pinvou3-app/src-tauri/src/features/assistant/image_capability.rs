@@ -74,45 +74,85 @@ impl ImageInputMode {
 /// misreports via a 400 (live-tested 2026-08, kimi-for-coding).
 ///
 /// K3.1 spellings are deliberately NOT on this list (2026-11-04 round-4
-/// review): the documented K3-series contract is the top-level
-/// `reasoning_effort` ladder (low/high/max; the omission default is
-/// endpoint-specific — `high` on the Kimi Code models-table lane, `max` per
-/// the models-overview platform wording) and the docs state
+/// review): the documented K3-series contract on the platform API lane is
+/// the top-level `reasoning_effort` ladder (low/high/max; the omission
+/// default is endpoint-specific — `high` on the Kimi Code models-table
+/// lane, `max` per the models-overview platform wording) and the docs state
 /// the K2.x `thinking` parameter is not used ("不使用 K2.x 的 `thinking`
 /// 参数", platform.kimi.com/docs/api/chat), so omission is the
 /// documented-valid shape — the same shape the bridge send path resolves for
-/// K3.1. The earlier inference "thinking cannot be turned off → omission is
-/// rejected too" wrongly extrapolated the K2.x live-tested omission
-/// rejection to K3.1; if a live probe ever shows the gateway rejecting
-/// omission for K3.1 as well, the fix is injecting top-level
-/// `reasoning_effort`, not `thinking` (to be regression-verified once a key
-/// is available).
+/// K3.1. Scoped reading: this "no thinking parameter" statement describes
+/// the platform lane; the engine's own Kimi Code lane additionally wires a
+/// nested `thinking.effort` shape for its exact k3/k3-256k membership ids
+/// (which stay on this list below), so "K3 series" here means the
+/// platform-lane contract the K3.1 ids ride, not the Kimi Code shaper
+/// dialect (round-9 wording fix). The earlier inference "thinking cannot be
+/// turned off → omission is rejected too" wrongly extrapolated the K2.x
+/// live-tested omission rejection to K3.1; if a live probe ever shows the
+/// gateway rejecting omission for K3.1 as well, the fix is injecting
+/// top-level `reasoning_effort`, not `thinking` (to be regression-verified
+/// once a key is available).
 ///
 /// This predicate only answers the thinking-parameter question. The separate
 /// completion-budget question ("does always-on reasoning consume the probe's
 /// max_tokens?") is answered by `moonshot_model_needs_reasoning_budget`
 /// below; K3.1 sits on that list while staying off this one, and one
 /// predicate must never serve both duties (sharing one boolean silently
-/// dropped the K3.1 probe budget to 64 — the round-5 review bug).
+/// dropped the K3.1 probe budget to 64 — the round-5 review bug). Both
+/// predicates share the family constant below so the budget side is
+/// structurally a superset (family ∪ K3.1) instead of a copy-paste of these
+/// literals (round-9 review).
 pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
-    matches!(
-        model.trim().to_ascii_lowercase().as_str(),
-        "k3" | "k3-256k"
-            | "kimi-k3"
-            // kimi-k3[1m] is the moonshot preset's official `models1m`
-            // suggestion (the platform CC guide still documents it,
-            // re-verified 2026-11-04) — the bracket declaration form of the
-            // bare kimi-k3 arm above, and this list is exact-match, so it
-            // needs its own arm to probe identically. K3.1 spellings are
-            // deliberately NOT listed: see the K3-series contract note above.
-            | "kimi-k3[1m]"
-            | "kimi-k2.7-code"
-            | "kimi-k2.7-code-highspeed"
-            | "kimi-for-coding"
-            | "kimi-for-coding-highspeed"
-            | "kimi-k2.6"
-    )
+    let normalized = model.trim().to_ascii_lowercase();
+    MOONSHOT_EXPLICIT_THINKING_FAMILY.contains(&normalized.as_str())
 }
+
+/// The legacy Moonshot probe family whose documented contract carries the
+/// top-level `thinking` parameter: the K2.x spellings and the exact-K3 ids
+/// (Kimi Code membership spellings included — the engine's Kimi Code lane
+/// wires a nested `thinking.effort` shape for these, while the platform
+/// lane shapes top-level effort; both stay on the thinking list). Shared
+/// verbatim by `moonshot_model_requires_explicit_thinking` (this family)
+/// and `moonshot_model_needs_reasoning_budget` (this family plus the K3.1
+/// composites). K3.1 spellings are deliberately NOT here: the platform API
+/// lane's K3 series resolves depth through the top-level `reasoning_effort`
+/// ladder and does not use the K2.x `thinking` parameter ("不使用 K2.x 的
+/// `thinking` 参数", platform.kimi.com/docs/api/chat) — see the
+/// contract note above `moonshot_model_requires_explicit_thinking`.
+const MOONSHOT_EXPLICIT_THINKING_FAMILY: &[&str] = &[
+    "k3",
+    "k3-256k",
+    "kimi-k3",
+    // kimi-k3[1m] is the moonshot preset's official `models1m` suggestion
+    // (the platform CC guide still documents it, re-verified 2026-11-04) —
+    // the bracket declaration form of the bare kimi-k3 entry above, and
+    // both lists are exact-match, so it needs its own entry to probe
+    // identically.
+    "kimi-k3[1m]",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-for-coding",
+    "kimi-for-coding-highspeed",
+    "kimi-k2.6",
+];
+
+/// The K3.1 spellings that join the budget list beyond the shared family:
+/// the four bare forms plus their reachable `[1m]` composites (2026-11-05
+/// review: k3.1-pro[1m] is the documented Kimi Code declaration and the ACP
+/// datalist entry; the composites must probe identically to their bare
+/// forms). The two highspeed `[1m]` composites deliberately go beyond the
+/// capability-table spellings: budget membership only needs the reachable
+/// stored forms, and over-covering is the safe direction.
+const MOONSHOT_K31_BUDGET_COMPOSITES: &[&str] = &[
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
+    "k3.1-pro",
+    "k3.1-pro-highspeed",
+    "k3.1-pro[1m]",
+    "kimi-k3.1-pro[1m]",
+    "k3.1-pro-highspeed[1m]",
+    "kimi-k3.1-pro-highspeed[1m]",
+];
 
 /// Moonshot always-reasoning budget predicate (**probe-only** list): models
 /// on this list always reason before answering, the reasoning text precedes
@@ -122,24 +162,26 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
 /// vision-capable model gets misreported as unverified. These models probe
 /// with the reasoning-tier cap instead
 /// (`IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING`; live-tested 2026-08
-/// kimi-for-coding / k3). The four K3.1 spellings are on this list per the
-/// same family contract — the models-overview page states both K3.1
+/// kimi-for-coding / k3). The membership is the shared explicit-thinking
+/// family above plus the K3.1 spellings: the four K3.1 spellings join per
+/// the same family contract — the models-overview page states both K3.1
 /// variants' parameter constraints are identical to kimi-k3
 /// (platform.kimi.com/docs/api/models-overview) — while they must keep the
 /// legacy `thinking` parameter omitted (see
 /// `moonshot_model_requires_explicit_thinking` above). Reachable `[1m]`
 /// composites are on this list so they probe identically to their bare
-/// forms: kimi-k3[1m] (the moonshot preset's models1m suggestion) and the
-/// four K3.1 `[1m]` spellings (k3.1-pro[1m] is the documented Kimi Code
-/// declaration and the ACP datalist entry; the prefixed composites are
-/// tolerated stored forms — re-verified 2026-11-05). The k3[1m] spelling
-/// stays excluded: it is a Kimi Code alias-guidance declaration, not an
-/// API model id (the vendor's error reference distinguishes Claude Code
-/// declarations from API model ids), so the API contract defines no
-/// budget tier for it. The manual probe posts straight over HTTP — no
-/// foundation-side validator sits in that path — so nothing here filters
-/// what reaches the gateway; the list encodes the contract, and a raw
-/// bracket id that does reach the gateway is the API's rejection domain.
+/// forms: kimi-k3[1m] (the moonshot preset's models1m suggestion, part of
+/// the shared family) and the four K3.1 `[1m]` spellings (k3.1-pro[1m] is
+/// the documented Kimi Code declaration and the ACP datalist entry; the
+/// prefixed composites are tolerated stored forms — re-verified
+/// 2026-11-05). The k3[1m] spelling stays excluded: it is a Kimi Code
+/// alias-guidance declaration, not an API model id (the vendor's error
+/// reference distinguishes Claude Code declarations from API model ids),
+/// so the API contract defines no budget tier for it. The manual probe
+/// posts straight over HTTP — no foundation-side validator sits in that
+/// path — so nothing here filters what reaches the gateway; the list
+/// encodes the contract, and a raw bracket id that does reach the gateway
+/// is the API's rejection domain.
 ///
 /// This is deliberately a separate predicate from
 /// `moonshot_model_requires_explicit_thinking`: budget selection answers
@@ -147,65 +189,56 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
 /// completion budget", while thinking-parameter injection answers "does the
 /// legacy `thinking` parameter contract require the field". The two
 /// responsibilities must not share one boolean — sharing one is exactly what
-/// dropped the K3.1 probe budget to 64 in the 2026-11-04 round-4 fix.
+/// dropped the K3.1 probe budget to 64 in the 2026-11-04 round-4 fix. The
+/// shared family constant keeps the superset relationship structural
+/// (budget = family ∪ K3.1) without merging the two duties (round-9
+/// review).
 pub fn moonshot_model_needs_reasoning_budget(model: &str) -> bool {
-    matches!(
-        model.trim().to_ascii_lowercase().as_str(),
-        "k3" | "k3-256k"
-            | "kimi-k3"
-            | "kimi-k3[1m]"
-            | "kimi-k2.7-code"
-            | "kimi-k2.7-code-highspeed"
-            | "kimi-for-coding"
-            | "kimi-for-coding-highspeed"
-            | "kimi-k2.6"
-            // K3.1 spellings — mostly the same spelling set as the
-            // VERIFIED/exact capability tables above (2026-11-04 round-5
-            // review: always reasoning, reasoning billed against the
-            // completion budget), plus their reachable `[1m]` composites
-            // (2026-11-05 review: k3.1-pro[1m] is the documented Kimi Code
-            // declaration and the ACP datalist entry; the composites must
-            // probe identically to their bare forms). The two highspeed
-            // `[1m]` composites deliberately go beyond the capability-table
-            // spellings: budget membership only needs the reachable stored
-            // forms, and over-covering is the safe direction.
-            | "kimi-k3.1-pro"
-            | "kimi-k3.1-pro-highspeed"
-            | "k3.1-pro"
-            | "k3.1-pro-highspeed"
-            | "k3.1-pro[1m]"
-            | "kimi-k3.1-pro[1m]"
-            | "k3.1-pro-highspeed[1m]"
-            | "kimi-k3.1-pro-highspeed[1m]"
-    )
+    let normalized = model.trim().to_ascii_lowercase();
+    MOONSHOT_EXPLICIT_THINKING_FAMILY.contains(&normalized.as_str())
+        || MOONSHOT_K31_BUDGET_COMPOSITES.contains(&normalized.as_str())
 }
 
-/// xAI's documented always-reasoning families get the same probe-budget
-/// upgrade as the Moonshot K3-family as a DEFENSIVE choice: the vendors'
-/// docs state reasoning is billed against the completion budget (the same
-/// mechanism the K3.1 fix documents), so a 64-token probe could report a
-/// vision-capable model as unsupported when reasoning alone exhausts the
-/// cap. That failure mode is a mechanism-based expectation, not an
-/// observed endpoint behavior — kept defensive pending endpoint-specific
-/// confirmation (see the closing note). Documented grounds (docs.x.ai,
-/// re-checked 2026-11-03/04, round-8 review): grok-4.7 — "reasoning cannot
-/// be turned off" (the model page documents the low/medium/high/xhigh
-/// ladder, not a disable); grok-4.20-0309-reasoning — the reasoning
+/// xAI's documented always-reasoning ids get the same probe-budget upgrade
+/// as the Moonshot K3-family as a DEFENSIVE choice: the docs state reasoning
+/// is billed against the completion budget (the same mechanism the K3.1 fix
+/// documents), so a 64-token probe could let reasoning alone exhaust the
+/// cap and a vision-capable model would come back "unverified" (empty or
+/// truncated final content — the extractor reads the final content only, so
+/// the misreport direction is "unverified", never a hard "unsupported").
+/// That failure mode is a mechanism-based expectation, not an observed
+/// endpoint behavior — no live probe is available in this environment (no
+/// key), so the upgrade stays defensive pending endpoint-specific
+/// confirmation. Documented grounds (docs.x.ai; the 4.7/4.20 ids re-checked
+/// 2026-11-03/04 in the round-8 review, grok-4.5/4.6 joined on the
+/// 2026-11-06 round-9 re-check): grok-4.7 — "reasoning cannot be disabled"
+/// with the low/medium/high/xhigh ladder (default high) documented on the
+/// model page and the September release notes; grok-4.5 / grok-4.6 — the
+/// reasoning guide groups 4.7/4.6/4.5 under one "cannot be disabled,
+/// default high" contract and each detail page documents "Reasoning
+/// efforts Supported: low, medium, high, xhigh — Default: high"
+/// (behavioral documentation, which is the basis on which they now join —
+/// the earlier "billing documentation alone" caution predates the
+/// detail-page effort tables); grok-4.20-0309-reasoning — the reasoning
 /// variant of the 4.20 family; grok-4.20-multi-agent-0309 —
 /// `reasoning.effort` controls the parallel-agent count, so reasoning is
-/// always on (the row deliberately gets no tier UI). Exact ids on purpose:
-/// the wider `grok` capability substring stays a family admission, and
-/// grok-4.5/4.6 stay on the plain probe budget as a DEFENSIVE choice
-/// pending endpoint-specific confirmation — the official reasoning guide
-/// actually groups 4.7/4.6/4.5 under one reasoning contract with a high
-/// default (2026-11-05 review), but billing documentation alone does not
-/// establish how this endpoint allocates max_tokens, and no live probe is
-/// available in this environment to confirm either direction. Keeping
-/// other variants unverified is reasonable.
+/// always on (the id left the settings catalog in the round-9 review over
+/// the Chat Completions wire incompatibility, but the budget arm stays for
+/// stored/custom configs and relay deployments). Exact ids on purpose: the
+/// wider `grok` capability substring stays a family admission. grok-4.3
+/// stays off the list on documented grounds: its reasoning is configurable
+/// ("Supports none (no reasoning at all), low, medium, and high", default
+/// low), so reasoning cannot trap the 64-token budget. The remaining
+/// variants (the non-reasoning 4.20 sibling, grok-build-0.1, grok-3) are
+/// documented non-always-reasoning and stay on the plain budget.
 pub fn xai_model_needs_reasoning_budget(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
-        "grok-4.7" | "grok-4.20-0309-reasoning" | "grok-4.20-multi-agent-0309"
+        "grok-4.7"
+            | "grok-4.6"
+            | "grok-4.5"
+            | "grok-4.20-0309-reasoning"
+            | "grok-4.20-multi-agent-0309"
     )
 }
 
@@ -527,6 +560,11 @@ mod tests {
             "kimi-k3.1-pro-highspeed",
             "k3.1-pro[1m]",
             "kimi-k3.1-pro[1m]",
+            // The highspeed [1m] composites complete the 8-spelling set at
+            // the predicate level too (the payload loop already covered all
+            // 8; round-9 review closes the predicate-level gap).
+            "k3.1-pro-highspeed[1m]",
+            "kimi-k3.1-pro-highspeed[1m]",
         ] {
             assert!(
                 !moonshot_model_requires_explicit_thinking(name),
@@ -612,12 +650,19 @@ mod tests {
         // Round-8 review: the xAI rows the catalog annotates image-capable
         // probe at the reasoning tier like the K3.1 arms — defensively: the
         // docs state reasoning cannot be disabled, so a 64-token probe
-        // could let reasoning eat the completion budget and misreport
-        // unsupported (endpoint allocation unconfirmed; no live probe).
+        // could let reasoning eat the completion budget and misreport a
+        // vision-capable model as unverified (endpoint allocation
+        // unconfirmed; no live probe). Round-9 review: grok-4.5/4.6 join —
+        // their detail pages document "Reasoning efforts Supported:
+        // low/medium/high/xhigh, Default: high" and the reasoning guide's
+        // "cannot be disabled" covers them by name (behavioral docs, the
+        // same evidence class as grok-4.7).
         for name in [
             "grok-4.7",
             "Grok-4.7",
             " grok-4.7 ",
+            "grok-4.6",
+            "grok-4.5",
             "grok-4.20-0309-reasoning",
             "grok-4.20-multi-agent-0309",
         ] {
@@ -626,13 +671,12 @@ mod tests {
                 "{name} is a documented always-reasoning id; probe budget must stay at the reasoning tier"
             );
         }
-        // The non-reasoning sibling and the ladder-documented rows stay on
-        // the plain probe budget (see the predicate's doc comment for the
-        // 4.5/4.6 open question).
+        // The non-reasoning sibling and the configurable-reasoning rows stay
+        // on the plain probe budget (grok-4.3 documents reasoning "none",
+        // default low, so reasoning cannot trap the budget).
         for name in [
             "grok-4.20-0309-non-reasoning",
-            "grok-4.6",
-            "grok-4.5",
+            "grok-4.3",
             "grok-build-0.1",
             "grok-3",
         ] {
