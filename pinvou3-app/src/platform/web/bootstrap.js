@@ -292,6 +292,12 @@
       this.connectStartedAt = Date.now();
       this.closingStartedAt = null;
       socket.addEventListener("open", () => {
+        // Round-23 复审 hardening:open 是四个 socket 事件里唯一没有身份
+        // 门的——close/error/message 都先核对事件归属再动周期状态。规范
+        // 兼容的浏览器里 CONNECTING 期 close() 不会送达 open,本门在现
+        // 有拓扑不可达;补上它与其余三门对称,晚到的陈旧 open 不再把
+        // join 帧经 sendRaw 发到后继的 socket 上(传输夹具钉住该方向)。
+        if (this.socket !== socket) return;
         this.sendRaw({
           v: protocolVersion,
           type: "web_client_join",
@@ -793,7 +799,7 @@
           // "connected" client with no transport whenever close() delivered
           // normally; scheduleReconnect self-guards, so the gated late
           // close/error events stay harmless.
-          // Round-19 复审:与救援同一验证分支(bootstrap.js:463)——投机周期
+          // Round-19 复审:与救援同一验证分支(liveness 段的投机计数腿)——投机周期
           // 内被事件失败摘除的 socket 若不是投机源本身,这次已证实的处理
           // 失败必须计入失败阶梯并清掉投机旗标:不清旗标,本次重连文案仍
           // 被投机语义压住一个周期(已证实的失败被宣布成「疑似」),阶梯

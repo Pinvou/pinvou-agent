@@ -1993,6 +1993,39 @@ async function connectWithCapabilities(events, listener) {
     'the visible retry stays visible across repeated throw cycles');
 }
 
+// Round-23 复审 hardening 钉:open 是四个 socket 事件里最后一个没有身份
+// 门的——陈旧 socket 的 open 监听器在救援/重建后仍然存活,迟到触发时
+// sendRaw 会把 join 帧发到当前 this.socket(后继)上。规范兼容的浏览器
+// 在 CONNECTING 期 close() 后不会送达 open,本形状现有拓扑不可达;门是
+// 与 close/error/message 三门对称的防御。删除身份门即红(后继出现第二
+// 个 join 帧)。
+{
+  const staleOpen = bootClient();
+  const staleOpenClient = staleOpen.window.PinvouWebClient;
+  await staleOpenClient.policyPromise;
+  const first = staleOpen.MockWebSocket.instances[0];
+  first.open();
+  first.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  first.readyState = staleOpen.MockWebSocket.CLOSING;
+  staleOpenClient._livenessCheck();
+  staleOpenClient.closingStartedAt = Date.now() - 46_000;
+  staleOpenClient._livenessCheck();
+  assert.equal(staleOpenClient.socket, null, 'the wedged socket must be rescued');
+  takeReconnectTimer(staleOpen.timers).callback();
+  const successor = staleOpen.MockWebSocket.instances[1];
+  successor.open();
+  first.open();
+  const joinFrames = successor.sent.filter((frame) => frame.type === 'web_client_join');
+  assert.equal(joinFrames.length, 1,
+    'a stale socket open event must not send its join frame on the successor');
+}
+
 // Round-9 复审:静默窗(120s)与 CONNECTING 楔死窗(45s)此前只有单侧行
 // 为钉(探针只从一侧越过阈值,把常数调小全部探针仍然绿)——源码级钉住
 // 常量字面量,与 vm 行为钉互补;改常数必须显式重审两侧行为钉。
