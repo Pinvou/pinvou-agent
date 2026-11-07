@@ -1148,13 +1148,15 @@ mod tests {
         let sweep = production
             .find("clear_pending_returning_child_ids")
             .expect("the terminal sweep must split out detached-worker approval ids");
-        assert!(
-            production[sweep..].contains("deny_child_approvals_after_terminal"),
-            "the split ids must be routed to the deterministic child denial"
-        );
         let denial_body_start = production
             .find("fn deny_child_approvals_after_terminal(")
             .expect("the deterministic child denial function must exist");
+        // 路由钉必须把窗口截止在 fn 定义之前：unbounded 尾窗会被定义本身的
+        // 名字喂饱——删除 585 行的调用臂后钉仍然全绿（round-15 评审 I1）。
+        assert!(
+            production[sweep..denial_body_start].contains("deny_child_approvals_after_terminal("),
+            "the split ids must be routed to the deterministic child denial"
+        );
         let denial_body_end = production[denial_body_start + 1..]
             .find("\nfn ")
             .map(|offset| denial_body_start + 1 + offset)
