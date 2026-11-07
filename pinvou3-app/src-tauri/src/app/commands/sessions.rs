@@ -1625,35 +1625,26 @@ pub async fn save_session_artifacts(
 
 /// Round-22 复审 MAJOR-3 源钉:五个 web-allowlisted session 突变命令的
 /// 出站错误链必须折叠存储根——store/retention 链携带 `<home>/...` 绝对
-/// 路径(损坏的 session-agents.json 会让每次删除稳定命中),删除任一
-/// 折叠即红。窗口以下一个命令体为界,测试模块不会混入。
+/// 路径(损坏的 session-agents.json 会让每次删除稳定命中)。窗口以下一
+/// 个命令体为界,测试模块不会混入。Round-24 复审(m2)补强:纯注释行
+/// 先滤除(round-23 补偿突变同一类),断言从 contains 升级为逐命令折叠
+/// 计数——set_session_pinned / set_session_archived 各有两个独立折叠臂
+/// 共占一个 marker,单臂回退此前保持全绿(旧文档「删除任一折叠即红」
+/// 实为「删除全部折叠即红」)。新增折叠臂时须同步计数表(枚举钉:新
+/// 增未折叠臂对本钉不可见)。
 #[cfg(test)]
 #[test]
 fn web_session_mutations_fold_storage_prefixes() {
-    let source = include_str!("sessions.rs");
-    for (fn_name, marker) in [
-        (
-            "pub async fn delete_session(",
-            // 出口一次性折叠(覆盖全部内层臂)。
-            "redact_storage_prefix(&error)",
-        ),
-        (
-            "pub async fn rename_session(",
-            "redact_storage_prefix(&format!(",
-        ),
-        (
-            "pub async fn set_session_pinned(",
-            "redact_storage_prefix(&format!(",
-        ),
-        (
-            "pub async fn set_session_archived(",
-            "redact_storage_prefix(&format!(",
-        ),
-        (
-            "pub async fn save_session_artifacts(",
-            "redact_storage_prefix(&format!(",
-        ),
+    const NEEDLE: &str = "crate::platform::paths::redact_storage_prefix(";
+    for (fn_name, expected_folds) in [
+        // delete_session 出口一次性折叠(覆盖全部内层臂)。
+        ("pub async fn delete_session(", 1),
+        ("pub async fn rename_session(", 1),
+        ("pub async fn set_session_pinned(", 2),
+        ("pub async fn set_session_archived(", 2),
+        ("pub async fn save_session_artifacts(", 1),
     ] {
+        let source = include_str!("sessions.rs");
         let start = source
             .find(fn_name)
             .unwrap_or_else(|| panic!("{fn_name} must exist"));
@@ -1669,11 +1660,21 @@ fn web_session_mutations_fold_storage_prefixes() {
         .filter_map(|delimiter| body.find(delimiter))
         .min()
         .unwrap_or_else(|| panic!("{fn_name} body must be terminated"));
-        let body = &body[..end];
-        assert!(
-            body.contains(marker),
-            "{fn_name} must fold storage-root paths out of its web-visible \
-             error chain ({marker})"
+        let counted = body[..end]
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            counted.matches(NEEDLE).count(),
+            expected_folds,
+            "{fn_name} must fold every web-visible error arm through the \
+             storage-root fold ({expected_folds} arms pinned; a single-arm \
+             revert previously stayed green under the shared contains \
+             marker, and a commented-out fold kept the needle findable)"
         );
     }
 }
