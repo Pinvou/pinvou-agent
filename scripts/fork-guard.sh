@@ -6,14 +6,16 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Registered head: candidate Pinvou/CodeWhale#150 head c997d2ec0 (route
-# output budget exposure; revised in place twice during review — 5c093b5d4 →
-# d0322fd0e fixed rustfmt ordering and added the wrapper-vs-transport parity
-# test, then one doc-word fix) leading maintenance base 11cba403d. Foundation
+# Registered head: candidate Pinvou/CodeWhale#150 head dc73de769 (route
+# output budget exposure; revised in place three times during review —
+# 5c093b5d4 → d0322fd0e fixed rustfmt ordering and added the wrapper-vs-
+# transport parity test, d0322fd0e → c997d2ec0 changed one doc word, and
+# c997d2ec0 → dc73de769 cleared the parity test's ambient override envs and
+# added the CHANGELOG entries) leading maintenance base 11cba403d. Foundation
 # PRs squash-merge (#123–#135), so when #150 lands the public head is a new
 # merge-time commit: re-pin EXPECTED_HEAD, the gitlink, and the registers to
 # that head as the final candidate-window step.
-EXPECTED_HEAD="c997d2ec0d0f02b56024fa8040d6faf2bd8d6da0"
+EXPECTED_HEAD="dc73de769b75fbc2843a66dad3ce4b1aeae0d6d0"
 EXPECTED_COMMITS=94
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
