@@ -976,8 +976,24 @@ function ConversationTurnView({
   // turns carrying a terminal footer (badge/duration/usage/error).
   const assistantFooterVisible = !running
     && (assistantAvailable || turn.lifecycleKnown || turn.completedAt || turn.error);
+  // 「从此轮分叉」入口（forkOrdinal 由宿主按 turn 序号换算的稳定原始值；
+  // 命令在 Rust 侧落盘新会话并切过去）。渲染判定独立于 assistantFooterVisible：
+  // footer 可见性还要求生命周期已知/有回复/已完结，而序号表对纯用户轮
+  // （steered 空回复轮、尚未获回复的末轮）照样编号——按钮随 footer 隐藏
+  // 会让这些轮失去本可用的分叉入口（Rust 端照样可分叉）。此类轮以独立的
+  // 分叉行渲染在头像行之外，头像行的「不得只剩头像」口径不受影响。
+  const forkTurnVisible = Boolean(onForkTurn && forkOrdinal != null);
   const assistantRowVisible = running || presentation.length > 0 || assistantFooterVisible;
   const retryHandler = retryHandlerForTurn(onRetry, turn);
+  const forkButton = forkTurnVisible && (
+    <button type="button" data-testid="conversation-fork-turn"
+      onClick={() => onForkTurn(turn.id, forkOrdinal)}
+      title={c.forkTurnTip}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:text-gray-600 hover:bg-black/5 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-white/10 transition-colors">
+      <GitBranch size={12} />
+      {c.forkTurn}
+    </button>
+  );
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length || userQuotes.length)
@@ -1055,17 +1071,7 @@ function ConversationTurnView({
                 onRetry={retryHandler}
               />
             )}
-            {/* 从此轮分叉：无损 what-if 分支入口（forkOrdinal 由宿主按
-                turn 序号换算的稳定原始值；命令在 Rust 侧落盘新会话并切过去）。 */}
-            {onForkTurn && forkOrdinal != null && (
-              <button type="button" data-testid="conversation-fork-turn"
-                onClick={() => onForkTurn(turn.id, forkOrdinal)}
-                title={c.forkTurnTip}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:text-gray-600 hover:bg-black/5 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-white/10 transition-colors">
-                <GitBranch size={12} />
-                {c.forkTurn}
-              </button>
-            )}
+            {forkButton}
             {(turn.lifecycleKnown || turn.completedAt || turn.error) && <>
               <ConversationStatusBadge status={turn.status} copy={c} />
               {showTerminalDuration && <span className="text-[11px] text-gray-400">{duration}</span>}
@@ -1101,6 +1107,14 @@ function ConversationTurnView({
           </AssistantMessageFooter>}
         </div>
       </div>
+      )}
+      {/* footer 隐藏但该轮有分叉入口时，独立分叉行渲染在头像行之外：头像行
+          的可见性口径（steered 空回复轮/无助手内容轮不得渲染只剩头像的行）
+          不被打破，而这些轮的分叉入口照常可用。 */}
+      {!assistantFooterVisible && forkTurnVisible && (
+        <div className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2" data-testid="conversation-fork-row">
+          {forkButton}
+        </div>
       )}
     </section>
   );

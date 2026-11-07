@@ -2002,6 +2002,12 @@ function hasStoredCredential(record) {
         try {
           const result = await invokeTauri('import_session_archive');
           if (!result) return;
+          // 逐条失败原因落到 console（toast 只放计数——失败串含 id/原因，
+          // 不适合塞进 pill；此前原因哪都不出现，用户只见「1 failed」无从
+          // 判断是保留 id 还是 schema 超限）。
+          for (const failure of [...(result.failed || []), ...(result.artifacts_failed || [])]) {
+            console.warn(`[sessions] import ${failure.session_id}: ${failure.reason}`);
+          }
           setSettingsToast(t.uiSettings.importSessionsDone(
             (result.imported || []).length,
             (result.skipped_existing || []).length,
@@ -2010,8 +2016,9 @@ function hasStoredCredential(record) {
             (result.artifacts_failed || []).length,
           ));
         } catch (error) {
+          const detail = String((error && error.message) || error || 'unknown error');
           console.warn('import session archive failed', error);
-          setSettingsToast(t.uiSettings.importSessionsFailed);
+          setSettingsToast(`${t.uiSettings.importSessionsFailed}: ${detail}`);
         } finally {
           setImportingSessions(false);
         }

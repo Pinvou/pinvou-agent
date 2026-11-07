@@ -312,6 +312,11 @@ function transferSteeredRunTerminals(turns) {
  * 根导出）。已知残留：post-provenance 历史（会话内压缩过）里用户再粘贴
  * 摘要头时，底座 era 口径会计入而前端跳过——该场景罕见，根治是把序号由
  * 后端下发（见 forkTurnEntries.js 注释）。
+ *
+ * 对齐细节：镜像底座 Editable 分类——不 trim。纯空白文本在底座是真实
+ * Editable turn（无 trim），前端旧实现 trim 后跳过会让序号与后端错位
+ * （外部写入/导入的记录可能携带）；标记匹配同样在未 trim 文本上做
+ * startsWith，与底座 `has_compaction_summary_header` 一致。
  */
 const COMPACTION_SUMMARY_MARKERS = [
   'Another language model started to solve this problem',
@@ -319,7 +324,7 @@ const COMPACTION_SUMMARY_MARKERS = [
 ];
 
 export function turnHasUserText(turn) {
-  const text = String((turn && turn.userItem && turn.userItem.text) || '').trim();
+  const text = String((turn && turn.userItem && turn.userItem.text) || '');
   if (!text) return false;
   return COMPACTION_SUMMARY_MARKERS.every(marker => !text.startsWith(marker));
 }

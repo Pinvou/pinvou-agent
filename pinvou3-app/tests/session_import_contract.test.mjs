@@ -18,11 +18,12 @@ const checkpoints = readFileSync(new URL('../src/features/codex/checkpoints.js',
 {
   const at = settings.indexOf("await invokeTauri('import_session_archive')");
   assert.notStrictEqual(at, -1, 'SettingsView must invoke import_session_archive');
-  const body = settings.slice(Math.max(0, at - 400), at + 700);
+  const body = settings.slice(Math.max(0, at - 400), at + 1100);
   assert.ok(body.includes('if (!bridge.available || importingSessions) return;'), 'handler must guard bridge availability and re-entry');
   assert.ok(body.includes('if (!result) return;'), 'user cancel (null) must return silently');
   assert.ok(body.includes('t.uiSettings.importSessionsDone(') && body.includes('result.skipped_existing') && body.includes('result.artifacts_failed'), 'success toast must compose imported/skipped/failed counts plus the partial (missing-artifacts) count');
-  assert.ok(body.includes('t.uiSettings.importSessionsFailed'), 'failure must surface the localized failed toast');
+  assert.ok(body.includes('failure.reason'), 'per-record failure reasons must at least reach the console (count-only left users with "1 failed" and no cause)');
+  assert.ok(body.includes('t.uiSettings.importSessionsFailed') && body.includes('${detail}'), 'failure must surface the localized failed toast with the backend detail');
   assert.ok(!main.includes('import_session_archive'), 'main entry must not carry the import surface (entry-budget ledger policy)');
 }
 
@@ -55,10 +56,19 @@ assert.match(
   /canInvoke\('fork_session'\)/,
   'fork support must be gated through canInvoke (web access-policy refusal must hide the entry, not error on click)',
 );
+// 锚定到 forkSupported 块（chatView 里有五处同款 sched- startsWith；不锚定
+// 的话删掉分叉门的检查仍会被 aux 车道的同款表达式撑绿）。
 assert.match(
   chatView,
-  /!activeSessionId\.startsWith\('sched-'\)/,
+  /const forkSupported = !!\(\s*activeSessionId\s*&& !activeSessionId\.startsWith\('sched-'\)/,
   'scheduled-run sessions must not render fork entries (Rust refuses them unconditionally)',
+);
+// in-flight 门按会话记（Set）：单槽位会被并发分叉互相清掉（A 落盘清掉 B
+// 的标记，B 上的再点击绕过前端门撞 Rust 预约拒绝）。
+assert.match(
+  chatView,
+  /forkBusySessionIds\.has\(sourceSessionId\)/,
+  'the fork in-flight guard must be keyed per session (a Set, not a single slot)',
 );
 assert.match(
   chatView,
@@ -81,11 +91,18 @@ assert.match(
   'fork failure must surface the localized notice with detail',
 );
 
-// 4. 时间线按钮：只有处理器与入口表同时在场才渲染，testid 稳定。
+// 4. 时间线按钮：只有处理器与入口表同时在场才渲染，testid 稳定；渲染判定
+// 独立于 assistant footer 可见性（footer 还要求生命周期已知/有回复——序号表
+// 对纯用户轮照样编号，按钮不得随之消失），footer 隐藏时以独立分叉行渲染。
 assert.match(
   timeline,
-  /\{onForkTurn && forkOrdinal != null && \(\s*<button type="button" data-testid="conversation-fork-turn"/,
+  /const forkButton = forkTurnVisible && \(\s*<button type="button" data-testid="conversation-fork-turn"/,
   'fork button must be gated on handler + per-turn ordinal and keep its testid',
+);
+assert.match(
+  timeline,
+  /\{!assistantFooterVisible && forkTurnVisible && \(\s*<div[^>]*data-testid="conversation-fork-row"/,
+  'turns without an assistant footer must still render their fork entry as a standalone row',
 );
 assert.match(
   timeline,

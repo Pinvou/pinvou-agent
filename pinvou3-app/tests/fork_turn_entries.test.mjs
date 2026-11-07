@@ -42,9 +42,11 @@ const imageOnlyTurn = id => ({ id, userItem: { type: 'user', text: '' } });
   assert.equal(entries.get('t3'), 2, 't3 is ordinal 2 (image-only turn skipped)');
 }
 
-// 4. 空白文本与缺 text 字段同纯图片处理（投影对 userItem 恒有 text 字段，
-// 缺字段仅在测试桩中出现，按同一口径跳过）。
-assert.equal(turnHasUserText({ id: 'x', userItem: { type: 'user', text: '  ' } }), false);
+// 4. 与底座 Editable 分类逐位对齐：纯空白文本在底座是真实 Editable turn
+// （分类不 trim），前端同口径计入（外部写入/导入的记录可能携带这类消息，
+// trim 跳过会让序号与后端错位）；缺 text 字段才是「无文本块」形态，同纯
+// 图片跳过。
+assert.equal(turnHasUserText({ id: 'x', userItem: { type: 'user', text: '  ' } }), true);
 assert.equal(turnHasUserText({ id: 'x', userItem: { type: 'user' } }), false);
 assert.equal(turnHasUserText({ id: 'x' }), false);
 assert.equal(turnHasUserText(null), false);

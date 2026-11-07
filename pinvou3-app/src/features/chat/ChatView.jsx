@@ -1826,9 +1826,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // user_turn_prompt_indices（Editable 分类）对齐：纯图片 turn 与压缩
       // 摘要头 turn（含会话内压缩的 stamped 载体）不占序号
       // （forkEntriesByTurnId / turnHasUserText）。turn 进行中（busy）整表
-      // 隐藏：Rust 端忙碌门拒绝 turn 内分叉；compaction 与 rewind 同口径
-      // 不占 turn 预约，期间分叉照常放行（快照取落盘记录的原子读，
-      // 见 features/sessions/fork.rs）。scheduled 运行会话（Rust 侧拒绝）
+      // 隐藏：Rust 端忙碌门拒绝 turn 内分叉；compaction 进行中 Rust 端也
+      // 显式拒绝（不占 turn 预约，turn-active 探针对它失明，fork 命令另行
+      // 探 is_compaction_in_flight——见 sessions.rs fork_session），整表隐藏
+      // 与之一致。scheduled 运行会话（Rust 侧拒绝）
       // 与 web 车道（命令不在 access-policy，canInvoke 返回 false）不提供
       // 入口——入口不应以「点击必报错」的形态存在。
       const forkSupported = !!(
@@ -1837,15 +1838,24 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         && bridge.available
         && canInvoke('fork_session')
       );
-      const [forkBusyFor, setForkBusyFor] = useState(null);
+      // in-flight 门按会话 id 记（与取消按钮的 cancellingSessionIds 同款）：
+      // ChatView 不因切会话重挂载，单槽位会被并发分叉互相清掉——先分叉 A
+      // 再分叉 B，A 先落盘时把 B 的标记清空，B 上的再点会绕过前端门撞上
+      // Rust 预约拒绝（虚假失败 toast）。
+      const [forkBusySessionIds, setForkBusySessionIds] = useState(() => new Set());
       const forkEntries = useMemo(
         () => (forkSupported ? forkEntriesByTurnId(conversationProjection.turns) : null),
         [forkSupported, conversationProjection.turns],
       );
       const handleForkTurn = useCallback(async (turnId, keepTurns) => {
-        if (!forkSupported || busy || (forkBusyFor && forkBusyFor === activeSessionId)) return;
+        if (!forkSupported || busy) return;
         const sourceSessionId = activeSessionId;
-        setForkBusyFor(sourceSessionId);
+        if (forkBusySessionIds.has(sourceSessionId)) return;
+        setForkBusySessionIds(prev => {
+          const next = new Set(prev);
+          next.add(sourceSessionId);
+          return next;
+        });
         try {
           const forked = await invokeTauri('fork_session', { sessionId: sourceSessionId, keepTurns });
           if (forked && forked.id && activeSessionIdRef.current === sourceSessionId) {
@@ -1858,9 +1868,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           const detail = String((err && err.message) || err || 'unknown error');
           flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
         } finally {
-          setForkBusyFor(null);
+          setForkBusySessionIds(prev => {
+            const next = new Set(prev);
+            next.delete(sourceSessionId);
+            return next;
+          });
         }
-      }, [forkSupported, forkBusyFor, activeSessionId, busy, flashQueuedNotice, t]);
+      }, [forkSupported, forkBusySessionIds, activeSessionId, busy, flashQueuedNotice, t]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
