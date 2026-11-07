@@ -90,7 +90,8 @@ assert.deepEqual(summarizeCheckpointChanges([]), {
 assert.deepEqual(summarizeCheckpointChanges(null).total, 0);
 
 // ── rewindEntriesByTurnId：入口变体判定 ─────────────────────────────
-const userTurn = id => ({ id, userItem: { type: 'user' } });
+// userItem 与真实投影同形（带 text；纯图片 turn 的 text 为空串，不占序号）。
+const userTurn = id => ({ id, userItem: { type: 'user', text: `第${id}轮` } });
 
 // turn N+1 有快照 → 该边界为「回退到第 N 轮」（代码+对话）；keepTurns = 序号-1。
 {
@@ -154,6 +155,39 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(rewindEntriesByTurnId(turns, []).size, 0);
   assert.equal(rewindEntriesByTurnId(turns, null).size, 0);
   assert.equal(rewindEntriesByTurnId(null, [{ id: 'c1', turn: 1 }]).size, 0);
+}
+
+// 纯图片 turn（userItem 无文本）不占序号：Rust 用底座 era 口径
+// （Editable 分类）计 turn，前端入口表必须同一口径，否则「第 N 轮」整体
+// 错位——快照序号对不上会把回退/分叉落点漂移到错误的轮次。
+{
+  const turns = [userTurn('t1'), { id: 'img', userItem: { type: 'user', text: '' } }, userTurn('t3')];
+  const entries = rewindEntriesByTurnId(turns, [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+  ]);
+  assert.equal(entries.has('img'), false, 'image-only turn must not render an entry');
+  assert.equal(entries.get('t3').keepTurns, 1, 't3 is ordinal 2 (image-only turn skipped)');
+  assert.equal(entries.get('t3').checkpoint.id, 'c2');
+}
+
+// 压缩摘要头 turn（stamped 载体/粘贴的摘要头）同样不占序号：与纯图片同属
+// 底座 Editable 分类的排除面（turnHasUserText 共用口径）。计入会让每个
+// 压缩过的会话 checkpoint 序号整体 +1、卡片落到错误的轮次。
+{
+  const current = 'Another language model started to solve this problem';
+  const turns = [
+    userTurn('t1'),
+    { id: 'carrier', userItem: { type: 'user', text: `${current} ...summary` } },
+    userTurn('t2'),
+  ];
+  const entries = rewindEntriesByTurnId(turns, [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+  ]);
+  assert.equal(entries.has('carrier'), false, 'summary-header turn must not render an entry');
+  assert.equal(entries.get('t2').keepTurns, 1, 't2 is ordinal 2 (carrier skipped)');
+  assert.equal(entries.get('t2').checkpoint.id, 'c2');
 }
 
 // ── 联调 Bug A：列表竞态导致变体误判 ────────────────────────────────

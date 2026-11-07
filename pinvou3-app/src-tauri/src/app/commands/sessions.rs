@@ -717,6 +717,50 @@ pub(super) fn create_session_record(
     Ok(session.metadata)
 }
 
+/// 从第 `keep_turns` 轮末尾分叉出新会话（无损 what-if 分支）。核心克隆/截断
+/// 逻辑在 [`crate::features::sessions`] 的 store 方法里（fork.rs，与 rewind
+/// 同级）；本命令只负责忙碌门、原子预约与 list_changed 事件。
+///
+/// 快照一致性：turn 进行中 messages/metadata 仍被 forwarder 更新，分叉会
+/// 携带半轮状态。与 rewind_to_turn 同一口径：先快速拒绝给出友好文案，再
+/// `reserve_turn` 原子占位并持有到落盘结束——预约窗口内新 turn 无法开始，
+/// 关闭「检查后开跑」的半轮捕获窗口。比 rewind 多一道压缩门：compaction
+/// 不占 turn 预约，turn-active 探针对它失明（engine_pool 的注释原文），
+/// 压缩进行中分叉会以点击序号漂移的快照落盘——这里显式探
+/// `is_compaction_in_flight` 拒绝（projects.rs 的探针同款）；rewind 的同款
+/// 盲区属既有行为，另行跟进。
+#[tauri::command]
+pub async fn fork_session(
+    session_id: String,
+    keep_turns: u32,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+) -> Result<SessionMetadata, String> {
+    if pool.is_turn_active(&session_id) {
+        return Err("会话正在执行，请等当前轮结束再分叉".to_string());
+    }
+    if pool.is_compaction_in_flight(&session_id) {
+        return Err("会话正在压缩上下文，请等压缩结束再分叉".to_string());
+    }
+    let reservation = pool
+        .reserve_turn(&session_id)
+        .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
+    let store_inner = store.inner().clone();
+    let forked = tauri::async_runtime::spawn_blocking(move || {
+        // 预约 Guard 持有到落盘结束（Drop 自动归还 slot），关闭半轮窗口。
+        let _reservation = reservation;
+        store_inner.fork_session_record(&session_id, keep_turns)
+    })
+    .await
+    .map_err(|error| format!("fork_session: 任务失败: {error}"))?
+    .map_err(|error| format!("fork_session: {error:#}"))?;
+    // 侧栏经 session:list_changed 去抖刷新；不发事件的命令产出的会话在
+    // 切走后 UI 不可达（review finding：fork 分支曾只存在于存储）。
+    emit_session_event(&app, "session:list_changed", &forked.id, "forked");
+    Ok(forked)
+}
+
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
@@ -1392,6 +1436,39 @@ pub async fn export_session(
         compressed_bytes: summary.compressed_bytes(),
         session_id: summary.session_id,
     }))
+}
+
+/// 导入会话归档（`export_session` 的逆操作）：弹文件选择框，把选中的
+/// tar.xz 归档（或裸 session .json）装回会话存储。已存在的 id 跳过；
+/// 结果按 imported / skipped_existing / failed 三类返回给前端组 toast。
+/// 用户取消选择返回 None。
+#[tauri::command]
+pub async fn import_session_archive(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+) -> Result<Option<crate::features::sessions::SessionImportSummary>, String> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("Session archive", &["tar.xz", "json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|error| format!("resolve_import_path_failed: {error}"))?;
+    let store = store.inner().clone();
+    let summary = tokio::task::spawn_blocking(move || store.import_archive(&path))
+        .await
+        .map_err(|error| format!("session_import_task_failed: {error}"))?
+        .map_err(|error| format!("session_import_failed: {error:#}"))?;
+    // 只在真有记录落盘时刷新侧栏（skip/failed-only 不改变列表）。事件携带
+    // 首个导入 id 仅作日志锚点；前端按事件去抖拉全量列表。
+    if let Some(id) = summary.imported.first() {
+        emit_session_event(&app, "session:list_changed", id, "imported");
+    }
+    Ok(Some(summary))
 }
 
 /// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。

@@ -25,7 +25,7 @@ fn resolve_code_session_roots(
 }
 
 /// Turn 开始前的影子 git checkpoint 前奏，`chat` 与 `accept_plan`（均发送真实
-/// 用户消息，`is_user_turn_prompt` 计数口径一致）共用。流程：执行根体积门 →
+/// 用户消息，与底座 era 计数 `count_user_turns` 同口径）共用。流程：执行根体积门 →
 /// turn 序号计数 → `create_checkpoint` → 失败/alias 冲突按级别记日志。失败/
 /// 超预算不阻断 turn（设计 §5 降级语义）。返回本轮成功登记的快照 id；发送
 /// 失败时调用方按 id 精确作废「未成活」快照（评审 M5，见各自 Err 分支）。
@@ -46,7 +46,8 @@ pub(super) async fn create_turn_checkpoint(
         if !checkpoints::execution_root_within_snapshot_budget(&execution, &ledger) {
             return Ok(None);
         }
-        // turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
+        // turn 序号用底座 era 口径计数（count_user_turns /
+        // user_turn_prompt_indices；tool_result 不计入），
         // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。会话 JSON
         // 读取是阻塞 IO，与快照同驻 spawn_blocking。
         let turn_number = store_count

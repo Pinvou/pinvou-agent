@@ -5,8 +5,9 @@
 // 原生车道时间线的 turn 边界，提供「回退到第 N 轮」入口的变体判定与 diff 摘要
 // 解析（确认弹窗预览）。
 //
-// 对齐规则：投影 turns 中带 userItem 的用户 turn 按出现顺序计序号，与 Rust
-// count_user_turns（is_user_turn_prompt 同口径）一一对应；preamble/系统项不占
+// 对齐规则：投影 turns 中带 userItem 的用户 turn 按出现顺序计序号（经
+// turnHasUserText 的同款口径跳过），与 Rust count_user_turns（底座 era 口径
+// user_turn_prompt_indices）一一对应；preamble/系统项不占
 // 序号。turn N+1 有 Turn 快照 → 该边界入口为「回退到第 N 轮」（代码+对话）；
 // 快照缺失（LRU 淘汰/当时快照失败）→ 「仅回退对话」变体（conversationOnly）。
 // 快照创建失败的 turn 只是入口变体不同，不会错位——回退前的 diff 预览展示的
@@ -15,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invokeTauri as invoke } from '../../platform/tauri/client.js';
 import { canInvoke } from '../../shared/platform.js';
+import { turnHasUserText } from '../conversation/deepseek-conversation.js';
 
 /**
  * checkpoint 列表 → Map<turnNumber, checkpoint>。
@@ -68,7 +70,10 @@ export function rewindEntriesByTurnId(turns, checkpoints) {
   const byTurn = checkpointMapByTurn(list);
   let ordinal = 0;
   for (const turn of turns || []) {
-    if (!turn || !turn.userItem || turn.id == null) continue;
+    // 纯图片 turn 不占序号：Rust rewind_to_turn 用底座 era 口径
+    // （user_turn_prompt_indices，Editable 分类）计 turn，与 fork 同口径；
+    // 前端不跳过会把「第 N 轮」整体错位（turnHasUserText 详见投影模块）。
+    if (!turn || turn.id == null || !turnHasUserText(turn)) continue;
     ordinal += 1;
     const checkpoint = byTurn.get(ordinal) || null;
     entries.set(turn.id, {

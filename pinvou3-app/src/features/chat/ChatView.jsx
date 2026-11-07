@@ -10,7 +10,7 @@ import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { boundDraftNoticeMode as boundDraftNoticeModeOf } from './bound-draft-mode.js';
 import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
-import { can, isWeb } from '../../shared/platform.js';
+import { can, canInvoke, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
@@ -50,6 +50,7 @@ import {
   conversationItemsForMode,
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
+import { forkEntriesByTurnId } from './forkTurnEntries.js';
 import {
   shouldForceScrollFollow,
   transitionConversationScrollState,
@@ -1639,6 +1640,60 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+      // 「从此轮分叉」入口表：turn id → keepTurns（1-based，含当前轮）。
+      // 序号口径与 rewindEntriesByTurnId 一致，与 Rust fork_session 的底座
+      // user_turn_prompt_indices（Editable 分类）对齐：纯图片 turn 与压缩
+      // 摘要头 turn（含会话内压缩的 stamped 载体）不占序号
+      // （forkEntriesByTurnId / turnHasUserText）。turn 进行中（busy）整表
+      // 隐藏：Rust 端忙碌门拒绝 turn 内分叉；compaction 进行中 Rust 端也
+      // 显式拒绝（不占 turn 预约，turn-active 探针对它失明，fork 命令另行
+      // 探 is_compaction_in_flight——见 sessions.rs fork_session），整表隐藏
+      // 与之一致。scheduled 运行会话（Rust 侧拒绝）
+      // 与 web 车道（命令不在 access-policy，canInvoke 返回 false）不提供
+      // 入口——入口不应以「点击必报错」的形态存在。
+      const forkSupported = !!(
+        activeSessionId
+        && !activeSessionId.startsWith('sched-')
+        && bridge.available
+        && canInvoke('fork_session')
+      );
+      // in-flight 门按会话 id 记（与取消按钮的 cancellingSessionIds 同款）：
+      // ChatView 不因切会话重挂载，单槽位会被并发分叉互相清掉——先分叉 A
+      // 再分叉 B，A 先落盘时把 B 的标记清空，B 上的再点会绕过前端门撞上
+      // Rust 预约拒绝（虚假失败 toast）。
+      const [forkBusySessionIds, setForkBusySessionIds] = useState(() => new Set());
+      const forkEntries = useMemo(
+        () => (forkSupported ? forkEntriesByTurnId(conversationProjection.turns) : null),
+        [forkSupported, conversationProjection.turns],
+      );
+      const handleForkTurn = useCallback(async (turnId, keepTurns) => {
+        if (!forkSupported || busy) return;
+        const sourceSessionId = activeSessionId;
+        if (forkBusySessionIds.has(sourceSessionId)) return;
+        setForkBusySessionIds(prev => {
+          const next = new Set(prev);
+          next.add(sourceSessionId);
+          return next;
+        });
+        try {
+          const forked = await invokeTauri('fork_session', { sessionId: sourceSessionId, keepTurns });
+          if (forked && forked.id && activeSessionIdRef.current === sourceSessionId) {
+            // 仅当用户仍停留在源会话时自动切换；分叉落盘的窗口内用户已
+            // 切走则不打断其导航——新分支经 session:list_changed 去抖进入
+            // 侧栏，仍可从列表进入。
+            await bridge.sessions.switchToSession(forked.id);
+          }
+        } catch (err) {
+          const detail = String((err && err.message) || err || 'unknown error');
+          flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
+        } finally {
+          setForkBusySessionIds(prev => {
+            const next = new Set(prev);
+            next.delete(sourceSessionId);
+            return next;
+          });
+        }
+      }, [forkSupported, forkBusySessionIds, activeSessionId, busy, flashQueuedNotice, t]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -3787,6 +3842,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
                     onRetry={isMultiAgentReadOnly ? undefined : retryLastTurn}
+                    forkEntries={busy ? undefined : forkEntries}
+                    onForkTurn={!forkSupported || isMultiAgentReadOnly ? undefined : handleForkTurn}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}

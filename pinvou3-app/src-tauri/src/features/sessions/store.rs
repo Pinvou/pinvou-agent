@@ -481,6 +481,19 @@ impl SessionStore {
     ) -> Result<deepseek_tui::session_export::SessionArchiveSummary> {
         validate_session_id(id)?;
         let session = self.load(id)?;
+        if include_artifacts {
+            // 闭合导出→导入循环：导入侧对成员名 fail-closed（`:` 分量挡
+            // Windows 盘符/ADS，`\` 归一化防改名），exporter 本身不校验
+            // 文件名——凡导入必拒/必改名的文件在此处先行失败并指名，归档
+            // 永不产出「导出成功、导入必拒」的产物。目录不存在（Ok(None)）
+            // 即无可扫描，直接放行。
+            if let Some(dir) = deepseek_tui::session_export::session_artifacts_dir(
+                self.manager.sessions_dir(),
+                id,
+            )? {
+                super::import::ensure_artifacts_exportable(&dir)?;
+            }
+        }
         // write_session_archive takes the session-store ROOT since the
         // engine-side confinement rework: it derives, validates and confines
         // the artifacts dir itself (invalid ids and links under the store are
@@ -511,6 +524,13 @@ impl SessionStore {
     pub(crate) fn save(&self, session: &SavedSession) -> Result<PathBuf> {
         let _mutation = self.scheduled_mutation.lock();
         self.persist_then_reconcile(session, "session save")
+    }
+
+    /// 会话存储根目录（`~/.pinvou3/sessions/`）。供 archive 导入这类
+    /// 兄弟模块按 id 探测记录/artifacts 目录使用；字段 `manager` 保持
+    /// store.rs 私有。
+    pub(crate) fn sessions_dir(&self) -> PathBuf {
+        self.manager.sessions_dir().to_path_buf()
     }
 
     /// Deleting races with the read-modify-write persist paths

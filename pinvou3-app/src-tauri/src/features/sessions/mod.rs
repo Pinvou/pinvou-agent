@@ -39,6 +39,8 @@
 //! external call paths unchanged.
 
 pub(crate) mod diagnostics;
+mod fork;
+mod import;
 mod injections;
 pub(crate) mod mode_state;
 mod retention;
@@ -130,6 +132,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+pub use self::import::{SessionImportFailure, SessionImportSummary};
 pub use crate::core::mode_state::SerializableMode;
 use crate::platform::paths;
 use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
