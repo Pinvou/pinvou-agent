@@ -459,8 +459,11 @@ const expectedProtocolHashes = {
   // Recomputed for round-13: in-body changes only (aux dispatch wraps the
   // web arm in the shared admission gate; guardrail notice replay dedup;
   // queued-head flush on leaving Auto; replay-cleanup rejection twin). No
-  // new command or event surface.
-  webWireSurface: '69e7e48b2a0d1b8da4f64cfc443ebe0cc68a0d1eb9bda73993f7e0033cb4eb83',};
+  // new command or event surface. Recomputed for round-15: in-body changes
+  // only (queued-flush admission owner across the mode query, planStuckGo
+  // in-flight latch + commit-marking mirror of the tauri lane). No new
+  // command or event surface.
+  webWireSurface: '1df98be9eb2dbf379eaa6b9fd1d3b626eed01a02db980c854dc10ee2988ed20c',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {

@@ -5187,7 +5187,8 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
   }
 
   // ── 卡片动作辅助 ─────────────────────────────────────────────────
-function patchItemById(id, patch) { return pinvouSharedweb().patchItemById(id, patch); }
+  // patchItemById 的本地委托已随 planStuckGo 改走定向写（patchItemByIdFor）
+  // 而无消费方，删除（round-15 评审 D 修复波；共享实现仍供其他车道使用）。
   function pushUserEcho(text, persist) {
     const item = { type: "user", text, time: timeStr() };
     let message = null;
@@ -5515,8 +5516,30 @@ async function planStuckReplan(itemId) { return pinvouSharedweb().planStuckRepla
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
-    patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo(sid);
+    // 在途防重入 + 提交后才落已处理（与 tauri 车道 interaction.js planStuckGo
+    // 同一纪律，round-14 修复的 web 镜像；review round-15 D）：等待窗口横跨
+    // 一次后端往返，没有同步闩时第二次点击会派发重复的模式切换/重复的补充
+    // 指令 turn。旧形态先 resolved:true 再 await——exit_plan_to_yolo 被拒时
+    // 卡片已被剥掉动作且异常无人接（onClick 上的 unhandled rejection）；失败
+    // 现在恢复可点并定向提示。exitPlanToYolo 包装层内部吞错（exitPlanFailed
+    // 系统项），提交标记需要拿到拒绝——直接 invoke 同一命令。
+    let stuck = null;
+    runSyncOnSession(sid, function () {
+      stuck = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "plan_stuck" && candidate.id === itemId;
+      }) || null;
+    });
+    if (stuck && stuck.submitting) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
+    try {
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) {
+      patchItemByIdFor(sid, itemId, { submitting: false });
+      addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();
+      return;
+    }
+    patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
