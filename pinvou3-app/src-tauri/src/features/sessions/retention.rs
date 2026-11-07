@@ -741,18 +741,38 @@ impl SessionStore {
             modes.retain(|id, _| !contains(id.as_str()));
         }
         // Purge modes against the DURABLE file with the full eviction set —
-        // NOT just the ids this process's boot-time map knows. Unlike the
-        // multi-agent flags, the mode sidecar has no boot-time ghost cleanup
-        // (`load_session_mode_states` merges every durable entry
-        // unconditionally), so a mode another process persisted after boot
-        // would otherwise survive its session's eviction forever and re-arm
-        // on id reuse: a recycled `agentic_{pid}_{counter}` id would reopen
-        // in the ghost mode instead of the default.
+        // NOT just the ids this process's boot-time map knows. The boot-time
+        // ghost sweep added with the tri-mode sidecars cleans orphaned ids at
+        // startup, but this purge remains load-bearing for post-boot writes:
+        // a mode another process (or a later in-run writer) persisted after
+        // boot would otherwise survive its session's eviction forever and
+        // re-arm on id reuse: a recycled `agentic_{pid}_{counter}` id would
+        // reopen in the ghost mode instead of the default.
         {
             let _modes_io = self.session_mode_states_io.lock();
             if let Err(error) = Self::apply_session_mode_mutation_locked(&[], ids) {
                 eprintln!(
                     "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
+                );
+            }
+        }
+
+        // Same ghost-id reasoning for the ask-on-guardrail overrides: a dead
+        // session's toggle surviving eviction would (a) accumulate forever
+        // and (b) silently re-arm a RECYCLED id via the seeding point
+        // (`ask_on_guardrail_seed` consults this map/sidecar at mint).
+        // Durable file purge covers toggles another process persisted after
+        // boot, same as the mode purge above.
+        {
+            let mut overrides = self.ask_on_guardrail_overrides.write();
+            overrides.retain(|id, _| !contains(id.as_str()));
+        }
+        {
+            let _modes_io = self.session_mode_states_io.lock();
+            if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[], &multi_agent_refs)
+            {
+                eprintln!(
+                    "[sessions] update _ask_on_guardrail.json after retention/delete purge failed: {error:#}"
                 );
             }
         }

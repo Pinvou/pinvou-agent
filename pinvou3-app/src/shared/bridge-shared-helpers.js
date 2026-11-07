@@ -652,7 +652,10 @@
       remoteCommittedRevision: "",
       sessionRevision: "",
       planSnapshot: { plan: null, todos: null },
-      modeState: { mode: "yolo" },
+      // Fresh buffers start at the lane default ("auto") like the bridge's
+      // own state init — a stray event materializing this buffer before the
+      // awaited sync lands must not display full-auto (round-8 L7-6).
+      modeState: { mode: "auto" },
       thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
       tokens: { input: 0, max: state.tokens.max },
       activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
@@ -1845,6 +1848,13 @@
     if (state.activeSessionId !== id) return;
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
+    // freshBuffer's modeState is the generic default (auto); the draft
+    // display must be overridden with this lane's global default — otherwise
+    // delete/archive of the open session lands on a chip reading Yolo while
+    // the backend resolves the unbound draft to the lane default (Auto),
+    // exactly the display-vs-behavior divergence the tri-mode draft work
+    // eliminated elsewhere.
+    state.modeState = currentDraftModeState();
   }
 
   // web+tauriSessions 共享

@@ -888,15 +888,69 @@ impl Default for ChatPrefs {
 /// Not exposed in the settings UI; writes go through field-level
 /// transactions (same as PetPrefs); per-session mode is stored separately in
 /// `sessions/_session_mode_states.json` (see `features::sessions`).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+/// Legacy-vocabulary guard for the lane-default mode fields: an unknown
+/// mode string (a variant written by a NEWER binary, or a hand-edited file)
+/// must degrade to "never chosen" instead of failing the whole settings.json
+/// parse — a parse failure falls back to system-locale defaults for every
+/// unrelated preference, and the next settings save then durably rewrites
+/// them. Known variants parse normally; anything else reads as None.
+fn deserialize_lenient_mode<'de, D>(deserializer: D) -> Result<Option<SerializableMode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<SerializableMode>::deserialize(deserializer).unwrap_or(None))
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CodePermissionPrefs {
     /// The code lane's global default mode (written on an explicit
     /// draft-state switch). None = code mode has never been used.
+    /// Tri-mode (M2): an explicit Auto choice is deliberately NOT written
+    /// here — a pre-tri-mode binary hits an unknown enum variant and its
+    /// whole-settings parse falls back to defaults (the next save then
+    /// durably rewrites them). Auto rides [`Self::last_mode_auto`] instead;
+    /// this field only ever carries the legacy Plan/Yolo vocabulary.
+    #[serde(default, deserialize_with = "deserialize_lenient_mode")]
     pub last_mode: Option<SerializableMode>,
+    /// Tri-mode companion for [`Self::last_mode`]: the code lane's global
+    /// default is explicitly Auto. Old binaries drop the unknown bool and
+    /// resolve `last_mode` (None → Plan) for the run — a one-time, safe
+    /// (stricter) staleness, not data loss. New binaries read this flag as
+    /// `Auto` and it wins over a stale `design` fold.
+    #[serde(default)]
+    pub last_mode_auto: bool,
     /// One-shot yolo confirmation ("full read/write of the project directory,
     /// shell execution allowed, no step-by-step approval") flag.
     pub yolo_confirmed: bool,
+    /// Tri-mode safety: the global "ask on guardrail hit" default new
+    /// sessions seed their per-session `ask_on_guardrail` from (sessions
+    /// absent from `_ask_on_guardrail.json` follow it). Default ON — the
+    /// safe posture is a card on a guardrail hit; turning it off is the
+    /// explicit "silent hard-deny" choice. Both default paths must agree on
+    /// true (serde field default for old settings.json AND
+    /// `Default::default()` for fresh installs / the container spread in
+    /// `defaults_for_system_locale`), hence the manual `Default` impl — a
+    /// derived one would materialize `false` on the fresh-install path and
+    /// silently disarm every new session's guardrail cards.
+    #[serde(default = "default_true")]
+    pub ask_on_guardrail_default: bool,
+}
+
+/// serde default for [`CodePermissionPrefs::ask_on_guardrail_default`].
+fn default_true() -> bool {
+    true
+}
+
+impl Default for CodePermissionPrefs {
+    fn default() -> Self {
+        Self {
+            last_mode: None,
+            last_mode_auto: false,
+            yolo_confirmed: false,
+            ask_on_guardrail_default: default_true(),
+        }
+    }
 }
 
 /// The work lane's global default mode.
@@ -904,12 +958,25 @@ pub struct CodePermissionPrefs {
 /// lane keeps an independent global default; written only by an explicit
 /// draft-state switch in the matching lane, never touched by switches inside
 /// already-materialized sessions.
-/// None = the lane was never explicitly chosen → default Yolo (matching the
-/// historical plain default).
+/// None = the lane was never explicitly chosen → the unbound-plain default
+/// (tri-mode: Auto; the backend resolves it in
+/// `features::sessions::mode_state::SessionStore::resolved_default_mode`).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModeDefaultPrefs {
+    /// Tri-mode (M2): an explicit Auto choice rides [`Self::work_auto`] —
+    /// this legacy field only ever carries Plan/Yolo, so pre-tri-mode
+    /// binaries keep parsing the file (see `deserialize_lenient_mode` for
+    /// the hand-edited/newer-file guard). The boot-time `design` fold only
+    /// fires when this field is None; the `get_mode_defaults` view lets
+    /// [`Self::work_auto`] win over a stale fold.
+    #[serde(default, deserialize_with = "deserialize_lenient_mode")]
     pub work: Option<SerializableMode>,
+    /// Tri-mode companion for [`Self::work`]: the work lane's global default
+    /// is explicitly Auto. Old binaries drop the unknown bool; new binaries
+    /// read it as Auto (frontend applies it to sessions at materialization).
+    #[serde(default)]
+    pub work_auto: bool,
     /// Kept only for backward-compatible reads of legacy settings.json (the
     /// design lane was merged into work): at startup, if work is empty this
     /// field backfills the work in-memory mirror (read fold, see
@@ -920,6 +987,7 @@ pub struct ModeDefaultPrefs {
     /// unrelated preferences write dropped this field, one write plus a
     /// restart before the user explicitly sets work would leave the fold
     /// without a source and silently lose the explicitly chosen default.
+    #[serde(default, deserialize_with = "deserialize_lenient_mode")]
     pub design: Option<SerializableMode>,
 }
 
@@ -3753,6 +3821,65 @@ mod tests {
         }
     }
 
+    /// M2 read side: an unknown mode variant (written by a newer binary, or
+    /// hand-edited) degrades that field to "never chosen" instead of failing
+    /// the whole settings.json parse — a parse failure falls back to
+    /// system-locale defaults for every unrelated preference and the next
+    /// save durably rewrites them. The probe variant must not exist in ANY
+    /// binary ("turbo"): "auto" is a legal variant for THIS binary — the
+    /// writer never emits it into these fields, which is the store-level
+    /// test's contract, not the deserializer's.
+    #[test]
+    fn unknown_mode_variant_degrades_to_never_chosen_not_whole_file_failure() {
+        let parsed = UserPrefs::parse_settings_with_state(
+            Some(
+                r#"{"language":"en","mode_defaults":{"work":"turbo","design":"plan"},"code_permission":{"last_mode":"turbo","yolo_confirmed":true}}"#,
+            ),
+            Some("en-US"),
+        );
+        assert!(
+            parsed.allow_normalization_persist,
+            "a lenient field degradation is not a parse failure"
+        );
+        assert_eq!(parsed.prefs.mode_defaults.work, None);
+        assert_eq!(
+            parsed.prefs.mode_defaults.design,
+            Some(crate::core::mode_state::SerializableMode::Plan)
+        );
+        assert_eq!(parsed.prefs.code_permission.last_mode, None);
+        assert!(parsed.prefs.code_permission.yolo_confirmed);
+    }
+
+    /// M2 write side: the explicit-Auto serialization rides the `*_auto`
+    /// companion flags; the legacy `last_mode`/`work` fields only ever
+    /// serialize Plan/Yolo/null, so pre-tri-mode binaries keep parsing the
+    /// file. Any reintroduction of `Some(Auto)` into the legacy fields turns
+    /// the `"auto"`-free serialization red.
+    #[test]
+    fn auto_choice_serializes_via_companion_flags_not_legacy_vocabulary() {
+        let mut cp = CodePermissionPrefs::default();
+        cp.last_mode_auto = true;
+        let json = serde_json::to_string(&cp).expect("serialize");
+        assert!(json.contains("\"last_mode_auto\":true"), "{json}");
+        assert!(json.contains("\"last_mode\":null"), "{json}");
+        assert!(
+            !json.contains("\"auto\""),
+            "legacy vocabulary must never carry the auto literal: {json}"
+        );
+
+        let mut md = ModeDefaultPrefs::default();
+        md.work_auto = true;
+        let json = serde_json::to_string(&md).expect("serialize");
+        assert!(json.contains("\"work_auto\":true"), "{json}");
+        assert!(!json.contains("\"auto\""), "{json}");
+
+        // Round-trip: the companion flags survive a save/load cycle.
+        let (cp, md): (CodePermissionPrefs, ModeDefaultPrefs) =
+            serde_json::from_str(&serde_json::to_string(&(cp, md)).expect("serialize"))
+                .expect("round-trip");
+        assert!(cp.last_mode_auto && md.work_auto);
+    }
+
     #[test]
     fn missing_settings_do_not_allow_normalization_persist() {
         let parsed = UserPrefs::parse_settings_with_state(None, Some("en-US"));
@@ -3920,11 +4047,17 @@ mod tests {
         let prefs = UserPrefs::default();
         assert!(prefs.code_permission.last_mode.is_none());
         assert!(!prefs.code_permission.yolo_confirmed);
+        // Tri-mode safety: the ask-on-guardrail default is ON on every
+        // default path — serde-missing field AND Default::default() (fresh
+        // install / container spread) — the safe posture is a card on a
+        // guardrail hit.
+        assert!(prefs.code_permission.ask_on_guardrail_default);
 
         // 旧 settings.json 没有 code_permission 字段 → serde default 兼容读出。
         let legacy: UserPrefs = serde_json::from_str(r#"{"theme":"genesis"}"#).unwrap();
         assert!(legacy.code_permission.last_mode.is_none());
         assert!(!legacy.code_permission.yolo_confirmed);
+        assert!(legacy.code_permission.ask_on_guardrail_default);
 
         // 写过的值能回读（mode 与 get_mode_state 协议同用 snake_case）。
         let json = r#"{"code_permission":{"last_mode":"yolo","yolo_confirmed":true}}"#;
@@ -3937,6 +4070,12 @@ mod tests {
         let serialized = serde_json::to_string(&parsed.code_permission).unwrap();
         assert!(serialized.contains("\"last_mode\":\"yolo\""));
         assert!(serialized.contains("\"yolo_confirmed\":true"));
+        // An explicit opt-out round-trips (and the two default paths agree:
+        // a written object without the field still reads true, above).
+        let opted_out: UserPrefs =
+            serde_json::from_str(r#"{"code_permission":{"ask_on_guardrail_default":false}}"#)
+                .unwrap();
+        assert!(!opted_out.code_permission.ask_on_guardrail_default);
     }
 
     #[test]

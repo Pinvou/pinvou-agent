@@ -505,6 +505,12 @@ const NATIVE_CHAT_EVENTS = [
   // 冻结为 discarded。处理逻辑在 code-native-lane.js（applyNativeChatEvent 的
   // chat:plan_resolved 分支，与 bridge chat-events.js plan_resolved 对齐）。
   'chat:plan_resolved',
+  // tri-mode 审批面：弹卡（按 approvalId 幂等去重）、守卫硬拒通知、权威 mode
+  // 广播（mode_changed 在订阅回调里走 refreshNativeControls，lane 无可视变化）。
+  'chat:approval_required',
+  'chat:approval_resolved',
+  'chat:guardrail_denied',
+  'chat:mode_changed',
   'chat:transient_error',
   'chat:done',
 ];
@@ -536,6 +542,112 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       onSubmit={submit}
       onCancel={actionable ? () => onCancelInput(item.toolCallId) : undefined}
     />
+  );
+}
+
+// 原生车道的 tri-mode 审批卡：结构镜像主聊天 ApprovalCard（tool-renderers.jsx），
+// 决策走显式 sessionId 的 decide_approval，不经 bridge 全局 activeSession。
+// lane 是纯数据不持文案：终态存 cardState（allowed / allowed_session / denied /
+// cancelled——turn 终态清扫与跨表面收敛回声共用），这里按键映射三语
+// （statusKey copy = uiCodex）；按钮/标题复用根级 t.approval*。
+const NATIVE_APPROVAL_STATUS_COPY = {
+  allowed: 'nativeApprovalAllowed',
+  allowed_session: 'nativeApprovalAllowedSession',
+  denied: 'nativeApprovalDenied',
+  cancelled: 'nativeApprovalCancelled',
+};
+
+// chat:guardrail_denied 的稳定 reason 键 → 三语短文案（uiCodex）。未知键原样透出。
+function nativeGuardrailReasonText(reason, copy) {
+  const key = String(reason || '');
+  if (key === 'session_denied') return copy.nativeGuardrailDeniedSession;
+  if (key === 'plan_mode') return copy.nativeGuardrailDeniedPlan;
+  if (key === 'guardrail_ask_off') return copy.nativeGuardrailDeniedAskOff;
+  return key;
+}
+
+// 输入参数视图：小而浅对象 → key: value 行；否则整段 JSON 截断（与主聊天
+// ApprovalCard 的 approvalInputView 同一规则——两处保持渲染语义一致）。
+function nativeApprovalInputView(input) {
+  if (input == null) return null;
+  // full = 完整原文（评审 P2：原生审批卡同样必须能查看完整的较长输入）。
+  if (typeof input === 'string') {
+    if (input.length > 400) {
+      return { pre: `${input.slice(0, 400)}…`, full: input };
+    }
+    return { pre: input };
+  }
+  if (typeof input !== 'object') return { pre: String(input) };
+  const keys = Object.keys(input);
+  if (keys.length > 0 && keys.length <= 6 && keys.every((key) => {
+    const value = input[key];
+    if (value == null || typeof value === 'object') return false;
+    return String(value).length <= 80 && key.length <= 40;
+  })) {
+    return { lines: keys.map(key => [key, String(input[key])]) };
+  }
+  let text;
+  try { text = JSON.stringify(input, null, 2) || String(input); } catch { text = String(input); }
+  if (text.length > 400) {
+    return { pre: `${text.slice(0, 400)}…`, full: text };
+  }
+  return { pre: text };
+}
+
+function NativeApprovalCard({ item, responding, t, copy, onDecide }) {
+  const done = !!item.resolved;
+  const submitting = !done && !!responding;
+  // Unknown outcome (host P2): the backend dropped the pending entry after
+  // the engine's ack+settle windows expired; the card must stop inviting a
+  // re-decision (a fresh click can only fail). resolved stays false, so a
+  // late authoritative resolution event still reconciles the card.
+  const unknownOutcome = !done && !submitting && item.cardState === 'unknown';
+  const statusText = done
+    ? (copy[NATIVE_APPROVAL_STATUS_COPY[item.cardState]] || '')
+    : unknownOutcome ? (copy.nativeApprovalOutcomeUnknown || '') : '';
+  const inputView = nativeApprovalInputView(item.input);
+  return (
+    <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
+      <div className={`text-[14px] font-semibold mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
+        {t.approvalTitle}{' '}
+        <code className={`px-1.5 py-0.5 rounded text-[12px] font-mono bg-black/10 dark:bg-white/10`}>{item.toolName || t.uiToolRender.toolUnknown}</code>
+      </div>
+      {item.description ? (
+        <div className={`text-[13px] leading-relaxed mb-1.5 text-[#444746] dark:text-[#C4C7C5]`}>{item.description}</div>
+      ) : null}
+      {item.intentSummary ? (
+        <div className={`text-[12px] leading-relaxed mb-1.5 text-[#757575] dark:text-[#8E8E8E]`}>
+          <span className="font-medium">{t.approvalIntent}: </span>{item.intentSummary}
+        </div>
+      ) : null}
+      {inputView ? (
+        inputView.lines ? (
+          <div className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] space-y-0.5`}>
+            {inputView.lines.map(([key, value]) => (
+              <div key={key}><span className="text-[#0B57D0] dark:text-[#8AB4F8]">{key}</span>: {value}</div>
+            ))}
+          </div>
+        ) : (
+          <pre className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.pre}</pre>
+        )
+      ) : null}
+      {inputView && inputView.full ? (
+        <details className="mb-1">
+          <summary className="text-[12px] cursor-pointer select-none text-[#0B57D0] dark:text-[#8AB4F8]">{copy.nativeApprovalShowFullInput}</summary>
+          <pre className={`text-[12px] font-mono rounded-lg p-2 mt-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.full}</pre>
+        </details>
+      ) : null}
+      <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
+      {done || unknownOutcome ? (
+        <div className={`text-[13px] font-medium text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('allow')}>{t.approvalAllow}</button>
+          <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('allow_for_session')}>{t.approvalAllowSession}</button>
+          <button type="button" className={cardBtnCls('danger') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('deny')}>{t.approvalDeny}</button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1011,6 +1123,7 @@ export function CodexAcpView({
     mode: CODE_MODE_FALLBACK,
     multiAgent: false,
     multiAgentAvailable: false,
+    askOnGuardrail: true,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // Grant-notice/picker mode source, agent-aware (review #484 round-8 m4):
@@ -1049,7 +1162,17 @@ export function CodexAcpView({
   const [codePermPrefs, setCodePermPrefs] = useState(null);
   // 待确认的 yolo 切换请求（{ draft }）；非 null 时渲染确认卡。
   const [pendingYoloSwitch, setPendingYoloSwitch] = useState(null);
+  // 确认卡的代数（chat 车道 pendingChatYoloDialogGenRef 同约，round-10 评审
+  // 补齐）：门开启与切会话各 bump 一次；confirm_code_yolo 在途回程落定时
+  // 代数不匹配即整单作废——不得清掉更新的对话框，也不得继续已弃置的旧
+  // 确认（M4 落点仍安全，这里收窄的是「顺手武装已弃置会话 + 吞掉新卡」）。
+  const pendingYoloDialogGenRef = useRef(0);
   const [yoloConfirmBusy, setYoloConfirmBusy] = useState(false);
+  // Same-tick latch (round-13 review, chat 车道 chatYoloConfirmBusyRef 同款):
+  // state commits one render late — two clicks inside one commit frame both
+  // pass the `yoloConfirmBusy` check and dispatch duplicate invokes. The ref
+  // flips synchronously at entry and releases in finally.
+  const yoloConfirmBusyRef = useRef(false);
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
@@ -1159,6 +1282,11 @@ export function CodexAcpView({
     handoffMode: nativeDraftControlsHandoff?.mode,
     prefs: codePermPrefs,
   });
+  // 会话级「守卫命中时询问」展示值（tri-mode）：归属保护与 mode 同款——刷新
+  // 返回前 / 上一会话的控件不串台，草稿态与切换途中按开（后端 default_true）。
+  const nativeAskOnGuardrail = activeId && nativeControlsSessionRef.current === activeId
+    ? nativeControls.askOnGuardrail !== false
+    : true;
   const nativeModelChoices = visibleUserModels((bs && bs.savedModels) || [])
     .map(model => ({ value: model.id, name: selectorMainLabel(model, t) || model.id }));
   const nativeSessionModelId = resolveNativeModelId({
@@ -1489,6 +1617,9 @@ export function CodexAcpView({
       mode: (modeState && modeState.mode) || nativeModeFallback(codePermPrefs),
       multiAgent: Boolean(modeState && modeState.multi_agent),
       multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available),
+      // 会话级「守卫命中时询问」（tri-mode）：后端 default_true；读取失败/旧后端
+      // 无此键时按开显示，不把开关翻成关。
+      askOnGuardrail: modeState ? modeState.ask_on_guardrail !== false : true,
     };
     // 请求期间可能切换会话；旧响应不得覆盖新会话的模型/模式/多智能体展示。
     if (!canApplyNativeControlsRefresh({
@@ -1541,12 +1672,15 @@ export function CodexAcpView({
       if (staged.mountedId != null) {
         await invoke('session_mount_collection', { sessionId, collectionId: staged.mountedId });
       }
-      // 暂存 mode 两个方向都要应用：默认可能是 plan（全局首次），也可能是 yolo
-      // （last_mode 记忆）；只设单方向会让反方向暂存静默失效。
+      // 暂存 mode 三个方向都要应用：plan（全局首次/last_mode 记忆）、yolo
+      // （last_mode 记忆）与 auto（tri-mode 逐项审批档）——只设部分方向会让
+      // 其余方向暂存静默失效（v3.5 补 auto：此前两分支漏掉逐项审批档）。
       if (staged.mode === 'plan') {
         await invoke('set_plan_mode_next', { sessionId });
       } else if (staged.mode === 'yolo') {
         await invoke('exit_plan_to_yolo', { sessionId });
+      } else if (staged.mode === 'auto') {
+        await invoke('set_session_mode', { sessionId, mode: 'auto' });
       }
       if (hasMultiAgentSelection) {
         await invoke('set_multi_agent_mode', {
@@ -1641,10 +1775,20 @@ export function CodexAcpView({
   /// 【确认】调 confirm_code_yolo 写入全局标志后按原路径切换；【取消】留在
   /// 当前 mode。确认是 UI 层语义，后端 exit_plan_to_yolo 不强制门控。
   async function switchNativeMode(target, { isPlan } = {}) {
-    if (target === 'yolo' && isPlan) {
+    // Yolo 一次性确认门对任何进入 Yolo 的切换生效（v3.5 修复：旧两态时代
+    // 门只挂在 plan→yolo 上；tri-mode 后 Auto → Yolo 不再绕道 Plan，
+    // 同一确认门必须覆盖直达路径）。Yolo→Yolo 由 chip 的同档早退拦下。
+    if (target === 'yolo') {
       const prefs = await refreshCodePermPrefs();
       if (needsYoloConfirmation(prefs)) {
-        setPendingYoloSwitch({ draft: !activeId });
+        // M4：门在 entry 捕获发起会话（chat 车道 pendingChatYoloSwitchSidRef
+        // 同约）——确认回程可能已切会话，落点必须仍是弹门的那一个，绝不
+        // 打到确认时刻的 live-active（那是一个从未见过门的会话）。
+        // fromAuto 钉住来路档位（chat 车道 action.via 同约）：Auto→Yolo
+        // 直达与 Plan→Yolo 退回确认后各自回到发起命令族，防两条等价路径
+        // 日后静默分叉。
+        pendingYoloDialogGenRef.current += 1;
+        setPendingYoloSwitch({ draft: !activeId, sid: activeId || null, fromAuto: !isPlan });
         return;
       }
     }
@@ -1663,42 +1807,112 @@ export function CodexAcpView({
   }
 
   /// mode chip 切换的实际执行路径（不含 yolo 确认门）。
-  async function performNativeModeSwitch(target, { isPlan } = {}) {
-    if (!activeId) {
+  /// `targetSessionId` 显式钉住目标会话（M4：确认门回程用）——缺省读
+  /// live-active，与旧行为一致；目标非当前会话时只切它、不刷本会话控件
+  /// （权威 chat:mode_changed 广播会按会话归属自行收敛）。
+  async function performNativeModeSwitch(target, { isPlan } = {}, targetSessionId) {
+    const sid = (typeof targetSessionId === 'string' && targetSessionId)
+      ? targetSessionId
+      : activeId;
+    if (!sid) {
       stageDraftMode(target);
       return;
     }
+    const isActiveTarget = sid === activeId;
     setError('');
     try {
       if (target === 'plan' && !isPlan) {
-        await invoke('set_plan_mode_next', { sessionId: activeId });
+        await invoke('set_plan_mode_next', { sessionId: sid });
       } else if (target === 'yolo' && isPlan) {
-        await invoke('exit_plan_to_yolo', { sessionId: activeId });
+        await invoke('exit_plan_to_yolo', { sessionId: sid });
+      } else if (target === 'yolo') {
+        // Auto → Yolo（v3.5：旧代码此分支缺失，Yolo 点击静默落空）：统一走
+        // set_session_mode（后端热同步安全姿态并广播 chat:mode_changed）。
+        // 确认门已在 switchNativeMode 施加。
+        await invoke('set_session_mode', { sessionId: sid, mode: 'yolo' });
+      } else if (target === 'auto') {
+        // Auto（tri-mode 逐项审批档）：无一次性确认门（门只对 yolo）。
+        // 统一走 set_session_mode（后端热同步安全姿态并广播 chat:mode_changed）。
+        // Web 面 parity（ChatView 同款，round-14）：Web 没有审批卡面，Auto
+        // 会话的首发会被 webAutoAdmissionGate 拒绝——Auto 行在 Web 上禁用
+        // （芯片行禁用 + 这里兜底拒绝写），避免经代码页把原生会话切成
+        // Web 面无法服务的 Auto 死路。
+        if (isWeb) return;
+        await invoke('set_session_mode', { sessionId: sid, mode: 'auto' });
       }
-      await refreshNativeControls(activeId);
+      if (isActiveTarget) await refreshNativeControls(sid);
     } catch (err) { showError(err); }
+  }
+
+  /// Session-level ask-on-guardrail toggle (tri-mode): optimistic flip →
+  /// set_ask_on_guardrail → refreshNativeControls authoritative re-check.
+  /// On failure do NOT roll back to the value captured at request start:
+  /// two opposite writes that both reject would each restore their own
+  /// captured value, leaving the display at a setting neither write
+  /// committed (reviewer P3). Failure takes the same refreshNativeControls
+  /// authoritative re-read and converges to the backend truth; its
+  /// request-id generation + ownership guard drops this stale read when the
+  /// session switches or a newer authoritative refresh lands mid-flight
+  /// (same generation protection as chat:mode_changed).
+  async function toggleNativeAskOnGuardrail(enabled) {
+    const targetSessionId = activeId;
+    if (!targetSessionId) return; // 草稿态无会话级开关（跟随全局默认，物化时落后端）
+    setNativeControls(current => (nativeControlsSessionRef.current === targetSessionId
+      ? { ...current, askOnGuardrail: Boolean(enabled) }
+      : current));
+    try {
+      await invoke('set_ask_on_guardrail', { sessionId: targetSessionId, enabled: Boolean(enabled) });
+      await refreshNativeControls(targetSessionId);
+    } catch (err) {
+      showError(err);
+      await refreshNativeControls(targetSessionId);
+    }
   }
 
   /// 确认卡【确认】：写全局 yolo 确认标志，成功后继续被中断的切换。
   async function confirmPendingYoloSwitch() {
     const pending = pendingYoloSwitch;
-    if (!pending || yoloConfirmBusy) return;
+    if (!pending || yoloConfirmBusy || yoloConfirmBusyRef.current) return;
+    // 同 tick 双击第二击在此被拦（ref 同步翻转早于 state 提交一帧）。
+    yoloConfirmBusyRef.current = true;
     setYoloConfirmBusy(true);
+    const genAtConfirm = pendingYoloDialogGenRef.current;
     try {
       const prefs = await invoke('confirm_code_yolo');
       if (prefs) setCodePermPrefs(prefs);
+      // 代数不匹配（在途窗口内切了会话 / 开了新门）即整单作废：不清当前
+      // 对话框、不继续旧确认（chat 车道 genAtConfirm 同款收窄）。
+      if (pendingYoloDialogGenRef.current !== genAtConfirm) return;
       setPendingYoloSwitch(null);
       if (pending.draft) {
         stageDraftMode('yolo');
       } else {
-        await performNativeModeSwitch('yolo', { isPlan: true });
+        // M4：落点钉在弹门时捕获的会话——确认回程切了会话也切的是发起
+        // 会话（live-active 从未见过这张门卡，不得被顺带武装成 Yolo）。
+        // 来路同样钉住（chat 车道 action.via 同约）：exit_plan_to_yolo 与
+        // set_session_mode('yolo') 今天等价，把 Plan→Yolo 退回与 Auto→Yolo
+        // 直达各自钉在发起命令族上，防止两条路径日后静默分叉（漂移守卫）。
+        await performNativeModeSwitch('yolo', { isPlan: !pending.fromAuto }, pending.sid);
       }
     } catch (err) {
       showError(err);
     } finally {
+      yoloConfirmBusyRef.current = false;
       setYoloConfirmBusy(false);
     }
   }
+
+  /// 切会话作废旧会话的 yolo 确认卡（chat 车道 [activeSessionId] effect 同约，
+  /// 弃置语义对齐）：卡属于弹门时的发起会话，切走后留在屏上会被新会话顺手
+  /// 确认——确认虽仍按 M4 钉在发起会话（安全），但用户已弃置该对话，继续
+  /// 武装它与 chat 车道的「切会话即弃卡」不一致。捕获的 sid 就在
+  /// pendingYoloSwitch 里，置 null 一并清掉；本车道确认卡无独立错误/代数
+  /// 状态，无需额外复位。
+  useEffect(() => {
+    pendingYoloDialogGenRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
+    setPendingYoloSwitch(null);
+  }, [activeId]);
 
   async function refreshSessions() {
     const next = await listAcpSessions();
@@ -1848,6 +2062,34 @@ export function CodexAcpView({
             lane.thinking = { active: true, startedAt: Date.now(), phase: 'thinking', toolName: null };
           }
         }
+        // tri-mode 审批卡还原：与 user_input 同款「pending 登记表 → 合成事件」，
+        // applyNativeChatEvent 按 approvalId 幂等去重。查询返回是 serde camelCase
+        // 的 PendingApproval，按事件负载的 snake_case 形状重灌。
+        const terminalFence = lane.approvalReplayTerminalSeq || 0;
+        let pendingApprovals = await invoke('get_pending_approvals', { sessionId: id })
+          .catch(() => null);
+        if (sessionLoadRequestRef.current !== requestId) return null;
+        // 重放终态代栅栏（评审 P3，镜像主车道 chat-events/sessions 的
+        // approvalReplayTerminalSeq）：快照在途时发生 turn 终态，chat:done 已
+        // 清空后端登记表并就在席卡落 cancelled——迟到的快照回程会把引擎侧已
+        // 消亡的审批当活卡插回（其决策只会得到 approval-not-found），整批
+        // 作废。sessionLoadRequestRef 只守会话切换，守不住同一会话的 turn
+        // 终态；墓碑只拦已落定的单个 id。
+        if ((lane.approvalReplayTerminalSeq || 0) !== terminalFence) pendingApprovals = null;
+        ((pendingApprovals) || []).forEach(entry => {
+          if (!entry) return;
+          applyNativeChatEvent(lane, 'chat:approval_required', {
+            session_id: id,
+            approval_id: entry.approvalId,
+            tool_name: entry.toolName,
+            description: entry.description,
+            input: entry.input,
+            intent_summary: entry.intentSummary,
+            approval_key: entry.approvalKey,
+            approval_grouping_key: entry.approvalGroupingKey,
+            force_prompt: entry.forcePrompt,
+          });
+        });
         await refreshNativeControls(id);
         if (sessionLoadRequestRef.current !== requestId) return null;
         setNativeLaneTick(tick => tick + 1);
@@ -2661,6 +2903,12 @@ export function CodexAcpView({
       if (name === 'chat:turn_started' || name === 'chat:done') {
         refreshSessions().catch(() => {});
       }
+      if (name === 'chat:mode_changed' && sessionId === activeIdRef.current) {
+        // 权威 mode 广播（本端/远端切换都会发射）：lane 自身无 mode 展示，
+        // 底栏 chip 的 mode/askOnGuardrail 经 refreshNativeControls 权威刷新
+        // （内部请求序号 + 会话归属保护，与常规刷新同一条路径）。
+        refreshNativeControls(sessionId).catch(() => {});
+      }
       if (changed && sessionId === activeIdRef.current) {
         setNativeLaneTick(tick => tick + 1);
       }
@@ -3243,6 +3491,62 @@ export function CodexAcpView({
     setNativeLaneTick(tick => tick + 1);
   }
 
+  // 原生车道 tri-mode 审批卡决策：语义镜像 respondNativeInput——entry 捕获
+  // sid（await 期间用户切会话时不得把终态写进错误 lane），成功后按决策写终态
+  // （decide_approval 成功会广播 chat:approval_resolved 供其它表面收敛；本
+  // lane 的卡按返回就地落终态，重放的同 id 回声对已决卡是 no-op），失败仅
+  // 提示、后端已把登记原样放回，卡保持 active 可重试。
+  async function decideNativeApproval(approvalId, decision) {
+    if (!activeId || !approvalId) return;
+    const sid = activeId;
+    // 在途防重入（interaction.js decideApproval 的 card.submitting 同款）：
+    // `responding` 是 React state，按钮禁用一拍后才提交，同一提交帧内的双击
+    // 两次都过禁用检查、派发两条 decide_approval。在 lane 卡对象上同步置
+    // submitting 并在 await 前拒绝重入，finally 里释放。
+    const card = getNativeLane(sid).items.find(item => (
+      item && item.type === 'approval' && item.approvalId === approvalId
+    ));
+    if (card) {
+      // resolved 一并拒入（round-10 评审，chat 车道 decideApproval 同款）：
+      // 卡已就地落终态（本地 settle / resolved 回声 / done 清扫）但按钮尚未
+      // 随下一帧卸载的窗口里，重入只会派发一条后端必拒的冗余 decide_approval
+      // 并闪一条错误提示。
+      if (card.submitting || card.resolved) return;
+      card.submitting = true;
+    }
+    setRespondingSessionId(sid); setError('');
+    try {
+      await invoke('decide_approval', { sessionId: sid, approvalId, decision });
+      markNativeApprovalResolved(sid, approvalId, decision);
+    } catch (err) {
+      // Round-13 review (parity with the main lane's decideApproval): the
+      // failure is recorded on the ORIGINATING lane regardless of which
+      // session is now active — gating the only feedback on
+      // `sid === activeIdRef.current` dropped a failed interaction entirely
+      // when the user switched away mid-decision. The toast still fires when
+      // the user is watching this lane.
+      appendNativeSystemItem(getNativeLane(sid), `${codexCopy.nativeApprovalDecisionFailed}${err && err.message ? err.message : err}`);
+      if (sid === activeIdRef.current) showError(err);
+    } finally {
+      if (card) card.submitting = false;
+      setRespondingSessionId(current => current === sid ? null : current);
+    }
+  }
+
+  function markNativeApprovalResolved(sessionId, approvalId, decision) {
+    const lane = getNativeLane(sessionId);
+    const card = lane.items.find(item => (
+      item && item.type === 'approval' && item.approvalId === approvalId
+    ));
+    if (card) {
+      card.resolved = true;
+      card.cardState = decision === 'deny' ? 'denied'
+        : decision === 'allow_for_session' ? 'allowed_session'
+        : 'allowed';
+    }
+    setNativeLaneTick(tick => tick + 1);
+  }
+
   // 原生车道手动压缩：直接调 compact_now 命令（与 work 侧共享同一条命令）——调完后，
   // 进行中/结果由 chat:compaction 系统项呈现（compactStart/compactDone/compactFail）；
   // invoke 本身失败按 work 侧同款补一条 compactFail 系统提示项。
@@ -3392,6 +3696,17 @@ export function CodexAcpView({
         />
       );
     }
+    if (item.extensionType === 'approval' && item.legacyItem) {
+      return (
+        <NativeApprovalCard
+          item={item.legacyItem}
+          responding={responding}
+          t={t}
+          copy={codexCopy}
+          onDecide={(decision) => decideNativeApproval(item.legacyItem.approvalId, decision).catch(showError)}
+        />
+      );
+    }
     if (item.type === 'permission' && item.extensionType === 'careful_blocked') {
       return (
         <div className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[12px] text-red-600 dark:text-red-300">
@@ -3428,6 +3743,15 @@ export function CodexAcpView({
               legacy.risk,
               legacy.agentId,
             )}
+          </div>
+        );
+      }
+      if (legacy.guardrailDenied) {
+        // tri-mode 守卫硬拒（不出卡）：按稳定 reason 键映射三语；未知键原样透出。
+        return (
+          <div className="px-1 text-[11px] text-gray-400">
+            {codexCopy.nativeGuardrailDenied}{legacy.toolName ? `: ${legacy.toolName} — ` : ': '}
+            {nativeGuardrailReasonText(legacy.reason, codexCopy)}
           </div>
         );
       }
@@ -4198,6 +4522,10 @@ export function CodexAcpView({
                         mode={nativeModeValue}
                         busy={busy || working}
                         onSwitch={switchNativeMode}
+                        askOnGuardrail={nativeAskOnGuardrail}
+                        askToggleDisabled={!activeId}
+                        onToggleAskOnGuardrail={toggleNativeAskOnGuardrail}
+                        autoRowDisabled={!!isWeb && !!activeId}
                       />
                       {nativeModelChoices.length > 0 && (
                         <ComposerModelSelector

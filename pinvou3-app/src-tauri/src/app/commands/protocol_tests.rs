@@ -210,7 +210,11 @@ command_protocol!(
         "submit_user_input",
         "cancel_user_input",
         "get_pending_user_inputs",
-        "summon_pinvou"
+        "summon_pinvou",
+        "decide_approval",
+        "get_pending_approvals",
+        "set_session_mode",
+        "set_ask_on_guardrail"
     ]
 );
 command_protocol!(
@@ -248,6 +252,46 @@ command_protocol!(
         "kb_model_download"
     ]
 );
+
+/// round-10 补钉：审批记忆随会话删除清空（claim 2 的唯一实现线）是
+/// composition root 里的一行——`session_purged_hook` 内的
+/// `pending_approvals::clear_session`。钩子机制与 clear_session 行为各有
+/// 行为钉，但这行接线此前删掉全绿。邻座两条 clear（timing/pending_user_input）
+/// 一并钉住，防未来的 hook 体检把审批记忆漏掉。
+#[test]
+fn session_purged_hook_clears_approval_memory() {
+    let app_entrypoint = include_str!("../../lib.rs");
+    // 钩子体内含多层 `);`（邻居 clear 的参数收尾），按首个 `);` 切会截断——
+    // 改取注册点之后的固定窗口。
+    let hook = app_entrypoint
+        .split("register_session_purged_hook(")
+        .nth(1)
+        .expect("the session purged hook must be registered in lib.rs");
+    // Round-13: floor the fixed window to a char boundary — lib.rs carries
+    // multibyte comments, and a blind byte slice would panic with an opaque
+    // "not a char boundary" instead of a real assertion if a future edit
+    // straddles the offset.
+    let window_end = hook.len().min(1500);
+    let window_end = hook
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|i| *i <= window_end)
+        .last()
+        .unwrap_or(0);
+    let body = &hook[..window_end];
+    assert!(
+        body.contains("crate::features::assistant::pending_approvals::clear_session("),
+        "the purged hook must clear approval memory (grant/denial/pending) for the deleted session"
+    );
+    assert!(
+        body.contains("pending_user_input::clear_session("),
+        "pre-existing neighbor clear (pending_user_input) must stay wired"
+    );
+    assert!(
+        body.contains("timing::clear_session("),
+        "pre-existing neighbor clear (timing) must stay wired"
+    );
+}
 
 #[test]
 fn preinstalled_model_startup_commands_are_not_registered() {
@@ -485,6 +529,8 @@ command_protocol!(
     "settings.rs",
     [
         "get_settings",
+        "get_ask_on_guardrail_default",
+        "set_ask_on_guardrail_default",
         "submit_feedback",
         "get_effective_model_config",
         "list_models",

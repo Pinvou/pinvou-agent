@@ -81,16 +81,28 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
       if ((modeStateEpochs[sid] || 0) !== epoch) return;
       if (state.activeSessionId !== sid) {
         runSyncOnSession(sid, function () {
-          state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+          state.modeState = {
+            // tri-mode：定向写回分支的兜底与 active 分支同一最坏方向安全档
+            // auto，不再退最宽档 yolo（round-9 与 sibling 分支对齐）。
+            mode: ms.mode || "auto",
+            multiAgent: !!ms.multi_agent,
+            askOnGuardrail: ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
+          };
         });
         return;
       }
-      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+      state.modeState = {
+        // tri-mode：缺省兜底与后端 resolved 默认一致（unbound plain → auto），
+        // 不再显示最宽档 yolo（round-2 M 家族：读失败兜底是最坏方向的谎言）。
+        mode: ms.mode || "auto",
+        multiAgent: !!ms.multi_agent,
+        askOnGuardrail: ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
+      };
     } catch {
       // get 失败同样不得用默认值覆盖已发生的权威改写。
       if ((modeStateEpochs[sid] || 0) !== epoch) return;
       if (state.activeSessionId !== sid) return;
-      state.modeState = { mode: "yolo", multiAgent: false };
+      state.modeState = { mode: "auto", multiAgent: false, askOnGuardrail: true };
     }
   }
 
@@ -100,12 +112,20 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
   // already-materialized session writes only that session's own record
   // (set_plan_mode_next and other per-session commands no longer leak into
   // globals in the backend).
+  // Draft-defaults writes get an epoch like the session reads: a
+  // get_mode_defaults issued BEFORE an in-flight setDraftMode (or
+  // setMultiAgentMode's draft branch) must not land after it and overwrite
+  // the just-written default with the pre-switch value — same staleness
+  // class the syncModeState epoch guards cover, on the draft surface
+  // (round-8 L7-2; the body's disclosure named only setDraftMode).
+  let modeDefaultsEpoch = 0;
   async function refreshModeDefaults() {
+    const epochAtRead = ++modeDefaultsEpoch;
     try {
       const defaults = await invoke("get_mode_defaults");
-      if (defaults) state.modeDefaults = defaults;
+      if (defaults && epochAtRead === modeDefaultsEpoch) state.modeDefaults = defaults;
     } catch { /* 读取失败保留旧值/缺省，不打扰交互 */ }
-    if (!state.activeSessionId) {
+    if (!state.activeSessionId && epochAtRead === modeDefaultsEpoch) {
       state.modeState = currentDraftModeState();
       notify();
     }
@@ -120,19 +140,34 @@ function setModeLane(lane) { return pinvouSharedtauriInteraction().setModeLane(l
   // materialization (the backend resolves only the code lane default for bound
   // sessions, never the work one).
   async function setDraftMode(target) {
+    // Any draft-default WRITE invalidates in-flight defaults reads (round-8
+    // L7-2 staleness discipline).
+    modeDefaultsEpoch += 1;
+    // The write's own response obeys the same discipline as the sibling read
+    // path above: capture the epoch after the invalidating bump and verify
+    // before applying — a defaults read issued after this write bumped the
+    // epoch again, and this stale response must not overwrite the fresher
+    // value that read lands (round-9).
+    const epochAtWrite = modeDefaultsEpoch;
     const boundDraft = !!state.draftWorkspacePath;
     // Bound drafts always write the code lane; unbound drafts follow the
     // current lane (two lanes, work/code; design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
-      if (defaults) state.modeDefaults = defaults;
-      if (boundDraft) state.pendingDraftMode = target;
-      if (!state.activeSessionId) {
-        state.modeState = {
-          mode: target,
-          multiAgent: !!(state.modeState && state.modeState.multiAgent),
-        };
+      // The whole post-await body obeys the epoch, not just the defaults
+      // write (round-10 review): an out-of-order earlier write's response
+      // must not re-pin pendingDraftMode or flip the draft display back to
+      // its target after a fresher write already landed.
+      if (epochAtWrite === modeDefaultsEpoch) {
+        if (defaults) state.modeDefaults = defaults;
+        if (boundDraft) state.pendingDraftMode = target;
+        if (!state.activeSessionId) {
+          state.modeState = {
+            mode: target,
+            multiAgent: !!(state.modeState && state.modeState.multiAgent),
+          };
+        }
       }
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
@@ -349,8 +384,10 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
         // 后端返回为准。
         state.pendingDraftMultiAgent = !!enabled;
         state.modeState = {
-          mode: (state.modeState && state.modeState.mode) || "yolo",
+          // tri-mode：缺省兜底与 active 分支同一最坏方向安全档 auto（round-9）。
+          mode: (state.modeState && state.modeState.mode) || "auto",
           multiAgent: !!enabled,
+          askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
         };
         // 草稿分支会从 try 内提前返回，走不到函数末尾的 notify()。
         // 必须在这里主动发布快照，否则拨杆只能等下一次无关状态事件才刷新。
@@ -366,8 +403,10 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
       // 丢弃，权威值由下方 set_multi_agent_mode 返回后写回（审计意见）。
       bumpModeStateEpoch(sid);
       state.modeState = {
-        mode: (state.modeState && state.modeState.mode) || "yolo",
+        // tri-mode：缺省兜底与 active 分支同一最坏方向安全档 auto（round-9）。
+        mode: (state.modeState && state.modeState.mode) || "auto",
         multiAgent: !!enabled,
+        askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
       };
       notify();
       try {
@@ -378,8 +417,10 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
         // 全局 modeState 会把回滚砸进别的会话、报错落错聊天（复核 P1）。
         runOnSession(sid, function () {
           state.modeState = {
-            mode: (state.modeState && state.modeState.mode) || "yolo",
+            // tri-mode：回滚兜底同样取最坏方向安全档 auto（round-9）。
+            mode: (state.modeState && state.modeState.mode) || "auto",
             multiAgent: previousMultiAgent,
+            askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
           };
           addSystemItem(bt("switchModeFailed") + invokeError);
         });
@@ -405,8 +446,32 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
-    patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo(sid);
+    // 在途防重入 + 提交后才落已处理（与下方 planStuckGoAuto 同一纪律，评审
+    // P2 形态对齐）：等待窗口横跨一次后端往返，没有同步闩时第二次点击会派发
+    // 重复的模式切换/重复的补充指令 turn。旧形态先 resolved:true 再 await——
+    // exitPlanToYolo 被拒时卡片已被剥掉动作且异常无人接（onClick 上的
+    // unhandled rejection）；失败现在恢复可点并定向提示。
+    let stuck = null;
+    runSyncOnSession(sid, function () {
+      stuck = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "planStuck" && candidate.id === itemId;
+      }) || null;
+    });
+    if (stuck && stuck.submitting) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
+    try {
+      // Direct invoke (planStuckGoAuto 同款): the shared exitPlanToYolo
+      // wrapper swallows failures internally (exitPlanFailed system item),
+      // so a rejected switch is undetectable through it — commit-marking
+      // needs the rejection to keep the card actionable.
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) {
+      patchItemByIdFor(sid, itemId, { submitting: false });
+      addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();
+      return;
+    }
+    patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
@@ -414,6 +479,169 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     try {
       await sendMessageToSession(sid, bt("planStuckGoPrompt"));
     } catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
+  }
+  // plan-stuck 卡的 Auto 档继续（tri-mode）：与 planStuckGo 同一条补充指令，
+  // 但切换目标是 Auto（逐项审批）而不是 Yolo——UI 层的一次性确认门只对
+  // yolo 生效，Auto 不经门。sid 捕获 / 定向写回与 planStuckGo 同一约定。
+  async function planStuckGoAuto(itemId, targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    // 在途防重入（decideApproval/setMultiAgentMode 同款）：mark handled only
+    // after the switch commits (reviewer P2) 的等待窗口横跨一次热同步往返，
+    // 没有同步闩时第二次点击会派发重复的 set_session_mode 和重复排队的补充
+    // 指令 turn。The catch keeps the card actionable and surfaces the error.
+    let stuck = null;
+    runSyncOnSession(sid, function () {
+      stuck = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "planStuck" && candidate.id === itemId;
+      }) || null;
+    });
+    if (stuck && stuck.submitting) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
+    try {
+      const st = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });
+      applyAuthoritativeModeState(sid, st);
+      patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
+    } catch (e) {
+      patchItemByIdFor(sid, itemId, { submitting: false });
+      addSystemItemFor(sid, bt("switchModeFailed") + e); notify(); return;
+    }
+    try { await sendMessageToSession(sid, bt("planStuckGoPrompt")); }
+    catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
+  }
+
+  // ── tri-mode 统一模式切换 / 会话级 ask-on-guardrail / 审批卡决策 ──────────
+  // sid 捕获与 exitPlanToYolo 同一约定：调用方可显式钉住目标会话，无参调用
+  // 读 live-active。权威写回一律走 applyAuthoritativeModeState（共享 epoch 表）。
+  async function setSessionMode(targetSessionId, mode, askOnGuardrail) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    try {
+      const args = { sessionId: sid, mode };
+      // 可选参数：仅显式传入时携带（undefined 不上线，保持协议指纹最小）。
+      if (askOnGuardrail === true || askOnGuardrail === false) args.askOnGuardrail = askOnGuardrail;
+      const st = await invoke("set_session_mode", args);
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
+    notify();
+  }
+  // 会话级「守卫命中时询问」开关：乐观翻转（后端要热同步底座安全姿态，可能
+  // 耗时），失败按触发会话回滚并提示（setMultiAgentMode 同款乐观模式）。
+  // 乐观写走 runSyncOnSession(sid)：显式 sid 参数也合法（非仅 live-active），
+  // 裸全局写会在「渲染镜像滞后一拍的切换窗口」里把翻转落到新会话的面上
+  // （round-13 review）。
+  async function setAskOnGuardrail(targetSessionId, enabled) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    let previousAsk = true;
+    runSyncOnSession(sid, function () {
+      previousAsk = (state.modeState && state.modeState.askOnGuardrail) !== false;
+      bumpModeStateEpoch(sid);
+      state.modeState = {
+        mode: (state.modeState && state.modeState.mode) || "auto",
+        multiAgent: !!(state.modeState && state.modeState.multiAgent),
+        askOnGuardrail: !!enabled,
+      };
+    });
+    notify();
+    try {
+      const st = await invoke("set_ask_on_guardrail", { sessionId: sid, enabled: !!enabled });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) {
+      runOnSession(sid, function () {
+        state.modeState = {
+          mode: (state.modeState && state.modeState.mode) || "auto",
+          multiAgent: !!(state.modeState && state.modeState.multiAgent),
+          askOnGuardrail: previousAsk,
+        };
+        addSystemItem(bt("switchModeFailed") + e);
+      });
+      // Reconcile from the persisted source of truth (reviewer P3): two
+      // opposite toggles that BOTH fail would each restore their captured
+      // optimistic value, leaving the chip showing enabled while the durable
+      // setting is disabled. The authoritative re-read converges the chip to
+      // what the backend actually kept; a re-read failure must not mask the
+      // original error, so the rollback value above stays the fallback.
+      // syncModeState 同款 epoch 纪律：重读发起前捕获、await 返回后校验——
+      // 窗口内落地的 chat:mode_changed 权威广播已 bump epoch，此读取即陈旧：
+      // 跳过写回（保留上面 rollback 值；权威值已由广播经收敛点落位），否则
+      // 旧快照会把权威值打回去，直到下一次事件才恢复一致（round-7 复核）。
+      const epoch = modeStateEpochs[sid] || 0;
+      try {
+        const ms = await invoke("get_mode_state", { sessionId: sid });
+        if ((modeStateEpochs[sid] || 0) === epoch) applyAuthoritativeModeState(sid, ms);
+      } catch { /* keep the optimistic rollback value */ }
+    }
+    notify();
+  }
+  // 审批卡决策回传（decide_approval）：sid 在 entry 捕获（await 期间用户可能
+  // 切会话，写入必须定向回触发会话，与 acceptPlan 同一约定）。乐观置为提交中，
+  // 成功写终态（终态文案由渲染层按 cardState 映射三语），失败恢复 active。
+  async function decideApproval(approvalId, decision, targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid || !approvalId) return;
+    let card = null;
+    runSyncOnSession(sid, function () {
+      card = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "approval" && candidate.approvalId === approvalId;
+      }) || null;
+    });
+    if (!card || card.resolved) return;
+    // 在途防重入（setMultiAgentMode 同款）：双击快过重渲染时会派发第二次
+    // decide_approval，第一次已成功后第二次只会得到 "approval not found"
+    // 并把失败提示打进会话流。
+    if (card.submitting) return;
+    const previous = { resolved: !!card.resolved, cardState: card.cardState || "active" };
+    runSyncOnSession(sid, function () { card.submitting = true; });
+    notify();
+    try {
+      await invoke("decide_approval", { sessionId: sid, approvalId, decision });
+      runSyncOnSession(sid, function () {
+        card.submitting = false;
+        card.resolved = true;
+        card.cardState = decision === "deny" ? "denied"
+          : decision === "allow_for_session" ? "allowed_session" : "allowed";
+        card.statusLabel = "";
+      });
+    } catch (e) {
+      runSyncOnSession(sid, function () {
+        card.submitting = false;
+        // M5：终态清扫（chat:done）可能在 await 期间已把卡就地落 cancelled。
+        // 恢复 pre-call 状态前必须让位终态——否则已取消的卡复活可点，后续
+        // 每次点击都追加失败提示。chat:approval_resolved 回声同理不覆盖
+        // 已决卡（回声处理只对未决卡生效）。
+        // 未知终态（宿主 P2）：后端在返回 Err 前已广播 decision "unknown"
+        // 的收敛事件；事件先落时卡已是不可决的 unknown 态——恢复 pre-call
+        // 的 active 会把它翻回可点（对可能已被消费的决策再邀一次点击），
+        // 必须让位。事件后落时这里照旧恢复，随后的收敛事件再把卡改写为
+        // unknown（只对未决卡生效），两种到达顺序都收敛到不可决。
+        if (card.cardState === "unknown") return;
+        if (!card.resolved) {
+          card.resolved = previous.resolved;
+          card.cardState = previous.cardState;
+        }
+      });
+      addSystemItemFor(sid, bt("approvalDecisionFailed") + e);
+    }
+    notify();
+  }
+  // 会话当前挂起的审批卡（remount / 切会话恢复用）。读取失败按空处理——
+  // 恢复是尽力而为，不得阻塞会话切换。
+  async function getPendingApprovals(targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return [];
+    try { return await invoke("get_pending_approvals", { sessionId: sid }) || []; }
+    catch { return []; }
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -532,6 +760,11 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       setMultiAgentMode,
       planStuckReplan,
       planStuckGo,
+      planStuckGoAuto,
+      setSessionMode,
+      setAskOnGuardrail,
+      decideApproval,
+      getPendingApprovals,
       submitUserInput,
       cancelUserInput,
       editLastTurn,

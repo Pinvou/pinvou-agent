@@ -25,7 +25,7 @@ import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
 import { RightDockPanel, useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
-import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard } from '../tools/tool-renderers.jsx';
+import { ApprovalCard, CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard } from '../tools/tool-renderers.jsx';
 import { cardBtnCls } from '../../shared/card-buttons.mjs';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
@@ -219,7 +219,7 @@ import {
 import { ComposerWorkspaceSelector } from './ComposerWorkspaceSelector.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { needsYoloConfirmation } from '../codex/code-permission-state.js';
-import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
+import { CHAT_YOLO_GATE_UNKNOWN_BINDING, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
 import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
 import {
   VoiceComposerButton,
@@ -2824,21 +2824,39 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // One-time YOLO confirmation gate for the first switch of a session/draft
       // with a bound workspace (matching code mode): confirming writes the global
       // flag and continues the switch (for a draft, exitPlanToYolo stages the mode
-      // choice); cancelling stays in Plan. Unbound targets keep the original path
-      // with no card.
+      // choice); cancelling stays in Plan. Unbound drafts are gated too since
+      // round-7: the lane default applies to every future session, so entering
+      // full-auto there goes through the same card.
       const [pendingChatYoloSwitch, setPendingChatYoloSwitch] = useState(false);
       const [chatYoloConfirmBusy, setChatYoloConfirmBusy] = useState(false);
+      // Round-9: the state flag commits one render late — the ref latch
+      // (consumed in confirmChatYoloSwitch) closes the same-tick double click.
+      const chatYoloConfirmBusyRef = useRef(false);
       const [chatYoloConfirmError, setChatYoloConfirmError] = useState('');
       // Target session captured when the confirm card opens: if the user switches
       // away during the confirm round-trip, exitPlanToYolo must not act on the new
       // active session.
       const pendingChatYoloSwitchSidRef = useRef(null);
-      // Action to continue after the confirmation: the mode-chip switch
-      // (default) or a plan-stuck card's Go. Both must pass the same
-      // one-time YOLO gate — the Go path used to call the bridge's no-arg
-      // exitPlanToYolo and flipped a bound session without any card
-      // (#445 R9 MAJOR 1).
+      // Action to continue after the confirmation: the mode-chip switch or a
+      // plan-stuck card's Go. Both must pass the same one-time YOLO gate —
+      // the Go path used to call the bridge's no-arg exitPlanToYolo and
+      // flipped a bound session without any card (#445 R9 MAJOR 1). Callers
+      // pass their action to the gate explicitly and the gate assigns it
+      // unconditionally: the old preset-then-conditional-fill shape raced a
+      // gen-matched in-flight confirm — its success path nulls the ref
+      // between the caller's preset and the gate's `if (!ref.current)` fill,
+      // so the fill armed the NEW dialog with the bare default
+      // `{ kind: 'modeChip' }` (no `via`) and that dialog's confirm fell into
+      // the exitPlanToYolo branch instead of its pinned origin.
       const pendingChatYoloActionRef = useRef(null);
+      // Dialog generation for the one-time confirm: bumped every time the
+      // refs are (re)assigned or invalidated — gate open, cancel, and the
+      // session-switch effect. An in-flight confirm captures the generation
+      // before its await and discards its outcome on mismatch, so a save
+      // round-trip can never consume a NEWER dialog's not-yet-confirmed
+      // action (round-8 R8-1: the post-await ref re-read used to let
+      // session A's confirmation dispatch session B's captured action).
+      const pendingChatYoloDialogGenRef = useRef(0);
       // Binding resolution at switch time cannot rely on async state: while a query
       // is in flight a click would see null and skip the gate. Resolve synchronously
       // before the verdict (cache → bridge query) so clicks made while waiting still
@@ -2896,28 +2914,44 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return null;
       }
       // Adjudicate the one-time YOLO gate for a click on `gateSid`.
-      // Returns true when the caller may proceed with its final action now
-      // (unbound, already confirmed, or bridge without prefs support);
-      // false when the confirmation card was opened (or the click went
-      // stale mid-await and the action must be abandoned).
-      async function chatYoloGateAllows(gateSid) {
-        const sessionBinding = await resolveBindingForGate(gateSid);
+      // `action` is the caller's continue-action (mode-chip origin, draft
+      // lane default, or a plan-stuck card's Go), assigned to
+      // pendingChatYoloActionRef unconditionally when the card opens — the
+      // explicit parameter closes the preset/default-fill race documented on
+      // the ref above. The draft route is expressed via `action.via ===
+      // 'draftMode'` and extends the gate to the unbound draft: the lane
+      // default applies to every future session, so entering full-auto there
+      // must not skip the one-time confirmation (codex switchNativeMode
+      // parity). Returns true when the
+      // caller may proceed with its final action now (unbound, already
+      // confirmed, or bridge without prefs support); false when the
+      // confirmation card was opened (or the click went stale mid-await and
+      // the action must be abandoned).
+      async function chatYoloGateAllows(gateSid, action) {
+        // Round-7 review P2: the gate is a YOLO-entry gate, not a
+        // workspace-binding gate — an unbound materialized session is exactly
+        // the population that can flip to full-auto without a second look,
+        // and the codex lane already gates every Yolo entry. The binding
+        // query stays (it refreshes the chip cache); the adjudication no
+        // longer keys on it. Prefs still decide (needsYoloConfirmation is
+        // false once yolo_confirmed is recorded), so this only widens who
+        // gets asked, never bypasses anyone.
+        await resolveBindingForGate(gateSid);
         // If the user switched away during the query round-trip, the
         // adjudication belongs to the session captured at click time — the
         // action must be abandoned.
         if (gateSid !== activeSessionIdRef.current) return false;
-        const boundTarget = chatYoloGateApplies({
-          activeSessionId: gateSid,
-          sessionBinding,
-          draftWorkspacePath: bs && bs.draftWorkspacePath,
-        });
-        if (boundTarget && typeof bridge.interaction.getCodePermissionPrefs === 'function') {
+        if (typeof bridge.interaction.getCodePermissionPrefs === 'function') {
           const prefs = await bridge.interaction.getCodePermissionPrefs();
           // Re-check after the second await as well.
           if (gateSid !== activeSessionIdRef.current) return false;
           if (needsYoloConfirmation(prefs)) {
+            // A newly opened dialog owns the shared refs: bump the generation
+            // so any confirm still awaiting its save round-trip discards.
+            pendingChatYoloDialogGenRef.current += 1;
             pendingChatYoloSwitchSidRef.current = gateSid;
-            if (!pendingChatYoloActionRef.current) pendingChatYoloActionRef.current = { kind: 'modeChip' };
+            // Unconditional: the action arrives as an explicit parameter (race note on the ref above).
+            pendingChatYoloActionRef.current = action;
             setPendingChatYoloSwitch(true);
             return false;
           }
@@ -2979,74 +3013,168 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // round-47 M5: the resolver body lives in features/chat/bound-draft-mode.js
       // (shared with main.jsx's chatLaneGrantMode) — one body, no drift twin.
       const boundDraftNoticeMode = () => boundDraftNoticeModeOf(bridge, bs);
-      async function handleModeChipSwitch(target, { isPlan }) {
+      async function handleModeChipSwitch(target, { isPlan } = {}) {
         if (!bridge.available || !bridge.interaction) return;
         if (target === 'plan' && !isPlan) {
           await bridge.interaction.setPlanModeNext();
           return;
         }
-        if (target !== 'yolo' || !isPlan) return;
+        // 草稿态（无已物化会话）：三档都必须落到 lane 全局默认
+        // （setDraftMode 支持 plan/yolo/auto 三值），绝不静默吞没——
+        // setSessionMode 对 !sid 是纯 no-op（round-2 M1），而
+        // setPlanModeNext/exitPlanToYolo 的草稿兜底早已是 setDraftMode；
+        // 未绑定草稿点 Yolo 同样过一次性确认门（codex 车道
+        // needsYoloConfirmation 对草稿生效，两车道同约）。
+        if (!activeSessionId) {
+          if (target !== 'auto' && target !== 'yolo') return;
+          // Pass the draft dispatch explicitly: if the gate opens its card,
+          // the confirm lands setDraftMode('yolo') (the lane default), not a
+          // session command that would no-op without a sid.
+          if (target === 'yolo' && !(await chatYoloGateAllows(null, { kind: 'modeChip', via: 'draftMode' }))) return;
+          await bridge.interaction.setDraftMode(target);
+          return;
+        }
+        // Auto（tri-mode 逐项审批档）：无一次性确认门——门只对 yolo 生效。
+        // 目标会话在 entry 捕获：await 期间切走也切的是发起会话的 mode。
+        // Web 面的审批卡无法在浏览器决策（decide_approval 在协议白名单是
+        // 前向兼容登记，web 桥门面不导出它——round-8 L6-F1 同口径），放行
+        // 进入 Auto 会把会话钉死在 Web 发送门（webAutoSendBlocked）之后；
+        // Auto→Yolo 逃生走下方同一命令，在 Web 可达。
+        if (target === 'auto') {
+          if (isWeb || typeof bridge.interaction.setSessionMode !== 'function') return;
+          await bridge.interaction.setSessionMode(activeSessionId, 'auto');
+          return;
+        }
+        if (target !== 'yolo') return;
+        // Yolo 确认门对 Auto → Yolo 同样生效（v3.5 修复：旧两态时代
+        // `!isPlan` 早退是死代码，tri-mode 使其成为可达的吞没点——Auto 态
+        // 点 Yolo 静默无操作，回全自动驾驶只能绕道 Plan）。Yolo→Yolo 已被
+        // chip 的 target === activeMode 早退拦下。
         const gateSid = activeSessionId;
         // Post-await re-checks live inside chatYoloGateAllows: the
         // adjudication is for the session captured at click time, and the
         // final action must not follow a switch-away.
         if (gateSid !== activeSessionIdRef.current) return;
-        if (!(await chatYoloGateAllows(gateSid))) return;
+        // Pass the dispatch origin explicitly: if the gate opens its card, the
+        // confirm must dispatch the SAME command family this click came from
+        // (Plan→Yolo exits the plan via exit_plan_to_yolo, Auto→Yolo goes
+        // through set_session_mode) instead of a fixed command — the two
+        // commands are equivalent today, and pinning the origin keeps them
+        // from drifting apart silently.
+        if (!(await chatYoloGateAllows(gateSid, { kind: 'modeChip', via: isPlan ? 'exitPlanToYolo' : 'sessionMode' }))) return;
         // The final action targets the adjudicated sid explicitly: the ref
         // re-checks only cover this component's awaits, while the bridge's
         // no-arg exitPlanToYolo reads live-active at call time — a
         // render-phase mirror can lag the bridge store by one flush, so the
         // adjudicated session must reach the command as a parameter.
-        await bridge.interaction.exitPlanToYolo(gateSid);
+        if (isPlan) {
+          // Plan 退回：语义命令 exit_plan_to_yolo（立即生效）。
+          await bridge.interaction.exitPlanToYolo(gateSid);
+        } else if (typeof bridge.interaction.setSessionMode === 'function') {
+          // Auto → Yolo：统一 set_session_mode（后端同一热同步 + 广播序列）。
+          await bridge.interaction.setSessionMode(gateSid, 'yolo');
+        }
+      }
+      // 会话级「守卫命中时询问」开关（tri-mode）：乐观翻转 + 失败回滚都在
+      // bridge（interaction.setAskOnGuardrail，setMultiAgentMode 同款模式），
+      // 这里只转发；sid 由 bridge 在 entry 捕获 live-active。
+      async function handleToggleAskOnGuardrail(enabled) {
+        if (!bridge.available || !bridge.interaction) return;
+        if (typeof bridge.interaction.setAskOnGuardrail !== 'function') return;
+        await bridge.interaction.setAskOnGuardrail(activeSessionId, enabled);
       }
       // The plan-stuck card's Go reaches Yolo too, so it passes the same
       // one-time gate and threads the card's session id into the bridge
       // (the bridge's no-arg form reads live-active, which is both a
       // gate bypass for a bound session and the stale-active defect).
-      async function handlePlanStuckGo(itemId) {
+      async function handlePlanStuckGo(itemId, targetMode) {
         if (!bridge.available || !bridge.interaction) return;
+        // Auto 档继续（tri-mode）：不经 Yolo 确认门（门只对 yolo 生效），走
+        // planStuckGoAuto——同一条补充指令，切换目标是 Auto 而不是 Yolo。
+        const goAuto = targetMode === 'auto' && typeof bridge.interaction.planStuckGoAuto === 'function';
         const gateSid = activeSessionId;
-        if (!gateSid) { await bridge.interaction.planStuckGo(itemId); return; }
+        if (!gateSid) {
+          if (goAuto) { await bridge.interaction.planStuckGoAuto(itemId); return; }
+          await bridge.interaction.planStuckGo(itemId);
+          return;
+        }
         if (gateSid !== activeSessionIdRef.current) return;
-        pendingChatYoloActionRef.current = { kind: 'planStuckGo', itemId };
-        if (!(await chatYoloGateAllows(gateSid))) return;
+        if (goAuto) { await bridge.interaction.planStuckGoAuto(itemId, gateSid); return; }
+        if (!(await chatYoloGateAllows(gateSid, { kind: 'planStuckGo', itemId }))) return;
         await bridge.interaction.planStuckGo(itemId, gateSid);
       }
       async function confirmChatYoloSwitch() {
-        if (chatYoloConfirmBusy) return;
+        // Round-9: the state flag commits one render late — the ref latch
+        // closes the same-tick double click (set synchronously at entry,
+        // cleared in the finally below alongside the state reset).
+        if (chatYoloConfirmBusyRef.current) return;
+        chatYoloConfirmBusyRef.current = true;
+        if (chatYoloConfirmBusy) {
+          // Stale-state arm (round-11 review): the previous attempt's finally
+          // already released the ref synchronously and queued the state reset
+          // that has not committed yet — no attempt is in flight. Release the
+          // latch here; leaving it set strands the confirm button with
+          // nothing left to clear it (dead until remount).
+          chatYoloConfirmBusyRef.current = false;
+          return;
+        }
         setChatYoloConfirmBusy(true);
         setChatYoloConfirmError('');
+        // Capture the dialog identity BEFORE the await: the preference save is
+        // exactly the window where the user can switch sessions, cancel, or
+        // open another confirm. The shared mutable refs belong to whichever
+        // dialog opened last — re-reading them after the await let a stale
+        // confirmation consume the newer dialog's not-yet-confirmed action
+        // (round-8 R8-1): A's resolution saw the live-active guard satisfied
+        // by B's own state and dispatched B's captured planStuckGo.
+        const genAtConfirm = pendingChatYoloDialogGenRef.current;
+        const sidAtConfirm = pendingChatYoloSwitchSidRef.current;
+        const actionAtConfirm = pendingChatYoloActionRef.current;
         try {
           await bridge.interaction.confirmCodeYolo();
-          if (pendingChatYoloSwitchSidRef.current !== activeSessionIdRef.current) {
-            // Switched away: just dismiss the card (the global flag is already written;
-            // the target session will not be prompted again after switching back).
-            setPendingChatYoloSwitch(false);
+          if (pendingChatYoloDialogGenRef.current !== genAtConfirm) {
+            // Superseded: this click's dialog is gone (session switch, cancel,
+            // or a newer confirm). The global one-shot flag is already
+            // written; the newer dialog re-confirms on its own click. Discard
+            // without touching the shared refs, flag, or error state — they
+            // belong to the newer dialog now.
             return;
           }
           setPendingChatYoloSwitch(false);
-          // Dispatch on the action captured when the card opened, targeting
-          // the captured sid — never live-active at call time.
-          const action = pendingChatYoloActionRef.current;
           pendingChatYoloActionRef.current = null;
-          if (action && action.kind === 'planStuckGo') {
-            await bridge.interaction.planStuckGo(action.itemId, pendingChatYoloSwitchSidRef.current);
+          // Dispatch on the action captured when THIS card opened, targeting
+          // the captured sid — never the post-await refs, never live-active.
+          if (actionAtConfirm && actionAtConfirm.kind === 'planStuckGo') {
+            await bridge.interaction.planStuckGo(actionAtConfirm.itemId, sidAtConfirm);
+          } else if (actionAtConfirm && actionAtConfirm.via === 'sessionMode') {
+            await bridge.interaction.setSessionMode(sidAtConfirm, 'yolo');
+          } else if (actionAtConfirm && actionAtConfirm.via === 'draftMode') {
+            await bridge.interaction.setDraftMode('yolo');
           } else {
-            await bridge.interaction.exitPlanToYolo(pendingChatYoloSwitchSidRef.current);
+            await bridge.interaction.exitPlanToYolo(sidAtConfirm);
           }
         } catch (e) {
           // No longer fail silently: keep the card open and show the reason inline
           // (matching the code lane; on old backends without confirmCodeYolo the user
-          // must not be left without feedback).
+          // must not be left without feedback). The error write is
+          // generation-gated too — a superseded attempt must not paint its
+          // failure onto the newer dialog.
           console.warn('confirm chat yolo switch failed', e);
-          setChatYoloConfirmError(String(e && e.message || e || 'error'));
+          if (pendingChatYoloDialogGenRef.current === genAtConfirm) {
+            setChatYoloConfirmError(String(e && e.message || e || 'error'));
+          }
         } finally {
+          chatYoloConfirmBusyRef.current = false;
           setChatYoloConfirmBusy(false);
         }
       }
       // Switching sessions invalidates the old session's confirm card and error
       // message.
       useEffect(() => {
+        // The bump discards any confirm still awaiting its save round-trip:
+        // the refs this effect nulls belonged to the previous session's
+        // dialog (round-8 R8-1).
+        pendingChatYoloDialogGenRef.current += 1;
         pendingChatYoloSwitchSidRef.current = null;
         pendingChatYoloActionRef.current = null;
         // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
@@ -4284,7 +4412,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                       />
                     );
                   })()}
-                  <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
+                  <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch}
+                    askOnGuardrail={bs && bs.modeState ? bs.modeState.askOnGuardrail : undefined}
+                    askToggleDisabled={!activeSessionId
+                      || !(bridge.interaction && typeof bridge.interaction.setAskOnGuardrail === 'function')}
+                    autoRowDisabled={!!isWeb && !!activeSessionId}
+                    onToggleAskOnGuardrail={handleToggleAskOnGuardrail} />
                   {/* Scheduled run conversations expose no swarm toggle:
                       the backend's swarm_mode_available excludes them (the
                       engine always assembles plain config there), so the
@@ -4391,7 +4524,21 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               error={chatYoloConfirmError}
               busy={chatYoloConfirmBusy}
               onConfirm={confirmChatYoloSwitch}
-              onCancel={() => setPendingChatYoloSwitch(false)}
+              onCancel={() => {
+                // Cancel must dispose the pending continue action, not just
+                // close the dialog — keep every invalidation point symmetric
+                // so no captured planStuckGo/modeChip outlives its own dialog
+                // (the gate now assigns the caller's action unconditionally on
+                // open, but the confirm still captures whatever the shared ref
+                // holds at click time). Same invalidation convention as the
+                // session-switch effect above.
+                // The generation bump also discards any confirm still
+                // awaiting its save round-trip (round-8 R8-1).
+                pendingChatYoloDialogGenRef.current += 1;
+                pendingChatYoloSwitchSidRef.current = null;
+                pendingChatYoloActionRef.current = null;
+                setPendingChatYoloSwitch(false);
+              }}
             />
           )}
 
@@ -5085,6 +5232,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
       if (item.type === 'plan_stuck') return <PlanStuckCard item={item} t={t} onGo={onPlanStuckGo} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;
+      if (item.type === 'approval') return <ApprovalCard item={item} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} t={t} />;
       if (item.type === 'user') {
         return <UserBubble item={item} sessionId={sessionId} editable={editable} t={t} conversationVariant={conversationVariant} onOpenSessionMention={onOpenSessionMention} knownSessionMentionIds={knownSessionMentionIds} sessionMentionDisabled={sessionMentionDisabled} />;

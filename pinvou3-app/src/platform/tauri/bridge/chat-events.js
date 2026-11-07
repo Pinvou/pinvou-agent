@@ -1105,6 +1105,34 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
       sweepUnpairedToolMeta();
+      // tri-mode 审批卡终态清扫（与 toolMeta 未配对清扫同一口径）：turn 终态
+      // 时后端登记表已兜底清空（emit_chat_terminal → clear_pending），残留的
+      // active 卡点击只会得到 "approval not found"。终态卡就地落 cancelled，
+      // 不再可点（渲染层按 cardState 映射三语终态文案）。
+      state.chatItems.forEach(function (item) {
+        if (item && item.type === "approval" && !item.resolved) {
+          item.submitting = false;
+          item.resolved = true;
+          item.cardState = "cancelled";
+        }
+      });
+      // 终态代栅栏 bump（评审 P3）：该会话的审批重放代数在此推进——
+      // 终态前发出的 get_pending_approvals 快照回程时见代数已变即整批
+      // 作废，不会把引擎侧已消亡的审批当活卡插回（sessions.js 消费）。
+      if (!state.approvalReplayTerminalSeq) {
+        state.approvalReplayTerminalSeq = new Map();
+      }
+      const approvalSeqMap = state.approvalReplayTerminalSeq;
+      approvalSeqMap.set(String(sid), (approvalSeqMap.get(String(sid)) || 0) + 1);
+      // Cap like the tombstone maps (512, oldest-insertion evicted): the seq
+      // map is pure staleness bookkeeping — an evicted session simply
+      // re-arms its replay window at 0 on the next done, which is the same
+      // fresh-lane state a restart would produce (round-8 L7-3: unbounded
+      // growth across app lifetime for sessions that never purge).
+      if (approvalSeqMap.size > 512) {
+        const oldest = approvalSeqMap.keys().next().value;
+        approvalSeqMap.delete(oldest);
+      }
       // Refresh artifacts written in this turn in place when already presented.
       // Add only the first card for artifacts the model did not present, and
       // skip artifacts already presented in this turn or changed repeatedly.
@@ -1273,6 +1301,157 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       reason: String(p.reason || ""),
       risk: String(p.risk || ""),
     });
+  }); });
+
+  // ── tri-mode 审批面（plan/auto/yolo + ask-on-guardrail）──────────────
+  // 审批卡同 user_input：不进 messages.json，靠 chat:approval_required 事件
+  // 弹卡 + 会话切换时 get_pending_approvals 重放（sessions.js）。按 approvalId
+  // 幂等去重（hasChatItemForTool 同款形态扫描）：后端登记表对同一审批原位
+  // 替换，事件重放不得重复出卡。
+  function hasChatItemForApproval(approvalId) {
+    return !!approvalId && state.chatItems.some(function (item) {
+      return item && item.type === "approval" && item.approvalId === approvalId;
+    });
+  }
+  // 审批重放墓碑（评审 P2）：get_pending_approvals 快照在 await 期间，同一
+  // 审批可能已从另一表面落定——live 的 chat:approval_resolved 先到而此刻
+  // 无卡可落（快照在途/后台工作集尚未重放），随后旧快照回程会把它当活卡
+  // 插回。resolved 落空时把 id 记入本会话墓碑；approval_required 插卡与
+  // sessions.js 的重放同键检查，跨 await 的迟到快照不再复活已决审批。
+  // Key includes the sid: approval ids are engine-assigned, never assumed
+  // globally unique. Cap = 512 oldest-first eviction. Dropping beyond the
+  // cap is safe because a tombstone only serves the in-flight snapshot
+  // window and the backend registry no longer re-presents the id — EXCEPT
+  // for tombstones created inside that window (reviewer P3): a
+  // get_pending_approvals snapshot issued on session switch may still
+  // contain a just-resolved approval whose tombstone is the only evidence
+  // blocking the late snapshot return; enough unrelated resolutions (absent
+  // card + nonterminal target turn, where the terminal-seq fence does not
+  // apply) can evict it before the return and resurrect a decided approval
+  // as an actionable card the backend never reauthorizes. Tombstones created
+  // while a snapshot is in flight are therefore pinned (sessions.js maintains
+  // the approvalReplayInFlight counter at snapshot issue/return and releases
+  // approvalReplayPinnedTombstones per sid when the window closes); eviction
+  // skips pinned entries, and the map may temporarily exceed the cap when
+  // every entry is pinned — the excess is reclaimed at window close
+  // (sessions.js trims the oldest unpinned entries back to the cap once the
+  // pins are released; the single-evict insert below alone would never
+  // shrink an oversized map back down).
+  function approvalTombstoneMap() {
+    if (!state.approvalReplayTombstones) state.approvalReplayTombstones = new Map();
+    return state.approvalReplayTombstones;
+  }
+  function tombstoneApproval(sid, approvalId) {
+    const map = approvalTombstoneMap();
+    const key = String(sid) + "\u0000" + String(approvalId);
+    const inFlight = (state.approvalReplayInFlight && state.approvalReplayInFlight.get(String(sid))) || 0;
+    if (inFlight > 0) {
+      if (!state.approvalReplayPinnedTombstones) state.approvalReplayPinnedTombstones = new Set();
+      state.approvalReplayPinnedTombstones.add(key);
+    }
+    if (map.size >= 512) {
+      for (const oldest of map.keys()) {
+        if (state.approvalReplayPinnedTombstones && state.approvalReplayPinnedTombstones.has(oldest)) continue;
+        map.delete(oldest);
+        break;
+      }
+    }
+    map.set(key, true);
+  }
+  function approvalIsTombstoned(sid, approvalId) {
+    return !!approvalId && approvalTombstoneMap().has(String(sid) + "\u0000" + String(approvalId));
+  }
+  listen("chat:approval_required", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const approvalId = String(p.approval_id || "");
+    if (!approvalId) return;
+    if (hasChatItemForApproval(approvalId)) return;
+    if (approvalIsTombstoned(p.session_id, approvalId)) return;
+    addChatItem({
+      type: "approval",
+      approvalId,
+      toolName: String(p.tool_name || ""),
+      description: String(p.description || ""),
+      intentSummary: p.intent_summary == null ? "" : String(p.intent_summary),
+      input: p.input === undefined ? null : p.input,
+      forcePrompt: !!p.force_prompt,
+      resolved: false,
+      cardState: "active",
+      submitting: false,
+      statusLabel: "",
+      time: timeStr(),
+    });
+    notify();
+  }); });
+
+  // 审批决策收敛广播（tri-mode M5）：决策可能来自第二窗口或 remote 表面，
+  // 后端 decide_approval 落定后广播终态；本表面的同 id 未决卡就地落终态。
+  // 只对未决卡生效（幂等）：发起方的乐观终态、终态清扫的 cancelled 都不得
+  // 被回声覆盖。负载不带 tool input（后端载荷构造点有钉）。未知/缺失决策
+  // 值按 no-op 处理（fail-neutral）：审批面上的畸形载荷不得把卡映射成
+  // "allowed"——宁可留着未决等权威回声/终态清扫。
+  // decision "unknown" (host P2) is the backend's authoritative unknown-
+  // outcome disposition (ack + settle windows expired, registry entry
+  // dropped): the card moves to the non-decidable "unknown" state
+  // (resolved stays false - a late authoritative resolution event still
+  // reconciles it in place, and the turn-terminal sweep takes over
+  // otherwise), so the button face stops inviting a re-decision on a
+  // possibly-consumed approval. Any other unknown value stays a malformed
+  // no-op.
+  listen("chat:approval_resolved", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const approvalId = String(p.approval_id || "");
+    if (!approvalId) return;
+    const decision = String(p.decision || "");
+    if (!["deny", "allow", "allow_for_session", "unknown"].includes(decision)) return;
+    let changed = false;
+    state.chatItems.forEach(function (item) {
+      if (item && item.type === "approval" && item.approvalId === approvalId && !item.resolved) {
+        item.submitting = false;
+        if (decision === "unknown") {
+          item.cardState = "unknown";
+        } else {
+          item.resolved = true;
+          item.cardState = decision === "deny" ? "denied"
+            : decision === "allow_for_session" ? "allowed_session" : "allowed";
+        }
+        item.statusLabel = "";
+        changed = true;
+      }
+    });
+    // 无未决卡可落：决议来自快照在途窗口里的另一表面。留下墓碑，
+    // 在途快照回程不得把这个已决审批当活卡插回。负载缺 session_id 的
+    // 畸形载荷按 no-op 处理（round-13 review：undefined 键永远匹配不上
+    // 重放路径的 sid 键，墓碑写了也是死条目）。
+    if (!changed && p.session_id) tombstoneApproval(p.session_id, approvalId);
+    if (changed) notify();
+  }); });
+
+  // 守卫硬拒（不出卡）：reason 是稳定英文键（后端 ApprovalDenyReason::reason_key），
+  // 前端按键映射三语文案；未知键原样透出，保证可审计。
+  listen("chat:guardrail_denied", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const reason = String(p.reason || "");
+    const reasonText = reason === "session_denied" ? bt("toolGuardrailDeniedSessionDenied")
+      : reason === "plan_mode" ? bt("toolGuardrailDeniedPlan")
+      : reason === "guardrail_ask_off" ? bt("toolGuardrailDeniedAskOff")
+      : reason;
+    const text = bt("toolGuardrailDenied") + ": " + (p.tool_name ? String(p.tool_name) + " — " : "") + reasonText;
+    addSystemItem(text, {
+      guardrailDenied: true,
+      toolName: String(p.tool_name || ""),
+      reason,
+    });
+  }); });
+
+  // 权威 mode 广播（本端/远端切换都会发射）：走统一收敛点写回（epoch 保护，
+  // 在途 syncModeState 旧读作废）。负载只带 mode/ask_on_guardrail，multiAgent
+  // 由 applyAuthoritativeModeState 保留当前值。
+  listen("chat:mode_changed", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    if (!p.session_id) return;
+    applyAuthoritativeModeState(String(p.session_id), p);
+    notify();
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
@@ -1482,6 +1661,34 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
     notify();
   });
 
+    // Called from bridge.js on session buffer eviction/deletion: the
+    // approval-replay terminal-seq entry dies with the buffer (the fence
+    // only guards a LIVE session's replay; keeping deleted/evicted entries
+    // was the one map the purge sweep missed — round-8 L7-3).
+    //
+    // Review 5764675531 (P2): reclaiming must not reset the fence generation
+    // while a replay window is open. If the sid is evicted mid-window and the
+    // entry dies here, a session reopen re-arms the fence at the default 0 —
+    // so a snapshot issued BEFORE the terminal bump (captured fence 0)
+    // returns after the bump and passes the 0 == 0 check, re-inserting a
+    // decided approval as an active card. Defer instead (same cross-module
+    // shared-state convention as approvalReplayInFlight): sessions.js drops
+    // the entry when the last window for this sid closes (flush in
+    // replayPendingApprovals' finally); with no window open the direct
+    // delete keeps the round-8 L7-3 hygiene unchanged.
+    function purgeApprovalReplayTerminalSeq(sid) {
+      const key = String(sid);
+      if (state.approvalReplayInFlight && (state.approvalReplayInFlight.get(key) || 0) > 0) {
+        if (!state.approvalReplayTerminalSeqPurgePending) {
+          state.approvalReplayTerminalSeqPurgePending = new Set();
+        }
+        state.approvalReplayTerminalSeqPurgePending.add(key);
+        return;
+      }
+      if (state.approvalReplayTerminalSeq) {
+        state.approvalReplayTerminalSeq.delete(key);
+      }
+    }
     return {
       authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline,
@@ -1489,6 +1696,7 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
       // the pending trailing edge for that sid
       cancelStreamRenderTimers,
       refreshActiveStreamRender,
+      purgeApprovalReplayTerminalSeq,
     };
   };
 })();

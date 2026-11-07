@@ -45,6 +45,7 @@ const windowObject = {
   crypto: { randomUUID: () => '00000000-0000-4000-8000-000000000000' },
   performance: { now: () => 0 },
   addEventListener() {},
+  removeEventListener() {},
   setTimeout,
   clearTimeout,
 };
@@ -109,6 +110,123 @@ for (const method of Object.keys(api.computerUse)) {
   );
 }
 assert.equal(api.sendMessage, undefined, 'Web flat command facade must stay private');
+
+// 评审 P2：Web 面的 Auto→Yolo 逃生（interaction.setSessionMode）必须真实
+// 接线。此前该方法只存在于桌面桥，ChatView 的存在性守卫在 Web 早退——
+// Auto 会话的模式芯片 Yolo 动作是死按钮，Web 发送门（webAutoSendBlocked）
+// 把浏览器用户锁死在无法发送的 Auto 档。域面存在性由上方 expectedApi
+// 契约 deepEqual 钉住；这里钉运行时行为：invoke 定向裁决会话、权威写回
+// 收敛点拿到返回态、可选 askOnGuardrail 仅显式携带、无 sid 保持桌面同款
+// 纯 no-op（composer-controls 的兜底 setSessionMode(null,'auto') 在 Web
+// 不得变成可达的进入-Auto 写入）。本块置于此处：后续步骤会往 state 灌
+// 附件/粘贴等重状态，notify 的发布校验不为本块背锅。
+let webSetSessionModeArgs = null;
+invokeResponse = async (command, args) => {
+  if (command !== 'set_session_mode') return null;
+  webSetSessionModeArgs = { ...args };
+  return { mode: 'yolo', multi_agent: false };
+};
+await api.interaction.setSessionMode('web-auto-sid', 'yolo');
+assert.deepEqual(
+  webSetSessionModeArgs,
+  { sessionId: 'web-auto-sid', mode: 'yolo' },
+  'web setSessionMode must invoke set_session_mode pinned to the adjudicated session',
+);
+await api.interaction.setSessionMode('web-auto-sid', 'auto', false);
+assert.deepEqual(
+  webSetSessionModeArgs,
+  { sessionId: 'web-auto-sid', mode: 'auto', askOnGuardrail: false },
+  'web setSessionMode must carry an explicit askOnGuardrail override',
+);
+webSetSessionModeArgs = null;
+await api.interaction.setSessionMode(null, 'auto');
+await api.interaction.setSessionMode('', 'auto');
+assert.equal(
+  webSetSessionModeArgs,
+  null,
+  'web setSessionMode must stay a no-op without a session id (entering Auto stays desktop-only)',
+);
+invokeResponse = async () => null;
+
+// 评审 P3：Web mode mappers 必须保留 ask_on_guardrail 子状态。此前
+// syncSessionPresentationState / syncModeState / applyModeFromState 丢弃
+// 该键，mounted 只读指示（composer-controls 对缺失值按缺省开投影）把远端
+// 已选的 OFF 显示成开启。运行时驱动一次会话切换（权威读取带 OFF）与一次
+// 权威写回（set_session_mode 返回带 OFF），断言 live modeState 保留子状态；
+// 再驱动一次读取失败，断言兜底投影按 default_true（未知→开，与 tauri 桥
+// 同口径）。随后源码钉住三个 mapper 的缺键投影形状。
+// 会话切换会经 loadSessionForClient 等待桌面能力快照（waitForWebInvoke
+// Capabilities）；测试宿主没有真实 client，直接声明能力就绪让门立即放行。
+// Web 载荷走分块 RPC（web_access_load_session_chunk，base64 JSON），宿主
+// 补 atob 并返回单块 eof 载荷。
+windowObject.PinvouWebClient = { desktopCapabilitiesReady: true };
+windowObject.atob = encoded => Buffer.from(String(encoded || ''), 'base64').toString('binary');
+const webAskSessionPayload = Buffer.from(
+  JSON.stringify({ metadata: { id: 'web-ask-sid' }, messages: [] }),
+  'utf8',
+).toString('base64');
+invokeResponse = async (command, args) => {
+  if (command === 'web_access_load_session_chunk') {
+    return {
+      offset: 0,
+      total: Buffer.from(JSON.stringify({ metadata: { id: args && args.id }, messages: [] }), 'utf8').length,
+      download_id: 'dl-web-ask',
+      data_base64: webAskSessionPayload,
+      eof: true,
+    };
+  }
+  if (command === 'get_mode_state') {
+    return { mode: 'auto', multi_agent: false, ask_on_guardrail: false };
+  }
+  return null;
+};
+await api.sessions.switchToSession('web-ask-sid');
+assert.equal(flat.getState().activeSessionId, 'web-ask-sid', '切换必须落 live 会话');
+{
+  const ms = flat.getState().modeState;
+  assert.equal(ms.askOnGuardrail, false,
+    'switch-presentation mapper must retain a remote ask_on_guardrail=false');
+  assert.equal(ms.mode, 'auto', 'switch-presentation mapper keeps the resolved mode');
+}
+invokeResponse = async command => {
+  if (command === 'set_session_mode') {
+    return { mode: 'auto', multi_agent: false, ask_on_guardrail: false };
+  }
+  if (command === 'get_mode_state') {
+    return { mode: 'auto', multi_agent: false, ask_on_guardrail: false };
+  }
+  return null;
+};
+await api.interaction.setSessionMode('web-ask-sid', 'auto');
+assert.equal(flat.getState().modeState.askOnGuardrail, false,
+  'authoritative modeState convergence must retain ask_on_guardrail=false');
+// An old backend payload without the key (unknown substate) must project
+// default-true (backend default_true), not OFF - and must not reset the
+// converged OFF when a later read fails outright.
+invokeResponse = async command => {
+  if (command === 'set_session_mode') return { mode: 'yolo', multi_agent: false };
+  if (command === 'get_mode_state') return Promise.reject(new Error('read failed'));
+  return null;
+};
+await api.interaction.setSessionMode('web-ask-sid', 'yolo');
+assert.equal(flat.getState().modeState.askOnGuardrail, true,
+  'an unknown substate must project default-true (backend default_true), not OFF');
+assert.equal(flat.getState().modeState.mode, 'yolo',
+  'the convergence keeps the returned resolved mode');
+invokeResponse = async () => null;
+{
+  const source = read('bridge.js');
+  for (const anchor of [
+    /function mapModeState\(ms\) \{[\s\S]{0,300}?askOnGuardrail: !ms \|\| ms\.ask_on_guardrail == null \? true : !!ms\.ask_on_guardrail/,
+    /state\.modeState = mode\.ok && mode\.value\s*\n\s*\? \{[\s\S]{0,200}?askOnGuardrail: mode\.value\.ask_on_guardrail == null \? true : !!mode\.value\.ask_on_guardrail[\s\S]{0,120}?: \{ mode: "auto", multiAgent: false, askOnGuardrail: true \}/,
+    /function applyModeFromState\(st\) \{[\s\S]{0,400}?askOnGuardrail: st\.ask_on_guardrail == null \? true : !!st\.ask_on_guardrail,/,
+    /return \{ mode: d \|\| \(boundDraft \? "plan" : "auto"\), multiAgent: false, askOnGuardrail: true \};/,
+    /catch \{[\s\S]{0,200}?state\.modeState = \{ mode: "auto", multiAgent: false, askOnGuardrail: true \};/,
+    /mode: target,\s*\n\s*multiAgent: !!\(state\.modeState && state\.modeState\.multiAgent\),\s*\n\s*\/\/ [^\n]*default_true[\s\S]{0,80}?askOnGuardrail: true,/,
+  ]) {
+    assert.match(source, anchor, `web mode mapper must keep the ask_on_guardrail projection: ${anchor}`);
+  }
+}
 
 snapshotReads = 0;
 const state = api.state.getMany(['sessions', 'settings']);

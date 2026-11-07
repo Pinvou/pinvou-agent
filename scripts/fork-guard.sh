@@ -7,6 +7,9 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 merged.
+# #131 (host-armed guardrail prompts + authority-transition notice) landed as the
+# squash e2a0e14fd; its review-candidate head was verified tree-identical to that
+# squash (ea3d9e576), so the guardrail fingerprints below pin the merged content.
 EXPECTED_HEAD="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 EXPECTED_COMMITS=93
 # Published maintenance base of this integration.
@@ -201,6 +204,38 @@ fingerprints=(
   "T2|shell 指引与执行同一 dispatcher    |CodeWhale/crates/tui/src/tools/shell/guidance.rs|pub(super) fn runtime_command_guidance()"
   "T2|指引对齐 catalog 一致性回归        |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_catalog_guidance_matches_execution"
   "T2|computer-use zoom 子栅格换算       |CodeWhale/plugins/computer-use/src/raster.mjs|export function zoomChildRaster(prev, region)"
+  "T2|Armed forced hold under Full Access resolves to prompt |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_armed_full_access_forced_hold_resolves_to_prompt"
+  "T2|Authority transition renders the host change |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_authority_transition_between_renders_the_host_change"
+  "T2|Armed deny face becomes guardrail prompt |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_deny_face_becomes_guardrail_prompt_unarmed_stays_block"
+  "T2|Turn meta authority transition renders only on change |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_turn_meta_authority_transition_renders_only_on_change"
+  "T2|Live turn meta builder reads the pending transition |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_live_turn_meta_builder_reads_the_pending_transition"
+  "T2|Armed Full Access hold prompts instead of blocking |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_full_access_hold_prompts_instead_of_blocking"
+  "T2|Armed child refuses delegated typed ask under auto approve |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_armed_child_refuses_delegated_typed_ask_even_under_auto_approve"
+  "T2|Armed sandbox escalation prompts instead of failing closed |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_sandbox_escalation_prompts_instead_of_failing_closed"
+  "T2|Armed typed ask rule prompts instead of auto running |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_full_access_typed_ask_rule_prompts_instead_of_auto_running"
+  "T2|Armed repo-law hold prompts instead of blocking |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_repo_law_hold_prompts_instead_of_blocking"
+  "T2|Preview manifest hashes the wire authority transition |CodeWhale/crates/tui/src/core/engine/preview/tests.rs|fn forkguard_preview_manifest_hashes_the_same_authority_transition_line_the_wire_sends"
+  "T2|Turn authority install never rolls back published arming |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_turn_authority_install_never_rolls_back_published_arming"
+  "T2|ChangeMode status suffixes report arming changes |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_apply_change_mode_status_suffixes_report_the_arming_change"
+  "T2|Turn start detector records and renders transition once |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_turn_start_detector_records_the_posture_and_renders_the_transition_once"
+  "T2|Pending arming survives arming-free publishes |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_pending_arming_survives_arming_free_authority_publishes"
+  "T2|Armed composer shell keeps the hard deny face |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_composer_shell_keeps_the_hard_deny_face"
+  "T2|Armed Auto-Review escalation stays fail closed |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_auto_review_escalation_stays_fail_closed"
+  "T2|Preview transition uses the planned posture |CodeWhale/crates/tui/src/core/engine/preview/tests.rs|fn forkguard_preview_transition_uses_the_planned_posture_not_the_stale_session"
+  "T2|Pump never auto approves a force prompt hold |CodeWhale/crates/tui/src/runtime_threads/tests.rs|fn forkguard_pump_never_auto_approves_a_force_prompt_hold"
+  "T2|Not-started turn keeps the pending transition |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_a_not_started_turn_neither_consumes_nor_records_the_transition"
+  "T2|Sync clears the recorded posture |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_sync_session_clears_the_recorded_turn_meta_posture"
+  "T2|Isolated turn keeps the pending transition |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_an_isolated_turn_neither_consumes_nor_records_the_transition"
+  "T2|Narrowed turn keeps the standing baseline |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_a_provenance_narrowed_turn_neither_emits_the_host_line_nor_pollutes_the_baseline"
+  "T2|Auto-Review narrowing carries its receipt |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_an_auto_review_turn_narrowed_by_provenance_still_records_its_narrowing"
+  "T2|Authority transition model notice line |CodeWhale/crates/tui/src/core/authority.rs|Authority transition (host): {} -> {}; reason: {}"
+  # Round-9 minor: the host-side unknown-outcome classifier matches this
+  # engine Display wording by substring (pending_approvals.rs); if the base
+  # rewords it, unknown outcomes silently flip into the determinate-refusal
+  # arm and a possibly-consumed approval is restored as retryable. This
+  # production-literal fingerprint makes the drift a guard red today (the
+  # CodeWhale#131 follow-up to export a marker constant remains open).
+  "T2|Approval unknown-outcome classifier wording |CodeWhale/crates/tui/src/core/engine/handle.rs|approval decision outcome is unknown"
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"

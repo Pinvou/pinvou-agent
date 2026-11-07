@@ -417,6 +417,27 @@ pub const SCHEDULED_TASK_UPDATE_TOOL: &str = "mcp_app-automations_update_schedul
 /// Scheduled Tasks panel.
 pub const SCHEDULED_TASK_DELETE_TOOL: &str = "mcp_app-automations_delete_scheduled_task";
 
+/// Per-turn approval posture carried into the send-op builder (tri-mode
+/// safety, S-1). The pool derives it from the session's `SerializableMode`
+/// (`Plan`/`Auto` → `(false, Suggest)`, `Yolo` → `(true, Bypass)`);
+/// scheduled and benchmark paths pass their own (byte-identical to the
+/// pre-tri-mode values) instead.
+#[derive(Debug, Clone, Copy)]
+pub struct TurnApprovalPosture {
+    pub auto_approve: bool,
+    pub approval_mode: deepseek_tui::ApprovalMode,
+}
+
+impl TurnApprovalPosture {
+    pub fn from_serialized_mode(mode: crate::core::mode_state::SerializableMode) -> Self {
+        let (auto_approve, approval_mode) = mode.approval_params();
+        Self {
+            auto_approve,
+            approval_mode,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -2766,6 +2787,29 @@ impl Pinvou3Bridge {
         session_id: &str,
         roots: SessionRoots,
     ) -> EngineConfig {
+        self.build_engine_config_for_session_roots_with_profile(
+            session_id,
+            roots,
+            crate::features::assistant::safety_deny_rules::SafetyRuleProfile::Full,
+        )
+    }
+
+    /// Profile-aware form of [`build_engine_config_for_session_roots`]
+    /// (tri-mode safety): the CALLER derives the profile from the session's
+    /// persisted mode and engine lane
+    /// (`SafetyRuleProfile::for_engine_lane(store.mode_state(sid).mode,
+    /// engine_is_scheduled_run)`) and threads it in — the bridge itself holds
+    /// no store. The profile selects only WHICH safety rule families compose
+    /// into the spawn-time execpolicy initial value (see
+    /// [`safety_deny_rules::SafetyRuleProfile`]); the post-spawn arming
+    /// (`EnginePool`'s `Op::ChangeMode`) separately syncs the mode posture
+    /// itself.
+    pub(crate) fn build_engine_config_for_session_roots_with_profile(
+        &self,
+        session_id: &str,
+        roots: SessionRoots,
+        profile: crate::features::assistant::safety_deny_rules::SafetyRuleProfile,
+    ) -> EngineConfig {
         let is_aux = crate::features::sessions::is_aux_session_id(session_id);
         let mut cfg = self.build_engine_config();
         let _ = std::fs::create_dir_all(&roots.execution);
@@ -2818,9 +2862,11 @@ impl Pinvou3Bridge {
         // computation. Ruleset = CLI binary-name deny + disabled skill
         // script-path deny (§5.1 channel ③) + sensitive-data/privilege
         // safety deny (segments 1-4 of the former bundle hook
-        // deny_sensitive_paths, see the safety_deny_rules module docs).
+        // deny_sensitive_paths, see the safety_deny_rules module docs),
+        // composed for the caller's safety-mode profile (Full = the
+        // pre-profile face; Floor = the Yolo lane's floor-only face).
         cfg.exec_policy_engine = codewhale_execpolicy::ExecPolicyEngine::with_rulesets(vec![
-            self.scope_deny_ruleset(session_id),
+            self.scope_deny_ruleset_for_mode(session_id, profile),
         ]);
         // An auxiliary conversation (aux- prefix) is a scoped Q&A session:
         // its engine is isolated, mirroring the foundation's isolated-chat
@@ -3100,6 +3146,24 @@ impl Pinvou3Bridge {
         )
     }
 
+    /// Profile-aware form of [`scope_deny_ruleset`] (tri-mode safety): the
+    /// caller derives the profile from the session's persisted mode and
+    /// engine lane (`SafetyRuleProfile::for_engine_lane`) — Yolo sessions get
+    /// the Floor ruleset, Plan/Auto the Full one, and an unattended
+    /// scheduled-run engine always Full. The pool is the only production
+    /// caller (it owns the store); every caller without session-mode
+    /// information stays on [`scope_deny_ruleset`] (Full).
+    pub(crate) fn scope_deny_ruleset_for_mode(
+        &self,
+        session_id: &str,
+        profile: crate::features::assistant::safety_deny_rules::SafetyRuleProfile,
+    ) -> codewhale_execpolicy::Ruleset {
+        self.scope_deny_ruleset_with(
+            session_id,
+            crate::features::assistant::safety_deny_rules::safety_rules_for_profile(profile),
+        )
+    }
+
     /// Injectable form of [`scope_deny_ruleset`] for the safety section:
     /// production passes the live disk snapshot
     /// [`safety_deny_rules::safety_deny_rules`]; tests inject a fixed sudo
@@ -3242,7 +3306,30 @@ impl Pinvou3Bridge {
         snapshot: &ExpertRosterSnapshot,
         swarm: bool,
     ) -> EngineConfig {
-        let mut cfg = self.build_engine_config_for_session_roots(session_id, roots);
+        self.build_engine_config_for_multi_agent_with_profile(
+            session_id,
+            roots,
+            snapshot,
+            swarm,
+            crate::features::assistant::safety_deny_rules::SafetyRuleProfile::Full,
+        )
+    }
+
+    /// Profile-aware form of [`build_engine_config_for_multi_agent`]
+    /// (tri-mode safety, same caller-derived profile contract as
+    /// [`build_engine_config_for_session_roots_with_profile`]): the spawn
+    /// path threads the session's mode-derived profile so a swarm session's
+    /// execpolicy initial value matches its lane's deny face.
+    pub(crate) fn build_engine_config_for_multi_agent_with_profile(
+        &self,
+        session_id: &str,
+        roots: SessionRoots,
+        snapshot: &ExpertRosterSnapshot,
+        swarm: bool,
+        profile: crate::features::assistant::safety_deny_rules::SafetyRuleProfile,
+    ) -> EngineConfig {
+        let mut cfg =
+            self.build_engine_config_for_session_roots_with_profile(session_id, roots, profile);
         // 契约走系统级 instructions（spawn 一次、compaction 存活、不进子智能体提示）；
         // 每轮动态内容只有候选行，随发送链进 <system-reminder> 信封。
         // 插入位置承重：底座把全部 sources 按声明序拼成一个 Permissions
@@ -3595,12 +3682,17 @@ impl Pinvou3Bridge {
     }
 
     /// Build the [`Op::SendMessage`] sent to the engine — switch
-    /// trust/approval/sandbox by `mode`.
+    /// trust/approval/sandbox by `mode`; the approval half arrives as the
+    /// caller's [`TurnApprovalPosture`] (the pool resolves it from the
+    /// session's tri-mode state — Plan/Auto = (false, Suggest), Yolo =
+    /// (true, Bypass); scheduled/benchmark paths pass their own), not from
+    /// this table (round-9 minor: the pre-tri-mode table claimed both Yolo
+    /// and Plan sent `auto_approve=true, Auto`).
     ///
-    /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | effective behavior |
-    /// |------|-------------|------------|--------------|---------------|---------|
-    /// | Yolo | self.allow  | true       | true         | Auto          | fully automatic + trust the whole home directory |
-    /// | Plan | true        | true       | true         | Auto          | read-only toolset + ReadOnly sandbox (the foundation's tool_setup.rs switches automatically by mode) |
+    /// | mode | allow_shell | trust_mode | approval posture | effective behavior |
+    /// |------|-------------|------------|------------------|---------|
+    /// | Yolo | self.allow  | true       | caller's (ordinary: true, Bypass) | fully automatic + trust the whole home directory |
+    /// | Plan | true        | true       | caller's (ordinary: false, Suggest) | read-only toolset + ReadOnly sandbox (the foundation's tool_setup.rs switches automatically by mode) |
     ///
     /// **M1 weak-model hardening**: prepend a `<system-reminder>` block before
     /// the user content, generated dynamically per `phase`. The same
@@ -3678,6 +3770,7 @@ impl Pinvou3Bridge {
         session_id: &str,
         content: String,
         mode: AppMode,
+        approval: TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<Op> {
@@ -3686,6 +3779,7 @@ impl Pinvou3Bridge {
             session_id,
             content,
             mode,
+            approval,
             persona_reminder,
             restrict_tools,
             self.build_hook_executor(),
@@ -3762,6 +3856,7 @@ impl Pinvou3Bridge {
         session_id: &str,
         content: String,
         mode: AppMode,
+        approval: TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
         workspace: &std::path::Path,
@@ -3773,6 +3868,7 @@ impl Pinvou3Bridge {
             session_id,
             content,
             mode,
+            approval,
             persona_reminder,
             restrict_tools,
             self.build_multi_agent_hook_executor(workspace),
@@ -3821,6 +3917,7 @@ impl Pinvou3Bridge {
         session_id: &str,
         content: String,
         mode: AppMode,
+        approval: TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
         hook_executor: Arc<HookExecutor>,
@@ -3835,9 +3932,15 @@ impl Pinvou3Bridge {
             expert_snapshot.is_some() || expert_candidates.is_empty(),
             "ordinary turns must not carry expert candidate lines",
         );
-        // CodeWhale 0.9.12 no longer represents bypass authority as an
-        // AppMode variant. Keep mode and approval as separate typed inputs.
-        let (auto_approve, approval_mode) = policy.approval_params();
+        // Tri-mode safety (S-1 landed): the approval posture arrives from the
+        // pool (which resolves it from the session's SerializableMode —
+        // Plan/Auto = (false, Suggest), Yolo = (true, Bypass)); scheduled and
+        // benchmark paths pass their own postures. Mode and approval stay
+        // separate typed inputs (CodeWhale 0.9.12 contract).
+        let TurnApprovalPosture {
+            auto_approve,
+            approval_mode,
+        } = approval;
         let (allow_shell, trust_mode) = match mode {
             // Agent/Yolo is the local single-user work mode; workspace trust
             // is fixed product semantics and must not be accidentally narrowed
@@ -4989,6 +5092,10 @@ mod tests {
                     sid,
                     "List my MCP applications".into(),
                     AppMode::Agent,
+                    TurnApprovalPosture {
+                        auto_approve: true,
+                        approval_mode: deepseek_tui::ApprovalMode::Auto,
+                    },
                     None,
                     false,
                 )
@@ -5056,6 +5163,10 @@ mod tests {
                 "plain",
                 "Plan how to configure applications".into(),
                 AppMode::Plan,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 false,
             )
@@ -5111,6 +5222,10 @@ mod tests {
                 "plain",
                 "List my MCP applications".into(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 false,
             )
@@ -6330,6 +6445,10 @@ mod tests {
                 "sess-plain",
                 "看看这张图\n[Attached image: /tmp/shot.png]".to_string(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 false,
             )
@@ -6352,7 +6471,17 @@ mod tests {
     fn build_send_message_op_mints_a_submission_id() {
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "hi".to_string(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route");
         let Op::SendMessage { submission_id, .. } = op else {
             panic!("expected SendMessage");
@@ -6377,6 +6506,10 @@ mod tests {
             "sess-plain",
             "hi".to_string(),
             AppMode::Agent,
+            TurnApprovalPosture {
+                auto_approve: true,
+                approval_mode: deepseek_tui::ApprovalMode::Auto,
+            },
             None,
             false,
             bridge.build_hook_executor(),
@@ -6452,6 +6585,20 @@ mod tests {
 
     #[test]
     fn api_key_requirement_allows_only_vllm_or_loopback_without_key() {
+        // Lock the DEEPSEEK_* env: `api_key_required` resolves `base_url()`,
+        // and `base_url()` reads `DEEPSEEK_BASE_URL` FIRST — a concurrent
+        // env-writing test (e.g. the multiagent spawn probe pointing it at
+        // its loopback server) made the cloud arm read a loopback URL and
+        // flip the `api_key_required()` assertion. Both the unlocked reader
+        // and the writer predate the tri-mode PR (round-13 battery hit it in
+        // two consecutive runs); the lock gives this reader the same
+        // serialization + restoration the route-limits test got.
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
         assert!(base_url_uses_loopback("http://localhost:8000/v1"));
         assert!(base_url_uses_loopback("http://localhost.:8000/v1"));
         assert!(base_url_uses_loopback("http://127.0.0.42:8000/v1"));
@@ -7522,7 +7669,17 @@ mod tests {
     fn build_send_message_op_injects_sudo_for_yolo_not_plan() {
         let bridge = fixture_bridge();
         let content_of = |mode| match bridge
-            .build_send_message_op("sess-plain", "用户消息".to_string(), mode, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "用户消息".to_string(),
+                mode,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route")
         {
             Op::SendMessage { content, .. } => content,
@@ -7553,6 +7710,10 @@ mod tests {
                 "sess-plain",
                 "用户消息".to_string(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 Some(persona.clone()),
                 false,
             )
@@ -7567,7 +7728,17 @@ mod tests {
         );
         // This copy must not appear when None
         let op_none = bridge
-            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "hi".to_string(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route");
         if let Op::SendMessage { content, .. } = op_none {
             assert!(!content.contains("数据库架构师"), "未加持不应注入 persona");
@@ -7592,6 +7763,10 @@ mod tests {
                 "sess-plain",
                 "hi".to_string(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 restrict,
             )
@@ -7625,6 +7800,10 @@ mod tests {
                 "sess-code-project",
                 "hi".to_string(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 restrict,
             )
@@ -7862,7 +8041,17 @@ mod tests {
         let restrict =
             crate::features::assistant::engine_pool::turn_restrict_tools("aux-xyz", false, false);
         let op = bridge
-            .build_send_message_op("aux-xyz", "hi".to_string(), AppMode::Agent, None, restrict)
+            .build_send_message_op(
+                "aux-xyz",
+                "hi".to_string(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                restrict,
+            )
             .expect("resolve test route");
         match op {
             Op::SendMessage {
@@ -7894,6 +8083,10 @@ mod tests {
                 "aux-xyz",
                 "hi".to_string(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 Some("persona anchor".to_string()),
                 restrict,
             )
@@ -7917,6 +8110,10 @@ mod tests {
                 "aux-sched-xyz",
                 "hi".to_string(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 restrict,
             )
@@ -7931,7 +8128,17 @@ mod tests {
         }
         std::fs::remove_file(&aux_cfg.mcp_config_path).unwrap();
         let op = bridge
-            .build_send_message_op("aux-xyz", "hi".to_string(), AppMode::Agent, None, restrict)
+            .build_send_message_op(
+                "aux-xyz",
+                "hi".to_string(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                restrict,
+            )
             .expect("resolve test route");
         match op {
             Op::SendMessage { allowed_tools, .. } => assert_eq!(
@@ -7951,7 +8158,17 @@ mod tests {
             Some(aux_cfg.mcp_config_path.as_path())
         );
         let op = bridge
-            .build_send_message_op("aux-xyz", "hi".to_string(), AppMode::Agent, None, restrict)
+            .build_send_message_op(
+                "aux-xyz",
+                "hi".to_string(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                restrict,
+            )
             .expect("resolve test route");
         match op {
             Op::SendMessage { allowed_tools, .. } => assert_eq!(
@@ -7996,7 +8213,17 @@ mod tests {
             }
         }
         let normal_op = bridge
-            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "hi".to_string(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route");
         match normal_op {
             Op::SendMessage { content, .. } => assert!(
@@ -8259,7 +8486,17 @@ mod tests {
         );
 
         let ordinary = bridge
-            .build_send_message_op("gui-session", "hello".into(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "gui-session",
+                "hello".into(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .unwrap();
         assert!(matches!(
             ordinary,
@@ -8828,7 +9065,17 @@ mod tests {
             hook_executor: Some(message_executor),
             ..
         } = bridge
-            .build_send_message_op("sess-plain", "test".into(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "test".into(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route")
         else {
             panic!("每轮 SendMessage 必须显式携带 hook executor");
@@ -9038,7 +9285,17 @@ mod tests {
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("sess-plain", "hi".into(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "hi".into(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(trust_mode, "Yolo 模式 trust_mode 必须 true");
@@ -9051,7 +9308,17 @@ mod tests {
     fn bridge_plan_mode_trust_mode_true_after_p1() {
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("sess-plain", "list dir".into(), AppMode::Plan, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "list dir".into(),
+                AppMode::Plan,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route");
         let (_allow_shell, trust_mode) = extract_shell_trust(op);
         assert!(
@@ -9076,7 +9343,17 @@ mod tests {
         unsafe { std::env::remove_var("PINVOU3_ALLOW_SHELL") };
         let bridge = fixture_bridge();
         let op = bridge
-            .build_send_message_op("sess-plain", "exec ls".into(), AppMode::Plan, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "exec ls".into(),
+                AppMode::Plan,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route");
         let (allow_shell, _trust_mode) = extract_shell_trust(op);
         assert!(
@@ -9117,7 +9394,17 @@ mod tests {
         // build_send_message_op's mode match).
         let bridge = fixture_bridge();
         let yolo = match bridge
-            .build_send_message_op("sess-plain", "hi".into(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "hi".into(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route")
         {
             Op::SendMessage { content, .. } => content,
@@ -9153,6 +9440,10 @@ mod tests {
                 session_id,
                 "方案调研".to_string(),
                 AppMode::Plan,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 false,
             )
@@ -10695,7 +10986,17 @@ mod tests {
             "DtConfig 注入点必须透传显式档位"
         );
         let op = bridge
-            .build_send_message_op("sess-plain", "hi".to_string(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "sess-plain",
+                "hi".to_string(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("resolve test route");
         let Op::SendMessage {
             reasoning_effort, ..
@@ -12320,7 +12621,17 @@ mod tests {
             "k",
         );
         let ordinary_op = bridge
-            .build_send_message_op("plain-session", "hi".into(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "plain-session",
+                "hi".into(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("build op");
         let workspace = std::env::temp_dir().join("pinvou3-multiagent-send-hook");
         let snapshot = ExpertRosterSnapshot::capture();
@@ -12330,6 +12641,10 @@ mod tests {
                 "multi-agent-session",
                 "hi".into(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 false,
                 &workspace,
@@ -12504,6 +12819,10 @@ mod tests {
                 "multi-agent-empty",
                 "hi".into(),
                 AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 false,
                 &workspace,
@@ -12512,7 +12831,17 @@ mod tests {
             )
             .expect("build multi-agent op");
         let ordinary_op = bridge
-            .build_send_message_op("plain-empty", "hi".into(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "plain-empty",
+                "hi".into(),
+                AppMode::Agent,
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
+                None,
+                false,
+            )
             .expect("build op");
         let deepseek_tui::core::ops::Op::SendMessage {
             content: multi_content,

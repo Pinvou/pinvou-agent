@@ -43,6 +43,10 @@ export function createNativeLane() {
     memory: null,
     // chat:compaction phase=start → true，done/fail → false；用于禁用手动压缩入口。
     compacting: false,
+    // 审批重放终态代（评审 P3）：chat:done 终态清扫处推进（见
+    // applyNativeChatEvent），CodexAcpView.loadSession 的 get_pending_approvals
+    // 重放据此整批作废迟到快照（主车道 sessions.js 同款）。
+    approvalReplayTerminalSeq: 0,
     seq: 0,
   };
 }
@@ -576,6 +580,102 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       });
       return true;
     }
+    case 'chat:approval_required': {
+      // tri-mode 审批卡（ask-on-guardrail 武装 / Auto 姿态弹卡）。按
+      // approvalId 幂等去重（后端登记表对同一审批原位替换、remount 后
+      // get_pending_approvals 重放同一审批，均不得重复出卡）。字段与
+      // PendingApproval（serde camelCase 查询返回）/事件 snake_case 负载
+      // 双通道对齐：这里兼容读两种 casing，lane 内统一存 camelCase。
+      const approvalId = String(p.approval_id || p.approvalId || '');
+      if (!approvalId) return false;
+      if (lane.items.some(item => (
+        item && item.type === 'approval' && item.approvalId === approvalId
+      ))) return false;
+      // 重放墓碑（评审 P2）：get_pending_approvals 快照 await 期间该审批已
+      // 从另一表面落定时，chat:approval_resolved 先到而卡不在 lane，落空
+      // 分支留下墓碑；迟到的旧快照在这里被拦，不再把已决审批当活卡插回。
+      if (lane.approvalTombstones && lane.approvalTombstones.has(approvalId)) return false;
+      lane.items.push({
+        id: nextId(lane),
+        type: 'approval',
+        approvalId,
+        toolName: String(p.tool_name || p.toolName || ''),
+        description: String(p.description || ''),
+        intentSummary: (p.intent_summary ?? p.intentSummary) == null
+          ? ''
+          : String(p.intent_summary ?? p.intentSummary),
+        input: (p.input ?? null),
+        forcePrompt: Boolean(p.force_prompt ?? p.forcePrompt),
+        resolved: false,
+        cardState: 'active',
+      });
+      return true;
+    }
+    case 'chat:guardrail_denied': {
+      // 守卫硬拒（不出卡）：reason 是稳定英文键，渲染层按键映射三语文案；
+      // 未知键原样透出，保证可审计（与 chat:tool_gate_decision 同款归一）。
+      lane.items.push({
+        id: nextId(lane),
+        type: 'system',
+        guardrailDenied: true,
+        toolName: String(p.tool_name || ''),
+        reason: String(p.reason || ''),
+      });
+      return true;
+    }
+    case 'chat:approval_resolved': {
+      // 审批决策收敛广播（tri-mode M5）：决策可能来自第二窗口或 remote
+      // 表面，后端 decide_approval 落定后广播终态；本 lane 的同 id 未决卡
+      // 就地落终态。只对未决卡生效（幂等）：发起方已落的终态、终态清扫的
+      // cancelled 都不得被回声覆盖。负载不带 tool input（后端构造点有钉）。
+      const resolvedId = String(p.approval_id || p.approvalId || '');
+      if (!resolvedId) return false;
+      const decision = String(p.decision || '');
+      // fail-neutral（与 chat-events 主车道同口径）：未知/缺失决策值按 no-op
+      // 早退——审批面上的畸形载荷不得把未决卡映射成 "allowed"，宁可留着
+      // 未决等权威回声/终态清扫。decision "unknown"（宿主 P2）是后端未知
+      // 终态臂的权威处置（ack + settle 双窗超时，登记已摘除）：卡改为不可
+      // 决的 unknown 态（resolved 保持 false，迟到的权威决议事件仍可就地
+      // 收口，turn 终态清扫也会接管），按钮面不再邀请对可能已被消费的
+      // 决策重复点击；除该值外的未知值仍是畸形载荷 no-op。
+      if (!['deny', 'allow', 'allow_for_session', 'unknown'].includes(decision)) return false;
+      let changed = false;
+      lane.items.forEach(item => {
+        if (item && item.type === 'approval' && item.approvalId === resolvedId && !item.resolved) {
+          if (decision === 'unknown') {
+            item.cardState = 'unknown';
+          } else {
+            item.resolved = true;
+            item.cardState = decision === 'deny' ? 'denied'
+              : decision === 'allow_for_session' ? 'allowed_session' : 'allowed';
+          }
+          changed = true;
+        }
+      });
+      // 无未决卡可落：决议来自快照在途窗口里的另一表面。留下墓碑，
+      // 在途快照回程不得把这个已决审批当活卡插回（lane 随会话重建，
+      // 墓碑生命周期天然不跨会话）。
+      if (!changed) {
+        if (!lane.approvalTombstones) lane.approvalTombstones = new Set();
+        lane.approvalTombstones.add(resolvedId);
+        // 512 cap, oldest-insertion evicted — the main lane's tombstone map
+        // is capped the same way and the PR body's "上限 512 逐条淘汰" claim
+        // covers both lanes (round-8 L8-2: the native set was the uncapped
+        // one). The lane rebuilds with its session, so the cap is a
+        // long-session hygiene bound, not a correctness primitive.
+        if (lane.approvalTombstones.size > 512) {
+          const oldest = lane.approvalTombstones.values().next().value;
+          lane.approvalTombstones.delete(oldest);
+        }
+      }
+      return changed;
+    }
+    case 'chat:mode_changed': {
+      // 权威 mode 广播：lane 自身不持 mode 展示（native controls 由
+      // CodexAcpView.refreshNativeControls 按 sessionId 驱动，请求序号 +
+      // 归属保护），这里无可视变化——返回 false，不 bump 渲染。
+      return false;
+    }
     case 'chat:memory': {
       // 每轮 chat 后后端推送的本会话注入记忆快照（chat.rs 对全部会话发射）。
       // 只归一化 id/kind/text 三字段，渲染层做轻量展示（条数徽标 + 弹层列表）。
@@ -644,6 +744,26 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         item.state = 'done';
         item.success = item.success === null ? false : item.success;
       }
+      // Approval-card terminal sweep (tri-mode, round-2 M3): mirrors the
+      // main lane's chat-events.js sweep — the backend registry is cleared
+      // at every terminal (emit_chat_terminal → clear_pending), so a stale
+      // active card's click can only ever yield "approval not found".
+      // Settle it in place as cancelled (status copy maps
+      // nativeApprovalCancelled) and stop the buttons, exactly like the
+      // main lane; only a session switch/remount previously cleared these.
+      for (const item of lane.items) {
+        if (!(item && item.type === 'approval' && !item.resolved)) continue;
+        item.resolved = true;
+        item.cardState = 'cancelled';
+      }
+      // Terminal-generation fence for the get_pending_approvals replay
+      // (review P3): the backend registry is cleared at every terminal, so a
+      // snapshot captured before this point is stale even when no in-place
+      // card existed (fresh-remount lane). The consumer in
+      // CodexAcpView.loadSession drops the whole snapshot when the counter
+      // moved on; mirrors the main lane's chat-events.js
+      // approvalReplayTerminalSeq bump consumed by sessions.js.
+      lane.approvalReplayTerminalSeq = (lane.approvalReplayTerminalSeq || 0) + 1;
       const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;
@@ -746,12 +866,14 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       || Object.keys(lane.toolMeta).length > 0,
   );
   const messages = saved && Array.isArray(saved.messages) ? saved.messages : [];
-  // Tool-gate decisions are host-visible audit records rather than model
-  // messages. Keep them across an authoritative SavedSession rehydrate just
-  // like the work/web bridge keeps live-only system items in its session
-  // buffer; otherwise a reconnect immediately erases the decision.
-  const liveToolGateNotices = lane.items
-    .filter(item => item && item.type === 'system' && item.toolGateDecision)
+  // Tool-gate decisions and guardrail hard-denials are host-visible audit
+  // records rather than model messages. Keep them across an authoritative
+  // SavedSession rehydrate just like the work/web bridge keeps live-only
+  // system items in its session buffer; otherwise a reconnect immediately
+  // erases the decision (guardrail notices carry the same live-only shape —
+  // round-9 extends the toolGateDecision preserve to chat:guardrail_denied).
+  const liveAuditNotices = lane.items
+    .filter(item => item && item.type === 'system' && (item.toolGateDecision || item.guardrailDenied))
     .map(item => ({ ...item }));
   const resultById = {};
   for (const message of messages) {
@@ -892,11 +1014,19 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     item.state = 'done';
     item.success = item.success === null ? false : item.success;
   }
-  for (const notice of liveToolGateNotices) {
-    const duplicate = lane.items.some(item => (
-      item && item.type === 'system' && item.toolGateDecision
-        && item.toolId === notice.toolId && item.decision === notice.decision
-    ));
+  for (const notice of liveAuditNotices) {
+    // 同类标记才去重（保存的会话消息不会还原这两种 live-only 系统项，
+    // 这里的比对是防御性的）：tool-gate 按 toolId+decision，守卫硬拒按
+    // toolName+reason。
+    const duplicate = lane.items.some(item => {
+      if (!item || item.type !== 'system') return false;
+      if (notice.toolGateDecision) {
+        return item.toolGateDecision
+          && item.toolId === notice.toolId && item.decision === notice.decision;
+      }
+      return item.guardrailDenied
+        && item.toolName === notice.toolName && item.reason === notice.reason;
+    });
     if (!duplicate) lane.items.push({ ...notice, id: nextId(lane) });
   }
   lane.timeline = Array.isArray(timelineEvents) ? [...timelineEvents] : [];

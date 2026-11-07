@@ -319,4 +319,93 @@ mod tests {
         assert!(task_completion_notify_in_scope("0123456789abcdef"));
         assert!(task_completion_notify_in_scope("sched-daily-report"));
     }
+
+    /// 评审 P2：windowless 宿主（`pinvou agent run` 等 boot lane）没有审批
+    /// 决策消费者，交互审批必须确定性 decline 而非把任务钉到 deadline。转发
+    /// 命令体无法单测构造，按 repo 惯例钉装配次序：windowless 臂排在定时
+    /// 无人值守臂之后（任务保存策略不变）、交互面之前；臂内只做确定性
+    /// decline（deny_tool_call），不得登记 pending、不得弹审批事件——无人可
+    /// 答的卡不得铸造。
+    #[test]
+    fn forkguard_forwarder_windowless_arm_declines_without_minting_a_card() {
+        let src = include_str!("forwarder.rs");
+        let production = src.split("#[cfg(test)]").next().expect("non-empty source");
+        let scheduled_at = production
+            .find("scheduled_tool_should_auto_approve(")
+            .expect("the scheduled unattended arm must stay first");
+        // Anchor from the scheduled arm: the UserInputRequired routing now
+        // carries its own (earlier) windowless marker — round-11 typed-ask
+        // decline — so a file-global find would shadow this arm.
+        let windowless_at = scheduled_at
+            + production[scheduled_at..]
+                .find("windowless_host::is_windowless_host()")
+                .expect("the windowless host arm is missing from the ApprovalRequired routing");
+        let interactive_at = scheduled_at
+            + production[scheduled_at..]
+                .find("approval_surface_decision(")
+                .expect("the interactive arm must stay last");
+        assert!(
+            scheduled_at < windowless_at && windowless_at < interactive_at,
+            "arm order: scheduled stored-policy → windowless decline → interactive surface"
+        );
+        let arm = &production[windowless_at..interactive_at];
+        assert!(
+            arm.contains("deny_tool_call("),
+            "the windowless arm must resolve the ask deterministically with a decline"
+        );
+        assert!(
+            arm.contains("windowless host has no approval consumer"),
+            "the decline must name its reason in the boot-lane log line"
+        );
+        assert!(
+            !arm.contains("pending_approvals::record("),
+            "a card no one can answer must not be minted"
+        );
+        assert!(
+            !arm.contains("approval_required"),
+            "the windowless arm must not raise an approval event"
+        );
+        assert!(
+            !arm.contains("approve_tool_call("),
+            "the decline is fail-safe: no grant path in the windowless arm"
+        );
+    }
+
+    /// round-11 评审 MAJOR：`Event::UserInputRequired`（typed ask）路由此前
+    /// 只有 scheduled/interactive 两臂——windowless 宿主掉进 interactive 臂，
+    /// 无人可答的确认卡把 agentic run 钉到整任务超时（run 报 timeout 而非
+    /// 可解释结果）。本钉把第三臂锁在 scheduled 与 interactive 之间：臂内
+    /// 确定性取消（cancel_user_input，底座收口为工具结果），不登记 pending、
+    /// 不发 `chat:user_input_required`。
+    #[test]
+    fn forkguard_forwarder_windowless_typed_ask_declines_without_minting() {
+        let src = include_str!("forwarder.rs");
+        let production = src.split("#[cfg(test)]").next().expect("non-empty source");
+        let typed_at = production
+            .find("Event::UserInputRequired")
+            .expect("the typed-ask routing must stay in the forwarder");
+        let windowless_at = production[typed_at..]
+            .find("windowless_host::is_windowless_host()")
+            .expect("the windowless host arm is missing from the UserInputRequired routing");
+        let interactive_at = production[typed_at..]
+            .find("pending_user_input::record(")
+            .expect("the interactive arm must keep the pending registration");
+        assert!(
+            windowless_at < interactive_at,
+            "arm order: scheduled stored-policy → windowless decline → interactive pending"
+        );
+        let arm = &production[typed_at + windowless_at..typed_at + interactive_at];
+        assert!(
+            arm.contains("cancel_user_input("),
+            "the windowless typed-ask arm must resolve the ask deterministically with a cancel"
+        );
+        assert!(
+            arm.contains("windowless host has no input consumer"),
+            "the decline must name its reason in the boot-lane log line"
+        );
+        assert!(
+            !arm.contains("chat:user_input_required"),
+            "the windowless arm must not raise a user-input event"
+        );
+    }
 }

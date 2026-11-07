@@ -630,6 +630,29 @@ try {
   assert.equal(replayedGateNotices[0].toolId, 'gate-tool-1');
   assert.equal(replayedGateNotices[0].risk, 'high');
 
+  // round-10 补钉：guardrail 硬拒通告与 tool-gate 同享 live-only 保留（round-9
+  // 引入的 `|| item.guardrailDenied` 分支此前无任何测试，删掉该分支全套保持
+  // 绿——审计丢失回归不可见）。
+  applyNativeChatEvent(lane7, 'chat:guardrail_denied', {
+    session_id: 's7',
+    tool_name: 'write_file',
+    reason: 'guardrail_ask_off',
+  });
+  const guardrailNotice = lane7.items.at(-1);
+  assert.equal(guardrailNotice.type, 'system');
+  assert.equal(guardrailNotice.guardrailDenied, true);
+  assert.equal(guardrailNotice.toolName, 'write_file');
+  assert.equal(guardrailNotice.reason, 'guardrail_ask_off');
+  hydrateNativeLane(lane7, { messages: [] }, []);
+  const replayedGuardrail = lane7.items.filter(item => item.guardrailDenied);
+  assert.equal(replayedGuardrail.length, 1,
+    'SavedSession rehydrate must retain the live guardrail hard-deny audit (round-9 preserve)');
+  assert.equal(replayedGuardrail[0].toolName, 'write_file');
+  assert.equal(replayedGuardrail[0].reason, 'guardrail_ask_off');
+  // 两条 live 审计项并存时同时保留。
+  const bothPreserved = lane7.items.filter(item => item.toolGateDecision || item.guardrailDenied);
+  assert.equal(bothPreserved.length, 2, 'gate + guardrail audit items survive the same rehydrate');
+
   // A completed compaction refreshes usage without waiting for the next chat:usage event.
   const lane7b = createNativeLane();
   lane7b.tokens = { input: 98000, max: 262144 };

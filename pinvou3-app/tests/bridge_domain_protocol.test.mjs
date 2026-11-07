@@ -79,6 +79,11 @@ const protocolSources = {
   multiAgent: ['bridge/multiagent.js'],
   projects: ['bridge/projects.js'],
   computerUse: ['bridge/computer_use.js'],
+  // Round-11 review: the web lane's wire surface had no hash at all (the
+  // per-domain hashes above cover only tauri-lane files + the shared base),
+  // so a web invoke/listen span change would not redden any contract. One
+  // whole-file entry pins the web bridge's full invoke/listen surface.
+  webWireSurface: ['../web/bridge.js'],
 };
 
 const expectedProtocolHashes = {
@@ -243,8 +248,53 @@ const expectedProtocolHashes = {
   // line number, three deleted English captions) — chat.js spans and the
   // command surface unchanged. Recomputed again in round 3: the present_artifact
   // comment now carries the web lane's exact `chat:tool_start` token so both
-  // bridge lanes read byte-identically.
-  chat: '44c35fd4781321ce44d8f2c0674ccafdd512233878c7e4f79e259e1bff4e6eba',
+  // bridge lanes read byte-identically. Recomputed for the tri-mode safety
+  // surface: chat-events.js gains three listeners — chat:approval_required
+  // (approval card projection), chat:guardrail_denied (hard-deny notice) and
+  // chat:mode_changed (authoritative mode broadcast through
+  // applyAuthoritativeModeState). Recomputed for the reviewer P2/P3 waves:
+  // the approval_resolved listener gains the authoritative "unknown"
+  // disposition branch (non-decidable unknown card state) and its captured
+  // body carries the tombstone-pinning window comments; event names, invoke
+  // shapes and authoritative payload handling remain unchanged.
+  // Recomputed for round-8: the chat:done listener gains the terminal-seq
+  // 512-cap eviction lines inside its span (in-body change, no new
+  // invoke/listen surface; the purge hook lives in bridge.js's
+  // onSessionBufferPurged, outside the hashed lane files).
+  // Recomputed for round-13: in-body changes only — the aux-chat dispatch
+  // wraps its web arm in the shared Auto admission gate, the
+  // chat:guardrail_denied listener gains the stable-key replay dedup, the
+  // chat:mode_changed handler flushes the queued head on escaping Auto, and
+  // the pending-approvals replay cleanup gains a rejection twin. No new
+  // command or event surface.
+  chat: 'ce61c1c4c35e43edb4586cae7e95d375318f008fe006dbbea2b1c560e31ad81a',
+  // Recomputed for the tri-mode safety surface: chat-events.js gains three
+  // listeners — chat:approval_required (approval card projection),
+  // chat:guardrail_denied (hard-deny notice) and chat:mode_changed
+  // (authoritative mode broadcast through applyAuthoritativeModeState).
+  // Recomputed for the v3.5 fix wave: sessions.js materialization now also
+  // applies an explicit yolo/auto work-lane default via the existing
+  // set_session_mode command (no new command or event surface).
+
+  // Recomputed for the round-4 fail-neutral echo guard: the
+  // chat:approval_resolved handler gains an unknown-decision early return
+  // (same single listener, no new command or event surface).
+
+  // Recomputed for the approval replay tombstone (review P2): the
+  // chat:approval_resolved listener records a tombstone when no unresolved
+  // card matched, and chat:approval_required consults it — no new command
+  // or event surface, only the in-body guard against a stale in-flight
+  // get_pending_approvals snapshot reinserting a settled approval.
+
+  // Recomputed for the lint-clean decision guard: the same unknown-decision
+  // early return spelled as a includes() list (CI's unicorn rule), the same
+  // single listener and identical behavior.
+
+  // Recomputed for the review-P2/P3 fix wave: the web lane's doSendFor
+  // posture gate consults the existing get_mode_state command before
+  // admitting a turn (no new command or event surface), and the approval
+  // replay gains the terminal-generation fence (approvalReplayTerminalSeq
+  // bump in the chat:done sweep) — no new invoke or listen entries.
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -255,7 +305,20 @@ const expectedProtocolHashes = {
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the lane-merge residual wave: toggleSuperPerm
   // (set_super_permission, get_super_permission_status) joined the shared base.
-  interaction: 'a4c231e1119499eae66fe3e0e36d9604393b85468398a062b1e271e5e2f19b20',
+  // Recomputed for the tri-mode safety surface: the interaction domain gains
+  // set_session_mode / set_ask_on_guardrail / decide_approval /
+  // get_pending_approvals invokes (plan/auto/yolo unified switching,
+  // session-level ask-on-guardrail toggle, approval-card decisions and the
+  // remount replay query).
+  // Recomputed for the review-P3 reconcile: the set_ask_on_guardrail failure
+  // path re-reads the existing get_mode_state command to converge the chip
+  // to the persisted source of truth (no new command or event surface).
+  // Recomputed for the plan-stuck commit-marking + in-flight latch: both Go
+  // paths latch on a synchronous submitting flag, and planStuckGo now
+  // invokes the existing exit_plan_to_yolo command directly (the shared
+  // exitPlanToYolo wrapper swallows failures, which commit-marking must
+  // observe) — no new command or event surface.
+  interaction: '5345757ac633c2fa3b89126a2e16cdce30a88dc8041b7a543114cff4ad8c9c7a',
   // Recomputed for the shared-helper dedup (see batch note above).
   knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +
@@ -331,7 +394,14 @@ const expectedProtocolHashes = {
   // main's sidecar-helper wave (#596), aux-session surface and the
   // #713/#735/#701 lane merges; the pin below is the extractor's output on
   // the merged bridge/sessions.js (rebase onto main @ 88bff8582).
-  sessions: 'acee7f6975f19302026d6619618aadf8619e51684b271d024aa705e6c1efcd17',
+  // Recomputed for the tri-mode safety surface: the switch paths gain the
+  // get_pending_approvals invoke (replayPendingApprovals re-projects pending
+  // approval cards after a session switch, same recovery idea as
+  // get_pending_user_inputs).
+  // Recomputed for the v3.5 fix wave: materialization applies an explicit
+  // yolo/auto work-lane default via the existing set_session_mode command
+  // (plan keeps set_plan_mode_next; no new command or event surface).
+  sessions: 'dd2f01ea3fe18e515456e13098b42afb49b1993a700c5a189a86cc9bff9ec2df',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
@@ -382,7 +452,18 @@ const expectedProtocolHashes = {
   // ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
   // projects_set_never_materialize / align_session_to_project
   // (bridge/projects.js).
-  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',};
+  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',
+  // Round-11 review: first registration — the web lane's invoke/listen
+  // surface (whole web/bridge.js file, see webWireSurface above). A span
+  // change in the web bridge now reddens this pin like the tauri domains.
+  // Recomputed for round-13: in-body changes only (aux dispatch wraps the
+  // web arm in the shared admission gate; guardrail notice replay dedup;
+  // queued-head flush on leaving Auto; replay-cleanup rejection twin). No
+  // new command or event surface. Recomputed for round-15: in-body changes
+  // only (queued-flush admission owner across the mode query, planStuckGo
+  // in-flight latch + commit-marking mirror of the tauri lane). No new
+  // command or event surface.
+  webWireSurface: '1df98be9eb2dbf379eaa6b9fd1d3b626eed01a02db980c854dc10ee2988ed20c',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {

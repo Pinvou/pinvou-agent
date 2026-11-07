@@ -29,6 +29,15 @@ pub struct SessionModeStateView {
     /// Swarm-regime scope (scheduled sessions excluded) so the toggle hides
     /// where the engine would never honor the lifted caps.
     multi_agent_available: bool,
+    /// The execution mode an `accept_plan` on this state would resume into
+    /// (`claim_pending_plan`'s restore: pre_plan_mode, fallback Auto —
+    /// including the rebooted-Plan fallback). Review zhuowp 5780927743
+    /// third: the web acceptPlan face previously gated only on the CURRENT
+    /// mode (`mode === "plan"` passed) and a card entered from Auto then
+    /// executed under Auto, a posture the web face cannot serve (no
+    /// approval-card decision surface). The gate now reads this projection
+    /// and refuses such accepts with the same face as its Auto rejection.
+    post_accept_mode: SerializableMode,
 }
 
 #[tauri::command]
@@ -37,19 +46,23 @@ pub async fn get_mode_state(
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
 ) -> Result<SessionModeStateView, String> {
+    let state = store.mode_state(&session_id);
     Ok(SessionModeStateView {
-        state: store.mode_state(&session_id),
+        post_accept_mode: state.post_accept_mode(),
+        state,
         multi_agent_available: pool.swarm_mode_available(&session_id),
     })
 }
 
 /// code 会话权限模式的全局偏好：新建 code 会话的默认 mode（`last_mode`，
-/// None = 首次使用 → Plan）与 yolo 一次性确认标志。前端 code 页启动/进草稿时拉取。
+/// None = 首次使用 → Plan；显式 Auto 经 `last_mode_auto` 伴随旗持久化，此处
+/// 折回 `last_mode`，见 `code_permission_prefs_view`）与 yolo 一次性确认
+/// 标志。前端 code 页启动/进草稿时拉取。
 #[tauri::command]
 pub async fn get_code_permission_prefs(
     store: State<'_, SessionStore>,
 ) -> Result<crate::platform::prefs::CodePermissionPrefs, String> {
-    Ok(store.code_permission_prefs())
+    Ok(store.code_permission_prefs_view())
 }
 
 /// 用户在 code 页确认卡【确认】切 yolo：全局记住，之后任何会话 Plan↔yolo
@@ -70,7 +83,8 @@ pub async fn confirm_code_yolo(
 
 /// The per-lane (work/code) global default modes. Fetched at startup / on
 /// entering the draft state to drive the draft-state chip; None = the lane
-/// was never explicitly chosen (defaults code→plan, work→yolo).
+/// was never explicitly chosen (defaults code→plan, work→Auto for new
+/// unbound plain sessions — see `resolved_default_mode`).
 #[tauri::command]
 pub async fn get_mode_defaults(
     store: State<'_, SessionStore>,
@@ -95,7 +109,13 @@ pub async fn set_mode_default(
     // the draft-state switch persists through the settings transaction.
     let store = store.inner().clone();
     super::settings::join_blocking("set_mode_default", move || {
-        store.set_mode_default(lane, mode);
+        // Persistence failure propagates (review JensenChen28 5780647695):
+        // returning Ok(stale defaults) made both bridges file the old
+        // default while drawing the draft chip as the target — the switch
+        // was never durable and a session materialized later under the OLD
+        // default. The frontend catch keeps the authoritative state and
+        // surfaces the error instead of drawing the target.
+        store.set_mode_default(lane, mode)?;
         Ok(store.mode_defaults())
     })
     .await
@@ -105,28 +125,58 @@ pub async fn set_mode_default(
 
 /// 用户在 composer chip 选 Plan：设 mode=Plan。
 /// 下一条 chat 消息带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
+/// 与 `set_session_mode` 统一收口：写库后走同一「姿态热同步 + chat:mode_changed」
+/// 发布序列（`publish_session_mode_change`），多端模式芯片即时收敛。目标会话
+/// 先过存在性门（`ensure_mode_target_session`）——防 IPC 直调给任意 id 铸造
+/// mode 条目 + `_ask_on_guardrail.json` sidecar。
 #[tauri::command]
 pub async fn set_plan_mode_next(
     session_id: String,
     store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
 ) -> Result<SessionModeState, String> {
-    store
-        .set_mode(&session_id, SerializableMode::Plan)
-        .map_err(|error| format!("set_plan_mode_next({session_id}): {error:#}"))?;
-    Ok(store.mode_state(&session_id))
+    ensure_mode_target_session("set_plan_mode_next", &session_id, &store)?;
+    let store = store.inner().clone();
+    // The mode write RMWs the sidecar files (fsync-heavy) under a std Mutex
+    // — join it on a blocking worker instead of parking this runtime
+    // worker, like accept_plan's commit and the settings family.
+    let sid = session_id.clone();
+    let worker_store = store.clone();
+    super::settings::join_blocking("set_plan_mode_next", move || {
+        worker_store
+            .set_mode(&sid, SerializableMode::Plan)
+            .map_err(|error| format!("set_plan_mode_next({sid}): {error:#}"))
+    })
+    .await?;
+    publish_session_mode_change(&session_id, &store, &pool, &app).await
 }
 
-/// 用户在 composer chip 选 Yolo（从 Plan 退回）：mode 切 Yolo。
-/// 对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
+/// 用户在 composer chip 选 Yolo（从 Plan 退回）：mode 切 Yolo（立即生效，
+/// 一次性确认门在前端 UI 层）。与 `set_session_mode` 统一收口：写库后走
+/// 同一「姿态热同步 + chat:mode_changed」发布序列，多端模式芯片即时收敛。
+/// 对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。目标会话先过
+/// 存在性门（同 `set_plan_mode_next`）。
 #[tauri::command]
 pub async fn exit_plan_to_yolo(
     session_id: String,
     store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
 ) -> Result<SessionModeState, String> {
-    store
-        .set_mode(&session_id, SerializableMode::Yolo)
-        .map_err(|error| format!("exit_plan_to_yolo({session_id}): {error:#}"))?;
-    Ok(store.mode_state(&session_id))
+    ensure_mode_target_session("exit_plan_to_yolo", &session_id, &store)?;
+    let store = store.inner().clone();
+    // Same blocking-worker join as set_plan_mode_next: the sidecar RMW is
+    // file I/O under a std Mutex and need not park this runtime worker.
+    let sid = session_id.clone();
+    let worker_store = store.clone();
+    super::settings::join_blocking("exit_plan_to_yolo", move || {
+        worker_store
+            .set_mode(&sid, SerializableMode::Yolo)
+            .map_err(|error| format!("exit_plan_to_yolo({sid}): {error:#}"))
+    })
+    .await?;
+    publish_session_mode_change(&session_id, &store, &pool, &app).await
 }
 
 // ===================== 多智能体模式开关（ADR-0006） =====================
@@ -187,6 +237,7 @@ pub async fn accept_plan(
     display_message: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    app: AppHandle,
 ) -> Result<SessionModeState, String> {
     let mut reservation = pool
         .reserve_turn(&session_id)
@@ -260,12 +311,21 @@ pub async fn accept_plan(
         super::multiagent::MatchSource(&plan_markdown),
     );
     crate::features::assistant::timing::start_turn(&session_id);
+    // Tri-mode safety (S-1): execution after plan approval runs in the mode
+    // the session was in before entering Plan (fallback Auto) — the claim
+    // already flipped the store; carry its posture on the wire.
+    let accepted_mode = accepted_mode_state.mode;
+    let approval =
+        crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(
+            accepted_mode,
+        );
     if let Err(error) = pool
         .send_reserved_user_message(
             &session_id,
             prepared_delegation.content,
             user_display_message(display_content),
-            SerializableMode::Yolo.to_app_mode(),
+            accepted_mode.to_app_mode(),
+            approval,
             false,
             prepared_delegation.expert_snapshot,
             prepared_delegation.expert_candidates,
@@ -307,6 +367,16 @@ pub async fn accept_plan(
     let joined = tauri::async_runtime::spawn_blocking(move || plan_claim.commit()).await;
     if let Err(error) = joined {
         eprintln!("[sessions] accept_plan commit join failed: {error}");
+    }
+    // Tri-mode convergence: the claim flipped the store to the accepted mode
+    // (pre-Plan posture, fallback Auto) — publish the SAME posture sync +
+    // `chat:mode_changed` sequence as the mode-chip commands so every client
+    // converges on the claimed mode (this is the point where
+    // `set_plan_mode_next`'s pending Plan mode becomes the session mode).
+    // The turn is already submitted, so a sync failure is log-only (same
+    // tolerance as the commit join above), never a command error.
+    if let Err(error) = publish_session_mode_change(&session_id, &store, &pool, &app).await {
+        eprintln!("[sessions] accept_plan posture publish failed: {error}");
     }
     Ok(accepted_mode_state)
 }
@@ -488,4 +558,437 @@ pub async fn summon_pinvou(
     )
     .await
     .map_err(|e| format!("summon_pinvou: {e:#}"))
+}
+
+// ===================== 交互审批面（tri-mode safety） =====================
+
+/// 前端审批卡决策回传：allow（仅此一次）/ allow_for_session（本会话同组操作
+/// 静默放行，grouping_key 作用域）/ deny（本会话对该确切操作记住拒绝，
+/// exact approval_key 作用域）。decision 先校验（登记摘除不可逆，非法值必须
+/// 原样 Err）；合法决策先摘除挂起登记（卡已收口，engine 侧审批 id 也随调用
+/// 消亡，不得残留），授予/拒绝缓存在 engine 调用成功后写入。决策落定后广播
+/// `chat:approval_resolved`（M5 收敛面）：决策可能来自第二窗口或 remote 表面，
+/// 其它表面的同 id 卡需就地落终态；前端只对未决卡生效（幂等），发起方自己的
+/// 卡走乐观更新、事件回声不覆盖已决卡。载荷不带 tool input（敏感面纪律）。
+#[tauri::command]
+pub async fn decide_approval(
+    session_id: String,
+    approval_id: String,
+    decision: String,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<(), String> {
+    use crate::features::assistant::pending_approvals;
+    // 先校验 decision：登记摘除不可逆，非法 decision 若在摘除后才发现，
+    // 卡已消失而 engine 侧审批无人应答（悬挂到 turn 结束）。校验在先即
+    // 原样 Err，不产生任何副作用。
+    if !matches!(decision.as_str(), "allow" | "allow_for_session" | "deny") {
+        return Err(format!(
+            "decide_approval: invalid decision \"{decision}\" (expected allow | allow_for_session | deny)"
+        ));
+    }
+    // 再摘登记：拿回 approval_key / grouping_key 供缓存写入；engine 侧调用
+    // 失败（审批已超时/turn 已中断）时把摘除的登记原样放回——卡保持未决，
+    // 本表面可重试、其它表面的点击仍能收口；摘除不回滚会留一张永远
+    // "approval not found" 的死卡（登记摘除不可逆的唯一例外是引擎调用失败）。
+    // 引擎调用成功路径不回滚：卡已消费，残留会复活已收口的卡。
+    //
+    // 恢复受双重栅栏把守（评审 P2：只允许在同一仍然存活的审批生命周期内
+    // 恢复）——摘除与 await 之间可能发生 turn 终态清扫 / 会话清除 /
+    // 并发决策 / 引擎重建，无条件恢复会把已关闭生命周期里的请求原样复活，
+    // 全新 remount 快照照样把它暴露出来，前端墓碑管不到后端 resurrect：
+    // (a) 注册表栅栏 = remove_fenced 返回的代数快照，恢复走
+    //     restore_if_generation_is——比较与插回共用同一注册表临界区
+    //     （评审 P2：先读 generation() 再 record() 的两段式锁之间存在
+    //     窗口，终态清扫可以在比较之后、插回之前推进代数，过期恢复照样
+    //     复活死条目）；任何注册表变更（终态清扫/清除/并发决策/新弹卡）
+    //     都取消恢复。保守方向正确——漏恢复的代价是重触发一次操作，
+    //     错误恢复的代价是复活一张引擎侧审批已不存在的死卡。
+    // (b) 引擎化身栅栏 = 恢复前重读 engine_incarnation()（告知性预检，
+    //     生命周期边界仍由 (a) 的注册表临界区裁决），摘除时快照的化身
+    //     必须仍是活条目——被逐出/重建后的新引擎永远不会应答旧审批
+    //     id，恢复只会造出点了必然报错的僵尸卡。
+    let Some((pending, registry_generation)) =
+        pending_approvals::remove_fenced(&session_id, &approval_id)
+    else {
+        return Err(format!(
+            "decide_approval: approval not found: {approval_id}"
+        ));
+    };
+    let Some((engine, incarnation)) = pool.handle_with_incarnation(&session_id).await else {
+        // 引擎不在场：无化身可比对，只受注册表栅栏把守。
+        pending_approvals::restore_if_generation_is(&session_id, pending, registry_generation);
+        return Err("session_engine_not_running".to_string());
+    };
+    let result = if decision == "deny" {
+        engine.handle.deny_tool_call(approval_id.clone()).await
+    } else {
+        // "allow" | "allow_for_session"（上方已校验）。
+        engine.handle.approve_tool_call(approval_id.clone()).await
+    };
+    let outcome = match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // 引擎 Err 分两类（ack/settle 契约，判定见
+            // approval_outcome_is_unknown）——只有确定拒绝恢复登记：
+            // (a) 确定拒绝（stale id / 未能持久提交 / 未被引擎消费 / 通道
+            //     关闭）：决策确定未生效，卡仍是活的未决请求。发送时引擎
+            //     在场：化身预检 + 注册表栅栏（见上；插回的比较与插入在
+            //     restore_if_generation_is 的同一临界区内完成），本表面可
+            //     重试、其它表面的点击仍能收口。
+            // (b) 未知终态（ack + settle 双窗超时）：决策仍可能在引擎侧
+            //     迟交并执行，而迟交没有宿主对账事件、也无法再建立本应许
+            //     诺的会话级授予/拒绝记忆——恢复活跃决策控件等于许诺一次
+            //     可能已被消费的决策可以重来。与注册表栅栏同一保守方向：
+            //     不恢复登记（remount 不复活该卡，点击的终态只体现在
+            //     transcript），错误文本如实携带引擎的未知措辞供各表面呈
+            //     现。缓存与收敛广播本就只在成功后写入/发出，此处无新增。
+            //     但登记摘除只管 remount：已挂载的卡（聊天车道 / 代码
+            //     原生车道）各自持着 active 决策控件，若不同步告知，UI
+            //     仍邀请对一道可能已被消费的决策再点一次（后续每次点击
+            //     只能失败，评审 P2）。未知臂走 resolved 广播通道携带
+            //     decision "unknown"（resolved-shaped 事件、负载仍出自
+            //     唯一构造点）：两个挂载面把卡渲染成不可决的未知态
+            //     （resolved 保持 false，迟到的权威决议事件仍可就地
+            //     对账收口）；确定拒绝臂不广播（卡仍是活的未决请求，
+            //     本表面可重试、其它表面的点击仍能收口——行为不变）。
+            if !pending_approvals::approval_outcome_is_unknown(&error) {
+                let engine_still_live =
+                    pool.engine_incarnation(&session_id).await == Some(incarnation);
+                if engine_still_live {
+                    pending_approvals::restore_if_generation_is(
+                        &session_id,
+                        pending,
+                        registry_generation,
+                    );
+                }
+            } else {
+                let payload = pending_approvals::approval_resolved_payload(
+                    &session_id,
+                    &approval_id,
+                    "unknown",
+                );
+                let _ = app.emit("chat:approval_resolved", payload.clone());
+                crate::features::remote_control::forward_app_event(
+                    &app,
+                    "chat:approval_resolved",
+                    payload,
+                );
+            }
+            return Err(format!("decide_approval({decision}): {error:#}"));
+        }
+    };
+    // 授予/拒绝缓存在 engine 调用**成功后**写入：decision 在 engine 侧未生效
+    // （审批已消费/turn 已中断）时，缓存不得替一次没落地的点击放行后续调用。
+    if outcome.is_ok() && decision == "allow_for_session" {
+        // 授予记在 lossy grouping_key 上：覆盖后续旗标变体（v0.8.37 语义）。
+        // 携带登记卡的来源工作区代：重绑推进代后恢复执行的旧成功臂在这里被
+        // 锁内失配拒绝，不得把旧目录的决策写进新代记忆（评审 5764675531）。
+        pending_approvals::remember_grant(
+            &session_id,
+            &pending.approval_grouping_key,
+            pending.request_workspace_generation,
+        );
+    }
+    if outcome.is_ok() && decision == "deny" {
+        // 拒绝记在 exact approval_key 上：换参数要重新请批（#1617 语义）。
+        // 代校验同 remember_grant。
+        pending_approvals::remember_denial(
+            &session_id,
+            &pending.approval_key,
+            pending.request_workspace_generation,
+        );
+    }
+    // 收敛广播在 engine 调用成功后（与缓存写入同序）：失败不广播——其它表面
+    // 的卡保持未决，发起方收到错误提示；摘除的登记已原样放回，重试仍能收口。
+    if outcome.is_ok() {
+        let payload =
+            pending_approvals::approval_resolved_payload(&session_id, &approval_id, &decision);
+        let _ = app.emit("chat:approval_resolved", payload.clone());
+        crate::features::remote_control::forward_app_event(&app, "chat:approval_resolved", payload);
+    }
+    outcome
+}
+
+/// 会话当前挂起的审批卡。代码页会话 lane 随组件卸载销毁，
+/// `chat:approval_required` 不重发；remount 时调本命令还原审批卡
+/// （与 get_pending_user_inputs 同一还原思路）。
+#[tauri::command]
+pub async fn get_pending_approvals(
+    session_id: String,
+) -> Vec<crate::features::assistant::pending_approvals::PendingApproval> {
+    crate::features::assistant::pending_approvals::list(&session_id)
+}
+
+/// Tri-mode 统一模式切换：写会话 mode（`set_plan_mode_next` 同款持久化），
+/// 可选同时翻转 ask-on-guardrail；随后走统一发布序列（`publish_session_
+/// change`）：会话引擎在位时热同步底座安全姿态（`Op::ChangeMode`），否则
+/// 下次发送按新 mode 组 op；并广播 `chat:mode_changed`。返回刷新后的完整
+/// mode 状态。Plan 的 pending ticket 由 `set_mode_in_memory` 既有语义清空，
+/// 这里不重复处理。目标会话先过存在性门（`ensure_mode_target_session`，
+/// `set_multi_agent_mode` 同款 id 形状 + 会话存在校验；plain 会话即合法
+/// 目标，不加 aux 限制）——防 IPC 直调给任意 id 铸造 mode 条目 + sidecar。
+#[tauri::command]
+pub async fn set_session_mode(
+    session_id: String,
+    mode: SerializableMode,
+    ask_on_guardrail: Option<bool>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<SessionModeState, String> {
+    ensure_mode_target_session("set_session_mode", &session_id, &store)?;
+    let store = store.inner().clone();
+    // The mode + ask writes each RMW the sidecar files (fsync-heavy) under
+    // a std Mutex — join them on a blocking worker instead of parking this
+    // runtime worker, like accept_plan's commit and the settings family.
+    let sid = session_id.clone();
+    super::settings::join_blocking("set_session_mode", {
+        let store = store.clone();
+        let sid = sid.clone();
+        move || {
+            store
+                .set_mode(&sid, mode)
+                .map_err(|error| format!("set_session_mode({sid}): {error:#}"))
+        }
+    })
+    .await?;
+    // ask 半段失败不吞掉 mode 半段：mode 已落库并生效，发布序列照走（广播
+    // 携带权威状态，其它表面/窗口收敛到已生效的 mode），ask 错误大声记日志
+    // 并回传——命令失败但切换半落地时，前端按广播收敛芯片而不是回滚一个
+    // 实际已持久化的 mode。
+    let mut ask_error = None;
+    if let Some(enabled) = ask_on_guardrail {
+        let store = store.clone();
+        let value = sid.clone();
+        if let Err(error) = super::settings::join_blocking("set_session_mode:ask", move || {
+            store
+                .set_ask_on_guardrail(&value, enabled)
+                .map_err(|error| format!("ask_on_guardrail: {error:#}"))
+        })
+        .await
+        {
+            // stderr 会随启动日志落盘：消息不带会话 id（本 PR 自订的
+            // cleartext-logging 纪律，见 `mode_state.rs` 同款注释）；sid
+            // 只进回传给调用方的 Err，那里是调用方自己的展示面。
+            eprintln!(
+                "[commands] set_session_mode: {error} (mode already persisted; broadcasting \
+                 authoritative state)"
+            );
+            ask_error = Some(format!("set_session_mode({sid}): {error}"));
+        }
+    }
+    let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
+    if let Some(error) = ask_error {
+        return Err(error);
+    }
+    Ok(state)
+}
+
+/// 单独翻转会话 ask-on-guardrail（Yolo 全自动档下守卫命中弹卡还是硬拒）。
+/// 会话尚无 mode 状态条目时随全局默认（store 侧不物化条目，避免钉死 mode）。
+/// 目标会话先过存在性门（同 `set_session_mode`）：开关只对真实会话有意义，
+/// 防 IPC 直调为任意 id 写 sidecar。
+#[tauri::command]
+pub async fn set_ask_on_guardrail(
+    session_id: String,
+    enabled: bool,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<SessionModeState, String> {
+    ensure_mode_target_session("set_ask_on_guardrail", &session_id, &store)?;
+    let store = store.inner().clone();
+    // Same blocking-worker join as set_session_mode: the sidecar RMW is
+    // file I/O under a std Mutex and need not park this runtime worker.
+    let sid = session_id.clone();
+    let worker_store = store.clone();
+    super::settings::join_blocking("set_ask_on_guardrail", move || {
+        worker_store
+            .set_ask_on_guardrail(&sid, enabled)
+            .map_err(|error| format!("set_ask_on_guardrail({sid}): {error:#}"))
+    })
+    .await?;
+    publish_session_mode_change(&session_id, &store, &pool, &app).await
+}
+
+/// mode 写命令共用的目标会话门：id 形状校验（避免非法 id 逃逸会话边界）+
+/// 会话确实存在（防 IPC 直调给不存在的 id 铸造 mode 状态条目 /
+/// `_ask_on_guardrail.json` sidecar）。镜像 `set_multi_agent_mode` 的前两道
+/// 门，**不带** aux 限制——plain 会话是合法的 mode 目标。两个校验都必须在
+/// 任何写库/sidecar 动作之前：校验失败即原样 Err，不留任何持久化痕迹。
+pub(super) fn ensure_mode_target_session(
+    command: &str,
+    session_id: &str,
+    store: &SessionStore,
+) -> Result<(), String> {
+    crate::features::sessions::validate_session_id(session_id)
+        .map_err(|error| format!("{command}: {error:#}"))?;
+    store
+        .load(session_id)
+        .map_err(|error| format!("{command}({session_id}): 会话不存在: {error:#}"))?;
+    Ok(())
+}
+
+/// 会话 mode 写路径的统一发布序列（`set_session_mode` / `set_ask_on_guardrail`
+/// / `set_plan_mode_next` / `exit_plan_to_yolo` / `accept_plan` 共用）：会话
+/// 引擎在位时把新安全姿态热同步进底座（`Op::ChangeMode` + 规则集刷新），
+/// 引擎不在位则跳过（lazy spawn 的下一次发送自会按 store 里的 mode 组 op）；
+/// 然后广播 `chat:mode_changed`（桌面 emit + 远程转发），多端模式芯片即时
+/// 收敛。返回刷新后的完整 mode 状态。
+///
+/// 引擎热同步失败**不**使发布失败：store 的 mode 写在此之前已经落库（命令
+/// 先写后发布），下一次发送自会按 store mode 组 op 自愈；把错误抛回只会让
+/// 前端回滚一个实际已持久化的切换、其余端滞留旧模式。失败大声记日志，广播
+/// 携带 store 权威状态照发。
+async fn publish_session_mode_change(
+    session_id: &str,
+    store: &SessionStore,
+    pool: &EnginePool,
+    app: &AppHandle,
+) -> Result<SessionModeState, String> {
+    if let Err(error) = sync_engine_safety_posture(session_id, pool).await {
+        // 不带会话 id（cleartext-logging 纪律），且如实声明自愈边界：逐轮
+        // send op 只重导出 mode/approval 姿态；ask 旗标只在 `Op::ChangeMode`
+        // 上携带，要等下一次 mode/ask 写或 respawn 才重新武装。
+        eprintln!(
+            "[commands] publish_session_mode_change: engine posture sync failed (mode/approval \
+             posture re-derives on the next send; the ask flag re-arms on the next mode/ask \
+             write or respawn): {error:#}"
+        );
+    }
+    let state = store.mode_state(session_id);
+    emit_mode_changed(app, session_id, state.mode, state.ask_on_guardrail);
+    Ok(state)
+}
+
+/// 会话引擎在位时把新安全姿态热同步进底座（`Op::ChangeMode`）；引擎不在位
+/// 则跳过——lazy spawn 的下一次发送自会按 store 里的 mode 组 op。
+async fn sync_engine_safety_posture(session_id: &str, pool: &EnginePool) -> Result<(), String> {
+    if pool.handle_for(session_id).await.is_some() {
+        pool.sync_session_safety_posture(session_id)
+            .await
+            .map_err(|error| format!("sync_session_safety_posture({session_id}): {error:#}"))?;
+    }
+    Ok(())
+}
+
+/// `chat:mode_changed` 双路广播（桌面 emit + 远程转发），payload 的 mode 为
+/// snake_case 序列化值，ask_on_guardrail 为会话解析值（无条目会话 = 全局默认）。
+fn emit_mode_changed(
+    app: &AppHandle,
+    session_id: &str,
+    mode: SerializableMode,
+    ask_on_guardrail: bool,
+) {
+    let payload = mode_changed_payload(session_id, mode, ask_on_guardrail);
+    let _ = app.emit("chat:mode_changed", payload.clone());
+    crate::features::remote_control::forward_app_event(app, "chat:mode_changed", payload);
+}
+
+/// The `chat:mode_changed` payload (single source for both broadcast legs):
+/// `mode` serializes snake_case (`yolo`/`auto`/`plan`), `ask_on_guardrail`
+/// is the session-resolved value. Factored out so the wire contract is unit-
+/// pinnable without an AppHandle.
+pub(super) fn mode_changed_payload(
+    session_id: &str,
+    mode: SerializableMode,
+    ask_on_guardrail: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": session_id,
+        "mode": mode,
+        "ask_on_guardrail": ask_on_guardrail,
+    })
+}
+
+#[cfg(test)]
+mod get_mode_state_view_wire_tests {
+    //! Round-13 review (M-5): the `post_accept_mode` IPC seam had no test
+    //! that bites — the projection was store-tested and the web gate test
+    //! MOCKED `get_mode_state`, so deleting the wire field (or renaming it
+    //! via a serde attribute) kept the whole suite green while the web
+    //! acceptPlan gate silently lost its input (`undefined !== "auto"` never
+    //! fires). This pin joins the two halves: the serialized VIEW must carry
+    //! the exact snake_case wire field, alongside the flattened state keys,
+    //! with the claim-mirroring values.
+
+    use super::*;
+
+    fn view_for(state: SessionModeState) -> serde_json::Value {
+        let multi_agent_available = false;
+        serde_json::to_value(&SessionModeStateView {
+            post_accept_mode: state.post_accept_mode(),
+            state,
+            multi_agent_available,
+        })
+        .expect("the view must serialize")
+    }
+
+    #[test]
+    fn post_accept_mode_is_on_the_wire_with_exact_keys() {
+        // Plan entered from nothing (rebooted-Plan fallback): the gate must
+        // see `post_accept_mode === "auto"` even though `mode === "plan"`.
+        let mut state = SessionModeState::default();
+        state.mode = SerializableMode::Plan;
+        state.pre_plan_mode = None;
+        let value = view_for(state);
+        assert_eq!(
+            value.get("post_accept_mode"),
+            Some(&serde_json::json!("auto")),
+            "the web acceptPlan gate reads `post_accept_mode` off this exact snake_case wire \
+             field; a rename or omission silently voids the gate"
+        );
+        assert_eq!(
+            value.get("mode"),
+            Some(&serde_json::json!("plan")),
+            "the current mode stays `plan` — the gate needs BOTH fields to distinguish the \
+             accept-resume posture"
+        );
+
+        // Plan entered from Yolo resumes Yolo.
+        let mut state = SessionModeState::default();
+        state.mode = SerializableMode::Plan;
+        state.pre_plan_mode = Some(SerializableMode::Yolo);
+        assert_eq!(
+            view_for(state).get("post_accept_mode"),
+            Some(&serde_json::json!("yolo"))
+        );
+
+        // A non-Plan state projects itself (the gate's second leg).
+        let mut state = SessionModeState::default();
+        state.mode = SerializableMode::Auto;
+        assert_eq!(
+            view_for(state).get("post_accept_mode"),
+            Some(&serde_json::json!("auto"))
+        );
+    }
+
+    #[test]
+    fn view_keys_are_the_flattened_state_plus_the_two_extras() {
+        let mut state = SessionModeState::default();
+        state.mode = SerializableMode::Plan;
+        let state_keys = serde_json::to_value(&state)
+            .expect("state serializes")
+            .as_object()
+            .expect("state is an object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let view_keys = view_for(state)
+            .as_object()
+            .expect("view is an object")
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut expected = state_keys;
+        expected.insert("multi_agent_available".to_string());
+        expected.insert("post_accept_mode".to_string());
+        assert_eq!(
+            view_keys, expected,
+            "the view's wire keys must be exactly the flattened state keys plus \
+             `multi_agent_available` and `post_accept_mode` (snake_case) — a serde rename or \
+             an un-flattened shape breaks the web/desktop readers"
+        );
+    }
 }
