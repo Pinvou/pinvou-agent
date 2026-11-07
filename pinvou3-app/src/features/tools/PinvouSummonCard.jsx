@@ -248,7 +248,9 @@ export function PinvouSummonModal({ item, theme, t, isLocal }) {
             loading it hides the modal and releases the summon guard. It does
             not cancel the backend request — the direct-to-model call runs to
             its timeout and its result is still recorded to the review ledger
-            even though the modal is gone. */}
+            even though the modal is gone (a re-summon in between only ever
+            sees its own settle: the stale settle is sequence-gated to
+            ledger-only, bridge-shared-helpers summonPinvou). */}
         <button type="button" onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} aria-label={t.pvSkip}
           className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
           <X size={16} />
