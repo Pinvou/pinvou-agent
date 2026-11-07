@@ -114,6 +114,46 @@ mod tests {
         assert_eq!(count_user_turns(&messages[..1]), 1);
     }
 
+    /// post-provenance 方向的本侧钉子（底座
+    /// `forkguard_user_turn_prompt_indices_are_era_aware` 的 app 层镜像）：
+    /// 含 stamped 载体的历史里，粘贴的摘要头 turn **计入** turn 数。
+    /// `count_user_turns` 是 `user_turn_prompt_indices` 的一行委托，底座已钉
+    /// 该契约；这里本地复钉，防止未来退回单消息宽松口径（会漏计粘贴头，
+    /// fork/rewind 序号与底座 host 编号整体错位）。载体按底座
+    /// `compaction_checkpoint_message` 的形状以字面量钉住（provenance 块为
+    /// 底座 crate 私有，未导出）。
+    #[test]
+    fn count_user_turns_counts_pasted_header_in_post_provenance_history() {
+        const COMPACTION_CHECKPOINT_PROVENANCE: &str =
+            "<!-- codewhale.compaction-checkpoint.v1 -->";
+        const COMPACTION_SUMMARY_MARKER: &str =
+            "Another language model started to solve this problem";
+        let stamped_carrier = Message {
+            role: "user".into(),
+            content: vec![
+                ContentBlock::Text {
+                    text: format!("{COMPACTION_SUMMARY_MARKER}\nhandoff"),
+                    cache_control: None,
+                },
+                ContentBlock::Text {
+                    text: COMPACTION_CHECKPOINT_PROVENANCE.to_string(),
+                    cache_control: None,
+                },
+            ],
+        };
+        let messages = vec![
+            text_message("user", "第一轮"),
+            stamped_carrier,
+            text_message("user", COMPACTION_SUMMARY_MARKER),
+            text_message("user", "第二轮"),
+        ];
+        assert_eq!(
+            count_user_turns(&messages),
+            3,
+            "post-provenance history counts the pasted header turn (base era contract)"
+        );
+    }
+
     /// The JSON entry point and the in-memory slice must agree: after a
     /// serde round-trip, the same messages give `count_user_turns_in_json`
     /// the same value as `count_user_turns`. The "CLI and engine no longer
