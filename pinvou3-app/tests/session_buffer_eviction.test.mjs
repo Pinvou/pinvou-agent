@@ -307,25 +307,38 @@ test('tauri LRU capacity eviction keeps personaPlaceholderTitles; real deletion 
     'real session deletion must clean the placeholder-title marker');
 });
 
-test('tauri compaction in-flight flag cleaned on eviction and real deletion', () => {
-  // Unlike personaPlaceholderTitles, the compactingSessions flag has no
-  // rehydration story: a stale flag would keep the ctx-compact entry
-  // disabled for a buffer that no longer exists.
+test('tauri compacting buffer protected from capacity eviction; stale flag expires', () => {
+  // In-flight compaction must not lose its in-flight flag to capacity
+  // eviction: eviction would re-enable the ctx-compact entry while the
+  // engine-side compaction is still running, and a re-click double-enqueues
+  // (pool.compact_now has no enqueue dedupe). The protection reads the flag
+  // timestamp with the same 15-minute backstop as the ChatView read, so an
+  // expired flag (terminal event lost) stops protecting and the buffer
+  // evicts normally, cleaning the flag with it. Unlike personaPlaceholderTitles,
+  // the flag has no rehydration story either way.
   const { api, state } = loadTauriSessionsFeature();
   api.switchActiveTo('s1', null);
-  state.compactingSessions.s1 = true; // chat:compaction start landed for s1
+  state.compactingSessions.s1 = Date.now(); // chat:compaction start landed for s1
   state.composerDraft = 'd1';
   for (let i = 2; i <= 33; i++) {
     api.switchActiveTo(`s${i}`, null);
     state.composerDraft = `d${i}`;
   }
-  assert.equal(state.compactingSessions.s1, undefined,
-    'capacity eviction must clean the compaction in-flight flag together with the buffer');
+  assert.ok(state.compactingSessions.s1 > 0,
+    'capacity eviction must not reclaim a buffer with in-flight compaction');
 
-  api.switchActiveTo('s1', null); // rebuild (flag cannot reappear, but be explicit)
-  state.compactingSessions.s1 = true;
-  api.purgeSessionBuffer('s1');
+  // Expired flag: the backstop expires the protection, the buffer becomes
+  // evictable again and the stale flag is cleaned together with it.
+  state.compactingSessions.s1 = Date.now() - 16 * 60 * 1000;
+  api.switchActiveTo('s34', null);
+  state.composerDraft = 'd34';
   assert.equal(state.compactingSessions.s1, undefined,
+    'expired compaction flag must stop protecting the buffer and be cleaned on eviction');
+
+  // Real deletion always cleans the flag, protection or not.
+  state.compactingSessions.s3 = Date.now();
+  api.purgeSessionBuffer('s3');
+  assert.equal(state.compactingSessions.s3, undefined,
     'real session deletion must clean the compaction in-flight flag');
 });
 

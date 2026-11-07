@@ -208,7 +208,7 @@ const sessionState = {
   modeState: { mode: 'yolo' },
   thinking: { active: false },
   tokens: { input: 0, max: 1000 },
-  compactingSessions: { [deletedSessionId]: true },
+  compactingSessions: { [deletedSessionId]: Date.now() },
   queued: [],
   activePersona: null,
   mountedCollection: null,

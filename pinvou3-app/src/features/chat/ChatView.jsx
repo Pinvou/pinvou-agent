@@ -1179,16 +1179,33 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // 进行中压缩会排队到轮末才跑，所以 busy（当前会话 turn）与
       // compactingSessions（桥接层 chat:compaction start→终态在途标记，与
       // 代码车道 lane.compacting 同机制）都必须禁用入口，否则点击在轮末前
-      // 无任何反馈，且按钮复位后重复点击会重复入队压缩。按会话记录手动
-      // 入队中的 sid（ChatView 切会话不 remount，见上方 keyed-state 约定），
-      // A 会话入队中不误禁 B 会话。
-      const [manualCompactingSessionId, setManualCompactingSessionId] = useState(null);
-      const compactingActive = !!(activeSessionId && bs && bs.compactingSessions && bs.compactingSessions[activeSessionId]);
-      const ctxCompactInFlight = compactingActive || manualCompactingSessionId === activeSessionId;
+      // 无任何反馈，且按钮复位后重复点击会重复入队压缩。手动标记从点击
+      // 一直保持到桥接层 start 接管（见下方 effect），而非 invoke 返回即清
+      // ——入队到 start 之间按钮不得复位，否则双击会重复入队压缩。
+      // compactingSessions 与手动标记都存时间戳，读取按 15 分钟兜底自愈
+      // （与 Rust MAX_COMPACTION_LATCH_AGE 同款，engine_pool.rs）：终态
+      // 事件丢失（引擎被驱逐中止 forwarder、web 端桌面重启）时在途标记
+      // 过期失效，入口不会永久禁用。按会话记录（ChatView 切会话不
+      // remount，见上方 keyed-state 约定），A 会话入队中不误禁 B 会话。
+      const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
+      const [manualCompact, setManualCompact] = useState(null); // { sid, at }
+      const compactingStartedAt = activeSessionId && bs && bs.compactingSessions
+        ? bs.compactingSessions[activeSessionId] : 0;
+      const compactingActive = !!(compactingStartedAt && Date.now() - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS);
+      const manualCompactActive = !!(manualCompact && manualCompact.sid === activeSessionId
+        && Date.now() - manualCompact.at < COMPACTING_FLAG_MAX_AGE_MS);
+      const ctxCompactInFlight = compactingActive || manualCompactActive;
+      useEffect(() => {
+        // 桥接层 start 已接管禁用 → 释放手动标记（身份校验，只清本会话）。
+        if (compactingActive && activeSessionId) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- 与 RightDock 的 stale-permit 撤销同款：start 接管后必须同步释放手动标记，否则终态清掉桥接标记后手动标记会复活、按钮被无谓多禁一轮 TTL
+          setManualCompact(current => (current && current.sid === activeSessionId ? null : current));
+        }
+      }, [compactingActive, activeSessionId]);
       const handleManualCompact = useCallback(async () => {
         const sid = activeSessionId;
-        if (!sid || manualCompactingSessionId === sid || compactingActive || busy) return;
-        setManualCompactingSessionId(sid);
+        if (!sid || manualCompactActive || compactingActive || busy) return;
+        setManualCompact({ sid, at: Date.now() });
         try {
           await invokeTauri('compact_now', { sessionId: sid });
         } catch (err) {
@@ -1197,11 +1214,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // 车道一致，把该错误映射为本地化指引文案而不是裸错误链。
           const detail = raw.includes('session_engine_not_running') ? t.uiCodex.nativeCompactInactive : raw;
           flashQueuedNotice(sid, { text: `${t.uiCodex.compactFail}: ${detail}` });
-        } finally {
-          // 只清自己这轮：终态前 compactingActive 已由 chat:compaction 接管禁用
-          setManualCompactingSessionId(current => (current === sid ? null : current));
+          // 失败即清：成功路径保持置位，直到桥接层 start 接管（effect）。
+          setManualCompact(current => (current && current.sid === sid ? null : current));
         }
-      }, [manualCompactingSessionId, compactingActive, busy, activeSessionId, flashQueuedNotice, t]);
+      }, [manualCompactActive, compactingActive, busy, activeSessionId, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
