@@ -1173,6 +1173,51 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [queuedEditCandidate, queued, activeSessionId, t, flashQueuedNotice]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
+      // 手动压缩入口：点击 ctx 用量行触发 compact_now。进行中/结果由
+      // chat:compaction 系统项呈现（与代码车道共享同一事件流，桥接层已
+      // 渲染 compactStart/Done/Cancel）。命令本身只把 Op 入队即返回：轮次
+      // 进行中压缩会排队到轮末才跑，所以 busy（当前会话 turn）与
+      // compactingSessions（桥接层 chat:compaction start→终态在途标记，与
+      // 代码车道 lane.compacting 同机制）都必须禁用入口，否则点击在轮末前
+      // 无任何反馈，且按钮复位后重复点击会重复入队压缩。手动标记从点击
+      // 一直保持到桥接层 start 接管（见下方 effect），而非 invoke 返回即清
+      // ——入队到 start 之间按钮不得复位，否则双击会重复入队压缩。
+      // compactingSessions 与手动标记都存时间戳，读取按 15 分钟兜底自愈
+      // （与 Rust MAX_COMPACTION_LATCH_AGE 同款，engine_pool.rs）：终态
+      // 事件丢失（引擎被驱逐中止 forwarder、web 端桌面重启）时在途标记
+      // 过期失效，入口不会永久禁用。按会话记录（ChatView 切会话不
+      // remount，见上方 keyed-state 约定），A 会话入队中不误禁 B 会话。
+      const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
+      const [manualCompact, setManualCompact] = useState(null); // { sid, at }
+      const compactingStartedAt = activeSessionId && bs && bs.compactingSessions
+        ? bs.compactingSessions[activeSessionId] : 0;
+      const compactingActive = !!(compactingStartedAt && Date.now() - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS);
+      const manualCompactActive = !!(manualCompact && manualCompact.sid === activeSessionId
+        && Date.now() - manualCompact.at < COMPACTING_FLAG_MAX_AGE_MS);
+      const ctxCompactInFlight = compactingActive || manualCompactActive;
+      useEffect(() => {
+        // 桥接层 start 已接管禁用 → 释放手动标记（身份校验，只清本会话）。
+        if (compactingActive && activeSessionId) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- 与 RightDock 的 stale-permit 撤销同款：start 接管后必须同步释放手动标记，否则终态清掉桥接标记后手动标记会复活、按钮被无谓多禁一轮 TTL
+          setManualCompact(current => (current && current.sid === activeSessionId ? null : current));
+        }
+      }, [compactingActive, activeSessionId]);
+      const handleManualCompact = useCallback(async () => {
+        const sid = activeSessionId;
+        if (!sid || manualCompactActive || compactingActive || busy) return;
+        setManualCompact({ sid, at: Date.now() });
+        try {
+          await invokeTauri('compact_now', { sessionId: sid });
+        } catch (err) {
+          const raw = String(err && err.message ? err.message : err || '');
+          // 引擎懒启动，重启后未发过消息的会话没有可压缩的上下文——与代码
+          // 车道一致，把该错误映射为本地化指引文案而不是裸错误链。
+          const detail = raw.includes('session_engine_not_running') ? t.uiCodex.nativeCompactInactive : raw;
+          flashQueuedNotice(sid, { text: `${t.uiCodex.compactFail}: ${detail}` });
+          // 失败即清：成功路径保持置位，直到桥接层 start 接管（effect）。
+          setManualCompact(current => (current && current.sid === sid ? null : current));
+        }
+      }, [manualCompactActive, compactingActive, busy, activeSessionId, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
@@ -4363,7 +4408,19 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 ctxPct >= 0.9 ? 'text-[#C5221F] dark:text-[#F28B82]'
                 : ctxPct >= 0.75 ? 'text-[#B06000] dark:text-[#F9AB00]'
                 : 'text-[#9AA0A6] dark:text-[#5F6368]'}`}>
-                {t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+                <button
+                  type="button"
+                  data-testid="chat-ctx-compact"
+                  onClick={handleManualCompact}
+                  disabled={busy || ctxCompactInFlight}
+                  title={ctxCompactInFlight ? t.compactingNow : t.compactNowTip}
+                  className="inline-flex items-center gap-1 hover:underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity">
+                  {ctxCompactInFlight ? t.compactingNow : (
+                    <>
+                      {t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+                    </>
+                  )}
+                </button>
               </div>
             )}
             <div className="flex items-center justify-center mt-3">

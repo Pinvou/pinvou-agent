@@ -208,6 +208,7 @@ const sessionState = {
   modeState: { mode: 'yolo' },
   thinking: { active: false },
   tokens: { input: 0, max: 1000 },
+  compactingSessions: { [deletedSessionId]: Date.now() },
   queued: [],
   activePersona: null,
   mountedCollection: null,
@@ -250,6 +251,8 @@ assert.deepEqual(
 assert.equal(sessionState.activeSessionId, null);
 assert.deepEqual(JSON.parse(JSON.stringify(sessionState.messages)), []);
 assert.equal(sessionStates[deletedSessionId], undefined);
+assert.equal(sessionState.compactingSessions[deletedSessionId], undefined,
+  'real session deletion must clean the compaction in-flight flag');
 assert.equal(sessionNotifications, 1);
 
 console.log('web access desktop session deletion sync test passed');

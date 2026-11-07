@@ -231,6 +231,11 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     artifactChange: { seq: 0, path: "", event: "", sessionId: "", at: 0 },
     // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
     sessionBusy: {},
+    // 上下文压缩进行中的会话 { session_id: true }。chat:compaction start 置位、
+    // done/fail/cancel 终态清除；主车道压缩入口据此禁用（与代码车道
+    // code-native-lane 的 lane.compacting 同机制）。不属于工作集（saveWorkingSetTo
+    // 的显式字段表之外），切会话 swap 不影响；会话删除/驱逐时随 turnUsageDirty 一并清除。
+    compactingSessions: {},
     // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
@@ -954,6 +959,7 @@ function isProtectedScheduledBuffer(id, buf) { return pinvouSharedweb().isProtec
       cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete state.compactingSessions[id];
       // personaPlaceholderTitles is lightweight session metadata (the marker
       // for placeholder titles that auto-rename may override); rehydration
       // never restores it, so capacity eviction must keep it and only real
@@ -997,6 +1003,7 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
       cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete state.compactingSessions[id];
       // personaPlaceholderTitles survives capacity eviction (see the
       // comment at the scheduled eviction site); only purgeSessionBuffer
       // (real deletion) cleans it.
@@ -1014,6 +1021,7 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
     // Real session deletion: any stashed draft is invalidated too and must not flow back into a rebuilt buffer with the same id.
     delete evictedSessionDrafts[id];
     delete turnUsageDirty[id];
+    delete state.compactingSessions[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
     // The scene-events localStorage key is cleaned together with session deletion, avoiding unbounded accumulation across historical sessions.
@@ -4517,11 +4525,34 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
+    // 压缩在途标记：start 置位、终态（done/fail/cancel）清除，供主车道压缩入口
+    // 禁用按钮（与代码车道 code-native-lane 的 lane.compacting 同机制）。
+    // start 存时间戳：终态可能永不达（引擎驱逐会中止 forwarder，见
+    // engine_pool.rs reclaim_engine_entry 注释；web 端桌面重启同样丢终态），
+    // 读取侧按与 Rust MAX_COMPACTION_LATCH_AGE 同款的 15 分钟兜底自愈，
+    // 入口不会永久禁用。
+    // done 携带的 post_tokens 是压缩后的占用估计（forwarder 为刷新用量条
+    // 而加，Rust 侧为 estimated_input_tokens 保守估算）；压缩轮已置
+    // turnUsageDirty，后续 usage 累计值不可信，用量条只能靠这里的
+    // post_tokens 刷新，因此不得被 dirty 语义拦下。
+    const sid = e.payload && e.payload.session_id;
+    if (sid) {
+      if (phase === "start") state.compactingSessions[sid] = Date.now();
+      else delete state.compactingSessions[sid];
+      notify();
+    }
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
+    if (phase === "done") {
+      const postTokens = Number(e.payload && e.payload.post_tokens);
+      if (Number.isFinite(postTokens) && postTokens > 0 && postTokens <= state.tokens.max) {
+        state.tokens = { input: postTokens, max: state.tokens.max };
+        notify();
+      }
+    }
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────

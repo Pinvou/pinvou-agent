@@ -244,7 +244,14 @@ const expectedProtocolHashes = {
   // command surface unchanged. Recomputed again in round 3: the present_artifact
   // comment now carries the web lane's exact `chat:tool_start` token so both
   // bridge lanes read byte-identically.
-  chat: '44c35fd4781321ce44d8f2c0674ccafdd512233878c7e4f79e259e1bff4e6eba',
+  // Recomputed for the PR #834 review-fix wave: the chat:compaction listener
+  // now stores a timestamp (not a boolean) at start so the read side can
+  // expire a lost-terminal in-flight flag with the same 15-minute backstop
+  // as the Rust MAX_COMPACTION_LATCH_AGE latch, and the comment wording no
+  // longer calls post_tokens "accurate" (Rust emits a conservative estimate).
+  // Event names, invoke shapes and the payload contract unchanged; the web
+  // twin carries the identical body.
+  chat: '31537f8ca2703da4b4824b4d483ef778684b60b37201b9640a5b1bdfe05d77c3',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

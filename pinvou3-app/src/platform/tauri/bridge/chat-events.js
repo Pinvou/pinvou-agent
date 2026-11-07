@@ -1242,11 +1242,34 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
+    // 压缩在途标记：start 置位、终态（done/fail/cancel）清除，供主车道压缩入口
+    // 禁用按钮（与代码车道 code-native-lane 的 lane.compacting 同机制）。
+    // start 存时间戳：终态可能永不达（引擎驱逐会中止 forwarder，见
+    // engine_pool.rs reclaim_engine_entry 注释；web 端桌面重启同样丢终态），
+    // 读取侧按与 Rust MAX_COMPACTION_LATCH_AGE 同款的 15 分钟兜底自愈，
+    // 入口不会永久禁用。
+    // done 携带的 post_tokens 是压缩后的占用估计（forwarder 为刷新用量条
+    // 而加，Rust 侧为 estimated_input_tokens 保守估算）；压缩轮已置
+    // turnUsageDirty，后续 usage 累计值不可信，用量条只能靠这里的
+    // post_tokens 刷新，因此不得被 dirty 语义拦下。
+    const sid = e.payload && e.payload.session_id;
+    if (sid) {
+      if (phase === "start") state.compactingSessions[sid] = Date.now();
+      else delete state.compactingSessions[sid];
+      notify();
+    }
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
+    if (phase === "done") {
+      const postTokens = Number(e.payload && e.payload.post_tokens);
+      if (Number.isFinite(postTokens) && postTokens > 0 && postTokens <= state.tokens.max) {
+        state.tokens = { input: postTokens, max: state.tokens.max };
+        notify();
+      }
+    }
   }); });
 
   // Sub-agent tool gates happen inside the foundation and do not produce an

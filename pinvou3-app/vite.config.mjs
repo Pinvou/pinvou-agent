@@ -567,7 +567,25 @@ function enforceLazyChunks() {
 // ceiling takes the next thousand step; the web ceiling stays 128_000
 // (223 B headroom above the measured web entry). This cap does not promise
 // headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 487_000;
+//
+// PR #834 owns the 487_000 → 488_000 desktop step on top of #833's shared
+// 486_000 → 487_000 raise (re-cut per policy on top of the rebased #833,
+// whose rebase onto main brought in the tray feature): the main-lane
+// manual-compaction entry hardens in the always-mounted chat surface —
+// busy/compacting click gate, session-keyed in-flight state with a
+// 15-minute lost-terminal self-heal (mirroring the Rust
+// MAX_COMPACTION_LATCH_AGE), localized engine-error mapping, and the
+// shared compactingSessions bridge slice with eviction protection. All
+// render-path UI in ChatView; it cannot defer without breaking the
+// composer footer. Both endpoints measured on the local node 24
+// toolchain: 486,097 → 487,044 B desktop (+947 B: +789 feature entry,
+// +158 review-fix hardening) and 127,777 → 127,777 B web (byte-identical
+// — after the #833 delivery-pipeline refactor the shared slice registry
+// rides the chat-view group on web). The desktop ceiling takes the next
+// thousand step (956 B headroom); the web ceiling stays 128_000 (223 B
+// headroom above the measured web entry). This cap does not promise
+// headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {

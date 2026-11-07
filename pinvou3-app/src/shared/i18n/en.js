@@ -474,6 +474,7 @@ export const dictEn = {
         feedbackBodyRequired: 'Please enter feedback details.', feedbackUnsupportedFile: 'Unsupported attachment format.',
         feedbackTooManyFiles: 'You can attach up to 5 files.', feedbackPickUnavailable: 'File picker is unavailable.',
         chatGreeting: 'Hi — what would you like to work on today?', artifacts: 'Artifacts', placeholder: 'Ask PINVOU or enter a command', disclaimer: 'PINVOU may display inaccurate info, so double-check.', ctxUsage: 'Context',
+        compactNowTip: 'Compact the context to free up session memory', compactingNow: 'Compacting…',
         chatInputLimitReached: n => `The ${n}-character limit has been reached.`,
         searchPlaceholder: 'Search chats', searchNoResults: 'No matching chats', searchDateAll: 'All',
         searchBatchManage: 'Select', searchBatchDone: 'Done', searchSelectAll: 'Select all', searchSelectedCount: n => `${n} selected`,

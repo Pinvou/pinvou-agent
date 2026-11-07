@@ -78,6 +78,7 @@ function loadTauriSessionsFeature(overrides) {
     busy: false,
     thinking: false,
     tokens: { input: 0, max: 0 },
+    compactingSessions: {},
     turnTimeline: [],
     activeTurnTimelineId: null,
     personaEvents: [],
@@ -304,6 +305,41 @@ test('tauri LRU capacity eviction keeps personaPlaceholderTitles; real deletion 
   api.purgeSessionBuffer('s1');
   assert.equal(personaPlaceholderTitles.s1, undefined,
     'real session deletion must clean the placeholder-title marker');
+});
+
+test('tauri compacting buffer protected from capacity eviction; stale flag expires', () => {
+  // In-flight compaction must not lose its in-flight flag to capacity
+  // eviction: eviction would re-enable the ctx-compact entry while the
+  // engine-side compaction is still running, and a re-click double-enqueues
+  // (pool.compact_now has no enqueue dedupe). The protection reads the flag
+  // timestamp with the same 15-minute backstop as the ChatView read, so an
+  // expired flag (terminal event lost) stops protecting and the buffer
+  // evicts normally, cleaning the flag with it. Unlike personaPlaceholderTitles,
+  // the flag has no rehydration story either way.
+  const { api, state } = loadTauriSessionsFeature();
+  api.switchActiveTo('s1', null);
+  state.compactingSessions.s1 = Date.now(); // chat:compaction start landed for s1
+  state.composerDraft = 'd1';
+  for (let i = 2; i <= 33; i++) {
+    api.switchActiveTo(`s${i}`, null);
+    state.composerDraft = `d${i}`;
+  }
+  assert.ok(state.compactingSessions.s1 > 0,
+    'capacity eviction must not reclaim a buffer with in-flight compaction');
+
+  // Expired flag: the backstop expires the protection, the buffer becomes
+  // evictable again and the stale flag is cleaned together with it.
+  state.compactingSessions.s1 = Date.now() - 16 * 60 * 1000;
+  api.switchActiveTo('s34', null);
+  state.composerDraft = 'd34';
+  assert.equal(state.compactingSessions.s1, undefined,
+    'expired compaction flag must stop protecting the buffer and be cleaned on eviction');
+
+  // Real deletion always cleans the flag, protection or not.
+  state.compactingSessions.s3 = Date.now();
+  api.purgeSessionBuffer('s3');
+  assert.equal(state.compactingSessions.s3, undefined,
+    'real session deletion must clean the compaction in-flight flag');
 });
 
 test('web personaPlaceholderTitles cleaned only on real deletion (source contract)', () => {
