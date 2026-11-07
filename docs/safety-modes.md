@@ -221,8 +221,8 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
 
 | 档 | 服务车道 | 规模 | 组成 |
 |---|---|---|---|
-| Full | Plan / Auto（及一切无会话信息的调用方默认） | 8,736 条 | never-sensible 底线族 + 敏感族（逐文件凭据销毁、exfil 直传、持久化、sudo 等），与 pre-profile 组成逐字节一致（快照测试钉） |
-| Floor | Yolo | 3,528 条 | 只保留 never-sensible 底线族，敏感族缺位 |
+| Full | Plan / Auto（及一切无会话信息的调用方默认） | 8,742 条 | never-sensible 底线族 + 敏感族（逐文件凭据销毁、exfil 直传、持久化、sudo 等），与 pre-profile 组成逐字节一致（快照测试钉） |
+| Floor | Yolo | 3,534 条 | 只保留 never-sensible 底线族，敏感族缺位 |
 
 - **profile 只选择组装哪些规则族，绝不改写规则串、绝不 Deny→Ask 改标**：每条
   发出的规则保持 typed `Deny`，命中的族在一切审批姿态下照旧短路。武装会话对
@@ -386,9 +386,10 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   full_is_the_pinned_composition` / `_floor_keeps_floor_drops_sensitive` /
   `_sudo_toggle_interplay_unchanged` / `_floor_engine_behavior` /
   `_engine_lane_forces_full_for_unattended_runs` / `_floor_count_is_pinned`
-  （Full 8,736 沿用既有 `rule_snapshot_is_stable` 快照——round-13 的
-  resolved-home 尾斜杠 exfil 面补 7 条后由 8,729 重钉，Floor 3,528 同批由
-  3,521 重钉；车道矩阵另有专测），加 sessions/commands 域的开关持久化与
+  （Full 8,742 沿用既有 `rule_snapshot_is_stable` 快照——round-13 的
+  resolved-home 尾斜杠 exfil 面补 7 条后由 8,729 重钉，round-15 评审 C 的
+  Windows 尾反斜杠 tilde 拼写面补 6 条后定于 8,742，Floor 3,528 同批由
+  3,521 重钉、round-15 定于 3,534；车道矩阵另有专测），加 sessions/commands 域的开关持久化与
   默认播种回归；前端 lane 覆盖三态芯片、开关与 ApprovalCard。
 - **登记**：fork-guard 的 `EXPECTED_HEAD`/`EXPECTED_COMMITS` 与指纹表
   （`scripts/fork-guard.sh`）、`docs/fork-modifications.md` T2 增补随本 PR
