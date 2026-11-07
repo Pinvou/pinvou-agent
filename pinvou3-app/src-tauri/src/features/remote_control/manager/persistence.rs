@@ -18,6 +18,14 @@ use super::{
 };
 use crate::platform::paths;
 
+/// Round-15 复审:队列满错误的可识别前缀——stop/refresh 属恢复路径,按
+/// 此前缀把该类错误降级为「记日志继续」,不再楔死停用/轮换;同键不同
+/// 密钥的冲突保持 fail-closed 不变(round-14 记录的设计边界)。用字符串
+/// 前缀而非枚举:全模块错误面就是 String,与既有风格一致,调用方以
+/// `starts_with` 判别。
+pub(super) const PENDING_REVOCATION_QUEUE_FULL_PREFIX: &str =
+    "pending Web revocation queue is full";
+
 pub(super) fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
     WebAccessInfo {
         endpoint_id: endpoint.config.endpoint_id.clone(),
@@ -370,8 +378,44 @@ enum RevocationLedgerLoad {
 fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevocationLedger {
     let mut salvaged = PendingRevocationLedger::default();
     let mut keys = HashSet::new();
-    for pending in &ledger.entries {
+    for (index, pending) in ledger.entries.iter().enumerate() {
         if salvaged.entries.len() >= super::MAX_PENDING_REVOCATIONS {
+            // Round-15 复审 NIT:容量截断必须显式报数——静默丢掉的条目意味
+            // 着对应 endpoint 在 relay 侧保持可 join,直到人工清理。
+            // Round-16 复审:报数之外逐个点名(哪几把凭据还在 relay 侧
+            // joinable 是人工清理的输入);截断集 ≤ 待吊销总量,该路径本身
+            // 已是异常分支,逐条点名的日志量可接受。
+            // Round-20 复审(S10-2):容量截断先于逐条校验,被点名条目的
+            // endpoint_id 未经字符集校验——ledger 被种植/损坏时控制字符与
+            // ANSI 序列会原样进入桌面日志(日志伪造)。逐条先剪裁到校验
+            // 同款字符集,剪裁有损的条目标注 corrupt。
+            let dropped: Vec<String> = ledger
+                .entries
+                .iter()
+                .skip(index)
+                .map(|pending| {
+                    let clipped: String = pending
+                        .endpoint_id
+                        .chars()
+                        .filter(|character| {
+                            character.is_ascii_alphanumeric()
+                                || *character == '-'
+                                || *character == '_'
+                        })
+                        .collect();
+                    if clipped == pending.endpoint_id {
+                        clipped
+                    } else {
+                        format!("{clipped}~corrupt")
+                    }
+                })
+                .collect();
+            eprintln!(
+                "[web-access] salvage dropped {} pending revocations past the capacity of {} (endpoints stay joinable at the relay until revoked manually): {}",
+                ledger.entries.len() - index,
+                super::MAX_PENDING_REVOCATIONS,
+                dropped.join(", ")
+            );
             break;
         }
         if validate_pending_revocation(pending).is_err() {
@@ -592,7 +636,7 @@ pub(super) fn queue_pending_revocation_at(
     }
     if ledger.entries.len() >= super::MAX_PENDING_REVOCATIONS {
         return Err(format!(
-            "pending Web revocation queue is full ({})",
+            "{PENDING_REVOCATION_QUEUE_FULL_PREFIX} ({})",
             super::MAX_PENDING_REVOCATIONS
         ));
     }
@@ -879,6 +923,46 @@ pub(super) fn new_stream_epoch() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn salvage_truncation_log_clips_dropped_endpoint_ids_to_the_validated_charset() {
+        // Round-20 复审(S10-2)源钉:容量截断先于逐条校验,被点名条目的
+        // endpoint_id 未经校验——直接点名会把种植的控制字符/ANSI 序列带
+        // 进桌面日志(日志伪造)。截断窗口内必须出现字符集剪裁与
+        // `~corrupt` 标注;回退为裸 clone 点名即红。
+        let source = include_str!("persistence.rs");
+        let start = source
+            .find("salvage dropped {} pending revocations")
+            .expect("the truncation log line must exist");
+        // 窗口下界落到字符边界(本文件含 CJK 注释,裸减 900 会切进多字
+        // 节字符——slice panic 而非断言失败,round-17 的同类教训)。
+        let mut window_start = start.saturating_sub(900);
+        while window_start > 0 && !source.is_char_boundary(window_start) {
+            window_start -= 1;
+        }
+        let window = &source[window_start..start];
+        // Round-23 复审:窗口先滤除纯注释行再断言——剪裁/标注删掉后,窗口
+        // 内注释提及同一字面量即可补偿(兄弟钉的突变实证类,round-16
+        // M6a)。(行首过滤口径:行尾 `//` 与块注释内的提及仍能掩护,按已
+        // 披露残留。)
+        let window = window
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            window.contains("filter(|character| {"),
+            "dropped endpoint ids must be clipped to the validated charset              before they are named in the log"
+        );
+        assert!(
+            window.contains("~corrupt"),
+            "lossy-clipped ids must be marked corrupt instead of passing \
+             through unvalidated"
+        );
+    }
 
     #[test]
     fn env_url_overrides_are_trimmed_and_fail_safe() {

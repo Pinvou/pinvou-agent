@@ -15,8 +15,8 @@ use super::Inner;
 use super::{
     CachedWebAttachment, MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES, MAX_WEB_ATTACHMENT_UPLOADS,
     MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES, MAX_WEB_SESSION_DOWNLOADS,
-    WEB_ATTACHMENT_UPLOAD_DIR_PREFIX, WEB_SESSION_TRANSFER_TTL, WebAttachmentUpload,
-    WebSessionDownload, WebSessionDownloadChunk,
+    WEB_ATTACHMENT_UPLOAD_DIR_PREFIX, WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW,
+    WEB_SESSION_TRANSFER_TTL, WebAttachmentUpload, WebSessionDownload, WebSessionDownloadChunk,
 };
 use crate::platform::paths;
 
@@ -382,6 +382,39 @@ pub(super) fn take_web_session_download(
     Ok(inner.web_session_downloads.remove(download_id))
 }
 
+/// Round-15 复审:两个下载槽位都被「已就绪但无人拾取」的孤儿占住时
+/// (中继把 commit 响应丢了,手机拿不到 download_id,既无法拾取也无从
+/// 取消),重试会硬失败到 10 分钟 TTL Reaper 才自愈。 begin 在满槽时
+/// 先逐出最旧的 ready 条目,重试导出会开新下载;存在未 ready 条目说明
+/// 引擎仍在写入,不可作受害者,保留既有满槽错误。web_session_download_order
+/// 因此成为逐出顺序的承载者(此前只写不读的死重)。
+/// Round-16 复审(M2):受害判据加新鲜度窗——「ready」本身区分不出
+/// 「响应丢失的孤儿」与「手机已持 id、正在分块读取的下载」(chunk 读取
+/// 会刷新 last_touched),故只有停更超过
+/// `WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW` 的 ready 条目才可作
+/// 受害者;读中下载不会被逐出。真孤儿的清理最多延后一个窗口,仍远早
+/// 于 TTL;文档原句「手机从未收到其 id,字节必然无人认领」是过强断言,
+/// 以本窗口为实际边界。
+pub(super) fn evict_oldest_ready_session_download(inner: &mut Inner) -> bool {
+    let now = Instant::now();
+    let victim = inner
+        .web_session_download_order
+        .iter()
+        .find(|id| {
+            inner.web_session_downloads.get(*id).is_some_and(|d| {
+                d.ready
+                    && now.saturating_duration_since(d.last_touched)
+                        > WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW
+            })
+        })
+        .cloned();
+    let Some(victim) = victim else {
+        return false;
+    };
+    inner.web_session_download_order.retain(|id| id != &victim);
+    inner.web_session_downloads.remove(&victim).is_some()
+}
+
 pub(super) fn read_web_session_download_chunk(
     inner: &mut Inner,
     download_id: &str,
@@ -448,9 +481,14 @@ mod tests {
 
     /// A `last_touched` older than the TTL, without panicking on hosts whose
     /// monotonic clock started less than the TTL ago (fresh boot).
+    /// Round-20 复审(S05):二级回退 `now - WEB_SESSION_TRANSFER_TTL` 在
+    /// 开机不足 TTL 的主机上仍会 panic——与本文件新测试的受检回退同一
+    /// 约定,末级退化到当前时刻:条目按「未过期」处理,断言以干净失败
+    /// (红)替代测试进程崩溃。
     fn expired_last_touched(now: Instant) -> Instant {
         now.checked_sub(WEB_SESSION_TRANSFER_TTL + Duration::from_secs(1))
-            .unwrap_or_else(|| now - WEB_SESSION_TRANSFER_TTL)
+            .or_else(|| now.checked_sub(WEB_SESSION_TRANSFER_TTL))
+            .unwrap_or_else(Instant::now)
     }
     #[cfg(any(
         windows,

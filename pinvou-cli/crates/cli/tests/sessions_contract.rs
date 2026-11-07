@@ -1296,23 +1296,31 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
         );
     }
     // Writes take the same refusal, and before the markdown-suffix check: the
-    // file is untouched.
-    expect_failed(&["pinvou", "artifacts", "write", &id, ".env", "--stdin"]);
+    // files are untouched. Round-11 复审 minor:写向同样经前缀/尾序列腿
+    // (.env.local 与 .m2/settings.xml 的写拒绝在 resolve_session_artifact
+    // 上游,文件不动)。Round-15 复审 F2:此前只断言 expect_failed——
+    // 敏感门被删后,markdown 后缀检查仍会拒绝这些非 .md 目标,钉保持全
+    // 绿(装饰性;真实顺序是门在前、markdown 检查在后)。断言拒绝码使门
+    // 删除转红;`expect_failed` 返回 CliError,消息携带稳定码。Round-17
+    // 复审(残留收口):`.env` 本身无后缀,门被删时
+    // markdown 检查会以另一个稳定码拒之——裸 expect_failed 钉在门删除下
+    // 仍全绿;并入同一循环断言拒绝码后,三个写向的门删除都转红。
+    for target in [".env", ".env.local", ".m2/settings.xml"] {
+        let error = expect_failed(&["pinvou", "artifacts", "write", &id, target, "--stdin"]);
+        // Round-16 复审(NIT):与读向钉同一 starts_with 前缀断言——码是
+        // 消息的稳定前缀,前缀断言比 contains 略强且两侧一致。
+        assert!(
+            error
+                .to_string()
+                .starts_with("artifact_crosses_sensitive_component"),
+            "write to {target} must be refused by the sensitive gate, not the markdown \
+             suffix check; got: {error}"
+        );
+    }
     assert_eq!(
         std::fs::read_to_string(workspace_dir.join(".env")).unwrap(),
         "TOKEN=secret\n"
     );
-    // Round-11 复审 minor:写向同样经前缀/尾序列腿(.env.local 与
-    // .m2/settings.xml 的写拒绝在 resolve_session_artifact 上游,文件不动)。
-    expect_failed(&["pinvou", "artifacts", "write", &id, ".env.local", "--stdin"]);
-    expect_failed(&[
-        "pinvou",
-        "artifacts",
-        "write",
-        &id,
-        ".m2/settings.xml",
-        "--stdin",
-    ]);
     assert_eq!(
         std::fs::read_to_string(workspace_dir.join(".m2").join("settings.xml")).unwrap(),
         "<server/>"

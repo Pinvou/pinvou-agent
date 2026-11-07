@@ -311,8 +311,12 @@ pub async fn organize_memory_with_llm(
 /// write the completion diagnostic.
 fn finish_organize_report(report: &mut MemoryOrganizeReport) {
     if let Err(error) = persist_organize_report(report) {
-        let detail = format!("persist organize history: {error}");
-        eprintln!("[memory] {detail}");
+        // Round-15 复审 minor:report.warnings 随 organize_memory 载荷与
+        // 历史查询出站(Web 允许清单内),与其他 memory 警告同口径折叠
+        // 存储根;desktop 日志保留原始明细。
+        let raw = format!("persist organize history: {error}");
+        eprintln!("[memory] {raw}");
+        let detail = crate::platform::paths::redact_storage_prefix(&raw);
         report.warnings.push(detail);
     }
     append_memory_review_diagnostic(
@@ -349,10 +353,26 @@ pub fn load_organize_history() -> Vec<MemoryOrganizeReport> {
     values
         .into_iter()
         .filter_map(|value| serde_json::from_value::<MemoryOrganizeReport>(value).ok())
+        .map(|mut report| {
+            // Round-16 follow-up 复审(M3):创建侧折叠(apply 阶段六臂 +
+            // persist 警告)只管本 PR 之后入库的条目;历史文件里更早的条目
+            // (≤ ORGANIZE_HISTORY_MAX_REPORTS,自然轮转淘汰)warnings 仍带
+            // 原始存储根绝对路径,而本查询出站(Web 允许清单内)。读路径统
+            // 一补折叠:redact 幂等,已折叠条目二次折叠为无操作。
+            report.warnings = report
+                .warnings
+                .iter()
+                .map(|warning| crate::platform::paths::redact_storage_prefix(warning))
+                .collect();
+            report
+        })
         .collect()
 }
 
-fn persist_organize_report(report: &MemoryOrganizeReport) -> std::io::Result<()> {
+// pub(super): tests.rs drives the on-disk heal assertion through this
+// writer (the heal itself rides the folding load_organize_history read
+// above).
+pub(super) fn persist_organize_report(report: &MemoryOrganizeReport) -> std::io::Result<()> {
     let _guard = io::write_lock().lock();
     let mut history = load_organize_history();
     history.insert(0, report.clone());
@@ -885,8 +905,18 @@ fn apply_organize_actions(
         Err(error) => {
             // Without the fresh views no action can be verified against the
             // current store: apply nothing rather than trusting the snapshot.
+            // Round-16 复审(M5):io 错误的 Display 携带绝对存储路径
+            // (bounded-read 原语的错误即 path.display()),随 report 载荷
+            // 与历史查询出站(Web 允许清单内)前必须折叠存储根——本函数
+            // 六个 error 警告臂同口径,与 finish_organize_report 一致。
+            // (Round-19 复审订正:「Display 携带路径」今天对六臂中的四
+            // 臂成立;update 与 merge-update 两臂的错误被 anyhow
+            // `.context` 包过,Display 只渲染最外层 context 文本,路径
+            // 不浮到字面——折叠在其上是纯防御性冗余。两臂保留折叠:裸
+            // io 臂的路径确实会浮出,且新臂落进同形态时无需逐一甄别。)
             warnings.push(format!(
-                "organize: reload stores before applying actions: {error}; no action applied"
+                "organize: reload stores before applying actions: {}; no action applied",
+                crate::platform::paths::redact_storage_prefix(&error.to_string()),
             ));
             return (deleted, updated, merged, warnings, capped);
         }
@@ -970,8 +1000,11 @@ fn apply_organize_actions(
                             }
                         },
                         Err(error) => {
-                            warnings
-                                .push(format!("organize: delete {} {id}: {error}", action.kind));
+                            warnings.push(format!(
+                                "organize: delete {} {id}: {}",
+                                action.kind,
+                                crate::platform::paths::redact_storage_prefix(&error.to_string()),
+                            ));
                         }
                     }
                 }
@@ -1007,7 +1040,11 @@ fn apply_organize_actions(
                         ));
                     }
                     Err(error) => {
-                        warnings.push(format!("organize: update {} {id}: {error}", action.kind));
+                        warnings.push(format!(
+                            "organize: update {} {id}: {}",
+                            action.kind,
+                            crate::platform::paths::redact_storage_prefix(&error.to_string()),
+                        ));
                     }
                 }
             }
@@ -1097,8 +1134,9 @@ fn apply_organize_actions(
                     }
                     Err(error) => {
                         warnings.push(format!(
-                            "organize: merge {} {keep}: {error}; merge skipped",
-                            action.kind
+                            "organize: merge {} {keep}: {}; merge skipped",
+                            action.kind,
+                            crate::platform::paths::redact_storage_prefix(&error.to_string()),
                         ));
                     }
                 }
@@ -1141,8 +1179,9 @@ fn apply_organize_actions(
                             // merge, keep is already updated and this source item lingers, so
                             // the report must pinpoint it as a merge's cleanup delete.
                             warnings.push(format!(
-                                "organize: merge {} cleanup delete {id}: {error}",
-                                action.kind
+                                "organize: merge {} cleanup delete {id}: {}",
+                                action.kind,
+                                crate::platform::paths::redact_storage_prefix(&error.to_string()),
                             ));
                         }
                     }
@@ -1158,7 +1197,10 @@ fn apply_organize_actions(
     // compaction reloads the store it rewrites.
     for kind in ["current_focus", "recent_activity"] {
         if let Err(error) = io::compact_timed_memory_store_unlocked(kind) {
-            warnings.push(format!("organize: compact {kind}: {error}"));
+            warnings.push(format!(
+                "organize: compact {kind}: {}",
+                crate::platform::paths::redact_storage_prefix(&error.to_string())
+            ));
         }
     }
     (deleted, updated, merged, warnings, capped)

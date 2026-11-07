@@ -3289,6 +3289,105 @@ async fn organize_memory_without_content_skips_llm_and_reports_no_change() {
     assert_eq!(load_organize_history().len(), 1);
 }
 
+// Round-16 follow-up 复审(M3):创建侧折叠只覆盖本 PR 之后入库的条目;
+// 历史文件里更早的条目 warnings 仍带原始存储根绝对路径,而本查询出站
+// (get_memory_organize_history 在 Web 允许清单内)。读路径统一补折叠:
+// 遗留条目出站为 ~/.pinvou3 形态;redact 幂等,已折叠/无路径条目原样
+// 通过;下一轮 persist(load→insert→truncate→write)顺带把文件落盘 healed。
+#[test]
+fn organize_history_readback_folds_legacy_raw_storage_prefixes() {
+    let home = IsolatedPinvouHome::new("organize-history-legacy-fold");
+    let raw_path = super::io::organize_history_path();
+    std::fs::create_dir_all(raw_path.parent().unwrap()).unwrap();
+    let legacy_report = serde_json::json!({
+        "started_at": "2026-01-01T00:00:00Z",
+        "finished_at": "2026-01-01T00:00:01Z",
+        "model": "legacy",
+        "scanned": {"preference": 1},
+        "deleted": {},
+        "updated": {},
+        "merged": {},
+        "skipped_sensitive": 0,
+        "no_change": true,
+        "warnings": [
+            format!("persist organize history: failed writing {}", raw_path.display()),
+            "clean warning without any path".to_string(),
+        ],
+    });
+    write_json_atomic(
+        &super::io::organize_history_path(),
+        &vec![legacy_report.clone()],
+    )
+    .unwrap();
+
+    let history = load_organize_history();
+    assert_eq!(history.len(), 1);
+    let warnings = &history[0].warnings;
+    assert_eq!(warnings.len(), 2);
+    assert!(
+        warnings[0].starts_with("persist organize history: failed writing ~/.pinvou3/"),
+        "the legacy raw storage-root path must fold on readback, got {:?}",
+        warnings[0]
+    );
+    assert!(
+        !warnings[0].contains(&home.root.display().to_string()),
+        "the folded warning must not retain the raw home prefix"
+    );
+    assert_eq!(warnings[1], "clean warning without any path");
+
+    // 读侧折叠幂等:二次读取与首读完全一致(不会出现双重折叠变形)。
+    let again = load_organize_history();
+    assert_eq!(again[0].warnings, history[0].warnings);
+
+    // Round-20 复审(S11):夹具补一条**已折叠**条目(文件直存)——读侧
+    // 必须原样通过,不得二次折叠或改写(此前该形态只由 transform 级单测
+    // 覆盖,本文件夹具缺位)。
+    let folded_report = serde_json::json!({
+        "started_at": "2026-01-02T00:00:00Z",
+        "finished_at": "2026-01-02T00:00:01Z",
+        "model": "legacy-folded",
+        "scanned": {"preference": 1},
+        "deleted": {},
+        "updated": {},
+        "merged": {},
+        "skipped_sensitive": 0,
+        "no_change": true,
+        "warnings": [
+            "persist organize history: failed writing ~/.pinvou3/user/memory/snapshot.md",
+        ],
+    });
+    write_json_atomic(
+        &super::io::organize_history_path(),
+        &vec![legacy_report.clone(), folded_report.clone()],
+    )
+    .unwrap();
+    let with_folded = load_organize_history();
+    assert_eq!(
+        with_folded[1].warnings[0],
+        "persist organize history: failed writing ~/.pinvou3/user/memory/snapshot.md",
+        "an already-folded stored warning must pass through unchanged"
+    );
+
+    // 下一轮 persist(load→insert→truncate→write)顺带把磁盘文件落成
+    // healed 形态(注释声称的行为此前无断言):persist 后直接读文件字节,
+    // 旧条目的原始绝对路径必须已消失。
+    // persist 的入参不带 raw 警告(命令层在 finish_organize_report 折叠后
+    // 才入 persist;本测试只断言旧条目经「重载即折叠」落盘 healed)。
+    let mut healed_input = folded_report.clone();
+    healed_input["started_at"] = serde_json::json!("2026-01-03T00:00:00Z");
+    let healed = serde_json::from_value::<MemoryOrganizeReport>(healed_input).unwrap();
+    super::organize::persist_organize_report(&healed).unwrap();
+    let on_disk = std::fs::read_to_string(super::io::organize_history_path()).unwrap();
+    assert!(
+        !on_disk.contains(&home.root.display().to_string()),
+        "the next persist must heal legacy raw entries on disk"
+    );
+    assert!(
+        on_disk.contains("persist organize history: failed writing ~/.pinvou3/"),
+        "the healed file must carry the folded form"
+    );
+}
+
 #[tokio::test]
 async fn organize_memory_requires_memory_enabled() {
     let _home = IsolatedPinvouHome::new("organize-disabled");
@@ -4392,4 +4491,182 @@ fn memory_block_marker_gate_is_case_insensitive() {
     assert!(contains_memory_block_marker("PinVou_User_Memory"));
     assert!(contains_memory_block_marker("<pinvou_user_memory>"));
     assert!(!contains_memory_block_marker("ordinary preference text"));
+}
+
+/// Round-15 复审 minor:`finish_organize_report` 把 persist 失败推进
+/// `report.warnings`——该载荷随 organize_memory 命令与历史查询出站
+/// (Web 允许清单内),与其他 memory 警告同口径折叠存储根。退回裸
+/// `format!(…)` 推送时本钉转红(desktop 日志保留原始明细,与折叠并行)。
+/// Round-16 复审(M6a):断言只看非注释行——折叠删掉、仅在注释里提及
+/// `redact_storage_prefix` 而推裸文本的突变曾保持全绿(突变实证),与
+/// 裸读扫描钉同一过滤口径。
+#[test]
+fn organize_report_persist_warning_folds_the_storage_prefix() {
+    let source = include_str!("organize.rs");
+    let start = source
+        .find("fn finish_organize_report(")
+        .expect("finish_organize_report must exist");
+    let body = &source[start..];
+    // f47c45d6 曾把末位 marker 笔误成 `"\n#[cfg(test]"`(少个右括号)——
+    // 该 marker 因此永不匹配,静默失效;organize.rs 今天没有测试模块所以
+    // 恰好无害,恢复原形以免日后 organize.rs 落测试时窗口失界。
+    let end = ["\nfn ", "\npub fn ", "\n#[cfg(test)]"]
+        .iter()
+        .filter_map(|marker| body.find(marker))
+        .min()
+        .unwrap_or(body.len());
+    let body = &body[..end];
+    let code = body
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains("redact_storage_prefix"),
+        "the organize report persist warning rides phone-visible payloads and must fold the storage prefix",
+    );
+    assert!(
+        code.contains("report.warnings.push(detail)"),
+        "the warning must still reach the report (folded), not be dropped",
+    );
+    assert!(
+        code.contains("eprintln!(\"[memory] {raw}\")"),
+        "the desktop log keeps the raw detail; only the outbound copy is folded",
+    );
+}
+
+/// Round-16 复审(M5):`apply_organize_actions` 的六个 error 警告臂随
+/// `report.warnings` 载荷与历史查询出站(Web 允许清单内),而 bounded-read
+/// 原语的 io 错误 Display 携带绝对存储路径(path.display())。折叠已按
+/// persist 警告同一口径落进各臂;本钉逐臂取窗口断言,非注释行才算数
+/// (与上一钉同一过滤),删任一臂的折叠即红。
+#[test]
+fn organize_apply_warnings_fold_the_storage_prefix() {
+    let source = include_str!("organize.rs");
+    let production = source
+        .split("#[cfg(test)]")
+        .next()
+        .expect("organize.rs must keep its tests behind #[cfg(test)]");
+    let start = production
+        .find("fn apply_organize_actions(")
+        .expect("apply_organize_actions must exist");
+    let body = &production[start..];
+    // Round-21 复审:补齐后续项标记——apply_organize_actions 与 census
+    // 计数窗之间夹着 enum OrganizeDeleteOutcome 等项,原标记表只认 fn,
+    // 窗口会越过函数体落到后续项(今天无害,项内出现 `redact_storage_
+    // prefix(&` 时计数即失真)。Round-22 复审记拼写缺口为已知残留:
+    // `pub enum `/`pub struct `/`pub(crate) fn `/`const `/`static `/`
+    // type ` 不在表内——本函数身后恰为裸 `enum` 故今日精确;截断时逐
+    // 前缀断言 panic(响亮失败而非静默漏计),新增后续项时须同步扩表。
+    let end = [
+        "\nfn ",
+        "\npub fn ",
+        "\nenum ",
+        "\nstruct ",
+        "\nimpl ",
+        "\nasync fn ",
+    ]
+    .iter()
+    .filter_map(|marker| body.find(marker))
+    .min()
+    .unwrap_or(body.len());
+    let body = &body[..end];
+    let code = body
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    const ERROR_ARM_PREFIXES: [&str; 6] = [
+        "organize: reload stores before applying actions: {}",
+        "organize: delete {} {id}: {}",
+        "organize: update {} {id}: {}",
+        "organize: merge {} {keep}: {}",
+        "organize: merge {} cleanup delete {id}: {}",
+        "organize: compact {kind}: {}",
+    ];
+    for prefix in ERROR_ARM_PREFIXES {
+        let at = code
+            .find(prefix)
+            .unwrap_or_else(|| panic!("{prefix} warning arm must exist in apply_organize_actions"));
+        // Round-18 复审:窗口切片此前未落地字符边界——at-120 / at+len+300
+        // 撞进多字节行时切片 panic(编译崩而非断言红,失败语言错误),与
+        // memory.rs 折叠扫描钉同款回退。
+        let floor = |source: &str, mut index: usize| {
+            while index > 0 && !source.is_char_boundary(index) {
+                index -= 1;
+            }
+            index
+        };
+        let window = &code[floor(&code, at.saturating_sub(120))
+            ..floor(&code, (at + prefix.len() + 300).min(code.len()))];
+        assert!(
+            window.contains("redact_storage_prefix"),
+            "the `{prefix}` warning interpolates an io error whose Display carries \
+             the absolute storage path; it rides phone-visible payloads and must \
+             fold via redact_storage_prefix"
+        );
+    }
+    // Round-18 复审:六臂清单是枚举式钉——新增裸 error 臂不可见。折叠
+    // 计数普查让任何折叠数变化显眼:新增带折叠的臂会因计数 7≠6 转红,
+    // 迫使前缀清单一并更新;新增裸 error 臂仍是本钉边界(organize 的臂
+    // 是 match 臂,没有 map_err 那样的统一 token 可穷举扫描,与命令层
+    // 钉的穷尽口径不同,按已披露残留处理)。
+    let fold_count = code.matches("redact_storage_prefix(&").count();
+    assert_eq!(
+        fold_count, 6,
+        "apply_organize_actions must carry exactly the six error-arm folds; a new \
+         error-bearing arm must join ERROR_ARM_PREFIXES with its own fold"
+    );
+}
+
+/// Round-15 复审(S14 F1):封界读原语的行为钉只覆盖 journal 与权威读两
+/// 条车道,其余车道(io 的 authority/body-match/commit 回读、organize 的
+/// 历史读)被改回裸 `fs::read_to_string`/`fs::read` 时现有钉全绿。源契
+/// 约扫三个文件生产半边的裸读调用行(注释行的字面提及不算)。
+#[test]
+fn memory_store_lanes_keep_raw_reads_routed_through_the_bounded_primitive() {
+    // Round-16 follow-up 复审(M4):扫描此前只覆盖 7 个生产文件中的 3 个
+    // (mod.rs/llm_review.rs/render.rs/types.rs 不在列),且 token 形态漏
+    // read_to_end/BufReader/File::open 逐字读取族。本模块现在生产文件全
+    // 覆盖 + 全 token 族;绕行捷径(读 helper 挪到模块外再被扫描文件调
+    // 用)仍属本钉边界之外,由引用侧评审把关。
+    let scan = |source: &str| {
+        source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("tests must stay behind cfg(test)")
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .any(|line| {
+                line.contains("read_to_string")
+                    || line.contains("read_to_end")
+                    || line.contains("fs::read(")
+                    || line.contains("BufReader")
+                    || line.contains("File::open")
+            })
+    };
+    for (name, source) in [
+        ("io.rs", include_str!("io.rs")),
+        ("organize.rs", include_str!("organize.rs")),
+        ("util.rs", include_str!("util.rs")),
+        ("mod.rs", include_str!("mod.rs")),
+        ("llm_review.rs", include_str!("llm_review.rs")),
+        ("render.rs", include_str!("render.rs")),
+        ("types.rs", include_str!("types.rs")),
+    ] {
+        assert!(
+            !scan(source),
+            "{name} must not read store files with raw unbounded reads; route \
+             through platform::filesystem::read_private_data_file"
+        );
+    }
 }

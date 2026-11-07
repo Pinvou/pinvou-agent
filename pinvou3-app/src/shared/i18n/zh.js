@@ -842,6 +842,7 @@ cancel: '取消', chooseThisFolder: '选择此文件夹', choose: '选择',
 currentFolder: path => `当前文件夹：${path}`, selectedCount: n => `已选择 ${n} 项`,
 thisComputer: '此电脑', home: '用户目录', emptyFolder: '此目录中没有可选内容',
 loadFailed: err => `读取失败：${err}`, workspaceNotAuthorized: '请先在桌面端允许远程访问本机目录', alreadyOpen: '已有文件选择器正在打开',
+listingFailed: '读取桌面端文件列表失败，请重试。',
   },
   // platform/web/bootstrap.js 的 invoke 拒绝错误文案,由 React 入口挂到
   // window.PinvouWebClientStrings(纯脚本无法 import ES module,bootstrap 内置中文兜底)。

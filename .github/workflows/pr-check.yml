@@ -48,7 +48,8 @@ name: PR Check
 # - windows-rustup-repair-test: Relevant PRs corrupt a copied toolchain in an
 #   isolated RUSTUP_HOME and verify download-source fallback and reinstall.
 # - macos-cli-check:macOS-gated pinvou-cli code (#[cfg(target_os = "macos")]) must
-#   type-check somewhere; compile-only leg mirroring the Windows CLI compile check
+#   type-check somewhere; mostly-compile-only leg (the one gated production pin runs
+#   via a filtered cargo test) mirroring the Windows CLI compile check
 #   for ready cli_rust/rust_full PRs, the matching Merge Queue combined tree, and
 #   main push (cumulative; Linux cannot type-check macOS-gated code).
 # - rust-loongarch64-check:交叉 compile-only leg:用发布 job 同一套钉死 loong64
@@ -3111,21 +3112,24 @@ jobs:
   # pinvou-cli contains #[cfg(target_os = "macos")] code (support/supervise.rs,
   # voice.rs's non-linux/non-windows arms, ...) that compiles nowhere else in CI:
   # cli-test is ubuntu-only and the macOS
-  # runner above only smokes the Node ACP bridge. This compile-only leg mirrors
+  # runner above only smokes the Node ACP bridge. This leg mirrors
   # the windows-rust-test "pinvou-cli Windows compile check" step for exactly
-  # that risk class. No Tauri system packages are needed on macOS (system frameworks
+  # that risk class (mostly compile-only; the one gated production pin runs
+  # below). No Tauri system packages are needed on macOS (system frameworks
   # are preinstalled; same minimum as the Windows compile check), and no zram setup
   # is required (macOS runners are out of the gate-policy memory scope).
   # Cache policy: this leg gets the same restorable treatment as
   # macos-rust-check — the save/restore fallback, separate-key, cached-dir
   # and rmeta-only rationale are documented once at the Cargo cache step below.
-  # Still compile-only (no test execution): cli-test already runs the CLI
+  # Mostly compile-only (no suite execution): cli-test already runs the CLI
   # contract suite on Linux, and executing it here too would double the macOS
-  # runner minutes for a second copy of behavior Linux already exercises —
-  # sound while no #[cfg(all(test, target_os = "macos"))] module exists (the
-  # round-42 audit found none); the Windows leg now RUNS its platform-gated
-  # pinvou-cli tests for exactly the reason this rationale does not extend
-  # there: a platform-gated test compiles on no other leg at all.
+  # runner minutes for a second copy of behavior Linux already exercises.
+  # Compile-only stopped being fully sound once the workspace carried a
+  # macOS-gated test (the round-42 audit found none; the round-16 follow-up
+  # wave added the first), so the gated pin RUNS below with the Windows leg's
+  # filtered pattern — a platform-gated test compiles on no other leg at all,
+  # and a rename must fail loudly instead of silently degrading this leg back
+  # to compile-only.
   # Triggers: ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
   # (a PR that is green alone can still combine into a macOS-only compile break,
   # and Linux cannot type-check #[cfg(target_os = "macos")] code, so "Linux
@@ -3192,10 +3196,15 @@ jobs:
       # saved only on the main push (PRs and Merge Queue runs restore through
       # rust-cache's prefix fallback), the key stays separate from the
       # siblings, and the pinvou-cli workspace target dir is cached like
-      # macos-rust-check caches src-tauri. A check-only target dir carries
-      # rmeta-size artifacts and no linked test binaries, so the link-time
-      # runner deaths behind the cli-test/rust-test cache-targets directive
-      # cannot recur here.
+      # macos-rust-check caches src-tauri. The original rationale — a
+      # check-only target dir carries rmeta-size artifacts and no linked
+      # test binaries — stopped being literally true when the macOS-gated
+      # pin step below started linking one filtered lib test binary into
+      # this dir (round-22 review). That binary is single-crate sized, not
+      # the cli-test-suite scale whose link-time runner deaths motivated
+      # cache-targets: false elsewhere, so target caching is kept
+      # deliberately; revisit that choice if this leg gains more test
+      # steps.
       # Round-48 review: `cache-on-failure` matches macos-rust-check (its
       # anti-death-loop rationale: save-on-success-only + eviction left a
       # failed main push with a cold cache namespace). Without it a failed
@@ -3224,6 +3233,39 @@ jobs:
           cargo check --manifest-path pinvou-cli/Cargo.toml
           -p adapter-gaia --features test-support --all-targets --locked
 
+      # Round-16 follow-up review: the macOS-gated production alias-flag pin
+      # (system_prefix_hits_run_through_the_production_alias_flag) compiles on
+      # no other leg, so compile-only could not detect the regression it pins
+      # (flipping the production flag back to false reopens the /private/etc/*
+      # lanes with every Linux lane green — the round-6 M2 hole). Same
+      # filtered-run pattern as the Windows leg: zero-match guard keeps a
+      # rename from becoming a silent pass; the run stays filtered rather than
+      # running the whole CLI lib suite because onboarding that suite to macOS
+      # belongs to a dedicated change.
+      - name: pinvou-cli macOS-gated unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          run_filtered() {
+            log="/tmp/pinvou_cli_macos_tests.log"
+            cargo "$@" 2>&1 | tee "$log"
+            grep -qE 'running [1-9][0-9]* tests?' "$log" || {
+              echo "FAIL: filter '$*' matched 0 tests (a renamed test must not become a silent pass)" >&2
+              exit 1
+            }
+            grep -q "^test result: ok" "$log" || {
+              echo "FAIL: filter '$*' had failing tests" >&2
+              exit 1
+            }
+            grep -qE '^test result: ok\. [1-9][0-9]* passed' "$log" || {
+              echo "FAIL: filter '$*' executed 0 tests (an ignored-only run must not pass the guard)" >&2
+              exit 1
+            }
+          }
+          run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked system_prefix_hits_run_through_the_production_alias_flag
+          echo "MACOS_CLI_TIMING step=cli-macos-tests elapsed_seconds=$((SECONDS-started)) status=0"
+
   # LoongArch64 交叉编译检查:GitHub 没有 loong64 runner,目标编译只能交叉,
   # 而发布 job 的完整交叉构建(packaging + ASR/knowledge 交叉产物)太重,
   # 不能每个 PR 跑——本 leg 用发布 job 同一套钉死工具链
@@ -3231,7 +3273,8 @@ jobs:
   # deepin beige glibc-2.38 sysroot 把三个 workspace 对
   # loongarch64-unknown-linux-gnu 类型检查一遍,让目标专属 cfg/依赖/链接
   # 约束在 PR 上就红,而不是等下一次 VERSION push 的发布构建才炸。
-  # 与 macos-cli-check 同类:compile-only(check 不链接,不产出安装包)。
+  # compile-only(check 不链接,不产出安装包;macos-cli-check 现已链接并
+  # 执行 macOS 专属钉,与本 leg 的纯类型检查不再是同一类)。
   rust-loongarch64-check:
     name: rust-loongarch64-check
     needs: changes

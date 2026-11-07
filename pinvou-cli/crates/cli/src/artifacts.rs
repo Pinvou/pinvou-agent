@@ -44,6 +44,10 @@ use pinvou3_lib::features::sessions::SessionStore;
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
+/// Stable refusal code for the sensitive-component gate (round-16 复审 NIT:
+/// 单一命名定义点;契约钉按此拼写断言,门删除或码漂移都转红)。
+const ARTIFACT_CROSSES_SENSITIVE_COMPONENT: &str = "artifact_crosses_sensitive_component";
+
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_PATH_COMPONENT_PREFIXES;
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_SUFFIXES as SENSITIVE_PATH_COMPONENT_SUFFIXES;
 /// The credential-component blocklist, IMPORTED from
@@ -128,7 +132,10 @@ fn crosses_sensitive_component_suffix(canonical: &Path) -> Option<&'static str> 
 /// the prefix list here silently missed the macOS `/private/{etc,var,tmp}`
 /// alias expansion that `check_sensitive_components` gained — canonicalized
 /// spellings on macOS resolve `/etc/...` to `/private/etc/...`, which matches
-/// no list entry, so the GUI refused paths this mirror shipped.
+/// no list entry, so the GUI refused paths this mirror shipped. (Round-17
+/// 复审订正:the disclosed session-artifact asymmetry lives on the
+/// `resolve_session_artifact` gate below, not on this fn — this one does
+/// apply the system-prefix leg; see the comment at that gate.)
 pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
     check_sensitive_canonical(canonical, cfg!(target_os = "macos"))
 }
@@ -397,6 +404,20 @@ fn resolve_session_artifact(
     // model context, which is the read direction. The round-11 audit adds the
     // directory-scoped tails (gh/Maven/sops/Chrome credential files can sit
     // inside a session workspace just the same).
+    //
+    // Disclosed asymmetry (Round-15 复审 F3; Round-17 复审订正注释归属——
+    // 这条披露属于本 session-artifact 车道,不是 check_sensitive_path,后
+    // 者是带系统前缀腿的完整镜像):this lane deliberately keeps the
+    // credential-component legs WITHOUT the system-prefix leg (containment
+    // is proven inside resolve_session_artifact itself — the sessions-root
+    // strip and session/area validation further down this function refuse
+    // any target outside session storage before the file is read or
+    // written — so this gate needs only the component legs; the checks
+    // immediately below run BEFORE that containment). The upstream
+    // list widening that added `/var/root/` therefore widens the documented
+    // root-install divergence (GUI refuses every artifact under a root home
+    // via `check_sensitive_components`, this CLI lane still serves them)
+    // rather than closing it — see the module doc for the standing contract.
     let directory_scoped_tail =
         pinvou3_lib::platform::path_policy::blocked_path_tail_hit(&canonical)
             .map(|tail| tail.join("/"));
@@ -406,8 +427,11 @@ fn resolve_session_artifact(
         .or_else(|| crosses_sensitive_component_suffix(&canonical).map(str::to_string))
         .or(directory_scoped_tail);
     if let Some(blocked) = blocked {
+        // Round-16 复审(NIT):拒绝码此前是内联 format! 字面量;提为常量
+        // 使单一命名定义点与 sessions_contract 的读/写方向钉共享同一拼写
+        // (钉仍按字面量断言以检测漂移)。
         return Err(CliError::failed(format!(
-            "artifact_crosses_sensitive_component: {} crosses `{blocked}`; credential paths are \
+            "{ARTIFACT_CROSSES_SENSITIVE_COMPONENT}: {} crosses `{blocked}`; credential paths are \
              never read or written through this command",
             canonical.display()
         )));
@@ -682,6 +706,23 @@ fn write(
 
 #[cfg(test)]
 mod tests {
+    /// Round-15 复审 F1:生产接线的别名 flag(`cfg!(target_os = "macos")`)
+    /// 本身无钉——既有别名钉全部驱动显式参数的 helper,flag 回归成 `false`
+    /// 时 macOS 的 `/private/etc/*` 车道在全部测试保持绿的状态下重新敞开
+    /// (round-6 M2 孔)。macOS 门控的行为钉经真实生产入口驱动真实 flag;
+    /// 其余平台该入口的行为由显式参数钉覆盖。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn system_prefix_hits_run_through_the_production_alias_flag() {
+        // 前两条是 flag 突变的判别断言(flag→false 时 alias 展开消失、
+        // `/private/…` 撞不上任何 raw 清单项而放行);第三条是对照:raw
+        // 拼写 `/etc/shadow` 不经 alias 展开也命中,钉住「raw 半边 OR
+        // alias 半边」里 raw 那一半不被误删。
+        assert!(super::check_sensitive_path(Path::new("/private/etc/shadow")).is_err());
+        assert!(super::check_sensitive_path(Path::new("/private/var/root/x")).is_err());
+        assert!(super::check_sensitive_path(Path::new("/etc/shadow")).is_err());
+    }
+
     use super::*;
     // Round-6 复审:生产半边已上收为上游组合谓词,系统前缀清单只剩测试
     // 在用——随用随导入,避免非测试构建的 unused_imports 硬门报错。

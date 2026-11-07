@@ -62,10 +62,30 @@ const hostFilePicker = readSource(
   'utf8',
 );
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
-const commands = fs.readdirSync(commandsRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(commandsRoot, name), 'utf8'))
+// Round-20 复审(S14):聚合此前只覆盖顶层文件,`dependencies/` 子目录被
+// 漏扫。改为递归收集(按完整路径排序,顺序确定性不变)。Round-21 复审:
+// readdirSync 的默认 sort 触发 unicorn/require-array-sort-compare(CI
+// frontend-test 自 round-20 wave 起红)——改用显式比较器,不再依赖
+// 元素恰为字符串的隐式行为。Round-22 复审:改走 readdirSync 的
+// withFileTypes(Dirent.isDirectory 为 lstat 语义)——statSync 会跟随
+// 目录符号链接,三个扫描根下一旦出现链接目录就会跨树递归(假红)甚至
+// 成环;与 bridge_domain_protocol 套件的 sourceFiles 同款形态。
+function walkRustSources(rootDir) {
+  const files = [];
+  const visit = dir => {
+    for (const entry of fs
+      .readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (entry.name.endsWith('.rs')) files.push(full);
+    }
+  };
+  visit(rootDir);
+  return files;
+}
+const commands = walkRustSources(commandsRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const remoteControlCommands = readSource(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
 const remoteControlManagerRoot = path.join(
@@ -76,10 +96,11 @@ const remoteControlManagerRoot = path.join(
   'remote_control',
   'manager',
 );
-const remoteControlManager = fs.readdirSync(remoteControlManagerRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(remoteControlManagerRoot, name), 'utf8'))
+// Round-21 复审:两个聚合也走 walkRustSources 递归——manager/、platform/
+// 今天是平铺目录,未来出现子目录时非递归枚举会静默漏扫(commands 的
+// S14 同类)。平铺时 DFS 顺序与旧的名字排序一致,现有断言不受影响。
+const remoteControlManager = walkRustSources(remoteControlManagerRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const remoteControlPlatformRoot = path.join(
   root,
@@ -89,10 +110,8 @@ const remoteControlPlatformRoot = path.join(
   'remote_control',
   'platform',
 );
-const remoteControlPlatform = fs.readdirSync(remoteControlPlatformRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(remoteControlPlatformRoot, name), 'utf8'))
+const remoteControlPlatform = walkRustSources(remoteControlPlatformRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const settingsView = readSource(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const artifactsPanel = readSource(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
@@ -231,7 +250,13 @@ for (const command of [
 // 曾三个全漏)由本钉永久兜住:任何新 web_access_* 命令不加进任一侧即红。
 {
   const defined = new Set();
-  for (const match of remoteControlCommands.matchAll(/pub(?:\([\w:]+\))? (?:async )?fn (web_access_\w+)\(/g)) {
+  // Round-19 复审 M1:正则必须行首锚定。此前的无锚定版本连
+  // `#[cfg(test)]` 折叠错误钉数据表里的 8 条签名形状字符串
+  // ("pub async fn web_access_chat(" 等)一并当作定义——真命令被删
+  // /改名后 Set 仍由这些幻影命中撑住,反向存在钉对其余 8/42 策略命令
+  // 失明(探针实证)。生产签名都在列 0,表数据带缩进,行首锚定即可
+  // 精确切分。
+  for (const match of remoteControlCommands.matchAll(/^pub(?:\([\w:]+\))? (?:async )?fn (web_access_\w+)\(/gm)) {
     defined.add(match[1]);
   }
   assert.ok(defined.size >= 50,
@@ -246,6 +271,15 @@ for (const command of [
     assert.ok(defined.has(command),
       `${command} is anti-pinned but no longer defined in remote_control.rs`);
   }
+  // Round-15 复审 M1:反向存在钉——Web 策略放行的 web_access_* 必须仍
+  // 定义于 remote_control.rs。只删 Rust 命令而策略留名时,正向钉全绿,
+  // 手机在运行时 invoke 到不存在的命令(此前只有 Rust→策略单方向)。
+  for (const command of allowed) {
+    if (command.startsWith('web_access_')) {
+      assert.ok(defined.has(command),
+        `${command} is allowed by the web policy but no longer defined in remote_control.rs`);
+    }
+  }
 }
 
 // Round-11 复审 M4:事件半边的反钉——web_access:* 事件全部管理专用
@@ -253,8 +287,28 @@ for (const command of [
 // event_subscribe 是订阅控制)。结构化扫描 Rust 管理器与 JS 桥里的
 // web_access:* 字面量:任何一个都不允许出现在 Web 策略事件名单里,
 // 新增同名事件即被扫进(此前事件半边没有任何反向钉)。
-for (const source of [remoteControlManager, desktopRemoteControlBridge]) {
-  for (const match of source.matchAll(/"web_access:([a-z_]+)"/g)) {
+// Round-15 复审 M5:命令层一并纳入扫描。Round-18 复审口径订正:命令层
+// 今天是零命中——本源现在贡献零断言,属前瞻性兜底:命令层将来若新增同
+// 名事件字面量(转发/状态通道),扫描会立刻把它拦进反钉,而非逃过。
+// Round-19 复审:扫描面从单个 remote_control.rs 扩到整个 app/commands
+// 聚合(文件顶部已聚合,复用之);正则放宽到任意引号(单引号/模板字符
+// 串)并允许数字段名([a-z0-9_]+),闭合探针实证的三类旁路拼法;注释行
+// 先行剔除,避免文档提及制造幻影断言(幻影方向本就 fail-closed,剔除
+// 只为省掉未来政策化时的假红)。Round-20 复审:聚合改为递归
+// (dependencies/ 子目录此前漏扫)并把 features/remote_control/platform
+// 聚合一并纳入扫描(该聚合此前只供其它钉使用);两个新面今日均为零
+// web_access:* 命中,纯前瞻性兜底。
+// 只剔纯注释行(行首即 // 或 /*):含尾注释的代码行必须保留,否则
+// `web_access:x` 字面量藏在行尾注释前的代码里会被整行删掉,扫描反而
+// fail-open(Round-17 订正过的同类)。块注释续行(`* …`)保留——其中的
+// 字样只会制造 fail-closed 幻影断言,不会放过真违例。
+function stripPureCommentLines(source) {
+  return source.split('\n')
+    .filter(line => !/^\s*(?:\/\/|\/\*)/.test(line))
+    .join('\n');
+}
+for (const source of [remoteControlManager, desktopRemoteControlBridge, commands, remoteControlPlatform].map(stripPureCommentLines)) {
+  for (const match of source.matchAll(/["'`]web_access:([a-z0-9_]+)["'`]/g)) {
     const eventName = `web_access:${match[1]}`;
     assert.equal(allowedEvents.has(eventName), false,
       `${eventName} is a management channel and must never enter the web event policy`);
@@ -484,8 +538,20 @@ assert.doesNotMatch(codexWorkspacePanel, /invoke\('get_codex_workspace_(?:change
   'the shared workspace UI must not bypass the Web-safe command adapter');
 assert.doesNotMatch(codexView, /invoke\('cancel_codex_acp'/,
   'the shared ACP UI must not bypass the Web-safe cancellation adapter');
+// Round-15 复审 HIGH(突变实证):`?.[0] || ''` 会把提取漂移(改名、箭头
+// 函数化、重排版去掉列 0 的 `\n}`)变成对空串 trivially-true 的
+// doesNotMatch——workspacePath 泄漏防线无声熄灭而全套件保持绿。先断言
+// 提取非空,再跑反钉。
+const createAcpSessionSource =
+  acpPlatformClient.match(/export function createAcpSession[\s\S]*?\n\}/)?.[0];
+assert.ok(
+  createAcpSessionSource,
+  'createAcpSession must be extractable for the workspacePath anti-pin; if this \
+   assertion fires the function was renamed or restructured and the pin below \
+   must be re-anchored',
+);
 assert.doesNotMatch(
-  acpPlatformClient.match(/export function createAcpSession[\s\S]*?\n\}/)?.[0] || '',
+  createAcpSessionSource,
   /web_access_create_codex_acp_session[\s\S]*?workspacePath/,
   'Web code-session creation must submit only the opaque workspace handle',
 );
@@ -697,6 +763,8 @@ assert.doesNotMatch(hostFilePicker, /currentWorkspaceHandle/,
   'browsing never carries a workspace handle, so no stale-handle fallback path may remain');
 assert.match(hostFilePicker, /localizedPickerError/,
   'both the listing and confirm-mint failures must map stable authorization codes to localized copy');
+assert.match(hostFilePicker, /web_session_list_host_files_failed[\s\S]{0,200}labels\.listingFailed/,
+  'the round-21 stable browse/mint failure code must map to localized picker copy, not render as a bare code');
 assert.match(hostFilePicker,
   /(?:var|const|let) confirmedGeneration = loadGeneration;[\s\S]{0,900}if \(disposed \|\| confirmedGeneration !== loadGeneration\) return;/,
   'a late confirm-mint failure must not touch the UI after the picker closed or a newer listing rendered');
@@ -719,6 +787,16 @@ for (const label of [
   '先にデスクトップでローカルフォルダーへの遠隔アクセスを許可してください',
 ]) {
   assert.equal(i18n.includes(label), true, `missing localized host workspace error: ${label}`);
+}
+// Round-23 复审 MINOR:listingFailed 此前只存在于 picker 内置的中文兜底
+// 表——en/ja 词典没有该键,全部语言都渲染中文兜底。三语键存在性与
+// workspaceNotAuthorized 同一口径钉死;词典删键即红。
+for (const label of [
+  'Listing desktop files failed. Please try again.',
+  'デスクトップのファイル一覧の読み込みに失敗しました。もう一度お試しください。',
+  '读取桌面端文件列表失败，请重试。',
+]) {
+  assert.equal(i18n.includes(label), true, `missing localized host file listing failure: ${label}`);
 }
 assert.match(appMain, /PinvouHostFilePickerStrings\s*=\s*misc\.hostFilePicker/,
   'the active locale must reach the Web host picker error branch');
@@ -1125,8 +1203,18 @@ assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
-assert.ok((toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length >= 4,
-  'all tool install, uninstall, and import handlers must fail closed in WebUI');
+// Round-15 复审 M2:下限 >=4 会容忍删掉 8 个卫兵中的 4 个仍全绿;收敛
+// 为精确计数,新增卫兵时随钉更新(与本文件其他精确计数钉同约定)。
+// Round-21 复审(已披露盲区):本 census 只数两种「纯」卫兵形态
+// (`!canMutateToolStore` 与 `|| busyRef.current` 两款);复合谓词卫兵
+// (`|| !somethingElse`,现存 5 处)、花括号形态(`{ return; }`)不在
+// 数内;且计数是全文件的,一处删除另一处新增会正负相抵。新卫兵用这些
+// 形态落地时需要另行钉住,不能指望本计数兜底。
+assert.equal(
+  (toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length,
+  8,
+  'all tool install, uninstall, and import handlers must fail closed in WebUI; \
+   if a guard was deliberately removed or added, update this count consciously');
 // 回收站 Web 只读降级：list_recycled_plugins 为只读命令（access-policy 放行），
 // 恢复/导出/彻底删除的动作按钮整块挂 canMutateToolStore 门控，处理函数自身
 // fail-closed（含 purge——其确认弹窗入口虽由门控按钮触发，处理函数仍须自守）。

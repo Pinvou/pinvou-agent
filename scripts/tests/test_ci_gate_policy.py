@@ -1961,6 +1961,32 @@ class CiGatePolicyTests(unittest.TestCase):
             macos_cli_steps,
             "the macOS leg must run the toolchain pinned by rust-toolchain.toml",
         )
+        # Round-24 review (m6): the macOS-gated alias-flag pin step compiles
+        # and executes on no other leg, so deleting the whole step fails no
+        # test and silently reverts the leg to compile-only - the exact
+        # orphan class the benchmark-core filter pins above close for the
+        # Windows leg. Pin the step, its filter, and the three guard bodies
+        # (zero-match, ok-result, executed-count) so a deletion or guard
+        # swap fails this policy suite.
+        self.assertIn(
+            "- name: pinvou-cli macOS-gated unit tests",
+            macos_cli_steps,
+        )
+        self.assertIn(
+            "system_prefix_hits_run_through_the_production_alias_flag",
+            macos_cli_steps,
+        )
+        self.assertIn("grep -qE 'running [1-9][0-9]* tests?'", macos_cli_steps)
+        self.assertIn('grep -q "^test result: ok"', macos_cli_steps)
+        self.assertIn(
+            "a renamed test must not become a silent pass", macos_cli_steps
+        )
+        self.assertIn(
+            "^test result: ok\\. [1-9][0-9]* passed",
+            macos_cli_steps,
+            "the executed-count guard keeps an #[ignore]d pin from passing "
+            "the step silently (the round-23 review hole)",
+        )
 
         required_gate = self._required_gate()
         self.assertIn("- cli-test", required_gate)
