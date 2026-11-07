@@ -873,6 +873,61 @@ pub async fn edit_last_turn(
 
 #[cfg(test)]
 mod tests {
+    /// Round-24 复审(m5)源钉:edit_last_turn 的 awaited 错误臂是本文件
+    /// 唯一没有回归信号的 web 可见折叠——census 只扫 `.map_err(|` 拼写,
+    /// 本臂是 `if let Err` + `return Err` 形,不在 census 窗口表内
+    /// (round-12 注释披露「实义而非计数」,但披露不等于钉住:删除该折
+    /// 叠此前全套件保持全绿)。窗口为命令体;折叠必须落在
+    /// `.edit_last_turn_reserved(` 调用之后(臂位,round-21 臂界教训);
+    /// 纯注释行先滤除(round-23 口径)。
+    #[test]
+    fn edit_last_turn_awaited_error_folds_the_storage_prefix() {
+        let source = include_str!("memory.rs");
+        let start = source
+            .find("pub async fn edit_last_turn(")
+            .expect("edit_last_turn must exist");
+        let body = &source[start..];
+        let end = [
+            "\n#[tauri::command]",
+            "\n#[cfg(test)]",
+            "\npub async fn ",
+            "\npub fn ",
+            "\nfn ",
+        ]
+        .iter()
+        .filter_map(|delimiter| body.find(delimiter))
+        .min()
+        .expect("edit_last_turn body must be terminated");
+        let counted = body[..end]
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let call_at = counted
+            .find(".edit_last_turn_reserved(")
+            .expect("the awaited edit_last_turn_reserved call must stay");
+        let fold_at = counted
+            .find("crate::platform::paths::redact_storage_prefix(&format!(")
+            .expect("the awaited-error arm must fold the storage root \
+             before egress: deleting the fold previously kept every suite \
+             green because the census scans .map_err arms only");
+        assert!(
+            fold_at > call_at,
+            "the fold must sit in the awaited-error arm after the \
+             edit_last_turn_reserved call, not anywhere in the command body"
+        );
+        assert_eq!(
+            counted
+                .matches("crate::platform::paths::redact_storage_prefix(&format!(")
+                .count(),
+            1,
+            "exactly one awaited-error fold arm is pinned; a new web-visible \
+             arm must join this pin (enumerated-pin residual)"
+        );
+    }
     use super::*;
     use deepseek_tui::models::{ContentBlock, Message};
 
