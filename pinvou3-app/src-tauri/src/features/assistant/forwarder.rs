@@ -727,6 +727,13 @@ pub(crate) fn spawn_event_forwarder(
                             "chat:user_input_required",
                             payload,
                         );
+                        // 后台挂起等待回复时弹桌面通知（可在设置中关闭）；
+                        // 无人值守定时分支已在上方取消输入，不会走到这里。
+                        crate::features::assistant::engine_support::maybe_notify_input_needed(
+                            &app,
+                            &session_id,
+                            &id,
+                        );
                     }
                 }
                 Event::SessionUpdated {
@@ -2224,9 +2231,11 @@ mod transcript_persist_pins {
     //! fresh always-true atomic would ship green. Pin the plumbing instead.
 
     /// The production `spawn_event_forwarder` body with line comments
-    /// stripped, so prose that mentions a needle verbatim cannot satisfy a
-    /// pin.
-    fn forwarder_body() -> String {
+    /// stripped first, then closed `/* … */` spans removed (newline
+    /// count preserved; an unterminated `/*` is kept verbatim), so prose
+    /// that mentions a needle verbatim cannot satisfy a pin in either
+    /// comment kind.
+    pub(super) fn forwarder_body() -> String {
         let src = include_str!("forwarder.rs");
         let signature = "pub(crate) fn spawn_event_forwarder(";
         let start = src.find(signature).expect("the forwarder fn must exist");
@@ -2236,7 +2245,7 @@ mod transcript_persist_pins {
             .filter_map(|marker| rest.find(marker))
             .min()
             .map_or(src.len(), |offset| start + signature.len() + offset);
-        src[start..end]
+        let without_line_comments = src[start..end]
             .split('\n')
             .map(|line| {
                 line.split("//")
@@ -2244,7 +2253,36 @@ mod transcript_persist_pins {
                     .expect("split always yields one item")
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        strip_block_comments(&without_line_comments)
+    }
+
+    /// Newline-preserving removal of closed `/* … */` spans. Runs after the
+    /// line-comment pass, so a `//`-commented-out `/*` marker cannot make
+    /// this eat live code; the needle set of every pin below lives in code,
+    /// never in a block comment.
+    fn strip_block_comments(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(open) = rest.find("/*") {
+            match rest[open..].find("*/") {
+                Some(close_rel) => {
+                    out.push_str(&rest[..open]);
+                    let inner = &rest[open + 2..open + close_rel];
+                    for _ in 0..inner.matches('\n').count() {
+                        out.push('\n');
+                    }
+                    rest = &rest[open + close_rel + 2..];
+                }
+                None => {
+                    // Unterminated block: keep it verbatim, scan past the marker.
+                    out.push_str(&rest[..open + 2]);
+                    rest = &rest[open + 2..];
+                }
+            }
+        }
+        out.push_str(rest);
+        out
     }
 
     #[test]
@@ -2305,6 +2343,62 @@ mod transcript_persist_pins {
                 .count(),
             1,
             "TurnUsage must feed SelfMetrics exactly once, args in engine field order + per-call output_tokens"
+        );
+    }
+}
+
+#[cfg(test)]
+mod input_notification_pins {
+    //! The input-needed desktop notification rides the interactive
+    //! `UserInputRequired` arm only. Deleting the call leaves every suite
+    //! green (`dead_code` is allowed and no test drives the forwarder's
+    //! event loop), so the wiring shape is pinned here — same reasoning as
+    //! `transcript_persist_pins` above, reusing its comment-stripped fn-body
+    //! extraction (test code is cut off, so the pin cannot match itself).
+
+    #[test]
+    fn interactive_input_arm_fires_the_desktop_notification_once() {
+        // 去注释去空白后匹配:prose 提到调用形状无法满足钉子,rustfmt 折行不敏感
+        // (engine_usage_wiring_feeds_self_metrics_once 同法)。
+        let flattened: String = super::transcript_persist_pins::forwarder_body()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let call = "engine_support::maybe_notify_input_needed(";
+        assert_eq!(
+            flattened.matches(call).count(),
+            1,
+            "exactly the interactive UserInputRequired arm must fire the input-needed notification"
+        );
+        let call_at = flattened.find(call).expect("count above proves presence");
+        // 参数序即语义:(&app, &session_id, &id)——键以 (session, input) 归档,
+        // 对换参数会静默丢失按会话的去重剪枝。去空白后匹配且不依赖尾逗号:
+        // rustfmt 折行/折回单行(尾逗号消失)都不影响判定。
+        let after_args = &flattened[call_at + call.len()..];
+        assert!(
+            after_args.starts_with("&app,&session_id,&id,)")
+                || after_args.starts_with("&app,&session_id,&id)"),
+            "the wiring must pass (&app, &session_id, &id) — argument order is the dedup semantics",
+        );
+        let arm_start = flattened[..call_at]
+            .rfind("Event::UserInputRequired")
+            .expect("the notification call must live inside the UserInputRequired arm");
+        let arm_end = flattened[call_at..]
+            .find("Event::")
+            .map_or(flattened.len(), |offset| call_at + offset);
+        let arm = &flattened[arm_start..arm_end];
+        // 无人值守分支先取消输入,attended 分支先 emit 再弹通知:两腿互斥,
+        // 通知不得落入无人值守腿(顺序突变即红)。
+        let cancel_at = arm
+            .find("cancel_user_input(")
+            .expect("the unattended leg must cancel the parked input");
+        let emit_at = arm
+            .find(r#"emit("chat:user_input_required""#)
+            .expect("the attended leg must emit to the frontend");
+        let call_in_arm = call_at - arm_start;
+        assert!(
+            cancel_at < emit_at && emit_at < call_in_arm,
+            "the unattended cancel must precede the attended emit, and the notification must follow it inside the same arm"
         );
     }
 }

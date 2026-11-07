@@ -805,17 +805,20 @@ pub struct AdvancedPrefs {
 pub struct NotificationPrefs {
     pub enabled: bool,
     pub task_completed: bool,
+    /// 模型经 request_user_input 等待用户回复时弹系统通知。
+    pub needs_input: bool,
 }
 
 impl Default for NotificationPrefs {
     fn default() -> Self {
         // Linux desktop notification portals vary widely by distro/session.
-        // Keep task completion notifications opt-in there, while preserving
-        // the previous default on Windows/macOS.
+        // Keep desktop notifications opt-in there, while preserving the
+        // previous default on Windows/macOS.
         let enabled = !cfg!(target_os = "linux");
         Self {
             enabled,
             task_completed: enabled,
+            needs_input: enabled,
         }
     }
 }
@@ -3907,11 +3910,14 @@ mod tests {
             prefs.notifications.task_completed,
             !cfg!(target_os = "linux")
         );
+        assert_eq!(prefs.notifications.needs_input, !cfg!(target_os = "linux"));
 
         let json = r#"{"notifications":{"task_completed":false}}"#;
         let parsed: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.notifications.enabled, !cfg!(target_os = "linux"));
         assert!(!parsed.notifications.task_completed);
+        // 未携带的 needs_input 同样从平台 Default 补齐，不随部分补丁漂移。
+        assert_eq!(parsed.notifications.needs_input, !cfg!(target_os = "linux"));
     }
 
     #[test]

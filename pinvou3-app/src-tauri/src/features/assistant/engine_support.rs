@@ -23,24 +23,32 @@ pub(super) fn wrap_system_reminder(body: &str, content: &str) -> String {
     format!("<system-reminder>\n{body}\n</system-reminder>\n\n{content}")
 }
 
-pub(super) fn maybe_notify_task_completed(
+/// Dedup key a global desktop notification is filed under. The `':'` is
+/// load-bearing: `NotificationState::should_notify` prunes by the session
+/// prefix before the first colon, so the key must keep the session id and
+/// the event id separable.
+fn desktop_notification_key(session_id: &str, event_id: &str) -> String {
+    format!("{session_id}:{event_id}")
+}
+
+/// Shared tail of the global desktop-notification pipeline, in gate order:
+/// aux exclusion → per-kind pref gate (`check_enabled` runs only here, so
+/// aux sessions never pay the settings-file read) → per-session dedup →
+/// benchmark/eval suppression → send. Both notification kinds name no
+/// session, which is what the aux gate protects.
+fn maybe_send_desktop_notification(
     app: &AppHandle,
     session_id: &str,
-    turn_id: Option<String>,
-    status: TurnOutcomeStatus,
-    error: Option<&str>,
+    notify_key: String,
+    check_enabled: impl FnOnce() -> bool,
+    send: fn(&AppHandle),
 ) {
-    if status != TurnOutcomeStatus::Completed || error.is_some() {
+    if !global_desktop_notification_in_scope(session_id) {
         return;
     }
-    if !task_completion_notify_in_scope(session_id) {
+    if !check_enabled() {
         return;
     }
-    if !crate::platform::notifications::task_completion_enabled() {
-        return;
-    }
-    let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
-    let notify_key = format!("{session_id}:{key}");
     let notification_state = app
         .try_state::<crate::platform::notifications::NotificationState>()
         .map(|state| state.should_notify(notify_key));
@@ -51,17 +59,56 @@ pub(super) fn maybe_notify_task_completed(
     #[cfg(not(feature = "benchmark-hooks"))]
     let should_notify = notification_state.unwrap_or(true);
     if should_notify {
-        crate::platform::notifications::notify_task_completed(app);
+        send(app);
     }
 }
 
-/// Whether a finished turn of this session may raise the global "task
-/// completed" desktop notification. Aux side-chat turns are excluded
-/// (round-26 minor M3): the notification names no session, so an aux reply
-/// finishing while its main task still runs would pop an indistinguishable
-/// "completed" for a task that never finished — the same global-side-effect
-/// class as the round-15 memory-review exclusion (forwarder.rs).
-fn task_completion_notify_in_scope(session_id: &str) -> bool {
+pub(super) fn maybe_notify_task_completed(
+    app: &AppHandle,
+    session_id: &str,
+    turn_id: Option<String>,
+    status: TurnOutcomeStatus,
+    error: Option<&str>,
+) {
+    if status != TurnOutcomeStatus::Completed || error.is_some() {
+        return;
+    }
+    let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
+    maybe_send_desktop_notification(
+        app,
+        session_id,
+        desktop_notification_key(session_id, &key),
+        crate::platform::notifications::task_completion_enabled,
+        crate::platform::notifications::notify_task_completed,
+    );
+}
+
+/// Desktop notification when the engine parks on `request_user_input`: the
+/// model is blocked until the user answers, and without this the only signal
+/// lives inside the app window. The unattended-scheduled path cancels the
+/// input before reaching the forwarder's interactive branch, so this only
+/// fires for sessions with a human operator — save a narrow window after
+/// `wait_for_scheduled_terminal`'s external-cancel deadline, where the
+/// unattended guard has already dropped but the engine may not be dead yet
+/// (at most one pref-gated, deduplicated bubble). Eval hosts suppress it the
+/// same way as completion notifications (observation runs must stay quiet).
+pub(super) fn maybe_notify_input_needed(app: &AppHandle, session_id: &str, input_id: &str) {
+    maybe_send_desktop_notification(
+        app,
+        session_id,
+        desktop_notification_key(session_id, input_id),
+        crate::platform::notifications::needs_input_enabled,
+        crate::platform::notifications::notify_input_needed,
+    );
+}
+
+/// Whether a turn of this session may raise a global desktop notification
+/// (task-completed or input-needed — both name no session). Aux side-chat
+/// turns are excluded (round-26 minor M3): an aux notification popping while
+/// its main task still runs would be indistinguishable from the main task's
+/// own notification — the same global-side-effect class as the round-15
+/// memory-review exclusion (forwarder.rs).
+fn global_desktop_notification_in_scope(session_id: &str) -> bool {
     crate::features::sessions::aux_side_effect_exclusion(session_id)
 }
 
@@ -311,12 +358,113 @@ pub(super) fn scheduled_tool_should_auto_approve(
 
 #[cfg(test)]
 mod tests {
-    use super::task_completion_notify_in_scope;
+    use super::{desktop_notification_key, global_desktop_notification_in_scope};
 
     #[test]
-    fn task_completion_notification_excludes_aux_sessions() {
-        assert!(!task_completion_notify_in_scope("aux-0123456789abcdef"));
-        assert!(task_completion_notify_in_scope("0123456789abcdef"));
-        assert!(task_completion_notify_in_scope("sched-daily-report"));
+    fn desktop_notification_key_keeps_session_and_event_separable() {
+        // NotificationState::should_notify prunes by the prefix before the
+        // first ':' — a separator drop (or a session-only key) would make
+        // every session share one dedup slot and let one event suppress
+        // another's notification. Pin the shape at the only key builder.
+        let key = desktop_notification_key("0123456789abcdef", "turn_ab12cd34");
+        assert_eq!(
+            key.split_once(':'),
+            Some(("0123456789abcdef", "turn_ab12cd34")),
+            "the dedup key must keep the session id separable from the event id",
+        );
+    }
+
+    #[test]
+    fn desktop_notifications_exclude_aux_sessions() {
+        assert!(!global_desktop_notification_in_scope(
+            "aux-0123456789abcdef"
+        ));
+        assert!(global_desktop_notification_in_scope("0123456789abcdef"));
+        assert!(global_desktop_notification_in_scope("sched-daily-report"));
+    }
+}
+
+#[cfg(test)]
+mod desktop_notification_wiring_pins {
+    //! The two `maybe_notify_*` wrappers pair each notification kind with
+    //! its own pref gate and sender. Swapping the pair (or the dedup-key
+    //! argument order) compiles cleanly — `fn() -> bool` and
+    //! `fn(&AppHandle)` parameter shapes are interchangeable — and no
+    //! behavior test drives the real wiring, so the pairing is pinned here
+    //! against this file's own source, the same way `forwarder.rs` pins its
+    //! call-site wiring shape.
+
+    /// Comment- and whitespace-stripped body of the fn with the given
+    /// signature prefix. Naive brace matching: the pinned wrappers contain
+    /// no braces in string or char literals (a future edit adding one fails
+    /// loudly here instead of silently weakening the pin).
+    fn pinned_fn_body(signature: &str) -> String {
+        let src = include_str!("engine_support.rs");
+        let sig_at = src.find(signature).expect("pinned fn must exist");
+        let body_at = src[sig_at..].find('{').expect("fn body brace") + sig_at;
+        let mut depth = 0usize;
+        for (offset, ch) in src[body_at..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return src[body_at..=body_at + offset]
+                            .split('\n')
+                            .map(|line| {
+                                line.split("//")
+                                    .next()
+                                    .expect("split always yields one item")
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .chars()
+                            .filter(|c| !c.is_whitespace())
+                            .collect();
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces in pinned fn body");
+    }
+
+    #[test]
+    fn each_notification_kind_keeps_its_own_pref_and_sender() {
+        let input = pinned_fn_body("pub(super) fn maybe_notify_input_needed(");
+        // 键参数序即语义：应为 (session, input)。对换会静默丢失按会话的
+        // 去重剪枝（should_notify 按 ':' 前缀剪枝）。
+        assert!(
+            input.contains("desktop_notification_key(session_id,input_id)"),
+            "the input notification must dedup under (session, input) argument order",
+        );
+        // 跨种类配对突变（换 pref 或换 sender）在编译期不可见，钉死相邻形状。
+        assert!(
+            input.contains(
+                "needs_input_enabled,crate::platform::notifications::notify_input_needed",
+            ),
+            "the input notification must pair needs_input_enabled with notify_input_needed",
+        );
+        assert!(
+            !input.contains("task_completion") && !input.contains("notify_task_completed"),
+            "the input notification must not carry completion wiring",
+        );
+
+        let completed = pinned_fn_body("pub(super) fn maybe_notify_task_completed(");
+        assert!(
+            completed.contains("desktop_notification_key(session_id,&key)"),
+            "the completion notification must dedup under (session, turn) argument order",
+        );
+        assert!(
+            completed.contains(
+                "task_completion_enabled,crate::platform::notifications::notify_task_completed",
+            ),
+            "the completion notification must pair task_completion_enabled with notify_task_completed",
+        );
+        assert!(
+            !completed.contains("needs_input_enabled")
+                && !completed.contains("notify_input_needed"),
+            "the completion notification must not carry input wiring",
+        );
     }
 }
