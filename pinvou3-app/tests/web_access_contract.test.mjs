@@ -462,7 +462,7 @@ assert.match(commands, /pub struct AuxSessionBinding \{\s*pub id: String,?\s*\}/
   'the aux session command must return an id-only projection');
 assert.match(commands, /fn get_or_create_aux_session\([\s\S]{0,300}?-> Result<AuxSessionBinding, String>/,
   'get_or_create_aux_session must not return raw SessionMetadata across the Web boundary');
-assert.match(commands, /get_or_create_aux_session\(&session_id\)[\s\S]{0,200}?AuxSessionBinding \{ id: metadata\.id \}/,
+assert.match(commands, /get_or_create_aux_session\(&sid\)[\s\S]{0,240}?AuxSessionBinding \{ id: metadata\.id \}/,
   'the aux session projection must be built from the store metadata without exposing it');
 assert.match(commands, /fn reset_aux_session\([\s\S]{0,400}?-> Result<AuxSessionBinding, String>/,
   'reset_aux_session must not return raw SessionMetadata across the Web boundary');

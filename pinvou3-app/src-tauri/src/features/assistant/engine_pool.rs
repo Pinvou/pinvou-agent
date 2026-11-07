@@ -3323,7 +3323,20 @@ impl EnginePool {
         // must still emit session:deleted — gating the event on overall
         // success left clients buffering a stale transcript for a session
         // that no longer exists.
-        let created = self.store.get_or_create_aux_session(main_id);
+        // The create half (including the reuse leg's confirmed-absent probe
+        // and the mode pin's two-file RMW under the sidecar io mutex) is
+        // sync sidecar IO — join it on a blocking worker like the other
+        // pool persistence awaits (round-15 review B1) instead of parking
+        // the runtime worker that also drives the engine pumps.
+        let worker_store = self.store.clone();
+        let worker_main = main_id.to_string();
+        let created = tokio::task::spawn_blocking(move || {
+            worker_store.get_or_create_aux_session(&worker_main)
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("reset_aux_chat_session: create-half join failed: {error}")
+        })?;
         Ok((deleted_aux, created))
     }
 

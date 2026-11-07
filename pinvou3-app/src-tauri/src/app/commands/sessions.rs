@@ -1516,10 +1516,19 @@ async fn get_or_create_aux_session_inner(
     store
         .load(&session_id)
         .map_err(|e| format!("get_or_create_aux_session: main session not found: {e:#}"))?;
-    store
-        .get_or_create_aux_session(&session_id)
-        .map(|metadata| AuxSessionBinding { id: metadata.id })
-        .map_err(|e| format!("get_or_create_aux_session: {e:#}"))
+    // 创建/复用两腿都在 store 同步方法内做 sidecar IO（复用腿的确认缺席探针
+    // + 模式钉还要在 std Mutex 下做两文件 RMW，fsync 偏重）——与 mode chip
+    // 命令族同一纪律，join 到 blocking worker 而不是停在 runtime worker 上
+    // （round-15 评审 B1：这是 join_blocking 修完 chip 命令族后剩下的同类项）。
+    let worker_store = store.inner().clone();
+    let sid = session_id.clone();
+    let metadata = super::settings::join_blocking("get_or_create_aux_session", move || {
+        worker_store
+            .get_or_create_aux_session(&sid)
+            .map_err(|e| format!("get_or_create_aux_session: {e:#}"))
+    })
+    .await?;
+    Ok(AuxSessionBinding { id: metadata.id })
 }
 
 /// Atomically restart a main session's auxiliary conversation (M6): if an
