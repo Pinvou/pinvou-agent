@@ -400,7 +400,7 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   );
   assert.match(
     poolSource,
-    /reconfigure_multi_agent_mode[\s\S]{0,500}\.reserve\(\)[\s\S]{0,700}turn_lock\.lock\(\)\.await[\s\S]{0,300}set_multi_agent\(session_id, enabled\)[\s\S]{0,300}evict_locked\(session_id\)/,
+    /reconfigure_multi_agent_mode[\s\S]{0,500}\.marketplace_uninstall\s*\.reserve\(&self\.turn_lifecycles\.for_session\(session_id\)\)\?[\s\S]{0,700}turn_lock\.lock\(\)\.await[\s\S]{0,300}set_multi_agent\(session_id, enabled\)[\s\S]{0,300}evict_locked\(session_id\)/,
     '生成中拒绝切换；状态持久化与旧引擎回收必须和发送原子串行',
   );
   assert.doesNotMatch(
