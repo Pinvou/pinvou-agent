@@ -4725,7 +4725,8 @@
     // dismiss 即解守卫(保留"关窗后立即可再召唤"),所以 dismiss→再召唤窗口里旧
     // settle 会晚到:序号不等时旧结果只入账、不写新弹窗,旧 finally 也不解掉新
     // 召唤的守卫(r3 审 M9:旧结果注入新弹窗/旧 finally 提前解守卫,两个串扰)。
-    const seq = (state.pinvouSummonSeq = (state.pinvouSummonSeq || 0) + 1);
+    state.pinvouSummonSeq = (state.pinvouSummonSeq || 0) + 1;
+    const seq = state.pinvouSummonSeq;
     // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
     // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
     state.pinvouModal = { loading: true, coverage: mode === "coverage" };
