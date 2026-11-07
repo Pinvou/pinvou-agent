@@ -841,8 +841,12 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     if (!preserveScheduledRunContext) state.scheduledRunContext = null;
     state.scheduledTaskPendingGuide = null;
     state.activeSessionId = saved.metadata.id;
+    const cachedBuffer = sessionStates[id];
+    const childRecoveryNotices = (cachedBuffer?.chatItems || []).filter(function (item) {
+      return globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item);
+    });
     if (hydrateLiveSession) {
-      const liveBuffer = sessionStates[id] || freshBuffer();
+      const liveBuffer = cachedBuffer || freshBuffer();
       loadWorkingSetFrom(liveBuffer);
       const liveMessages = Array.isArray(state.messages) ? [...state.messages] : [];
       const liveChatItems = Array.isArray(state.chatItems) ? [...state.chatItems] : [];
@@ -872,6 +876,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
         context.currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
       } else {
         resetPendingAssistant();
+        if (childRecoveryNotices.length) mergeHydratedChatItems(childRecoveryNotices, 0);
       }
       saveWorkingSetTo(liveBuffer);
     } else {
@@ -891,6 +896,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       state.artifacts = mergeHydratedArtifacts(saved.artifacts, []);
       state.artifacts = filterSessionArtifacts(state.artifacts, state.activeSessionId);
       rerenderFromMessages();
+      if (childRecoveryNotices.length) mergeHydratedChatItems(childRecoveryNotices, 0);
     }
     await syncModeState();
     await syncActivePersona();

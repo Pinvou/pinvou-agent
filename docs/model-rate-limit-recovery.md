@@ -12,7 +12,8 @@ minutes. Ordinary network/5xx retries retain their existing configuration.
 | `max_delay_secs` | 60 | Local exponential base ceiling; server minima may exceed it |
 
 Backoff doubles and uses equal jitter between 50% and 100% of the local base.
-The next attempt waits for the greater of that delay and the server minimum.
+When the provider supplies a nonzero retry minimum, take the greater of that minimum
+and the jittered local delay, then add half of the jittered local delay.
 `Retry-After` accepts numeric seconds and an HTTP-date. Known structured retry
 and reset fields are read before the diagnostic body is summarized. A hint that
 does not fit the remaining budget parks the operation immediately; it is never

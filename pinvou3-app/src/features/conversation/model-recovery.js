@@ -1,5 +1,22 @@
 import { dict, languageFromLocaleTags } from '../../shared/i18n.js';
 
+export function isActiveChildRecoveryNotice(item) {
+  return Boolean(!item?.legacyConversationOnly && item?.modelRecovery?.agent_id && item.modelRecovery.state === 'waiting');
+}
+
+export function restoreChildRecoveryNotices(previous, current) {
+  const key = item => JSON.stringify([item.modelRecovery.agent_id, item.modelRecovery.operation_id]);
+  const latest = new Map(current.filter(item => item?.modelRecovery?.agent_id).map(item => [key(item), item]));
+  const restored = previous.map(item => {
+    if (!item?.modelRecovery?.agent_id) return item;
+    const identity = key(item);
+    const notice = latest.get(identity) || item;
+    latest.delete(identity);
+    return notice;
+  });
+  return [...restored, ...latest.values()];
+}
+
 export function recoveryNotice(receipt, language) {
   const lang = languageFromLocaleTags(language, 'en');
   const copy = dict[lang]?.uiChat;
@@ -60,4 +77,4 @@ export function settleRecoveryEvent(payload = {}, state = {}) {
 }
 
 // Classic desktop/web bridges share this feature with the React native lane.
-globalThis.PinvouModelRecovery = { recoveryNotice, upsertRecoveryNotice, settleRecoveryNotices, settleRecoveryEvent };
+globalThis.PinvouModelRecovery = { recoveryNotice, upsertRecoveryNotice, settleRecoveryNotices, settleRecoveryEvent, isActiveChildRecoveryNotice, restoreChildRecoveryNotices };

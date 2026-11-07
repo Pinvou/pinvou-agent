@@ -2287,8 +2287,12 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
     if (!preserveScheduledRunContext) state.scheduledRunContext = null;
     state.scheduledTaskPendingGuide = null;
     state.activeSessionId = saved.metadata.id;
+    const cachedBuffer = sessionStates[id];
+    const childRecoveryNotices = (cachedBuffer?.chatItems || []).filter(function (item) {
+      return globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item);
+    });
     if (hydrateLiveSession) {
-      const liveBuffer = sessionStates[id] || freshBuffer();
+      const liveBuffer = cachedBuffer || freshBuffer();
       loadWorkingSetFrom(liveBuffer);
       const liveMessages = Array.isArray(state.messages) ? [...state.messages] : [];
       const liveChatItems = Array.isArray(state.chatItems) ? [...state.chatItems] : [];
@@ -2317,6 +2321,7 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
         currentStreamId = mergeHydratedChatItems(liveChatItems, liveCurrentStreamId);
       } else {
         resetPendingAssistant();
+        if (childRecoveryNotices.length) mergeHydratedChatItems(childRecoveryNotices, 0);
       }
       liveBuffer.loadedFromDisk = true;
       liveBuffer.sessionRevision = String(saved.transcript_revision || saved.transcriptRevision || "");
@@ -2338,6 +2343,7 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
       state.artifacts = mergeHydratedArtifacts(saved.artifacts, []);
       state.artifacts = filterSessionArtifacts(state.artifacts, state.activeSessionId);
       rerenderFromMessages();
+      if (childRecoveryNotices.length) mergeHydratedChatItems(childRecoveryNotices, 0);
     }
     // The full-load path rebuilds tool cards after the active workspace is
     // selected. Start Shell reconciliation only after that rebuild; polling
@@ -2822,7 +2828,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) {
-        return !item.turnErrorNotice && !item.authoritySyncNotice;
+        return (!item.turnErrorNotice || globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item)) && !item.authoritySyncNotice;
       });
       const uitem = {
         type: "user",
@@ -3790,12 +3796,15 @@ function applyWorkspaceReboundMark(payload) { return pinvouSharedweb().applyWork
         // 此回调在 runSyncOnSession(sid) 内，sid 即触发会话）。
         if (acceptedMode) applyAuthoritativeModeState(sid, acceptedMode);
       }
-      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
+      state.chatItems = state.chatItems.filter(function (item) {
+        return !item.turnErrorNotice || globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item);
+      });
       if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
         if (operation === "edit_last") {
           for (let index = state.chatItems.length - 1; index >= 0; index--) {
             if (state.chatItems[index] && state.chatItems[index].type === "user") {
-              state.chatItems.splice(index);
+              const replacedItems = state.chatItems.splice(index);
+              state.chatItems.push(...replacedItems.filter(item => globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item)));
               break;
             }
           }
@@ -4541,29 +4550,32 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
 
   // 可恢复的瞬态错误（SSE idle timeout / 瞬态工具失败）：turn 没结束，引擎会 retry，
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
-  listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
-    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
-    const error = e.payload && e.payload.error;
-    if (error) {
-      const messages = bridgeMessages();
-      if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false))) {
-        const displayError = typeof messages.redactRawError === "function"
-          ? messages.redactRawError(error, state)
-          : error;
-        const notice = "⚠️ " + displayError;
-        const duplicate = state.chatItems.some(function (item) {
-          return item && item.turnErrorNotice && item.text === notice;
-        });
-        if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+  listen("chat:transient_error", function (e) {
+    const childRecovery = !!e.payload?.model_recovery?.agent_id;
+    onSessionEvent(e, function () {
+      if (!childRecovery && e.payload?.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
+      const error = e.payload && e.payload.error;
+      if (error) {
+        const messages = bridgeMessages();
+        if (!(typeof messages.addModelServiceErrorNotice === "function" && messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false))) {
+          const displayError = typeof messages.redactRawError === "function"
+            ? messages.redactRawError(error, state)
+            : error;
+          const notice = "⚠️ " + displayError;
+          const duplicate = state.chatItems.some(function (item) {
+            return item && item.turnErrorNotice && item.text === notice;
+          });
+          if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+        }
       }
-    }
-    // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
-    // 兜底启动检测被绕过/中途删 key 的场景。
-    // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
-    if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
+      // 401/鉴权失败:刷新 effectiveModelConfig → 前端拦截遮罩自动弹出引导配置。
+      // 兜底启动检测被绕过/中途删 key 的场景。
+      // \b401\b 词边界锚定,避免误匹配 "port 4014"/"row 401" 等含 401 子串的无关报错。
+      if (error && /\b401\b|unauthorized|authentication/i.test(String(error))) loadEffectiveModelConfig();
 
-    if (e.payload && e.payload.model_recovery) notify();
-  }); });
+      if (e.payload && e.payload.model_recovery) notify();
+    }, { presentationOnly: childRecovery });
+  });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
   // 路由到对应 session 的产物列表(后台 session 的产物也跟踪)。
@@ -5249,7 +5261,8 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
     state.messages.push({ role: "user", content: [{ type: "text", text: newText }] });
     resetPendingAssistant();
     state.chatItems = [];
-    rerenderFromMessages();
+    rerenderFromMessages({ keepItemIdSequence: true });
+    state.chatItems.push(...previous.chatItems.filter(item => globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item)));
     state.busy = true;
     startThinking();
     currentStreamText = "";
@@ -5282,7 +5295,7 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       if (editBuffer) editBuffer.localTurnOwned = false;
       runSyncOnSession(sid, function () {
         state.messages = previous.messages;
-        state.chatItems = previous.chatItems;
+        state.chatItems = globalThis.PinvouModelRecovery?.restoreChildRecoveryNotices?.(previous.chatItems, state.chatItems) ?? previous.chatItems;
         state.busy = previous.busy;
         state.thinking = previous.thinking;
         currentStreamText = previous.currentStreamText;

@@ -247,7 +247,9 @@ const expectedProtocolHashes = {
   // Recovery metadata settles at chat:done and notifies after transient updates.
   // The existing event names/payload transport stay unchanged; callback text
   // participates in this digest, including those new consumer branches.
-  chat: '286967fbc0db03fd8edf75642b8a603fc882c92655779d0e146dc6053bf6c7e8',
+  // The transient error listener now routes detached child recovery without
+  // claiming a foreground turn. Event names and payload shapes stay the same.
+  chat: '609bc8abed06c5525756308edf33fb50c66741c51ea0f63b43cb07ce6fb6a677',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
