@@ -1225,9 +1225,6 @@ pub async fn test_image_input_capability(
     Ok(run_image_capability_probe(&model, &base_url, &api_key, model_id.as_deref()).await)
 }
 
-/// General settings field patch. Search, pet, the model list and the active model are managed by dedicated
-/// commands and stay out of this protocol, so a caller holding an old full snapshot cannot overwrite values
-/// another operation just wrote.
 /// 通知开关的字段级补丁：部分更新不得把未携带的开关重置回默认值
 /// （整表替换会让「只改 needs_input」的写入把 enabled/task_completed 复位）。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1238,6 +1235,9 @@ pub struct NotificationPrefsPatch {
     pub needs_input: Option<bool>,
 }
 
+/// General settings field patch. Search, pet, the model list and the active model are managed by dedicated
+/// commands and stay out of this protocol, so a caller holding an old full snapshot cannot overwrite values
+/// another operation just wrote.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GeneralSettingsPatch {
@@ -2005,7 +2005,7 @@ mod tests {
         apply_general_settings_patch(
             &mut current,
             GeneralSettingsPatch {
-                notifications: Some(crate::app::commands::settings::NotificationPrefsPatch {
+                notifications: Some(NotificationPrefsPatch {
                     needs_input: Some(false),
                     ..Default::default()
                 }),
@@ -2018,6 +2018,36 @@ mod tests {
         assert!(
             current.notifications.task_completed,
             "未携带的开关不得被重置"
+        );
+    }
+
+    #[test]
+    fn notification_patch_preserves_needs_input_across_master_patch() {
+        // 反向补丁（任务完成开关发出的 {enabled, task_completed} 形状）同样
+        // 只合并携带的字段：持久化的 needs_input 意图不得随主开关补丁复位，
+        // 否则主开关关→开后输入提醒的持久意图悄然丢失。
+        let mut current = UserPrefs::default();
+        current.notifications.enabled = true;
+        current.notifications.task_completed = true;
+        current.notifications.needs_input = true;
+
+        apply_general_settings_patch(
+            &mut current,
+            GeneralSettingsPatch {
+                notifications: Some(NotificationPrefsPatch {
+                    enabled: Some(false),
+                    task_completed: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert!(!current.notifications.enabled);
+        assert!(!current.notifications.task_completed);
+        assert!(
+            current.notifications.needs_input,
+            "未携带的 needs_input 不得被重置"
         );
     }
 
