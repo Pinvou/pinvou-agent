@@ -6195,11 +6195,6 @@ mod tests {
             "the persist failure must be handled inside revoke, not propagated"
         );
         assert!(
-            body.contains("endpoint.config.allow_host_workspace = true;"),
-            "the failure arm must re-latch the in-memory flag to match the \
-             still-authorized disk state"
-        );
-        assert!(
             body.contains("folder access remains enabled"),
             "the error must tell the user the revocation did not take effect"
         );
@@ -6214,6 +6209,19 @@ mod tests {
             .find("folder access remains enabled")
             .expect("the actionable failure message must exist");
         let failure_arm = &body[failure_arm_start..failure_arm_end];
+        // Round-24 复审 MAJOR(突变实锤):回锁断言此前是函数级 contains——
+        // round-22 在 validate_config 失败臂内加入了逐字节相同的回锁行
+        // (`Err(error) => {` 窗口内、本窗口之外),该行满足函数级断言:
+        // 删除本臂的回锁块(编译通过)时本钉保持全绿(本轮已执行突变,
+        // 1 passed / 0 failed)。改为臂界窗口断言,单删本臂回锁即红,且
+        // validate 臂的同一行不再兜底。
+        assert!(
+            failure_arm.contains("endpoint.config.allow_host_workspace = true;"),
+            "the persist-failure arm itself must re-latch the in-memory flag \
+             to match the still-authorized disk state; the validate arm's \
+             identical re-latch line must not satisfy this window (a \
+             function-wide contains went blind when round-22 added it)"
+        );
         assert!(
             failure_arm.contains("self.emit_status();"),
             "the failure arm must re-emit status so the UI shows the truthful \
