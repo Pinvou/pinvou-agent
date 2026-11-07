@@ -1,5 +1,70 @@
 # CodeWhale Fork 修改清单
 
+
+## T6 review candidate: bounded model rate-limit recovery (2026-11-05)
+
+This T6 review candidate integrates public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e`
+with the rate-limit lifecycle candidate and its transport review corrections.
+The registered parent gitlink is `19132162830b38aba7d900ef806427171d9203ef`
+(tree `12a8be1ad97b7724618760ee3393c637633fb929`). Both original recovery behavior and maintenance updates
+remain in the integration. Child tool dispatch retains recovery observation
+around the actual tool call and settles its in-flight write reservation afterward;
+cancellation still reaches the existing reservation guard's cleanup.
+
+Only review branches are advanced. Protected maintenance and immutable tags remain
+unchanged. Public-maintenance-head equality remains a separate merge gate; resolving
+conflicts does not make this candidate merge-ready.
+
+Original implementation provenance (historical snapshots, not integration validation):
+
+The reusable HTTP slice was prepared first against upstream `codewhale-hq/Codewhale`
+main `cbb7380f09989228b446a0958ea4620c78060a79`, in the local
+`feat/provider-rate-limit-recovery-upstream` branch at
+`9d0ac42c569956b3cfd6feb994127b1e13063387` (tree
+`5f82300bfc68cbcea9c08126525fdd1d0d73be8d`). It covers policy, provider
+classification, server minima, disclosure and active HTTP clocks. It does not
+claim the fork's host checkpoint/UI integration or outer-operation accounting.
+Current upstream transport work is tracked in codewhale-hq/Codewhale#7220;
+these original receipts do not validate the integration tree.
+
+The fork keeps credential/account-scoped admission, suspendable HTTP leases,
+shared recovery episodes, persisted reset deadlines, stable model-operation
+budgets and root/child checkpoint outcomes at the existing Engine lifecycle
+boundaries. These cannot be implemented by a prompt, Skill or host-only replay
+without bypassing stream/tool atomicity. UI, preferences, localization and host
+recovery storage configuration stay in `pinvou3-app`.
+
+`core/capacity.rs` moves the existing semaphore-backed `DynamicGate` out of the
+child governor for reuse; the child governor re-exports it and retains its
+cancellation/redispatch tests. No second capacity algorithm is introduced.
+The HTTP retry module owns the additional recovery clock and observation scope;
+boxed scope boundaries bound nested future sizes using the product Engine
+thread stack, without changing runtime stack environment variables.
+
+Behavior regressions cover actual HTTP refusal/recovery, shared queued cooldown,
+effective identity, full capacity restoration, explicit storage I/O/reload and
+repair, stream reopen/outer retry identity, preserved tool history, and owned
+child parking versus explicit cancellation. Vision uses the same native sender;
+preview classification retains its prior state-isolation contract. Child
+recovery observations persist and settle independently of a foreground turn. The old disabled-transport child
+fixture now expects one attempt: its wrapper must not restart an exhausted 429
+budget. Parent CI explicitly executes the new foundation filters with nonzero
+match checks. See [model-rate-limit-recovery.md](model-rate-limit-recovery.md)
+for defaults, configuration, provider references and manual-continuation policy.
+
+Candidate inventory: 96 commits above upstream v0.9.12 (93 at the published
+maintenance baseline), 548 changed files, +123354/-50026 (net +73328).
+The merge preserves both parents and their authorship and adds a DCO sign-off.
+Published-baseline inventory below is distinct from this review gitlink.
+
+This lifecycle slice exceeds the single-file drift soft limit in `client.rs`.
+It is retained because scope identity, admission, HTTP wire dispatch and response
+classification share the same owner; splitting by file length would obscure that
+invariant. Reduction order: land the reusable HTTP slice upstream, then upstream
+quota/operation lifecycle hooks, and remove fork glue when upstream supplies
+compatible contracts. Validation and review evidence belongs to the exact
+candidate snapshot; it does not establish CI, merge or release eligibility.
+
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
@@ -70,7 +135,9 @@
 
 ## 0. 当前状态（2026-11-05）
 
-- 当前公开维护头与父仓 gitlink：`11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；本轮仅更新父仓引用，没有推进维护分支。
+Published maintenance snapshot (2026-11-05; ancestor of the T6 candidate):
+
+- Public maintenance: `11cba403dc6bd6ca5c4dca55042785b03449ac8e`, including #123/#124/#129/#131/#133/#134/#135. The parent review gitlink is registered above; maintenance is unchanged.
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 93 个提交，r1 `1fafee7e2` 之上 78 个；91 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
 - 实测 drift：540 files, +119210/-49666，净增 69544；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。

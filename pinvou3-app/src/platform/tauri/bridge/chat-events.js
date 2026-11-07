@@ -338,12 +338,15 @@ function pinvouSharedtauriChatEvents() {
         // sid 即触发会话；不能用 active 兜底，await 竞态下两者可能不同）。
         if (acceptedMode) applyAuthoritativeModeState(sid, acceptedMode);
       }
-      state.chatItems = state.chatItems.filter(function (item) { return !item.turnErrorNotice; });
+      state.chatItems = state.chatItems.filter(function (item) {
+        return !item.turnErrorNotice || globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item);
+      });
       if (!snapshotAlreadyCoversTurn && !hideInternalRuntimeMessage) {
         if (operation === "edit_last") {
           for (let index = state.chatItems.length - 1; index >= 0; index--) {
             if (state.chatItems[index] && state.chatItems[index].type === "user") {
-              state.chatItems.splice(index);
+              const replacedItems = state.chatItems.splice(index);
+              state.chatItems.push(...replacedItems.filter(item => globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item)));
               break;
             }
           }
@@ -1088,6 +1091,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
           messages.settleModelServiceErrorNotices(state);
         }
       }
+      window.PinvouModelRecovery?.settleRecoveryEvent(e.payload, state);
       const shellMessages = bridgeMessages();
       if (typeof shellMessages.showShellCleanupFailure === "function") {
         shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
@@ -1291,26 +1295,31 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
 
   // 可恢复的瞬态错误（SSE idle timeout / 瞬态工具失败）：turn 没结束，引擎会 retry，
   // 绝不 setBusy(false)，只飘一条 ⚠️ 提示。
-  listen("chat:transient_error", function (e) { onSessionEvent(e, function () {
-    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
-    const error = e.payload && e.payload.error;
-    refreshEffectiveModelConfigAfterAuthError(error);
-    if (error) {
-      const messages = bridgeMessages();
-      const addedModelServiceNotice = typeof messages.addModelServiceErrorNotice === "function" &&
-        messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false);
-      if (!addedModelServiceNotice) {
-        const displayError = typeof messages.redactRawError === "function"
-          ? messages.redactRawError(error, state)
-          : error;
-        const notice = "⚠️ " + displayError;
-        const duplicate = state.chatItems.some(function (item) {
-          return item && item.turnErrorNotice && item.text === notice;
-        });
-        if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+  listen("chat:transient_error", function (e) {
+    const childRecovery = !!e.payload?.model_recovery?.agent_id;
+    onSessionEvent(e, function () {
+      if (!childRecovery && e.payload?.session_id) turnUsageDirty[e.payload.session_id] = true; // 重试轮 usage 含重发请求
+      const error = e.payload && e.payload.error;
+      refreshEffectiveModelConfigAfterAuthError(error);
+      if (error) {
+        const messages = bridgeMessages();
+        const addedModelServiceNotice = typeof messages.addModelServiceErrorNotice === "function" &&
+          messages.addModelServiceErrorNotice(e.payload || {}, state, addSystemItem, false);
+        if (!addedModelServiceNotice) {
+          const displayError = typeof messages.redactRawError === "function"
+            ? messages.redactRawError(error, state)
+            : error;
+          const notice = "⚠️ " + displayError;
+          const duplicate = state.chatItems.some(function (item) {
+            return item && item.turnErrorNotice && item.text === notice;
+          });
+          if (!duplicate) addSystemItem(notice, { turnErrorNotice: true });
+        }
       }
-    }
-  }); });
+
+      if (e.payload && e.payload.model_recovery) notify();
+    }, { presentationOnly: childRecovery });
+  });
 
   // File watcher 推送的产物事件：session workspace 下新文件/修改/删除。
   // 路由到对应 session 的产物列表(后台 session 的产物也跟踪)。

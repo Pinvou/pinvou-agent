@@ -1154,3 +1154,14 @@ Object.assign(dictZh.uiChat, {
   bgTasks: '后台任务',
   bgTasksRunning: n => `${n} 个后台任务运行中`,
 });
+
+Object.assign(dictZh.uiChat, {
+  modelRecoveryWaiting: '模型服务限流，已尝试 {attempt}/{max} 次；下次尝试：{time}。可点击停止取消等待。',
+  modelRecoveryChildWaiting: '模型服务限流，已尝试 {attempt}/{max} 次；下次尝试：{time}。正在等待恢复。',
+  modelRecoveryInterrupted: '限流恢复已暂停，进度已保存（{attempt}/{max} 次）。恢复时间：{time}；恢复后可继续。',
+  modelRecoveryUnknownTime: '服务商未提供，请稍后手动继续',
+});
+
+Object.assign(dictZh.uiChat, { modelRecoveryAgent: '子任务 {agent}：' });
+
+Object.assign(dictZh.uiChat, { modelRecoveryCancelled: '限流等待已取消。', modelRecoveryStopped: '限流等待已结束，请查看本轮结果。' });

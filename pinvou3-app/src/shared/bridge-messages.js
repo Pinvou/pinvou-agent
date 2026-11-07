@@ -226,6 +226,10 @@
     addModelServiceErrorNotice: function (payload, state, addSystemItem, legacyConversationOnly, terminalRecord) {
       payload = payload || {};
       state = state || {};
+      if (payload.model_recovery && globalThis.PinvouModelRecovery) {
+        return globalThis.PinvouModelRecovery.upsertRecoveryNotice(payload.model_recovery,
+          state.chatItems || [], addSystemItem, state.settings && state.settings.language);
+      }
       const helper = window.PinvouModelServiceErrors;
       payload.terminal = !!legacyConversationOnly;
       const userError = window.PinvouBridgeMessages.modelServiceUserError(payload, state);

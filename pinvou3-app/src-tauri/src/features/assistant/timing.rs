@@ -511,6 +511,46 @@ pub fn record_milestone_meta(session_id: &str, milestone: &str, meta: serde_json
     append_event(session_id, entry);
 }
 
+/// Persist content-free recovery receipts beside the existing resumable transcript.
+pub fn record_model_recovery(
+    session_id: &str,
+    receipt: &deepseek_tui::core::events::RecoveryReceipt,
+) {
+    // Background/off-turn children own a stable observation group, independent
+    // of whichever foreground user turn happens to be active when they report.
+    let turn_id = receipt
+        .agent_id
+        .as_ref()
+        .map(|id| format!("agent:{id}"))
+        .or_else(|| {
+            active_turns().lock().ok().and_then(|map| {
+                map.get(session_id)
+                    .and_then(|q| q.back())
+                    .map(|t| t.turn_id.clone())
+            })
+        });
+    let Some(turn_id) = turn_id else {
+        return;
+    };
+    append_event(
+        session_id,
+        json!({ "event": "model_recovery", "session_id": session_id, "turn_id": turn_id,
+        "timestamp": now_ms(), "ts": Utc::now().to_rfc3339(), "model_recovery": receipt }),
+    );
+}
+
+/// Persist typed child termination without copying progress text or task content.
+pub fn record_agent_recovery_terminal(session_id: &str, agent_id: &str, status: &str) {
+    append_event(
+        session_id,
+        json!({
+            "event": "model_recovery_terminal", "session_id": session_id,
+            "turn_id": format!("agent:{agent_id}"), "agent_id": agent_id,
+            "timestamp": now_ms(), "ts": Utc::now().to_rfc3339(), "status": status,
+        }),
+    );
+}
+
 /// 解析后的 timeline 事件。一个 turn 的生命周期事件按同一 turn_id 关联。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEvent {
@@ -520,6 +560,10 @@ pub struct TimelineEvent {
     pub ts: String,     // RFC3339
     pub status: Option<String>, // assistant_done only
     pub error: Option<String>, // assistant_done only
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_recovery: Option<deepseek_tui::core::events::RecoveryReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub usage: Option<TurnUsage>, // assistant_done / context_snapshot(老事件为 None)
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub tool_name: Option<String>,
@@ -607,7 +651,14 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
     // A context snapshot has no paired user_start, and turn pairing only
     // reads (user_start, assistant_done) records, so snapshots cannot affect
     // turn totals.
-    let is_base_event = matches!(event, "user_start" | "assistant_done" | "context_snapshot");
+    let is_base_event = matches!(
+        event,
+        "user_start"
+            | "assistant_done"
+            | "context_snapshot"
+            | "model_recovery"
+            | "model_recovery_terminal"
+    );
     #[cfg(any(feature = "benchmark-hooks", test))]
     let is_observation_event = matches!(
         event,
@@ -659,6 +710,10 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
                 .unwrap_or(0),
         });
     Some(TimelineEvent {
+        agent_id: v
+            .get("agent_id")
+            .and_then(|id| id.as_str())
+            .map(str::to_owned),
         turn_id: turn_id.to_string(),
         event: event.to_string(),
         timestamp,
@@ -669,6 +724,9 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
             .and_then(|x| x.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        model_recovery: v
+            .get("model_recovery")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
         usage,
         #[cfg(any(feature = "benchmark-hooks", test))]
         tool_name: v
@@ -707,6 +765,89 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
 mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
+
+    #[test]
+    fn model_recovery_off_turn_child_has_durable_independent_ownership() {
+        crate::platform::test_support::with_temp_home("model-recovery-off-turn", || {
+            let sid = "off-turn-recovery";
+            let receipt = deepseek_tui::core::events::RecoveryReceipt {
+                agent_id: Some("child-fixture".into()),
+                operation_id: Some("child-operation".into()),
+                turn_id: None,
+                attempt: 2,
+                max_attempts: 20,
+                next_retry_at_ms: Some(1900000000000),
+                state: "waiting".into(),
+            };
+            record_model_recovery(sid, &receipt);
+            let unrelated = start_turn(sid);
+            record_model_recovery(sid, &receipt);
+            record_agent_recovery_terminal(sid, "child-fixture", "cancelled");
+            let events = read_timeline(sid).unwrap();
+            let observed: Vec<_> = events
+                .iter()
+                .filter(|e| e.event.starts_with("model_recovery"))
+                .collect();
+            assert_eq!(observed.len(), 3);
+            assert!(
+                observed
+                    .iter()
+                    .all(|e| e.turn_id == "agent:child-fixture" && e.turn_id != unrelated)
+            );
+            assert_eq!(
+                observed[0]
+                    .model_recovery
+                    .as_ref()
+                    .unwrap()
+                    .operation_id
+                    .as_deref(),
+                Some("child-operation")
+            );
+            assert_eq!(observed[2].agent_id.as_deref(), Some("child-fixture"));
+            assert_eq!(observed[2].status.as_deref(), Some("cancelled"));
+            clear_session(sid);
+        });
+    }
+
+    #[test]
+    fn model_recovery_roundtrips_on_current_timing_turn() {
+        crate::platform::test_support::with_temp_home("model-recovery-timing", || {
+            let sid = "recovery-current-turn";
+            let stale = start_turn(sid);
+            let current = start_turn(sid);
+            let receipt = deepseek_tui::core::events::RecoveryReceipt {
+                agent_id: None,
+                operation_id: Some("operation-fixture".into()),
+                turn_id: Some("engine-fixture".into()),
+                attempt: 3,
+                max_attempts: 20,
+                next_retry_at_ms: Some(1900000000000),
+                state: "interrupted".into(),
+            };
+            record_model_recovery(sid, &receipt);
+            finish_turn(sid, "Interrupted", Some("Rate limit exceeded: fixture"));
+            let events = read_timeline(sid).unwrap();
+            let recovery = events
+                .iter()
+                .find(|event| event.event == "model_recovery")
+                .expect("production reader retains receipt");
+            assert_eq!(recovery.turn_id, current);
+            assert_ne!(recovery.turn_id, stale);
+            let payload = serde_json::to_value(&events).unwrap();
+            let recovery = payload
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["event"] == "model_recovery")
+                .unwrap();
+            assert_eq!(recovery["model_recovery"]["attempt"], 3);
+            assert_eq!(
+                recovery["model_recovery"]["next_retry_at_ms"],
+                1900000000000_i64
+            );
+            clear_session(sid);
+        });
+    }
 
     #[test]
     fn timing_events_append_and_pair_turn_id() {

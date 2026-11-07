@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 93 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 96 registered commits (93 maintenance commits plus two review commits and their integration merge).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 merged.
-EXPECTED_HEAD="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
-EXPECTED_COMMITS=93
+# Registered T6 review integration; maintenance remains MAINTENANCE_BASE.
+EXPECTED_HEAD="19132162830b38aba7d900ef806427171d9203ef"
+EXPECTED_COMMITS=96
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -281,7 +281,17 @@ fingerprints=(
   "T5|artifacts 包含/排除回归            |CodeWhale/crates/tui/src/session_export.rs|forkguard_session_archive_includes_artifacts_and_respects_skip"
   "T5|短读 member fail-closed 回归      |CodeWhale/crates/tui/src/session_export.rs|forkguard_session_archive_rejects_artifact_shorter_than_recorded_size"
 
-  "T6|可缩容 launch gate 模块            |CodeWhale/crates/tui/src/tools/subagent/governor.rs|pub(crate) struct DynamicGate"
+  "T6|Unknown quota classification|CodeWhale/crates/tui/src/client/rate_limit_tests.rs|fn forkguard_rate_limit_unknown_quota_sender_and_billing_boundary"
+  "T6|Short-lived clients retain shared episode|CodeWhale/crates/tui/src/client/rate_limit_tests.rs|fn forkguard_rate_limit_episode_survives_last_auxiliary_client_drop"
+  "T6|Cancelled receipts retain FIFO order|CodeWhale/crates/tui/src/llm_client/rate_limit/tests.rs|fn cancelled_observation_cannot_overtake_same_operation_reopen"
+  "T6|Sealed parent retains typed child terminal|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_rate_limit_detached_cancel_survives_a_sealed_parent_mailbox"
+  "T6|HTTP recovery policy|CodeWhale/crates/tui/src/config.rs|pub struct RateLimitRetryPolicy"
+  "T6|Shared cooldown queue recheck|CodeWhale/crates/tui/src/client/rate_limit_tests.rs|fn forkguard_rate_limit_rechecks_cooldown_after_admission_queues"
+  "T6|HTTP scope identity|CodeWhale/crates/tui/src/client/rate_limit_tests.rs|fn forkguard_rate_limit_identity_uses_effective_accounts_and_normalized_headers"
+  "T6|Stream recovery budget and receipts|CodeWhale/crates/tui/src/core/engine/operation_tests.rs|fn forkguard_rate_limit_stream_reopen_keeps_budget_identity_and_receipts"
+  "T6|Provider pause preserves owned children|CodeWhale/crates/tui/src/core/engine/operation_tests.rs|fn forkguard_rate_limit_terminal_barrier_parks_children_and_honors_cancel"
+  "APP|Recovery receipt timeline roundtrip|pinvou3-app/src-tauri/src/features/assistant/timing.rs|fn model_recovery_roundtrips_on_current_timing_turn"
+  "T6|可缩容 launch gate 模块            |CodeWhale/crates/tui/src/core/capacity.rs|pub(crate) struct DynamicGate"
   "T6|限流 AIMD 治理器                   |CodeWhale/crates/tui/src/tools/subagent/governor.rs|pub(crate) struct RateLimitGovernor"
   "T6|fleet 治理器接线全部 spawn 路径    |CodeWhale/crates/tui/src/tools/subagent/mod.rs|runtime.governor = Some(Arc::clone(&self.governor));"
   "T6|限流时间自愈行为回归               |CodeWhale/crates/tui/src/tools/subagent/governor.rs|fn forkguard_rate_limit_governor_pauses_and_time_recovers_after_window_drains"

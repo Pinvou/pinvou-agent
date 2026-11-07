@@ -364,7 +364,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
     }
     runSyncOnSession(sid, function () {
       state.chatItems = state.chatItems.filter(function (item) {
-        return !item.turnErrorNotice && !item.authoritySyncNotice;
+        return (!item.turnErrorNotice || globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item)) && !item.authoritySyncNotice;
       });
       const uitem = {
         type: "user",
@@ -1681,7 +1681,7 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       // projection this is a mid-turn injection, not a turn admission — it
       // must not consume a timing record or carry a phantom lifecycle badge.
       state.chatItems = state.chatItems.filter(function (ci) {
-        return !ci.turnErrorNotice && !ci.authoritySyncNotice;
+        return (!ci.turnErrorNotice || globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(ci)) && !ci.authoritySyncNotice;
       });
       addChatItem({ type: "user", text: item.text, time: timeStr(), steeredMidTurn: true });
       noteSteerCommittedForPosition(sid, item.text);

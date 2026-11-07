@@ -1263,3 +1263,14 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '本地服务默认�
 // restored: inline catalog descriptions from jaBase (referenced by the model catalog)
 Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '高性能モデル', '快速响应': '高速応答', '代码场景': 'コーディング向け', '高性价比': 'コストパフォーマンス重視', '通用能力': '汎用', '兼容保留': '互換性オプション', '轻量模型': '軽量モデル'
 });
+
+Object.assign(dictJa.uiChat, {
+  modelRecoveryWaiting: 'モデルサービスのレート制限です（{attempt}/{max} 回）。次の試行：{time}。「停止」で待機を取り消せます。',
+  modelRecoveryChildWaiting: 'モデルサービスのレート制限です（{attempt}/{max} 回）。次の試行：{time}。回復を待機しています。',
+  modelRecoveryInterrupted: 'レート制限からの復旧を中断し、進捗を保存しました（{attempt}/{max} 回）。復旧時刻：{time}。復旧後に続行できます。',
+  modelRecoveryUnknownTime: '提供されていません。後ほど手動で続行してください',
+});
+
+Object.assign(dictJa.uiChat, { modelRecoveryAgent: 'サブタスク {agent}：' });
+
+Object.assign(dictJa.uiChat, { modelRecoveryCancelled: 'レート制限の待機を取り消しました。', modelRecoveryStopped: 'レート制限の待機が終了しました。このターンの結果を確認してください。' });

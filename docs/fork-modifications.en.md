@@ -1,5 +1,19 @@
 # CodeWhale Fork Modification Register
 
+## T6 review integration: bounded model rate-limit recovery (2026-11-05)
+
+The parent review gitlink is `19132162830b38aba7d900ef806427171d9203ef` (tree
+`12a8be1ad97b7724618760ee3393c637633fb929`), integrating public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e`
+with the rate-limit candidate and its transport review fixes. Child tool calls
+retain recovery observation and settle existing write reservations after execution;
+dropped calls retain cancellation cleanup. The candidate has 96 commits above
+upstream v0.9.12, 548 changed files and +123354/-50026 drift (net +73328).
+The published maintenance inventory below describes its ancestor, not this review
+gitlink. Protected maintenance and immutable tags are unchanged; the public-head
+gate remains required. See the [full candidate register](fork-modifications.md#t6-review-candidate-bounded-model-rate-limit-recovery-2026-11-05)
+and [recovery policy](model-rate-limit-recovery.md). Historical validation receipts
+are not promoted to evidence for this integration tree.
+
 ## Merged into the maintenance branch: compaction checkpoint role compatibility
 
 - T7: insert the typed Agent topology checkpoint after the latest real user input and before its assistant/tool chain, including when a compaction summary trails that chain. For Chat Completions, place a structurally recognized current-format summary ahead of its retained round on the wire and merge that summary plus the topology checkpoint into the same user wire message. Quoting the summary marker inside an ordinary user prompt does not trigger reordering. The fix covers only the trailing `tool -> user` that compaction itself creates; the reported provider text was `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"` (SSE lane). Saved history and tool-call/result IDs stay untouched, and the session-pinned system prefix is unchanged.
@@ -72,7 +86,7 @@
 
 ## Current state (2026-11-05)
 
-- Public maintenance and parent gitlink: `11cba403dc6bd6ca5c4dca55042785b03449ac8e` (2026-11-05). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`. This follow-up changes parent references only; it does not advance maintenance.
+- Published maintenance snapshot (ancestor of the review gitlink): `11cba403dc6bd6ca5c4dca55042785b03449ac8e` (2026-11-05). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`. This follow-up changes parent references only; it does not advance maintenance.
 - Measured history: 93 commits above upstream v0.9.12 `dcd4c200f`, 78 above r1 `1fafee7e2`; 91 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
 - Measured drift: 540 files, +119210/-49666, net +69544; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.

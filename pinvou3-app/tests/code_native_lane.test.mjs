@@ -2,7 +2,7 @@
 // code-native-lane.js 的纯逻辑回归：chat:* 事件推进、SavedSession hydration、投影。
 // 风格对齐 deepseek_conversation_timeline.test.mjs：把模块复制到临时 type:module 目录再导入。
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -16,7 +16,7 @@ mkdirSync(path.join(temp, 'features', 'conversation'), { recursive: true });
 mkdirSync(path.join(temp, 'features', 'codex'), { recursive: true });
 mkdirSync(path.join(temp, 'features', 'multiagent'), { recursive: true });
 mkdirSync(path.join(temp, 'shared'), { recursive: true });
-for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
+for (const file of ['conversation-model.js', 'deepseek-conversation.js', 'model-recovery.js']) {
   copyFileSync(path.join(root, 'src', 'features', 'conversation', file), path.join(temp, 'features', 'conversation', file));
 }
 copyFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), path.join(temp, 'features', 'codex', 'code-native-lane.js'));
@@ -25,6 +25,9 @@ copyFileSync(path.join(root, 'src', 'features', 'multiagent', 'spawn-aggregation
 copyFileSync(path.join(root, 'src', 'shared', 'internal-message.mjs'), path.join(temp, 'shared', 'internal-message.mjs'));
 copyFileSync(path.join(root, 'src', 'shared', 'shell-tools.mjs'), path.join(temp, 'shared', 'shell-tools.mjs'));
 copyFileSync(path.join(root, 'src', 'shared', 'path-utils.js'), path.join(temp, 'shared', 'path-utils.js'));
+
+copyFileSync(path.join(root, 'src', 'shared', 'i18n.js'), path.join(temp, 'shared', 'i18n.js'));
+cpSync(path.join(root, 'src', 'shared', 'i18n'), path.join(temp, 'shared', 'i18n'), { recursive: true });
 
 try {
   const {
@@ -74,6 +77,21 @@ try {
     'ordinary user text must remain displayable at message level');
   assert.equal(classicMessages.isInternalUserMessage([{ type: 'text', text: ordinaryLiteralTagMention }]), false,
     'classic message-level classifier must agree that ordinary text is visible');
+
+  const { ensureLanguage } = await import(pathToFileURL(path.join(temp, 'shared', 'i18n.js')).href);
+  await ensureLanguage('en');
+  for (const [status, error, settled] of [['Interrupted', null, 'cancelled'], ['Failed', 'network failure', 'stopped'], ['Completed', null, 'recovered']]) {
+    const waiting = createNativeLane();
+    appendLocalUserMessage(waiting, 'native recovery probe');
+    applyNativeChatEvent(waiting, 'chat:turn_started', { turn_id: 'recovery-turn' });
+    const options = { language: 'en' };
+    applyNativeChatEvent(waiting, 'chat:transient_error', { error: 'Rate limit exceeded: fixture', model_recovery: { state: 'waiting', attempt: 2, max_attempts: 20, next_retry_at_ms: 1900000000000, operation_id: 'recovery-call' } }, options);
+    assert.ok(waiting.items.some(item => item.modelRecovery?.state === 'waiting'));
+    applyNativeChatEvent(waiting, 'chat:done', { status, error }, options);
+    const receiptItem = waiting.items.find(item => item.modelRecovery);
+    assert.equal(receiptItem.modelRecovery.state, settled);
+    assert.ok(!JSON.stringify(projectNativeLane(waiting, 'recovery-session', options)).includes('Next attempt'));
+  }
 
   // ── 发送 + 流式回合 ─────────────────────────────────────────────
   const lane = createNativeLane();
@@ -1096,6 +1114,33 @@ try {
   const happyCard = swarmHappyLane.items.find(item => item.toolId === 'ag-ok1');
   assert.equal(happyCard.state, 'done');
   assert.equal(happyCard.success, true, 'the sweep must not downgrade an already-settled tool');
+
+  // Root completion cannot hide a detached child's still-current wait when
+  // there is no new child event until the long server minimum expires.
+  const detachedLane = createNativeLane();
+  appendLocalUserMessage(detachedLane, 'start an independent child');
+  const detachedReceipt = { agent_id: 'detached-child', operation_id: 'detached-call', state: 'waiting', attempt: 1, max_attempts: 20, next_retry_at_ms: 1900000000000 };
+  applyNativeChatEvent(detachedLane, 'chat:transient_error', { model_recovery: detachedReceipt }, { language: 'en' });
+  applyNativeChatEvent(detachedLane, 'chat:done', { status: 'Completed' }, { language: 'en' });
+  const detachedNotice = detachedLane.items.find(item => item.modelRecovery);
+  assert.equal(detachedNotice.modelRecovery.state, 'waiting');
+  assert.ok(!detachedNotice.legacyConversationOnly);
+  assert.ok(JSON.stringify(projectNativeLane(detachedLane, 'detached-session')).includes('Next attempt'));
+  applyNativeChatEvent(detachedLane, 'chat:transient_error', { model_recovery: { ...detachedReceipt, state: 'recovered' } }, { language: 'en' });
+  assert.ok(!JSON.stringify(projectNativeLane(detachedLane, 'detached-session')).includes('Next attempt'));
+
+  // Off-turn child recovery belongs to its agent/operation across later user turns.
+  const lateChildLane = createNativeLane();
+  appendLocalUserMessage(lateChildLane, 'parent prompt');
+  applyNativeChatEvent(lateChildLane, 'chat:done', { status: 'Completed' });
+  const lateChild = { agent_id: 'late-child', operation_id: 'late-operation', state: 'waiting', attempt: 2, max_attempts: 20, next_retry_at_ms: 1900000000000 };
+  applyNativeChatEvent(lateChildLane, 'chat:transient_error', { model_recovery: lateChild }, { language: 'en' });
+  appendLocalUserMessage(lateChildLane, 'unrelated new turn');
+  applyNativeChatEvent(lateChildLane, 'chat:transient_error', { model_recovery: { ...lateChild, state: 'cancelled', next_retry_at_ms: null } }, { language: 'en' });
+  const childNotices = lateChildLane.items.filter(item => item.modelRecovery);
+  assert.equal(childNotices.length, 1);
+  assert.equal(childNotices[0].modelRecovery.state, 'cancelled');
+  assert.ok(!JSON.stringify(projectNativeLane(lateChildLane, 'late-child-session')).includes('Next attempt'));
 
   // Subscription manifest invariant: NATIVE_CHAT_EVENTS must map one-to-one
   // onto every chat:* branch of applyNativeChatEvent. A manifest entry
