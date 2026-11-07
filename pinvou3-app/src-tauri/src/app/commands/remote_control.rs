@@ -802,8 +802,14 @@ pub async fn web_access_ingest_file(
 ///
 /// Round-23 复审补录:本命令的 append 臂与 ingest 侧的 cache 臂(manager
 /// 文本)仍以原始单语言(zh)文本出站——与 round-22 已披露的 tasks.rs
-/// CRUD 族同一疾病类(无路径、先于本链存在),按既定 follow-up 车道
-/// 处理,不在本链夹带。
+/// CRUD 族同一疾病类(静态无路径文案、先于本链存在),按既定 follow-up
+/// 车道处理,不在本链夹带。Round-24 复审修正:tasks.rs 家族的「无路径」
+/// 表述只对 CRUD 成员的静态文案成立——同族的 runs-listing 命令
+/// (list_scheduled_task_runs)的错误链携带 `<home>/...` 绝对路径,已在
+/// round-24 本链内折叠(见 tasks.rs 的
+/// list_scheduled_task_runs_arms_fold_storage_prefixes);CRUD 成员仍按
+/// 车道披露,其错误链是否携带路径以后续核查为准,不再以「无路径」一概
+/// 而论。
 #[tauri::command]
 pub async fn web_access_upload_attachment_chunk(
     upload_id: String,

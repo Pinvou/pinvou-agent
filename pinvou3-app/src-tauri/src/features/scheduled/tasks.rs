@@ -2066,6 +2066,13 @@ pub async fn read_scheduled_task(
     )
     .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
 }
+/// Round-24 复审 MAJOR-2:本命令在 web 允许清单内(bridge 由
+/// bridge-shared-helpers 直接 invoke),内层链携带 `<home>/...` 绝对路径
+/// ——automation 链的 `Failed to read {dir.display()}` context 与
+/// read_run_file 的 read/parse path context 经 `{err:#}` 原样上浮,裸传
+/// 经 bridge/relay 落到手机侧(与 round-22 MAJOR-3 的五个 session 命令
+/// 同病)。全部出口先折叠再出站;非路径细节(kind/id/计数)保留。源钉
+/// 见本文件测试模块的 list_scheduled_task_runs_arms_fold_storage_prefixes。
 pub async fn list_scheduled_task_runs(
     id: String,
     limit: Option<usize>,
@@ -2074,21 +2081,31 @@ pub async fn list_scheduled_task_runs(
     state
         .reconcile_runs()
         .await
-        .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!("Failed to reconcile scheduled task runs: {err}"))
+        })?;
     let manager = state.automations.lock().await;
     let record = manager
         .get_automation(&id)
-        .map_err(|err| format!("Failed to read scheduled task '{id}': {err}"))?;
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!("Failed to read scheduled task '{id}': {err}"))
+        })?;
     let record = ensure_automation_workspace(&manager, record)
-        .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))
+        })?;
     let records = manager
         .list_runs(&id, limit)
-        .map_err(|err| format!("Failed to list scheduled task runs for '{id}': {err}"))?;
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!("Failed to list scheduled task runs for '{id}': {err}"))
+        })?;
     if limit.is_none() {
         compact_viewed_runs(&state.read_state, &id, &records);
     }
     let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!("Failed to list scheduled conversations: {err:#}"))
+        })?;
     let task_name = record.name;
     let task_model = record.model;
     drop(manager);
@@ -2252,6 +2269,52 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+
+    /// Round-24 复审 MAJOR-2 源钉:web-allowlisted 的
+    /// list_scheduled_task_runs 的全部错误出口必须经存储根折叠再出站。
+    /// 窗口为命令体(终止符表同兄弟钉);折叠计数钉死——单臂回退此前在
+    /// contains 型钉下保绿(round-22 突变 A 的同一类),计数前先滤除纯
+    /// 注释行(round-23 补偿突变口径:「单臂回退 + 窗内注释提及
+    /// needle」此前保持全绿;行尾 // 与块注释内提及仍可掩护,按已披露
+    /// 残留)。新增错误臂时必须并入折叠并同步计数(枚举钉:新增未折叠
+    /// 臂对本钉不可见)。
+    #[test]
+    fn list_scheduled_task_runs_arms_fold_storage_prefixes() {
+        let source = include_str!("tasks.rs");
+        let start = source
+            .find("pub async fn list_scheduled_task_runs(")
+            .expect("list_scheduled_task_runs must exist");
+        let body = &source[start..];
+        let end = [
+            "\n#[tauri::command]",
+            "\n#[cfg(test)]",
+            "\npub async fn ",
+            "\npub fn ",
+            "\nfn ",
+        ]
+        .iter()
+        .filter_map(|delimiter| body.find(delimiter))
+        .min()
+        .expect("list_scheduled_task_runs body must be terminated");
+        let counted = body[..end]
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let folds = counted
+            .matches("crate::platform::paths::redact_storage_prefix(&format!(")
+            .count();
+        assert_eq!(
+            folds, 5,
+            "every error exit of web-allowlisted list_scheduled_task_runs \
+             must fold the storage root before egress; a single-arm revert \
+             previously stayed green under a contains-style marker (the \
+             round-22 mutation-A class)"
+        );
+    }
 
     #[test]
     fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {
