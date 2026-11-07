@@ -6460,6 +6460,23 @@ mod tests {
                  return, resurrecting the stop/refresh wedge with both \
                  needles still present"
             );
+            // Round-24 复审(m1,突变实锤):顺序断言对「插入臂」加宽是盲
+            // 的——在 guard 与 catch-all 之间插入
+            // `Err(error) if error.starts_with("conflicting pending Web
+            // revocation credentials") => { eprintln!(…); }`(编译通过,
+            // round-14 记录的同键冲突边界改道 log-and-continue,fail-open)
+            // 后,两条 needle 与顺序断言依旧全绿(本轮已执行)。相邻性断
+            // 言:guard 与 catch-all 之间除 guard 自身外不得再出现任何
+            // `Err(error)` 臂 opener。
+            assert_eq!(
+                body[guard_at..catchall_at].matches("Err(error)").count(),
+                1,
+                "{label} must keep the queue-full guard arm immediately \
+                 before the catch-all conflict arm: an arm inserted between \
+                 them (e.g. a conflicting-secret arm that logs and \
+                 continues) silently flips the documented round-14 \
+                 fail-closed boundary to fail-open (executed mutant)"
+            );
         }
         // refresh 的提交后回放同样不得楔住 activate(rotation 已提交的
         // 半提交窗口不得以失败上报)。
