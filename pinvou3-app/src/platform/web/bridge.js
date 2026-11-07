@@ -3041,6 +3041,21 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     notify();
     flushAdmissionSids.add(sid);
     doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true)
+      // 成功受理路径的释放+补排空（评审 JensenChen28 5811400272 P2）：终态
+      // 转发（chat:done）与 web_access_chat 回执是两条独立发布路径，回执可
+      // 能晚于本轮终态——终态时 busy 已落、done 触发的 flush 被在途拥有者
+      // 挡回；在受理成功的落定处释放后若 busy 仍落、队非空，此处补一次
+      // flush 排空队首（正常轮 busy 在顶，这里自然不触发）。拒绝路径不补：
+      // 队首已由下方 catch 回队，立即重排会绕过"等下一次触发"的既有语义
+      // 变成 Auto 拒绝自旋。
+      .then(function (accepted) {
+        flushAdmissionSids.delete(sid);
+        if (accepted === true && !isBusyFor(sid)) flushQueued(sid);
+      }, function (error) {
+        flushAdmissionSids.delete(sid);
+        // 原样上抛：下方的 catch 回队臂依赖这个 rejection 才能运行。
+        throw error;
+      })
       .catch(function () {
         // 失败一律原位保留队首（unshift 回队首）：Auto 门拒绝同样如此——
         // 队首留着等后续 turn-end flush 重试，拒绝原因由 doSendFor 落的
@@ -3054,7 +3069,8 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
         notify();
       })
       // 受理落定即释放（拒绝/成功/回队三态，含 catch 自身 throw 的路径）：
-      // turn 内由 busy 把门，done 后照常 FIFO。
+      // turn 内由 busy 把门，done 后照常 FIFO。Set.delete 幂等，与上方两臂
+      // 的提前释放不冲突；此尾臂保留是为了兜住 catch 自身 throw 的路径。
       .then(function () { flushAdmissionSids.delete(sid); },
             function () { flushAdmissionSids.delete(sid); });
   }

@@ -246,4 +246,61 @@ test('web 排队受理 FIFO：受理在途窗口的新输入必须入队，不�
   assert.equal(rt.view().queued.length, 0, '队列清空');
 });
 
+test('web 排队受理 FIFO：终态先于回执时，受理释放后必须补排空队首', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+
+  // 姿态门与回执全部可控：A 即时放行即时回执；B 放行后回执挂起；C 随后放行。
+  let gateCalls = 0;
+  const gateQueue = [];
+  rt.setHandler('get_mode_state', () => {
+    gateCalls += 1;
+    return new Promise(resolve => gateQueue.push(resolve));
+  });
+  let chatCalls = 0;
+  const chatQueue = [];
+  rt.setHandler('web_access_chat', () => {
+    chatCalls += 1;
+    return new Promise(resolve => chatQueue.push(resolve));
+  });
+  // 第一轮 A：直发，查询与回执按序放行。
+  const sendA = rt.flat.sendMessage('A');
+  await tick(); await tick();
+  gateQueue.shift()({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  chatQueue.shift()({});
+  await tick(); await tick();
+  await sendA;
+  assert.equal(rt.view().busy, true, 'precondition: A 已受理');
+
+  // B、C 入队 → A 终态 → flush 取 B，B 的查询放行受理，回执挂起。
+  await rt.flat.sendMessage('B');
+  await rt.flat.sendMessage('C');
+  rt.emit('chat:done', { session_id: 'chat-a', seq: 401 });
+  await tick(); await tick();
+  assert.equal(rt.view().queued.length, 1, 'precondition: 仅队首 B 出队（C 在队）');
+  gateQueue.shift()({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  assert.equal(chatCalls, 2, 'precondition: B 的 web_access_chat 回执在途');
+
+  // B 的终态先于回执：busy 落下，done 触发的 flush 被在途拥有者挡回，C 不动。
+  rt.emit('chat:done', { session_id: 'chat-a', seq: 402 });
+  await tick(); await tick();
+  assert.equal(rt.view().queued.length, 1, '拥有者在途：终态触发的 flush 不得动 C');
+
+  // B 的回执到达：受理成功落定处释放并补排空——C 自动拉起（无任何外部触发）。
+  chatQueue.shift()({});
+  await tick(); await tick();
+  assert.equal(gateCalls, 3, '补排空必须拉起 C 的姿态查询');
+  gateQueue.shift()({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  assert.equal(chatCalls, 3, '补排空必须发出 C');
+  const orderText = JSON.stringify(rt.view().messages);
+  assert.ok(
+    orderText.indexOf('"B"') >= 0 && orderText.indexOf('"C"') > orderText.indexOf('"B"'),
+    'B 必须先于 C 入 transcript（FIFO）'
+  );
+  assert.equal(rt.view().queued.length, 0, '队列清空');
+});
+
 console.log('web_queue_admission_fifo: ok');
