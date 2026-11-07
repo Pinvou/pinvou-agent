@@ -351,8 +351,11 @@ earlier raw-bytes-plus-headroom approximation let crafted frames through.)
   leave the process up: `websocket_protocol_violation code=<ws error code>`
   (a contained per-socket protocol violation), `revocation_persist_failed
   code=<errno>`, `revocation_unexpected_failure`, and
-  `forward_reencode_refused` (a web forward whose re-serialized encoding
-  exceeds the desktop bound is refused without touching the desktop).
+  `forward_reencode_refused` (a web forward that could not be re-encoded
+  at all — the defensive catch; the frame is refused with `bad_message`
+  and the desktop is untouched). An over-bound forward whose encoding
+  measured successfully is refused with `frame_too_large` and produces
+  no log line.
 - After the handlers are installed at the very end of startup, `SIGINT` and
   `SIGTERM` terminate all WebSocket clients without a close handshake (peers
   observe an abnormal closure) and exit the process with code 0; in-flight

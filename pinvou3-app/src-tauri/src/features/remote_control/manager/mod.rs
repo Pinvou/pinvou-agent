@@ -6091,6 +6091,12 @@ mod tests {
         // emit,朴素的「首个 emit 深度 < 首个 lock 深度」判据看不见这一点
         // (突变实证:误报)。改为精确区间判定:每个 emit_status 站点不得
         // 落在任何 self.inner.lock() 站点所属花括号块闭合之前。
+        //
+        // Round-24 复审(m)已披露残留:区间由裸 { / } 计数得出,含注释与
+        // 字符串——lock 站点与其块闭合之间若出现含失衡 `}` 的注释或字符
+        // 串字面量,该 span 会被提前截断,未来「emit 落入 guard 区间」的
+        // 回归可能被判为区外(静默绿;round-23 兄弟钉同一口径)。今日文
+        // 本下五个 lock span 均正确闭合,基线绿为人工复核确认。
         let source = include_str!("mod.rs");
         let body = source
             .split("pub fn revoke_host_workspace")
