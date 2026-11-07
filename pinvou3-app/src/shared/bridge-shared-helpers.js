@@ -297,7 +297,14 @@
       buf.scheduledInitialTurnPhase === "active" ||
       !!(buf.queued && buf.queued.length) ||
       !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === id) ||
-      state.scheduledTaskCreationSessionId === id;
+      state.scheduledTaskCreationSessionId === id ||
+      // 压缩在途中的缓冲不受容量驱逐：驱逐会清掉在途标记并复用入口，而
+      // Rust 侧压缩仍在跑且 pool.compact_now 无入队去重，重新点击会重复
+      // 入队一轮压缩。时间戳按 15 分钟兜底读取（与 ChatView 的
+      // COMPACTING_FLAG_MAX_AGE_MS、Rust MAX_COMPACTION_LATCH_AGE 同款），
+      // 过期标记不保护，缓冲可照常驱逐并随之清理标记。
+      !!(state.compactingSessions && state.compactingSessions[id] &&
+        Date.now() - state.compactingSessions[id] < 15 * 60 * 1000);
   }
 
   // web+tauriSessions 共享

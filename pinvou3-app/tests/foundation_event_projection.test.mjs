@@ -67,8 +67,8 @@ const emit = (name, payload) => listeners.get(name)({
 });
 
 emit('chat:compaction', { id: 'compact-1', phase: 'start', message: 'Manual context compaction started' });
-assert.equal(state.compactingSessions['session-1'], true,
-  'compaction start must raise the per-session in-flight flag');
+assert.ok(state.compactingSessions['session-1'] > 0,
+  'compaction start must raise the per-session in-flight flag (timestamped)');
 emit('chat:compaction', { id: 'compact-1', phase: 'cancel', auto: true, message: 'interrupted' });
 assert.equal(state.compactingSessions['session-1'], undefined,
   'compaction cancel terminal must clear the in-flight flag');

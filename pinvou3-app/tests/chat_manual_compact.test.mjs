@@ -74,12 +74,14 @@ const emitCompaction = payload => listeners.get('chat:compaction')({
   payload: { session_id: 'session-1', ...payload },
 });
 
-// 场景 1：start 置位在途标记（手动与自动压缩共用同一事件流）。
+// 场景 1：start 置位带时间戳的在途标记（手动与自动压缩共用同一事件流；
+// 读取侧按时间戳做 15 分钟兜底自愈，见 ChatView 与驱逐保护谓词）。
 emitCompaction({ phase: 'start', id: 'compact-1', auto: false, message: 'Manual context compaction started' });
-assert.equal(state.compactingSessions['session-1'], true, 'start 必须置位压缩在途标记');
+const compactStartedAt = state.compactingSessions['session-1'];
+assert.ok(typeof compactStartedAt === 'number' && compactStartedAt > 0, 'start 必须置位带时间戳的压缩在途标记');
 assert.equal(state.chatItems.length, 1, 'start 系统项照常入列');
 
-// 场景 2：done 清除标记，且 post_tokens 是压缩后的准确占用——直接刷新
+// 场景 2：done 清除标记，且 post_tokens 是压缩后的占用估计——直接刷新
 // 用量条（保留真实窗口分母），不等下一轮 usage。
 const notifyAfterStart = notifyCount;
 emitCompaction({ phase: 'done', id: 'compact-1', messages_before: 12, messages_after: 8, post_tokens: 9500, message: '12 → 8 messages' });
@@ -99,7 +101,7 @@ for (const bad of [undefined, 0, -5, 999999]) {
 // 场景 4：fail/cancel 终态同样清除标记——不能留下永久禁用的入口。
 for (const phase of ['fail', 'cancel']) {
   emitCompaction({ phase: 'start' });
-  assert.equal(state.compactingSessions['session-1'], true);
+  assert.ok(state.compactingSessions['session-1'] > 0);
   emitCompaction({ phase, message: 'x' });
   assert.equal(state.compactingSessions['session-1'], undefined, `${phase} 终态必须清除在途标记`);
 }
@@ -114,14 +116,18 @@ assert.equal(pruneMerges.length, 1, 'prune-only 合并路径不受影响');
 assert.doesNotThrow(() => emitCompaction({ phase: 'start', session_id: undefined }));
 assert.equal(Object.keys(state.compactingSessions).length, 0, '无 session_id 不得写标记');
 
-// 场景 7：压缩轮的 usage 事件仍被 dirty guard 冻结（post_tokens 已给出准确值，
-// 后续累计 input 不可信——语义与 chat_usage_context_window 的 dirty 场景一致）。
+// 场景 7：压缩轮的 usage 事件仍被 dirty guard 冻结（post_tokens 已给出
+// 占用估计，后续累计 input 不可信——语义与 chat_usage_context_window 的
+// dirty 场景一致）。dirty 必须由压缩事件自身置位（监听器自标记），
+// 测试不得预置——否则删掉自标记本场景仍绿，post_tokens 绕过 dirty 的
+// 前提就失钉了。
 const emitUsage = payload => listeners.get('chat:usage')({
   event: 'chat:usage',
   payload: { session_id: 'session-1', ...payload },
 });
-context.turnUsageDirty['session-1'] = true;
-emitUsage({ input_tokens: 40000 });
+emitCompaction({ phase: 'start', session_id: 'session-2' });
+assert.ok(context.turnUsageDirty['session-2'], '压缩事件必须自置 turnUsageDirty（post_tokens 绕过 dirty 的前提）');
+emitUsage({ session_id: 'session-2', input_tokens: 40000 });
 assert.equal(state.tokens.input, 9500, '压缩轮后续累计 input 不可信，保留 post_tokens 值');
 
 // ── web 双端源码契约：压缩 handler 必须同步维护标记并消费 post_tokens ──
@@ -129,15 +135,16 @@ const tauriCompaction = source.slice(source.indexOf('listen("chat:compaction"'))
 const webSource = read('src', 'platform', 'web', 'bridge.js');
 const webCompaction = webSource.slice(webSource.indexOf('listen("chat:compaction"'));
 for (const [label, section] of [['tauri', tauriCompaction], ['web', webCompaction]]) {
-  assert.ok(section.includes('state.compactingSessions[sid] = true'), `${label}: start 必须置位标记`);
-  assert.ok(section.includes('delete state.compactingSessions[sid]'), `${label}: 终态必须清标记`);
-  assert.ok(section.includes('post_tokens'), `${label}: 必须消费 post_tokens 刷新用量条`);
+  assert.ok(section.includes('if (phase === "start") state.compactingSessions[sid] = Date.now();'), `${label}: start 必须置位带时间戳标记（读取侧据此兜底自愈）`);
+  assert.ok(section.includes('else delete state.compactingSessions[sid];'), `${label}: 终态必须经 else 分支清标记（done/fail/cancel 全覆盖）`);
+  assert.ok(section.includes('state.tokens = { input: postTokens, max: state.tokens.max };'), `${label}: 必须把 post_tokens 写入用量条`);
   assert.ok(section.includes('postTokens <= state.tokens.max'), `${label}: post_tokens 超窗守卫保留`);
 }
 
-// ── 桥接状态接线：字段进切片、两端 state 声明、删除/驱逐同清 ──
+// ── 桥接状态接线：字段进切片、两端 state 声明、删除/驱逐同清、驱逐保护 ──
 const sharedSource = read('src', 'shared', 'bridge-shared-helpers.js');
 assert.ok(sharedSource.includes('"compactingSessions"'), 'STATE_SLICE_FIELDS.chat 必须声明 compactingSessions（两 lane 快照共用同一常量）');
+assert.ok(sharedSource.includes('Date.now() - state.compactingSessions[id] < 15 * 60 * 1000'), '容量驱逐保护必须按兜底时限读在途标记（过期不保护）');
 const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
 assert.equal(tauriBridgeSource.split('compactingSessions: {}').length - 1, 1, 'tauri state 必须声明 compactingSessions');
 assert.equal(webSource.split('compactingSessions: {}').length - 1, 1, 'web state 必须声明 compactingSessions');
@@ -147,20 +154,26 @@ assert.equal(webSource.split('delete state.compactingSessions[id]').length - 1, 
 
 // ── ChatView 源码契约：守卫、按会话入队、错误映射、可测性挂钩 ──
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx').replace(/\r\n/g, '\n');
-// 守卫必须同时挡 busy（轮中入队→轮末前无反馈）与 compactingActive（终态前重复入队）。
-assert.match(chatViewSource, /if \(!sid \|\| manualCompactingSessionId === sid \|\| compactingActive \|\| busy\) return;/,
+// 守卫必须同时挡 busy（轮中入队→轮末前无反馈）与压缩在途（终态前重复入队）。
+assert.match(chatViewSource, /if \(!sid \|\| manualCompactActive \|\| compactingActive \|\| busy\) return;/,
   '入口守卫必须同时挡 busy 与压缩在途，否则轮中点击是静默空操作且按钮复位后重复入队');
-// 命令只入队即返回：sid 必须在调用点捕获（切会话后错误仍落到原会话）。
-assert.match(chatViewSource, /const sid = activeSessionId;\s*if \(!sid[\s\S]*?setManualCompactingSessionId\(sid\);/, 'sid 必须在 invoke 前捕获');
+// 命令只入队即返回：sid 必须在调用点捕获（切会话后错误仍落到原会话）；
+// 手动标记必须在 invoke 前置位且紧邻 try——入队到桥接 start 接管之间
+// 按钮不得复位，否则双击会重复入队压缩。
+assert.match(chatViewSource, /const sid = activeSessionId;\s*if \(!sid[\s\S]*?setManualCompact\(\{ sid, at: Date\.now\(\) \}\);\s*try \{/, 'sid 必须在 invoke 前捕获，手动标记置位紧邻 invoke');
 assert.match(chatViewSource, /invokeTauri\('compact_now', \{ sessionId: sid \}\)/, '压缩命令与参数形状');
 // 按会话 keying（ChatView 切会话不 remount）：布尔会在 A 入队中误禁 B。
-assert.match(chatViewSource, /useState\(null\);\s*const compactingActive = !!\(activeSessionId && bs && bs\.compactingSessions && bs\.compactingSessions\[activeSessionId\]\);/s,
-  '手动入队状态必须按会话记录');
-assert.match(chatViewSource, /setManualCompactingSessionId\(current => \(current === sid \? null : current\)\);/, '复位必须校验会话身份');
+assert.match(chatViewSource, /const \[manualCompact, setManualCompact\] = useState\(null\);/, '手动入队状态必须按会话记录（{sid, at}）');
+assert.match(chatViewSource, /compactingStartedAt && Date\.now\(\) - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS/, '桥接在途标记必须按 15 分钟兜底自愈（镜像 MAX_COMPACTION_LATCH_AGE）');
+assert.match(chatViewSource, /manualCompact\.sid === activeSessionId\s*&& Date\.now\(\) - manualCompact\.at < COMPACTING_FLAG_MAX_AGE_MS/, '手动标记同样受兜底时限约束');
+assert.match(chatViewSource, /setManualCompact\(current => \(current && current\.sid === sid \? null : current\)\);/, '失败复位必须校验会话身份');
+// 桥接层 start 接管禁用后必须释放手动标记（身份校验，只清本会话）。
+assert.match(chatViewSource, /if \(compactingActive && activeSessionId\) \{[\s\S]{0,220}setManualCompact\(current => \(current && current\.sid === activeSessionId \? null : current\)\);/, '桥接 start 接管时必须释放手动标记');
 // 引擎懒启动错误映射：裸错误链不得直接露出（与代码车道 nativeCompactInactive 同款）。
 assert.match(chatViewSource, /raw\.includes\('session_engine_not_running'\) \? t\.uiCodex\.nativeCompactInactive : raw/, '引擎未运行必须映射本地化文案');
 assert.ok(!chatViewSource.includes('compactFailNotice'), '失败文案必须复用 uiCodex.compactFail，不得新开重复 key');
 // UI 挂钩与禁用形状。
+assert.match(chatViewSource, /onClick=\{handleManualCompact\}/, '按钮必须实际接线点击处理器（卸掉 onClick 其余 pin 仍绿）');
 assert.match(chatViewSource, /data-testid="chat-ctx-compact"/, '按钮必须带 testid（smoke 可达）');
 assert.match(chatViewSource, /disabled=\{busy \|\| ctxCompactInFlight\}/, '禁用必须含 busy 与压缩在途');
 
