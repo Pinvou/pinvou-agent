@@ -596,8 +596,7 @@ function enforceLazyChunks() {
 // inside the desktop entry's existing headroom) and 127,777 → 128,263 B
 // web on the local node 24 toolchain. The web ceiling takes the next
 // thousand step (737 B headroom). This cap does not promise headroom
-// for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
+// for unrelated main changes.export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {

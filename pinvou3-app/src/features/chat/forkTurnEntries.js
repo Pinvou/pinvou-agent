@@ -8,6 +8,10 @@ import { turnHasUserText } from '../conversation/deepseek-conversation.js';
  * fork_session 的底座 user_turn_prompt_indices（Editable 分类）对齐：
  * 纯图片 turn 与压缩摘要头 turn（stamped 载体/粘贴摘要头，见
  * turnHasUserText）不计序号。
+ * 已知残留（与 Rust 侧 fork.rs 同一口径披露）：post-provenance 历史
+ * （会话内压缩过）里粘贴的摘要头 turn，后端 era 列表计入而本表跳过——
+ * 此时点击的序号比后端少一，分叉会把被点击的那轮留在源会话（分支少含
+ * 一轮）。该场景罕见；根治是把序号由后端随消息下发，前端不再本地计数。
  * 抽成纯函数与 checkpoints.js 的 rewindEntriesByTurnId 同款，可被
  * DOM-free 的逻辑测试直接钉住序号映射。
  */
