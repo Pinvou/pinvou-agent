@@ -273,12 +273,12 @@ export function ComputerUseDialogs({ slice, copy, virtualDisplayNote = '' }) {
     // absent/unknown the generic honesty line renders instead, so the
     // absolute base claim is never left unqualified. A missing key skips
     // the row (same fail-neutral shape as before the collapse).
-    const grantCaveat = !grantVirtual ? '' : (
+    const grantCaveat = grantVirtual ? (
       virtualDisplayNote === 'macos' ? copy.grantMacCaveat
         : virtualDisplayNote === 'linux' ? copy.grantLinuxCaveat
           : virtualDisplayNote === 'windows' ? copy.grantWindowsCaveat
             : copy.grantUnknownPlatformCaveat
-    );
+    ) : '';
     return createPortal(
       <div data-testid="computer-use-grant-dialog" className="fixed inset-0 z-[1210] flex items-center justify-center p-4 bg-black/45">
         <div

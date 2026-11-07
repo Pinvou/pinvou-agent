@@ -3353,8 +3353,7 @@ mod tests {
                 pixel[3] = 255;
             }
             let stride = width * 4;
-            let mut rows: Vec<Vec<u8>> =
-                reference.chunks(stride).rev().map(<[u8]>::to_vec).collect();
+            let rows: Vec<Vec<u8>> = reference.chunks(stride).rev().map(<[u8]>::to_vec).collect();
             rows.concat()
         };
         flip_and_swizzle_bgrx_to_rgba(&mut buffer, width, height);
