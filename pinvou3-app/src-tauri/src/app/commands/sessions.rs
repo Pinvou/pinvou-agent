@@ -724,7 +724,11 @@ pub(super) fn create_session_record(
 /// 快照一致性：turn 进行中 messages/metadata 仍被 forwarder 更新，分叉会
 /// 携带半轮状态。与 rewind_to_turn 同一口径：先快速拒绝给出友好文案，再
 /// `reserve_turn` 原子占位并持有到落盘结束——预约窗口内新 turn 无法开始，
-/// 关闭「检查后开跑」的半轮捕获窗口。
+/// 关闭「检查后开跑」的半轮捕获窗口。比 rewind 多一道压缩门：compaction
+/// 不占 turn 预约，turn-active 探针对它失明（engine_pool 的注释原文），
+/// 压缩进行中分叉会以点击序号漂移的快照落盘——这里显式探
+/// `is_compaction_in_flight` 拒绝（projects.rs 的探针同款）；rewind 的同款
+/// 盲区属既有行为，另行跟进。
 #[tauri::command]
 pub async fn fork_session(
     session_id: String,
@@ -735,6 +739,9 @@ pub async fn fork_session(
 ) -> Result<SessionMetadata, String> {
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请等当前轮结束再分叉".to_string());
+    }
+    if pool.is_compaction_in_flight(&session_id) {
+        return Err("会话正在压缩上下文，请等压缩结束再分叉".to_string());
     }
     let reservation = pool
         .reserve_turn(&session_id)
