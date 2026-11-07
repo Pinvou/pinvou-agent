@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
 import './helpers/i18n-all.js';
-import { recoveryNotice, upsertRecoveryNotice, settleRecoveryNotices } from '../src/features/conversation/model-recovery.js';
+import { isActiveChildRecoveryNotice, recoveryNotice, upsertRecoveryNotice, settleRecoveryNotices } from '../src/features/conversation/model-recovery.js';
 import { conversationItemsForMode } from '../src/features/conversation/deepseek-conversation.js';
 
 const base = { state: 'waiting', attempt: 2, max_attempts: 20, next_retry_at_ms: 1900000000000, operation_id: 'operation-1' };
@@ -50,5 +52,25 @@ assert.ok(!children[0].text.includes('Next attempt'));
 settleRecoveryNotices(children, 'Completed', null, 'en');
 assert.equal(children[1].modelRecovery.state, 'waiting');
 assert.ok(conversationItemsForMode(children).includes(children[1]));
+assert.deepEqual(children.filter(isActiveChildRecoveryNotice), [children[1]]);
+assert.equal(isActiveChildRecoveryNotice({ turnErrorNotice: true, modelRecovery: base }), false);
+assert.equal(isActiveChildRecoveryNotice({ turnErrorNotice: true }), false);
 upsertRecoveryNotice({ ...base, agent_id: 'child-b', state: 'recovered' }, children, addChild, 'en');
 assert.ok(!conversationItemsForMode(children).includes(children[1]));
+assert.deepEqual(children.filter(isActiveChildRecoveryNotice), []);
+
+// Both classic hosts call the shared live-item filter during transcript hydration.
+const sharedSource = fs.readFileSync(new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8');
+const hydrationWindow = { PinvouModelRecovery: { isActiveChildRecoveryNotice } };
+vm.runInNewContext(sharedSource, { window: hydrationWindow, globalThis: hydrationWindow });
+const waitingSystemNotice = { type: 'system', turnErrorNotice: true, modelRecovery: { ...base, agent_id: 'child-c' } };
+for (const lane of ['web', 'tauriMain']) {
+  const shared = hydrationWindow.PinvouBridgeShared.create(lane, { state: { messages: [], chatItems: [] } });
+  assert.equal(shared.liveChatItemKeptForHydration(waitingSystemNotice), true, lane);
+  assert.equal(shared.liveChatItemKeptForHydration({ type: 'system', turnErrorNotice: true, modelRecovery: base }), false, lane);
+  const replay = { itemIdSeq: { value: 12 }, toolMeta: { value: {} }, rebuildToolMeta() {}, sweepUnsettledTools() {}, emitPersonaAt() {} };
+  shared.rerenderFromMessagesCore(replay, { keepItemIdSequence: true });
+  assert.equal(replay.itemIdSeq.value, 12, lane);
+  shared.rerenderFromMessagesCore(replay);
+  assert.equal(replay.itemIdSeq.value, 0, lane);
+}

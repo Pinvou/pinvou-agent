@@ -23,6 +23,8 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import './helpers/i18n-all.js';
+import * as modelRecovery from '../src/features/conversation/model-recovery.js';
 
 const webBridgeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'platform', 'web');
 const read = relativePath => fs.readFileSync(path.join(webBridgeRoot, relativePath), 'utf8');
@@ -104,6 +106,7 @@ function bootWebBridge() {
     clearTimeout,
   };
   const context = vm.createContext({
+    PinvouModelRecovery: modelRecovery,
     window: windowObject,
     document: documentObject,
     navigator: { mediaDevices: null },
@@ -140,7 +143,7 @@ function bootWebBridge() {
       return d;
     },
     setHandler(name, fn) { handlers[name] = fn; },
-    emit(name, payload) { (listeners[name] || []).forEach(fn => fn({ payload })); },
+    emit(name, payload) { (listeners[name] || []).forEach(fn => fn({ event: name, payload })); },
     fireWindow(type, detail) { windowObject.dispatchEvent({ type, detail }); },
     personas: api.personas,
     sessions: api.sessions,
@@ -156,6 +159,68 @@ function chunkResponse(saved) {
     data_base64: encoded.toString('base64'), eof: true,
   };
 }
+
+function childRecoveryPayload(sessionId, state = 'waiting') {
+  return {
+    session_id: sessionId,
+    error: 'Rate limit exceeded: model recovery state changed',
+    model_recovery: { agent_id: 'child', operation_id: 'recovery-1', state, attempt: 1, max_attempts: 3 },
+  };
+}
+
+function savedWithParentTurn(id) {
+  return chunkResponse({
+    metadata: { id, title: id }, artifacts: [], transcript_revision: 'fixture-revision',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Durable parent turn' }] }],
+  });
+}
+
+test('Web navigation retains only the live child receipt during remote terminal reconciliation', { timeout: 3000 }, async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => savedWithParentTurn(id));
+  assert.equal(await rt.sessions.switchToSession('parent'), true);
+  assert.equal(await rt.sessions.switchToSession('other'), true);
+  rt.emit('chat:transient_error', childRecoveryPayload('parent'));
+  assert.equal(rt.view().chatItems.some(item => item.modelRecovery), false);
+  let beginReconcile;
+  const reconcileStarted = new Promise(resolve => { beginReconcile = resolve; });
+  let releaseReconcile;
+  const pendingReconcile = new Promise(resolve => { releaseReconcile = resolve; });
+  let parentLoads = 0;
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => {
+    if (id === 'parent' && ++parentLoads === 1) {
+      beginReconcile();
+      return pendingReconcile;
+    }
+    return savedWithParentTurn(id);
+  });
+  try {
+    rt.emit('chat:done', { session_id: 'parent', status: 'completed' });
+    await reconcileStarted;
+    assert.equal(await rt.sessions.switchToSession('parent'), true);
+    assert.equal(parentLoads, 2);
+    assert.equal(rt.view().busy, false);
+    assert.equal(rt.view().chatItems.filter(item => item.modelRecovery?.state === 'waiting').length, 1);
+  } finally {
+    releaseReconcile(savedWithParentTurn('parent'));
+  }
+});
+
+test('Web routes late child recovery to an unopened session without claiming a foreground turn', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => savedWithParentTurn(id));
+  assert.equal(await rt.sessions.switchToSession('other'), true);
+  rt.emit('chat:transient_error', childRecoveryPayload('parent'));
+  assert.equal(rt.view().chatItems.some(item => item.modelRecovery), false);
+  assert.equal(await rt.sessions.switchToSession('parent'), true);
+  assert.equal(rt.view().busy, false);
+  assert.equal(rt.view().chatItems.filter(item => item.modelRecovery?.state === 'waiting').length, 1);
+  rt.emit('chat:transient_error', childRecoveryPayload('parent', 'recovered'));
+  assert.equal(rt.view().busy, false);
+  assert.equal(rt.view().chatItems.some(item => item.modelRecovery && !item.legacyConversationOnly), false);
+  await rt.flat.sendMessage('New foreground turn');
+  assert.equal(rt.view().queued.length, 0);
+});
 
 test('web cold replay preserves first duplicate tool matching and cached session navigation', async () => {
   const rt = bootWebBridge();

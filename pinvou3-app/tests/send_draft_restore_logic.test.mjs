@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { isActiveChildRecoveryNotice } from '../src/features/conversation/model-recovery.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -38,6 +39,7 @@ function forget(promise) {
 function createTauriChat(overrides = {}) {
   const sandbox = {
     window: { __PINVOU_TAURI_BRIDGE_FEATURES__: {} },
+    PinvouModelRecovery: { isActiveChildRecoveryNotice },
     console,
     setTimeout,
     clearTimeout,
@@ -307,6 +309,38 @@ const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
   const result = await feature.sendMessage('你好', null);
   assert.equal(result, true, 'tauri 常规派发必须返回 true');
   assert.equal(state.messages.length, 1, 'user 消息必须进入 transcript');
+}
+
+{
+  const { feature, state } = createTauriChat();
+  const liveChild = { turnErrorNotice: true, modelRecovery: { agent_id: 'child', state: 'waiting' } };
+  const settledChild = { turnErrorNotice: true, modelRecovery: { agent_id: 'settled', state: 'stopped' } };
+  const previousError = { turnErrorNotice: true };
+  const previousSync = { authoritySyncNotice: true };
+  state.chatItems.push(liveChild, settledChild, previousError, previousSync);
+
+  assert.equal(await feature.sendMessage('Start another turn', null), true);
+  assert.ok(state.chatItems.includes(liveChild));
+  assert.ok(!state.chatItems.includes(settledChild));
+  assert.ok(!state.chatItems.includes(previousError));
+  assert.ok(!state.chatItems.includes(previousSync));
+}
+
+{
+  const { feature, state } = createTauriChat();
+  const child = { turnErrorNotice: true, modelRecovery: { agent_id: 'child', state: 'waiting' } };
+  const previousError = { turnErrorNotice: true };
+  const previousSync = { authoritySyncNotice: true };
+  state.chatItems.push(child, previousError, previousSync);
+  state.queued.push({ id: 'chip', steerId: 'committed', steered: true, text: 'Follow up' });
+
+  feature.settleSteerCommitted('s1', 'committed');
+
+  assert.equal(state.queued.length, 0);
+  assert.ok(state.chatItems.some(item => item.steeredMidTurn && item.text === 'Follow up'));
+  assert.ok(state.chatItems.includes(child));
+  assert.ok(!state.chatItems.includes(previousError));
+  assert.ok(!state.chatItems.includes(previousSync));
 }
 
 {
