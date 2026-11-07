@@ -255,13 +255,17 @@ test('web 排队受理 FIFO：终态先于回执时，受理释放后必须补�
   const gateQueue = [];
   rt.setHandler('get_mode_state', () => {
     gateCalls += 1;
-    return new Promise(resolve => gateQueue.push(resolve));
+    return new Promise(resolve => {
+      gateQueue.push(resolve);
+    });
   });
   let chatCalls = 0;
   const chatQueue = [];
   rt.setHandler('web_access_chat', () => {
     chatCalls += 1;
-    return new Promise(resolve => chatQueue.push(resolve));
+    return new Promise(resolve => {
+      chatQueue.push(resolve);
+    });
   });
   // 第一轮 A：直发，查询与回执按序放行。
   const sendA = rt.flat.sendMessage('A');
@@ -297,9 +301,89 @@ test('web 排队受理 FIFO：终态先于回执时，受理释放后必须补�
   assert.equal(chatCalls, 3, '补排空必须发出 C');
   const orderText = JSON.stringify(rt.view().messages);
   assert.ok(
-    orderText.indexOf('"B"') >= 0 && orderText.indexOf('"C"') > orderText.indexOf('"B"'),
+    orderText.includes('"B"') && orderText.indexOf('"C"') > orderText.indexOf('"B"'),
     'B 必须先于 C 入 transcript（FIFO）'
   );
+  assert.equal(rt.view().queued.length, 0, '队列清空');
+});
+
+test('web 排队受理 FIFO：前驱的尾清理不得抹掉后继的受理所有权', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+
+  // 全可控：A/B/C 依次受理；B 的回执挂到终态之后（制造补排空），C 的查询
+  // 在 B 的成功臂里被拉起（后继所有权同步取得）。
+  let gateCalls = 0;
+  const gateQueue = [];
+  rt.setHandler('get_mode_state', () => {
+    gateCalls += 1;
+    return new Promise(resolve => {
+      gateQueue.push(resolve);
+    });
+  });
+  let chatCalls = 0;
+  const chatQueue = [];
+  rt.setHandler('web_access_chat', () => {
+    chatCalls += 1;
+    return new Promise(resolve => {
+      chatQueue.push(resolve);
+    });
+  });
+  const sendA = rt.flat.sendMessage('A');
+  await tick(); await tick();
+  gateQueue.shift()({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  chatQueue.shift()({});
+  await tick(); await tick();
+  await sendA;
+  assert.equal(rt.view().busy, true, 'precondition: A 已受理');
+
+  // B、C 入队 → A 终态 → flush B → B 受理但回执挂起。
+  await rt.flat.sendMessage('B');
+  await rt.flat.sendMessage('C');
+  rt.emit('chat:done', { session_id: 'chat-a', seq: 501 });
+  await tick(); await tick();
+  gateQueue.shift()({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  assert.equal(chatCalls, 2, 'precondition: B 的回执在途');
+
+  // B 的终态先于回执：busy 落，C 不动（B 的所有权在途）。
+  rt.emit('chat:done', { session_id: 'chat-a', seq: 502 });
+  await tick(); await tick();
+  assert.equal(rt.view().queued.length, 1, 'precondition: C 在队');
+
+  // B 的回执到达：成功臂释放 B 的 token 并补排空——C 同步出队并取得
+  // 新 token，其姿态查询挂起。B 的尾清理随后运行，不得删除 C 的 token。
+  chatQueue.shift()({});
+  await tick(); await tick();
+  await tick(); await tick();
+  assert.equal(gateCalls, 3, '补排空拉起 C 的姿态查询');
+  assert.equal(rt.view().queued.length, 0, 'precondition: C 已出队（受理在途）');
+
+  // 修复点：C 的所有权仍在（B 的尾清理未越权）→ 新输入 D 必须入队排 C 后，
+  // 不得直发绕过。修复前这里 D 直发并先于 C 受理（wire A,B,D,C）。
+  await rt.flat.sendMessage('D');
+  await tick(); await tick();
+  assert.equal(gateCalls, 3, 'C 的所有权仍被持有：D 不得另起姿态查询');
+  assert.equal(rt.view().queued.length, 1, 'D 必须入队排在 C 后');
+
+  // C 放行受理 → C 终态 → flush D → D 受理。顺序 B,C,D。
+  gateQueue.shift()({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  assert.equal(chatCalls, 3, 'C 受理发出');
+  chatQueue.shift()({});
+  await tick(); await tick();
+  assert.equal(rt.view().busy, true, 'precondition: C 已受理（busy 顶上）');
+  rt.emit('chat:done', { session_id: 'chat-a', seq: 503 });
+  await tick(); await tick();
+  assert.equal(gateCalls, 4, 'D 的姿态查询在 C 终态后才起');
+  gateQueue.shift()({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  const orderText = JSON.stringify(rt.view().messages);
+  const ib = orderText.indexOf('"B"');
+  const ic = orderText.indexOf('"C"');
+  const id = orderText.indexOf('"D"');
+  assert.ok(ib >= 0 && ic > ib && id > ic, 'wire 顺序必须 B,C,D');
   assert.equal(rt.view().queued.length, 0, '队列清空');
 });
 

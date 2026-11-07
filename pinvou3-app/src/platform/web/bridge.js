@@ -3017,7 +3017,12 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // busy 检查 shift 走 B 并再起一次查询；若 B 的查询先决，B 先于 A 受理，
   // FIFO 失序。按 sid 持有受理权直到本次 doSendFor 落定（受理成功→busy
   // 已顶上；拒绝→队首已回队），窗口内的重入 flush 直接让路。
-  const flushAdmissionSids = new Set();
+  const flushAdmissionSids = new Map();
+  let flushAdmissionSeq = 0;
+  // 受理权 token（评审 JensenChen28 5811525579 P2）：成功臂补排空会同步为
+  // 后继 C 再取同 sid 的所有权，而前驱 B 的尾清理随后才跑——按 sid 的幂等
+  // delete 会把后继的所有权一起抹掉，窗口重开（D,C 失序）。每次受理持
+  // 递增 token，释放只在自己仍是当前持有者时生效。
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
@@ -3039,7 +3044,8 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
     notify();
-    flushAdmissionSids.add(sid);
+    const admissionToken = ++flushAdmissionSeq;
+    flushAdmissionSids.set(sid, admissionToken);
     doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       // 成功受理路径的释放+补排空（评审 JensenChen28 5811400272 P2）：终态
       // 转发（chat:done）与 web_access_chat 回执是两条独立发布路径，回执可
@@ -3049,10 +3055,10 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       // 队首已由下方 catch 回队，立即重排会绕过"等下一次触发"的既有语义
       // 变成 Auto 拒绝自旋。
       .then(function (accepted) {
-        flushAdmissionSids.delete(sid);
+        releaseAdmission(sid, admissionToken);
         if (accepted === true && !isBusyFor(sid)) flushQueued(sid);
       }, function (error) {
-        flushAdmissionSids.delete(sid);
+        releaseAdmission(sid, admissionToken);
         // 原样上抛：下方的 catch 回队臂依赖这个 rejection 才能运行。
         throw error;
       })
@@ -3071,8 +3077,13 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       // 受理落定即释放（拒绝/成功/回队三态，含 catch 自身 throw 的路径）：
       // turn 内由 busy 把门，done 后照常 FIFO。Set.delete 幂等，与上方两臂
       // 的提前释放不冲突；此尾臂保留是为了兜住 catch 自身 throw 的路径。
-      .then(function () { flushAdmissionSids.delete(sid); },
-            function () { flushAdmissionSids.delete(sid); });
+      .then(function () { releaseAdmission(sid, admissionToken); },
+            function () { releaseAdmission(sid, admissionToken); });
+  }
+  // 受理权释放：仅当 sid 的当前持有者仍是本次受理的 token 时才删除——
+  // 成功臂补排空可能已让后继取得新的所有权，前驱的尾清理不得越权抹掉它。
+  function releaseAdmission(sid, token) {
+    if (flushAdmissionSids.get(sid) === token) flushAdmissionSids.delete(sid);
   }
 
   async function sendMessageToSession(sessionId, text, meta) { return pinvouSharedweb().sendMessageToSession(sessionId, text, meta); }
