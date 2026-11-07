@@ -98,6 +98,7 @@ function extractCalls(source, callee) {
       'invoke("computer_use_set_enabled", { enabled: target })',
       'invoke("computer_use_request_permissions")',
       'invoke("computer_use_request_permissions")',
+      'invoke("computer_use_set_virtual_display_preference", { enabled: target })',
       'invoke("computer_use_permission_status")',
     ],
     'computer_use command surface must stay unchanged',
@@ -121,7 +122,17 @@ function createHarness({ status = {}, failInvoke = null, failMessage = '', initi
   const published = [];
   const state = {
     activeSessionId: 's1',
-    computerUse: { enabled: false, granted: false, stopped: false, platformSupported: true, ...initialState },
+    // preferVirtualDisplay mirrors the shipped bridge.js slice default (true,
+    // the backend default) — this VM does not load bridge.js, so the default
+    // must be restated here for the preference-mapping pins below.
+    computerUse: {
+      enabled: false,
+      granted: false,
+      stopped: false,
+      platformSupported: true,
+      preferVirtualDisplay: true,
+      ...initialState,
+    },
   };
   const harness = {
     invoked, state, listeners,
@@ -1239,6 +1250,458 @@ function emit(harness, event, payload) {
     false,
     'the authoritative refresh must agree, not re-latch the stop',
   );
+}
+
+// ── 37. virtualDisplayState/detail flow into the slice (both refresh paths) ──
+// The settings row reads the projection; the session-less answer (settings
+// cold start) and the session answer must both carry it. A status WITHOUT
+// the fields (older backend) must leave the fail-closed defaults untouched,
+// and an unrecognized state string maps to "unknown", never verbatim.
+{
+  const virtualStatus = {
+    enabled: true,
+    granted: false,
+    stopped: false,
+    platform_supported: true,
+    virtualDisplayState: 'ready',
+    virtualDisplayDetail: 'Xorg dummy driver detected',
+  };
+  const sessionLess = createHarness({ initialState: { enabled: true }, status: virtualStatus });
+  sessionLess.state.activeSessionId = null;
+  await sessionLess.feature.refreshStatus(null);
+  let last = sessionLess.published().at(-1);
+  assert.equal(last.virtualDisplayState, 'ready', 'the session-less read must publish virtualDisplayState');
+  assert.equal(last.virtualDisplayDetail, 'Xorg dummy driver detected', 'the detail rides along');
+
+  const perSession = createHarness({ initialState: { enabled: true }, status: virtualStatus });
+  await perSession.feature.refreshStatus('s1');
+  last = perSession.published().at(-1);
+  assert.equal(last.virtualDisplayState, 'ready', 'the session read must publish virtualDisplayState too');
+
+  const legacy = createHarness({ initialState: { enabled: true }, status: { enabled: true, platform_supported: true } });
+  await legacy.feature.refreshStatus('s1');
+  last = legacy.published().at(-1);
+  assert.equal('virtualDisplayState' in last, false,
+    'a status without the fields must not grow the key (defaults stay fail-closed)');
+
+  const garbage = createHarness({
+    initialState: { enabled: true, virtualDisplayState: 'unknown', virtualDisplayDetail: '' },
+    status: { enabled: true, platform_supported: true, virtualDisplayState: 'sort-of-ready', virtualDisplayDetail: 'x' },
+  });
+  await garbage.feature.refreshStatus('s1');
+  assert.equal(garbage.state.computerUse.virtualDisplayState, 'unknown',
+    'an unrecognized state string must map back to the fail-closed default');
+  assert.equal(garbage.state.computerUse.virtualDisplayDetail, '',
+    'an unrecognized state must not adopt the detail either');
+}
+
+// ── 38. setVirtualDisplayPreference reaches the backend and refreshes ──
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: {
+      enabled: true, granted: false, stopped: false, platform_supported: true,
+      virtualDisplayState: 'disabled', virtualDisplayDetail: '',
+    },
+  });
+  await harness.feature.setVirtualDisplayPreference(true);
+  const call = harness.invoked.find(([command]) => command === 'computer_use_set_virtual_display_preference');
+  assert.ok(call, 'the preference write must reach the backend');
+  assert.equal(call[1] && call[1].enabled, true, 'the payload must carry the boolean');
+  // The wrapper re-reads status before resolving: the fake status still says
+  // "disabled" here, which pins that the UI moves via the refreshed slice,
+  // not via a local guess.
+  assert.equal(harness.state.computerUse.virtualDisplayState, 'disabled',
+    'the resolution must follow the re-read authoritative status');
+  // A failing write surfaces the error instead of touching the slice.
+  const failing = createHarness({
+    failInvoke: (command) => command === 'computer_use_set_virtual_display_preference',
+  });
+  await assert.rejects(failing.feature.setVirtualDisplayPreference(false), /invoke failed/);
+}
+
+// ── 39. grant/confirm targets ride the pending map and the granted slice ──
+{
+  // A real status answer keeps `enabled` true across the mid-test refreshes:
+  // the harness's empty default would flip the slice to disabled and push
+  // the later grant_required into its inert re-read branch.
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  emit(harness, 'computer_use:grant_required', { session_id: 's1', target: 'virtual' });
+  let last = harness.published().at(-1);
+  assert.equal(last.grantRequest && last.grantRequest.target, 'virtual',
+    'a virtual grant request must carry the target');
+  // refreshStatus rebuilds the request from the pending entry: the target
+  // must survive the switch-away/switch-back resurfacing.
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  last = harness.published().at(-1);
+  assert.equal(last.grantRequest && last.grantRequest.target, 'virtual',
+    'the virtual target must survive the refresh-resurfacing');
+  await harness.feature.grant('s1');
+  last = harness.published().at(-1);
+  assert.equal(last.grantedTarget, 'virtual', 'Allow must record the virtual target for the banner');
+  // A later PHYSICAL re-request must not inherit the stale virtual target.
+  emit(harness, 'computer_use:grant_required', { session_id: 's1' });
+  last = harness.published().at(-1);
+  assert.equal(last.grantRequest && last.grantRequest.target, undefined,
+    'a request without the field keeps the old { sessionId } shape');
+  await harness.feature.grant('s1');
+  last = harness.published().at(-1);
+  assert.equal(last.grantedTarget, 'physical',
+    'a physical grant must overwrite the recorded target (fail-neutral)');
+  // Stop resets it with the banner.
+  await harness.feature.stop();
+  assert.equal(harness.published().at(-1).grantedTarget, 'physical',
+    'stop must reset the recorded target');
+}
+{
+  const harness = createHarness({ initialState: { enabled: true } });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-v', summary: 'left click', action: 'left_click',
+    element: 'Buy now', target: 'virtual',
+  });
+  assert.equal(harness.published().at(-1).confirmRequest.target, 'virtual',
+    'a virtual confirm payload must carry the target');
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1', confirm_id: 'cu-p', summary: 'left click', action: 'left_click',
+    element: 'Buy now',
+  });
+  assert.equal('target' in harness.published().at(-1).confirmRequest, false,
+    'a payload without the field must not grow a target key');
+}
+
+// ── 40. sessionDisplayTarget reconciles the banner truth from status ──
+// The banner reads grantedTarget, which the grant_required EVENT derived —
+// knowledge a window reload loses. The status now carries the guard's
+// per-session registry answer (sessionDisplayTarget): a concrete value wins
+// over the event-derived one, null ("no live row") clears the mirror but
+// keeps the event-derived value (fail-neutral — the banner must never guess
+// "virtual"), and an older backend without the key touches nothing.
+{
+  // Reload reconciliation: no event was ever seen in this window, yet the
+  // status alone flips both the mirror and the banner variant.
+  const reload = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: true, stopped: false, platform_supported: true, sessionDisplayTarget: 'virtual' },
+  });
+  await reload.feature.refreshStatus('s1');
+  let last = reload.published().at(-1);
+  assert.equal(last.sessionDisplayTarget, 'virtual',
+    'a concrete status target must land in the slice');
+  assert.equal(last.grantedTarget, 'virtual',
+    'the banner variant must reconcile from status after a reload');
+
+  // Status wins over a stale event-derived value.
+  const wins = createHarness({
+    initialState: { enabled: true, grantedTarget: 'virtual' },
+    status: { enabled: true, granted: true, stopped: false, platform_supported: true, session_display_target: 'physical' },
+  });
+  await wins.feature.refreshStatus('s1');
+  last = wins.published().at(-1);
+  assert.equal(last.grantedTarget, 'physical',
+    'a contradicting status must win over the event-derived value (snake_case accepted)');
+
+  // Null row: the mirror clears, the event-derived value stands.
+  const noRow = createHarness({
+    initialState: { enabled: true, grantedTarget: 'virtual' },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true, sessionDisplayTarget: null },
+  });
+  await noRow.feature.refreshStatus('s1');
+  last = noRow.published().at(-1);
+  assert.equal(last.sessionDisplayTarget, null,
+    'a null registry row must clear the mirror');
+  assert.equal(last.grantedTarget, 'virtual',
+    'null carries no target information: the banner must not be re-guessed');
+
+  // Unrecognized value: fail-neutral like the state vocabulary above.
+  const garbage = createHarness({
+    initialState: { enabled: true, grantedTarget: 'virtual', sessionDisplayTarget: 'physical' },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true, sessionDisplayTarget: 'sort-of-virtual' },
+  });
+  await garbage.feature.refreshStatus('s1');
+  assert.equal(garbage.state.computerUse.sessionDisplayTarget, null,
+    'an unrecognized value must clear the mirror');
+  assert.equal(garbage.state.computerUse.grantedTarget, 'virtual',
+    'an unrecognized value must leave the banner fail-neutral');
+
+  // Old backend: no key, no growth, banner untouched.
+  const legacy = createHarness({
+    initialState: { enabled: true, grantedTarget: 'virtual' },
+    status: { enabled: true, granted: true, stopped: false, platform_supported: true },
+  });
+  await legacy.feature.refreshStatus('s1');
+  last = legacy.published().at(-1);
+  assert.equal('sessionDisplayTarget' in last, false,
+    'a status without the field must not grow the key (defaults stay fail-closed)');
+  assert.equal(last.grantedTarget, 'virtual',
+    'without the field the event-derived value stays authoritative');
+
+  // Session-less branch: a null answer clears a stale mirror (same field
+  // hygiene as granted/requests there); an absent key touches nothing.
+  const sessionLess = createHarness({
+    initialState: { enabled: true, grantedTarget: 'virtual', sessionDisplayTarget: 'virtual' },
+    status: { enabled: true, stopped: false, platform_supported: true, sessionDisplayTarget: null },
+  });
+  sessionLess.state.activeSessionId = null;
+  await sessionLess.feature.refreshStatus(null);
+  last = sessionLess.published().at(-1);
+  assert.equal(last.sessionDisplayTarget, null,
+    'a session-less refresh must clear a stale mirror');
+  assert.equal(last.grantedTarget, 'virtual',
+    'the session-less null answer must not re-guess the banner either');
+  const legacyDraft = createHarness({
+    initialState: { enabled: true, grantedTarget: 'virtual', sessionDisplayTarget: 'virtual' },
+    status: { enabled: true, stopped: false, platform_supported: true },
+  });
+  legacyDraft.state.activeSessionId = null;
+  await legacyDraft.feature.refreshStatus(null);
+  assert.equal(legacyDraft.state.computerUse.sessionDisplayTarget, 'virtual',
+    'an old backend must not have its mirror disturbed by a draft refresh');
+}
+
+// ── 41. preferVirtualDisplay: key-only-when-present, fail-neutral ──
+// The frozen status contract always carries the persisted preference; the
+// settings switch binds to THIS field (not the derived virtualDisplayState).
+// Absent (older backend) ⇒ keep the current value; a non-boolean ⇒ ignored;
+// a real boolean ⇒ mirrored, on both refresh paths.
+{
+  const virtualStatus = {
+    enabled: true,
+    granted: false,
+    stopped: false,
+    platform_supported: true,
+    virtualDisplayState: 'ready',
+    virtualDisplayDetail: '',
+    preferVirtualDisplay: false,
+  };
+  // Session path mirrors the preference.
+  const perSession = createHarness({ initialState: { enabled: true }, status: virtualStatus });
+  await perSession.feature.refreshStatus('s1');
+  const last = perSession.published().at(-1);
+  assert.equal(last.preferVirtualDisplay, false,
+    'the session read must publish preferVirtualDisplay');
+  assert.equal(last.virtualDisplayState, 'ready',
+    'the state fields keep riding the same patch');
+
+  // Session-less path (settings cold start) mirrors it too.
+  const sessionLess = createHarness({ initialState: { enabled: true }, status: virtualStatus });
+  sessionLess.state.activeSessionId = null;
+  await sessionLess.feature.refreshStatus(null);
+  assert.equal(sessionLess.published().at(-1).preferVirtualDisplay, false,
+    'the session-less read must publish preferVirtualDisplay too');
+
+  // Absent field ⇒ keep the current value (fail-neutral; never guessed).
+  const legacy = createHarness({
+    initialState: { enabled: true, preferVirtualDisplay: false },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  await legacy.feature.refreshStatus('s1');
+  assert.equal(legacy.state.computerUse.preferVirtualDisplay, false,
+    'a status without the field must keep the current value');
+  const legacyDefault = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  await legacyDefault.feature.refreshStatus('s1');
+  assert.equal(legacyDefault.state.computerUse.preferVirtualDisplay, true,
+    'a status without the field keeps the slice default (true, the backend default)');
+
+  // Non-boolean (unrecognized) ⇒ ignored, never coerced.
+  const garbage = createHarness({
+    initialState: { enabled: true, preferVirtualDisplay: true },
+    status: {
+      enabled: true, granted: false, stopped: false, platform_supported: true,
+      virtualDisplayState: 'ready', virtualDisplayDetail: '', preferVirtualDisplay: 'yes',
+    },
+  });
+  await garbage.feature.refreshStatus('s1');
+  assert.equal(garbage.state.computerUse.preferVirtualDisplay, true,
+    'a non-boolean preference must be ignored');
+}
+
+// ── 42. virtualDisplayPatch RESETS on unrecognized input ──
+// (review finding) The previous value must not survive an answer the backend
+// cannot justify: a carried-but-unrecognized state resets the projection to
+// the fail-closed defaults instead of keeping a stale "ready"/"active" from
+// an earlier snapshot. Key-absent (older backend) still touches nothing.
+{
+  const stale = createHarness({
+    initialState: { enabled: true, virtualDisplayState: 'ready', virtualDisplayDetail: 'was ready' },
+    status: {
+      enabled: true, granted: false, stopped: false, platform_supported: true,
+      virtualDisplayState: 'sort-of-ready', virtualDisplayDetail: 'x',
+    },
+  });
+  await stale.feature.refreshStatus('s1');
+  assert.equal(stale.state.computerUse.virtualDisplayState, 'unknown',
+    'an unrecognized state must reset the projection, not keep the stale value');
+  assert.equal(stale.state.computerUse.virtualDisplayDetail, '',
+    'the reset must clear the detail too');
+
+  // A carried non-string (hand-rolled/garbage payload) resets the same way.
+  const nonString = createHarness({
+    initialState: { enabled: true, virtualDisplayState: 'active', virtualDisplayDetail: 'live' },
+    status: {
+      enabled: true, granted: false, stopped: false, platform_supported: true,
+      virtualDisplayState: 42, virtualDisplayDetail: 'x',
+    },
+  });
+  await nonString.feature.refreshStatus('s1');
+  assert.equal(nonString.state.computerUse.virtualDisplayState, 'unknown',
+    'a carried non-string state must reset the projection too');
+  assert.equal(nonString.state.computerUse.virtualDisplayDetail, '',
+    'and clear the stale detail with it');
+
+  // Key absent: still a null patch (older backend, defaults untouched) —
+  // pinned in test 37; repeated here so the reset rule cannot silently
+  // swallow the absent-key rule.
+  const legacy = createHarness({
+    initialState: { enabled: true, virtualDisplayState: 'ready', virtualDisplayDetail: 'kept' },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  await legacy.feature.refreshStatus('s1');
+  assert.equal(legacy.state.computerUse.virtualDisplayState, 'ready',
+    'a status without the fields must leave the current value untouched');
+}
+
+// ── 43. sameRequest includes target: a flipped-target re-request republishes ──
+// (review finding, reproduced by the reviewer) A virtual grant dialog is up;
+// the same session re-requests with the target flipped (e.g. xvfb vanished
+// mid-epoch and the backend now asks for the physical desktop). The dialog
+// must be RE-published with the physical copy — without the target term in
+// sameRequest the patch counts as unchanged and the stale virtual copy
+// stays on screen.
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  emit(harness, 'computer_use:grant_required', { session_id: 's1', target: 'virtual' });
+  assert.equal(harness.published().at(-1).grantRequest.target, 'virtual',
+    'fixture: the virtual dialog is up');
+  const before = harness.published().length;
+  emit(harness, 'computer_use:grant_required', { session_id: 's1', target: 'physical' });
+  assert.ok(harness.published().length > before,
+    'a flipped-target re-request must count as a change and publish');
+  const last = harness.published().at(-1);
+  assert.ok(last.grantRequest, 'the re-request dialog must be up');
+  assert.equal(last.grantRequest.target, undefined,
+    'the dialog copy must flip to the fail-neutral physical shape (no target key)');
+  // And an identical re-send stays a no-op (the unchanged-request rule the
+  // target term must not break).
+  const stable = harness.published().length;
+  emit(harness, 'computer_use:grant_required', { session_id: 's1', target: 'physical' });
+  assert.equal(harness.published().length, stable,
+    'an identical re-request must stay a publish no-op');
+}
+
+// ── 44. pending.grantTarget dies with its epoch ──
+// (review finding) Wherever pending.grant transitions to false (grant
+// success, revoke, reconcile-false), grantTarget must be deleted: the
+// reconcile-TRUE branch never writes a target (that is the event's job), so
+// a stale target would resurface virtual copy for a LATER event-less
+// request. With the key gone, the resurfaced dialog renders the fail-neutral
+// physical copy. Each case: virtual request → epoch ends → a new request is
+// raised in another window (this window never sees its event) → server-truth
+// reconciliation resurfaces it → the copy must be physical.
+async function assertEventLessResurfacingRendersPhysical(harness, sharedStatus) {
+  sharedStatus.pending_grant = true;
+  sharedStatus.granted = false;
+  await harness.feature.refreshStatus('s1');
+  const last = harness.published().at(-1);
+  assert.ok(last.grantRequest, 'the event-less request must resurface');
+  assert.equal(last.grantRequest.target, undefined,
+    'the resurfaced dialog must render the fail-neutral physical copy (no target key)');
+}
+{
+  // (a) grant success ends the epoch.
+  const sharedStatus = { enabled: true, granted: false, stopped: false, platform_supported: true };
+  const granted = createHarness({ initialState: { enabled: true }, status: sharedStatus });
+  emit(granted, 'computer_use:grant_required', { session_id: 's1', target: 'virtual' });
+  assert.equal(granted.published().at(-1).grantRequest.target, 'virtual', 'fixture: virtual dialog up');
+  await granted.feature.grant('s1');
+  await assertEventLessResurfacingRendersPhysical(granted, sharedStatus);
+}
+{
+  // (b) revoke ends the epoch.
+  const sharedStatus = { enabled: true, granted: false, stopped: false, platform_supported: true };
+  const revoked = createHarness({ initialState: { enabled: true }, status: sharedStatus });
+  emit(revoked, 'computer_use:grant_required', { session_id: 's1', target: 'virtual' });
+  await revoked.feature.revoke('s1');
+  await assertEventLessResurfacingRendersPhysical(revoked, sharedStatus);
+}
+{
+  // (c) reconcile-false ends the epoch (resolved in another window).
+  const sharedStatus = { enabled: true, granted: false, stopped: false, platform_supported: true };
+  const reconciled = createHarness({ initialState: { enabled: true }, status: sharedStatus });
+  emit(reconciled, 'computer_use:grant_required', { session_id: 's1', target: 'virtual' });
+  sharedStatus.pending_grant = false;
+  await reconciled.feature.refreshStatus('s1');
+  assert.equal(reconciled.published().at(-1).grantRequest, null,
+    'fixture: the other-window resolution collapsed the dialog');
+  await assertEventLessResurfacingRendersPhysical(reconciled, sharedStatus);
+}
+
+// ── 45. an event-less pending grant seeds its target from status truth ──
+// (review finding) A window reloaded with an unanswered grant never saw the
+// grant_required event. The reconciler's grant-true branch now seeds
+// pending.grantTarget from the SAME status payload's per-session display
+// target — server truth for the live request (written once at backend
+// creation), never a previous epoch's event value — so a virtual session's
+// dialog renders the virtual copy instead of the physical copy that
+// promises per-action confirmations a virtual grant structurally never
+// raises. Absent/unknown targets stay fail-neutral physical; a physical
+// truth keeps the plain (no-key) shape, which renders the default copy.
+{
+  const sharedStatus = {
+    enabled: true, granted: false, stopped: false, platform_supported: true,
+    pending_grant: true, session_display_target: 'virtual',
+  };
+  const harness = createHarness({ initialState: { enabled: true }, status: sharedStatus });
+  await harness.feature.refreshStatus('s1');
+  const last = harness.published().at(-1);
+  assert.ok(last.grantRequest, 'the reloaded pending grant must resurface');
+  assert.equal(last.grantRequest.target, 'virtual',
+    'the dialog must render the virtual copy seeded from the status session truth');
+  // The seed dies with the epoch like any event-derived target: after the
+  // grant resolves elsewhere, a fresh event-less request with no session
+  // truth falls back to physical.
+  sharedStatus.pending_grant = false;
+  await harness.feature.refreshStatus('s1');
+  assert.equal(harness.published().at(-1).grantRequest, null,
+    'fixture: the resolved epoch collapsed the dialog');
+  const laterStatus = {
+    enabled: true, granted: false, stopped: false, platform_supported: true,
+    pending_grant: true,
+  };
+  const later = createHarness({ initialState: { enabled: true }, status: laterStatus });
+  await later.feature.refreshStatus('s1');
+  assert.equal(later.published().at(-1).grantRequest.target, undefined,
+    'a session truth without the field stays fail-neutral physical');
+
+  // A concrete physical truth seeds too — but "physical" renders the
+  // default (no-target-key) copy shape.
+  const physical = createHarness({
+    initialState: { enabled: true },
+    status: { ...sharedStatus, pending_grant: true, session_display_target: 'physical' },
+  });
+  await physical.feature.refreshStatus('s1');
+  assert.equal(physical.published().at(-1).grantRequest.target, undefined,
+    'a physical-seeded target renders the default physical copy shape');
+
+  // A carried UNKNOWN target value must not be copied into the request.
+  const unknown = createHarness({
+    initialState: { enabled: true },
+    status: { ...sharedStatus, pending_grant: true, session_display_target: 'weird' },
+  });
+  await unknown.feature.refreshStatus('s1');
+  assert.equal(unknown.published().at(-1).grantRequest.target, undefined,
+    'an unknown session target must stay fail-neutral physical');
 }
 
 console.log('computer use bridge behavior tests passed');

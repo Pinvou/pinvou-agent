@@ -58,6 +58,12 @@ pub struct PlatformCapabilities {
     pub paste_image_clipboard_read: bool,
     pub local_embed_supported: bool,
     pub global_shortcuts_available: bool,
+    /// Semantic selector for the computer-use virtual-display note row
+    /// ("windows" | "macos" | "linux" | "", serialized camelCase as
+    /// `virtualDisplayNote`). Its own capability, not an installer-bit
+    /// proxy: the note and the dependency installers can change
+    /// independently.
+    pub virtual_display_note: &'static str,
 }
 
 impl PlatformCapabilities {
@@ -90,6 +96,7 @@ impl PlatformCapabilities {
             paste_image_clipboard_read: capabilities.paste_image_clipboard_read,
             local_embed_supported: capabilities.local_embed_supported,
             global_shortcuts_available: capabilities.global_shortcuts_available,
+            virtual_display_note: capabilities.virtual_display_note,
         }
     }
 }
@@ -171,6 +178,29 @@ mod platform_capability_tests {
         assert_eq!(
             capabilities.global_shortcuts_available,
             expected.global_shortcuts_available
+        );
+        // The serialized capability must carry the exact note selector the
+        // platform layer resolved: the settings page gates its Windows/macOS
+        // virtual-display note rows on this field (never on the installer
+        // bits), so a divergence would show the wrong platform's note.
+        assert_eq!(
+            capabilities.virtual_display_note,
+            expected.virtual_display_note
+        );
+        // The serialized spelling is the frozen frontend contract
+        // (`virtualDisplayNote`, camelCase via rename_all) with the
+        // vocabulary pinned here too.
+        let Ok(value) = serde_json::to_value(&capabilities) else {
+            panic!("PlatformCapabilities must serialize");
+        };
+        assert!(
+            matches!(
+                value
+                    .get("virtualDisplayNote")
+                    .and_then(|note| note.as_str()),
+                Some("") | Some("windows") | Some("macos") | Some("linux")
+            ),
+            "virtualDisplayNote must stay in the frozen vocabulary: {value}"
         );
     }
 

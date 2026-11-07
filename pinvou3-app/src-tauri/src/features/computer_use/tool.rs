@@ -34,7 +34,7 @@ use deepseek_tui::tools::spec::{
 };
 
 use super::audit::{AuditLog, AuditRecord};
-use super::backend::BackendHandle;
+use super::backend::{BackendHandle, ComputerUseBackend};
 use super::guard::{
     ComputerUseShared, GuardRejection, is_secure_role, keyed_binding_u64, matches_t3_denylist,
     raw_element_binding,
@@ -42,8 +42,9 @@ use super::guard::{
 use super::platform;
 use super::scaling::{self, ScaleMap, ScaledScreenshot};
 use super::types::{
-    ActionClass, ComputerUseAction, ComputerUseError, EVENT_CONFIRM_REQUIRED, EVENT_GRANT_REQUIRED,
-    ElementInfo, Key, MouseButton, ScrollDirection, TOOL_NAME, UiTreeOptions, parse_key_chord,
+    ActionClass, Capabilities, ComputerUseAction, ComputerUseError, DisplayTarget,
+    EVENT_CONFIRM_REQUIRED, EVENT_GRANT_REQUIRED, ElementInfo, Key, MouseButton, ScrollDirection,
+    TOOL_NAME, UiTreeOptions, parse_key_chord,
 };
 
 /// UI settle wait after input/scroll actions execute (the single definition
@@ -85,6 +86,16 @@ pub const MAX_CONFIRM_ID_CHARS: usize = 128;
 /// smaller tree than requested.
 pub const MAX_UI_TREE_DEPTH: u32 = 64;
 pub const MAX_UI_TREE_NODES: u32 = 10_000;
+/// `open` program-name cap (characters), mirroring the parse-time cap
+/// convention of the other free-text fields: the program rides the consent
+/// summary/payload and the audit trail, so an uncapped model-supplied string
+/// would be pure memory/abuse surface. Real executables are far below.
+pub const MAX_OPEN_PROGRAM_CHARS: usize = 1024;
+/// `open` per-argument cap (characters) and argument-count cap: file paths
+/// and URLs are the legitimate shape; anything past these is a model error,
+/// rejected at parse time (schema declares the same bounds).
+pub const MAX_OPEN_ARG_CHARS: usize = 4096;
+pub const MAX_OPEN_ARGS: usize = 64;
 
 /// Stable audit code for the T3 "confirmation required" error. The full
 /// error message carries the element label (on-screen content may be
@@ -126,6 +137,7 @@ pub const SUPPORTED_ACTIONS: &[&str] = &[
     "type",
     "key",
     "hold_key",
+    "open",
 ];
 
 /// The Tauri event sink (tests inject a recorder in its place).
@@ -164,6 +176,16 @@ struct ToolState {
     /// held gets no confirmation just like any other mouse_move; mainstream
     /// products have no held-move re-screening).
     mouse_buttons_held: bool,
+    /// The display target this session's backend was created for (the
+    /// ONE-TIME creation decision recorded in `Capabilities.target`), cached
+    /// at the first capability read. `None` until then: the payload/audit
+    /// boundaries fall back to the resolved preference (see
+    /// [`resolved_display_target`]) instead of guessing.
+    display_target: Option<DisplayTarget>,
+    /// Whether the backend's model-facing fidelity note
+    /// (`Capabilities.target_note`) has been surfaced on an action result
+    /// already — once per session, not on every result.
+    target_note_surfaced: bool,
 }
 
 /// The cloneable execution parts (execute is async while backend calls are
@@ -182,11 +204,83 @@ pub struct ComputerUseTool {
     parts: Parts,
 }
 
+/// The lazy factory's one-time backend creation, with the cached global
+/// availability snapshot refresh pinned to BOTH creation outcomes. The
+/// snapshot (`virtualDisplayState`'s global input) is only recomputed at its
+/// documented refresh points; routing the creation result through this helper
+/// means installing (or removing) the platform's virtual stack — e.g. `xvfb`
+/// on linux — while the app runs flips the settings hint on the next status
+/// read instead of waiting for a restart. A successful virtual creation
+/// refreshes too (the probe inside `create_backend` just answered green);
+/// a live session keeps reporting "active" through the per-session registry,
+/// which the global snapshot never overrides.
+fn create_backend_reporting_availability(
+    shared: &ComputerUseShared,
+    prefer_virtual: bool,
+    create: impl FnOnce(
+        bool,
+    ) -> (
+        Result<Box<dyn ComputerUseBackend>, ComputerUseError>,
+        platform::TargetDecision,
+    ),
+) -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> {
+    let (created, decision) = create(prefer_virtual);
+    match &created {
+        // A FAILED creation under an on preference must not leave the probe's
+        // green verdict in the snapshot: the probe only answers
+        // binary/class presence, so the plain refresh would flip the hint
+        // right back to "ready" for a stack that just demonstrably failed to
+        // start. Record the failure instead — the next legitimate refresh
+        // point (a preference flip, the next creation, startup replay)
+        // re-evaluates it. The ATTRIBUTION follows the decision, not the
+        // preference: the decision happens before the build, so a failed
+        // Physical build (probe said unavailable) is a physical-backend
+        // failure and must not be recorded as "the last virtual session
+        // failed to start".
+        Err(error) if prefer_virtual => {
+            let detail = match decision {
+                platform::TargetDecision::Virtual => {
+                    format!("the last virtual session failed to start: {error}")
+                }
+                platform::TargetDecision::Physical => {
+                    format!("the computer use backend failed to start: {error}")
+                }
+            };
+            shared.set_virtual_availability(platform::VirtualAvailabilitySnapshot {
+                state: "unavailable",
+                detail,
+            });
+        }
+        _ => shared.refresh_virtual_availability(),
+    }
+    created
+}
+
 impl ComputerUseTool {
     /// Production constructor: the backend starts lazily (the worker thread
     /// is spawned on the first request).
     pub fn new(app: AppHandle, session_id: String, shared: Arc<ComputerUseShared>) -> Self {
-        let backend = BackendHandle::lazy(platform::create_backend);
+        // The virtual-vs-physical preference is read at FACTORY EXECUTION
+        // time (the lazy first request), not at tool construction: that is
+        // the "backend creation" moment the one-time fallback decision is
+        // pinned to, so a preference flip between construction and first use
+        // is still honored. The resolved target is registered on the shared
+        // per-session registry (status "active" input) right here on the
+        // worker thread, where the backend object already exists — a failed
+        // creation registers nothing.
+        let shared_for_factory = Arc::clone(&shared);
+        let session_for_factory = session_id.clone();
+        let backend = BackendHandle::lazy(move || {
+            let prefer_virtual = shared_for_factory.prefer_virtual_display();
+            let backend = create_backend_reporting_availability(
+                &shared_for_factory,
+                prefer_virtual,
+                platform::create_backend_with_decision,
+            )?;
+            let target = backend.capabilities().target;
+            shared_for_factory.set_session_target(&session_for_factory, target);
+            Ok(backend)
+        });
         // Register the handle: on revoke/stop/master-switch off, the command
         // layer goes through shared.backends to have the backend close its
         // persistent OS-level grant (the Wayland portal session); Drop
@@ -241,11 +335,20 @@ impl Drop for ComputerUseTool {
             .shared
             .backends
             .registered_handle(&self.parts.session_id);
-        if registered
+        let is_active_tool = registered
             .as_ref()
-            .is_none_or(|current| current.is_same_backend(&self.parts.backend))
-        {
+            .is_none_or(|current| current.is_same_backend(&self.parts.backend));
+        if is_active_tool {
             self.parts.shared.revoke_session(&self.parts.session_id);
+        }
+        // Drop this session's display-target row (the status "active" input)
+        // under the SAME identity rule as the revoke: a same-session
+        // successor's factory may have registered ITS target already, and a
+        // stale tool's Drop must not clear the successor's row.
+        if is_active_tool {
+            self.parts
+                .shared
+                .clear_session_target(&self.parts.session_id);
         }
         // Unregister + emergency cleanup: otherwise the registry entry would
         // pin the worker thread (and its persistent portal session) until
@@ -583,6 +686,67 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
                 ms,
             }
         }
+        "open" => {
+            reject_unexpected(input, action_name, &["program", "args"])?;
+            // The program is spawned directly (no shell), so a bare name or
+            // absolute path is the legitimate shape — Command resolves bare
+            // names via PATH in the app env at spawn time.
+            let program = match input.get("program") {
+                Some(Value::String(program)) if !program.is_empty() => program.clone(),
+                Some(Value::String(_)) => {
+                    return Err(invalid("program must be a non-empty string for open"));
+                }
+                None | Some(Value::Null) => {
+                    return Err(invalid("program is required for open"));
+                }
+                Some(_) => return Err(field_type_error("program", "a string")),
+            };
+            // NUL cannot appear in an argv entry on unix (spawn would fail
+            // with an obscure libc error) and has no business in a program
+            // name: reject at parse time with the same shape as `type`.
+            if program.contains('\0') {
+                return Err(invalid("program must not contain NUL characters for open"));
+            }
+            let count = program.chars().count();
+            if count > MAX_OPEN_PROGRAM_CHARS {
+                return Err(invalid(format!(
+                    "program is too long for open: {count} chars (max {MAX_OPEN_PROGRAM_CHARS})"
+                )));
+            }
+            let args = match input.get("args") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(values)) => {
+                    if values.len() > MAX_OPEN_ARGS {
+                        return Err(invalid(format!(
+                            "args has more than {MAX_OPEN_ARGS} entries for open"
+                        )));
+                    }
+                    let mut args = Vec::with_capacity(values.len());
+                    for value in values {
+                        match value {
+                            Value::String(arg) => {
+                                if arg.contains('\0') {
+                                    return Err(invalid(
+                                        "args must not contain NUL characters for open",
+                                    ));
+                                }
+                                let count = arg.chars().count();
+                                if count > MAX_OPEN_ARG_CHARS {
+                                    return Err(invalid(format!(
+                                        "each arg must be <= {MAX_OPEN_ARG_CHARS} characters for open"
+                                    )));
+                                }
+                                args.push(arg.clone());
+                            }
+                            _ => return Err(field_type_error("args", "an array of strings")),
+                        }
+                    }
+                    args
+                }
+                Some(_) => return Err(field_type_error("args", "an array of strings")),
+            };
+            ComputerUseAction::Open { program, args }
+        }
         _ => {
             // The error string goes into the audit log's error field; the
             // model-supplied action name is not echoed (a model could smuggle
@@ -666,7 +830,7 @@ fn capture_and_store(parts: &Parts, workspace: &Path) -> Result<ShotOutcome, Com
     })
 }
 
-fn shot_result_text(shot: &ShotOutcome) -> String {
+fn shot_result_text(shot: &ShotOutcome, target: DisplayTarget) -> String {
     let mut text = format!(
         "screenshot saved: {}\nimage: {}x{} px (scale {:.3} of device {}x{}, monitor origin ({}, {}))\n\
          All coordinates you pass to computer_use are in this image's pixel space, origin top-left.\n\
@@ -681,6 +845,13 @@ fn shot_result_text(shot: &ShotOutcome) -> String {
         shot.map.origin_y,
         shot.rel_path,
     );
+    // Stable target marker (virtual-display design §4): tells the model which
+    // display it is acting on without any parsing cost — the frontend only
+    // parses the path, so this string is frozen. On the virtual target the
+    // user's desktop is untouched; on the physical target disruption should
+    // be minimized and announced.
+    text.push('\n');
+    text.push_str(target_marker(target));
     // Review finding: at the minimum scale floor the PNG can still exceed
     // the foundation's attach cap, which silently skips it — the model must
     // be told instead of going blind. The warning keys on the foundation's
@@ -693,6 +864,46 @@ fn shot_result_text(shot: &ShotOutcome) -> String {
         );
     }
     text
+}
+
+/// The stable per-target marker strings appended to every screenshot result
+/// (design §4). Frozen spellings — do not reword without a cross-check of
+/// frontend/consumers.
+fn target_marker(target: DisplayTarget) -> &'static str {
+    match target {
+        DisplayTarget::Virtual => "[target: isolated virtual display]",
+        DisplayTarget::Physical => "[target: user's desktop]",
+    }
+}
+
+/// The resolved display target for this session: the backend's recorded
+/// one-time creation decision once capabilities have been read (cached in
+/// [`ToolState`]), else the session's registered target — written at
+/// creation, BEFORE any audit record can exist, so a preference or probe
+/// flip between creation and the first capability read cannot make an
+/// error-path record mislabel a live virtual session. The preference+probe
+/// re-derivation below is the last resort for records outside a registered
+/// session (the same rule the creation-time decision uses). Used by the
+/// payload / audit / screenshot-marker boundaries.
+fn resolved_display_target(parts: &Parts) -> DisplayTarget {
+    if let Some(target) = parts.state.lock().display_target {
+        return target;
+    }
+    if let Some(target) = parts.shared.session_target(&parts.session_id) {
+        return target;
+    }
+    let availability = platform::probe_virtual_display();
+    match platform::resolve_target(parts.shared.prefer_virtual_display(), &availability) {
+        platform::TargetDecision::Virtual => DisplayTarget::Virtual,
+        platform::TargetDecision::Physical => DisplayTarget::Physical,
+    }
+}
+
+/// Caches the backend's recorded target at every capability read (both the
+/// early Input read in `execute` and the per-call read in `run`): the first
+/// read replaces the preference fallback with the backend's actual decision.
+fn cache_display_target(parts: &Parts, capabilities: &Capabilities) {
+    parts.state.lock().display_target = Some(capabilities.target);
 }
 
 fn with_image_metadata(result: ToolResult, shot: &ShotOutcome) -> ToolResult {
@@ -1159,7 +1370,15 @@ fn requires_t3_check(action: &ComputerUseAction) -> bool {
     action.class() == ActionClass::Input
         && !matches!(
             action,
-            ComputerUseAction::MouseMove { .. } | ComputerUseAction::Scroll { .. }
+            ComputerUseAction::MouseMove { .. }
+                | ComputerUseAction::Scroll { .. }
+                // `open` launches an app before anything is on screen to
+                // screen: there is no target element to read, so the
+                // per-action T3 gate has nothing to screen (documented in
+                // the tool description). The grant gate still applies —
+                // `open` is Input class — and on a virtual target the
+                // launch does not touch the user's desktop at all.
+                | ComputerUseAction::Open { .. }
         )
 }
 
@@ -1406,7 +1625,10 @@ impl ConfirmActionDetails {
 
 /// Builds the `computer_use:confirm_required` event payload: identity fields
 /// plus the structured [`ConfirmActionDetails`] merged in (the single
-/// serialization path for the structured confirm fields).
+/// serialization path for the structured confirm fields). `target` is the
+/// frozen "virtual" | "physical" disclosure (§2) — the frontend renders
+/// target-aware dialog copy and tolerates its absence (old payloads,
+/// fail-neutral).
 fn build_confirm_payload(
     session_id: &str,
     confirm_id: &str,
@@ -1415,6 +1637,7 @@ fn build_confirm_payload(
     element_label: &str,
     type_preview_full: Option<&str>,
     masked_target: bool,
+    target: &str,
 ) -> Value {
     let details = ConfirmActionDetails::from_action(action, type_preview_full, masked_target);
     let mut payload = json!({
@@ -1425,6 +1648,8 @@ fn build_confirm_payload(
         "summary": summary,
         "element": element_label,
         "confirm_id": confirm_id,
+        // Which display the action targets ("virtual" | "physical").
+        "target": target,
     });
     if let Ok(Value::Object(map)) = serde_json::to_value(&details) {
         if let Some(object) = payload.as_object_mut() {
@@ -1486,6 +1711,7 @@ fn request_confirmation(
         element_label,
         type_preview_full.as_deref(),
         masked_target,
+        resolved_display_target(parts).as_str(),
     );
     parts
         .shared
@@ -1532,7 +1758,17 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // another session, it times out with an explicit error (InputBusy)
         // instead of waiting unboundedly and silently wedging other sessions
         // (review finding).
-        let _input_guard = (action.class() == ActionClass::Input)
+        //
+        // The exclusivity protects the USER'S physical desktop. A virtual
+        // target's input physically cannot reach it (a private X server
+        // behind a private cookie / pid-targeted CGEvents pinned to
+        // display-bounds-verified windows / messages posted to hidden-desktop
+        // windows), so a resolved virtual target skips the lock: serializing
+        // independent isolated displays would cap process-wide input
+        // throughput and stall a second session up to the timeout for no
+        // safety gain. Unknown target ⇒ lock, the conservative direction.
+        let target_is_virtual = parts.state.lock().display_target == Some(DisplayTarget::Virtual);
+        let _input_guard = (action.class() == ActionClass::Input && !target_is_virtual)
             .then(|| parts.shared.lock_physical_input())
             .transpose()
             .map_err(|rejection| rejection.message())?;
@@ -1546,11 +1782,29 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         if (action.needs_scale_map() || t3_screening_needs_scale_map(&action))
             && parts.state.lock().last_map.is_none()
         {
+            // The target marker must reflect the backend's ONE-TIME creation
+            // decision, not a fresh probe: the probe can flip after creation
+            // (a virtual stack installed mid-app-run), and stamping a
+            // physical session's first screenshot with the virtual marker
+            // would misreport the target. Prime the cache from the backend's
+            // stamped capabilities once, here, so this and every later
+            // boundary read the same decision.
+            if let Ok(capabilities) = parts.backend.capabilities() {
+                cache_display_target(&parts, &capabilities);
+            }
             let auto = capture_and_store(&parts, &workspace).map_err(|e| backend_error_text(&e))?;
-            warnings.push(
-                "no screenshot had been taken this session; one was captured automatically and is attached"
-                    .to_string(),
-            );
+            // Route the auto-captured outcome through the SAME shot_result_text
+            // path as explicit/follow-up captures (review finding): every
+            // screenshot the model sees must carry the frozen "[target: …]"
+            // marker and the coordinate-space header, not just the bare
+            // auto-capture notice. Rendered here, appended with the warnings
+            // below, so actions without a follow-up capture (bare pointer
+            // moves) still surface the marker.
+            warnings.push(format!(
+                "no screenshot had been taken this session; one was captured automatically and is \
+                 attached.\n{}",
+                shot_result_text(&auto, resolved_display_target(&parts))
+            ));
             shot = Some(auto);
         }
 
@@ -1730,6 +1984,35 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
             .backend
             .capabilities()
             .map_err(|e| backend_error_text(&e))?;
+        // The backend's recorded one-time target decision replaces the
+        // preference fallback from here on (payloads, audit, markers).
+        cache_display_target(&parts, &capabilities);
+        // The per-OS fidelity note (experimental private API, message-level
+        // input, WM-less degradation) is model-facing but had no channel of
+        // its own: surface it ONCE per session on the first action's
+        // warnings, so the model learns the target's limits before it
+        // wonders why an input did not land. The `surfaced` flag is set only
+        // where the warnings are actually RENDERED (the success return
+        // below): `warnings` never reach the model on an error return, so
+        // flagging at push time could lose the note for the whole session
+        // when the first action fails. On a virtual target the deeper
+        // `notes` list rides the same once-per-session channel: those
+        // residuals (broker-launched apps outside the session, --args
+        // semantics, US-ANSI chords, WM-less degradation) were previously
+        // reachable only through the handful of unsupported/error
+        // interpolations, so the healthy path never delivered them.
+        // Physical targets keep their shape unchanged: their `notes` stay on
+        // the error interpolations only.
+        let note_pending = {
+            let state = parts.state.lock();
+            !state.target_note_surfaced && !capabilities.target_note.is_empty()
+        };
+        if note_pending {
+            warnings.push(capabilities.target_note.clone());
+            if capabilities.target == DisplayTarget::Virtual && !capabilities.notes.is_empty() {
+                warnings.push(capabilities.notes.clone());
+            }
+        }
         match action.class() {
             ActionClass::Input if !capabilities.input => {
                 return Err(format!(
@@ -1795,7 +2078,7 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
                     if !outcome.is_empty() {
                         outcome.push('\n');
                     }
-                    outcome.push_str(&shot_result_text(&fresh));
+                    outcome.push_str(&shot_result_text(&fresh, resolved_display_target(&parts)));
                     shot = Some(fresh);
                 }
                 Err(error) if matches!(action, ComputerUseAction::Screenshot) => {
@@ -1815,6 +2098,12 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         for warning in &warnings {
             outcome.push_str(&format!("\nwarning: {warning}"));
         }
+        // The note reached the model with this outcome — exactly-once
+        // guaranteed from here (a first action that failed above left the
+        // flag unset, so the next action retries the surfacing).
+        if note_pending {
+            parts.state.lock().target_note_surfaced = true;
+        }
         Ok(outcome)
     })();
 
@@ -1828,6 +2117,10 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         action.name(),
         consent_label(&action, confirmed_t3),
     );
+    // Which display the action targeted ("virtual" | "physical"): the
+    // backend's recorded creation decision, or the resolved preference
+    // fallback for runs that never reached a capability read.
+    record.with_display_target(resolved_display_target(&parts).as_str());
     match &action {
         // Privacy: never log typed text — length only.
         ComputerUseAction::Type { text } => {
@@ -1882,6 +2175,14 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         }
         ComputerUseAction::MouseMove { x, y } | ComputerUseAction::ElementAtPoint { x, y } => {
             record.with_target(&format!("({x}, {y})"));
+        }
+        // open: the program name is model-supplied FREE TEXT, so — like
+        // chords and typed text — it never enters the audit (a secret can be
+        // chunk-spelled across open calls the same way it can across chord
+        // chunks). The arg COUNT and the display_target field carry the
+        // audit story; the model-facing receipt still names the program.
+        ComputerUseAction::Open { args, .. } => {
+            record.with_target(&format!("open with {} args", args.len()));
         }
         _ => {}
     }
@@ -1995,6 +2296,9 @@ fn action_summary(action: &ComputerUseAction) -> String {
         ComputerUseAction::MouseUp { button } => format!("{} mouse up", button.as_str()),
         // T3 gate excludes hover/scroll/observe, so these arms are currently unreachable.
         ComputerUseAction::MouseMove { x, y } => format!("mouse_move to ({x}, {y})"),
+        // The program name (never the args) identifies the launch for the
+        // user; `open` is T3-excluded, so this summary is informational.
+        ComputerUseAction::Open { program, .. } => format!("open {program}"),
         other => other.name().to_string(),
     }
 }
@@ -2255,6 +2559,21 @@ fn execute_action(
             backend.hold_key(keys, *ms)?;
             Ok(format!("held {chord} for {ms} ms"))
         }
+        ComputerUseAction::Open { program, args } => {
+            // Virtual backends spawn inside their display; physical backends
+            // answer the trait's explicit Unsupported (opening apps on the
+            // user's real desktop is out of scope) — the model sees the
+            // honest error instead of a silent desktop launch.
+            let pid = backend.open_app(program, args)?;
+            let args_note = if args.is_empty() {
+                String::new()
+            } else {
+                format!(" with {} arg(s)", args.len())
+            };
+            Ok(format!(
+                "opened {program}{args_note} (pid {pid}); take a screenshot next to see its window"
+            ))
+        }
     }
 }
 
@@ -2269,12 +2588,25 @@ impl ToolSpec for ComputerUseTool {
     }
 
     fn description(&self) -> &str {
-        "Control the user's desktop: take screenshots, move/click the mouse, type text, \
-         press key chords, scroll, and inspect the accessibility tree. \
+        "Control a desktop: take screenshots, move/click the mouse, type text, \
+         press key chords, scroll, open applications (`open`, spawns a program \
+         directly — no shell — on the display target), and inspect the accessibility tree. \
+         When the app reports an isolated virtual display is in use (see the \
+         [target: …] line on every screenshot), everything you do happens on that \
+         isolated display and the user's real desktop is untouched — launch apps \
+         there with `open` and work freely; this isolation is subject to the \
+         platform residuals the target note discloses (e.g. on macOS an app \
+         you just opened passes through the user's desktop while it is being \
+         moved in), and per-action screening does NOT run on the isolated \
+         display (nothing there can be a user-facing control the user did not \
+         grant). When the target is the user's real \
+         desktop, every action is visible to the user: minimize disruption, keep \
+         actions to the minimum the task needs, and say what you are about to do \
+         before doing it. \
          Coordinates are ALWAYS in the pixel space of the last screenshot this tool returned \
          (origin top-left); take a screenshot first and reuse its coordinate space. \
          Every action that touches the mouse or keyboard (mouse_move, scroll, clicks, keys, \
-         typing) requires a per-session grant from the user; the grant stays valid until \
+         typing, open) requires a per-session grant from the user; the grant stays valid until \
          revoked or until the session's engine is recycled (e.g. reaped after idle), in \
          which case the user must grant again. Before an activation action runs (clicks, drags, mouse down/up, typing, \
          keys), its target is screened against a consequential-control denylist \
@@ -2282,7 +2614,8 @@ impl ToolSpec for ComputerUseTool {
          pauses the action until the user confirms it via confirm_id. Screening is \
          best-effort category detection over the accessibility tree: when the target \
          cannot be read or screening is unavailable, the action still executes without \
-         confirmation. Know the limits before relying on the screen: the category terms \
+         confirmation (open is not screened at all: nothing is on screen yet — its \
+         arguments are spawned directly, never through a shell). Know the limits before relying on the screen: the category terms \
          match English, Chinese (Simplified/Traditional), and Japanese labels only — in \
          other UI languages only the language-independent password-field screen applies. \
          The target is located by a point lookup with no window identity, so a \
@@ -2335,6 +2668,8 @@ impl ToolSpec for ComputerUseTool {
                 "amount": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Scroll wheel clicks, 1-100 (scroll)" },
                 "max_depth": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Max accessibility tree depth (ui_tree)" },
                 "max_nodes": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Max accessibility tree nodes (ui_tree)" },
+                "program": { "type": "string", "maxLength": 1024, "description": "Program to launch, spawned directly without a shell (open): a bare name resolved via PATH or an absolute path" },
+                "args": { "type": "array", "items": { "type": "string", "maxLength": 4096 }, "maxItems": 64, "description": "Arguments passed verbatim to the program (open)" },
                 "confirm_id": { "type": "string", "description": "Single-use user-confirmation token for a blocked consequential action" }
             },
             "required": ["action"]
@@ -2384,6 +2719,12 @@ impl ToolSpec for ComputerUseTool {
                 let error_text = error.to_string();
                 let mut record = AuditRecord::new(&self.parts.session_id, "unparseable", "n/a");
                 record.with_target(&audit_target);
+                // Display target like every other boundary record (the cache
+                // is unprimed this early, so this is the resolved-preference
+                // answer — the audit vocabulary treats absent/unknown as
+                // distinct, and the resolved preference is what the session
+                // WOULD target).
+                record.with_display_target(resolved_display_target(&self.parts).as_str());
                 let record = record.finish(
                     "rejected",
                     Some(format!(
@@ -2409,19 +2750,44 @@ impl ToolSpec for ComputerUseTool {
             }
         };
 
-        // Capabilities first (review finding: prompting for the grant before
-        // reporting the platform unsupported would induce the user to
-        // authorize a platform that can never be used, while burning a grant
-        // budget for nothing).
-        if parsed.action.class() == ActionClass::Input {
+        // Capabilities BEFORE the gate for Input actions (review finding:
+        // prompting for the grant before reporting the platform unsupported
+        // would induce the user to authorize a platform that can never be
+        // used, while burning a grant budget for nothing) — the read's
+        // target cache is what the consent gate's grant event and the
+        // rejected-call audits below report, so a rejection carries the
+        // backend's recorded decision instead of the live probe's answer
+        // (which a mid-run stack install could flip). Observe actions read
+        // AFTER the gate, inside `run`: the capability read constructs the
+        // backend (a real side effect — on a virtual-target host it spawns
+        // the whole display stack), and a stale-engine Observe call must
+        // not boot that stack just to be told the feature is off; its
+        // rejection audit carries the resolved-preference answer like every
+        // other pre-backend boundary record (see audit.rs).
+        let input_class = parsed.action.class() == ActionClass::Input;
+        if input_class {
             let backend = self.parts.backend.clone();
-            let capabilities = tauri::async_runtime::spawn_blocking(move || backend.capabilities())
+            let read = tauri::async_runtime::spawn_blocking(move || backend.capabilities())
                 .await
                 .map_err(|error| {
-                    ToolError::execution_failed(format!("computer use worker join failed: {error}"))
+                    // The read itself failed (worker gone / backend start
+                    // failed): the call dies here without reaching run()'s
+                    // audit, so leave the trace the audit discipline
+                    // promises instead of a silent short-circuit.
+                    let text = format!("computer use worker join failed: {error}");
+                    audit_failed_call(&self.parts, &parsed.action, &text);
+                    ToolError::execution_failed(text)
                 })?
-                .map_err(|error| ToolError::execution_failed(backend_error_text(&error)))?;
-            if !capabilities.input {
+                .map_err(|error| {
+                    let text = backend_error_text(&error);
+                    audit_failed_call(&self.parts, &parsed.action, &text);
+                    ToolError::execution_failed(text)
+                })?;
+            // Cache the backend's recorded target at the earliest read so
+            // the grant payload below (and every later surface) reflects
+            // the backend's actual decision, not the preference fallback.
+            cache_display_target(&self.parts, &read);
+            if !read.input {
                 // Audit the rejected call (review finding: capability
                 // rejections had no trace at all, inconsistent with the
                 // established audit treatment of gate rejections).
@@ -2431,12 +2797,12 @@ impl ToolSpec for ComputerUseTool {
                     "capability:input-unsupported",
                     &format!(
                         "input injection is unsupported on this platform/session ({})",
-                        capabilities.notes
+                        read.notes
                     ),
                 );
                 return Ok(ToolResult::error(format!(
                     "input injection is unsupported on this platform/session ({})",
-                    capabilities.notes
+                    read.notes
                 )));
             }
         }
@@ -2469,7 +2835,14 @@ impl ToolSpec for ComputerUseTool {
                 .await;
                 self.parts.events.emit(
                     EVENT_GRANT_REQUIRED,
-                    json!({ "session_id": self.parts.session_id }),
+                    json!({
+                        "session_id": self.parts.session_id,
+                        // Which display the grant would authorize control of
+                        // ("virtual" | "physical", §2): the dialog copy is
+                        // target-aware; old frontends tolerate the missing
+                        // field (fail-neutral).
+                        "target": resolved_display_target(&self.parts).as_str(),
+                    }),
                 );
             }
             // Audit the rejected call (non-input classes may degrade to
@@ -2489,6 +2862,14 @@ impl ToolSpec for ComputerUseTool {
         let parts = self.parts.clone();
         let audit_session = self.parts.session_id.clone();
         let audit_action = parsed.action.name();
+        // The join-failure audit record must carry the display target like
+        // every other boundary record — this is the "action may have
+        // executed" path, exactly where knowing the target matters most.
+        // `resolved_display_target` reads the cached backend decision (the
+        // capability read in `execute` already primed it for Input actions);
+        // for the rare pre-cache panic it falls back to the probe/preference
+        // answer, which is still better than an untargeted record.
+        let audit_target = resolved_display_target(&self.parts).as_str().to_string();
         tauri::async_runtime::spawn_blocking(move || run(parts, parsed, workspace))
             .await
             .map_err(|error| {
@@ -2499,11 +2880,9 @@ impl ToolSpec for ComputerUseTool {
                 // may embed input content (e.g. a chord fragment from a char
                 // boundary panic) and must not be echoed into the JSONL; the
                 // full error goes only to the model.
-                let record = AuditRecord::new(&audit_session, audit_action, "input").finish(
-                    "error",
-                    Some("worker join failed".to_string()),
-                    0,
-                );
+                let mut record = AuditRecord::new(&audit_session, audit_action, "input");
+                record.with_display_target(audit_target.as_str());
+                let record = record.finish("error", Some("worker join failed".to_string()), 0);
                 if let Err(audit_error) =
                     AuditLog::for_session(&audit_session).and_then(|log| log.append(&record))
                 {
@@ -2528,13 +2907,19 @@ fn rejection_name(rejection: GuardRejection) -> &'static str {
 /// Audit for rejected calls (gate rejection / capability rejection): the
 /// action did not run and there is no injection consequence, but the error is
 /// never swallowed silently (fail-open: an append failure only eprintlns).
+/// The record carries the resolved display target like every other
+/// boundary record. The target is the backend's recorded decision: the
+/// early capability read in `execute` primes the cache for EVERY action
+/// class before the gates, so even a first-action rejection reports the
+/// backend's actual decision rather than the live probe's answer.
 fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, message: &str) {
-    let record = AuditRecord::new(
+    let mut record = AuditRecord::new(
         &parts.session_id,
         action.name(),
         format!("rejected:{reason}"),
-    )
-    .finish("rejected", Some(message.to_string()), 0);
+    );
+    record.with_display_target(resolved_display_target(parts).as_str());
+    let record = record.finish("rejected", Some(message.to_string()), 0);
     match AuditLog::for_session(&parts.session_id) {
         Ok(log) => {
             if let Err(error) = log.append(&record) {
@@ -2543,6 +2928,30 @@ fn audit_rejected_call(parts: &Parts, action: &ComputerUseAction, reason: &str, 
         }
         Err(error) => {
             eprintln!("[computer_use] audit log unavailable for rejected call: {error}");
+        }
+    }
+}
+
+/// Audit a call that failed BEFORE `run()`'s per-call audit record exists —
+/// a pre-gate capability-read failure (backend start failed, worker died).
+/// The record is an `error` (the call was not refused by a gate — it
+/// failed), with the display target from the same resolution chain as
+/// `run()` (cached backend decision → session registry row → the
+/// preference+probe fallback, so a prior successful action still pins this
+/// record to the session's real target).
+/// Fail-open like every audit append: a write failure warns, never blocks.
+fn audit_failed_call(parts: &Parts, action: &ComputerUseAction, message: &str) {
+    let mut record = AuditRecord::new(&parts.session_id, action.name(), "pre-run");
+    record.with_display_target(resolved_display_target(parts).as_str());
+    let record = record.finish("error", Some(message.to_string()), 0);
+    match AuditLog::for_session(&parts.session_id) {
+        Ok(log) => {
+            if let Err(error) = log.append(&record) {
+                eprintln!("[computer_use] failed-call audit append failed: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("[computer_use] audit log unavailable for failed call: {error}");
         }
     }
 }
@@ -2563,6 +2972,15 @@ mod confirm_payload_tests {
         preview: Option<String>,
         masked_target: bool,
     ) -> Value {
+        payload_for_target(action, preview, masked_target, "physical")
+    }
+
+    fn payload_for_target(
+        action: ComputerUseAction,
+        preview: Option<String>,
+        masked_target: bool,
+        target: &str,
+    ) -> Value {
         let summary = action_summary(&action);
         build_confirm_payload(
             "s-test",
@@ -2572,6 +2990,7 @@ mod confirm_payload_tests {
             "element label",
             preview.as_deref(),
             masked_target,
+            target,
         )
     }
 
@@ -2588,9 +3007,23 @@ mod confirm_payload_tests {
         assert_eq!(payload["button"], "left");
         assert_eq!(payload["click_count"], 2);
         assert_eq!(payload["point"], json!({ "x": 5, "y": 6 }));
+        // Target disclosure (§2): a frozen "virtual" | "physical" string.
+        assert_eq!(payload["target"], "physical");
         // No typing fields on a click.
         assert!(payload.get("text_length").is_none());
         assert_eq!(payload["text_preview_truncated"], false);
+        // The virtual spelling is the other half of the frozen vocabulary.
+        let virtual_payload = payload_for_target(
+            ComputerUseAction::Click {
+                button: MouseButton::Left,
+                count: 1,
+                at: None,
+            },
+            None,
+            false,
+            "virtual",
+        );
+        assert_eq!(virtual_payload["target"], "virtual", "{virtual_payload}");
     }
 
     #[test]

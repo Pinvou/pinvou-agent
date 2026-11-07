@@ -251,6 +251,31 @@ pub fn parse_key_chord(text: &str) -> Result<Vec<Key>, String> {
     Ok(keys)
 }
 
+/// Which display the backend operates on. Internal only: payload/audit
+/// boundaries map it to the strings "virtual" / "physical" (via
+/// [`DisplayTarget::as_str`]). The one-time fallback decision at backend
+/// creation is recorded here (in `Capabilities::target`), so a session never
+/// silently flips targets mid-run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayTarget {
+    /// The user's real desktop session.
+    Physical,
+    /// An isolated virtual display (Xvfb / hidden Win32 desktop / CGVirtualDisplay).
+    Virtual,
+}
+
+impl DisplayTarget {
+    /// The stable string used at the payload/audit boundaries ("virtual" /
+    /// "physical"). Frontend consumers treat a missing field as physical
+    /// (fail-neutral), so these spellings are frozen.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Physical => "physical",
+            Self::Virtual => "virtual",
+        }
+    }
+}
+
 /// Backend capability declaration. The stub backend reports all false; real backends fill in
 /// what the platform actually supports.
 #[derive(Debug, Clone)]
@@ -260,6 +285,14 @@ pub struct Capabilities {
     pub ui_tree: bool,
     /// Free-text explanation (e.g. "input unavailable: no portal authorization").
     pub notes: String,
+    /// Which display this backend drives. Set once at backend creation (the
+    /// virtual-vs-physical fallback decision happens exactly once, there) and
+    /// never re-evaluated mid-session.
+    pub target: DisplayTarget,
+    /// Model-facing note about the target's fidelity/behavior beyond
+    /// [`Self::notes`] (e.g. "isolated virtual display (Xvfb), the user's
+    /// desktop is unaffected"). Empty when the platform has nothing to add.
+    pub target_note: String,
 }
 
 /// The raw result of one screen capture (device physical pixels).
@@ -457,6 +490,14 @@ pub enum ComputerUseAction {
         chord: String,
         ms: u64,
     },
+    /// Launch an application inside the backend's display target (virtual
+    /// backends only; physical backends keep the explicit-unsupported
+    /// default). The program is spawned directly (no shell); `args` are
+    /// passed verbatim.
+    Open {
+        program: String,
+        args: Vec<String>,
+    },
 }
 
 impl ComputerUseAction {
@@ -475,7 +516,13 @@ impl ComputerUseAction {
             | Self::Drag { .. }
             | Self::Type { .. }
             | Self::KeyChord { .. }
-            | Self::HoldKey { .. } => ActionClass::Input,
+            | Self::HoldKey { .. }
+            // `open` launches an app on the display target: Input tier (a
+            // session grant is required). It deliberately gets NO per-action
+            // T3 confirmation — nothing is on the (virtual) screen yet to
+            // screen, and the launch itself does not touch the user's
+            // physical desktop when the target is virtual.
+            | Self::Open { .. } => ActionClass::Input,
         }
     }
 
@@ -510,6 +557,7 @@ impl ComputerUseAction {
             Self::Type { .. } => "type",
             Self::KeyChord { .. } => "key",
             Self::HoldKey { .. } => "hold_key",
+            Self::Open { .. } => "open",
         }
     }
 
@@ -523,9 +571,9 @@ impl ComputerUseAction {
     }
 
     /// Whether a follow-up screenshot is attached after the action. Single source of truth:
-    /// actions that actually change screen content (keyboard, click, drag, wheel) and wait
-    /// all attach a follow-up; mouse_move only moves the pointer and changes no content, so
-    /// a follow-up would only burn tokens and is not attached.
+    /// actions that actually change screen content (keyboard, click, drag, wheel, app
+    /// launch) and wait all attach a follow-up; mouse_move only moves the pointer and
+    /// changes no content, so a follow-up would only burn tokens and is not attached.
     pub fn attaches_screenshot(&self) -> bool {
         match self {
             Self::Screenshot | Self::Wait { .. } | Self::Scroll { .. } => true,
@@ -535,7 +583,10 @@ impl ComputerUseAction {
             | Self::Drag { .. }
             | Self::Type { .. }
             | Self::KeyChord { .. }
-            | Self::HoldKey { .. } => true,
+            | Self::HoldKey { .. }
+            // The freshly opened app's window IS the screen change the model
+            // must see next.
+            | Self::Open { .. } => true,
             Self::CursorPosition | Self::UiTree { .. } | Self::ElementAtPoint { .. } => false,
             // mouse_move deliberately does not attach a screenshot.
             Self::MouseMove { .. } => false,

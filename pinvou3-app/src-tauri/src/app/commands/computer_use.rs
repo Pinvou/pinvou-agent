@@ -87,6 +87,42 @@ pub struct ComputerUseStatus {
     /// others instead of waiting for a click that would fail with
     /// "unknown or expired".
     pub pending_confirm: Option<serde_json::Value>,
+    /// Global virtual-display resolution (frozen §2 vocabulary):
+    /// "active" (a session is currently driving the virtual display),
+    /// "ready" (preferred + probe OK, none active), "unavailable"
+    /// (preferred, probe failed — see `virtual_display_detail`),
+    /// "disabled" (preference off). Serialized camelCase per the frontend
+    /// slice contract (`virtualDisplayState`, default "unknown" there).
+    #[serde(rename = "virtualDisplayState")]
+    pub virtual_display_state: &'static str,
+    /// Diagnostic for `virtualDisplayState` ("" when nothing is wrong;
+    /// e.g. the linux install hint when the probe fails). Present on every
+    /// response so consumers never key on absence.
+    #[serde(rename = "virtualDisplayDetail")]
+    pub virtual_display_detail: String,
+    /// The persisted "prefer isolated virtual display" preference
+    /// (in-memory mirror of settings.json `computer_use.prefer_virtual_display`,
+    /// read from `ComputerUseShared`). This is the PREFERENCE, not the derived
+    /// state: the settings switch binds to it, while the hint line renders
+    /// from `virtualDisplayState` — so an active virtual session with the
+    /// preference off reports `preferVirtualDisplay: false` alongside
+    /// `virtualDisplayState: "active"` (the live backend's target was decided
+    /// once, at creation). Always serialized, camelCase per the same frozen
+    /// contract as the other virtual fields.
+    #[serde(rename = "preferVirtualDisplay")]
+    pub prefer_virtual_display: bool,
+    /// The display target THIS session's backend was created for
+    /// ("virtual" | "physical", from the guard's per-session registry),
+    /// null when the session has no live row (tool not constructed /
+    /// already torn down, or an empty session id). Server truth for the
+    /// consent banner's variant: a window reload loses the event-derived
+    /// `grantedTarget`, so the frontend reconciles it from this field
+    /// (status wins when a concrete target is present; the event path
+    /// stays the fallback). Always serialized (null included) so the
+    /// frontend can tell "server says no row" apart from an older backend
+    /// that predates the field.
+    #[serde(rename = "sessionDisplayTarget")]
+    pub session_display_target: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -94,6 +130,7 @@ pub fn computer_use_get_status(
     session_id: String,
     shared: State<'_, Arc<ComputerUseShared>>,
 ) -> ComputerUseStatus {
+    let (virtual_display_state, virtual_display_detail) = shared.virtual_display_state();
     ComputerUseStatus {
         enabled: shared.is_enabled(),
         // An empty session id means "no active session" (e.g. the settings
@@ -108,6 +145,15 @@ pub fn computer_use_get_status(
         } else {
             shared.pending_payload_for_session(&session_id)
         },
+        virtual_display_state,
+        virtual_display_detail,
+        prefer_virtual_display: shared.prefer_virtual_display(),
+        // None for an empty session id or a session without a live backend
+        // row (the accessor reads the guard's registry, the same source the
+        // "active" state resolution uses).
+        session_display_target: shared
+            .session_target(&session_id)
+            .map(|target| target.as_str()),
     }
 }
 
@@ -289,6 +335,43 @@ pub async fn computer_use_set_enabled(
     Ok(())
 }
 
+/// Set the "prefer isolated virtual display" preference. Same persist-then-
+/// flip ordering as [`computer_use_set_enabled`]: settings.json first (a
+/// failed write must not leave the in-memory flag diverged), then the
+/// in-memory mirror — which also refreshes the cached availability snapshot
+/// (the probe is cheap: binary/class presence only, never a server spawn) —
+/// then a state-changed broadcast so every window with an active session
+/// re-renders its virtual-display hint immediately (the broadcast carries
+/// no session id; the frontend listener skips windows that cannot resolve
+/// one, and those pick the change up on their next status read — e.g. the
+/// settings page's mount poll). NO disallow-list refresh: this
+/// preference changes WHERE future sessions run, not which tools are
+/// visible. No consent sweep rides the flip: live sessions keep their
+/// already-created backend (the fallback decision is one-time, at creation
+/// — by design).
+#[tauri::command]
+pub async fn computer_use_set_virtual_display_preference(
+    enabled: bool,
+    shared: State<'_, Arc<ComputerUseShared>>,
+    app: AppHandle,
+) -> Result<(), String> {
+    // Same settings-transaction shape as the master toggle (cross-process
+    // settings.json.lock held across the write; joined on a blocking worker).
+    super::settings::join_blocking("computer_use_set_virtual_display_preference", move || {
+        UserPrefs::update_transaction(|prefs| {
+            prefs.computer_use.prefer_virtual_display = enabled;
+            Ok(())
+        })
+    })
+    .await?;
+    // The await between persist and flip mirrors the accepted set_enabled
+    // race shape: settings are replayed at startup, toggles are user-paced
+    // and idempotent.
+    shared.set_display_pref(enabled);
+    notify_state_changed(&app, "virtual-display-preference-changed", None);
+    Ok(())
+}
+
 /// Trigger platform permission onboarding: macOS raises the Screen
 /// Recording + Accessibility system dialogs; Windows/Linux have no system
 /// permission flow and get an explicit unsupported error (never a silent
@@ -355,6 +438,10 @@ mod tests {
                 "action": "left_click",
                 "confirm_id": "cu-abc"
             })),
+            virtual_display_state: "ready",
+            virtual_display_detail: String::new(),
+            prefer_virtual_display: true,
+            session_display_target: Some("virtual"),
         };
         let Ok(value) = serde_json::to_value(&status) else {
             panic!("ComputerUseStatus must serialize");
@@ -372,6 +459,18 @@ mod tests {
                     "action": "left_click",
                     "confirm_id": "cu-abc"
                 },
+                // The virtual-display slice keys are camelCase per the §2
+                // frozen contract (unlike the snake_case neighbors here —
+                // the frontend slice consumes these exact spellings).
+                "virtualDisplayState": "ready",
+                "virtualDisplayDetail": "",
+                // The persisted preference rides the same camelCase contract
+                // and is always serialized (a plain bool, never absent).
+                "preferVirtualDisplay": true,
+                // The per-session banner-truth key rides the same camelCase
+                // contract: a live virtual backend answers "virtual" and the
+                // frontend reconciles its event-derived grantedTarget from it.
+                "sessionDisplayTarget": "virtual",
             })
         );
         // A served pending_confirm is exactly the confirm_required event
@@ -394,6 +493,172 @@ mod tests {
             Some(&serde_json::Value::Null),
             "{value}"
         );
+        // The virtual-display keys stay PRESENT on every response, including
+        // the unavailable + detail shape (the settings hint renders the
+        // detail line from it).
+        let unavailable = ComputerUseStatus {
+            virtual_display_state: "unavailable",
+            virtual_display_detail: "install xvfb".to_string(),
+            ..no_confirm
+        };
+        let Ok(value) = serde_json::to_value(&unavailable) else {
+            panic!("ComputerUseStatus must serialize");
+        };
+        assert_eq!(value["virtualDisplayState"], "unavailable", "{value}");
+        assert_eq!(value["virtualDisplayDetail"], "install xvfb", "{value}");
+        // The banner-truth key must stay PRESENT as null when the session has
+        // no live backend row (the "no row" answer the frontend reconciles
+        // against, distinct from an older backend whose answer predates the
+        // field): same present-null discipline as pending_confirm above.
+        let no_row = ComputerUseStatus {
+            session_display_target: None,
+            ..unavailable
+        };
+        let Ok(value) = serde_json::to_value(&no_row) else {
+            panic!("ComputerUseStatus must serialize");
+        };
+        assert_eq!(
+            value.get("sessionDisplayTarget"),
+            Some(&serde_json::Value::Null),
+            "{value}"
+        );
+    }
+
+    /// The registry-backed projection feeding `sessionDisplayTarget`:
+    /// registered sessions answer their target, unknown/empty ids answer
+    /// None, and a cleared row reverts to None (the reload-reconciliation
+    /// contract, exercised through the same accessor the command calls).
+    #[test]
+    fn session_target_projection_follows_the_registry() {
+        use crate::features::computer_use::DisplayTarget;
+        let shared = ComputerUseShared::new();
+        assert_eq!(shared.session_target("s1"), None);
+        assert_eq!(shared.session_target(""), None);
+        shared.set_session_target("s1", DisplayTarget::Virtual);
+        assert_eq!(shared.session_target("s1"), Some(DisplayTarget::Virtual));
+        assert_eq!(
+            shared.session_target("s1").map(DisplayTarget::as_str),
+            Some("virtual")
+        );
+        // Overwrite = the same-session successor tool re-registered (its
+        // backend fell back to physical).
+        shared.set_session_target("s1", DisplayTarget::Physical);
+        assert_eq!(
+            shared.session_target("s1").map(DisplayTarget::as_str),
+            Some("physical")
+        );
+        // Teardown clears; other sessions are unaffected throughout.
+        shared.set_session_target("s2", DisplayTarget::Virtual);
+        shared.clear_session_target("s1");
+        assert_eq!(shared.session_target("s1"), None);
+        assert_eq!(
+            shared.session_target("s2").map(DisplayTarget::as_str),
+            Some("virtual")
+        );
+        shared.clear_session_target("s2");
+    }
+
+    /// The `virtualDisplayState` resolution is a frozen four-value vocabulary
+    /// ("active" | "ready" | "unavailable" | "disabled"); "active" wins over
+    /// a stale snapshot the moment any live session drives the virtual
+    /// display. Exercised through the guard (the command is a thin pass-
+    /// through of `shared.virtual_display_state()`).
+    #[test]
+    fn virtual_display_state_resolves_active_over_snapshot() {
+        use crate::features::computer_use::{DisplayTarget, VirtualAvailabilitySnapshot};
+        let green = VirtualAvailabilitySnapshot {
+            state: "available",
+            detail: String::new(),
+        };
+        let shared = ComputerUseShared::new();
+        // Until the first probe runs, the state is explicit-unavailable
+        // (never a promised-but-unprobed "ready").
+        assert_eq!(shared.virtual_display_state().0, "unavailable");
+        // Pref on + green probe → ready (the green probe is injected here:
+        // this host's stub probe answers unavailable, and the production
+        // command refreshes the cache from the real probe after every flip).
+        shared.set_display_pref(true);
+        shared.set_virtual_availability(green.clone());
+        assert_eq!(shared.virtual_display_state().0, "ready");
+        // Pref off → disabled regardless of the probe (the flip refreshes
+        // the cache itself; the disabled snapshot overrides the injected
+        // green one).
+        shared.set_display_pref(false);
+        assert_eq!(shared.virtual_display_state().0, "disabled");
+        // Preference back on with a green probe → ready again.
+        shared.set_display_pref(true);
+        shared.set_virtual_availability(green);
+        assert_eq!(shared.virtual_display_state().0, "ready");
+        // A live virtual session upgrades to "active" even over a stale
+        // "disabled" snapshot (the session WAS created while the pref was
+        // on and is still running).
+        shared.set_session_target("s-active", DisplayTarget::Virtual);
+        let (state, _detail) = shared.virtual_display_state();
+        assert_eq!(state, "active");
+        // A live session driving the PHYSICAL target (the target was
+        // resolved once at backend creation — e.g. the preference was
+        // flipped on mid-session) does not count as "active", but it must
+        // not leave the hint at "ready" either: the ready copy claims the
+        // agent works in an isolated display while the banner for the same
+        // session truthfully says it is controlling the user's computer.
+        // "disabled" is the vocabulary word whose copy states the agent
+        // uses the real screen (R8 M1).
+        shared.set_session_target("s-active", DisplayTarget::Physical);
+        assert_eq!(shared.virtual_display_state().0, "disabled");
+        // With the row cleared the hint returns to the snapshot's own truth.
+        shared.clear_session_target("s-active");
+        assert_eq!(shared.virtual_display_state().0, "ready");
+    }
+
+    /// The `preferVirtualDisplay` status field mirrors the PREFERENCE, not the
+    /// derived state: after `computer_use_set_virtual_display_preference(false)`
+    /// the status must answer `preferVirtualDisplay: false` even while a
+    /// virtual session is STILL live (`virtualDisplayState` stays "active" —
+    /// the live backend's target was decided once at creation). The settings
+    /// switch binds to the field; the state-driven hint line keeps reading the
+    /// state. Exercised through the same guard accessors the command
+    /// projects (`prefer_virtual_display` / `virtual_display_state`), since
+    /// the command itself needs Tauri `State`.
+    #[test]
+    fn prefer_virtual_display_reflects_the_pref_even_while_a_session_is_active() {
+        use crate::features::computer_use::DisplayTarget;
+        let status_json = |shared: &ComputerUseShared| {
+            let (virtual_display_state, virtual_display_detail) = shared.virtual_display_state();
+            serde_json::to_value(&ComputerUseStatus {
+                enabled: true,
+                granted: true,
+                stopped: false,
+                platform_supported: true,
+                pending_grant: false,
+                pending_confirm: None,
+                virtual_display_state,
+                virtual_display_detail,
+                prefer_virtual_display: shared.prefer_virtual_display(),
+                session_display_target: shared.session_target("s-live").map(|t| t.as_str()),
+            })
+            .expect("ComputerUseStatus must serialize")
+        };
+        let shared = ComputerUseShared::new();
+        // A live virtual session (the registry row is what makes the state
+        // "active", independent of the probe on this host).
+        shared.set_session_target("s-live", DisplayTarget::Virtual);
+        // Default preference is TRUE.
+        let value = status_json(&shared);
+        assert_eq!(value["preferVirtualDisplay"], true, "{value}");
+        assert_eq!(value["virtualDisplayState"], "active", "{value}");
+        assert_eq!(value["sessionDisplayTarget"], "virtual", "{value}");
+        // The pref write flips the field even while the session stays active.
+        shared.set_display_pref(false);
+        let value = status_json(&shared);
+        assert_eq!(
+            value["preferVirtualDisplay"], false,
+            "the preference flip must be visible in the status: {value}"
+        );
+        assert_eq!(
+            value["virtualDisplayState"], "active",
+            "the live virtual session keeps the derived state active: {value}"
+        );
+        shared.clear_session_target("s-live");
     }
 
     /// The permission projection's JSON keys are a frontend contract (the

@@ -3817,7 +3817,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             />
           )}
           {COMPUTER_USE_ENABLED && (
-            <ComputerUseDialogs slice={computerUseSlice} copy={computerUseCopy} />
+            <ComputerUseDialogs
+              slice={computerUseSlice}
+              copy={computerUseCopy}
+              virtualDisplayNote={(bs && bs.platformCapabilities && bs.platformCapabilities.virtualDisplayNote) || ''}
+            />
           )}
           {/* Floating Input Area */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: session-row drag-drop hot zone; the keyboard-equivalent path is the composer @ mention panel */}
