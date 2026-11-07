@@ -247,6 +247,10 @@
     state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
     if (restoreSteeredWorkingSet) restoreSteeredWorkingSet(buf);
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
+    // 同步解召唤守卫:守卫是全局单飞闸,旧 session 的在途 settle 凭召唤序号只入账
+    // 不写 UI(r3 审 m-minor:否则新会话里品/悟最长被静默吞 180s)。旧 settle 的
+    // finally 命中同序号时再赋 false 也幂等。
+    state.pinvouSummoning = false;
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
     state.busy = buf.scheduledInitialTurnPhase === "active" ? true : buf.busy;
@@ -3083,7 +3087,12 @@
   function dismissPinvouReview() {
     // 关窗即解召唤守卫:否则若在 await 期间被关(切 session 等路径),会留下"窗没了但
     // pinvouSummoning 仍 held"的死区——重复点品/悟在守卫处(summonPinvou 开头)被吞,要等
-    // 整个直连 vLLM 调用(≤30s)返回才解锁。in-flight 结果靠 summonPinvou 内 `if (state.pinvouModal)` 守卫自然丢弃。
+    // 整个直连模型调用(本地 5-30s,云端思考模型最长 180s 超时)返回才解锁。注意关窗
+    // 不取消后端请求:Rust 侧无 abort 通道,调用会跑完;返回后 recordPinvouReview
+    // 仍会把结果写入 sidecar。若关窗后又发起了新召唤,旧 settle 凭召唤序号
+    // (state.pinvouSummonSeq,见 summonPinvou)只入账:不写新弹窗、不解新守卫——
+    // 旧结果注入新弹窗/旧 finally 提前解新守卫两个串扰都被序号门挡住(r3 审 M9)。
+    // 代价:dismiss→再召唤=两次并发直连调用(各自计费);这是用户显式行为,幂等入账。
     state.pinvouModal = null;
     state.pinvouSummoning = false;
     notify();
@@ -4712,6 +4721,12 @@
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
     const sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
+    // 本次召唤序号:settle 路径凭 `seq === state.pinvouSummonSeq` 才写弹窗/解守卫。
+    // dismiss 即解守卫(保留"关窗后立即可再召唤"),所以 dismiss→再召唤窗口里旧
+    // settle 会晚到:序号不等时旧结果只入账、不写新弹窗,旧 finally 也不解掉新
+    // 召唤的守卫(r3 审 M9:旧结果注入新弹窗/旧 finally 提前解守卫,两个串扰)。
+    state.pinvouSummonSeq = (state.pinvouSummonSeq || 0) + 1;
+    const seq = state.pinvouSummonSeq;
     // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
     // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
     state.pinvouModal = { loading: true, coverage: mode === "coverage" };
@@ -4721,11 +4736,11 @@
       const review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
       if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
       recordPinvouReview(review); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
-      if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
+      if (state.pinvouModal && state.pinvouSummonSeq === seq) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
     } catch (e) {
-      if (state.activeSessionId === sid && state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
+      if (state.activeSessionId === sid && state.pinvouModal && state.pinvouSummonSeq === seq) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
     } finally {
-      state.pinvouSummoning = false;
+      if (state.pinvouSummonSeq === seq) state.pinvouSummoning = false; // 被顶掉的旧 settle 不动新召唤的守卫
       notify();
     }
   }

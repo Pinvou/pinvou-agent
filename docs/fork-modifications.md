@@ -68,12 +68,12 @@
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-11-05）
+## 0. 当前状态（2026-11-07）
 
-- 当前公开维护头与父仓 gitlink：`11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；本轮仅更新父仓引用，没有推进维护分支。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 93 个提交，r1 `1fafee7e2` 之上 78 个；91 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
-- 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：540 files, +119210/-49666，净增 69544；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 候选期登记头与父仓 gitlink：`dc73de769b75fbc2843a66dad3ce4b1aeae0d6d0`（2026-11-07 重钉，[Pinvou/CodeWhale#150](https://github.com/Pinvou/CodeWhale/pull/150) 待合；候选分支在评审中三次原地修订——`5c093b5d4`→`d0322fd0e` 修正 engine.rs 的 rustfmt use 排序、补 wrapper-vs-transport 同链 parity 测试与 doc，`d0322fd0e`→`c997d2ec0` 仅一词 doc 措辞，`c997d2ec0`→`dc73de769` 为 parity 测试补 ambient override env 清理（宿主设 CODEWHALE_MAX_OUTPUT_TOKENS 时会假红）并补双 CHANGELOG 条目——仍为单提交，登记头随每次修订同步重钉）。该提交（`feat(engine): expose route output budget to hosts`）把 `core::engine::route_effective_max_output_tokens` 与输入侧先例 `context_input_budget_for_route` 同型公开，供宿主一次性调用（品悟召唤检阅）复用与主对话完全相同的 `max_tokens` 预算链，不再硬编码漂移；纯 API 暴露、零行为变更、无可回馈口径的行为差异。维护基 `11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05，含 #115–#122、#114/#125 与 #123/#124/#129/#131/#133/#134/#135）仍为其祖先。**#150 以 squash 方式合入时公开头是合入时刻新生成的 commit**（底座 #123–#135 均为 squash 合入、非分支头直通），届时父仓 gitlink、登记（本节）与 fork-policy §0 须最后一次重钉到该合入头并收敛。**#150 合入前 `verify-public-submodule.sh`（公开可达门禁）对候选 gitlink 红是预期状态**——登记头=候选头只是 `fork-guard.sh` 本地拓扑层的口径，不替代、不放宽公开门禁。
+- 实测历史（新头）：上游 v0.9.12 `dcd4c200f` 之上 94 个提交，r1 `1fafee7e2` 之上 79 个；92 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。`scripts/fork-guard.sh` 的 `EXPECTED_HEAD`/`EXPECTED_COMMITS=94` 即登记值。
+- 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。候选期 r3 标签验证未放宽。
+- 实测 drift（基线 `11cba403d`）：540 files, +119210/-49666，净增 69544；候选提交另加 +94/-0（四个文件：engine.rs +3、engine/context.rs +75 含 parity 测试、两份 CHANGELOG.md 各 +8；无新 `forkguard_*` 行为名，独立名仍为 301，登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 

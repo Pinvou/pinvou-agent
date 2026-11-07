@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 93 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 94 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 merged.
-EXPECTED_HEAD="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
-EXPECTED_COMMITS=93
+# Registered head: candidate Pinvou/CodeWhale#150 head dc73de769 (route
+# output budget exposure; revised in place three times during review —
+# 5c093b5d4 → d0322fd0e fixed rustfmt ordering and added the wrapper-vs-
+# transport parity test, d0322fd0e → c997d2ec0 changed one doc word, and
+# c997d2ec0 → dc73de769 cleared the parity test's ambient override envs and
+# added the CHANGELOG entries) leading maintenance base 11cba403d. Foundation
+# PRs squash-merge (#123–#135), so when #150 lands the public head is a new
+# merge-time commit: re-pin EXPECTED_HEAD, the gitlink, and the registers to
+# that head as the final candidate-window step.
+EXPECTED_HEAD="dc73de769b75fbc2843a66dad3ce4b1aeae0d6d0"
+EXPECTED_COMMITS=94
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -308,6 +316,8 @@ fingerprints=(
   "APP|spawn 前安装 Engine session id   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.session_id = Some(session_id.to_string());"
   "APP|产品白名单复用原生 allowed_tools |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|宿主申报输出事实抵达钢丝回归        |pinvou3-app/src-tauri/src/features/assistant/route_wire_cap_tests.rs|fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies"
+  "APP|审查线材预算与主对话同链钉        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn main_wire_max_output_tokens_matches_engine_budget_for_k3"
+  "APP|审查思考永不关闭档位表钉        |pinvou3-app/src-tauri/src/features/review/mod.rs|fn review_thinking_controls_pick_lowest_tier_never_off"
   "APP|会话工具开关走动态禁用整形        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
   "APP|subagent ledger root 透传       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.subagent_state_root = Some(roots.ledger);"
   "APP|逐轮精确安全策略下发               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|turn_tool_security: Some(Arc::new(turn_tool_security))"
@@ -359,10 +369,11 @@ fingerprints=(
   "APP|Shell 任务按稳定来源对账         |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn forkguard_shell_monitor_assigns_identical_commands_by_stable_origin"
   "APP|GUI export reuses base session_export |pinvou3-app/src-tauri/src/features/sessions/store.rs|deepseek_tui::session_export::write_session_archive("
   "APP|GUI export store contract regression  |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_session_archive_export_via_store_keeps_full_context"
-  # --fast runs only the fingerprint layer (CI's sole entry point), but
-  # renaming a pinned test is exactly the shape it cannot see: this
-  # source-level fingerprint pulls the existence of the "no tool-call cap
-  # pinned test" into the sub-second layer — a rename or deletion turns red
+  # --fast runs Layer 0 (registered-head topology) plus the fingerprint layer
+  # (CI's sole entry point), but renaming a pinned test is exactly the shape
+  # the fingerprint layer cannot see: this source-level fingerprint pulls the
+  # existence of the "no tool-call cap pinned test" into the sub-second layer
+  # — a rename or deletion turns red
   # immediately; whether it actually executes is still verified at compile
   # level by the layer-3 run_pinned_cap_test.
   "APP|engine config no-tool-call-cap pinned test |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_has_no_tool_call_cap"
