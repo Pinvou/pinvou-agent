@@ -5,6 +5,9 @@
 // 拥有者跨 await，落定（受理成功/拒绝回队）即释放。本测试用 per-command
 // deferred 复现重叠触发 + 逆序查询完成（评审要求的形态），断言窗口内：
 // 队列不动、只有一次姿态查询；队首受理后剩余消息仍按队列序逐条发出。
+// 第二轮（评审 JensenChen28 5810381950 P2）：受理在途窗口内的新输入不得走
+// 直发路径——队首被受理 owner shift 走后 queued.length===0 且 busy===false，
+// 直发检查若不咨询受理拥有者，新输入会绕过队首起第二条查询（D,A 失序）。
 // 运行时回归与 web_send_gate_consumed_state_restore 同款 vm harness。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -187,6 +190,60 @@ test('web 排队受理 FIFO：队首被 Auto 门拒绝回队后仍保持队首�
   await tick(); await tick();
   assert.equal(rt.view().busy, true, '离开 Auto 后重试受理由 mode_changed 触发照常完成');
   assert.equal(rt.view().queued.length, 0, '重试消费队首');
+});
+
+test('web 排队受理 FIFO：受理在途窗口的新输入必须入队，不得直发绕过队首', async () => {
+  const rt = bootWebBridge();
+  await primeSessionA(rt);
+
+  // A 直发并受理（查询 1 即时放行）；后续查询挂起直到 gateRelease。
+  let gateCalls = 0;
+  let gateRelease = null;
+  rt.setHandler('get_mode_state', () => {
+    gateCalls += 1;
+    if (gateCalls === 1) return Promise.resolve({ mode: 'plan', multi_agent: false });
+    return new Promise(resolve => { gateRelease = resolve; });
+  });
+  rt.setHandler('web_access_chat', () => Promise.resolve({}));
+  const sendA = rt.flat.sendMessage('A');
+  await tick(); await tick();
+  await sendA;
+  assert.equal(rt.view().busy, true, 'precondition: A 已受理');
+
+  // B 入队；turn 终态 → flush 取走 B，其姿态门查询挂起（受理在途窗口）。
+  await rt.flat.sendMessage('B');
+  rt.emit('chat:done', { session_id: 'chat-a', seq: 301 });
+  await tick(); await tick();
+  assert.equal(rt.view().busy, false, 'B 在姿态门窗口：busy 未顶上');
+  assert.equal(rt.view().queued.length, 0, 'B 已被受理 owner shift 出队');
+  assert.equal(gateCalls, 2, 'B 的姿态门查询在途');
+
+  // 窗口内新输入 D：修复前两个直发检查都不咨询受理拥有者，D 直发并起第二
+  // 条查询挂住（D 先决即 D,A 失序）；修复后 D 入队排在 B 后，不起新查询。
+  const sendD = rt.flat.sendMessage('D');
+  await tick(); await tick();
+  const dLanded = await Promise.race([
+    sendD.then(() => true, () => false),
+    new Promise(resolve => { setTimeout(() => resolve(false), 50); }),
+  ]);
+  assert.equal(dLanded, true, 'D 必须走入队路径即时落定，而非挂在新姿态查询上');
+  assert.equal(gateCalls, 2, '受理在途时新输入不得起第二条姿态查询');
+  assert.equal(rt.view().queued.length, 1, 'D 必须入队排在 B 后');
+  assert.equal(rt.view().busy, false, 'D 不得在 B 受理前开 turn');
+
+  // B 放行受理 → B 轮终态 → flush D，放行 → D 受理。顺序必须 B 先 D 后。
+  gateRelease({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  assert.equal(rt.view().busy, true, 'B 受理后 busy 顶上');
+  rt.emit('chat:done', { session_id: 'chat-a', seq: 302 });
+  await tick(); await tick();
+  assert.equal(gateCalls, 3, 'D 的姿态门查询在 B 终态后才起（受理拥有者已释放）');
+  gateRelease({ mode: 'plan', multi_agent: false });
+  await tick(); await tick();
+  const orderText = JSON.stringify(rt.view().messages);
+  assert.ok(orderText.includes('"B"') && orderText.indexOf('"D"') > orderText.indexOf('"B"'),
+    'B 必须先于 D 入 transcript（FIFO）');
+  assert.equal(rt.view().queued.length, 0, '队列清空');
 });
 
 console.log('web_queue_admission_fifo: ok');

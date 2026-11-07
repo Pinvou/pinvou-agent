@@ -3454,7 +3454,10 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
 
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
-    if (isBusyFor(sid) || state.queued.length > 0) {
+    // 受理拥有者在途（flushAdmissionSids）时同样入队：队首恰被 owner shift
+    // 走、busy 未顶上的窗口里，直发会绕过队首另起姿态查询，先决时后输入
+    // 先于队首受理（评审 JensenChen28 5810381950 P2 的 D,A 失序）。
+    if (isBusyFor(sid) || state.queued.length > 0 || flushAdmissionSids.has(sid)) {
       const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
@@ -3480,7 +3483,8 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
     if (state.activeSessionId !== sid) {
       return abandonToOwnSession();
     }
-    if (isBusyFor(sid) || state.queued.length > 0) {
+    // 权威 hydrate 途中受理可能已在途/队列已积：同上一致入队，直发不得越过。
+    if (isBusyFor(sid) || state.queued.length > 0 || flushAdmissionSids.has(sid)) {
       const racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
