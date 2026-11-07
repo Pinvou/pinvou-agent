@@ -911,9 +911,11 @@ mod tests {
             .expect("the awaited edit_last_turn_reserved call must stay");
         let fold_at = counted
             .find("crate::platform::paths::redact_storage_prefix(&format!(")
-            .expect("the awaited-error arm must fold the storage root \
+            .expect(
+                "the awaited-error arm must fold the storage root \
              before egress: deleting the fold previously kept every suite \
-             green because the census scans .map_err arms only");
+             green because the census scans .map_err arms only",
+            );
         assert!(
             fold_at > call_at,
             "the fold must sit in the awaited-error arm after the \

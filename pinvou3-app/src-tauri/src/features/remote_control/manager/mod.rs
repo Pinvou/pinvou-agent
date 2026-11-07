@@ -5622,9 +5622,11 @@ mod tests {
             );
         let call = body
             .find("transfer::evict_oldest_ready_session_download(&mut inner);")
-            .expect("the eviction call must stay wired inside the gate (a \
+            .expect(
+                "the eviction call must stay wired inside the gate (a \
                      commented-out call keeps the needle only in a comment, \
-                     which the line filter strips)");
+                     which the line filter strips)",
+            );
         let capacity = body
             .find("ensure_web_session_download_capacity(&inner, reserved_bytes)?;")
             .expect("the capacity gate must stay in begin");
