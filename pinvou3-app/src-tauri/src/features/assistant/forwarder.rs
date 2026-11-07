@@ -2231,8 +2231,10 @@ mod transcript_persist_pins {
     //! fresh always-true atomic would ship green. Pin the plumbing instead.
 
     /// The production `spawn_event_forwarder` body with line comments
-    /// stripped, so prose that mentions a needle verbatim cannot satisfy a
-    /// pin.
+    /// stripped first, then closed `/* … */` spans removed (newline
+    /// count preserved; an unterminated `/*` is kept verbatim), so prose
+    /// that mentions a needle verbatim cannot satisfy a pin in either
+    /// comment kind.
     pub(super) fn forwarder_body() -> String {
         let src = include_str!("forwarder.rs");
         let signature = "pub(crate) fn spawn_event_forwarder(";
@@ -2243,7 +2245,7 @@ mod transcript_persist_pins {
             .filter_map(|marker| rest.find(marker))
             .min()
             .map_or(src.len(), |offset| start + signature.len() + offset);
-        src[start..end]
+        let without_line_comments = src[start..end]
             .split('\n')
             .map(|line| {
                 line.split("//")
@@ -2251,7 +2253,36 @@ mod transcript_persist_pins {
                     .expect("split always yields one item")
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        strip_block_comments(&without_line_comments)
+    }
+
+    /// Newline-preserving removal of closed `/* … */` spans. Runs after the
+    /// line-comment pass, so a `//`-commented-out `/*` marker cannot make
+    /// this eat live code; the needle set of every pin below lives in code,
+    /// never in a block comment.
+    fn strip_block_comments(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(open) = rest.find("/*") {
+            match rest[open..].find("*/") {
+                Some(close_rel) => {
+                    out.push_str(&rest[..open]);
+                    let inner = &rest[open + 2..open + close_rel];
+                    for _ in 0..inner.matches('\n').count() {
+                        out.push('\n');
+                    }
+                    rest = &rest[open + close_rel + 2..];
+                }
+                None => {
+                    // Unterminated block: keep it verbatim, scan past the marker.
+                    out.push_str(&rest[..open + 2]);
+                    rest = &rest[open + 2..];
+                }
+            }
+        }
+        out.push_str(rest);
+        out
     }
 
     #[test]
@@ -2340,6 +2371,15 @@ mod input_notification_pins {
             "exactly the interactive UserInputRequired arm must fire the input-needed notification"
         );
         let call_at = flattened.find(call).expect("count above proves presence");
+        // 参数序即语义:(&app, &session_id, &id)——键以 (session, input) 归档,
+        // 对换参数会静默丢失按会话的去重剪枝。去空白后匹配且不依赖尾逗号:
+        // rustfmt 折行/折回单行(尾逗号消失)都不影响判定。
+        let after_args = &flattened[call_at + call.len()..];
+        assert!(
+            after_args.starts_with("&app,&session_id,&id,)")
+                || after_args.starts_with("&app,&session_id,&id)"),
+            "the wiring must pass (&app, &session_id, &id) — argument order is the dedup semantics",
+        );
         let arm_start = flattened[..call_at]
             .rfind("Event::UserInputRequired")
             .expect("the notification call must live inside the UserInputRequired arm");
