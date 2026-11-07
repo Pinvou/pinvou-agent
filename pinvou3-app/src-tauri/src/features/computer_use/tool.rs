@@ -1995,13 +1995,23 @@ fn run(parts: Parts, parsed: ParsedCall, workspace: PathBuf) -> ToolResult {
         // where the warnings are actually RENDERED (the success return
         // below): `warnings` never reach the model on an error return, so
         // flagging at push time could lose the note for the whole session
-        // when the first action fails.
+        // when the first action fails. On a virtual target the deeper
+        // `notes` list rides the same once-per-session channel: those
+        // residuals (broker-launched apps outside the session, --args
+        // semantics, US-ANSI chords, WM-less degradation) were previously
+        // reachable only through the handful of unsupported/error
+        // interpolations, so the healthy path never delivered them.
+        // Physical targets keep their shape unchanged: their `notes` stay on
+        // the error interpolations only.
         let note_pending = {
             let state = parts.state.lock();
             !state.target_note_surfaced && !capabilities.target_note.is_empty()
         };
         if note_pending {
             warnings.push(capabilities.target_note.clone());
+            if capabilities.target == DisplayTarget::Virtual && !capabilities.notes.is_empty() {
+                warnings.push(capabilities.notes.clone());
+            }
         }
         match action.class() {
             ActionClass::Input if !capabilities.input => {

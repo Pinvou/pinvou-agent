@@ -559,17 +559,21 @@ function enforceLazyChunks() {
 //
 // 486_000 → 487_000 desktop only (PR #826, measured per policy): the
 // computer-use virtual display target joins the shared startup graph.
-// Measured same-base against main@78dcc1c3e: 485,878 → 486,693 B desktop
-// (+815 B) and 127,596 → 127,596 B web (byte count unchanged). What grew
-// the desktop entry is the consent, chat and computer-use logic surface,
-// which the desktop build inlines into main-*.js where the web build
-// lazy-splits it into the chat-view group; the tauri bridge files are
-// classic startup scripts OUTSIDE this module graph (they have a script
-// count gate, not a byte gate) and the locale dicts stay lazy chunks.
-// The desktop ceiling takes the next thousand step, leaving 307 B
-// headroom — inside the recorded CI-vs-local delta envelope, so the next
-// growth re-cuts per policy; the web ceiling stays 128_000. This cap does
-// not promise headroom for unrelated main changes.
+// Measured same-base against the current rebase base main@1354560268bd
+// (re-measured after the R8 wave — the earlier note recorded the
+// pre-rebase base 78dcc1c3e with 485,878 → 486,693 B, numbers that no
+// longer reproduce): 485,915 → 486,672 B desktop (+757 B) and
+// 127,596 → 127,596 B web (byte count unchanged). What grew the desktop
+// entry is the consent, chat and computer-use logic surface, which the
+// desktop build inlines into main-*.js where the web build lazy-splits it
+// into the chat-view group; the tauri bridge files are classic startup
+// scripts OUTSIDE this module graph (they have a script count gate, not a
+// byte gate) and the locale dicts stay lazy chunks (the consent caveat
+// keys land there, not in the entry). The desktop ceiling takes the next
+// thousand step, leaving 328 B headroom — inside the recorded
+// CI-vs-local delta envelope, so the next growth re-cuts per policy; the
+// web ceiling stays 128_000. This cap does not promise headroom for
+// unrelated main changes.
 export const MAIN_ENTRY_BUDGET_BYTES = 487_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 

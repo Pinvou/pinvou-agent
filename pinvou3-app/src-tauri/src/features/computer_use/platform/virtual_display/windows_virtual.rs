@@ -179,7 +179,13 @@ const TEARDOWN_JOB_WAIT_MS: u32 = 5000;
 const TEARDOWN_JOB_POLL_MS: u64 = 100;
 const TEARDOWN_CAPTURE_JOIN_MS: u64 = 2000;
 /// Orphan recovery: bounded polls waiting for a leftover desktop to empty.
-const RECOVERY_EMPTY_POLLS: u32 = 20;
+/// The old 2 s budget let a slow-dying leftover (a wedged app that only the
+/// last TerminateProcess round reaches, a shell unwinding its windows)
+/// survive into the reopened desktop — `CreateDesktopW` on an existing name
+/// REOPENS the same desktop object, so ghost windows would sit in the new
+/// session's captures and hit-tests. 10 s stays bounded and this path runs
+/// only after a crashed run; the residual after exhaustion is warn-logged.
+const RECOVERY_EMPTY_POLLS: u32 = 100;
 const RECOVERY_POLL_MS: u64 = 100;
 
 /// Capture: how long to wait for a capture reply before the capture thread
@@ -377,8 +383,13 @@ fn compose_key_lparam(scan: u32, extended: bool, context: bool, up: bool) -> isi
 /// real input distinguishes them by this bit) plus the right-hand
 /// Ctrl/Alt. The model's chord vocabulary only ever produces the
 /// navigation cluster from this set (chords name `Control`/`Alt`, which map
-/// to the shared left-side VKs), but the bit is carried for every key it
-/// applies to, matching real input. Pure, unit-pinned.
+/// to the shared left-side VKs). The table deliberately omits the
+/// right-hand Win keys and RCONTROL/RMENU (VK_LWIN is also reachable — via
+/// `Key::Meta` — and its real input does carry the bit): under the
+/// disclosed message-level fidelity those keys' synthetic posts never
+/// trigger shell-managed behavior anyway, so the omission is behaviorally
+/// nil; it is stated here so the table is not mistaken for exhaustive.
+/// Pure, unit-pinned.
 fn key_is_extended(vk: u16) -> bool {
     // The VK_* constants are typed newtypes, not bare u16 patterns — the
     // set rides in a const table.
@@ -740,10 +751,14 @@ fn flip_and_swizzle_bgrx_to_rgba(buffer: &mut [u8], width: usize, height: usize)
         let top = y * stride;
         let bottom = (height - 1 - y) * stride;
         // split_at_mut makes the two row borrows disjoint (a direct double
-        // `&mut buffer[..]` does not compile).
+        // `&mut buffer[..]` does not compile). `tail` starts AT the bottom
+        // row and extends to the end of the buffer, but only this one row is
+        // ours to swizzle: everything below it was already swapped into the
+        // top half by earlier iterations, and `swap(0, 2)` is self-inverse,
+        // so re-swizzling would flip those rows' channels back.
         let (head, tail) = buffer.split_at_mut(bottom);
         swizzle_row(&mut head[top..top + stride]);
-        swizzle_row(tail);
+        swizzle_row(&mut tail[..stride]);
         head[top..top + stride].swap_with_slice(&mut tail[..stride]);
     }
     if height % 2 == 1 {
@@ -966,11 +981,23 @@ unsafe fn recover_leftover_desktop(name: &str, desktop: HDESK) {
                 ),
             }
         }
+        let mut emptied = false;
         for _ in 0..RECOVERY_EMPTY_POLLS {
             if desktop_window_pids(desktop).is_empty() {
+                emptied = true;
                 break;
             }
             sleep(Duration::from_millis(RECOVERY_POLL_MS));
+        }
+        if !emptied {
+            // Truthful residual: the reopened desktop may still hold ghost
+            // windows from the crashed run — the new session's captures and
+            // hit-tests can see them until they die.
+            log::warn!(
+                "[computer_use][virtual-win] the leftover desktop '{name}' still has \
+                 windows after the recovery budget; reopening it — ghost windows from \
+                 the crashed run may appear in this session's captures"
+            );
         }
         if let Err(error) = CloseDesktop(desktop) {
             log_desktop_close_error(
@@ -2236,8 +2263,13 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
                     lands; verify actions with a follow-up screenshot"
                 .to_string(),
             target: DisplayTarget::Virtual,
-            target_note: "isolated hidden Windows desktop — the user's desktop is \
-                          untouched; keyboard/mouse reach apps as window messages and \
+            target_note: "isolated hidden Windows desktop — the user's desktop stays \
+                          untouched except that apps delegating their launch to a \
+                          system broker (e.g. a store-app stub) get their real \
+                          process created outside this session: such an app can \
+                          surface a window on the user's desktop, is not contained \
+                          by the session, and is not terminated with it; \
+                          keyboard/mouse reach apps as window messages and \
                           some apps ignore synthetic messages; screenshots are \
                           per-window composites (no DWM on a hidden desktop) covering \
                           the session's whole virtual screen (all monitors); UAC \
@@ -3305,6 +3337,28 @@ mod tests {
         let mut odd = vec![1, 2, 3, 40, 4, 5, 6, 41, 7, 8, 9, 42];
         flip_and_swizzle_bgrx_to_rgba(&mut odd, 1, 3);
         assert_eq!(odd, vec![9, 8, 7, 255, 6, 5, 4, 255, 3, 2, 1, 255]);
+        // Heights ≥ 4 are where a whole-tail swizzle becomes visible: rows
+        // swapped in below the midpoint would be re-swizzled on later
+        // iterations (self-inverse channel swap ⇒ reverted), so every row of
+        // a multi-row buffer is pinned, not just the 2-row shapes.
+        let height = 5usize;
+        let width = 2usize;
+        let mut buffer: Vec<u8> = (0..(width * height * 4) as u32)
+            .map(|i| (i * 37 % 251) as u8)
+            .collect();
+        let expected = {
+            let mut reference = buffer.clone();
+            for pixel in reference.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            let stride = width * 4;
+            let mut rows: Vec<Vec<u8>> =
+                reference.chunks(stride).rev().map(<[u8]>::to_vec).collect();
+            rows.concat()
+        };
+        flip_and_swizzle_bgrx_to_rgba(&mut buffer, width, height);
+        assert_eq!(buffer, expected);
     }
 
     /// WM_CHAR text encoding runs through the IMPLEMENTATION's encoder

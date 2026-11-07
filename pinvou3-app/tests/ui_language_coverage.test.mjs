@@ -388,11 +388,35 @@ for (const language of ['zh', 'en', 'ja']) {
     return out;
   };
   const zhTypes = new Map(typedLeafKeys(dict.zh.uiComputerUse));
-  assert.ok(zhTypes.size >= 37, `uiComputerUse leaf count looks wrong: ${zhTypes.size}`);
+  // Count guard (R8: this section previously had only a `>= 37` lower
+  // bound, so deleting a key from all three dictionaries at once — or from
+  // zh alone, breaking parity — passed the whole suite). Any key change
+  // must update this count in the same commit; the section currently holds
+  // 65 leaves including the three platform consent caveats (mac/linux/
+  // windows) and the unknown-platform honesty line.
+  assert.equal(zhTypes.size, 65, `uiComputerUse must hold exactly the 65 pinned leaves (found ${zhTypes.size})`);
   for (const language of ['en', 'ja']) {
     const types = new Map(typedLeafKeys(dict[language].uiComputerUse));
+    assert.equal(
+      types.size,
+      zhTypes.size,
+      `${language}.uiComputerUse must hold exactly as many leaves as zh`,
+    );
     for (const [key, type] of zhTypes) {
+      assert.ok(types.has(key), `${language}.uiComputerUse.${key} must exist (parity with zh)`);
       assert.equal(types.get(key), type, `${language}.uiComputerUse.${key} must be a ${type} like zh`);
+    }
+  }
+  // The platform consent caveats are the honest-isolation surface: each
+  // must exist in every language or the grant dialog silently renders no
+  // caveat for that platform.
+  for (const key of ['grantMacCaveat', 'grantLinuxCaveat', 'grantWindowsCaveat', 'grantUnknownPlatformCaveat']) {
+    for (const language of ['zh', 'en', 'ja']) {
+      assert.equal(
+        typeof dict[language].uiComputerUse[key],
+        'string',
+        `${language}.uiComputerUse.${key} must be a string`,
+      );
     }
   }
   assert.match(source('features/chat/ChatView.jsx'), /t\.uiComputerUse/);

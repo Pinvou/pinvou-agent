@@ -1247,6 +1247,17 @@ impl ComputerUseShared {
     /// vocabulary): "active" wins over everything (a live session IS driving
     /// a virtual display right now), then the cached snapshot's
     /// "disabled" / "unavailable" / "available"→"ready".
+    ///
+    /// R8 truthfulness: a live session whose backend was created for the
+    /// PHYSICAL target (e.g. the preference was flipped on mid-session; the
+    /// target resolves once at backend creation) must not be described as
+    /// "ready" — the settings hint for "ready" claims the agent works in an
+    /// isolated display while the banner for the same session truthfully
+    /// says it is controlling the user's computer. "disabled" is the
+    /// vocabulary word whose copy states the agent uses the real screen, so
+    /// a live physical session maps there until its row is cleared (the
+    /// hint then returns to the snapshot's own truth). A virtual session
+    /// still wins: "active" describes it regardless of the preference.
     pub(crate) fn virtual_display_state(&self) -> (&'static str, String) {
         let (state, detail) = {
             let snapshot = self.virtual_availability.read();
@@ -1254,6 +1265,9 @@ impl ComputerUseShared {
         };
         if self.has_active_virtual_session() {
             return ("active", detail);
+        }
+        if self.has_active_physical_session() {
+            return ("disabled", detail);
         }
         match state {
             "available" => ("ready", detail),
@@ -1291,6 +1305,16 @@ impl ComputerUseShared {
             .lock()
             .values()
             .any(|target| *target == DisplayTarget::Virtual)
+    }
+
+    /// Whether any live session's backend currently targets the PHYSICAL
+    /// desktop (R8: keeps the status hint from claiming isolation while a
+    /// granted session drives the real screen).
+    fn has_active_physical_session(&self) -> bool {
+        self.session_targets
+            .lock()
+            .values()
+            .any(|target| *target == DisplayTarget::Physical)
     }
 
     /// The settings toggle (called by the integration layer's settings

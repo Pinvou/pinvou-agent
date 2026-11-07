@@ -264,6 +264,21 @@ export function ComputerUseDialogs({ slice, copy, virtualDisplayNote = '' }) {
     // conservative Esc=Deny mapping stay untouched. A request without the
     // target field (old backend) renders the physical copy (fail-neutral).
     const grantVirtual = computerUseTarget(grantRequest.target) === 'virtual';
+    // The platform caveat row (R8): each known platform carries its own
+    // honest-isolation residual — macOS (opened apps start in the user's
+    // session and stay visible without the Accessibility grant), Linux (a
+    // raw-Wayland app can escape the redirected toolkits), Windows (a
+    // broker-launched app's real window can surface on the user's screen
+    // and keeps running after the session) — and when the capability is
+    // absent/unknown the generic honesty line renders instead, so the
+    // absolute base claim is never left unqualified. A missing key skips
+    // the row (same fail-neutral shape as before the collapse).
+    const grantCaveat = !grantVirtual ? '' : (
+      virtualDisplayNote === 'macos' ? copy.grantMacCaveat
+        : virtualDisplayNote === 'linux' ? copy.grantLinuxCaveat
+          : virtualDisplayNote === 'windows' ? copy.grantWindowsCaveat
+            : copy.grantUnknownPlatformCaveat
+    );
     return createPortal(
       <div data-testid="computer-use-grant-dialog" className="fixed inset-0 z-[1210] flex items-center justify-center p-4 bg-black/45">
         <div
@@ -276,19 +291,8 @@ export function ComputerUseDialogs({ slice, copy, virtualDisplayNote = '' }) {
           <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
             <h3 id="computer-use-grant-title" className="text-[16px] font-semibold mb-2">{grantVirtual ? copy.grantTitleVirtual : copy.grantTitle}</h3>
             <p className="text-[13px] leading-relaxed opacity-80 mb-4">{grantVirtual ? copy.grantDescVirtual : copy.grantDesc}</p>
-            {grantVirtual && virtualDisplayNote === 'macos' && copy.grantMacCaveat && (
-              <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{copy.grantMacCaveat}</p>
-            )}
-            {grantVirtual && virtualDisplayNote === 'linux' && copy.grantLinuxCaveat && (
-              <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{copy.grantLinuxCaveat}</p>
-            )}
-            {/* R7: on a KNOWN platform the caveat rows carry the real
-                isolation limits. When the capability is absent/unknown
-                (platform capabilities failed to load), the base copy would
-                otherwise claim absolute isolation unqualified — render the
-                generic honesty line instead. */}
-            {grantVirtual && virtualDisplayNote !== 'macos' && virtualDisplayNote !== 'linux' && virtualDisplayNote !== 'windows' && copy.grantUnknownPlatformCaveat && (
-              <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{copy.grantUnknownPlatformCaveat}</p>
+            {grantCaveat && (
+              <p className="text-[13px] leading-relaxed opacity-80 -mt-2 mb-4">{grantCaveat}</p>
             )}
             {actionError && actionError.stamp === grantRequest.sessionId && (
               <div className="text-[13px] text-[#EA4335] mb-3">{actionError.message}</div>

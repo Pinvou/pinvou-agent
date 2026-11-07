@@ -170,6 +170,10 @@ struct MockState {
     /// — empty like the real physical backends; set a sentence to drive the
     /// once-per-session surfacing scenarios).
     target_note: String,
+    /// The `Capabilities.notes` payload (defaults to "mock" like the previous
+    /// hardcoded value; set a sentence on a Virtual-target mock to drive the
+    /// once-per-session notes-surfacing pins).
+    fidelity_notes: String,
     /// Recorded open_app calls (program, args): the execution surface for
     /// the `open` action (the "NOT executed" assertions for other actions
     /// need the same shape here).
@@ -219,6 +223,7 @@ impl Default for MockState {
             type_error: None,
             display_target: DisplayTarget::Physical,
             target_note: String::new(),
+            fidelity_notes: "mock".to_string(),
             opened: Vec::new(),
             open_error: None,
             open_pid: 4321,
@@ -262,7 +267,7 @@ impl ComputerUseBackend for MockBackend {
             screenshot: state.screenshot_cap,
             input: !state.no_input_cap,
             ui_tree: state.ui_tree_cap,
-            notes: "mock".to_string(),
+            notes: state.fidelity_notes.clone(),
             target: state.display_target,
             target_note: state.target_note.clone(),
         }
@@ -5479,9 +5484,24 @@ async fn open_action_executes_through_the_backend_and_reports_the_pid() {
 /// model sees an honest error (never a silent desktop launch). The mock here
 /// overrides nothing beyond the default because MockBackend implements
 /// open_app, so this pins the TOOL layer's error surfacing of the default
-/// via a minimal inline backend.
+/// via a minimal inline backend. The failed `open` still appends a real
+/// audit record, so the test redirects `PINVOU3_HOME` like `fixture()` —
+/// without the redirect every run leaked an audit line into the ambient
+/// `~/.pinvou3` (R8 minor).
 #[tokio::test]
 async fn open_action_fails_explicitly_on_a_physical_backend() {
+    let _env_lock = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let previous = std::env::var_os("PINVOU3_HOME");
+    let home_dir = tempfile::Builder::new()
+        .prefix("pinvou3-cu-home-noopen-")
+        .tempdir()
+        .expect("temp home dir");
+    // SAFETY: holding platform::paths::tests::ENV_LOCK, so env writes are
+    // serialized in-process; `EnvRestore` undoes this on drop.
+    unsafe { std::env::set_var("PINVOU3_HOME", home_dir.path()) };
+    let _restore = EnvRestore(previous);
     struct NoOpenBackend;
     impl ComputerUseBackend for NoOpenBackend {
         fn capabilities(&self) -> Capabilities {
@@ -5818,6 +5838,7 @@ async fn virtual_target_session_surfaces_note_markers_and_audit() {
         let mut mock = fixture.mock.lock();
         mock.display_target = DisplayTarget::Virtual;
         mock.target_note = "per-OS fidelity note".to_string();
+        mock.fidelity_notes = "per-OS residual notes".to_string();
     }
     fixture.shared.grant_session("s-test");
 
@@ -5836,6 +5857,10 @@ async fn virtual_target_session_surfaces_note_markers_and_audit() {
         !text.contains("per-OS fidelity note"),
         "a failed action renders no warnings; the note must stay unsurfaced: {text}"
     );
+    assert!(
+        !text.contains("per-OS residual notes"),
+        "the residual notes ride the same once-per-session channel: {text}"
+    );
 
     // Second action succeeds: the note surfaces WITH the virtual marker, and
     // the audit records the virtual spelling.
@@ -5851,6 +5876,11 @@ async fn virtual_target_session_surfaces_note_markers_and_audit() {
     assert!(
         text.contains("warning: per-OS fidelity note"),
         "the fidelity note must surface on the first successful action: {text}"
+    );
+    assert!(
+        text.contains("warning: per-OS residual notes"),
+        "the virtual target's deeper residual notes must surface on the same \
+         channel — they were previously reachable only through error paths: {text}"
     );
     assert!(
         text.contains("[target: isolated virtual display]"),
@@ -5880,6 +5910,43 @@ async fn virtual_target_session_surfaces_note_markers_and_audit() {
     assert!(
         !text.contains("per-OS fidelity note"),
         "the fidelity note must surface exactly once per session: {text}"
+    );
+    assert!(
+        !text.contains("per-OS residual notes"),
+        "the residual notes must surface exactly once per session: {text}"
+    );
+}
+
+/// The notes-surfacing channel is VIRTUAL-only: a physical session never
+/// gains a `warning:` line from `Capabilities.notes` (their notes stay on the
+/// unsupported/error interpolations, the pre-R8 shape). Mutation pin for the
+/// `target == DisplayTarget::Virtual` gate — dropping the gate fails the
+/// assertion below.
+#[tokio::test]
+async fn physical_session_never_surfaces_the_notes_list() {
+    let (fixture, _restore) = fixture();
+    {
+        let mut mock = fixture.mock.lock();
+        mock.display_target = DisplayTarget::Physical;
+        mock.target_note = "physical target note".to_string();
+        mock.fidelity_notes = "physical residual notes".to_string();
+    }
+    fixture.shared.grant_session("s-test");
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "screenshot"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let text = result.expect("screenshot").content;
+    assert!(
+        text.contains("warning: physical target note"),
+        "the target-note channel itself is target-agnostic: {text}"
+    );
+    assert!(
+        !text.contains("physical residual notes"),
+        "a physical session must not surface the notes list: {text}"
     );
 }
 

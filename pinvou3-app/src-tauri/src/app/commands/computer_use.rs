@@ -595,10 +595,19 @@ mod tests {
         shared.set_session_target("s-active", DisplayTarget::Virtual);
         let (state, _detail) = shared.virtual_display_state();
         assert_eq!(state, "active");
-        // Physical-only sessions do NOT count as active.
+        // A live session driving the PHYSICAL target (the target was
+        // resolved once at backend creation — e.g. the preference was
+        // flipped on mid-session) does not count as "active", but it must
+        // not leave the hint at "ready" either: the ready copy claims the
+        // agent works in an isolated display while the banner for the same
+        // session truthfully says it is controlling the user's computer.
+        // "disabled" is the vocabulary word whose copy states the agent
+        // uses the real screen (R8 M1).
         shared.set_session_target("s-active", DisplayTarget::Physical);
-        assert_eq!(shared.virtual_display_state().0, "ready");
+        assert_eq!(shared.virtual_display_state().0, "disabled");
+        // With the row cleared the hint returns to the snapshot's own truth.
         shared.clear_session_target("s-active");
+        assert_eq!(shared.virtual_display_state().0, "ready");
     }
 
     /// The `preferVirtualDisplay` status field mirrors the PREFERENCE, not the

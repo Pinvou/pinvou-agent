@@ -224,8 +224,10 @@ struct BackendRequest {
     /// the skip, a request the caller abandoned on timeout was still
     /// executed as usual — by then the physical input lock was released
     /// and the guard would not re-check, other sessions could be injecting
-    /// at the same time, breaking the cross-session full-serialization
-    /// guarantee, and the model had already been told "the action failed").
+    /// at the same time, breaking the cross-session serialization
+    /// guarantee (which tool.rs scopes to physical targets — a virtual
+    /// session injects into its own isolated display), and the model had
+    /// already been told "the action failed").
     cancelled: Arc<AtomicBool>,
     /// Control-lane request (emergency-stop button release / OS-grant close / Shutdown):
     /// **exempt from the dequeue skip**. An action request executing late

@@ -1540,6 +1540,11 @@ struct MacosVirtualDisplayBackend {
     held_pids: Vec<(MouseButton, i32)>,
     /// Cancel flag set after the caller times out (see the trait contract).
     cancel: Option<Arc<AtomicBool>>,
+    /// Set when the session-scope parking could not be applied (creation or
+    /// any capture-time re-park): `capabilities` appends the honest overlap
+    /// disclosure to the target note instead of leaving the failure
+    /// log-only (R8 minor).
+    park_failed: Arc<AtomicBool>,
 }
 
 impl MacosVirtualDisplayBackend {
@@ -1670,6 +1675,7 @@ impl MacosVirtualDisplayBackend {
             );
             if !mirrored && let Err(error) = park_right_of_main(self.display_id) {
                 log::warn!("[computer_use:macos-vd] re-parking failed: {error}");
+                self.park_failed.store(true, Ordering::Relaxed);
             }
         }
     }
@@ -2341,7 +2347,9 @@ fn capability_target_note() -> String {
      own bounds, so a window overhanging into those bounds contributes its \
      pixels to the capture, and if the display joins a mirror set mid-session \
      the captures may show the user's desktop and agent content may be visible \
-     on the user's screen until the mirror is undone; events are delivered \
+     on the user's screen until the mirror is undone (until then the input \
+     targeting rules also cannot fully distinguish the user's windows inside \
+     the mirrored geometry); events are delivered \
      directly to the target app \
      and may not reach every app (e.g. WebKit content processes on recent \
      macOS may ignore them); apps opened with open launch into the user's \
@@ -2408,7 +2416,23 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
             // Unsupported beats a half-working tree.
             ui_tree: false,
             target: DisplayTarget::Virtual,
-            target_note: capability_target_note(),
+            target_note: {
+                let mut note = capability_target_note();
+                // A failed session-scope placement is more than a log line:
+                // the model must know the display may overlap the user's
+                // screens (and what that means for captures/targeting)
+                // instead of the failure staying invisible (R8 minor).
+                if self.park_failed.load(Ordering::Relaxed) {
+                    note.push_str(
+                        "; the session-scope display placement could not be \
+                                   applied and re-parking has failed — the virtual display \
+                                   may overlap the user's screens, so its captures can \
+                                   mix in the user's windows and agent content can be \
+                                   visible on the user's screen until a placement succeeds",
+                    );
+                }
+                note
+            },
             notes: {
                 let mut notes = capability_notes();
                 // CGEventPostToPid needs the Accessibility TCC grant just
@@ -2492,13 +2516,25 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
         // gesture onto whatever window lies under it.
         let pressed_pid = self.held_pids.last().map(|&(_, pid)| pid);
         let pid = match pressed_pid {
-            Some(remembered) => match self.reverified_target_pid(remembered) {
-                Ok(pid) => pid,
-                Err(error) => {
+            Some(remembered) => {
+                // The held-press fast path skips input_pid's hit-test/focus
+                // resolution but NOT its Accessibility preflight: the TCC
+                // contract covers EVERY input entry point, and a grant
+                // revoked mid-gesture must fail the action instead of
+                // reporting success while WindowServer drops the events.
+                if !accessibility_granted() {
+                    let error = accessibility_error();
                     self.clear_focus_on_error(&error);
                     return Err(error);
                 }
-            },
+                match self.reverified_target_pid(remembered) {
+                    Ok(pid) => pid,
+                    Err(error) => {
+                        self.clear_focus_on_error(&error);
+                        return Err(error);
+                    }
+                }
+            }
             None => self.input_pid_cleared(Some((x, y)))?,
         };
         let (event_type, button) = move_event_type(&self.held_buttons);
@@ -2602,21 +2638,31 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
             .find(|(held, _)| *held == button)
             .map(|&(_, pid)| pid);
         let pid = match pressed_pid {
-            Some(remembered) => match self.reverified_target_pid(remembered) {
-                Ok(pid) => pid,
-                Err(error) => {
+            Some(remembered) => {
+                // Same Accessibility preflight as `move_to`'s held-press
+                // fast path: a grant revoked mid-gesture must fail the
+                // action, not report success while the events are dropped.
+                if !accessibility_granted() {
+                    let error = accessibility_error();
                     self.clear_focus_on_error(&error);
-                    // The press target is gone (app quit / window closed):
-                    // no future `mouse_up` can ever deliver this up, so
-                    // keeping the held entries would strand THIS button —
-                    // every later `move_to`/`mouse_up` would keep failing
-                    // against the dead remembered pid. Consume the held
-                    // state here; the error still reports the real failure.
-                    self.held_buttons.retain(|held| *held != button);
-                    self.held_pids.retain(|(held, _)| *held != button);
                     return Err(error);
                 }
-            },
+                match self.reverified_target_pid(remembered) {
+                    Ok(pid) => pid,
+                    Err(error) => {
+                        self.clear_focus_on_error(&error);
+                        // The press target is gone (app quit / window closed):
+                        // no future `mouse_up` can ever deliver this up, so
+                        // keeping the held entries would strand THIS button —
+                        // every later `move_to`/`mouse_up` would keep failing
+                        // against the dead remembered pid. Consume the held
+                        // state here; the error still reports the real failure.
+                        self.held_buttons.retain(|held| *held != button);
+                        self.held_pids.retain(|(held, _)| *held != button);
+                        return Err(error);
+                    }
+                }
+            }
             None => self.input_pid_cleared(Some(dest))?,
         };
         let (_, up, _) = cg_mouse_event_types(button);
@@ -2899,9 +2945,12 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     }
     // Park right of the main display (session scope). Non-fatal: the guard
     // re-checks on every capture, and the display is fully functional
-    // wherever it currently sits.
+    // wherever it currently sits — but the failure is recorded so the
+    // capability note discloses the overlap risk instead of only logging it.
+    let park_failed = Arc::new(AtomicBool::new(false));
     if let Err(error) = park_right_of_main(display_id) {
         log::warn!("[computer_use:macos-vd] initial parking failed: {error}");
+        park_failed.store(true, Ordering::Relaxed);
     }
     log::info!(
         "[computer_use:macos-vd] virtual display {display_id} active \
@@ -2917,6 +2966,7 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
         held_buttons: Vec::new(),
         held_pids: Vec::new(),
         cancel: None,
+        park_failed,
     }))
 }
 
@@ -3591,6 +3641,11 @@ mod tests {
             note.contains("joins a mirror set mid-session"),
             "the mirror-join residual (user pixels reach the capture, agent \
              content reaches the user's screen) must be disclosed"
+        );
+        assert!(
+            note.contains("cannot fully distinguish the user's windows inside"),
+            "until the mirror is undone the input targeting rules are blinded \
+             too — the residual must be disclosed"
         );
         assert!(note.contains("WebKit content processes"));
         assert!(note.contains("falls back to your desktop"));

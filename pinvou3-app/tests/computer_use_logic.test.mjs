@@ -611,6 +611,7 @@ const dialogCopy = {
   grantDescVirtual: 'The agent works in an isolated virtual display, not on your screen.',
   grantMacCaveat: 'On this Mac, opened apps can stay visible on your desktop without the Accessibility permission.',
   grantLinuxCaveat: 'On Linux, a raw-Wayland app could still show its window on your screen.',
+  grantWindowsCaveat: 'On Windows, a broker-launched app can surface its real window on your screen and keep running after the session.',
   grantUnknownPlatformCaveat: "This platform's isolation limits could not be verified — an opened app may briefly appear on your screen.",
   grantAllow: 'Allow',
   grantDeny: 'Deny',
@@ -834,16 +835,18 @@ try {
     'the physical title must not leak into the virtual dialog');
   assert.ok(findByTestId(tree, 'computer-use-grant-allow'), 'the Allow button stays');
   assert.ok(findByTestId(tree, 'computer-use-grant-deny'), 'the Deny button stays');
-  // Per-platform caveats under the virtual grant: the macOS/Linux fidelity
-  // notes render on their platform and nowhere else — a platform without a
-  // residual ("windows") or an unknown capability (undefined) renders
-  // neither line (no wrong-platform copy, fail-neutral hiding).
+  // Per-platform caveats under the virtual grant: the macOS/Linux/Windows
+  // fidelity notes render on their platform and nowhere else — an unknown
+  // capability (undefined) renders only the generic honesty line (no
+  // wrong-platform copy, fail-neutral hiding).
   tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } }, 'macos');
   grantText = allText(tree);
   assert.ok(grantText.includes(dialogCopy.grantMacCaveat),
     'the macOS caveat renders on macos');
   assert.equal(grantText.includes(dialogCopy.grantLinuxCaveat), false,
     'the Linux caveat must not render on macos');
+  assert.equal(grantText.includes(dialogCopy.grantWindowsCaveat), false,
+    'the Windows caveat must not render on macos');
   tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } }, 'linux');
   grantText = allText(tree);
   assert.ok(grantText.includes(dialogCopy.grantLinuxCaveat),
@@ -852,6 +855,12 @@ try {
     'the macOS caveat must not render on linux');
   tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } }, 'windows');
   grantText = allText(tree);
+  // R8: Windows carries the broker-launch residual (a store-app stub's
+  // real window can surface on the user's screen and keeps running after
+  // the session) — the same user-visibility shape the macOS/Linux caveats
+  // disclose.
+  assert.ok(grantText.includes(dialogCopy.grantWindowsCaveat),
+    'the Windows caveat renders on windows');
   assert.equal(grantText.includes(dialogCopy.grantMacCaveat), false,
     'no mac caveat on windows');
   assert.equal(grantText.includes(dialogCopy.grantLinuxCaveat), false,

@@ -148,6 +148,14 @@ const SWEEP_TERM_GRACE: Duration = Duration::from_millis(500);
 /// `_NET_SUPPORTING_WM_CHECK` marker on the root within this budget or the
 /// session continues WM-less (see [`Self::verify_wm_management`]).
 const WM_CHECK_GRACE: Duration = Duration::from_secs(3);
+/// Cap on apps recorded as running for one session (`open` action, R8
+/// minor): without it every open grew the recorded-children list — and the
+/// pidfile rewrite it drives — for the whole session, with only Stop,
+/// release, or a server respawn shrinking it. Unverifiable (dead or
+/// pid-recycled) records are pruned before the gate, so the cap applies to
+/// LIVE apps only. Windows bounds the equivalent through its kill-on-close
+/// job inventory and macOS through its 60 s-grace `session_pids`.
+const MAX_OPEN_CHILDREN: usize = 32;
 /// fd 3 read chunk; the display number line is a handful of bytes.
 const DISPLAYFD_CHUNK: usize = 16;
 /// Bound on the displayfd read buffer: Xvfb writes exactly `"%d\n"` (a few
@@ -693,14 +701,22 @@ impl VirtualX11Backend {
         }
         let deadline = Instant::now() + WM_CHECK_GRACE;
         let mut ok = false;
+        // Whether the loop itself observed the WM's death: `try_wait` reaps
+        // the zombie as a side effect, releasing the pid for kernel
+        // recycling — after that observation the handle must be DROPPED
+        // (never signaled by number), the same invariant `server_alive` and
+        // [`Self::detect_dead_wm`] follow. Only a handle whose process was
+        // alive at the last observation reaches `terminate_then_kill` (a
+        // held, unreaped zombie still pins that pid).
+        let mut observed_dead = false;
         while Instant::now() < deadline {
-            // Died before taking management? (try_wait reaps the zombie as a
-            // side effect, same as the entry check.)
+            // Died before taking management?
             let dead = self
                 .wm
                 .as_mut()
                 .is_some_and(|child| matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
             if dead {
+                observed_dead = true;
                 break;
             }
             if self.root_has_ewmh_manager() {
@@ -710,6 +726,17 @@ impl VirtualX11Backend {
             std::thread::sleep(Duration::from_millis(100));
         }
         if ok {
+            return;
+        }
+        if observed_dead {
+            log::warn!(
+                "[computer_use] virtual display: window manager '{program}' exited before \
+                 taking management of {}; continuing without a WM",
+                self.display
+            );
+            self.wm = None;
+            self.wm_program = None;
+            self.write_pidfile();
             return;
         }
         log::warn!(
@@ -766,6 +793,23 @@ impl VirtualX11Backend {
         };
         self.children.push(record);
         self.write_pidfile();
+    }
+
+    /// The `open` entry's bounded-launch gate (R8 minor): prune unverifiable
+    /// records first (dead or pid-recycled children stop counting against
+    /// the cap), then refuse to launch past [`MAX_OPEN_CHILDREN`]. The
+    /// error names no program (redaction contract). Split from `open_app`
+    /// so the cap is drivable — and pinnable — without spawning Xvfb.
+    fn ensure_open_capacity(&mut self) -> Result<(), ComputerUseError> {
+        self.prune_dead_children();
+        if self.children.len() >= MAX_OPEN_CHILDREN {
+            return Err(ComputerUseError::failed(format!(
+                "open: the session already has {MAX_OPEN_CHILDREN} apps recorded as \
+                 running on the isolated display; stop the session or let some \
+                 apps exit before opening more"
+            )));
+        }
+        Ok(())
     }
 
     /// Drop recorded children that can no longer be verified (their /proc
@@ -1884,6 +1928,7 @@ impl ComputerUseBackend for VirtualX11Backend {
         self.ensure_server()?;
         validate_open_program(program)?;
         validate_open_args(args)?;
+        self.ensure_open_capacity()?;
         let mut command = Command::new(program);
         command.args(args);
         apply_open_env(
@@ -2580,8 +2625,9 @@ mod tests {
     /// overrides with their exact values, the redirected session-bus address
     /// (a set-but-unusable address: libdbus/GDBus do NOT autolaunch a private
     /// bus for it, so bus-dependent features simply see a disconnected bus
-    /// instead of reaching the user's real one), and exactly 2 removals
-    /// (the host Wayland session variables); anything else (PATH etc.) is
+    /// instead of reaching the user's real one), and exactly 4 removals
+    /// (the host Wayland session variables and the Gecko/session-type
+    /// overrides); anything else (PATH etc.) is
     /// inherited, so the override map must contain nothing beyond the pinned
     /// keys. XDG_RUNTIME_DIR is deliberately NOT removed (apps need it).
     #[test]
@@ -2981,6 +3027,59 @@ mod tests {
         fn drop(&mut self) {
             kill_pid_tree(self.0);
         }
+    }
+
+    /// The `open` cap pin (R8 minor): MAX_OPEN_CHILDREN live records must
+    /// refuse another launch with the count-only error, and one freed slot
+    /// must pass — removing the gate from `ensure_open_capacity` (or the
+    /// call in `open_app`) fails the first assertion. The records point at
+    /// ONE real live process with its real start time, so the prune pass in
+    /// the gate keeps them (the cap applies to live apps only).
+    #[test]
+    fn open_capacity_refuses_past_the_cap_and_passes_below() {
+        let dir = tempfile::Builder::new()
+            .prefix("pinvou3-cu-open-cap-")
+            .tempdir()
+            .expect("temp session dir");
+        let mut sleeper = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep fixture");
+        let pid = sleeper.id();
+        let _leak_guard = KillOnDrop(pid);
+        let starttime = process_starttime(pid).expect("read the fixture's start time");
+        let mut backend = backend_with_wm(None, dir.path());
+        backend.children = (0..MAX_OPEN_CHILDREN)
+            .map(|_| ChildRecord {
+                pid,
+                program: "sleep".to_string(),
+                starttime,
+            })
+            .collect();
+        let error = backend
+            .ensure_open_capacity()
+            .err()
+            .expect("the cap must refuse another launch");
+        assert!(
+            error.to_string().contains("32 apps recorded as running"),
+            "the cap error must carry the count-only wording (no program text): {error}"
+        );
+        // One slot free → the gate passes (no spawn happened; the records
+        // survive the prune because they verify against the live fixture).
+        backend.children.pop();
+        backend
+            .ensure_open_capacity()
+            .expect("below the cap the gate passes");
+        assert_eq!(
+            backend.children.len(),
+            MAX_OPEN_CHILDREN - 1,
+            "the prune must keep live verified records"
+        );
+        let _ = sleeper.kill();
+        let _ = sleeper.wait();
     }
 
     /// An already-exited child (exits within milliseconds of spawn; the
@@ -3925,19 +4024,19 @@ mod xvfb_live_tests {
 
     /// Teardown + residue assertions shared by the full-cycle test and its
     /// xmessage-less skip path: process death (Xvfb, recorded WM, optional
-    /// app), session dir + cookie removal, and the zero-new-socket pin. The
+    /// app), session dir + cookie removal, and the own-socket pin. The
     /// app-independent assertions MUST run on every machine shape — a
     /// machine without `xmessage` would otherwise never exercise them.
     fn assert_teardown_leaves_no_residue(
         backend: VirtualX11Backend,
         pidfile: &PidFile,
-        sockets_before: &[String],
         app_pid: Option<u32>,
     ) {
         let session_dir = backend.session_dir.clone();
         let auth_path = backend.auth_path.clone();
         let xvfb_pid = pidfile.xvfb_pid;
         let wm_pid = pidfile.wm_pid;
+        let own_socket = format!("X{}", backend.display.trim_start_matches(':'));
         drop(backend);
         wait_until_gone(xvfb_pid, "the Xvfb server");
         if let Some(wm) = wm_pid {
@@ -3952,13 +4051,17 @@ mod xvfb_live_tests {
         );
         assert!(!auth_path.exists(), "the cookie file must be gone");
         // Socket residue: the teardown's SIGTERM-first wind-down must let the
-        // server clean its own `/tmp/.X11-unix/X{n}` — the directory listing
-        // must come back exactly as it was before the spawn.
+        // server clean its own `/tmp/.X11-unix/X{n}` — the session's socket
+        // must be gone after the drop. Scoped to THIS session's socket: the
+        // whole-directory snapshot before/after shape failed spuriously
+        // whenever unrelated X churn hit the same host mid-run (another
+        // live-suite lane, the user's own Xwayland), which is noise, not
+        // residue (R8 minor).
+        let sockets_after = x11_unix_sockets();
         assert!(
-            x11_unix_sockets() == sockets_before,
-            "teardown must leave zero new X11 unix sockets: before {sockets_before:?} \
-             after {:?}",
-            x11_unix_sockets()
+            !sockets_after.contains(&own_socket),
+            "teardown must remove the session's own X11 unix socket {own_socket}: \
+             after {sockets_after:?}"
         );
     }
 
@@ -3977,7 +4080,6 @@ mod xvfb_live_tests {
         if !live_ready(&home) {
             return;
         }
-        let sockets_before = x11_unix_sockets();
         let mut backend = VirtualX11Backend::new().expect("virtual backend creation");
 
         // Capabilities record the virtual target.
@@ -4042,7 +4144,7 @@ mod xvfb_live_tests {
                 Vec::<u32>::new(),
                 "no app children without an open"
             );
-            assert_teardown_leaves_no_residue(backend, &pidfile, &sockets_before, None);
+            assert_teardown_leaves_no_residue(backend, &pidfile, None);
             return;
         }
         let app_pid = backend
@@ -4120,7 +4222,7 @@ mod xvfb_live_tests {
         // removed, no process residue. The WM (when this machine has one)
         // must die with the session too — recorded `wm_pid`, SIGTERM-first
         // wind-down.
-        assert_teardown_leaves_no_residue(backend, &pidfile, &sockets_before, Some(app_pid));
+        assert_teardown_leaves_no_residue(backend, &pidfile, Some(app_pid));
     }
 
     /// Respawn-after-server-kill: kill the Xvfb under the backend; the NEXT
