@@ -562,8 +562,9 @@ function enforceLazyChunks() {
 // load sync, and one shared save/rollback pipeline for both notification
 // switches (the toggle handler factory replaced the duplicated pair and
 // gave back 62 B; the row's master-derivation rides the lazy SettingsView).
-// Same-base build against 8ca62d4df measures 485,878 → 486,060 B desktop
-// and 127,596 → 127,777 B web on the local node 26 toolchain. The desktop
+// Same-base build against 65d2030a9 (the 2026-11-06 rebase base: the #832
+// squash now on main) measures 485,915 → 486,097 B desktop and
+// 127,596 → 127,777 B web on the local node 24 toolchain. The desktop
 // ceiling takes the next thousand step; the web ceiling stays 128_000
 // (223 B headroom above the measured web entry). This cap does not promise
 // headroom for unrelated main changes.
