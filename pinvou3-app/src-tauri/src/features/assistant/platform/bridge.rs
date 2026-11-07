@@ -2058,10 +2058,7 @@ impl Pinvou3Bridge {
     /// fill-gap facts for models the base chain doesn't catalogue, replacing
     /// the base's 8192 uncatalogued guess (base-catalogued models stay on
     /// the base's Documented path — the anchor declines for them).
-    pub(crate) fn route_limits_for_model(
-        &self,
-        model: &str,
-    ) -> Option<codewhale_config::route::RouteLimits> {
+    fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
         let inferred_context = crate::core::model_context::resolved_context_window(model);
@@ -2166,9 +2163,11 @@ impl Pinvou3Bridge {
     /// the same budget as the main conversation instead of hard-coding a
     /// constant and drifting from the engine — the same rule
     /// `context_input_budget_for_route` was published for on the input side.
-    /// Floor behavior for uncatalogued ids on official endpoints: the
-    /// compatibility ceiling falls back to `Uncatalogued(8192)` (so an unknown
-    /// gateway model gets 8192, not the old hard-coded 1600); the foundation
+    /// Uncatalogued-id behavior: the compatibility ceiling falls back to
+    /// `Uncatalogued(8192)` — a **ceiling**, not a floor: with a declared
+    /// window the request cap is `(window/4).clamp(1, 8192)`, so an unknown
+    /// gateway model on a small-window route can land below 8192 (still far
+    /// above the old hard-coded 1600 in the common case); the foundation
     /// floors the final value at 1.
     pub(crate) fn main_wire_max_output_tokens(&self, model: &str) -> u32 {
         let config = self.build_dt_config();
@@ -6741,15 +6740,15 @@ mod tests {
     /// foundation `route_effective_max_output_tokens` (the identical chain the
     /// engine's client walks). Pin the k3/Kimi Coding Plan value so the two
     /// paths cannot silently drift apart: the base catalogue documents k3's
-    /// default generation ceiling (131072), the compatibility ceiling applies
-    /// as OutputCeilingSource::Documented (route_budget.rs `output_ceiling_source`
-    /// reads the static k3 row; `RouteDeclaredUnknown` is the kimi-for-coding
-    /// family path, not bare "k3") → requested cap min(API_MAX 65536) = 65536,
-    /// and the host route declares no output cap. The review's old hard-coded
-    /// budget was 1600 — consumed entirely by k3 reasoning tokens (content
-    /// empty, finish_reason=length, 2026-11-06) — and even the interim 8192
-    /// hard-code was 8× under the main wire. If the foundation budget chain
-    /// changes this value, update the pin together with the main-turn wire.
+    /// default generation ceiling (131072), and `output_ceiling_source`
+    /// (route_budget.rs) reads the static k3 row as
+    /// OutputCeilingSource::Documented before the membership roster
+    /// (`RouteDeclaredUnknown`, which bare "k3" is also on) is ever consulted
+    /// → requested cap min(API_MAX 65536) = 65536, and the host route declares
+    /// no output cap. The review's old hard-coded budget was 1600 — consumed
+    /// entirely by k3 reasoning tokens (content empty, finish_reason=length,
+    /// 2026-11-06). If the foundation budget chain changes this value, update
+    /// the pin together with the main-turn wire.
     #[test]
     fn main_wire_max_output_tokens_matches_engine_budget_for_k3() {
         let (_lock, _env) = locked_env(&[
@@ -6781,6 +6780,13 @@ mod tests {
         // Openai 直通链上（两条链当前同值，但钉住生产线材才有防漂移意义）。
         bridge.prefs.advanced.saved_models[0].provider_kind = Some("coding_plan".to_string());
         bridge.prefs.advanced.saved_models[0].vendor = Some("kimi".to_string());
+        // 钉住链而不止钉值：vendor→moonshot 映射若断（回退 Openai/custom 直通链）
+        // 两条链当前同值、值钉仍绿——身份断言让映射漂移变红（r3 审 m-minor）。
+        assert_eq!(
+            bridge.provider(),
+            "moonshot",
+            "coding_plan×kimi 归一必须落 provider()==moonshot（引擎 Moonshot 身份链）"
+        );
         assert_eq!(
             bridge.main_wire_max_output_tokens(&bridge.model()),
             65_536,
