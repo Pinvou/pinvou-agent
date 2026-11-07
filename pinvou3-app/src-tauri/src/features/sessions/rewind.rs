@@ -1,8 +1,10 @@
 //! 代码模式「改动随对话回退」的对话侧：把 transcript 截断到第 N 个用户 turn 末尾。
 //!
 //! 设计文档 `docs/code-mode-改动随对话回退-设计.md` §4：
-//! - 定位口径与 `code_checkpoints::count_user_turns`、底座 `EditLastTurn` 同一谓词
-//!   [`deepseek_tui::is_user_turn_prompt`]：tool_result 与运行时内部信封同样以
+//! - 定位口径与 `code_checkpoints::count_user_turns`、底座 `EditLastTurn` 同源，
+//!   都读底座 era 列表 [`deepseek_tui::user_turn_prompt_indices`]（该列表的
+//!   Editable 分类曾以单消息谓词 [`deepseek_tui::is_user_turn_prompt`] 表述，
+//!   现以 era 列表为准）：tool_result 与运行时内部信封同样以
 //!   `role = "user"` 落盘，按 role 定位会切在工具往返中间。
 //! - 被截段落写入 sidecar `_rewound_turns.json`（纯数据备份，UI 不暴露 redo）。
 //! - 本方法是 [`super::transcript::looks_like_truncating_overwrite`] 守卫的显式

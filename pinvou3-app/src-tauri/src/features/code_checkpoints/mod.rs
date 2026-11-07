@@ -5,8 +5,10 @@
 //! §3），砍掉 ACP 钩子、仅保留品悟原生 code 车道。与 feat 分支的差异：
 //! - 模块落位改为 `features/code_checkpoints`（main 无 `code_sessions` 拆分）；
 //! - Turn-count semantics corrected: counting by `role == "user"` on the feat
-//!   branch would include tool_result entries; the predicate in `turns` (a
-//!   private module) matches fork `8cc61b609`'s `is_user_turn_prompt` instead.
+//!   branch would include tool_result entries; the counter in `turns` (a
+//!   private module) instead reads the base era list
+//!   `user_turn_prompt_indices` (historically matched fork `8cc61b609`'s
+//!   single-message `is_user_turn_prompt` form, since retired).
 //!
 //! 快照策略：**每会话一个影子 git 仓库**（shadow git-dir 落账本根
 //! `checkpoints/repo`，`--work-tree` 指向执行根）。
