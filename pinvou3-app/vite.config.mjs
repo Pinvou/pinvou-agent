@@ -581,9 +581,12 @@ function enforceLazyChunks() {
 // takes the literal next step. Reset to the honest 493_000 after the
 // round-9 wave re-measured the entry at 492,861 B (round-8 confirm-gate
 // and round-9 web-gatenotice work ride the entry via ChatView), leaving
-// 139 B headroom at the local node 24 measurement. Bridge classic scripts
-// remain copied verbatim (the chat-events approval_resolved listener does
-// not move this entry).
+// 139 B headroom at the local node 24 measurement. Round-15 re-measure
+// (review H): a clean build:ui on node 24 lands at 492,964 B — 36 B
+// headroom against this ceiling (the recorded 492,861/139 B did not
+// reproduce; treat the live number as the re-cut trigger). Bridge classic
+// scripts remain copied verbatim (the chat-events approval_resolved
+// listener does not move this entry).
 export const MAIN_ENTRY_BUDGET_BYTES = 493_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 

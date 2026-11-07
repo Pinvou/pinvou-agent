@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | Plan | `AppMode::Plan`（底座只读归一：禁 shell、只读 sandbox、只读工具集） | 只读拦截（既有） | 同左 | 拦截；审批事件到达即异常，防御性硬拒（`plan_mode`） |
 | Auto | `Agent` + `(false, Suggest)` | 弹卡 | 自主守卫面在引擎门内静默硬拒（开关 OFF = 不武装；该转换只覆盖 tri-mode 自主守卫面，不产生审批事件，因此**没有** `chat:guardrail_denied`——该通告只覆盖宿主审批面的拒绝，见 §4.1） | 逐次审批卡；工作区内文件写走底座 #5185 carve-out 免卡，只读命令走 readonly 分类免卡 |
-| Yolo | `Agent` + `(true, Bypass)` | 弹卡 | 硬拒 + 通告（`guardrail_ask_off`） | 免卡（历史 Yolo 行为） |
+| Yolo | `Agent` + `(true, Bypass)` | 弹卡 | 硬拒 + 通告（`guardrail_ask_off`；该通告走宿主审批面——未武装的自主守卫拒在引擎门内不产生事件，故此格只在拒绝事件仍到达宿主面时可达，如武装→去武装翻转后仍在途的卡） | 免卡（历史 Yolo 行为） |
 
 注意（评审 P3，开表面化）：开关 OFF 并不把 Auto 变成「无提示」——**既有**
 的 Suggest 逐项 Ask 面（普通可提示工具）、仓库法则（repository-law）提示与
@@ -274,8 +274,12 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
   的 `"plan"/"yolo"` 照常反序列化；**共享表永不写 `"auto"` 字面量**——与
   settings.json 车道的 `*_auto` 伴随旗同一纪律：显式 Auto 选择折叠为
   `"plan"` 落 `_session_mode_states.json`，真实选择以 `true` 旗记入
-  `_session_auto_modes.json` 伴随表（写入顺序：先共享表、后伴随表，中断只
-  会留下保守的 `plan`）。因此「旧二进制 + 共享 PINVOU3_HOME」的降级不再
+  `_session_auto_modes.json` 伴随表（写入顺序：先共享表、后伴随表；中断
+  通常只会留下保守的 `plan`——唯一残窗是已带旗 Auto 的 **Plan 降档**：共享
+  表条目本就写 `plan`，整个中断窗口落在伴随旗删除上，崩溃在删除前会留下
+  `plan`+旗的孤儿组合，新二进制读回时按旗解析回 Auto——比用户显式选的
+  Plan 宽一档但仍低于 Yolo，`sessions/mode_state.rs` 的写入注释登记为已知
+  有界残窗）。因此「旧二进制 + 共享 PINVOU3_HOME」的降级不再
   付出整表隔离/从空表重建的代价：
   - **读路径**：pre-tri-mode 二进制整表 strict 反序列化**成功**；Auto 会话
     在其视图里保守降级为 Plan（逐项请批），其余会话的选择原样保留。
