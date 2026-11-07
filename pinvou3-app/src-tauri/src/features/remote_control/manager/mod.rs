@@ -123,6 +123,15 @@ const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     // "keep the promise total" reason as web_access_set_codex_acp_mode.
     "web_access_set_codex_acp_config_option",
     "web_access_respond_codex_acp_permission",
+    // Round-15 review (same-class twins, third sweep): the elicitation
+    // responder is the direct submit_user_input analog (user input fed into
+    // a running external ACP agent), and web_access_cancel_codex_acp is the
+    // cancel_generation-class entry for the ACP runtime. Both are inert for
+    // multi-agent sessions today for the same reason as the two above —
+    // denylisted so the "web is read-only on multi-agent execution surfaces"
+    // promise stays total instead of relying on today's invalid combination.
+    "web_access_respond_codex_acp_elicitation",
+    "web_access_cancel_codex_acp",
     "edit_last_turn",
     "exit_plan_to_yolo",
     "set_ask_on_guardrail",
@@ -131,6 +140,28 @@ const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "summon_pinvou",
     "web_access_chat",
 ];
+
+/// 纯判定核（round-15 评审 I2：三臂决策此前无任何行为覆盖——反转
+/// is_multi_agent、删 contains 检查、删 aux 旁路的突变体全绿）。宿主包装
+/// 只负责把 AppHandle 投影成两个布尔再委托；判定语义以本函数为单一事实源。
+fn multi_agent_web_scope_decision(
+    command: &str,
+    is_aux_shaped: bool,
+    is_multi_agent: bool,
+) -> Result<(), String> {
+    if is_aux_shaped {
+        return Ok(());
+    }
+    if !MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command) {
+        return Ok(());
+    }
+    if is_multi_agent {
+        return Err(format!(
+            "{command} is not available for desktop-only multi-agent Sessions over Web"
+        ));
+    }
+    Ok(())
+}
 
 fn validate_multi_agent_session_web_scope(
     app: &AppHandle,
@@ -159,24 +190,17 @@ fn validate_multi_agent_session_web_scope(
     // chat for exactly the heaviest users. The denylist's "web is read-only"
     // promise is scoped to the multi-agent EXECUTION surface, not to its
     // side chat.
-    if crate::features::sessions::is_aux_session_id(session_id) {
-        return Ok(());
-    }
-    if !MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command) {
-        return Ok(());
-    }
     let is_multi_agent = {
         use tauri::Manager as _;
         app.state::<crate::features::sessions::SessionStore>()
             .mode_state(session_id)
             .multi_agent
     };
-    if is_multi_agent {
-        return Err(format!(
-            "{command} is not available for desktop-only multi-agent Sessions over Web"
-        ));
-    }
-    Ok(())
+    multi_agent_web_scope_decision(
+        command,
+        crate::features::sessions::is_aux_session_id(session_id),
+        is_multi_agent,
+    )
 }
 
 const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
@@ -4719,6 +4743,12 @@ mod tests {
             // decide_approval analog. Same inertness, same rationale.
             "web_access_set_codex_acp_config_option",
             "web_access_respond_codex_acp_permission",
+            // Round-15 review (third sweep): the elicitation responder is
+            // the submit_user_input analog for the ACP runtime, and
+            // web_access_cancel_codex_acp is the cancel_generation-class
+            // entry. Same promise-totality rationale.
+            "web_access_respond_codex_acp_elicitation",
+            "web_access_cancel_codex_acp",
         ] {
             assert!(
                 super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
@@ -4735,6 +4765,34 @@ mod tests {
             assert!(
                 !super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
                 "只读查看 {command} 必须放行——Web 只读横幅要能取数"
+            );
+        }
+    }
+
+    /// 行为覆盖（round-15 评审 I2）：`multi_agent_web_scope_decision` 的全部
+    /// 四臂——aux 旁路、非封禁命令放行、多代理 + 封禁拒绝（错误带命令名）、
+    /// 非多代理 + 封禁放行（普通会话照常可用）。此前仅有常量成员钉，反转
+    /// is_multi_agent 或删除 contains 检查的突变体全绿。
+    #[test]
+    fn multi_agent_web_scope_decision_arms_are_behavioral() {
+        // 封禁表内 + 多代理 → 拒绝，错误面带命令名（定位可行动）。
+        let err = super::multi_agent_web_scope_decision("set_session_mode", false, true)
+            .expect_err("denylisted write must be refused for a multi-agent session");
+        assert!(err.contains("set_session_mode"), "错误必须带命令名: {err}");
+        // 封禁表内 + 非 aux 形状 + 非多代理 → 放行（普通会话 Web 照常可用）。
+        super::multi_agent_web_scope_decision("set_session_mode", false, false)
+            .expect("ordinary sessions keep web access to non-posture commands");
+        // aux 形状 id → 旁路（含封禁表内命令；隔离纯问答面威胁模型不适用）。
+        super::multi_agent_web_scope_decision("web_access_chat", true, true)
+            .expect("aux ids bypass the denylist scope for any command");
+        // 非封禁命令 + 多代理 → 放行（纯读面必须能取数）。
+        super::multi_agent_web_scope_decision("get_mode_state", false, true)
+            .expect("read-only commands stay reachable for multi-agent sessions");
+        // 封禁表逐命令 + 多代理 → 全部拒绝（决策核消费整表，防 contains 被删）。
+        for command in super::MULTI_AGENT_WEB_EXECUTION_DENYLIST {
+            assert!(
+                super::multi_agent_web_scope_decision(command, false, true).is_err(),
+                "denylisted {command} must be refused through the decision core"
             );
         }
     }
