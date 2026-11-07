@@ -3011,6 +3011,13 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
         return false;
       });
   }
+  // 受理拥有者（评审 JensenChen28 5804488461 P2）：doSendFor 的姿态门在
+  // get_mode_state 往返期间 busy 仍为 false，mode_changed / turn-done /
+  // 权威重试等多个异步触发都可能在此窗口内再次 flushQueued——第二次会越过
+  // busy 检查 shift 走 B 并再起一次查询；若 B 的查询先决，B 先于 A 受理，
+  // FIFO 失序。按 sid 持有受理权直到本次 doSendFor 落定（受理成功→busy
+  // 已顶上；拒绝→队首已回队），窗口内的重入 flush 直接让路。
+  const flushAdmissionSids = new Set();
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
@@ -3023,6 +3030,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       return;
     }
     if (isBusyFor(sid)) return;            // 已在生成中（新一轮已起）→ 留给那轮的 done 再 flush
+    if (flushAdmissionSids.has(sid)) return; // 受理已在途：等它落定（受理/回队）后再 flush
     const q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
     const item = q.shift();
@@ -3031,6 +3039,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
     notify();
+    flushAdmissionSids.add(sid);
     doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
         // 失败一律原位保留队首（unshift 回队首）：Auto 门拒绝同样如此——
@@ -3043,7 +3052,11 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
         if (!retryQueue) return;
         retryQueue.unshift(item);
         notify();
-      });
+      })
+      // 受理落定即释放（拒绝/成功/回队三态，含 catch 自身 throw 的路径）：
+      // turn 内由 busy 把门，done 后照常 FIFO。
+      .then(function () { flushAdmissionSids.delete(sid); },
+            function () { flushAdmissionSids.delete(sid); });
   }
 
   async function sendMessageToSession(sessionId, text, meta) { return pinvouSharedweb().sendMessageToSession(sessionId, text, meta); }
