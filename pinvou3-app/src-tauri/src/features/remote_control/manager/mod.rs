@@ -5602,6 +5602,18 @@ mod tests {
         let body = &body[..body
             .find("\n    fn ")
             .expect("begin body must be terminated by the next fn")];
+        // Round-24 复审(m7):纯注释行先滤除——注释掉接线行
+        // (`// transfer::evict_…`)后 needle 仍在注释文本内,裸 find 保绿
+        // (与 round-23 对三个兄弟钉的过滤同一口径;行尾 // 与块注释内提
+        // 及仍可掩护,按已披露残留)。
+        let body = body
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let gate = body
             .find("if inner.web_session_downloads.len() >= MAX_WEB_SESSION_DOWNLOADS {")
             .expect(
@@ -5610,7 +5622,9 @@ mod tests {
             );
         let call = body
             .find("transfer::evict_oldest_ready_session_download(&mut inner);")
-            .expect("the eviction call must stay wired inside the gate");
+            .expect("the eviction call must stay wired inside the gate (a \
+                     commented-out call keeps the needle only in a comment, \
+                     which the line filter strips)");
         let capacity = body
             .find("ensure_web_session_download_capacity(&inner, reserved_bytes)?;")
             .expect("the capacity gate must stay in begin");
@@ -5638,6 +5652,16 @@ mod tests {
         let body = &body[..body
             .find("\n    fn ")
             .expect("commit body must be terminated by the next fn")];
+        // Round-24 复审(m7):纯注释行先滤除,口径同上一钉——注释掉
+        // last_touched 刷新行后 needle 不得藏在注释文本里保绿。
+        let body = body
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let ready_flip = body
             .find("download.ready = true;")
             .expect("commit must flip the download ready at the reservation it verified");
