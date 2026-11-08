@@ -79,7 +79,11 @@
 //!   redelivery (possibly duplicating; the drop channel is cycle-bounded,
 //!   the never-arriving-event channel rate-bounded by the 24h give-up)
 //!   instead of silent loss. One disclosure narrows that to a
-//!   non-redelivery disposition, and four more qualify the redelivery:
+//!   non-redelivery disposition, three more qualify the redelivery, and
+//!   one further channel is lossy without being a redelivery either
+//!   (round-9: the persistence loss below is a second non-redelivery
+//!   disclosure, not a redelivery qualifier — the contract doc already
+//!   classified it that way):
 //!   (1) a file dropped through `MAX_STEER_DROP_CYCLES` cycles is
 //!   quarantined (`steer_drop_limit`) instead of re-delivering — the bound
 //!   the cycle counter exists to enforce; the gate sits ahead of the
@@ -97,22 +101,38 @@
 //!   turn's transcript (the forwarder retries the full snapshot on the
 //!   next event, but a failure that outlasts the session never lands it),
 //!   and the landed marker then also suppresses this body's keyed retries;
-//!   (4) a terminal event can be DEFERRED rather than lost — a steer
-//!   accepted while the target's turn is in its final (tool-free) stream
-//!   is not committed or dropped at the turn boundary: only an interrupt
-//!   settles steers, so the event waits for the target's NEXT turn's first
-//!   drain (the 24h give-up bounds the wait if no next turn comes; the
+//!   (4) a terminal event can be DEFERRED rather than lost — the
+//!   foundation settles parked steers only at a drain/inject point or on
+//!   an interrupt, so a steer accepted during the target's turn is
+//!   normally committed by that same turn's in-turn resume (the stream
+//!   loop drains the steer channel after every stream event), but a steer
+//!   that lands after the turn's LAST drain is not committed or dropped at
+//!   the turn boundary: it waits for the target's NEXT turn's first drain
+//!   (the 24h give-up bounds the wait if no next turn comes; the
 //!   re-delivery's own dispatched turn then commits the parked steer too —
 //!   both bodies land); (5) if BOTH the commit's done-marker write AND the
 //!   spool removal fail (read-only spool root), the registration stays
 //!   armed so the poll cannot loop redeliveries at full cadence — the wait
-//!   then expires at the 24h rate. The pending-file ceiling EXEMPTS
+//!   then expires at the 24h rate. If no terminal event ever arrives while
+//!   the app keeps running, the possible causes are exactly the constant's
+//!   list (`STEER_COMMIT_WAIT`): the next-turn deferral above, a forwarder
+//!   aborted by an engine recycle, a Drop notification lost on a full or
+//!   closed event channel at engine-drop time, a forwarder task that
+//!   panicked on an earlier event, or a deferral outlasting the wait. The
+//!   pending-file ceiling EXEMPTS
 //!   in-flight steers from its count (round-8 M1: they are accepted
 //!   deliveries, not backlog — counting them would let steering traffic
-//!   terminally quarantine innocent new arrivals). Registry locks recover
-//!   from poisoning with the current data (`into_inner`): a panic inside a
-//!   critical section degrades to the disclosed 24h-duplicate channel, it
-//!   cannot silently disarm armed entries.
+//!   terminally quarantine innocent new arrivals; round-9: a same-pass
+//!   mass drop can momentarily push the DE-ARMED leftovers past the cap —
+//!   at fleet scale, hundreds of concurrently armed steers whose drops all
+//!   land inside one inter-pass gap — and the tail quarantine then applies
+//!   to that genuinely-queued excess as always). The registry, late-map,
+//!   and drop-cycle locks recover from poisoning with the current data
+//!   (`into_inner`; a recovered map is assumed logically usable — the
+//!   realistic post-panic states all resolve in the duplicate/redelivery
+//!   direction): a panic inside a critical section degrades to the
+//!   disclosed 24h-duplicate channel, it cannot silently disarm armed
+//!   entries.
 //! - **Retry budget is per-process**: `RetryState` lives in memory, so a
 //!   watcher restart gives a permanently-failing file a fresh attempt budget
 //!   (a crash loop re-buys ~10 attempts per boot — bounded by boot cadence).
@@ -531,28 +551,34 @@ struct PendingSteerDelivery {
 
 /// How long a pending steer waits for its terminal event. A commit usually
 /// lands at the next step boundary (a busy target drains steers before each
-/// model call), but it is NOT guaranteed at the turn boundary: the
-/// foundation settles steers only on an interrupt, so a steer accepted
-/// during the turn's final (tool-free) stream waits for the target's NEXT
-/// turn's first drain — possibly hours, or never if the session goes idle
-/// (round-8: the "commit is immediate" claim this constant's comment used
-/// to make is false; the expiry below is what bounds that deferral). A
-/// timeout means the event is not coming on its own: the forwarder aborted
-/// with an engine recycle, the Drop notification was lost (a full or
-/// closed event channel at engine-drop time), the forwarder task itself
-/// panicked on an earlier event, or the deferral above outlasted the wait —
-/// the wait is abandoned and the file re-queues (possibly duplicating,
-/// better than losing). Measured with `Instant`, so the wait counts AWAKE
-/// time on Linux/macOS — a system sleep pauses the clock and postpones the
-/// expiry by the slept duration. Std specifies no suspend guarantee for
-/// `Instant`: the Windows clock may count sleep, in which case the wait
-/// can expire during a sleep.
+/// model call — and during the final (tool-free) stream too: the foundation
+/// drains the steer channel after every stream event and resumes the turn
+/// to commit accepted steers in the SAME turn, round-9 M3). It is NOT
+/// guaranteed at the turn boundary, though: the foundation settles parked
+/// steers only on an interrupt or at a drain/inject point, so a steer that
+/// lands after the turn's LAST drain exits with the turn uncommitted and
+/// waits for the target's NEXT turn's first drain — possibly hours, or
+/// never if the session goes idle (round-8: the "commit is immediate"
+/// claim this constant's comment used to make is false; the expiry below
+/// is what bounds that deferral). A timeout means the event is not coming
+/// on its own: the forwarder aborted with an engine recycle, the Drop
+/// notification was lost (a full or closed event channel at engine-drop
+/// time), the forwarder task itself panicked on an earlier event, or the
+/// deferral above outlasted the wait — the wait is abandoned and the file
+/// re-queues (possibly duplicating, better than losing). Measured with
+/// `Instant`, so the wait counts AWAKE time on Linux/macOS — a system
+/// sleep pauses the clock and postpones the expiry by the slept duration.
+/// Std specifies no suspend guarantee for `Instant`: the Windows clock may
+/// count sleep, in which case the wait can expire during a sleep.
 const STEER_COMMIT_WAIT: Duration = Duration::from_secs(24 * 3600);
 
-/// The in-flight registry. Its retained bytes are bounded by the pending
-/// ceiling × `MAX_SPOOL_FILE_BYTES` (≤16 MiB at the 256-file cap): each
-/// armed entry holds its body's first-read bytes until the terminal event,
-/// the stale-release, or this wait's expiry.
+/// The in-flight registry. Each armed entry holds its body's first-read
+/// bytes (≤ `MAX_SPOOL_FILE_BYTES`) until the terminal event, the
+/// stale-release, or this wait's expiry (round-9: the old "bounded by the
+/// pending ceiling × MAX_SPOOL_FILE_BYTES" line predates the round-8
+/// exemption — armed files are NOT cap-counted, so the armed population is
+/// bounded by what the engines accept and drains via the terminal event or
+/// the 24h give-up, not by the ceiling).
 static PENDING_STEERS: std::sync::OnceLock<
     std::sync::Mutex<HashMap<String, PendingSteerDelivery>>,
 > = std::sync::OnceLock::new();
@@ -937,7 +963,15 @@ pub fn resolve_pending_steer(steer_id: &str, committed: bool) {
     // between the verify above and here must not be removed untried under
     // a marker that would answer its retries "delivered". Drop the marker
     // this arm just wrote (the new body was never delivered), disarm, and
-    // let the next poll deliver the newest queued content. This is also
+    // let the next poll deliver the newest queued content — normally. The
+    // unlink only saves the newest body if it lands before a concurrent
+    // poll pass's marker-exists check: if the replacement itself is what
+    // triggered that pass's stale-release, the pass may consume the newest
+    // body through the already-delivered skip INSIDE this same interleaving
+    // (round-9: the same-pass variant of this arm; narrower than the
+    // acknowledged re-verify→removal residual — the unlink bounds marker
+    // suppression to the instant — but the "next poll" wording below is
+    // then too late by one skip). This is also
     // the vanished/unreadable arm for the commit window: whatever sits at
     // the path now, this finalizer cannot vouch for it, and the poll's
     // own arms handle every queued state.
@@ -1803,6 +1837,16 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         else {
             // Round-14 minor 2: the landed-guard applies here too — no
             // "quarantining" log for a rename that did not move the file.
+            // Round-9 (adjudication note): disarm parity with the
+            // vanished/drop-limit/panic arms is NOT available here and is
+            // not needed — an armed entry always carries the UTF-8 path it
+            // was armed under (arming happens only past this gate), so a
+            // same-user rename to a non-UTF-8 name moves the file away
+            // while its registration still points at the old path; the
+            // path-keyed disarm cannot match, and the entry resolves the
+            // honest way instead: the terminal event's mismatch arm
+            // (vanished → no-marker disarm) or the 24h expiry. Bounded,
+            // same over-quarantine direction as the other rename races.
             if quarantine(&path) {
                 log::warn!("[messaging] quarantining non-UTF-8 spool name {:?}", path);
             }
@@ -1988,11 +2032,26 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     if let Err(unlink_error) =
                         std::fs::remove_file(done_dir().join(format!("{stem}.json")))
                     {
-                        log::warn!(
-                            "[messaging] failed to drop the stale done marker for {:?}: {unlink_error} \
-                             (the skip arm will remove the newest body untried at the next pass)",
-                            name
-                        );
+                        // Round-9: an UNKEYED delivery wrote no marker this
+                        // pass, so the unlink ENOENTs and the stale-marker
+                        // consequence below is false — there is nothing to
+                        // suppress the newest body (the replacement
+                        // re-delivers normally with its cleared budget).
+                        // Only a real error over a marker that DID land
+                        // carries the untried-removal consequence.
+                        if unlink_error.kind() == std::io::ErrorKind::NotFound {
+                            log::debug!(
+                                "[messaging] no done marker to drop for {:?} (unkeyed \
+                                 delivery); the replacement re-delivers normally",
+                                name
+                            );
+                        } else {
+                            log::warn!(
+                                "[messaging] failed to drop the stale done marker for {:?}: {unlink_error} \
+                                 (the skip arm will remove the newest body untried at the next pass)",
+                                name
+                            );
+                        }
                     }
                     retries.clear(&name);
                     // The dispatched old body DID land (a new turn), so the
@@ -2288,6 +2347,7 @@ mod spool_pipeline_tests {
         let joined = source[..end]
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
+            .map(strip_trailing_line_comment)
             .collect::<Vec<_>>()
             .join("\n");
         let mut out = String::with_capacity(joined.len());
@@ -2303,10 +2363,45 @@ mod spool_pipeline_tests {
         out
     }
 
+    /// Round-9 M1: a trailing `// …` comment survives whole-line filtering,
+    /// so a decoy needle in a trailing comment rescued the call-window and
+    /// ±400-byte pins (a flipped literal plus `// , true` inside the paren
+    /// window shipped every pin green). Cut each line at the first `//`
+    /// that is NOT inside a `"`-quoted string literal (escape-aware). Raw
+    /// strings `r#"…"#` are tracked as ordinary quotes — the tracked state
+    /// can mis-toggle on their embedded quotes, but that only ever RETAINS
+    /// a comment (the fail-visible direction for a needle whose text lives
+    /// in production strings, which none do here), never fabricates one.
+    fn strip_trailing_line_comment(line: &str) -> &str {
+        let bytes = line.as_bytes();
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut i = 0;
+        while i < bytes.len() {
+            if escaped {
+                escaped = false;
+                i += 1;
+                continue;
+            }
+            match bytes[i] {
+                b'\\' if in_string => escaped = true,
+                b'"' => in_string = !in_string,
+                b'/' if !in_string && i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                    return &line[..i];
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        line
+    }
+
     /// The call-window argument bind shared by the wiring pins: from the
     /// needle to its call's closing paren, the argument literal must appear
     /// INSIDE the call (a decoy `, true` elsewhere in the arm — comment or
-    /// code — satisfies a span-wide `contains`, not this).
+    /// code — satisfies a span-wide `contains`, not this; the shared helper
+    /// strips comments first, so a decoy cannot hide in a trailing comment
+    /// either).
     fn call_window_contains(haystack: &str, needle: &str, arg: &str) -> bool {
         let Some(start) = haystack.find(needle) else {
             return false;
@@ -3080,6 +3175,12 @@ mod spool_pipeline_tests {
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o500);
         std::fs::set_permissions(&spool, perms).unwrap();
         resolve_pending_steer("steer-4@2", true);
+        // Round-9: restore BEFORE asserting (the round-8 fixture hygiene the
+        // other two chmod fixtures adopted) — a red assert above must not
+        // leak the read-only tree and poison every later TempHome user.
+        let mut perms = std::fs::metadata(&spool).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&spool, perms).unwrap();
         assert!(
             done_dir().join("lock.json").exists(),
             "the marker survives the failed removal (the end state cannot \
@@ -3094,10 +3195,6 @@ mod spool_pipeline_tests {
             !is_pending_steer_path(&spool.join("lock.json")),
             "the registration is consumed either way"
         );
-        // Restore so TempHome's cleanup can remove the tree.
-        let mut perms = std::fs::metadata(&spool).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&spool, perms).unwrap();
     }
 
     /// Round-8 M1: files with a steer in flight are EXEMPT from the pending
@@ -3854,11 +3951,22 @@ mod spool_pipeline_tests {
         // suite green. The safe shape routes the hit through the
         // `if let Some(entry) = pending.get(..)` branch INSIDE the shared
         // critical section, so require that branch between the two locks.
+        // Round-9 M2: a bare `contains("if let Some(")` is defeated by the
+        // variant `let hit = ….get(..).cloned(); if let Some(entry) = hit` —
+        // the guard still drops at the semicolon while the needle passes.
+        // Bind the SCRUTINEE to the guard variable instead: the flattened
+        // span must carry the production shape verbatim, so a scrutinee on
+        // a statement-scoped temporary goes red.
+        let flattened: String = body[pending_lock..late_lock]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
         assert!(
-            body[pending_lock..late_lock].contains("if let Some("),
+            flattened.contains("ifletSome(entry)=pending.get(steer_id).cloned()"),
             "the peek hit must be resolved inside the shared critical section \
-             (a statement-scoped temporary guard would release the registry \
-             before the late-map record)"
+             through the registry guard variable itself (a statement-scoped \
+             temporary guard — `let hit = …; if let Some(e) = hit` — would \
+             release the registry before the late-map record)"
         );
         let finalizer = production
             .find("pub fn resolve_pending_steer")
@@ -4414,6 +4522,15 @@ mod spool_pipeline_tests {
             (
                 "steer dropped {MAX_STEER_DROP_CYCLES} times",
                 "cancel_pending_steer_path",
+            ),
+            // Round-9: the drop-limit arm's clear was previously bound
+            // only behaviorally (the cycle-budget assert); bind it
+            // structurally like its siblings so deleting the clear inside
+            // the landed-quarantine gate goes red without re-running the
+            // behavioral fixture.
+            (
+                "steer dropped {MAX_STEER_DROP_CYCLES} times",
+                "clear_steer_drop_cycles",
             ),
             (
                 "delivery panicked {count} times",

@@ -427,9 +427,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   armed-skip, so it can quarantine a file that still holds an in-flight
   steer armed by a mid-delivery re-steer — the disposition is the same
   whether or not the steered body already landed). A commit is not
-  guaranteed at the turn boundary: the engine settles steers only on an
-  interrupt, so a steer accepted during the turn's final (tool-free)
-  stream waits for the target's NEXT turn's first drain. If no terminal
+  guaranteed at the turn boundary: the engine settles parked steers only
+  at a drain/inject point or on an interrupt — during a live turn the
+  stream loop drains the steer channel after every stream event and the
+  turn resumes to commit accepted steers in the SAME turn (round-9), so
+  the case that waits for the target's NEXT turn's first drain is a steer
+  that landed after the turn's last drain. If no terminal
   event ever arrives while the app keeps running (that deferral, a
   forwarder aborted by an engine recycle, a lost Drop notification on a
   full event channel at engine-drop time, or a forwarder task that
@@ -438,8 +441,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   queued file re-delivers on the first poll after restart — either way
   possibly duplicating. The pending-file ceiling does NOT count in-flight
   steered files against its cap (they are accepted deliveries, not
-  unattended backlog), so steering traffic cannot terminally quarantine
-  fresh arrivals. Quarantine
+  unattended backlog), so ordinary steering traffic cannot terminally
+  quarantine fresh arrivals (round-9: not an absolute — at fleet scale a
+  same-pass mass drop, hundreds of concurrently armed steers whose drops
+  all land inside one inter-pass gap, can push the de-armed leftovers past
+  the cap, and the tail quarantine then applies to that genuinely-queued
+  excess). Quarantine
   audit lines carry the failure-receipt fields named after the foundation
   agent_mail receipt (`code` / `retryable:false` / `failed_at`, plus a
   human `reason` field; the `code` values are messaging-local classes, not
