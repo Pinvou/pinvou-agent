@@ -1,7 +1,8 @@
 // 回退确认弹窗（工作模式 + 原生 code 共用）：从 RewindChip.jsx 拆出的重弹窗层，
 // 经 ChatView 的 React.lazy 懒加载——弹窗只在用户点击回退入口后才需要，
-// 其 ~7KB 压缩体积不占启动主入口的 500KB 预算（评审 r11：main #586 增量
-// 叠加后预算溢出）。行为与拆分前逐字一致。
+// 其压缩体积不占启动主入口预算（预算现为 vite.config 的
+// MAIN_ENTRY_BUDGET_BYTES 486_000/128_000；评审 r11 时为 500KB 且随后被
+// #586 增量叠爆，历史称谓勿再引用）。行为与拆分前逐字一致。
 
 import { useState } from 'react';
 import { ModalShell } from '../../components/ModalShell.jsx';

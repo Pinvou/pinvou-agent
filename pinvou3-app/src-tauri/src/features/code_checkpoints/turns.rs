@@ -7,8 +7,15 @@
 //! 计数都应统一读 era 形列表——单消息 `is_user_turn_prompt` 逐条分类会漏计
 //! post-provenance 历史里粘贴的压缩摘要头 turn。sessions 侧 rewind/fork
 //! （`features::sessions`）同样读这一个列表，checkpoint 序号必须与之同口径，
-//! 否则「第 N 轮」在 checkpoint 卡片与回退/分叉入口之间整体错位。设计文档
-//! `docs/code-mode-改动随对话回退-设计.md` §3「移植时的修正」。
+//! 否则「第 N 轮」在 checkpoint 卡片与回退/分叉入口之间整体错位。计数使用方：
+//! 底座 `Op::EditLastTurn`、store 落盘兜底 `persist_admitted_chat_display`、
+//! 本模块 turn 计数（设计文档 `docs/code-mode-改动随对话回退-设计.md` §3
+//! 「移植时的修正」）。
+//!
+//! 唯一在 era 列表之上追加的剔除：步数预算通知（ExternalUser 落盘、turn_meta
+//! 无 non-authoritative 标记，era 口径会误计——见
+//! `is_step_budget_notification`）。计数与截断边界统一走
+//! `user_turn_prompt_cut_indices`。
 
 use deepseek_tui::models::{ContentBlock, Message, Role};
 use deepseek_tui::user_turn_prompt_indices;

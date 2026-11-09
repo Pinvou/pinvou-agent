@@ -1259,15 +1259,22 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
     // string — is_acp_metadata's documented exclusion applies here too: aux
     // sessions are aux-owned, never ACP histories, and must stay reachable
     // for headless runs (the probe otherwise over-rejects them).
-    if let Ok(saved) = store.load(session_id) {
-        if !crate::features::sessions::is_aux_session_id(session_id)
-            && saved.metadata.model.ends_with("(ACP)")
-        {
-            anyhow::bail!(
-                "agent_session_not_chat: session '{session_id}' is an ACP session; \
-                 headless runs cannot target ACP histories"
-            );
-        }
+    // r45 minor 7: the probe used `if let Ok` - a transient second-load
+    // failure silently skipped the ACP refusal (every sibling gate fails
+    // closed). Treat a load failure here as the same unreadable-session
+    // fault the first load already hard-errors on.
+    let saved = store.load(session_id).map_err(|error| {
+        anyhow::anyhow!(
+            "agent_session_unreadable: session '{session_id}' exists but could not be loaded: {error:#}"
+        )
+    })?;
+    if !crate::features::sessions::is_aux_session_id(session_id)
+        && saved.metadata.model.ends_with("(ACP)")
+    {
+        anyhow::bail!(
+            "agent_session_not_chat: session '{session_id}' is an ACP session; \
+             headless runs cannot target ACP histories"
+        );
     }
     match store.session_kind(session_id)? {
         SessionKind::Chat => Ok(()),
