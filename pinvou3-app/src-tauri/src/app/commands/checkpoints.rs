@@ -50,6 +50,13 @@ pub(super) async fn create_turn_checkpoint(
         // user_turn_prompt_indices；tool_result 不计入），
         // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。会话 JSON
         // 读取是阻塞 IO，与快照同驻 spawn_blocking。
+        // 已知残留（mixed vintage）：turn 序号在落账时按**当时**的计数口径
+        // 盖戳且不随加载重算——本 PR 之前落账的旧戳按单消息口径计数，此后
+        // 按 era 口径计数。含「用户粘贴的压缩摘要头」的 post-provenance
+        // 历史里旧戳比 era 位置低一档：目标点查不到快照时退化为「仅回退
+        // 对话」（conversationOnly），undo 计数对不上时 fail-closed 禁用——
+        // 失败方向安全，但该场景的重放/回退体验有损；根治是快照重算或序号
+        // 下发，见 fork.rs 模块文档的残留清单。
         let turn_number = store_count
             .load(&sid_count)
             .map(|session| checkpoints::count_user_turns(&session.messages) + 1)

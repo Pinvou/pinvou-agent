@@ -5761,8 +5761,7 @@ fn valid_checkpoint_id(id: &str) -> bool {
 
 /// Exact user-turn count over transcript JSON, via the app-side entry point
 /// that runs the engine's own era-form counting (`user_turn_prompt_indices`).
-/// This
-/// replaces a JSON approximation that counted image-only turns the engine
+/// This replaces a JSON approximation that counted image-only turns the engine
 /// treats as non-prompt and could wedge `checkpoints rewind` in a
 /// code-restored state (the CLI pre-check passed, the store's authoritative
 /// recount refused, and nothing changed on retry). The values were just
