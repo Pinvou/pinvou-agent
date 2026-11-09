@@ -591,7 +591,7 @@ export const dictZh = {
         // 品悟检阅卡(PinvouSummonCard/Rows/Loading)。品/悟 字形是品牌、保留;周边文案随语言。
         pvLoadingPin: 'Pinvou 品·查错检阅', pvLoadingWu: 'Pinvou 悟·发散补全',
         pvLoadingPinSub: '正在逐条核对、揪问题', pvLoadingWuSub: '正在比对完整性维度、发散补点',
-        pvLoadingHint: isLocal => isLocal ? '本地模型推理中，通常 5–30 秒，稍候～' : '模型推理中，思考型模型可能要一两分钟，稍候～',
+        pvLoadingHint: isLocal => isLocal ? '本地模型推理中，通常 5–30 秒，稍候～' : '模型推理中，思考型模型可能要几分钟，稍候～',
         pvFail: '失败：', pvSkipped: '已跳过', pvPerspective: '视角', pvAlsoInvolves: '也涉及',
         pvVerdictPass: '✓ 通过，可交付', pvFramework: '完整性框架', pvDims: '维', pvSuggest: '建议 ', pvNeedsVerify: '需核实',
         pvActAdopt: '采纳建议', pvActAsk: '让 AI 问我', pvActVerify: '让 AI 核实', pvActConfirmed: '我确认没问题',

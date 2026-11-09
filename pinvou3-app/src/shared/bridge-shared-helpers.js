@@ -250,6 +250,11 @@
     // 同步解召唤守卫:守卫是全局单飞闸,旧 session 的在途 settle 凭召唤序号只入账
     // 不写 UI(r3 审 m-minor:否则新会话里品/悟最长被静默吞 180s)。旧 settle 的
     // finally 命中同序号时再赋 false 也幂等。
+    // 注意:本函数不止切 session 时跑——runSyncOnSession 后台同步(定时任务/记忆
+    // 运行等)也会借它临时换缓冲,守卫随之被放,等于"在途也允许再召唤"。后果只是
+    // 已接受的两次并发付费调用(dismiss 同代价);序号门保证无泄漏、无错窗注入
+    // (r4 审 m6 核过)。若要收紧成严格 session-switch 语义,在切走时 bump
+    // pinvouSummonSeq 即可让旧 settle 永不匹配。
     state.pinvouSummoning = false;
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
@@ -3073,10 +3078,16 @@
   }
 
   // web+tauriChat 共享
-  function recordPinvouReview(review) {
+  function recordPinvouReview(review, seq) {
     if (!state.activeSessionId || !review) return null;
     const pos = state.messages.length;
-    state.pinvouReviews.push({ pos, review });
+    const entry = { pos, review };
+    // 记召唤序号:r4 审 m5——被顶掉的旧 settle(序号 < 当前)也照入账(r3 定的
+    // 幂等设计),但 Rust 核账读"同一产出物从后往前第一个 entry",并发窗口里
+    // 新 settle 先落、旧 settle 后落会让"最近一轮"变成被顶掉的旧审查,核账
+    // 对着 Boss 没看过的旧 verdict 审。序号让读取端可辨新旧(rust 侧按 max 取)。
+    if (typeof seq === "number") entry.seq = seq;
+    state.pinvouReviews.push(entry);
     const sid = state.activeSessionId;
     const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
     invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
@@ -4734,7 +4745,7 @@
       // focus=产出物 path(品=审产物); mode="coverage"=悟(通盘体检)。
       const review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
       if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
-      recordPinvouReview(review); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
+      recordPinvouReview(review, seq); // 存 sidecar(供核账读上轮账目,带召唤序号辨新旧);modal.review 同引用,裁决写它=写 sidecar
       if (state.pinvouModal && state.pinvouSummonSeq === seq) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
     } catch (e) {
       if (state.activeSessionId === sid && state.pinvouModal && state.pinvouSummonSeq === seq) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }

@@ -343,6 +343,9 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     if !in_ws {
         return None;
     }
+    // read_to_string 对二进制产物(.docx/.pdf/.xlsx 等)静默失败返回 None——该类
+    // session 退化成只凭对话流审查。文本抽取是后续功能候选(P1),当前形态刻意
+    // 如此(2026-11-09 审:把已知限制写进代码,别只活在 PR 描述里)。
     let content = std::fs::read_to_string(&abs).ok()?;
     let n = content.chars().count();
     let bounded = if n > ARTIFACT_CHAR_LIMIT {
@@ -384,22 +387,29 @@ fn ledger_from_entries(
     artifact_path: &str,
     current_pos: u64,
 ) -> Option<Vec<PinvouIssue>> {
-    // 最近一轮【品】entry(rev=从后往前第一个;有 verdict 或 issues 非空)。**跳过【悟】的 coverage
-    // entry**(issues 空+无 verdict)——否则悟 record 的 entry 会当 latest、让 current_pos 守门失效
-    // (悟非 pass→永远不触发重新立账,品又读不到 pass 后的增量)。
-    let latest = arr.iter().rev().find(|e| {
-        let r = match e.get("review") {
-            Some(r) => r,
-            None => return false,
-        };
-        if r.get("artifact_path").and_then(Value::as_str) != Some(artifact_path) {
-            return false;
-        }
-        r.get("verdict").and_then(Value::as_str).is_some()
-            || r.get("issues")
-                .and_then(Value::as_array)
-                .is_some_and(|a| !a.is_empty())
-    })?;
+    // 最近一轮【品】entry。**跳过【悟】的 coverage entry**(issues 空+无 verdict)
+    // ——否则悟 record 的 entry 会当 latest、让 current_pos 守门失效(悟非 pass→
+    // 永远不触发重新立账,品又读不到 pass 后的增量)。
+    // 序选择:r4 审 m5——entry 带 `seq`(召唤序号,recordPinvouReview 写入)时取
+    // **seq 最大的**,不是从后往前第一个。dismiss→再召唤的并发窗口里新 settle
+    // 先落、被顶掉的旧 settle 后落,纯"最后一条"会把 Boss 没看过的旧审查当
+    // 最近一轮,核账对着过期 verdict 审。老 entry(无 seq)按 0 计,稳定性不受影响。
+    let latest = arr
+        .iter()
+        .filter(|e| {
+            let r = match e.get("review") {
+                Some(r) => r,
+                None => return false,
+            };
+            if r.get("artifact_path").and_then(Value::as_str) != Some(artifact_path) {
+                return false;
+            }
+            r.get("verdict").and_then(Value::as_str).is_some()
+                || r.get("issues")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| !a.is_empty())
+        })
+        .max_by_key(|e| e.get("seq").and_then(Value::as_u64).unwrap_or(0))?;
     let latest_pos = latest.get("pos").and_then(Value::as_u64).unwrap_or(0);
     let passed = latest
         .get("review")
@@ -596,15 +606,22 @@ async fn model_review(
         crate::core::model_endpoint::error_for_status_with_body(resp, "chat/completions status")
             .await?;
     let value: Value = resp.json().await.context("parse chat/completions json")?;
-    let content = value
+    let choice = value
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|c| c.first())
-        .and_then(|c| c.get("message"))
+        .cloned()
+        .unwrap_or_default();
+    let content = choice
+        .get("message")
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    parse_model_review(content).context("parse Pinvou review")
+    let finish_reason = choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    parse_model_review_with_finish(content, finish_reason.as_deref()).context("parse Pinvou review")
 }
 
 /// One-shot Chat Completions body for model review. Field set mirrors the
@@ -616,8 +633,11 @@ async fn model_review(
 /// so the wire-drift budget stays testable. `max_tokens` is the caller's
 /// route-effective budget (`bridge::main_wire_max_output_tokens`, the same
 /// algorithm as the main turn — a hard-coded constant drifted the moment a
-/// thinking-on budget was needed: the old 1600 was consumed entirely by k3
-/// reasoning tokens, content empty, finish_reason=length, 2026-11-06).
+/// thinking-on budget was needed: the old hard-coded cap was consumed entirely
+/// by k3 reasoning tokens, content empty, finish_reason=length, 2026-11-06).
+/// The literal digits are kept out of this doc comment on purpose: the call-site
+/// region pin asserts the region never mentions them (a re-inlined constant
+/// would otherwise satisfy a contains-only pin).
 /// `max_tokens_field` is the caller's `review_max_tokens_field` decision —
 /// the engine swaps the field to `max_completion_tokens` on four route
 /// classes and the review must not mismatch them. Thinking controls (never
@@ -823,12 +843,17 @@ fn canonical_minimax_model_is_m3(model: &str) -> bool {
     )
 }
 
-/// 镜像 `prefs::is_moonshot_k31_route` 的附加条件与型号名单：Moonshot 身份
-/// （vendor kimi|moonshot、Kimi preset、env `kimi` 经别名归一）或官方 Kimi 路由
-/// URL × K3.1 拼写（仅容忍 `[1m]` 声明后缀）。K3.1 是 always-reasoning 契约：
-/// 深度走顶层 `reasoning_effort`，`thinking:{disabled}` 被拒，**省略即文档有效
-/// 形态**（引擎 send-path 刻意把 K3.1 effort 解析为 None）——审查镜像 omission，
-/// 不发任何字段（2026-11-07 r3 审 M2）。
+/// K3.1 附加条件与型号名单：Moonshot 身份（vendor kimi|moonshot、Kimi preset、
+/// env `kimi` 经别名归一）或官方 Kimi 路由 URL × K3.1 拼写（仅容忍 `[1m]` 声明
+/// 后缀）。型号名单与 `prefs::is_moonshot_k31_route` 逐字相同；附加条件是**刻意
+/// 的拓宽**，不是逐字镜像——prefs 按 vendor 戳（kimi|moonshot）或官方 URL 附加，
+/// 这里按 Moonshot 身份或官方 URL 附加（2026-11-09 审 m2 澄清，旧注释的"镜像"
+/// 说法不实）。分歧面：无 kimi|moonshot 戳的中转记录若经 Kimi preset 解析出
+/// Moonshot 身份，引擎走通用 Moonshot 臂发 `thinking:{enabled}`（bridge 注已标记
+/// 该形在 K3.1 契约之外），审查发零字段。零字段是 K3.1 always-reasoning 契约的
+/// 文档有效形态（深度走顶层 `reasoning_effort`，`thinking:{disabled}` 被拒，
+/// 引擎 send-path 刻意把 K3.1 effort 解析为 None，omission 即文档有效形态）——
+/// 审查取契约形态而非复刻越界线材（2026-11-07 r3 审 M2）。
 fn review_model_is_moonshot_k31(api: ApiProvider, base_url: &str, model: &str) -> bool {
     let attached = api == ApiProvider::Moonshot
         || is_exact_kimi_code_route(base_url)
@@ -961,8 +986,14 @@ fn review_max_tokens_field(api: ApiProvider, base_url: &str, model: &str) -> &'s
 ///   名单（qwen3.8-max[+preview]、kimi-k2.7-code 系）无开关不发字段，hybrid 名单
 ///   发 `enable_thinking=true`，preserve 名单发 `preserve_thinking=true`，
 ///   deepseek-v4*/glm-5.2|5.1|5 发 `reasoning_effort=high`（底座把 low 折叠为
-///   high）。`wire="openai"` 的 Modelstudio*Anthropic 变体底座同样在此线剥离，
-///   审查同一照做。
+///   high）。`wire="openai"` 的 Modelstudio*Anthropic 变体（TokenPlan/CodingPlan
+///   Anthropic 两个 kind）底座路由门 `is_exact_modelstudio_chat_route` 明确
+///   "speak the Messages dialect and are never verified here"——路由层对四个
+///   Modelstudio kind 一律先剥离全部思考字段、只对非 Anthropic 两个 kind 回写，
+///   所以引擎线材对 *Anthropic 恒零字段；审查同形：这两个 kind 直接 fail-close
+///   零字段，不进名单逻辑（2026-11-09 审 M1：旧线让 *Anthropic 混进名单臂、在
+///   精确 Alibaba 端点上发 `enable_thinking`，恰是底座注释点名的 unguarded
+///   400 风险）。
 /// - Qwen preset / 非 Modelstudio 身份的 dashscope URL：**零字段**——引擎落
 ///   Openai 身份，通用层无写入、路由层按身份门控，主对话线材不含任何思考字段；
 ///   hybrid 型号 native 缺省思考开，thinking-only 名单无开关，经典 id 无思考
@@ -985,9 +1016,11 @@ fn review_max_tokens_field(api: ApiProvider, base_url: &str, model: &str) -> &'s
 ///   不 split 时 M2 的 reasoning 会混进 content 破坏解析。
 /// - OpenRouter 系（Openrouter/Orcarouter/Novita/Together kind）：
 ///   `reasoning_effort=low` + `thinking.enabled`（底座 low 档同款）。**例外**
-///   `thinkingmachines/inkling`：底座 `apply_inkling_reasoning_effort` 明确
+///   `thinkingmachines/inkling` 仅在 Together kind 上：底座
+///   `apply_inkling_reasoning_effort` 只对 `provider == Together` 生效并明确
 ///   `object.remove("thinking")`——Inkling 不吃 Together 通用 thinking 扩展，
-///   只发顶层 effort。
+///   只发顶层 effort；OpenRouter 等其他聚合 kind × inkling 底座走通用臂照发
+///   effort+thinking，审查同形（2026-11-09 审 m1 收敛例外范围）。
 /// - SiliconFlow 系（Siliconflow/SiliconflowCn/Sglang/Deepinfra/Atlascloud kind，
 ///   底座同一折叠臂）：`reasoning_effort=high` + `thinking.enabled`。
 /// - env-pin 家族（kind 归一后与底座同名臂同款）：arcee/huggingface
@@ -1094,13 +1127,12 @@ fn apply_review_thinking_controls(
         return;
     }
     // Model Studio（底座 `apply_modelstudio_route_reasoning_controls` 镜像：
-    // 路由 fail-close、名单门控、档位折叠）。
+    // 路由 fail-close、名单门控、档位折叠）。*Anthropic 两个 kind 底座路由门
+    // 不认（Messages 方言，"never verified here"）——路由层剥离后不回写，引擎
+    // 线材恒零字段；这里同样不进名单臂，落函数尾零字段（2026-11-09 审 M1）。
     if matches!(
         api,
-        ApiProvider::ModelstudioTokenPlan
-            | ApiProvider::ModelstudioTokenPlanAnthropic
-            | ApiProvider::ModelstudioCodingPlan
-            | ApiProvider::ModelstudioCodingPlanAnthropic
+        ApiProvider::ModelstudioTokenPlan | ApiProvider::ModelstudioCodingPlan
     ) {
         if !is_exact_modelstudio_chat_route(base_url) {
             return;
@@ -1122,6 +1154,13 @@ fn apply_review_thinking_controls(
         }
         return;
     }
+    // 以下 Doubao/z.ai/Mimo/Minimax（及上方 Deepseek 臂）的 URL 嗅探是**已记载
+    // 拓宽**，与 Kimi 家族同性质：路由方言跟端点走，与身份/preset 无关——
+    // OpenaiCompatible preset 直指官方端点（无 vendor 戳）时身份落 Openai，
+    // 底座零字段，但官方端点真实方言就是思考字段（底座注释"URL 嗅探变体"测试
+    // 同口径钉住，2026-11-09 审 m3 补记载）。嗅探含子串匹配的固有近似
+    // （lookalike 主机/路径片段可提前命中本臂）；底座 heritage
+    // `reasoning_dialect_from_base_url` 同语义。
     if preset == ModelPreset::Doubao
         || api == ApiProvider::Volcengine
         || base.contains("volces.com")
@@ -1183,12 +1222,17 @@ fn apply_review_thinking_controls(
             | ApiProvider::Novita
             | ApiProvider::Together
     ) {
-        // Inkling 例外：底座 `apply_inkling_reasoning_effort` 明确
-        // `object.remove("thinking")`（"It does not use Together's generic
-        // `thinking` extension"）——只发顶层 effort。
-        if model
-            .trim()
-            .eq_ignore_ascii_case("thinkingmachines/inkling")
+        // Inkling 例外：底座 `apply_inkling_reasoning_effort` 只在 **Together
+        // 身份**上生效（chat.rs `provider != ApiProvider::Together`
+        // 提前返回），明确 `object.remove("thinking")`（"It does not use
+        // Together's generic `thinking` extension"）——只发顶层 effort。
+        // OpenRouter/Orcarouter/Novita × inkling 底座走各自通用臂照发
+        // effort+thinking，审查同形（2026-11-09 审 m1：旧线把例外扩大到全部
+        // 四 slug，是与底座的未记载分歧）。
+        if api == ApiProvider::Together
+            && model
+                .trim()
+                .eq_ignore_ascii_case("thinkingmachines/inkling")
         {
             body["reasoning_effort"] = json!("low");
             return;
@@ -1261,6 +1305,33 @@ fn apply_review_thinking_controls(
 }
 
 fn parse_model_review(content: &str) -> Result<ModelReview> {
+    parse_model_review_with_finish(content, None)
+}
+
+/// `finish_reason=length` 是预算被推理吃满/输出截断的信号：空 content 或截断
+/// JSON 报干巴巴的"没有 JSON"会把人引去查提示词，而病根在输出预算。带上
+/// finish_reason 的解释（2026-11-09 审 m9；k3 旧线上正是这个形态——旧上限全被
+/// reasoning 吃掉、content 空、finish_reason=length）。
+fn parse_model_review_with_finish(
+    content: &str,
+    finish_reason: Option<&str>,
+) -> Result<ModelReview> {
+    parse_model_review_inner(content).map_err(|err| {
+        if finish_reason == Some("length") {
+            err.context(
+                "model hit the route's output-token cap before emitting \
+                 parseable review JSON (finish_reason=length) — the budget \
+                 went to reasoning tokens or the JSON was cut off; the wire \
+                 already carries the engine's main-turn budget, so this \
+                 points at the route, not at the review",
+            )
+        } else {
+            err
+        }
+    })
+}
+
+fn parse_model_review_inner(content: &str) -> Result<ModelReview> {
     if let Ok(v) = serde_json::from_str::<ModelReview>(content.trim()) {
         return Ok(v);
     }
@@ -2262,6 +2333,13 @@ mod tests {
                 "https://api.moonshot.ai/v1",
                 "kimi-k3.1-pro[1m]",
             ),
+            // r4 审突变实证：四个拼写只钉两个，删掉未钉拼写全测试保持绿。
+            (
+                "moonshot",
+                "https://api.moonshot.cn/v1",
+                "kimi-k3.1-pro-highspeed",
+            ),
+            ("moonshot", "https://api.kimi.com/coding/v1", "k3.1-pro"),
         ] {
             let mut k31 = json!({});
             apply_review_thinking_controls(
@@ -2406,6 +2484,26 @@ mod tests {
             ms_gateway.as_object().expect("body object").is_empty(),
             "Modelstudio 非精确端点 fail-close: {ms_gateway}"
         );
+        // r4 审 M1：*Anthropic 两个 kind 底座路由门不认（Messages 方言，
+        // "never verified here"——路由层剥离后不回写），引擎线材恒零字段。
+        // 审查同形 fail-close，不进名单臂（精确 Alibaba 端点 × hybrid 也零字段）。
+        for kind in [
+            "modelstudio-token-plan-anthropic",
+            "modelstudio-coding-plan-anthropic",
+        ] {
+            let mut ms_anthropic = json!({});
+            apply_review_thinking_controls(
+                &mut ms_anthropic,
+                review_api(kind),
+                ModelPreset::OpenaiCompatible,
+                ms_url,
+                "qwen3.6-flash",
+            );
+            assert!(
+                ms_anthropic.as_object().expect("body object").is_empty(),
+                "{kind} 恒零字段（底座剥离不回写）: {ms_anthropic}"
+            );
+        }
 
         // 聚合商四 slug 全钉（r3 审 M6：此前只钉 openrouter，缩到单 slug 突变绿）
         // + 大小写变体（parse 归一）+ Inkling 例外。
@@ -2440,6 +2538,29 @@ mod tests {
             "thinkingmachines/inkling",
         );
         assert_eq!(inkling["reasoning_effort"], json!("low"), "{inkling}");
+        // r4 审 m1：底座 `apply_inkling_reasoning_effort` 只对 Together 身份生效
+        // （chat.rs `provider != ApiProvider::Together` 提前返回）——其他聚合
+        // kind × inkling 走各自通用臂照发 effort+thinking，审查同形。
+        for slug in ["openrouter", "orcarouter", "novita"] {
+            let mut inkling_other = json!({});
+            apply_review_thinking_controls(
+                &mut inkling_other,
+                review_api(slug),
+                ModelPreset::OpenaiCompatible,
+                "https://gateway.example/v1",
+                "thinkingmachines/inkling",
+            );
+            assert_eq!(
+                inkling_other["reasoning_effort"],
+                json!("low"),
+                "{slug} inkling: {inkling_other}"
+            );
+            assert_eq!(
+                inkling_other["thinking"],
+                json!({ "type": "enabled" }),
+                "{slug} inkling 走通用臂: {inkling_other}"
+            );
+        }
         assert!(
             inkling.get("thinking").is_none(),
             "Inkling 不吃 Together 通用 thinking 扩展: {inkling}"
@@ -2827,6 +2948,31 @@ mod tests {
              dropping the builder timeout leaves the const assert green \
              while the request runs unbounded"
         );
+        // r4 审 m4：上面的 contains 钉挡不住**旁路**——region 内追加
+        // request 级 `.timeout(Duration::from_secs(30))` 会静默压过 client 的
+        // 180s（reqwest request timeout 优先），builder 后改写
+        // `body["max_tokens"]` 也满足全部 contains 钉。两条负向断言把旁路变红。
+        assert_eq!(
+            region.matches(".timeout(").count(),
+            1,
+            "the request region must carry exactly one timeout — the pinned \
+             builder timeout; a second request-level .timeout() silently \
+             overrides it (reqwest request timeout wins over client timeout) \
+             and a silent revert would pass every contains pin"
+        );
+        assert!(
+            !region.contains("from_secs("),
+            "no raw Duration::from_secs in the request region — an inline \
+             request-level timeout would silently override the pinned \
+             DEFAULT_TIMEOUT"
+        );
+        assert!(
+            !region.contains("1600"),
+            "the retired hard-coded token cap must not reappear inside the \
+             request region — a post-build body[\"max_tokens\"] override \
+             would satisfy every contains pin while silently shrinking the \
+             engine-parity budget"
+        );
     }
 
     /// 核账跳过哪些动作的契约：只有 accept(接受现状)/confirmed(需核实已确认)算已结，其余
@@ -2905,6 +3051,36 @@ mod tests {
             ledger_from_entries(&arr, "/p.md", 20).is_none(),
             "悟 entry 被跳过,pass 后改产物→重新立账审增量"
         );
+    }
+
+    /// r4 审 m5:dismiss→再召唤的并发窗口里,新 settle(seq=2)先落、被顶掉的旧
+    /// settle(seq=1)后落——纯"从后往前第一个"会把 Boss 没看过的旧审查当最近
+    /// 一轮,核账对过期 verdict 审。带 seq 的 entry 按 seq 最大者选;老 entry
+    /// (无 seq)按 0 计,旧行为(数组序)在无 seq 时保持。
+    #[test]
+    fn ledger_latest_picks_max_seq_not_array_order() {
+        // 旧 settle 后落:数组序上它是最后一条,但 seq 小 → 不当 latest。
+        let arr = vec![
+            serde_json::json!({"pos":10,"seq":2,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
+            serde_json::json!({"pos":10,"seq":1,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+        ];
+        // latest=seq2 pass 且产物没变 → 走核账分支,读最近立账=旧 settle 的交通错
+        // (账目读取仍按数组序找最近立账,与 latest 判定解耦——这正是要钉的边界)。
+        let kept = ledger_from_entries(&arr, "/p.md", 10).expect("pass+产物没变→核账");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].text, "交通错");
+        // 反向落序必须同判:latest 选择只看 seq,与数组顺序无关。
+        let mut stale_first = vec![
+            serde_json::json!({"pos":10,"seq":1,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+            serde_json::json!({"pos":10,"seq":2,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
+        ];
+        stale_first.swap(0, 1);
+        let kept2 = ledger_from_entries(&stale_first, "/p.md", 10).expect("同结构不同落序同判");
+        assert_eq!(kept2[0].text, "交通错", "latest 判定与数组落序无关");
     }
 
     /// 覆盖镜头:framework + coverage 必须从 ModelReview 透传进 PinvouReview,不被 guard 丢。
