@@ -486,12 +486,17 @@ impl SessionStore {
             // Windows 盘符/ADS，`\` 归一化防改名），exporter 本身不校验
             // 文件名——凡导入必拒/必改名的文件在此处先行失败并指名，归档
             // 永不产出「导出成功、导入必拒」的产物。目录不存在（Ok(None)）
-            // 即无可扫描，直接放行。
+            // 即无可扫描，直接放行。记录本体字节计入同一张账本（导入侧
+            // 把 session.json 也计入总量并受单成员上限）。
             if let Some(dir) = deepseek_tui::session_export::session_artifacts_dir(
                 self.manager.sessions_dir(),
                 id,
             )? {
-                super::import::ensure_artifacts_exportable(&dir)?;
+                let record_bytes =
+                    std::fs::metadata(self.manager.sessions_dir().join(format!("{id}.json")))
+                        .map(|meta| meta.len())
+                        .unwrap_or(0);
+                super::import::ensure_artifacts_exportable(&dir, record_bytes)?;
             }
         }
         // write_session_archive takes the session-store ROOT since the
