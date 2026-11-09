@@ -57,11 +57,26 @@ assert.match(
   'fork support must be gated through canInvoke (web access-policy refusal must hide the entry, not error on click)',
 );
 // 锚定到 forkSupported 块（chatView 里有五处同款 sched- startsWith；不锚定
-// 的话删掉分叉门的检查仍会被 aux 车道的同款表达式撑绿）。
+// 的话删掉分叉门的检查仍会被 aux 车道的同款表达式撑绿）。大小写不敏感
+// （toLowerCase）对齐 Rust is_sched_session_id 的 eq_ignore_ascii_case——
+// 大写变体 id 在大小写不敏感文件系统上就是定时会话本体。
 assert.match(
   chatView,
-  /const forkSupported = !!\(\s*activeSessionId\s*&& !activeSessionId\.startsWith\('sched-'\)/,
+  /const forkSupported = !!\([\s\S]*?!activeSessionId\.toLowerCase\(\)\.startsWith\('sched-'\)/,
   'scheduled-run sessions must not render fork entries (Rust refuses them unconditionally)',
+);
+// fork 失败详情的三语兜底（'unknown error' 字面量不得回流 toast）。
+assert.doesNotMatch(
+  chatView,
+  /\|\s*'unknown error'/,
+  'fork failure detail must fall back to the i18n unknownError key, not an English literal',
+);
+// 自动切换仅 ChatView 仍挂载时执行（卸载后 activeSessionIdRef 冻结，
+// 会替用户在别的视图背后切会话）。
+assert.match(
+  chatView,
+  /chatViewMountedRef\.current && activeSessionIdRef\.current === sourceSessionId/,
+  'fork auto-switch must be gated on ChatView still being mounted',
 );
 // in-flight 门按会话记（Set）：单槽位会被并发分叉互相清掉（A 落盘清掉 B
 // 的标记，B 上的再点击绕过前端门撞 Rust 预约拒绝）。
