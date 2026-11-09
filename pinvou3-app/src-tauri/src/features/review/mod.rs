@@ -3055,32 +3055,34 @@ mod tests {
 
     /// r4 审 m5:dismiss→再召唤的并发窗口里,新 settle(seq=2)先落、被顶掉的旧
     /// settle(seq=1)后落——纯"从后往前第一个"会把 Boss 没看过的旧审查当最近
-    /// 一轮,核账对过期 verdict 审。带 seq 的 entry 按 seq 最大者选;老 entry
-    /// (无 seq)按 0 计,旧行为(数组序)在无 seq 时保持。
+    /// 一轮。可观察后果:旧 settle 是 pass(pos 偏早)时,数组序判定触发
+    /// current_pos 守门 → 返回 None 重新立账,而真实最近一轮(seq2)已立了 issues
+    /// 该进核账。带 seq 的 entry 按 seq 最大者选;老 entry(无 seq)按 0 计,
+    /// 同为 0 时取数组序最后一条=旧行为原样保留。
     #[test]
     fn ledger_latest_picks_max_seq_not_array_order() {
-        // 旧 settle 后落:数组序上它是最后一条,但 seq 小 → 不当 latest。
+        // 落序:seq2(新,issues)先落,seq1(旧,pass)后落——stale 在数组尾。
         let arr = vec![
-            serde_json::json!({"pos":10,"seq":2,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
-            serde_json::json!({"pos":10,"seq":1,"review":{"artifact_path":"/p.md","issues":[
-                {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
+            serde_json::json!({"pos":20,"seq":2,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"签证错","severity":"high","kind":"quality","resolution":"modify"}
             ]}}),
+            serde_json::json!({"pos":10,"seq":1,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
         ];
-        // latest=seq2 pass 且产物没变 → 走核账分支,读最近立账=旧 settle 的交通错
-        // (账目读取仍按数组序找最近立账,与 latest 判定解耦——这正是要钉的边界)。
-        let kept = ledger_from_entries(&arr, "/p.md", 10).expect("pass+产物没变→核账");
+        // 正确:latest=seq2(issues)→passed=false→读最近立账=签证错。
+        // 若按数组序选 latest=seq1 pass(pos=10)→current_pos=20>10→None 重新立账,
+        // 把 Boss 正在裁决的 seq2 账目甩掉重审——这就是突变要红的差异。
+        let kept = ledger_from_entries(&arr, "/p.md", 20).expect("seq2 立账该进核账,不重新立账");
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].text, "交通错");
-        // 反向落序必须同判:latest 选择只看 seq,与数组顺序无关。
-        let mut stale_first = vec![
-            serde_json::json!({"pos":10,"seq":1,"review":{"artifact_path":"/p.md","issues":[
+        assert_eq!(kept[0].text, "签证错", "latest 按 seq 取,不按数组序");
+        // 兼容:无 seq 的老 entry 都按 0 计,同分取数组序最后一条=旧行为。
+        let legacy = vec![
+            serde_json::json!({"pos":10,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
+            serde_json::json!({"pos":12,"review":{"artifact_path":"/p.md","issues":[
                 {"text":"交通错","severity":"high","kind":"quality","resolution":"modify"}
             ]}}),
-            serde_json::json!({"pos":10,"seq":2,"review":{"artifact_path":"/p.md","verdict":"pass","issues":[]}}),
         ];
-        stale_first.swap(0, 1);
-        let kept2 = ledger_from_entries(&stale_first, "/p.md", 10).expect("同结构不同落序同判");
-        assert_eq!(kept2[0].text, "交通错", "latest 判定与数组落序无关");
+        let kept_legacy = ledger_from_entries(&legacy, "/p.md", 12).expect("无 seq 保持旧行为");
+        assert_eq!(kept_legacy[0].text, "交通错", "老 entry(无 seq)latest 仍按数组序");
     }
 
     /// 覆盖镜头:framework + coverage 必须从 ModelReview 透传进 PinvouReview,不被 guard 丢。
