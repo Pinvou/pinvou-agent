@@ -371,7 +371,12 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
         text: displayText,
         time: timeStr(),
         messageIndex: state.messages.length,
+        // 引擎 <context_update> 运行时消息的待消费边界计数（重放回种/live
+        // 事件累加，见 chat-events.js 同名字段）：fork/rewind 入口表据此
+        // 前移序号，随气泡下发后清零。
+        runtimeContextUpdatesBefore: (turnOwnerBuffer && turnOwnerBuffer.runtimeContextUpdatesPending) || 0,
       };
+      if (turnOwnerBuffer) turnOwnerBuffer.runtimeContextUpdatesPending = 0;
       if (meta && meta.pinvouTransfer) uitem.pinvouTransfer = meta.pinvouTransfer; // 仅展示层,不进 messages/LLM
       if (meta && meta.pinvouScene) uitem.pinvouScene = meta.pinvouScene; // 仅展示层,不进 messages/LLM
       addChatItem(uitem);
@@ -1657,7 +1662,9 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
             if (state.chatItems[i] && state.chatItems[i].type === "user") { lastUser = state.chatItems[i]; break; }
           }
           if (lastUser && lastUser.text === withdrawnText) return;
-          addChatItem({ type: "user", text: withdrawnText, time: timeStr(), steeredMidTurn: true });
+          const steerBuffer = getBuffer(sid);
+          addChatItem({ type: "user", text: withdrawnText, time: timeStr(), steeredMidTurn: true, runtimeContextUpdatesBefore: (steerBuffer && steerBuffer.runtimeContextUpdatesPending) || 0 });
+          if (steerBuffer) steerBuffer.runtimeContextUpdatesPending = 0;
         });
         // A committed event means the engine injected the message regardless
         // of which path rendered the bubble: the persisted position must be
@@ -1683,7 +1690,9 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       state.chatItems = state.chatItems.filter(function (ci) {
         return !ci.turnErrorNotice && !ci.authoritySyncNotice;
       });
-      addChatItem({ type: "user", text: item.text, time: timeStr(), steeredMidTurn: true });
+      const steerBuffer = getBuffer(sid);
+      addChatItem({ type: "user", text: item.text, time: timeStr(), steeredMidTurn: true, runtimeContextUpdatesBefore: (steerBuffer && steerBuffer.runtimeContextUpdatesPending) || 0 });
+      if (steerBuffer) steerBuffer.runtimeContextUpdatesPending = 0;
       noteSteerCommittedForPosition(sid, item.text);
     });
     notify();

@@ -1684,6 +1684,13 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856()
           return (t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) || t === "<turn_meta_unchanged />";
         })) uitem2.steeredMidTurn = true;
       },
+      // <context_update> 运行时消息重放后的尾随计数回种（投影层不产生
+      // turn 但后端 era 口径计边界，见 bridge-shared-helpers 的计数说明）：
+      // 回种到会话 buffer，composer 下一气泡据此随气泡下发。
+      setRuntimeContextUpdatesPending: function (count) {
+        const buffer = getBuffer(state.activeSessionId);
+        if (buffer) buffer.runtimeContextUpdatesPending = count;
+      },
       carefulBlockedItem: function (c, tm, blockedMd) {
         return { type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" };
       },

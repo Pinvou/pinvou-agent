@@ -298,6 +298,12 @@ function pinvouSharedtauriChatEvents() {
     }
     const content = String(payload.content || "");
     const hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
+    // 引擎 <context_update> 运行时消息（pinned 上下文漂移）：投影层不产生
+    // turn 但后端 era 口径计 turn 边界——计入 buffer 的待消费计数，下一个
+    // 用户气泡随气泡下发（fork/rewind 入口表序号前移，forkTurnEntries.js）。
+    if (hideInternalRuntimeMessage && window.PinvouBridgeMessages?.isContextUpdateRuntimeMessage(content)) {
+      userBuffer.runtimeContextUpdatesPending = (userBuffer.runtimeContextUpdatesPending || 0) + 1;
+    }
     const operation = String(payload.operation || "append");
     const action = String(payload.action || "");
     const actionPlanId = String(payload.plan_id || payload.planId || "").trim();
@@ -354,7 +360,13 @@ function pinvouSharedtauriChatEvents() {
           flushPendingStreamRender();
           resetPendingAssistant();
         }
-        addChatItem({ type: "user", text: content, time: timeStr() });
+        addChatItem({
+          type: "user",
+          text: content,
+          time: timeStr(),
+          runtimeContextUpdatesBefore: userBuffer.runtimeContextUpdatesPending || 0,
+        });
+        userBuffer.runtimeContextUpdatesPending = 0;
       }
       state.busy = true;
       if (!state.thinking.active) startThinking();

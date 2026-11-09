@@ -74,7 +74,9 @@ export function rewindEntriesByTurnId(turns, checkpoints) {
     // （user_turn_prompt_indices，Editable 分类）计 turn，与 fork 同口径；
     // 前端不跳过会把「第 N 轮」整体错位（turnHasUserText 详见投影模块）。
     if (!turn || turn.id == null || !turnHasUserText(turn)) continue;
-    ordinal += 1;
+    // 引擎 <context_update> 运行时消息并入（forkTurnEntries.js 同款）：后端
+    // era 口径计边界而投影层不产生 turn，bridge 层随用户气泡下发计数。
+    ordinal += 1 + ((turn.userItem && turn.userItem.runtimeContextUpdatesBefore) || 0);
     const checkpoint = byTurn.get(ordinal) || null;
     entries.set(turn.id, {
       keepTurns: ordinal - 1,

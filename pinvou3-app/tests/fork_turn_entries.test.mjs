@@ -85,3 +85,34 @@ assert.equal(turnHasUserText(textTurn('x')), true);
 
 // 7. 非数组输入安全返回空表。
 assert.equal(forkEntriesByTurnId(null).size, 0);
+
+// 8. 引擎 <context_update> 运行时消息（pinned 上下文漂移）：投影层不产生
+// turn，但 Rust era 口径（Editable 分类——context_update 无 tool_result 块、
+// 非 runtime-owned、有文本块）计入边界。bridge 层把落下的每个
+// context_update 计入待消费计数、随下一个用户气泡下发
+// （runtimeContextUpdatesBefore），本表据此前移序号：t1 之前有 1 个
+// context_update → t1 是 ordinal 2（后端 era 列表 [cu, t1, ...] 的第 2 位），
+// 分叉切点才与后端 turn_prompt_indices[keep] 一致。
+{
+  const t1 = { id: 't1', userItem: { type: 'user', text: '第一轮', runtimeContextUpdatesBefore: 1 } };
+  const entries = forkEntriesByTurnId([t1]);
+  assert.equal(entries.get('t1'), 2, 'context_update before t1 shifts its ordinal to 2');
+}
+
+// 8b. 计数跨多个漂移点累加：t2 之前共 3 个 context_update（2 个在 t1 后、
+// 1 个在 t2 前——t1 自身携带的 1 个已在 t1 消费），t2 的序号 = 2 轮 + 3。
+{
+  const t1 = { id: 't1', userItem: { type: 'user', text: '第一轮', runtimeContextUpdatesBefore: 1 } };
+  const t2 = { id: 't2', userItem: { type: 'user', text: '第二轮', runtimeContextUpdatesBefore: 2 } };
+  const entries = forkEntriesByTurnId([t1, t2]);
+  assert.equal(entries.get('t1'), 2);
+  assert.equal(entries.get('t2'), 5, 't2 = 2 turns + 3 context updates before it');
+}
+
+// 8c. 无计数字段（codex 车道 / 旧气泡）退化为原始口径，不受影响。
+{
+  const entries = forkEntriesByTurnId([textTurn('t1'), textTurn('t2')]);
+  assert.equal(entries.get('t1'), 1);
+  assert.equal(entries.get('t2'), 2);
+}
+

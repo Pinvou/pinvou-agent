@@ -190,6 +190,26 @@ const userTurn = id => ({ id, userItem: { type: 'user', text: `第${id}轮` } })
   assert.equal(entries.get('t2').checkpoint.id, 'c2');
 }
 
+// 引擎 <context_update> 运行时消息（pinned 上下文漂移）：投影层不产生 turn，
+// 但 Rust era 口径（Editable 分类）计入边界——bridge 层把落下的每个
+// context_update 计入待消费计数、随下一个用户气泡下发
+// （runtimeContextUpdatesBefore），本表据此对齐 checkpoint 落账序号
+// （count_user_turns 同口径计入 context_update）：t2 之前有 1 个
+// context_update → 后端落账戳 count([t1, cu]) + 1 = 3，前端边界序号
+// 1 + 1 + 1 = 3 与之对齐，keepTurns = 3 - 1 = 2 且命中 turn:3 的快照。
+{
+  const turns = [
+    userTurn('t1'),
+    { id: 't2', userItem: { type: 'user', text: '第二轮', runtimeContextUpdatesBefore: 1 } },
+  ];
+  const entries = rewindEntriesByTurnId(turns, [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 3, kind: 'turn' },
+  ]);
+  assert.equal(entries.get('t2').keepTurns, 2, 't2 boundary ordinal is 3 (context update counted)');
+  assert.equal(entries.get('t2').checkpoint.id, 'c2', 'adjusted ordinal matches the backend-stamped checkpoint');
+}
+
 // ── 联调 Bug A：列表竞态导致变体误判 ────────────────────────────────
 // 复现：turn 3 进行中（或完成但未重拉）时列表停在 [c1,c2] → t3 边界误判为
 // 「仅回退对话」；turn 完成（busy→idle）重拉拿到 [c1,c2,c3] 后收敛为全量回退。

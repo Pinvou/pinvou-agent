@@ -177,6 +177,10 @@
 
   window.PinvouBridgeMessages = Object.freeze({
     isInternalRuntimeUserMessage,
+    // canonical <context_update> shape matcher: the fork/rewind ordinal
+    // counter (bridge-shared-helpers / chat-events) counts exactly these
+    // dropped runtime messages — see forkTurnEntries.js.
+    isContextUpdateRuntimeMessage,
     isInternalUserMessage,
     isKnownInternalMetadataBlock,
     isInternalUserMessageProvenance,

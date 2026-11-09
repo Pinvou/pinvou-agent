@@ -313,6 +313,12 @@ function transferSteeredRunTerminals(turns) {
  * 摘要头时，底座 era 口径会计入而前端跳过——该场景罕见，根治是把序号由
  * 后端下发（见 forkTurnEntries.js 注释）。
  *
+ * 反向形态（后端计入而投影层无 turn）由 bridge 层的
+ * runtimeContextUpdatesBefore 计数闭合：引擎 <context_update> 运行时消息
+ * （pinned 上下文漂移）按底座 Editable 分类计入 era 列表，投影层不产生
+ * turn——bridge 在投递/重放两路把计数随下一个用户气泡下发，入口表在此
+ * 之上并入序号（forkTurnEntries.js / checkpoints.js）。
+ *
  * 对齐细节：镜像底座 Editable 分类——不 trim。纯空白文本在底座是真实
  * Editable turn（无 trim），前端旧实现 trim 后跳过会让序号与后端错位
  * （外部写入/导入的记录可能携带）；标记匹配同样在未 trim 文本上做
