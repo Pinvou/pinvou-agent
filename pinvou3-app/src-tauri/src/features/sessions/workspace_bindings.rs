@@ -252,12 +252,79 @@ pub(super) fn backfill_workspace_binding_cache(
     }
 }
 
+/// 三态绑定探测结果（fork 源会话专用；见
+/// [`SessionStore::session_workspace_binding_probe`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum WorkspaceBindingProbe {
+    /// 有绑定：分支复刻该绑定。
+    Bound(PathBuf),
+    /// 确认无绑定：分支保持无绑定（不误造绑定）。
+    Unbound,
+    /// 不可判定：sidecar 读失败 / 解析失败 / 版本超前。fork fail-closed 拒绝。
+    Unknown,
+}
+
 impl SessionStore {
-    fn session_workspace_sidecar_path(&self, id: &str) -> PathBuf {
+    pub(super) fn session_workspace_sidecar_path(&self, id: &str) -> PathBuf {
         self.manager
             .sessions_dir()
             .join(id)
             .join(SESSION_WORKSPACE_SIDECAR_FILE)
+    }
+
+    /// 三态 fork 源绑定探测。读路径 [`Self::session_workspace_binding`] 的
+    /// `None` 同时覆盖「无绑定」与「sidecar 损坏/不可读/版本超前」——后者
+    /// 对 fork 不可接受：绑定复刻会把「读失败」当「无绑定」放行，分支静默
+    /// 失去绑定（引擎 cwd 与 mode_state 安全姿态都随绑定走）。fork 必须区分：
+    /// Bound 复刻、Unbound 保持无绑定、Unknown fail-closed 拒绝。缓存命中
+    /// 直接 Bound（缓存只存已绑定路径）；未命中时按 [`read_workspace_sidecar`]
+    /// 的同一日志卫生口径分类（路径含 sessions/<id>/，日志只留错误种类）。
+    pub(super) fn session_workspace_binding_probe(&self, id: &str) -> WorkspaceBindingProbe {
+        if let Some(path) = self.session_workspaces.read().get(id).cloned() {
+            return WorkspaceBindingProbe::Bound(path);
+        }
+        if validate_session_id(id).is_err()
+            || !self
+                .manager
+                .sessions_dir()
+                .join(format!("{id}.json"))
+                .is_file()
+        {
+            return WorkspaceBindingProbe::Unbound;
+        }
+        let payload = match std::fs::read(self.session_workspace_sidecar_path(id)) {
+            Ok(payload) => payload,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return WorkspaceBindingProbe::Unbound;
+            }
+            Err(error) => {
+                eprintln!(
+                    "[sessions] read workspace binding sidecar failed: {:?}",
+                    error.kind()
+                );
+                return WorkspaceBindingProbe::Unknown;
+            }
+        };
+        match serde_json::from_slice::<SessionWorkspaceSidecar>(&payload) {
+            Ok(sidecar) if sidecar.version <= SESSION_WORKSPACE_SIDECAR_VERSION => {
+                WorkspaceBindingProbe::Bound(backfill_workspace_binding_cache(
+                    &self.session_workspaces,
+                    id,
+                    sidecar.path,
+                ))
+            }
+            Ok(sidecar) => {
+                eprintln!(
+                    "[sessions] workspace binding sidecar version {} above supported {}, ignored",
+                    sidecar.version, SESSION_WORKSPACE_SIDECAR_VERSION,
+                );
+                WorkspaceBindingProbe::Unknown
+            }
+            Err(error) => {
+                eprintln!("[sessions] parse workspace binding sidecar failed: {error}");
+                WorkspaceBindingProbe::Unknown
+            }
+        }
     }
 
     /// Binds the session working directory and atomically persists it to the

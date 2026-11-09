@@ -5,11 +5,12 @@
 //! 切点口径与 rewind 同源：底座 [`deepseek_tui::user_turn_prompt_indices`]
 //! 的 era 口径（比单消息 [`deepseek_tui::is_user_turn_prompt`] 多计入
 //! post-provenance 历史里粘贴的压缩摘要头 turn——底座文档明确 host 编号应
-//! 统一读这一个列表）。前端入口表（forkEntriesByTurnId）以
-//! `turnHasUserText` 同步跳过摘要头 turn：pre-provenance 历史（用户把压缩
-//! 摘要粘进新会话的常见场景）里两侧都不计，post-provenance 历史里粘贴的
-//! 摘要头前端少计一格（后端 era 会计入），属已知残留——真正的修法是把
-//! 序号由后端下发，见 forkTurnEntries.js 注释。
+//! 统一读这一个列表）。前端入口表（forkEntriesByTurnId）按
+//! `turnHasUserText` + 引擎 `<context_update>` 运行时消息的 per-session
+//! 计数（bridge 层在投递/重载两路把计数附加到下一个用户气泡）对齐同一
+//! 列表。已知残留（前端比后端少计一格、序号向后错位）：post-provenance
+//! 历史里用户粘贴的压缩摘要头 turn，后端 era 会计入而前端跳过。根治是
+//! 把序号由后端随消息下发，前端不再本地计数——见 forkTurnEntries.js 注释。
 //!
 //! 刻意不随克隆走的内容：artifacts（实体存放在源会话 artifacts 目录，复制
 //! 记录会形成跨会话指针）、journal/leaf 兼容投影（messages 是非 journal
@@ -27,11 +28,16 @@
 //! 保留——rewind 会向前端暴露 had_compaction 警示，fork 暂不区分）。
 //! 按 id 键存、因此**主动复刻**的状态：用户工作目录绑定 sidecar
 //! （`workspace-binding.json`）——引擎 cwd、shell 目录、AGENTS.md/项目技能
-//! 注入与 mode_state 安全姿态（有绑定默认 Plan，无绑定默认 Yolo）全部按
-//! 解析到的绑定走，分支不复刻就会静默降级成无绑定会话；代码会话（原生
-//! 品悟 Engine 车道）的绑定在代码会话侧车而非本 store，无法照搬，分叉对其
-//! 如实拒绝。新会话引擎按既有 lazy respawn 路径在首次发送时接管，无需在此
-//! 触碰 pool。
+//! 注入与 mode_state 的绑定派生默认全部按解析到的绑定走，分支不复刻就会
+//! 静默降级成无绑定会话（绑定会话的默认姿态偏 Plan、无绑定偏 Yolo；用户
+//! 显式设过的会话级 mode 按 id 键存、不随分支走，分支以默认值注水——与
+//! 新建会话一致）。fork 命令持有 projects rebind fence（sibling-writer
+//! 契约，review #484 round-11 M3）：绑定源探测/复刻与 rebind 的候选快照-
+//! 翻译窗口互斥，分支 sidecar 不会带着改绑前的旧路径逃出翻译。绑定源
+//! sidecar 损坏/版本超前时三态探针如实拒绝（而非当无绑定放行）。代码会话
+//! （原生品悟 Engine 车道）的绑定在代码会话侧车而非本 store，无法照搬，
+//! 分叉对其如实拒绝。新会话引擎按既有 lazy respawn 路径在首次发送时接管，
+//! 无需在此触碰 pool。
 //!
 //! 注意：persist 落盘后附带保留预算清扫（`persist_then_reconcile`），若
 //! store 超预算，最旧的记录——可能是刚分叉的源会话——会被清扫驱逐；与任何
@@ -69,6 +75,23 @@ impl SessionStore {
         if self.is_code_session(session_id) {
             anyhow::bail!("原生代码会话不支持分叉：项目绑定与工作树状态不随分支走");
         }
+        // 绑定源三态探测（先于 load/落盘 fail fast，见 workspace_bindings 的
+        // 探针文档）：Unbound 分支保持无绑定；Unknown（sidecar 损坏/不可读/
+        // 新版本）必须拒绝——「读失败当无绑定放行」会让分支静默失去绑定，
+        // mode_state 安全姿态随之降级，恰是绑定复刻要消灭的形态。绑定与
+        // roots 在锁外一次读取：fork 命令持有 projects rebind fence（见
+        // sessions.rs fork_session），rebind 无法在读取与落盘之间改写绑定。
+        let (parent_workspace, parent_roots) = match self
+            .session_workspace_binding_probe(session_id)
+        {
+            super::workspace_bindings::WorkspaceBindingProbe::Bound(path) => {
+                (Some(path), self.session_workspace_roots(session_id))
+            }
+            super::workspace_bindings::WorkspaceBindingProbe::Unknown => anyhow::bail!(
+                "无法读取源会话的工作区绑定（文件损坏或由更新版本写入）；为避免分支静默降级为无绑定会话，已拒绝分叉"
+            ),
+            super::workspace_bindings::WorkspaceBindingProbe::Unbound => (None, Vec::new()),
+        };
         // load→persist 对与 delete/驱逐串行（与 truncate_to_user_turn 同一
         // 口径，delete 的文档写明该锁正是为此存在）：没有它，源会话在 load
         // 与落盘之间被删除/驱逐会留下指向已不存在记录的血缘。锁不可重入
@@ -79,7 +102,7 @@ impl SessionStore {
         let total_turns = turn_prompt_indices.len();
         let keep = keep_turns as usize;
         if total_turns == 0 {
-            anyhow::bail!("会话当前没有可分叉的用户 turn，无法分叉（共 0 轮）");
+            anyhow::bail!("会话还没有可分叉的用户轮次（共 0 轮）");
         }
         if keep > total_turns {
             anyhow::bail!("会话当前只有 {total_turns} 轮，无法分叉到第 {keep_turns} 轮末尾");
@@ -116,14 +139,17 @@ impl SessionStore {
         self.persist_then_reconcile(&forked, "session fork")?;
         // 绑定复刻在锁释放后进行：`bind_session_workspace_with_roots` 只写
         // 本会话自己的 sidecar，不需要与 delete 互斥；回滚用的 `delete`
-        // 会再取锁，持锁调用会死锁。落盘与绑定之间源会话被删的残余窗口
-        // 只影响绑定探针（读到 None 则分支保持无绑定），不产生孤儿数据。
+        // 会再取锁，持锁调用会死锁。绑定/roots 取自锁外探测（fork 命令的
+        // projects rebind fence 保证读取与落盘之间无 rebind 改写）；源会话
+        // 在落盘与绑定之间被删的残余窗口只影响绑定探针的读取时机，不产生
+        // 孤儿数据。
         drop(mutation);
-        if let Some(parent_workspace) = self.session_workspace_binding(session_id) {
-            let roots = self.session_workspace_roots(session_id);
-            if let Err(error) =
-                self.bind_session_workspace_with_roots(&forked.metadata.id, parent_workspace, roots)
-            {
+        if let Some(parent_workspace) = parent_workspace {
+            if let Err(error) = self.bind_session_workspace_with_roots(
+                &forked.metadata.id,
+                parent_workspace,
+                parent_roots,
+            ) {
                 // 绑定失败的分支正是本复刻要消灭的「无绑定降级」形态，
                 // 按新建会话的绑定失败回滚口径（create_session_durable）
                 // 删除刚落盘的分支。
@@ -467,5 +493,87 @@ mod tests {
         // 源会话不被半成品污染。
         let original = store.load(&source.metadata.id).expect("reload");
         assert_eq!(original.messages.len(), 2);
+    }
+
+    /// 绑定源三态探测（review 修复）：sidecar 损坏或版本超前时 fork 必须
+    /// fail-closed 拒绝——「读失败当无绑定放行」会让分支静默失去绑定，
+    /// mode_state 安全姿态随之降级。两条 Unknown 腿（解析失败/版本超前）
+    /// 与恢复后的正常分叉都钉住。
+    #[test]
+    fn fork_refuses_undecodable_workspace_binding_sidecar() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let mut session = store.load(&source.metadata.id).expect("load");
+        session.messages = vec![turn_prompt("绑定源的一轮"), assistant_text("回复")];
+        store.save(&session).expect("seed");
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou3-fork-sidecar-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&workspace).expect("mkdir workspace");
+        store
+            .bind_session_workspace_with_roots(&source.metadata.id, workspace, Vec::new())
+            .expect("bind source");
+        let sidecar = store.session_workspace_sidecar_path(&source.metadata.id);
+        // bind 命中内存缓存（缓存只存已绑定路径、探针直接返回 Bound）：
+        // 逐腿清缓存让探针真正走到 sidecar 读侧——生产里 Unknown 只在
+        // 「无缓存条目且 sidecar 不可判定」（新进程/缓存未回填）时出现。
+        store.session_workspaces.write().remove(&source.metadata.id);
+
+        // 腿 1：sidecar 解析失败。
+        std::fs::write(&sidecar, b"{not json").expect("corrupt sidecar");
+        let error = store
+            .fork_session_record(&source.metadata.id, 1)
+            .expect_err("corrupt sidecar must refuse fork");
+        assert!(
+            error.to_string().contains("工作区绑定"),
+            "must name the binding probe: {error:#}"
+        );
+
+        // 腿 2：版本超前（当前支持 v2）——同样先清缓存走 sidecar 读侧。
+        store.session_workspaces.write().remove(&source.metadata.id);
+        std::fs::write(
+            &sidecar,
+            br#"{"version": 999, "path": "/tmp/elsewhere", "workspace_roots": [], "explicit_ancestor_roots": [], "bound_at": null}"#,
+        )
+        .expect("write future sidecar");
+        let error = store
+            .fork_session_record(&source.metadata.id, 1)
+            .expect_err("future-version sidecar must refuse fork");
+        assert!(
+            error.to_string().contains("工作区绑定"),
+            "must name the binding probe: {error:#}"
+        );
+        // 分支不得已落盘（拒绝发生在 load/落盘之前）。
+        let entries: Vec<_> = std::fs::read_dir(store.sessions_dir())
+            .expect("list sessions")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".json"))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "refused fork must not persist a branch: {entries:?}"
+        );
+
+        // 恢复正常 sidecar 后分叉照常（探针不误伤）。
+        store
+            .bind_session_workspace_with_roots(
+                &source.metadata.id,
+                std::env::temp_dir().join("pinvou3-fork-rebind-ok"),
+                Vec::new(),
+            )
+            .expect("rebind source");
+        let forked = store
+            .fork_session_record(&source.metadata.id, 1)
+            .expect("fork after repair");
+        assert!(
+            store.session_workspace_binding(&forked.id).is_some(),
+            "branch carries the repaired binding"
+        );
     }
 }

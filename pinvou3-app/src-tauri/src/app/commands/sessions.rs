@@ -736,6 +736,7 @@ pub async fn fork_session(
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请等当前轮结束再分叉".to_string());
@@ -747,9 +748,21 @@ pub async fn fork_session(
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
     let store_inner = store.inner().clone();
+    let projects_inner = projects.inner().clone();
     let forked = tauri::async_runtime::spawn_blocking(move || {
         // 预约 Guard 持有到落盘结束（Drop 自动归还 slot），关闭半轮窗口。
         let _reservation = reservation;
+        // 分支绑定复刻是 root-accepting writer（写 workspace sidecar），与
+        // create_session_durable 同守 projects rebind fence（review #484
+        // round-11 M3 的 sibling-writer 契约）：分支 sidecar 不得落在 rebind
+        // 的候选快照与翻译之间，否则带着改绑前的旧路径拼法整体逃出翻译，
+        // 分支静默绑到已不存在的目录。先于落盘取锁（round-13 minor 1 口径）：
+        // REBIND_IN_PROGRESS 拒绝时不留孤儿分支。无条件取锁——源是否绑定要
+        // 到 fork 内部才探明，rebind 进行中的 fork 本就是竞窗，最便宜且诚实
+        // 的互斥就是互斥本身（rebind 罕见且短，fork 持锁开销可忽略）。
+        let _fence = projects_inner.rebind_fence().map_err(|error| {
+            anyhow::anyhow!("工作区绑定迁移进行中，请等迁移完成再分叉（{error}）")
+        })?;
         store_inner.fork_session_record(&session_id, keep_turns)
     })
     .await
@@ -1450,7 +1463,11 @@ pub async fn import_session_archive(
     let Some(picked) = app
         .dialog()
         .file()
-        .add_filter("Session archive", &["tar.xz", "json"])
+        // 两个过滤器各司其名（单一名目「Session archive」盖两种扩展会误导
+        // 选裸记录的用户）：tar.xz 归档 / 裸 session 记录（扩展名大小写
+        // 不敏感，import_archive 同口径）。
+        .add_filter("Session archive (tar.xz)", &["tar.xz"])
+        .add_filter("Session record (json)", &["json"])
         .blocking_pick_file()
     else {
         return Ok(None);
