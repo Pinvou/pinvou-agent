@@ -583,46 +583,33 @@ function enforceLazyChunks() {
 // Both endpoints measured on the local node 24 toolchain: 486,097 →
 // 487,290 B desktop (+1,193 B: +789 feature entry, +158 review-fix
 // hardening, +15 marker-takeover release fix, +231 gate self-heal tick)
-// and 127,777 → 127,777 B web (byte-identical in size: none of the web
-// entry chunk's code changed — ChatView rides the web-only lazy
-// chat-view group, and the bridge-side additions ride the classic
-// startup bundles). The desktop ceiling takes the next thousand step
-// (710 B headroom); the web ceiling stays 128_000 (223 B headroom above
-// the measured web entry). This cap does not promise headroom for
-// unrelated main changes.
-//
-// Round-5 review fix wave, measured on the same toolchain: +75 B
-// desktop (fresh-flag takeover predicate in the release effect +
-// accessible action name on the entry button) → 487,365 B desktop
-// (635 B headroom under the 488_000 ceiling, no re-cut needed); web
-// 127,777 B unchanged (still size-identical, 223 B headroom).
-//
-// Round-6 review fix wave, measured on the same toolchain: +229 B
-// desktop (start-system-item takeover fallback with a click-time item-id
-// snapshot, shared ctxUsageText value with the composed accessible name,
-// and the module-scope readout derivation) → 487,594 B desktop
-// (406 B headroom under the 488_000 ceiling, no re-cut needed); web
-// 127,777 B unchanged (still size-identical, 223 B headroom).
-//
-// Review 5874108926 fix waves, measured on the same toolchain: the
-// per-session marker map + the start-signal reconcile sweep (+215 B
-// desktop) → 487,810 B desktop (190 B headroom under the 488_000
-// ceiling, no re-cut needed); web unchanged (still size-identical).
-// Review 5876783763 wave: the reconcile arm orders by the monotonic
-// compaction sequence instead of two wall-clock/flag arms (−34 B
-// desktop) → 487,776 B desktop (224 B headroom under the 488_000
-// ceiling, no re-cut needed).
+// and 127,777 → 127,777 B web (byte-identical in size: the web entry
+// chunk is untouched — ChatView rides the web-only lazy chat-view group,
+// and the bridge-side additions ride the classic startup bundles). The
+// desktop ceiling takes the next thousand step (710 B headroom); the web
+// ceiling stays 128_000 (223 B headroom above the measured web entry).
+// This cap does not promise headroom for unrelated main changes.
 //
 // PR #835 owns the 128_000 → 129_000 web raise (and rides the 488_000
 // desktop ceiling from #834): the session-fork wiring joins the chat
 // surface on both platforms (fork entries, per-turn ordinal plumbing,
 // and the fork handler in ChatView; the archive-import surface lives in
 // the lazily-loaded SettingsView and does not touch the entry). Measured
-// on the post-rebase feat-manual-compact tip (60d4f3796): web entry
-// 128,263 B on the local node 24 toolchain (737 B headroom under the
-// 129_000 ceiling). This cap does not promise headroom for unrelated
-// main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
+// against the pre-rebase feat-manual-compact tip (18e6627cc):
+// 487,840 → 487,840 B desktop (byte-identical — the fork wiring sits
+// inside the desktop entry's existing headroom) and 127,777 → 128,263 B
+// web on the local node 24 toolchain. The web ceiling takes the next
+// thousand step (737 B headroom). This cap does not promise headroom
+// for unrelated main changes.
+//
+// PR #835 review-fix wave owns the 488_000 → 489_000 desktop raise: the
+// fork/rewind ordinal counter (context_update runtime-message plumbing in
+// ChatView/bridge), the fork auto-switch mount guard + split switch-failure
+// notice, and the case-insensitive sched- gate. Measured at the wave tip:
+// 487,867 → 488,188 B desktop (+321 B; 812 B under the new ceiling). The
+// web entry measured 127,863 B at the review head and stays under 129_000.
+// This cap does not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 489_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
