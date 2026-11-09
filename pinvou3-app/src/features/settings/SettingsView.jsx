@@ -2016,7 +2016,7 @@ function hasStoredCredential(record) {
             (result.artifacts_failed || []).length,
           ));
         } catch (error) {
-          const detail = String((error && error.message) || error || 'unknown error');
+          const detail = String((error && error.message) || error || t.unknownError);
           console.warn('import session archive failed', error);
           setSettingsToast(`${t.uiSettings.importSessionsFailed}: ${detail}`);
         } finally {

@@ -189,7 +189,7 @@ export const dictZh = {
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', multiAgentDesktopOnly: '此蜂群对话当前仅在桌面端可用。', toolStore: '插件中心', cardPool: '专家池', recent: '历史对话',   sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '项目', sidebarTaskFilterCodeSessions: '代码会话', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', chatSection: '对话', chatStreamingAnimation: '流式回复淡入', chatStreamingAnimationDesc: 'AI 回复流式输出时，新内容淡入显示', sidebarNavExpand: '展开导航', sidebarNavCollapse: '收起导航', sidebarCollapseAll: '折叠', sidebarExpandAll: '展开', sidebarTaskStyle: '样式', sidebarResize: '拖拽调整边栏宽度，双击复位', settings: '设置', tearoffTitle: '撕离窗口',  mobileMore: '更多',
         archiveSession: '收纳', archiveConfirmTitle: '确认收纳任务', archiveConfirmMessage: '将该任务移出任务列表，存入【对话管理-已收纳】，需要时可找回。', archiveConfirmDetail: '', archiveConfirmAction: '确认收纳',
         archiveSuccess: '已收纳到【对话管理-已收纳】', archiveSuccessView: '前往查看',
-        exportSessionArchive: '导出会话日志', exportSessionDone: path => `会话日志已导出：${path}`, exportSessionFailed: '会话日志导出失败',
+        exportSessionArchive: '导出会话日志', exportSessionDone: path => `会话日志已导出：${path}`, exportSessionFailed: '会话日志导出失败', unknownError: '未知错误',
         sessionBatchFailed: n => `${n} 个任务操作失败，请重试`,
    
         archivedDeleteTitle: '删除收纳任务？', archivedDeleteMessage: '此操作会永久删除该任务及其内容，无法撤销。', archivedDeleteAction: '删除',
@@ -808,7 +808,7 @@ dictZh.uiKnowledge = {
 // features/conversation 追加词条（uiConversation 已存在，合并而非覆盖）
 Object.assign(dictZh.uiConversation, {
   retryReply: '重新生成',
-  forkTurn: '从此轮分叉', forkTurnTip: '以这一轮为终点，创建一个无损的新会话分支', forkFailed: '分叉会话失败',
+  forkTurn: '从此轮分叉', forkTurnTip: '以这一轮为终点，创建一个无损的新会话分支', forkFailed: '分叉会话失败', forkSwitchFailed: '分支已保存，但切换到新分支失败', unknownError: '未知错误',
   callingTool: name => `正在调用 ${name}`,
   copyCode: '复制代码',
   inputPlaceholder: '请输入',

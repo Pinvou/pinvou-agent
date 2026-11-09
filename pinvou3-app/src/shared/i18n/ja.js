@@ -187,7 +187,7 @@ const jaBase = {
         newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定期タスク', monitor: '稼働状態', multiAgentDesktopOnly: 'このスワーム会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴',   sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'プロジェクト', sidebarTaskFilterCodeSessions: 'コードセッション', sidebarTaskFilterScheduled: '定期タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近の更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', chatSection: 'チャット', chatStreamingAnimation: 'ストリーミング応答のフェードイン', chatStreamingAnimationDesc: 'AIの応答のストリーミング中に、新しい内容をフェードインで表示します', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarCollapseAll: '折りたたむ', sidebarExpandAll: '展開', sidebarTaskStyle: 'スタイル', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', tearoffTitle: '切り離し',  mobileMore: 'その他',
         archiveSession: '隠す', archiveConfirmTitle: 'このタスクを隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、チャット管理ページから戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '隠しました', archiveSuccessView: '表示',
-        exportSessionArchive: 'セッションログを書き出す', exportSessionDone: path => `セッションログを ${path} に書き出しました`, exportSessionFailed: 'セッションログの書き出しに失敗しました',
+        exportSessionArchive: 'セッションログを書き出す', exportSessionDone: path => `セッションログを ${path} に書き出しました`, exportSessionFailed: 'セッションログの書き出しに失敗しました', unknownError: '不明なエラー',
         sessionBatchFailed: n => `${n} 件のタスク操作に失敗しました。再試行してください。`,
            
         archivedDeleteTitle: '隠したタスクを削除しますか？', archivedDeleteMessage: 'このタスクと内容は完全に削除され、元に戻せません。', archivedDeleteAction: '削除',
@@ -784,7 +784,7 @@ dictJa.uiKnowledge = {
 
 Object.assign(dictJa.uiConversation, {
   retryReply: '再生成',
-  forkTurn: 'このターンから分岐', forkTurnTip: 'このターンを終点として、会話内容を損なわない新規セッション分岐を作成します', forkFailed: 'セッションの分岐に失敗しました',
+  forkTurn: 'このターンから分岐', forkTurnTip: 'このターンを終点として、会話内容を損なわない新規セッション分岐を作成します', forkFailed: 'セッションの分岐に失敗しました', forkSwitchFailed: '分岐は保存されましたが、切り替えに失敗しました', unknownError: '不明なエラー',
   callingTool: name => `${name} を呼び出し中`,
   copyCode: 'コードをコピー',
   inputPlaceholder: '入力してください',

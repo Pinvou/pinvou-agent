@@ -1059,6 +1059,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeSessionIdRef = useRef(activeSessionId);
       activeSessionIdRef.current = activeSessionId;
+      // ChatView 随视图切换（currentView !== 'chat'）卸载；分叉 invoke 在飞
+      // 期间用户切到设置/工具 store 时，activeSessionIdRef 冻结在卸载前的值，
+      // 仅凭它判断会「替用户在别的视图背后切会话」——卸载置否，自动切换
+      // 只在 ChatView 仍挂载时执行。
+      const chatViewMountedRef = useRef(true);
+      useEffect(() => {
+        chatViewMountedRef.current = true;
+        return () => { chatViewMountedRef.current = false; };
+      }, []);
       const computerUseCopy = t.uiComputerUse;
       const computerUseSlice = (bs && bs.computerUse) || null;
       // Fetch the authoritative computer-use state on session mount/switch: the banner and
@@ -1824,7 +1833,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // 「从此轮分叉」入口表：turn id → keepTurns（1-based，含当前轮）。
       // 序号口径与 rewindEntriesByTurnId 一致，与 Rust fork_session 的底座
       // user_turn_prompt_indices（Editable 分类）对齐：纯图片 turn 与压缩
-      // 摘要头 turn（含会话内压缩的 stamped 载体）不占序号
+      // 摘要头 turn（含会话内压缩的 stamped 载体）不占序号，引擎
+      // <context_update> 运行时消息经 runtimeContextUpdatesBefore 并入
       // （forkEntriesByTurnId / turnHasUserText）。turn 进行中（busy）整表
       // 隐藏：Rust 端忙碌门拒绝 turn 内分叉；compaction 进行中 Rust 端也
       // 显式拒绝（不占 turn 预约，turn-active 探针对它失明，fork 命令另行
@@ -1834,7 +1844,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // 入口——入口不应以「点击必报错」的形态存在。
       const forkSupported = !!(
         activeSessionId
-        && !activeSessionId.startsWith('sched-')
+        // 大小写不敏感对齐 Rust is_sched_session_id（eq_ignore_ascii_case）：
+        // 大写变体 id 在大小写不敏感文件系统上就是定时会话本体，前端入口
+        // 与后端拒绝必须同口径（fork_session 命令本身仍有服务端拒绝兜底）。
+        && !activeSessionId.toLowerCase().startsWith('sched-')
         && bridge.available
         && canInvoke('fork_session')
       );
@@ -1858,14 +1871,20 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         });
         try {
           const forked = await invokeTauri('fork_session', { sessionId: sourceSessionId, keepTurns });
-          if (forked && forked.id && activeSessionIdRef.current === sourceSessionId) {
-            // 仅当用户仍停留在源会话时自动切换；分叉落盘的窗口内用户已
-            // 切走则不打断其导航——新分支经 session:list_changed 去抖进入
-            // 侧栏，仍可从列表进入。
-            await bridge.sessions.switchToSession(forked.id);
+          // 仅当用户仍停留在源会话且 ChatView 仍挂载时自动切换；分叉落盘的
+          // 窗口内用户已切走/切到别的视图则不打断其导航——新分支经
+          // session:list_changed 去抖进入侧栏，仍可从列表进入。切换失败不
+          // 冒充 forkFailed（分支已落盘、侧栏可见），如实提示切换失败。
+          if (forked && forked.id && chatViewMountedRef.current && activeSessionIdRef.current === sourceSessionId) {
+            try {
+              await bridge.sessions.switchToSession(forked.id);
+            } catch (switchError) {
+              const switchDetail = String((switchError && switchError.message) || switchError || t.uiConversation.unknownError);
+              flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkSwitchFailed}: ${switchDetail}` });
+            }
           }
         } catch (err) {
-          const detail = String((err && err.message) || err || 'unknown error');
+          const detail = String((err && err.message) || err || t.uiConversation.unknownError);
           flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
         } finally {
           setForkBusySessionIds(prev => {

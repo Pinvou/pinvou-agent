@@ -2871,7 +2871,7 @@ const App = () => {
           // Rust 侧导出前置校验的拒绝串指名文件并给出改法（「rename or
           // remove this file and retry the export」）——只透静态文案会把
           // 恢复路径留在 console 里（review finding）。
-          const detail = String((error && error.message) || error || 'unknown error');
+          const detail = String((error && error.message) || error || t.unknownError);
           console.warn('export session archive failed', error);
           setSettingsToast(`${t.exportSessionFailed}: ${detail}`);
         } finally {
