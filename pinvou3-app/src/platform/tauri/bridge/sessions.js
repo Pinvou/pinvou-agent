@@ -184,8 +184,8 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
   // buffer 上（评审 r8 M1）。本函数只丢弃该缓存（不做删除回调、不动暂存
   // 草稿），使下次激活落到 durable load；与 purgeSessionBuffer 的删除语义
   // 刻意不同。
-  function invalidateSessionBuffer(id) {
-    if (typeof id !== "string" || !id) return;
+  function invalidateSessionBuffer(id, options) {
+    if (typeof id !== "string" || !id) return false;
     // 评审 r9 minor 1：暂存未发送草稿再丢缓存（本文件既定原则——淘汰不得
     // 丢草稿）；保持与 purgeSessionBuffer 的差异：无删除回调、不动其它记账。
     // r39 minor 9：暂存失败（超过上限、不可安全保留的草稿）时拒绝失效——
@@ -196,19 +196,24 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
     // 只保护「失效丢缓存」路径；压缩前台臂随后的 forceDurableLoad 重载不走
     // 本函数的草稿暂存——草稿由重载自身的工作集保存/恢复编排保留（安全，
     // 与本拒绝无关），注释不得声称本拒绝覆盖该路径。
+    const refuseWhenBusy = !!(options && options.refuseWhenBusy);
     if (sessionStates[id]) {
-      if (typeof stashEvictedSessionDraft !== "function") return;
-      if (!stashEvictedSessionDraft(id, sessionStates[id])) return;
-      // r45 MAJOR-3：busy / queued（待发送的排队追问）在场的会话拒绝失效——
-      // 压缩 done 的重同步臂在真实收缩时于换入前调用本函数，而自动压缩恰在
-      // turn 进行中触发（队列芯片存在的意义）：delete sessionStates[id] 会
-      // 连带丢弃 queued 数组、busy 标记与 thinking/所有权状态，用户的排队
-      // 消息无声消失且无任何提示（r45 实证）。与上方草稿拒绝同一取舍
-      // （pruneSessionBuffers 的保护谓词正是为「busy/queued 不回收」而生）：
-      // 推迟到下一次收缩/切换；代价是该会话的陈旧缓存多留一个压缩窗口，
-      // 调和门维持诚实隐藏。
+      if (typeof stashEvictedSessionDraft !== "function") return false;
+      if (!stashEvictedSessionDraft(id, sessionStates[id])) return false;
+      // r45 MAJOR-3 + r46 修订：busy / queued（待发送的排队追问）在场的会话
+      // 拒绝失效——但仅限显式传入 refuseWhenBusy 的压缩臂（自动压缩恰在
+      // turn 途中触发时排队追问正等待发送；delete sessionStates[id] 会连带
+      // 丢弃 queued 数组、busy 标记与所有权状态，r45 实证）。缺省不拒：
+      // r8-M1 回退跳过失效臂与 r11-M2 live 工作集清除臂需要照常失效（busy
+      // 缓存不清会比队列丢失更糟——切回即陈旧时间线）。两条拒绝腿的调用方
+      // 必须尊重 false 返回并跳过后续动作；队列跨重载保留属 v2。
       const evicted = sessionStates[id];
-      if (evicted.busy || (Array.isArray(evicted.queued) && evicted.queued.length)) return;
+      if (
+        refuseWhenBusy &&
+        (evicted.busy || (Array.isArray(evicted.queued) && evicted.queued.length))
+      ) {
+        return false;
+      }
     }
     delete sessionStates[id];
     // 活动会话的失效必须同时作用于 live 工作集（评审 r11 M2）：只删
@@ -221,6 +226,7 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
       state.chatItems = [];
       if (typeof notify === "function") notify();
     }
+    return true;
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;

@@ -130,6 +130,12 @@ const SHADOW_EXCLUDES: &[&str] = &[
 /// 文件」语义。新增凭据名时两侧都要评估,不要从一侧推导另一侧
 /// (round-5 复审 S06:两清单已在其语义边界内各自演化)。
 /// 代价是这些文件不随回退恢复，属可接受取舍（设计文档已知限制有记录）。
+// r45 minor 12 披露：path_policy（Rounds-9..14）的凭据存储批次
+// （.vault-token/.gitcookies/credentials.toml|.db/msal_token_cache.json/
+// .s3cfg/.msmtprc/rclone.conf/credentials.tfrc.json/.gitconfig/.yarnrc[.yml]/
+// .authinfo(+.gpg)/.wgetrc/.curlrc/.hgrc/.boto/.minikube/adbkey/gcloud 目录，
+// 约 20 项）不在本清单——把快照排除面与 path_policy 拦截面划等号会改变既有
+// 快照行为，需独立评审。两侧清单的交叉引用钉属 follow-up，防再漂移。
 const SECRET_EXCLUDES: &[&str] = &[
     ".env",
     ".env.local",
@@ -2806,7 +2812,11 @@ pub fn apply_restore(
     // r19 M1：账本腿改为按账本真实位置派生（绑定布局 = 空集——固定
     // checkpoints/** 会把项目无辜同名目录挡在 clean 语义之外，预览与实际
     // 行为背离）。
-    let mut clean_args: Vec<String> = vec!["clean".into(), "-fd".into()];
+    // r46 MAJOR-2：生产 clean 参数从 RESTORE_CLEAN_ARGS 播种（含 -q，#784 的
+    // 捕获上限免疫——大工作区删除清单会越过平台 4MiB 捕获上限，checkout-index
+    // 已重写工作区之后 kill-tree 会把实际完成的恢复报成失败）。icase -e 腿
+    // 追加其后（探测：-q 与 -e 组合无冲突）。
+    let mut clean_args: Vec<String> = RESTORE_CLEAN_ARGS.iter().map(|s| s.to_string()).collect();
     // r24 B1：shadow 腿与秘密腿同款 icase 字符类——裸小写在大小写敏感文件
     // 系统上挡不住 Dist/ 变体，被 icase purge 移出 index 的真实文件会被
     // clean -fd 物理删除（评审实证，会话前就存在的用户文件）。
@@ -3275,8 +3285,10 @@ fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
 /// r32 MAJOR-4：index.json 的进程内读改写串行锁——messages-shrunk 钩子线程
 /// （compaction 作废）与 turn 快照的 load→save 跨度互斥，否则两条 RMW 链
 /// 互相丢失更新（作废被复活 / 新条目被丢）。进程内串行；跨进程互斥由
-/// r45 MAJOR-1 的账本围栏覆盖（invalidate/drop 家族入口处获取，CLI 与 GUI
-/// 同键互斥），「CLI 锁 follow-up」披露就此兑现。
+/// r45 MAJOR-1 的账本围栏覆盖 invalidate/drop 家族（CLI 与 GUI 同键互斥），
+/// 「CLI 锁 follow-up」披露就此兑现。r46 普查注：第七写者
+/// quarantine_index_and_rebuild 仍在围栏外（隔离前身份复核收窄窗口），
+/// 读路径（find/list）亦未围栏——按 r46 minor-4 披露口径维持。
 fn with_index_write_lock<R>(ledger_root: &Path, f: impl FnOnce() -> R) -> R {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};

@@ -69,10 +69,13 @@ for (const [viewName, viewSource] of [['ChatView', chatView], ['CodexAcpView', c
   const listenAt = chatEvents.indexOf('listen("chat:compaction"');
   const sidAt = chatEvents.indexOf('const compactionSid =', listenAt);
   const captureAt = chatEvents.indexOf('const compactionOuterActive =', listenAt);
-  const invalidateAt = chatEvents.indexOf('if (compactionResync) invalidateSessionBuffer(compactionSid);', listenAt);
+  // r46 MAJOR-3：失效调用改为捕获拒绝判定（busy/queued 会话拒绝失效，
+  // 前台重载随之跳过——见下方布尔闸锚）。
+  const invalidateAt = chatEvents.indexOf('const compactionInvalidated =', listenAt);
+  const refuseAt = chatEvents.indexOf('refuseWhenBusy: true }) !== false;', invalidateAt);
   const handlerAt = chatEvents.indexOf('onSessionEvent(e, function', listenAt);
   assert.ok(
-    listenAt !== -1 && sidAt !== -1 && captureAt !== -1 && invalidateAt !== -1 && handlerAt !== -1,
+    listenAt !== -1 && sidAt !== -1 && captureAt !== -1 && invalidateAt !== -1 && refuseAt !== -1 && invalidateAt < refuseAt && refuseAt < handlerAt && handlerAt !== -1,
     '压缩事件处理的全部锚点必须存在（r40 M1 / r41 minor 1）',
   );
   assert.ok(
@@ -81,8 +84,8 @@ for (const [viewName, viewSource] of [['ChatView', chatView], ['CodexAcpView', c
   );
   assert.match(chatEvents, /const compactionResync = compactionShrank && !!compactionSid &&\s*typeof invalidateSessionBuffer === "function" &&\s*\(compactionOuterActive \? typeof switchToSessionInternal === "function" : true\);/,
     '重同步判定必须在换入域前完成（活动臂要求重载原语在场；后台臂仅失效）');
-  assert.match(chatEvents, /if \(compactionResync && compactionOuterActive && typeof switchToSessionInternal === "function"\) \{\s*(?:\/\/[^\n]*\n\s*)?Promise\.resolve\(switchToSessionInternal\(compactionSid, true, "compaction", \{ forceDurableLoad: true \}\)\)/,
-    '前台收缩臂必须强制盘载重注水——同 id 快路径不重载、失效不重注水会留下空白时间线（r39 M1）');
+  assert.match(chatEvents, /if \(compactionInvalidated && compactionOuterActive && typeof switchToSessionInternal === "function"\) \{\s*(?:\/\/[^\n]*\n\s*)?Promise\.resolve\(switchToSessionInternal\(compactionSid, true, "compaction", \{ forceDurableLoad: true \}\)\)/,
+    '前台收缩臂必须强制盘载重注水——且仅在失效未被拒绝（busy/queued 会话拒绝后跳过重载，r46 MAJOR-3）时执行（r39 M1）');
   // r42 minor 9 / r43 P2-6：前台臂的通知条必须闸在重载布尔契约上——失败的
   // 或被接管的 reload 仍会走 then()，把「压缩完成」通知条追加到当前缓冲
   // （幻影通知条落在别的会话/空白视图）。仅靠域哈希（变化检测器）无法表达
@@ -103,7 +106,7 @@ for (const [viewName, viewSource] of [['ChatView', chatView], ['CodexAcpView', c
 //    全绿）。
 {
   const tauriSessions = source('platform/tauri/bridge/sessions.js');
-  assert.match(tauriSessions, /if \(!stashEvictedSessionDraft\(id, sessionStates\[id\]\)\) return;/,
+  assert.match(tauriSessions, /if \(!stashEvictedSessionDraft\(id, sessionStates\[id\]\)\) return false;/,
     'invalidateSessionBuffer 必须在草稿不可安全暂存时拒绝失效（r39 minor 9 / r40 minor 7）');
 }
 // 1) Bug-A 修复的 busy 容差参数：删掉 { busy: Boolean(busy) } → 发送期间

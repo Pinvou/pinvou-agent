@@ -1258,7 +1258,13 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     const compactionResync = compactionShrank && !!compactionSid &&
       typeof invalidateSessionBuffer === "function" &&
       (compactionOuterActive ? typeof switchToSessionInternal === "function" : true);
-    if (compactionResync) invalidateSessionBuffer(compactionSid);
+    // r46 MAJOR-3：refuseWhenBusy 传入压缩臂——busy/queued（排队追问正等待
+    // 发送）在场时失效被拒绝，缓存刻意保留（排队消息与 busy 不受压缩窗口
+    // 波及），前台臂的强制重载随之跳过（重载的工作集保存/替换会把
+    // queued/busy 清空，正好绕过拒绝）。拒绝时调和门继续诚实隐藏入口；
+    // 通知条照常挂载（缓存未失效，挂载落点正确）。
+    const compactionInvalidated =
+      compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
     onSessionEvent(e, function () {
     if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
@@ -1289,7 +1295,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") {
-      if (compactionResync && compactionOuterActive && typeof switchToSessionInternal === "function") {
+      if (compactionInvalidated && compactionOuterActive && typeof switchToSessionInternal === "function") {
         // 前台臂：失效已在换入前完成，此处强制盘载重注水，通知条后补。
         Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
           // r42 minor 9: boolean contract (true on success, false on failure,

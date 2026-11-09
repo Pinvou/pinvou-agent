@@ -252,7 +252,14 @@ const expectedProtocolHashes = {
   // bridge lanes read byte-identically.
   // Recomputed once more for the r42 minor-9 boolean-contract gate on the
   // compaction front arm (reload success gate on the compaction notice).
-  chat: '1e3a147cd2ef6fd2a5acda8966190ba37b53f57603cc847977f0a8319fee7a01',
+  // Recomputed for the r46 MAJOR-3 resync-gating: the compaction resync arm now
+  // captures invalidateSessionBuffer's refusal verdict (busy/queued sessions
+  // refuse invalidation) and the foreground reload is skipped when refused —
+  // same event set, handler body only.
+  // Recomputed for the r46 MAJOR-3 option-parameter form: invalidateSessionBuffer
+  // takes { refuseWhenBusy } from the compaction arms and returns its verdict
+  // (true invalidated / false refused) for the caller to gate the reload on.
+  chat: 'de3344b02dac03467546d1ddeba49117d6f10d5a0384e34fda1ef8d9e9dc301f',
 
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',

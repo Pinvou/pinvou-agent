@@ -101,7 +101,7 @@ pub(crate) fn strip_all_git_env(command: &mut Command) {
 /// the `features::codex_acp` facade re-export instead of mirroring the list
 /// (a CLI-side mirror had already drifted by three keys); the GUI's own
 /// callers keep using it through the crate-private strip_git_override_env.
-pub const GIT_OVERRIDE_KEYS: [&str; 25] = [
+pub const GIT_OVERRIDE_KEYS: [&str; 26] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -145,6 +145,12 @@ pub const GIT_OVERRIDE_KEYS: [&str; 25] = [
     // COUNT.
     "GIT_CONFIG_KEY_0",
     "GIT_CONFIG_VALUE_0",
+    // r45 minor 6 (checkpoints review): GIT_DEFAULT_HASH flips a bare
+    // `git init` to SHA-256; the shadow repo's commit ids are validated as
+    // 40-hex (SHA-1), so a host-exported default hash silently reset the
+    // checkpoint history every turn. Explicit `--object-format` at init would
+    // also close it, but stripping keeps every future bare init covered.
+    "GIT_DEFAULT_HASH",
 ];
 
 /// Published through the `features::codex_acp` facade for the same-repo
