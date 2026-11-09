@@ -203,4 +203,35 @@ mod tests {
             "恢复面必须 fail-closed（先于 read-tree/checkout-index）: {apply_error:#}"
         );
     }
+
+    /// r45 borderline 回归：refs 遍历**根自身**是链接时整体拒绝清扫——
+    /// 工作区外植入的陈旧 *.lock 不得被 unlink（r44 M3 只堵了条目层，根
+    /// 仍被 read_dir 跟随）。断言：清扫不产出清除、外部哨兵文件原样在场。
+    #[test]
+    fn sweep_refs_refuses_a_symlinked_root_and_never_touches_the_target() {
+        use crate::features::code_checkpoints::sweep_refs;
+        let root = TestDir::new("sweep-root");
+        let outside = TestDir::new("sweep-outside");
+        // 外部目标树内的「陈旧锁」（≥120s 由 is_stale 恒真代替）。
+        let outside_lock = outside.path().join("head.lock");
+        std::fs::write(&outside_lock, b"stale").unwrap();
+        // 影子仓库形状：<repo>/refs 本体替换为指向外部的 junction。
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let refs = repo.join("refs");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&refs)
+            .arg(outside.path())
+            .status()
+            .expect("mklink runs");
+        assert!(status.success(), "mklink /J must succeed on Windows");
+
+        let cleared = sweep_refs(&refs, 4, &|_| true);
+        assert!(!cleared, "symlinked refs root must refuse the sweep");
+        assert!(
+            outside_lock.exists(),
+            "the out-of-workspace lock must never be deleted through the link"
+        );
+    }
 }

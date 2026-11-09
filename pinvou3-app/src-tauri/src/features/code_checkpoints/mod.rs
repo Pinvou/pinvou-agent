@@ -630,44 +630,8 @@ fn clear_stale_git_locks_older_than(repo: &Path, min_age: std::time::Duration) -
             cleared = true;
         }
     }
-    // update-ref 的锁在 refs 子树里（refs/checkpoints/head.lock、按 id 的
-    // 逐检查点锁）。refs 层级固定很浅，定深遍历避免意外放大。
-    fn sweep_refs(dir: &Path, depth: u8, is_stale: &dyn Fn(&Path) -> bool) -> bool {
-        if depth == 0 {
-            return false;
-        }
-        let mut cleared = false;
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            // r44 MAJOR-3：file_type 不跟随链接（path.is_dir 会跟随）——unbound
-            // 布局下影子仓库在 agent 可写工作区内，植入的符号链接目录会让清扫
-            // 递归进链接目标，把工作区外（甚至任意路径）的 *.lock 当陈旧锁删除。
-            // 与 estimate_workspace_bytes / shadow_repo_bytes 的走读约定同向：
-            // 链接一律不下钻。
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
-                cleared |= sweep_refs(&path, depth - 1, is_stale);
-            } else if path.extension().is_some_and(|ext| ext == "lock")
-                && is_stale(&path)
-                && std::fs::remove_file(&path).is_ok()
-            {
-                eprintln!(
-                    "[checkpoints] cleared stale lock left by a killed git: {}",
-                    path.display()
-                );
-                cleared = true;
-            }
-        }
-        cleared
-    }
+    // refs 子树的陈旧锁清扫见模块级 [`sweep_refs`]（r45 borderline：根拒绝符号链接，
+    // 条目不跟随链接；提为模块级以便 platform 适配层的行为钉测试可达）。
     cleared |= sweep_refs(&repo.join("refs"), 4, &is_stale);
     cleared
 }
@@ -677,6 +641,64 @@ fn clear_stale_git_locks_older_than(repo: &Path, min_age: std::time::Duration) -
 /// git 同样会死在 update-ref / 删 ref 的路上——若只给写路径接清扫，
 /// drop/invalidate 就会留下永远清不掉的 ref 锁，索引条目已删而 ref 仍在，
 /// gc 永远收不回对象，影子仓库随之泄漏。
+/// r44 M3 + r45 borderline：refs 子树的陈旧 `*.lock` 清扫。定深 ≤4；条目层
+/// 不跟随符号链接（`entry.file_type()`），遍历根自身经 `symlink_metadata`
+/// 拒绝链接（unbound 布局下 `<影子仓库>/refs` 本体可被 agent 换成指向工作区
+/// 外的链接——删除原语不得经根逃逸）。
+fn sweep_refs(dir: &Path, depth: u8, is_stale: &dyn Fn(&Path) -> bool) -> bool {
+    if depth == 0 {
+        return false;
+    }
+    // r45 borderline：**遍历根自身**也要拒绝符号链接——条目层已不跟随
+    // （r44 M3），但 unbound 布局下 agent 可把 `<影子仓库>/refs` 本体换成
+    // 指向工作区外任意树的链接：read_dir 在根上跟随链接，目标内 ≥120s 的
+    // *.lock（深度 ≤4）仍会被 unlink——工作区外删除原语经根收窄存活。
+    // symlink_metadata 不跟随：根是链接即整体放弃本轮清扫（fail-closed，
+    // 残留锁由下一轮 git 失败重试路径再次触发清扫）。
+    match std::fs::symlink_metadata(dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            eprintln!(
+                "[checkpoints] refs sweep root is a symlink, refusing to sweep: {}",
+                dir.display()
+            );
+            return false;
+        }
+        Ok(_) => {}
+        Err(_) => return false,
+    }
+    let mut cleared = false;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // r44 MAJOR-3：file_type 不跟随链接（path.is_dir 会跟随）——unbound
+        // 布局下影子仓库在 agent 可写工作区内，植入的符号链接目录会让清扫
+        // 递归进链接目标，把工作区外（甚至任意路径）的 *.lock 当陈旧锁删除。
+        // 与 estimate_workspace_bytes / shadow_repo_bytes 的走读约定同向：
+        // 链接一律不下钻。
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            cleared |= sweep_refs(&path, depth - 1, is_stale);
+        } else if path.extension().is_some_and(|ext| ext == "lock")
+            && is_stale(&path)
+            && std::fs::remove_file(&path).is_ok()
+        {
+            eprintln!(
+                "[checkpoints] cleared stale lock left by a killed git: {}",
+                path.display()
+            );
+            cleared = true;
+        }
+    }
+    cleared
+}
+
 fn run_git_with_stale_lock_retry(
     run_bounded: impl Fn() -> Result<std::process::Output>,
     repo: &Path,
@@ -1122,9 +1144,10 @@ fn purge_secret_survivors_exactly(repo: &Path, work_tree: &Path) -> Result<()> {
     let mut chunk: Vec<&str> = Vec::new();
     let mut chunk_chars = 0usize;
     for path in &survivor_paths {
-        chunk.push(path.as_str());
-        chunk_chars += path.len() + 1;
-        if chunk.len() >= 200 || chunk_chars >= 28_000 {
+        // r45 minor 6：**先冲刷、后推入**——r44 版在推入后检查，单块已可到
+        // ~33k 字符 > Windows 32,767 命令行上限（spawn 直接失败）。推入前
+        // 预判「本条加上会越界」即冲刷，单块字符量恒低于上限。
+        if !chunk.is_empty() && (chunk.len() >= 200 || chunk_chars + path.len() + 1 > 28_000) {
             let output = git(
                 repo,
                 work_tree,
@@ -1143,6 +1166,8 @@ fn purge_secret_survivors_exactly(repo: &Path, work_tree: &Path) -> Result<()> {
             chunk.clear();
             chunk_chars = 0;
         }
+        chunk.push(path.as_str());
+        chunk_chars += path.len() + 1;
     }
     if !chunk.is_empty() {
         let mut rm_args: Vec<&str> = vec!["rm", "-r", "--cached", "--quiet", "-f", "--"];
@@ -1594,7 +1619,7 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                 eprintln!(
                     "[checkpoints] checkpoint index entry with a malformed object id quarantined; rebuilt from an empty index"
                 );
-                return Ok(quarantine_index_and_rebuild(&path));
+                return Ok(quarantine_index_and_rebuild(&path, &bytes));
             }
             Ok(index)
         }
@@ -1616,7 +1641,7 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             if let Some(fresh) = recheck_concurrent_index_rewrite(&path, &bytes) {
                 return Ok(fresh);
             }
-            Ok(quarantine_index_and_rebuild(&path))
+            Ok(quarantine_index_and_rebuild(&path, &bytes))
         }
     }
 }
@@ -1670,14 +1695,24 @@ fn entry_has_valid_commit(entry: &CheckpointMeta) -> bool {
     if commit.trim() != commit {
         return false;
     }
-    let valid_len = commit.len() == 40 || commit.len() == 64;
+    // r45 minor 5：影子仓库恒为 SHA-1——64 位十六进制（SHA-256 形状）只可能
+    // 是手改索引：放行会让末条卡死复用探针/prepare（r44-minor-1 孪生形状，
+    // 无自愈），按判损走隔离+重建自愈。
+    let valid_len = commit.len() == 40;
     valid_len && commit.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// r39 minor 5：索引损坏（解析失败或语义损坏）的共用隔离+重建腿——隔离保留
 /// 现场后返回空索引。隔离失败只记日志（现场未保留，但重建照常），不得让
 /// checkpoint 能力因一次写坏而永久失效。
-fn quarantine_index_and_rebuild(path: &std::path::Path) -> CheckpointIndex {
+fn quarantine_index_and_rebuild(path: &std::path::Path, judged_bytes: &[u8]) -> CheckpointIndex {
+    // r45 minor 4：隔离前身份复核（第七写者窗口）——本函数是 with_index_write_lock
+    // 与各围栏之外的第七个索引写者，微秒级窗口内对端可能已原子替换好索引。
+    // 磁盘内容 ≠ 本次判损字节 → 对端刚写入，直接采用其新鲜索引（含迁移）；
+    // 一致才隔离。
+    if let Some(fresh) = recheck_concurrent_index_rewrite(path, judged_bytes) {
+        return migrate_index_to_v2(fresh);
+    }
     match crate::platform::filesystem::quarantine_corrupt_file(path) {
         Ok(_) => eprintln!(
             "[checkpoints] corrupt checkpoint index quarantined; rebuilt from an empty index"
@@ -2167,6 +2202,19 @@ impl PendingRewind {
     }
 }
 
+/// r45 minor 3：pending 的跨进程 flock（sidecar `_rewound_turns.json.lock`
+/// 的孪生）——`write_pending_rewind`/`clear_pending_rewind` 的窗口此前在
+/// 一切围栏与跨进程锁之外：GUI undo 的 clear 可以删掉在飞 CLI rewind 刚
+/// 写下的 pending（P1 孤儿）。阻塞式，与推入侧的等待语义一致。
+fn lock_pending_rewind_file(ledger_root: &Path) -> Result<std::fs::File> {
+    let path = pending_rewind_path(ledger_root).with_extension("json.lock");
+    let file = crate::platform::filesystem::open_lock_file_with_dirs(&path)
+        .with_context(|| format!("打开回退暂记锁失败: {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("锁定回退暂记失败: {}", path.display()))?;
+    Ok(file)
+}
+
 fn pending_rewind_path(ledger_root: &Path) -> std::path::PathBuf {
     ledger_root.join("pending_rewind.json")
 }
@@ -2178,6 +2226,9 @@ pub fn write_pending_rewind(
     pre_restore_id: &str,
     transcript_revision: &str,
 ) -> Result<()> {
+    // r45 minor 3：跨进程 flock——写窗口与对端 clear/live-pending 终结臂互斥。
+    let _lock = lock_pending_rewind_file(ledger_root)
+        .map_err(|error| anyhow::anyhow!("锁定回退暂记失败: {error:#}"))?;
     // r31 MAJOR-2：把文档不变量落地为真——「pending 在飞期间新回退被拒」。
     // 仅同边界（同目标 + 同 keepTurns + 同 revision，即错误信息引导的同一
     // 重试）允许重写；其它新回退在此如实拒绝。否则 fresh PreRestore 会快照
@@ -2332,6 +2383,15 @@ pub fn pending_pre_restore_for_degraded(
 /// 清理性质：失败只记日志（陈旧暂记由调用方的已绑定检查兜底，不会把
 /// undo 绑到已完成回退的旧快照上）。
 pub fn clear_pending_rewind(ledger_root: &Path) {
+    // r45 minor 3：跨进程 flock——clear 的删除窗口与对端 write_pending_rewind
+    // 互斥（GUI undo 清理 × CLI rewind 写入跨进程并发）。
+    let _lock = match lock_pending_rewind_file(ledger_root) {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("[checkpoints] 清理 pending_rewind 失败（锁不可用，保留现场）: {error:#}");
+            return;
+        }
+    };
     if let Err(error) = fs::remove_file(pending_rewind_path(ledger_root)) {
         if error.kind() != std::io::ErrorKind::NotFound {
             eprintln!("[checkpoints] 清理 pending_rewind 失败（仅清理未做）: {error:#}");
@@ -2401,11 +2461,20 @@ pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> 
     if !checkpoint_entry_present(ledger_root, &pending.checkpoint_id)? {
         // 目标已被 LRU 淘汰：该回退永远无法完成——清掉暂记解除快照阻断并
         // 如实留痕（此前静默 None，文件永不清、reconcile 的淘汰分支不可达）。
+        // r45 minor 2：删除前回读比对（r44-minor-3 孪生）——成员校验窗口内
+        // 对端的 pending 写入可整体替换文件，裸删会孤儿化对端的 P1 凭据。
         eprintln!(
             "[checkpoints] pending rewind target evicted, dropping pending: {}",
             pending.checkpoint_id
         );
-        let _ = fs::remove_file(&path);
+        match fs::read(&path) {
+            Ok(current) if current == bytes => {
+                let _ = fs::remove_file(&path);
+            }
+            _ => log::warn!(
+                "[checkpoints] stale pending was replaced concurrently; leaving the peer's pending in place"
+            ),
+        }
         return Ok(None);
     }
     Ok(Some(pending))
@@ -2591,6 +2660,39 @@ pub(crate) fn acquire_ledger_write_fence(ledger_root: &Path) -> Result<WriteFenc
         write_fence_path(ledger_root, "ledger"),
         "该会话的检查点账本有写操作在飞（快照或回退准备进行中），请稍后再试；若刚发生崩溃或强制退出，残留锁最长约 30 分钟后自动清除".to_string(),
     )
+}
+
+/// r45 MAJOR-1：账本围栏的 try 变体——围栏已被持有时返回 `Ok(None)`（调用方
+/// 按 best-effort 语义降级跳过并记日志），空闲时获取并返回 `Ok(Some(fence))`。
+/// 供索引 RMW 的作废/作废类入口（invalidate/drop 家族）使用：它们与
+/// apply/create/diff 共写同一 `index.json`，跨进程 last-writer-wins 的索引
+/// 覆盖由此收口（r45 点名的 CLI rewind 尾部 × GUI 发送前奏形状）。不做
+/// 陈旧偷取——残留时按「占用中」降级，下一轮自然重试。
+pub(crate) fn try_acquire_ledger_write_fence(ledger_root: &Path) -> Result<Option<WriteFence>> {
+    let fence_key = fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let path = write_fence_path(&fence_key, "ledger");
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let token = now_nanos().to_string();
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            use std::io::Write as _;
+            let _ = writeln!(
+                file,
+                "pid={} token={token} created_at={}",
+                std::process::id(),
+                now_seconds()
+            );
+            Ok(Some(WriteFence { path, token }))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(anyhow::Error::new(error).context("创建检查点写围栏失败")),
+    }
 }
 
 /// r42 M6：执行根内的目录再解析点（Windows junction / mount point）清单。
@@ -3172,8 +3274,9 @@ fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
 /// 返回作废条数；无符合条件条目时幂等返回 0（不触碰磁盘）。
 /// r32 MAJOR-4：index.json 的进程内读改写串行锁——messages-shrunk 钩子线程
 /// （compaction 作废）与 turn 快照的 load→save 跨度互斥，否则两条 RMW 链
-/// 互相丢失更新（作废被复活 / 新条目被丢）。进程内；跨进程（CLI）锁列
-/// follow-up（既有披露）。按账本根分桶，不同会话不互斥。
+/// 互相丢失更新（作废被复活 / 新条目被丢）。进程内串行；跨进程互斥由
+/// r45 MAJOR-1 的账本围栏覆盖（invalidate/drop 家族入口处获取，CLI 与 GUI
+/// 同键互斥），「CLI 锁 follow-up」披露就此兑现。
 fn with_index_write_lock<R>(ledger_root: &Path, f: impl FnOnce() -> R) -> R {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
@@ -3197,6 +3300,15 @@ fn with_index_write_lock<R>(ledger_root: &Path, f: impl FnOnce() -> R) -> R {
 
 pub fn invalidate_turn_checkpoints_after(ledger_root: &Path, keep_turns: u32) -> Result<usize> {
     // r32 MAJOR-4：作废写与快照 RMW 跨度串行（钩子线程亦经此函数入锁）。
+    // r45 MAJOR-1：跨进程互斥——CLI rewind 尾部（本函数的另一调用方）与
+    // GUI 发送前奏的 create/prepare 分属两进程，进程内锁盖不住 last-writer-
+    // wins 的索引覆盖（作废丢失 → 被弃分支锚点劫持，或新条目被丢 → 该轮
+    // undo 绑定静默丢失）。账本围栏占用时如实拒绝（调用方按瞬态处理）。
+    let fence_key = fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let _write_fence = match try_acquire_ledger_write_fence(&fence_key)? {
+        Some(fence) => fence,
+        None => bail!("检查点账本有写操作在飞（快照/回退准备进行中），本轮作废顺延，请稍后重试"),
+    };
     with_index_write_lock(ledger_root, || {
         invalidate_entries_if(ledger_root, |entry| {
             entry.kind == CheckpointKind::Turn && entry.turn.is_some_and(|turn| turn > keep_turns)
@@ -3216,6 +3328,19 @@ pub fn invalidate_turn_checkpoints_after_created_until(
     keep_turns: u32,
     created_until: i64,
 ) -> Result<usize> {
+    // r45 MAJOR-1：跨进程围栏——本函数在压缩钩子线程上异步执行（best-effort
+    // 语义），围栏被持有时降级为跳过并记日志：宁可漏删（入口降级、陈旧和解
+    // 最终一致补作废），不可与在飞写者互踩索引。同轮重试自愈。
+    let fence_key = fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let _write_fence = match try_acquire_ledger_write_fence(&fence_key)? {
+        Some(fence) => fence,
+        None => {
+            log::warn!(
+                "[checkpoints] compaction invalidation skipped: ledger write fence is held (in-flight checkpoint writer); will retry on the next shrink"
+            );
+            return Ok(0);
+        }
+    };
     with_index_write_lock(ledger_root, || {
         // r42 P2-1：活暂记的两个 id 不作废。pending 的目标边界快照 turn 恒
         // > kept（目标 = keep+1 的边界快照），裸谓词会把在飞暂记自己的目标
@@ -3260,6 +3385,19 @@ pub fn invalidate_stale_turn_checkpoints(
 ) -> Result<usize> {
     // r33 MAJOR-1：与 create/钩子作废同锁——否则 rewind 前奏的陈旧和解与
     // 在飞钩子作废互相丢失更新（作废被复活 → first-wins 劫持回归）。
+    // r45 MAJOR-1：跨进程围栏——本函数是 rewind 预检的 best-effort 和解，
+    // 围栏被持有时降级跳过（下一轮预检按备份记录最终一致补作废），不拒绝
+    // 用户请求。
+    let fence_key = fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let _write_fence = match try_acquire_ledger_write_fence(&fence_key)? {
+        Some(fence) => fence,
+        None => {
+            log::warn!(
+                "[checkpoints] stale-sweep invalidation skipped: ledger write fence is held (in-flight checkpoint writer); will retry on the next rewind precheck"
+            );
+            return Ok(0);
+        }
+    };
     with_index_write_lock(ledger_root, || {
         invalidate_entries_if(ledger_root, |entry| {
             entry.kind == CheckpointKind::Turn
@@ -3318,6 +3456,19 @@ fn invalidate_entries_if(
 pub fn drop_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<bool> {
     validate_checkpoint_id(checkpoint_id)?;
     // r33 MAJOR-1：drop 的 RMW 同锁串行（对钩子/create 皆然）。
+    // r45 MAJOR-1：跨进程围栏——发送失败的「未成活快照」精确作废与并发
+    // 写者（CLI 侧 rewind 尾部、对端 create/prepare）互斥；占用时跳过并
+    // 留日志（残存条目按既有语义降级，不做误删）。
+    let fence_key = fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let _write_fence = match try_acquire_ledger_write_fence(&fence_key)? {
+        Some(fence) => fence,
+        None => {
+            log::warn!(
+                "[checkpoints] unsent-checkpoint drop skipped: ledger write fence is held (in-flight checkpoint writer); the entry survives until retried"
+            );
+            return Ok(false);
+        }
+    };
     with_index_write_lock(ledger_root, || {
         Ok(invalidate_entries_if(ledger_root, |e| e.id == checkpoint_id)? > 0)
     })

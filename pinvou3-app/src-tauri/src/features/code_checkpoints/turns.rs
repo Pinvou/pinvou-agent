@@ -4,9 +4,15 @@
 //! 它们误算成用户 turn（feat 分支 `32b5fdf9e` 的 turn 号错位 bug 即源于此）。
 //! 正确口径由 fork 提交 `8cc61b609` 在 `CodeWhale/crates/tui/src/runtime_handoff.rs`
 //! 提供并根级重导出，本分支已合入该 gitlink（merge pr-320），故不再 vendored
-//! 副本。同口径使用方：底座 `Op::EditLastTurn`、store 落盘兜底
+//! 副本。计数使用方：底座 `Op::EditLastTurn`、store 落盘兜底
 //! `persist_admitted_chat_display`、本模块 turn 计数（设计文档
 //! `docs/code-mode-改动随对话回退-设计.md` §3「移植时的修正」）。
+//!
+//! r45 minor 10（口径如实化）：pin 指定的底座要求宿主对 rewind 截断点使用
+//! era-aware `user_turn_prompt_indices`，而本模块仍是逐消息谓词计数——
+//! 「同口径」的说法只对计数使用方成立，对截断点选择**不成立**。后果恒为
+//! fail-closed（调和门诚实隐藏入口），绝不会切错位置；形状沿自 main 的
+//! 既有实现，如实披露，不宣称对齐。
 
 use deepseek_tui::is_user_turn_prompt;
 use deepseek_tui::models::{ContentBlock, Message, Role};

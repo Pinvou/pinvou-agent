@@ -119,6 +119,13 @@ export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { bu
     if (busy && ordinal === backendUserTurns + steeredBeyondBackend + 1) {
       return entries;
     }
+    // r45 minor 8：诚实拒绝必须留下成因诊断——零日志时，未来谓词漂移与
+    // 诚实拒绝在观测上不可区分（本轮评审点名的可观测性缺口）。dev 可见
+    // 的 console.warn 不进用户 UI。
+    console.warn(
+      "[checkpoints] rewind entries hidden: timeline/userTurns mismatch",
+      JSON.stringify({ timelineTurns: ordinal, backendUserTurns, steeredBeyondBackend, busy }),
+    );
     return new Map();
   }
   return entries;

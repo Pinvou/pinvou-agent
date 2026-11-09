@@ -5917,6 +5917,34 @@ fn checkpoints_rewind(
         )));
     }
     let checkpoint = resolve_rewind_plan(&entries, keep_turns)?;
+    // r45 minor 11: the live-pending peek and its refusal moved ABOVE the
+    // turn-count gate. After an apply/truncate crash the transcript sits at
+    // kept_turns, so keep_turns >= total_turns fired first and the guided
+    // retry (the one remedy the refusal copy itself prescribes) reported a
+    // misleading `cannot_rewind` instead of the pending conflict. A
+    // same-boundary pending is the guided-retry path: it skips the turn gate
+    // (the transcript is exactly what the retried rewind truncates) while a
+    // different boundary is still refused with the actionable copy.
+    let live_pending = checkpoints::peek_pending_rewind_target(&ledger).map_err(|error| {
+        crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+    })?;
+    let guided_retry = live_pending
+        .as_ref()
+        .is_some_and(|(pending_target, _)| *pending_target == checkpoint.id);
+    if let Some((pending_target, pending_keep)) = live_pending {
+        if pending_target != checkpoint.id {
+            return Err(CliError::failed(format!(
+                "pending_rewind_conflict: an unfinished rewind targeting checkpoint {}                  (keeping {} turns) is still pending; complete or discard it first —                  headless: retry `code checkpoints rewind` to that same checkpoint (the                  guided retry completes it), or remove the pending marker in the session's                  checkpoint ledger; desktop: sending a new message auto-reconciles it —                  before rewinding to a different boundary ({})",
+                pending_target, pending_keep, checkpoint.id,
+            )));
+        }
+    }
+    if !guided_retry && keep_turns >= total_turns {
+        return Err(CliError::failed(format!(
+            "cannot_rewind: the session currently has {total_turns} turns; cannot rewind past              turn {keep_turns}"
+        )));
+    }
+
 
     // 1) r19 M10: restore through the pending-rewind protocol (same as the
     //    GUI): prepare (create/reuse PreRestore) → write pending → apply. A
@@ -5941,22 +5969,6 @@ fn checkpoints_rewind(
     // misidentifying the hazard and prescribing "retry the same rewind" to an
     // attempt that would hit this refusal forever; the remedy names an
     // actionable headless step first.
-    let live_pending = checkpoints::peek_pending_rewind_target(&ledger).map_err(|error| {
-        crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
-    })?;
-    if let Some((pending_target, pending_keep)) = live_pending {
-        if pending_target != checkpoint.id {
-            return Err(CliError::failed(format!(
-                "pending_rewind_conflict: an unfinished rewind targeting checkpoint {} \
-                 (keeping {} turns) is still pending; complete or discard it first — \
-                 headless: retry `code checkpoints rewind` to that same checkpoint (the \
-                 guided retry completes it), or remove the pending marker in the session's \
-                 checkpoint ledger; desktop: sending a new message auto-reconciles it — \
-                 before rewinding to a different boundary ({})",
-                pending_target, pending_keep, checkpoint.id,
-            )));
-        }
-    }
     // r25 MAJOR-3: the matcher's revision check is itself the commit
     // discriminator - a completed rewind's truncate rewrites the transcript,
     // so the revision always advances and the matcher returns None. The only
