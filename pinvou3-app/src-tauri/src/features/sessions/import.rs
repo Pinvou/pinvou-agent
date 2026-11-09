@@ -45,10 +45,51 @@ const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// xz 流解码字典上限（256 MiB）：`XzDecoder::new` 默认无上限（u64::MAX），
 /// 字典按流头声明在首个块解码前整块分配，先于任何成员上限生效。
 const MAX_XZ_DICTIONARY_BYTES: u64 = 256 * 1024 * 1024;
+/// 解压流字节预算 = 总量上限 + 64 MiB 头/扩展/填充余量：tar-rs 在迭代器
+/// 内部就把 'L'/'K'/'x' pax/GNU 扩展块经 `read_all` 读进内存（发生在任何
+/// 成员上限生效之前），几百 KB 的构造归档借一条长名记录即可迫使多 GiB
+/// 的 Vec 分配——与 xz 字典同一类「分配先于上限」。64 MiB 约容纳 6.4 万
+/// 条扩展记录，只对恶意输入可见（合法归档的头开销在 KB 量级）。
+const MAX_TAR_OVERHEAD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DECOMPRESSED_BYTES: u64 = MAX_TOTAL_BYTES + MAX_TAR_OVERHEAD_BYTES;
+/// 单个归档的成员数上限：总量账本按声明大小记账，海量零字节成员贡献
+/// 0 却制造海量头解析与堆对象——几 MB 的归档即可让导入线程长时间满载。
+/// 1 万成员（均值 200 KiB/成员）远超正常会话的 artifacts 规模。
+const MAX_MEMBER_COUNT: usize = 10_000;
 // 底座保留的 sessions 根文件名（`session_boot_owners.json` 注册表）：
 // 拒绝语义（含大小写不敏感的别名口径，见
 // `super::validators::RESERVED_SESSION_ID_STEMS` 与 `validate_session_id`）
 // 统一由 validators 执行，本模块不再持有独立字面量以免两处漂移。
+
+/// 解压流字节预算 reader：统计从解码器拉出的每个字节（tar 头、pax/GNU
+/// 扩展块与填充都算），超预算即以 IO 错误终止，tar-rs 将其作为归档错误
+/// 抛出、导入 fail-closed。
+struct BudgetedReader<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R: Read> Read for BudgetedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "archive exceeds the decompressed-byte budget",
+            ));
+        }
+        let n = self.inner.read(buf)?;
+        if n as u64 > self.remaining {
+            // 本次读取最多超出一个缓冲区；tar-rs 会因该错误中止解析，
+            // 已流入的最后一个块不构成逃逸面。
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "archive exceeds the decompressed-byte budget",
+            ));
+        }
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionImportFailure {
@@ -81,7 +122,11 @@ impl SessionStore {
     /// 从归档文件导入会话。`.json` 后缀按单条 session 记录读取，其余按
     /// `export_session` 的 tar.xz 归档读取。
     pub(crate) fn import_archive(&self, path: &Path) -> Result<SessionImportSummary> {
-        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        {
             let mut summary = SessionImportSummary::default();
             // 上限在分配之前生效：take 限制读入字节，稀疏文件（truncate 出
             // 的巨文件）不会先整读进内存再被拒。容量按文件声明的长度预置
@@ -101,33 +146,65 @@ impl SessionStore {
             return Ok(summary);
         }
 
+        self.import_archive_stream_file(path, MAX_DECOMPRESSED_BYTES, MAX_MEMBER_COUNT)
+    }
+
+    /// tar.xz 归档流解析（生产路径 [`Self::import_archive`] 传模块常量；
+    /// budget/count 参数化，测试以小预算钉住解压流记账——预算 reader 在
+    /// 本函数内构造，拆掉它的回归在本测试下 RED，而不是只在机制单测下
+    /// 存活）。
+    fn import_archive_stream_file(
+        &self,
+        path: &Path,
+        decompressed_budget: u64,
+        member_count_cap: usize,
+    ) -> Result<SessionImportSummary> {
         let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
         // 解码字典按流头声明在首个块解码前整块分配，`XzDecoder::new` 的默认
         // 上限是 u64::MAX（= 无上限）：一个 ~100 字节的构造 .xz 即可迫使
         // liblzma 预留最高 ~4 GiB 的 LZMA2 字典——发生在任何 tar 成员上限
         // 生效之前。256 MiB 上限对合法归档无感（exporter level-6 字典仅
         // 8 MiB），却把恶意输入的内存放大钳到与 tar 总量上限同一量级。
+        // 解压流字节预算（[`BudgetedReader`]）同窗生效：tar-rs 在迭代器内
+        // 部就把 pax/GNU 扩展块经 `read_all` 读进内存，任何成员上限都管
+        // 不到这些字节，预算对从解码器拉出的每个字节记账。
         let stream = liblzma::stream::Stream::new_stream_decoder(MAX_XZ_DICTIONARY_BYTES, 0)
             .context("initialize xz decoder")?;
         let decoder = liblzma::read::XzDecoder::new_stream(file, stream);
-        let mut archive = tar::Archive::new(decoder);
+        let mut archive = tar::Archive::new(BudgetedReader {
+            inner: decoder,
+            remaining: decompressed_budget,
+        });
 
         let mut record: Option<SavedSession> = None;
         let mut artifacts: Vec<(String, Vec<u8>)> = Vec::new();
         let mut total_bytes: u64 = 0;
+        let mut member_count: usize = 0;
         for entry in archive
             .entries()
             .context("read archive members (is this a tar.xz session archive?)")?
         {
             let entry = entry.context("read archive entry")?;
+            member_count += 1;
+            if member_count > member_count_cap {
+                bail!("archive exceeds the {member_count_cap}-member import cap");
+            }
             if !entry.header().entry_type().is_file() {
                 // 目录/链接/设备成员一律拒绝：链接成员无法按内容校验，
                 // 是经典的归档投毒面。
                 bail!("archive contains a non-regular member; refusing to import");
             }
-            let member_name = entry.path()?.to_string_lossy().replace('\\', "/");
+            // 非 UTF-8 成员名拒绝（而非 lossy 改名）：`to_string_lossy` 会把
+            // 不同的非法字节名折叠成同一 U+FFFD 目标，第二个成员同名原子
+            // 覆盖第一个（成员无声丢失）；导出预扫描的恒等性检查也追不到
+            // 这种改名。解析期拒绝维持整档 fail-closed。
+            let entry_path = entry.path()?;
+            let Some(raw_name) = entry_path.to_str() else {
+                bail!("archive member name is not valid UTF-8; refusing to import");
+            };
+            let member_name = raw_name.replace('\\', "/");
             let size = entry.size();
-            total_bytes += size;
+            total_bytes = total_bytes.saturating_add(size);
             if total_bytes > MAX_TOTAL_BYTES {
                 bail!("archive exceeds the {MAX_TOTAL_BYTES}-byte total import cap");
             }
@@ -155,6 +232,18 @@ impl SessionStore {
                 }
                 "manifest.json" | "container.json" => {}
                 other => {
+                    // artifacts 目录名大小写必须精确：大小写不敏感文件系统
+                    // （APFS/NTFS）上 `Artifacts/x` 与 `artifacts/x` 落在同一
+                    // 目录，静默走未知成员忽略会让用户以为已归档的文件无声
+                    // 消失——fail-closed 拒绝并指名成员。
+                    let first_component = other.split('/').next().unwrap_or("");
+                    if first_component.eq_ignore_ascii_case("artifacts")
+                        && first_component != "artifacts"
+                    {
+                        bail!(
+                            "archive member {member_name} spells the artifacts directory with a different case; refusing to import"
+                        );
+                    }
                     if let Some(relative) = other.strip_prefix("artifacts/") {
                         // 解析期校验、任一非法即拒绝整个归档：把坏成员留到
                         // 落盘期只会降级成「记录导入成功但 artifacts 静默
@@ -240,8 +329,20 @@ fn import_one_session_inner(
     // `persist_then_reconcile` 而非 `save`。
     let mutation = store.scheduled_mutation.lock();
     let record_path = store.sessions_dir().join(format!("{id}.json"));
-    if record_path.exists() {
-        return ImportOutcome::SkippedExisting(id);
+    // 三态存在性探测（store.rs 的 doctrine：普通 `exists()` 会把 EACCES/EIO
+    // 折叠成「不存在」，随后的原子落盘会静默覆盖一条活会话的记录——与
+    // skip-existing 语义直接矛盾，`durable_session_record_is_absent` 的文档
+    // 原文正是以本场景论证该口径）。仅真实 NotFound 视为可导入；元数据
+    // 失败如实报错让用户重试，绝不写入。
+    match std::fs::metadata(&record_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return ImportOutcome::Failed(fail(format!(
+                "probe existing record {}: {error}",
+                record_path.display()
+            )));
+        }
+        Ok(_) => return ImportOutcome::SkippedExisting(id),
     }
 
     // artifacts 先落盘、记录后落盘：save 失败时若 artifacts 已完整写入，
@@ -330,15 +431,27 @@ fn import_artifacts(store: &SessionStore, id: &str, artifacts: &[(String, Vec<u8
 
 /// 导出前置校验（闭合导出→导入循环）：逐个 artifacts 文件按导入方的成员
 /// 规则（[`validated_artifact_target`]）、恒等性（归一化后不得改变相对
-/// 布局，即 POSIX 上文件名里的 `\` 会被导入方当分隔符改名）与同一张字节
-/// 上限账本（单成员 [`MAX_MEMBER_BYTES`] / 总量 [`MAX_TOTAL_BYTES`]）验证
-/// 可往返。任一文件不满足即让导出失败并指名文件，用户改名/删减后重试——
-/// 归档从此不会产出「导出成功、导入必拒」的产物（导入侧保持 fail-closed
-/// 不变）。遍历口径与底座 exporter 一致：跳过符号链接（exporter 也不打
-/// 包）、仅收常规文件、目录递归。
-pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path) -> Result<()> {
-    fn walk(dir: &Path, relative: &str, problems: &mut Vec<String>, total_bytes: &mut u64) {
+/// 布局，即 POSIX 上文件名里的 `\` 会被导入方当分隔符改名）与同一张上限
+/// 账本（单成员 [`MAX_MEMBER_BYTES`] / 总量 [`MAX_TOTAL_BYTES`] / 成员数
+/// [`MAX_MEMBER_COUNT`]，会话记录本体计入同一张字节账本——导入侧把
+/// session.json 也计入总量并受单成员上限）验证可往返。任一文件不满足即
+/// 让导出失败并指名文件，用户改名/删减后重试——归档从此不会产出「导出
+/// 成功、导入必拒」的产物（导入侧保持 fail-closed 不变）。遍历口径与
+/// 底座 exporter 一致：跳过符号链接（exporter 也不打包）、仅收常规文件、
+/// 目录递归；不可读目录/元数据失败与非 UTF-8 文件名不再静默跳过（否则
+/// exporter 稍后以含混错误失败，问题定位丢上下文），而是并入问题清单。
+pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path, record_bytes: u64) -> Result<()> {
+    fn walk(
+        dir: &Path,
+        relative: &str,
+        problems: &mut Vec<String>,
+        total_bytes: &mut u64,
+        member_count: &mut usize,
+    ) {
         let Ok(entries) = std::fs::read_dir(dir) else {
+            problems.push(format!(
+                "artifacts/{relative}: directory cannot be read (fix its permissions and retry the export)"
+            ));
             return;
         };
         for entry in entries.flatten() {
@@ -348,21 +461,38 @@ pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path) -> Result<()> {
             if file_type.is_symlink() {
                 continue;
             }
-            let child = entry.file_name().to_string_lossy().into_owned();
+            // 非 UTF-8 文件名如实上报：exporter 按同样的 lossy 改名去打开
+            // 原始路径会以裸 NotFound 失败，问题不在场时无从定位。
+            let raw_name = entry.file_name();
+            let Some(child) = raw_name.to_str() else {
+                let parent = if relative.is_empty() {
+                    "artifacts".to_string()
+                } else {
+                    format!("artifacts/{relative}")
+                };
+                problems.push(format!(
+                    "{parent}/<non-UTF-8 name>: file name is not valid UTF-8 (rename this file and retry the export)"
+                ));
+                continue;
+            };
             let child_relative = if relative.is_empty() {
-                child.clone()
+                child.to_string()
             } else {
                 format!("{relative}/{child}")
             };
-            let path = dir.join(&child);
+            let path = dir.join(child);
             if file_type.is_dir() {
-                walk(&path, &child_relative, problems, total_bytes);
+                walk(&path, &child_relative, problems, total_bytes, member_count);
             } else if file_type.is_file() {
+                *member_count += 1;
                 // 与导入方同一张字节账本：单成员 512 MiB / 总量 2 GiB 的
                 // 上限不镜像的话，大文件会话会「导出成功、导入必拒」——
                 // 恰好违反本函数存在的目的（review finding）。超单成员
                 // 上限的文件不再累计（导入侧也是按头记账先拒）。
                 let Ok(meta) = entry.metadata() else {
+                    problems.push(format!(
+                        "artifacts/{child_relative}: file metadata cannot be read (fix its permissions and retry the export)"
+                    ));
                     continue;
                 };
                 if meta.len() > MAX_MEMBER_BYTES {
@@ -371,7 +501,7 @@ pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path) -> Result<()> {
                     ));
                     continue;
                 }
-                *total_bytes += meta.len();
+                *total_bytes = total_bytes.saturating_add(meta.len());
                 if *total_bytes > MAX_TOTAL_BYTES {
                     problems.push(format!(
                         "artifacts/{child_relative}: artifacts exceed the {MAX_TOTAL_BYTES}-byte total import cap (remove or thin this session's artifacts and retry the export)"
@@ -404,7 +534,27 @@ pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path) -> Result<()> {
     }
     let mut problems = Vec::new();
     let mut total_bytes = 0u64;
-    walk(artifacts_dir, "", &mut problems, &mut total_bytes);
+    let mut member_count = 0usize;
+    // 记录本体计入同一张账本：不镜像的话「artifacts 恰低于总量 + 多 MB
+    // 记录」或超大记录仍会导出成功、导入必拒。
+    if record_bytes > MAX_MEMBER_BYTES {
+        problems.push(format!(
+            "session record exceeds the {MAX_MEMBER_BYTES}-byte import cap (shrink the conversation record and retry the export)"
+        ));
+    }
+    total_bytes = total_bytes.saturating_add(record_bytes);
+    walk(
+        artifacts_dir,
+        "",
+        &mut problems,
+        &mut total_bytes,
+        &mut member_count,
+    );
+    if member_count > MAX_MEMBER_COUNT {
+        problems.push(format!(
+            "artifacts/: more than {MAX_MEMBER_COUNT} files exceed the member-count import cap (thin this session's artifacts and retry the export)"
+        ));
+    }
     if problems.is_empty() {
         return Ok(());
     }
@@ -418,9 +568,16 @@ pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path) -> Result<()> {
 /// （Windows 盘符 prefix 分量会被 `PathBuf::push` 清空已拼路径——
 /// `artifacts/C:/evil` 逃出 artifacts 目录；同一检查顺带拒绝 NTFS ADS）；
 /// 另拒含 NUL 的分量（tar pax 扩展名可携带，`to_string_lossy` 原样保留，
-/// 落盘时才被 std 拒绝——提前拒绝以维持「解析期 fail-closed」口径）与
+/// 落盘时才被 std 拒绝——提前拒绝以维持「解析期 fail-closed」口径）、
 /// 超 255 字节的分量（ext4/APFS/NTFS 的分量长度上限，超限只会把失败从
-/// 解析期推迟到落盘期）。返回目标是 artifacts 目录下的既定路径。
+/// 解析期推迟到落盘期），以及以尾点/尾空格结尾的分量——Win32 落盘时
+/// 剥离尾点/尾空格，`notes.` 会与 `notes` 静默合并成同名覆盖（第二个
+/// 成员 wins），这是唯一「导出成功、导入静默改名合并」的形态；POSIX 上
+/// 这类名字合法但极罕见，导出预扫描共享本校验，会先行指名并给出改名
+/// 指引。已知残留（Windows-only、失败路径响亮）：`CON`/`COM1` 等保留
+/// 设备名不做本地镜像校验——落盘期 std 写入失败如实进 artifacts_failed，
+/// 且 POSIX 会话里这些是合法文件名，提前拒绝反而破坏既有导出。
+/// 返回目标是 artifacts 目录下的既定路径。
 fn validated_artifact_target(artifacts_dir: &Path, relative: &str) -> Result<std::path::PathBuf> {
     let normalized = relative.replace('\\', "/");
     if normalized.is_empty() || normalized.starts_with('/') {
@@ -434,6 +591,8 @@ fn validated_artifact_target(artifacts_dir: &Path, relative: &str) -> Result<std
             || component.contains(':')
             || component.contains('\0')
             || component.len() > 255
+            || component.ends_with('.')
+            || component.ends_with(' ')
         {
             bail!("invalid artifact member path: {relative:?}");
         }
@@ -459,7 +618,10 @@ fn session_schema_version_ceiling() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::super::{SessionImportFailure, SessionImportSummary};
-    use super::{MAX_MEMBER_BYTES, SessionStore, validated_artifact_target};
+    use super::{
+        MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES, SessionStore,
+        ensure_artifacts_exportable, validated_artifact_target,
+    };
     use deepseek_tui::models::{ContentBlock, Message, Role};
 
     use super::session_schema_version_ceiling;
@@ -563,13 +725,18 @@ mod tests {
     /// 手工 ustar 头写入成员（tar::Builder 拒绝 `..` 成员名，恶意样例必须
     /// 绕过它的清洗直接构造）：name + 声明 size + payload 原样拼装。
     fn archive_with_raw_member(name: &str, payload: &[u8]) -> std::path::PathBuf {
+        archive_with_raw_member_bytes(name.as_bytes(), payload)
+    }
+
+    /// 同上，但成员名按原始字节写入（非 UTF-8 名称样例走这条）。
+    fn archive_with_raw_member_bytes(name: &[u8], payload: &[u8]) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
             "pinvou3-import-raw-{}-{}.tar.xz",
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
         let mut header = [0u8; 512];
-        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[..name.len()].copy_from_slice(name);
         // size 字段：offset 124，11 位八进制 + NUL。
         let size_field = format!("{:011o}\0", payload.len());
         header[124..124 + size_field.len()].copy_from_slice(size_field.as_bytes());
@@ -812,6 +979,12 @@ mod tests {
     /// 单成员上限按实际字节执行（头可谎报小、流不可谎报短——`take()` 截断
     /// 后按读到的真实长度记账）：512 MiB+1 的零字节成员 xz 压缩后极小，
     /// 构造廉价，读侧按实际长度 bail。
+    /// 口径说明：fixture 的声明大小 == 实际大小（都是 cap+1）并非疏漏——
+    /// tar-rs 的成员 reader 按头声明大小截界（pax/GNU size 同步施加于读与
+    /// 跳过），「声明小、实际大」的成员经由 tar-rs 不可构造；能到达读侧的
+    /// 最坏形态就是「声明 > cap、读满 cap+1 即 bail」，而只要把这里的
+    /// actual-bytes bail 换成任何声明大小检查，本测试的
+    /// `contains("exceeds the")` 就抓不到 cap 错误（mutation 已验证 RED）。
     #[test]
     fn import_enforces_per_member_cap_by_actual_bytes() {
         let (store, _lock, _env) = isolated_store();
@@ -1018,6 +1191,12 @@ mod tests {
             // 255 字节是 ext4/APFS/NTFS 的单分量长度上限，超限只会把同名
             // 失败推迟到落盘期（ENAMETOOLONG）。
             "a/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            // Win32 落盘剥离尾点/尾空格：`notes.` 与 `notes` 静默合并成同名
+            // 覆盖（第二成员 wins）——解析期拒绝（POSIX 上合法但极罕见，
+            // 导出预扫描共享本校验并指名给出改名指引）。
+            "notes.",
+            "notes ",
+            "a/notes.",
         ] {
             assert!(
                 validated_artifact_target(base, bad).is_err(),
@@ -1122,6 +1301,279 @@ mod tests {
             format!("{error:#}").contains("huge.bin")
                 && format!("{error:#}").contains("import cap"),
             "the offending file and the cap must be named: {error:#}"
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    /// 解压流字节预算（review MAJOR 修复）：tar-rs 在迭代器内部就把
+    /// pax/GNU 扩展块经 `read_all` 读进内存，任何成员上限都管不到这些
+    /// 字节——预算 reader 对从解码器拉出的每个字节记账，超限即 fail-closed。
+    /// 用小预算构造（真实上限 2 GiB + 64 MiB 无法在测试里合法越顶）。
+    #[test]
+    fn import_enforces_decompressed_byte_budget() {
+        let (store, _lock, _env) = isolated_store();
+        let archive = build_archive(&[
+            ("manifest.json", &[0u8; 800].as_slice()),
+            ("container.json", &[0u8; 800].as_slice()),
+        ]);
+        let error = store
+            .import_archive_stream_file(&archive, 1024, MAX_MEMBER_COUNT)
+            .expect_err("decompressed stream over budget must fail");
+        assert!(
+            format!("{error:#}").contains("decompressed-byte budget"),
+            "{error:#}"
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    /// 成员数上限：总量账本按声明大小记账，海量零字节成员贡献 0 却制造
+    /// 海量头解析——超过 [`MAX_MEMBER_COUNT`] 的归档整档拒绝。
+    #[test]
+    fn import_enforces_member_count_cap() {
+        let (store, _lock, _env) = isolated_store();
+        let members: Vec<(&str, &[u8])> = (0..=MAX_MEMBER_COUNT)
+            .map(|index| {
+                let name: &'static str =
+                    Box::leak(format!("artifacts/f{index}.txt").into_boxed_str());
+                (name, b"x".as_slice())
+            })
+            .collect();
+        let archive = build_archive(&members);
+        let error = store
+            .import_archive(&archive)
+            .expect_err("member-count bomb must fail the archive");
+        assert!(
+            format!("{error:#}").contains("member import cap"),
+            "{error:#}"
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    /// skip 探测是三态的（store.rs doctrine）：`exists()` 会把 EACCES/EIO
+    /// 折叠成「不存在」，随后的原子落盘会静默覆盖一条活会话的记录——
+    /// 元数据失败必须进 failed 让用户重试，绝不写入。
+    #[cfg(unix)]
+    #[test]
+    fn import_reports_stat_fault_instead_of_overwriting_existing_record() {
+        use std::os::unix::fs::PermissionsExt;
+        let (store, _lock, _env) = isolated_store();
+        let first = write_json_record(&store, "probeio1");
+        let summary = store.import_archive(&first).expect("first import lands");
+        assert_eq!(summary.imported, vec!["probeio1".to_string()]);
+        let _ = std::fs::remove_file(&first);
+        // 同 id 的第二次导入素材先备好（0o000 下 store 无法再写盘）。
+        let second = write_json_record(&store, "probeio1");
+
+        let sessions_dir = store.sessions_dir();
+        let original = std::fs::metadata(&sessions_dir)
+            .expect("stat sessions dir")
+            .permissions()
+            .mode();
+        std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod sessions dir");
+        // root 下 chmod 不拦截（探针仍成功）：本测试的平台前提不成立，跳过。
+        if std::fs::metadata(sessions_dir.join("probeio1.json")).is_ok() {
+            std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
+                .expect("restore permissions");
+            return;
+        }
+        let summary = store.import_archive(&second).expect("summary returned");
+        std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
+            .expect("restore permissions");
+
+        assert!(
+            summary.imported.is_empty(),
+            "stat fault must not overwrite the live record: {:?}",
+            summary.imported
+        );
+        assert!(
+            summary.skipped_existing.is_empty(),
+            "stat fault is not a skip either: {:?}",
+            summary.skipped_existing
+        );
+        assert!(
+            summary.failed[0].reason.contains("probe existing record"),
+            "{}",
+            summary.failed[0].reason
+        );
+        // 活记录原样（未被归档副本覆盖）。
+        let live = store.load("probeio1").expect("live record intact");
+        assert_eq!(live.messages.len(), 2);
+        let _ = std::fs::remove_file(&second);
+    }
+
+    /// 非 UTF-8 成员名拒绝（而非 lossy 改名）：不同的非法字节名经
+    /// `to_string_lossy` 会折叠成同一 U+FFFD 目标，第二个成员同名原子
+    /// 覆盖第一个（成员无声丢失）。
+    #[cfg(unix)]
+    #[test]
+    fn import_rejects_non_utf8_member_names() {
+        let (store, _lock, _env) = isolated_store();
+        let archive = archive_with_raw_member_bytes(b"artifacts/\xFF\xFEbad.txt", b"payload");
+        let error = store
+            .import_archive(&archive)
+            .expect_err("non-UTF-8 member name must fail the archive");
+        assert!(
+            format!("{error:#}").contains("not valid UTF-8"),
+            "{error:#}"
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    /// artifacts 目录名大小写必须精确：大小写不敏感文件系统（APFS/NTFS）
+    /// 上 `Artifacts/x` 与 `artifacts/x` 落在同一目录，静默未知成员忽略会
+    /// 让用户以为已归档的文件无声消失。
+    #[test]
+    fn import_rejects_case_variant_artifacts_directory() {
+        let (store, _lock, _env) = isolated_store();
+        for member in ["Artifacts/x.txt", "ARTIFACTS/x.txt"] {
+            let archive = build_archive(&[(member, b"payload".as_slice())]);
+            let error = store
+                .import_archive(&archive)
+                .expect_err("case-variant artifacts dir must fail the archive");
+            assert!(
+                format!("{error:#}").contains("different case"),
+                "{member}: {error:#}"
+            );
+            let _ = std::fs::remove_file(&archive);
+        }
+    }
+
+    /// Win32 尾点/尾空格剥离成员在解析期拒绝：`notes.` 落盘会与 `notes`
+    /// 静默合并成同名覆盖。
+    #[test]
+    fn import_rejects_win32_tail_stripping_member_names() {
+        let (store, _lock, _env) = isolated_store();
+        for member in ["artifacts/notes.", "artifacts/notes "] {
+            let archive = build_archive(&[(member, b"payload".as_slice())]);
+            let error = store
+                .import_archive(&archive)
+                .expect_err("tail-dot/space member must fail the archive");
+            assert!(
+                format!("{error:#}").contains("invalid artifact member path"),
+                "{member}: {error:#}"
+            );
+            let _ = std::fs::remove_file(&archive);
+        }
+    }
+
+    /// 导出预扫描把记录本体计入同一张账本（导入侧把 session.json 计入
+    /// 总量并受单成员上限）：不镜像的话超大记录仍会「导出成功、导入必拒」。
+    #[test]
+    fn export_prescan_counts_record_bytes_against_the_same_ledger() {
+        let (_store, _lock, _env) = isolated_store();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-import-prescan-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir empty artifacts dir");
+        // 单成员腿：记录本体超 512 MiB 上限（数值即可，无需落大文件）。
+        let error = ensure_artifacts_exportable(&dir, MAX_MEMBER_BYTES + 1)
+            .expect_err("oversized record must fail the pre-scan");
+        assert!(
+            format!("{error:#}").contains("session record exceeds"),
+            "{error:#}"
+        );
+        // 总量腿：记录顶到总量上限 + 任一 artifact 文件即超 2 GiB 总账。
+        std::fs::write(dir.join("small.txt"), b"x").expect("seed tiny artifact");
+        let error = ensure_artifacts_exportable(&dir, MAX_TOTAL_BYTES)
+            .expect_err("record at total cap leaves no room for artifacts");
+        assert!(
+            format!("{error:#}").contains("total import cap"),
+            "{error:#}"
+        );
+        // 干净目录 + 适中记录照常放行（预扫描未误伤正常会话）。
+        std::fs::remove_file(dir.join("small.txt")).expect("cleanup");
+        ensure_artifacts_exportable(&dir, 1024).expect("clean pre-scan passes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 导出预扫描不再静默跳过不可读目录与非 UTF-8 文件名（exporter 稍后
+    /// 会以含混错误失败，问题不在场时无从定位）。
+    #[cfg(unix)]
+    #[test]
+    fn export_prescan_reports_unreadable_dirs_and_non_utf8_names() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::PermissionsExt;
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let artifacts = store
+            .sessions_dir()
+            .join(&source.metadata.id)
+            .join("artifacts");
+        std::fs::create_dir_all(&artifacts).expect("mkdir artifacts");
+        std::fs::write(
+            artifacts.join(std::ffi::OsStr::from_bytes(b"bad\xFFname.txt")),
+            b"x",
+        )
+        .expect("write non-utf8 artifact");
+        let archive = std::env::temp_dir().join(format!(
+            "pinvou3-prescan-utf8-{}-{}.tar.xz",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let error = store
+            .export_archive(&source.metadata.id, &archive, true)
+            .expect_err("non-UTF-8 artifact name must fail the export");
+        assert!(
+            format!("{error:#}").contains("not valid UTF-8"),
+            "{error:#}"
+        );
+        let _ = std::fs::remove_file(&archive);
+
+        // 不可读子目录：预扫描必须指名，而非静默跳过。
+        let locked = artifacts.join("locked");
+        std::fs::create_dir_all(&locked).expect("mkdir locked");
+        std::fs::remove_file(artifacts.join(std::ffi::OsStr::from_bytes(b"bad\xFFname.txt")))
+            .expect("remove non-utf8 artifact");
+        let original = std::fs::metadata(&locked)
+            .expect("stat")
+            .permissions()
+            .mode();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod locked");
+        if std::fs::read_dir(&locked).is_ok() {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(original))
+                .expect("restore permissions");
+            return;
+        }
+        let error = store
+            .export_archive(&source.metadata.id, &archive, true)
+            .expect_err("unreadable dir must fail the pre-scan");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(original))
+            .expect("restore permissions");
+        assert!(format!("{error:#}").contains("cannot be read"), "{error:#}");
+    }
+
+    /// 导出预扫描镜像导入方的成员数上限：超限会话导出先行失败并指名。
+    #[test]
+    fn export_prescan_mirrors_member_count_cap() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let dir = store
+            .sessions_dir()
+            .join(&source.metadata.id)
+            .join("artifacts");
+        std::fs::create_dir_all(&dir).expect("mkdir artifacts");
+        for index in 0..=MAX_MEMBER_COUNT {
+            std::fs::write(dir.join(format!("f{index}.txt")), b"x").expect("seed artifact");
+        }
+        let archive = std::env::temp_dir().join(format!(
+            "pinvou3-prescan-count-{}-{}.tar.xz",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let error = store
+            .export_archive(&source.metadata.id, &archive, true)
+            .expect_err("member-count bomb must fail the export");
+        assert!(
+            format!("{error:#}").contains("member-count import cap"),
+            "{error:#}"
         );
         let _ = std::fs::remove_file(&archive);
     }
