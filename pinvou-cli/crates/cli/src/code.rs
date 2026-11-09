@@ -5910,12 +5910,6 @@ fn checkpoints_rewind(
     let messages = serde_json::to_value(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error}")))?;
     let total_turns = count_user_turns_exact(&messages)?;
-    if keep_turns >= total_turns {
-        return Err(CliError::failed(format!(
-            "cannot_rewind: the session currently has {total_turns} turns; cannot rewind past \
-             turn {keep_turns}"
-        )));
-    }
     let checkpoint = resolve_rewind_plan(&entries, keep_turns)?;
     // r45 minor 11: the live-pending peek and its refusal moved ABOVE the
     // turn-count gate. After an apply/truncate crash the transcript sits at
@@ -5941,7 +5935,8 @@ fn checkpoints_rewind(
     }
     if !guided_retry && keep_turns >= total_turns {
         return Err(CliError::failed(format!(
-            "cannot_rewind: the session currently has {total_turns} turns; cannot rewind past              turn {keep_turns}"
+            "cannot_rewind: the session currently has {total_turns} turns; cannot rewind past \
+             turn {keep_turns}"
         )));
     }
 
