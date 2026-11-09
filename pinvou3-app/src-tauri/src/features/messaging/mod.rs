@@ -1473,6 +1473,17 @@ fn read_bounded(path: &Path) -> Option<Vec<u8>> {
 /// equal with the volatile timestamp nulled are the same message: null the
 /// field on both sides (absent becomes null too) and compare. Unparseable
 /// (hostile surgery) compares unequal — the re-queue path.
+///
+/// Round-9 F-B: the compare projects through the TYPED
+/// [`SpooledMessage`] schema before comparing — unknown/additive fields are
+/// dropped by the deserializer, so a future per-call volatile field added
+/// to the server's payload cannot silently flip every keyed re-spool to
+/// "materially different" (the stale-release gate would then release on
+/// ANY re-spool — an in-flight duplicate — instead of holding
+/// semantically-equal bodies until the terminal event). A record the
+/// schema cannot parse compares unequal even against a byte-different
+/// copy of itself: it is outside the logical-message domain, and the
+/// poll's own validate gate poisons it on delivery.
 fn spool_records_equal(a: &[u8], b: &[u8]) -> bool {
     // Steady-state fast path: the armed compare runs every poll pass and is
     // almost always byte-identical (nothing replaced the file). A memcmp
@@ -1481,31 +1492,30 @@ fn spool_records_equal(a: &[u8], b: &[u8]) -> bool {
     if a == b {
         return true;
     }
-    let (Ok(mut a), Ok(mut b)) = (
-        serde_json::from_slice::<serde_json::Value>(a),
-        serde_json::from_slice::<serde_json::Value>(b),
+    let (Ok(record_a), Ok(record_b)) = (
+        serde_json::from_slice::<SpooledMessage>(a),
+        serde_json::from_slice::<SpooledMessage>(b),
     ) else {
         return false;
     };
-    if let Some(a) = a.as_object_mut() {
-        a.insert("created_at".into(), serde_json::Value::Null);
-    }
-    if let Some(b) = b.as_object_mut() {
-        b.insert("created_at".into(), serde_json::Value::Null);
-    }
-    // Round-11 minor 7: the titles are volatile too — from_title is
+    // Project through the known field set (Serialize emits exactly the
+    // nine schema fields), then null the volatile fields:
+    // Round-11 minor 7: created_at is re-stamped per spool, from_title is
     // re-derived from the live store at delivery, to_title is unused by
-    // delivery, and a session rename inside the wide (≤30s) window made a
-    // same keyed re-spool compare UNEQUAL (a duplicate delivery).
-    if let Some(a) = a.as_object_mut() {
-        a.insert("from_title".into(), serde_json::Value::Null);
-        a.insert("to_title".into(), serde_json::Value::Null);
+    // delivery — a session rename inside the wide window made a same keyed
+    // re-spool compare UNEQUAL (a duplicate delivery).
+    let (mut value_a, mut value_b) = (
+        serde_json::to_value(&record_a).unwrap_or_default(),
+        serde_json::to_value(&record_b).unwrap_or_default(),
+    );
+    for value in [&mut value_a, &mut value_b] {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("created_at".into(), serde_json::Value::Null);
+            object.insert("from_title".into(), serde_json::Value::Null);
+            object.insert("to_title".into(), serde_json::Value::Null);
+        }
     }
-    if let Some(b) = b.as_object_mut() {
-        b.insert("from_title".into(), serde_json::Value::Null);
-        b.insert("to_title".into(), serde_json::Value::Null);
-    }
-    a == b
+    value_a == value_b
 }
 
 /// Round-10 M1: the terminal arms' replace guard. A disposition must only
@@ -1913,7 +1923,22 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         // no backoff advance) — unless the queued content was replaced under
         // the stale registration, in which case the registration is revoked
         // and the newest body delivers instead of freezing behind the wait.
-        match pending_steer_released(&path) {
+        // Round-9 F-A: a file NOT in the pass-start armed snapshot cannot be
+        // armed at this point — arming happens at a file's own delivery
+        // below, later in this same single-task pass (the ceiling snapshot's
+        // doctrine), so a snapshot miss proves the live peek would return
+        // NotArmed. Guarding on the snapshot skips the O(armed) registry
+        // scan for every non-armed file (the overwhelmingly common
+        // population, ~10-30ms/pass at the caps — round-9 lane quantified);
+        // a snapshot hit still takes the LIVE peek, so a mid-pass terminal
+        // event's revocation (the disclosed same-pass drop re-delivery)
+        // stays exact.
+        let skip = if armed_paths.contains(&path) {
+            pending_steer_released(&path)
+        } else {
+            PendingSteerSkip::NotArmed
+        };
+        match skip {
             PendingSteerSkip::Held => continue,
             // Round-5 m1: a stale release means a materially-different body
             // replaced the armed one. The inherited attempt budget belongs
@@ -3646,6 +3671,128 @@ mod spool_pipeline_tests {
         assert!(spool.join("hold2.json").exists());
     }
 
+    /// Round-9 F-B: an ADDITIVE (schema-unknown) field must not flip the
+    /// compare to "materially different". The compare projects through the
+    /// typed [`SpooledMessage`] schema, so a future per-call volatile field
+    /// added to the server's payload cannot turn every keyed re-spool into
+    /// a stale-release (an in-flight duplicate) instead of a hold behind
+    /// the armed steer. Mutation pin: reverting `spool_records_equal` to
+    /// the raw-Value compare (unknown fields participate) ships this test
+    /// red — the drifted re-spool releases and the newest body delivers
+    /// the same pass.
+    #[tokio::test]
+    async fn additive_unknown_field_stays_held_while_pending() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("hold3.json"),
+            record_json("hold3", Some("k-hold3")),
+        )
+        .unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-41@3".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let outcome = process_spool_file(
+            &spool.join("hold3.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut Default::default(),
+            &mut None,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::PendingSteer(..)));
+
+        // The exact drift shape F-B names: same logical message, fresh
+        // created_at, plus an additive field the schema does not know.
+        let current = std::fs::read_to_string(spool.join("hold3.json")).unwrap();
+        let mut drifted = current.trim_end().to_string();
+        assert!(drifted.ends_with('}'), "fixture must be a JSON object");
+        drifted.insert_str(drifted.len() - 1, ",\"note\":\"server-added volatile\"");
+        let drifted = drifted.replace(
+            "\"created_at\":\"2026-09-28T00:00:00Z\"",
+            "\"created_at\":\"2026-09-28T00:00:02Z\"",
+        );
+        assert_ne!(drifted, current, "the fixture must really drift");
+        std::fs::write(spool.join("hold3.json"), drifted).unwrap();
+
+        let poll_delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Dispatched),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &poll_delivery,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(
+            *poll_delivery.calls.borrow(),
+            0,
+            "an additive unknown field must not release the armed steer"
+        );
+        assert!(is_pending_steer_path(&spool.join("hold3.json")));
+        assert!(spool.join("hold3.json").exists());
+    }
+
+    /// Round-9 F-C: the disclosed poisoning-recovery policy, pinned
+    /// behaviorally. A panic inside a registry critical section poisons
+    /// the mutex; every production lock site recovers with
+    /// `into_inner()`, so the next operation proceeds with the CURRENT
+    /// map (the duplicate/redelivery direction the module doc names)
+    /// instead of cascading panics. Mutation pin: replacing the recovery
+    /// on the resolve path's lock sites with a plain `unwrap()` makes
+    /// this test panic (red) — the module doc's disclosure rests here.
+    #[test]
+    fn poisoned_registry_recovers_with_current_data() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let path = spool.join("poison-reg.json");
+        pending_steers().lock().unwrap().insert(
+            "steer-poison@0".to_string(),
+            PendingSteerDelivery {
+                spool_path: path.clone(),
+                original: std::sync::Arc::new(b"{}".to_vec()),
+                armed_at: Instant::now(),
+            },
+        );
+        assert!(is_pending_steer_path(&path));
+        // Panic while HOLDING the registry lock to poison it;
+        // catch_unwind keeps the test alive (the default hook prints the
+        // seeded panic message — expected noise).
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = pending_steers().lock().unwrap();
+            panic!("seed: poison the registry mutex");
+        }));
+        assert!(poisoned.is_err(), "the seeded panic must have fired");
+        // The recovered registry must serve the CURRENT data: the dropped
+        // arm consumes the armed entry (re-queue direction) and charges
+        // the identity's drop cycle through the recovered maps.
+        resolve_pending_steer("steer-poison@0", false);
+        assert!(
+            !is_pending_steer_path(&path),
+            "the recovered registry must serve the current data (the armed \
+             entry is consumed by the dropped arm, not lost or cascaded)"
+        );
+        assert_eq!(
+            steer_drop_cycles()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get("poison-reg.json")
+                .copied(),
+            Some(1),
+            "the drop-cycle charge must land through the recovered map"
+        );
+        clear_steer_drop_cycles("poison-reg.json");
+    }
+
     /// A file deleted between read_dir and its turn must be disarmed by the
     /// poll's vanished arm in the SAME pass — registration revoked, drop
     /// bookkeeping cleared — instead of stranding until the 24h expiry.
@@ -3728,6 +3875,23 @@ mod spool_pipeline_tests {
         assert!(
             poll_span[..poll_end].contains("prune_expired_pending_steers()"),
             "process_pending_spool must call the expiry prune in its own body"
+        );
+        // Round-9 F-A: the armed-skip must be gated on the pass-start
+        // snapshot — deleting the guard is a pure-perf regression no
+        // behavioral test can observe (the scan cost), and moving the peek
+        // AHEAD of the snapshot would change semantics. Require the guard
+        // needle before the first live peek in the poll body (flattened, so
+        // rustfmt line breaks cannot rescue a deletion).
+        let poll_body = &poll_span[..poll_end];
+        let flattened: String = poll_body.chars().filter(|c| !c.is_whitespace()).collect();
+        let peek_at = flattened
+            .find("pending_steer_released(&path)")
+            .expect("the poll must consult the armed-skip decision");
+        assert!(
+            flattened[..peek_at].contains("ifarmed_paths.contains(&path)"),
+            "the armed-skip must be gated on the pass-start armed snapshot \
+             (a snapshot miss proves NotArmed — arming only happens at a \
+             file's own delivery later in this single-task pass)"
         );
     }
 
