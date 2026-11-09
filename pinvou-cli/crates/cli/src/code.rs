@@ -5945,7 +5945,6 @@ fn checkpoints_rewind(
         )));
     }
 
-
     // 1) r19 M10: restore through the pending-rewind protocol (same as the
     //    GUI): prepare (create/reuse PreRestore) → write pending → apply. A
     //    crash between apply and truncate now leaves the pending marker, so a
