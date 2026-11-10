@@ -753,7 +753,6 @@ pub(crate) fn spawn_event_forwarder(
                             system_prompt,
                             model,
                             mode: profile.execution_mode(),
-                            token_accounting: ScheduledTokenAccounting::PreservePersisted,
                         };
                         let store_for_save = store.clone();
                         let session_for_save = session_id.clone();

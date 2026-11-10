@@ -1333,17 +1333,12 @@ fn text_message(role: &str, text: &str) -> Message {
     }
 }
 
-fn scheduled_engine_state(
-    messages: Vec<Message>,
-    mode: ScheduledRunMode,
-    token_accounting: ScheduledTokenAccounting,
-) -> ScheduledEngineState {
+fn scheduled_engine_state(messages: Vec<Message>, mode: ScheduledRunMode) -> ScheduledEngineState {
     ScheduledEngineState {
         messages,
         system_prompt: Some(SystemPrompt::Text("scheduled system prompt".to_string())),
         model: "/engine-model".to_string(),
         mode,
-        token_accounting,
     }
 }
 
@@ -1991,11 +1986,7 @@ fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_prof
     let persisted = store
         .persist_scheduled_engine_state(
             &id,
-            scheduled_engine_state(
-                messages.clone(),
-                ScheduledRunMode::Yolo,
-                ScheduledTokenAccounting::PreservePersisted,
-            ),
+            scheduled_engine_state(messages.clone(), ScheduledRunMode::Yolo),
         )
         .expect("persist scheduled engine state");
 
@@ -2034,62 +2025,6 @@ fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_prof
 }
 
 #[test]
-fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts() {
-    let (store, _g) = isolated_store();
-    let scheduled = store
-        .create_scheduled_run(scheduled_profile("task-token-accounting"))
-        .expect("create scheduled run");
-    let id = scheduled.metadata.id.clone();
-
-    store
-        .persist_scheduled_token_total(&id, 0, 100)
-        .expect("persist terminal token total");
-    store
-        .persist_scheduled_engine_state(
-            &id,
-            scheduled_engine_state(
-                vec![
-                    text_message("user", "first turn"),
-                    text_message("assistant", "incremental update"),
-                ],
-                ScheduledRunMode::Plan,
-                ScheduledTokenAccounting::PreservePersisted,
-            ),
-        )
-        .expect("persist SessionUpdated-equivalent state");
-    assert_eq!(
-        store
-            .load(&id)
-            .expect("load after update")
-            .metadata
-            .total_tokens,
-        100
-    );
-
-    let reloaded = reopen_store(&store).expect("restart before later turn");
-    reloaded
-        .persist_scheduled_engine_state(
-            &id,
-            scheduled_engine_state(
-                vec![text_message("assistant", "later turn")],
-                ScheduledRunMode::Yolo,
-                ScheduledTokenAccounting::PreservePersisted,
-            ),
-        )
-        .expect("persist later engine snapshot");
-
-    assert_eq!(
-        reloaded
-            .load(&id)
-            .expect("load preserved total")
-            .metadata
-            .total_tokens,
-        100,
-        "engine-state persistence must keep the durable token total"
-    );
-}
-
-#[test]
 fn scheduled_engine_state_entry_rejects_normal_chat_without_mutation() {
     let (store, _g) = isolated_store();
     let chat = store
@@ -2106,7 +2041,6 @@ fn scheduled_engine_state_entry_rejects_normal_chat_without_mutation() {
             scheduled_engine_state(
                 vec![text_message("user", "must not persist")],
                 ScheduledRunMode::Plan,
-                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect_err("normal chat must not use scheduled persistence");
@@ -2214,7 +2148,6 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
                 system_prompt: Some(SystemPrompt::Text("agent prompt".to_string())),
                 model: "/agent-model".to_string(),
                 mode: ScheduledRunMode::Agent,
-                token_accounting: ScheduledTokenAccounting::PreservePersisted,
             },
         )
         .expect("persist agent engine state");
@@ -2263,7 +2196,6 @@ fn scheduled_terminal_token_persistence_does_not_replace_engine_state() {
                     text_message("assistant", "retain this response"),
                 ],
                 ScheduledRunMode::Plan,
-                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect("persist cached SessionUpdated state");
