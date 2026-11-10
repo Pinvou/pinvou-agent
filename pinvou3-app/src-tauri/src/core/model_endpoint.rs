@@ -798,6 +798,49 @@ pub fn model_probe_http_code(status: reqwest::StatusCode) -> &'static str {
     }
 }
 
+/// Shared transport-error classification ladder — the one source of the
+/// code vocabulary (`timeout` / `tls_error` / `dns_failed` /
+/// `connection_refused` / `network_error`) behind settings.rs's connection
+/// test, the CLI's models.rs, and the monitor snapshot's `transport`
+/// (i18n `connectionMessages`). Callers differ only in what they can feed
+/// it: settings/CLI pass `is_timeout` plus the redacted Display text (a
+/// real reqwest error's Display omits the source chain, so the keyword
+/// arms stay dead there beyond URL-embedded words); the monitor's snapshot
+/// probe additionally feeds its structured `is_dns`/`is_connect` flags,
+/// which classify real errors whose keywords can never reach a Display
+/// text. One ladder keeps every surface's code set identical by
+/// construction (was: two hand-maintained ladders drifting — the monitor's
+/// had lost `tls_error`). The dns arm must precede the connect arm:
+/// hyper-util files resolver failures under its Connect kind, so `is_dns`
+/// only classifies if it runs first.
+pub fn transport_code_for(
+    is_timeout: bool,
+    is_dns: bool,
+    is_connect: bool,
+    display_text: &str,
+) -> &'static str {
+    let lower = display_text.to_lowercase();
+    if is_timeout {
+        "timeout"
+    } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+        "tls_error"
+    } else if is_dns
+        || lower.contains("dns")
+        || lower.contains("lookup")
+        || lower.contains("name or service not known")
+    {
+        "dns_failed"
+    } else if is_connect
+        || lower.contains("connection refused")
+        || lower.contains("os error 10061")
+        || lower.contains("actively refused")
+    {
+        "connection_refused"
+    } else {
+        "network_error"
+    }
+}
+
 /// Transport-error → (classification code, redacted underlying detail).
 /// The two-pass scrub (URL-userinfo strip, then secret-shape pass — the
 /// same composition as the CLI's `support::redact_error_text`) is
@@ -806,29 +849,14 @@ pub fn model_probe_http_code(status: reqwest::StatusCode) -> &'static str {
 /// `http://user:pass@host` base_url must not depend on reqwest's own
 /// Display redaction staying complete. One scrub here covers both
 /// surfaces permanently (was: identical ladders in settings.rs and the
-/// CLI's models.rs).
+/// CLI's models.rs). Classification itself delegates to the shared
+/// `transport_code_for` ladder; this surface sees only `is_timeout` plus
+/// the redacted Display text.
 pub fn model_probe_transport_code(err: &reqwest::Error) -> (&'static str, String) {
     let raw = crate::platform::credential_store::redact_secret(
         &crate::platform::redact_url_credentials_in_text(&err.to_string()),
     );
-    let lower = raw.to_lowercase();
-    let code = if err.is_timeout() {
-        "timeout"
-    } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
-        "tls_error"
-    } else if lower.contains("dns")
-        || lower.contains("lookup")
-        || lower.contains("name or service not known")
-    {
-        "dns_failed"
-    } else if lower.contains("connection refused")
-        || lower.contains("os error 10061")
-        || lower.contains("actively refused")
-    {
-        "connection_refused"
-    } else {
-        "network_error"
-    };
+    let code = transport_code_for(err.is_timeout(), false, false, &raw);
     (code, raw)
 }
 
