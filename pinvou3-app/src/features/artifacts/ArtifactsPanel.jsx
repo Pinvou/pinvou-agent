@@ -10,6 +10,7 @@ import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 import { cardBtnCls } from '../../shared/card-buttons.mjs';
 import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
 import { DESIGN_MESSAGE_TYPES, buildDesignRuntimeScript } from './design-runtime.js';
+import { ARTIFACT_PREVIEW_INSTALL_RUNTIME } from './artifact-preview-navigation.js';
 import { DesignInspectorPanel } from './DesignInspectorPanel.jsx';
 import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';
 import { loadArtifactPreview } from './artifact-preview.js';
@@ -202,8 +203,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (!showDesignWorkbench || !frame || !frame.contentWindow) return;
         try {
           if (!designRuntimeScriptRef.current) designRuntimeScriptRef.current = buildDesignRuntimeScript();
-          const script = designRuntimeScriptRef.current;
-          frame.contentWindow.eval(script);
+          // sandbox 收紧后（allow-scripts，无 allow-same-origin）父窗口不能再
+          // contentWindow.eval 注入：经帧内 bootstrap 的安装中继在本帧内 eval。
+          // 帧本就允许脚本执行，runtime 与页面自身脚本同权限，无提权；安装失败
+          // 经 design runtime 的错误通道回报（onMessage 监听器已有 ERROR 分支）。
+          frame.contentWindow.postMessage(
+            { type: ARTIFACT_PREVIEW_INSTALL_RUNTIME, script: designRuntimeScriptRef.current },
+            '*',
+          );
         } catch (error) {
           console.warn('[pinvou3][artifacts] design runtime inject failed', error);
         }

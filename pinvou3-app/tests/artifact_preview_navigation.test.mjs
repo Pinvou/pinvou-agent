@@ -103,3 +103,67 @@ assert.ok(
 );
 
 console.log('artifact preview navigation tests passed');
+
+// ── sandbox 收紧后的 postMessage 通道（评审 r2 M2）──
+import {
+  ARTIFACT_PREVIEW_CONTENT_SIZE,
+  ARTIFACT_PREVIEW_FRAME_WHEEL,
+  ARTIFACT_PREVIEW_INSTALL_RUNTIME,
+  ARTIFACT_PREVIEW_REQUEST_SIZE,
+  artifactPreviewContentSizeFromMessage,
+  artifactPreviewFrameWheelFromMessage,
+  artifactPreviewInstallRuntimeMessage,
+} from '../src/features/artifacts/artifact-preview-navigation.js';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// 纯函数：消息解析与来源数据净化
+assert.deepEqual(
+  artifactPreviewContentSizeFromMessage({ type: ARTIFACT_PREVIEW_CONTENT_SIZE, w: 800, h: 600 }),
+  { w: 800, h: 600 },
+);
+assert.equal(artifactPreviewContentSizeFromMessage({ type: ARTIFACT_PREVIEW_CONTENT_SIZE, w: 0, h: 0 }), null,
+  '空测量不得进入父窗口缓存');
+assert.equal(artifactPreviewContentSizeFromMessage({ type: ARTIFACT_PREVIEW_CONTENT_SIZE, w: '9;alert(1)', h: 1 }), null,
+  '非数值尺寸必须拒绝');
+assert.equal(artifactPreviewContentSizeFromMessage({ type: 'untrusted-message' }), null);
+assert.equal(artifactPreviewFrameWheelFromMessage({ type: ARTIFACT_PREVIEW_FRAME_WHEEL, deltaY: -12 }), -12);
+assert.equal(artifactPreviewFrameWheelFromMessage({ type: ARTIFACT_PREVIEW_FRAME_WHEEL, deltaY: 'x' }), null);
+assert.deepEqual(
+  artifactPreviewInstallRuntimeMessage('const x=1;'),
+  { type: ARTIFACT_PREVIEW_INSTALL_RUNTIME, script: 'const x=1;' },
+);
+
+// bootstrap 载荷：尺寸自报 / ctrl+滚轮转发 / 安装中继必须齐备
+const doc = buildArtifactPreviewDocument('<p>hi</p>');
+for (const fragment of [
+  'reportSize',
+  JSON.stringify(ARTIFACT_PREVIEW_CONTENT_SIZE).slice(1, -1),
+  JSON.stringify(ARTIFACT_PREVIEW_REQUEST_SIZE).slice(1, -1),
+  JSON.stringify(ARTIFACT_PREVIEW_FRAME_WHEEL).slice(1, -1),
+  JSON.stringify(ARTIFACT_PREVIEW_INSTALL_RUNTIME).slice(1, -1),
+  'new ResizeObserver(reportSize)',
+  'lastW=-1,lastH=-1',
+  '(0,eval)(d.script)',
+]) {
+  assert.ok(doc.includes(fragment), `bootstrap 必须包含 ${fragment}`);
+}
+// 请求尺寸与安装命令只在父→帧方向；帧内不得把 request-size 误当上报
+assert.ok(doc.includes('if(d.type===' + JSON.stringify(ARTIFACT_PREVIEW_REQUEST_SIZE) + '){reportSize();return;}'),
+  'request-size 必须触发帧内重新测量');
+
+// 组件契约：iframe 不再持有 allow-same-origin（导入产物是第三方可控输入，
+// 同源 srcdoc 脚本可直达 window.parent.__TAURI__）；测量/缩放/安装走消息通道。
+const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const composerShared = readFileSync(path.join(appRoot, 'src', 'features', 'settings', 'composer-shared.jsx'), 'utf8');
+assert.ok(composerShared.includes('sandbox="allow-scripts"'), 'ScaledHtmlPreview 必须 drop allow-same-origin');
+assert.ok(!composerShared.includes('sandbox="allow-same-origin'), '不得残留任何 allow-same-origin 沙箱');
+assert.ok(!composerShared.includes('contentWindow.document'), '父窗口不得再读跨源帧 document');
+assert.ok(composerShared.includes('artifactPreviewContentSizeFromMessage'), '测量必须来自帧内上报');
+assert.ok(composerShared.includes('artifactPreviewFrameWheelFromMessage'), 'ctrl+滚轮必须来自帧内转发');
+const panel = readFileSync(path.join(appRoot, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
+assert.ok(panel.includes('ARTIFACT_PREVIEW_INSTALL_RUNTIME'), 'design runtime 必须经消息中继安装');
+assert.ok(!panel.includes('.eval('), '父窗口不得再向跨源帧 eval 注入');
+
+console.log('artifact_preview_navigation: sandbox-hardening assertions passed');
