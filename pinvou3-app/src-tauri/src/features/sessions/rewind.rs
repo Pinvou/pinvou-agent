@@ -500,13 +500,24 @@ impl SessionStore {
             bail!("Cannot undo rewind for scheduled-run session '{id}'");
         }
         validate_session_id(id)?;
-        let _backup_guard = REWIND_BACKUP_LOCK.lock();
-        let _cross_process = lock_rewound_turns_file()?;
-        let mut backups = load_rewound_turns_map()?;
-        let record = backups
-            .get(id)
-            .and_then(|records| records.last().cloned())
-            .with_context(|| format!("会话 '{id}' 没有可反悔的回退记录"))?;
+        let record = {
+            // r46 MAJOR-4：备份锁与跨进程 flock 只包住 sidecar 的读改写——
+            // 此前两者以函数作用域持有、横跨 persist_then_reconcile，而其
+            // retention 清理在删除会话时会再次 lock 同一个非重入互斥量
+            // （同线程 = 永久死锁，undo 期间一次保留策略删除即触发）。
+            let _backup_guard = REWIND_BACKUP_LOCK.lock();
+            let _cross_process = lock_rewound_turns_file()?;
+            let backups = load_rewound_turns_map()?;
+            let record = backups
+                .get(id)
+                .and_then(|records| records.last().cloned())
+                .with_context(|| format!("会话 '{id}' 没有可反悔的回退记录"))?;
+            // （持久化在锁作用域之外执行——见下方 persist_then_reconcile。）
+            Some((record, backups))
+        };
+        let Some((record, mut backups)) = record else {
+            unreachable!("with_context above guarantees a record");
+        };
         let mut session = self
             .manager
             .load_session_snapshot(id)
@@ -545,14 +556,20 @@ impl SessionStore {
         session.metadata.message_count = session.messages.len();
         session.metadata.updated_at = Utc::now();
         // 先持久化 transcript 再删备份记录：本步失败时记录仍在，可重试。
+        // r46 MAJOR-4：此处的锁已释放——retention 清理若在 persist 期间删除
+        // 会话并再次 lock 备份互斥量，不会再撞上本函数持有的同线程锁。
         self.persist_then_reconcile(&session, "rewind undo restore")?;
         // 记录删除失败只留孤儿数据；反悔条件②（turn 数已不等于 kept_turns）会
         // 自然挡住重复恢复，不算失败，如实记日志。
-        if let Some(records) = backups.get_mut(id) {
-            records.pop();
-        }
-        if let Err(error) = persist_rewound_turns_map(&backups) {
-            eprintln!("[sessions] remove consumed rewind backup for {id} failed: {error:#}");
+        {
+            let _backup_guard = REWIND_BACKUP_LOCK.lock();
+            let _cross_process = lock_rewound_turns_file()?;
+            if let Some(records) = backups.get_mut(id) {
+                records.pop();
+            }
+            if let Err(error) = persist_rewound_turns_map(&backups) {
+                eprintln!("[sessions] remove consumed rewind backup for {id} failed: {error:#}");
+            }
         }
         Ok(RestoredRewindTurns {
             messages: restored,
