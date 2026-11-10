@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::features::connectors::skill_gate;
 use crate::platform::process::{REAP_GRACE, Reap, reap_killed_child};
@@ -625,6 +625,18 @@ where
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+/// `*_cancel` 公共脚手架(飞书 / 企微 / 钉钉 / 腾讯会议四份字节相同块收编):
+/// 置取消标志 + tree-kill 当前长驻子进程(关二维码弹窗 / 超时时调)。
+/// 各连接器的 `*_cancel` Tauri 命令保持注册与命名不变,只按自己的
+/// [`ConnectorConn`] id 一行透传到本函数。
+pub(crate) async fn cancel_connect(app: AppHandle, id: &'static str) -> Result<Value, String> {
+    let pid = app.state::<ConnectorConn>().cancel(id);
+    if let Some(pid) = pid {
+        let _ = tokio::task::spawn_blocking(move || kill_pid_tree(pid)).await;
+    }
+    Ok(json!({ "ok": true }))
 }
 
 // ──────────────────────── 多连接器共享的连接编排状态 ────────────────────────

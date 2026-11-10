@@ -418,11 +418,7 @@ fn phase_authorize(app: &AppHandle, generation: u64) -> Result<(), String> {
 
 /// 取消连接:置取消标志 + tree-kill 当前长驻子进程(关二维码弹窗 / 超时时调)。
 pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
-    let pid = app.state::<ConnectorConn>().cancel(ID);
-    if let Some(pid) = pid {
-        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
-    }
-    Ok(json!({ "ok": true }))
+    cc::cancel_connect(app, ID).await
 }
 
 /// Disconnect Feishu: `lark-cli auth logout` (clears tokens). The probe verdict is
