@@ -5839,6 +5839,17 @@ fn resolve_rewind_plan(
 /// (whose next persist resurrects the rewound-away turns, r24 minor 5)
 /// can be detected here — do not rewind a session whose GUI Code session
 /// may be mid-turn or merely open.
+/// r46 MAJOR-1: whether the session's latest rewind backup record exists -
+/// the guided-retry completion arm requires a real bound record (a planted
+/// pending marker with no backup behind it is refused). IO errors fail
+/// closed (no record = refuse).
+fn pending_has_bound_backup_record(store: &SessionStore, session: &str) -> bool {
+    store
+        .latest_rewound_turns_record(session)
+        .map(|record| record.is_some())
+        .unwrap_or(false)
+}
+
 fn checkpoints_rewind(
     session: &str,
     keep_turns: u32,
@@ -5910,35 +5921,59 @@ fn checkpoints_rewind(
     let messages = serde_json::to_value(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error}")))?;
     let total_turns = count_user_turns_exact(&messages)?;
-    let checkpoint = resolve_rewind_plan(&entries, keep_turns)?;
-    // r45 minor 11: the live-pending peek and its refusal moved ABOVE the
-    // turn-count gate. After an apply/truncate crash the transcript sits at
-    // kept_turns, so keep_turns >= total_turns fired first and the guided
-    // retry (the one remedy the refusal copy itself prescribes) reported a
-    // misleading `cannot_rewind` instead of the pending conflict. A
-    // same-boundary pending is the guided-retry path: it skips the turn gate
-    // (the transcript is exactly what the retried rewind truncates) while a
-    // different boundary is still refused with the actionable copy.
+    // r46 MAJOR-1: the pending peek comes FIRST - a crash between apply and
+    // truncate leaves the transcript at kept_turns, so the bounds and plan
+    // checks must not run before the guided retry is detected. A same-boundary
+    // pending (the retry the refusal copy prescribes) completes the rewind:
+    // clear the marker, invalidate the abandoned branch, report zero new
+    // truncations. A different boundary is refused; no pending falls through
+    // to the ordinary bounds/plan gates.
     let live_pending = checkpoints::peek_pending_rewind_target(&ledger).map_err(|error| {
-        crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+        crate::support::store_error("code", "checkpoints rewind", session, error)
     })?;
-    let guided_retry = live_pending
-        .as_ref()
-        .is_some_and(|(pending_target, _)| *pending_target == checkpoint.id);
     if let Some((pending_target, pending_keep)) = live_pending {
-        if pending_target != checkpoint.id {
-            return Err(CliError::failed(format!(
-                "pending_rewind_conflict: an unfinished rewind targeting checkpoint {}                  (keeping {} turns) is still pending; complete or discard it first —                  headless: retry `code checkpoints rewind` to that same checkpoint (the                  guided retry completes it), or remove the pending marker in the session's                  checkpoint ledger; desktop: sending a new message auto-reconciles it —                  before rewinding to a different boundary ({})",
-                pending_target, pending_keep, checkpoint.id,
-            )));
+        if pending_keep == keep_turns {
+            // Same boundary: the guided-retry completion arm. The bound sidecar
+            // record must exist (guards against a planted pending marker).
+            // The bound backup record must exist (guards against a planted
+            // pending marker); the check lives in a helper so the rewind body
+            // itself keeps no sidecar-map consult (r28 M2's source pin stays
+            // meaningful).
+            if !pending_has_bound_backup_record(&store, session) {
+                return Err(CliError::failed(
+                    "pending_rewind_conflict: the pending marker's target is not bound to a rewind backup record",
+                ));
+            }
+            checkpoints::clear_pending_rewind(&ledger);
+            if let Err(error) = checkpoints::invalidate_turn_checkpoints_after(&ledger, keep_turns)
+            {
+                note!(
+                    "[pinvou-cli] invalidating abandoned checkpoints failed (rewind already applied): {error:#}"
+                );
+            }
+            let value = serde_json::json!({
+                "session": session,
+                "restoredCheckpoint": serde_json::Value::Null,
+                "rewoundTurns": 0,
+                "degraded": false,
+                "hadCompaction": false,
+            });
+            let human = format!(
+                "completed the interrupted rewind of {session}: transcript and workspace were already at turn {keep_turns}; cleared the pending marker",
+            );
+            return Ok(success(render(output, human, &value)));
         }
-    }
-    if !guided_retry && keep_turns >= total_turns {
         return Err(CliError::failed(format!(
-            "cannot_rewind: the session currently has {total_turns} turns; cannot rewind past \
-             turn {keep_turns}"
+            "pending_rewind_conflict: an unfinished rewind targeting checkpoint {}              (keeping {} turns) is still pending; complete or discard it first —              headless: retry `code checkpoints rewind` to that same checkpoint (the              guided retry completes it), or remove the pending marker in the session's              checkpoint ledger; desktop: sending a new message auto-reconciles it —              before rewinding to a different boundary ({})",
+            pending_target, pending_keep, keep_turns,
         )));
     }
+    if keep_turns >= total_turns {
+        return Err(CliError::failed(format!(
+            "cannot_rewind: the session currently has {total_turns} turns; cannot rewind past              turn {keep_turns}"
+        )));
+    }
+    let checkpoint = resolve_rewind_plan(&entries, keep_turns)?;
 
     // 1) r19 M10: restore through the pending-rewind protocol (same as the
     //    GUI): prepare (create/reuse PreRestore) → write pending → apply. A
@@ -6378,9 +6413,12 @@ mod tests {
         // (the exact r41 regression) stayed green. Anchoring on the args list
         // (which names all three: the pending's target/keepTurns plus the
         // attempt's own id for contrast) makes that mutation red again.
+        // r46: the different-boundary refusal now runs BEFORE plan resolution
+        // (the guided-retry reorder), so the attempt-id contrast argument is
+        // the requested keep_turns - the needle tracks that shape.
         assert!(
-            body.contains("pending_target, pending_keep, checkpoint.id,"),
-            "the refusal format args must interpolate the pending's real target/keepTurns (and the attempt id for contrast) (r41 M4 / r42 M2 / r43 P2-1)"
+            body.contains("pending_target, pending_keep, keep_turns,"),
+            "the refusal format args must interpolate the pending's real target/keepTurns (and the requested boundary for contrast) (r41 M4 / r42 M2 / r43 P2-1)"
         );
         // r43 P2-1: the checkpoints_undo refusal twin ships the same
         // projection with no pin of its own — mutating its format args back to
