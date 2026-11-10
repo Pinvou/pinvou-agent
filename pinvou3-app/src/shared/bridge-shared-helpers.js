@@ -1730,7 +1730,18 @@
   // web+tauriSessions 共享（FE14 残余批：原 tauri sessions.js / web bridge.js 逐字镜像）
   async function loadPinvouReviewsForSession(sid) {
     try {
-      return await invoke("get_session_pinvou_reviews", { sessionId: sid }) || [];
+      const reviews = (await invoke("get_session_pinvou_reviews", { sessionId: sid })) || [];
+      // 召唤序号是内存计数器（summonPinvou 里 +1），重启清零；sidecar 里的 seq
+      // 却持久。不在此抬底的话，重启后新召唤 seq 从 1 起、永远排在旧 entry 之下
+      // ——Rust 端 max_by_key(seq) 把旧 pass 当最近一轮，`passed && pos>` 守门
+      // 每次点击都返回 None → 每次都全量重审、核账永不回归（r5 审 M1）。
+      // 所有 hydrate 路径都经此函数，取全局 max（计数器必须压过所有持久 seq）。
+      for (const entry of reviews) {
+        if (typeof entry?.seq === "number" && entry.seq > (state.pinvouSummonSeq || 0)) {
+          state.pinvouSummonSeq = entry.seq;
+        }
+      }
+      return reviews;
     } catch (error) {
       reportSidecarReadFailure("pinvou reviews", sid, error);
       return [];
@@ -3078,19 +3089,28 @@
   }
 
   // web+tauriChat 共享
+  // 全量快照写的串行链：两个并发 settle（dismiss→再召唤，PR 注释明确背书的
+  // 并发）各自 fire-and-forget 全量快照时，Tauri 异步命令并发执行，后完成的
+  // 旧快照会盖掉新快照、永久丢 entry——与「各自入账/幂等入账」承诺矛盾
+  // （r5 审 m6）。链式排队后写序=入账序，而共享数组按 settle 到达序追加，
+  // 后一笔快照恒为前一笔超集，末笔必含全部。
+  let pinvouSaveChain = Promise.resolve();
   function recordPinvouReview(review, seq) {
     if (!state.activeSessionId || !review) return null;
     const pos = state.messages.length;
     const entry = { pos, review };
     // 记召唤序号:r4 审 m5——被顶掉的旧 settle(序号 < 当前)也照入账(r3 定的
-    // 幂等设计),但 Rust 核账读"同一产出物从后往前第一个 entry",并发窗口里
-    // 新 settle 先落、旧 settle 后落会让"最近一轮"变成被顶掉的旧审查,核账
-    // 对着 Boss 没看过的旧 verdict 审。序号让读取端可辨新旧(rust 侧按 max 取)。
+    // 幂等设计),Rust 核账按 seq 最大的当最近一轮(纯数组序会让并发窗口里
+    // 被顶掉的旧审查当最近一轮,核账对着 Boss 没看过的旧 verdict 审)。
     if (typeof seq === "number") entry.seq = seq;
     state.pinvouReviews.push(entry);
     const sid = state.activeSessionId;
     const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
-    invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot }).catch(function () {});
+    pinvouSaveChain = pinvouSaveChain
+      .then(function () {
+        return invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot });
+      })
+      .catch(function () {});
     return pos; // 供卡片记 reviewPos,裁决时按 pos 定位原 state 写 resolution
   }
 
@@ -3112,8 +3132,16 @@
   // web+tauriChat 共享
   function persistPinvouReviews() {
     if (!state.activeSessionId) return Promise.resolve();
+    // 同走串行链（r5 审 m6）：裁决写与在途 settle 写并发时,后落盘的旧全量
+    // 快照同样会盖掉新快照。
+    const sid = state.activeSessionId;
     const snapshot = JSON.parse(JSON.stringify(state.pinvouReviews));
-    return invoke("save_session_pinvou_reviews", { sessionId: state.activeSessionId, reviews: snapshot }).catch(function () {});
+    pinvouSaveChain = pinvouSaveChain
+      .then(function () {
+        return invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot });
+      })
+      .catch(function () {});
+    return pinvouSaveChain;
   }
 
   // web+tauriMain 共享
