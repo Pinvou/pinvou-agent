@@ -216,6 +216,12 @@ pub async fn summon(
         let raw =
             model_review(bridge, COVERAGE_PROMPT, &build_context(messages, workspace)).await?;
         let mut review = apply_guard(raw, bridge.locale_tag());
+        // 悟镜头契约无 verdict（COVERAGE_PROMPT 不要求该键）；模型跑偏带出
+        // verdict 时强制 None——否则带 verdict 的悟 entry 会成为 ledger_from_entries
+        // latest 过滤的候选（filter 收 verdict 非空），重新打开
+        // ledger_skips_coverage_entry_for_relist 钉死的「悟当 latest、守门失效」
+        // bug（r5 审 NIT，apply_guard 原样透传 raw.verdict）。
+        review.verdict = None;
         review.artifact_path = artifact_path;
         return Ok(review);
     }
@@ -562,7 +568,7 @@ async fn model_review(
     // 无 adaptive 默认）。底座 Messages adapter 的 low 档 shaper 未公开；宿主侧
     // 手抄型号启发会再造漂移面，待底座暴露后补齐。
     if preset == ModelPreset::Anthropic {
-        let content = crate::core::model_endpoint::post_anthropic_messages(
+        let completion = crate::core::model_endpoint::post_anthropic_messages(
             &client,
             &base_url,
             &bridge.api_key(),
@@ -572,9 +578,17 @@ async fn model_review(
             max_tokens,
             bridge.opencode_conversation_key("model-review"),
         )
-        .await?
-        .text;
-        return parse_model_review(&content).context("parse Pinvou review");
+        .await?;
+        // stop_reason 映射进 parse 的诊断层（r5 审 m5）：Anthropic 的
+        // "max_tokens" 与 OpenAI 的 "length" 同义（预算被推理吃满/输出截断）。
+        // 不映射的话，parse_model_review_with_finish 给这个失败形态加的解释在
+        // 本分支静默失效——而该分支同样吃本 PR 的 route-effective 预算。
+        let finish_reason = completion
+            .stop_reason
+            .as_deref()
+            .and_then(|reason| (reason == "max_tokens").then_some("length"));
+        return parse_model_review_with_finish(&completion.text, finish_reason)
+            .context("parse Pinvou review");
     }
     // 路由身份与主对话同一解析：engine cfg.provider 正是 `provider()` 的产物
     // （engine_route_provider 除 Responses 改名外恒等），底座 `api_provider()`
@@ -582,6 +596,9 @@ async fn model_review(
     // 不可解析兜底 Deepseek。审查按同一 ApiProvider 分类，raw 字符串臂全部
     //退役——规范 slug/大小写/别名拼写不再与引擎劈开（2026-11-07 r3 审 M3/M7）。
     let api = bridge.build_dt_config().api_provider();
+    // 线材型号按引擎同款家族表规范化（canonical_wire_model_for_review 注）：
+    // 决策与线材同吃规范 id，别名拼写与引擎不再劈开（2026-11-09 r5 审 m1/m2）。
+    let model_name = canonical_wire_model_for_review(api, &model_name);
     // Token 上限字段同样镜像引擎（review_max_tokens_field 文档注）：换名集合里的
     // 路由发 max_completion_tokens，其余保持 max_tokens。
     let max_tokens_field = review_max_tokens_field(api, &base_url, &model_name);
@@ -675,7 +692,7 @@ fn review_model_preset(bridge: &Pinvou3Bridge) -> ModelPreset {
         .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default())
 }
 
-/// Byte-for-byte mirror of the foundation's exact-route predicate
+/// Behavior-equivalent mirror of the foundation's exact-route predicate
 /// `is_exact_https_route`（CodeWhale crates/config/src/provider.rs）: scheme
 /// and host compare ASCII case-insensitively, the path is case-sensitive, and
 /// exactly one trailing slash is insignificant（端口属于 authority，故
@@ -841,6 +858,115 @@ fn canonical_minimax_model_is_m3(model: &str) -> bool {
         normalized.as_str(),
         "minimax" | "minimax-m3" | "minimax-m-3" | "minimax-m-3-thinking"
     )
+}
+
+/// 线材型号按引擎同款家族别名表规范化（`wire_model_for_provider_route` 的
+/// canonical_*_model_id 表，CodeWhale crates/tui/src/config.rs:1281-1347 与
+/// crates/config/src/lib.rs:4288-4390 同表；canonical 常数 =
+/// provider_defaults.rs:73-80,144-161）。引擎主对话在 build_chat_wire_body
+/// 先规范化再上线材（`glm-5-3` → `GLM-5.3`、`minimax-m-3` → `MiniMax-M3`、
+/// mimo 别名 → 规范 id，各表只认本族别名、未收录原样透传），审查一次性请求
+/// 原样发存储名会 model_not_found——官方端点不认手写别名（2026-11-09 r5 审
+/// m1，MiniMax 形态三路复审独立命中）；决策端同吃规范 id——GLM 别名此前连
+/// forced-thinking 臂都不进，档位漂到 API 文档默认 max（r5 审 m2）。归一规则
+/// 与底座逐字同款（trim + 小写 + `_`/空格 → `-`）。k3/K3.1/gpt-*/inkling 在
+/// 底座本就 passthrough（`canonical_moonshot_model_id` 只收敛 k2.7/k2.6 族）
+/// ——原样透传=与旧审查线材逐字节一致。Openrouter/Arcee 底座有表但审查无按
+/// 其 id 分类之臂，刻意不收（窄于引擎全集，记载分歧）。
+fn canonical_wire_model_for_review(api: ApiProvider, model: &str) -> String {
+    let normalized = model.trim().to_ascii_lowercase();
+    let normalized = normalized.replace(['_', ' '], "-");
+    let canonical: Option<&'static str> = match api {
+        ApiProvider::Zai => match normalized.as_str() {
+            "glm-5.1" | "glm-5-1" | "zai-glm-5.1" | "zai-glm-5-1" => Some("GLM-5.1"),
+            // 每个别名解析到自己的 id，绝不经过默认型号（同底座注：默认挪动
+            // 不得静默改指显式 GLM-5.2 路由）。
+            "glm-5.2" | "glm-5-2" | "zai-glm-5.2" | "zai-glm-5-2" => Some("GLM-5.2"),
+            "glm-5.3-flash" | "glm-5-3-flash" | "zai-glm-5.3-flash" | "zai-glm-5-3-flash" => {
+                Some("GLM-5.3-Flash")
+            }
+            "glm-5.3" | "glm-5-3" | "zai-glm-5.3" | "zai-glm-5-3" => Some("GLM-5.3"),
+            "glm-5-turbo" | "glm-5turbo" | "zai-glm-5-turbo" => Some("GLM-5-Turbo"),
+            _ => None,
+        },
+        ApiProvider::Minimax | ApiProvider::MinimaxAnthropic => match normalized.as_str() {
+            "minimax" | "minimax-m3" | "minimax-m-3" | "minimax-m-3-thinking" => Some("MiniMax-M3"),
+            "minimax-m2.7" | "minimax-m2-7" | "minimax-m-2.7" | "minimax-m-2-7" => {
+                Some("MiniMax-M2.7")
+            }
+            "minimax-m2.7-highspeed"
+            | "minimax-m2-7-highspeed"
+            | "minimax-m-2.7-highspeed"
+            | "minimax-m-2-7-highspeed" => Some("MiniMax-M2.7-highspeed"),
+            "minimax-m2.5" | "minimax-m2-5" | "minimax-m-2.5" | "minimax-m-2-5" => {
+                Some("MiniMax-M2.5")
+            }
+            "minimax-m2.5-highspeed"
+            | "minimax-m2-5-highspeed"
+            | "minimax-m-2.5-highspeed"
+            | "minimax-m-2-5-highspeed" => Some("MiniMax-M2.5-highspeed"),
+            "minimax-m2.1" | "minimax-m2-1" | "minimax-m-2.1" | "minimax-m-2-1" => {
+                Some("MiniMax-M2.1")
+            }
+            "minimax-m2.1-highspeed"
+            | "minimax-m2-1-highspeed"
+            | "minimax-m-2.1-highspeed"
+            | "minimax-m-2-1-highspeed" => Some("MiniMax-M2.1-highspeed"),
+            "minimax-m2" | "minimax-m-2" => Some("MiniMax-M2"),
+            _ => None,
+        },
+        ApiProvider::XiaomiMimo => match normalized.as_str() {
+            "mimo"
+            | "mimo-v2.5-pro"
+            | "mimo-v2-5-pro"
+            | "xiaomi-mimo-v2.5-pro"
+            | "xiaomi-mimo-v2-5-pro" => Some("mimo-v2.5-pro"),
+            "mimo-v2.5-pro-ultraspeed"
+            | "mimo-v2-5-pro-ultraspeed"
+            | "xiaomi-mimo-v2.5-pro-ultraspeed"
+            | "xiaomi-mimo-v2-5-pro-ultraspeed"
+            | "ultraspeed"
+            | "pro-ultraspeed" => Some("mimo-v2.5-pro-ultraspeed"),
+            "omni"
+            | "mimo-omni"
+            | "v2.5-omni"
+            | "v25-omni"
+            | "mimo-v2.5"
+            | "mimo-v25"
+            | "mimo-v2-5"
+            | "mimo-v2.5-omni"
+            | "mimo-v25-omni"
+            | "mimo-v2-5-omni"
+            | "xiaomi-mimo-v2.5"
+            | "xiaomi-mimo-v2-5"
+            | "xiaomi-mimo-v2.5-omni"
+            | "xiaomi-mimo-v2-5-omni" => Some("mimo-v2.5"),
+            "asr" | "mimo-asr" | "mimo-v2.5-asr" | "speech-to-text" | "transcribe" => {
+                Some("mimo-v2.5-asr")
+            }
+            "mimo-tts" | "mimo-v25-tts" | "mimo-v2.5-tts" | "tts" | "speech" => {
+                Some("mimo-v2.5-tts")
+            }
+            "mimo-tts-voicedesign"
+            | "mimo-voice-design"
+            | "mimo-v25-tts-voicedesign"
+            | "mimo-v2.5-tts-voicedesign"
+            | "voicedesign"
+            | "voice-design" => Some("mimo-v2.5-tts-voicedesign"),
+            "mimo-tts-voiceclone"
+            | "mimo-voice-clone"
+            | "mimo-v25-tts-voiceclone"
+            | "mimo-v2.5-tts-voiceclone"
+            | "voiceclone"
+            | "voice-clone" => Some("mimo-v2.5-tts-voiceclone"),
+            "mimo-v2-tts" => Some("mimo-v2-tts"),
+            _ => None,
+        },
+        _ => None,
+    };
+    canonical
+        .map(str::to_string)
+        .unwrap_or_else(|| model.to_string())
 }
 
 /// K3.1 附加条件与型号名单：Moonshot 身份（vendor kimi|moonshot、Kimi preset、
@@ -1159,8 +1285,9 @@ fn apply_review_thinking_controls(
     // OpenaiCompatible preset 直指官方端点（无 vendor 戳）时身份落 Openai，
     // 底座零字段，但官方端点真实方言就是思考字段（底座注释"URL 嗅探变体"测试
     // 同口径钉住，2026-11-09 审 m3 补记载）。嗅探含子串匹配的固有近似
-    // （lookalike 主机/路径片段可提前命中本臂）；底座 heritage
-    // `reasoning_dialect_from_base_url` 同语义。
+    // （lookalike 主机/路径片段可提前命中本臂）；本宿主自有模块
+    // `core::reasoning_dialect::reasoning_dialect_from_base_url` 同语义（非底座
+    // heritage——r5 审 NIT 澄清出处）。
     if preset == ModelPreset::Doubao
         || api == ApiProvider::Volcengine
         || base.contains("volces.com")
@@ -1291,8 +1418,11 @@ fn apply_review_thinking_controls(
         body["reasoning_effort"] = json!("low");
         return;
     }
-    // xAI grok-4.5|4.6 精确第一方端点（底座同款守卫）；grok-4.7 不收档位。
-    if (api == ApiProvider::Xai || preset == ModelPreset::Xai)
+    // xAI grok-4.5|4.6 精确第一方端点；grok-4.7 不收档位。守卫与底座同维度
+    // （Xai 身份 × 精确 URL × 型号；底座无 preset 概念——r5 审 m3：preset 拓宽
+    // 臂使该臂与"底座同款守卫"矛盾，且正常流 preset Xai 恒解析出 Xai 身份，
+    // 拓宽无增益，故不列入下方已记载拓宽块）。
+    if api == ApiProvider::Xai
         && is_exact_https_host_path(base_url, "api.x.ai", "v1")
         && matches!(
             model.trim().to_ascii_lowercase().as_str(),
@@ -1609,23 +1739,27 @@ mod tests {
         // Kimi Code 会员 K3（精确 api.kimi.com/coding/v1 × k3|k3-256k）：嵌套
         // effort 线（底座 apply_kimi_code_k3_reasoning_effort），无顶层档位；
         // 尾斜杠按底座语义忽略。
-        let mut k3 = json!({});
-        apply_review_thinking_controls(
-            &mut k3,
-            review_api("moonshot"),
-            ModelPreset::OpenaiCompatible,
-            "https://api.kimi.com/coding/v1/",
-            "k3",
-        );
-        assert_eq!(
-            k3["thinking"],
-            json!({ "type": "enabled", "effort": "low" }),
-            "k3: {k3}"
-        );
-        assert!(
-            k3.get("reasoning_effort").is_none(),
-            "Kimi Code K3 用嵌套 effort,不吃顶层档位: {k3}"
-        );
+        // r5 审 NIT：两个拼写全钉（k3-256k 未钉时，删掉臂成员的突变全绿，
+        // 256k 拼写静默落通用臂——嵌套 effort 没了，档位漂到服务器默认）。
+        for k3_model in ["k3", "k3-256k"] {
+            let mut k3 = json!({});
+            apply_review_thinking_controls(
+                &mut k3,
+                review_api("moonshot"),
+                ModelPreset::OpenaiCompatible,
+                "https://api.kimi.com/coding/v1/",
+                k3_model,
+            );
+            assert_eq!(
+                k3["thinking"],
+                json!({ "type": "enabled", "effort": "low" }),
+                "{k3_model}: {k3}"
+            );
+            assert!(
+                k3.get("reasoning_effort").is_none(),
+                "Kimi Code {k3_model} 用嵌套 effort,不吃顶层档位: {k3}"
+            );
+        }
 
         // 直连按量平台 K3（精确 api.moonshot.cn|ai /v1 × kimi-k3）：always-thinking
         // 路由只收顶层 reasoning_effort → low，且**不发 thinking**（底座
@@ -2247,6 +2381,23 @@ mod tests {
             grok_gateway.as_object().expect("body object").is_empty(),
             "非第一方 xAI 网关不发 grok 字段: {grok_gateway}"
         );
+        // r5 审 m3：守卫收窄到身份维度（底座无 preset 概念）。Xai preset × 非
+        // Xai 身份（env pin 劈叉形）× 精确端点 → 零字段，不再吃 preset 拓宽。
+        let mut grok_preset_split = json!({});
+        apply_review_thinking_controls(
+            &mut grok_preset_split,
+            review_api("openai"),
+            ModelPreset::Xai,
+            "https://api.x.ai/v1",
+            "grok-4.5",
+        );
+        assert!(
+            grok_preset_split
+                .as_object()
+                .expect("body object")
+                .is_empty(),
+            "Xai preset × 非 Xai 身份零字段（守卫=身份维度）: {grok_preset_split}"
+        );
 
         // URL 嗅探变体（provider/preset 都不带家族信息时归臂不能漏）。
         let mut deepseek_url = json!({});
@@ -2413,6 +2564,24 @@ mod tests {
             glm52.get("reasoning_effort").is_none(),
             "GLM-5.2 low 档仅 generic toggle: {glm52}"
         );
+        // r5 审 NIT：5-Turbo 同为 tiered（known 臂成员此前未钉，删成员突变全绿）。
+        let mut glm5turbo = json!({});
+        apply_review_thinking_controls(
+            &mut glm5turbo,
+            review_api("zai"),
+            ModelPreset::OpenaiCompatible,
+            "https://open.bigmodel.cn/api/paas/v4",
+            "GLM-5-Turbo",
+        );
+        assert_eq!(
+            glm5turbo["thinking"],
+            json!({ "type": "enabled", "clear_thinking": false }),
+            "{glm5turbo}"
+        );
+        assert!(
+            glm5turbo.get("reasoning_effort").is_none(),
+            "GLM-5-Turbo low 档仅 generic toggle: {glm5turbo}"
+        );
         let mut glm_unknown = json!({});
         apply_review_thinking_controls(
             &mut glm_unknown,
@@ -2458,6 +2627,31 @@ mod tests {
                 .expect("body object")
                 .is_empty(),
             "thinking-only 名单零字段: {ms_thinking_only}"
+        );
+        // r5 审 NIT：thinking-only ∩ preserve 名单交集（kimi-k2.7-code 同在两
+        // 名单）——底座写 preserve 且无 enable/effort（thinking_only ||
+        // thinking_enabled 恒 true，effort 臂被 thinking_only 短路）；qwen3.8-max
+        // 不在 preserve 名单，盖不住「漏 preserve」突变。
+        let mut ms_k27code = json!({});
+        apply_review_thinking_controls(
+            &mut ms_k27code,
+            review_api("modelstudio-token-plan"),
+            ModelPreset::OpenaiCompatible,
+            ms_url,
+            "kimi-k2.7-code",
+        );
+        assert_eq!(
+            ms_k27code["preserve_thinking"],
+            json!(true),
+            "kimi-k2.7-code 在 preserve 名单: {ms_k27code}"
+        );
+        assert!(
+            ms_k27code.get("enable_thinking").is_none(),
+            "thinking-only 不发 enable: {ms_k27code}"
+        );
+        assert!(
+            ms_k27code.get("reasoning_effort").is_none(),
+            "thinking-only 不发 effort: {ms_k27code}"
         );
         let mut ms_effort = json!({});
         apply_review_thinking_controls(
@@ -2677,6 +2871,16 @@ mod tests {
             "muse-spark-1.3",
         );
         assert_eq!(muse["reasoning_effort"], json!("low"), "{muse}");
+        // r5 审 NIT：精确拼写 muse-spark 同收档位（名单=精确 id + `-` 前缀族）。
+        let mut muse_exact = json!({});
+        apply_review_thinking_controls(
+            &mut muse_exact,
+            review_api("meta"),
+            ModelPreset::OpenaiCompatible,
+            "https://gateway.example/v1",
+            "muse-spark",
+        );
+        assert_eq!(muse_exact["reasoning_effort"], json!("low"), "{muse_exact}");
         let mut google = json!({});
         apply_review_thinking_controls(
             &mut google,
@@ -3082,7 +3286,62 @@ mod tests {
             ]}}),
         ];
         let kept_legacy = ledger_from_entries(&legacy, "/p.md", 12).expect("无 seq 保持旧行为");
-        assert_eq!(kept_legacy[0].text, "交通错", "老 entry(无 seq)latest 仍按数组序");
+        assert_eq!(
+            kept_legacy[0].text, "交通错",
+            "老 entry(无 seq)latest 仍按数组序"
+        );
+    }
+
+    /// r5 审 m1/m2：线材型号规范化=引擎家族别名表镜像——别名/大小写/`_`/空格
+    /// 拼写收敛到规范 id（glm-5-3 → GLM-5.3 等），未收录 id 原样透传（k3/K3.1/
+    /// gpt-*/inkling 与旧审查线材逐字节一致；底座 Moonshot 表只收敛 k2.7/k2.6
+    /// 族，k3 本就 passthrough）。
+    #[test]
+    fn canonical_wire_model_mirrors_engine_family_maps() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("zai", "glm-5-3", "GLM-5.3"),
+            ("zai", "zai_glm 5.3", "GLM-5.3"),
+            ("zai", "GLM-5.3", "GLM-5.3"),
+            ("zai", "glm-5.3-flash", "GLM-5.3-Flash"),
+            ("zai", "glm-5-2", "GLM-5.2"),
+            ("zai", "glm-5-1", "GLM-5.1"),
+            ("zai", "glm-5turbo", "GLM-5-Turbo"),
+            ("zai", "glm-5.4-preview", "glm-5.4-preview"),
+            ("minimax", "minimax-m-3", "MiniMax-M3"),
+            ("minimax", "MINIMAX_M_3", "MiniMax-M3"),
+            ("minimax", "MiniMax-M3", "MiniMax-M3"),
+            ("minimax", "minimax-m-3-thinking", "MiniMax-M3"),
+            (
+                "minimax",
+                "minimax-m2-7-highspeed",
+                "MiniMax-M2.7-highspeed",
+            ),
+            ("minimax", "minimax-m3.5", "minimax-m3.5"),
+            ("mimo", "xiaomi-mimo-v2.5-pro", "mimo-v2.5-pro"),
+            ("mimo", "MIMO V2 5 PRO", "mimo-v2.5-pro"),
+            (
+                "mimo",
+                "mimo-v2.5-pro-ultraspeed",
+                "mimo-v2.5-pro-ultraspeed",
+            ),
+            ("mimo", "mimo-v2.5-asr", "mimo-v2.5-asr"),
+            ("mimo", "mimo-unknown", "mimo-unknown"),
+            ("moonshot", "kimi-k3", "kimi-k3"),
+            ("moonshot", "kimi-k3.1-pro[1m]", "kimi-k3.1-pro[1m]"),
+            ("openai", "gpt-5.6-terra", "gpt-5.6-terra"),
+            (
+                "together",
+                "thinkingmachines/inkling",
+                "thinkingmachines/inkling",
+            ),
+        ];
+        for (provider, model, expected) in cases {
+            assert_eq!(
+                canonical_wire_model_for_review(review_api(provider), model),
+                *expected,
+                "{provider} × {model}"
+            );
+        }
     }
 
     /// 覆盖镜头:framework + coverage 必须从 ModelReview 透传进 PinvouReview,不被 guard 丢。

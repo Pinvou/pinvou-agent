@@ -2169,6 +2169,14 @@ impl Pinvou3Bridge {
     /// gateway model on a small-window route can land below 8192 (still far
     /// above the old hard-coded 1600 in the common case); the foundation
     /// floors the final value at 1.
+    ///
+    /// Limits provenance nuance (r5 review m9): the `route_limits_for_model`
+    /// declaration passed here is literally what lands in
+    /// `EngineConfig.active_route_limits` (compaction/preflight budgets), but
+    /// the main turn's wire clamp reads the client-frozen resolver candidate
+    /// limits instead; the two coincide on catalogued routes (k3 verified) and
+    /// this declaration is the more truthful fact where they differ
+    /// (operator-owned endpoints).
     pub(crate) fn main_wire_max_output_tokens(&self, model: &str) -> u32 {
         let config = self.build_dt_config();
         let provider = config.api_provider();
