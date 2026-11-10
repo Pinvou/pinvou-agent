@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 94 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 94 registered commits (93 maintenance + the #150 candidate), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,7 +11,9 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # 5c093b5d4 → d0322fd0e fixed rustfmt ordering and added the wrapper-vs-
 # transport parity test, d0322fd0e → c997d2ec0 changed one doc word, and
 # c997d2ec0 → dc73de769 cleared the parity test's ambient override envs and
-# added the CHANGELOG entries) leading maintenance base 11cba403d. Foundation
+# added the CHANGELOG entries; a fourth upstream revision after dc73de769
+# deletes both CHANGELOG files and touches no API surface) leading
+# maintenance base 11cba403d. Foundation
 # PRs squash-merge (#123–#135), so when #150 lands the public head is a new
 # merge-time commit: re-pin EXPECTED_HEAD, the gitlink, and the registers to
 # that head as the final candidate-window step.
