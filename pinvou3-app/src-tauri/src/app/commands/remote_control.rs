@@ -121,6 +121,8 @@ pub(super) enum WebSessionOperation {
     ReadConversationAttachmentChunk,
     ReadArtifactChunk,
     ArtifactAccess,
+    ListHostFiles,
+    IngestFile,
 }
 
 impl WebSessionOperation {
@@ -136,6 +138,8 @@ impl WebSessionOperation {
             Self::ReadConversationAttachmentChunk => "read_conversation_attachment_chunk",
             Self::ReadArtifactChunk => "read_artifact_chunk",
             Self::ArtifactAccess => "artifact_access",
+            Self::ListHostFiles => "list_host_files",
+            Self::IngestFile => "ingest_file",
         }
     }
 }
@@ -357,6 +361,17 @@ pub struct WebHostFileListing {
 /// Browse the desktop host filesystem for the WebUI file picker. Directory
 /// mode may request an opaque workspace capability for the validated current
 /// directory; native host paths are never accepted by ACP Web RPCs.
+///
+/// Errors fold to the stable `web_session_list_host_files_failed` wire code
+/// (round-21 复审 M3):`list_host_files` 的错误臂携带桌面绝对路径——
+/// path 缺省时默认枚举 `$HOME`,canonical 化臂也会回显桌面解析路径——
+/// 裸 `?` 直传会把这些细节经 bridge/relay 送到手机侧。(Round-22 复审
+/// MAJOR-1:同一命令体内的 grant 铸造臂同样携路径——`issue_web_workspace_
+/// grant` 的 validate_browsable_path canonical 化臂、目录校验与身份采集
+/// 臂都带 `path.display()`/canonical 拼写,TOCTOU(列目录与铸造之间目录
+/// 被删/换)或 Windows 身份采集失败都会命中——必须与本命令的枚举臂走
+/// 同一折叠。)两条腿的原始链都只落桌面日志(`web_operation_result` 的
+/// log::warn)。
 #[tauri::command]
 pub fn web_access_list_host_files(
     path: Option<String>,
@@ -368,10 +383,18 @@ pub fn web_access_list_host_files(
     // 即 main,放行);此 gate 拦截的是桌面辅助 WebView 直接 invoke 浏览
     // $HOME 的路径。
     require_main_webview(&window)?;
-    let listing = file_access::list_host_files(path)?;
+    let listing = web_session_result(
+        WebSessionOperation::ListHostFiles,
+        file_access::list_host_files(path),
+    )?;
     let workspace_handle = issue_workspace_handle
         .unwrap_or(false)
-        .then(|| manager.issue_web_workspace_grant(&listing.path))
+        .then(|| {
+            web_session_result(
+                WebSessionOperation::ListHostFiles,
+                manager.issue_web_workspace_grant(&listing.path),
+            )
+        })
         .transpose()?;
     Ok(WebHostFileListing {
         listing,
@@ -749,12 +772,25 @@ pub fn web_access_cancel_session_download(
 
 /// Parse a desktop-host file without returning its extracted markdown to the
 /// browser. The opaque handle is resolved only by `web_access_chat`.
+///
+/// Errors fold to the stable `web_session_ingest_file_failed` wire code
+/// (round-22 复审 MAJOR-2):`ingest_file` 的校验臂携带 canonical 化后的
+/// 桌面绝对路径(`path {} is not a file`/`is not readable` 回显解析拼写,
+/// symlink 别名会回显真实目标),裸 `?` 直传会把这些细节连同中文原文经
+/// bridge/relay 落到手机侧的附件 chip 上。原始链只落桌面日志。
+///
+/// Round-23 复审补记(消费端):折叠码在 ACP 通道经受控错误正则落通用
+/// 失败文案;web 聊天附件 chip 亦渲染通用失败文案——桌面聊天对敏感路径
+/// 拒绝的具体文案刻意不跨 relay(隐私正向),消费端未做特判。
 #[tauri::command]
 pub async fn web_access_ingest_file(
     path: String,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<manager::WebAttachmentSummary, String> {
-    let result = super::files::ingest_file(path).await?;
+    let result = web_session_result(
+        WebSessionOperation::IngestFile,
+        super::files::ingest_file(path).await,
+    )?;
     manager.cache_web_attachment(result)
 }
 
@@ -763,6 +799,29 @@ pub async fn web_access_ingest_file(
 /// directory, run through the shared ingest pipeline, and come back as the same
 /// opaque `WebAttachmentSummary` the host-file flow returns. Nothing survives
 /// past attachment consumption, eviction, or endpoint teardown.
+///
+/// Round-23 复审补录:本命令的 append 臂与 ingest 侧的 cache 臂(manager
+/// 文本)仍以原始单语言(zh)文本出站——与 round-22 已披露的 tasks.rs
+/// CRUD 族同一疾病类(静态无路径文案、先于本链存在),按既定 follow-up
+/// 车道处理,不在本链夹带。Round-24 复审修正:tasks.rs 家族的「无路径」
+/// 表述只对 CRUD 成员的静态文案成立——同族的 runs-listing 命令
+/// (list_scheduled_task_runs)的错误链携带 `<home>/...` 绝对路径,已在
+/// round-24 本链内折叠(见 tasks.rs 的
+/// list_scheduled_task_runs_arms_fold_storage_prefixes);CRUD 成员仍按
+/// 车道披露,其错误链是否携带路径以后续核查为准,不再以「无路径」一概
+/// 而论。Round-25 复审修正:runs-listing 并非唯一泄漏成员——同车道
+/// (非 CRUD 读写车道)的 list_scheduled_tasks / read_scheduled_task /
+/// list_scheduled_runs 携带同一批 automation 链路径,已在 round-25 本
+/// 链内折叠(见 tasks.rs 的
+/// scheduled_read_list_commands_arms_fold_storage_prefixes)。Round-27
+/// 复审执行了 round-25 披露的「后续核查」并证实 CRUD/变更成员
+/// (create/update/delete/pause/resume/pin/run-now/mark-viewed)同样
+/// 经同一批 carrier 携带绝对路径(ensure_*_workspace 的
+/// workspace.display()、automation_manager 的 save/delete/read
+/// path.display()、kind sidecar 的 path.display())——round-27 本链内
+/// 已将八成员全部出口折叠(见 tasks.rs 的
+/// scheduled_crud_commands_arms_fold_storage_prefixes)。tasks.rs 家族
+/// 至此全车道折叠,残余仅余附件 upload/cache 臂的静态无路径文案。
 #[tauri::command]
 pub async fn web_access_upload_attachment_chunk(
     upload_id: String,
@@ -1843,11 +1902,25 @@ mod tests {
     /// Round-9 复审 minor:折叠必须发生在命令边界——helper 级测试(直接
     /// 驱动 fold_*)看不见接线,解除任一命令体的折叠会让原生错误链(宿主
     /// 路径/中文原文)原样过继电器,而 helper 测试仍然全绿。按本 PR 的
-    /// gate-pin 惯例用 source-contract 钉住八个命令体的折叠接线。
+    /// gate-pin 惯例用 source-contract 钉住下列命令体的折叠接线(新
+    /// web-allowlisted 命令体应在此登记)。
     #[test]
     fn web_command_bodies_fold_errors_at_the_boundary() {
         let source = include_str!("remote_control.rs");
         for (fn_name, marker) in [
+            (
+                "pub fn web_access_list_host_files(",
+                // Round-22 复审 MAJOR-1:命令体两条腿(枚举 + grant 铸造)
+                // 都必须走同一折叠——删掉任一腿的 web_session_result 接线
+                // 都让本钉红(接线回退此前对全部套件不可见,突变实证)。
+                "WebSessionOperation::ListHostFiles",
+            ),
+            (
+                "pub async fn web_access_ingest_file(",
+                // Round-22 复审 MAJOR-2:同族旁系——校验臂回显 canonical
+                // 桌面路径,折叠接线同样按钉保护。
+                "WebSessionOperation::IngestFile",
+            ),
             ("pub async fn web_access_chat(", "fold_web_chat_error("),
             (
                 "pub async fn web_access_create_session_and_chat(",
@@ -1897,6 +1970,41 @@ mod tests {
             assert!(
                 body.contains(marker),
                 "{fn_name} must fold its errors at the command boundary ({marker})"
+            );
+        }
+        // Round-22 复审 MAJOR-1 补强:list_host_files 的行级 marker 在两腿
+        // (枚举 + grant 铸造)都出现,contains 对单腿回退是盲的(round-22
+        // 复审的突变 A——只回退一条腿——原样保绿)。两条腿的
+        // web_session_result 接线按计数钉死:删掉任一腿计数即变 1。
+        // Round-23 复审:计数前先滤除纯注释行,终止符表补齐
+        // `#[tauri::command]`/`fn ` 与兄弟循环同表——「单腿回退 + 窗内
+        // 注释提及 `web_session_result(`」的补偿突变此前保持全绿(注释把
+        // 计数补回 2;行级 marker 钉不受影响,它断言的是接线的存在性而非
+        // 计数)。(行首过滤口径:行尾 `//` 与块注释内的提及仍能掩护,按
+        // 已披露残留。)
+        {
+            let start = source
+                .find("pub fn web_access_list_host_files(")
+                .expect("web_access_list_host_files must exist");
+            let body = &source[start..];
+            let end = [
+                "\n#[tauri::command]",
+                "\n#[cfg(test)]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\nfn ",
+            ]
+            .iter()
+            .filter_map(|delimiter| body.find(delimiter))
+            .min()
+            .expect("web_access_list_host_files body must be terminated");
+            let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+            let leg_folds = counted.matches("web_session_result(").count();
+            assert_eq!(
+                leg_folds, 2,
+                "both legs of web_access_list_host_files (the listing and the \
+                 grant mint) must fold through web_session_result; a single-leg \
+                 revert previously kept every suite green (executed mutant)"
             );
         }
     }
@@ -2081,6 +2189,23 @@ mod tests {
         assert_eq!(
             web_session_result(WebSessionOperation::ResetAuxSession, error).unwrap_err(),
             "web_session_reset_aux_session_failed"
+        );
+        // Round-21 复审 M3:the phone file picker's browse lane carries
+        // desktop-absolute paths in its native error arms (the $HOME default
+        // when `path` is absent, and the canonicalized-path arm of
+        // validate_browsable_path) — it folds through the same funnel; the
+        // raw chain is desktop-log-only.
+        assert_eq!(
+            web_session_result(WebSessionOperation::ListHostFiles, error).unwrap_err(),
+            "web_session_list_host_files_failed"
+        );
+        // Round-22 复审 MAJOR-2:the picker's attach lane is the sibling of
+        // the browse lane above — its validation arms echo the canonicalized
+        // desktop path (and a symlink alias resolves to its real target), so
+        // it folds through the same funnel; the raw chain is desktop-log-only.
+        assert_eq!(
+            web_session_result(WebSessionOperation::IngestFile, error).unwrap_err(),
+            "web_session_ingest_file_failed"
         );
     }
 

@@ -20,6 +20,7 @@
     thisComputer: "此电脑", home: "用户目录", emptyFolder: "此目录中没有可选内容",
     loadFailed: function (err) { return "读取失败：" + err; },
     workspaceNotAuthorized: "请先在桌面端允许远程访问本机目录",
+    listingFailed: "读取桌面端文件列表失败，请重试。",
     alreadyOpen: "已有文件选择器正在打开",
   };
 
@@ -252,6 +253,13 @@
         const code = String(error && error.code ? error.code : "");
         if (code === "host_workspace_not_authorized" || message === "host_workspace_not_authorized") {
           return labels.workspaceNotAuthorized;
+        }
+        // Round-22 复审:round-21 起本命令的枚举/铸造两条腿都折叠成稳定
+        // wire code(原始链只落桌面日志),选择器必须把该码映射为可读
+        // 文案,否则面板会把裸代码字符串直接渲染出来。
+        if (code === "web_session_list_host_files_failed"
+          || message === "web_session_list_host_files_failed") {
+          return labels.listingFailed;
         }
         return message;
       }

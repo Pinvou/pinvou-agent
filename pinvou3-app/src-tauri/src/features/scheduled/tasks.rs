@@ -471,9 +471,11 @@ impl ScheduledTaskState {
         // Publish scheduling only after workspace/binding/kind are committed.
         // A crash before that boundary leaves an inert paused record.
         request.status = Some(AutomationStatus::Paused);
-        let created = manager
-            .create_automation(request)
-            .map_err(|err| format!("Failed to create scheduled task: {err}"))?;
+        let created = manager.create_automation(request).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to create scheduled task: {err}"
+            ))
+        })?;
         let created_id = created.id.clone();
         let created = match ensure_automation_workspace(&manager, created) {
             Ok(created) => created,
@@ -483,9 +485,9 @@ impl ScheduledTaskState {
                         "[scheduled] create workspace rollback failed; record remains paused: {rollback:#}"
                     );
                 }
-                return Err(format!(
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
                     "Failed to create scheduled task workspace: {error:#}"
-                ));
+                )));
             }
         };
         if let Err(error) =
@@ -494,9 +496,9 @@ impl ScheduledTaskState {
         {
             if requires_model_binding {
                 let _ = manager.delete_automation(&created.id);
-                return Err(format!(
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
                     "Failed to save scheduled task model binding: {error:#}"
-                ));
+                )));
             }
             log::warn!(
                 "Created scheduled task {}, but failed to save its model binding: {error:#}",
@@ -526,7 +528,9 @@ impl ScheduledTaskState {
                     );
                 }
                 let _ = std::fs::remove_dir_all(scheduled_task_internal_workspace(&created.id));
-                return Err(format!("Failed to save scheduled task kind: {error:#}"));
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to save scheduled task kind: {error:#}"
+                )));
             }
         }
         let created = if requested_paused {
@@ -538,7 +542,9 @@ impl ScheduledTaskState {
                     if let Err(rollback) = manager.delete_automation(&created.id) {
                         log::warn!("[scheduled] create activation rollback failed: {rollback:#}");
                     }
-                    return Err(format!("Failed to activate scheduled task: {error:#}"));
+                    return Err(crate::platform::paths::redact_storage_prefix(&format!(
+                        "Failed to activate scheduled task: {error:#}"
+                    )));
                 }
             }
         };
@@ -565,7 +571,9 @@ impl ScheduledTaskState {
             if is_not_found_error(&err) {
                 format!("scheduled task not found: {id}")
             } else {
-                format!("Failed to update scheduled task '{id}': {err:#}")
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to update scheduled task '{id}': {err:#}"
+                ))
             }
         })?;
         if input.model_id.is_some() && input.model.is_none() && previous.model.is_none() {
@@ -574,7 +582,7 @@ impl ScheduledTaskState {
         let current_kind = self
             .task_kinds
             .checked_kind_lookup_for(&id)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| crate::platform::paths::redact_storage_prefix(&error.to_string()))?;
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
@@ -630,7 +638,11 @@ impl ScheduledTaskState {
         };
         let updated = manager
             .update_automation(&id, build_update_request(input)?)
-            .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
+            .map_err(|err| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to update scheduled task '{id}': {err}"
+                ))
+            })?;
         let updated = match ensure_automation_workspace(&manager, updated) {
             Ok(updated) => updated,
             Err(error) => {
@@ -639,9 +651,9 @@ impl ScheduledTaskState {
                         "Failed to restore scheduled task {id} after a workspace-save failure: {rollback:#}"
                     );
                 }
-                return Err(format!(
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
                     "Failed to update scheduled task workspace '{id}': {error:#}"
-                ));
+                )));
             }
         };
         if let Some(target) = retarget {
@@ -655,7 +667,9 @@ impl ScheduledTaskState {
                         "Failed to restore scheduled task {id} after a target-save failure: {rollback:#}"
                     );
                 }
-                return Err(format!("Failed to save scheduled task target: {error:#}"));
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to save scheduled task target: {error:#}"
+                )));
             }
         }
         if requested_model_update.is_some() || requested_model_id.is_some() {
@@ -673,9 +687,9 @@ impl ScheduledTaskState {
                     // remains applied and retriable as a whole (round-13
                     // minor 9: the generic binding error does not enumerate
                     // these already-persisted fields).
-                    return Err(format!(
+                    return Err(crate::platform::paths::redact_storage_prefix(&format!(
                         "Failed to save scheduled task model binding: {error:#}"
-                    ));
+                    )));
                 }
                 log::warn!(
                     "Updated scheduled task {id}, but failed to save its model binding: {error:#}"
@@ -692,15 +706,21 @@ impl ScheduledTaskState {
             &self.ui_metadata,
             None,
         )
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs for '{id}': {err}"
+            ))
+        })
     }
 
     async fn pause_task(&self, id: String) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        let updated = manager
-            .pause_automation(&id)
-            .map_err(|err| format!("Failed to pause scheduled task '{id}': {err}"))?;
+        let updated = manager.pause_automation(&id).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to pause scheduled task '{id}': {err}"
+            ))
+        })?;
         map_scheduled_task_from_manager(
             &manager,
             updated,
@@ -711,17 +731,26 @@ impl ScheduledTaskState {
             &self.ui_metadata,
             None,
         )
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs for '{id}': {err}"
+            ))
+        })
     }
 
     async fn resume_task(&self, id: String) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        let updated = manager
-            .resume_automation(&id)
-            .map_err(|err| format!("Failed to resume scheduled task '{id}': {err}"))?;
-        let updated = ensure_automation_workspace(&manager, updated)
-            .map_err(|err| format!("Failed to resume scheduled task workspace '{id}': {err:#}"))?;
+        let updated = manager.resume_automation(&id).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to resume scheduled task '{id}': {err}"
+            ))
+        })?;
+        let updated = ensure_automation_workspace(&manager, updated).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to resume scheduled task workspace '{id}': {err:#}"
+            ))
+        })?;
         map_scheduled_task_from_manager(
             &manager,
             updated,
@@ -732,7 +761,11 @@ impl ScheduledTaskState {
             &self.ui_metadata,
             None,
         )
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs for '{id}': {err}"
+            ))
+        })
     }
 
     async fn set_task_pinned(&self, id: String, pinned: bool) -> Result<ScheduledTaskDto, String> {
@@ -741,9 +774,11 @@ impl ScheduledTaskState {
         let current = manager
             .get_automation(&id)
             .map_err(|_| "定时任务不存在或已被删除".to_string())?;
-        self.ui_metadata
-            .set_pinned(&id, pinned)
-            .map_err(|err| format!("Failed to update scheduled task pin state '{id}': {err:#}"))?;
+        self.ui_metadata.set_pinned(&id, pinned).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to update scheduled task pin state '{id}': {err:#}"
+            ))
+        })?;
         map_scheduled_task_from_manager(
             &manager,
             current,
@@ -754,7 +789,11 @@ impl ScheduledTaskState {
             &self.ui_metadata,
             None,
         )
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs for '{id}': {err}"
+            ))
+        })
     }
 
     async fn delete_task(&self, id: String) -> Result<DeletedScheduledTaskDto, String> {
@@ -762,9 +801,11 @@ impl ScheduledTaskState {
         // cancellation-style outer timeout could release the gate midway through
         // the archive-then-delete sequence, allowing update/run-now into partial state.
         let _operation = self.lock_operation(&id).await;
-        self.delete_task_inner(&id)
-            .await
-            .map_err(|error| format!("Failed to delete scheduled task '{id}': {error:#}"))
+        self.delete_task_inner(&id).await.map_err(|error| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to delete scheduled task '{id}': {error:#}"
+            ))
+        })
     }
 
     async fn run_task_now(&self, id: String) -> Result<ScheduledRunDto, String> {
@@ -775,18 +816,29 @@ impl ScheduledTaskState {
             .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
         {
             let manager = self.automations.lock().await;
-            let current = manager
-                .get_automation(&id)
-                .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
+            let current = manager.get_automation(&id).map_err(|err| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to run scheduled task '{id}': {err}"
+                ))
+            })?;
             ensure_automation_workspace(&manager, current).map_err(|err| {
-                format!("Failed to prepare scheduled task workspace '{id}': {err:#}")
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to prepare scheduled task workspace '{id}': {err:#}"
+                ))
             })?;
         }
         let run = run_now_shared(&self.automations, &id, task_manager)
             .await
-            .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
-        let session_titles = scheduled_session_titles(&self.sessions)
-            .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+            .map_err(|err| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to run scheduled task '{id}': {err}"
+                ))
+            })?;
+        let session_titles = scheduled_session_titles(&self.sessions).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to list scheduled conversations: {err:#}"
+            ))
+        })?;
         Ok(map_scheduled_run(
             run,
             &self.sessions,
@@ -805,13 +857,15 @@ impl ScheduledTaskState {
                 let manager = self.automations.lock().await;
                 match manager.get_automation(&automation_id) {
                     Ok(_) => manager.list_runs(&automation_id, None).map_err(|err| {
-                        format!("Failed to list scheduled task runs for '{automation_id}': {err}")
+                        crate::platform::paths::redact_storage_prefix(&format!(
+                            "Failed to list scheduled task runs for '{automation_id}': {err}"
+                        ))
                     })?,
                     Err(active_error) => self.history_archive.runs_for(&automation_id).ok_or_else(
                         || {
-                            format!(
+                            crate::platform::paths::redact_storage_prefix(&format!(
                                 "Failed to read scheduled task '{automation_id}': {active_error}"
-                            )
+                            ))
                         },
                     )?,
                 }
@@ -820,11 +874,15 @@ impl ScheduledTaskState {
             format!("Scheduled run '{run_id}' does not belong to task '{automation_id}'")
         })?;
         ensure_scheduled_run_can_be_marked_viewed(run, &self.sessions)
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::platform::paths::redact_storage_prefix(&err.to_string()))?;
         compact_viewed_runs(&self.read_state, &automation_id, &runs);
         self.read_state
             .mark_viewed(&automation_id, &run_id)
-            .map_err(|err| format!("Failed to mark scheduled run '{run_id}' as viewed: {err}"))?;
+            .map_err(|err| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to mark scheduled run '{run_id}' as viewed: {err}"
+                ))
+            })?;
         Ok(ScheduledRunViewedDto {
             automation_id,
             run_id,
@@ -1652,7 +1710,12 @@ fn map_scheduled_run_with_task(
         created_at: record.created_at.to_rfc3339(),
         ended_at: record.ended_at.map(|value| value.to_rfc3339()),
         thread_id: record.thread_id,
-        error: record.error,
+        // Round-27 复审 m3:持久化于折叠纪律落地前的旧 run 记录,其
+        // error 字段仍携带原始 `<home>/...` 文本,经成功路径的 DTO 原样
+        // 出站——读取时按同一原语折叠(幂等,已折叠文本原样透传)。
+        error: record
+            .error
+            .map(|error| crate::platform::paths::redact_storage_prefix(&error)),
         unread,
         session_title,
         pinned,
@@ -1980,19 +2043,36 @@ fn humanize_rrule(rrule: &str) -> String {
         Err(_) => rrule.to_string(),
     }
 }
+/// Round-25 复审 MAJOR-1:本命令与 `read_scheduled_task`、
+/// `list_scheduled_runs` 同在 web 允许清单(bridge 由
+/// bridge-shared-helpers 直接 invoke),内层 automation 链携带
+/// `<home>/...` 绝对路径(automation_manager 的 read/parse/display
+/// context 与 ensure_*_workspace 的 workspace context)经 `{err:#}`
+/// 原样上浮。round-24 只折叠了 runs-listing 一员;同车道(非 CRUD
+/// 读写车道)的三个命令全部出口先折叠再出站。Round-27 复审核查了
+/// round-25 披露为「后续核查项」的 CRUD/变更车道并证实其为活泄露
+/// (create/update/resume/run-now 等八成员经同一批 carrier 上浮绝对
+/// 路径),本提交将八成员全部出口同样先折叠再出站,折叠计数由
+/// `scheduled_crud_commands_arms_fold_storage_prefixes` 钉死。
 pub async fn list_scheduled_tasks(
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledTaskDto>, String> {
-    state
-        .reconcile_runs()
-        .await
-        .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
+    state.reconcile_runs().await.map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to reconcile scheduled task runs: {err}"
+        ))
+    })?;
     let manager = state.automations.lock().await;
-    ensure_all_automation_workspaces(&manager)
-        .map_err(|err| format!("Failed to prepare scheduled task workspaces: {err:#}"))?;
-    let records = manager
-        .list_automations()
-        .map_err(|err| format!("Failed to list scheduled tasks: {err}"))?;
+    ensure_all_automation_workspaces(&manager).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to prepare scheduled task workspaces: {err:#}"
+        ))
+    })?;
+    let records = manager.list_automations().map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled tasks: {err}"
+        ))
+    })?;
     let current_ids = records
         .iter()
         .map(|record| record.id.clone())
@@ -2023,8 +2103,11 @@ pub async fn list_scheduled_tasks(
     if let Err(error) = state.ui_metadata.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled task UI metadata: {error:#}");
     }
-    let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let session_titles = scheduled_session_titles(&state.sessions).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled conversations: {err:#}"
+        ))
+    })?;
     records
         .into_iter()
         .map(|record| {
@@ -2040,20 +2123,33 @@ pub async fn list_scheduled_tasks(
             )
         })
         .collect::<Result<Vec<_>>>()
-        .map_err(|err| format!("Failed to read scheduled task runs: {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs: {err}"
+            ))
+        })
 }
+/// Round-25 复审 MAJOR-1(同车道折叠,口径见 `list_scheduled_tasks` 文档)。
 pub async fn read_scheduled_task(
     id: String,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<ScheduledTaskDetailDto, String> {
     let manager = state.automations.lock().await;
-    let record = manager
-        .get_automation(&id)
-        .map_err(|err| format!("Failed to read scheduled task '{id}': {err}"))?;
-    let record = ensure_automation_workspace(&manager, record)
-        .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
-    let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let record = manager.get_automation(&id).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to read scheduled task '{id}': {err}"
+        ))
+    })?;
+    let record = ensure_automation_workspace(&manager, record).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to prepare scheduled task workspace '{id}': {err:#}"
+        ))
+    })?;
+    let session_titles = scheduled_session_titles(&state.sessions).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled conversations: {err:#}"
+        ))
+    })?;
     map_scheduled_task_from_manager(
         &manager,
         record,
@@ -2064,31 +2160,53 @@ pub async fn read_scheduled_task(
         &state.ui_metadata,
         Some(&session_titles),
     )
-    .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+    .map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to read scheduled task runs for '{id}': {err}"
+        ))
+    })
 }
+/// Round-24 复审 MAJOR-2:本命令在 web 允许清单内(bridge 由
+/// bridge-shared-helpers 直接 invoke),内层链携带 `<home>/...` 绝对路径
+/// ——automation 链的 `Failed to read {dir.display()}` context 与
+/// read_run_file 的 read/parse path context 经 `{err:#}` 原样上浮,裸传
+/// 经 bridge/relay 落到手机侧(与 round-22 MAJOR-3 的五个 session 命令
+/// 同病)。全部出口先折叠再出站;非路径细节(kind/id/计数)保留。源钉
+/// 见本文件测试模块的 list_scheduled_task_runs_arms_fold_storage_prefixes。
 pub async fn list_scheduled_task_runs(
     id: String,
     limit: Option<usize>,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledRunDto>, String> {
-    state
-        .reconcile_runs()
-        .await
-        .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
+    state.reconcile_runs().await.map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to reconcile scheduled task runs: {err}"
+        ))
+    })?;
     let manager = state.automations.lock().await;
-    let record = manager
-        .get_automation(&id)
-        .map_err(|err| format!("Failed to read scheduled task '{id}': {err}"))?;
-    let record = ensure_automation_workspace(&manager, record)
-        .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
-    let records = manager
-        .list_runs(&id, limit)
-        .map_err(|err| format!("Failed to list scheduled task runs for '{id}': {err}"))?;
+    let record = manager.get_automation(&id).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to read scheduled task '{id}': {err}"
+        ))
+    })?;
+    let record = ensure_automation_workspace(&manager, record).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to prepare scheduled task workspace '{id}': {err:#}"
+        ))
+    })?;
+    let records = manager.list_runs(&id, limit).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled task runs for '{id}': {err}"
+        ))
+    })?;
     if limit.is_none() {
         compact_viewed_runs(&state.read_state, &id, &records);
     }
-    let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let session_titles = scheduled_session_titles(&state.sessions).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled conversations: {err:#}"
+        ))
+    })?;
     let task_name = record.name;
     let task_model = record.model;
     drop(manager);
@@ -2112,26 +2230,30 @@ pub async fn list_scheduled_task_runs(
 /// Return every retained scheduled run with a single reconciliation and a single
 /// metadata scan. The frontend uses this for the global Scheduled Runs sidebar;
 /// task-detail reads keep using `list_scheduled_task_runs`.
+/// Round-25 复审 MAJOR-1(同车道折叠,口径见 `list_scheduled_tasks` 文档)。
 pub async fn list_scheduled_runs(
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledRunDto>, String> {
-    state
-        .reconcile_runs()
-        .await
-        .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
+    state.reconcile_runs().await.map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to reconcile scheduled task runs: {err}"
+        ))
+    })?;
     let mut records = Vec::new();
     let mut active_run_keys = HashSet::new();
     {
         let manager = state.automations.lock().await;
-        let automations = manager
-            .list_automations()
-            .map_err(|err| format!("Failed to list scheduled tasks: {err}"))?;
+        let automations = manager.list_automations().map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to list scheduled tasks: {err}"
+            ))
+        })?;
         for automation in automations {
             let runs = manager.list_runs(&automation.id, None).map_err(|err| {
-                format!(
+                crate::platform::paths::redact_storage_prefix(&format!(
                     "Failed to list scheduled task runs for '{}': {err}",
                     automation.id
-                )
+                ))
             })?;
             active_run_keys.extend(
                 runs.iter()
@@ -2171,8 +2293,11 @@ pub async fn list_scheduled_runs(
         compact_viewed_runs(&state.read_state, &automation_id, &runs);
     }
     records.sort_by_key(|(run, _, _)| std::cmp::Reverse(run.scheduled_for));
-    let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let session_titles = scheduled_session_titles(&state.sessions).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled conversations: {err:#}"
+        ))
+    })?;
     let mut output = Vec::with_capacity(records.len());
     for (record, task_name, task_model) in records {
         let summary =
@@ -2252,6 +2377,155 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+
+    /// Round-24 复审 MAJOR-2 源钉:web-allowlisted 的
+    /// list_scheduled_task_runs 的全部错误出口必须经存储根折叠再出站。
+    /// 窗口为命令体(终止符表同兄弟钉);折叠计数钉死——单臂回退此前在
+    /// contains 型钉下保绿(round-22 突变 A 的同一类),计数前先滤除纯
+    /// 注释行(round-23 补偿突变口径:「单臂回退 + 窗内注释提及
+    /// needle」此前保持全绿;行尾 // 与块注释内提及仍可掩护,按已披露
+    /// 残留)。新增错误臂时必须并入折叠并同步计数(枚举钉:新增未折叠
+    /// 臂对本钉不可见)。
+    #[test]
+    fn list_scheduled_task_runs_arms_fold_storage_prefixes() {
+        let source = include_str!("tasks.rs");
+        let start = source
+            .find("pub async fn list_scheduled_task_runs(")
+            .expect("list_scheduled_task_runs must exist");
+        let body = &source[start..];
+        let end = [
+            // 本文件不携带任何真实命令属性(命令在 app/commands 层注册),
+            // architecture guard 对 app 外文件按属性文本计数且 baseline
+            // 为 0——终止符经 concat! 分拼,源码文本不得匹配 guard 的属
+            // 性扫描,同时保持终止符完整语义。
+            concat!("\n#[tauri::", "command]"),
+            "\n#[cfg(test)]",
+            "\npub async fn ",
+            "\npub fn ",
+            "\nfn ",
+        ]
+        .iter()
+        .filter_map(|delimiter| body.find(delimiter))
+        .min()
+        .expect("list_scheduled_task_runs body must be terminated");
+        let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+        let folds = counted
+            .matches("crate::platform::paths::redact_storage_prefix(&format!(")
+            .count();
+        assert_eq!(
+            folds, 5,
+            "every error exit of web-allowlisted list_scheduled_task_runs \
+             must fold the storage root before egress; a single-arm revert \
+             previously stayed green under a contains-style marker (the \
+             round-22 mutation-A class)"
+        );
+    }
+
+    /// Round-25 复审 MAJOR-1 源钉:同车道的三个读写命令
+    /// (list_scheduled_tasks / read_scheduled_task / list_scheduled_runs)
+    /// 此前仍经裸 `{err:#}` 上浮 automation 链的绝对路径 context。
+    /// 窗口/终止符/注释过滤与上方 runs-listing 钉同一套;每命令折叠计
+    /// 数钉死(5/4/4),单臂回退即红。新增错误臂必须并入折叠并同步计
+    /// 数;CRUD/变更车道成员自 round-27 起同样折叠,由下方专属钉计数。
+    #[test]
+    fn scheduled_read_list_commands_arms_fold_storage_prefixes() {
+        let source = include_str!("tasks.rs");
+        for (name, expected) in [
+            ("list_scheduled_tasks", 5),
+            ("read_scheduled_task", 4),
+            ("list_scheduled_runs", 4),
+        ] {
+            let finder = format!("pub async fn {name}(");
+            let start = source
+                .find(&finder)
+                .unwrap_or_else(|| panic!("{name} must exist"));
+            let body = &source[start..];
+            let end = [
+                concat!("\n#[tauri::", "command]"),
+                "\n#[cfg(test)]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\nfn ",
+            ]
+            .iter()
+            .filter_map(|delimiter| body.find(delimiter))
+            .min()
+            .unwrap_or_else(|| panic!("{name} body must be terminated"));
+            let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+            let folds = counted
+                .matches("crate::platform::paths::redact_storage_prefix(&format!(")
+                .count();
+            assert_eq!(
+                folds, expected,
+                "every error exit of web-allowlisted {name} must fold the \
+                 storage root before egress; the read/list lane previously \
+                 leaked automation-chain absolute paths while only the \
+                 runs-listing member was folded (round-25 MAJOR-1)"
+            );
+        }
+    }
+
+    /// Round-27 复审 M1 源钉:round-25 披露为「后续核查项」的
+    /// CRUD/变更车道八成员(create/update/delete/pause/resume/pin/
+    /// run-now/mark-viewed)经核查证实为活泄露——与读写车道同一批
+    /// carrier(ensure_*_workspace 的 workspace.display()、
+    /// automation_manager 的 save/delete/read path.display()、kind
+    /// sidecar 的 path.display()),全部在 web 允许清单内且 error 串
+    /// 经 complete_rpc 原样到手机。本提交折叠全部出口;本钉按命令
+    /// 窗口钉死每命令折叠计数(needle 为折叠原语全路径前缀,兼容
+    /// `&format!` 与 `&error.to_string()` 两种拼装),窗口/终止符/
+    /// 注释过滤与上方读写车道钉同一套纪律。新增错误臂必须并入折叠
+    /// 并同步计数,单臂回退即红。
+    #[test]
+    fn scheduled_crud_commands_arms_fold_storage_prefixes() {
+        let source = include_str!("tasks.rs");
+        for (name, expected) in [
+            ("create_task", 5),
+            ("update_task", 7),
+            ("pause_task", 2),
+            ("resume_task", 3),
+            ("set_task_pinned", 2),
+            ("delete_task", 1),
+            ("run_task_now", 4),
+            ("mark_run_viewed", 4),
+        ] {
+            let finder = format!("    async fn {name}(");
+            let start = source
+                .find(&finder)
+                .unwrap_or_else(|| panic!("{name} must exist"));
+            let body = &source[start..];
+            let end = [
+                concat!("\n#[tauri::", "command]"),
+                "\n#[cfg(test)]",
+                "\n    async fn ",
+                "\n    fn ",
+                // Round-28 复审 MINOR-7:可见性限定形式的下一方法此前不在
+                // 终止符表——mark_run_viewed 的窗口溢入 pub(crate) 的
+                // delete_run_for_session(当下无害,未来在溢入段加折叠会
+                // 假红、此删彼加的挪移会假绿)。补齐三种 pub 形式。
+                "\n    pub(crate) async fn ",
+                "\n    pub(crate) fn ",
+                "\n    pub fn ",
+                "\n}\n",
+            ]
+            .iter()
+            .filter_map(|delimiter| body.find(delimiter))
+            .min()
+            .unwrap_or_else(|| panic!("{name} body must be terminated"));
+            let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+            let folds = counted
+                .matches("crate::platform::paths::redact_storage_prefix(&")
+                .count();
+            assert_eq!(
+                folds, expected,
+                "every error exit of web-allowlisted {name} must fold the \
+                 storage root before egress; the CRUD/mutation lane leaked \
+                 automation-chain absolute paths under a pending-verification \
+                 disclosure that its own cited carriers already disproved \
+                 (round-27 M1)"
+            );
+        }
+    }
 
     #[test]
     fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {

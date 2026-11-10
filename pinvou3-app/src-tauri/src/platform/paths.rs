@@ -46,12 +46,81 @@ pub fn redact_storage_prefix(text: &str) -> String {
     if prefix.is_empty() {
         return text.to_string();
     }
-    let folded = text.replace(&prefix, "~/.pinvou3");
+    // Round-28 复审 MINOR-4:needle 是替换文本的子串时(PINVOU3_HOME 为
+    // `~`/`3`/`pinv` 这类退化相对值),折叠产物仍含 needle——重入式再折叠
+    // 无界增长,读回愈合每读一次膨胀一次,幂等契约破裂。真实绝对家目录
+    // 必然含第二个分隔符或盘符冒号,不可能成为 `~/.pinvou3` 的子串,故该
+    // 形态只可能是退化部署;按恒等返回的保守方向拦截(文本本就呈
+    // `~/.pinvou3` 相对形态,无需折叠)。
+    if "~/.pinvou3".contains(prefix.as_str()) {
+        return text.to_string();
+    }
+    // Round-15 复审 F4:Windows 的盘符/用户段大小写不稳定(错误文本里的
+    // `c:\users\…` 对 home `C:\Users\…` 此前完全不折叠,绝对路径带过
+    // relay)。匹配改为 ASCII 无关大小写;Linux 上大小写敏感文件系统的
+    // 异拼只是显示层过折叠(方向安全),不影响任何路径解析。(Round-18
+    // 复审残留注记:替换在两个方向上都只限 ASCII——PINVOU3_HOME 本身
+    // 含非 ASCII 字母时,错误文本里这些字节层面的异拼仍不折叠; 极罕见
+    // 的安装形态,按已披露残留处理。Round-19 复审补记两类同层残留:
+    // needle 是 pinvou3_home() 的原生 Display 拼写,故 (a) 正斜杠拼写的
+    // 绝对路径(`C:/Users/…`,外部工具 stderr / file URL 等)与 (b)
+    // UNC 家目录的 verbatim-UNC 规范化拼写(`\\?\UNC\server\share\…`,
+    // canonicalize 类构造才产生)都不含 needle 原文,不折叠;两者在本
+    // PR 前的逐字节 replace 下同样漏,非回归。已核当前错误构造器无一
+    // 产生这两种拼写;未来引入 canonicalize 类构造时须同步扩 needle。
+    // Round-21 复审补记第三类同层残留:PINVOU3_HOME 为相对值(如测试
+    // 的 `p8`、畸形部署的裸目录名)时 needle 就是该相对串,不含分隔符的
+    // 文本中任何相同子串都会被过折叠(display-safe 的过宽方向,与上方
+    // Linux 大小写过折叠同族);needle 为空已在上方拦截,截断风险无。
+    // (Round-28 复审补记:needle 本身是替换文本子串的退化形态——`~`、
+    // `3`、`pinv` 等,折叠产物仍含 needle,幂等破裂——已在下方守卫恒等
+    // 拦截,不再属于本残留;`p8` 类非子串相对 needle 仍按本残留披露。)
+    // 另记于此而非调用点:redact_storage_prefix 只折 `~/.pinvou3` 存储
+    // 根,不折用户 `$HOME` 本身——`list_host_files` 缺省枚举 `$HOME` 的
+    // 错误臂在 round-21(M3)改走命令层稳定码折叠,依赖本原语兜 `$HOME`
+    // 的用法兜不住,必须走稳定码。Round-22 复审补记第四类同层残留:
+    // needle 在读取时取自当前 PINVOU3_HOME——此前家目录下落盘的旧警告
+    // (home 迁移/数据目录还原后仍在 20 条历史窗口内)不再含当前
+    // needle,读回折叠救不了它们;触发面窄(需家目录变更 + 旧条目存
+    // 活),泄漏是失效的旧路径,按已披露残留处理。)
+    let folded = replace_ascii_case_insensitive(text, &prefix, "~/.pinvou3");
     if folded == text {
         folded
     } else {
         folded.replace('\\', "/")
     }
+}
+
+/// ASCII 无关大小写的字面替换(非 `replace` 的大小写折叠变体,避免引入
+/// 正则依赖)。逐字符推进,UTF-8 多字节字符按整字符拷贝。
+fn replace_ascii_case_insensitive(text: &str, from: &str, to: &str) -> String {
+    let bytes = text.as_bytes();
+    let needle = from.as_bytes();
+    if needle.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + needle.len() <= bytes.len()
+            && bytes[i..i + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            out.push_str(to);
+            i += needle.len();
+        } else {
+            match text[i..].chars().next() {
+                Some(ch) => {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+                // Unreachable: the loop condition guarantees `text[i..]` is
+                // non-empty, so `chars().next()` is always `Some` (the
+                // loop advances by whole characters only).
+                None => break,
+            }
+        }
+    }
+    out
 }
 
 pub fn settings_path() -> PathBuf {
@@ -1004,6 +1073,46 @@ pub(crate) mod tests {
         });
     }
 
+    /// Round-15 复审 F4:Windows 错误文本的盘符/用户段大小写漂移此前
+    /// 完全不折叠,绝对路径带过 relay;匹配改为 ASCII 无关大小写。语义
+    /// 保留:非前缀文本不折叠;前缀后跟非分隔符仍按既有约定折叠(过
+    /// 折叠是展示层安全方向,见 sibling 钉)。
+    #[test]
+    fn redact_storage_prefix_matches_case_insensitively() {
+        // Round-23 复审探针实锤:家目录此前派生自 temp_dir(),大小写牙齿
+        // 继承 TMPDIR 的拼写——Linux CI 的 /tmp 全小写,lower 与 needle
+        // 逐字节相等,回退字节精确 replace 的突变让包括本钉在内的全部
+        // redact 钉保持全绿(Windows 回归腿的过滤器不含本模块,该维度
+        // 在任何 CI 腿上都未被真正执行;同一突变在 TMPDIR 含大写时本钉
+        // 即红,机制确认)。家目录改为固定混合大小写拼写:ENV_LOCK 下直
+        // 设,pinvou3_home 对 env 值做纯字符串处理,无需落盘,牙齿不再
+        // 依赖平台临时目录的拼写。
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let root = std::env::temp_dir().join("PathsRedactCaseHome");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let root = pinvou3_home();
+        let lower = format!(
+            "{}\\user\\memory\\x.json",
+            root.display().to_string().to_ascii_lowercase()
+        );
+        assert!(
+            redact_storage_prefix(&lower).starts_with("~/.pinvou3"),
+            "a case-variant absolute path must fold"
+        );
+        let mixed = format!("{}\\User\\MEMORY\\x.json", root.display());
+        assert!(
+            redact_storage_prefix(&mixed).starts_with("~/.pinvou3"),
+            "the home-root needle matches byte-exactly in this vector; the \
+             ASCII case-fold teeth live in the lowercase vector above"
+        );
+        assert_eq!(
+            redact_storage_prefix("no path here"),
+            "no path here",
+            "non-prefix text stays untouched"
+        );
+    }
     #[test]
     fn redact_storage_prefix_passes_already_folded_text_through() {
         crate::platform::test_support::with_temp_home("paths-redact-folded", || {
@@ -1052,6 +1161,30 @@ pub(crate) mod tests {
             redact_storage_prefix(text),
             text,
             "an empty storage prefix must leave the text untouched"
+        );
+    }
+
+    /// Round-28 复审 MINOR-4:needle 是替换文本的子串时(PINVOU3_HOME 为
+    /// `~` 这类退化相对值),折叠产物仍含 needle——重入式再折叠无界增长,
+    /// 读回愈合每读一次膨胀一次。护栏必须恒等返回:单次输出不变、二次
+    /// 折叠恒等。删守卫突变:两次折叠的两次断言皆红(`~` 在替换文本
+    /// `~/.pinvou3` 内存活,每折一次多长一段)。
+    #[test]
+    fn redact_storage_prefix_substring_of_replacement_guard_is_idempotent() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: ENV_LOCK held via locked_env; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", "~") };
+        let text = "read /etc/shadow failed under ~/.pinvou3/scheduled/x";
+        let once = redact_storage_prefix(text);
+        assert_eq!(
+            once, text,
+            "a degenerate home that is a substring of the replacement \
+             must not fold at all (the text already reads as the folded form)"
+        );
+        let twice = redact_storage_prefix(&once);
+        assert_eq!(
+            twice, once,
+            "re-folding the guard's output must be a no-op (idempotency)"
         );
     }
 }

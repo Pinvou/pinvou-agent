@@ -664,6 +664,15 @@ PINNED_GATE_STEP_NAMES = {
         "Verify script (plist/usage-key/bundle targets checks, push only)",
         "Probe and export the macOS lld link flags",
     ),
+    # Round-28 复审 MINOR-6b:两个 gated-test 步骤此前不在本表——唯一性
+    # 防护(exactly-once 反诱饵)不覆盖它们,echo 洗白一个空壳步骤可绕过
+    # 全部同名 assertIn 钉。补入两个 job。
+    "windows-rust-test": (
+        "pinvou-cli Windows-gated unit tests",
+    ),
+    "macos-cli-check": (
+        "pinvou-cli macOS-gated unit tests",
+    ),
 }
 
 
@@ -1819,6 +1828,22 @@ class CiGatePolicyTests(unittest.TestCase):
         # runtime zero-match guard is the tripwire that fails the leg; this
         # pin holds the line itself.
         self.assert_run_filtered_filter(windows_rust_steps, "pinvou-cli", "windows_batch_tests")
+        # Round-27 review (m10): the Windows leg gains the executed-count
+        # guard the macOS leg grew in round-24 -- an #[ignore]d pin prints
+        # "ok. 0 passed; N ignored" and used to pass silently here. The
+        # macOS step's "same filtered-run pattern" comment is now true
+        # again; pin the guard bodies so a deletion reverts the asymmetry.
+        self.assertIn(
+            "^test result: ok\\. [1-9][0-9]* passed",
+            windows_rust_steps,
+            "the Windows executed-count guard keeps an #[ignore]d pin from "
+            "passing the step silently (the round-23 review hole, closed "
+            "symmetrically in round-27)",
+        )
+        self.assertIn(
+            "an ignored-only run must not pass the guard",
+            windows_rust_steps,
+        )
         self.assert_run_filtered_filter(
             windows_rust_steps,
             "adapter-gaia",
@@ -1960,6 +1985,37 @@ class CiGatePolicyTests(unittest.TestCase):
             "rustup show active-toolchain",
             macos_cli_steps,
             "the macOS leg must run the toolchain pinned by rust-toolchain.toml",
+        )
+        # Round-24 review (m6): the macOS-gated alias-flag pin step compiles
+        # and executes on no other leg, so deleting the whole step fails no
+        # test and silently reverts the leg to compile-only - the exact
+        # orphan class the benchmark-core filter pins above close for the
+        # Windows leg. Pin the step, its filter, and the three guard bodies
+        # (zero-match, ok-result, executed-count) so a deletion or guard
+        # swap fails this policy suite.
+        self.assertIn(
+            "- name: pinvou-cli macOS-gated unit tests",
+            macos_cli_steps,
+        )
+        # Round-28 复审 MINOR-6a:filter 此前用裸 assertIn——套件自己的
+        # assert_run_filtered_filter 助手(Round-50,行尾 token 精确钉)
+        # 正是为「测试名+filter 协调改名后旧文本仍是行子串保绿」而建,
+        # 七个 Windows filter 全走助手,本处补齐同一口径。
+        self.assert_run_filtered_filter(
+            macos_cli_steps,
+            "pinvou-cli",
+            "system_prefix_hits_run_through_the_production_alias_flag",
+        )
+        self.assertIn("grep -qE 'running [1-9][0-9]* tests?'", macos_cli_steps)
+        self.assertIn('grep -q "^test result: ok"', macos_cli_steps)
+        self.assertIn(
+            "a renamed test must not become a silent pass", macos_cli_steps
+        )
+        self.assertIn(
+            "^test result: ok\\. [1-9][0-9]* passed",
+            macos_cli_steps,
+            "the executed-count guard keeps an #[ignore]d pin from passing "
+            "the step silently (the round-23 review hole)",
         )
 
         required_gate = self._required_gate()

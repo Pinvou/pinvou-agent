@@ -1105,7 +1105,15 @@ pub async fn delete_session(
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
     }
-    result
+    // Round-22 复审 MAJOR-3:本命令在 Web 允许清单内,出口一次性折叠全部
+    // 内层错误链(级联删除、Agent 映射清理、定时联动删除)——
+    // store/retention 链携带 `<home>/...` 绝对路径(`write session {}`
+    // 等 context),裸传会经 bridge/relay 落到手机侧;损坏的
+    // session-agents.json 会让每次删除都稳定命中该形状。非路径细节
+    // (not found 等)保留。Round-25 复审修正:kind 判定臂在上方自带
+    // map_err 提前返回(`delete_session({id})` 前缀,固定文本、无路径),
+    // **不**经过本出口折叠——上句的「全部」只覆盖走进 result 的链。
+    result.map_err(|error| crate::platform::paths::redact_storage_prefix(&error))
 }
 
 #[cfg(test)]
@@ -1410,7 +1418,14 @@ pub async fn rename_session(
     }
     store
         .set_title(&id, title)
-        .map_err(|e| format!("rename_session({id}): {e:#}"))?;
+        // Round-22 复审 MAJOR-3:web-allowlisted 命令,store 链携带存储
+        // 绝对路径(retention.rs 的 `write session {}` context),先折叠
+        // 再出站;非路径细节保留。
+        .map_err(|e| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "rename_session({id}): {e:#}"
+            ))
+        })?;
     emit_session_event(&app, "session:list_changed", &id, "renamed");
     Ok(())
 }
@@ -1432,15 +1447,15 @@ pub async fn set_session_pinned(
         ));
     }
     // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
-    store
-        .load(&id)
-        .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
+    store.load(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("set_session_pinned({id}): {e:#}"))
+    })?;
     // Report a refused/failed persist instead of swallowing it: the list is
     // re-read from the durable file, so a silently dropped write shows the
     // user their pin reverting with no explanation.
-    store
-        .set_pinned(&id, pinned)
-        .map_err(|e| format!("set_session_pinned({id}): {e:#}"))?;
+    store.set_pinned(&id, pinned).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("set_session_pinned({id}): {e:#}"))
+    })?;
     let action = if pinned { "pinned" } else { "unpinned" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
@@ -1461,12 +1476,12 @@ pub async fn set_session_archived(
         ));
     }
     // 先 load 一次确认 session 存在,避免收起表残留无效 id。
-    store
-        .load(&id)
-        .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
-    store
-        .set_hidden(&id, archived)
-        .map_err(|e| format!("set_session_archived({id}): {e:#}"))?;
+    store.load(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("set_session_archived({id}): {e:#}"))
+    })?;
+    store.set_hidden(&id, archived).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("set_session_archived({id}): {e:#}"))
+    })?;
     let action = if archived { "archived" } else { "restored" };
     emit_session_event(&app, "session:list_changed", &id, action);
     Ok(())
@@ -1605,9 +1620,94 @@ pub async fn save_session_artifacts(
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     ensure_chat_session(&store, &id, "save_session_artifacts")?;
-    store
-        .update_artifacts(&id, paths)
-        .map_err(|e| format!("save_session_artifacts: {e:#}"))
+    store.update_artifacts(&id, paths).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("save_session_artifacts: {e:#}"))
+    })
+}
+
+/// Round-22 复审 MAJOR-3 源钉:五个 web-allowlisted session 突变命令的
+/// 出站错误链必须折叠存储根——store/retention 链携带 `<home>/...` 绝对
+/// 路径(损坏的 session-agents.json 会让每次删除稳定命中)。窗口以下一
+/// 个命令体为界,测试模块不会混入。Round-24 复审(m2)补强:纯注释行
+/// 先滤除(round-23 补偿突变同一类),断言从 contains 升级为逐命令折叠
+/// 计数——set_session_pinned / set_session_archived 各有两个独立折叠臂
+/// 共占一个 marker,单臂回退此前保持全绿(旧文档「删除任一折叠即红」
+/// 实为「删除全部折叠即红」)。新增折叠臂时须同步计数表(枚举钉:新
+/// 增未折叠臂对本钉不可见)。
+#[cfg(test)]
+#[test]
+fn web_session_mutations_fold_storage_prefixes() {
+    const NEEDLE: &str = "crate::platform::paths::redact_storage_prefix(";
+    for (fn_name, expected_folds, producers) in [
+        // delete_session 出口一次性折叠(覆盖全部内层臂)。
+        ("pub async fn delete_session(", 1, &[] as &[&str]),
+        ("pub async fn rename_session(", 1, &[]),
+        // Round-27 复审 m5:双折叠命令补逐臂序牙——折叠必须紧跟各自的
+        // 生产调用(load 臂在 set_* 之前,set_* 臂在其后);「剥掉 load
+        // 臂折叠、在定文本臂垫一枚冗余折叠」的交换突变计数不变,序牙
+        // 转红。
+        (
+            "pub async fn set_session_pinned(",
+            2,
+            &["store.load(&id)", "store.set_pinned(&id, pinned)"],
+        ),
+        (
+            "pub async fn set_session_archived(",
+            2,
+            &["store.load(&id)", "store.set_hidden(&id, archived)"],
+        ),
+        ("pub async fn save_session_artifacts(", 1, &[]),
+    ] {
+        let source = include_str!("sessions.rs");
+        let start = source
+            .find(fn_name)
+            .unwrap_or_else(|| panic!("{fn_name} must exist"));
+        let body = &source[start..];
+        let end = [
+            "\n#[tauri::command]",
+            "\n#[cfg(test)]",
+            "\npub async fn ",
+            "\npub fn ",
+            "\nfn ",
+        ]
+        .iter()
+        .filter_map(|delimiter| body.find(delimiter))
+        .min()
+        .unwrap_or_else(|| panic!("{fn_name} body must be terminated"));
+        let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+        assert_eq!(
+            counted.matches(NEEDLE).count(),
+            expected_folds,
+            "{fn_name} must fold every web-visible error arm through the \
+             storage-root fold ({expected_folds} arms pinned; a single-arm \
+             revert previously stayed green under the shared contains \
+             marker, and a commented-out fold kept the needle findable)"
+        );
+        if let [producer_a, producer_b] = producers {
+            let a_at = counted
+                .find(producer_a)
+                .unwrap_or_else(|| panic!("{fn_name} must keep {producer_a}"));
+            let b_at = counted
+                .find(producer_b)
+                .unwrap_or_else(|| panic!("{fn_name} must keep {producer_b}"));
+            let mut fold_positions = Vec::new();
+            let mut from = 0;
+            while let Some(found) = counted[from..].find(NEEDLE) {
+                fold_positions.push(from + found);
+                from = from + found + NEEDLE.len();
+            }
+            assert!(
+                fold_positions.len() == 2
+                    && a_at < fold_positions[0]
+                    && fold_positions[0] < b_at
+                    && b_at < fold_positions[1],
+                "{fn_name} folds must sit in their own producer arms in \
+                 call order ({producer_a} < fold < {producer_b} < fold); a \
+                 stripped real arm padded with a redundant fixed-text fold \
+                 keeps the count but breaks this ordering"
+            );
+        }
+    }
 }
 
 /// Shared skeleton for the two position-keyed sidecar normalizers
@@ -1712,6 +1812,11 @@ pub async fn save_session_pinvou_scene_events(
     events: serde_json::Value,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
+    // Round-23 复审口径注记:本命令与 get_session_pinvou_scene_events、
+    // list_workspace_files 的裸 `?` 错误出口同族——当前可达的错误构造器
+    // (sidecar 的 std io Display / 固定 id 文本)均不内嵌路径,故未折叠
+    // (与 executor 交付臂的既定口径一致):未来任何内嵌绝对路径的错误
+    // 构造函数加入这些链时,必须同步接 redact_storage_prefix 折叠。
     ensure_chat_session(&store, &session_id, "save_session_pinvou_scene_events")?;
     let normalized = normalize_pinvou_scene_events(events)?;
     let path = crate::platform::paths::session_pinvou_scene_events(&session_id);

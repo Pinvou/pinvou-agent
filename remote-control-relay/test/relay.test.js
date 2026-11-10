@@ -246,8 +246,13 @@ function waitForRawClose(sock, timeoutMs = 3000) {
   });
 }
 
-async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl) {
-  const ws = await openSocket(url);
+async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl, wsOptions = {}) {
+  // wsOptions 让个别测试能给桌面 socket 配 maxPayload:三道 frame_too_large
+  // 门测试(两道超界 + 近界限正控)用它把桌面入站上限配成真实桌面界限,
+  // 使「桌面不受扰」断言有牙齿——若被拒帧仍被转发,桌面侧 1009 关闭即
+  // 翻红(默认 100 MiB maxPayload 下该断言结构性不可观察,Round-19 复审;
+  // 近界限腿 round-20 复审加入,Round-21 复审记数)。
+  const ws = await openSocket(url, wsOptions);
   const registered = nextMessage(ws, "desktop_endpoint_registered");
   ws.send(JSON.stringify({
     v: 2,
@@ -2172,7 +2177,342 @@ test("a state above the clamped capacity loads and refuses only new revocations"
   }
 });
 
-test("survives a desktop frame the relay cannot serialize and keeps the web client joined", async () => {
+test("rejects a web frame whose envelope would exceed the desktop bound with frame_too_large", async () => {
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_envelope_${Date.now()}`;
+  const accessToken = "access-token-envelope-000000000000001";
+  const desktopSecret = "desktop-secret-envelope-00000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    // 大于桌面界限、小于 ingress 上限:此前被 ingress 放行、转发后超桌面
+    // tungstenite 界限,桌面强制断线(自愈闪断);现在在转发前按真实编码
+    // 长度以 frame_too_large 明确拒绝。
+    const pad = "x".repeat(4_150_000);
+    web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", request_id: "req-big", command: "chat", args: { pad } }));
+
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "frame_too_large");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must not be disturbed by the oversized web frame");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // 同一 web 会话随后仍可正常转发(错误是帧级的,不断链)——正向断言:
+    // client_ready 必须真实到达桌面,而不是仅有「无错误」的否定断言。
+    const readyReceived = nextMessage(desktop.ws, "client_ready");
+    web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-b", after_seq: 0 }));
+    const ready = await readyReceived;
+    assert.equal(ready.stream_epoch, "epoch-b");
+    await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("rejects a web frame whose encoded forward expands past the desktop bound", async () => {
+  // Round-17 复审修正:JSON 再序列化会膨胀数字字面量——4 字节的 `1e20`
+  // 重编码为 21 位精确十进制(每元素 +17 字节)。构造一帧:raw 远小于
+  // ingress 上限(旧 raw+余量近似门直接放行),但转发编码膨胀后超过桌面
+  // 界限;门量真实编码长度,必须以 frame_too_large 拒绝且桌面不掉线。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_expand_${Date.now()}`;
+  const accessToken = "access-token-expand-0000000000000001";
+  const desktopSecret = "desktop-secret-expand-000000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const base = { v: 2, type: "rpc_request", request_id: "req-expand", command: "chat", args: { nums: [] } };
+    const overhead = Buffer.byteLength(JSON.stringify(base));
+    // 每个元素 raw `1e20,` = 5 字节 → 解析后重编码 `100000000000000000000,`
+    // = 22 字节:按编码侧反推元素数,保证编码越过桌面界限而 raw(≈ 编码
+    // 的 23%)远低于 ingress 上限。字面量必须以文本形式拼进 wire 帧
+    // (JSON.stringify 会直接输出 21 位十进制,膨胀就无从发生)。
+    const elementCount = Math.ceil((4 * 1024 * 1024 - 64 * 1024 + 4096 - overhead) / 22);
+    const elementText = Array.from({ length: elementCount }, () => "1e20").join(",");
+    const frame = JSON.stringify(base).replace('"nums":[]', `"nums":[${elementText}]`);
+    assert.equal(frame.includes("1e20"), true,
+      "the raw frame must carry exponential literals (the expansion vector)");
+    assert.equal(Buffer.byteLength(frame) < 4 * 1024 * 1024, true,
+      "the raw frame must pass the ingress payload cap");
+    const expanded = Buffer.byteLength(JSON.stringify(JSON.parse(frame)));
+    assert.equal(expanded > 4 * 1024 * 1024 - 64 * 1024, true,
+      "the re-serialized encoding must exceed the desktop bound");
+
+    web.ws.send(frame);
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "frame_too_large",
+      "the gate must measure the forwarded encoding, not the raw bytes");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must not be disturbed by the expanding web frame");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // Round-18 复审:「desktop undisturbed」此前只采样 readyState——与
+    // 信封测试同口径补一条真实转发断言:拒绝后同一 web 会话的合法帧仍
+    // 完整到达桌面(错误是帧级的,不断链)。
+    const readyReceived = nextMessage(desktop.ws, "client_ready");
+    web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-expansion", after_seq: 0 }));
+    const ready = await readyReceived;
+    assert.equal(ready.stream_epoch, "epoch-expansion");
+    await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("forwards a near-bound legal web frame to the desktop (positive control against bound drift)", async () => {
+  // Round-20 复审(S09):两条门测试只钉欠阻塞方向(放行超帧=红);
+  // 界限常量向下漂移(误改成 1 MiB ⇒ 所有 1MiB~界限间的合法 web→桌面
+  // 帧被 frame_too_large 拒绝)此前全套件保持绿——没有「接近界限但仍
+  // 合法」的正向对照。发一帧 raw 与转发编码都落在 ingress 上限与桌面
+  // 界限之间的 rpc_request,断言桌面完整收到。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_nearbound_${Date.now()}`;
+  const accessToken = "access-token-nearbound-000000000000001";
+  const desktopSecret = "desktop-secret-nearbound-00000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const base = { v: 2, type: "rpc_request", request_id: "req-nearbound", command: "chat", args: { pad: "" } };
+    const overhead = Buffer.byteLength(JSON.stringify(base));
+    // 目标:转发编码 ≈ 桌面界限 − 16 KiB(转发信封与心跳争用的余量),
+    // raw(ASCII pad,无再编码膨胀)远低于 ingress 上限、又远高于任何
+    // 会被误配的向下漂移界限。
+    const target = 4 * 1024 * 1024 - 64 * 1024 - 16 * 1024;
+    const pad = "x".repeat(target - overhead);
+    const frame = JSON.stringify({ ...base, args: { pad } });
+    const encoded = Buffer.byteLength(JSON.stringify(JSON.parse(frame)));
+    assert.equal(encoded < 4 * 1024 * 1024 - 64 * 1024, true,
+      "the forwarded encoding must stay under the desktop bound");
+    assert.equal(Buffer.byteLength(frame) > 1024 * 1024, true,
+      "the frame must sit far above any plausible drifted-down bound");
+
+    const received = nextMessage(desktop.ws, "rpc_request");
+    web.ws.send(frame);
+    const rpc = await received;
+    assert.equal(rpc.request_id, "req-nearbound",
+      "a near-bound legal frame must reach the desktop intact");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must stay open across the near-bound forward");
+    await expectNoMessage(web.ws, "error");
+    await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("pins the server bound to within 1 KiB of the desktop bound on both sides", async () => {
+  // Round-27 复审 m9:既有门测试的盲窗量化——向下漂移在 −16 KiB 内
+  // (near-bound 对照腿在 bound−16KiB)保持绿,向上漂移要到 +4 KiB
+  // (expand 测试)才被观察。±1 KiB 两腿把盲窗压到 1 KiB:向下漂
+  // ≥1 KiB ⇒ bound−1KiB 合法帧被 frame_too_large 拒绝(负腿红);
+  // 向上漂 ≥1 KiB ⇒ bound+1KiB 超帧被放行,桌面 tungstenite 在其自身
+  // 4 MiB−64KiB maxPayload 处强制断线(正腿红)。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_1kib_${Date.now()}`;
+  const accessToken = "access-token-1kib-00000000000000001";
+  const desktopSecret = "desktop-secret-1kib-0000000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const bound = 4 * 1024 * 1024 - 64 * 1024;
+    const make = (request_id, size) => {
+      const base = { v: 2, type: "rpc_request", request_id, command: "chat", args: { pad: "" } };
+      const overhead = Buffer.byteLength(JSON.stringify(base));
+      // raw 与转发编码一致(ASCII pad,无再编码膨胀),构造误差经实测
+      // 校正到 ±8 字节内——±1 KiB 断言对这些残余不敏感。
+      return JSON.stringify({ ...base, args: { pad: "x".repeat(size - overhead) } });
+    };
+
+    // 负腿:bound−1 KiB 必须放行(向下漂 ≥1 KiB 的界限会误拒)。
+    const legal = make("req-1kib-under", bound - 1024);
+    const received = nextMessage(desktop.ws, "rpc_request");
+    web.ws.send(legal);
+    const rpc = await received;
+    assert.equal(rpc.request_id, "req-1kib-under",
+      "a bound-1KiB frame must reach the desktop; a >=1KiB downward bound drift refuses it");
+    await expectNoMessage(web.ws, "error");
+
+    // 正腿:bound+1 KiB 必须被 frame_too_large 拒绝(向上漂 ≥1 KiB 会放行)。
+    const oversized = make("req-1kib-over", bound + 1024);
+    web.ws.send(oversized);
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "frame_too_large",
+      "a bound+1KiB frame must be refused; a >=1KiB upward bound drift forwards it and the desktop kills the socket");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must not be disturbed by the refused frame");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME_BYTES", async () => {
+  // Round-25 复审 MAJOR-4:relay_client.rs 的注释声称「字节等式经 relay
+  // 门测试双向验证」,但门测试只内联自己的字面量副本、从未读 Rust 源
+  // ——服务端漂移有上方门测试兜底,桌面侧漂移无人观察(等式才是
+  // operative contract)。本钉直接对 Rust 常量断言:桌面
+  // MAX_INBOUND_TEXT_BYTES 漂离 4 MiB − 64 KiB 时套件转红,注释的
+  // 「双向验证」自此为真。
+  const rust = await readFile(
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "..",
+      "pinvou3-app",
+      "src-tauri",
+      "src",
+      "features",
+      "remote_control",
+      "relay_client.rs",
+    ),
+    "utf8",
+  );
+  // Round-27 复审 m8:匹配前先滤除纯注释行——裸 match 对「常量已改、
+  // 任意注释仍引用旧行」的漂移是盲的(与 Rust 侧 comment_filtered 同
+  // 一口径);行首锚定 (^…$ 多行) 使前缀重排(如 pub const)也失配,
+  // 拼写冻结与值冻结同强度。
+  const rustCode = rust
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trimStart();
+      return !(trimmed.startsWith('//') || trimmed.startsWith('///'));
+    })
+    .join('\n');
+  assert.match(
+    rustCode,
+    /^const MAX_INBOUND_TEXT_BYTES: usize = \(4 \* 1024 \* 1024\) - \(64 \* 1024\);$/m,
+    "the desktop MAX_INBOUND_TEXT_BYTES must stay byte-equal to server.js \
+     DESKTOP_MAX_FRAME_BYTES (4 MiB - 64 KiB): the relay pre-check rejects \
+     at this bound and tungstenite kills the connection one byte past it, \
+     so desktop-side drift silently resurrects the round-15 reconnect flap",
+  );
+});
+
+test("answers desktop_offline before measuring an oversized frame", async () => {
+  // Round-19 复审:PROTOCOL.md 承诺「桌面断开时先答 desktop_offline,帧
+  // 不被测量也不被转发」——此前无测试钉住,把测量门挪到离线检查之前的
+  // 重构全绿(M5 突变实证)。本测试:桌面 terminate 后,web 送越界帧,
+  // 必须收到 desktop_offline 而非 frame_too_large。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_offlinegate_${Date.now()}`;
+  const accessToken = "access-token-offlinegate-00000000000001";
+  const desktopSecret = "desktop-secret-offlinegate-00000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const offline = nextMessage(web.ws, "desktop_connection_state");
+    desktop.ws.terminate();
+    assert.equal((await offline).status, "offline",
+      "the relay must observe the desktop loss before the oversized frame arrives");
+
+    const pad = "x".repeat(4_150_000);
+    web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", request_id: "req-offline-big", command: "chat", args: { pad } }));
+    const answered = await nextMessage(web.ws, "error");
+    assert.equal(answered.code, "desktop_offline",
+      "a disconnected desktop must be answered desktop_offline before any measurement");
+    assert.equal(web.ws.readyState, web.ws.OPEN,
+      "the offline answer must be informational; the web socket stays open");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("forwards a legal desktop event inside the old role-blind false-positive window", async () => {
+  // Round-16 复审(M3):桌面入站界只约束 web→desktop。落在
+  // 「桌面界限 − 信封余量 < 帧大小 ≤ 桌面自身的出站上限」窗口内的
+  // desktop→web 事件此前被误判 frame_too_large 并静默丢弃(浏览器无
+  // 上限,转发本可成功);角色收窄后必须照常送达 web 客户端。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_role_scope_${Date.now()}`;
+  const accessToken = "access-token-role-scope-00000000000001";
+  const desktopSecret = "desktop-secret-role-scope-000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    // 桌面合法事件(≤ 桌面自身出站上限 4,128,768),但加转发信封余量后
+    // 落入旧误判窗(> 4,128,768 − 512)。
+    const target = 4_128_543;
+    const base = JSON.stringify({
+      v: 2,
+      type: "event",
+      event: "chat:delta",
+      stream_epoch: "epoch-big",
+      seq: 1,
+      payload: "",
+    });
+    const padLength = target - Buffer.byteLength(base);
+    const frame = base.replace('"payload":""', `"payload":"${"x".repeat(padLength)}"`);
+    assert.equal(Buffer.byteLength(frame), target);
+    const eventPromise = nextMessage(web.ws, "event");
+    desktop.ws.send(frame);
+
+    const event = await eventPromise;
+    assert.equal(event.payload.length, padLength,
+      "the desktop event must reach the web client intact: the desktop bound \
+       only governs web→desktop forwards, not this direction");
+    await expectNoMessage(desktop.ws, "error");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("survives a desktop frame the relay cannot serialize and lets a fresh web client rejoin with the rejoin flag", async () => {
   const isolated = await spawnRelay();
   const endpointId = `endpoint_deep_event_${Date.now()}`;
   const accessToken = "access-token-deep-event-00000000000001";
@@ -2183,19 +2523,35 @@ test("survives a desktop frame the relay cannot serialize and keeps the web clie
     const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
     await connected;
 
+    const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
     const deepPayload = `${"[".repeat(20000)}0${"]".repeat(20000)}`;
     desktop.ws.send(`{"v":2,"type":"event","payload":${deepPayload}}`);
 
-    if (await deepFrameRejectedAtIngress(desktop, web, isolated)) return;
-
-    await waitForClose(web.ws);
-    assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
-    await expectNoMessage(desktop.ws, "error");
+    // #781 之后该帧类已在入口被拒(bad_json,套接字全开);更老的树会把帧
+    // 转发出去并杀死 web socket。两条世界线在此汇合后再显式断开/重入——
+    // round-16 复审 M4:此前的早退让重入尾巴不可达,测试名承诺的
+    // web_rejoining=true 从未被驱动;尾巴必须放在早退之前可达的位置。
+    const ingressError = await nextMessageOrTimeout(desktop.ws, "error");
+    if (ingressError) {
+      assert.equal(ingressError.code, "bad_json");
+      assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+      assert.equal(web.ws.readyState, web.ws.OPEN);
+      await expectStillOpen(web.ws);
+    } else {
+      // 无入口上限的树:帧已转发,坏帧杀死了 web socket。
+      await waitForClose(web.ws);
+    }
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
 
-    // A fresh web client joins and the desktop forwards normally again.
+    closeSocket(web.ws);
+    await disconnected;
+    const rejoinNotice = nextMessage(desktop.ws, "web_client_connected");
     const rejoined = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    const rejoin = await rejoinNotice;
+    assert.equal(rejoin.web_rejoining, true,
+      "a fresh web client after a real disconnect must be flagged as a rejoin, \
+       not a takeover — this is what the test name promises");
     assert.equal(rejoined.joined.desktop_connected, true);
     const event = nextMessage(rejoined.ws, "event");
     desktop.ws.send(JSON.stringify({
