@@ -3896,6 +3896,128 @@ mod spool_pipeline_tests {
         );
     }
 
+    /// Round-10 (L11/L3): the pending registry prunes to the poll listing
+    /// like every other map — a file deleted BETWEEN passes is never
+    /// listed, so its armed entry would strand for the 24h wait holding its
+    /// retained bytes (the in-pass vanished arm above only covers files the
+    /// pass listed; the forwarder-aborted / lost-Drop-notification class
+    /// has no terminal event to disarm with). Deleting the listing retain
+    /// at the top of `process_pending_spool` ships this test red.
+    #[tokio::test]
+    async fn pending_registry_prunes_to_the_listing_between_passes() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("b.json"), record_json("b", Some("k-b"))).unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-20@10".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let outcome = process_spool_file(
+            &spool.join("b.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut Default::default(),
+            &mut None,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::PendingSteer(..)));
+        assert!(is_pending_steer_path(&spool.join("b.json")));
+
+        // The file vanishes between passes — no terminal event ever comes.
+        std::fs::remove_file(spool.join("b.json")).unwrap();
+
+        // One pass over the now-empty directory: the listing retain must
+        // retire the dead entry instead of freezing it to the expiry.
+        let poll_delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Dispatched),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        process_pending_spool(
+            &poll_delivery,
+            &AllowAllGates,
+            &store,
+            &mut RetryState::default(),
+            &mut Default::default(),
+        )
+        .await;
+        assert!(
+            !is_pending_steer_path(&spool.join("b.json")),
+            "a between-passes vanish must not strand the armed entry for the \
+             24h wait"
+        );
+    }
+
+    /// Round-10 (L3): the armed-skip snapshot is only a FILTER — a snapshot
+    /// hit must take the LIVE peek, so a terminal DROP landing mid-pass
+    /// (this stub drops b.json's steer while delivering a.json, which
+    /// sorts first) yields NotArmed and b.json still delivers in the SAME
+    /// pass. Trusting the stale snapshot (Held on every hit) would defer
+    /// that delivery one pass — the exactness property the module doc
+    /// discloses.
+    struct MidPassDropDelivery {
+        victim_steer_id: &'static str,
+        delivered: Rc<RefCell<Vec<String>>>,
+        calls: Rc<RefCell<usize>>,
+    }
+
+    impl SpoolDelivery for MidPassDropDelivery {
+        async fn deliver(&self, message: &SpooledMessage) -> Result<DeliveryOutcome> {
+            *self.calls.borrow_mut() += 1;
+            self.delivered.borrow_mut().push(message.id.clone());
+            resolve_pending_steer(self.victim_steer_id, false);
+            Ok(DeliveryOutcome::Dispatched)
+        }
+    }
+
+    #[tokio::test]
+    async fn mid_pass_drop_keeps_the_same_pass_delivery() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("b.json"), record_json("b", Some("k-b"))).unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered("steer-21@11".to_string())),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let outcome = process_spool_file(
+            &spool.join("b.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut Default::default(),
+            &mut None,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::PendingSteer(..)));
+
+        // a.json sorts first: its delivery drops b's steer mid-pass.
+        std::fs::write(spool.join("a.json"), record_json("a", Some("k-a"))).unwrap();
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+        let poll_delivery = MidPassDropDelivery {
+            victim_steer_id: "steer-21@11",
+            delivered: Rc::clone(&delivered),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        process_pending_spool(
+            &poll_delivery,
+            &AllowAllGates,
+            &store,
+            &mut RetryState::default(),
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(
+            delivered.borrow().as_slice(),
+            ["a".to_string(), "b".to_string()],
+            "the mid-pass drop must release b.json for delivery in the SAME \
+             pass (the live peek corrects the stale snapshot)"
+        );
+    }
+
     /// The expiry give-up only fires if the production poll actually calls
     /// the prune — `expired_pending_steer_gives_up_and_redelivers` calls
     /// the injectable helper directly, so deleting the call site at the
@@ -4003,14 +4125,22 @@ mod spool_pipeline_tests {
         // `stamp_steer_generation` compiles and passes the argument window
         // (the call still reads `&steer_id`), but finalizes raw ids that
         // match no registration and strand every steered delivery for the
-        // 24h wait. Pin the order per arm.
+        // 24h wait. Round-10 (mutation M1): bind the BINDING, not just the
+        // call's presence — the bare `stamp_steer_generation(..);` statement
+        // (result discarded, raw id forwarded) satisfied the old
+        // order-only check with the whole suite green. `let steer_id = `
+        // rebinds the name to the stamped value, so any later `&steer_id`
+        // in the arm IS the stamped id; a mutant that drops the binding
+        // cannot forward the stamped id under this needle.
         for (label, span) in [("committed", committed_span), ("dropped", dropped_span)] {
             let call = span
                 .find("resolve_steer_outcome(")
                 .unwrap_or_else(|| panic!("{label} arm must call the hook"));
             let stamp = span
-                .find("stamp_steer_generation(")
-                .unwrap_or_else(|| panic!("{label} arm must stamp the steer id"));
+                .find("let steer_id = stamp_steer_generation(")
+                .unwrap_or_else(|| {
+                    panic!("{label} arm must stamp the steer id into the binding the fan-out reads")
+                });
             assert!(
                 call > stamp,
                 "the {label} arm must stamp the steer id BEFORE fanning out \
@@ -4067,6 +4197,10 @@ mod spool_pipeline_tests {
     /// first verify only), so pin the re-verify + fresh-marker unlink
     /// between the marker write and the removal in the finalizer's span —
     /// deleting or moving the block after the removal turns this red.
+    /// Round-10 (mutation M2): bind the re-verify's ARGUMENT too — the old
+    /// needle bound the callee name only, so passing `None` (the helper's
+    /// always-equal arm) shipped the entire suite green while silently
+    /// reopening the loss window this pin exists to guard.
     #[test]
     fn committed_arm_reverifies_after_the_marker_write() {
         let source = include_str!("mod.rs");
@@ -4090,10 +4224,42 @@ mod spool_pipeline_tests {
         );
         let between = &span[marker_write..removal];
         assert!(
-            between.contains("replaced_since_first_read")
+            between.contains("replaced_since_first_read(&entry.spool_path, Some(&entry.original))")
                 && between.contains("remove_file(done_dir()"),
-            "the committed arm must re-verify after the marker write and \
-             unlink the fresh marker on replacement"
+            "the committed arm must re-verify after the marker write against the \
+             retained bytes (not a neutralized argument) and unlink the fresh \
+             marker on replacement"
+        );
+    }
+
+    /// Round-10 (perf lane): the byte-equality fast path is what keeps the
+    /// armed steady-state compare a memcmp instead of two full JSON parses
+    /// per armed file per pass (the round-5 quantification: ~150-350ms of
+    /// each 1s pass at the 256-armed ceiling before the fast path). No
+    /// behavioral test can observe the cost — deleting the early return
+    /// ships the whole suite green and silently re-costs the regression
+    /// round-5 fixed (mutation-verified) — so pin the structural fact: the
+    /// fast path must precede the typed projection inside the helper.
+    #[test]
+    fn spool_records_equal_keeps_the_byte_equality_fast_path() {
+        let source = include_str!("mod.rs");
+        let production = comment_stripped_production(source, "mod spool_pipeline_tests");
+        let helper = production
+            .find("fn spool_records_equal")
+            .expect("the compare helper");
+        let body = &production[helper..];
+        let body_end = body.find("\nfn ").unwrap_or(body.len());
+        let body = &body[..body_end];
+        let fast_path = body
+            .find("if a == b {")
+            .expect("the byte-equality fast path must exist");
+        let projection = body
+            .find("serde_json::from_slice::<SpooledMessage>")
+            .expect("the typed projection must exist");
+        assert!(
+            fast_path < projection,
+            "the armed steady-state compare must answer byte-identical records \
+             with a memcmp BEFORE the typed projection parses both bodies"
         );
     }
 
@@ -5541,6 +5707,10 @@ mod spool_pipeline_tests {
         assert_eq!(MAX_STEER_DROP_CYCLES, 10);
         assert_eq!(MAX_PENDING_FILES, 256);
         assert_eq!(MAX_SPOOL_FILE_BYTES, 64 * 1024);
+        // Round-10: the steer/dispatch timeout is load-bearing in the
+        // module doc's cancel-safety/exactly-once argument, so a silent
+        // literal drift belongs in the same disclosed set.
+        assert_eq!(DELIVERY_TIMEOUT, Duration::from_secs(30));
         use crate::features::sessions::MAX_SESSION_BLOCK_JSON_LINE;
         assert_eq!(MAX_SESSION_BLOCK_JSON_LINE, 64 * 1024);
     }
