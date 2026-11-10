@@ -68,11 +68,9 @@ pub fn clean_id(value: &str) -> String {
 }
 
 pub(super) fn stable_id_with_prefix(prefix: &str, value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
+    // 同 platform::paths::fnv1a64 的共享 FNV-1a-64 原语（常量口径一致），
+    // 勿在本地复刻循环。
+    let hash = crate::platform::paths::fnv1a64(value.as_bytes());
     format!("{}_{hash:016x}", clean_id(prefix))
 }
 

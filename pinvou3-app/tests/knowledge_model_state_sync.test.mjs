@@ -18,6 +18,10 @@ const knowledgeCommands = readFileSync(
   path.join(appRoot, 'src-tauri/src/app/commands/knowledge.rs'),
   'utf8',
 );
+const sharedKnowledgeHostFeature = readFileSync(
+  path.join(appRoot, 'src-tauri/src/features/shared_knowledge_host/mod.rs'),
+  'utf8',
+);
 const remoteCommands = readFileSync(
   path.join(appRoot, 'src-tauri/src/app/commands/remote_knowledge.rs'),
   'utf8',
@@ -71,7 +75,14 @@ test('status queries and completed host downloads synchronize the desktop model'
   );
   assert.match(
     knowledgeCommands,
-    /pub async fn kb_model_download\([\s\S]*https:\/\/127\.0\.0\.1:3210[\s\S]*remote\.download_model/u,
+    /pub async fn kb_model_download\([\s\S]*item\.endpoint == LOCAL_ENDPOINT[\s\S]*remote\.download_model/u,
+  );
+  // kb_model_download 的宿主刷新过滤器、owner register/rebind 与宿主状态上报
+  // 共用同一 LOCAL_ENDPOINT 常量（dead-code sweep 收敛了三处 127.0.0.1:3210
+  // 字面量）；端点值锚定在 features/shared_knowledge_host/mod.rs 的声明处。
+  assert.match(
+    sharedKnowledgeHostFeature,
+    /pub\(crate\) const LOCAL_ENDPOINT: &str = "https:\/\/127\.0\.0\.1:3210"/u,
   );
   assert.match(
     remoteCommands,

@@ -267,6 +267,7 @@ pub fn session_mounted_collections_snapshot(
 use crate::features::knowledge as knowledge_domain;
 use crate::features::knowledge::model_download as model_domain;
 use crate::features::remote_knowledge::RemoteKnowledgeService;
+use crate::features::shared_knowledge_host::LOCAL_ENDPOINT;
 use knowledge_domain::*;
 use model_domain::*;
 
@@ -451,7 +452,7 @@ pub async fn kb_model_download(
     for connection in remote
         .configured_connections()
         .into_iter()
-        .filter(|item| item.scope.is_owner() && item.endpoint == "https://127.0.0.1:3210")
+        .filter(|item| item.scope.is_owner() && item.endpoint == LOCAL_ENDPOINT)
     {
         if let Err(error) = remote.download_model(&connection.server_id).await {
             eprintln!(

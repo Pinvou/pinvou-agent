@@ -6,7 +6,11 @@ use std::path::{Path, PathBuf};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-const LOCAL_ENDPOINT: &str = "https://127.0.0.1:3210";
+/// Loopback endpoint of the bundled local host service — the single source
+/// for every spelling of it (host status/reporting, the owner register/rebind
+/// calls, and the desktop's kb-model host-refresh filter; the connection
+/// store persists exactly this normalized form).
+pub(crate) const LOCAL_ENDPOINT: &str = "https://127.0.0.1:3210";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
