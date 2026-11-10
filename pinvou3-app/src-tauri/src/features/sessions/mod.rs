@@ -42,7 +42,7 @@ pub(crate) mod diagnostics;
 mod injections;
 pub(crate) mod mode_state;
 mod retention;
-mod rewind;
+pub(crate) mod rewind;
 mod scheduled;
 mod sidecars;
 mod store;

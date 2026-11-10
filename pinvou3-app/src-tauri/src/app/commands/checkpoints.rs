@@ -1050,7 +1050,20 @@ pub async fn rewind_to_turn(
     })
     .await
     .map_err(|error| format!("回退预检任务失败: {error}"))??;
-    if keep_turns >= total_turns {
+    // r46 MAJOR-1（GUI 镜像）：同边界活暂记在场 = 引导重试（崩溃尝试已完成
+    // apply，可能连 truncate 也已持久化）——跳过轮数门，让重试走完协议收尾
+    // （completion 臂会跳过注定失败的 at-boundary re-truncate）。
+    let pending_same_boundary = match checkpoints::peek_pending_rewind(&ledger)
+        .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
+    {
+        Some(pending) => pending.keep_turns == keep_turns,
+        None => false,
+    };
+    if pending_same_boundary {
+        log::info!(
+            "[pinvou3][checkpoints] guided retry: same-boundary pending is live, skipping the turn-count gate sid={session_id}"
+        );
+    } else if keep_turns >= total_turns {
         return Err(format!(
             "会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾"
         ));
@@ -1221,11 +1234,22 @@ pub async fn rewind_to_turn(
         ),
         _ => None,
     };
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
-    })
-    .await
-    .map_err(|error| format!("截断对话任务失败: {error}"))?
+    // r46 MAJOR-1 completion arm（GUI 镜像）：转录已在边界（崩溃尝试已完成
+    // 截断持久化、暂记清理未跑）→ 跳过截断，直达收尾（clear + invalidate
+    // 在下方执行）。store 的 at-boundary 门会对重截断确定性拒绝，此处先行
+    // 短路并如实报告 0 新截断。
+    let outcome = if pending_same_boundary && total_turns == keep_turns {
+        Ok(crate::features::sessions::rewind::TruncateToTurnOutcome {
+            rewound_turns: 0,
+            had_compaction: false,
+        })
+    } else {
+        tauri::async_runtime::spawn_blocking(move || {
+            store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
+        })
+        .await
+        .map_err(|error| format!("截断对话任务失败: {error}"))?
+    }
     .map_err(|error| match &restored_checkpoint {
         // 代码已回退而对话未截断：备份未写成 → undo 记录不存在，「撤销回退」
         // 不可用；独立的 restore 入口已移除。可执行的自救只有重试回退（恢复
