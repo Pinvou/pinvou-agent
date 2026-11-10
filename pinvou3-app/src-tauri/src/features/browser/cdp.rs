@@ -126,10 +126,6 @@ impl CdpSession {
         response
     }
 
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
     /// Test-only constructor over a real loopback raw WebSocket write half, so
     /// the close bound can be exercised without a browser. The peer socket
     /// never speaks the protocol; only write-half close behavior is under test.
