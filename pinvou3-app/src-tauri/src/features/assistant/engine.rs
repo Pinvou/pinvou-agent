@@ -590,12 +590,71 @@ pub(crate) fn emit_chat_terminal(
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
 }
 
+/// Canonical opening of an engine pinned-context drift delta (`<context_update>`
+/// user-role message). Must stay byte-identical to the base writer
+/// (`CodeWhale/crates/tui/src/prefix_cache.rs`, the `out = String::from(...)`
+/// inside the context_update composition) and to the frontend matcher
+/// (`pinvou3-app/src/shared/bridge-messages.js` `isContextUpdateRuntimeMessage`
+/// prefix array). All three spell the literal independently because the base
+/// composes it inline; `context_update_message_text` pins this copy with a
+/// unit test and the frontend matcher is pinned in the bridge harness tests.
+const CONTEXT_UPDATE_MESSAGE_PREFIX: &str = "<context_update>\nSession context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):\n";
+
+/// Mirror of the frontend matcher: a user-role message whose joined Text
+/// blocks (same join the replay rawText rebuild uses) carry the canonical
+/// `<context_update>` shape. The engine appends exactly one such message per
+/// pinned-context drift delta; every other runtime user-role message carries
+/// non-authoritative provenance and does not match.
+fn context_update_message_text(message: &Message) -> bool {
+    if message.role != deepseek_tui::models::Role::User {
+        return false;
+    }
+    let mut text = String::new();
+    for block in &message.content {
+        if let deepseek_tui::models::ContentBlock::Text {
+            text: block_text, ..
+        } = block
+        {
+            text.push_str(block_text);
+        }
+    }
+    let normalized = text.trim().replace("\r\n", "\n");
+    normalized.starts_with(CONTEXT_UPDATE_MESSAGE_PREFIX)
+        && normalized.ends_with("\n</context_update>")
+}
+
+/// Count of era-boundary `<context_update>` drift deltas currently in the
+/// transcript. The frontend counts these on the replay path, but the live
+/// delivery never announces them (a drift delta produces no
+/// `chat:user_message`), so the committed-transcript event carries the
+/// authoritative cumulative total and the entry-table counter resyncs
+/// against it after every commit.
+pub(crate) fn count_context_updates(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| context_update_message_text(m))
+        .count()
+}
+
+fn transcript_committed_payload(
+    session_id: &str,
+    revision: &str,
+    context_updates_total: usize,
+) -> serde_json::Value {
+    json!({
+        "session_id": session_id,
+        "transcript_revision": revision,
+        "context_updates_total": context_updates_total,
+    })
+}
+
 pub(crate) fn emit_transcript_committed(
     app: &AppHandle,
     session_id: &str,
     revision: String,
     persistence_origin: &str,
     message_count: usize,
+    context_updates_total: usize,
 ) {
     crate::features::sessions::diagnostics::record_backend(
         "transcript_committed_emitting",
@@ -604,12 +663,10 @@ pub(crate) fn emit_transcript_committed(
             "transcript_revision": revision,
             "persistence_origin": if persistence_origin.is_empty() { "unknown" } else { persistence_origin },
             "message_count": message_count,
+            "context_updates_total": context_updates_total,
         }),
     );
-    let payload = json!({
-        "session_id": session_id,
-        "transcript_revision": revision,
-    });
+    let payload = transcript_committed_payload(session_id, &revision, context_updates_total);
     let _ = app.emit("chat:transcript_committed", payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:transcript_committed", payload);
 }
@@ -1585,6 +1642,7 @@ async fn finish_reclaimed_lifecycle_turn(
                         revision,
                         "reclaimed_fallback",
                         saved.messages.len(),
+                        count_context_updates(&saved.messages),
                     );
                 }
                 Err(revision_error) => {
@@ -4772,5 +4830,90 @@ mod agent_shed_pin_tests {
             body.contains(needle),
             "the broadcast must re-shield watcher-marked sessions (code-qualified needle)"
         );
+    }
+}
+
+#[cfg(test)]
+mod context_update_count_tests {
+    use super::{
+        CONTEXT_UPDATE_MESSAGE_PREFIX, context_update_message_text, count_context_updates,
+        transcript_committed_payload,
+    };
+    use deepseek_tui::models::{ContentBlock, Message};
+
+    fn user_message(text: &str) -> Message {
+        Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn canonical(delta: &str) -> String {
+        // Same composition shape as the base writer (prefix_cache.rs):
+        // header + delta lines + closing tag.
+        format!("{CONTEXT_UPDATE_MESSAGE_PREFIX}{delta}\n</context_update>")
+    }
+
+    #[test]
+    fn counts_only_canonical_user_context_updates() {
+        let messages = vec![
+            user_message("plain prompt"),
+            user_message(&canonical("- drifted\n")),
+            Message {
+                role: deepseek_tui::models::Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: canonical("- echoed\n"),
+                    cache_control: None,
+                }],
+            },
+            user_message(&canonical("+ added\n- removed\n")),
+            user_message("quoted mention: <context_update> is not canonical"),
+        ];
+        assert_eq!(count_context_updates(&messages), 2);
+    }
+
+    #[test]
+    fn matcher_requires_full_prefix_and_suffix() {
+        assert!(context_update_message_text(&user_message(&canonical(
+            "+ x\n"
+        ))));
+        // Missing the closing tag: a truncated/pasted fragment must not count.
+        assert!(!context_update_message_text(&user_message(&format!(
+            "{}+ x\n",
+            CONTEXT_UPDATE_MESSAGE_PREFIX
+        ))));
+        // Missing the header (bare tag mention) must not count.
+        assert!(!context_update_message_text(&user_message(
+            "x\n</context_update>"
+        )));
+        // CRLF normalization and surrounding whitespace mirror the frontend matcher.
+        let crlf = format!(
+            "{}- y\r\n\r\n</context_update>",
+            CONTEXT_UPDATE_MESSAGE_PREFIX
+        );
+        assert!(context_update_message_text(&user_message(&crlf)));
+        assert!(context_update_message_text(&user_message(&format!(
+            "  {}",
+            canonical("- z\n")
+        ))));
+        // Non-user roles never count.
+        assert!(!context_update_message_text(&Message {
+            role: deepseek_tui::models::Role::System,
+            content: vec![ContentBlock::Text {
+                text: canonical("- w\n"),
+                cache_control: None,
+            }],
+        }));
+    }
+
+    #[test]
+    fn committed_payload_carries_context_update_total() {
+        let payload = transcript_committed_payload("sess-1", "rev-9", 7);
+        assert_eq!(payload["session_id"], "sess-1");
+        assert_eq!(payload["transcript_revision"], "rev-9");
+        assert_eq!(payload["context_updates_total"], 7);
     }
 }

@@ -144,6 +144,33 @@
     return text.startsWith(prefix) && text.endsWith("\n</context_update>");
   }
 
+  // Sum of the context_update boundary counts already handed out to a
+  // session's rendered user bubbles (runtimeContextUpdatesBefore). The
+  // committed-transcript resync (chat:transcript_committed payload
+  // context_updates_total, computed Rust-side by count_context_updates)
+  // recomputes the trailing pending count as total − consumed: the live
+  // delivery never announces engine drift deltas (they produce no
+  // chat:user_message), so the cumulative total is the only trustworthy
+  // live source, and the resync absorbs every live-path divergence at once
+  // (drift deltas, duplicate admissions, failed sends, deferred drops,
+  // edit_last splices).
+  function runtimeContextUpdatesConsumedTotal(chatItems) {
+    let consumed = 0;
+    for (const item of chatItems || []) {
+      if (item && item.type === "user" && typeof item.runtimeContextUpdatesBefore === "number") {
+        consumed += item.runtimeContextUpdatesBefore;
+      }
+    }
+    return consumed;
+  }
+
+  function resyncRuntimeContextUpdatesPending(buffer, chatItems, total) {
+    if (!buffer) return;
+    const totalNormalized = Number(total) || 0;
+    buffer.runtimeContextUpdatesPending =
+      Math.max(0, totalNormalized - runtimeContextUpdatesConsumedTotal(chatItems));
+  }
+
   function isInternalRuntimeUserMessage(value) {
     return isContextUpdateRuntimeMessage(value) ||
       containsOnlyInternalRuntimeMetadata(value) ||
@@ -181,6 +208,10 @@
     // counter (bridge-shared-helpers / chat-events) counts exactly these
     // dropped runtime messages — see forkTurnEntries.js.
     isContextUpdateRuntimeMessage,
+    // committed-transcript resync of the ordinal counter (tauri lane):
+    // pending = payload.context_updates_total − consumed-on-bubbles.
+    runtimeContextUpdatesConsumedTotal,
+    resyncRuntimeContextUpdatesPending,
     isInternalUserMessage,
     isKnownInternalMetadataBlock,
     isInternalUserMessageProvenance,

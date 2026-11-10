@@ -258,8 +258,10 @@ const expectedProtocolHashes = {
   // Recomputed again for review 5876783763: the marker-maintenance block
   // also advances the monotonic compactionSeq counter (no invoke/listen
   // surface change).
-  chat: 'b4f6f16cacf88c6f4959af16e838cdfe47869b72f2f54e3b259f0057aae4056b',
-  // Recomputed for the shared-helper dedup (see batch note above).
+  // Recomputed for the #835 rebase onto 60d4f3796: the chat:transcript_committed
+  // context_update ordinal resync block (review r2 fix wave) now rides the
+  // same merged listen bodies (no invoke/listen surface change).
+  chat: 'bdd570ac21b55c2380a1cfe16c1c6f08c6f5009cdeba0879a2dc6dd947ecc661',  // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
   // session id (the YOLO gate passes the adjudicated sid), so the

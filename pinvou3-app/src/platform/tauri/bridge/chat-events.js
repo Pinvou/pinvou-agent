@@ -298,12 +298,6 @@ function pinvouSharedtauriChatEvents() {
     }
     const content = String(payload.content || "");
     const hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
-    // 引擎 <context_update> 运行时消息（pinned 上下文漂移）：投影层不产生
-    // turn 但后端 era 口径计 turn 边界——计入 buffer 的待消费计数，下一个
-    // 用户气泡随气泡下发（fork/rewind 入口表序号前移，forkTurnEntries.js）。
-    if (hideInternalRuntimeMessage && window.PinvouBridgeMessages?.isContextUpdateRuntimeMessage(content)) {
-      userBuffer.runtimeContextUpdatesPending = (userBuffer.runtimeContextUpdatesPending || 0) + 1;
-    }
     const operation = String(payload.operation || "append");
     const action = String(payload.action || "");
     const actionPlanId = String(payload.plan_id || payload.planId || "").trim();
@@ -315,6 +309,15 @@ function pinvouSharedtauriChatEvents() {
     if (admissionKey) {
       userBuffer.remoteAdmissionKeys.push(admissionKey);
       if (userBuffer.remoteAdmissionKeys.length > 32) userBuffer.remoteAdmissionKeys.shift();
+    }
+    // 引擎 <context_update> 运行时消息（pinned 上下文漂移）：投影层不产生
+    // turn 但后端 era 口径计 turn 边界——计入 buffer 的待消费计数，下一个
+    // 用户气泡随气泡下发（fork/rewind 入口表序号前移，forkTurnEntries.js）。
+    // 必须在 admission 去重之后累加：同一事件的重复投递在上面就已返回，
+    // 不得二次计数（漂移残差由 chat:transcript_committed 的
+    // context_updates_total 权威重同步兜底，见下方监听器）。
+    if (hideInternalRuntimeMessage && window.PinvouBridgeMessages?.isContextUpdateRuntimeMessage(content)) {
+      userBuffer.runtimeContextUpdatesPending = (userBuffer.runtimeContextUpdatesPending || 0) + 1;
     }
     let lastUserText = "";
     for (let messageIndex = userBuffer.messages.length - 1; messageIndex >= 0; messageIndex--) {
@@ -428,6 +431,20 @@ function pinvouSharedtauriChatEvents() {
     if (revision) {
       committedBuffer.sessionRevision = revision;
       committedBuffer.remoteCommittedRevision = revision;
+    }
+    // <context_update> 边界计数的权威重同步。live 通道从不播报引擎
+    // 漂移增量（它们不产生 chat:user_message），提交负载里的累计总数是
+    // 唯一可信的 live 来源：pending = 总数 − 已随气泡下发的消费量。一次
+    // 重算同时收敛所有 live 残差（漂移增量、重复投递、发送失败、deferred
+    // 丢弃、edit_last 拼接），重载回放路径的重放计数与此口径一致。
+    if (payload.context_updates_total != null) {
+      runSyncOnSession(sid, function () {
+        window.PinvouBridgeMessages?.resyncRuntimeContextUpdatesPending?.(
+          committedBuffer,
+          state.chatItems,
+          payload.context_updates_total,
+        );
+      });
     }
     recordAuthoritySyncDiagnostic("transcript_committed_event_received", Object.assign({
       event_revision: revision,
