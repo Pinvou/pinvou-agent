@@ -184,14 +184,6 @@ pub struct Document {
     pub already_exists: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct TrashedDocument {
-    #[serde(flatten)]
-    pub document: Document,
-    pub collection_name: String,
-}
-
 fn is_false(value: &bool) -> bool {
     !*value
 }
