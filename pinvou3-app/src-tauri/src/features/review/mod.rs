@@ -385,9 +385,11 @@ fn read_prior_ledger(
     ledger_from_entries(&arr, artifact_path, current_pos)
 }
 
-/// 从 sidecar entries 选【首轮立账】的账目(抽出便于单测)。读首个该产物、issues 非空的 entry,
-/// 不是最近一轮——否则 pass 轮 issues 空,下次核账读到空账目就退化成自由批评、重新挑错,导致
-/// pass↔continue 震荡(实测连点品三态循环)。固定读首轮那批,核账每次都核同一批+当前产物→收敛。
+/// 从 sidecar entries 选【最近一轮立账】的账目(抽出便于单测)。gate 与内容都按
+/// 序号/数组序取**最近**一轮该产物、issues 非空的 entry——不是首轮:pass 轮 issues
+/// 空,若读到空账目会退化成自由批评、重新挑错,导致 pass↔continue 震荡(实测连点
+/// 品三态循环)。核账每次核最近一批+当前产物;连续召唤同产物不变时 current_pos
+/// 守门防横跳(见函数内注)。
 fn ledger_from_entries(
     arr: &[Value],
     artifact_path: &str,
@@ -431,27 +433,34 @@ fn ledger_from_entries(
     }
     // 读【最近一轮立账】(最近 issues 非空 entry)的账目——支持多轮立账(首轮品 + 悟后重新立账各立一批)。
     // pass 轮 issues 空会被跳过;accept/confirmed 已结的过滤(§5,is_ledger_closed)。
-    arr.iter().rev().find_map(|entry| {
-        let rv = entry.get("review")?;
-        if rv.get("artifact_path").and_then(Value::as_str)? != artifact_path {
-            return None;
-        }
-        if rv
-            .get("issues")
-            .and_then(Value::as_array)
-            .is_none_or(|a| a.is_empty())
-        {
-            return None;
-        }
-        let kept = rv
-            .get("issues")?
-            .as_array()?
-            .iter()
-            .filter(|i| !is_ledger_closed(i.get("resolution").and_then(Value::as_str)))
-            .filter_map(|i| serde_json::from_value::<PinvouIssue>(i.clone()).ok())
-            .collect::<Vec<_>>();
-        Some(kept)
-    })
+    // 内容选取与 latest 同款序号选择(r5 审 M2:只给 gate 半边上 seq、内容仍按数组
+    // 序取的话,dismiss→再召唤双非空账窗口里 gate 拿新的、内容拿数组末尾被顶掉的
+    // 旧批,核账对着 Boss 没看过的账审)。老 entry(无 seq)按 0 计,平局取数组序
+    // 最后一条=旧行为原样保留(max_by_key 平局取末个,std 保证)。
+    arr.iter()
+        .filter(|entry| {
+            let rv = match entry.get("review") {
+                Some(rv) => rv,
+                None => return false,
+            };
+            rv.get("artifact_path").and_then(Value::as_str) == Some(artifact_path)
+                && rv
+                    .get("issues")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| !a.is_empty())
+        })
+        .max_by_key(|entry| entry.get("seq").and_then(Value::as_u64).unwrap_or(0))
+        .map(|entry| {
+            entry
+                .get("review")
+                .and_then(|rv| rv.get("issues"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|i| !is_ledger_closed(i.get("resolution").and_then(Value::as_str)))
+                .filter_map(|i| serde_json::from_value::<PinvouIssue>(i.clone()).ok())
+                .collect::<Vec<_>>()
+        })
 }
 
 /// 核账上下文：上轮账目 + 当前产物文件真实内容（§5）。核账只对账，不喂全会话。
@@ -3290,6 +3299,41 @@ mod tests {
             kept_legacy[0].text, "交通错",
             "老 entry(无 seq)latest 仍按数组序"
         );
+    }
+
+    /// r5 审 M2：内容扫描与 latest 同款序号选择——dismiss→再召唤双非空账窗口
+    /// 里 gate 拿 seq2(新)，核账内容必须同源，不再吃数组末尾被顶掉的 seq1 旧批。
+    /// 旧内容扫描(rev().find_map 数组序)在本形里取 seq1 → 红（M7 突变实证旧
+    /// 全绿：latest 的 pass-skip 形盖不住双 issues 形）。
+    #[test]
+    fn ledger_content_scan_picks_max_seq_not_array_order() {
+        // 落序:seq2(新 settle)先落在前、seq1(被顶掉)后落在数组尾;两笔都非空。
+        let arr = vec![
+            serde_json::json!({"pos":20,"seq":2,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"新账","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+            serde_json::json!({"pos":19,"seq":1,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"旧账","severity":"low","kind":"quality","resolution":"modify"}
+            ]}}),
+        ];
+        let kept = ledger_from_entries(&arr, "/p.md", 20).expect("双非空账必进核账");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            kept[0].text, "新账",
+            "内容扫描按 seq 取,不吃数组尾被顶掉的旧批"
+        );
+        // 兼容:全 legacy(无 seq)平局取数组序最后一条=旧行为原样(std max_by_key
+        // 平局取末个,与旧 rev().find_map 同形)。
+        let legacy = vec![
+            serde_json::json!({"pos":10,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"首批","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+            serde_json::json!({"pos":12,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"次批","severity":"low","kind":"quality","resolution":"modify"}
+            ]}}),
+        ];
+        let kept_legacy = ledger_from_entries(&legacy, "/p.md", 12).expect("legacy 保持旧行为");
+        assert_eq!(kept_legacy[0].text, "次批", "无 seq 平局取数组序最后一条");
     }
 
     /// r5 审 m1/m2：线材型号规范化=引擎家族别名表镜像——别名/大小写/`_`/空格
