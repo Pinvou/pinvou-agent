@@ -68,29 +68,29 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    MAX_NAME_CHARS, MAX_SCROLL_CLICKS, combine_drag_errors, drag_waypoints,
-    normalize_typed_newlines, sanitize_name, screening_hit,
+    DEFAULT_TREE_MAX_DEPTH, HOLD_CANCEL_POLL_MS, MAX_NAME_CHARS, MAX_SCROLL_CLICKS,
+    MULTI_CLICK_INTERVAL_MS, combine_drag_errors, drag_waypoints, normalize_typed_newlines,
+    sanitize_name, screening_hit,
 };
 use super::wayland_portal::{self, PortalInput};
 
 /// Settle time between a move and the click that follows it (applied in
 /// `click` and at drag start; `mouse_down` does not settle) — a race buffer
-/// between injection and compositor processing.
+/// between injection and compositor processing. Diverges from the shared
+/// helpers' `CLICK_SETTLE_MS` (40 vs 30): Linux injection goes through the
+/// compositor, so the buffer is longer.
 const SETTLE_MS: u64 = 40;
-/// Gap between multiple clicks (double/triple click).
-const CLICK_GAP_MS: u64 = 40;
 /// Interpolated drag steps and per-step delay (instantaneous moves that are
-/// too fast are recognized as non-drags by some apps).
+/// too fast are recognized as non-drags by some apps). Diverges from the
+/// shared helpers' `DRAG_STEPS`/`DRAG_STEP_DELAY_MS` (12x10ms vs 8x12ms):
+/// Linux needs more, shorter motion events for a drag to be recognized.
 const DRAG_STEPS: usize = 12;
 const DRAG_STEP_MS: u64 = 10;
-/// Granularity of the hold_key sleep: a stop/timeout cancel flag is polled
-/// at least this often, so an abandoned hold stops within this window
-/// instead of the full hold duration.
-const HOLD_CANCEL_POLL_MS: u64 = 100;
 /// Delay between scroll clicks.
 const SCROLL_GAP_MS: u64 = 15;
-/// ui_tree default capture caps.
-const DEFAULT_MAX_DEPTH: u32 = 8;
+/// ui_tree default capture caps. `DEFAULT_MAX_NODES` (200) diverges from the
+/// shared `DEFAULT_TREE_MAX_NODES` (400): each AT-SPI node costs several
+/// D-Bus round-trips, so Linux caps the default tree lower.
 const DEFAULT_MAX_NODES: usize = 200;
 /// Timeout for a single a11y D-Bus method call (zbus connection-level
 /// `method_timeout`).
@@ -710,7 +710,7 @@ async fn ui_tree_async(
         out: format!("# atspi tree session={session} desktop={desktop} extents={extents_note}\n"),
         next_index: 0,
         max_nodes: opts.max_nodes.map_or(DEFAULT_MAX_NODES, |n| n as usize),
-        max_depth: opts.max_depth.unwrap_or(DEFAULT_MAX_DEPTH),
+        max_depth: opts.max_depth.unwrap_or(DEFAULT_TREE_MAX_DEPTH),
     };
 
     // Observation path: best-effort enumeration (a single hung app is
@@ -1822,7 +1822,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     return Err(error);
                 }
                 if i + 1 < count {
-                    sleep(Duration::from_millis(CLICK_GAP_MS));
+                    sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
                 }
             }
             return Ok(());
@@ -1837,7 +1837,7 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                 .button(button, Direction::Click)
                 .map_err(|error| input_failed("mouse click", error))?;
             if i + 1 < count {
-                sleep(Duration::from_millis(CLICK_GAP_MS));
+                sleep(Duration::from_millis(MULTI_CLICK_INTERVAL_MS));
             }
         }
         Ok(())
