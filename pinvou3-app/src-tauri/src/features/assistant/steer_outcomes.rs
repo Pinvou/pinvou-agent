@@ -40,8 +40,9 @@ pub fn register_steer_resolution_hook(hook: SteerResolutionHook) -> Result<(), (
 /// future lane that spawns the delivery watcher WITHOUT registering this
 /// hook would strand every steered file at the 24h `STEER_COMMIT_WAIT`
 /// before a duplicate — the messaging suite's lib.rs source pin binds the
-/// registration to the finalizer, and the watcher's sole spawn site is
-/// audited by the same pin's slice.
+/// registration to the finalizer and asserts the registration precedes the
+/// first `spawn_delivery_watcher` occurrence (order, not uniqueness: a
+/// second spawn site in another host file would leave that pin green).
 pub fn resolve_steer_outcome(steer_id: &str, committed: bool) {
     if let Some(hook) = STEER_RESOLUTION_HOOK.get() {
         hook(steer_id, committed);

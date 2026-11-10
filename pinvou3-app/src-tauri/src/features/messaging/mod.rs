@@ -152,7 +152,13 @@
 //! deleted or never-existing sender), and the pending-file cap bounds a
 //! runaway sender. The spool directory itself remains an unauthenticated
 //! local side door (any local process can write it) — that boundary is the
-//! OS user account.
+//! OS user account. Round-10 platform corners inside that same boundary:
+//! on Windows, a reserved-device spool stem (`CON`, `NUL`, case-insensitive)
+//! can make the done-marker write address the device (a successful write
+//! with no marker file — that identity's keyed retries re-deliver), and on
+//! a case-insensitive filesystem two names differing only in case share one
+//! stem marker; both require same-user spool surgery with non-server-shaped
+//! names (real spool names are 64-char lowercase hex).
 //!
 //! The delivered text carries a machine-readable sender header block with
 //! untrusted-content contract lines (the session-mention block pattern
@@ -541,7 +547,9 @@ struct PendingSteerDelivery {
     spool_path: PathBuf,
     /// The steered pass's first-read bytes: the committed arm compares the
     /// file against these before finalizing, so a keyed retry that replaced
-    /// the body mid-steer is never finalized under the old body's commit
+    /// the body mid-steer is caught before the marker lands (the
+    /// re-verify-to-removal residual the arm's comment owns stays open —
+    /// this compare narrows the window; it cannot close it)
     /// (retaining the parsed record would hold the whole body for up to
     /// [`STEER_COMMIT_WAIT`]; the raw bytes are the only thing the
     /// finalizer needs).
@@ -638,7 +646,7 @@ fn pending_entry_or_late_record(steer_id: &str, committed: bool) -> Option<Pendi
     let mut late = late_terminal_events()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    late.retain(|_, (armed_at, _)| armed_at.elapsed() < LATE_TERMINAL_TTL);
+    late.retain(|_, (buffered_at, _)| buffered_at.elapsed() < LATE_TERMINAL_TTL);
     late.insert(steer_id.to_string(), (Instant::now(), committed));
     None
 }
@@ -814,7 +822,7 @@ fn prune_expired_pending_steers() {
     late_terminal_events()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .retain(|_, (armed_at, _)| armed_at.elapsed() < LATE_TERMINAL_TTL);
+        .retain(|_, (buffered_at, _)| buffered_at.elapsed() < LATE_TERMINAL_TTL);
 }
 
 /// Steer terminal resolution: the forwarder calls this on
@@ -971,7 +979,16 @@ pub fn resolve_pending_steer(steer_id: &str, committed: bool) {
     // (round-9: the same-pass variant of this arm; narrower than the
     // acknowledged re-verify→removal residual — the unlink bounds marker
     // suppression to the instant — but the "next poll" wording below is
-    // then too late by one skip). This is also
+    // then too late by one skip). Round-10 residual inventory, both
+    // directions disclosed: if the concurrent pass gets PAST its marker
+    // check and delivers the newest body first, its Done arm writes the
+    // stem marker and this arm's unlink then removes THAT marker — the
+    // newest body was delivered, so nothing is lost, but a future same-key
+    // retry re-spools and re-delivers (the duplicate direction of the
+    // skip-above variant). And a file vanishing between the first verify
+    // and this re-verify exits HERE, so the no-marker dedup gap the
+    // pre-marker arm names (a keyed retry of the committed body
+    // re-delivers) applies to this arm's exit too. This is also
     // the vanished/unreadable arm for the commit window: whatever sits at
     // the path now, this finalizer cannot vouch for it, and the poll's
     // own arms handle every queued state.
@@ -1745,11 +1762,34 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
     // the same doctrine as RetryState above — a same-identity re-spool
     // after an external delete must not inherit the previous body's
     // partial drop budget (its doc claims the shared doctrine; this is
-    // what makes that true).
+    // what makes that true). Round-10, the lenient mirror direction: a
+    // same-user writer who deletes and re-spools the name between passes
+    // re-buys the full series each cycle — accepted, the spool is an
+    // unauthenticated same-user side door (the trust paragraph at the
+    // module top), and the watcher-autonomous loop the bound exists for
+    // stays charged.
     steer_drop_cycles()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .retain(|name, _| listed.contains(name));
+    // Round-10 (L11/L3): the pending registry prunes to the listing like
+    // every other map above. A file deleted BETWEEN passes is never listed,
+    // so the in-pass vanished arm below (which only covers files this pass
+    // listed) never fires for it — without this retain its armed entry
+    // would strand for the full 24h wait holding its retained bytes. The
+    // finalizer's own verify-fail arm keeps commits correct (a commit for a
+    // vanished file disarms there); this retires the dead memory and frees
+    // a same-name re-spool from freezing behind a corpse.
+    pending_steers()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|_, entry| {
+            entry
+                .spool_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| listed.contains(n))
+        });
     // Pending cap: the sorted tail beyond the ceiling is hostile growth —
     // quarantine it with an audit record instead of delivering unbounded
     // unattended turns (the cap is on *pending* files, not on deliveries:
@@ -1868,9 +1908,12 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         if !path.exists() {
             retries.clear(&name);
             clear_steer_drop_cycles(&name);
-            // Disarm an in-flight registration too: the file is gone, so
-            // the entry would otherwise strand for the full 24h wait
-            // (holding its retained bytes) before the expiry prunes it.
+            // Disarm an in-flight registration too. The pass-start listing
+            // retain covers vanishes BETWEEN passes; this arm covers the
+            // vanish inside the pass window (deleted after read_dir but
+            // before this file's sorted position) — without it the entry
+            // would strand for the full 24h wait holding its retained
+            // bytes before the expiry prunes it.
             cancel_pending_steer_path(&path);
             continue;
         }
