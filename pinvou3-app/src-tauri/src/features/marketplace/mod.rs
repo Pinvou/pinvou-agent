@@ -839,8 +839,8 @@ pub fn unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
 /// 存量 mcp.json 条目的路径迁移：指向旧布局（`bundle/mcp-servers/<id>/`）的
 /// command/args 重写为新包目录（`bundles/<id>/mcp/`）。幂等；只改本 app 写的
 /// 文件（mcp.json）。按 mcp.json 的 server 键（= 工具 id）逐条重写，覆盖内嵌预设
-/// 与自定义/手放 MCP（不再只遍历内嵌清单）。返回是否有改动（供启动标记观测）。
-pub fn migrate_mcp_json_paths() -> Result<bool, String> {
+/// 与自定义/手放 MCP（不再只遍历内嵌清单）。
+pub fn migrate_mcp_json_paths() -> Result<(), String> {
     // 与其他 mcp.json 写方（add/remove_to_mcp_json）同一把跨进程文件锁串行化
     // （M-8；锁见 file_lock.rs）。
     connectors::with_mcp_json_lock(|| {
@@ -850,19 +850,19 @@ pub fn migrate_mcp_json_paths() -> Result<bool, String> {
         // mcp.lock critical section — a planted FIFO swapped in after the
         // check blocks `open()` forever while HOLDING mcp.lock, wedging
         // every mcp.json writer in every process.
-        // Absent stays `Ok(false)`; a refused read (FIFO/symlink/non-regular)
+        // Absent stays `Ok(())`; a refused read (FIFO/symlink/non-regular)
         // fails the migration loudly instead of silently skipping, the
         // same fail-closed direction as the sibling in-lock reads.
         let content = match crate::platform::filesystem::read_private_data_file(&mcp_path) {
             Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(format!("读取 mcp.json 失败: {e}")),
         };
         let mut mcp: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
         let mut changed = false;
         let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) else {
-            return Ok(false);
+            return Ok(());
         };
         let ids: Vec<String> = servers.keys().cloned().collect();
         for id in ids {
@@ -894,7 +894,7 @@ pub fn migrate_mcp_json_paths() -> Result<bool, String> {
         if changed {
             connectors::write_json_pretty(&mcp_path, &mcp)?;
         }
-        Ok(changed)
+        Ok(())
     })
 }
 
@@ -3283,15 +3283,16 @@ pub(crate) mod tests {
             )
             .unwrap();
 
-            // 新目录不存在：不重写、旧路径保留
-            assert!(!migrate_mcp_json_paths().unwrap());
+            // 新目录不存在：不重写、旧路径保留（返回值已收敛为 Result<(), String>，
+            // 跳过/重写的语义由下方文件内容断言钉住）
+            migrate_mcp_json_paths().unwrap();
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(content.contains(&old_text), "新目录缺失时旧路径应保留");
 
             // 新目录出现（搬迁成功）：重写指向新目录
             let new_dir = mcp_catalog::package_mcp_dir(id);
             std::fs::create_dir_all(&new_dir).unwrap();
-            assert!(migrate_mcp_json_paths().unwrap());
+            migrate_mcp_json_paths().unwrap();
             let mcp: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
             let command = mcp["servers"][id]["command"].as_str().unwrap();
