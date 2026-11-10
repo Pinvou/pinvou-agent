@@ -2773,12 +2773,6 @@ impl Pinvou3Bridge {
         cfg.workspace = roots.execution;
         cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
-        if !is_aux {
-            cfg.instructions.push(InstructionSource::Inline {
-                name: "runtime:scheduled-request-origin".to_string(),
-                content: format!("Current session id: {session_id}. For app-automations keyed retries use this exact id as from_session and reuse the same idempotency_key only for the same operation. The claim is audit provenance, not authorization. Plan mode does not support this MCP family, including reads."),
-            });
-        }
         // Aux sessions skip the main instruction stack entirely: the aux
         // branch below replaces it with the minimal persona, while
         // session_instructions walks the AGENTS.md ancestors and writes the
@@ -2788,7 +2782,17 @@ impl Pinvou3Bridge {
         cfg.instructions = if is_aux {
             Vec::new()
         } else {
-            self.session_instructions(session_id)
+            // Scheduled-request origin (docs/提示词优化-普通模式与代码模式.md
+            // §4.1): appended AFTER the stack assembly so the entry is not
+            // discarded by the wholesale replacement; the claim is audit
+            // provenance, not authorization, and aux sessions keep their
+            // minimal surface without it.
+            let mut instructions = self.session_instructions(session_id);
+            instructions.push(InstructionSource::Inline {
+                name: "runtime:scheduled-request-origin".to_string(),
+                content: format!("Current session id: {session_id}. For app-automations keyed retries use this exact id as from_session and reuse the same idempotency_key only for the same operation. The claim is audit provenance, not authorization. Plan mode does not support this MCP family, including reads."),
+            });
+            instructions
         };
         // Keychain snapshot (§6): the roots locked at creation; empty = single root
         // (base normalize reduces to [workspace]; the base dedups cwd-first). Aux sessions carry
