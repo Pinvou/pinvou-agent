@@ -72,7 +72,7 @@
     // pendingBySession is intentionally untouched: switching back to the
     // session must resurface them via refreshStatus. Pure state operation
     // (no command traffic); refreshStatus calls this synchronously when it
-    // detects a session switch, and the behavior tests drive it directly.
+    // detects a session switch.
     function clearSessionRequests(sessionId) {
       const sid = String(sessionId || "");
       const current = state.computerUse;
@@ -616,7 +616,6 @@
 
     return {
       refreshStatus,
-      clearSessionRequests,
       grant,
       revoke,
       stop,
