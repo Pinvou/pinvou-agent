@@ -160,19 +160,17 @@ impl SpoolRequestKind {
 
 /// One spooled task request (create / update / delete). Field names mirror
 /// server.py's `_spool_payload` exactly (snake_case JSON on disk); unknown
-/// fields are skipped on read (contract §4.4 drift defense). The `id` field
-/// is informational only — the watcher keys its state on the directory-listed
-/// file name, never on this field (a user-writable spool must not control
-/// watcher paths). Payload fields are optional because update supplies only
-/// the changed subset and delete supplies none; `validate` enforces the
-/// per-kind requirements.
+/// fields are skipped on read (contract §4.4 drift defense) — server.py
+/// still writes its informational `id`/`created_at` keys, which the watcher
+/// never reads (its state keys on the directory-listed file name, so a
+/// user-writable spool must not control watcher paths). Payload fields are
+/// optional because update supplies only the changed subset and delete
+/// supplies none; `validate` enforces the per-kind requirements.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub(crate) struct SpooledCreationRequest {
     pub schema_version: u32,
     #[serde(default)]
     pub kind: SpoolRequestKind,
-    #[serde(default)]
-    pub id: String,
     #[serde(default)]
     pub task_id: Option<String>,
     #[serde(default)]
@@ -192,8 +190,6 @@ pub(crate) struct SpooledCreationRequest {
     pub paused: Option<bool>,
     #[serde(default)]
     pub from_session: Option<String>,
-    #[serde(default)]
-    pub created_at: String,
     #[serde(default)]
     pub idempotency_key: Option<String>,
 }
@@ -1452,8 +1448,23 @@ fn quarantine_with_warning(path: &Path, warnings: &mut usize) -> bool {
 fn sanitize_marker_text(text: &str) -> String {
     let pinvou3_home = crate::platform::paths::pinvou3_home();
     let home = crate::platform::paths::user_home_dir();
-    // Longest prefix first so the pinvou3-home placeholder wins over "~".
-    let longest_first = [(&pinvou3_home, "<pinvou3-home>"), (&home, "~")];
+    // The validator's permanent errors embed the CANONICALIZED home (a
+    // symlinked-home spelling such as macOS /var → /private/var differs
+    // from the plain prefix), so the canonical spelling scrubs alongside
+    // the plain ones. Longest prefix first so the pinvou3-home placeholder
+    // wins over "~".
+    let pinvou3_home_canonical = crate::platform::paths::pinvou3_home()
+        .canonicalize()
+        .unwrap_or_else(|_| pinvou3_home.clone());
+    let home_canonical = crate::platform::paths::user_home_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| home.clone());
+    let longest_first = [
+        (&pinvou3_home, "<pinvou3-home>"),
+        (&pinvou3_home_canonical, "<pinvou3-home>"),
+        (&home, "~"),
+        (&home_canonical, "~"),
+    ];
     let mut sanitized = text.to_string();
     for (prefix, placeholder) in longest_first {
         let prefix_text = prefix.to_string_lossy().to_string();
@@ -1512,7 +1523,17 @@ fn write_failure_marker(stem: &str, error: &anyhow::Error) {
     // like every other marker read.
     if let Some(existing) = read_regular_bounded(&marker, MAX_RESULT_MARKER_BYTES) {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&existing) {
-            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            // The receipt is a DIGEST-BOUND ok:true (the same definition
+            // `result_marker_suppresses` and the session_creation sibling
+            // enforce): a digest-LESS ok:true marker is not a recorded
+            // result (forged or pre-digest) and the failure marker
+            // replaces it.
+            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                && value
+                    .get("request_digest")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+            {
                 log::warn!(
                     "[scheduled-creation] refusing to overwrite an ok:true receipt for {stem}"
                 );
@@ -2639,7 +2660,6 @@ mod tests {
         let request = SpooledCreationRequest {
             schema_version: 1,
             kind: SpoolRequestKind::Create,
-            id: "irrelevant".to_string(),
             task_id: None,
             target_session: None,
             name: Some("早报".to_string()),
@@ -2648,7 +2668,6 @@ mod tests {
             model_id: None,
             paused: Some(false),
             from_session: Some("src".to_string()),
-            created_at: String::new(),
             idempotency_key: Some("k".to_string()),
         };
         assert_eq!(
@@ -5706,6 +5725,53 @@ mod tests {
         );
         assert!(!result_marker_suppresses(&dir.join("missing.json"), "d1"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Converged with the session_creation sibling (its round-13 MAJOR 4b):
+    /// the write_failure_marker receipt refusal is DIGEST-bound — a readable
+    /// digest-bound ok:true receipt is never clobbered by a later failure
+    /// marker (deleting the refusal arm turns this red).
+    #[test]
+    fn failure_marker_never_clobbers_a_digest_bound_receipt() {
+        let _home = TempHome::new();
+        let dir = done_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("rrr1212.json");
+        std::fs::write(
+            &marker,
+            serde_json::json!({
+                "ok": true,
+                "task_id": "t",
+                "request_digest": spool_request_digest(&valid_record()),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let before = std::fs::read(&marker).unwrap();
+        write_failure_marker("rrr1212", &anyhow::anyhow!("boom"));
+        assert_eq!(
+            std::fs::read(&marker).unwrap(),
+            before,
+            "the readable digest-bound receipt survives byte-for-byte"
+        );
+    }
+
+    /// And the receipt DEFINITION: a digest-LESS ok:true marker is not a
+    /// receipt and IS replaced by the failure marker (the watcher's retry
+    /// path depends on this — the model's next retry re-applies instead of
+    /// replaying a forged success).
+    #[test]
+    fn failure_marker_overwrites_a_digest_less_ok_marker() {
+        let _home = TempHome::new();
+        let dir = done_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("sss1313.json");
+        std::fs::write(&marker, serde_json::json!({"ok": true}).to_string()).unwrap();
+        write_failure_marker("sss1313", &anyhow::anyhow!("boom"));
+        let replaced: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&marker).unwrap()).unwrap();
+        assert_eq!(replaced["ok"], serde_json::json!(false));
+        assert_eq!(replaced["error"], serde_json::json!("boom"));
     }
 
     #[tokio::test]

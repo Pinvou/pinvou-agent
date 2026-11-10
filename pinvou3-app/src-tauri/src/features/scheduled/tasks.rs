@@ -130,11 +130,8 @@ pub struct ScheduledTaskState {
     pool: Option<EnginePool>,
     fallback_model: String,
     scheduler_cancel: Option<CancellationToken>,
-    #[allow(dead_code)]
     scheduler_handle: Arc<SyncMutex<Option<tokio::task::JoinHandle<()>>>>,
-    #[allow(dead_code)]
     retention_handle: Arc<SyncMutex<Option<tokio::task::JoinHandle<()>>>>,
-    #[allow(dead_code)]
     creation_watch: Arc<SyncMutex<Option<creation_requests::CreationWatchGuard>>>,
 }
 
@@ -245,7 +242,6 @@ pub struct ScheduledRunDto {
     pub status: String,
     pub created_at: String,
     pub ended_at: Option<String>,
-    pub thread_id: Option<String>,
     pub error: Option<String>,
     pub unread: bool,
     pub session_title: Option<String>,
@@ -1651,7 +1647,6 @@ fn map_scheduled_run_with_task(
         status: automation_run_status_label(&record.status),
         created_at: record.created_at.to_rfc3339(),
         ended_at: record.ended_at.map(|value| value.to_rfc3339()),
-        thread_id: record.thread_id,
         error: record.error,
         unread,
         session_title,
