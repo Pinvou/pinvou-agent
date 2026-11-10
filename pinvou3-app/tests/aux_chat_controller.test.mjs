@@ -26,16 +26,10 @@ import {
   getAuxQuotes,
   stageAuxQuote,
 } from '../src/features/aux-chat/aux-quote.mjs';
+import { deferred } from './helpers/deferred.mjs';
 
 const SEND_WATCHDOG_MS = 1_000;
 const SETTLE_WATCHDOG_MS = 1_000;
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
-}
 
 // Deterministic timers: advance(ms) fires every timer due inside the window,
 // including timers armed by callbacks that run during the advance.

@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { deferred } from './helpers/deferred.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const updaterSource = fs.readFileSync(
@@ -44,16 +45,6 @@ function loadUpdaterFeature(options = {}) {
   });
 
   return { updater, state, notifications, invokeCalls };
-}
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
 }
 
 test('downloadAndInstallUpdate guards against missing or already-running updates', async () => {

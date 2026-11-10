@@ -8,16 +8,7 @@ import {
   isFailedNativeSurfaceHideGenerationCurrent,
   settleBrowserUiPublicationAfterCommit,
 } from '../src/features/browser/native-surface-transition.mjs';
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((yes, no) => {
-    resolve = yes;
-    reject = no;
-  });
-  return { promise, reject, resolve };
-}
+import { deferred } from './helpers/deferred.mjs';
 
 test('publishes synchronously when no native surface can be visible', () => {
   const publications = [];
