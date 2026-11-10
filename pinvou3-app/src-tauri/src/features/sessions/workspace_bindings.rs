@@ -256,8 +256,9 @@ pub(super) fn backfill_workspace_binding_cache(
 /// [`SessionStore::session_workspace_binding_probe`]）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WorkspaceBindingProbe {
-    /// 有绑定：分支复刻该绑定。
-    Bound(PathBuf),
+    /// 有绑定：分支复刻该绑定；roots 与绑定来自**同一份** sidecar 快照
+    /// （单次读取，见探测函数文档）。
+    Bound(PathBuf, Vec<PathBuf>),
     /// 确认无绑定：分支保持无绑定（不误造绑定）。
     Unbound,
     /// 不可判定：sidecar 读失败 / 解析失败 / 版本超前。fork fail-closed 拒绝。
@@ -277,12 +278,16 @@ impl SessionStore {
     /// 对 fork 不可接受：绑定复刻会把「读失败」当「无绑定」放行，分支静默
     /// 失去绑定（引擎 cwd 与 mode_state 安全姿态都随绑定走）。fork 必须区分：
     /// Bound 复刻、Unbound 保持无绑定、Unknown fail-closed 拒绝。缓存命中
-    /// 直接 Bound（缓存只存已绑定路径）；未命中时按 [`read_workspace_sidecar`]
-    /// 的同一日志卫生口径分类（路径含 sessions/<id>/，日志只留错误种类）。
+    /// 给出绑定路径（缓存只存已绑定路径），但**仍回读 sidecar 取 roots**：
+    /// 绑定与 roots 必须来自同一份快照（compose 车道的 keychain 单读纪律），
+    /// 且 warm 缓存下 sidecar 损坏/不可读不得把 roots 折叠成空集——那是
+    /// 三态探测要堵的同一类 fail-open（review r2：缓存 Bound + sidecar 损坏
+    /// + `session_workspace_roots` 的 `unwrap_or_default` = 静默空 roots 绑定）。
+    /// 缓存命中而 sidecar 已被删除（NotFound）属陈旧缓存，按既有 roots
+    /// 口径给空集。未命中时按 [`read_workspace_sidecar`] 的同一日志卫生
+    /// 口径分类（路径含 sessions/<id>/，日志只留错误种类）。
     pub(super) fn session_workspace_binding_probe(&self, id: &str) -> WorkspaceBindingProbe {
-        if let Some(path) = self.session_workspaces.read().get(id).cloned() {
-            return WorkspaceBindingProbe::Bound(path);
-        }
+        let cached_path = self.session_workspaces.read().get(id).cloned();
         if validate_session_id(id).is_err()
             || !self
                 .manager
@@ -295,7 +300,12 @@ impl SessionStore {
         let payload = match std::fs::read(self.session_workspace_sidecar_path(id)) {
             Ok(payload) => payload,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                return WorkspaceBindingProbe::Unbound;
+                // sidecar 不存在：缓存命中时绑定仍以缓存为准（roots 空集），
+                // 否则确认无绑定。
+                return match cached_path {
+                    Some(path) => WorkspaceBindingProbe::Bound(path, Vec::new()),
+                    None => WorkspaceBindingProbe::Unbound,
+                };
             }
             Err(error) => {
                 eprintln!(
@@ -307,11 +317,10 @@ impl SessionStore {
         };
         match serde_json::from_slice::<SessionWorkspaceSidecar>(&payload) {
             Ok(sidecar) if sidecar.version <= SESSION_WORKSPACE_SIDECAR_VERSION => {
-                WorkspaceBindingProbe::Bound(backfill_workspace_binding_cache(
-                    &self.session_workspaces,
-                    id,
-                    sidecar.path,
-                ))
+                WorkspaceBindingProbe::Bound(
+                    backfill_workspace_binding_cache(&self.session_workspaces, id, sidecar.path),
+                    sidecar.workspace_roots,
+                )
             }
             Ok(sidecar) => {
                 eprintln!(

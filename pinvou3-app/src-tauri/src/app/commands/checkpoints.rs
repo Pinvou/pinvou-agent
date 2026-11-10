@@ -57,6 +57,13 @@ pub(super) async fn create_turn_checkpoint(
         // 对话」（conversationOnly），undo 计数对不上时 fail-closed 禁用——
         // 失败方向安全，但该场景的重放/回退体验有损；根治是快照重算或序号
         // 下发，见 fork.rs 模块文档的残留清单。
+        //
+        // 第三条失败臂（review r2，同一残留家族）：前端跳过粘贴头轮次、
+        // 后端 era 计数包含它 → 检索表 first-wins 会把「点按粘贴头之后的
+        // 轮次」解析到**粘贴头那轮的快照**——恢复的代码与对话内部一致
+        // （同一边界），但比点击点早一轮：被静默丢弃的那轮可能含助手文件
+        // 编辑。此臂不 fail-closed、也不报错，只能靠这份文字披露；根治同上
+        // （后端下发序号后三臂同时消失）。
         let turn_number = store_count
             .load(&sid_count)
             .map(|session| checkpoints::count_user_turns(&session.messages) + 1)

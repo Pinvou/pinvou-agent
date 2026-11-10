@@ -761,7 +761,10 @@ pub async fn fork_session(
         // 到 fork 内部才探明，rebind 进行中的 fork 本就是竞窗，最便宜且诚实
         // 的互斥就是互斥本身（rebind 罕见且短，fork 持锁开销可忽略）。
         let _fence = projects_inner.rebind_fence().map_err(|error| {
-            anyhow::anyhow!("工作区绑定迁移进行中，请等迁移完成再分叉（{error}）")
+            // 措辞不指认持锁方：fork 自身持 fence 期间，其他 fenced writer
+            //（项目编辑/移动/codex set_workspace）被拒时看到的也是这条
+            // REBIND_IN_PROGRESS 尾巴，指认「目录 rebind」会误导。
+            anyhow::anyhow!("工作区绑定迁移或互斥写入进行中，请稍后重试分叉（{error}）")
         })?;
         store_inner.fork_session_record(&session_id, keep_turns)
     })

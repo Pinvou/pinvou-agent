@@ -83,6 +83,7 @@ const SessionMentionMenu = mentionLazy(() =>
 const SessionMentionCards = mentionLazy(() =>
   import('./SessionMentionControls.jsx').then((m) => ({ default: m.SessionMentionCards })));
 import { PROJECT_SESSION_DRAG_TYPE, resolveSessionProjectId } from '../projects/projectGrouping.js';
+import { classifyRebindError } from '../projects/rebindErrors.js';
 import {
   buildSessionMentionBlock,
   splitSessionMentionBlock,
@@ -1884,7 +1885,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             }
           }
         } catch (err) {
-          const detail = String((err && err.message) || err || t.uiConversation.unknownError);
+          // rebind 互斥拒绝（REBIND_IN_PROGRESS 等稳定 marker）走既有分类
+          // 映射的 trilingual 文案，不把后端英文诊断尾巴原样亮给用户；其余
+          // 错误保留原始细节（unknownError 兜底）。
+          const classified = classifyRebindError(err, t);
+          const detail = classified && classified.kind === 'copy'
+            ? classified.message
+            : String((err && err.message) || err || t.uiConversation.unknownError);
           flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
         } finally {
           setForkBusySessionIds(prev => {

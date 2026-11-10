@@ -84,8 +84,12 @@ impl SessionStore {
         let (parent_workspace, parent_roots) = match self
             .session_workspace_binding_probe(session_id)
         {
-            super::workspace_bindings::WorkspaceBindingProbe::Bound(path) => {
-                (Some(path), self.session_workspace_roots(session_id))
+            // 绑定与 roots 来自同一份 sidecar 快照（单次读取）：warm 缓存下
+            // sidecar 损坏/不可读走 Unknown fail-closed，不再经
+            // `session_workspace_roots` 的 `unwrap_or_default` 折叠成静默空
+            // roots（review r2）。
+            super::workspace_bindings::WorkspaceBindingProbe::Bound(path, roots) => {
+                (Some(path), roots)
             }
             super::workspace_bindings::WorkspaceBindingProbe::Unknown => anyhow::bail!(
                 "无法读取源会话的工作区绑定（文件损坏或由更新版本写入）；为避免分支静默降级为无绑定会话，已拒绝分叉"
@@ -499,6 +503,67 @@ mod tests {
     /// fail-closed 拒绝——「读失败当无绑定放行」会让分支静默失去绑定，
     /// mode_state 安全姿态随之降级。两条 Unknown 腿（解析失败/版本超前）
     /// 与恢复后的正常分叉都钉住。
+    /// warm 缓存 + sidecar 损坏也必须拒绝（review r2）：探针的缓存命中
+    /// 只给绑定路径，roots 与绑定必须来自**同一份** sidecar 快照——缓存
+    /// 命中后仍回读 sidecar，损坏/不可读在 warm 缓存下同样走 Unknown
+    /// fail-closed。否则分支带着正确路径 + 静默空 roots 绑定（正是三态
+    /// 探针要堵的 fail-open 在 roots 粒度上的残留）。与上一测试相反，
+    /// 本测试**不清缓存**——清了就退化为 cold 腿，钉不住 warm 路径。
+    #[test]
+    fn fork_probe_refuses_corrupt_sidecar_even_with_warm_cache() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let mut session = store.load(&source.metadata.id).expect("load");
+        session.messages = vec![turn_prompt("warm 缓存的一轮"), assistant_text("回复")];
+        store.save(&session).expect("seed");
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou3-fork-warm-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&workspace).expect("mkdir workspace");
+        store
+            .bind_session_workspace_with_roots(&source.metadata.id, workspace, Vec::new())
+            .expect("bind source warms the cache");
+        // 不清缓存：绑定路径已在内存缓存里。
+        assert!(
+            store
+                .session_workspaces
+                .read()
+                .contains_key(&source.metadata.id),
+            "precondition: cache must be warm"
+        );
+        std::fs::write(
+            store.session_workspace_sidecar_path(&source.metadata.id),
+            b"{not json",
+        )
+        .expect("corrupt sidecar");
+        // warm 缓存下损坏的 sidecar 仍走 Unknown → fork 拒绝（旧行为是
+        // 缓存 Bound + `session_workspace_roots` 的 unwrap_or_default 静默
+        // 空 roots 放行）。
+        match store.session_workspace_binding_probe(&source.metadata.id) {
+            crate::features::sessions::workspace_bindings::WorkspaceBindingProbe::Unknown => {}
+            other => panic!("warm cache + corrupt sidecar must be Unknown, got {other:?}"),
+        }
+        let error = store
+            .fork_session_record(&source.metadata.id, 1)
+            .expect_err("corrupt sidecar must refuse fork even with warm cache");
+        assert!(error.to_string().contains("工作区绑定"), "{error:#}");
+        let entries: Vec<_> = std::fs::read_dir(store.sessions_dir())
+            .expect("list sessions")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".json"))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "refused fork must not persist a branch: {entries:?}"
+        );
+    }
+
     #[test]
     fn fork_refuses_undecodable_workspace_binding_sidecar() {
         let (store, _lock, _env) = isolated_store();

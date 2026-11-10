@@ -78,6 +78,19 @@ assert.match(
   /chatViewMountedRef\.current && activeSessionIdRef\.current === sourceSessionId/,
   'fork auto-switch must be gated on ChatView still being mounted',
 );
+// fork 失败的 REBIND_IN_PROGRESS 走既有三语分类映射（rebindErrors.js），
+// 不把后端英文诊断尾巴原样亮给用户（review r2：持锁方是 fork 自身时，
+// 原样尾巴还会误导指认「目录 rebind」）。
+assert.match(
+  chatView,
+  /classifyRebindError\(err, t\)/,
+  'fork failure must classify rebind rejections through the shared mapping',
+);
+assert.match(
+  chatView,
+  /classified\.kind === 'copy'/,
+  'only marker-classified rejections use the mapped copy; raw detail stays for everything else',
+);
 // in-flight 门按会话记（Set）：单槽位会被并发分叉互相清掉（A 落盘清掉 B
 // 的标记，B 上的再点击绕过前端门撞 Rust 预约拒绝）。
 assert.match(

@@ -609,7 +609,18 @@ function enforceLazyChunks() {
 // 487,867 → 488,188 B desktop (+321 B; 812 B under the new ceiling). The
 // web entry measured 127,863 B at the review head and stays under 129_000.
 // This cap does not promise headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 489_000;
+//
+// PR #835 second fix wave (r2 review) owns the 489_000 → 490_000 desktop
+// raise: the committed-transcript context_update resync wiring on the fork
+// surface, the rebind-error classification in the fork failure toast, and the
+// artifact-html sandbox hardening (postMessage measurement/zoom/install
+// bootstrap in artifact-preview-navigation.js, the entry-side copy via
+// composer-shared; ArtifactsPanel rides a lazy chunk). Measured at the wave
+// tip: 488,188 → 489,518 B desktop (+1,330 B; 482 B under the new ceiling).
+// The web entry measured 126,661 B at the wave tip and stays under 129_000
+// (the tauri-only counter plumbing does not ride the web entry). This cap
+// does not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 490_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
