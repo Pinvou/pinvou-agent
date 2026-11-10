@@ -26,7 +26,6 @@ vm.runInContext(
   `this.selectorMainLabel = selectorMainLabel;\n` +
   `this.selectorSubLabel = selectorSubLabel;\n` +
   `this.MODEL_CATALOG = MODEL_CATALOG;\n` +
-  `this.MODEL_CATALOG_SECTIONS = MODEL_CATALOG_SECTIONS;\n` +
   `this.MODEL_PRESET_DEFS = MODEL_PRESET_DEFS;\n` +
   `this.findCloudProviderForModel = findCloudProviderForModel;\n` +
   `this.providerLabelForModel = providerLabelForModel;\n` +
@@ -45,7 +44,7 @@ vm.runInContext(
   { filename: srcPath },
 );
 
-const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, MODEL_CATALOG_SECTIONS, MODEL_PRESET_DEFS, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, findCloudProviderForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
+const { isPresetModel, catalogItemMatchesModel, MODEL_CATALOG, MODEL_PRESET_DEFS, groupModelsForSelector, localUserNamed, selectorMainLabel, selectorSubLabel, providerLabelForModel, findCloudProviderForModel, reasoningEffortTiersForModel, defaultReasoningEffortForModel, reasoningEffortForModelSwitch, normalizeStoredReasoningEffort, baseUrlUsesLoopback, baseUrlUsesLocalOrPrivate, localProbeTiersForKind, alwaysThinkingSpecForModel, localReasoningTiers, catalogImageCapableForModel, reasoningEffortDisplayForTiers } = ctx;
 
 // i18n 测试替身:复刻实际字典里会用到的字段
 const t = {
@@ -304,9 +303,7 @@ test('2026-09-28 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding.dashscope.aliyuncs.com/v1', model: 'kimi-k2.5' })), true);
   // (qwen3-coder-plus used to pin the intl alias host here; the official
   // page dropped it in the 2026-10-10 refresh — see the 2026-10-13 test.)
-  // Aggregator groups: org-prefixed ids classify per vendor, and the new
-  // section is registered.
-  assert.strictEqual(MODEL_CATALOG_SECTIONS.aggregator, '聚合平台');
+  // Aggregator groups: org-prefixed ids classify per vendor.
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'openrouter', 'https://openrouter.ai/api/v1', 'deepseek/deepseek-v4.1-flash')), true);
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'siliconflow', 'https://api.siliconflow.cn/v1', 'deepseek-ai/DeepSeek-V4-Pro')), true);
   assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'siliconflow', 'https://api.siliconflow.com/v1', 'Pro/zai-org/GLM-5.2')), true);
