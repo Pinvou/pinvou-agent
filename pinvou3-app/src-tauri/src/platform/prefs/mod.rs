@@ -805,7 +805,8 @@ pub struct AdvancedPrefs {
 pub struct NotificationPrefs {
     pub enabled: bool,
     pub task_completed: bool,
-    /// 模型经 request_user_input 等待用户回复时弹系统通知。
+    /// System notification when the model parks on `request_user_input`
+    /// waiting for the user's reply.
     pub needs_input: bool,
 }
 
@@ -3916,7 +3917,8 @@ mod tests {
         let parsed: UserPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.notifications.enabled, !cfg!(target_os = "linux"));
         assert!(!parsed.notifications.task_completed);
-        // 未携带的 needs_input 同样从平台 Default 补齐，不随部分补丁漂移。
+        // An uncarried needs_input is likewise filled from the platform
+        // Default and does not drift with partial patches.
         assert_eq!(parsed.notifications.needs_input, !cfg!(target_os = "linux"));
     }
 

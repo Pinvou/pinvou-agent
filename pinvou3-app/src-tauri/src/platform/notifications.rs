@@ -4,12 +4,43 @@ use parking_lot::Mutex;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
-const TASK_COMPLETED_TITLE: &str = "任务已完成";
-const TASK_COMPLETED_BODY: &str = "任务已成功完成。您可以在编辑器中查看结果。";
-const INPUT_NEEDED_TITLE: &str = "需要你的输入";
-// 桌面通知没有接点击动作(native builder 未注册 on_action,notify-send 结构性
-// 不上报点击),文案不得承诺点击行为。
-const INPUT_NEEDED_BODY: &str = "任务正在等待你的回复，请打开品悟继续。";
+use crate::platform::prefs::{Language, NotificationPrefs, UserPrefs};
+
+// Desktop notifications carry no click action (the native builder registers
+// no on_action, and notify-send structurally reports none), so the copy must
+// not promise click behavior in any language.
+const TASK_COMPLETED_TITLE_ZH: &str = "任务已完成";
+const TASK_COMPLETED_BODY_ZH: &str = "任务已成功完成。您可以在编辑器中查看结果。";
+const TASK_COMPLETED_TITLE_EN: &str = "Task completed";
+const TASK_COMPLETED_BODY_EN: &str =
+    "The task completed successfully. You can review the results in the editor.";
+const TASK_COMPLETED_TITLE_JA: &str = "タスクが完了しました";
+const TASK_COMPLETED_BODY_JA: &str = "タスクが正常に完了しました。エディターで結果を確認できます。";
+const INPUT_NEEDED_TITLE_ZH: &str = "需要你的输入";
+const INPUT_NEEDED_BODY_ZH: &str = "任务正在等待你的回复，请打开品悟继续。";
+const INPUT_NEEDED_TITLE_EN: &str = "Input needed";
+const INPUT_NEEDED_BODY_EN: &str = "The task is waiting for your reply. Open Pinvou to continue.";
+const INPUT_NEEDED_TITLE_JA: &str = "入力が必要です";
+const INPUT_NEEDED_BODY_JA: &str = "タスクが返信を待っています。Pinvou を開いて続行してください。";
+
+/// Copy per notification kind, keyed by the saved UI language (`UserPrefs::load`,
+/// the same source the system tray localizes from). Resolved at send time so a
+/// language switch takes effect without a restart.
+fn task_completed_copy(language: Language) -> (&'static str, &'static str) {
+    match language {
+        Language::ZhHans => (TASK_COMPLETED_TITLE_ZH, TASK_COMPLETED_BODY_ZH),
+        Language::En => (TASK_COMPLETED_TITLE_EN, TASK_COMPLETED_BODY_EN),
+        Language::Ja => (TASK_COMPLETED_TITLE_JA, TASK_COMPLETED_BODY_JA),
+    }
+}
+
+fn input_needed_copy(language: Language) -> (&'static str, &'static str) {
+    match language {
+        Language::ZhHans => (INPUT_NEEDED_TITLE_ZH, INPUT_NEEDED_BODY_ZH),
+        Language::En => (INPUT_NEEDED_TITLE_EN, INPUT_NEEDED_BODY_EN),
+        Language::Ja => (INPUT_NEEDED_TITLE_JA, INPUT_NEEDED_BODY_JA),
+    }
+}
 
 #[derive(Default)]
 pub struct NotificationState {
@@ -44,7 +75,7 @@ impl NotificationState {
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 struct NotificationPrefsOnly {
-    notifications: crate::platform::prefs::NotificationPrefs,
+    notifications: NotificationPrefs,
 }
 
 fn read_notification_prefs() -> NotificationPrefsOnly {
@@ -61,20 +92,32 @@ pub fn task_completion_enabled() -> bool {
 
 pub fn needs_input_enabled() -> bool {
     let prefs = read_notification_prefs();
-    prefs.notifications.enabled && prefs.notifications.needs_input
+    // One effective rule for delivery and the Settings display: the UI derives
+    // the input row from the master switch (the task row backfills as
+    // `enabled && task_completed`, and the input row shows
+    // `needs_input && task_completed`), so delivery must require all three.
+    // The supported CLI can persist `enabled=true, task_completed=false`, and
+    // on Windows/macOS an older file in that state defaults `needs_input` to
+    // true — there the row displays off while a two-field gate would still
+    // deliver. Stored choices stay untouched; only delivery agrees with what
+    // the switch shows.
+    prefs.notifications.enabled
+        && prefs.notifications.task_completed
+        && prefs.notifications.needs_input
+}
+
+fn saved_language() -> Language {
+    UserPrefs::load().language
 }
 
 pub fn notify_task_completed(app: &AppHandle) {
-    notify_desktop(
-        app,
-        TASK_COMPLETED_TITLE,
-        TASK_COMPLETED_BODY,
-        "task completion",
-    );
+    let (title, body) = task_completed_copy(saved_language());
+    notify_desktop(app, title, body, "task completion");
 }
 
 pub fn notify_input_needed(app: &AppHandle) {
-    notify_desktop(app, INPUT_NEEDED_TITLE, INPUT_NEEDED_BODY, "input needed");
+    let (title, body) = input_needed_copy(saved_language());
+    notify_desktop(app, title, body, "input needed");
 }
 
 fn notify_desktop(app: &AppHandle, title: &str, body: &str, kind: &str) {
@@ -189,7 +232,8 @@ mod tests {
             .unwrap();
             assert!(!needs_input_enabled());
 
-            // 主开关关时不得放行（对齐 task_completion_enabled 的兄弟用例）。
+            // Master switch off must not deliver (mirrors the
+            // task_completion_enabled sibling case).
             std::fs::write(
                 &settings,
                 r#"{"notifications":{"enabled":false,"needs_input":true}}"#,
@@ -198,20 +242,90 @@ mod tests {
             assert!(!needs_input_enabled());
 
             std::fs::write(&settings, r#"{"notifications":{"enabled":true}}"#).unwrap();
-            // 缺失的 needs_input 从结构体 Default 补齐（Linux 默认关、macOS/Windows 默认开）：
-            // 钉住 Linux 的 opt-in 默认，防止默认被改成无条件开启。
+            // A missing needs_input is filled from the struct Default (off on
+            // Linux, on on macOS/Windows): pins the Linux opt-in default so it
+            // cannot drift to always-on.
             assert_eq!(needs_input_enabled(), !cfg!(target_os = "linux"));
 
             std::fs::write(&settings, r#"{"notifications":{"needs_input":true}}"#).unwrap();
-            // 缺失的 enabled 从结构体 Default 补齐（Linux 默认关、macOS/Windows 默认开）。
+            // A missing enabled is filled from the struct Default (off on
+            // Linux, on on macOS/Windows).
             assert_eq!(needs_input_enabled(), !cfg!(target_os = "linux"));
 
             std::fs::write(
                 &settings,
-                r#"{"notifications":{"enabled":true,"needs_input":true}}"#,
+                r#"{"notifications":{"enabled":true,"task_completed":true,"needs_input":true}}"#,
             )
             .unwrap();
             assert!(needs_input_enabled());
+
+            // The Settings row derives its display from the master switch, so
+            // the CLI-authored split (master off, input intent on) must not
+            // deliver either — including the legacy-file shape where the
+            // missing needs_input defaults to true on Windows/macOS.
+            std::fs::write(
+                &settings,
+                r#"{"notifications":{"enabled":true,"task_completed":false,"needs_input":true}}"#,
+            )
+            .unwrap();
+            assert!(!needs_input_enabled());
+            std::fs::write(
+                &settings,
+                r#"{"notifications":{"enabled":true,"task_completed":false}}"#,
+            )
+            .unwrap();
+            assert!(!needs_input_enabled());
+        });
+    }
+
+    #[test]
+    fn notification_copy_follows_saved_language() {
+        with_temp_pinvou3_home("notification-language", |root| {
+            let settings = root.join("settings.json");
+            // zh copy is byte-identical to the pre-localization strings, so
+            // zh users see zero behavior change.
+            for (tag, input, completed) in [
+                (
+                    "zh-Hans",
+                    ("需要你的输入", "任务正在等待你的回复，请打开品悟继续。"),
+                    ("任务已完成", "任务已成功完成。您可以在编辑器中查看结果。"),
+                ),
+                (
+                    "en",
+                    (
+                        "Input needed",
+                        "The task is waiting for your reply. Open Pinvou to continue.",
+                    ),
+                    (
+                        "Task completed",
+                        "The task completed successfully. You can review the results in the editor.",
+                    ),
+                ),
+                (
+                    "ja",
+                    (
+                        "入力が必要です",
+                        "タスクが返信を待っています。Pinvou を開いて続行してください。",
+                    ),
+                    (
+                        "タスクが完了しました",
+                        "タスクが正常に完了しました。エディターで結果を確認できます。",
+                    ),
+                ),
+            ] {
+                std::fs::write(&settings, format!(r#"{{"language":"{tag}"}}"#)).unwrap();
+                let language = saved_language();
+                assert_eq!(
+                    input_needed_copy(language),
+                    input,
+                    "{tag} input-needed copy"
+                );
+                assert_eq!(
+                    task_completed_copy(language),
+                    completed,
+                    "{tag} completion copy"
+                );
+            }
         });
     }
 

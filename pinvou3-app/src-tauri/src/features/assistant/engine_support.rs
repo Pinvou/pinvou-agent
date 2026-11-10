@@ -432,13 +432,15 @@ mod desktop_notification_wiring_pins {
     #[test]
     fn each_notification_kind_keeps_its_own_pref_and_sender() {
         let input = pinned_fn_body("pub(super) fn maybe_notify_input_needed(");
-        // 键参数序即语义：应为 (session, input)。对换会静默丢失按会话的
-        // 去重剪枝（should_notify 按 ':' 前缀剪枝）。
+        // Key argument order is semantics: it must be (session, input).
+        // Swapping silently loses the per-session dedup pruning
+        // (should_notify prunes by the ':' prefix).
         assert!(
             input.contains("desktop_notification_key(session_id,input_id)"),
             "the input notification must dedup under (session, input) argument order",
         );
-        // 跨种类配对突变（换 pref 或换 sender）在编译期不可见，钉死相邻形状。
+        // Cross-kind pairing mutations (swapping the pref or the sender) are
+        // invisible to the compiler, so pin the adjacent shape.
         assert!(
             input.contains(
                 "needs_input_enabled,crate::platform::notifications::notify_input_needed",

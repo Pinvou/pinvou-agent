@@ -1027,12 +1027,15 @@ const App = () => {
         }
       }, [language]);
       const [superPerm, setSuperPerm] = useState(false);
-      // 桌面通知两开关的初始默认 = 平台主开关默认（对齐 Rust NotificationPrefs::default）。
+      // Both desktop-notification switches start from the platform
+      // master-switch default (aligned with Rust NotificationPrefs::default).
       const defaultDesktopNotificationSwitch = platformCapabilities.taskCompletionNotificationsDefault !== false;
       const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultDesktopNotificationSwitch);
-      // inputNeededNotif 保存「needs_input 持久意图」；生效显示在 SettingsView
-      // 按 intent && taskCompletedNotif 派生——任务完成开关是主开关（载荷携带
-      // enabled），派生让主开关开→关→开的两个方向都不撒谎。
+      // inputNeededNotif stores the persisted needs_input intent; the
+      // effective display derives as intent && taskCompletedNotif in
+      // SettingsView — the task-completion switch is the master switch (its
+      // payload carries enabled), so the derivation stays truthful across the
+      // master going off->on in both directions.
       const [inputNeededNotif, setInputNeededNotif] = useState(defaultDesktopNotificationSwitch);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
@@ -1280,8 +1283,10 @@ const App = () => {
         }
         const notifications = settings.notifications || {};
         setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
-        // 只回填持久意图、不折叠 enabled：主开关的生效性由显示层派生；
-        // 若在这里折叠 enabled，主开关关→开后就无法恢复已持久化的 needs_input。
+        // Backfill only the persisted intent; do not fold enabled into the
+        // input switch: the master switch's effectiveness is derived in the
+        // display layer, and folding enabled here would make a persisted
+        // needs_input unrecoverable after the master goes off->on.
         setInputNeededNotif(notifications.needs_input !== false);
         uiPrefsInitRef.current = true;
       };
@@ -3408,9 +3413,11 @@ const App = () => {
         invokeTauri('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
       }
 
-      // 通知开关共用一条保存管道：乐观置位 → saveSettings，失败回滚。
-      // 任务完成开关同时是桌面通知主开关（载荷携带 enabled）；「需要输入」
-      // 只携带自己的开关，Rust 侧按字段合并，不会重置其余开关。
+      // Both notification switches share one save pipeline: optimistic set ->
+      // saveSettings, rollback on failure. The task-completion switch doubles
+      // as the desktop-notification master switch (payload carries enabled);
+      // the input switch carries only its own field, and the Rust side merges
+      // by field, so no other switch resets.
       function makeNotifToggle(getCurrent, setCurrent, payloadFor) {
         return async (enabled) => {
           const nextEnabled = !!enabled;

@@ -1241,8 +1241,9 @@ pub async fn test_image_input_capability(
     Ok(run_image_capability_probe(&model, &base_url, &api_key, model_id.as_deref()).await)
 }
 
-/// 通知开关的字段级补丁：部分更新不得把未携带的开关重置回默认值
-/// （整表替换会让「只改 needs_input」的写入把 enabled/task_completed 复位）。
+/// Field-level patch for the notification switches: a partial update must not
+/// reset unlisted switches to their defaults (a whole-struct replace would let
+/// an "only change needs_input" write reset enabled/task_completed).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NotificationPrefsPatch {
@@ -2088,18 +2089,23 @@ mod tests {
         );
 
         assert!(!current.notifications.needs_input);
-        assert!(current.notifications.enabled, "未携带的开关不得被重置");
+        assert!(
+            current.notifications.enabled,
+            "unlisted switches must not be reset"
+        );
         assert!(
             current.notifications.task_completed,
-            "未携带的开关不得被重置"
+            "unlisted switches must not be reset"
         );
     }
 
     #[test]
     fn notification_patch_preserves_needs_input_across_master_patch() {
-        // 反向补丁（任务完成开关发出的 {enabled, task_completed} 形状）同样
-        // 只合并携带的字段：持久化的 needs_input 意图不得随主开关补丁复位，
-        // 否则主开关关→开后输入提醒的持久意图悄然丢失。
+        // The inverse patch (the {enabled, task_completed} shape sent by the
+        // master switch) likewise merges only carried fields: the persisted
+        // needs_input intent must not reset with the master patch, or
+        // switching the master off->on silently loses the persisted
+        // input-notice intent.
         let mut current = UserPrefs::default();
         current.notifications.enabled = true;
         current.notifications.task_completed = true;
@@ -2121,7 +2127,7 @@ mod tests {
         assert!(!current.notifications.task_completed);
         assert!(
             current.notifications.needs_input,
-            "未携带的 needs_input 不得被重置"
+            "an uncarried needs_input must not be reset"
         );
     }
 
