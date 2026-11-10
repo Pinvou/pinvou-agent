@@ -9,6 +9,18 @@ use crate::platform::prefs::{Language, NotificationPrefs, UserPrefs};
 // Desktop notifications carry no click action (the native builder registers
 // no on_action, and notify-send structurally reports none), so the copy must
 // not promise click behavior in any language.
+//
+// This table is intentionally separate from `src/shared/i18n.js`: i18n.js
+// lives inside the webview bundle, while these notifications are raised by
+// the Rust host process — the engine's wait-for-input path fires even when
+// the window is closed and the webview never loaded, so the host cannot
+// consume webview-bundle resources at send time. Keeping the surface
+// minimal: one title/body per kind per saved UI language (`UserPrefs::load`,
+// the same language source the system tray localizes from), zh copy pinned
+// byte-identical to the pre-localization strings by
+// `notification_copy_follows_saved_language`. The in-app activity labels
+// (`activityInputNeeded` / `activityTaskDone` in i18n) are a separate,
+// shorter UI surface and are deliberately not reused here.
 const TASK_COMPLETED_TITLE_ZH: &str = "任务已完成";
 const TASK_COMPLETED_BODY_ZH: &str = "任务已成功完成。您可以在编辑器中查看结果。";
 const TASK_COMPLETED_TITLE_EN: &str = "Task completed";

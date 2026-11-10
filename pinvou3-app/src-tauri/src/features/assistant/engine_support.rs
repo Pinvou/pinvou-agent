@@ -394,30 +394,36 @@ mod desktop_notification_wiring_pins {
     //! against this file's own source, the same way `forwarder.rs` pins its
     //! call-site wiring shape.
 
-    /// Comment- and whitespace-stripped body of the fn with the given
-    /// signature prefix. Naive brace matching: the pinned wrappers contain
-    /// no braces in string or char literals (a future edit adding one fails
-    /// loudly here instead of silently weakening the pin).
+    /// Whitespace-stripped body of the fn with the given signature prefix,
+    /// after a two-pass comment strip (the same caliber as
+    /// `forwarder_body`): line-comment tails first — a `//`-commented-out
+    /// `/*` marker cannot eat live code — then closed `/* … */` spans
+    /// removed with nesting-depth tracking (review JensenChen28 4521432771
+    /// and 4525154638). The strip runs before brace matching, so a
+    /// mutation hiding braces inside comments cannot derail the body
+    /// scan. Residual exposure, unchanged: needles inside string literals
+    /// or trailing `//` mentions still satisfy a `contains` pin; the
+    /// pinned wrappers contain no braces in string or char literals (a
+    /// future edit adding one fails loudly here instead of silently
+    /// weakening the pin).
     fn pinned_fn_body(signature: &str) -> String {
-        let src = include_str!("engine_support.rs");
-        let sig_at = src.find(signature).expect("pinned fn must exist");
-        let body_at = src[sig_at..].find('{').expect("fn body brace") + sig_at;
+        pinned_body_from_src(include_str!("engine_support.rs"), signature)
+    }
+
+    /// [`pinned_fn_body`] against a caller-supplied source, so the strip
+    /// caliber itself is testable against mutated sources.
+    fn pinned_body_from_src(src: &str, signature: &str) -> String {
+        let stripped = strip_block_comments(&without_line_tails(src));
+        let sig_at = stripped.find(signature).expect("pinned fn must exist");
+        let body_at = stripped[sig_at..].find('{').expect("fn body brace") + sig_at;
         let mut depth = 0usize;
-        for (offset, ch) in src[body_at..].char_indices() {
+        for (offset, ch) in stripped[body_at..].char_indices() {
             match ch {
                 '{' => depth += 1,
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return src[body_at..=body_at + offset]
-                            .split('\n')
-                            .map(|line| {
-                                line.split("//")
-                                    .next()
-                                    .expect("split always yields one item")
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
+                        return stripped[body_at..=body_at + offset]
                             .chars()
                             .filter(|c| !c.is_whitespace())
                             .collect();
@@ -427,6 +433,77 @@ mod desktop_notification_wiring_pins {
             }
         }
         panic!("unbalanced braces in pinned fn body");
+    }
+
+    /// Line-comment tails dropped per line (a `//`-commented-out `/*`
+    /// marker cannot make the block pass eat live code), preserving
+    /// newlines.
+    fn without_line_tails(src: &str) -> String {
+        src.split('\n')
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Newline-preserving removal of closed `/* … */` spans, tracking
+    /// nesting depth: Rust block comments nest, so a span's balancing
+    /// close is the `*/` that returns the depth to zero, not the first
+    /// `*/` seen (review JensenChen28 4525154638, same scanner class as
+    /// the shared `comment_filtered` and `forwarder_body`). An
+    /// unterminated `/*` is kept verbatim (scan past the marker).
+    fn strip_block_comments(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(open) = rest.find("/*") {
+            let after_open = &rest[open + 2..];
+            let mut depth = 1usize;
+            let mut scan = 0usize;
+            let mut close_end = None;
+            while depth > 0 {
+                let next_open = after_open[scan..].find("/*").map(|rel| scan + rel);
+                let next_close = after_open[scan..].find("*/").map(|rel| scan + rel);
+                match (next_open, next_close) {
+                    (Some(open_at), Some(close_at)) if open_at < close_at => {
+                        depth += 1;
+                        scan = open_at + 2;
+                    }
+                    (_, Some(close_at)) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close_end = Some(close_at + 2);
+                        } else {
+                            scan = close_at + 2;
+                        }
+                    }
+                    (Some(open_at), None) => {
+                        depth += 1;
+                        scan = open_at + 2;
+                    }
+                    (None, None) => break,
+                }
+            }
+            match close_end {
+                Some(end) => {
+                    out.push_str(&rest[..open]);
+                    let inner = &after_open[..end - 2];
+                    for _ in 0..inner.matches('\n').count() {
+                        out.push('\n');
+                    }
+                    rest = &after_open[end..];
+                }
+                None => {
+                    // Unterminated block: keep it verbatim, scan past the marker.
+                    out.push_str(&rest[..open + 2]);
+                    rest = after_open;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
     }
 
     #[test]
@@ -467,6 +544,44 @@ mod desktop_notification_wiring_pins {
             !completed.contains("needs_input_enabled")
                 && !completed.contains("notify_input_needed"),
             "the completion notification must not carry input wiring",
+        );
+    }
+
+    #[test]
+    fn block_commented_wrapper_body_keeps_no_needle_alive() {
+        // Review JensenChen28 4521432771: pinned_fn_body used to strip
+        // line-comment tails only, so a compiling mutation that wrapped the
+        // executable wrapper body in `/* … */` kept every needle substring
+        // alive while the wrapper stopped issuing notifications. The block
+        // pass must remove the needle with the span.
+        let mutated = "pub(super) fn maybe_notify_input_needed(\n    session_id: &str,\n    input_id: &str,\n) {\n    /*\n    let key = desktop_notification_key(session_id, input_id);\n    crate::platform::notifications::notify_input_needed(needs_input_enabled, &key);\n    */\n}";
+        let body = pinned_body_from_src(mutated, "pub(super) fn maybe_notify_input_needed(");
+        assert!(
+            !body.contains("desktop_notification_key(session_id,input_id)"),
+            "a block-commented wrapper body must not satisfy a pin needle",
+        );
+        assert!(
+            !body.contains("notify_input_needed(needs_input_enabled"),
+            "every needle inside the commented span must be removed",
+        );
+    }
+
+    #[test]
+    fn nested_block_commented_wrapper_body_keeps_no_needle_alive() {
+        // Nesting depth (review JensenChen28 4525154638 on the shared
+        // filter; this scanner is the same class): Rust block comments
+        // nest, so the first `*/` must not close the outer span —
+        // otherwise an outer comment holding an inner `/* … */` keeps the
+        // needle's substring alive past the inner close.
+        let mutated = "pub(super) fn maybe_notify_input_needed(\n    session_id: &str,\n    input_id: &str,\n) {\n    /* outer\n    /* inner */\n    let key = desktop_notification_key(session_id, input_id);\n    */\n}";
+        let body = pinned_body_from_src(mutated, "pub(super) fn maybe_notify_input_needed(");
+        assert!(
+            !body.contains("desktop_notification_key(session_id,input_id)"),
+            "a needle behind a nested block-comment span must be removed",
+        );
+        assert!(
+            !body.contains("*/"),
+            "the balancing close must be consumed with the span",
         );
     }
 }

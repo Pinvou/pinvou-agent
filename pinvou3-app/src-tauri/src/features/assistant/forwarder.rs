@@ -2236,12 +2236,17 @@ mod transcript_persist_pins {
     //! fresh always-true atomic would ship green. Pin the plumbing instead.
 
     /// The production `spawn_event_forwarder` body with line comments
-    /// stripped first, then closed `/* … */` spans removed (newline
-    /// count preserved; an unterminated `/*` is kept verbatim), so prose
-    /// that mentions a needle verbatim cannot satisfy a pin in either
-    /// comment kind.
+    /// stripped first, then closed `/* … */` spans removed with
+    /// nesting-depth tracking (newline count preserved; an unterminated
+    /// `/*` is kept verbatim), so prose that mentions a needle verbatim
+    /// cannot satisfy a pin in either comment kind.
     pub(super) fn forwarder_body() -> String {
-        let src = include_str!("forwarder.rs");
+        forwarder_body_from_src(include_str!("forwarder.rs"))
+    }
+
+    /// [`forwarder_body`] against a caller-supplied source, so the strip
+    /// caliber itself is testable against mutated sources.
+    fn forwarder_body_from_src(src: &str) -> String {
         let signature = "pub(crate) fn spawn_event_forwarder(";
         let start = src.find(signature).expect("the forwarder fn must exist");
         let rest = &src[start + signature.len()..];
@@ -2262,27 +2267,58 @@ mod transcript_persist_pins {
         strip_block_comments(&without_line_comments)
     }
 
-    /// Newline-preserving removal of closed `/* … */` spans. Runs after the
-    /// line-comment pass, so a `//`-commented-out `/*` marker cannot make
-    /// this eat live code; the needle set of every pin below lives in code,
-    /// never in a block comment.
+    /// Newline-preserving removal of closed `/* … */` spans, tracking
+    /// nesting depth: Rust block comments nest, so a span's balancing
+    /// close is the `*/` that returns the depth to zero, not the first
+    /// `*/` seen (review JensenChen28 4525154638, same scanner class as
+    /// the shared `comment_filtered`). Runs after the line-comment pass,
+    /// so a `//`-commented-out `/*` marker cannot make this eat live
+    /// code; the needle set of every pin below lives in code, never in a
+    /// block comment.
     fn strip_block_comments(src: &str) -> String {
         let mut out = String::with_capacity(src.len());
         let mut rest = src;
         while let Some(open) = rest.find("/*") {
-            match rest[open..].find("*/") {
-                Some(close_rel) => {
+            let after_open = &rest[open + 2..];
+            let mut depth = 1usize;
+            let mut scan = 0usize;
+            let mut close_end = None;
+            while depth > 0 {
+                let next_open = after_open[scan..].find("/*").map(|rel| scan + rel);
+                let next_close = after_open[scan..].find("*/").map(|rel| scan + rel);
+                match (next_open, next_close) {
+                    (Some(open_at), Some(close_at)) if open_at < close_at => {
+                        depth += 1;
+                        scan = open_at + 2;
+                    }
+                    (_, Some(close_at)) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close_end = Some(close_at + 2);
+                        } else {
+                            scan = close_at + 2;
+                        }
+                    }
+                    (Some(open_at), None) => {
+                        depth += 1;
+                        scan = open_at + 2;
+                    }
+                    (None, None) => break,
+                }
+            }
+            match close_end {
+                Some(end) => {
                     out.push_str(&rest[..open]);
-                    let inner = &rest[open + 2..open + close_rel];
+                    let inner = &after_open[..end - 2];
                     for _ in 0..inner.matches('\n').count() {
                         out.push('\n');
                     }
-                    rest = &rest[open + close_rel + 2..];
+                    rest = &after_open[end..];
                 }
                 None => {
                     // Unterminated block: keep it verbatim, scan past the marker.
                     out.push_str(&rest[..open + 2]);
-                    rest = &rest[open + 2..];
+                    rest = after_open;
                 }
             }
         }
@@ -2328,6 +2364,26 @@ mod transcript_persist_pins {
             !body.contains(".persist_admitted_chat_display(")
                 && !body.contains(".persist_chat_engine_state"),
             "the forwarder must not bypass the commit-callback helpers"
+        );
+    }
+
+    #[test]
+    fn nested_block_commented_forwarder_body_keeps_no_needle_alive() {
+        // Nesting depth (review JensenChen28 4525154638, same scanner class
+        // as the shared comment_filtered): Rust block comments nest, so the
+        // first `*/` must not close the outer span — a compiling mutation
+        // wrapping the persist plumbing in an outer comment with an inner
+        // `/* … */` would otherwise keep the needle alive past the inner
+        // close.
+        let mutated = "pub(crate) fn spawn_event_forwarder(\n    transcript_writer_active: Arc<AtomicBool>,\n) {\n    /* outer\n    /* inner */\n    let writer_for_save = transcript_writer_active.clone();\n    */\n}\n\n#[cfg(test)]";
+        let body = forwarder_body_from_src(mutated);
+        assert!(
+            !body.contains("let writer_for_save = transcript_writer_active.clone();"),
+            "a needle behind a nested block-comment span must be removed",
+        );
+        assert!(
+            !body.contains("*/"),
+            "the balancing close must be consumed with the span",
         );
     }
 
