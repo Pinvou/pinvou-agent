@@ -706,3 +706,25 @@ and 11 T3 entries; R6's three APP entries were a per-round count. Evidence-reten
 policy remains a maintainer decision; no new retention threshold is inferred.
 See [R7 verification](prompt-optimization-evaluation/review-r7-verification.json)
 and [R7 sources](prompt-optimization-evaluation/source-manifest-review-r7.json).
+
+## PR822 CodeWhale baseline follow (2026-11-10)
+
+The submodule gitlink follows pinvou3-clean to 6f7a3a748 (CodeWhale#142's
+terminal-error source field, #148's todo-item status default, #150's
+engine route-output-budget exposure to hosts, plus #152's security
+dependency bumps: rusqlite 0.41.1 / libsqlite3-sys 0.39.1 bundled SQLite
+3.54.1 for RUSTSEC-2026-0459, rmcp 3.9.0 for RUSTSEC-2026-0462, rio-vt
+0.5.29 for RUSTSEC-2026-0430). fork-guard
+re-registers the review head (6f7a3a748) and the commits-above-v0.9.12
+census (98); the maintenance base (11cba403d), the official v0.9.12 root
+(dcd4c200) and the immutable r1 closure are unchanged ancestors, and the
+public-head transition contract stays gitlink == branch head with the
+r3 tag pinned at its closure (61cb769be).
+
+The engine event changes ride the same move: `TurnComplete` gains
+`error_source` (Option<TurnErrorSource>, "source of this exact terminal
+error, when known by its producer"). The parent's exhaustive match sites
+update in the same PR — the assistant forwarder ignores the new field
+(it surfaces usage/status/error only) and the strict-mode validation
+fixture constructs it as None. No TurnComplete routing, redaction or
+timeline behavior changes in the parent.
