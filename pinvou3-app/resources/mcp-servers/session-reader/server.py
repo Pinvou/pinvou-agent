@@ -1387,9 +1387,10 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
             "the newest body is the one applied. Under commit-time steer "
             "finalization the double-dispatch window is the armed-steer "
             "span: a materially-different replacement releases the armed "
-            "steer (stale-release gate) or is caught by the delivering "
-            "pass's re-verify, and the newest body delivers within about "
-            "one poll tick — while a semantically-equal resubmission is "
+            "steer at the stale-release gate (delivers that same pass), or "
+            "if the swap lands inside the delivering pass itself the "
+            "re-verify re-queues the newest body after one retry backoff "
+            "— while a semantically-equal resubmission is "
             "held without re-dispatching until the earlier body's terminal "
             "event (the contract §6 disclosure)."
         ),

@@ -498,11 +498,14 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   budget cleared) and the newest body delivers that same pass — about one
   poll tick; if the swap instead lands inside the delivering pass itself,
   the post-delivery re-verify catches it before any registration exists
-  and re-queues it with the budget cleared — the newest body still
-  delivers at the next pass, not after a backoff. Either way the old
+  and re-queues the newest body with one attempt recorded — it delivers
+  after that identity's retry backoff (5 s fresh, up to a minute once
+  attempts accumulate), and only a swap landing while the identity is
+  already at the attempt limit clears the budget outright (the
+  exhaustion arm's replaced branch). Either way the old
   body's terminal event ends nothing app-side (it is buffered as late and
   ages out), so that double-dispatch window ends when the newest body's
-  own delivery lands about one poll tick later — not at the
+  own delivery lands one retry backoff after the swap — not at the
   terminal event and not the 24h wait; a semantically-equal body re-spools
   too but is held by the poll's stale-release gate without re-dispatching
   (the dedup happens at hold time, not spool time) until the earlier
@@ -533,22 +536,30 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   channel where a keyed retry was answered "delivered" from a marker
   written at steer-Ok); every former loss trigger now degrades to
   at-least-once redelivery (possibly duplicating) instead of silent loss,
-  save the ten-cycle `steer_drop_limit` quarantine above — and one lossy
-  channel that is not a redelivery: the finalizer writes the done marker
+  save the ten-cycle `steer_drop_limit` quarantine above — and three lossy
+  channels that are not redeliveries: the finalizer writes the done marker
   on the terminal event without consulting the forwarder's
   transcript-persistence outcome, so a session persist that fails and
   outlasts the session loses the turn's transcript while the landed
   marker suppresses this body's keyed retries (the in-app forwarder
   retries the full snapshot on the next event; a failure that outlasts
-  the session never lands it); a
+  the session never lands it); a replacement landing inside the committed
+  arm's re-verify-to-removal residual is destroyed untried under the old
+  body's landed marker (µs-scale, disclosed in the arm's comment rather
+  than promised closed); and a crash between the marker write and the
+  re-verify leaves the marker answering the newest body "delivered" so
+  the skip arm removes it untried; a
   macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
   double-deliver — since commit-time finalization that double-delivery
   window spans the whole commit wait (the queued file carries no marker
   until the winning instance's terminal event), not just one poll tick,
-  and the duplication is exactly one extra delivery: the second
-  instance's registry then holds the file, so it does not re-deliver
-  continuously — and the replaced-after-delivery arm can then erase the
+  and the duplication is exactly one extra delivery while the second
+  instance's steers commit or hold (its registry then holds the file, so
+  it does not re-deliver continuously) — a second instance whose engine
+  DROPS the steer loops its own bounded drop-cycle series instead (ten
+  cycles, then its `steer_drop_limit` quarantine caps the burst) — and
+  the replaced-after-delivery arm can then erase the
   winning instance's done marker — plugin-level upstream, the marker
   interplay is disclosed here (round-19 minor 15); a send against an
   ACP/code target — keyed or not (the round-18 minor-17 correction: this
