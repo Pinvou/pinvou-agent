@@ -760,9 +760,9 @@ impl ProjectStore {
         explicit_assignments_of(&self.state.read().assignments, project_id)
     }
 
-    /// Snapshot of the anti-materialization exclusion table (canonical keys;
-    /// shipped by the command layer with list_projects; the manage panel shows and
-    /// revokes from it).
+    /// Snapshot of the anti-materialization exclusion table (canonical keys).
+    /// 仅测试用（生产路径走 `never_materialize_display_roots`）。
+    #[cfg(test)]
     pub fn never_materialize_roots(&self) -> Vec<String> {
         self.state.read().never_materialize_roots.clone()
     }
