@@ -376,6 +376,10 @@ fn is_ledger_closed(resolution: Option<&str>) -> bool {
 
 /// 读 sidecar(`pinvou_reviews.json`)里针对同一产出物的最近一轮账目(issues)。有则进
 /// 核账模式（§5，激活原未做项「连续召唤接续」）。sidecar 由前端 recordPinvouReview 落盘，后端只读。
+/// 读失败/解析失败静默降级为自由批评（返回 None）——刻意为之并在此记载：账目
+/// 没有 UI 呈现面，向召唤路径报错既无处显示，也会挡住下一次 settle 的覆盖写、
+/// 让损坏文件永远无法自愈；此为模块已记载的静默降级之一（同 `artifact_path`
+/// 探针的静默回落）。条目级损坏由 `ledger_from_entries` 拒绝（r7 审 m1）。
 fn read_prior_ledger(
     session_id: &str,
     artifact_path: &str,
@@ -452,16 +456,33 @@ fn ledger_from_entries(
                     .is_some_and(|a| !a.is_empty())
         })
         .max_by_key(|entry| entry.get("seq").and_then(Value::as_u64).unwrap_or(0))
-        .map(|entry| {
-            entry
+        .and_then(|entry| {
+            // 先按 resolution 滤结案（只读 raw 字符串，与解码无关），再逐条解码
+            // （r7 审 m1）：任一未结条目解不开（非 object 的手改/外来写入）→ 整个
+            // 账目按不可读返回 None（退自由批评、重新立账）。旧 filter_map(.ok())
+            // 会把解不开的条目悄悄丢掉——全丢时账目变空，核账 prompt 对空账按
+            // 「全部已结」判 pass=把损坏伪装成 Boss 全结（vacuous pass）；部分丢
+            // 时核账对着缺账审计，Boss 未结条目静默蒸发。与 personas.rs 对同一
+            // 文件「存在但损坏必须显式失败」的政策同向；这里退回自由批评而非向
+            // 召唤路径报错，因为账目没有呈现面，且召唤报错会挡住下一次 settle
+            // 覆盖写、让损坏文件永远无法自愈。全部条目解码成功、仅因 resolution
+            // 结案而滤空 = 合法「全已结」→ 空账进核账判 pass 仍是设计内流程。
+            let raw_issues: Vec<&Value> = entry
                 .get("review")
                 .and_then(|rv| rv.get("issues"))
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
                 .filter(|i| !is_ledger_closed(i.get("resolution").and_then(Value::as_str)))
-                .filter_map(|i| serde_json::from_value::<PinvouIssue>(i.clone()).ok())
-                .collect::<Vec<_>>()
+                .collect();
+            let mut decoded = Vec::with_capacity(raw_issues.len());
+            for i in raw_issues {
+                match serde_json::from_value::<PinvouIssue>(i.clone()) {
+                    Ok(issue) => decoded.push(issue),
+                    Err(_) => return None,
+                }
+            }
+            Some(decoded)
         })
 }
 
@@ -570,7 +591,11 @@ async fn model_review(
     // 输出预算与主对话同一算法(2026-11-06 产品决策):走
     // `main_wire_max_output_tokens`(底座 route-effective cap,含 explicit
     // override/兼容上限/route 事实/窗口裁剪),不再硬编码——思考常开后预算必须
-    // 容得下 reasoning tokens,硬编码值会随模型漂移。
+    // 容得下 reasoning tokens,硬编码值会随模型漂移。入参刻意用规范化**前**的
+    // 存储名:引擎主回合的钳制也把 request.model 原样交给
+    // route_effective_max_output_tokens,由底座内部过 wire_model_for_provider_route
+    // 归一——宿主预规范化反而与引擎输入不同形(r7 审 m2釋疑;下面的线材型号/
+    // token 字段/思考臂才吃 canonical 后的名字)。
     let max_tokens = bridge.main_wire_max_output_tokens(&model_name);
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
@@ -878,19 +903,41 @@ fn canonical_minimax_model_is_m3(model: &str) -> bool {
     )
 }
 
-/// 线材型号按引擎同款家族别名表规范化（`wire_model_for_provider_route` 的
-/// canonical_*_model_id 表，CodeWhale crates/tui/src/config.rs:1281-1347 与
-/// crates/config/src/lib.rs:4288-4390 同表；canonical 常数 =
-/// provider_defaults.rs:73-80,144-161）。引擎主对话在 build_chat_wire_body
-/// 先规范化再上线材（`glm-5-3` → `GLM-5.3`、`minimax-m-3` → `MiniMax-M3`、
-/// mimo 别名 → 规范 id，各表只认本族别名、未收录原样透传），审查一次性请求
-/// 原样发存储名会 model_not_found——官方端点不认手写别名（2026-11-09 r5 审
-/// m1，MiniMax 形态三路复审独立命中）；决策端同吃规范 id——GLM 别名此前连
-/// forced-thinking 臂都不进，档位漂到 API 文档默认 max（r5 审 m2）。归一规则
-/// 与底座逐字同款（trim + 小写 + `_`/空格 → `-`）。k3/K3.1/gpt-*/inkling 在
-/// 底座本就 passthrough（`canonical_moonshot_model_id` 只收敛 k2.7/k2.6 族）
-/// ——原样透传=与旧审查线材逐字节一致。Openrouter/Arcee 底座有表但审查无按
-/// 其 id 分类之臂，刻意不收（窄于引擎全集，记载分歧）。
+/// 线材型号按引擎同款表规范化（`wire_model_for_provider_route` 的
+/// canonical/slug 两半臂，CodeWhale crates/tui/src/config.rs:1360-1470 +
+/// model_for_provider 10418-10475 与 crates/config/src/lib.rs:4858-4927 同源；
+/// canonical/slug 常数 = provider_defaults.rs:33-42,84-85,114-115 +
+/// config/models.rs:29-30）。引擎主对话在 build_chat_wire_body 先规范化再上
+/// 线材（`glm-5-3` → `GLM-5.3`、`minimax-m-3` → `MiniMax-M3`、mimo 别名 →
+/// 规范 id，各表只认本族别名、未收录原样透传），审查一次性请求原样发存储名
+/// 会 model_not_found——官方端点不认手写别名（2026-11-09 r5 审 m1，MiniMax
+/// 形态三路复审独立命中）；决策端同吃规范 id——GLM 别名此前连 forced-thinking
+/// 臂都不进，档位漂到 API 文档默认 max（r5 审 m2）。归一规则与底座逐字同款
+/// （trim + 小写 + `_`/空格 → `-`；DeepSeek 门例外：无该改写、另有字符集门与
+/// 紧凑别名表，见 review_normalize_deepseek_model_name）。k3/K3.1/gpt-* 底座
+/// 本就 passthrough（`provider_passes_model_through` 在 canonical 之前短路）
+/// ——原样透传=与旧审查线材逐字节一致。
+///
+/// **镜像面（与引擎逐字同款）**：Zai/Minimax/Mimo 家族表；DeepSeek 直营门
+/// （Deepseek/DeepseekCN/DeepseekAnthropic：退休别名 `deepseek-chat`/
+/// `deepseek-reasoner`→`deepseek-v4-flash`、紧凑/`deepseek-ai/`前缀拼写收敛
+/// 裸 canonical、有效 id 保调用方大小写、未知/外语 id 原样透传——别名带退休
+/// 日期，引擎主对话已改写、审查原样发=review-splits-from-engine 在本应用同名
+/// 路由上的残留，2026-11-10 r7 审 M1）；Siliconflow(-CN)（canonical 半臂
+/// 12 拼写收敛裸 canonical 后 slug 半臂翻 `deepseek-ai/` 前缀线材 slug，两半
+/// 臂保持引擎组合次序）；Together 行（env `DEEPSEEK_PROVIDER=together` 才可达，
+/// vendor 表无 together；inkling 三拼写收敛 `thinkingmachines/inkling`——不收
+/// 则审查的 Inkling effort-only 例外对别名拼写不命中、多发引擎已摘除的
+/// `thinking:{enabled}`，r7 审 m）。
+///
+/// **刻意不收（窄于引擎全集，分歧在此记载）**：Openrouter/Arcee 的近期型号
+/// 大表（arcee/gemma/glm/kimi/minimax/nemotron/qwen canonical 行 + deepseek
+/// slug 行）与 NIM/Novita/Fireworks/Sglang/Vllm/Deepinfra 的 deepseek slug
+/// 行、OpencodeGo 允许表——底座均为私有 fn（公开 API 只暴露 custom 门，公开
+/// 包装不覆盖型号表；手抄即再造一张要随底座漂移的表），且全部仅 env pin
+/// （`DEEPSEEK_PROVIDER`）可达：vendor 表产不出这些身份，官方目录/UI 存
+/// vendor 前缀存储形，裸别名属手写配置。引擎收、审查透传；若日后宿主可产出
+/// 这些身份或底座公开型号表，先补镜像再删本段。
 ///
 /// 引擎同款 custom-endpoint 前置门（`wire_model_for_provider_route` 首臂，
 /// crates/tui/src/config.rs:1497；契约 crates/config/src/lib.rs:4921——自定义
@@ -905,6 +952,19 @@ fn canonical_wire_model_for_review(api: ApiProvider, base_url: &str, model: &str
         .unwrap_or(codewhale_config::ProviderKind::Deepseek);
     if codewhale_config::provider_preserves_custom_base_url_model(kind, base_url) {
         return model.trim().to_string();
+    }
+    // DeepSeek 直营 / Siliconflow(-CN) / Together 的镜像产出调用方大小写或
+    // slug 常数（非 'static 表行），走独立的 String 半臂（各分支注详差异面）；
+    // 其余家族维持 'static 别名表臂。
+    match api {
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic => {
+            return review_canonical_deepseek_direct_model(model);
+        }
+        ApiProvider::Siliconflow | ApiProvider::SiliconflowCn => {
+            return review_canonical_siliconflow_model(model);
+        }
+        ApiProvider::Together => return review_canonical_together_model(model),
+        _ => {}
     }
     let normalized = model.trim().to_ascii_lowercase();
     let normalized = normalized.replace(['_', ' '], "-");
@@ -999,6 +1059,124 @@ fn canonical_wire_model_for_review(api: ApiProvider, base_url: &str, model: &str
     canonical
         .map(str::to_string)
         .unwrap_or_else(|| model.trim().to_string())
+}
+
+/// 引擎 DeepSeek 直营门镜像（canonical_model_id_for_provider 的
+/// Deepseek|DeepseekCN|DeepseekAnthropic 臂，CodeWhale crates/tui/src/config.rs:1406-1425）。
+/// 归一（normalize_model_name，config.rs:927）失败=外语 id/字符集外 → 原样透传
+/// （引擎 `?` 让 canonical 整体 None，wire_model_for_provider unwrap_or 回 raw
+/// trimmed）；别名/紧凑/前缀拼写收敛 canonical；有效 id（含大小写变体）保调用
+/// 方拼写（引擎 eq_ignore_ascii_case/小写相等双条件原样保留）。slug 半臂对
+/// Deepseek 无行=恒等（model_for_provider 无 Deepseek 行）。
+fn review_canonical_deepseek_direct_model(model: &str) -> String {
+    let trimmed = model.trim();
+    let Some(normalized) = review_normalize_deepseek_model_name(trimmed) else {
+        return trimmed.to_string();
+    };
+    let lowered = normalized.to_ascii_lowercase();
+    match review_direct_deepseek_canonical_id(&lowered) {
+        Some(c) if c.eq_ignore_ascii_case(&normalized) || lowered == c => normalized,
+        Some(c) => c.to_string(),
+        None => normalized,
+    }
+}
+
+/// 引擎 Siliconflow 半臂镜像：canonical 半臂 = aggregator 臂
+/// （config.rs:1428-1446：`canonical_official_deepseek_model_id(
+/// normalize_model_name(trimmed).unwrap_or(trimmed))`，None 落引擎尾
+/// Some(trimmed)）；slug 半臂 = model_for_provider 的 Siliconflow 行
+/// （10431-10440，小写匹配、常数大小写即线材大小写）。两半臂组合次序与引擎
+/// 一致（先 canonical 再 slug；`pro`/`flash` 简写先经 normalize_model_name 的
+/// 紧凑表成裸 canonical 再进 slug）。
+fn review_canonical_siliconflow_model(model: &str) -> String {
+    let trimmed = model.trim();
+    let normalized =
+        review_normalize_deepseek_model_name(trimmed).unwrap_or_else(|| trimmed.to_string());
+    let canonical = review_official_deepseek_canonical_id(&normalized.to_ascii_lowercase())
+        .map(str::to_string)
+        .unwrap_or_else(|| trimmed.to_string());
+    match canonical.to_ascii_lowercase().as_str() {
+        "deepseek-v4-pro" | "deepseek-reasoner" | "deepseek-r1" => {
+            "deepseek-ai/DeepSeek-V4-Pro".to_string()
+        }
+        "deepseek-v4-flash" | "deepseek-chat" | "deepseek-v3" => {
+            "deepseek-ai/DeepSeek-V4-Flash".to_string()
+        }
+        _ => canonical,
+    }
+}
+
+/// 引擎 Together slug 行镜像（model_for_provider 10455-10471）：canonical 半臂
+/// 无行（恒 Some(trimmed)），slug 半臂小写匹配。env `DEEPSEEK_PROVIDER=together`
+/// 才可达（vendor 表无 together）；inkling 三拼写收敛 canonical 后，审查的
+/// Inkling effort-only 例外（thinking_controls 的 Together 臂）才与引擎一样
+/// 对别名拼写命中。
+fn review_canonical_together_model(model: &str) -> String {
+    let trimmed = model.trim();
+    match trimmed.to_ascii_lowercase().as_str() {
+        "deepseek-v4-pro" | "deepseek-v4pro" => "deepseek-ai/DeepSeek-V4-Pro".to_string(),
+        "deepseek-v4-flash" | "deepseek-v4flash" | "deepseek-chat" | "deepseek-reasoner" => {
+            "deepseek-ai/DeepSeek-V4-Flash".to_string()
+        }
+        "inkling" | "together-inkling" | "thinkingmachines/inkling" => {
+            "thinkingmachines/inkling".to_string()
+        }
+        _ => trimmed.to_string(),
+    }
+}
+
+/// 引擎 `normalize_model_name` 镜像（config.rs:927）：紧凑别名表
+/// （canonical_model_name，config.rs:911）→ deepseek 前缀判定 → 字符集门
+/// （字母数字与 `-_.:/`）内保调用方拼写；门外/非 deepseek 返回 None。
+fn review_normalize_deepseek_model_name(trimmed_model: &str) -> Option<String> {
+    match trimmed_model.to_ascii_lowercase().as_str() {
+        "pro" | "deepseek-v4pro" => return Some("deepseek-v4-pro".to_string()),
+        "flash" | "deepseek-v4flash" => return Some("deepseek-v4-flash".to_string()),
+        "flash-vision" | "deepseek-v4flashvisionexp" => {
+            return Some("deepseek-v4-flash-vision-exp".to_string());
+        }
+        _ => {}
+    }
+    let lowered = trimmed_model.to_ascii_lowercase();
+    if !lowered.starts_with("deepseek") && !lowered.contains("/deepseek") {
+        return None;
+    }
+    if trimmed_model
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'))
+    {
+        return Some(trimmed_model.to_string());
+    }
+    None
+}
+
+/// 引擎 `canonical_direct_deepseek_model_id` + `canonical_official_deepseek_model_id`
+/// 镜像（config.rs:1081/1058）：输入为已小写化的归一名。
+fn review_direct_deepseek_canonical_id(lowered: &str) -> Option<&'static str> {
+    match lowered {
+        "deepseek-chat" | "deepseek-reasoner" => Some("deepseek-v4-flash"),
+        _ => review_official_deepseek_canonical_id(lowered),
+    }
+}
+
+/// 引擎 `canonical_official_deepseek_model_id` 镜像（config.rs:1058）：12 拼写
+/// （裸/紧凑/`deepseek-ai/`/`deepseek/` 前缀）→ 裸 canonical。
+fn review_official_deepseek_canonical_id(lowered: &str) -> Option<&'static str> {
+    match lowered {
+        "deepseek-v4-pro"
+        | "deepseek-v4pro"
+        | "deepseek-ai/deepseek-v4-pro"
+        | "deepseek-ai/deepseek-v4pro"
+        | "deepseek/deepseek-v4-pro"
+        | "deepseek/deepseek-v4pro" => Some("deepseek-v4-pro"),
+        "deepseek-v4-flash"
+        | "deepseek-v4flash"
+        | "deepseek-ai/deepseek-v4-flash"
+        | "deepseek-ai/deepseek-v4flash"
+        | "deepseek/deepseek-v4-flash"
+        | "deepseek/deepseek-v4flash" => Some("deepseek-v4-flash"),
+        _ => None,
+    }
 }
 
 /// K3.1 附加条件与型号名单：Moonshot 身份（vendor kimi|moonshot、Kimi preset、
@@ -1571,7 +1749,7 @@ fn full_transcript(messages: &[Message]) -> String {
 /// "The items below involve external facts" / "以下の項目は外部事実に関わります"),
 /// so matching must cover all prefixes instead of a single starts_with, in
 /// every UI language. Keep in sync with resolvePinvouReview in
-/// `pinvou3-app/src/platform/tauri/bridge/chat.js` and
+/// `pinvou3-app/src/platform/tauri/bridge.js` and
 /// `pinvou3-app/src/platform/web/bridge.js`; the
 /// `b1_transfer_prefixes_stay_in_sync_with_bridge_sources` test fails when a
 /// bridge copy changes without this table following. The old zh-only prefix
@@ -3626,10 +3804,50 @@ mod tests {
         assert_eq!(kept_legacy[0].text, "次批", "无 seq 平局取数组序最后一条");
     }
 
+    /// r7 审 m1：账目条目解不开（非 object 的手改/外来写入）→ 整个账目拒绝进
+    /// 核账（None，退自由批评重新立账）。旧 filter_map(.ok()) 会把解不开的条目
+    /// 悄悄丢掉——全丢时账目变空，核账 prompt 对空账按「全部已结」判 pass=
+    /// 把损坏伪装成 Boss 全结（vacuous pass），本钉红。全部条目解码成功、仅因
+    /// resolution 结案滤空 = 合法「全已结」→ 空账照进（设计内流程不回退）。
+    #[test]
+    fn ledger_undecodable_issues_reject_reconcile() {
+        // 未结条目混入手写非 object 行 → 拒绝（不进核账）。
+        let corrupt = vec![
+            serde_json::json!({"pos":20,"seq":1,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"真账","severity":"high","kind":"quality","resolution":"modify"},
+                "garbage"
+            ]}}),
+        ];
+        assert!(
+            ledger_from_entries(&corrupt, "/p.md", 20).is_none(),
+            "解不开的账目必须拒绝核账,不得静默变空账"
+        );
+        // 全部已结（解码成功、resolution 滤空）→ 空账仍进核账（设计内 pass 流程）。
+        let all_closed = vec![
+            serde_json::json!({"pos":20,"seq":1,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"已结","severity":"high","kind":"quality","resolution":"accept"}
+            ]}}),
+        ];
+        let kept = ledger_from_entries(&all_closed, "/p.md", 20).expect("全已结空账该进核账");
+        assert!(kept.is_empty(), "全已结滤空=合法空账,非损坏");
+        // 全部未结且可解码 → 原样保留（回归护栏）。
+        let healthy = vec![
+            serde_json::json!({"pos":20,"seq":1,"review":{"artifact_path":"/p.md","issues":[
+                {"text":"真账","severity":"high","kind":"quality","resolution":"modify"}
+            ]}}),
+        ];
+        let kept = ledger_from_entries(&healthy, "/p.md", 20).expect("健康账目该进核账");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].text, "真账");
+    }
+
     /// r5 审 m1/m2：线材型号规范化=引擎家族别名表镜像——别名/大小写/`_`/空格
     /// 拼写收敛到规范 id（glm-5-3 → GLM-5.3 等），未收录 id 原样透传（k3/K3.1/
-    /// gpt-*/inkling 与旧审查线材逐字节一致；底座 Moonshot 表只收敛 k2.7/k2.6
-    /// 族，k3 本就 passthrough）。
+    /// gpt-* 底座 passthrough 短路；Moonshot 表只收敛 k2.7/k2.6 族且在 wire 上
+    /// 已死）。r7 审 M1/m：补 DeepSeek 直营门（退休别名/紧凑/前缀收敛、有效 id
+    /// 保大小写、未知/外语透传）、Siliconflow(-CN) slug 半臂、Together 行
+    /// （inkling 别名收敛后 thinking 臂的 effort-only 例外才对别名命中）；并以
+    /// openrouter 负钉记载刻意不收的大族表（补臂须先改钉，分歧有意识化）。
     #[test]
     fn canonical_wire_model_mirrors_engine_family_maps() {
         // (provider, base_url, model, expected)——base_url 参与引擎同款
@@ -3766,6 +3984,128 @@ mod tests {
                 "https://api.together.xyz/v1",
                 "thinkingmachines/inkling",
                 "thinkingmachines/inkling",
+            ),
+            // r7 审 M1：DeepSeek 直营门镜像（config.rs:1406-1425 同门）——退休
+            // 别名/紧凑/前缀拼写收敛、有效 id 保调用方大小写、未知/外语透传。
+            // 官方端点主对话发 canonical、审查发 raw 的劈线在本应用同名默认路由
+            // 上重现即此臂缺位；删臂=这些行红。
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "deepseek-chat",
+                "deepseek-v4-flash",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "deepseek-reasoner",
+                "deepseek-v4-flash",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "deepseek-v4pro",
+                "deepseek-v4-pro",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "DeepSeek-V4-Flash",
+                "DeepSeek-V4-Flash",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "deepseek-ai/deepseek-v4-flash",
+                "deepseek-v4-flash",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "deepseek-r1",
+                "deepseek-r1",
+            ),
+            (
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "my-custom-model",
+                "my-custom-model",
+            ),
+            // r7 审 m：Siliconflow slug 半臂——canonical 半臂 12 拼写收敛裸
+            // canonical 后翻 deepseek-ai/ 前缀线材 slug；`pro`/`flash` 简写经
+            // 紧凑表同达；非 deepseek id 原样透传（两半臂组合次序=引擎）。
+            (
+                "siliconflow",
+                "https://api.siliconflow.com/v1",
+                "deepseek-v4pro",
+                "deepseek-ai/DeepSeek-V4-Pro",
+            ),
+            (
+                "siliconflow",
+                "https://api.siliconflow.com/v1",
+                "deepseek-chat",
+                "deepseek-ai/DeepSeek-V4-Flash",
+            ),
+            (
+                "siliconflow",
+                "https://api.siliconflow.cn/v1",
+                "deepseek-ai/deepseek-v4-flash",
+                "deepseek-ai/DeepSeek-V4-Flash",
+            ),
+            (
+                "siliconflow",
+                "https://api.siliconflow.com/v1",
+                "flash",
+                "deepseek-ai/DeepSeek-V4-Flash",
+            ),
+            (
+                "siliconflow",
+                "https://api.siliconflow.com/v1",
+                "Qwen/Qwen3.6-Max",
+                "Qwen/Qwen3.6-Max",
+            ),
+            (
+                "siliconflow-cn",
+                "https://api.siliconflow.cn/v1",
+                "deepseek-chat",
+                "deepseek-ai/DeepSeek-V4-Flash",
+            ),
+            // r7 审 m：Together slug 行（env `DEEPSEEK_PROVIDER=together` 才可
+            // 达）——inkling 别名两拼写收敛；裸 deepseek id 翻前缀 slug；无行
+            // 透传保大小写。
+            (
+                "together",
+                "https://api.together.xyz/v1",
+                "inkling",
+                "thinkingmachines/inkling",
+            ),
+            (
+                "together",
+                "https://api.together.xyz/v1",
+                "together-inkling",
+                "thinkingmachines/inkling",
+            ),
+            (
+                "together",
+                "https://api.together.xyz/v1",
+                "deepseek-chat",
+                "deepseek-ai/DeepSeek-V4-Flash",
+            ),
+            (
+                "together",
+                "https://api.together.xyz/v1",
+                "Qwen3.6-27B",
+                "Qwen3.6-27B",
+            ),
+            // 刻意不收的负钉（分歧记载于 canonical_wire_model_for_review 注）：
+            // Openrouter 大族表引擎收（canonical_openrouter_recent_model_id
+            // trinity/gemma/glm/kimi/minimax/nemotron/qwen 行 + deepseek slug
+            // 行）、审查透传——加臂必须先改这行红，让分歧收窄有意识化。
+            (
+                "openrouter",
+                "https://openrouter.ai/api/v1",
+                "trinity",
+                "trinity",
             ),
             // r6 审 M1：custom-endpoint 门——relay 上引擎原样透传存储名
             // （lib.rs:4921 契约"自定义端点必须收到用户提供的原样选择器"），
