@@ -186,6 +186,10 @@
       this.lastInboundAt = 0;
       // Set on every connect(): wedge-window start for the liveness watchdog.
       this.connectStartedAt = 0;
+      // First CLOSING observation by the watchdog (same wedge rescue);
+      // cleared on every connect(), speculative close, and CLOSING/CLOSED
+      // rescue.
+      this.closingStartedAt = null;
       this.livenessTimer = null;
       this.pending = new Map();
       this.listeners = new Map();
@@ -286,7 +290,14 @@
       // a CONNECTING socket may be abandoned.
       this.lastInboundAt = Date.now();
       this.connectStartedAt = Date.now();
+      this.closingStartedAt = null;
       socket.addEventListener("open", () => {
+        // Round-23 复审 hardening:open 是四个 socket 事件里唯一没有身份
+        // 门的——close/error/message 都先核对事件归属再动周期状态。规范
+        // 兼容的浏览器里 CONNECTING 期 close() 不会送达 open,本门在现
+        // 有拓扑不可达;补上它与其余三门对称,晚到的陈旧 open 不再把
+        // join 帧经 sendRaw 发到后继的 socket 上(传输夹具钉住该方向)。
+        if (this.socket !== socket) return;
         this.sendRaw({
           v: protocolVersion,
           type: "web_client_join",
@@ -299,7 +310,17 @@
       });
       socket.addEventListener("message", (event) => this.handleMessage(event.data, socket));
       socket.addEventListener("close", () => {
-        if (this.socket === socket) this.socket = null;
+        // Round-16 复审 MAJOR-1:晚到的 close 只许处置它自己的 socket。
+        // CLOSING/CLOSED 救援会把 socket 引用先行摘除(this.socket=null),
+        // 其 close 事件因此可能在后继周期已经 join 之后才送达;若此时仍
+        // 无条件清旗标/再排重连,健康后继会被打回未协商态——下一个入站
+        // 事件撞上 !desktopCapabilitiesReady 就被 processRemoteEvent 判成
+        // incompatible_desktop 永久关门(probe 端到端复现)。身份不符的
+        // close 是纯噪声:旗标属于当前周期,与这颗旧 socket 无关。事件
+        // 处理失败主动摘除的 socket 同样落进门内,但那条路径自己排重连
+        // (handleRemoteEvent 的 catch),不依赖本处理器的无条件分支。
+        if (this.socket !== socket) return;
+        this.socket = null;
         this.joined = false;
         this.desktopOnline = false;
         this.desktopCapabilitiesReady = false;
@@ -312,6 +333,9 @@
         if (!this.closedPermanently) this.scheduleReconnect("连接已断开，正在重试…");
       });
       socket.addEventListener("error", () => {
+        // Round-16 复审:与 close 处理器同一身份门——被救援摘除的 socket
+        // 晚到的 error 同样是噪声,不得把后继周期的旗标/投机计数打脏。
+        if (this.socket !== socket) return;
         // 看门狗/网络恢复的投机关闭在半开 socket 上会先触发 error(部分
         // 浏览器把失败的关闭握手报成 error+close):这与自然死亡不同——
         // 验证尚未开始,既不能计入投机失败,也不能提前点亮 connecting,
@@ -402,6 +426,63 @@
         try { this.socket.close(); } catch { /* already closing */ }
         return;
       }
+      // Round-15 复审:CLOSING/CLOSED 态此前被永久忽略——投机 close() 在
+      // 静默掉线的链路上(NAT 超时、无 online 事件)可能永远收不到 close
+      // 事件,引擎的 closing-handshake 超时差异让「已连接但死链路」楔在
+      // 客户端自己的 45s/120s 常量之外。与 CONNECTING 楔口同一救援:超过
+      // 同一窗口仍在 CLOSING/CLOSED,丢弃 socket 引用并走普通退避重连。
+      // (Round-16 复审订正:原注释的「非投机」与实现不符;「与送达路径
+      // 严格同构」也不成立——送达路径对非 speculativeSource 的投机
+      // socket 会计一次投机失败(close 处理器的计账分支),救援不记,失
+      // 败阶梯晚一个周期补上;joined 后从 OPEN 静默被救的 socket 其实证
+      // 明过存活。真实的行为契约是:救援的死不计投机失败、不清
+      // speculativeReconnect,后继周期自己的 join 验证决定 UI 是否走出
+      // connected。)投机周期内 scheduleReconnect 的文案抑制是投机语义
+      // 本身,与送达路径一致;只有后继自己验证失败(close 先于 join ack
+      // 送达)才会计数升级。救援只摘 socket/closingStartedAt——joined/
+      // leaseId 等旗标保持旧周期值直到后继 join ack,与「瞬态断线不卸载
+      // UI」的既有设计一致。(Round-18 复审订正:「救援的死一律不计」只
+      // 对投机源 socket 成立;投机周期内被救援的后继(非
+      // speculativeSource)尚未通过 join 验证,其死按 close 处理器同一
+      // 验证分支计一次投机失败——否则全救援拓扑的阶梯永不前进,UI 永远
+      // 停在 connected。下方实现同步。)(Round-21 复审 reconciliation:
+      // 「救援只摘 socket/closingStartedAt、其余旗标保持旧值」与事件失败
+      // catch 路径(reset joined/desktopOnline/desktopCapabilitiesReady/
+      // leaseId 四旗,其注释称残留为跨周期泄漏)是有意分歧,不是疏漏:
+      // catch 路径发生在已投递的事件把周期状态污染之后,重置是止损;救
+      // 援发生在无投递事件的静默楔口,保留 UI/协商稳定是既有设计。代价
+      // 的诚实记录:后继 socket OPEN 到 join ack 之间的窗口里 sendJoined/
+      // sendRpc 闸门仍按旧周期开着——桌面在线时 relay 重打 lease_id,流
+      // 程不受影响;桌面离线时该窗口的 RPC 会收到 desktop_offline 并落进
+      // catch-all error 分支(UI 翻出错误、RPC 等满超时而非排队 flush)
+      // ——窗口一周期一次、下一周期 join ack 后闭合,按已接受取舍记录;
+      // 两种路径的对齐是行为变更,若做须带各自的楔口回归钉。)
+      if (
+        this.socket.readyState === WebSocket.CLOSING
+        || this.socket.readyState === WebSocket.CLOSED
+      ) {
+        if (!this.closingStartedAt) {
+          this.closingStartedAt = Date.now();
+          return;
+        }
+        if (Date.now() - this.closingStartedAt <= LIVENESS_CONNECT_WEDGE_TIMEOUT_MS) return;
+        this.closingStartedAt = null;
+        const rescued = this.socket;
+        this.socket = null;
+        // Round-18 复审:救援替代了永远不会送达的 close 事件,因此必须把
+        // close 处理器的验证分支一同带过来——投机周期内被救援摘除的
+        // socket 若不是投机源本身(它是投机重连发出的后继,join ack 尚未
+        // 送达),它的死就是验证失败,必须计入失败阶梯;否则全救援拓扑
+        // (每颗 close 都楔死、永不送达)会让阶梯永远停在 0,UI 永远停留
+        // 在 connected,RPC 全部悬到各自的超时(probe 端到端复现)。计数
+        // 在 scheduleReconnect 之前:清掉 speculativeReconnect 后,本次
+        // 重连的文案不再被投机语义抑制,恢复对用户可见。
+        if (this.speculativeReconnect && rescued !== this.speculativeSource) {
+          this.noteSpeculativeFailure();
+        }
+        this.scheduleReconnect("连接已断开，正在重试…");
+        return;
+      }
       if (this.socket.readyState !== WebSocket.OPEN) return;
       if (Date.now() - this.lastInboundAt <= LIVENESS_SILENCE_TIMEOUT_MS) return;
       // A cycle that never became usable — no join ack, or an ack whose
@@ -417,6 +498,7 @@
     // copies that relied on an edit-together comment — one method removes the
     // drift hazard instead of pinning it.
     speculativeClose(socket) {
+      this.closingStartedAt = null;
       if (!this.joined || (this.awaitingCapabilitySnapshot && !this.desktopCapabilitiesReady)) {
         this.speculativeFailures += 1;
       }
@@ -476,6 +558,10 @@
 
     bindNetworkListeners() {
       if (typeof window.addEventListener !== "function") return;
+      // Round-20 复审(披露落树):online/visibilitychange 对 CLOSING
+      // socket 的 cancel-then-noop(取消重连定时器,但对不可取消的
+      // CLOSING 态本身不做任何事)是有意的看门狗设计——CLOSING/CLOSED
+      // 由楔窗口救援路径处理,网络事件不与其竞争(round-15 披露记录)。
       window.addEventListener("online", () => this.handleNetworkBecomeOnline());
       window.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "visible") return;
@@ -499,6 +585,42 @@
       if (typeof raw !== "string") return;
       let message;
       try { message = JSON.parse(raw); } catch { return; }
+      // Round-18 复审:与 close/error 事件门同一身份契约。周期状态帧
+      // (join ack / desktop_connection_state / desktop_snapshot /
+      // endpoint_revoked / endpoint_replaced / error)此前无身份门:被
+      // 救援或事件失败摘除的 socket 上在途的帧仍会在后继周期送达——
+      // 晚到的旧 join ack 会把已完成协商的后继打回未协商态(下一个入站
+      // 事件撞上 !desktopCapabilitiesReady 被 processRemoteEvent 判成
+      // incompatible_desktop 永久关门),晚到的 error/endpoint_replaced
+      // 会 this.socket.close()/closePermanently 波及健康后继。旗标属于
+      // 当前周期,旧 socket 的帧是纯噪声,连同 liveness 证据一起丢弃
+      // (事件分派链在 handleRemoteEvent 内另有同一身份门,两道闸口语义
+      // 一致)。
+      // Round-20 复审例外:非 TTL 的 endpoint_revoked 是链接级事实——
+      // relay 只在端点被真正吊销/人工撤销后发送,端点 id 由 relay 单调
+      // 铸造,被撤销的端点不可能再 join 成功(只会 endpoint_not_found),
+      // 旧 socket 送达的副本同样为真。整帧按噪声丢弃后,唯一副本落在
+      // 被摘除 socket 的窗口里时,真实撤销退化为 endpoint_not_found 的
+      // 「桌面离线」重试环(该码被客户端有意分类为瞬态),撤销卡片不可
+      // 达。非 TTL 撤销帧旁路身份门直接终态;TTL 臂保持受门——过期的
+      // desktop_offline_ttl_expired 副本会把健康后继打回 desktop_offline
+      // (rejoin 后的新副本自会送达当前 socket)。
+      // Round-22 复审:终态已确立后(closedPermanently)旁路必须停步——
+      // this.socket 已为 null,其余晚到帧都被下方身份门丢弃,唯独本旁路
+      // 会重入 closePermanently:重复派发连接事件(自恢复监听方)并把
+      // 已确立的终态卡片(如 endpoint_replaced 的「已在另一台浏览器中
+      // 打开」)覆盖成撤销文案。closePermanently 状态上幂等,故仅是
+      // 事件噪声/卡片翻转,不是稳定性缺陷;一行守卫关掉。
+      if (this.closedPermanently) return;
+      if (
+        sourceSocket !== this.socket
+        && message.type === "endpoint_revoked"
+        && message.reason !== "desktop_offline_ttl_expired"
+      ) {
+        this.closePermanently("revoked", "此远程控制链接已失效。");
+        return;
+      }
+      if (sourceSocket !== this.socket) return;
       // Any parseable inbound frame counts as liveness evidence.
       this.lastInboundAt = Date.now();
       switch (message.type) {
@@ -661,10 +783,38 @@
           // Invalidate this socket immediately so already-queued messages from
           // the same connection cannot overtake the failed event. The durable
           // cursor is unchanged, so the desktop replays it after reconnect.
+          // The invalidation detaches the socket, so its close event is noise
+          // under the close handler's identity gate: this path must reset the
+          // cycle flags and schedule the replay reconnect itself (a round-16
+          // probe asserted the reconnect timer and found none — the designed
+          // stateNotReady / sequence-gap recovery stalled until an OS
+          // online/visibilitychange event).
           this.socket = null;
-          try { sourceSocket.close(); } catch {
-            this.scheduleReconnect("事件处理失败，正在重新连接…");
+          this.joined = false;
+          this.desktopOnline = false;
+          this.desktopCapabilitiesReady = false;
+          this.leaseId = null;
+          // Round-25 复审 NIT:closedPermanently/连接语义在 catch 里同样
+          // 失效——楔窗时钟一并清零,使该字段「每条 detach 路径都清」的
+          // 文档契约字面成立(rescue/speculativeClose/connect 均已清)。
+          this.closingStartedAt = null;
+          try { sourceSocket.close(); } catch { /* already closing */ }
+          // Delegating the reconnect to the close event instead left a zombie
+          // "connected" client with no transport whenever close() delivered
+          // normally; scheduleReconnect self-guards, so the gated late
+          // close/error events stay harmless.
+          // Round-19 复审:与救援同一验证分支(liveness 段的投机计数腿)——投机周期
+          // 内被事件失败摘除的 socket 若不是投机源本身,这次已证实的处理
+          // 失败必须计入失败阶梯并清掉投机旗标:不清旗标,本次重连文案仍
+          // 被投机语义压住一个周期(已证实的失败被宣布成「疑似」),阶梯
+          // 也少计一次。投机源自身仍按既有契约宽恕——它的死亡由我们
+          // 自己的投机 close 归因,而其继任周期自带 join 验证
+          // (round-25 修正:旧注「投机源从未通过 join 验证」不成立,
+          // 投机源可以已完全加入;该理由是承重的,按它改计数会回归阶梯)。
+          if (this.speculativeReconnect && sourceSocket !== this.speculativeSource) {
+            this.noteSpeculativeFailure();
           }
+          this.scheduleReconnect("事件处理失败，正在重新连接…");
         });
       return this.eventDispatch;
     }

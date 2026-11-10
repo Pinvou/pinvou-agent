@@ -466,6 +466,11 @@ fn normalize_backend_details(event: &str, value: &Value) -> Option<Value> {
             "message_count",
         ],
         "web_session_download_cancelled" => &["session_id", "download_id", "total_bytes", "ready"],
+        // Round-27 复审 M2:begin 容量门逐出孤儿时发 `trigger` 一个字段;
+        // 事件名此前不在本白名单,record_backend 静默丢弃并逐条打 stderr
+        // 拒收行——「每次逐出发诊断」的声明落空。白名单臂与下方 trigger
+        // 归一化分支须同提交落地(acceptance 钉见 tests)。
+        "web_session_download_evicted" => &["trigger"],
         "web_session_chunk_served" => &[
             "session_id",
             "download_id",
@@ -556,6 +561,7 @@ fn normalize_backend_details(event: &str, value: &Value) -> Option<Value> {
                 &["revision_compute_failed", "session_load_failed"],
             )
             .map(Value::String),
+            "trigger" => allowed_enum(Some(value), &["begin_capacity_gate"]).map(Value::String),
             _ => None,
         };
         if let Some(normalized) = normalized {
@@ -603,6 +609,33 @@ mod tests {
             assert!(normalized.get(key).is_none(), "{key} must be dropped");
         }
         assert!(normalize_backend_details("future_backend_event", &json!({})).is_none());
+    }
+
+    /// Round-27 复审 M2 验收钉:逐出诊断事件必须被后端白名单接受——
+    /// 事件名只在本文件白名单生效,record_backend 的调用点(mod.rs 容量
+    /// 门)与本文件是跨文件契约,mod.rs 内的源钉结构性看不见本表;漏配
+    /// 时 record 逐条静默丢弃,本钉转红。
+    #[test]
+    fn backend_allowlist_accepts_the_eviction_diagnostic() {
+        let normalized = normalize_backend_details(
+            "web_session_download_evicted",
+            &json!({ "trigger": "begin_capacity_gate" }),
+        )
+        .expect("the eviction diagnostic must be allowlisted, not silently dropped");
+        assert_eq!(normalized["trigger"], "begin_capacity_gate");
+        // 字段归一化失败按既有口径丢字段而非拒整条记录(与
+        // terminal_status 等 allowed_enum 字段一致):未知 trigger 落出
+        // 空 details,逐出诊断因此退化为无载荷条目——仍可观察,但
+        // trigger 拼写漂移须在此处可见。
+        let drifted = normalize_backend_details(
+            "web_session_download_evicted",
+            &json!({ "trigger": "unknown_trigger" }),
+        )
+        .expect("the event must stay allowlisted");
+        assert!(
+            drifted.get("trigger").is_none(),
+            "an unknown trigger must be dropped, not passed through"
+        );
     }
 
     #[test]

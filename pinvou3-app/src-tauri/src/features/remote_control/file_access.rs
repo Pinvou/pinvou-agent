@@ -40,6 +40,10 @@ pub struct HostFileListing {
     pub roots: Vec<HostFileRoot>,
 }
 
+// Round-20 复审(披露落树):post-revoke 的主机文件列举(list_host_files
+// / read_artifact_chunk)不设 allow_host_workspace 同意门——撤销后该
+// surface 是否随授权一并失效是产品决策(当前保持可用,依赖端点自身的
+// 吊销/TTL 生命周期;round-15 披露记录),并非遗漏。
 pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, String> {
     let requested = requested
         .as_deref()

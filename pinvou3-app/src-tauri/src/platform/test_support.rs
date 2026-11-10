@@ -404,3 +404,20 @@ pub(crate) fn force_private_file_mode(path: &std::path::Path, mode: u32) -> bool
         false
     }
 }
+
+/// Round-27 复审 m14:源钉「纯注释行先滤除」的共享原语——此前各文件
+/// 的源钉各自内联同一过滤闭包(mod.rs/persistence.rs/memory.rs/
+/// sessions.rs/memory tests/tasks.rs/executor.rs/relay_client.rs/
+/// remote_control.rs),口径漂移只能靠人眼对齐。行首 `//`/`///` 行
+/// 剔除;行尾 `//` 与块注释内的提及仍能掩护,按各钉已披露残留处理。
+#[cfg(test)]
+pub(crate) fn comment_filtered(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

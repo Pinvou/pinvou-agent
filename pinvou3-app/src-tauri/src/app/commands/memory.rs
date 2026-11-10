@@ -533,13 +533,17 @@ pub async fn organize_memory(
     // degrade to the pool's shared bridge with global prefs loaded directly,
     // the same `get_image_input_capability` fallback.
     let bridge = match resolve_session_id(None, &store) {
-        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
-            // The `fresh_bridge_for` error chain can carry endpoint/credential
-            // probing details; pass it through `redact_secret` before returning
-            // to the frontend (shared `sanitize_command_error` policy).
+        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|e| {
+            // Endpoint/credential probing details + storage root must both be
+            // scrubbed before this web-visible arm returns (Round-15 复审
+            // minor:organize 命令与其他 memory 命令同口径折叠)。
+            // Round-20 复审(S10-1):折叠先行——旧序 sanitize→fold 在含
+            // 空白的家目录上会让 redact_secret 的空白分词先吃掉折叠
+            // needle 的后段,盘符+用户名碎片仍以明文出站;先折叠再走统一
+            // secret 扫描,任何形态下都不再泄漏家目录碎片。
             sanitize_command_error(
                 &format!("organize memory: resolve bridge for {sid}"),
-                format!("{error:#}"),
+                crate::platform::paths::redact_storage_prefix(&format!("{e:#}")),
             )
         })?,
         None => {
@@ -553,7 +557,14 @@ pub async fn organize_memory(
     // the scheduled-task entry point passes a token).
     let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
         .await
-        .map_err(|error| sanitize_command_error("organize memory", format!("{error:#}")))?;
+        .map_err(|e| {
+            sanitize_command_error(
+                "organize memory",
+                // Round-20 复审(S10-1):同上,折叠先行(空白家目录碎片
+                // 泄漏修复)。
+                crate::platform::paths::redact_storage_prefix(&format!("{e:#}")),
+            )
+        })?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store);
     // If the best-effort pre-render already failed, do not let the snapshot
     // refresh retry (avoiding a duplicate same-code warning and a second
@@ -823,9 +834,9 @@ pub async fn edit_last_turn(
         return Err("empty new_message".into());
     }
     let sid = require_active_sid(session_id, &store)?;
-    let reservation = pool
-        .reserve_turn(&sid)
-        .map_err(|e| format!("reserve edit_last_turn: {e:#}"))?;
+    let reservation = pool.reserve_turn(&sid).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("reserve edit_last_turn: {e:#}"))
+    })?;
     if let Some(expected) = expected_transcript_revision.as_deref() {
         // 护栏拒绝时 reservation 在此 Drop：未提交预约自动失效，gate 立即
         // 重开，transcript 保持原样。
@@ -844,26 +855,166 @@ pub async fn edit_last_turn(
         .edit_last_turn_reserved(&sid, new_message, display_message, reservation)
         .await
     {
-        crate::features::assistant::timing::finish_turn(
-            &sid,
-            "send_error",
-            Some(&format!("{error:#}")),
-        );
-        // Round-12 复审:与文件内其余 web 可见 Err 同纪——过共享折叠,存储
-        // 根前缀不得随错误文本出站(该臂是 `if let Err` + `return Err` 形,
-        // 不在 `web_visible_memory_errors_fold_the_storage_prefix` 的
-        // `.map_err` 扫描内,折叠是实义而非计数)。
-        return Err(crate::platform::paths::redact_storage_prefix(&format!(
-            "edit_last_turn: {error:#}"
-        )));
+        // Round-27 复审 M3(round-12 注记改写):同一原始错误此前经两条
+        // 出站——finish_turn 的 send_error 文本写入 assistant_done 时间线
+        // 事件,经 web 可达的 get_session_timeline 原样回读;return Err 侧
+        // 才折叠。只在 Err 侧折叠给了假信心(新钉原样钉住单折叠覆盖)。
+        // 折叠一次,两条出站共用同一折叠文本;桌面侧原始链仍走
+        // `[edit_last_turn]` 日志臂,按既定策略保留原文。
+        let folded = crate::platform::paths::redact_storage_prefix(&format!("{error:#}"));
+        crate::features::assistant::timing::finish_turn(&sid, "send_error", Some(&folded));
+        return Err(format!("edit_last_turn: {folded}"));
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    /// Round-24 复审(m5)源钉:edit_last_turn 的 awaited 错误臂是本文件
+    /// 唯一没有回归信号的 web 可见折叠——census 只扫 `.map_err(|` 拼写,
+    /// 本臂是 `if let Err` + `return Err` 形,不在 census 窗口表内
+    /// (round-12 注释披露「实义而非计数」,但披露不等于钉住:删除该折
+    /// 叠此前全套件保持全绿)。窗口为命令体;折叠必须落在
+    /// `.edit_last_turn_reserved(` 调用之后(臂位,round-21 臂界教训);
+    /// 纯注释行先滤除(round-23 口径)。
+    #[test]
+    fn edit_last_turn_awaited_error_folds_the_storage_prefix() {
+        let source = include_str!("memory.rs");
+        let start = source
+            .find("pub async fn edit_last_turn(")
+            .expect("edit_last_turn must exist");
+        let body = &source[start..];
+        let end = [
+            "\n#[tauri::command]",
+            "\n#[cfg(test)]",
+            "\npub async fn ",
+            "\npub fn ",
+            "\nfn ",
+        ]
+        .iter()
+        .filter_map(|delimiter| body.find(delimiter))
+        .min()
+        .expect("edit_last_turn body must be terminated");
+        let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+        let call_at = counted
+            .find(".edit_last_turn_reserved(")
+            .expect("the awaited edit_last_turn_reserved call must stay");
+        let tail = &counted[call_at..];
+        let fold_at = tail
+            .find("crate::platform::paths::redact_storage_prefix(&format!(")
+            .expect(
+                "the awaited-error arm must fold the storage root \
+             before egress: deleting the fold previously kept every suite \
+             green because the census scans .map_err arms only",
+            );
+        // Round-27 复审 M3:折叠必须先于扇出,且两条出站共用同一折叠
+        // 绑定——时间线侧(finish_turn)回到裸 `{error:#}`、或在折叠前
+        // 扇出的突变,两条顺序断言转红。
+        let finish_turn_at = tail
+            .find("finish_turn(")
+            .expect("the send_error timeline egress must stay");
+        let folded_use_at = tail
+            .find("Some(&folded)")
+            .expect("the timeline egress must consume the shared folded text");
+        let err_use_at = tail
+            .find("edit_last_turn: {folded}")
+            .expect("the returned Err must consume the shared folded text");
+        assert!(
+            fold_at < finish_turn_at
+                && finish_turn_at < folded_use_at
+                && folded_use_at < err_use_at,
+            "the fold must run before the timeline/Err fan-out, and both \
+             egresses must consume the shared folded binding; folding only \
+             the Err copy (round-24 shape) or a raw timeline egress turns \
+             this red"
+        );
+        assert_eq!(
+            counted
+                .matches("crate::platform::paths::redact_storage_prefix(&format!(")
+                .count(),
+            2,
+            "two folds in this command: the shared awaited-error binding \
+             and the reserve arm (folded as of round-27); a new web-visible \
+             arm must join a pin (enumerated-pin residual)"
+        );
+    }
     use super::*;
     use deepseek_tui::models::{ContentBlock, Message};
+
+    #[test]
+    fn whitespace_home_folds_before_the_secret_scan_so_no_fragment_leaks() {
+        // Round-20 复审(S10-1)行为钉:含空白的家目录上,旧序
+        // sanitize→fold 会让 redact_secret 的空白分词先吃掉折叠 needle
+        // 后段(`...John [REDACTED]` 形态),盘符/用户名碎片以明文出站。
+        // 新序(生产臂)先折叠后扫描:短 token 存活为折叠形态,长 token
+        // 整体 [REDACTED]——两个方向都不再残留家目录碎片。对照腿用旧序
+        // 手工复现泄漏形态(钉住回归的真实形状),删除折叠先行(改回旧
+        // 序)即红。残余注记(round-21 复审):折叠先行会把以家目录开头的
+        // 无空白长 token 缩短(~/.pinvou3 起头)——恰长 ≥24(含数字+字母)
+        // 的该类 token 缩短后可能跌破族阈值逃过扫描;方向上这是把旧序的
+        // 必然碎片泄漏换成更窄的掩蔽残留,非前缀文本的扫描不受影响。
+        let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
+        let home = base.join("John Doe").join(".pinvou3");
+        std::fs::create_dir_all(&home).unwrap();
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        // 路径一律取 pinvou3_home() 的读数(macOS /tmp 符号链接等规范化差
+        // 异),保证折叠 needle 与 detail 同源。
+        let home_now = crate::platform::paths::pinvou3_home();
+        let detail = format!(
+            "os error 3: {}/sessions2/x.json: No such file or directory",
+            home_now.display()
+        );
+        // 生产新序:折叠先行(sanitize_command_error 内层只做 secret 扫描)。
+        let new_order = sanitize_command_error(
+            "organize memory",
+            crate::platform::paths::redact_storage_prefix(&detail),
+        );
+        assert!(
+            !new_order.contains("John Doe")
+                && !new_order.contains(home_now.display().to_string().as_str()),
+            "the fold-first order must not leak any home fragment, got: {new_order}"
+        );
+        // 对照腿:旧序(sanitize 先行)确实产生碎片泄漏——本测试钉的就是
+        // 该形态不再出现在生产臂。泄漏形状要求空格前段短于内层 secret 的
+        // ≥24 长度族;平台上临时目录本身超长时该形状造不出来(macOS
+        // /var/folders…),对照腿跳过;那里空白前段自身已入 ≥24 族,两序
+        // 产出字节不同(旧序两个 [REDACTED]、新序折叠后一个)但均无碎片
+        // 残留——生产不变式腿(!contains 碎片)在该平台上对顺序回归无
+        // 信号,顺序牙齿依赖 Linux CI 的短 /tmp(round-23 复审口径注记;
+        // round-27 复审 m11 订正:原「两序产出相同」在字节层为假)。
+        let pre_space = format!("{}/John", base.display());
+        if pre_space.len() < 24 {
+            let old_order = crate::platform::paths::redact_storage_prefix(&sanitize_command_error(
+                "organize memory",
+                &detail,
+            ));
+            assert!(
+                old_order.contains("John"),
+                "control: the reversed order must reproduce the fragment leak shape this pin forbids, got: {old_order}"
+            );
+        }
+
+        // 无空白 home 的常规方向不受影响:折叠形态完整出站。
+        let plain_home = base.join("plainhome").join(".pinvou3");
+        std::fs::create_dir_all(&plain_home).unwrap();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &plain_home) };
+        let plain_now = crate::platform::paths::pinvou3_home();
+        let plain_detail = format!("os error 3: {}/mem/x.json: boom", plain_now.display());
+        let folded = sanitize_command_error(
+            "organize memory",
+            crate::platform::paths::redact_storage_prefix(&plain_detail),
+        );
+        assert!(
+            folded.contains("organize memory: os error 3: ~/.pinvou3/mem/x.json"),
+            "the plain-home fold must survive the secret scan intact, got: {folded}"
+        );
+    }
 
     fn revision_message(role: &str, text: &str) -> Message {
         Message {
@@ -1085,10 +1236,73 @@ mod tests {
     /// `Err<String>` 会原样过 relay——错误拼接必须经共享的
     /// `redact_storage_prefix` 折叠存储根前缀(与 Round-9 修复的警告
     /// detail 同策略;当前 std os error 的 Display 不内嵌路径,但任何一个
-    /// 未来内嵌路径的错误构造函数都会让这里成为泄露点)。唯一例外是
-    /// `reserve edit_last_turn`:原始链按既定策略只进桌面日志,Web 侧由
-    /// 稳定码折叠。逐 `map_err(|e|` 臂取窗口断言,不依赖 rustfmt 的换行
+    /// 未来内嵌路径的错误构造函数都会让这里成为泄露点)。round-27 起
+    /// `reserve edit_last_turn` 例外臂同样折叠(其错误链经
+    /// store.load 携带存储路径,且该命令 web 可达;原始链按既定策略只
+    /// 进桌面日志)。逐 `map_err(|e|` 臂取窗口断言,不依赖 rustfmt 的换行
     /// 形态(单行形态计数曾被折叠换行静默绕过——突变复跑实证)。
+    #[test]
+    fn organize_command_arms_fold_before_the_secret_scan() {
+        // Round-20 复审(S10-1)源钉:空白家目录上 sanitize→fold 旧序会
+        // 泄漏家目录碎片(见 whitespace_home 行为钉);生产臂必须折叠先
+        // 行——两臂窗内必须出现「fold 应用于原始 detail」的形态
+        // (`redact_storage_prefix(&format!(`),且不得再出现旧序
+        // 标记(`redact_storage_prefix(&sanitize_command_error`)。改回旧
+        // 序本钉即红。
+        let source = include_str!("memory.rs");
+        for (needle, label) in [
+            (
+                "organize memory: resolve bridge for {sid}",
+                "the bridge-resolution arm",
+            ),
+            (
+                "organize_memory_with_llm(&bridge, None)",
+                "the organize arm",
+            ),
+        ] {
+            let at = source
+                .find(needle)
+                .unwrap_or_else(|| panic!("{label} must exist"));
+            // 窗口下界 window_lo 向 needle 前方扩 400 字节并落到字符边
+            // 界:旧序突变(redact_storage_prefix(&sanitize_command_error
+            // (…))的标记位于 needle 之前,不含前文的窗口会漏看它(F6
+            // 突变实证)。Round-21 复审:上界 window_hi 同样扩并落字符边
+            // 界——撞进多字节字符时切片会 panic(编译崩而非断言红),与
+            // siblings 同一约束;顺带把必需字面量里的闭包参数拼写解耦
+            // (按 M6b 口径 `|e|` 不属于被钉契约,改名为 `|error|` 不得
+            // 假红)。Round-22 复审(m4):上界从 +900 收紧到 +500——两
+            // 臂自身的 fold 都在 needle 后 +310 以内,而 +900 已把相邻臂
+            // 的 fold(bridge needle 起约 +832)也扫进窗口,删掉本臂自己的
+            // fold 会被邻臂补偿而漏报;+500 保留自身 fold 余量并排除邻臂。
+            let mut window_lo = at.saturating_sub(400);
+            while window_lo > 0 && !source.is_char_boundary(window_lo) {
+                window_lo -= 1;
+            }
+            let mut window_hi = (at + 500).min(source.len());
+            while window_hi > window_lo && !source.is_char_boundary(window_hi) {
+                window_hi -= 1;
+            }
+            let arm = &source[window_lo..window_hi];
+            // Round-23 复审:窗口先滤除纯注释行再断言——「折叠删掉、窗口
+            // 内的注释提及 needle」的补偿突变在兄弟钉上曾突变实证(round-16
+            // M6a),本钉此前不过滤,窗内已有的注释块能吸收字面量而保持全
+            // 绿。(口径注记与 web_visible 钉相同:行首判定——行尾 `//`
+            // 注释与块注释内的提及仍能掩护,彻底闭合需字符串感知的词法扫
+            // 描,按已披露残留处理。)
+            let arm = crate::platform::test_support::comment_filtered(arm);
+            assert!(
+                arm.contains("redact_storage_prefix(&format!("),
+                "{label} must apply the fold to the raw error detail \
+                 (fold-before-scan order)"
+            );
+            assert!(
+                !arm.contains("redact_storage_prefix(&sanitize_command_error"),
+                "{label} must not revert to the sanitize-first order that \
+                 leaks home fragments on whitespace homes"
+            );
+        }
+    }
+
     #[test]
     fn web_visible_memory_errors_fold_the_storage_prefix() {
         // 只扫生产半边:include_str 含测试模块自身,断言字面量会污染计数。
@@ -1099,25 +1313,53 @@ mod tests {
             .expect("memory.rs must keep its tests behind #[cfg(test)]");
         let mut arms = 0;
         let mut raw_arms = 0;
-        for (pos, _) in production.match_indices(".map_err(|e|") {
-            arms += 1;
-            let window_end = (pos + 400).min(production.len());
-            let window = &production[pos..window_end];
-            if !(window.contains("redact_storage_prefix")
-                || window.contains("reserve edit_last_turn"))
-            {
-                raw_arms += 1;
+        // Round-15 复审 minor:扫描覆盖 `.map_err(|e|` 与 `.map_err(|error|`
+        // 两种拼写——此前 organize 命令的两臂用后者拼写,本钉看不见,断言
+        // 信息夸大了覆盖面。Round-16 复审(M6b):改为统一扫描 `.map_err(|`
+        // ——按拼写枚举是打地鼠(`|err|` 拼写突变实证可绕过),闭包参数名
+        // 不属于被钉契约的一部分。Round-17 复审(M4 余项):窗口判定改为
+        // 只看非注释行——折叠删掉、仅在 400 字节窗口内的注释里提及
+        // `redact_storage_prefix`(或 `[edit_last_turn]`)而推裸文本的突变,
+        // 原实现保持全绿;注释行先滤除后,字面提及不再能掩护裸臂(与
+        // organize.rs 三钉同一过滤口径)。(Round-18 复审口径注记:过滤是
+        // 行首判定——行尾 `//` 注释与 `/* */` 块注释里的字面提及仍能掩护
+        // 裸臂;彻底闭合需字符串感知的词法扫描,超出源钉边界,按已披露
+        // 残留处理。)
+        let scan = crate::platform::test_support::comment_filtered(production);
+        let spelling = ".map_err(|";
+        {
+            let mut pos = 0;
+            while let Some(found) = scan[pos..].find(spelling) {
+                arms += 1;
+                let start = pos + found;
+                let mut window_end = (start + 400).min(scan.len());
+                // 400 字节窗口不得落在多字节字符中间:start+400 撞进 CJK 行
+                // 时切片会 panic(编译崩而非断言红,失败语言错误);回退到
+                // 最近字符边界。
+                while window_end < scan.len() && !scan.is_char_boundary(window_end) {
+                    window_end -= 1;
+                }
+                let window = &scan[start..window_end];
+                // Round-27 复审 m7:`reserve edit_last_turn` 例外臂已折叠,
+                // 例外标记随同移除——该标记此前被臂自己的消息文本自满足,
+                // 对回退突变是盲的(折叠删掉、窗口内消息文本仍在)。
+                if !(window.contains("redact_storage_prefix")
+                    || window.contains("[edit_last_turn]"))
+                {
+                    raw_arms += 1;
+                }
+                pos = start + spelling.len();
             }
         }
         assert!(
             arms >= 11,
-            "expected the ten folded error arms plus the edit_last_turn chain, found {arms}"
+            "expected the folded error arms plus the edit_last_turn chain, found {arms}"
         );
         assert_eq!(
             raw_arms, 0,
             "every web-visible memory error arm must fold the storage prefix via \
-             redact_storage_prefix; the single allowed exception is the deliberately-raw \
-             edit_last_turn reservation chain"
+             redact_storage_prefix; the allowed exceptions are the deliberately-raw \
+             edit_last_turn reservation chain and its revision-guard log arms"
         );
     }
 

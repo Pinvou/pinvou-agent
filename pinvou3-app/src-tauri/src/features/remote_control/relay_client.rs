@@ -51,7 +51,13 @@ const INBOUND_CHANNEL_CAPACITY: usize = 32;
 /// still kill the socket with a legal frame — raising the desktop ceiling
 /// must ride along with such a deployment (round-5 review: the old comment
 /// justified the bound by the wrong direction; round-6 review: the 16 MiB
-/// figure is the relay's server-side clamp, not a PROTOCOL.md number).
+/// figure is the relay's server-side clamp, not a PROTOCOL.md number;
+/// round-21 review: PROTOCOL.md now documents that clamp and the
+/// 4 MiB − 64 KiB bound (server.js names its copy DESKTOP_MAX_FRAME_BYTES;
+/// the byte equality is pinned in both directions as of round-26 — the
+/// relay gate tests exercise the server-side gate against this bound and
+/// the relay suite asserts this constant's exact spelling) — the operative
+/// contract is the equality, not the proxy-variance wording).
 const MAX_INBOUND_TEXT_BYTES: usize = (4 * 1024 * 1024) - (64 * 1024);
 const OUTBOUND_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 // Stream resets are tiny control messages. Keeping at most one in-flight and
@@ -1585,6 +1591,129 @@ mod tests {
         assert!(
             !super::super::manager::TERMINAL_REGISTRATION_ERROR_CODES
                 .contains(&"endpoint_not_found")
+        );
+    }
+
+    /// 接线钉(Round-15 复审 MA5):吊销 worker 的终态闸门语义只存在于
+    /// run_revocation_loop 的这一个内联判定——`terminal.is_some()` 单独
+    /// 成闸(把 `|| (scoped_to_self && …endpoint_not_found…)` 腿删掉)会
+    /// 复活注释里预言的 12s 无限 connect→revoke 循环,而
+    /// terminal_message / terminal_relay_message 的单元测试看不见这个
+    /// 调用点,全套件保持绿。钉死双腿合取的原样形态与 endpoint_not_found
+    /// 字面量:删腿、退回单腿、改名任一突变即红。
+    /// Round-25 复审 MAJOR-2:纯注释行先滤除再匹配(与 manager 测试模块
+    /// 的 comment_filtered 同一口径;行尾 // 与块注释内提及仍可掩护)。
+    fn comment_filtered(source: &str) -> String {
+        // Round-27 复审 m14:过滤原语上收 platform::test_support 共享。
+        crate::platform::test_support::comment_filtered(source)
+    }
+
+    #[test]
+    fn revocation_worker_gate_wires_the_worker_terminal_legs() {
+        let source = include_str!("relay_client.rs");
+        let start = source
+            .find("async fn run_revocation_loop")
+            .expect("run_revocation_loop must exist");
+        let tail = &source[start..];
+        let end = ["\nasync fn ", "\nfn ", "\n#[cfg(test)]", "\nmod "]
+            .iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .expect("run_revocation_loop body must be terminated by the next item");
+        let body = comment_filtered(&tail[..end]);
+        assert!(
+            body.contains(
+                "let worker_terminal = terminal.is_some()
+                                        || (scoped_to_self"
+            ),
+            "the revocation worker gate must keep the two-leg disjunction: terminal \
+             frames AND self-scoped endpoint_not_found both end the worker; reverting \
+             to `terminal.is_some()` alone resurrects the 12s infinite connect→revoke \
+             loop after relay state loss"
+        );
+        assert!(
+            body.contains("== Some(\"endpoint_not_found\")"),
+            "the worker gate must pin its own endpoint_not_found literal; the shared \
+             folding predicate classifies it as recoverable for the register loop"
+        );
+        // Round-16 follow-up 复审(M5):推导行同属门语义——翻转
+        // is_none_or → is_some_and(仅反义改写)会让外来 endpoint 的
+        // endpoint_not_found 帧重新判为非终态,两条现有断言全绿,12s 循环
+        // 复活。按逐字节形态钉住 none-or 推导。
+        assert!(
+            body.contains(".is_none_or(|scope| scope.is_empty() || scope == endpoint_id)"),
+            "the scope derivation must stay none-or (missing endpoint_id or an \
+             empty/self scope counts as scoped to self); flipping it to is_some_and \
+             reopens the infinite connect→revoke loop while both gate-leg pins \
+             stay green"
+        );
+        // Round-18 复审:推导行之外还有两处相邻突变现有断言全绿——(a)删掉
+        // 下游消费(`if worker_terminal { ... return; }`),worker 在终态帧
+        // 上永不终止,12s 循环复活;(b)把消费挪到 tx_in 转发之前,manager
+        // 永远看不到终态帧(worker 静默退场,轮换竞态里的迟到终结帧无法
+        // 与帧归属区分)。按「转发先于消费」的顺序钉住两者。
+        let forward = body
+            .find("if tx_in.send(RelayInbound::Message(text.to_string())).await.is_err()")
+            .expect("the terminal frame must still be forwarded to the manager");
+        let consume = body.find("if worker_terminal {").expect(
+            "the worker_terminal derivation must be consumed by the loop's \
+                 terminal return; deleting the consumption lets terminal frames \
+                 pass unacted and resurrects the 12s connect→revoke loop",
+        );
+        assert!(
+            forward < consume,
+            "the terminal frame must be forwarded to the manager BEFORE the worker \
+             terminates; consuming first silently drops the terminal frame"
+        );
+        // Round-20 复审(S04):删除消费块内的 `return;`(Close 照发、循环
+        // 继续跑)的突变此前全部断言保持绿——12s connect→revoke 循环复活。
+        // 钉住消费块内必须仍以 return; 终止(取块首右括号前切片)。
+        let consume_slice = &body[consume..];
+        let consume_block_end = consume_slice
+            .find('}')
+            .expect("the worker_terminal consumption block must be closed by its brace");
+        assert!(
+            consume_slice[..consume_block_end].contains("return;"),
+            "the worker_terminal block must still return after sending Close; \
+             deleting the return keeps the worker looping on terminal frames \
+             and resurrects the 12s connect→revoke loop"
+        );
+    }
+
+    /// 接线钉(Round-15 复审 MA5,轻量半):run_loop 的注册类 reject 帧必须
+    /// 先经 stamp_unscoped_registration_error 补戳再转发——删除该调用点后
+    /// 帮助函数单元测试仍绿(manager 的空 id 防线兜底,故降级为轻量钉)。
+    #[test]
+    fn run_loop_stamps_unscoped_registration_errors_before_forwarding() {
+        let source = include_str!("relay_client.rs");
+        let start = source
+            .find("async fn run_loop")
+            .expect("run_loop must exist");
+        let tail = &source[start..];
+        let end = ["\nasync fn ", "\nfn ", "\n#[cfg(test)]", "\nmod "]
+            .iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .expect("run_loop body must be terminated by the next item");
+        let body = comment_filtered(&tail[..end]);
+        assert!(
+            body.contains(
+                "if stamp_unscoped_registration_error(
+                                            &mut value,
+                                            &config.endpoint_id,
+                                        )"
+            ),
+            "run_loop must stamp unscoped registration errors with the endpoint it is \
+             registering before forwarding; deleting the call site makes late terminal \
+             frames unattributable to the manager's explicit-match gate"
+        );
+        // Round-18 复审:补戳写进 `forwarded` 后,发送臂必须使用补戳后的
+        // 值——把发送回退成裸 `text` 的突变让补戳成为死计算,两处断言
+        // (调用点形态 + 本断言)全绿。按发送实参钉住消费端。
+        assert!(
+            body.contains("RelayInbound::Message(forwarded)"),
+            "the forwarded frame must be the stamped `forwarded` value; reverting \
+             the send to the raw `text` turns the stamp into a dead computation"
         );
     }
 }
