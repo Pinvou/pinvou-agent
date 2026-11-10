@@ -6795,6 +6795,14 @@ mod tests {
             "moonshot",
             "coding_plan×kimi 归一必须落 provider()==moonshot（引擎 Moonshot 身份链）"
         );
+        // r6 审 NIT：预算包装实际消费的是 build_dt_config().api_provider()，
+        // 不是 provider() 字符串——把引擎侧解析结果一并钉住，parse 链漂移
+        // （如不可解析兜底改道）才可见。
+        assert_eq!(
+            bridge.build_dt_config().api_provider(),
+            ApiProvider::Moonshot,
+            "build_dt_config().api_provider() 必须落引擎 Moonshot 身份（预算包装的实际输入）"
+        );
         assert_eq!(
             bridge.main_wire_max_output_tokens(&bridge.model()),
             65_536,

@@ -220,7 +220,9 @@ pub async fn summon(
         // verdict 时强制 None——否则带 verdict 的悟 entry 会成为 ledger_from_entries
         // latest 过滤的候选（filter 收 verdict 非空），重新打开
         // ledger_skips_coverage_entry_for_relist 钉死的「悟当 latest、守门失效」
-        // bug（r5 审 NIT，apply_guard 原样透传 raw.verdict）。
+        // bug（r5 审 NIT，apply_guard 原样透传 raw.verdict）。summon 走真 HTTP
+        // 无法单测，此行由 summon_coverage_forces_verdict_none 源钉护住——
+        // 删行=钉红（2026-11-10 r6 审 m2：该行此前无钉，注释亦未声称护住它）。
         review.verdict = None;
         review.artifact_path = artifact_path;
         return Ok(review);
@@ -606,8 +608,9 @@ async fn model_review(
     //退役——规范 slug/大小写/别名拼写不再与引擎劈开（2026-11-07 r3 审 M3/M7）。
     let api = bridge.build_dt_config().api_provider();
     // 线材型号按引擎同款家族表规范化（canonical_wire_model_for_review 注）：
-    // 决策与线材同吃规范 id，别名拼写与引擎不再劈开（2026-11-09 r5 审 m1/m2）。
-    let model_name = canonical_wire_model_for_review(api, &model_name);
+    // 决策与线材同吃规范 id，别名拼写与引擎不再劈开（2026-11-09 r5 审 m1/m2）；
+    // 自定义端点按引擎同款门原样透传（r6 审 M1）。
+    let model_name = canonical_wire_model_for_review(api, &base_url, &model_name);
     // Token 上限字段同样镜像引擎（review_max_tokens_field 文档注）：换名集合里的
     // 路由发 max_completion_tokens，其余保持 max_tokens。
     let max_tokens_field = review_max_tokens_field(api, &base_url, &model_name);
@@ -846,14 +849,20 @@ fn zai_model_is_known_reasoning(model: &str) -> bool {
         || zai_model_is(model, "GLM-5-Turbo")
 }
 
-/// 底座 `is_exact_google_chat_route`（client/chat.rs）逐字镜像：Google 官方
-/// OpenAI 兼容端点。`google.thinking_config.thinking_level` 只写在该路由。
+/// 底座 `is_exact_google_chat_route`（client/chat.rs:625-637）逐字镜像：Google
+/// 官方 OpenAI 兼容端点。`google.thinking_config.thinking_level` 只写在该路由。
+/// 注意底座此门**整 URL 小写**（含 path）再比较，与 `is_exact_https_route` 的
+/// path 大小写敏感轴不同——`…/V1Beta/openai` 在引擎主对话算官方路由，审查旧版
+/// 误用 path 敏感轴判否、零字段劈线（2026-11-10 r6 审 m5，镜面保同形）。
 fn is_exact_google_chat_route(base_url: &str) -> bool {
-    is_exact_https_host_path(
-        base_url,
-        "generativelanguage.googleapis.com",
-        "v1beta/openai",
-    )
+    let trimmed = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    let Some((host, path)) = trimmed
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return false;
+    };
+    host == "generativelanguage.googleapis.com" && path == "v1beta/openai"
 }
 
 /// 底座 `canonical_minimax_model_id`（tui config.rs:1316-1347）的 M3 收敛分支
@@ -882,7 +891,21 @@ fn canonical_minimax_model_is_m3(model: &str) -> bool {
 /// 底座本就 passthrough（`canonical_moonshot_model_id` 只收敛 k2.7/k2.6 族）
 /// ——原样透传=与旧审查线材逐字节一致。Openrouter/Arcee 底座有表但审查无按
 /// 其 id 分类之臂，刻意不收（窄于引擎全集，记载分歧）。
-fn canonical_wire_model_for_review(api: ApiProvider, model: &str) -> String {
+///
+/// 引擎同款 custom-endpoint 前置门（`wire_model_for_provider_route` 首臂，
+/// crates/tui/src/config.rs:1497；契约 crates/config/src/lib.rs:4921——自定义
+/// 端点必须收到用户提供的原样选择器，官方端点才可安全收敛已知别名）：自定义
+/// 端点保有模型 id 命名空间，原样透传 trim 后的存储名——漏门的 relay 上主对话
+/// 发 raw 成功、审查发 canonical 400 model_not_found（2026-11-10 r6 审 M1）。
+/// 门数学直接复用 codewhale_config 公开包装（不重抄官方端点表，底座表动则
+/// 门随动）。
+fn canonical_wire_model_for_review(api: ApiProvider, base_url: &str, model: &str) -> String {
+    let kind = api
+        .kind()
+        .unwrap_or(codewhale_config::ProviderKind::Deepseek);
+    if codewhale_config::provider_preserves_custom_base_url_model(kind, base_url) {
+        return model.trim().to_string();
+    }
     let normalized = model.trim().to_ascii_lowercase();
     let normalized = normalized.replace(['_', ' '], "-");
     let canonical: Option<&'static str> = match api {
@@ -975,7 +998,7 @@ fn canonical_wire_model_for_review(api: ApiProvider, model: &str) -> String {
     };
     canonical
         .map(str::to_string)
-        .unwrap_or_else(|| model.to_string())
+        .unwrap_or_else(|| model.trim().to_string())
 }
 
 /// K3.1 附加条件与型号名单：Moonshot 身份（vendor kimi|moonshot、Kimi preset、
@@ -1441,10 +1464,6 @@ fn apply_review_thinking_controls(
         body["reasoning_effort"] = json!("low");
         return;
     }
-}
-
-fn parse_model_review(content: &str) -> Result<ModelReview> {
-    parse_model_review_with_finish(content, None)
 }
 
 /// `finish_reason=length` 是预算被推理吃满/输出截断的信号：空 content 或截断
@@ -2932,6 +2951,191 @@ mod tests {
             json!({ "type": "adaptive" }),
             "规范收敛 M3 精确路由 adaptive: {m3_alias}"
         );
+
+        // r6 审 m5：底座 google 路由门整 URL 小写（含 path）——大写 path 变体
+        // （Gemini 文档偶见 `V1Beta` 手写）引擎算官方路由，审查必须同形；旧版
+        // 误用 path 敏感轴时此形静默零字段劈线。
+        let mut google_case_path = json!({});
+        apply_review_thinking_controls(
+            &mut google_case_path,
+            review_api("google"),
+            ModelPreset::OpenaiCompatible,
+            "https://generativelanguage.googleapis.com/V1Beta/openai",
+            "gemini-3.6-flash",
+        );
+        assert_eq!(
+            google_case_path["google"]["thinking_config"]["thinking_level"],
+            json!("low"),
+            "Google 官方端点 path 大小写不敏感(底座整 URL 小写): {google_case_path}"
+        );
+
+        // r6 审 m6：默认/次要官方臂逐钉——zai coding-plan 默认端点
+        // （DEFAULT_ZAI_BASE_URL=api.z.ai/api/coding/paas/v4）与 Model Studio
+        // token-plan(.maas.aliyuncs.com)/coding-intl 宿主此前零覆盖，删臂全绿
+        // = 默认 GLM coding-plan 路由丢 forced-thinking 档位（r3 审 M1 bug 类
+        // 在默认路由复活）/官方 Alibaba 端点静默丢 controls。
+        let mut zai_coding = json!({});
+        apply_review_thinking_controls(
+            &mut zai_coding,
+            review_api("zai"),
+            ModelPreset::OpenaiCompatible,
+            "https://api.z.ai/api/coding/paas/v4",
+            "GLM-5.3",
+        );
+        assert_eq!(
+            zai_coding["thinking"],
+            json!({ "type": "enabled", "clear_thinking": false }),
+            "zai coding-plan 默认端点同官方臂 toggle: {zai_coding}"
+        );
+        assert_eq!(
+            zai_coding["reasoning_effort"],
+            json!("low"),
+            "zai coding-plan 默认端点 forced-thinking 档位（漏发=文档默认 max）: {zai_coding}"
+        );
+        let mut ms_token_plan = json!({});
+        apply_review_thinking_controls(
+            &mut ms_token_plan,
+            review_api("modelstudio-token-plan"),
+            ModelPreset::OpenaiCompatible,
+            "https://dashscope-preview.maas.aliyuncs.com/compatible-mode/v1",
+            "kimi-k2.6",
+        );
+        assert_eq!(
+            ms_token_plan["enable_thinking"],
+            json!(true),
+            "token-plan 宿主 hybrid 名单 enable_thinking: {ms_token_plan}"
+        );
+        assert_eq!(
+            ms_token_plan["preserve_thinking"],
+            json!(true),
+            "token-plan 宿主 preserve 名单同钉: {ms_token_plan}"
+        );
+        let mut ms_coding_intl = json!({});
+        apply_review_thinking_controls(
+            &mut ms_coding_intl,
+            review_api("modelstudio-coding-plan"),
+            ModelPreset::OpenaiCompatible,
+            "https://coding-intl.dashscope.aliyuncs.com/v1",
+            "kimi-k2.6",
+        );
+        assert_eq!(
+            ms_coding_intl["enable_thinking"],
+            json!(true),
+            "coding-intl 宿主 hybrid 名单 enable_thinking: {ms_coding_intl}"
+        );
+    }
+
+    /// r6 审 NIT：臂成员逐钉——每个 preset/URL 成员用「仅该成员成立」的输入钉住
+    /// （api 身份与其余 URL 成员都不命中，删该成员=输入落函数尾零字段=红）。
+    /// GLM preset 成员不可行为钉：官方 z.ai 端点必含 z.ai/bigmodel.cn URL 成员、
+    /// relay 端点必 fail-close 零字段，两态都与函数尾零字段同形——不设假钉
+    /// （r6 审已记载，成员保留作意图标注）。
+    #[test]
+    fn review_thinking_controls_arm_member_pins() {
+        // LocalVllm preset 成员：Openai 身份 × relay URL × always-thinking 型号
+        // （qwen36_35b_256k 非 NoControl 名单）。
+        let mut local = json!({});
+        apply_review_thinking_controls(
+            &mut local,
+            review_api("openai"),
+            ModelPreset::LocalVllm,
+            "https://relay.example/v1",
+            "qwen36_35b_256k",
+        );
+        assert_eq!(
+            local["chat_template_kwargs"],
+            json!({ "enable_thinking": true }),
+            "LocalVllm preset 成员独立成立（本地线材 chat_template_kwargs）: {local}"
+        );
+        assert_eq!(local["reasoning_effort"], json!("low"), "{local}");
+        // Deepseek preset 成员。
+        let mut deepseek = json!({});
+        apply_review_thinking_controls(
+            &mut deepseek,
+            review_api("openai"),
+            ModelPreset::Deepseek,
+            "https://relay.example/v1",
+            "deepseek-reasoner",
+        );
+        assert_eq!(deepseek["reasoning_effort"], json!("low"), "{deepseek}");
+        assert_eq!(
+            deepseek["thinking"],
+            json!({ "type": "enabled" }),
+            "{deepseek}"
+        );
+        // Kimi preset 成员（非 K3/K3.1 拼写、relay URL → 通用 enabled）。
+        let mut kimi = json!({});
+        apply_review_thinking_controls(
+            &mut kimi,
+            review_api("openai"),
+            ModelPreset::Kimi,
+            "https://relay.example/v1",
+            "kimi-k2.6",
+        );
+        assert_eq!(kimi["thinking"], json!({ "type": "enabled" }), "{kimi}");
+        // Doubao preset 成员。
+        let mut doubao = json!({});
+        apply_review_thinking_controls(
+            &mut doubao,
+            review_api("openai"),
+            ModelPreset::Doubao,
+            "https://relay.example/v1",
+            "doubao-seed-1.6",
+        );
+        assert_eq!(doubao["reasoning_effort"], json!("high"), "{doubao}");
+        assert_eq!(doubao["thinking"], json!({ "type": "enabled" }), "{doubao}");
+        // Mimo preset 成员。
+        let mut mimo = json!({});
+        apply_review_thinking_controls(
+            &mut mimo,
+            review_api("openai"),
+            ModelPreset::Mimo,
+            "https://relay.example/v1",
+            "mimo-v2.5-pro",
+        );
+        assert_eq!(mimo["thinking"], json!({ "type": "enabled" }), "{mimo}");
+        // Minimax preset 成员（审查线 split 全线保留；adaptive 只钉 Minimax 身份）。
+        let mut minimax = json!({});
+        apply_review_thinking_controls(
+            &mut minimax,
+            review_api("openai"),
+            ModelPreset::Minimax,
+            "https://relay.example/v1",
+            "MiniMax-M3",
+        );
+        assert_eq!(minimax["reasoning_split"], json!(true), "{minimax}");
+        assert!(
+            minimax.get("thinking").is_none(),
+            "adaptive 只钉 Minimax 身份（preset 成员仅 split）: {minimax}"
+        );
+        // URL 成员：api 身份与 preset 都不命中，仅 URL 嗅探成立（已记载拓宽）。
+        let mut zai_url = json!({});
+        apply_review_thinking_controls(
+            &mut zai_url,
+            review_api("openai"),
+            ModelPreset::OpenaiCompatible,
+            "https://api.z.ai/api/paas/v4",
+            "GLM-5.3",
+        );
+        assert_eq!(
+            zai_url["thinking"],
+            json!({ "type": "enabled", "clear_thinking": false }),
+            "z.ai URL 成员（路由方言跟端点走）: {zai_url}"
+        );
+        assert_eq!(zai_url["reasoning_effort"], json!("low"), "{zai_url}");
+        let mut mimo_url = json!({});
+        apply_review_thinking_controls(
+            &mut mimo_url,
+            review_api("openai"),
+            ModelPreset::OpenaiCompatible,
+            "https://api.xiaomimimo.com/v1",
+            "mimo-v2.5-pro",
+        );
+        assert_eq!(
+            mimo_url["thinking"],
+            json!({ "type": "enabled" }),
+            "xiaomimimo.com URL 成员: {mimo_url}"
+        );
     }
 
     #[test]
@@ -3101,6 +3305,27 @@ mod tests {
             "max_tokens",
             "非 M3 规范型号不换"
         );
+        // r6 审 NIT：直连 K3 路由门的 scheme/authority 严格轴（is_exact_https_route
+        // 镜像语义）此前无负钉——http 降级与端口变体都不是直连平台，不得换字段名
+        // （否则思考臂/字段名同时劈线）。
+        assert_eq!(
+            review_max_tokens_field(
+                review_api("moonshot"),
+                "http://api.moonshot.cn/v1",
+                "kimi-k3"
+            ),
+            "max_tokens",
+            "http 降级不算直连 K3 路由——换名要求 https 官方 authority"
+        );
+        assert_eq!(
+            review_max_tokens_field(
+                review_api("moonshot"),
+                "https://api.moonshot.cn:8443/v1",
+                "kimi-k3"
+            ),
+            "max_tokens",
+            "端口变体是另一 authority，不算直连 K3 路由"
+        );
     }
 
     /// Pin the call site, not just the builder: the builder pin above goes
@@ -3155,6 +3380,23 @@ mod tests {
              (dropping the early return would send an OpenAI chat wire with \
              thinking fields to Anthropic endpoints)"
         );
+        // r6 审 m1：六处接线里唯一漏钉的一处（r3-M5 同类，突变实证：删调用行
+        // 全测试绿——canonical 单测只测函数本身，管不到接线）。
+        assert!(
+            region.contains("canonical_wire_model_for_review("),
+            "model_review must send the engine-canonical wire model — \
+             official family endpoints reject hand-written aliases with \
+             model_not_found; deleting the call silently reverts to the raw \
+             stored name while the map unit test stays green"
+        );
+        // r6 审 m3：Anthropic stop_reason=max_tokens → length 诊断的映射钉。
+        assert!(
+            region.contains("stop_reason"),
+            "the Anthropic branch must map stop_reason=max_tokens into the \
+             finish_reason=length diagnostic; deleting the mapping leaves \
+             Anthropic truncation failures undiagnosed (the budget context \
+             is what points the debugging at the route, not at the prompt)"
+        );
         assert!(
             region.contains(".timeout(DEFAULT_TIMEOUT)"),
             "the review client must keep the compile-time-pinned timeout; \
@@ -3185,6 +3427,54 @@ mod tests {
              request region — a post-build body[\"max_tokens\"] override \
              would satisfy every contains pin while silently shrinking the \
              engine-parity budget"
+        );
+    }
+
+    /// r6 审 m2：悟镜头 verdict=None（summon 走真 HTTP 无法单测）——源钉把
+    /// 删行变红。summon 的旧行注引 ledger_skips_coverage_entry_for_relist 作
+    /// 出处，但该钉护的是 ledger 过滤半边、不执行本行（r3-M5/M2 突变同类：
+    /// 修好的行没有自己的钉）。
+    #[test]
+    fn summon_coverage_forces_verdict_none() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("async fn summon")
+            .expect("summon definition present");
+        let region = &source[start
+            ..source[start..]
+                .find("fn latest_artifact_file")
+                .expect("latest_artifact_file definition present")
+                + start];
+        assert!(
+            region.contains("review.verdict = None;"),
+            "the coverage lens must force verdict=None at the summon layer: \
+             a stray model verdict rides the ledger latest filter (it accepts \
+             non-null verdicts) and re-opens the coverage-as-latest gate bug; \
+             apply_guard passes raw verdict through unchanged"
+        );
+    }
+
+    /// r6 审 m3：finish_reason=length 诊断层——k3 旧线上「预算全被 reasoning
+    /// 吃掉、content 空」的形态必须把排查指向输出预算而不是提示词。删长度臂
+    /// 或吞掉 finish_reason=红。
+    #[test]
+    fn parse_review_finish_reason_length_diagnostic() {
+        let err = parse_model_review_with_finish("not json at all", Some("length"))
+            .expect_err("unparseable content must error");
+        assert!(
+            err.to_string().contains("finish_reason=length"),
+            "length finish must surface the budget diagnostic: {err}"
+        );
+        let plain =
+            parse_model_review_with_finish("not json at all", None).expect_err("must error");
+        assert!(
+            !plain.to_string().contains("finish_reason=length"),
+            "no finish_reason must keep the plain parse error: {plain}"
+        );
+        // 可解析的正文不叠加诊断（诊断只在解析失败时指引预算）。
+        assert!(
+            parse_model_review_with_finish("{}", Some("length")).is_ok(),
+            "a parseable body needs no length diagnostic"
         );
     }
 
@@ -3342,48 +3632,167 @@ mod tests {
     /// 族，k3 本就 passthrough）。
     #[test]
     fn canonical_wire_model_mirrors_engine_family_maps() {
-        let cases: &[(&str, &str, &str)] = &[
-            ("zai", "glm-5-3", "GLM-5.3"),
-            ("zai", "zai_glm 5.3", "GLM-5.3"),
-            ("zai", "GLM-5.3", "GLM-5.3"),
-            ("zai", "glm-5.3-flash", "GLM-5.3-Flash"),
-            ("zai", "glm-5-2", "GLM-5.2"),
-            ("zai", "glm-5-1", "GLM-5.1"),
-            ("zai", "glm-5turbo", "GLM-5-Turbo"),
-            ("zai", "glm-5.4-preview", "glm-5.4-preview"),
-            ("minimax", "minimax-m-3", "MiniMax-M3"),
-            ("minimax", "MINIMAX_M_3", "MiniMax-M3"),
-            ("minimax", "MiniMax-M3", "MiniMax-M3"),
-            ("minimax", "minimax-m-3-thinking", "MiniMax-M3"),
+        // (provider, base_url, model, expected)——base_url 参与引擎同款
+        // custom-endpoint 门（r6 审 M1），官方/relay 两轴都必须可表达。
+        let cases: &[(&str, &str, &str, &str)] = &[
+            ("zai", "https://api.z.ai/api/paas/v4", "glm-5-3", "GLM-5.3"),
+            (
+                "zai",
+                "https://api.z.ai/api/paas/v4",
+                "zai_glm 5.3",
+                "GLM-5.3",
+            ),
+            ("zai", "https://api.z.ai/api/paas/v4", "GLM-5.3", "GLM-5.3"),
+            (
+                "zai",
+                "https://api.z.ai/api/paas/v4",
+                "glm-5.3-flash",
+                "GLM-5.3-Flash",
+            ),
+            ("zai", "https://api.z.ai/api/paas/v4", "glm-5-2", "GLM-5.2"),
+            ("zai", "https://api.z.ai/api/paas/v4", "glm-5-1", "GLM-5.1"),
+            (
+                "zai",
+                "https://api.z.ai/api/paas/v4",
+                "glm-5turbo",
+                "GLM-5-Turbo",
+            ),
+            (
+                "zai",
+                "https://api.z.ai/api/paas/v4",
+                "glm-5.4-preview",
+                "glm-5.4-preview",
+            ),
             (
                 "minimax",
+                "https://api.minimax.io/v1",
+                "minimax-m-3",
+                "MiniMax-M3",
+            ),
+            (
+                "minimax",
+                "https://api.minimax.io/v1",
+                "MINIMAX_M_3",
+                "MiniMax-M3",
+            ),
+            (
+                "minimax",
+                "https://api.minimax.io/v1",
+                "MiniMax-M3",
+                "MiniMax-M3",
+            ),
+            (
+                "minimax",
+                "https://api.minimax.io/v1",
+                "minimax-m-3-thinking",
+                "MiniMax-M3",
+            ),
+            (
+                "minimax",
+                "https://api.minimax.io/v1",
                 "minimax-m2-7-highspeed",
                 "MiniMax-M2.7-highspeed",
             ),
-            ("minimax", "minimax-m3.5", "minimax-m3.5"),
-            ("mimo", "xiaomi-mimo-v2.5-pro", "mimo-v2.5-pro"),
-            ("mimo", "MIMO V2 5 PRO", "mimo-v2.5-pro"),
+            (
+                "minimax",
+                "https://api.minimax.io/v1",
+                "minimax-m3.5",
+                "minimax-m3.5",
+            ),
+            // r6 审 NIT：裸成员 `minimax`/`minimax-m3`（与
+            // canonical_minimax_model_is_m3 同名单）此前无行钉。
+            (
+                "minimax",
+                "https://api.minimax.io/v1",
+                "minimax",
+                "MiniMax-M3",
+            ),
+            (
+                "minimax",
+                "https://api.minimax.io/v1",
+                "minimax-m3",
+                "MiniMax-M3",
+            ),
             (
                 "mimo",
+                "https://api.xiaomimimo.com/v1",
+                "xiaomi-mimo-v2.5-pro",
+                "mimo-v2.5-pro",
+            ),
+            (
+                "mimo",
+                "https://api.xiaomimimo.com/v1",
+                "MIMO V2 5 PRO",
+                "mimo-v2.5-pro",
+            ),
+            (
+                "mimo",
+                "https://api.xiaomimimo.com/v1",
                 "mimo-v2.5-pro-ultraspeed",
                 "mimo-v2.5-pro-ultraspeed",
             ),
-            ("mimo", "mimo-v2.5-asr", "mimo-v2.5-asr"),
-            ("mimo", "mimo-unknown", "mimo-unknown"),
-            ("moonshot", "kimi-k3", "kimi-k3"),
-            ("moonshot", "kimi-k3.1-pro[1m]", "kimi-k3.1-pro[1m]"),
-            ("openai", "gpt-5.6-terra", "gpt-5.6-terra"),
+            (
+                "mimo",
+                "https://api.xiaomimimo.com/v1",
+                "mimo-v2.5-asr",
+                "mimo-v2.5-asr",
+            ),
+            (
+                "mimo",
+                "https://api.xiaomimimo.com/v1",
+                "mimo-unknown",
+                "mimo-unknown",
+            ),
+            (
+                "moonshot",
+                "https://api.moonshot.cn/v1",
+                "kimi-k3",
+                "kimi-k3",
+            ),
+            (
+                "moonshot",
+                "https://api.moonshot.cn/v1",
+                "kimi-k3.1-pro[1m]",
+                "kimi-k3.1-pro[1m]",
+            ),
+            (
+                "openai",
+                "https://api.openai.com/v1",
+                "gpt-5.6-terra",
+                "gpt-5.6-terra",
+            ),
             (
                 "together",
+                "https://api.together.xyz/v1",
                 "thinkingmachines/inkling",
                 "thinkingmachines/inkling",
             ),
+            // r6 审 M1：custom-endpoint 门——relay 上引擎原样透传存储名
+            // （lib.rs:4921 契约"自定义端点必须收到用户提供的原样选择器"），
+            // canonical 化在 relay 上 model_not_found（主对话可用、审查炸=
+            // 本 PR 要杀的 bug 类自引入）。删门=这三行红。
+            ("zai", "https://relay.example/v1", "glm-5-3", "glm-5-3"),
+            (
+                "minimax",
+                "https://relay.example/v1",
+                "minimax-m-3",
+                "minimax-m-3",
+            ),
+            ("mimo", "https://relay.example/v1", "mimo", "mimo"),
+            // 引擎 passthrough 同款 trim（wire_model_for_provider_route 首行
+            // `model.trim()`；旧版兜底返回未 trim 原串）。
+            (
+                "moonshot",
+                "https://relay.example/v1",
+                "  kimi-k3  ",
+                "kimi-k3",
+            ),
         ];
-        for (provider, model, expected) in cases {
+        for (provider, base_url, model, expected) in cases {
             assert_eq!(
-                canonical_wire_model_for_review(review_api(provider), model),
+                canonical_wire_model_for_review(review_api(provider), base_url, model),
                 *expected,
-                "{provider} × {model}"
+                "{provider} × {base_url} × {model}"
             );
         }
     }
