@@ -144,7 +144,8 @@ const PinvouRows = ({ review, t, role }) => {
 };
 
 // Review loading state: local models take 5-30s and online reasoning models
-// (thinking not disableable, e.g. Kimi k3) can take a minute or two. Show an
+// (thinking not disableable, e.g. Kimi k3) can take several minutes — the
+// one-shot request caps at 180s (pvLoadingHint says the same). Show an
 // iOS activity spinner, an elapsed timer and reassuring copy so the wait does
 // not feel stuck.
 const PinvouLoading = ({ isWu, isDark, t, isLocal }) => {

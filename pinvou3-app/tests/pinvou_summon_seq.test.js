@@ -32,6 +32,14 @@ function extractSaveChainBlock(source) {
   return match[0];
 }
 
+function extractSummonBlock(source) {
+  const match = source.match(
+    /async function summonPinvou\(focus, mode\) \{[\s\S]*?notify\(\);\n *\}\n *\}\n/,
+  );
+  assert.ok(match, 'summonPinvou 函数体未找到——抽取正则与源码漂移');
+  return match[0];
+}
+
 function makeDeferredInvoke(log) {
   const pending = [];
   const invoke = (command, payload) => {
@@ -46,8 +54,12 @@ function makeDeferredInvoke(log) {
 
 async function drain() {
   // 链上 .then 回调要等微任务队列清空两轮才落日志。
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
 
 function runLoader(sandboxState, reviews) {
@@ -199,4 +211,99 @@ test('chained saves keep the sid captured at record time', async () => {
     's1',
     'sid is captured synchronously at record time — no cross-session snapshot contamination',
   );
+});
+
+// r7 审 m3：settle 门本身此前零自动化覆盖（JS-only 行为，仅注释守护）——重构
+// summonPinvou 可能无声重开 r3 审 M9 的两个串扰（旧结果注入新弹窗 / 旧 finally
+// 提前解掉新召唤守卫）。抽取真实 summonPinvou + 串行链，在 dismiss→再召唤窗口
+// 里让旧 settle 晚到：必须只入账（带自己的 seq），不写新弹窗、不解新守卫；
+// 新 settle 到达才写弹窗并解自己的守卫。删任何一处 `seq ===` 门或入账行，本
+// 测试红。
+test('stale settle records to the ledger but cannot inject into a newer summon nor release its guard', async () => {
+  const log = [];
+  const { invoke, pending } = makeDeferredInvoke(log);
+  const state = {
+    activeSessionId: 's1',
+    pinvouSummoning: false,
+    pinvouSummonSeq: 0,
+    pinvouModal: null,
+    pinvouReviews: [],
+    messages: [{}, {}, {}],
+  };
+  const sandbox = {
+    invoke,
+    state,
+    notify: () => {},
+    console,
+    bt: (key) => key,
+    addSystemItem: () => {},
+  };
+  vm.runInNewContext(
+    `${extractSaveChainBlock(sharedBaseSource)}\n${extractSummonBlock(sharedBaseSource)}\n` +
+      'this.__summon = summonPinvou;',
+    sandbox,
+    { filename: 'pinvou-summon-settle-gate.js' },
+  );
+
+  const first = sandbox.__summon(null, null); // seq 1, in flight
+  assert.strictEqual(state.pinvouSummonSeq, 1, 'first summon takes seq 1');
+  // Dismiss contract (dismissPinvouReview): release the guard, close the
+  // modal, no cancel of the in-flight backend request.
+  state.pinvouSummoning = false;
+  state.pinvouModal = null;
+  const second = sandbox.__summon(null, null); // seq 2
+  assert.strictEqual(state.pinvouSummonSeq, 2, 're-summon takes the next seq');
+  assert.strictEqual(state.pinvouSummoning, true, 're-summon re-arms the guard');
+
+  // Stale settle (seq 1) lands late: ledger-only.
+  pending[0].resolve({ verdict: 'fail', issues: [{ text: 'stale' }] });
+  await drain();
+  await drain();
+  assert.strictEqual(
+    state.pinvouReviews.length,
+    1,
+    'superseded settle still records to the review ledger (deliberate, disclosed)',
+  );
+  assert.strictEqual(state.pinvouReviews[0].seq, 1, 'stale entry rides its own seq');
+  assert.strictEqual(
+    state.pinvouModal && state.pinvouModal.loading && !state.pinvouModal.review,
+    true,
+    'stale settle must not inject into the newer summon modal (r3 M9 crossover 1: still loading, no review)',
+  );
+  assert.strictEqual(
+    state.pinvouSummoning,
+    true,
+    'stale finally must not release the newer summon guard (r3 M9 crossover 2)',
+  );
+  assert.strictEqual(
+    log.length,
+    3,
+    'two summons in flight + the stale settle save fired (ledger-only)',
+  );
+
+  // Fresh settle (seq 2): injects and releases its own guard.
+  pending[1].resolve({ verdict: 'pass', issues: [] });
+  await first;
+  await second;
+  await drain();
+  assert.strictEqual(
+    state.pinvouModal && state.pinvouModal.review && state.pinvouModal.review.verdict,
+    'pass',
+    'fresh settle injects its review into the modal',
+  );
+  assert.strictEqual(
+    state.pinvouSummoning,
+    false,
+    'fresh settle releases the guard for the next summon',
+  );
+  assert.strictEqual(
+    state.pinvouReviews.length,
+    2,
+    'both settles are ledgered — the seq gate orders consumption, not persistence',
+  );
+  pending[2].resolve(null);
+  await drain();
+  assert.strictEqual(log.length, 4, 'fresh settle save queued behind the stale save (chain)');
+  pending[3].resolve(null);
+  await drain();
 });
