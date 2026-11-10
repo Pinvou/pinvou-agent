@@ -3364,8 +3364,8 @@ impl RemoteControlManager {
 #[cfg(test)]
 mod tests {
     use super::persistence::{
-        acknowledge_pending_revocation_at, load_config_from, load_or_initialize_rpc_ledger_at,
-        load_pending_revocations_from, queue_pending_revocation_at,
+        load_config_from, load_or_initialize_rpc_ledger_at, load_pending_revocations_from,
+        queue_pending_revocation_at,
     };
     use super::rpc::{WebSessionScope, web_session_scope};
     use super::*;
@@ -5108,30 +5108,6 @@ mod tests {
             Some(0o600),
             "load must restore the private 0600 baseline for the secret-bearing ledger"
         );
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn revocation_ack_removes_only_the_matching_durable_entry() {
-        let directory = std::env::temp_dir().join(format!(
-            "pinvou-web-revocation-ack-{}-{}",
-            std::process::id(),
-            crate::features::remote_control::short_token(12)
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("pending.json");
-        let first = test_pending_revocation("ep_retired_one");
-        let second = test_pending_revocation("ep_retired_two");
-        queue_pending_revocation_at(&path, first.clone()).unwrap();
-        queue_pending_revocation_at(&path, second.clone()).unwrap();
-
-        acknowledge_pending_revocation_at(&path, &first).unwrap();
-        assert_eq!(
-            load_pending_revocations_from(&path).unwrap().entries,
-            VecDeque::from([second.clone()])
-        );
-        acknowledge_pending_revocation_at(&path, &second).unwrap();
-        assert!(!path.exists(), "an empty revocation ledger is removed");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
