@@ -18,8 +18,24 @@ use super::ingest_deps::{
 
 // ============== 产物可视化预览助手（commands::render_artifact_visual 复用）==============
 
+/// 单张预览图片的大小预检上限：本函数产出的 data URI 会整段塞进 IPC 帧与
+/// iframe `srcDoc`，读取前先显式拒绝异常大的文件，避免超大文件整个读进
+/// 内存再 base64（约 1.33×）后进 IPC。正常输入（soffice/pdftoppm 生成的
+/// 页图、≤20 MiB 上传产物图）远低于此线；触线即报错，不做静默降级。
+const MAX_PREVIEW_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// 单个图片文件 → `data:image/...;base64,...`。
 pub fn image_file_to_data_uri(path: &Path) -> Result<String, String> {
+    let size = std::fs::metadata(path)
+        .map_err(|e| format!("读图失败: {e}"))?
+        .len();
+    if size > MAX_PREVIEW_IMAGE_BYTES {
+        return Err(format!(
+            "图片文件超过 {} MiB 预览上限（{size} 字节），已拒绝内联: {}",
+            MAX_PREVIEW_IMAGE_BYTES / (1024 * 1024),
+            path.display()
+        ));
+    }
     let bytes = std::fs::read(path).map_err(|e| format!("读图失败: {e}"))?;
     let mime =
         crate::platform::filesystem::image_mime_type(path).unwrap_or("application/octet-stream");

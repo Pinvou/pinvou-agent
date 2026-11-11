@@ -493,15 +493,28 @@ pub(crate) async fn execute_page_tool(
                 .and_then(Value::as_array)
                 .cloned()
                 .ok_or_else(|| "browser/missing-argument: text".to_string())?;
-            let timeout = arguments
-                .get("timeout")
-                .and_then(Value::as_u64)
-                .unwrap_or(10_000)
-                .min(12_000);
-            let matched = call(webview, "waitFor", json!([texts, timeout])).await?;
+            let requested_timeout = arguments.get("timeout").and_then(Value::as_u64);
+            let timeout = requested_timeout.unwrap_or(10_000).min(12_000);
+            // The 12s clamp keeps the waitFor round-trip inside the platform's
+            // 15s JavaScript-evaluation budget, but it used to be silent: a
+            // caller asking for 60s waited 12s with no hint. Disclose the
+            // clamp whenever it actually fires.
+            let clamp_note = match requested_timeout {
+                Some(requested) if requested > timeout => format!(
+                    "\n(Note: the requested timeout of {requested} ms was clamped to {timeout} ms to fit the platform's 15s evaluation budget; waits longer than {timeout} ms are not supported by this tool.)"
+                ),
+                _ => String::new(),
+            };
+            let matched = match call(webview, "waitFor", json!([texts, timeout])).await {
+                Ok(matched) => matched,
+                Err(error) if !clamp_note.is_empty() => {
+                    return Err(format!("{error}{clamp_note}"));
+                }
+                Err(error) => return Err(error),
+            };
             Ok(tool_text(
                 format!(
-                    "Found text: {}",
+                    "Found text: {}{clamp_note}",
                     matched
                         .get("match")
                         .and_then(Value::as_str)

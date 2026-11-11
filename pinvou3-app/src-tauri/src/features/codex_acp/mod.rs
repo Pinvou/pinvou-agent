@@ -452,6 +452,17 @@ fn rebind_evictable(
 /// converges once the spawn settles.
 const REBIND_ACP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Upper bound on one `session/load` request inside the cold spawn. The
+/// pool-wide `sessions` lock is held across the whole spawn (see
+/// `get_or_spawn`), so an unbounded load — a peer that accepts `initialize`
+/// then wedges before answering `session/load` — would block every ACP
+/// session entrypoint indefinitely. 120s covers legitimate large-history
+/// restores (initialize itself gets 30s); on expiry the error is surfaced
+/// explicitly instead of falling through to the fresh-session path, because
+/// `session/new` rides the same connection and would hang on the same wedged
+/// peer while the pool lock is still held.
+const ACP_SESSION_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Retry hints of at least this many milliseconds are phrased in seconds
 /// instead of raw ms, so long backoffs read as actionable waits.
 const RETRY_HINT_SECONDS_MIN_MS: u128 = 2_000;
@@ -5772,10 +5783,40 @@ impl AcpPool {
             if initialized.agent_capabilities.load_session {
                 if let Some(saved_id) = saved.acp_session_id.clone() {
                     replay_suppressed.store(true, Ordering::Release);
-                    let loaded = connection
-                        .send_request(LoadSessionRequest::new(saved_id.clone(), workspace.clone()))
-                        .block_task()
-                        .await;
+                    let loaded = match tokio::time::timeout(
+                        ACP_SESSION_LOAD_TIMEOUT,
+                        connection
+                            .send_request(LoadSessionRequest::new(
+                                saved_id.clone(),
+                                workspace.clone(),
+                            ))
+                            .block_task(),
+                    )
+                    .await
+                    {
+                        Ok(loaded) => loaded,
+                        Err(_) => {
+                            let error = anyhow::anyhow!(
+                                "{} ACP session/load 超时（{} 秒无响应）",
+                                backend.display_name(),
+                                ACP_SESSION_LOAD_TIMEOUT.as_secs()
+                            );
+                            eprintln!(
+                                "[pinvou3-app] {} ACP 恢复会话超时，中止会话重建: {error}",
+                                backend.display_name()
+                            );
+                            diagnostics::write(
+                                operation_id,
+                                "session:load_timeout",
+                                format!(
+                                    "session_id={pinvou_session_id} saved_acp_session_id={saved_id} timeout_secs={} error={error:#}",
+                                    ACP_SESSION_LOAD_TIMEOUT.as_secs()
+                                ),
+                            );
+                            replay_suppressed.store(false, Ordering::Release);
+                            return Err(error);
+                        }
+                    };
                     replay_suppressed.store(false, Ordering::Release);
                     match loaded {
                         Ok(response) => (

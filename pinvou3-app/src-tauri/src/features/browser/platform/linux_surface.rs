@@ -23,6 +23,13 @@ use super::super::NativeSurfaceBounds;
 const OVERLAY_WIDGET_NAME: &str = "pinvou-native-browser-overlay";
 const FIXED_WIDGET_NAME: &str = "pinvou-native-browser-fixed";
 const GTK_DISPATCH_TIMEOUT: Duration = Duration::from_millis(750);
+/// Bound on the post-start (RUNNING/FINISHED) acknowledgement wait. Once the
+/// GTK closure has begun we must not cancel it, but a wedged GTK main loop
+/// would otherwise hold the caller — which owns the native_surface lock —
+/// forever. 60s is far beyond any legitimate synchronous GTK mutation; on
+/// expiry the error reports the outcome as UNKNOWN because the closure may
+/// still commit after we return.
+const GTK_RUNNING_ACK_TIMEOUT: Duration = Duration::from_secs(60);
 const DISPATCH_PENDING: u8 = 0;
 const DISPATCH_RUNNING: u8 = 1;
 const DISPATCH_CANCELLED: u8 = 2;
@@ -167,9 +174,22 @@ fn receive_webview_result(
             Ok(_) => Err(format!(
                 "Linux {action} timed out waiting for the GTK main thread; the unexecuted operation was cancelled"
             )),
-            Err(DISPATCH_RUNNING | DISPATCH_FINISHED) => receiver.recv().map_err(|_| {
-                format!("Linux {action} was interrupted before GTK acknowledgement")
-            })?,
+            // The closure already started, so cancelling is off the table —
+            // the mutation may land after we return. Wait boundedly for the
+            // acknowledgement: an unbounded recv() here let a wedged GTK main
+            // loop hang the caller (holding the native_surface lock) forever.
+            Err(DISPATCH_RUNNING | DISPATCH_FINISHED) => {
+                match receiver.recv_timeout(GTK_RUNNING_ACK_TIMEOUT) {
+                    Ok(result) => result,
+                    Err(RecvTimeoutError::Timeout) => Err(format!(
+                        "Linux {action} did not receive its GTK acknowledgement within {}s; the GTK closure outcome is UNKNOWN — it may still commit after this return, and the native surface state must be treated as unverified",
+                        GTK_RUNNING_ACK_TIMEOUT.as_secs()
+                    )),
+                    Err(RecvTimeoutError::Disconnected) => Err(format!(
+                        "Linux {action} was interrupted before GTK acknowledgement"
+                    )),
+                }
+            }
             Err(_) => Err(format!("Linux {action} was cancelled")),
         },
     }

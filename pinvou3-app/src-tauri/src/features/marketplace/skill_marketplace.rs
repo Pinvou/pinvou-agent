@@ -35,14 +35,6 @@ use crate::platform::paths;
 static MARKETPLACE_DIR: Dir<'static> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
-/// Uncompressed size cap for a single skill subtree (defensive; applies to
-/// both bundled and uploaded skills). Only the test scaffolding
-/// (`import_package_named`) uses it — the unified plugin-package size gate
-/// for the production upload channel lives in
-/// `plugin_import::MAX_PLUGIN_SIZE_BYTES`.
-#[cfg(test)]
-const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
-
 /// 安装来源标记文件名。卸载时校验它存在,避免误删内置/手放的 skill。
 const INSTALLED_FROM_MARKER: &str = ".installed-from";
 
@@ -1152,7 +1144,7 @@ impl SkillMarketplaceManager {
             let path_str = super::plugin_import::checked_zip_entry_path(
                 &mut entry,
                 &mut total,
-                MAX_SKILL_SIZE_BYTES,
+                super::plugin_import::MAX_PLUGIN_SIZE_BYTES,
                 "技能包",
             )?;
             if entry.is_dir() {
@@ -1300,10 +1292,14 @@ impl SkillMarketplaceManager {
                 let buf =
                     super::plugin_import::read_zip_entry_bounded(&mut entry, declared, "条目")?;
                 actual_total = actual_total.saturating_add(buf.len() as u64);
-                if actual_total > MAX_SKILL_SIZE_BYTES {
+                // 与生产通道同一收口：上限取 plugin_import::MAX_PLUGIN_SIZE_BYTES
+                //（200 MiB），不再维护 fork 本地的 5 MiB 遗留闸（历史
+                // MAX_SKILL_SIZE_BYTES 已删除；伪造头部由上方
+                // read_zip_entry_bounded 的声明/实际互洽校验拒收）。
+                if actual_total > super::plugin_import::MAX_PLUGIN_SIZE_BYTES {
                     return Err(format!(
                         "技能包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                        MAX_SKILL_SIZE_BYTES / 1024 / 1024
+                        super::plugin_import::MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
                     ));
                 }
                 std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
@@ -1424,9 +1420,10 @@ impl SkillMarketplaceManager {
             Some(desc) => {
                 let content = std::fs::read_to_string(&md_path)
                     .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
-                // 先纯校验/改写（rewrite 无 IO）：值不可单行表达（含引号/反斜杠等）
+                // 先纯校验/改写（rewrite 无 IO）：值不可表达（控制字符/结构畸形）
                 // 时在任何落盘之前报错——备份 key 与 SKILL.md 都不被触碰，不留下
-                // 「命令 Err 但 extra 已写入」的中间态。
+                // 「命令 Err 但 extra 已写入」的中间态。引号/反斜杠经无损渲染器
+                // 正常回写（与 Restore 路径同一口径），不再是拒绝形态。
                 let new_content = rewrite_frontmatter_description(&content, desc)?;
                 // 首次回写前备份引擎口径原值（含「原本没有」空串哨兵）——
                 // 清覆盖时据此恢复，frontmatter 默认值不因覆盖过一次而丢失。
@@ -2232,7 +2229,7 @@ fn read_skill_description_from_str(content: &str) -> Option<String> {
     description
 }
 
-/// 把 SKILL.md frontmatter 的 description 重写为单行值（`sync_display_description`
+/// 把 SKILL.md frontmatter 的 description 重写为新值（`sync_display_description`
 /// 用），写口径与 [`read_skill_description_from_str`]（CodeWhale 引擎平铺解析器
 /// 镜像）互洽：
 ///
@@ -2242,14 +2239,12 @@ fn read_skill_description_from_str(content: &str) -> Option<String> {
 ///   结构），改为在 frontmatter 末尾插入顶层行——引擎平铺解析重复键 last-wins，
 ///   插在嵌套行之前会被盖回旧值；
 /// - 没有 description → 插在 name 行之后（无 name 行则插在 opening `---` 后）；
-/// - 统一写单行。读端只做「剥成对双/单引号」、不做反转义，因此值含 `"` 或 `\` 时
-///   双引号包裹转义会与读值不符（不互洽），含换行也无法单行表达——这两类值连同
-///   首尾成对引号（读端会剥掉丢字符）一律 Err 拒绝，不猜（Set 路径；**Restore
-///   路径不走这里**，见 [`restore_frontmatter_description`]——备份原值可能是
-///   多行/含引号，走无损块状渲染）；
-/// - 值在 YAML plain scalar 下不安全（前导指示符、内嵌 `: ` / ` #`、块状标记、
-///   关键字/数字形态）时整体双引号包裹——此时值内已无 `"` 和 `\`，包裹后读端剥
-///   引号即得原值；
+/// - 值渲染复用 Restore 路径的无损渲染器 [`render_description_lines_lossless`]：
+///   plain 安全单行写 plain；含 `"`/`\`/首尾 `'`/不便 plain 形态的单行写成对
+///   单引号或块状字面量，逐字回读。曾对引号/反斜杠一律 Err 拒绝，合法文案
+///   （如引用用户原话）被迫改写措辞——limits-audit 后 Set 与 Restore 同口径，
+///   互洽校验兜底保证写读一致；仅控制字符（含换行）仍拒绝（生产 Set 流的
+///   `validate_display_meta` 已先行同口径拒绝，这里保留防线）；
 /// - 替换机制/结构守卫见 [`replace_top_level_description`]（frontmatter 边界取
 ///   **前两个 `---`**，与引擎一致；区间内第二个 `description:` 结构性拒绝）。
 fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<String, String> {
@@ -2260,20 +2255,8 @@ fn rewrite_frontmatter_description(content: &str, description: &str) -> Result<S
     if v.chars().any(|c| c.is_control()) {
         return Err("说明含控制字符/换行，无法写入单行 frontmatter".to_string());
     }
-    if v.contains('"') || v.contains('\\') {
-        return Err(
-            "说明含双引号或反斜杠：单技能包的说明会同步写入 SKILL.md，这类字符无法安全同步，请改用其他表述".to_string(),
-        );
-    }
-    if v.starts_with('\'') || v.ends_with('\'') {
-        return Err("说明首尾的单引号会在同步写入 SKILL.md 时丢失，请去掉后再保存".to_string());
-    }
-    let new_line = if yaml_plain_needs_quotes(v) {
-        format!("description: \"{v}\"")
-    } else {
-        format!("description: {v}")
-    };
-    replace_top_level_description(content, &[new_line], v)
+    let new_lines = render_description_lines_lossless(v)?;
+    replace_top_level_description(content, &new_lines, v)
 }
 
 /// 清覆盖恢复专用：把备份的引擎口径**原值**无损渲染成 frontmatter 行。与 Set
@@ -5005,28 +4988,38 @@ mod tests {
         assert_eq!(no_name, "---\ndescription: 补充描述\nversion: 1\n---\n");
     }
 
-    /// YAML plain scalar 不安全的值整体双引号包裹（值内无 "/\\ 时两种读法同值）。
+    /// YAML plain scalar 不安全的值不能裸写：Set 路径复用无损渲染器后，不便
+    /// plain 的单行值（无引号/反斜杠/换行）整体单引号包裹，读端剥引号即得原值。
     #[test]
     fn rewrite_description_quotes_yaml_unsafe_values() {
         for v in ["true", "123", "含: 冒号", "|开头"] {
             let out = rewrite_frontmatter_description("---\nname: x\n---\n", v).unwrap();
             assert!(
-                out.contains(&format!("description: \"{v}\"")),
-                "{v} 应被双引号包裹: {out}"
+                out.contains(&format!("description: '{v}'")),
+                "{v} 应被单引号包裹: {out}"
             );
             assert_eq!(read_skill_description_from_str(&out).as_deref(), Some(v));
         }
     }
 
-    /// 不互洽的值拒绝回写：换行/控制字符、双引号、反斜杠、首尾单引号。
+    /// 互洽口径：含双引号/反斜杠/首尾单引号的值不再拒绝（曾一律 Err，合法文案
+    /// 被迫改写措辞）——Set 路径复用 Restore 的无损渲染器，回写后镜像读取器
+    /// 必须逐字读回。换行/控制字符仍拒绝（生产流 `validate_display_meta` 同口径
+    /// 先行拒绝）；畸形 frontmatter（缺 opening/closing ---）也拒绝。
     #[test]
-    fn rewrite_description_rejects_non_roundtrippable_values() {
-        for v in ["含\n换行", "含\"双引号", "含\\反斜杠", "'首尾单引号'"] {
-            assert!(
-                rewrite_frontmatter_description("---\nname: x\n---\n", v).is_err(),
-                "{v:?} 应拒绝回写"
+    fn rewrite_description_roundtrips_quoted_values_losslessly() {
+        for v in ["含\"双引号", "含\\反斜杠", "'首尾单引号'"] {
+            let out = rewrite_frontmatter_description("---\nname: x\n---\n", v)
+                .unwrap_or_else(|e| panic!("{v:?} 应无损回写: {e}"));
+            assert_eq!(
+                read_skill_description_from_str(&out).as_deref(),
+                Some(v),
+                "{v:?} 写完必须逐字读回: {out}"
             );
         }
+        // 换行/控制字符仍拒绝
+        assert!(rewrite_frontmatter_description("---\nname: x\n---\n", "含\n换行").is_err());
+        assert!(rewrite_frontmatter_description("---\nname: x\n---\n", "带\u{7}控制符").is_err());
         // 畸形 frontmatter（缺 opening/closing ---）也拒绝
         assert!(rewrite_frontmatter_description("no frontmatter", "x").is_err());
         assert!(rewrite_frontmatter_description("---\nname: x\n", "x").is_err());
@@ -5437,9 +5430,10 @@ mod tests {
         }
     }
 
-    /// Set 路径的顺序契约：值含双引号（rewrite 必拒）时**先**校验后备份——
+    /// Set 路径的顺序契约：值非法（控制字符，门禁必拒）时**先**校验后备份——
     /// 命令 Err 且 extra 不落任何 key、SKILL.md 字节不变（不留下「报错但
-    /// 备份 key 已持久化」的中间态）。
+    /// 备份 key 已持久化」的中间态）。曾用双引号值触发（rewrite 拒引号），
+    /// 引号值经无损渲染器回写后改用仍被拒绝的控制字符触发同一顺序路径。
     #[test]
     fn set_description_rejected_before_backup_write() {
         let tmp = fresh_dir("set_quote_reject");
@@ -5462,9 +5456,9 @@ mod tests {
             .unwrap();
 
         let err = mgr
-            .update_display_meta("q-skill", Some("新名"), Some("带\"引号\"的说明"))
+            .update_display_meta("q-skill", Some("新名"), Some("带\u{7}控制符的说明"))
             .unwrap_err();
-        assert!(err.contains("双引号"), "{err}");
+        assert!(err.contains("控制字符"), "{err}");
         assert!(
             store.skill_desc_backup("q-skill").unwrap().is_none(),
             "校验失败的 Set 不得落备份 key"
@@ -5474,6 +5468,30 @@ mod tests {
             original,
             "校验失败的 Set 不得动 SKILL.md"
         );
+
+        // 引号值不再被拒：无损回写 + 逐字回读 + 原值备份，随后清空恢复原值。
+        let value = "带\"引号\"与\\反斜杠的说明";
+        mgr.update_display_meta("q-skill", Some("新名"), Some(value))
+            .unwrap_or_else(|e| panic!("引号说明应无损回写: {e}"));
+        assert_eq!(
+            store.skill_desc_backup("q-skill").unwrap().as_deref(),
+            Some("原描述"),
+            "首次回写前应备份引擎口径原值"
+        );
+        let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert_eq!(
+            read_skill_description_from_str(&md).as_deref(),
+            Some(value),
+            "引号说明必须逐字读回: {md}"
+        );
+        mgr.update_display_meta("q-skill", None, Some("  ")).unwrap();
+        let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert_eq!(
+            read_skill_description_from_str(&md).as_deref(),
+            Some("原描述"),
+            "清空后恢复备份原值: {md}"
+        );
+        assert!(store.skill_desc_backup("q-skill").unwrap().is_none());
     }
 
     /// 无损恢复渲染器单测：单行安全值写 plain、多行/含引号值写块状字面量，
