@@ -9,8 +9,10 @@
 
   let activePicker = null;
 
-  // 文案单一来源是 shared/i18n.js 的 uiPlatformMisc.hostFilePicker,由 React 入口
-  // 按当前语言挂到 window.PinvouHostFilePickerStrings;此处保留中文兜底(纯脚本无法 import ES module)。
+  // The single source for this copy is uiPlatformMisc.hostFilePicker in
+  // shared/i18n.js; the React entry attaches it to
+  // window.PinvouHostFilePickerStrings in the active language. These Chinese
+  // strings remain only as a fallback (a plain script cannot import ES modules).
   const FALLBACK_LABELS = {
     pickFolderTitle: "选择桌面端文件夹", pickFileTitle: "选择桌面端文件",
     close: "关闭", goUp: "上一级", loadingPath: "正在读取桌面端目录…", loading: "正在读取…",
@@ -254,9 +256,10 @@
         if (code === "host_workspace_not_authorized" || message === "host_workspace_not_authorized") {
           return labels.workspaceNotAuthorized;
         }
-        // Round-22 复审:round-21 起本命令的枚举/铸造两条腿都折叠成稳定
-        // wire code(原始链只落桌面日志),选择器必须把该码映射为可读
-        // 文案,否则面板会把裸代码字符串直接渲染出来。
+        // Round-22 review: since round-21, both legs of this command (enum/
+        // mint) fold into a stable wire code (the original chain only lands in
+        // desktop logs), so the picker must map that code to readable copy,
+        // or the panel would render the bare code string directly.
         if (code === "web_session_list_host_files_failed"
           || message === "web_session_list_host_files_failed") {
           return labels.listingFailed;

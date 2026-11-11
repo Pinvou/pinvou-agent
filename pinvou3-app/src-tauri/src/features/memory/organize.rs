@@ -311,9 +311,10 @@ pub async fn organize_memory_with_llm(
 /// write the completion diagnostic.
 pub(super) fn finish_organize_report(report: &mut MemoryOrganizeReport) {
     if let Err(error) = persist_organize_report(report) {
-        // Round-15 复审 minor:report.warnings 随 organize_memory 载荷与
-        // 历史查询出站(Web 允许清单内),与其他 memory 警告同口径折叠
-        // 存储根;desktop 日志保留原始明细。
+        // Round-15 review minor: report.warnings rides the organize_memory
+        // payload and the history query outbound (both on the Web allowlist),
+        // so it folds the storage root under the same convention as other
+        // memory warnings; the desktop log keeps the raw detail.
         let raw = format!("persist organize history: {error}");
         eprintln!("[memory] {raw}");
         let detail = crate::platform::paths::redact_storage_prefix(&raw);
@@ -354,11 +355,14 @@ pub fn load_organize_history() -> Vec<MemoryOrganizeReport> {
         .into_iter()
         .filter_map(|value| serde_json::from_value::<MemoryOrganizeReport>(value).ok())
         .map(|mut report| {
-            // Round-16 follow-up 复审(M3):创建侧折叠(apply 阶段六臂 +
-            // persist 警告)只管本 PR 之后入库的条目;历史文件里更早的条目
-            // (≤ ORGANIZE_HISTORY_MAX_REPORTS,自然轮转淘汰)warnings 仍带
-            // 原始存储根绝对路径,而本查询出站(Web 允许清单内)。读路径统
-            // 一补折叠:redact 幂等,已折叠条目二次折叠为无操作。
+            // Round-16 follow-up review (M3): create-side folding (the six
+            // apply-stage arms plus the persist warning) only covers entries
+            // persisted after this PR; entries already in the history file
+            // (≤ ORGANIZE_HISTORY_MAX_REPORTS, retired by natural rotation)
+            // still carry warnings with the raw absolute storage-root path,
+            // and this query rides outbound (Web allowlist). The read path
+            // adds folding uniformly: redact is idempotent, so re-folding an
+            // already-folded entry is a no-op.
             report.warnings = report
                 .warnings
                 .iter()
@@ -377,10 +381,12 @@ pub(super) fn persist_organize_report(report: &MemoryOrganizeReport) -> std::io:
     let mut history = load_organize_history();
     history.insert(0, report.clone());
     history.truncate(ORGANIZE_HISTORY_MAX_REPORTS);
-    // Round-28 复审 MINOR-5:原子写路径的 io Display 不含路径(裸 OS 文本),
-    // finish_organize_report 的折叠因此对本臂恒为空转。按 read_capped 的
-    // 同一 `{path}: {e}` 口径补上路径上下文,让既有折叠成为有载重的折叠
-    // (desktop eprintln 保留原始明细的行为不变)。
+    // Round-28 review MINOR-5: the atomic-write path's io Display carries no
+    // path (bare OS text), so finish_organize_report's folding was always a
+    // no-op for this arm. Add path context under the same `{path}: {e}`
+    // convention as read_capped, turning the existing fold into one that
+    // carries weight (the desktop eprintln keeping the raw detail is
+    // unchanged).
     let history_path = io::organize_history_path();
     write_json_atomic(&history_path, &history).map_err(|error| {
         std::io::Error::new(error.kind(), format!("{}: {error}", history_path.display()))
@@ -663,8 +669,8 @@ pub(super) fn validate_organize_action(
     // items that expire or get archived after this snapshot — the io update
     // entry points reset status/last_hit to active/now, and honoring the patch
     // would revive a just-archived item for a whole window at its original
-    // ttl_days, contradicting prompt rule 6 (「保持原有过期设置」, "keep the
-    // original expiry setting").
+    // ttl_days, contradicting prompt rule 6 ("keep the original expiry
+    // setting").
     if op != "delete" && matches!(kind.as_str(), "current_focus" | "recent_activity") {
         let not_active = targets
             .iter()
@@ -912,15 +918,20 @@ fn apply_organize_actions(
         Err(error) => {
             // Without the fresh views no action can be verified against the
             // current store: apply nothing rather than trusting the snapshot.
-            // Round-16 复审(M5):io 错误的 Display 携带绝对存储路径
-            // (bounded-read 原语的错误即 path.display()),随 report 载荷
-            // 与历史查询出站(Web 允许清单内)前必须折叠存储根——本函数
-            // 六个 error 警告臂同口径,与 finish_organize_report 一致。
-            // (Round-19 复审订正:「Display 携带路径」今天对六臂中的四
-            // 臂成立;update 与 merge-update 两臂的错误被 anyhow
-            // `.context` 包过,Display 只渲染最外层 context 文本,路径
-            // 不浮到字面——折叠在其上是纯防御性冗余。两臂保留折叠:裸
-            // io 臂的路径确实会浮出,且新臂落进同形态时无需逐一甄别。)
+            // Round-16 review (M5): the io error's Display carries the
+            // absolute storage path (the bounded-read primitive's error is
+            // path.display()), so the storage root must be folded before it
+            // rides the report payload and the history query outbound (Web
+            // allowlist) — the same convention as this function's six error
+            // warning arms and finish_organize_report.
+            // (Round-19 review correction: "the Display carries the path"
+            // holds today for four of the six arms; the errors of the update
+            // and merge-update arms are wrapped by anyhow `.context`, whose
+            // Display renders only the outermost context text, so the path
+            // never surfaces literally — folding there is purely defensive
+            // redundancy. Those two arms keep the fold: the bare io arm's
+            // path does surface, and a new arm falling into the same shape
+            // needs no case-by-case triage.)
             warnings.push(format!(
                 "organize: reload stores before applying actions: {}; no action applied",
                 crate::platform::paths::redact_storage_prefix(&error.to_string()),

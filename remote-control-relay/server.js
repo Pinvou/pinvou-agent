@@ -40,15 +40,20 @@ const MAX_PAYLOAD_BYTES = boundedInteger(
 // desktop could produce while still rejecting unbounded-depth frames before
 // JSON.parse, which alone would accept them.
 const MAX_WIRE_NESTING_DEPTH = 128;
-// Round-15 复审:桌面侧 tungstenite 的入站上限是协议文档的 4 MiB−64 KiB。
-// Web→desktop 转发会在载荷外再包一层(endpoint_id + lease_id + v),恰好
-// 4 MiB 的 web 帧此前被 ingress 放行、转发后超桌面界限,触发桌面强制断
-// 线重连(自愈但会闪断)。ingress 不动(上限语义不变)。
-// Round-17 复审修正:门量的是转发编码的实际字节数,不是 ingress 字节数
-// ——JSON 再序列化会膨胀数字字面量(4 字节的 `1e20` 重序列化为 21 位
-// 精确十进制),raw+固定余量的近似拦不住这种帧;现在转发前编码一次,
-// 按真实编码长度拒绝(超限回显明确的 frame_too_large,而非让桌面在界
-// 限上撞死),命中的同一编码串直接交给桌面,量即所发。
+// Round-15 review: the desktop-side tungstenite inbound bound is the protocol
+// doc's 4 MiB−64 KiB. Web→desktop forwarding wraps the payload in one more
+// envelope (endpoint_id + lease_id + v), so a 4 MiB web frame used to pass the
+// ingress bound and then exceed the desktop bound after forwarding, forcing
+// the desktop to drop and reconnect (self-healing but a visible flash). The
+// ingress bound is untouched (its semantics stay unchanged).
+// Round-17 review correction: the gate measures the actual bytes of the
+// forwarded encoding, not the ingress bytes — JSON re-serialization inflates
+// numeric literals (the 4-byte `1e20` re-serializes as a 21-digit exact
+// decimal), which a raw-plus-fixed-headroom approximation cannot catch. The
+// frame is now encoded once before forwarding and rejected by its real encoded
+// length (an over-limit frame gets an explicit frame_too_large echo instead of
+// letting the desktop crash into the bound), and the exact encoded string that
+// fits is handed to the desktop — what is measured is what is sent.
 const DESKTOP_MAX_FRAME_BYTES = 4 * MIB - 64 * 1024;
 const MAX_ENDPOINTS = boundedInteger(
   process.env.MAX_ENDPOINTS ?? process.env.MAX_ROOMS,
@@ -265,8 +270,9 @@ try {
   }
 } catch {}
 
-/// 终结单个目的地 socket 的四步清理,send() 的全部终止路径共用:
-/// stringify 失败 / 高水位 / send 回调错误 / send 同步抛错。
+/// Four-step teardown for a single destination socket, shared by every
+/// termination path of send(): stringify failure / high-water mark / send
+/// callback error / send throwing synchronously.
 function terminateDestination(ws) {
   ws.policyClosing = true;
   clearTimeout(ws.authTimer);
@@ -308,8 +314,9 @@ function sendEncoded(ws, encoded, bytes) {
     });
     return true;
   } catch {
-    // 与其余三条终结路径同口径清理 authTimer:close 处理器会兜底,
-    // 但这里先行清理保持四条路径完全一致。
+    // Clear authTimer the same way as the other three termination paths: the
+    // close handler would cover it, but clearing here first keeps all four
+    // paths exactly identical.
     terminateDestination(ws);
     return false;
   }
@@ -1382,13 +1389,17 @@ function forwardAuthenticatedMessage(ws, msg) {
       });
       return;
     }
-    // Round-15 复审:桌面入站界只约束 web→desktop 方向(桌面→web 的接收
-    // 方——浏览器——没有对应上限),门只挂在 web 转发臂;未认证帧走各自
-    // 的握手/限流路径。Round-17 复审修正:量转发编码的真实字节数——JSON
-    // 再序列化会膨胀数字字面量(如 1e20),raw 字节数只是下界近似。编码
-    // 一次,超界回 frame_too_large 并只丢该帧;命中边界的同一编码串直接
-    // 交给桌面(量即所发)。encodeFrame 对 JSON.parse 产物实际不可抛,
-    // catch 仅防御性保持双端存活。
+    // Round-15 review: the desktop inbound bound only constrains the
+    // web→desktop direction (the desktop→web receiver — the browser — has no
+    // matching bound), so the gate hangs only on the web forwarding arm;
+    // unauthenticated frames follow their own handshake/rate-limit paths.
+    // Round-17 review correction: measure the real bytes of the forwarded
+    // encoding — JSON re-serialization inflates numeric literals (e.g. 1e20),
+    // so raw bytes are only a lower-bound approximation. Encode once; over the
+    // bound, answer frame_too_large and drop only that frame; the exact
+    // encoded string that fits is handed to the desktop (what is measured is
+    // what is sent). encodeFrame cannot actually throw on JSON.parse output;
+    // the catch is purely defensive, keeping both ends alive.
     let forwardEncoded;
     let forwardBytes;
     try {
@@ -1399,13 +1410,19 @@ function forwardAuthenticatedMessage(ws, msg) {
         lease_id: endpoint.lease_id,
       }));
     } catch (error) {
-      // Round-20 复审(S08):防御路径此前静默——与其它运行时错误同一
-      // [relay-error] 纪律补一行固定前缀日志(该路径今日不可达,一旦
-      // 触发必须能在日志/健康计数侧看见)。Round-21 复审:改为固定词表
-      // token,不插值 error.message——encodeFrame 对 JSON.parse 产物不可
-      // 抛(throwing getter/BigInt/循环引用均造不出),但 frame.js 的复
-      // 用面不排除非 parse 数据;V8 循环结构错误的文案会内嵌用户属性名,
-      // 固定 token 让本行在结构上免于日志伪造(与 :1471/:1335 同款)。
+      // Round-20 review (S08): this defensive path used to be silent — add one
+      // fixed-prefix log line under the same [relay-error] discipline as other
+      // runtime errors (the path is unreachable today, but if it ever fires it
+      // must be visible in the log; PROTOCOL.md documents exactly this log
+      // line — there is deliberately no dedicated healthz counter, the
+      // existing receiverErrorTerminations counter family is untouched).
+      // Round-21 review: switch to a fixed vocabulary token, no error.message
+      // interpolation — encodeFrame cannot throw on JSON.parse output
+      // (throwing getters/BigInt/cyclic references cannot produce one), but
+      // frame.js is reused elsewhere and non-parse data cannot be ruled out;
+      // V8's circular-structure error text embeds user property names, so a
+      // fixed token keeps this line structurally immune to log forging (same
+      // pattern as :1471/:1335).
       console.error("[relay-error] forward_reencode_refused");
       send(ws, {
         v: 2,
@@ -1487,9 +1504,11 @@ wss.on("connection", (ws, req) => {
   // (round-11 review).
   ws.on("error", (error) => {
     relayStats.receiverErrorTerminations += 1;
-    // Round-22 复审:按 code 记录(与上方 protocol-violation 臂同一
-    // 固定 token 口径),不插值 error.message——ws Receiver 错误文案
-    // 今日虽是固定英文+数字,固定 code 让该纪律不再依赖这一前提。
+    // Round-22 review: log by code (same fixed-token posture as the
+    // protocol-violation arm above), no error.message interpolation — ws
+    // Receiver error text happens to be fixed English plus numbers today, but
+    // logging the fixed code stops this discipline from depending on that
+    // premise.
     console.error(
       `[relay] receiver error on ${ws.role || "unknown"} socket: code=${error && error.code ? error.code : "unknown"}`,
     );
@@ -1498,8 +1517,7 @@ wss.on("connection", (ws, req) => {
 
   ws.on("message", (raw, isBinary) => {
     if (ws.policyClosing || ws.revokePending) return;
-    const rawBytes = rawMessageBytes(raw);
-    if (!consumeIngress(ws, rawBytes)) {
+    if (!consumeIngress(ws, rawMessageBytes(raw))) {
       rejectSocket(ws, "ingress_rate_limited", "websocket ingress rate limit exceeded");
       return;
     }
@@ -1575,10 +1593,13 @@ wss.on("connection", (ws, req) => {
       const leaseId = endpoint.lease_id;
       endpoint.web = null;
       endpoint.lease_id = null;
-      // rejoin 旗标描述的是「当前在线的 web 会话是接续会话」;该会话已死,
-      // 旗标随之失效。不重置的话,desktop 在无 web 在线时重新注册会收到
-      // web_client_connected:false + web_rejoining:true 的矛盾帧。
-      // 下一次 join 会按 had_web_client 重新计算,不受此处重置影响。
+      // The rejoin flag asserts "the currently online web session is a
+      // continuing session"; that session is dead, so the flag is void.
+      // Without the reset, a desktop re-registering while no web client is
+      // online would receive the contradictory frame
+      // web_client_connected:false + web_rejoining:true.
+      // The next join recomputes from had_web_client and is unaffected by
+      // this reset.
       endpoint.web_rejoined = false;
       send(endpoint.desktop, {
         v: 2,

@@ -453,18 +453,25 @@ async fn run_revocation_loop(
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(value) => {
                                     let terminal = terminal_message(&value, &endpoint_id);
-                                    // Round-12 复审 P3:worker 自身的终止集与
-                                    // 消费方的 ack 集是两个函数,此前仅靠当前
-                                    // 唯一调用点的行为耦合。endpoint_not_found
-                                    // 在 terminal_message 里按「可恢复」折叠为
-                                    // None(注册循环靠 reconnect 自愈),但对
-                                    // 吊销 worker 而言 endpoint 已不存在,吊销
-                                    // 天然完成——未来的 spawn_revocation 调用点
-                                    // 若不消费 Message 帧,会把一次额外重试变
-                                    // 成 12s 超时的无限 connect→revoke 循环。
-                                    // worker 在此处自行把该码判为终态;外来
-                                    // endpoint 的帧仍按 None 忽略(与折叠谓词
-                                    // 同一 scope 口径)。
+                                    // Round-12 review P3: the worker's own
+                                    // terminal set and the consumer's ack set
+                                    // are two functions, previously coupled
+                                    // only by the behavior of the single
+                                    // existing call site. endpoint_not_found
+                                    // folds to None as "recoverable" in
+                                    // terminal_message (the register loop
+                                    // self-heals via reconnect), but for the
+                                    // revocation worker the endpoint no longer
+                                    // exists, so the revocation is naturally
+                                    // complete — a future spawn_revocation
+                                    // call site that did not consume Message
+                                    // frames would turn one extra retry into
+                                    // an infinite 12s-timeout
+                                    // connect→revoke loop. The worker judges
+                                    // that code terminal here itself; frames
+                                    // for foreign endpoints are still ignored
+                                    // as None (same scope convention as the
+                                    // folding predicate).
                                     let scoped_to_self = value
                                         .get("endpoint_id")
                                         .and_then(Value::as_str)
@@ -752,11 +759,15 @@ async fn run_loop(
                                     if registration_acknowledges_endpoint(&value, &config.endpoint_id) {
                                         reconnect_backoff.reset();
                                     }
-                                    // Relay 的注册类 reject 帧不携带(或带空)
-                                    // endpoint_id:补戳本 socket 正在注册的
-                                    // endpoint,让 manager 侧的显式匹配 gate
-                                    // 生效——否则轮换竞态中迟到的终结帧无法与
-                                    // 帧归属区分,可能误伤刚接替的新 endpoint。
+                                    // Relay's registration-class reject frames
+                                    // carry no (or an empty) endpoint_id:
+                                    // re-stamp this socket's in-flight
+                                    // endpoint so the manager-side
+                                    // explicit-match gate takes effect —
+                                    // otherwise a late terminal frame during a
+                                    // rotation race cannot be told apart from
+                                    // frame ownership and may take down the
+                                    // endpoint that just replaced it.
                                     let forwarded =
                                         if stamp_unscoped_registration_error(
                                             &mut value,
@@ -846,46 +857,56 @@ enum RelayTerminal {
     RegisterRejected,
 }
 
-/// 确定性注册拒绝码:同一份持久化配置对它们重试永不可能是成功,run_loop
-/// 必须带原因停下。manager 侧的 `TERMINAL_REGISTRATION_ERROR_CODES` 与本
-/// 清单的对齐(双向)由测试 `terminal_registration_code_lists_stay_aligned`
-/// 钉住——清单漂移时 run_loop 无事件返回、UI 静默冻结在 Connecting,比被
-/// 修复的 Error↔Connecting 翻转更糟。
+/// Deterministic registration-rejection codes: retrying with the same
+/// persisted config can never succeed against them, so run_loop must stop
+/// with a reason. Alignment between the manager-side
+/// `TERMINAL_REGISTRATION_ERROR_CODES` and this list (both directions) is
+/// pinned by the test `terminal_registration_code_lists_stay_aligned` — if
+/// the lists drift, run_loop returns no events and the UI silently freezes
+/// on Connecting, which is worse than the flapping this fixes.
 pub(crate) const REGISTER_REJECTED_ERROR_CODES: &[&str] = &[
     "invalid_access_token",
     "invalid_desktop_secret",
     "bad_desktop_endpoint_register",
-    // 协议版本不匹配对给定构建对同样是确定的(提示更新桌面端)。
+    // A protocol-version mismatch is equally deterministic for a given build
+    // pair (it means "update the desktop app").
     "unsupported_protocol_version",
 ];
 
 fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
     let message_endpoint = value.get("endpoint_id").and_then(Value::as_str);
     if value.get("type").and_then(Value::as_str) == Some("error") {
-        // Round-5 复审 M6:空串 scope 与缺失同等对待(与下方补戳谓词同一
-        // 口径)。此前分类在补戳之前运行、把空串当「外来 endpoint」,补戳
-        // 谓词却把空串当「未打scope 的本端帧」——同一文件里两个谓词互相
-        // 矛盾,发来 `endpoint_id:""` 拒绝帧的 relay 会让本端显示 Error
-        // 却不终结循环,永远 Error↔Connecting 翻转。
+        // Round-5 review M6: an empty-string scope is treated the same as a
+        // missing one (same convention as the re-stamp predicate below). The
+        // classification used to run before re-stamping and treat the empty
+        // string as a "foreign endpoint" while the re-stamp predicate treats
+        // it as "our own frame without scope" — the two predicates in one
+        // file contradicted each other, and a relay sending reject frames
+        // with `endpoint_id:""` made this side show Error without ending the
+        // loop, flapping Error↔Connecting forever.
         if !message_endpoint.is_none_or(|value| value.is_empty() || value == endpoint_id) {
             return None;
         }
         let code = value.get("code").and_then(Value::as_str);
-        // endpoint_not_found 是可恢复的:relay 丢失了该 endpoint 的内存状态
-        // (进程重启/TTL 清理),重连后的 register 会用同一 endpoint_id 与凭据
-        // 重建它,按普通断开走重连自愈;永久停止只会让 UI 静默冻结(且 reject
-        // 帧不带 endpoint_id,manager 入口本就丢弃,连原因都看不到)。
+        // endpoint_not_found is recoverable: the relay lost its in-memory
+        // state for the endpoint (process restart/TTL cleanup); after
+        // reconnecting, register rebuilds it with the same endpoint_id and
+        // credentials, so it self-heals as an ordinary disconnect; stopping
+        // permanently would only silently freeze the UI (and reject frames
+        // carry no endpoint_id, so the manager entry drops them anyway —
+        // not even the reason is visible).
         return if code == Some("endpoint_not_found") {
             None
         } else if code == Some("endpoint_revoked") {
-            // 墓碑化 endpoint 的注册重试:与 desktop_endpoint_revoked 等价。
+            // Register retry against a tombstoned endpoint: equivalent to
+            // desktop_endpoint_revoked.
             Some(RelayTerminal::Revoked)
         } else if code.is_some_and(|code| REGISTER_REJECTED_ERROR_CODES.contains(&code)) {
             Some(RelayTerminal::RegisterRejected)
         } else {
-            // 瞬时拒绝(endpoint_capacity_reached、
-            // endpoint_creation_rate_limited、authentication_timeout 等)
-            // 保持既有重连行为。
+            // Transient rejections (endpoint_capacity_reached,
+            // endpoint_creation_rate_limited, authentication_timeout, etc.)
+            // keep the existing reconnect behavior.
             None
         };
     }
@@ -913,11 +934,14 @@ pub(crate) fn terminal_relay_message(value: &Value, endpoint_id: &str) -> bool {
         && value
             .get("endpoint_id")
             .and_then(Value::as_str)
-            // Round-6 复审:空串 scope 与缺失同口径(本模块 M6 不变量的
-            // 第三处折叠此前漏了这一处——Some("") 会被当成「带 scope 的
-            // 他端帧」落到 terminal_message 的可恢复分类,探针帧收不到
-            // ack,持久化条目滞留)。方向是 fail-safe 的,但口径必须
-            // 一致;外端 id 仍不折叠。
+            // Round-6 review: an empty-string scope is treated the same as a
+            // missing one (the third fold of this module's M6 invariant
+            // previously missed this spot — Some("") would have been treated
+            // as a "scoped foreign frame", falling into terminal_message's
+            // recoverable classification, so the probe frame never got an
+            // ack and the persisted entry lingered). The direction is
+            // fail-safe, but the convention must be consistent; a foreign id
+            // still does not fold.
             .is_none_or(|framed| framed.is_empty() || framed == endpoint_id)
     {
         // The endpoint is already absent: the pending revocation is
@@ -933,10 +957,13 @@ pub(crate) fn terminal_relay_message(value: &Value, endpoint_id: &str) -> bool {
     )
 }
 
-/// 注册类终结 error 帧(reject 帧不携带 endpoint_id)且尚未带 scope:这些帧
-/// 在转发给 manager 前补戳本 socket 的 endpoint_id,让显式匹配 gate 生效。
-/// 空串与缺失同等对待——显式匹配 gate 不得把空 id 当作「当前 endpoint」,
-/// 否则轮换竞态中迟到的终结帧仍会误伤刚接替的新 endpoint。
+/// Registration-class terminal error frames (reject frames carry no
+/// endpoint_id) that do not yet carry a scope: before being forwarded to the
+/// manager these frames are re-stamped with this socket's endpoint_id so the
+/// explicit-match gate takes effect. Empty string and missing are treated
+/// alike — the explicit-match gate must not treat an empty id as "the
+/// current endpoint", or a late terminal frame in a rotation race would
+/// still take down the endpoint that just replaced it.
 fn registration_error_without_scope(value: &Value) -> bool {
     value.get("type").and_then(Value::as_str) == Some("error")
         && value
@@ -951,9 +978,9 @@ fn registration_error_without_scope(value: &Value) -> bool {
             })
 }
 
-/// 转发前的补戳(检测 + 写入一体,循环与测试共同消费):命中
-/// [`registration_error_without_scope`] 的帧补上本 socket 的 endpoint_id。
-/// 返回是否补戳。
+/// Pre-forward re-stamp (detection + write in one; consumed by both the loop
+/// and the tests): frames matching [`registration_error_without_scope`] get
+/// this socket's endpoint_id added. Returns whether a stamp was applied.
 fn stamp_unscoped_registration_error(value: &mut Value, endpoint_id: &str) -> bool {
     if !registration_error_without_scope(value) {
         return false;
@@ -1321,8 +1348,9 @@ mod tests {
         let websocket = relay_websocket_config();
         assert_eq!(websocket.max_message_size, Some(MAX_INBOUND_TEXT_BYTES));
         assert_eq!(websocket.max_frame_size, Some(MAX_INBOUND_TEXT_BYTES));
-        // PROTOCOL.md: MAX_PAYLOAD_BYTES >= 4 MiB,桌面帧上限 4 MiB - 64 KiB。
-        // 入站上限必须能容纳桌面自己允许发出的最大帧。
+        // PROTOCOL.md: MAX_PAYLOAD_BYTES >= 4 MiB; the desktop frame cap is
+        // 4 MiB - 64 KiB. The inbound cap must accommodate the largest frame
+        // the desktop itself is allowed to send.
         assert_eq!(MAX_INBOUND_TEXT_BYTES, MAX_RELAY_FRAME_BYTES);
         assert_eq!(MAX_INBOUND_TEXT_BYTES, 4 * 1024 * 1024 - 64 * 1024);
 
@@ -1353,8 +1381,10 @@ mod tests {
             Some(RelayTerminal::Replaced)
         );
         assert_eq!(
-            // endpoint_not_found 可恢复:重连后 register 重建 endpoint,
-            // 不终结连接(否则 UI 静默冻结且 manager 拿不到任何原因)。
+            // endpoint_not_found is recoverable: register rebuilds the
+            // endpoint after reconnecting, without ending the connection
+            // (otherwise the UI silently freezes and the manager never
+            // learns any reason).
             terminal_message(
                 &json!({
                     "type": "error",
@@ -1364,8 +1394,9 @@ mod tests {
             ),
             None
         );
-        // 终结判定只对已注册 endpoint 生效:他端点消息不得终结本连接
-        // (原 terminal_messages_are_scoped_to_the_registered_endpoint)。
+        // The terminal judgment applies only to the registered endpoint:
+        // another endpoint's message must not end this connection
+        // (originally terminal_messages_are_scoped_to_the_registered_endpoint).
         assert_eq!(
             terminal_message(
                 &json!({
@@ -1380,7 +1411,8 @@ mod tests {
 
     #[test]
     fn registration_rejections_are_terminal_but_transient_errors_keep_reconnecting() {
-        // 墓碑化 endpoint:同一凭据重试必然同样失败,必须停止重连。
+        // Tombstoned endpoint: retrying with the same credentials must fail
+        // the same way, so reconnecting must stop.
         assert_eq!(
             terminal_message(
                 &json!({
@@ -1392,13 +1424,15 @@ mod tests {
             ),
             Some(RelayTerminal::Revoked)
         );
-        // 凭据被确定性拒绝:停止重连,manager 停在带具体原因的 Error 状态,
-        // 而不是每 ~10s 在 Error↔Connecting 之间翻转。
+        // Credentials deterministically rejected: stop reconnecting, leaving
+        // the manager parked in an Error state with a concrete reason instead
+        // of flapping between Error↔Connecting every ~10s.
         for code in [
             "invalid_access_token",
             "invalid_desktop_secret",
             "bad_desktop_endpoint_register",
-            // 协议版本不匹配对给定构建对同样是确定的。
+            // A protocol-version mismatch is equally deterministic for a
+            // given build pair.
             "unsupported_protocol_version",
         ] {
             assert_eq!(
@@ -1407,7 +1441,7 @@ mod tests {
                 "{code} must stop the reconnect loop"
             );
         }
-        // 瞬时错误(容量/限流/认证超时)仍然重连。
+        // Transient errors (capacity/rate limit/auth timeout) still reconnect.
         for code in [
             "endpoint_capacity_reached",
             "endpoint_creation_rate_limited",
@@ -1419,7 +1453,8 @@ mod tests {
                 "{code} must keep reconnecting"
             );
         }
-        // 拒绝帧不携带 endpoint_id 时才默认命中本连接;带他端点 id 的不终结。
+        // Only a reject frame with no endpoint_id defaults to hitting this
+        // connection; one naming a foreign endpoint does not end it.
         assert_eq!(
             terminal_message(
                 &json!({
@@ -1431,19 +1466,24 @@ mod tests {
             ),
             None
         );
-        // 撤销回放的布尔视图只认可「endpoint 确认消失/被顶替」的终结;
-        // 凭据拒绝不能让回放把持久撤销条目当作已确认删掉。
+        // The revocation replay's boolean view only accepts terminal outcomes
+        // that prove "the endpoint is confirmed gone/displaced"; a credential
+        // rejection must not let the replay delete a durable revocation entry
+        // as if confirmed.
         assert!(terminal_relay_message(
             &json!({ "type": "error", "code": "endpoint_revoked" }),
             "ep_1"
         ));
-        // endpoint 不存在同样等价于吊销已确认。
+        // A missing endpoint is equally equivalent to the revocation being
+        // confirmed.
         assert!(terminal_relay_message(
             &json!({ "type": "error", "code": "endpoint_not_found" }),
             "ep_1"
         ));
-        // Round-6 复审:空串 scope 与缺失同口径——探针帧的第三处折叠此前
-        // 漏了这一处,Some("") 会被当成带 scope 的他端帧,ack 不落地。
+        // Round-6 review: an empty-string scope is treated the same as a
+        // missing one — the probe frame's third fold previously missed this
+        // spot, so Some("") was treated as a scoped foreign frame and the
+        // ack never landed.
         assert!(terminal_relay_message(
             &json!({ "type": "error", "code": "endpoint_not_found", "endpoint_id": "" }),
             "ep_1"
@@ -1458,12 +1498,16 @@ mod tests {
         ));
     }
 
-    /// 接线钉(双向):manager 的注册终结清单与本模块 `terminal_message` 的
-    /// RegisterRejected/Revoked 分类必须互相覆盖——REGISTER 清单里的每个码
-    /// 都必须在 manager 清单,manager 清单里的每个码都必须终结;
-    /// 无 scope 的注册类终结帧会被 run_loop 补戳本 socket 的 endpoint_id;
-    /// 已带 scope 的帧必须原样放行,空串 scope 与缺失同等对待(补戳),
-    /// 非注册类错误码不得误戳;补戳写入的是本 socket 的 endpoint。
+    /// Wiring pin (both directions): the manager's registration-terminal list
+    /// and this module's `terminal_message` RegisterRejected/Revoked
+    /// classification must cover each other — every code in the REGISTER list
+    /// must be in the manager list, and every code in the manager list must
+    /// be terminal; unscoped registration-class terminal frames get
+    /// re-stamped by run_loop with this socket's endpoint_id; frames already
+    /// carrying a scope must pass through verbatim, an empty-string scope is
+    /// treated like a missing one (re-stamped), non-registration error codes
+    /// must not be stamped by mistake; the stamp writes this socket's
+    /// endpoint.
     #[test]
     fn unscoped_registration_errors_are_detected_for_stamping() {
         assert!(registration_error_without_scope(&json!({
@@ -1488,10 +1532,13 @@ mod tests {
             "type": "desktop_endpoint_revoked",
             "code": "endpoint_revoked"
         })));
-        // Round-6 复审:测试文档声称「非注册类错误码不得误戳」——瞬时类
-        // (容量/限流)的未带 scope 错误帧必须原样放行;补戳会让 manager 把
-        // 每次瞬时拒绝记成粘性 Error,在容量挤压期来回翻转,恰是本 PR 要
-        // 消灭的抖动类。删除谓词中的码白名单即红。
+        // Round-6 review: the test doc claims "non-registration error codes
+        // must not be stamped by mistake" — unscoped transient-class
+        // (capacity/rate-limit) error frames must pass through verbatim;
+        // stamping would make the manager record every transient rejection as
+        // a sticky Error, flapping back and forth during capacity squeeze —
+        // exactly the jitter class this PR set out to eliminate. Removing the
+        // code allowlist from the predicate turns this red.
         for transient in [
             "endpoint_capacity_reached",
             "endpoint_creation_rate_limited",
@@ -1505,10 +1552,12 @@ mod tests {
             );
         }
 
-        // Round-5 复审 M6:空串 scope 的注册拒绝帧在终结分类里视同本端——
-        // 与补戳谓词(上方断言)同一口径。删除 terminal_message 的空串折叠
-        // 后,这些帧被分类为「外来 endpoint」,循环不终结,UI 永远在
-        // Error↔Connecting 之间翻转,本钉变红。
+        // Round-5 review M6: registration reject frames with an empty-string
+        // scope count as ours in the terminal classification — same
+        // convention as the re-stamp predicate (assertions above). If the
+        // empty-string fold is removed from terminal_message, these frames
+        // are classified as a "foreign endpoint", the loop does not end, the
+        // UI flaps between Error↔Connecting forever, and this pin turns red.
         for code in [
             "endpoint_revoked",
             "invalid_access_token",
@@ -1522,7 +1571,8 @@ mod tests {
                 "an empty-scope {code} error must classify terminal for this endpoint"
             );
         }
-        // 非 error 类通知(桌面侧事件)总是携带显式 id:空串仍不算本端。
+        // Non-error notices (desktop-side events) always carry an explicit
+        // id: an empty string still does not count as ours.
         assert_eq!(
             terminal_message(
                 &json!({ "type": "desktop_endpoint_revoked", "endpoint_id": "" }),
@@ -1531,7 +1581,8 @@ mod tests {
             None,
             "an empty-scope notice must not classify terminal"
         );
-        // 外来显式 id 仍然不终结(既有语义不回归)。
+        // A foreign explicit id still does not end the connection (no
+        // regression of the existing semantics).
         assert_eq!(
             terminal_message(
                 &json!({ "type": "error", "code": "endpoint_revoked", "endpoint_id": "ep_other" }),
@@ -1540,7 +1591,8 @@ mod tests {
             None
         );
 
-        // 补戳一体:命中帧被写入本 socket 的 endpoint,未命中帧保持原样。
+        // The stamp is all-in-one: a matching frame gets this socket's
+        // endpoint written, a non-matching frame stays verbatim.
         let mut scoped = json!({
             "type": "error",
             "code": "endpoint_revoked",
@@ -1564,9 +1616,10 @@ mod tests {
         );
     }
 
-    /// `endpoint_not_found` 刻意不在 manager 清单(其 reject 帧不带
-    /// endpoint_id,manager 入口本就丢弃)。清单漂移时 run_loop 无事件返回、
-    /// UI 静默冻结在 Connecting,比被修复的 Error↔Connecting 翻转更糟。
+    /// `endpoint_not_found` is deliberately absent from the manager list (its
+    /// reject frames carry no endpoint_id, and the manager entry drops them
+    /// anyway). If the lists drift, run_loop returns no events and the UI
+    /// silently freezes on Connecting — worse than the flapping this fixes.
     #[test]
     fn terminal_registration_code_lists_stay_aligned() {
         let mut classified_terminal = vec!["endpoint_revoked"];
@@ -1594,17 +1647,23 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-15 复审 MA5):吊销 worker 的终态闸门语义只存在于
-    /// run_revocation_loop 的这一个内联判定——`terminal.is_some()` 单独
-    /// 成闸(把 `|| (scoped_to_self && …endpoint_not_found…)` 腿删掉)会
-    /// 复活注释里预言的 12s 无限 connect→revoke 循环,而
-    /// terminal_message / terminal_relay_message 的单元测试看不见这个
-    /// 调用点,全套件保持绿。钉死双腿合取的原样形态与 endpoint_not_found
-    /// 字面量:删腿、退回单腿、改名任一突变即红。
-    /// Round-25 复审 MAJOR-2:纯注释行先滤除再匹配(与 manager 测试模块
-    /// 的 comment_filtered 同一口径;行尾 // 与块注释内提及仍可掩护)。
+    /// Wiring pin (Round-15 review MA5): the revocation worker's terminal
+    /// gate semantics exist only in this one inline judgment inside
+    /// run_revocation_loop — letting `terminal.is_some()` gate alone
+    /// (deleting the `|| (scoped_to_self && …endpoint_not_found…)` leg)
+    /// resurrects the 12s infinite connect→revoke loop predicted in the
+    /// comment, while the terminal_message / terminal_relay_message unit
+    /// tests cannot see this call site and the whole suite stays green.
+    /// Pins the verbatim shape of the two-leg disjunction and the
+    /// endpoint_not_found literal: deleting a leg, regressing to a single
+    /// leg, or renaming any of them turns red.
+    /// Round-25 review MAJOR-2: pure comment lines are filtered out before
+    /// matching (same convention as the manager test module's
+    /// comment_filtered; a mention in a trailing `//` or inside a block
+    /// comment can still cover).
     fn comment_filtered(source: &str) -> String {
-        // Round-27 复审 m14:过滤原语上收 platform::test_support 共享。
+        // Round-27 review m14: the filter primitive moved up to
+        // platform::test_support as shared code.
         crate::platform::test_support::comment_filtered(source)
     }
 
@@ -1636,10 +1695,12 @@ mod tests {
             "the worker gate must pin its own endpoint_not_found literal; the shared \
              folding predicate classifies it as recoverable for the register loop"
         );
-        // Round-16 follow-up 复审(M5):推导行同属门语义——翻转
-        // is_none_or → is_some_and(仅反义改写)会让外来 endpoint 的
-        // endpoint_not_found 帧重新判为非终态,两条现有断言全绿,12s 循环
-        // 复活。按逐字节形态钉住 none-or 推导。
+        // Round-16 follow-up review (M5): the derivation line is part of the
+        // gate semantics too — flipping is_none_or → is_some_and (a purely
+        // antonymic rewrite) reclassifies a foreign endpoint's
+        // endpoint_not_found frame as non-terminal with both existing
+        // assertions green, resurrecting the 12s loop. Pins the none-or
+        // derivation by its byte-for-byte shape.
         assert!(
             body.contains(".is_none_or(|scope| scope.is_empty() || scope == endpoint_id)"),
             "the scope derivation must stay none-or (missing endpoint_id or an \
@@ -1647,11 +1708,15 @@ mod tests {
              reopens the infinite connect→revoke loop while both gate-leg pins \
              stay green"
         );
-        // Round-18 复审:推导行之外还有两处相邻突变现有断言全绿——(a)删掉
-        // 下游消费(`if worker_terminal { ... return; }`),worker 在终态帧
-        // 上永不终止,12s 循环复活;(b)把消费挪到 tx_in 转发之前,manager
-        // 永远看不到终态帧(worker 静默退场,轮换竞态里的迟到终结帧无法
-        // 与帧归属区分)。按「转发先于消费」的顺序钉住两者。
+        // Round-18 review: besides the derivation line, two adjacent
+        // mutations keep all existing assertions green — (a) deleting the
+        // downstream consumption (`if worker_terminal { ... return; }`)
+        // leaves the worker never terminating on terminal frames,
+        // resurrecting the 12s loop; (b) moving the consumption before the
+        // tx_in forward means the manager never sees the terminal frame (the
+        // worker exits silently, and a late terminal frame in a rotation
+        // race cannot be told apart from frame ownership). Pins both via the
+        // "forward before consume" order.
         let forward = body
             .find("if tx_in.send(RelayInbound::Message(text.to_string())).await.is_err()")
             .expect("the terminal frame must still be forwarded to the manager");
@@ -1665,9 +1730,11 @@ mod tests {
             "the terminal frame must be forwarded to the manager BEFORE the worker \
              terminates; consuming first silently drops the terminal frame"
         );
-        // Round-20 复审(S04):删除消费块内的 `return;`(Close 照发、循环
-        // 继续跑)的突变此前全部断言保持绿——12s connect→revoke 循环复活。
-        // 钉住消费块内必须仍以 return; 终止(取块首右括号前切片)。
+        // Round-20 review (S04): the mutation deleting the `return;` inside
+        // the consumption block (Close still sent, loop keeps running)
+        // previously kept every assertion green — the 12s connect→revoke
+        // loop resurrects. Pins that the consumption block must still end
+        // with return; (slice taken up to the block's first closing brace).
         let consume_slice = &body[consume..];
         let consume_block_end = consume_slice
             .find('}')
@@ -1680,9 +1747,11 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-15 复审 MA5,轻量半):run_loop 的注册类 reject 帧必须
-    /// 先经 stamp_unscoped_registration_error 补戳再转发——删除该调用点后
-    /// 帮助函数单元测试仍绿(manager 的空 id 防线兜底,故降级为轻量钉)。
+    /// Wiring pin (Round-15 review MA5, lightweight half): run_loop's
+    /// registration-class reject frames must go through
+    /// stamp_unscoped_registration_error before forwarding — deleting that
+    /// call site leaves the helper's unit tests green (the manager's empty-id
+    /// defense backstops it, hence only a lightweight pin).
     #[test]
     fn run_loop_stamps_unscoped_registration_errors_before_forwarding() {
         let source = include_str!("relay_client.rs");
@@ -1707,9 +1776,11 @@ mod tests {
              registering before forwarding; deleting the call site makes late terminal \
              frames unattributable to the manager's explicit-match gate"
         );
-        // Round-18 复审:补戳写进 `forwarded` 后,发送臂必须使用补戳后的
-        // 值——把发送回退成裸 `text` 的突变让补戳成为死计算,两处断言
-        // (调用点形态 + 本断言)全绿。按发送实参钉住消费端。
+        // Round-18 review: once the stamp goes into `forwarded`, the send arm
+        // must use the stamped value — a mutation reverting the send to the
+        // raw `text` turns the stamp into a dead computation with both
+        // assertions (call-site shape + this one) green. Pins the consumer
+        // via the send argument.
         assert!(
             body.contains("RelayInbound::Message(forwarded)"),
             "the forwarded frame must be the stamped `forwarded` value; reverting \
