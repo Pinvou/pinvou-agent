@@ -50,7 +50,7 @@ else
     x86_64) CMAKE_SHA256="3ada9a3f5d8a85413579bdd0ea6aa8e8da86efdd6d15c91a1afa517f2021956c" ;;
     *) echo "❌ cmake 自动下载暂不支持架构: $(uname -m)" >&2; exit 1 ;;
   esac
-  curl --retry 4 --retry-all-errors -fsSL -o "$WORK/cmake.tgz" \
+  curl --retry 4 --retry-all-errors --connect-timeout 15 --max-time 600 -fsSL -o "$WORK/cmake.tgz" \
     "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-$(uname -m).tar.gz"
   # --status is silent; report expected/actual explicitly, because the EXIT
   # trap deletes the download and this message is the only record left.
@@ -106,7 +106,7 @@ cp "$WORK/sv/build/bin/sense-voice-main" "$engine_tmp" || { rm -f "$engine_tmp";
 mv -f "$engine_tmp" "$ASR_DIR/sense-voice-main"
 
 echo "[4/5] 下载模型 $MODEL_FILE（modelscope，国内可达）…"
-curl --retry 4 --retry-all-errors -fsSL -o "$WORK/$MODEL_FILE" \
+curl --retry 4 --retry-all-errors --connect-timeout 15 --max-time 600 -fsSL -o "$WORK/$MODEL_FILE" \
   "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/$MODEL_FILE"
 printf '%s  %s\n' "$MODEL_SHA256" "$WORK/$MODEL_FILE" | sha256sum --check --status \
   || { echo "❌ model sha256 check failed (corrupt download or changed upstream asset): $MODEL_FILE (expected $MODEL_SHA256, actual $(sha256sum "$WORK/$MODEL_FILE" | cut -d' ' -f1))" >&2; exit 1; }

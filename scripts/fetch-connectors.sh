@@ -134,7 +134,7 @@ trap 'rm -rf -- "$work_dir"' EXIT
 fetch_archive() {
   local url="$1" archive="$2" expected="$3"
   if ! verify_file "$archive" "$expected" >/dev/null 2>&1; then
-    curl --fail --location --retry 4 --retry-all-errors --output "$archive.part" "$url"
+    curl --fail --location --retry 4 --retry-all-errors --connect-timeout 15 --max-time 600 --output "$archive.part" "$url"
     verify_file "$archive.part" "$expected"
     mv "$archive.part" "$archive"
   fi
