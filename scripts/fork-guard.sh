@@ -7,7 +7,7 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 and
-# CodeWhale#142/#148/#150/#152 (deps: rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29) merged.
+# CodeWhale#136/#142/#148/#150/#152 (deps: rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29) merged.
 EXPECTED_HEAD="6f7a3a748f408568468ace45aa5cdbb34f882d73"
 EXPECTED_COMMITS=98
 # Published maintenance base of this integration.

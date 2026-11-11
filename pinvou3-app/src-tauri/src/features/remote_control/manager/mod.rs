@@ -32,11 +32,12 @@ use crate::platform::paths;
 use persistence::atomic_write_private_json;
 use persistence::{
     PENDING_REVOCATION_QUEUE_FULL_PREFIX, acquire_process_lock, apply_runtime_relay_override,
-    config_path, eligible_pending_revocations, fresh_config, load_config, load_config_from,
-    load_or_initialize_rpc_ledger, load_pending_revocations_for_replay, new_stream_epoch,
-    pairing_info, pending_revocation_key, persist_config, persist_pending_revocations,
-    persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
-    remote_relay_ws_url, remove_config, remove_rpc_ledger, validate_config,
+    clip_pending_endpoint_id_for_log, config_path, eligible_pending_revocations, fresh_config,
+    load_config, load_config_from, load_or_initialize_rpc_ledger,
+    load_pending_revocations_for_replay, new_stream_epoch, pairing_info, pending_revocation_key,
+    persist_config, persist_pending_revocations, persist_rpc_ledger, process_lock_path, public_url,
+    queue_pending_revocation, remote_relay_ws_url, remove_config, remove_rpc_ledger,
+    validate_config,
 };
 
 // RPC admission, response shaping, scope validation, and the stream/event
@@ -75,8 +76,10 @@ use workspace_grants::{
     require_host_workspace_authorization,
 };
 
-// 编译内置默认指向本机联调 Relay(与 run-dev.sh 注入同值,等价无覆盖);当前
-// 没有打包期生产端点注入,生产部署依赖用户在设置里保存自定义 Relay(优先级最高)。
+// The compile-time default points at the local development Relay (the same value
+// run-dev.sh injects, so it is equivalent to no override); there is currently no
+// packaging-time production endpoint injection, so production deployments rely on the
+// user saving a custom Relay in settings (highest priority).
 const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:8787/pinvou3/remote";
 const DEFAULT_RELAY_WS_URL: &str = "ws://127.0.0.1:8787/pinvou3/remote/ws";
 const MAX_WEB_ACCESS_CONFIG_BYTES: usize = 16 * 1024;
@@ -89,15 +92,18 @@ const LEASE_ID_WIRE_PLACEHOLDER: &str = "lease_000000000000000000000000";
 const RPC_CACHE_CAPACITY: usize = 512;
 const RPC_CACHE_BYTES_CAPACITY: usize = 32 * 1024 * 1024;
 const MAX_RPC_IN_FLIGHT: usize = 32;
-/// 浏览器端 `invoke` 180s 即超时放弃；桌面命令卡死时按此上限惰性释放
-/// in-flight 槽位，避免 `too_many_in_flight_requests` 永久拒绝后续请求。
+/// The browser side gives up on `invoke` after 180s; desktop commands stuck past this
+/// limit have their in-flight slots lazily released, so `too_many_in_flight_requests`
+/// never permanently refuses later requests.
 const RPC_IN_FLIGHT_TTL: Duration = Duration::from_secs(300);
 const MAX_RPC_COMMAND_BYTES: usize = 128;
-/// 新形态多智能体会话（普通 id + 开关标志）在 Web 上是只读的（ADR-0006，
-/// 桌面专属）：查看/列表照常放行（只读横幅要能取数），一切会触发新一轮
-/// 模型执行或改变运行中 turn 状态的入口统一拦截——此前只拦了输入框，
-/// 编辑重发/计划裁决/取消审批/停止生成都能绕过（复核 P1）。桌面端不经本
-/// 漏斗，不受影响。
+/// The new-form multi-agent sessions (ordinary id plus a toggle flag) are read-only
+/// over Web (ADR-0006, desktop-only): view/list still pass (the read-only banner needs
+/// its data), while every entrance that could trigger a new round of model execution
+/// or change a running turn's state is intercepted uniformly — previously only the
+/// input box was blocked, so edit-resend / plan adjudication / approval cancellation /
+/// stop generation could all slip through (review P1). The desktop does not go through
+/// this funnel and is unaffected.
 const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "accept_plan",
     "cancel_generation",
@@ -162,41 +168,51 @@ fn validate_multi_agent_session_web_scope(
 const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RPC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const RPC_LEDGER_VERSION: u8 = 1;
-/// 会话分块单独放大：首开会话在高延迟链路上按 256KB 串行拉取过慢。
-/// 上限受 `MAX_RPC_RESPONSE_BYTES`（2MiB）约束，base64 膨胀后仍需留出 JSON 外壳余量。
+/// Session chunks get a separate larger cap: opening a session over a high-latency
+/// link with 256KB serial pulls was too slow. The cap stays under
+/// `MAX_RPC_RESPONSE_BYTES` (2MiB), leaving headroom for the JSON envelope after
+/// base64 expansion.
 pub const MAX_SESSION_CHUNK_BYTES: usize = 1024 * 1024;
 const MAX_WEB_ATTACHMENTS: usize = 16;
 const MAX_WEB_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_WEB_ATTACHMENTS_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WEB_ATTACHMENT_UPLOADS: usize = 4;
 const MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES: usize = 64 * 1024 * 1024;
-/// 浏览器本机上传在桌面端的短生命周期暂存目录前缀。仅带此前缀的目录会被
-/// 启动清扫与附件消费清理删除，避免波及旧版 E2E 使用的其他 uploads 子目录。
+/// Prefix of the desktop's short-lived staging directories for browser-local uploads.
+/// Only directories carrying this prefix are removed by the startup sweep and
+/// attachment-consumption cleanup, so other uploads subdirectories used by legacy E2E
+/// are never touched.
 pub(crate) const WEB_ATTACHMENT_UPLOAD_DIR_PREFIX: &str = "webup_";
 const MAX_WEB_SESSION_DOWNLOADS: usize = 2;
 const PENDING_REVOCATIONS_VERSION: u8 = 1;
 const MAX_PENDING_REVOCATIONS: usize = 32;
 const MAX_PENDING_REVOCATIONS_FILE_BYTES: usize = 256 * 1024;
-/// RPC 账本的有界读取上限:满额 512 条墓碑(每条 ≤256 字节 id + 64 位指纹)
-/// 距离 1 MiB 还有数倍余量,超出即为损坏文件,不得无界读入。
+/// Bounded read cap for the RPC ledger: a full 512 tombstones (each ≤256-byte id plus
+/// a 64-bit fingerprint) leave several times of headroom under 1 MiB; anything larger
+/// is a corrupt file and must not be read unbounded.
 const MAX_RPC_LEDGER_FILE_BYTES: usize = 1024 * 1024;
 const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
-/// Round-16 复审(M2):满槽逐出的新鲜度窗。「ready」区分不出「响应丢失
-/// 的孤儿」与「手机已持 id、仍在分块读取的下载」;窗口内被读过的条目
-/// (chunk 读取会刷新 last_touched)不当受害者。窗口远小于 TTL:真孤儿
-/// 的清理最多延后一个窗口,仍远早于 10 分钟 Reaper。
+/// Round-16 review (M2): freshness window for full-slot eviction. "ready" cannot tell
+/// a "response-lost orphan" from a "download the phone already holds an id for and is
+/// still chunk-reading"; entries read within the window (a chunk read refreshes
+/// last_touched) are never victims. The window is far smaller than the TTL: a real
+/// orphan's cleanup is delayed at most one window, still far earlier than the 10-minute
+/// Reaper.
 const WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW: Duration = Duration::from_secs(30);
 const WEB_SESSION_TRANSFER_REAPER_INTERVAL: Duration = Duration::from_secs(60);
 
-/// 这些 error 码终结本次注册(relay_client 的 run_loop 停止重连),manager
-/// 需要据此做完整清理或停在带原因的 Error 状态。Relay 的 reject 帧不携带
-/// endpoint_id,`handle_relay_message` 的入口必须为它们放行;其余 error 码
-/// (含 `endpoint_not_found` 与瞬时容量/限流类)保持既有行为。本清单与
-/// relay_client::terminal_message 的 RegisterRejected/Revoked 臂保持对齐
-/// (刻意排除 `endpoint_not_found`:其 reject 帧不带 endpoint_id,入口本就
-/// 丢弃;清单放行它只会造出无消费的终结路径),对齐由 relay_client 测试
-/// `terminal_registration_code_lists_stay_aligned` 钉住。
+/// These error codes terminate the registration (relay_client's run_loop stops
+/// reconnecting), and the manager must react with full cleanup or by resting in an
+/// Error state carrying the reason. The relay's reject frames carry no endpoint_id, so
+/// handle_relay_message's entrance must let them through; all other error codes
+/// (including `endpoint_not_found` and the transient capacity/throttle kinds) keep
+/// their existing behavior. This list stays aligned with relay_client::terminal_message's
+/// RegisterRejected/Revoked arms (deliberately excluding `endpoint_not_found`: its
+/// reject frame carries no endpoint_id and the entrance drops it anyway; letting the
+/// list admit it would only create an unconsumed terminal path); the alignment is
+/// pinned by the relay_client test
+/// `terminal_registration_code_lists_stay_aligned`.
 pub(crate) const TERMINAL_REGISTRATION_ERROR_CODES: &[&str] = &[
     "endpoint_revoked",
     "invalid_access_token",
@@ -205,7 +221,7 @@ pub(crate) const TERMINAL_REGISTRATION_ERROR_CODES: &[&str] = &[
     "unsupported_protocol_version",
 ];
 
-/// 从事件 payload 提取会话 id（不同事件用不同字段名）。
+/// Extracts the session id from an event payload (different events use different field names).
 fn event_session_id(payload: &Value) -> Option<&str> {
     payload
         .get("session_id")
@@ -214,8 +230,9 @@ fn event_session_id(payload: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-/// 远程端正式支持代码会话之前，过滤原生代码会话事件。predicate 为 None（未注入）
-/// 时不过滤，行为与注入前一致。
+/// Filters native code-session events until the remote side officially supports code
+/// sessions. With a None predicate (not injected) nothing is filtered and behavior
+/// matches pre-injection.
 fn should_filter_code_session_event(
     predicate: Option<&CodeSessionPredicate>,
     payload: &Value,
@@ -228,9 +245,9 @@ fn should_filter_code_session_event(
     }
 }
 
-/// 转发的 rpc_request 必须指向当前活跃的 Web lease(与 `client_ready` 的
-/// 校验一致)。无活跃 lease 时不过滤:此时主准入路径本就没有可回复的
-/// endpoint,行为与校验加入前一致。
+/// A forwarded rpc_request must target the currently active Web lease (the same check
+/// as `client_ready`). With no active lease nothing is filtered: the main admission
+/// path has no replyable endpoint in that state, matching pre-check behavior.
 /// A changed lease always invalidates subscriptions: they belong to a
 /// concrete Web lease and must rebuild before `client_ready` requests a
 /// replay, otherwise old subscriptions can advance the new client's event
@@ -242,21 +259,24 @@ fn should_filter_code_session_event(
 /// destroying them on every idle reconnect.
 fn apply_web_lease_change(inner: &mut Inner, web_rejoining: bool) {
     inner.subscriptions.clear();
-    // Round-15 复审(记录有意不对称):takeover 的 wipe 不做 reservation
-    // 豁免——`clear_web_attachments` 会删除带活跃 reservation 的附件暂存
-    // 目录,与容量逐出循环的 reservation-sparing 不同;此时在飞 turn 的
-    // 暂存源消失、该 turn 失败(错误链折叠为稳定码,影响为单次 turn)。
-    // 这是「换人即清场」语义的一部分:替换客户端不得触摸上一 lease 的
-    // 任何暂存数据,豁免会在 takeover 后留下可被新客户端探测的目录。
+    // Round-15 review (documenting a deliberate asymmetry): the takeover wipe grants no
+    // reservation exemption — `clear_web_attachments` deletes attachment staging
+    // directories even with an active reservation, unlike the capacity-eviction loop's
+    // reservation-sparing; an in-flight turn's staging source then disappears and that
+    // turn fails (its error chain folds to a stable code, impact limited to one turn).
+    // This is part of the "new client, clean slate" semantics: the replacing client must
+    // not be able to touch any of the previous lease's staged data, and an exemption
+    // would leave behind directories the new client could probe after the takeover.
     if !web_rejoining {
         clear_web_attachments(inner);
     }
 }
 
-/// 撤权的内存侧效果:同步活跃 endpoint 的授权旗标,并立刻作废已铸出的
-/// workspace grant。grant 是绑定 endpoint 的一次性句柄(30 分钟 TTL),
-/// 不清除的话,手机在撤权前铸出的 grant 在整个 TTL 窗口内仍可兑换建立
-/// host 目录会话。
+/// The in-memory side of revocation: syncs the active endpoint's authorization flag
+/// and immediately invalidates all minted workspace grants. A grant is an endpoint-bound
+/// one-shot handle (30-minute TTL); if not cleared, grants the phone minted before the
+/// revocation could still be redeemed to open host-directory sessions for the whole
+/// TTL window.
 fn revoke_host_workspace_state(inner: &mut Inner) {
     if let Some(endpoint) = inner.endpoint.as_mut() {
         endpoint.config.allow_host_workspace = false;
@@ -264,9 +284,9 @@ fn revoke_host_workspace_state(inner: &mut Inner) {
     inner.web_workspace_grants.clear();
 }
 
-/// `attachment_` 前缀 + 非空字母数字是桌面铸造的附件句柄形状
-/// (`attachment_{short_token(32)}`)。形状校验让调用方自选的任意字节
-/// 不回显进错误链(Round-11 复审 minor)。
+/// `attachment_` prefix plus non-empty alphanumerics is the desktop-minted attachment
+/// handle shape (`attachment_{short_token(32)}`). The shape check keeps caller-chosen
+/// arbitrary bytes out of the error chain (Round-11 review minor).
 fn attachment_handle_is_well_formed(handle: &str) -> bool {
     match handle.strip_prefix("attachment_") {
         Some(body) => !body.is_empty() && body.chars().all(|c| c.is_ascii_alphanumeric()),
@@ -274,13 +294,45 @@ fn attachment_handle_is_well_formed(handle: &str) -> bool {
     }
 }
 
-/// 入库/重发用的 relay 文本上限:与 `rpc_error_completion` 的错误截断
-/// 同口径(char 边界,不劈开多字节字符)。
+/// Relay text cap for storage/replay: the same caliber as `rpc_error_completion`'s
+/// error truncation (char-boundary, never splitting a multi-byte character).
 const RELAY_ERROR_TEXT_MAX_CHARS: usize = 16_384;
 
-/// relay 提供的自由文本(错误 message、主机命名等)入库前的 char 边界
-/// 截断——帧上限 4 MiB 的文本原样存进会随每次状态重发重复序列化
-/// (Round-11 复审 NIT)。
+/// Round-29 review MINOR-1: the in-memory backlog is the whole-ledger
+/// acknowledgement source, and `validate_pending_revocation_ledger` rejects
+/// anything over MAX_PENDING_REVOCATIONS — a salvage degradation that leaves
+/// memory-only siblings plus later distinct-key rotations can push the
+/// backlog past the cap, and from then on every acknowledgement persist
+/// fails validation, wedging all pending revocations for the process
+/// lifetime (the wedge heals only at restart, which silently drops the
+/// memory-only leftovers anyway). Retiring the OLDEST entries loudly
+/// converts that permanent wedge into a bounded, named loss under the same
+/// "endpoints stay joinable until revoked manually" discipline as the
+/// salvage truncation log; the newest intents stay ackable, and a retired
+/// entry re-enters only by being requeued. The ack error arm needs no cap:
+/// its `remaining` is taken from an already-capped backlog and drops the
+/// acked entry before re-pushing it.
+fn cap_pending_revocation_backlog(backlog: &mut Vec<PendingRevocation>) {
+    let excess = backlog.len().saturating_sub(MAX_PENDING_REVOCATIONS);
+    if excess == 0 {
+        return;
+    }
+    let retired: Vec<String> = backlog
+        .drain(0..excess)
+        .map(|entry| clip_pending_endpoint_id_for_log(&entry.endpoint_id))
+        .collect();
+    eprintln!(
+        "[web-access] pending revocation backlog passed the capacity of {} — retired the oldest {} {} (endpoints stay joinable at the relay until revoked manually): {}",
+        MAX_PENDING_REVOCATIONS,
+        excess,
+        if excess == 1 { "entry" } else { "entries" },
+        retired.join(", ")
+    );
+}
+
+/// Char-boundary truncation of relay-supplied free text (error messages, host naming
+/// etc.) before storage — otherwise up-to-4-MiB frame text would be stored verbatim
+/// and re-serialized on every status resend (Round-11 review NIT).
 fn bound_relay_text(mut text: String) -> String {
     if let Some((boundary, _)) = text.char_indices().nth(RELAY_ERROR_TEXT_MAX_CHARS) {
         text.truncate(boundary);
@@ -288,11 +340,12 @@ fn bound_relay_text(mut text: String) -> String {
     text
 }
 
-/// 注册类 error 帧的可操作恢复提示。版本不匹配的正确恢复路径是升级到
-/// 匹配的最新版本——轮换只会铸出同一协议版本的新 endpoint,「rotate」
-/// 提示在那里是错误指引。同一个码覆盖两侧:桌面端过旧(默认情形)与
-/// 自建中继过旧(桌面端其实是新的)无法从码上区分,提示必须同时覆盖
-/// (Round-10 复审 minor)。
+/// Actionable recovery hints for registration-class error frames. For a version
+/// mismatch the correct recovery is upgrading to a matching latest version — rotation
+/// only mints a new endpoint with the same protocol version, so a "rotate" hint there
+/// would be wrong guidance. One code covers both sides: a too-old desktop (the default
+/// case) and a too-old self-hosted relay (where the desktop is actually new) cannot be
+/// distinguished from the code, so the hint must cover both (Round-10 review minor).
 fn relay_registration_error_reason(error_code: &str, relay_message: &str) -> String {
     match error_code {
         "invalid_access_token" | "invalid_desktop_secret" => {
@@ -308,9 +361,11 @@ fn relay_registration_error_reason(error_code: &str, relay_message: &str) -> Str
     }
 }
 
-/// 注册终结码的稳定恢复码:`last_error` 原文是英文(渲染进桌面状态行),
-/// SettingsView 据本码映射三语恢复文案,缺失时回退原文。分支必须与
-/// [`relay_registration_error_reason`] 一致,双方由同一测试钉住。
+/// Stable recovery codes for registration terminal codes: the raw `last_error` text is
+/// English (rendered into the desktop status line); SettingsView maps this code to
+/// trilingual recovery copy, falling back to the raw text when absent. The branches must
+/// stay consistent with [`relay_registration_error_reason`]; both sides are pinned by
+/// the same test.
 fn relay_registration_error_code(error_code: &str) -> Option<&'static str> {
     match error_code {
         "invalid_access_token" | "invalid_desktop_secret" => Some("rotate_credentials"),
@@ -328,9 +383,10 @@ fn rpc_request_targets_active_lease(inner: &Inner, lease_id: &str) -> bool {
         .map_or(true, |active| active == lease_id)
 }
 
-/// `client_ready` 两阶段握手(PROTOCOL.md):缺失或非布尔的 `state_ready`
-/// 一律按 phase-1(未就绪)处理——桌面只协商能力与回放游标,不投递业务
-/// 事件;旧版默认 true 会让不发送该字段的客户端跳过就绪屏障。
+/// `client_ready` two-phase handshake (PROTOCOL.md): a missing or non-boolean
+/// `state_ready` is always treated as phase-1 (not ready) — the desktop only negotiates
+/// capabilities and the replay cursor and delivers no business events; defaulting to
+/// true would let clients that never send the field skip the readiness barrier.
 fn client_state_ready(value: &Value) -> bool {
     value
         .get("state_ready")
@@ -369,8 +425,8 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "session:persona_changed",
 ];
 
-/// 远程端正式支持代码会话列表/授权/UI 之前，带 session_id 的原生代码会话事件
-/// 一律不转发。
+/// Until the remote side officially supports code-session listing/authorization/UI,
+/// native code-session events carrying a session_id are never forwarded.
 pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 #[derive(Clone)]
@@ -406,13 +462,16 @@ struct Inner {
     web_session_downloads: HashMap<String, WebSessionDownload>,
     web_session_download_order: VecDeque<String>,
     pending_revocations_in_flight: HashSet<String>,
-    /// Round-11 复审 minor:本进程的待吊销权威账本。回放时装载自磁盘,
-    /// queue 时随写盘同步追加;确认针对它整体落盘,而不是「重读磁盘→
-    /// 删一条→重写」——抢救降级(抢救落盘失败)后磁盘上没有账本,重读
-    /// 式确认会拿空账本清掉仍在内存的兄弟条目,重启后这批待吊销记录
-    /// 全部丢失(旧 endpoint 在 relay 侧保持可加入)。
+    /// Round-11 review minor: this process's authoritative pending-revocation ledger.
+    /// Loaded from disk at replay and appended in lockstep with disk writes at queue
+    /// time; acknowledgement persists the whole of it, rather than "re-read disk →
+    /// remove one → rewrite" — after a salvage degradation (salvage persist failed)
+    /// there is no ledger on disk, and a re-read-style acknowledgement would take an
+    /// empty ledger and clear sibling entries still in memory, losing this whole batch
+    /// of pending revocations across a restart (the old endpoint stays joinable on the
+    /// relay side).
     pending_revocation_backlog: Vec<PendingRevocation>,
-    /// 原生代码会话判定；None = 未注入（不过滤，启动早期行为不变）。
+    /// Native code-session predicate; None = not injected (no filtering, startup-early behavior unchanged).
     code_session_predicate: Option<CodeSessionPredicate>,
 }
 
@@ -443,7 +502,8 @@ impl Default for Inner {
     }
 }
 
-/// 浏览器本机文件分块上传的内存累积缓冲。落盘与 ingest 只发生在最后一块提交时。
+/// In-memory accumulation buffer for chunked browser-local file uploads. Persisting
+/// and ingest happen only when the final chunk commits.
 #[derive(Debug)]
 struct WebAttachmentUpload {
     file_name: String,
@@ -517,8 +577,9 @@ struct CachedWebAttachment {
     /// handle. Defer deletion until that reservation finishes so the engine
     /// never races a disappearing upload source.
     discard_requested: bool,
-    /// 浏览器本机上传的桌面暂存目录。附件被消费、淘汰或清空时随之删除，
-    /// 保证上传文件不留存；桌面主机文件附件恒为 None。
+    /// Desktop staging directory for a browser-local upload. Deleted together with the
+    /// attachment on consumption, eviction, or clearing, guaranteeing uploaded files do
+    /// not persist; desktop host-file attachments are always None.
     upload_dir: Option<PathBuf>,
 }
 
@@ -546,8 +607,8 @@ struct ActiveEndpoint {
     /// the later `client_ready` instant.
     fresh_baseline_seq: Option<u64>,
     last_error: Option<String>,
-    /// 与 `last_error` 成对的稳定恢复码;任何不携带码的错误写入都必须把它
-    /// 清掉,防止旧码被映射到新错误文本上。
+    /// Stable recovery code paired with `last_error`; any error write that carries no
+    /// code must clear it, so an old code is never mapped onto new error text.
     last_error_code: Option<String>,
     sender: RelaySender,
 }
@@ -558,12 +619,14 @@ enum RpcCacheEntry {
     Complete {
         fingerprint: String,
         completion: RpcCompletion,
-        /// Round-14 复审 minor:TTL 扫描为「已受理仍在执行」的请求写入的
-        /// 超时占位打标(仅扫描臂置 true)。重启/重载的代际臂据此把这类
-        /// 占位改写成如实的 `outcome_unknown`——否则重放永远拿到伪造的
-        /// `rpc_timed_out`,而契约对该状态的如实答案恰是 outcome_unknown;
-        /// 未受理的占位不打标(超时对从未执行的请求是准确答案)。
-        /// 仅内存态:RPC 账本持久化的是墓碑,不是本缓存。
+        /// Round-14 review minor: marks the timeout placeholders the TTL sweep writes for
+        /// "acknowledged but still executing" requests (only the sweep arm sets true). The
+        /// generation arm on restart/reload uses this to rewrite such placeholders into the
+        /// honest `outcome_unknown` — otherwise replay would forever return a fabricated
+        /// `rpc_timed_out` where the contract's honest answer for that state is exactly
+        /// outcome_unknown; unacknowledged placeholders are not marked (a timeout is an
+        /// accurate answer for a never-executed request).
+        /// In-memory only: the RPC ledger persists tombstones, not this cache.
         swept_acknowledged: bool,
     },
 }
@@ -632,8 +695,9 @@ struct PendingRevocation {
     desktop_secret: String,
 }
 
-// 手写 Debug:desktop_secret 是明文凭据,派生 Debug 会把它带进日志与 panic
-// 信息;endpoint_id/relay_url 保持可见以便定位。
+// Hand-written Debug: desktop_secret is a plaintext credential and a derived Debug
+// would leak it into logs and panic messages; endpoint_id/relay_url stay visible for
+// diagnosis.
 impl std::fmt::Debug for PendingRevocation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -936,9 +1000,10 @@ fn reset_web_state(inner: &mut Inner) {
     inner.web_workspace_grants.clear();
 }
 
-/// 停用路径专用的容错读取:web-access.json 损坏或超大时按「无配置」继续,
-/// 让停用始终可用(停用随后会删除该文件)。start/resume/refresh 仍走
-/// `load_config` 的 fail-closed 语义并带具体路径报错。
+/// Fault-tolerant read dedicated to the stop path: a corrupt or oversized
+/// web-access.json continues as "no config" so stop always works (stop deletes the
+/// file right after). start/resume/refresh still follow `load_config`'s fail-closed
+/// semantics and report the concrete path.
 fn load_config_for_stop_at(path: &Path) -> Option<WebAccessConfig> {
     match load_config_from(path) {
         Ok(config) => config,
@@ -1063,16 +1128,18 @@ impl RemoteControlManager {
         if let Some(previous) = previous_config.as_ref() {
             match queue_pending_revocation(previous) {
                 Ok(()) => self.sync_pending_revocation_backlog(previous),
-                // Round-15 复审:满队不再楔死轮换——rotation 是恢复路径,
-                // 第 33 次无 relay 连接的轮换起队列写满,`?` 传播会让此后每
-                // 次 refresh 都失败。降级为记日志继续;代价必须说真话
-                // (Round-17 复审订正,原注释「吊销意图留在原地」失实):
-                // 满队的这次轮换,旧凭据的吊销意图没有落在任何一侧——队
-                // 列写满在追加前即拒绝、backlog 同步随之跳过、下方
-                // persist_config 再覆写 web-access.json——旧 endpoint 在
-                // relay 侧保持可 join,直到 relay 过期或人工清理,与 salvage
-                // 截断日志同一诚实口径。同键不同密钥的冲突仍按 round-14
-                // 记录的设计边界 fail-closed。
+                // Round-15 review: a full queue no longer wedges rotation — rotation is a
+                // recovery path, and from the 33th relay-less rotation onward the queue is
+                // full, where `?` propagation would make every later refresh fail.
+                // Degrade to logging and continue; the cost must be stated honestly
+                // (Round-17 review correction — the original "revocation intent stays in
+                // place" claim was inaccurate): for this queue-full rotation the old
+                // credentials' revocation intent landed nowhere — the full queue rejects
+                // before appending, the backlog sync is skipped with it, and persist_config
+                // below overwrites web-access.json — so the old endpoint stays joinable on
+                // the relay until relay expiry or manual cleanup, the same honest caliber
+                // as the salvage truncation log. Same-key-different-secret conflicts remain
+                // fail-closed per the design boundary recorded in round-14.
                 Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {
                     eprintln!(
                         "[web-access] refresh ignores full pending-revocation queue: {error}"
@@ -1099,9 +1166,10 @@ impl RemoteControlManager {
         if let Some(previous) = previous {
             let _ = previous.sender.try_send(RelayOutbound::Shutdown);
         }
-        // Round-15 复审:此处 `?` 曾让「rotation 已提交(旧凭据已下线、
-        // 新凭据已落盘)但 activate 未跑」的半提交窗口以失败上报。回放是
-        // 清理路径,与 stop 同一容错;失败不回滚已提交的轮换。
+        // Round-15 review: a `?` here used to report the half-committed window "rotation
+        // committed (old credentials retired, new ones persisted) but activate never ran"
+        // as a failure. Replay is a cleanup path with the same tolerance as stop; a
+        // failure does not roll back the committed rotation.
         if let Err(error) = self.replay_pending_revocations() {
             eprintln!("[web-access] refresh ignores pending-revocation replay failure: {error}");
         }
@@ -1112,58 +1180,74 @@ impl RemoteControlManager {
         })?))
     }
 
-    /// 撤销本机目录授权但不断开链接:后续 workspace grant 在铸造时被拒,
-    /// 已发出的 grant 也随之立刻作废(否则一个 30 分钟 TTL 的一次性句柄
-    /// 仍可在撤权后兑换,授权旗标与实际可访问面不一致)。这是设置弹窗的
-    /// 显式撤权入口——让旧版本「开启访问」单按钮顺带写下的
-    /// allow_host_workspace 可见、可单独收回,而不必轮换或停用整条链接
-    /// (Stop 之外的唯一清除路径)。幂等:已是未授权状态时不重写凭据文件,
-    /// 但状态失效与状态刷新照常执行(重复撤权无副作用)。
+    /// Revokes host-directory authorization without disconnecting the link: later
+    /// workspace grants are refused at mint time and already-issued grants are
+    /// invalidated immediately with it (otherwise a one-shot 30-minute-TTL handle could
+    /// still be redeemed after revocation, leaving the authorization flag inconsistent
+    /// with the actually accessible surface). This is the settings dialog's explicit
+    /// revocation entrance — making the allow_host_workspace that older versions'
+    /// single "enable access" button wrote down visible and individually retractable,
+    /// without rotating or stopping the whole link (the only clear path besides Stop).
+    /// Idempotent: when already unauthorized the credentials file is not rewritten, but
+    /// state invalidation and the status refresh still run (repeat revocations have no
+    /// side effects).
     pub fn revoke_host_workspace(&self) -> Result<WebAccessInfo, String> {
         let _lifecycle = self.lifecycle.lock();
         self.ensure_policy()?;
         self.ensure_process_ownership()?;
-        // Round-11 复审 minor:状态失效不依赖配置文件——先作废内存旗标与
-        // 全部已发出的 grant,再做配置读回/落盘。web-access.json 在端点
-        // 存活期间损坏时,严格读取失败不能把撤权卡死(与 stop_current
-        // 容错读的同一理由:停用/撤权本身就是恢复手段),否则一次性
-        // grant 在剩余 TTL 内仍可兑换。读取/校验失败时 durable 侧并未
-        // 改变且 start/enable 对损坏文件 fail-closed,不存在复活面,错误
-        // 按已撤销一侧呈现;落盘失败则是另一回事——磁盘仍 latch 着授权,
-        // 内存若停在已撤销一侧,下一次 start/enable 会从磁盘重建授权而
-        // 毫无同意手势(Round-15 复审 MA1)。因此落盘失败必须把内存旗标
-        // 回锁到磁盘一侧再返回:状态两侧一致、UI 显示真实授权态、错误
-        // 明说撤权未生效需重试。
+        // Round-11 review minor: state invalidation does not depend on the config file —
+        // invalidate the in-memory flag and every issued grant first, then read back /
+        // persist the config. If web-access.json corrupts while the endpoint is alive, a
+        // strict-read failure must not wedge the revocation (same rationale as
+        // stop_current's tolerant read: stop/revocation are themselves recovery means),
+        // or one-shot grants would stay redeemable for the rest of their TTL. On a
+        // read/validation failure the durable side never changed and start/enable are
+        // fail-closed on a corrupt file, so there is no resurrection surface and the
+        // error is presented on the revoked side; persist failure is a different matter —
+        // the disk still latches authorization, and if memory rested on the revoked side,
+        // the next start/enable would rebuild authorization from disk with no consent
+        // gesture (Round-15 review MA1). A persist failure must therefore re-latch the
+        // in-memory flag to the disk side before returning: both state sides consistent,
+        // the UI showing the real authorization state, and the error saying plainly that
+        // the revocation did not take effect and should be retried.
         {
             let mut inner = self.inner.lock();
             revoke_host_workspace_state(&mut inner);
         }
-        // Round-12 复审 P3:从未配置过(enable 之前)的 revoke 是幂等空
-        // 操作——配置不存在则旗标与 grant 都不可能存在,上面的状态失效
-        // 已经空跑。此前返回 Err 会被 bridge 记入 last_error,设置页对
-        // 一次无实际效果的点击显示失败;改回携带空 endpoint_id 的非活跃
-        // 信息(与 stop_current 对未激活 endpoint 的返回形状一致)。不发
-        // status:没有任何状态变化可推送,设置页以本次返回的载荷合并。
-        // (Round-19 复审 NIT:该前提依赖 endpoint 同样为空——配置文件
-        // 被外部删除而 inner.endpoint 仍在的畸形态下,上面的失效已真实
-        // 翻旗标/清 grant,不推 status 会让 UI 滞留已授权显示到下一次无
-        // 关状态推送。endpoint 在场时补一次状态刷新,空配置正常路径维持
-        // 原样不发。)
+        // Round-12 review P3: revoking something never configured (before enable) is an
+        // idempotent no-op — with no config, neither the flag nor grants can exist, and
+        // the invalidation above was already a no-op. Returning Err previously let the
+        // bridge record it into last_error, so the settings page showed a failure for a
+        // click with no actual effect; return the inactive info with an empty endpoint_id
+        // instead (the same return shape stop_current uses for a non-active endpoint). No
+        // status is emitted: there is no state change to push, and the settings page
+        // merges with the payload returned this time.
+        // (Round-19 review NIT: that premise relies on the endpoint being empty too — in
+        // the malformed state where the config file was deleted externally while
+        // inner.endpoint remains, the invalidation above really did flip the flag/clear
+        // grants, and not emitting status would leave the UI stuck on an authorized
+        // display until the next unrelated status push. Emit one status refresh when an
+        // endpoint is present; the normal empty-config path stays as-is and emits
+        // nothing.)
         let mut config = match load_config() {
             Ok(Some(config)) => config,
             Err(error) => {
-                // Round-20 复审 MINOR:严格读取失败时,上方失效已真实翻旗
-                // 标/清 grant(真实状态变化)——与下方 config-absent 臂的
-                // Round-19 NIT 同一理由,错误返回前补一次状态刷新,避免
-                // UI 滞留已授权显示到下一次无关状态推送。此处无 inner
-                // guard 在持(上方失效块已闭合),不触精确锁区间钉。
+                // Round-20 review MINOR: on a strict-read failure the invalidation above
+                // really did flip the flag/clear grants (a real state change) — same
+                // rationale as the config-absent arm's Round-19 NIT below, so emit one
+                // status refresh before returning the error, keeping the UI from staying
+                // stuck on an authorized display until the next unrelated status push. No
+                // inner guard is held here (the invalidation block above is closed), so the
+                // exact lock-span pin is not triggered.
                 self.emit_status();
                 return Err(error);
             }
             Ok(None) => {
                 let endpoint_present = {
-                    // 独立块内取放 guard:锁跨不进 emit_status(不可重入
-                    // 锁同线程自锁),也满足上方精确锁区间钉的括号深度判据。
+                    // Take and drop the guard inside a standalone block: the lock must not
+                    // span into emit_status (a non-reentrant lock self-deadlocks on the same
+                    // thread), and this also satisfies the exact lock-span pin's brace-depth
+                    // criterion above.
                     let inner = self.inner.lock();
                     inner.endpoint.is_some()
                 };
@@ -1179,13 +1263,16 @@ impl RemoteControlManager {
             }
         };
         validate_config(&config).map_err(|error| {
-            // Round-22 复审 MINOR:校验失败臂与落盘失败臂同一纪律——
-            // durable 侧未动,而内存已被上方失效块清旗标;内存若停在已撤
-            // 销一侧,后续 benign start/enable 会从磁盘重建授权而毫无同意
-            // 手势(与 Round-15 复审 MA1 同一复活面)。磁盘 latch 仍授权
-            // 时回锁旗标、刷新状态,错误明说撤权未生效;磁盘本未授权时
-            // 撤权已实质达成,只需刷新状态再报配置损坏。此处无 inner
-            // guard 在持,不触精确锁区间钉。
+            // Round-22 review MINOR: the validation-failure arm follows the same
+            // discipline as the persist-failure arm — the durable side is untouched while
+            // memory has already had its flag cleared by the invalidation block above; if
+            // memory rested on the revoked side, a later benign start/enable would rebuild
+            // authorization from disk with no consent gesture (the same resurrection
+            // surface as Round-15 review MA1). When the disk still latches authorization,
+            // re-latch the flag, refresh status, and say plainly the revocation did not
+            // take effect; when the disk was already unauthorized the revocation
+            // substantively succeeded — just refresh status and report the corrupt config.
+            // No inner guard is held here, so the exact lock-span pin is not triggered.
             let remains_enabled = config.allow_host_workspace;
             if remains_enabled {
                 {
@@ -1196,12 +1283,15 @@ impl RemoteControlManager {
                 }
             }
             self.emit_status();
-            // 文案刻意不复用落盘失败臂的错误短语——那串短语是既有行为钉
-            // (revoke_persist_failure_re_latches…)失败臂窗口的终止
-            // needle,这里复用会把它的窗口切片反转发红;两臂本就是不同
-            // 失败形状,文案分开也更准确。(Round-28 复审核准:本钉现走
-            // comment_filtered,纯注释行已滤除,注释提及不再构成注入面;
-            // 行尾注释与块注释仍可掩护,按已披露残留处理。)
+            // The copy deliberately does not reuse the persist-failure arm's error
+            // phrase — that phrase is the terminator needle of the existing behavioral
+            // pin's (revoke_persist_failure_re_latches…) failure-arm window, and reusing it
+            // here would reverse its window slice and turn it red; the two arms are
+            // different failure shapes anyway, so separate copy is also more accurate.
+            // (Round-28 review calibration: this pin now runs through comment_filtered,
+            // pure comment lines are stripped, and comment mentions no longer form an
+            // injection surface; trailing comments and block comments can still shield it,
+            // handled as a disclosed residual.)
             if remains_enabled {
                 format!(
                     "host-workspace revocation did not take effect; folder consent stays enabled on disk: {error}"
@@ -1213,18 +1303,23 @@ impl RemoteControlManager {
         let latched = config.allow_host_workspace;
         if latched {
             config.allow_host_workspace = false;
-            // Round-14 复审 minor:并发 desktop_endpoint_revoked(消息泵臂,
-            // 不持生命周期锁)可能恰好在本读取与落盘之间删除了配置文件;
-            // 此时撤销目标已达成(relay 侧端点已入墓碑,本地凭据已清),
-            // 不得把 flag=false 的配置文件复活成「已配置」的幻影(否则下
-            // 次 start 拿墓碑端点空转一轮再被 handle_revoked 清理)。存在
-            // 性检查缩小而非闭合窗口(彻底闭合需泵臂持生命周期锁,死锁面
-            // 不划算);残余形状自愈且无访问增益,与本函数既有注释一致。
+            // Round-14 review minor: a concurrent desktop_endpoint_revoked (the message
+            // pump arm, which holds no lifecycle lock) may delete the config file right
+            // between this read and the persist; the revocation goal is then already
+            // achieved (the relay-side endpoint is tombstoned, local credentials cleared),
+            // and a flag=false config file must not be resurrected into a "configured"
+            // phantom (otherwise the next start spins one round on a tombstoned endpoint
+            // before handle_revoked cleans it up). The existence check narrows the window
+            // without closing it (closing it fully would need the pump arm to hold the
+            // lifecycle lock — a deadlock surface not worth it); the residual shape
+            // self-heals with no access gain, consistent with this function's existing
+            // comments.
             if config_path().exists() {
                 if let Err(error) = persist_config(&config) {
-                    // 落盘失败:磁盘 latch 未动,内存不得停留在已撤销一侧
-                    // (否则内存/磁盘分叉,后续 benign start/enable 会无声
-                    // 复活授权)。回锁旗标、刷新状态、报可行动错误。
+                    // Persist failure: the disk latch is untouched, so memory must not rest
+                    // on the revoked side (otherwise memory/disk diverge and later benign
+                    // start/enable silently resurrect authorization). Re-latch the flag,
+                    // refresh status, and return an actionable error.
                     eprintln!(
                         "[web-access] host-workspace revocation failed to persist, re-latching in-memory consent: {error}"
                     );
@@ -1241,15 +1336,19 @@ impl RemoteControlManager {
                 }
             }
         }
-        // 状态失效无条件先行(幂等重入时 grant 清空同样真实发生),状态
-        // 刷新因此一律发送;emit_status→status 会再次锁 inner,取 guard
-        // 的独立块必须先出作用域,否则 parking_lot 不可重入锁在同线程
-        // 自锁(撤销即死锁,死锁钉按括号深度判)。
+        // State invalidation runs unconditionally first (on idempotent re-entry the
+        // grant clearing equally really happens), so the status refresh is always sent;
+        // emit_status→status locks inner again, so the standalone block that takes the
+        // guard must have left scope first, or parking_lot's non-reentrant lock
+        // self-deadlocks on the same thread (revocation would deadlock; the deadlock pin
+        // judges by brace depth).
         self.emit_status();
         let inner = self.inner.lock();
-        // Round-5 复审 minor:endpoint 未激活(resume 尚未成功/激活失败)时
-        // 撤权仍已持久化成功,按失败上报会让设置弹窗对一次真实的撤权显示
-        // 错误。返回携带配置内 endpoint_id 的非活跃信息而不是 Err。
+        // Round-5 review minor: when the endpoint is not active (resume not yet
+        // successful / activation failed), the revocation has still persisted
+        // successfully — reporting failure would make the settings dialog show an error
+        // for a revocation that really happened. Return inactive info carrying the
+        // config's endpoint_id instead of Err.
         match inner.endpoint.as_ref() {
             Some(endpoint) => Ok(pairing_info(endpoint)),
             None => Ok(WebAccessInfo {
@@ -1261,7 +1360,8 @@ impl RemoteControlManager {
         }
     }
 
-    /// 注入原生代码会话判定闭包；之后带代码会话 id 的事件不再转发到远程 WebUI。
+    /// Injects the native code-session predicate; events carrying code-session ids are
+    /// no longer forwarded to the remote WebUI afterwards.
     pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
         self.inner.lock().code_session_predicate = Some(predicate);
     }
@@ -1269,8 +1369,9 @@ impl RemoteControlManager {
     pub fn stop_current(&self) -> Result<(), String> {
         let _lifecycle = self.lifecycle.lock();
         self.ensure_process_ownership()?;
-        // 停用本身就是恢复手段,损坏的持久状态不能把停用也卡死:start/resume/
-        // refresh 仍 fail-closed(带具体路径报错),这里只降级读取并继续清理。
+        // Stopping is itself a recovery means; corrupt persistent state must not wedge
+        // stopping too: start/resume/refresh stay fail-closed (reporting the concrete
+        // path) while this only degrades the read and continues cleanup.
         if let Err(error) = self.replay_pending_revocations() {
             eprintln!("[web-access] stop ignores pending-revocation replay failure: {error}");
         }
@@ -1285,11 +1386,12 @@ impl RemoteControlManager {
         if let Some(config) = current_config.as_ref() {
             match queue_pending_revocation(config) {
                 Ok(()) => self.sync_pending_revocation_backlog(config),
-                // Round-15 复审:满队不楔停用(恢复路径,理由同 refresh
-                // 臂);代价与 refresh 臂同一口径如实记录——这次停用的吊
-                // 销意图没有落在任何一侧,endpoint 在 relay 侧保持可 join
-                // 到过期/人工清理。同键不同密钥冲突保持 round-14 的
-                // fail-closed 边界。
+                // Round-15 review: a full queue does not wedge stop (a recovery path; same
+                // rationale as the refresh arm); the cost is recorded honestly with the same
+                // caliber as the refresh arm — this stop's revocation intent landed nowhere,
+                // and the endpoint stays joinable on the relay until expiry or manual
+                // cleanup. Same-key-different-secret conflicts keep the round-14 fail-closed
+                // boundary.
                 Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {
                     eprintln!("[web-access] stop ignores full pending-revocation queue: {error}");
                 }
@@ -1298,7 +1400,7 @@ impl RemoteControlManager {
         }
         // A failed removal leaves the old config authoritative. Its queued
         // entry therefore remains dormant instead of revoking a live link.
-        // 损坏的配置文件同样会被删除:停用之后磁盘上不再残留无法解析的状态。
+        // A corrupt config file is deleted too: after stop, no unparseable state remains on disk.
         remove_config()?;
         let endpoint = {
             let mut inner = self.inner.lock();
@@ -1314,8 +1416,9 @@ impl RemoteControlManager {
         if let Err(error) = self.replay_pending_revocations() {
             eprintln!("[web-access] stop ignores pending-revocation replay failure: {error}");
         }
-        // Round-15 复审:停用本体已完成(配置已删、endpoint 已拆),账本
-        // 文件删除失败只降级——报 Err 会让用户对一次已生效的停用看到失败。
+        // Round-15 review: the stop itself is complete (config deleted, endpoint torn
+        // down), so a ledger-file removal failure only degrades — returning Err would
+        // make the user see a failure for a stop that already took effect.
         if let Err(error) = remove_rpc_ledger() {
             eprintln!("[web-access] stop ignores rpc-ledger removal failure: {error}");
         }
@@ -1358,15 +1461,19 @@ impl RemoteControlManager {
     fn replay_pending_revocations(&self) -> Result<(), String> {
         let ledger = load_pending_revocations_for_replay()?;
         let current = load_config()?;
-        // 回放装载的账本是本进程的权威副本:确认针对它整体落盘,见
-        // finish_pending_revocation。Round-14 复审 minor:装载改为**并集
-        // 且内存优先**——同键同值条目以账本为准,账本没有而内存持有的
-        // 条目(抢救降级后重存盘失败、只在内存里的兄弟条目)必须保留,
-        // 否则 start 之后第二次生命周期调用的回放会用磁盘快照整个覆盖
-        // 内存,降级条目从两侧同时消失;同键不同值的冲突保留内存版本
-        // (在飞工人重试的正是它)。确认工人删除条目时内存与磁盘同批
-        // 更新(finish_pending_revocation 整体落盘),不存在「内存已被
-        // 确认、磁盘仍留残条」的复活面;生命周期锁串行化回放与确认。
+        // The ledger loaded at replay is this process's authoritative copy: acknowledgement
+        // persists the whole of it — see finish_pending_revocation. Round-14 review minor:
+        // loading changed to **union with memory-priority** — same-key same-value entries
+        // defer to the ledger, while entries the ledger lacks but memory holds (siblings
+        // left memory-only after a salvage degradation's re-persist failed) must be kept,
+        // otherwise the replay of the second lifecycle call after start would overwrite
+        // memory wholesale with the disk snapshot and degraded entries would vanish from
+        // both sides at once; same-key different-value conflicts keep the memory version
+        // (it is exactly what the in-flight worker is retrying). When the ack worker
+        // deletes an entry, memory and disk are updated in the same batch
+        // (finish_pending_revocation persists the whole ledger), so there is no
+        // "memory already acked, disk still holds the residue" resurrection surface; the
+        // lifecycle lock serializes replay and acknowledgement.
         {
             let mut inner = self.inner.lock();
             let held = std::mem::take(&mut inner.pending_revocation_backlog);
@@ -1378,6 +1485,10 @@ impl RemoteControlManager {
                     merged.push(entry.clone());
                 }
             }
+            // Round-29 review MINOR-1: the union of salvage-leftover memory entries
+            // and the disk ledger can cross the validation cap — keep the cap
+            // binding right where the merged backlog is adopted.
+            cap_pending_revocation_backlog(&mut merged);
             inner.pending_revocation_backlog = merged;
         }
         for pending in eligible_pending_revocations(&ledger, current.as_ref()) {
@@ -1422,16 +1533,18 @@ impl RemoteControlManager {
         Ok(())
     }
 
-    /// Round-12 复审 P2:`queue_pending_revocation` 只写盘、不同步进程内
-    /// backlog——磁盘权威账本里刚排队的条目要等 queue 之后的
-    /// `replay_pending_revocations` 重同步才进入内存。若那次 replay 失败
-    /// (refresh 的 `?` 在此中止、stop 记录后继续),后续任一 ack 的整体
-    /// 落盘会以不含该条目的陈旧 backlog 覆盖磁盘,刚排队的吊销记录被
-    /// 永久删除,旧 endpoint 的 `desktop_secret` 在 relay 侧无限期保持
-    /// 有效——恰是整体落盘语义要保护的资产。queue 成功后(调用方持有
-    /// lifecycle 锁)直接同步推进 backlog,replay 重同步退化为防御性
-    /// 措施。同 key 旧条目先移除:queue 对同 key 不同内容返回 Err,能
-    /// 走到这里即同内容,收敛方向唯一。
+    /// Round-12 review P2: `queue_pending_revocation` only writes to disk and does not
+    /// sync the in-process backlog — an entry just queued into the disk-authoritative
+    /// ledger only enters memory when `replay_pending_revocations` re-syncs after the
+    /// queue. If that replay fails (refresh's `?` aborts here; stop logs and continues),
+    /// any later ack's whole-ledger persist would overwrite the disk with a stale backlog
+    /// lacking the entry, permanently deleting the just-queued revocation record and
+    /// keeping the old endpoint's `desktop_secret` valid on the relay indefinitely —
+    /// exactly the asset the whole-ledger persist semantics protect. After a successful
+    /// queue (the caller holds the lifecycle lock) the backlog is advanced directly in
+    /// sync, demoting the replay re-sync to a defensive measure. Same-key old entries are
+    /// removed first: queue returns Err for a same-key different-content entry, so
+    /// reaching here means same content and the convergence direction is unique.
     fn sync_pending_revocation_backlog(&self, config: &WebAccessConfig) {
         let pending = PendingRevocation::from(config);
         let key = pending_revocation_key(&pending);
@@ -1440,6 +1553,7 @@ impl RemoteControlManager {
             .pending_revocation_backlog
             .retain(|entry| pending_revocation_key(entry) != key);
         inner.pending_revocation_backlog.push(pending);
+        cap_pending_revocation_backlog(&mut inner.pending_revocation_backlog);
     }
 
     fn finish_pending_revocation(
@@ -1450,14 +1564,17 @@ impl RemoteControlManager {
     ) {
         let _lifecycle = self.lifecycle.lock();
         if acknowledged {
-            // Round-11 复审 minor:确认针对进程内权威账本
-            // (`pending_revocation_backlog`)整体落盘,而不是「重读磁盘→删
-            // 一条→重写」——抢救降级后磁盘上没有账本,重读式确认会拿空
-            // 账本清掉仍在内存的兄弟条目,重启后这批待吊销记录全部丢失
-            // (旧 endpoint 在 relay 侧保持可加入)。落盘失败把全集(含本
-            // 条)放回内存,留待下个生命周期重试;回放/queue 时账本已随
-            // 盘写同步,重启亦从磁盘重建。生命周期锁串行化两个确认工人
-            // 的取-存窗口,不存在并发丢失。
+            // Round-11 review minor: acknowledgement persists the whole of the in-process
+            // authoritative ledger (`pending_revocation_backlog`), not "re-read disk →
+            // remove one → rewrite" — after a salvage degradation there is no ledger on
+            // disk, and a re-read-style acknowledgement would take an empty ledger and
+            // clear sibling entries still in memory, losing this whole batch of pending
+            // revocations across a restart (the old endpoint stays joinable on the relay
+            // side). On persist failure the full set (including this entry) goes back into
+            // memory for the next lifecycle's retry; replay/queue keep the ledger in
+            // lockstep with disk writes, and restarts rebuild it from disk. The lifecycle
+            // lock serializes both ack workers' take-store windows, so nothing is
+            // concurrently lost.
             let endpoint_id = pending.endpoint_id.clone();
             let mut remaining = {
                 let mut inner = self.inner.lock();
@@ -1556,9 +1673,10 @@ impl RemoteControlManager {
         reservation.revalidate()
     }
 
-    /// 绑定/兑换时点的授权旗标复核:reserve 与 session 创建之间用户可能
-    /// 已撤销授权,一次性句柄的 TTL 窗口内不得让撤权前的 reservation 仍把
-    /// host 目录绑进新 session。
+    /// Authorization-flag recheck at bind/redeem time: the user may have revoked
+    /// authorization between reserve and session creation; within the one-shot handle's
+    /// TTL window a pre-revocation reservation must not bind the host directory into a
+    /// new session.
     pub(crate) fn require_host_workspace_authorized(&self) -> Result<(), String> {
         let inner = self.inner.lock();
         let authorized = inner
@@ -1609,8 +1727,9 @@ impl RemoteControlManager {
         self.cache_web_attachment_entry(result, None)
     }
 
-    /// 与 `cache_web_attachment` 同语义，但附件源自浏览器本机上传：登记其
-    /// 桌面暂存目录，缓存条目消亡（消费/淘汰/清空）时一并删除目录。
+    /// Same semantics as `cache_web_attachment`, but the attachment comes from a
+    /// browser-local upload: its desktop staging directory is registered and deleted
+    /// together with the cache entry's death (consumption/eviction/clearing).
     pub fn cache_web_attachment_from_upload(
         &self,
         result: crate::features::files::file_ingest::IngestResult,
@@ -1709,11 +1828,12 @@ impl RemoteControlManager {
             if !unique.insert(handle.as_str()) {
                 return Err("远程控制附件句柄重复".into());
             }
-            // Round-11 复审 minor:拒绝串只回显桌面自己铸造的形状
-            // (`attachment_<字母数字>`)。调用方字节原样进入错误链,经
-            // fold_web_chat_error 的忙碌锚点折叠后,含
-            // `reserve Web chat turn: …` 段的句柄会把硬失败伪装成瞬态
-            // 忙碌,驱动手机侧对从未准入的 turn 做远端和解。
+            // Round-11 review minor: the refusal string only echoes the desktop-minted
+            // shape (`attachment_<alphanumeric>`). Caller bytes otherwise enter the error
+            // chain verbatim, and after fold_web_chat_error's busy-anchor folding a handle
+            // containing a `reserve Web chat turn: …` segment would disguise a hard failure
+            // as transient busyness, driving the phone to remotely reconcile a turn that
+            // was never admitted.
             if !attachment_handle_is_well_formed(handle) {
                 return Err("远程控制附件句柄不存在或已过期".into());
             }
@@ -1777,9 +1897,10 @@ impl RemoteControlManager {
         )
     }
 
-    /// 累积浏览器本机文件的一个有界分块；最后一块 `commit` 时返回完整文件名
-    /// 与字节。单文件上限收紧为 `file_ingest::MAX_FILE_BYTES`，避免传完
-    /// 20 MiB 才拿到一个 oversize 降级附件。
+    /// Accumulates one bounded chunk of a browser-local file; the final chunk's `commit`
+    /// returns the complete file name and bytes. The per-file cap is tightened to
+    /// `file_ingest::MAX_FILE_BYTES` so the transfer does not finish 20 MiB only to yield
+    /// an oversize degraded attachment.
     pub fn append_web_attachment_upload(
         &self,
         upload_id: &str,
@@ -1802,8 +1923,8 @@ impl RemoteControlManager {
         )
     }
 
-    /// 取消一个进行中的浏览器本机上传并释放其内存缓冲。对未知或已完成的
-    /// ID 幂等——迟到的取消不应产生错误。
+    /// Cancels an in-progress browser-local upload and releases its memory buffer.
+    /// Idempotent for unknown or already-finished ids — a late cancel must not error.
     pub fn abort_web_attachment_upload(&self, upload_id: &str) {
         discard_web_attachment_upload(&mut self.inner.lock(), upload_id);
     }
@@ -1839,19 +1960,24 @@ impl RemoteControlManager {
         if inner.web_session_downloads.contains_key(&download_id) {
             return Err("requested Session download id is already active".into());
         }
-        // Round-25 复审 MINOR:逐出此前只接在槽位门上——字节门
-        // (MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES)失败时同样楔住重试:一个
-        // ≥128 MiB 的丢响应孤儿把 active_bytes 顶过总上限而槽位数不足,
-        // 逐出永不触发,重试硬失败到 TTL Reaper(与本修复要消除的失败面
-        // 相同,只是换了维度)。逐出统一接在容量门(槽位+字节双维度)上:
-        // 容量检查失败即先逐出最旧的过期 ready 孤儿再重验,直至容量满足
-        // 或无可逐出者(按容量门的真实错误失败,保留原文案);每个受害者
-        // 记一条诊断——此前逐出静默,手机侧只见「不存在或已过期」。
+        // Round-25 review MINOR: eviction previously hooked only into the slot gate — the
+        // byte gate (MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES) failing wedged retries just the
+        // same: one ≥128 MiB lost-response orphan pushed active_bytes over the total cap
+        // while the slot count stayed under, so eviction never fired and retries hard-failed
+        // to the TTL Reaper (the same failure surface this fix removes, just in another
+        // dimension). Eviction now hooks uniformly into the capacity gate (slots + bytes):
+        // on a capacity-check failure the oldest expired ready orphans are evicted first and
+        // the check re-run, until capacity is satisfied or nothing is evictable (failing with
+        // the capacity gate's real error, original copy kept); each victim gets one diagnostic
+        // — eviction was previously silent, with the phone seeing only "does not exist or has
+        // expired".
         let mut evictions = 0_usize;
-        // Round-28 复审 MINOR-1:逐出后的容量门失败与序列化文件创建失败
-        // 原先以 `?` 直接出函数,已发生的逐出丢诊断(与本段自己的「每个
-        // 受害者记一条诊断」相悖)。收进闭包统一出口,无论成败都先释放
-        // 锁、按计数补齐逐条诊断,再传播结果。
+        // Round-28 review MINOR-1: a capacity-gate failure after eviction and a serialized-
+        // file creation failure previously exited the function via `?` directly, losing the
+        // diagnostics of evictions that already happened (contradicting this section's own
+        // "one diagnostic per victim"). Funneled into one closure exit: on success or failure
+        // the lock is released first, per-count diagnostics are filled in, and only then is
+        // the result propagated.
         let begin = (|| -> Result<WebSessionDownloadReservation, String> {
             while ensure_web_session_download_capacity(&inner, reserved_bytes).is_err() {
                 if !transfer::evict_oldest_ready_session_download(&mut inner) {
@@ -1890,9 +2016,10 @@ impl RemoteControlManager {
                 committed: false,
             })
         })();
-        // Round-27 复审 M2:诊断在释放管理锁之后落盘(与 cancelled 点的
-        // 「锁外 record」同一口径)——白名单生效后 record_backend 会做
-        // append+flush 文件 I/O,不得在逐出循环的临界区内执行。
+        // Round-27 review M2: diagnostics persist after the manager lock is released (the
+        // same caliber as the cancelled point's "record outside the lock") — once the
+        // allowlist takes effect, record_backend performs append+flush file I/O and must not
+        // run inside the eviction loop's critical section.
         drop(inner);
         for _ in 0..evictions {
             crate::features::sessions::diagnostics::record_backend(
@@ -2048,9 +2175,9 @@ impl RemoteControlManager {
                 relay_url: remote_relay_ws_url(),
                 web_client_connected: false,
                 host_workspace_authorized: false,
-                // Round-15 复审 NIT:原 idle_error 字段从未被赋过非 None
-                // 值(恒等 None + or_else),已删除;idle 错误唯一来源是
-                // policy_error。
+                // Round-15 review NIT: the old idle_error field was never assigned a
+                // non-None value (always None + or_else) and was removed; the only source of
+                // idle errors is policy_error.
                 last_error: self.policy_error.clone(),
                 last_error_code: None,
             }
@@ -2155,11 +2282,12 @@ impl RemoteControlManager {
         let mut next_ledger = inner.rpc_ledger.clone();
         next_ledger.acknowledge(request_id, &fingerprint)?;
         if let Err(error) = persist_rpc_ledger(&next_ledger) {
-            // 持久化失败是瞬时的(磁盘满/EACCES 等),与 handle_rpc_request
-            // 的准入路径同一裁决:响应但不写 Complete 缓存。命令尚未执行,
-            // 同一 client_request_id 的重试会经 Pending 臂重派发并重走
-            // begin(settle 收口解除派发代标记);缓存成 Complete 会把这次
-            // 瞬时失败永久重放给手机(replay poisoning)。
+            // A persist failure is transient (disk full/EACCES etc.), adjudicated the same
+            // way as handle_rpc_request's admission path: respond but do not write the
+            // Complete cache. The command has not executed, so a retry with the same
+            // client_request_id redisperses through the Pending arm and re-runs begin (the
+            // settle exit clears the dispatch generation marker); caching it as Complete
+            // would replay this transient failure to the phone forever (replay poisoning).
             Self::settle_begin_persist_failure(&mut inner, request_id, &lease_id, &error);
             return Ok(false);
         }
@@ -2199,15 +2327,20 @@ impl RemoteControlManager {
                     completion,
                     ..
                 }) => {
-                    // Round-5 复审 M1:TTL 扫描会把仍在执行(或恰好刚完成)的
-                    // 请求先写成超时占位。真实完成必须取代占位而不是被幂等吞
-                    // 掉,否则手机重放这个 id 拿到的是过期超时(「已释放」),
-                    // 真实结果永远到不了手机。只有占位可被取代:占位被替换后
-                    // 第二次 complete 仍走幂等忽略;确定性拒绝等真终态不可被
-                    // 伪造的 complete 覆盖(命令未派发,不存在真实完成)。
-                    // 替换是有意「存而不发」:手机已收到超时终态,同
-                    // client_request_id 的主动双发会破坏单响应契约;手机
-                    // 重放该 id 时,Complete 臂会回放这里替换后的真实结果。
+                    // Round-5 review M1: the TTL sweep writes timeout placeholders first for
+                    // requests still executing (or having just finished). A real completion must
+                    // replace the placeholder instead of being swallowed by idempotency, or a
+                    // phone replaying this id gets a stale timeout ("released") and the real
+                    // result never reaches it. Only a placeholder is replaceable: after the
+                    // placeholder is replaced, a second complete still takes the idempotent-ignore
+                    // path; real terminal states like deterministic refusals can never be covered
+                    // by a fabricated complete (the command was never dispatched, so no real
+                    // completion exists).
+                    // The replacement deliberately "stores without sending": the phone already
+                    // received the timeout terminal state, and proactively double-sending the
+                    // same client_request_id would break the single-response contract; when the
+                    // phone replays the id, the Complete arm replays the real result substituted
+                    // here.
                     if Self::rpc_completion_is_in_flight_timeout(completion) {
                         let fingerprint = fingerprint.clone();
                         inner.rpc_cache.insert(
@@ -2224,9 +2357,10 @@ impl RemoteControlManager {
                                 swept_acknowledged: false,
                             },
                         );
-                        // Round-7 复审:替换插入与 Pending→Complete 臂同一
-                        // 记账对称性——插入后立即按容量裁剪,避免一次 ≤2MiB
-                        // 的迟到真实结果把缓存字节顶过上限直到下一次插入。
+                        // Round-7 review: the replacement insertion keeps the same accounting
+                        // symmetry as the Pending→Complete arm — prune by capacity right after
+                        // inserting, so one ≤2MiB late real result cannot push cache bytes over
+                        // the cap until the next insertion.
                         prune_rpc_cache(&mut inner);
                     }
                     return Ok(());
@@ -2333,12 +2467,13 @@ impl RemoteControlManager {
                 endpoint.web_client_connected = false;
                 endpoint.lease_id = None;
                 endpoint.fresh_baseline_seq = None;
-                // Round-14 复审 NIT:与 error 帧入口同口径过界(本地格式化
-                // 文本常态远小于界,一致性收口,防未来经此臂接入 relay 侧
-                // 自由文本)。
+                // Round-14 review NIT: bound through the same caliber as the error-frame
+                // entrance (locally formatted text is normally far below the bound; one
+                // consistent funnel guards against future relay-side free text entering
+                // through this arm).
                 endpoint.last_error = error.map(bound_relay_text);
-                // 字段契约:任何不携带码的错误写入都必须清掉旧码,防止旧恢复
-                // 码被映射到新的错误文本上(round-5 复审 minor)。
+                // Field contract: any error write carrying no code must clear the old one, so
+                // an old recovery code is never mapped onto new error text (round-5 review minor).
                 endpoint.last_error_code = None;
             }
         }
@@ -2362,12 +2497,14 @@ impl RemoteControlManager {
         } else {
             ""
         };
-        // Relay 的 reject 帧不携带 endpoint_id(作用于本 socket 的注册);
-        // relay_client 转发前会补戳本 socket 注册的 endpoint,使显式匹配
-        // gate 生效(轮换竞态中迟到的终结帧从此被丢弃,不会误伤新 endpoint)。
-        // 空 endpoint_id 的放行分支仅作为对未戳帧的纵深防御保留;其余 error
-        // 帧与所有其他消息仍要求显式匹配当前 endpoint,防止他端点帧串扰或
-        // 瞬时错误抖动状态。
+        // The relay's reject frame carries no endpoint_id (it applies to this socket's
+        // registration); relay_client stamps this socket's registered endpoint before
+        // forwarding, making the explicit-match gate effective (a late terminal frame in a
+        // rotation race is dropped from now on and can never hurt the new endpoint). The
+        // allow branch for an empty endpoint_id remains only as defense-in-depth for
+        // un-stamped frames; all other error frames and every other message still require
+        // explicitly matching the current endpoint, preventing cross-endpoint frame
+        // crosstalk or transient errors jittering the state.
         let terminal_registration_error =
             endpoint_id.is_empty() && TERMINAL_REGISTRATION_ERROR_CODES.contains(&error_code);
         if !self.is_current_endpoint(endpoint_id) && !terminal_registration_error {
@@ -2383,15 +2520,17 @@ impl RemoteControlManager {
             "web_client_disconnected" => self.handle_web_disconnected(&value),
             "rpc_request" => self.handle_rpc_request(&value),
             "event_subscribe" | "event_unsubscribe" => {
-                // Round-11 复审 minor:订阅帧与 rpc_request 同一接替竞态面
-                // (PR 已为 rpc_request/client_ready 加门,唯独订阅帧缺席)
-                // ——迟到的死 lease 订阅帧(relay 按 socket 打当时 lease 戳)
-                // 会让退订摘掉新客户端刚装的订阅、订阅回填已被替换的名单。
-                // Round-14 复审 minor:门检不在此处单独持锁——先验锁再放行
-                // 会在两锁之间留出 takeover 窗口(本文件 rpc 门注释点名的
-                // 形态),窗口内接替发生时迟到帧仍可摘掉新 lease 刚装的
-                // 订阅。门检移入 handle_event_subscription,与订阅变更
-                // 同一把锁、同一次获取。
+                // Round-11 review minor: subscription frames share rpc_request's takeover-race
+                // surface (the PR gated rpc_request/client_ready but missed subscription frames)
+                // — a late dead-lease subscription frame (the relay stamps the lease at socket
+                // time) would let the unsubscribe strip a subscription the new client just
+                // installed, and the subscription backfill would replace the wrong list.
+                // Round-14 review minor: the gate check does not take its own lock here —
+                // verifying the lease first and then admitting would leave a takeover window
+                // between the two locks (the shape this file's rpc-gate comment names); within
+                // that window a takeover lets the late frame still strip a subscription the new
+                // lease just installed. The gate check moved into handle_event_subscription,
+                // under the same lock and the same acquisition as the subscription change.
                 self.handle_event_subscription(
                     &value,
                     value.get("type").and_then(Value::as_str) == Some("event_subscribe"),
@@ -2402,10 +2541,12 @@ impl RemoteControlManager {
             "desktop_endpoint_replaced" => self.handle_replaced(endpoint_id),
             "error" => {
                 if error_code == "endpoint_revoked" {
-                    // Relay 明确告知注册命中墓碑:reject 帧不携带 endpoint_id,
-                    // 解析当前 endpoint 后走与 desktop_endpoint_revoked 相同的
-                    // 完整清理,否则本地配置会对一个不可能成功的注册永远重试。
-                    // (先取出 id 再调用,不能把锁的临时留给 if let 整句。)
+                    // The relay explicitly says the registration hit a tombstone: the reject
+                    // frame carries no endpoint_id, so resolve the current endpoint first and
+                    // then run the same full cleanup as desktop_endpoint_revoked — otherwise
+                    // the local config would retry a registration that can never succeed.
+                    // (Take the id out before calling; the lock's temporary must not live for
+                    // the whole if-let statement.)
                     let current = self
                         .inner
                         .lock()
@@ -2421,10 +2562,10 @@ impl RemoteControlManager {
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or("relay rejected Web access request");
-                // 注册被确定性拒绝时 run_loop 已停止重连;给出可操作的恢复
-                // 路径,并且该原因必须保持粘性(run_loop 终止路径不再发送
-                // Connection 事件,last_error 不会被「relay connection lost」
-                // 覆盖)。
+                // When a registration is deterministically refused, run_loop has stopped
+                // reconnecting; provide an actionable recovery path, and the reason must stay
+                // sticky (the run_loop termination path no longer sends Connection events, so
+                // last_error is never overwritten by "relay connection lost").
                 self.set_endpoint_error_with_code(
                     relay_registration_error_code(error_code),
                     relay_registration_error_reason(error_code, relay_message),
@@ -2614,10 +2755,12 @@ impl RemoteControlManager {
         // Subscribe/unsubscribe bookkeeping only; no desktop-side notification
         // is needed for unsubscribe.
         let mut inner = self.inner.lock();
-        // Round-14 复审 minor:lease 门与订阅变更同一把锁、同一次获取
-        // (与 rpc_request 的准入同口径)。帧 lease 与活跃 lease 不符即
-        // 丢弃;无活跃 lease 时保持放行(主路径本无可回复对象,订阅在
-        // 首次 join 后才可能被消费,语义与既有实现一致)。
+        // Round-14 review minor: the lease gate takes the same lock, in the same
+        // acquisition, as the subscription change (same caliber as rpc_request's
+        // admission). A frame whose lease does not match the active lease is dropped; with
+        // no active lease it keeps passing (the main path has no replyable target anyway,
+        // and a subscription can only be consumed after the first join — consistent with
+        // the existing semantics).
         let lease_id = value
             .get("lease_id")
             .and_then(Value::as_str)
@@ -2701,13 +2844,17 @@ impl RemoteControlManager {
         }
     }
 
-    /// 墓碑分支的结算收口:完成值计算与「是否进 Complete 缓存」的判定在这
-    /// 一个函数里,`handle_rpc_request` 的墓碑臂与测试共同消费。只有「墓碑
-    /// 自身指纹 + 已确认」的 outcome_unknown 可缓存;指纹冲突按次重算、绝不
-    /// 入缓存——缓存到墓碑指纹下会在重启后把探针的冲突重放给合法指纹,缓
-    /// 存到来方指纹下又会经 Complete 分支抢占合法指纹的重派发(见
-    /// `tombstone_completion_cacheable`)。测试直接驱动本函数钉住决策本身;
-    /// 三个接线点都只剩对它的平凡调用,改动即审。
+    /// Settlement funnel for the tombstone branch: the completion value computation and
+    /// the "does it enter the Complete cache" judgment live in this one function, consumed
+    /// by handle_rpc_request's tombstone arm and by tests. Only the outcome_unknown of
+    /// "tombstone's own fingerprint + acknowledged" is cacheable; fingerprint conflicts
+    /// are recomputed per request and never cached — caching under the tombstone
+    /// fingerprint would replay the probe's conflict against the legitimate fingerprint
+    /// after a restart, and caching under the incoming fingerprint would let the Complete
+    /// branch preempt the legitimate fingerprint's redispatch (see
+    /// `tombstone_completion_cacheable`). Tests drive this function directly to pin the
+    /// decision itself; the three wiring sites are now trivial calls into it, so any
+    /// change is reviewable at a glance.
     fn settle_tombstone_outcome(
         inner: &mut Inner,
         request_id: &str,
@@ -2721,10 +2868,12 @@ impl RemoteControlManager {
         completion
     }
 
-    /// 准入拒绝分支的结算收口:cacheable(确定性)拒绝进 Complete 缓存,
-    /// 瞬时拒绝(在途饱和、Session/账本暂不可用、触盘的 kb 路径校验)只应答
-    /// 本次——缓存瞬时拒绝会让同 client_request_id 的重试永远重放它,直到
-    /// FIFO 淘汰。收口理由同 [`Self::settle_tombstone_outcome`]。
+    /// Settlement funnel for the admission-refusal branch: cacheable (deterministic)
+    /// refusals enter the Complete cache, while transient refusals (in-flight saturation,
+    /// Session/ledger temporarily unavailable, the disk-touching kb path validation)
+    /// answer only this request — caching a transient refusal would make retries with the
+    /// same client_request_id replay it forever, until FIFO eviction. Same funnel
+    /// rationale as [`Self::settle_tombstone_outcome`].
     fn settle_admission_rejection(
         inner: &mut Inner,
         request_id: &str,
@@ -2737,16 +2886,20 @@ impl RemoteControlManager {
         rejection.completion.clone()
     }
 
-    /// begin(副作用屏障)分支的结算收口:账本持久化失败是瞬时的,响应但不
-    /// 进 Complete 缓存——命令尚未执行,重试会重新派发并重走 begin;缓存会
-    /// 把这一次失败永久重放(与准入路径曾有的 replay poisoning 同类)。错误
-    /// 文本在这里折叠存储根前缀:它会作为 rpc_response.error 到达手机。
-    /// Round-7 复审:收口同时解除 Pending 的派发代标记——失败后 Pending 仍
-    /// 带着当前派发代,同 id 重试会在 Pending 臂被幂等吞掉(静默直到 TTL
-    /// 占位顶成伪造超时),与上面「重试重新派发」的承诺相抵。解除后重试经
-    /// Pending 臂重派发、重走 begin;begin 失败意味着命令未被执行(WebView
-    /// 只在 begin 返回 true 后执行),重派发无双执行风险。收口理由同
-    /// [`Self::settle_tombstone_outcome`]。
+    /// Settlement funnel for the begin (side-effect barrier) branch: a ledger persist
+    /// failure is transient — respond but do not enter the Complete cache. The command has
+    /// not executed, so a retry redispatches and re-runs begin; caching would replay this
+    /// one failure forever (the same class as the admission path's old replay poisoning).
+    /// The error text folds the storage-root prefix here: it reaches the phone as
+    /// rpc_response.error.
+    /// Round-7 review: the funnel also clears Pending's dispatch generation marker — after
+    /// a failure Pending still carries the current generation, so a same-id retry would be
+    /// swallowed idempotently at the Pending arm (silent until the TTL placeholder hardens
+    /// into a fabricated timeout), contradicting the "retry redispatches" promise above.
+    /// After clearing, the retry redisperses through the Pending arm and re-runs begin; a
+    /// begin failure means the command never executed (the WebView executes only after
+    /// begin returns true), so redispatch carries no double-execution risk. Same funnel
+    /// rationale as [`Self::settle_tombstone_outcome`].
     fn settle_begin_persist_failure(
         inner: &mut Inner,
         request_id: &str,
@@ -2775,9 +2928,10 @@ impl RemoteControlManager {
         completion
     }
 
-    /// 是否为 TTL 扫描写入的超时占位(唯一的 `rpc_timed_out` 产出点在
-    /// `handle_rpc_request` 的扫描)。`complete_rpc` 据此允许真实完成取代
-    /// 占位;确定性拒绝等真终态码各不相同,不会被误取代。
+    /// Whether this is a timeout placeholder written by the TTL sweep (the only
+    /// `rpc_timed_out` producer is handle_rpc_request's sweep). `complete_rpc` uses this
+    /// to let a real completion replace the placeholder; real terminal codes like
+    /// deterministic refusals all differ and are never mistakenly replaced.
     fn rpc_completion_is_in_flight_timeout(completion: &RpcCompletion) -> bool {
         !completion.ok && completion.error_code.as_deref() == Some(RPC_TIMED_OUT_CODE)
     }
@@ -2851,11 +3005,12 @@ impl RemoteControlManager {
             let endpoint_id = endpoint.config.endpoint_id.clone();
             let sender = endpoint.sender.clone();
             let bridge_generation = inner.bridge_generation.clone();
-            // 在途请求超过 TTL 后转为超时占位,释放 in-flight 槽位,并阻止
-            // 同 id 重放触发重派发(幂等去重仍成立)。占位不是终态真理:
-            // 真实完成晚于扫描到达时,complete_rpc 会取代占位(Round-5 复审
-            // M1),所以迟到 begin/complete 的「幂等忽略」只对已取代后的
-            // 正常完成值成立。
+            // An in-flight request past its TTL turns into a timeout placeholder, freeing
+            // the in-flight slot and blocking same-id replay from triggering a redispatch
+            // (idempotent dedup still holds). The placeholder is not terminal truth: when a
+            // real completion arrives after the sweep, complete_rpc replaces the placeholder
+            // (Round-5 review M1), so the "idempotent ignore" for late begin/complete holds
+            // only for normal completion values after a replacement.
             let now = Instant::now();
             let expired: Vec<String> = inner
                 .rpc_cache
@@ -2872,9 +3027,10 @@ impl RemoteControlManager {
             for id in expired {
                 if let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get(&id) {
                     let fingerprint = pending.fingerprint.clone();
-                    // Round-14 复审 minor:已受理(已开始执行)的请求打标,
-                    // 代际变更臂据此改写为 outcome_unknown;未受理占位不打
-                    // 标(超时对从未执行的请求是准确答案)。
+                    // Round-14 review minor: requests that were acknowledged (already started
+                    // executing) get marked; the generation-change arm rewrites those into
+                    // outcome_unknown. Unacknowledged placeholders are not marked (a timeout is
+                    // an accurate answer for a never-executed request).
                     let swept_acknowledged = pending.acknowledged_generation.is_some();
                     inner.rpc_cache.insert(
                         id,
@@ -2894,13 +3050,15 @@ impl RemoteControlManager {
                 .values()
                 .filter(|entry| matches!(entry, RpcCacheEntry::Pending(_)))
                 .count();
-            // 与 client_ready 相同的 lease 校验:携带已被接替 lease 的
-            // rpc_request 是接替竞态中的迟到帧,直接忽略,不进入幂等缓存。
-            // 校验必须在准入同一把锁内:先单独验锁再准入会在两锁之间留出
-            // takeover 窗口,迟到帧仍可进入缓存并被分发。takeover 时
-            // pending RPC 会先重打新 lease 再被重投,不会误伤重投路径;
-            // 无活跃 lease 时保持原行为(主准入路径本来就没有可回复的
-            // endpoint)。
+            // The same lease validation as client_ready: an rpc_request carrying a lease
+            // that has already been superseded is a late frame in a takeover race — ignore it
+            // directly, without entering the idempotency cache.
+            // The validation must sit under the same lock as admission: validating the lease
+            // separately and then admitting leaves a takeover window between the two locks
+            // where a late frame could still enter the cache and be dispatched. On takeover,
+            // pending RPCs are re-stamped with the new lease before being re-delivered, so
+            // the redelivery path is never hurt; with no active lease the original behavior
+            // is kept (the main admission path has no replyable endpoint anyway).
             if !rpc_request_targets_active_lease(&inner, &lease_id) {
                 return;
             }
@@ -2923,10 +3081,10 @@ impl RemoteControlManager {
                             && pending.dispatched_generation != bridge_generation
                         {
                             pending.dispatched_generation = bridge_generation.clone();
-                            // 重派发必须重置 TTL 时钟:Pending 可能是 begin
-                            // 持久化失败后的重试臂,继承最初入场的
-                            // dispatched_at 会让窗口尾部的重试几乎立刻被
-                            // TTL 扫描伪造成 rpc_timed_out。
+                            // Redispatch must reset the TTL clock: a Pending entry may be the
+                            // retry arm after a begin persist failure, and inheriting the original
+                            // dispatched_at would let retries near the window's end be fabricated
+                            // into rpc_timed_out by the TTL sweep almost immediately.
                             pending.dispatched_at = Instant::now();
                             RpcRequestAction::Dispatch(RpcDispatch {
                                 request_id: request_id.clone(),
@@ -2957,8 +3115,9 @@ impl RemoteControlManager {
                 None => {
                     if let Some(tombstone) = inner.rpc_ledger.get(&request_id).cloned() {
                         if tombstone.fingerprint != fingerprint || tombstone.acknowledged {
-                            // 缓存判定收口在 settle_tombstone_outcome(只有
-                            // 自身指纹+已确认可缓存,冲突按次重算)。
+                            // The caching decision is funneled into settle_tombstone_outcome
+                            // (only own-fingerprint + acknowledged is cacheable; conflicts recompute
+                            // per request).
                             let completion = Self::settle_tombstone_outcome(
                                 &mut inner,
                                 &request_id,
@@ -2981,10 +3140,11 @@ impl RemoteControlManager {
                                 in_flight_count,
                             );
                             if let Some(rejection) = rejection {
-                                // 瞬时拒绝(在途饱和、Session 暂不可用)只回复
-                                // 本次请求;缓存会让同 client_request_id 的重试
-                                // 永远重放这个拒绝,直到 FIFO 淘汰。结算收口在
-                                // settle_admission_rejection,测试直接钉住它。
+                                // A transient refusal (in-flight saturation, Session temporarily
+                                // unavailable) answers only this request; caching would make retries
+                                // with the same client_request_id replay the refusal forever, until
+                                // FIFO eviction. The settlement funnels into
+                                // settle_admission_rejection, which tests pin directly.
                                 let completion = Self::settle_admission_rejection(
                                     &mut inner,
                                     &request_id,
@@ -3030,9 +3190,9 @@ impl RemoteControlManager {
                             }
                             Ok(NewRpcAdmission::Durable(next_ledger)) => {
                                 if let Err(error) = persist_rpc_ledger(&next_ledger) {
-                                    // 持久化失败是瞬时的:不写响应缓存,同
-                                    // client_request_id 的重试重新走完整准入,
-                                    // 而不是永远重放这一次失败。
+                                    // A persist failure is transient: no response cache write — a
+                                    // retry with the same client_request_id walks the full admission
+                                    // again, instead of replaying this one failure forever.
                                     let completion = rpc_error_completion(
                                         "rpc_ledger_unavailable",
                                         format!(
@@ -3063,7 +3223,7 @@ impl RemoteControlManager {
                                 }
                             }
                             Err(error) => {
-                                // 同上:账本不可用是瞬时状态,不缓存该拒绝。
+                                // Same as above: ledger unavailability is a transient state, so the refusal is not cached.
                                 let completion = rpc_error_completion(
                                     "rpc_ledger_unavailable",
                                     format!(
@@ -3088,10 +3248,11 @@ impl RemoteControlManager {
                 let _ = sender.try_send(RelayOutbound::Message(response));
             }
             RpcRequestAction::Dispatch(dispatch) => {
-                // Round-12 复审 P3:发射失败此前被静默吞掉——emit_rpc_dispatch
-                // 内部的恢复逻辑(清除 dispatched_generation、允许重发)照常
-                // 执行,但手机侧收不到任何回执,请求要等到 TTL sweep 伪造
-                // rpc_timed_out 才有终点。记录日志让这类失败可诊断。
+                // Round-12 review P3: an emit failure was previously swallowed silently —
+                // the recovery logic inside emit_rpc_dispatch (clearing dispatched_generation,
+                // allowing re-emit) still ran, but the phone received no receipt and the request
+                // had no endpoint until the TTL sweep fabricated rpc_timed_out. Logging makes
+                // such failures diagnosable.
                 if let Err(error) = self.emit_rpc_dispatch(dispatch) {
                     eprintln!("[web-access] rpc dispatch emit to main webview failed: {error}");
                 }
@@ -3345,13 +3506,14 @@ impl RemoteControlManager {
         if source == EventSource::Frontend && RUST_FORWARDED_EVENTS.contains(&event) {
             return Ok(());
         }
-        // 远程端正式支持代码会话列表/授权/UI 之前，先过滤原生代码会话事件：事件
-        // payload 携带的会话 id（`session_id` 用于 chat:* / artifact:disk，
-        // `id` 用于 session:*）指向品悟原生代码会话（仅原生，不含 ACP 会话）时
-        // 不转发（scheduled_task:run_updated 的 payload 现为空，不会命中本过滤）。
-        // 远程 WebUI 不会收到
-        // 它无法展示/授权的代码会话消息流；predicate 只对真实代码会话 id 返回
-        // true，普通会话不受影响。
+        // Until the remote side officially supports code-session listing/authorization/UI,
+        // native code-session events are filtered first: when the session id carried by the
+        // event payload (`session_id` for chat:* / artifact:disk, `id` for session:*) points
+        // at a Pinvou-native code session (native only, not ACP sessions), the event is not
+        // forwarded (scheduled_task:run_updated's payload is currently empty and never hits
+        // this filter). The remote WebUI never receives a code session's message stream that
+        // it cannot display or authorize; the predicate returns true only for real code
+        // session ids, so ordinary sessions are unaffected.
         if should_filter_code_session_event(
             self.inner.lock().code_session_predicate.as_ref(),
             &payload,
@@ -3416,8 +3578,10 @@ impl RemoteControlManager {
                 return Ok(());
             }
             if !subscribed {
-                // 旧版 WebUI 没有协商的新事件不能直接推送，否则会把桌面端判为
-                // 不兼容并断开；事件已写入 journal，后续订阅客户端仍可通过回放恢复。
+                // New events an older WebUI did not negotiate must not be pushed directly,
+                // or it would judge the desktop incompatible and disconnect; the event is
+                // already in the journal, so later subscribing clients can still recover it
+                // via replay.
                 return Ok(());
             }
             debug_assert_eq!(
@@ -3484,10 +3648,11 @@ impl RemoteControlManager {
         self.set_endpoint_error_with_code(None, error);
     }
 
-    /// 错误文本 + 可选稳定恢复码成对写入;不携带码的错误必须清掉旧码,
-    /// 防止旧恢复文案被映射到新错误上。文本先经 [`bound_relay_text`]
-    /// 截断(Round-11 复审 NIT:relay error 帧的 message 可达单帧上限
-    /// ~4 MiB,原样入库会在每次 `emit_status` 重复序列化整段)。
+    /// Writes error text + an optional stable recovery code as a pair; an error carrying
+    /// no code must clear the old one, so old recovery copy is never mapped onto a new
+    /// error. The text passes through [`bound_relay_text`] first (Round-11 review NIT: a
+    /// relay error frame's message can reach the single-frame cap of ~4 MiB; storing it
+    /// verbatim would re-serialize the whole thing on every `emit_status`).
     fn set_endpoint_error_with_code(&self, code: Option<&'static str>, error: String) {
         let error = bound_relay_text(error);
         {
@@ -3503,9 +3668,10 @@ impl RemoteControlManager {
 
     fn emit_status(&self) {
         let status = self.status();
-        // 状态 payload 携带含 access_token 片段的配对 URL 与二维码,属于
-        // 敏感载荷,只发给主窗口(与其余 web_access:* 事件一致),不广播到
-        // 读者/宠物等辅助 WebView。
+        // The status payload carries a pairing URL containing an access_token fragment
+        // plus a QR code — sensitive content sent only to the main window (consistent with
+        // the other web_access:* events), never broadcast to auxiliary WebViews such as
+        // reader/pet.
         let _ = self.app.emit_to("main", "web_access:status", status);
     }
 }
@@ -4196,9 +4362,10 @@ mod tests {
 
     #[test]
     fn a_redispatch_refreshes_the_dispatch_clock() {
-        // Round-10 复审 minor:重派发(webview 重载、begin 持久化失败后的
-        // 再派发)不刷新 dispatched_at 的话会继承最初入场的 TTL 时钟——
-        // 窗口尾部的重试几乎立刻被 TTL 扫描伪造成 rpc_timed_out。
+        // Round-10 review minor: without refreshing dispatched_at, a redispatch (webview
+        // reload, re-dispatch after a begin persist failure) inherits the TTL clock of its
+        // original admission — retries near the window's end are fabricated into
+        // rpc_timed_out by the TTL sweep almost immediately.
         let mut inner = Inner::default();
         inner.bridge_generation = Some("generation-old".into());
         let stale = Instant::now() - RPC_IN_FLIGHT_TTL - Duration::from_secs(10);
@@ -4360,11 +4527,13 @@ mod tests {
         assert_eq!(protected.fingerprint, protected_fingerprint);
     }
 
-    /// 接线钉:缓存判定收口在 `settle_admission_rejection` 与
-    /// `settle_tombstone_outcome`,直接驱动两个入口钉住「确定性(含已确认
-    /// 墓碑)才进 Complete 缓存;瞬时拒绝与指纹冲突绝不进」。此前的变异
-    /// 测试证明:handle_rpc_request 的接线点被改回无条件缓存时,既有的
-    /// helper 级测试仍然全绿——决策收口成单点后,这里直接钉决策。
+    /// Wiring pin: the caching decision funnels through `settle_admission_rejection` and
+    /// `settle_tombstone_outcome`; driving both entrances directly pins "only deterministic
+    /// outcomes (including acknowledged tombstones) enter the Complete cache; transient
+    /// refusals and fingerprint conflicts never do". Earlier mutation testing proved that
+    /// when handle_rpc_request's wiring points were reverted to unconditional caching, the
+    /// existing helper-level tests all stayed green — now that the decision funnels into a
+    /// single point, the decision itself is pinned here.
     #[test]
     fn rpc_settle_entry_points_cache_only_cacheable_outcomes() {
         let mut inner = Inner::default();
@@ -4428,7 +4597,7 @@ mod tests {
             Some(RpcCacheEntry::Complete { fingerprint, .. }) if fingerprint == "fp-owner",
         ));
 
-        // 指纹冲突:应答冲突,但两种指纹下都绝不入缓存。
+        // Fingerprint conflict: answer with the conflict, but never cache under either fingerprint.
         inner.rpc_cache.remove("tomb-req");
         let conflict = RemoteControlManager::settle_tombstone_outcome(
             &mut inner,
@@ -4453,10 +4622,11 @@ mod tests {
         );
     }
 
-    /// 接线钉:begin(副作用屏障)的账本持久化失败走 settle 收口——应答但
-    /// 绝不进 Complete 缓存(命令尚未执行,重试安全);回退成无条件缓存
-    /// (准入路径曾有过的 replay poisoning 同类)即红。错误文本还会折叠
-    /// 存储根前缀:它会作为 rpc_response.error 到达手机。
+    /// Wiring pin: begin's (side-effect barrier) ledger persist failure goes through the
+    /// settle funnel — respond but never enter the Complete cache (the command has not
+    /// executed, so retrying is safe); reverting to unconditional caching (the same class
+    /// as the admission path's old replay poisoning) turns red. The error text also folds
+    /// the storage-root prefix: it reaches the phone as rpc_response.error.
     #[test]
     fn begin_persist_failure_responds_without_caching() {
         let mut inner = Inner::default();
@@ -4473,10 +4643,11 @@ mod tests {
             }),
         );
 
-        // Round-15 复审(S18 F7):本测试直接读 PINVOU3_HOME(经
-        // pinvou3_home 与 settle 内的 redact_storage_prefix),而 paths 的
-        // 其他测试在同一测试二进制里并行改写该 env——不加 ENV_LOCK 会偶
-        // 发误红/空折叠。与其他 env 敏感测试同一脚手架。
+        // Round-15 review (S18 F7): this test reads PINVOU3_HOME directly (via pinvou3_home
+        // and the redact_storage_prefix inside settle), while paths' other tests rewrite that
+        // env in parallel within the same test binary — without ENV_LOCK this would
+        // intermittently false-red or produce empty folds. Same scaffolding as the other
+        // env-sensitive tests.
         let (_env_guard, _env_restore) =
             crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let raw_error = format!(
@@ -4515,9 +4686,14 @@ mod tests {
              generation silenced the retry until the TTL sweep fabricated a timeout)"
         );
 
-        // 源码契约(同 revoke 死锁钉形态):begin_rpc 必须经 settle 收口应答
-        // 持久化失败,且失败分支不得再引入 Complete 缓存(旧实现的
-        // prune_rpc_cache 只在缓存路径出现)——绕过收口即红。
+        // Source contract (same shape as the revoke deadlock pin): begin_rpc must answer a
+        // persist failure through the settle funnel, and the failure branch must not
+        // introduce Complete caching again (the old implementation's prune_rpc_cache appeared
+        // only on the cache path) — bypassing the funnel turns red. Round-29 review NIT:
+        // the needles run on comment-filtered source like the sibling pins — the raw match
+        // let a trailing comment mentioning `prune_rpc_cache` false-red and a comment
+        // mentioning `settle_begin_persist_failure` false-green (the comment-mention
+        // calibration class).
         let source = include_str!("mod.rs");
         let begin_start = source
             .find("pub fn begin_rpc(&self, request_id: &str, generation: &str)")
@@ -4526,6 +4702,7 @@ mod tests {
         let begin_body = &begin_tail[..begin_tail
             .find("\n    pub fn ")
             .expect("begin_rpc body must be terminated by the next fn")];
+        let begin_body = comment_filtered(begin_body);
         assert!(
             begin_body.contains("settle_begin_persist_failure"),
             "begin_rpc must route the persist failure through the settle funnel"
@@ -4561,17 +4738,21 @@ mod tests {
         );
     }
 
-    // Round-25 复审 MAJOR-2 源钉统一口径:纯注释行先滤除再匹配。
-    // Round-27 复审 m14:过滤原语上收 platform::test_support 共享——
-    // 本模块 14 处调用点与 persistence.rs 等兄弟钉此前各自内联同一
-    // 闭包(rung-2:helper 须删除调用方代码,而非并存)。
+    // Round-25 review MAJOR-2 source pins share one caliber: pure comment lines are
+    // filtered before matching.
+    // Round-27 review m14: the filtering primitive was lifted into platform::test_support
+    // for sharing — this module's 14 call sites and sibling pins like persistence.rs
+    // previously each inlined the same closure (rung-2: the helper must delete the
+    // callers' code, not coexist with it).
     use crate::platform::test_support::comment_filtered;
 
-    /// 接线钉(源码契约,同 lease gate 钉的形态):`complete_rpc` 的 Complete
-    /// 臂必须经共享谓词识别 TTL 超时占位并允许真实完成取代之——helper 级
-    /// 谓词测试钉不住「接线点被改回无条件幂等忽略」(Round-5 复审 M1 的
-    /// 病根:占位吞掉真实结果,手机重放永远拿到过期超时)。删除取代分支
-    /// 或绕开谓词即红。
+    /// Wiring pin (source contract, same shape as the lease gate pin): complete_rpc's
+    /// Complete arm must recognize TTL timeout placeholders through the shared predicate
+    /// and let a real completion replace them — helper-level predicate tests cannot pin
+    /// "the wiring point reverted to unconditional idempotent ignore" (the root disease of
+    /// Round-5 review M1: the placeholder swallows the real result and phone replays get a
+    /// stale timeout forever). Deleting the replacement branch or bypassing the predicate
+    /// turns red.
     #[test]
     fn complete_rpc_supersedes_the_in_flight_timeout_placeholder() {
         let source = include_str!("mod.rs");
@@ -4589,21 +4770,23 @@ mod tests {
             body.contains("rpc_completion_is_in_flight_timeout(completion)"),
             "the Complete arm must route the placeholder decision through the shared predicate"
         );
-        // Round-15 复审 MA3:谓词取反突变(`if !Self::…`)在仅有朴素
-        // contains + 插入计数时全套件保持绿(突变实证)——真完成被吞、
-        // 终态可被后续重复完成覆盖,round-5 的两类回归同时复活。钉死
-        // 谓词调用在 if 臂内的**无取反**原样形态:取反、删除 if、改写
-        // 谓词名任一突变都转红。
+        // Round-15 review MA3: a predicate-negation mutation (`if !Self::…`) kept the whole
+        // suite green under plain contains + insertion counting alone (mutant executed) —
+        // real completions swallowed and terminal states overwritable by later duplicate
+        // completes, reviving both round-5 regression classes at once. Pin the predicate
+        // call's **un-negated** verbatim form inside the if arm: negation, deleting the if,
+        // or renaming the predicate — any of those mutations turns red.
         assert!(
             body.contains("if Self::rpc_completion_is_in_flight_timeout(completion) {"),
             "the supersede decision must stay an un-negated if-arm calling the shared \
              predicate on completion in complete_rpc; negating it swallows real \
              completions and lets a later duplicate overwrite terminal values"
         );
-        // Round-14 复审 minor:朴素 contains 会被 Pending 臂自己的插入
-        // 满足——只删占位替换臂的插入(留空 if)时全测试套仍绿,round-5
-        // 的吞结果回归复活。要求函数体内至少两处插入:占位替换臂 +
-        // Pending→Complete 臂,缺任一即红。
+        // Round-14 review minor: plain contains is satisfied by the Pending arm's own
+        // insertion — deleting only the placeholder-replacement arm's insertion (leaving an
+        // empty if) kept the whole suite green, reviving round-5's result-swallowing
+        // regression. Require at least two insertions in the function body: the
+        // placeholder-replacement arm + the Pending→Complete arm; missing either turns red.
         assert!(
             body.matches("rpc_cache.insert").count() >= 2,
             "a real completion arriving after the TTL sweep must replace the placeholder, \
@@ -4612,10 +4795,11 @@ mod tests {
         );
     }
 
-    /// Round-14 复审 minor:打标的 TTL 超时占位必须在代际变更时被改写为
-    /// outcome_unknown(重启/重载后重放拿到如实的「结局不明」而不是伪造
-    /// 的「已超时」)。删除 prepare_bridge_generation 的改写臂或扫描臂的
-    /// 打标,本钉即红。
+    /// Round-14 review minor: marked TTL timeout placeholders must be rewritten to
+    /// outcome_unknown on a generation change (after restart/reload, replay gets the honest
+    /// "outcome unknown" instead of a fabricated "timed out"). Deleting
+    /// prepare_bridge_generation's rewrite arm or the sweep arm's marking turns this pin
+    /// red.
     #[test]
     fn swept_acknowledged_placeholders_repair_to_outcome_unknown_on_generation_change() {
         let rpc_source = include_str!("rpc.rs");
@@ -4637,11 +4821,11 @@ mod tests {
             body.contains("RPC_TIMED_OUT_CODE") && body.contains("outcome_unknown_completion()"),
             "the repair must convert the timeout placeholder to the truthful outcome_unknown"
         );
-        // Round-15 复审(S18 F8,突变分析):放宽 repair 匹配(去掉
-        // `!completion.ok` 或 RPC_TIMED_OUT_CODE 腿,让全部打标占位——包
-        // 括从未受理的——都被改写为 outcome_unknown)时,上面的朴素
-        // contains 仍全绿。钉死匹配合取的三个腿的原样文本:任一腿被删
-        // 即红。
+        // Round-15 review (S18 F8, mutant analysis): loosening the repair match (dropping
+        // the `!completion.ok` or RPC_TIMED_OUT_CODE leg so every marked placeholder —
+        // including never-acknowledged ones — gets rewritten to outcome_unknown) still kept
+        // the plain contains above green. Pin the verbatim text of the match's three
+        // conjunct legs: deleting any leg turns red.
         assert!(
             body.contains(
                 "(*swept_acknowledged
@@ -4815,10 +4999,12 @@ mod tests {
         );
     }
 
-    /// Web 只读封禁表：执行型入口全在表内，查看型不在（只读横幅要取数）。
-    /// `cancel_generation`、`cancel_shell_task` 与 `cancel_user_input` 同属改变
-    /// 运行中 turn 状态的取消类入口（前者终态整个生成并级联取消子智能体，
-    /// 后者可终止委派子智能体正在执行的 shell 任务），必须一并封禁。
+    /// The web read-only denylist: all execution-type entrances are in the table, view-type
+    /// ones are not (the read-only banner needs its data). `cancel_generation`,
+    /// `cancel_shell_task`, and `cancel_user_input` are all cancellation-type entrances that
+    /// change a running turn's state (the first terminates a whole generation and cascades
+    /// to sub-agents; the latter two can stop shell tasks delegated sub-agents are running),
+    /// so they must be banned together.
     #[test]
     fn multi_agent_web_denylist_blocks_execution_but_not_viewing() {
         for command in [
@@ -5088,12 +5274,14 @@ mod tests {
         }
     }
 
-    /// Round-17 复审:stop/refresh 的满队降级臂按共享前缀
-    /// PENDING_REVOCATION_QUEUE_FULL_PREFIX 判别,但错误文本与该常量的绑
-    /// 定此前无钉——把 persistence.rs 的 format! 改回异 wording 字面量的
-    /// 突变会让降级臂失配、满队楔死回归复活而全套件保持绿(降级臂钉只
-    /// 断言「引用了常量且无 `?`」,看不见文本漂移)。钉死判别契约本身:
-    /// 满队错误必须以共享前缀开头。
+    /// Round-17 review: stop/refresh's full-queue degradation arms discriminate by the
+    /// shared prefix PENDING_REVOCATION_QUEUE_FULL_PREFIX, but the binding between the
+    /// error text and that constant had no pin — a mutation changing persistence.rs's
+    /// format! back to a different-wording literal would break the degradation arm's match,
+    /// revive the full-queue wedge regression, and keep the whole suite green (the
+    /// degradation-arm pins only assert "references the constant and has no `?`", blind to
+    /// text drift). Pin the discrimination contract itself: a full-queue error must start
+    /// with the shared prefix.
     #[test]
     fn full_revocation_queue_error_carries_the_shared_degrade_prefix() {
         let directory = std::env::temp_dir().join(format!(
@@ -5119,6 +5307,105 @@ mod tests {
              stop/refresh recovery arms can recognize it: {overflow}"
         );
         std::fs::remove_dir_all(directory).ok();
+    }
+
+    /// Round-29 review MINOR-1: the in-memory backlog must never grow past
+    /// MAX_PENDING_REVOCATIONS — a salvage degradation that leaves memory-only
+    /// siblings plus later distinct-key rotations used to push it over, and
+    /// every acknowledgement persist then failed the ledger validation cap
+    /// forever (no revocation could be acked in that process). The cap keeps
+    /// the newest entries in order and retires the oldest; a no-op cap (the
+    /// pre-fix behavior) or a newest-retiring cap turns this red.
+    #[test]
+    fn pending_revocation_backlog_cap_keeps_the_newest_entries() {
+        let over_cap: Vec<PendingRevocation> = (0..MAX_PENDING_REVOCATIONS + 2)
+            .map(|index| test_pending_revocation(&format!("ep_backlog_cap_{index:02}")))
+            .collect();
+        let mut backlog = over_cap.clone();
+        cap_pending_revocation_backlog(&mut backlog);
+        assert_eq!(
+            backlog.len(),
+            MAX_PENDING_REVOCATIONS,
+            "the backlog must land exactly on the ledger validation cap"
+        );
+        assert!(
+            backlog
+                .iter()
+                .all(|entry| entry.endpoint_id.starts_with("ep_backlog_cap_")),
+            "only fixture entries may remain after the cap"
+        );
+        // The OLDEST entries retire: with memory-first seeding the front of
+        // the backlog is the oldest intent, and a salvage leftover set is
+        // exactly that — retiring the newest instead (or keeping everything,
+        // the pre-fix wedge) breaks these two directions.
+        assert!(
+            backlog
+                .iter()
+                .all(|entry| entry.endpoint_id != "ep_backlog_cap_00"
+                    && entry.endpoint_id != "ep_backlog_cap_01"),
+            "the two entries past the cap must be the retired oldest, not the newest"
+        );
+        assert_eq!(
+            backlog.last().map(|entry| entry.endpoint_id.as_str()),
+            Some("ep_backlog_cap_33"),
+            "the newest entry must survive the cap so the last rotation stays ackable"
+        );
+        // Exactly at cap the helper is an identity — a cap that trims even
+        // one entry below the limit silently loses ackable intents.
+        let mut at_cap: Vec<PendingRevocation> = (0..MAX_PENDING_REVOCATIONS)
+            .map(|index| test_pending_revocation(&format!("ep_backlog_fit_{index:02}")))
+            .collect();
+        cap_pending_revocation_backlog(&mut at_cap);
+        assert_eq!(at_cap.len(), MAX_PENDING_REVOCATIONS);
+        assert_eq!(
+            at_cap.first().map(|entry| entry.endpoint_id.as_str()),
+            Some("ep_backlog_fit_00"),
+            "at-cap backlogs must pass through unchanged"
+        );
+    }
+
+    /// Round-29 review MINOR-1 wiring pin: the cap must be bound at BOTH backlog
+    /// growth sites — the replay union (salvage leftovers + disk ledger) and
+    /// the post-queue sync. Deleting either call keeps the behavioral cap
+    /// test green (it drives the helper directly), so each site carries its
+    /// own needle; deleting the helper body's retire direction is covered by
+    /// the behavioral test.
+    #[test]
+    fn revocation_backlog_cap_is_wired_into_replay_and_sync() {
+        let source = include_str!("mod.rs");
+        let replay_start = source
+            .find("fn replay_pending_revocations(")
+            .expect("replay_pending_revocations must exist");
+        let replay_body = &source[replay_start..];
+        let replay_body = &replay_body[..replay_body
+            .find("\n    fn ")
+            .expect("replay_pending_revocations body must be terminated by the next fn")];
+        let replay_body = comment_filtered(replay_body);
+        assert!(
+            replay_body.contains("cap_pending_revocation_backlog(&mut merged)"),
+            "the replay union must run the backlog cap before adopting the \
+             merged backlog, or salvage leftovers plus rotations re-wedge \
+             acknowledgement persists"
+        );
+        let sync_start = source
+            .find("fn sync_pending_revocation_backlog(")
+            .expect("sync_pending_revocation_backlog must exist");
+        let sync_body = &source[sync_start..];
+        let sync_body = &sync_body[..sync_body
+            .find("\n    fn ")
+            .expect("sync_pending_revocation_backlog body must be terminated by the next fn")];
+        let sync_body = comment_filtered(sync_body);
+        let push_at = sync_body
+            .find("pending_revocation_backlog.push(pending)")
+            .expect("the sync must still push the queued entry");
+        let cap_at = sync_body
+            .find("cap_pending_revocation_backlog(&mut inner.pending_revocation_backlog)")
+            .expect("the post-queue sync must run the backlog cap");
+        assert!(
+            push_at < cap_at,
+            "the cap must run after the push, or the just-queued entry can be \
+             the one silently over cap"
+        );
     }
 
     #[test]
@@ -5156,9 +5443,11 @@ mod tests {
         let path = directory.join("pending.json");
         std::fs::write(&path, b"{corrupt json").unwrap();
 
-        // 内容损坏按 Corrupt 分类:queue(停用/轮换的必经点)从空账本继续,
-        // 用合法内容覆盖坏文件——旧 endpoint 的吊销不能被坏文件永久卡死。
-        // load_pending_revocations_from 对外仍如实报错,fail-closed 语义不变。
+        // Content corruption classifies as Corrupt: queue (a mandatory point on stop/rotate)
+        // continues from an empty ledger and overwrites the bad file with legitimate content —
+        // the old endpoint's revocation must not be wedged forever by a bad file.
+        // load_pending_revocations_from still reports errors honestly outward; the fail-closed
+        // semantics are unchanged.
         let pending = test_pending_revocation("ep_retired_corrupt");
         queue_pending_revocation_at(&path, pending.clone()).unwrap();
         let restored = load_pending_revocations_from(&path).unwrap();
@@ -5168,13 +5457,16 @@ mod tests {
 
     #[test]
     fn invalid_ledger_salvages_valid_entries_and_quarantines_the_original() {
-        // 可解析但未过整体校验的账本(此处:一条 endpoint_id 非法的坏条目 +
-        // 一条与合法条目同键的重复条目)必须逐条抢救合法条目并隔离原件,
-        // 而不是整体重写——整体丢弃会让旧 endpoint 在 relay 侧保持可加入。
-        // 重复条目与 valid_a 完全相同(同 relay_url + endpoint_id = 同键):
-        // 抢救按「重复键保留首个」跳过它——若删除键去重,抢救结果会多出
-        // 一条,本钉的条数断言即红(round-5 复审:原夹具改了 endpoint_id,
-        // 键随之不同,重复键分支从未被真正钉住)。
+        // A parseable ledger that fails whole-file validation (here: one entry with an
+        // illegal endpoint_id plus one duplicate sharing a valid entry's key) must have its
+        // legitimate entries salvaged one by one with the originals quarantined, rather than
+        // being rewritten wholesale — wholesale discard would keep the old endpoint joinable
+        // on the relay side.
+        // The duplicate is byte-identical to valid_a (same relay_url + endpoint_id = same
+        // key): salvage skips it per "keep the first for duplicate keys" — if dedup dropped
+        // the key, the salvage result would gain one entry and this pin's count assertion
+        // would turn red (round-5 review: the original fixture changed the endpoint_id, so
+        // the key differed and the duplicate-key branch was never truly pinned).
         let directory = std::env::temp_dir().join(format!(
             "pinvou-ledger-salvage-test-{}-{}",
             std::process::id(),
@@ -5187,10 +5479,11 @@ mod tests {
         let valid_b = PendingRevocation::from(&test_web_config("ep_salv_b"));
         let mut invalid = serde_json::to_value(&valid_a).unwrap();
         invalid["endpoint_id"] = json!("bad id");
-        // Round-9 复审 minor:重复条目与 valid_a 同键(relay_url +
-        // endpoint_id)但 desktop_secret 不同——「保留首个」与「保留末个」
-        // 自此不再等价,钉才真正判别(旧夹具的重复条目是逐字节复制,两
-        // 种顺序行为相同,keep-first 从未被钉住)。
+        // Round-9 review minor: the duplicate shares valid_a's key (relay_url + endpoint_id)
+        // but has a different desktop_secret — "keep first" and "keep last" are no longer
+        // equivalent, so the pin genuinely discriminates (the old fixture's duplicate was a
+        // byte-for-byte copy, both orders behaved identically, and keep-first was never
+        // pinned).
         let mut duplicate = serde_json::to_value(&valid_a).unwrap();
         duplicate["desktop_secret"] = json!("stale-keep-last-probe-secret-0123456789");
         let body = json!({
@@ -5204,9 +5497,10 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_vec(&body).unwrap()).unwrap();
 
-        // 抢救即落盘:裸 load 之后,磁盘上的账本必须已经是抢救后的合法
-        // 条目(隔离副本只留证据,不会被自动重放)——否则进程崩溃在
-        // worker ack 之前会永久丢掉这批待吊销记录。
+        // Salvage persists: after a bare load, the on-disk ledger must already hold the
+        // salvaged legitimate entries (the quarantine copy only keeps evidence and is never
+        // auto-replayed) — otherwise a crash before the worker ack would permanently lose
+        // this batch of pending revocations.
         let salvaged = load_pending_revocations_from(&path).unwrap();
         assert_eq!(
             salvaged.entries.len(),
@@ -5228,9 +5522,10 @@ mod tests {
             .collect();
         assert!(persisted_keys.contains(&pending_revocation_key(&valid_a)));
         assert!(persisted_keys.contains(&pending_revocation_key(&valid_b)));
-        // Round-9 复审 minor:同键重复条目必须保留「首个」的凭据——保留
-        // 末个会把待吊销记录换成旧密文(吊销 worker 拿旧 secret 去认证
-        // 会被拒,条目就永远悬着)。
+        // Round-9 review minor: a duplicate same-key entry must keep the "first" one's
+        // credentials — keeping the last would swap the pending revocation record to old
+        // ciphertext (the revocation worker authenticating with the old secret would be
+        // refused, leaving the entry hanging forever).
         let persisted_a = persisted
             .entries
             .iter()
@@ -5321,7 +5616,7 @@ mod tests {
             return;
         }
 
-        // 该文件持有 desktop_secret:load 必须恢复 0600 基线(同 config)。
+        // This file holds a desktop_secret: load must restore the 0600 baseline (same as config).
         assert!(load_pending_revocations_from(&path).is_ok());
         assert_eq!(
             crate::platform::test_support::permission_bits(&path),
@@ -5397,8 +5692,9 @@ mod tests {
             &json!({ "type": "error", "code": "endpoint_not_found" }),
             "ep_retired"
         ));
-        // 指名他端点的 endpoint_not_found 不是本端点消失的证明:在它上面
-        // ack 会删掉仍可能存在于 relay 侧的本端点持久撤销条目。
+        // An endpoint_not_found naming a different endpoint is not proof this endpoint is
+        // gone: acking on it would delete this endpoint's persisted revocation entry, which
+        // may still exist on the relay side.
         assert!(!relay_client::terminal_relay_message(
             &json!({
                 "type": "error",
@@ -5407,12 +5703,12 @@ mod tests {
             }),
             "ep_retired"
         ));
-        // endpoint_revoked 错误码证明 endpoint 已墓碑化,等价于撤销成功。
+        // The endpoint_revoked error code proves the endpoint is tombstoned — equivalent to a successful revocation.
         assert!(relay_client::terminal_relay_message(
             &json!({ "type": "error", "code": "endpoint_revoked" }),
             "ep_retired"
         ));
-        // 凭据拒绝不证明 endpoint 消失:持久撤销条目不能被当作已确认删除。
+        // A credential refusal does not prove the endpoint is gone: the persisted revocation entry must not be treated as confirmed-deleted.
         assert!(!relay_client::terminal_relay_message(
             &json!({ "type": "error", "code": "invalid_desktop_secret" }),
             "ep_retired"
@@ -5471,12 +5767,37 @@ mod tests {
     }
 
     #[test]
+    fn eviction_active_window_stays_far_below_the_transfer_ttl() {
+        // Round-29 review MINOR-3: both eviction tests derive fixture age FROM
+        // the constant, so drifting the value itself (e.g. 30s → 590s, hugging
+        // the 10-minute TTL) kept the whole suite green while the "orphans are
+        // reaped far earlier than the TTL" property silently died — a phone
+        // holding a download_id could then wait out nearly the whole TTL
+        // before losing it to the reaper. Pin the value and the relationship
+        // independent of the constants' use as fixture clocks; changing either
+        // bound turns this red.
+        assert_eq!(
+            WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW,
+            std::time::Duration::from_secs(30),
+            "the freshness window is a deliberate 30s value, not derivable from \
+             the other bounds"
+        );
+        assert!(
+            WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW * 10 <= WEB_SESSION_TRANSFER_TTL,
+            "the window must stay an order of magnitude below the TTL so eviction \
+             reaps orphans far earlier than the TTL reaper"
+        );
+    }
+
+    #[test]
     fn full_download_slots_evict_the_oldest_ready_orphan() {
-        // Round-15 复审:满槽时 begin 先逐出最旧的 ready 孤儿(响应丢失,
-        // 手机拿不到 download_id);引擎仍在写的未 ready 条目不可作受害者,
-        // 此时保留既有满槽错误。Round-16 复审(M2):受害判据加新鲜度窗
-        // ——「ready」区分不出孤儿与读中下载(分块读取刷新 last_touched),
-        // 停更超窗的 ready 条目才可逐;窗内的 ready 条目同样保留。
+        // Round-15 review: at full slots, begin first evicts the oldest ready orphan
+        // (response lost; the phone never got a download_id); entries not yet ready that the
+        // engine is still writing must never be victims, keeping the existing full-slot error
+        // in that case. Round-16 review (M2): the victim criteria gain a freshness window —
+        // "ready" cannot tell an orphan from a download being read (chunk reads refresh
+        // last_touched); only ready entries whose updates have aged past the window are
+        // evictable; ready entries inside the window are kept too.
         let aged = |id: &str, ready: bool| {
             (
                 id.to_string(),
@@ -5487,11 +5808,12 @@ mod tests {
                     reserved_bytes: 1,
                     total: 1,
                     ready,
-                    // Round-18 复审:直接相减在单调时钟启动不足 31s 的主机
-                    // (刚开机)上会 panic——测试崩而非断言红,失败语言错
-                    // 误。受检回退:先退窗宽+1s,再退窗边界,都不行就用当
-                    // 前时刻;退化只会让断言以「未超窗」干净失败,永不
-                    // panic。
+                    // Round-18 review: direct subtraction panics on hosts whose monotonic clock
+                    // has been up for less than 31s (freshly booted) — a test crash rather than a
+                    // red assertion, with a misleading failure language. Checked fallback: fall
+                    // back to window+1s first, then to the window boundary, and finally to now;
+                    // the degradation only lets the assertion fail cleanly as "not past the
+                    // window", never panicking.
                     last_touched: match Instant::now().checked_sub(
                         WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW
                             + std::time::Duration::from_secs(1),
@@ -5505,9 +5827,9 @@ mod tests {
             )
         };
         let mut inner = Inner::default();
-        // Round-16 follow-up 复审(M1):两个 ready 且超窗的候选——受害者
-        // 必须是插入序最旧的那个;倒序(.rev(),LIFO)变异会逐出较新候选,
-        // 本断言因此对顺序真实敏感。
+        // Round-16 follow-up review (M1): two ready, window-expired candidates — the victim
+        // must be the insertion-oldest one; a reversed-iteration (.rev(), LIFO) mutant would
+        // evict the newer candidate, so this assertion is genuinely order-sensitive.
         for (download_id, entry) in [
             aged("download_old", true),
             aged("download_second", true),
@@ -5527,18 +5849,19 @@ mod tests {
             ["download_second", "download_new"]
         );
 
-        // 第二次逐出按同一 FIFO 语义取下一个最旧 ready 候选。
+        // The second eviction takes the next-oldest ready candidate under the same FIFO semantics.
         assert!(transfer::evict_oldest_ready_session_download(&mut inner));
         assert!(!inner.web_session_downloads.contains_key("download_second"));
         assert_eq!(inner.web_session_download_order, ["download_new"]);
 
-        // 只剩未 ready(引擎写入中):无受害者,返回 false 且原样保留。
+        // Only not-ready entries remain (engine still writing): no victim, returns false and leaves everything as-is.
         assert!(!transfer::evict_oldest_ready_session_download(&mut inner));
         assert_eq!(inner.web_session_downloads.len(), 1);
         assert_eq!(inner.web_session_download_order, ["download_new"]);
 
-        // Round-16 复审(M2):窗内的 ready 条目(正在被分块读取)不当
-        // 受害者——不刷新 last_touched 的秒级读取间隙不得把读中下载逐出。
+        // Round-16 review (M2): ready entries inside the window (being chunk-read) are never
+        // victims — the seconds-long read gaps where last_touched is not refreshed must not
+        // evict a download mid-read.
         let fresh_ready = aged("download_fresh", true);
         inner
             .web_session_downloads
@@ -5560,13 +5883,16 @@ mod tests {
 
     #[test]
     fn chunk_read_refreshes_last_touched_so_active_downloads_stay_uneligible() {
-        // Round-20 复审 MAJOR-1:30s 活跃窗的承载前提是分块读取在非 eof 臂
-        // 刷新 last_touched(transfer.rs 的逐出谓词注释明言)。行为钉:播种
-        // 一个窗内但早于本次读取的条目,驱动一次非 eof 分块读取,断言条目
-        // 仍在且 last_touched 严格前进(比较而非相减,单调时钟刚启动的主机
-        // 不会 panic)。删除刷新分支的可编译突变此前全套件保持绿(突变实
-        // 证)——读中下载在满槽压力下变得可逐出,恰是该窗要防的回归,本钉
-        // 把它转红。eof 臂「移除条目、不刷新」由既有读测试覆盖。
+        // Round-20 review MAJOR-1: the 30s active window rests on chunk reads refreshing
+        // last_touched in the non-eof arm (transfer.rs's eviction-predicate comment says so
+        // explicitly). Behavioral pin: seed an entry inside the window but older than this
+        // read, drive one non-eof chunk read, and assert the entry survives with last_touched
+        // strictly advanced (compare, don't subtract — hosts with a freshly started monotonic
+        // clock must not panic). The compilable mutant deleting the refresh branch previously
+        // kept the whole suite green (mutant executed) — mid-read downloads became evictable
+        // under full-slot pressure, exactly the regression this window guards against; this
+        // pin turns it red. The eof arm's "remove the entry, no refresh" is covered by the
+        // existing read tests.
         use std::io::Write as _;
         let mut inner = Inner::default();
         let marker = Instant::now()
@@ -5619,14 +5945,16 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-16 复审 MAJOR-2):begin 的满槽逐出接线此前测试不可
-    /// 见——直接驱动 `begin_web_session_download` 需要 AppHandle(单元
-    /// 测试无法构造),唯有的逐出行为钉经 helper 驱动,删除 begin 内的
-    /// 接线(或把 `>=` 改成 `>`、或把调用挪到容量检查之后变死代码)全套
-    /// 件保持绿(突变实证)。按本模块「helper 级测试钉不住接线点」的既
-    /// 有约定(同 `rpc_request_lease_gate_is_wired_inside_the_admission_lock`
-    /// 的模块口径)改用源钉:钉住 if 行与调用的逐字节形态及
-    /// 「先逐出、后容量门」的顺序。
+    /// Wiring pin (Round-16 review MAJOR-2): begin's full-slot eviction wiring was
+    /// previously invisible to tests — driving `begin_web_session_download` directly needs an
+    /// AppHandle (unconstructible in unit tests), and the only eviction behavioral pins ran
+    /// through the helper, so deleting the wiring inside begin (or changing `>=` to `>`, or
+    /// moving the call after the capacity check into dead code) kept the whole suite green
+    /// (mutant executed). Per this module's established convention that "helper-level tests
+    /// cannot pin wiring points" (the same module caliber as
+    /// `rpc_request_lease_gate_is_wired_inside_the_admission_lock`), this uses a source pin:
+    /// pinning the if line's and the call's byte-exact shape plus the "evict first, capacity
+    /// gate after" ordering.
     #[test]
     fn begin_session_download_wires_the_eviction_before_the_capacity_gate() {
         let source = include_str!("mod.rs");
@@ -5637,10 +5965,11 @@ mod tests {
         let body = &body[..body
             .find("\n    fn ")
             .expect("begin body must be terminated by the next fn")];
-        // Round-24 复审(m7):纯注释行先滤除——注释掉接线行
-        // (`// transfer::evict_…`)后 needle 仍在注释文本内,裸 find 保绿
-        // (与 round-23 对三个兄弟钉的过滤同一口径;行尾 // 与块注释内提
-        // 及仍可掩护,按已披露残留)。
+        // Round-24 review (m7): pure comment lines are filtered first — after commenting
+        // out the wiring line (`// transfer::evict_…`) the needle still lived inside the
+        // comment text and a bare find stayed green (same filtering caliber as round-23's
+        // three sibling pins; trailing // and block-comment mentions can still shield it,
+        // a disclosed residual).
         let body = crate::platform::test_support::comment_filtered(body);
         let gate = body
             .find("while ensure_web_session_download_capacity(&inner, reserved_bytes).is_err() {")
@@ -5679,10 +6008,11 @@ mod tests {
             "each eviction must emit a diagnostic; a silent eviction leaves the \
              phone staring at a bare download-not-found error"
         );
-        // Round-27 复审 m3:诊断「落位」此前无钉——把 record 提到循环外
-        // /挪到 `if !evict` 之前(失败传播路径也发一条)都能编译保绿。
-        // 钉住计数递增臂恰在逐出调用之后、循环体之内,且逐条 record 在
-        // `drop(inner)` 之后(锁外 I/O 口径)。
+        // Round-27 review m3: the diagnostics' "placement" had no pin — hoisting record
+        // out of the loop / moving it before `if !evict` (the failure-propagation path would
+        // emit one too) both compiled and stayed green. Pin the count-increment arm right
+        // after the eviction call and inside the loop body, with each per-victim record after
+        // `drop(inner)` (the I/O-outside-the-lock caliber).
         let if_open = body
             .find("if !transfer::evict_oldest_ready_session_download(&mut inner) {")
             .expect("the failed-eviction propagate arm must exist");
@@ -5709,10 +6039,11 @@ mod tests {
              (fires with no eviction) or inside the lock (file I/O under the \
              critical section) both regress the wiring silently"
         );
-        // Round-28 复审 MINOR-2:载荷里的 trigger 字面量此前无钉——改掉
-        // mod.rs 侧的字面量时全套保绿,diagnostics 的枚举白名单随即把它
-        // 静默丢弃,每条逐出诊断都退化成空 details。枚举另一侧的接受性
-        // 由 diagnostics.rs 的 acceptance 钉看守,两侧在此拼成端到端。
+        // Round-28 review MINOR-2: the trigger literal in the payload had no pin — changing
+        // the mod.rs-side literal kept the whole suite green while diagnostics' enum
+        // allowlist silently dropped it, degrading every eviction diagnostic to empty
+        // details. The enum's other-side acceptance is guarded by diagnostics.rs's
+        // acceptance pin; the two sides join into end-to-end coverage here.
         assert!(
             body.contains(r#""trigger": "begin_capacity_gate""#),
             "the eviction diagnostic payload must carry the trigger literal \
@@ -5721,12 +6052,13 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-16 follow-up 复审 M2):commit 把 ready 翻真的同一临
-    /// 界区必须刷新 last_touched——begin→commit 跨度可能超过逐出新鲜度窗,
-    /// 若只翻 ready 而不刷新,一个刚提交、手机尚未开始分块读取的下载会以
-    /// 「ready 且停更超窗」的形态立刻成为可逐出受害者。helper 级测试构造
-    /// 不了 Manager(AppHandle),按本模块约定用源钉钉住翻真与刷新的相邻
-    /// 形态;删除刷新行的变异使本钉变红。
+    /// Wiring pin (Round-16 follow-up review M2): the same critical section where commit
+    /// flips ready must refresh last_touched — the begin→commit span can exceed the
+    /// eviction freshness window; flipping ready without refreshing would make a just-
+    /// committed download the phone has not started chunk-reading yet immediately evictable
+    /// as "ready and aged past the window". Helper-level tests cannot construct a Manager
+    /// (AppHandle); per this module's convention a source pin pins the flip and the refresh's
+    /// adjacency, and the mutant deleting the refresh line turns this pin red.
     #[test]
     fn commit_marks_download_ready_with_a_fresh_last_touched() {
         let source = include_str!("mod.rs");
@@ -5737,8 +6069,9 @@ mod tests {
         let body = &body[..body
             .find("\n    fn ")
             .expect("commit body must be terminated by the next fn")];
-        // Round-24 复审(m7):纯注释行先滤除,口径同上一钉——注释掉
-        // last_touched 刷新行后 needle 不得藏在注释文本里保绿。
+        // Round-24 review (m7): pure comment lines are filtered first, same caliber as the
+        // previous pin — after commenting out the last_touched refresh line the needle must
+        // not stay green by hiding in comment text.
         let body = crate::platform::test_support::comment_filtered(body);
         let ready_flip = body
             .find("download.ready = true;")
@@ -5795,16 +6128,16 @@ mod tests {
 
     #[test]
     fn code_session_event_filter_is_inert_without_predicate() {
-        // predicate 未注入（启动早期）时不过滤任何事件，行为与注入前一致。
+        // With no predicate injected (startup-early), nothing is filtered — behavior matches pre-injection.
         let payload = json!({ "session_id": "code-sess-1" });
         assert!(!should_filter_code_session_event(None, &payload));
     }
 
     #[test]
     fn code_session_events_are_filtered_for_each_field_name_variant() {
-        // 字段名契约(原 event_session_id_reads_each_event_family_field_name):
-        // chat:* / artifact:disk 用 session_id,session:* 用 id,
-        // scheduled_task:run_updated 用 sessionId。
+        // Field-name contract (formerly event_session_id_reads_each_event_family_field_name):
+        // chat:* / artifact:disk use session_id, session:* uses id,
+        // scheduled_task:run_updated uses sessionId.
         assert_eq!(
             event_session_id(&json!({ "session_id": "s-chat" })),
             Some("s-chat")
@@ -5831,10 +6164,11 @@ mod tests {
             );
         }
 
-        // 恒真 predicate 下过滤器等价于 event_session_id 的存在性判定
-        // (原 event_session_id_ignores_missing_or_non_string_fields 与
-        // code_session_filter_only_fires_on_a_session_id_field):不带会话 id
-        // 或 id 非字符串的全局事件不得被误伤。
+        // Under an always-true predicate the filter is equivalent to event_session_id's
+        // existence check (formerly
+        // event_session_id_ignores_missing_or_non_string_fields and
+        // code_session_filter_only_fires_on_a_session_id_field): global events without a
+        // session id, or whose id is not a string, must never be collateral damage.
         let always: CodeSessionPredicate = Arc::new(|_: &str| true);
         assert_eq!(
             event_session_id(&json!({ "kind": "session:list_changed" })),
@@ -5853,7 +6187,7 @@ mod tests {
 
     #[test]
     fn plain_session_events_survive_the_code_session_filter() {
-        // 普通会话事件必须不受影响：predicate 只对真实代码会话 id 返回 true。
+        // Ordinary session events must be unaffected: the predicate returns true only for real code-session ids.
         let predicate: CodeSessionPredicate =
             Arc::new(|session_id: &str| session_id.starts_with("code-"));
         for payload in [
@@ -5889,7 +6223,7 @@ mod tests {
     #[test]
     fn forwarded_rpc_requests_must_target_the_active_lease() {
         let mut inner = Inner::default();
-        // 无活跃 endpoint:不过滤(主准入路径本来就没有可回复的 endpoint)。
+        // No active endpoint: no filtering (the main admission path has no replyable endpoint anyway).
         assert!(rpc_request_targets_active_lease(&inner, TEST_LEASE_ID));
 
         inner.endpoint = Some(test_active_endpoint(Some(TEST_LEASE_ID)));
@@ -5900,15 +6234,17 @@ mod tests {
              and must be dropped before touching the idempotency cache"
         );
 
-        // 无活跃 lease(client 已断开)时保持原行为:不在此处过滤。
+        // No active lease (client already disconnected) keeps the original behavior: no filtering here.
         inner.endpoint = Some(test_active_endpoint(None));
         assert!(rpc_request_targets_active_lease(&inner, TEST_LEASE_ID));
     }
 
-    /// 接线钉(源码契约,同 revoke 死锁钉的形态):lease 校验必须留在准入
-    /// 锁的作用域内、且先于缓存查询——helper 级测试钉不住「接线点被删除」
-    /// (round-4 复审实测:删除调用后 helper 测试仍全绿)。删除校验、或把
-    /// 校验挪出 `inner.lock()` 之后再查询缓存,都会让本钉变红。
+    /// Wiring pin (source contract, same shape as the revoke deadlock pin): the lease
+    /// validation must stay inside the admission lock's scope and precede the cache lookup —
+    /// helper-level tests cannot pin "the wiring point was deleted" (round-4 review, verified
+    /// live: deleting the call kept every helper test green). Deleting the validation, or
+    /// moving it out of `inner.lock()` and querying the cache afterwards, both turn this pin
+    /// red.
     #[test]
     fn rpc_request_lease_gate_is_wired_inside_the_admission_lock() {
         let source = include_str!("mod.rs");
@@ -5935,13 +6271,15 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-5 复审 M2):settle 收口的安全契约(瞬时拒绝绝不进
-    /// Complete 缓存、墓碑冲突绝不缓存)只在 `handle_rpc_request` 的调用
-    /// 点生效——把三个调用点改回无条件缓存/无条件结算时,helper 级测试仍
-    /// 全绿(模块内注释自证)。Round-6 复审 minor:墓碑与预检按存在性断言,
-    /// 两条 admission 臂各有一个调用点,按**计数**断言——回退任意一支
-    /// (计数掉到 1)或新增绕过收口的臂(计数超过 2)都即红;负面钉禁止
-    /// 收口漏斗之外的任何直接 `settle_complete` 进函数体。
+    /// Wiring pin (Round-5 review M2): the settle funnel's safety contract (transient
+    /// refusals never enter the Complete cache, tombstone conflicts never cached) only takes
+    /// effect at the call sites in `handle_rpc_request` — reverting the three call sites to
+    /// unconditional caching/unconditional settling kept every helper-level test green (the
+    /// module's own comments attest it). Round-6 review minor: tombstone and precheck are
+    /// asserted by existence, and the two admission arms each have one call site, asserted by
+    /// **count** — rolling back either (count dropping to 1) or adding an arm bypassing the
+    /// funnel (count exceeding 2) turns red; a negative pin forbids any direct
+    /// `settle_complete` outside the funnel from entering the function body.
     #[test]
     fn rpc_cache_settle_funnels_are_wired_in_handle_rpc_request() {
         let source = include_str!("mod.rs");
@@ -5981,13 +6319,15 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-6 复审 M5):`web_rejoining` 标志的安全语义(重连不
-    /// 清 staged 传输、live takeover 才清)只在帧路径的调用点生效——helper
-    /// 级测试直接驱动 `apply_web_lease_change(inner, true)`,看不见接线。
-    /// 把任一调用点改回 `false`(或删除解析、让缺省 false 生效)会原样
-    /// 复原 round-2 的 staged 状态每 ~2.5 分钟被看门狗清空的回归,而全套
-    /// 件仍绿。两个到达路径(`handle_registered` 重注册转发、
-    /// `handle_web_connected` web join)都必须解析并透传该标志。
+    /// Wiring pin (Round-6 review M5): the `web_rejoining` flag's safety semantics (a rejoin
+    /// keeps staged transfers; only a live takeover clears them) only takes effect at the
+    /// frame-path call sites — helper-level tests drive
+    /// `apply_web_lease_change(inner, true)` directly and cannot see the wiring. Changing
+    /// either call site back to `false` (or deleting the parse, letting the default false
+    /// apply) would verbatim restore round-2's regression where staged state got wiped by the
+    /// watchdog every ~2.5 minutes while the whole suite stayed green. Both arrival paths
+    /// (`handle_registered` re-registration forwarding and `handle_web_connected` web join)
+    /// must parse and pass the flag through.
     #[test]
     fn web_rejoining_flag_is_wired_into_both_lease_change_call_sites() {
         let source = include_str!("mod.rs");
@@ -6002,10 +6342,11 @@ mod tests {
             let body = &body[..body
                 .find("\n    fn ")
                 .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
-            // Round-28 复审:兄弟接线钉在 round-23/24 陆续补了注释过滤,
-            // 本钉漏配——注释掉真实 parse+调用行时 needle 仍存活于注释
-            // 文本内,套件保绿。补齐同一口径(行尾注释与块注释仍可掩护,
-            // 已披露残留)。
+            // Round-28 review: sibling wiring pins gained comment filtering across
+            // round-23/24 but this pin missed it — with the real parse+call lines commented
+            // out, the needle survived inside the comment text and the suite stayed green.
+            // The same caliber is completed here (trailing comments and block comments can
+            // still shield it — a disclosed residual).
             let body = crate::platform::test_support::comment_filtered(body);
             assert!(
                 body.contains("get(\"web_rejoining\")"),
@@ -6018,10 +6359,11 @@ mod tests {
         }
     }
 
-    /// 接线钉(Round-6 复审 M6):`last_error_code` 字段契约的断连半边——
-    /// 不携带码的错误写入必须清掉旧恢复码(否则旧三语恢复提示会盖在新
-    /// 错误文本之上)。connected 臂与断连臂各自清码;删除任一臂的清码
-    /// 行即红。
+    /// Wiring pin (Round-6 review M6): the disconnect half of the `last_error_code` field
+    /// contract — an error write carrying no code must clear the old recovery code (or the
+    /// old trilingual recovery hint would sit on top of new error text). The connected arm
+    /// and the disconnect arm each clear codes; deleting either arm's clearing line turns
+    /// red.
     #[test]
     fn handle_connection_clears_stale_error_code_on_both_branches() {
         let source = include_str!("mod.rs");
@@ -6039,11 +6381,12 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-5 复审 M2 的 endpoint_revoked 半边):relay 的
-    /// endpoint_revoked 错误帧必须路由进 handle_revoked 的完整清理——
-    /// 删除该臂会让本地配置对一个不可能成功的注册永远重试,而
-    /// terminal_relay_message 的分类钉住在 relay_client 侧,看不见这条
-    /// manager 侧路由。删除臂内任一关键调用即红。
+    /// Wiring pin (the endpoint_revoked half of Round-5 review M2): the relay's
+    /// endpoint_revoked error frame must route into handle_revoked's full cleanup — deleting
+    /// that arm would make the local config retry forever on a registration that can never
+    /// succeed, while terminal_relay_message's classification is pinned on the relay_client
+    /// side and cannot see this manager-side routing. Deleting any key call inside the arm
+    /// turns red.
     #[test]
     fn relay_error_frames_route_endpoint_revoked_to_the_revoke_cleanup() {
         let source = include_str!("mod.rs");
@@ -6084,9 +6427,10 @@ mod tests {
         inner.web_attachment_order.push_back("attachment_a".into());
         inner.web_attachments.insert("attachment_a".into(), cached);
         inner.web_attachment_bytes = 64;
-        // Round-15 复审 MA4:rejoin 臂必须三种种全——只种 attachments 时,
-        // 在 keep 臂清空 in-flight uploads(乃至 session downloads)的突变
-        // 全套件保持绿(突变实证),Round-2 的 watchdog 吞上传回归半复活。
+        // Round-15 review MA4: the rejoin arm must seed all three — with only attachments
+        // seeded, mutants clearing in-flight uploads (or session downloads) in the keep arm
+        // kept the whole suite green (mutant executed), half-reviving Round-2's
+        // watchdog-swallows-uploads regression.
         inner.web_attachment_uploads.insert(
             "upload_a".to_string(),
             WebAttachmentUpload {
@@ -6096,6 +6440,15 @@ mod tests {
                 last_touched: Instant::now(),
             },
         );
+        // Round-29 review MINOR-4: the upload-order twin of the download-order
+        // seam — the upload pop loop removes whatever entry the order's front
+        // id names, so a stale id costs one live upload (over-eviction). Seed
+        // the queue and pin its consistency with the map on both arms;
+        // deleting `web_attachment_upload_order.clear()` in the takeover wipe
+        // used to keep the whole suite green.
+        inner
+            .web_attachment_upload_order
+            .push_back("upload_a".to_string());
         inner
             .web_session_download_order
             .push_back("download_a".to_string());
@@ -6132,15 +6485,23 @@ mod tests {
             inner.web_session_downloads.contains_key("download_a"),
             "a rejoin must keep session downloads"
         );
-        // Round-16 复审(M2 测试缝):顺序队列与映射必须同进退。陈旧 id
-        // 本身不会被逐出(受害者判据要求映射在场,缺失即跳过),漏清队列
-        // 的实际危害是死重:陈旧 id 在下一次 prune(仅在 begin/commit 内
-        // 运行)按映射 retain 掉之前一直占位;钉住两处清理的一致性。
+        // Round-16 review (M2 test seam): the order queue and the map must move together. A
+        // stale id itself would not be evicted (the victim criteria require the map entry to
+        // be present; a missing one is skipped) — the real harm of missing the queue cleanup
+        // is dead weight: the stale id occupies a slot until the next prune (which runs only
+        // inside begin/commit) retains it away by the map; pin the consistency of both
+        // cleanups.
         assert!(
             inner
                 .web_session_download_order
                 .contains(&"download_a".to_string()),
             "a rejoin must keep the download eviction order consistent with the map"
+        );
+        assert!(
+            inner
+                .web_attachment_upload_order
+                .contains(&"upload_a".to_string()),
+            "a rejoin must keep the upload order consistent with the map"
         );
 
         // Takeover (fresh client replaces a live one): the wipe must stay so
@@ -6152,6 +6513,11 @@ mod tests {
         assert!(
             inner.web_session_download_order.is_empty(),
             "a takeover wipe must clear the eviction order alongside the map"
+        );
+        assert!(
+            inner.web_attachment_upload_order.is_empty(),
+            "a takeover wipe must clear the upload order alongside the map; a \
+             stale id makes the upload pop loop remove a live upload"
         );
 
         std::fs::remove_dir_all(&staging).ok();
@@ -6193,17 +6559,19 @@ mod tests {
 
     #[test]
     fn revoke_host_workspace_never_holds_inner_across_emit_status() {
-        // 深度必须浅于取 inner guard 的位置——即 guard 已先出作用域。
-        // Round-15 复审 MA1 的落盘失败臂在更深的嵌套里先取/放 guard 再
-        // emit,朴素的「首个 emit 深度 < 首个 lock 深度」判据看不见这一点
-        // (突变实证:误报)。改为精确区间判定:每个 emit_status 站点不得
-        // 落在任何 self.inner.lock() 站点所属花括号块闭合之前。
+        // The depth must be shallower than where the inner guard is taken — i.e. the guard
+        // has already left scope. Round-15 review MA1's persist-failure arm takes/drops the
+        // guard in deeper nesting before emitting, which the naive "first emit depth < first
+        // lock depth" criterion cannot see (mutant executed: false positive). Replaced with
+        // exact span judgment: every emit_status site must not fall before the brace-block
+        // closure of any self.inner.lock() site.
         //
-        // Round-24 复审(m)已披露残留:区间由裸 { / } 计数得出,含注释与
-        // 字符串——lock 站点与其块闭合之间若出现含失衡 `}` 的注释或字符
-        // 串字面量,该 span 会被提前截断,未来「emit 落入 guard 区间」的
-        // 回归可能被判为区外(静默绿;round-23 兄弟钉同一口径)。今日文
-        // 本下五个 lock span 均正确闭合,基线绿为人工复核确认。
+        // Round-24 review (m) disclosed residual: the spans come from counting bare { / },
+        // comments and strings included — a comment or string literal containing an unbalanced
+        // `}` between a lock site and its block closure would truncate the span early, and a
+        // future "emit inside the guard span" regression could be judged outside it (silently
+        // green; same caliber as the round-23 sibling pins). Under today's text all five lock
+        // spans close correctly; the green baseline was confirmed by manual review.
         let source = include_str!("mod.rs");
         let body = source
             .split("pub fn revoke_host_workspace")
@@ -6254,13 +6622,14 @@ mod tests {
         }
     }
 
-    /// 接线钉(Round-10 复审 M2):撤销的安全语义「同步失效已铸发的
-    /// workspace grants + 落盘 consent 旗标」只在命令路径的调用点生效——
-    /// `revoking_host_workspace_also_invalidates_minted_grants` 直接驱动
-    /// free helper,看不见接线。删除 `revoke_host_workspace_state(&mut
-    /// inner)` 或 `persist_config(&config)?` 会让撤销退回「只改内存、
-    /// 已铸发 grant 在 30 分钟 TTL 内仍可兑换」的 pre-fix 行为而全套件
-    /// 保持绿(突变实证:20 个 revoke 匹配测试全绿)。
+    /// Wiring pin (Round-10 review M2): revocation's safety semantics — "invalidate minted
+    /// workspace grants in sync + persist the consent flag" — only takes effect at the
+    /// command-path call sites; `revoking_host_workspace_also_invalidates_minted_grants`
+    /// drives the free helper directly and cannot see the wiring. Deleting
+    /// `revoke_host_workspace_state(&mut inner)` or `persist_config(&config)?` would revert
+    /// revocation to the pre-fix behavior "memory-only change; minted grants stay redeemable
+    /// for their 30-minute TTL" while the whole suite stays green (mutant executed: all 20
+    /// revoke-matching tests green).
     #[test]
     fn revoke_host_workspace_wires_grant_invalidation_and_latches_the_flag() {
         let source = include_str!("mod.rs");
@@ -6284,11 +6653,13 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-15 复审 MA1):落盘失败必须把内存旗标回锁到磁盘一侧
-    /// 再返回。退回 `persist_config(&config)?` 的 ?-传播(或在错误臂删除
-    /// 回锁赋值)会把撤权留在「内存已撤销 / 磁盘仍授权」的分叉态——下一
-    /// 次 start/enable 从磁盘重建授权旗标而毫无同意手势,全套件保持绿
-    /// (突变实证:恢复 ?-传播后本钉转红、其余 revoke 钉全绿)。
+    /// Wiring pin (Round-15 review MA1): a persist failure must re-latch the in-memory flag
+    /// to the disk side before returning. Reverting to `persist_config(&config)?`'s `?`
+    /// propagation (or deleting the re-latch assignment in the error arm) would leave the
+    /// revocation in the forked state "memory revoked / disk still authorized" — the next
+    /// start/enable rebuilds the authorization flag from disk with no consent gesture, while
+    /// the whole suite stays green (mutant executed: restoring the `?` propagation turned this
+    /// pin red with every other revoke pin green).
     #[test]
     fn revoke_persist_failure_re_latches_memory_to_the_disk_side() {
         let source = include_str!("mod.rs");
@@ -6313,10 +6684,11 @@ mod tests {
             body.contains("folder access remains enabled"),
             "the error must tell the user the revocation did not take effect"
         );
-        // Round-16 复审(M1c):失败臂的「重发状态」此前无钉——只删这一处
-        // emit_status 时全套件保持绿(B1 钉只要求函数内存在任意一处 emit,
-        // 而函数末尾本就有一处)。断言 emit 落在失败臂窗口内(persist
-        // if-let 与错误文案之间),删臂内 emit 即红。
+        // Round-16 review (M1c): the failure arm's status re-emit had no pin — deleting just
+        // this emit_status kept the whole suite green (the B1 pin only requires some emit in
+        // the function, and the function tail already has one). Assert that the emit falls
+        // inside the failure-arm window (between the persist if-let and the error copy);
+        // deleting the in-arm emit turns red.
         let failure_arm_start = body
             .find("if let Err(error) = persist_config(&config)")
             .expect("the persist failure arm must exist");
@@ -6324,12 +6696,13 @@ mod tests {
             .find("folder access remains enabled")
             .expect("the actionable failure message must exist");
         let failure_arm = &body[failure_arm_start..failure_arm_end];
-        // Round-24 复审 MAJOR(突变实锤):回锁断言此前是函数级 contains——
-        // round-22 在 validate_config 失败臂内加入了逐字节相同的回锁行
-        // (`Err(error) => {` 窗口内、本窗口之外),该行满足函数级断言:
-        // 删除本臂的回锁块(编译通过)时本钉保持全绿(本轮已执行突变,
-        // 1 passed / 0 failed)。改为臂界窗口断言,单删本臂回锁即红,且
-        // validate 臂的同一行不再兜底。
+        // Round-24 review MAJOR (mutant confirmed): the re-latch assertion was previously a
+        // function-level contains — round-22 added a byte-identical re-latch line inside the
+        // validate_config failure arm (inside the `Err(error) => {` window, outside this one),
+        // and that line satisfied the function-level assertion: deleting this arm's re-latch
+        // block (still compiling) kept this pin green (mutation executed this round, 1 passed /
+        // 0 failed). Now an arm-bounded window assertion — deleting this arm's re-latch alone
+        // turns red, and the validate arm's identical line can no longer backstop it.
         assert!(
             failure_arm.contains("endpoint.config.allow_host_workspace = true;"),
             "the persist-failure arm itself must re-latch the in-memory flag \
@@ -6342,22 +6715,24 @@ mod tests {
             "the failure arm must re-emit status so the UI shows the truthful \
              still-authorized consent state instead of the optimistic revoked row"
         );
-        // Round-20 复审(S04):文案断言只证明文本存在,不证明它是被 return
-        // 的 Err——「打印文案后放行成功」的突变(misreport 失败的 persist
-        // 为成功)五条断言全绿。钉住 return Err( 落在失败臂窗口内(if-let
-        // 与文案之间;不做 return↔文案语句级配对——错误文案里自带分号
-        // "persisted; folder",纯文本分号扫描会假红)。
+        // Round-20 review (S04): the copy assertion only proves the text exists, not that it
+        // is the returned Err — the "print the copy then allow success" mutant (misreporting a
+        // failed persist as success) kept all five assertions green. Pin that `return Err(`
+        // falls inside the failure-arm window (between the if-let and the copy; no
+        // statement-level return↔copy pairing — the error copy itself contains a semicolon,
+        // "persisted; folder", so a plain-text semicolon scan would false-red).
         assert!(
             failure_arm.contains("return Err("),
             "the actionable failure message must be returned as an Err from \
              inside the persist-failure arm; a log-and-continue mutation \
              would misreport a failed persist as success"
         );
-        // Round-28 复审 MINOR-8a:次序此前无钉——把回锁块与 emit_status
-        // 整体对调可编译且上方全部成员断言保绿(已执行突变确认),但发出
-        // 的状态载荷携带已撤销旗标而内存/磁盘已回锁,UI 闪假 unauthorized
-        // 行。钉住回锁 → emit → return 的次序(与 validate 臂的
-        // relatch<emit 序同一口径)。
+        // Round-28 review MINOR-8a: the ordering had no pin — swapping the re-latch block and
+        // emit_status wholesale compiles and keeps every member assertion above green (mutant
+        // executed and confirmed), but the emitted status payload would carry the revoked flag
+        // while memory/disk are already re-latched, flashing a false unauthorized row in the
+        // UI. Pin the re-latch → emit → return order (the same caliber as the validate arm's
+        // relatch<emit ordering).
         let relatch_at = failure_arm
             .find("endpoint.config.allow_host_workspace = true;")
             .expect("the re-latch line must exist");
@@ -6376,15 +6751,18 @@ mod tests {
         );
     }
 
-    /// Round-20 复审 MINOR 钉:严格读取失败臂(config 损坏/不可读)此前在
-    /// 内存失效已真实翻旗标/清 grant 后经 `?` 直接返回,无状态刷新——UI
-    /// 滞留已授权显示到下一次无关状态推送(Round-19 NIT 已给 config-absent
-    /// 畸形态补了同一 emit;本钉把损坏形态纳入同一纪律)。源钉:失败臂窗口
-    /// 内必须同时出现错误返回与 emit_status;删除 emit 即红。Round-21
-    /// 复审修正:round-20 版本的窗口横跨 match 双臂,emit 断言被 Ok(None)
-    /// 臂的同类 emit 兜住——单删失败臂的 emit 全套件仍绿(分片双确认的
-    /// 旁路突变),修正为臂界窗(emit 落在 `Err(error) => {` 与
-    /// `return Err(error)` 之间,次序同验)后单删即红。
+    /// Round-20 review MINOR pin: the strict-read failure arm (config corrupt/unreadable)
+    /// previously returned via `?` right after the in-memory invalidation had really flipped
+    /// the flag/cleared grants, with no status refresh — the UI stayed on the authorized
+    /// display until the next unrelated status push (Round-19 NIT already added the same emit
+    /// for the config-absent malformed state; this pin brings the corrupt state under the
+    /// same discipline). Source pin: the failure-arm window must contain both the error return
+    /// and emit_status; deleting the emit turns red. Round-21 review correction: the round-20
+    /// window spanned both match arms, and the emit assertion was backstopped by the Ok(None)
+    /// arm's own emit — deleting only the failure arm's emit kept the whole suite green (the
+    /// split-confirmation bypass mutant); corrected to an arm-bounded window (the emit falls
+    /// between `Err(error) => {` and `return Err(error)`, order verified too), after which a
+    /// single deletion turns red.
     #[test]
     fn revoke_strict_load_failure_re_emits_status_before_returning() {
         let source = include_str!("mod.rs");
@@ -6423,12 +6801,14 @@ mod tests {
         );
     }
 
-    /// Round-22 复审 MINOR 源钉:validate_config 失败臂与落盘失败臂同一
-    /// 纪律——此前裸 `?` 直传,无状态刷新、无内存回锁,错误文本也不提
-    /// folder consent;UI 滞留已授权行(与 strict-load/missing-config 臂
-    /// 同族)。钉住臂 opener(裸 `?` 回退即红)、回锁 Needle(删除即红)
-    /// 与 emit 先于构造错误的顺序(块删除/顺序对调即红)。Round-23 复审
-    /// 补钉 emit 的无条件位置:挪进条件回锁块内的突变此前保持全绿。
+    /// Round-22 review MINOR source pin: the validate_config failure arm follows the same
+    /// discipline as the persist-failure arm — previously a bare `?` pass-through with no
+    /// status refresh, no in-memory re-latch, and error text never mentioning folder consent;
+    /// the UI stayed on the authorized row (the same family as the strict-load/missing-config
+    /// arms). Pin the arm opener (a bare `?` revert turns red), the re-latch needle (deletion
+    /// turns red), and the emit-before-constructing-the-error order (block deletion/order swap
+    /// turn red). Round-23 review adds the emit's unconditional position: the mutant moving it
+    /// inside the conditional re-latch block previously stayed green.
     #[test]
     fn revoke_validation_failure_re_latches_and_emits() {
         let source = include_str!("mod.rs");
@@ -6454,13 +6834,15 @@ mod tests {
             relatch_pos < emit_pos,
             "the re-latch must precede the status refresh so the emitted              payload shows the truthful still-authorized state"
         );
-        // Round-27 复审 m1:回锁的「条件内」位置此前未被钉——把回锁挪出
-        // `if remains_enabled {` 块(变无条件)的突变编译保绿,并把
-        // 配置损坏但磁盘未授权的形状翻成 fail-open(内存回锁为已授权、
-        // 磁盘旗标为 false,内存侧 host-folder 列举在重启前保持可用——
-        // 本钉家族所守的确切复活面)。钉法:回锁必须位于条件 opener
-        // 之后,且 opener 到回锁之间的切片花括号未配平(条件块仍在
-        // 打开态)——外提/后置突变在此双双失配转红。
+        // Round-27 review m1: the re-latch's "inside the conditional" position had no pin —
+        // the mutant hoisting the re-latch out of the `if remains_enabled {` block (making it
+        // unconditional) compiled green and flipped the corrupt-config-but-disk-unauthorized
+        // shape into fail-open (memory re-latched to authorized while the disk flag is false,
+        // keeping in-memory host-folder listing alive until restart — the exact resurrection
+        // surface this pin family guards). Pin method: the re-latch must sit after the
+        // conditional opener, and the braces between opener and re-latch must be unbalanced
+        // (the conditional block still open) — hoisting/postponing mutants both mismatch here
+        // and turn red.
         let if_pos = arm_body
             .find("if remains_enabled {")
             .expect("the conditional re-latch block must exist");
@@ -6473,12 +6855,14 @@ mod tests {
              authorized; hoisting it out (unconditional re-latch) flips the \
              invalid-config flag-false shape fail-open"
         );
-        // Round-23 复审 MINOR:emit 的无条件位置此前未被钉——把 emit 挪进
-        // `if remains_enabled {` 块内的突变保持全绿,配置损坏但磁盘未授权
-        // 的形状会静默失去状态刷新(落盘失败臂的既有同形缺口)。emit 必须
-        // 位于条件回锁块之外:从块 opener 到 emit 的切片花括号必须配平,
-        // 块内挪动即失配变红。(切片当前为纯代码;花括号计数口径与精确锁
-        // 区间钉相同——字符串/注释内的花括号属漂移脆弱面,按已披露残留。)
+        // Round-23 review MINOR: the emit's unconditional position had no pin — the mutant
+        // moving the emit inside the `if remains_enabled {` block stayed green, and the
+        // corrupt-config-but-disk-unauthorized shape would silently lose its status refresh
+        // (the persist-failure arm's existing same-shaped gap). The emit must sit outside the
+        // conditional re-latch block: the braces from the block opener to the emit must be
+        // balanced, and moving it into the block mismatches and turns red. (The slice is pure
+        // code today; the brace-counting caliber matches the exact lock-span pin — braces
+        // inside strings/comments are a drift-fragile surface, a disclosed residual.)
         let if_pos = arm_body
             .find("if remains_enabled {")
             .expect("the conditional re-latch block must exist");
@@ -6501,11 +6885,13 @@ mod tests {
         );
     }
 
-    /// Round-19 复审 NIT 钉(round-21 复审补:该臂此前无任何钉,整块删除
-    /// 全套件保持绿):config 缺失但内存端点仍在的畸形态——失效块已真实
-    /// 翻旗标/清 grant,条件性补一次状态刷新,避免 UI 滞留已授权显示。
-    /// 源钉:Ok(None) 臂窗口内 `if endpoint_present {` 与其块内
-    /// emit_status 必须共存;删除条件块(或只删 emit)即红。
+    /// Round-19 review NIT pin (round-21 review addition: this arm previously had no pin at
+    /// all — deleting the whole block kept the suite green): the malformed state where config
+    /// is missing but an in-memory endpoint remains — the invalidation block really did flip
+    /// the flag/clear grants, so one conditional status refresh is added, keeping the UI from
+    /// staying stuck on the authorized display. Source pin: within the Ok(None) arm window,
+    /// `if endpoint_present {` and its in-block emit_status must coexist; deleting the
+    /// conditional block (or just the emit) turns red.
     #[test]
     fn revoke_missing_config_arm_emits_status_when_endpoint_present() {
         let source = include_str!("mod.rs");
@@ -6547,11 +6933,12 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-15 复审 minor:满队楔死恢复路径)。stop/refresh 对
-    /// pending-revocation 队列满必须按共享前缀降级为记日志继续;退回
-    /// `queue_pending_revocation(…)?` 的 ?-传播会同时恢复两类楔死:
-    /// stop 无法停用、第 33 次轮换起 refresh 永久失败(突变实证)。
-    /// 同键不同密钥的冲突分支保持原样(round-14 的 fail-closed 边界)。
+    /// Wiring pin (Round-15 review minor: full-queue wedging of recovery paths). stop/refresh
+    /// must degrade a full pending-revocation queue to log-and-continue by the shared prefix;
+    /// reverting to `queue_pending_revocation(…)?`'s `?` propagation revives both wedge
+    /// classes at once: stop cannot stop, and refresh fails permanently from the 33th rotation
+    /// on (mutant executed). The same-key-different-secret conflict branch stays as-is (the
+    /// round-14 fail-closed boundary).
     #[test]
     fn recovery_paths_degrade_a_full_revocation_queue_instead_of_wedging() {
         let source = include_str!("mod.rs");
@@ -6575,15 +6962,15 @@ mod tests {
                 body.contains("PENDING_REVOCATION_QUEUE_FULL_PREFIX"),
                 "{label} must recognize the shared queue-full prefix and degrade to a log",
             );
-            // Round-18 复审:护栏与冲突臂的极性此前只由「引用常量 + 无 ?」
-            // 弱断言覆盖——把护栏放宽成 `starts_with(PREFIX) ||
-            // !error.is_empty()` 这类改写,会把 round-14 记录的同键不同
-            // 密钥 fail-closed 边界静默翻成 fail-open,现有断言全绿。按
-            // 逐字节形态钉住护栏与 catch-all 冲突臂。(Round-19 复审:
-            // 护栏 needle 必须含臂 opener `=> {`——裸护栏 needle 是
-            // superstring 盲的,析取加宽 `|| !error.is_empty()` 原样保留
-            // 旧 needle;带上 opener 后任何加宽都在 `=> {` 前插入文本,
-            // 针即失配。)
+            // Round-18 review: the guard's and conflict arm's polarity was previously covered
+            // only by weak "references the constant + no ?" assertions — widening the guard into
+            // rewrites like `starts_with(PREFIX) || !error.is_empty()` would silently flip the
+            // round-14-recorded same-key-different-secret fail-closed boundary into fail-open
+            // with every existing assertion green. Pin the guard and the catch-all conflict arm
+            // by byte-exact shape. (Round-19 review: the guard needle must include the arm
+            // opener `=> {` — a bare guard needle is superstring-blind, and the disjunction
+            // widening `|| !error.is_empty()` keeps the old needle verbatim; with the opener
+            // included, any widening inserts text before `=> {` and the needle mismatches.)
             assert!(
                 body.contains(
                     "Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {"
@@ -6598,11 +6985,12 @@ mod tests {
                  drops revocation intents for conflicting credentials without any \
                  durable record",
             );
-            // Round-22 复审(m5):两条 contains 不看臂序——guard 臂与
-            // catch-all 臂对调后编译照过,queue-full 错误改道 fail-closed
-            // 冲突臂返回,stop/refresh 楔死复活而两条 needle 原样在场。
-            // 按位置钉住 guard 先于 catch-all(与本测试已有的 entry/
-            // tolerate 顺序断言同一风格)。
+            // Round-22 review (m5): the two contains checks ignore arm order — swapping the
+            // guard arm and the catch-all arm still compiles, the queue-full error is rerouted
+            // to return through the fail-closed conflict arm, stop/refresh wedging revives, and
+            // both needles are present verbatim. Pin by position that the guard precedes the
+            // catch-all (the same style as this test's existing entry/tolerate order
+            // assertions).
             let guard_at = body
                 .find("Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {")
                 .expect("guard needle pinned above");
@@ -6617,15 +7005,15 @@ mod tests {
                  return, resurrecting the stop/refresh wedge with both \
                  needles still present"
             );
-            // Round-24 复审(m1,突变实锤):顺序断言对「插入臂」加宽是盲
-            // 的——在 guard 与 catch-all 之间插入同型 log-and-continue 臂
-            // 后两条 needle 与顺序断言依旧全绿(本轮已执行)。Round-25 复
-            // 审 MAJOR-3(再突变实锤):[guard_at..catchall_at] 切片对
-            // guard **之前**的插入臂仍是盲的——同样的臂插到 Ok(()) 与
-            // guard 之间(编译通过)时窗口内计数仍为 1,断言保绿(本轮已
-            // 执行)。改为从 match opener 起数到 catch-all 之间的全部
-            // `Err(` 臂 opener(与绑定拼写无关):任何前置或中间插入臂都
-            // 使计数超过 guard 自身的一处。
+            // Round-24 review (m1, mutant confirmed): the order assertion is blind to "inserted
+            // arms" — inserting a same-shaped log-and-continue arm between the guard and the
+            // catch-all left both needles and the order assertion green (executed this round).
+            // Round-25 review MAJOR-3 (another mutant confirmed): the [guard_at..catchall_at]
+            // slice is still blind to arms inserted **before** the guard — the same arm inserted
+            // between Ok(()) and the guard (compiles) leaves the in-window count at 1 and the
+            // assertion green (executed this round). Changed to counting every `Err(` arm opener
+            // (binding spelling irrelevant) from the match opener to the catch-all: any arm
+            // inserted before or between pushes the count past the guard's own single one.
             let match_open = body
                 .find("match queue_pending_revocation(")
                 .expect("the queue_pending_revocation match must exist");
@@ -6644,8 +7032,8 @@ mod tests {
                  fail-closed boundary to fail-open (executed mutants)"
             );
         }
-        // refresh 的提交后回放同样不得楔住 activate(rotation 已提交的
-        // 半提交窗口不得以失败上报)。
+        // refresh's post-commit replay must likewise not wedge activate (the half-committed
+        // window of a committed rotation must not be reported as a failure).
         let refresh_body = source
             .split("fn refresh(")
             .nth(1)
@@ -6656,15 +7044,16 @@ mod tests {
             .min()
             .unwrap_or(refresh_body.len());
         let refresh_body = comment_filtered(&refresh_body[..end]);
-        // 入口处的 fail-closed 回放(start/resume/refresh 同一口径)保留;
-        // 提交后、activate 前的回放必须走容错臂,不得 `?` 传播。
+        // The entrance's fail-closed replay (start/resume/refresh, one caliber) is kept; the
+        // post-commit, pre-activate replay must take the tolerant arm and never propagate `?`.
         assert!(
             refresh_body.contains("[web-access] refresh ignores pending-revocation replay failure"),
             "the post-commit replay before activate must tolerate failure like stop does",
         );
-        // Round-16 复审(M1b):入口回放的 fail-closed `?` 此前是可选断言
-        // (both-optional 的 if-let)——删除入口 `?` 行时本钉仍全绿,entry
-        // 路径可被静默改成容错。改为必选断言 + 顺序校验。
+        // Round-16 review (M1b): the entrance replay's fail-closed `?` was previously an
+        // optional assertion (a both-optional if-let) — deleting the entrance `?` line kept
+        // this pin green, letting the entry path be silently flipped to tolerant. Changed to a
+        // mandatory assertion + order verification.
         let entry_form = refresh_body.find("self.replay_pending_revocations()?;");
         assert!(
             entry_form.is_some(),
@@ -6681,9 +7070,10 @@ mod tests {
             entry_form < tolerate_form,
             "the fail-closed entry replay must precede the committed-rotation tolerate arm",
         );
-        // Round-16 复审(M1a):stop 的 rpc-ledger 删除降级此前无钉——退回
-        // `remove_rpc_ledger()?` 会让一次已生效的停用上报失败,而
-        // stop_current 无法被行为测试驱动(无 mock_app),全套件保持绿。
+        // Round-16 review (M1a): stop's rpc-ledger removal degradation had no pin — reverting
+        // to `remove_rpc_ledger()?` would report a failure for a stop that already took effect,
+        // and stop_current cannot be behaviorally driven (no mock_app), so the whole suite
+        // stayed green.
         let stop_body = source
             .split("pub fn stop_current(")
             .nth(1)
@@ -6705,9 +7095,10 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-10 复审 minor):`web_access:status` 载荷携带配对
-    /// URL 与 QR 位图(token 的载体),必须 emit_to("main") 而非广播——
-    /// 退回 `app.emit` 会把它送达 aux WebView(reader/pet),全套件不红。
+    /// Wiring pin (Round-10 review minor): the `web_access:status` payload carries the
+    /// pairing URL and QR bitmap (the token's carrier) and must be emit_to("main"), not
+    /// broadcast — reverting to `app.emit` would deliver it to aux WebViews (reader/pet)
+    /// without any suite turning red.
     #[test]
     fn emit_status_scopes_the_payload_to_the_main_webview() {
         let source = include_str!("mod.rs");
@@ -6723,13 +7114,14 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-11 复审 M2):重派发必须重置 TTL 时钟,两条臂都是
-    /// 同一契约——`handle_rpc_request` 的 Pending 臂是 begin 持久化失败
-    /// 后重试的真实通路(settle_begin_persist_failure 清掉
-    /// dispatched_generation 后必经此臂重派),`prepare_bridge_generation`
-    /// 臂已有行为钉驱动,但行为钉看不见本臂:Round-11 突变实证,删除
-    /// 本臂的时钟重置,3870 项测试全绿,窗口尾部的重试重新被 TTL 扫描
-    /// 伪造成 `rpc_timed_out`。删除任一臂的重置本钉即红。
+    /// Wiring pin (Round-11 review M2): redispatch must reset the TTL clock — both arms carry
+    /// the same contract. handle_rpc_request's Pending arm is the real path for post-begin-
+    /// persist-failure retries (after settle_begin_persist_failure clears
+    /// dispatched_generation, redelivery necessarily passes through it); the
+    /// prepare_bridge_generation arm already has a behavioral pin, but that pin cannot see
+    /// this arm: the Round-11 mutant deleting this arm's clock reset kept all 3870 tests green
+    /// while retries near the window's end were again fabricated into `rpc_timed_out` by the
+    /// TTL sweep. Deleting either arm's reset turns this pin red.
     #[test]
     fn rpc_redispatch_rearms_the_dispatch_clock_in_both_arms() {
         let source = include_str!("mod.rs");
@@ -6760,11 +7152,12 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-11 复审):phase-one 默认(state_ready 缺省即就绪门
-    /// 生效)的修复只在 `synchronize_client_from_value` 的调用点生效——
-    /// 现有测试直接驱动 helper,看不见调用点;把调用点内联回
-    /// `unwrap_or(true)`(pre-fix 行为,省略 state_ready 的客户端可跳过
-    /// 就绪门收取业务事件)时全套件保持绿。删除调用点即红。
+    /// Wiring pin (Round-11 review): the phase-one default fix (a missing state_ready means
+    /// the readiness gate applies) only takes effect at the `synchronize_client_from_value`
+    /// call site — existing tests drive the helper directly and cannot see the call site;
+    /// inlining the call site back to `unwrap_or(true)` (the pre-fix behavior, where clients
+    /// omitting state_ready could skip the readiness gate and still receive business events)
+    /// kept the whole suite green. Deleting the call site turns red.
     #[test]
     fn client_ready_readiness_gate_is_wired_at_the_synchronize_call_site() {
         let source = include_str!("mod.rs");
@@ -6781,9 +7174,9 @@ mod tests {
             "the readiness gate must be consulted at the synchronize call site; \
              inlining unwrap_or(true) back lets clients that omit state_ready skip it"
         );
-        // Round-15 复审(S18 F5):仅存在绑定不够——删除下游消费(让
-        // state_ready 从不参与判定)时上面的 contains 仍然全绿。断言绑定
-        // 之后确有读取。
+        // Round-15 review (S18 F5): mere existence of the binding is not enough — deleting
+        // the downstream consumption (so state_ready never participates in any judgment) kept
+        // the contains above green. Assert that the binding is actually read afterwards.
         let bound = body
             .find("let state_ready = client_state_ready(value);")
             .expect("the binding assert above guarantees the anchor");
@@ -6792,10 +7185,10 @@ mod tests {
             after_binding.contains("state_ready"),
             "state_ready must be consumed downstream of its binding, not bound and discarded",
         );
-        // Round-16 follow-up 复审(M5):存在性断言钉不住极性——把
-        // `if !state_ready {` 反转成 `if state_ready {`(变成只对未就绪
-        // 客户端放行业务事件)时,绑定与下游消费两条断言仍全绿。钉住否定
-        // 臂的逐字节形态(函数体内唯一)。
+        // Round-16 follow-up review (M5): existence assertions cannot pin polarity — inverting
+        // `if !state_ready {` into `if state_ready {` (delivering business events only to
+        // not-ready clients) kept both the binding and downstream-consumption assertions green.
+        // Pin the negated arm's byte-exact form (the only one in the function body).
         assert!(
             after_binding.contains("if !state_ready {"),
             "the readiness gate must stay negated (a not-ready client resets the \
@@ -6805,11 +7198,11 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-11 复审 minor):`reserve_web_attachments` 的拒绝串
-    /// 只回显铸造形状的句柄。方法体需要 AppHandle(emit_status 依赖),
-    /// 行为钉驱动不了;删除形状门让调用方字节重新进入错误链(其中含
-    /// `reserve Web chat turn: …` 段的句柄会把硬失败伪装成瞬态忙碌)时
-    /// 本钉变红。
+    /// Wiring pin (Round-11 review minor): reserve_web_attachments' refusal string echoes
+    /// only minted-shape handles. The method body needs an AppHandle (emit_status
+    /// dependency), so behavioral pins cannot drive it; deleting the shape gate lets caller
+    /// bytes back into the error chain (where a handle containing a `reserve Web chat turn: …`
+    /// segment disguises a hard failure as transient busyness), turning this pin red.
     #[test]
     fn reserve_web_attachments_echoes_only_well_formed_handles() {
         assert!(attachment_handle_is_well_formed(
@@ -6842,12 +7235,13 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-11 复审):restore-after-revoke 的 manager 半边——
-    /// `restore_web_workspace_grant` 必须读取**存活端点**的 consent 旗标
-    /// 传给 store(store 半边的拒绝语义已由 workspace_grants.rs 的行为钉
-    /// 判别),否则 revert 成硬编码 `true` 会复活「reserve→revoke→创建
-    /// 失败→restore 复活 grant」的时序(bind-time 复核仍在,属纵深缺口
-    /// 而非开放漏洞)。回退接线本钉即红。
+    /// Wiring pin (Round-11 review): the manager half of restore-after-revoke —
+    /// `restore_web_workspace_grant` must read the **live endpoint's** consent flag and pass
+    /// it to the store (the store half's refusal semantics are discriminated by
+    /// workspace_grants.rs's behavioral pin); otherwise reverting to a hardcoded `true`
+    /// revives the "reserve → revoke → creation fails → restore resurrects the grant"
+    /// sequence (the bind-time recheck still exists, making this a defense-in-depth gap rather
+    /// than an open hole). Reverting the wiring turns this pin red.
     #[test]
     fn restore_web_workspace_grant_reads_the_live_consent_flag() {
         let source = include_str!("mod.rs");
@@ -6872,11 +7266,13 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-11 复审 minor):确认必须针对进程内权威账本整体落盘
-    /// (`persist_pending_revocations`),并同步维护 backlog;回退成「重读
-    /// 磁盘→删一条→重写」(`acknowledge_pending_revocation`)会在抢救降
-    /// 级后拿空账本清掉内存里的兄弟条目。方法体需要 AppHandle,行为钉
-    /// 驱动不了,按本模块惯例以源码契约钉住。
+    /// Wiring pin (Round-11 review minor): acknowledgement must persist the whole of the
+    /// in-process authoritative ledger (`persist_pending_revocations`) and maintain the
+    /// backlog in sync; reverting to "re-read disk → remove one → rewrite"
+    /// (`acknowledge_pending_revocation`) would, after a salvage degradation, take an empty
+    /// ledger and clear in-memory sibling entries. The method body needs an AppHandle, so
+    /// behavioral pins cannot drive it — pinned as a source contract per this module's
+    /// convention.
     #[test]
     fn revocation_ack_persists_the_process_backlog_instead_of_rereading_disk() {
         let source = include_str!("mod.rs");
@@ -6902,10 +7298,11 @@ mod tests {
         );
     }
 
-    /// Round-14 复审 minor(source 契约钉):回放装载必须按「并集且内存
-    /// 优先」合并——朴素 `backlog = ledger.entries…collect()` 的整覆盖会
-    /// 在第二次生命周期调用时把抢救降级后只在内存里的条目从两侧同时
-    /// 抹掉。回退成整覆盖本钉即红。
+    /// Round-14 review minor (source-contract pin): replay loading must merge as "union with
+    /// memory priority" — a naive `backlog = ledger.entries…collect()` wholesale overwrite
+    /// would, on the second lifecycle call, wipe the entries that exist only in memory after a
+    /// salvage degradation from both sides at once. Reverting to wholesale overwrite turns
+    /// this pin red.
     #[test]
     fn revocation_replay_merges_disk_entries_into_the_process_backlog() {
         let source = include_str!("mod.rs");
@@ -6925,19 +7322,21 @@ mod tests {
             !body.contains("pending_revocation_backlog = ledger.entries"),
             "the plain disk-overwrite must not come back; it drops memory-only salvaged entries"
         );
-        // Round-15 复审(S14/S18 F4,突变实证):把合并种子从 held 换成
-        // ledger.entries(磁盘优先、同键冲突保留磁盘版本)后,上面两条
-        // 断言仍然全绿——键去重行 token 对称,不区分优先方向。钉死内存
-        // 优先的种子行:同键不同值保留内存版本(在飞工人重试的正是它)。
+        // Round-15 review (S14/S18 F4, mutant executed): swapping the merge seed from held to
+        // ledger.entries (disk priority, same-key conflicts keeping the disk version) still
+        // kept both assertions above green — the key-dedup line is token-symmetric and
+        // direction-blind. Pin the memory-priority seed line: same-key different-value
+        // conflicts keep the memory version (exactly what the in-flight worker retries).
         assert!(
             body.contains("let mut merged = held;"),
             "the merge must seed from the in-process backlog (memory wins conflicts); \
              seeding from the ledger silently inverts the documented precedence"
         );
-        // Round-16 follow-up 复审(M5):种子行钉不住冲突臂——同键同值处
-        // 若被改写成 retain+push 覆盖(账本版本胜),种子行仍绿。按逐字节
-        // 形态钉住「键不存在才追加」的守卫形态:同键不同值的冲突保留内存
-        // 版本(在飞工人重试的正是它)。
+        // Round-16 follow-up review (M5): the seed line cannot pin the conflict arm — if the
+        // same-key-same-value site were rewritten into retain+push overwrite (ledger version
+        // wins), the seed line stays green. Pin the "append only when the key is absent" guard
+        // shape byte-exactly: same-key different-value conflicts keep the memory version
+        // (exactly what the in-flight worker retries).
         assert!(
             body.contains(
                 "if !merged.iter().any(|existing| {\n                    pending_revocation_key(existing) == pending_revocation_key(entry)\n                }) {\n                    merged.push(entry.clone());\n                }"
@@ -6948,16 +7347,19 @@ mod tests {
         );
     }
 
-    /// 接线钉(Round-11 复审 minor):订阅帧必须先过活跃 lease 门再动
-    /// 订阅集——迟到的死 lease 订阅帧会让退订摘掉新客户端刚装的订阅。
-    /// 分派体需要 AppHandle,行为钉驱动不了;把门删掉或挪到订阅变更之后
-    /// 即红。
+    /// Wiring pin (Round-11 review minor): subscription frames must pass the active-lease
+    /// gate before touching the subscription set — a late dead-lease subscription frame would
+    /// let the unsubscribe strip a subscription the new client just installed. The dispatch
+    /// body needs an AppHandle, so behavioral pins cannot drive it; deleting the gate or
+    /// moving it after the subscription change turns red.
     #[test]
     fn event_subscriptions_are_lease_gated_under_the_mutation_lock() {
-        // Round-14 复审 minor(替代 dispatch-site 版本):门检必须活在
-        // handle_event_subscription 体内、与订阅变更同一把锁——旧形状
-        // (dispatch 臂先单独验锁再放行)在两锁之间留 takeover 窗口,本钉
-        // 对该回退形状变红(门检离开函数体即找不到谓词调用)。
+        // Round-14 review minor (alternative to the dispatch-site version): the gate check must
+        // live inside handle_event_subscription's body, under the same lock as the subscription
+        // change — the old shape (the dispatch arm validating the lease separately and then
+        // admitting) left a takeover window between the two locks; this pin turns red on that
+        // revert shape (move the gate check out of the function body and the predicate call is
+        // gone).
         let source = include_str!("mod.rs");
         let start = source
             .find("fn handle_event_subscription(")
@@ -6984,8 +7386,8 @@ mod tests {
         );
     }
 
-    /// Round-11 复审 NIT:relay 自由文本入库前的 char 边界截断(与
-    /// `rpc_error_completion` 的 16,384 同口径),多字节字符不被劈开。
+    /// Round-11 review NIT: char-boundary truncation of relay free text before storage (the
+    /// same caliber as `rpc_error_completion`'s 16,384), never splitting a multi-byte character.
     #[test]
     fn bound_relay_text_truncates_on_char_boundaries() {
         let short = "短错误".to_string();
@@ -6999,10 +7401,11 @@ mod tests {
         );
     }
 
-    /// 接线钉:relay 提供的错误文本必须在 `set_endpoint_error_with_code`
-    /// 入库点经 [`bound_relay_text`] 截断——单元钉只测函数本体,看不见
-    /// 调用点;把截断从入库点删掉(单帧 4 MiB 文本原样入库、每次
-    /// emit_status 重复序列化)即红。
+    /// Wiring pin: relay-supplied error text must be truncated via [`bound_relay_text`] at
+    /// the `set_endpoint_error_with_code` storage point — the unit pin tests only the function
+    /// itself and cannot see call sites; deleting the truncation from the storage point (up to
+    /// 4 MiB of single-frame text stored verbatim, re-serialized on every emit_status) turns
+    /// red.
     #[test]
     fn endpoint_error_persistence_bounds_the_relay_text() {
         let source = include_str!("mod.rs");
@@ -7023,9 +7426,10 @@ mod tests {
 
     #[test]
     fn registration_error_reasons_are_actionable() {
-        // 凭据被拒 → 轮换;配置不可用 → 轮换恢复;版本不匹配 → 更新桌面端
-        // (轮换无济于事);其余码原样保留 relay 文本。恢复码与原文分支必须
-        // 一致:SettingsView 据码映射三语文案,原文是回退。
+        // Credentials refused → rotate; config unusable → rotate to recover; version mismatch
+        // → update the desktop (rotation will not help); other codes keep the relay text
+        // verbatim. The recovery-code and raw-text branches must stay consistent: SettingsView
+        // maps the code to trilingual copy, with the raw text as fallback.
         assert!(
             relay_registration_error_reason("invalid_access_token", "denied")
                 .contains("rotate Web access")
@@ -7073,10 +7477,12 @@ mod tests {
             None
         );
 
-        // Round-7 复审:两张映射的分支对齐按终结码全表循环钉住——只往其中
-        // 一张加分支(另一张漏掉)时,该码会渲染原文且无恢复码(fail-soft
-        // 但不一致,单码独立断言抓不住)。endpoint_revoked 走 handle_revoked
-        // 的完整清理路径,两类指引都不适用,显式断言这一分区。
+        // Round-7 review: the two maps' branch alignment is pinned by looping over the whole
+        // terminal-code table — adding a branch to only one map (missing the other) would
+        // render that code's raw text with no recovery code (fail-soft but inconsistent; a
+        // per-code independent assertion cannot catch it). endpoint_revoked goes through
+        // handle_revoked's full cleanup path where neither hint applies; that partition is
+        // asserted explicitly.
         for code in TERMINAL_REGISTRATION_ERROR_CODES {
             let recovery = relay_registration_error_code(code);
             let hinted = relay_registration_error_reason(code, "relay said no") != "relay said no";
@@ -7101,8 +7507,9 @@ mod tests {
 
     #[test]
     fn client_ready_without_state_ready_defaults_to_phase_one() {
-        // PROTOCOL.md phase-1:缺失/非法的 state_ready 不得视为就绪,
-        // 否则不发送该字段的客户端会跳过就绪屏障直接收到业务事件。
+        // PROTOCOL.md phase-1: a missing/invalid state_ready must not count as ready, or
+        // clients that never send the field would skip the readiness barrier and receive
+        // business events directly.
         assert!(!client_state_ready(&json!({})));
         assert!(!client_state_ready(&json!({ "state_ready": false })));
         assert!(!client_state_ready(&json!({ "state_ready": "yes" })));
@@ -7178,18 +7585,19 @@ mod tests {
         let path = directory.join("web-access.json");
         std::fs::write(&path, b"{corrupt json").unwrap();
 
-        // start/resume/refresh 仍 fail-closed;
+        // start/resume/refresh stay fail-closed;
         assert!(load_config_from(&path).is_err());
-        // 停用路径把损坏配置按「无配置」降级,并继续删除该文件。
+        // The stop path degrades a corrupt config to "no config" and still deletes the file.
         assert_eq!(load_config_for_stop_at(&path), None);
         std::fs::remove_file(&path).unwrap();
         assert!(!path.exists(), "stop must leave no unparsable state behind");
         std::fs::remove_dir_all(directory).unwrap();
 
-        // Round-6 复审 minor:上面只钉住了容错读取;「降级后仍删除文件」
-        // 的接线在 stop_current 里,单元测试到不了(mock_app 缺失),按
-        // 本模块的 source-contract 惯例钉住——降级读取与删除调用必须
-        // 同时存在于 stop_current,二者缺一即红。
+        // Round-6 review minor: only the tolerant read was pinned above; the "still deletes
+        // the file after degrading" wiring lives in stop_current, unreachable by unit tests
+        // (no mock_app), so it is pinned per this module's source-contract convention — the
+        // degraded read and the removal call must both exist in stop_current; missing either
+        // turns red.
         let source = include_str!("mod.rs");
         let start = source
             .find("pub fn stop_current(&self)")
@@ -7223,11 +7631,13 @@ mod tests {
         );
     }
 
-    /// Round-6 复审:0600 修复必须挂在第一个句柄、先于任何内容读取——
-    /// 非 UTF-8 的损坏内容走读取腿报错返回,挂在读取之后的修复永远不会
-    /// 执行,损坏 + 放宽权限的凭据文件就一直裸留在盘上(与加载注释的
-    /// 威胁模型直接相抵)。把修复挪回读取之后或删除修复即红。
-    /// Windows/fallback 无 POSIX 模式,模式断言经 test_support 钩子跳过。
+    /// Round-6 review: the 0600 repair must hang off the first handle, before any content
+    /// read — corrupt non-UTF-8 content takes the read leg's error return, so a repair
+    /// attached after the read never runs, leaving a corrupt + world-readable credentials
+    /// file sitting on disk (in direct contradiction to the load comment's threat model).
+    /// Moving the repair back after the read, or deleting it, turns red.
+    /// Windows/fallback has no POSIX mode; the mode assertion is skipped via the test_support
+    /// hook.
     #[test]
     fn corrupt_world_readable_config_is_still_repaired_on_load() {
         let directory = std::env::temp_dir().join(format!(
@@ -7237,8 +7647,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("web-access.json");
-        // 非 UTF-8 字节:read_to_string 必然失败,模拟「损坏内容 + 放宽
-        // 权限」的组合。
+        // Non-UTF-8 bytes: read_to_string necessarily fails, simulating the "corrupt content + loosened permissions" combination.
         std::fs::write(&path, [0xff_u8, 0xfe, b'{', b'\n']).unwrap();
         let enforced = crate::platform::test_support::force_private_file_mode(&path, 0o644);
         let outcome = load_config_from(&path);
@@ -7254,13 +7663,15 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    /// Round-7 复审 M1:账本侧的 0600 修复必须与 config 同形——挂在**第一
-    /// 个**句柄上、先于任何内容读取。账本走 read_to_end(不因非 UTF-8 而
-    /// 失败),能暴露顺序的只有读取腿的真实 I/O 错误:这里用「路径是目录」
-    /// 制造 unix 上 open 成功、read(2) 必失败的 EISDIR。修复挂在读取之后
-    /// (round-6 之前的形状)或被删除时,Unavailable 提前返回,权限保持
-    /// 放宽,本测试即红。Windows 无 POSIX 模式,模式断言经 test_support
-    /// 钩子跳过(open 目录在该平台直接失败,同样走 Unavailable)。
+    /// Round-7 review M1: the ledger side's 0600 repair must mirror the config's shape —
+    /// hanging off the **first** handle, before any content read. The ledger reads via
+    /// read_to_end (which does not fail on non-UTF-8), so only the read leg's real I/O error
+    /// can expose the ordering: "the path is a directory" is used here to produce an EISDIR
+    /// that opens successfully on unix but whose read(2) must fail. With the repair attached
+    /// after the read (the pre-round-6 shape) or deleted, Unavailable returns early with
+    /// permissions still loosened and this test goes red. Windows has no POSIX mode; the mode
+    /// assertion is skipped via the test_support hook (opening a directory fails outright on
+    /// that platform, also taking the Unavailable path).
     #[test]
     fn corrupt_world_readable_ledger_is_still_repaired_on_load() {
         let directory = std::env::temp_dir().join(format!(

@@ -69,10 +69,12 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// NTFS 默认大小写不敏感:按 `$UpCase` 表(Unicode 大写映射)解析——除了
-/// 简单大小写折叠共有的 `ſ`→`s`、KELVIN SIGN→`k`,它还把 ı(U+0131)折叠
-/// 为 `I`,折叠原语已一并覆盖。与 macOS 同用 interface 层的折叠原语,使
-/// 词法判定与卷的真实解析语义一致。
+/// NTFS is case-insensitive by default: resolution follows the `$UpCase`
+/// table (Unicode uppercase mappings) — besides the `ſ`→`s` and
+/// KELVIN SIGN→`k` mappings shared with simple case folding, it also folds
+/// ı (U+0131) to `I`, which the fold primitive covers as well. Shares the
+/// interface-layer fold primitive with macOS so the lexical judgment matches
+/// the volume's real resolution semantics.
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     super::super::interface::volume_fold_eq(component, expected)
 }
@@ -87,8 +89,8 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // delivery judgment compared the compat spelling). The NT object
     // namespace is case-insensitive, so the prefix match itself must fold
     // too: a lowercase `\\?\unc\…` spelling is the same share as the
-    // uppercase form (Round-15 复审 F3;此前字节精确 strip 只漏判成不同
-    // key,fail-closed 方向)。
+    // uppercase form (Round-15 review F3; the previous byte-exact strip
+    // only mis-judged these into different keys, fail-closed direction).
     let folded_prefix = path.to_ascii_lowercase();
     let verbatim = folded_prefix.starts_with(r"\\?\unc\") || folded_prefix.starts_with(r"\\?\");
     let stripped = if folded_prefix.starts_with(r"\\?\unc\") {
@@ -98,64 +100,91 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     } else {
         path.to_string()
     };
-    // 与词法折叠原语同一拼表层(ſ/K/ı 显式替换 + lowercase):NTFS 按
-    // $UpCase 解析,ı→I 这类保证等价此前被 to_lowercase 漏判成不同 key,
-    // 已授予的祖先根会被静默丢弃(Round-15 复审 F2)。
+    // Same spelling-fold surface as the lexical fold primitive (explicit
+    // ſ/K/ı replacement + lowercase): NTFS resolves via $UpCase, and
+    // guaranteed equivalences like ı→I were previously missed by
+    // to_lowercase into different keys, silently dropping an already-granted
+    // ancestor root (Round-15 review F2).
     //
-    // 已知残余(Round-15 复审 F1,文档化;Round-17 复审补全影响面):Rust
-    // 的 to_lowercase 对 İ(U+0130) 产生 `i`+U+0307,与 `i`+U+0307 自身同
-    // 键——而 $UpCase 视二者为不同文件,这里发生 over-fold(两个不同目录
-    // 可能同键)。影响双向:grant 嵌套判定可能把一个 İ/ı̇ 异拼的兄弟目录
-    // 当成已授予根(其内容随后可在该授予根下访问),也可能把操作落在新
-    // 目录上(不泄露原根内容);祖先豁免车道里,与已授予根同键的异拼兄
-    // 弟目录其真实内容可能被当作该根交付(lib.rs compose 工作区根)。需要
-    // İ 与 i+U+0307 两拼 sibling 同时存在于同一 NTFS 目录——极罕见;完美
-    // 模拟 $UpCase 需要 std 之外的简单大小写映射,残留按已接受取舍记录。
+    // Known residual (Round-15 review F1, documented; Round-17 review
+    // completed the impact analysis): Rust's to_lowercase maps İ (U+0130)
+    // to `i`+U+0307, giving it the same key as literal `i`+U+0307 — while
+    // $UpCase treats the two as different files, so an over-fold happens
+    // here (two distinct directories may share one key). The impact runs
+    // both ways: the grant nesting judgment may treat a sibling directory
+    // spelled with İ/ı̇ as an already-granted root (its content then becomes
+    // accessible under that granted root), or may land an operation on the
+    // new directory (no leak of the original root's content); in the
+    // ancestor-exemption lane, an alternate-spelling sibling sharing a key
+    // with the granted root may have its real content delivered as that root
+    // (lib.rs compose workspace root). Requires an İ spelling and an
+    // i+U+0307 spelling to coexist as siblings in the same NTFS directory —
+    // extremely rare; perfectly emulating $UpCase needs a simple case
+    // mapping outside std, so the residual is recorded as an accepted
+    // tradeoff.
     //
-    // Round-23 复审补录,Round-24 复审修正:同一 over-fold 族的成员是
-    // ẞ(U+1E9E,小写为 ß)——与既有 ß 拼写同键而 $UpCase 视为不同文件
-    // (方向同 İ:over-fold;同样需对应异拼 sibling 同目录共存,极罕见)。
-    // Kelvin 符号 U+212A 曾在此被并列为族成员,Round-24 复审修正:它有
-    // 简单大写映射 U+004B,$UpCase 正是按简单大小写映射构建的,NTFS 本就
-    // 把 K/k/K(U+212A)解析为同一文件,这里折叠为 `k` 与文件系统一致
-    // ——无分歧,不构成残余。İ 与 ẞ 仍由上一句的通用 $UpCase 取舍覆盖,
-    // 点名口径与 round-21 一致。
+    // Added in Round-23 review, corrected in Round-24 review: another member
+    // of the same over-fold family is ẞ (U+1E9E, lowercase ß) — it shares a
+    // key with the existing ß spelling while $UpCase treats them as
+    // different files (same direction as İ: over-fold; likewise requires the
+    // two spellings to coexist as siblings in one directory, extremely
+    // rare). The Kelvin sign U+212A was once listed as a family member here;
+    // Round-24 review corrects that: it has the simple uppercase mapping
+    // U+004B, $UpCase is built exactly on simple case mappings, and NTFS
+    // already resolves K/k/K (U+212A) to the same file, so folding it to `k`
+    // here agrees with the filesystem — no divergence, not a residual. İ and
+    // ẞ remain covered by the general $UpCase tradeoff above; the naming
+    // convention matches round-21.
     //
-    // Round-20 复审补录的另两向残留(false-split/可用性方向为主,现网
-    // 应用产出的拼写不可达):(a)正斜杠设备拼写(`//?/C:\doc.`、
-    // `\?\UNC/server/…`)折叠出的 key 与 plain、与同文件的 verbatim key
-    // 均不匹配,成为孤儿 key;(b)希腊 sigma(ς/σ,任意位置——`to_lower-
-    // case` 另有词末 Σ→ς 的 SpecialCasing 规则,净效果与本记录一致,同为
-    // false-split;$UpCase 同款等价对如 µ/μ→Μ 亦同属此类):$UpCase 把
-    // 二者都折到 Σ(同文件),to_lowercase 保持区分,异拼同文件在此分裂
-    // 成不同 key。
+    // Two further residuals recorded in Round-20 review (mostly
+    // false-split/usability direction; spellings produced by the shipped app
+    // are unreachable): (a) forward-slash device spellings (`//?/C:\doc.`,
+    // `\?\UNC/server/…`) fold to a key matching neither the plain nor the
+    // same file's verbatim key, becoming orphan keys; (b) Greek sigma
+    // (ς/σ, in any position — `to_lowercase` additionally has a
+    // word-final Σ→ς SpecialCasing rule whose net effect matches this
+    // record, also a false-split; $UpCase equivalence pairs like µ/μ→Μ
+    // belong to the same class): $UpCase folds both to Σ (one file) while
+    // to_lowercase keeps them distinct, so alternate spellings of one file
+    // split into different keys here.
     //
-    // Round-21 复审修正:上面的「不产生 false-merge」对归一化敏感路径上
-    // 的设备拼写族不成立——`//?/` 与 `\\.\` 拼写(反斜杠形态以外)不命中
-    // verbatim 前缀识别(ASCII 小写化匹配要求反斜杠),落入 plain 臂:
-    // `//?/C:\doc.`(敏感,句点被剥离)与 `//?/C:\doc`(Win32 把 `/` 折成
-    // `\` 后即字面 `\\?\C:\doc` = plain `C:\doc`,不敏感)同键——两个真实
-    // 不同文件 false-merge,爆炸半径与上方 İ 残留相同(其一内容可在另一
-    // 的授予根下交付)。缓解:现网应用只产出 canonicalize 的 `\\?\` 拼写,
-    // `//?/`/`\\.\` 不可达;且需 `doc.` 与字面 `doc` 兄弟同目录共存(极罕
-    // 见)。同类:`\\.\C:\doc.` 与 `\\.\C:\doc`(`.` 组件被排除在敏感判定
-    // 外,设备命名空间走 plain 臂)。记录为已接受的文档化残留,不在本波
-    // 修(constant-前缀识别的扩展是行为变更,需独立评估)。
+    // Round-21 review correction: the "no false-merge" claim above does not
+    // hold for the device-spelling family on normalization-sensitive paths —
+    // `//?/` and `\\.\` spellings (anything but the backslash form) do not
+    // hit the verbatim prefix recognition (the ASCII-lowercased match
+    // requires backslashes) and fall into the plain arm: `//?/C:\doc.`
+    // (sensitive, dot stripped) and `//?/C:\doc` (after Win32 folds `/` to
+    // `\` this is literally `\\?\C:\doc` = plain `C:\doc`, insensitive) share
+    // one key — two genuinely different files false-merge, with the same
+    // blast radius as the İ residual above (one file's content can be
+    // delivered under the other's granted root). Mitigation: the shipped app
+    // only produces canonicalize's `\\?\` spelling, so `//?/`/`\\.\` is
+    // unreachable; it also requires `doc.` and literal `doc` siblings to
+    // coexist in one directory (extremely rare). Same class: `\\.\C:\doc.`
+    // and `\\.\C:\doc` (the `.` component is excluded from the sensitivity
+    // judgment, so the device namespace takes the plain arm). Recorded as an
+    // accepted, documented residual, not fixed in this wave (extending the
+    // constant-prefix recognition is a behavior change needing its own
+    // evaluation).
     //
-    // 另一 false-split(round-21 复审补录,无方向性风险):点/空格结尾组
-    // 件后随 `..` 导航时,逐组件剥离与 Win32 的先解析后剥离不一致——
-    // `C:\doc.\..\doc\f.txt`(Win32 解析为 `C:\doc\f.txt`)键出
-    // `c:/doc/../doc/f.txt`,而其已解析 plain 拼写键出 `c:/doc/f.txt`,同
-    // 文件双 key。方向是 fail-closed(重复 key → 重复授权/去重 miss,无
-    // 旁路),形状罕见;本波在
-    // identity_key_folds_verbatim_prefixes_to_the_plain_spelling 内补一
-    // 条该形状的断言(C:\doc.\..\doc\f.txt 键出保留 `..` 的
-    // c:/doc/../doc/f.txt)把现状锁住——策略一改即红。Round-25 复审补录
-    // 同族更窄角:整体仅由点/空格构成的组件(`.. `、`...`)不命中
-    // `== ".."` 特例,按普通名字剥离后成为空组件(键里留下 `c://b` 形
-    // 孤儿),而 Win32 把 `.. ` 解析为父导航——同为 false-split、
-    // fail-closed 方向,且应用产出(canonicalize)拼写不可达;先记录,
-    // 不为它加特例分支。
+    // Another false-split (recorded in round-21 review, no directional
+    // risk): with a dot/space-suffixed component followed by `..` navigation,
+    // per-component stripping disagrees with Win32's resolve-then-strip —
+    // `C:\doc.\..\doc\f.txt` (Win32 resolves it to `C:\doc\f.txt`) keys to
+    // `c:/doc/../doc/f.txt` while its resolved plain spelling keys to
+    // `c:/doc/f.txt`: one file, two keys. The direction is fail-closed
+    // (duplicate key → duplicate grant/dedup miss, no bypass) and the shape
+    // is rare; this wave adds an assertion for the shape inside
+    // identity_key_folds_verbatim_prefixes_to_the_plain_spelling
+    // (C:\doc.\..\doc\f.txt keys to the `..`-preserving c:/doc/../doc/f.txt)
+    // to lock the status quo — any strategy change turns it red. Round-25
+    // review adds a narrower corner of the same family: a component made up
+    // entirely of dots/spaces (`.. `, `...`) misses the `== ".."` special
+    // case and becomes an empty component after ordinary-name stripping
+    // (leaving a `c://b`-shaped orphan in the key), while Win32 parses
+    // `.. ` as parent navigation — again a false-split, fail-closed, and
+    // unreachable from app-produced (canonicalize) spellings; recorded
+    // without a special-case branch for it.
     let folded = super::super::interface::volume_fold_spelling(&stripped.replace('\\', "/"));
     if !has_win32_normalization_sensitive_component(path) {
         return folded;
@@ -173,8 +202,8 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // spelling exactly as Win32 resolves them; the verbatim spelling is
     // literal, so its key keeps the unstripped components under a `\\?/`
     // namespace marker that no plain key can produce. (Round-15 fix wave
-    // reconcile:the namespace guard合入本波的共享折叠表层——两个方向
-    // 互不削弱。)
+    // reconcile: the namespace guard was folded into this wave's shared
+    // spelling-fold surface — neither direction weakens the other.)
     if verbatim {
         return format!(r"\\?/{folded}");
     }
@@ -208,17 +237,20 @@ fn has_win32_normalization_sensitive_component(path: &str) -> bool {
     })
 }
 
-/// NTFS 默认大小写不敏感:组件前缀比较与 `path_component_eq` 同用折叠原语。
+/// NTFS is case-insensitive by default: component-prefix comparison uses the
+/// same fold primitive as `path_component_eq`.
 pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
     super::super::interface::volume_fold_prefix(component, prefix)
 }
 
-/// NTFS 默认大小写不敏感:组件后缀比较与 `path_component_eq` 同用折叠原语。
+/// NTFS is case-insensitive by default: component-suffix comparison uses the
+/// same fold primitive as `path_component_eq`.
 pub fn path_component_suffix(component: &OsStr, suffix: &str) -> bool {
     super::super::interface::volume_fold_suffix(component, suffix)
 }
 
-/// Windows 空设备名（git 等外部工具的「读空配置」入参）。
+/// The Windows null device name (the "read empty config" input for git and
+/// other external tools).
 pub fn null_device() -> &'static str {
     "NUL"
 }
@@ -257,8 +289,9 @@ fn connector_cli_program(cli_bin: &str, program: &str) -> OsString {
     }
 
     if !cli_bin.is_empty() && program == cli_bin {
-        // 版本化资产库（lock 表钉住版本，单点解析）优先；旧布局（未迁移的存量）
-        // 其次；都没有回退已有 npm 全局 shim。
+        // Versioned asset store first (lock table pins the version, single
+        // resolution point); legacy layout (unmigrated installs) second; if
+        // neither exists, fall back to the existing npm global shim.
         if let Some(path) = crate::platform::connector_lock::locked_cli_path(cli_bin) {
             if path.is_file() {
                 return path.into_os_string();
@@ -593,14 +626,19 @@ fn path_starts_with_case_insensitive(path: &Path, base: &Path) -> bool {
 }
 
 fn normalized_path_key(path: &Path) -> String {
-    // Round-21 复审(残余记录,原 body 未注明):本匹配器用 to_ascii_lower-
-    // case,不接 volume_fold_* 共享折叠表——base 含非 ASCII 大小写等价字
-    // 符($UpCase 等价:K Kelvin、ſ、ı 等)时 under-match,敏感根排除方向
-    // fail-open。缓解:调用方在上游先 canonicalize(file_ingest 的根与候
-    // 选都过 canonicalize;canonicalize 失败的候选更早被可读性门拒绝),
-    // canonicalize 成功会重新显露真实拼写,故该形态在现网调用路径不可达。
-    // 与 identity-key 的 İ 残留同一族:完美模拟 $UpCase 需要 std 之外的
-    // 简单大小写映射;扩展为共享折叠表是行为变更,按已接受取舍记录。
+    // Round-21 review (residual record; the original body carried no note):
+    // this matcher uses to_ascii_lowercase and does not go through the
+    // volume_fold_* shared fold table — when base contains non-ASCII
+    // case-equivalent characters ($UpCase equivalences: K Kelvin, ſ, ı,
+    // etc.) it under-matches, fail-open in the sensitive-root exclusion
+    // direction. Mitigation: callers canonicalize upstream first (both the
+    // file_ingest root and candidates go through canonicalize; candidates
+    // whose canonicalize fails are rejected even earlier by the readability
+    // gate), and a successful canonicalize re-exposes the real spelling, so
+    // the shape is unreachable on shipped call paths. Same family as the
+    // identity-key İ residual: perfectly emulating $UpCase needs a simple
+    // case mapping outside std; widening this to the shared fold table is a
+    // behavior change, recorded as an accepted tradeoff.
     path.to_string_lossy()
         .replace('\\', "/")
         .trim_end_matches('/')
@@ -823,9 +861,10 @@ fn archive_tool_filename() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // 不再自建局部 ENV_LOCK:改借 crate 级唯一的 platform::paths::tests::ENV_LOCK,
-    // 与所有 mutate env var 的测试共享同一把锁(此处 PINVOU3_PYTHON 属 env 写),
-    // 消除并行测试的数据竞争。
+    // No local ENV_LOCK anymore: borrow the crate's single
+    // platform::paths::tests::ENV_LOCK instead, sharing one lock with every
+    // test that mutates env vars (PINVOU3_PYTHON here is an env write),
+    // eliminating the data race under parallel tests.
 
     fn test_temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -856,9 +895,10 @@ mod tests {
             filesystem_path_identity_key(r"\\server\share\dir"),
             "the verbatim UNC prefix denotes the same file as the plain UNC spelling"
         );
-        // Round-15 复审 F3:NT 对象命名空间大小写不敏感,小写 verbatim
-        // 前缀拼写同一 share,identity key 必须同键(此前字节精确 strip
-        // 产生独立 key,fail-closed 方向的漏判)。
+        // Round-15 review F3: the NT object namespace is case-insensitive, a
+        // lowercase verbatim prefix spells the same share, and the identity
+        // key must fold it to the same key (the previous byte-exact strip
+        // produced a separate key — a fail-closed miss).
         assert_eq!(
             filesystem_path_identity_key(r"\\?\unc\server\share\dir"),
             filesystem_path_identity_key(r"\\server\share\dir"),
@@ -869,20 +909,24 @@ mod tests {
             plain,
             "a lowercase verbatim drive prefix is the same NT path and must fold"
         );
-        // Round-15 复审 F2:NTFS $UpCase 把 ı 折为 I,同文件不同拼写必须
-        // 同键(此前 to_lowercase 漏判,已授予祖先根被静默丢弃);与
-        // path_component_eq 的 volume_fold_spelling 同表。
+        // Round-15 review F2: NTFS $UpCase folds ı to I, so different
+        // spellings of one file must share one key (to_lowercase previously
+        // missed this and silently dropped granted ancestor roots); same
+        // table as path_component_eq's volume_fold_spelling.
         assert_eq!(
             filesystem_path_identity_key(r"C:\Users\p\ıd_rsa"),
             filesystem_path_identity_key(r"C:\Users\p\ID_RSA"),
             "dotless-i folds to I under $UpCase, matching the volume-fold primitive"
         );
-        // Round-21 复审:点/空格结尾组件后随 `..` 导航的已知 false-split
-        // (上方函数注释「另一 false-split」段的现状锁):逐组件剥离保留
-        // `..`,键为 `c:/doc/../doc/f.txt`;Win32 先解析后剥离的真实形态是
-        // `C:\doc\f.txt`(键 `c:/doc/f.txt`)——同文件双 key,fail-closed
-        // 方向。本钉锁住现状(改键策略是行为变更,须有意识地翻红本钉),
-        // 不把它当恒真契约。
+        // Round-21 review: the known false-split of a dot/space-suffixed
+        // component followed by `..` navigation (the status-quo lock from
+        // the "another false-split" paragraph in the function comment
+        // above): per-component stripping keeps the `..`, keying to
+        // `c:/doc/../doc/f.txt`; Win32's resolve-then-strip real shape is
+        // `C:\doc\f.txt` (key `c:/doc/f.txt`) — one file, two keys,
+        // fail-closed direction. This pin locks the status quo (changing
+        // the keying strategy is a behavior change that must consciously
+        // turn this pin red), not an always-true contract.
         assert_eq!(
             filesystem_path_identity_key(r"C:\doc.\..\doc\f.txt"),
             "c:/doc/../doc/f.txt",

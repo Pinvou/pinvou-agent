@@ -247,11 +247,14 @@ function waitForRawClose(sock, timeoutMs = 3000) {
 }
 
 async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl, wsOptions = {}) {
-  // wsOptions 让个别测试能给桌面 socket 配 maxPayload:三道 frame_too_large
-  // 门测试(两道超界 + 近界限正控)用它把桌面入站上限配成真实桌面界限,
-  // 使「桌面不受扰」断言有牙齿——若被拒帧仍被转发,桌面侧 1009 关闭即
-  // 翻红(默认 100 MiB maxPayload 下该断言结构性不可观察,Round-19 复审;
-  // 近界限腿 round-20 复审加入,Round-21 复审记数)。
+  // wsOptions lets individual tests configure the desktop socket's maxPayload:
+  // the three frame_too_large gate tests (two over-bound + one near-bound
+  // positive control) use it to set the desktop inbound limit to the real
+  // desktop bound, giving the "desktop undisturbed" assertion teeth — if a
+  // rejected frame were still forwarded, the desktop-side 1009 close would go
+  // red (with the default 100 MiB maxPayload the assertion is structurally
+  // unobservable, Round-19 review; the near-bound leg was added in the
+  // round-20 review and counted in the Round-21 review).
   const ws = await openSocket(url, wsOptions);
   const registered = nextMessage(ws, "desktop_endpoint_registered");
   ws.send(JSON.stringify({
@@ -533,10 +536,12 @@ test("serves the built WebUI SPA at the public base path", async () => {
   assert.equal(outside.status, 404);
 });
 
-// stat→read 之间的换出(部署替换 web/dist):readFile 失败必须以 503 应答,
-// 不得成为 async handler 的 unhandled rejection 杀死整个 relay(与 Host 头
-// 守卫同一中毒输入纪律)。用不可读的 index.html 确定性触发 read 失败
-// (root 与 Windows 忽略该权限位,场景不成立时跳过)。
+// Swap-out between stat and read (a deploy replacing web/dist): a readFile
+// failure must be answered with 503, not become an unhandled rejection in the
+// async handler that kills the whole relay (the same poisoned-input discipline
+// as the Host header guard). The read failure is triggered deterministically
+// with an unreadable index.html (root and Windows ignore that permission bit;
+// skipped when the scenario cannot hold).
 const unreadableFileScenario =
   process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() !== 0;
 test("answers 503 when the web dist file fails between stat and read", { skip: !unreadableFileScenario }, async () => {
@@ -2192,9 +2197,11 @@ test("rejects a web frame whose envelope would exceed the desktop bound with fra
     web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
     await connected;
 
-    // 大于桌面界限、小于 ingress 上限:此前被 ingress 放行、转发后超桌面
-    // tungstenite 界限,桌面强制断线(自愈闪断);现在在转发前按真实编码
-    // 长度以 frame_too_large 明确拒绝。
+    // Larger than the desktop bound yet smaller than the ingress cap: this
+    // used to pass ingress and then exceed the desktop tungstenite bound after
+    // forwarding, forcing the desktop to drop (self-healing but a visible
+    // flash); it is now rejected before forwarding with an explicit
+    // frame_too_large based on the real encoded length.
     const pad = "x".repeat(4_150_000);
     web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", request_id: "req-big", command: "chat", args: { pad } }));
 
@@ -2205,8 +2212,10 @@ test("rejects a web frame whose envelope would exceed the desktop bound with fra
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
 
-    // 同一 web 会话随后仍可正常转发(错误是帧级的,不断链)——正向断言:
-    // client_ready 必须真实到达桌面,而不是仅有「无错误」的否定断言。
+    // The same web session must still forward normally afterwards (the error
+    // is frame-level, it does not cut the link) — a positive assertion:
+    // client_ready must truly reach the desktop, rather than relying only on a
+    // negative "no error" assertion.
     const readyReceived = nextMessage(desktop.ws, "client_ready");
     web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-b", after_seq: 0 }));
     const ready = await readyReceived;
@@ -2220,10 +2229,13 @@ test("rejects a web frame whose envelope would exceed the desktop bound with fra
 });
 
 test("rejects a web frame whose encoded forward expands past the desktop bound", async () => {
-  // Round-17 复审修正:JSON 再序列化会膨胀数字字面量——4 字节的 `1e20`
-  // 重编码为 21 位精确十进制(每元素 +17 字节)。构造一帧:raw 远小于
-  // ingress 上限(旧 raw+余量近似门直接放行),但转发编码膨胀后超过桌面
-  // 界限;门量真实编码长度,必须以 frame_too_large 拒绝且桌面不掉线。
+  // Round-17 review correction: JSON re-serialization inflates numeric
+  // literals — the 4-byte `1e20` re-encodes as a 21-digit exact decimal
+  // (+17 bytes per element). Build a frame whose raw bytes sit far below the
+  // ingress cap (the old raw-plus-headroom approximation gate passes it
+  // directly) but whose forwarded encoding expands past the desktop bound;
+  // the gate measures the real encoded length, so it must reject with
+  // frame_too_large while the desktop stays connected.
   const isolated = await spawnRelay();
   const endpointId = `endpoint_expand_${Date.now()}`;
   const accessToken = "access-token-expand-0000000000000001";
@@ -2240,10 +2252,13 @@ test("rejects a web frame whose encoded forward expands past the desktop bound",
 
     const base = { v: 2, type: "rpc_request", request_id: "req-expand", command: "chat", args: { nums: [] } };
     const overhead = Buffer.byteLength(JSON.stringify(base));
-    // 每个元素 raw `1e20,` = 5 字节 → 解析后重编码 `100000000000000000000,`
-    // = 22 字节:按编码侧反推元素数,保证编码越过桌面界限而 raw(≈ 编码
-    // 的 23%)远低于 ingress 上限。字面量必须以文本形式拼进 wire 帧
-    // (JSON.stringify 会直接输出 21 位十进制,膨胀就无从发生)。
+    // Per element, raw `1e20,` = 5 bytes → re-encoded after parsing,
+    // `100000000000000000000,` = 22 bytes: derive the element count backwards
+    // from the encoded side so the encoding crosses the desktop bound while
+    // the raw bytes (≈ 23% of the encoding) stay far below the ingress cap.
+    // The literals must be spliced into the wire frame as text
+    // (JSON.stringify would emit the 21-digit decimal directly, so the
+    // expansion could not happen).
     const elementCount = Math.ceil((4 * 1024 * 1024 - 64 * 1024 + 4096 - overhead) / 22);
     const elementText = Array.from({ length: elementCount }, () => "1e20").join(",");
     const frame = JSON.stringify(base).replace('"nums":[]', `"nums":[${elementText}]`);
@@ -2264,9 +2279,11 @@ test("rejects a web frame whose encoded forward expands past the desktop bound",
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
 
-    // Round-18 复审:「desktop undisturbed」此前只采样 readyState——与
-    // 信封测试同口径补一条真实转发断言:拒绝后同一 web 会话的合法帧仍
-    // 完整到达桌面(错误是帧级的,不断链)。
+    // Round-18 review: "desktop undisturbed" previously sampled only
+    // readyState — add a real forwarding assertion on the same terms as the
+    // envelope test: after the rejection, a legitimate frame from the same web
+    // session must still reach the desktop in full (the error is frame-level,
+    // it does not cut the link).
     const readyReceived = nextMessage(desktop.ws, "client_ready");
     web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-expansion", after_seq: 0 }));
     const ready = await readyReceived;
@@ -2280,11 +2297,14 @@ test("rejects a web frame whose encoded forward expands past the desktop bound",
 });
 
 test("forwards a near-bound legal web frame to the desktop (positive control against bound drift)", async () => {
-  // Round-20 复审(S09):两条门测试只钉欠阻塞方向(放行超帧=红);
-  // 界限常量向下漂移(误改成 1 MiB ⇒ 所有 1MiB~界限间的合法 web→桌面
-  // 帧被 frame_too_large 拒绝)此前全套件保持绿——没有「接近界限但仍
-  // 合法」的正向对照。发一帧 raw 与转发编码都落在 ingress 上限与桌面
-  // 界限之间的 rpc_request,断言桌面完整收到。
+  // Round-20 review (S09): the two gate tests only pinned the
+  // under-blocking direction (letting an oversized frame through = red); a
+  // downward drift of the bound constant (mistakenly changed to 1 MiB ⇒ every
+  // legal web→desktop frame between 1 MiB and the bound rejected as
+  // frame_too_large) previously kept the whole suite green — there was no
+  // "near the bound yet still legal" positive control. Send an rpc_request
+  // whose raw bytes and forwarded encoding both fall between the ingress cap
+  // and the desktop bound, and assert the desktop receives it in full.
   const isolated = await spawnRelay();
   const endpointId = `endpoint_nearbound_${Date.now()}`;
   const accessToken = "access-token-nearbound-000000000000001";
@@ -2301,9 +2321,10 @@ test("forwards a near-bound legal web frame to the desktop (positive control aga
 
     const base = { v: 2, type: "rpc_request", request_id: "req-nearbound", command: "chat", args: { pad: "" } };
     const overhead = Buffer.byteLength(JSON.stringify(base));
-    // 目标:转发编码 ≈ 桌面界限 − 16 KiB(转发信封与心跳争用的余量),
-    // raw(ASCII pad,无再编码膨胀)远低于 ingress 上限、又远高于任何
-    // 会被误配的向下漂移界限。
+    // Target: forwarded encoding ≈ desktop bound − 16 KiB (headroom for the
+    // forwarding envelope contending with heartbeats); the raw bytes (ASCII
+    // pad, no re-encoding expansion) sit far below the ingress cap and far
+    // above any plausibly misconfigured drifted-down bound.
     const target = 4 * 1024 * 1024 - 64 * 1024 - 16 * 1024;
     const pad = "x".repeat(target - overhead);
     const frame = JSON.stringify({ ...base, args: { pad } });
@@ -2330,12 +2351,15 @@ test("forwards a near-bound legal web frame to the desktop (positive control aga
 });
 
 test("pins the server bound to within 1 KiB of the desktop bound on both sides", async () => {
-  // Round-27 复审 m9:既有门测试的盲窗量化——向下漂移在 −16 KiB 内
-  // (near-bound 对照腿在 bound−16KiB)保持绿,向上漂移要到 +4 KiB
-  // (expand 测试)才被观察。±1 KiB 两腿把盲窗压到 1 KiB:向下漂
-  // ≥1 KiB ⇒ bound−1KiB 合法帧被 frame_too_large 拒绝(负腿红);
-  // 向上漂 ≥1 KiB ⇒ bound+1KiB 超帧被放行,桌面 tungstenite 在其自身
-  // 4 MiB−64KiB maxPayload 处强制断线(正腿红)。
+  // Round-27 review m9: quantify the blind window of the existing gate tests —
+  // a downward drift within −16 KiB (the near-bound control leg sits at
+  // bound−16KiB) stayed green, and an upward drift was only observed at +4 KiB
+  // (the expand test). The ±1 KiB pair squeezes the blind window to 1 KiB: a
+  // downward drift ≥1 KiB ⇒ the legal bound−1KiB frame is rejected as
+  // frame_too_large (negative leg red);
+  // an upward drift ≥1 KiB ⇒ the oversized bound+1KiB frame is let through and
+  // the desktop tungstenite force-drops it at its own 4 MiB−64KiB maxPayload
+  // (positive leg red).
   const isolated = await spawnRelay();
   const endpointId = `endpoint_1kib_${Date.now()}`;
   const accessToken = "access-token-1kib-00000000000000001";
@@ -2354,12 +2378,15 @@ test("pins the server bound to within 1 KiB of the desktop bound on both sides",
     const make = (request_id, size) => {
       const base = { v: 2, type: "rpc_request", request_id, command: "chat", args: { pad: "" } };
       const overhead = Buffer.byteLength(JSON.stringify(base));
-      // raw 与转发编码一致(ASCII pad,无再编码膨胀),构造误差经实测
-      // 校正到 ±8 字节内——±1 KiB 断言对这些残余不敏感。
+      // Raw and forwarded encoding are identical (ASCII pad, no re-encoding
+      // expansion), and the construction error was measured and corrected to
+      // within ±8 bytes — the ±1 KiB assertions are insensitive to that
+      // residual.
       return JSON.stringify({ ...base, args: { pad: "x".repeat(size - overhead) } });
     };
 
-    // 负腿:bound−1 KiB 必须放行(向下漂 ≥1 KiB 的界限会误拒)。
+    // Negative leg: bound−1 KiB must pass (a bound drifted down ≥1 KiB would
+    // wrongly refuse it).
     const legal = make("req-1kib-under", bound - 1024);
     const received = nextMessage(desktop.ws, "rpc_request");
     web.ws.send(legal);
@@ -2368,7 +2395,8 @@ test("pins the server bound to within 1 KiB of the desktop bound on both sides",
       "a bound-1KiB frame must reach the desktop; a >=1KiB downward bound drift refuses it");
     await expectNoMessage(web.ws, "error");
 
-    // 正腿:bound+1 KiB 必须被 frame_too_large 拒绝(向上漂 ≥1 KiB 会放行)。
+    // Positive leg: bound+1 KiB must be rejected as frame_too_large (a drift
+    // up ≥1 KiB would let it through).
     const oversized = make("req-1kib-over", bound + 1024);
     web.ws.send(oversized);
     const rejected = await nextMessage(web.ws, "error");
@@ -2384,12 +2412,14 @@ test("pins the server bound to within 1 KiB of the desktop bound on both sides",
 });
 
 test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME_BYTES", async () => {
-  // Round-25 复审 MAJOR-4:relay_client.rs 的注释声称「字节等式经 relay
-  // 门测试双向验证」,但门测试只内联自己的字面量副本、从未读 Rust 源
-  // ——服务端漂移有上方门测试兜底,桌面侧漂移无人观察(等式才是
-  // operative contract)。本钉直接对 Rust 常量断言:桌面
-  // MAX_INBOUND_TEXT_BYTES 漂离 4 MiB − 64 KiB 时套件转红,注释的
-  // 「双向验证」自此为真。
+  // Round-25 review MAJOR-4: the relay_client.rs comment claims the byte
+  // equality is "verified in both directions by the relay gate tests", but the
+  // gate tests only inline their own literal copies and never read the Rust
+  // source — server-side drift is backstopped by the gate tests above, while
+  // desktop-side drift went unobserved (the equality is the operative
+  // contract). This pin asserts the Rust constant directly: if the desktop
+  // MAX_INBOUND_TEXT_BYTES drifts away from 4 MiB − 64 KiB the suite goes red,
+  // and the comment's "verified in both directions" becomes true.
   const rust = await readFile(
     join(
       dirname(fileURLToPath(import.meta.url)),
@@ -2404,10 +2434,11 @@ test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME
     ),
     "utf8",
   );
-  // Round-27 复审 m8:匹配前先滤除纯注释行——裸 match 对「常量已改、
-  // 任意注释仍引用旧行」的漂移是盲的(与 Rust 侧 comment_filtered 同
-  // 一口径);行首锚定 (^…$ 多行) 使前缀重排(如 pub const)也失配,
-  // 拼写冻结与值冻结同强度。
+  // Round-27 review m8: filter pure comment lines before matching — a bare
+  // match is blind to the "constant changed, some comment still quotes the old
+  // line" drift (the same posture as the Rust-side comment_filtered);
+  // line-start anchoring (^…$ multiline) also makes a prefix reordering (e.g.
+  // pub const) mismatch, freezing spelling as strongly as the value.
   const rustCode = rust
     .split('\n')
     .filter((line) => {
@@ -2426,10 +2457,12 @@ test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME
 });
 
 test("answers desktop_offline before measuring an oversized frame", async () => {
-  // Round-19 复审:PROTOCOL.md 承诺「桌面断开时先答 desktop_offline,帧
-  // 不被测量也不被转发」——此前无测试钉住,把测量门挪到离线检查之前的
-  // 重构全绿(M5 突变实证)。本测试:桌面 terminate 后,web 送越界帧,
-  // 必须收到 desktop_offline 而非 frame_too_large。
+  // Round-19 review: PROTOCOL.md promises "when the desktop disconnects, first
+  // answer desktop_offline; the frame is neither measured nor forwarded" — no
+  // test pinned this, and a refactor moving the measurement gate ahead of the
+  // offline check kept the suite green (M5 mutation evidence). This test:
+  // after the desktop terminate, the web sends an oversized frame and must
+  // receive desktop_offline, not frame_too_large.
   const isolated = await spawnRelay();
   const endpointId = `endpoint_offlinegate_${Date.now()}`;
   const accessToken = "access-token-offlinegate-00000000000001";
@@ -2464,10 +2497,12 @@ test("answers desktop_offline before measuring an oversized frame", async () => 
 });
 
 test("forwards a legal desktop event inside the old role-blind false-positive window", async () => {
-  // Round-16 复审(M3):桌面入站界只约束 web→desktop。落在
-  // 「桌面界限 − 信封余量 < 帧大小 ≤ 桌面自身的出站上限」窗口内的
-  // desktop→web 事件此前被误判 frame_too_large 并静默丢弃(浏览器无
-  // 上限,转发本可成功);角色收窄后必须照常送达 web 客户端。
+  // Round-16 review (M3): the desktop inbound bound only constrains
+  // web→desktop. desktop→web events landing in the window "desktop bound −
+  // envelope headroom < frame size ≤ the desktop's own outbound cap" were
+  // previously misjudged as frame_too_large and silently dropped (the browser
+  // has no bound; the forward would have succeeded); after the role narrowing
+  // they must reach the web client as usual.
   const isolated = await spawnRelay();
   const endpointId = `endpoint_role_scope_${Date.now()}`;
   const accessToken = "access-token-role-scope-00000000000001";
@@ -2480,8 +2515,9 @@ test("forwards a legal desktop event inside the old role-blind false-positive wi
     web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
     await connected;
 
-    // 桌面合法事件(≤ 桌面自身出站上限 4,128,768),但加转发信封余量后
-    // 落入旧误判窗(> 4,128,768 − 512)。
+    // A legal desktop event (≤ the desktop's own outbound cap of 4,128,768),
+    // but once the forwarding envelope headroom is added it lands in the old
+    // misjudgment window (> 4,128,768 − 512).
     const target = 4_128_543;
     const base = JSON.stringify({
       v: 2,
@@ -2527,10 +2563,13 @@ test("survives a desktop frame the relay cannot serialize and lets a fresh web c
     const deepPayload = `${"[".repeat(20000)}0${"]".repeat(20000)}`;
     desktop.ws.send(`{"v":2,"type":"event","payload":${deepPayload}}`);
 
-    // #781 之后该帧类已在入口被拒(bad_json,套接字全开);更老的树会把帧
-    // 转发出去并杀死 web socket。两条世界线在此汇合后再显式断开/重入——
-    // round-16 复审 M4:此前的早退让重入尾巴不可达,测试名承诺的
-    // web_rejoining=true 从未被驱动;尾巴必须放在早退之前可达的位置。
+    // After #781 this frame class is rejected at ingress (bad_json, all
+    // sockets stay open); older trees would forward the frame and it kills the
+    // web socket. The two world lines reconverge here before the explicit
+    // disconnect/rejoin — round-16 review M4: the earlier early-return made
+    // the rejoin tail unreachable and the web_rejoining=true promised by the
+    // test name was never driven; the tail must sit where it is reachable
+    // before the early return.
     const ingressError = await nextMessageOrTimeout(desktop.ws, "error");
     if (ingressError) {
       assert.equal(ingressError.code, "bad_json");
@@ -2538,7 +2577,8 @@ test("survives a desktop frame the relay cannot serialize and lets a fresh web c
       assert.equal(web.ws.readyState, web.ws.OPEN);
       await expectStillOpen(web.ws);
     } else {
-      // 无入口上限的树:帧已转发,坏帧杀死了 web socket。
+      // Tree without the ingress bound: the frame was forwarded and the bad
+      // frame killed the web socket.
       await waitForClose(web.ws);
     }
     assert.equal(isolated.child.exitCode, null);

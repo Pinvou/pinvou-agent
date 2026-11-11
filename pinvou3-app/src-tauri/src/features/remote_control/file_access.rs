@@ -40,10 +40,12 @@ pub struct HostFileListing {
     pub roots: Vec<HostFileRoot>,
 }
 
-// Round-20 复审(披露落树):post-revoke 的主机文件列举(list_host_files
-// / read_artifact_chunk)不设 allow_host_workspace 同意门——撤销后该
-// surface 是否随授权一并失效是产品决策(当前保持可用,依赖端点自身的
-// 吊销/TTL 生命周期;round-15 披露记录),并非遗漏。
+// Round-20 review (disclosure landed in-tree): the post-revoke host file
+// listing (list_host_files / read_artifact_chunk) has no
+// allow_host_workspace consent gate — whether that surface dies with the
+// revoked grant is a product decision (currently kept available, relying on
+// the endpoint's own revoke/TTL lifecycle; recorded as a round-15
+// disclosure), not an omission.
 pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, String> {
     let requested = requested
         .as_deref()

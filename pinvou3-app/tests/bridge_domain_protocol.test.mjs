@@ -393,9 +393,10 @@ for (const [domain, files] of Object.entries(protocolSources)) {
     ];
   });
   const hash = crypto.createHash('sha256').update(signatures.join('\n')).digest('hex');
-  // Round-15 复审 M4:缺条目曾是 fail-open(打一行日志即绿)——新增或
-  // 改名 domain 会在无钉状态下溜走。缺条目现在显式红:有意识地重算并
-  // 落表后才允许通过。
+  // Round-15 review M4: a missing entry used to be fail-open (one console
+  // line and the suite stayed green) — a new or renamed domain would slip
+  // through unpinned. A missing entry is now explicitly red: the table may
+  // only pass after a conscious recompute adds the entry.
   assert.ok(expectedProtocolHashes[domain],
     `${domain} must have a pinned protocol hash; recompute it consciously and add the entry (current: ${hash})`);
   assert.equal(hash, expectedProtocolHashes[domain], `${domain} bridge protocol changed`);
@@ -437,13 +438,17 @@ const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'listen').map(call => `shared/bridge-shared-helpers.js:listen:${call}`),
 ];
 const sharedBaseHash = crypto.createHash('sha256').update(sharedBaseSignatures.join('\n')).digest('hex');
-// Round-21 复审:与上方 domain 表同一 fail-closed 口径——这里的
-// console.log-and-pass 骨架在 expectedSharedBaseHash 被临时清空时会把
-// shared base 静默解除钉住;expectedSharedBaseHash 是非空字面量,改断言
-// 后该形状不再存在。取新哈希时把 expectedSharedBaseHash 置为空串跑一次
-// ——assert.ok 以「current: <hash>」形式报出新值(置为旧值只会让
-// assert.equal 失败而不打印,round-25 复审修正原注释的错误配方)。
-assert.ok(expectedSharedBaseHash, 'the shared base hash must stay pinned');
+// Round-21 review: same fail-closed posture as the domain table above — the
+// console.log-and-pass skeleton here would silently unpin the shared base if
+// expectedSharedBaseHash were temporarily cleared; expectedSharedBaseHash is a
+// non-empty literal, so that shape no longer exists once the assertion below
+// is in place. To take a new hash, run once with expectedSharedBaseHash set to
+// the empty string — assert.ok then reports the new value as
+// "current: <hash>" (setting it to the old value only makes assert.equal fail
+// without printing; round-25 review corrected the flawed recipe in the
+// original comment; round-29 review MINOR: the assert.ok message now actually
+// embeds the current hash, so the recipe is executable as written).
+assert.ok(expectedSharedBaseHash, `the shared base hash must stay pinned (run once with the literal set to '' to reveal the new value; current: ${sharedBaseHash})`);
 assert.equal(sharedBaseHash, expectedSharedBaseHash, 'shared bridge payload protocol changed');
 
 const featureRegistry = new Proxy({}, {

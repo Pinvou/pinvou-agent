@@ -95,9 +95,10 @@ impl EngineScheduledRuntime {
     }
 }
 
-/// Shell 开关的唯一读取点：与普通 Yolo 会话同口径（`Pinvou3Bridge::allow_shell_for_prefs`）。
-/// 任务创建（tasks.rs 的 build_create_request）与运行时（下面的 trait impl）共用，
-/// 避免两份同样的偏好读取各自漂移。
+/// The single read point for the shell toggle: same caliber as ordinary Yolo
+/// sessions (`Pinvou3Bridge::allow_shell_for_prefs`). Shared by task creation
+/// (tasks.rs build_create_request) and the runtime (the trait impl below) so two
+/// identical preference reads cannot drift apart.
 pub(crate) fn current_yolo_allow_shell() -> bool {
     Pinvou3Bridge::allow_shell_for_prefs(&UserPrefs::load())
 }
@@ -370,16 +371,20 @@ impl ScheduledChatExecutor {
                 // actually carry today: ensure_deliverable_target collapses
                 // store-load failures into static text and the per-session
                 // sidecar reads surface only error kinds, so no proven
-                // absolute-path carrier exists on this chain. (Round-20 复审
-                // 订正:此前"sidecar error contexts use bare file names"失实
-                // ——session-agent 索引仓的 SessionAgentStore::load_from 在
-                // 上下文里嵌 path.display();今天不泄漏仅仅因为上面那道收
-                // 敛把它折成了静态文案,若拆掉收敛本臂须像 organize 臂一样
-                // 接 redact_storage_prefix。)Round-19 复审:此前注释声称
-                // 与本文件 organize 臂同一纪律——失实,organize 臂自
-                // round-18 起额外折叠存储根(其链上的 bounded-read io
-                // Display 确有绝对路径);本臂将来若引入携带路径的错误构造,
-                // 须同步接 redact_storage_prefix(见 organize 臂注释)。
+                // absolute-path carrier exists on this chain. (Round-20 review
+                // correction: the earlier "sidecar error contexts use bare file
+                // names" claim was inaccurate — the session-agent index store's
+                // SessionAgentStore::load_from embeds path.display() in its
+                // contexts; no leak today only because the collapse above folds
+                // it into static text, and if that collapse were removed this arm
+                // would have to adopt redact_storage_prefix like the organize
+                // arm.) Round-19 review: this comment previously claimed the same
+                // discipline as this file's organize arm — inaccurate; since
+                // round-18 the organize arm additionally folds the storage root
+                // (its chain's bounded-read io Display genuinely carries absolute
+                // paths); if this arm ever introduces a path-carrying error
+                // constructor, it must adopt redact_storage_prefix in the same
+                // change (see the organize arm's comment).
                 error: Some(format!(
                     "scheduled message delivery: {}",
                     crate::platform::credential_store::redact_secret(&format!("{error:#}"))
@@ -429,14 +434,17 @@ impl ScheduledChatExecutor {
                 // Same redaction as the chat command layer's organize_memory: the
                 // bridge-resolution and LLM error chains can carry endpoint or
                 // credential-probing details, and run records are persisted and
-                // rendered verbatim in the task-detail UI. Round-18 复审:链上
-                // 还有 bounded-read 原语的 io Display(path.display() 的绝对
-                // 存储路径,来自 refresh_recent_work_expiry / snapshot load
-                // 的 context)——run record 经 list_scheduled_task_runs 出站
-                // (Web 允许清单内),与命令层同一口径折叠存储根。Round-21
-                // 复审:与命令层 S10-1 同序修正为先折叠后扫描——secret 先行
-                // 的旧序在含空白的家目录上会让 ≥24 长度族先吃掉折叠 needle
-                // (round-20 源钉 arm<fold<secret 钉住的正是该漏洞序)。
+                // rendered verbatim in the task-detail UI. Round-18 review: the
+                // chain also carries the bounded-read primitive's io Display
+                // (absolute storage paths from path.display(), in the contexts of
+                // refresh_recent_work_expiry / snapshot load) — the run record
+                // leaves via list_scheduled_task_runs (web allowlisted), so the
+                // storage root is folded with the same caliber as the command
+                // layer. Round-21 review: same-order fix as the command layer's
+                // S10-1 — fold first, then scan — because the old secret-first
+                // order let the ≥24-length token family consume the folded
+                // needle on whitespace-containing homes (exactly the vulnerable
+                // order pinned by the round-20 source pin arm<fold<secret).
                 error: Some(crate::platform::credential_store::redact_secret(&format!(
                     "memory organize: {}",
                     crate::platform::paths::redact_storage_prefix(&format!("{error:#}"))
@@ -479,12 +487,15 @@ impl TaskExecutor for ScheduledChatExecutor {
                     .await;
             }
             ScheduledTaskKindLookup::Unsupported(raw) => {
-                // Round-21 复审:kind 字段是 app-owned-but-not-trusted 的
-                // sidecar 状态(上方声明两处),Debug 展开的原始字节此前
-                // 未经折叠/扫描直达 Web 可见的 run record——本文件错误构造
-                // 的统一纪律(先折叠后扫描)在此同样适用;短 kind 经两
-                // 层 no-op 后仍原样可读(≥24 字符的字母数字族仍会被
-                // is_secret_like 打码,这是扫描的既定语义而非本臂的回归)。
+                // Round-21 review: the kind field is app-owned-but-not-trusted
+                // sidecar state (declared twice above); its raw Debug-expanded
+                // bytes previously reached the web-visible run record without
+                // folding/scanning — this file's uniform error-construction
+                // discipline (fold first, then scan) applies here too; short
+                // kinds remain readable verbatim after both no-op layers (the
+                // ≥24-character alphanumeric family is still masked by
+                // is_secret_like — that is the scan's established semantics, not
+                // a regression of this arm).
                 let detail = format!(
                     "unsupported scheduled task kind {raw:?}; update the app or recreate the task"
                 );
@@ -579,11 +590,13 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
         return TaskExecutionResult {
             status: TaskStatus::Canceled,
             result_text: None,
-            // Round-20 复审 MAJOR-2:取消路径携带的引擎错误链同样落 run
-            // record(list_scheduled_task_runs 出站),与 failed( 同一折叠
-            // 口径。Round-21 复审:口径统一为先折叠后扫描(下方 failed(
-            // 同批修正)——secret 先行会在含空白的家目录上让 ≥24 长度族
-            // 先吃掉折叠 needle(记忆命令臂 S10-1 实证形态)。
+            // Round-20 review MAJOR-2: the engine error chain carried by the cancel
+            // path also lands in the run record (leaving via
+            // list_scheduled_task_runs), folded with the same caliber as failed(.
+            // Round-21 review: the caliber is unified to fold-first-then-scan
+            // (failed( corrected in the same batch) — secret-first would let the
+            // ≥24-length family consume the folded needle on whitespace-containing
+            // homes (the S10-1-proven shape from the memory command arm).
             error: completion.error.map(|error| fold_then_redact(&error)),
             terminal_reason: TaskTerminalReason::Canceled,
         };
@@ -610,15 +623,19 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
     }
 }
 
-/// Run-record 错误出站的统一纪律(round-21 复审 MAJOR-2 定序,round-22
-/// 复审 m1/m2 收拢为单 helper):先折叠存储根,再对折叠后文本做 secret
-/// 扫描——旧序(secret 先行)在含空白的家目录上会让 ≥24 长度族的空白
-/// 分词吃掉折叠 needle(`...John [REDACTED]` 形态),盘符/用户名碎片
-/// 明文落 Web 可见的 run record。顺序写死在本 helper 内,臂级重新内联
-/// 旧序会被 census 钉拦下;空白 home 行为牙见
-/// failed_folds_before_the_secret_scan_on_whitespace_homes。已折叠文本
-/// 二次折叠幂等。organize 臂(format! 前缀拼接)与 secret-only 的
-/// delivery 臂不走本 helper(各有独立源钉),census 钉死全文件拼写数。
+/// Uniform discipline for run-record error egress (ordering fixed by the
+/// round-21 review MAJOR-2, consolidated into this single helper by the round-22
+/// review m1/m2): fold the storage root first, then run the secret scan over the
+/// folded text — the old order (secret first) let the whitespace tokens of the
+/// ≥24-length family consume the folded needle on whitespace-containing homes
+/// (the `...John [REDACTED]` shape), leaving drive-letter/username fragments in
+/// cleartext on the web-visible run record. The order is hard-coded in this
+/// helper; re-inlining the old order at an arm is blocked by the census pin; the
+/// whitespace-home behavioral tooth lives in
+/// failed_folds_before_the_secret_scan_on_whitespace_homes. Already-folded text is
+/// idempotent under re-folding. The organize arm (format! prefix assembly) and the
+/// secret-only delivery arm do not go through this helper (each has its own source
+/// pin); the census pins the whole file's spelling counts.
 fn fold_then_redact(raw: &str) -> String {
     crate::platform::credential_store::redact_secret(
         &crate::platform::paths::redact_storage_prefix(raw),
@@ -629,13 +646,15 @@ fn failed(error: impl std::fmt::Display) -> TaskExecutionResult {
     TaskExecutionResult {
         status: TaskStatus::Failed,
         result_text: None,
-        // Round-20 复审 MAJOR-2:create_scheduled_run 的最外层 anyhow
-        // context 携带 `<home>/.../scheduled-runs/...` 绝对路径
-        // (sessions/retention.rs),run_turn 错误链同类;run record 经
-        // list_scheduled_task_runs 出站(Web 允许清单内),与上方 organize
-        // 臂同一口径。Round-21 复审定序为先折叠后扫描,Round-22 复审
-        // (m1/m2)把该纪律收拢进 fold_then_redact——臂级顺序漂移在
-        // 结构上不可能;空白 home 行为牙与本臂的 helper 接线各有独立钉。
+        // Round-20 review MAJOR-2: create_scheduled_run's outermost anyhow
+        // context carries `<home>/.../scheduled-runs/...` absolute paths
+        // (sessions/retention.rs), and the run_turn error chain is the same
+        // kind; the run record leaves via list_scheduled_task_runs (web
+        // allowlisted), same caliber as the organize arm above. Round-21 review
+        // fixed the order to fold-then-scan; Round-22 review (m1/m2) consolidated
+        // the discipline into fold_then_redact — arm-level order drift is now
+        // structurally impossible; the whitespace-home behavioral tooth and this
+        // arm's helper wiring each have their own pins.
         error: Some(fold_then_redact(&error.to_string())),
         terminal_reason: TaskTerminalReason::Failed,
     }
@@ -1380,9 +1399,10 @@ mod tests {
 
     /// Review round-15 N10: the delivery-failure reason passes through
     /// `redact_secret` before it reaches the run record (credential /
-    /// endpoint-probing detail; Round-20 复审订正:旧括注"app error chains
-    /// carry store paths"与本臂自身注释的实勘结论相反——该链今天无已证实
-    /// 的绝对路径载体,折叠存储根不在本臂纪律内) — deleting the call kept
+    /// endpoint-probing detail; Round-20 review correction: the old aside "app
+    /// error chains carry store paths" contradicts this arm's own comment's field
+    /// findings — the chain has no proven absolute-path carrier today, so folding
+    /// the storage root is not part of this arm's discipline) — deleting the call kept
     /// every behavioral test green, so the call site is pinned textually,
     /// the same way as the live body above.
     /// Review round-15 N10, rewritten in round-17 M5: the delivery-failure
@@ -1421,20 +1441,25 @@ mod tests {
         );
     }
 
-    /// Round-18 复审:memory_organize 的失败原因此前只过 `redact_secret`
-    /// (其注释还声称与命令层同一处理——命令层自 round-15 起额外折叠存储
-    /// 根,注释失实)。organize 的错误链携带 bounded-read 原语的 io
-    /// Display(path.display() 的绝对存储路径),run record 经
-    /// `list_scheduled_task_runs` 出站(Web 允许清单内)。本钉与
+    /// Round-18 review: memory_organize's failure reason previously passed only
+    /// through `redact_secret` (its comment also claimed the same treatment as the
+    /// command layer — the command layer has additionally folded the storage root
+    /// since round-15, making that claim inaccurate). The organize error chain
+    /// carries the bounded-read primitive's io Display (absolute storage paths from
+    /// path.display()), and the run record leaves via `list_scheduled_task_runs`
+    /// (web allowlisted). This pin and
     /// `memory_organize_failure_folds_the_storage_root_in_the_record`
-    /// (Round-19 复审补的行为钉,同一文件内即可构造失败 organize)
-    /// 双重兜底:源码钉锚生产半边与臂内 redact 顺序,删任一层 redact
-    /// 即红;行为钉走真实执行路径断言 record 内容。Round-21 复审:顺序
-    /// 断言翻转为 fold 先行(secret 外层、fold 内层)——round-20 版本
-    /// 钉住的 arm<fold<secret 恰是 S10-1 实证过的漏洞序,本钉此前在
-    /// 保护错误方向;空白 home 行为钉
+    /// (the behavioral pin added by the Round-19 review; a failing organize can be
+    /// constructed within this same file) provide double coverage: the source pin
+    /// anchors the production half and the arm's redact order, so deleting either
+    /// redaction layer turns red; the behavioral pin drives the real execution path
+    /// and asserts the record content. Round-21 review: the order assertion flipped
+    /// to fold-first (secret outer, fold inner) — the arm<fold<secret order pinned
+    /// by the round-20 version is exactly the S10-1-proven vulnerable order, so this
+    /// pin had been protecting the wrong direction; the whitespace-home behavioral
+    /// pin
     /// (`memory_organize_failure_folds_before_the_secret_scan_on_whitespace_homes`)
-    /// 给顺序补上行为级红。
+    /// adds a behavioral-level red for the order.
     #[test]
     fn memory_organize_failure_reason_folds_the_storage_prefix() {
         let source = include_str!("executor.rs");
@@ -1798,15 +1823,18 @@ mod tests {
 
     #[tokio::test]
     async fn memory_organize_failure_folds_the_storage_root_in_the_record() -> Result<()> {
-        // Round-19 复审 M2:行为钉。round-18 源码钉注释曾声称「无 AppHandle
-        // 无法行为构造失败 organize」——不成立,上一测试的
-        // set_organize_error 就是同一构造。本测试注入携带存储路径的失败,
-        // 断言 run record(经 list_scheduled_task_runs 出站的 Web 可见面)
-        // 落的是折叠后的 ~/.pinvou3 形态而非原始路径。fixture 用短 home:
-        // 内层 redact_secret 的 ≥24 长度族会把长路径先打成 [REDACTED],
-        // 折叠层无从观察;短路径(如真实短安装/短用户名)正是折叠层独力
-        // 兜底的形态。ENV_LOCK 保证 worker 线程读到与本测试构造一致的
-        // PINVOU3_HOME(paths 测试会在同进程并行改写该变量)。
+        // Round-19 review M2: behavioral pin. The round-18 source-pin comment
+        // claimed a failing organize could not be behaviorally constructed without an
+        // AppHandle — untrue: the previous test's set_organize_error is exactly that
+        // construction. This test injects a failure carrying storage paths and
+        // asserts that the run record (the web-visible surface leaving via
+        // list_scheduled_task_runs) holds the folded ~/.pinvou3 form rather than the
+        // raw path. The fixture uses a short home: the inner redact_secret's
+        // ≥24-length family would mask a long path into [REDACTED] before the fold
+        // layer could observe it; short paths (like real short installs / short
+        // usernames) are exactly the shape only the fold layer can catch. ENV_LOCK
+        // ensures worker threads read the same PINVOU3_HOME this test constructs
+        // (paths tests rewrite that variable in parallel within the process).
         let (_env_guard, _env_restore) =
             crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
@@ -1853,20 +1881,26 @@ mod tests {
     #[tokio::test]
     async fn memory_organize_failure_folds_before_the_secret_scan_on_whitespace_homes() -> Result<()>
     {
-        // Round-21 复审(S10-1 补齐)行为钉:含空白的家目录上,secret 先行
-        // 的旧序会让 ≥24 长度族的空白分词吃掉折叠 needle(`...John
-        // [REDACTED]` 形态),盘符/用户名碎片明文落 run record。生产臂
-        // (round-21 起与命令层同序)先折叠后扫描:折叠形态的短 token 存活
-        // 为 ~/.pinvou3 形态,长 token 整体 [REDACTED]——两个方向都不残留
-        // 家目录碎片。对照腿用旧序手工复现泄漏形状(空白前段短于 ≥24 族时
-        // 可构造;临时目录本身超长的平台(macOS /var/folders…)跳过对照腿,
-        // 且那里空白前段自身已入 ≥24 族,两序产出字节不同(旧序两个
-        // [REDACTED]、新序折叠后一个)但均无碎片残留——生产不变式腿
-        // (!contains 碎片)在该平台上对顺序回归无信号,顺序牙齿依赖
-        // Linux CI 的短 /tmp(round-27 复审 m11 订正「两序产出相同」);
-        // round-23 复审口径注记)。
-        // 把顺序改回 secret 先行即红。ENV_LOCK 保证 worker 线程读到与本测试
-        // 构造一致的 PINVOU3_HOME。
+        // Round-21 review (S10-1 completion) behavioral pin: on whitespace-containing
+        // homes, the old secret-first order let the whitespace tokens of the
+        // ≥24-length family consume the folded needle (the `...John [REDACTED]`
+        // shape), leaving drive-letter/username fragments in cleartext on the run
+        // record. The production arm (same order as the command layer since round-21)
+        // folds first and scans second: folded short tokens survive as the
+        // ~/.pinvou3 form and long tokens are masked wholesale as [REDACTED] — no
+        // home fragment survives in either direction. The control leg reproduces the
+        // leak shape by hand under the old order (constructible when the
+        // whitespace-leading segment is shorter than the ≥24 family; platforms whose
+        // temp dir is itself overlong (macOS /var/folders…) skip the control leg,
+        // and there the whitespace-leading segment itself joins the ≥24 family, so
+        // the two orders produce byte-different output (two [REDACTED] under the old
+        // order, one folded under the new) but neither leaves fragments — the
+        // production-invariant leg (!contains fragments) has no signal for order
+        // regressions on that platform, and the order tooth relies on Linux CI's
+        // short /tmp (round-27 review m11 corrected "both orders produce identical
+        // output"; round-23 review caliber note).
+        // Reverting the order to secret-first turns red. ENV_LOCK ensures worker
+        // threads read the same PINVOU3_HOME this test constructs.
         let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
         let home = base.join("John Doe").join(".pinvou3");
         std::fs::create_dir_all(&home).unwrap();
@@ -1875,10 +1909,11 @@ mod tests {
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
         // serialized in-process (platform::test_support discipline).
         unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-        // 路径一律取 pinvou3_home() 的读数(macOS /tmp 符号链接等规范化差
-        // 异),保证折叠 needle 与注入的失败 detail 同源。尾段补足到 ≥24
-        // 含数字+字母,让旧序的 ≥24 族必定命中(泄漏形状与临时目录长度
-        // 无关)。
+        // Paths always take pinvou3_home()'s reading (normalization differences such
+        // as macOS /tmp symlinks), keeping the fold needle and the injected failure
+        // detail same-source. The tail is padded to ≥24 chars with digits+letters so
+        // the ≥24 family surely hits under the old order (the leak shape is
+        // independent of temp-dir length).
         let home_now = crate::platform::paths::pinvou3_home();
         let detail = format!(
             "snapshot load failed: {}/sessions2/x.json12345678901234567890123456789",
@@ -1912,10 +1947,12 @@ mod tests {
             "the failure arm must still format the organize context, got: {error}"
         );
 
-        // 对照腿:旧序(secret 先行)确实产生碎片泄漏——本测试钉的就是该
-        // 形态不再出现在生产臂。空白前段(temp/jd<pid>/John)短于 ≥24 族
-        // 时形状可复现;平台上临时目录本身超长时跳过(macOS /var/folders…),
-        // 与 memory.rs 同名钉的既有口径一致。
+        // Control leg: the old order (secret first) does produce the fragment leak —
+        // this test pins that the shape no longer appears in the production arm. The
+        // shape is reproducible when the whitespace-leading segment
+        // (temp/jd<pid>/John) is shorter than the ≥24 family; skipped on platforms
+        // whose temp dir is itself overlong (macOS /var/folders…), matching the
+        // established caliber of the same-named pin in memory.rs.
         let pre_space = format!("{}/John", base.display());
         if pre_space.len() < 24 {
             let leaked = crate::platform::paths::redact_storage_prefix(
@@ -1931,7 +1968,7 @@ mod tests {
             );
         }
 
-        // 短尾段腿:折叠形态完整出站(折叠层在扫描前已把家目录替换干净)。
+        // Short-tail leg: the folded form leaves intact (the fold layer replaced the home before the scan).
         let plain_detail = format!(
             "snapshot load failed: {}/mem/x.json: boom",
             home_now.display()
@@ -1963,12 +2000,14 @@ mod tests {
         Ok(())
     }
 
-    /// Round-22 复审(m1/m2)census 钉:四个 run-record 错误臂统一经
-    /// fold_then_redact 折叠(secret-only 的 delivery 臂与自带 format!
-    /// 前缀的 organize 臂除外)。全文件生产半边的两个原语拼写数钉死:
-    /// 新错误臂若内联旧序或绕开 helper,census 计数即变红,作者必须
-    /// 显式并入 helper(census 盲区:改写拼写——如 use 引入短名——不
-    /// 计数;组织形态改变时由编译器与行为钉兜底)。
+    /// Round-22 review (m1/m2) census pin: all four run-record error arms fold via
+    /// fold_then_redact (except the secret-only delivery arm and the organize arm
+    /// with its own format! prefix). The whole production half's counts of the two
+    /// primitive spellings are pinned: if a new error arm inlines the old order or
+    /// bypasses the helper, the census count turns red and the author must adopt the
+    /// helper explicitly (census blind spots: respelling — e.g. a `use` import of a
+    /// short name — is not counted; organizational changes are backed by the
+    /// compiler and the behavioral pins).
     #[test]
     fn run_record_fold_census_routes_through_the_helper() {
         let source = include_str!("executor.rs");
@@ -1976,9 +2015,10 @@ mod tests {
             .split("\n#[cfg(test)]")
             .next()
             .expect("executor.rs must keep its tests behind #[cfg(test)]");
-        // Round-27 复审 m4:纯注释行先滤除——生产半边的注释提及(措辞
-        // 巧合避开了被计拼写)此前能垫高/掩饰计数,与 tasks.rs 钉的过滤
-        // 口径对齐。
+        // Round-27 review m4: pure comment lines are filtered first — comment
+        // mentions in the production half (worded to dodge the counted spellings)
+        // could previously pad/mask the counts, aligning with tasks.rs's pin
+        // filtering caliber.
         let production = crate::platform::test_support::comment_filtered(production);
         assert_eq!(
             production
@@ -1996,12 +2036,14 @@ mod tests {
             "exactly the helper and the organize arm may fold; new error arms \
              must route through fold_then_redact"
         );
-        // Round-25 复审 MINOR:原语拼写 census 之上补 helper 调用点
-        // census——unsupported-kind 臂的 fold_then_redact 调用此前对两个
-        // 原语拼写 census 均不可见(删掉该调用、退回裸 detail 时全套件
-        // 保持绿,违背本文件「错误构造一律经 helper」的自钉标准)。钉死
-        // 生产半边的引用总数(4 个错误臂 + helper 定义自身):删除调用
-        // 或新增绕行臂即红。
+        // Round-25 review MINOR: on top of the primitive-spelling census, add a
+        // helper-call-site census — the unsupported-kind arm's fold_then_redact call
+        // was invisible to both primitive-spelling censuses (deleting that call and
+        // reverting to the bare detail kept the whole suite green, violating this
+        // file's self-pinned standard that error construction always goes through
+        // the helper). The production half's total reference count is pinned (4 error
+        // arms + the helper definition itself): deleting a call or adding a bypassing
+        // arm turns red.
         assert_eq!(
             production.matches("fold_then_redact(").count(),
             5,
@@ -2014,12 +2056,15 @@ mod tests {
         );
     }
 
-    /// Round-22 复审(m1)行为钉:failed() 出口的空白 home 顺序牙——
-    /// 此前只有 organize 臂有(本臂单元钉的短 home 下两序字节相同,顺序
-    /// 回归无信号,突变实证 323 全绿)。直接驱动 failed():生产 helper
-    /// (先折叠后扫描)两个方向都不残留家目录碎片;对照腿用旧序手工
-    /// 复现泄漏形状,临时目录超长的平台跳过对照腿(与 organize 钉同
-    /// 口径)。改回旧序或绕开 helper 内联均红。
+    /// Round-22 review (m1) behavioral pin: the failed() exit's whitespace-home
+    /// order tooth — previously only the organize arm had one (under this arm's unit
+    /// pin's short home the two orders were byte-identical, giving no signal for
+    /// order regressions; mutation 323 confirmed this with all green). Drives
+    /// failed() directly: the production helper (fold first, then scan) leaves no
+    /// home fragment in either direction; the control leg reproduces the leak shape
+    /// by hand under the old order, skipping the control leg on platforms with an
+    /// overlong temp dir (same caliber as the organize pin). Reverting to the old
+    /// order or bypassing the helper by inlining turns red.
     #[test]
     fn failed_folds_before_the_secret_scan_on_whitespace_homes() {
         let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
@@ -2042,8 +2087,9 @@ mod tests {
              run record, got: {error}"
         );
 
-        // 对照腿:旧序(secret 先行)确实产生碎片泄漏(空白前段短于
-        // ≥24 族时可构造;临时目录超长的平台造不出,跳过)。
+        // Control leg: the old order (secret first) does produce the fragment leak
+        // (constructible when the whitespace-leading segment is shorter than the
+        // ≥24 family; not constructible on platforms with an overlong temp dir, skip).
         let pre_space = format!("{}/John", base.display());
         if pre_space.len() < 24 {
             let leaked = crate::platform::paths::redact_storage_prefix(
@@ -2056,7 +2102,7 @@ mod tests {
             );
         }
 
-        // 短尾段腿:折叠形态完整出站(折叠层在扫描前已替换干净)。
+        // Short-tail leg: the folded form leaves intact (the fold layer replaced it before the scan).
         let plain = failed(format!(
             "create_scheduled_run: {}/mem/x.json: boom",
             home_now.display()
@@ -2071,23 +2117,26 @@ mod tests {
 
     #[test]
     fn failed_reason_folds_the_storage_root_like_the_organize_arm() {
-        // Round-20 复审 MAJOR-2 行为钉(单元半):failed( 是
-        // create_session(:505)与 run_turn(:545)错误臂的共同出口——
-        // create_scheduled_run 的最外层 anyhow context 携带绝对存储路径,
-        // 此前该出口无任何折叠。删除 failed( 内的折叠本断言即红。
-        // (Round-21 复审修正:round-20 注释声称「内外层序对调本断言即红」
-        // 不成立——短 home 下两层 token 都短于 ≥24 族,对调是字节级
-        // no-op。Round-22 复审(m1):顺序牙由 fold_then_redact helper
-        // census 钉与本文件
-        // failed_folds_before_the_secret_scan_on_whitespace_homes 行为钉
-        // 提供,本钉只负责折叠层存在性。)
+        // Round-20 review MAJOR-2 behavioral pin (unit half): failed( is the shared
+        // exit of the create_session(:505) and run_turn(:545) error arms —
+        // create_scheduled_run's outermost anyhow context carries absolute storage
+        // paths, and this exit previously had no folding at all. Deleting the fold
+        // inside failed( turns this assertion red.
+        // (Round-21 review correction: the round-20 comment's claim that "swapping
+        // the inner/outer order turns this assertion red" did not hold — under a
+        // short home both layers' tokens are shorter than the ≥24 family, so the
+        // swap is a byte-level no-op. Round-22 review (m1): the order tooth is
+        // provided by the fold_then_redact helper census pin and this file's
+        // failed_folds_before_the_secret_scan_on_whitespace_homes behavioral pin;
+        // this pin only covers the fold layer's existence.)
         let (_env_guard, _env_restore) =
             crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
         // serialized in-process (platform::test_support discipline).
         unsafe { std::env::set_var("PINVOU3_HOME", "p8") };
-        // 路径 token 保持短于内层 redact_secret 的 ≥24 长度族,让折叠层
-        // 独力可观察(与上方 organize 行为钉同一纪律)。
+        // Path tokens stay shorter than the inner redact_secret's ≥24-length family so
+        // the fold layer is independently observable (same discipline as the organize
+        // behavioral pin above).
         let result = failed(format!(
             "create scheduled task workspace {}",
             crate::platform::paths::pinvou3_home()
@@ -2107,9 +2156,9 @@ mod tests {
 
     #[test]
     fn completion_error_arms_fold_the_storage_root() {
-        // Round-20 复审 MAJOR-2 行为钉(单元半):map_completion 的
-        // Failed 臂与 Canceled 臂携带引擎错误链,同样落 run record——
-        // 删除任一臂的折叠本测试即红。
+        // Round-20 review MAJOR-2 behavioral pin (unit half): map_completion's Failed
+        // and Canceled arms carry engine error chains that likewise land in the run
+        // record — deleting the fold in either arm turns this test red.
         let (_env_guard, _env_restore) =
             crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes

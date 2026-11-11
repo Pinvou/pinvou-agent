@@ -1,7 +1,8 @@
 // architecture-guard: allow-target-cfg -- the cfg(unix)-gated test fixtures in this file share one non-portable shape: a real symlink. The round-12 baseline-gate convergence pin, the round-48 untracked-diff regression (refuses an escaping link, reads a local one canonically), and the round-51 fingerprint/baseline pins (a dirty symlink→regular-file must be skipped, never hashed through, and the tracked-ness oracle must answer literal paths so a glob-metacharacter filename cannot alias a tracked file) all need std::os::unix::fs::symlink or a `*`-bearing filename that Windows cannot express; the semantics under test are platform-independent, only the fixtures cannot be.
-// Round-15 复审:例外现在同时覆盖测试模块内 macOS 门控的 APFS 大小写折叠
-// 行为钉(case_variant_spellings_are_blocked_end_to_end)——该钉在非 macOS
-// 平台 trivially-true,门控而非静默全绿。
+// Round-15 review: the exception now also covers the test module's macOS-gated
+// APFS case-folding behavioral pin
+// (case_variant_spellings_are_blocked_end_to_end) — that pin is trivially true on
+// non-macOS platforms, so it is gated rather than silently green.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -104,7 +105,7 @@ pub struct WorkspaceBranches {
     pub git: bool,
     pub current: Option<String>,
     pub branches: Vec<String>,
-    /// 未提交更改条目数（git status），供前端在切换前提示确认。
+    /// Number of uncommitted-change entries (git status), for the frontend to prompt for confirmation before switching.
     pub dirty_count: usize,
 }
 
@@ -134,16 +135,18 @@ struct WorkspaceBaseline {
 pub fn list_workspace(root: &Path, relative_path: Option<&str>) -> Result<WorkspaceListing> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path.unwrap_or_default())?;
-    // Round-7 复审:与 preview/diff 同策略,被请求的目录本身途经凭据组件
-    // 时整体拒绝,而不是回一个空列表——「成功空列表 vs 报错」的分叉本身
-    // 会泄露黑名单目录的存在(列表与搜索不外泄其存在,见下方
-    // workspace_entry 的过滤注释;子项过滤挡不住「这个目录可列」的信号)。
+    // Round-7 review: same policy as preview/diff — when the requested directory
+    // itself crosses a credential component, refuse wholesale instead of returning
+    // an empty list; the "success-empty-list vs error" fork itself would leak the
+    // blocked directory's existence (listing and search never reveal its existence,
+    // see workspace_entry's filtering comment below; child filtering cannot stop
+    // the "this directory is listable" signal).
     if relative_path_crosses_blocked_component(&relative) {
         bail!("工作区路径途经凭据文件，拒绝列出: {relative}");
     }
     let directory = resolve_existing_path(&root, &relative, true)?;
-    // 解析腿(与 preview 车道同约束):「链接名清白」的符号链接
-    // (notes -> .aws)解析落点在黑名单目录上时同样拒绝。
+    // Resolution leg (same constraint as the preview lane): a clean-named symlink
+    // (notes -> .aws) whose resolved landing is a blocked directory is refused too.
     if path_crosses_blocked_component(&directory) {
         bail!("工作区路径途经凭据文件，拒绝列出: {relative}");
     }
@@ -209,8 +212,9 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
         bail!("工作区路径途经凭据文件，拒绝读取: {relative}");
     }
     let path = resolve_existing_path(root, &relative, false)?;
-    // 解析后的真实落点仍需过黑名单：工作区内 `notes.txt -> .env` 的链接名
-    // 本身清白，仅凭调用方拼写拦截会被符号链接绕过。
+    // The resolved real landing must still pass the blacklist: within the workspace,
+    // the link name `notes.txt -> .env` is itself clean, and blocking on the
+    // caller's spelling alone is bypassed by the symlink.
     if path_crosses_blocked_component(&path) {
         bail!("工作区路径途经凭据文件，拒绝读取: {relative}");
     }
@@ -242,8 +246,8 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
             });
         }
         let bytes = fs::read(&path).with_context(|| format!("读取图片失败: {}", path.display()))?;
-        // 扩展名→MIME 统一走 attachments 的共享映射表；表外扩展名沿用
-        // 原行为回退 image/png。
+        // Extension→MIME goes through attachments' shared mapping table; extensions
+        // outside the table keep the original fallback to image/png.
         let mime = crate::platform::filesystem::image_mime_type(&path).unwrap_or("image/png");
         return Ok(WorkspacePreview {
             name,
@@ -296,9 +300,11 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
 }
 
 pub fn resolve_workspace_resource(root: &Path, resource_path: &str) -> Result<PathBuf> {
-    // Round-16 复审(记录桌面豁免):与 resolve_workspace_file 同一豁免——
-    // 本解析不做凭据组件检查;调用点(open/reveal/resource)全部桌面命令,
-    // 内容进本地外部应用/阅读器而非模型上下文,手机不可达。
+    // Round-16 review (documenting the desktop exemption): the same exemption as
+    // resolve_workspace_file — this resolution performs no credential-component
+    // check; all call sites (open/reveal/resource) are desktop commands whose
+    // content goes to local external apps/readers rather than model context and is
+    // unreachable from the phone.
     let root = canonical_workspace(root)?;
     let path = resource_path_from_uri(resource_path)?;
     let candidate = if path.is_absolute() {
@@ -347,11 +353,14 @@ pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
         let mut dirty_paths = BTreeSet::new();
         for change in status {
             dirty_paths.insert(change.relative_path.clone());
-            // Round-12 复审:黑名单条目永远不会被预览/差异车道服务,基线
-            // 指纹不应读它们的内容——与变更车道的既定理由一致(黑名单
-            // 条目不能先读一遍内容);不可读的黑名单名(如 chmod-000 的
-            // .env)此前会让指纹整体报错、连带会话创建失败。dirty_paths
-            // 仍保留全量,桌面分支的脏标计数语义不变。
+            // Round-12 review: blocked entries are never served by the preview/diff
+            // lanes, so the baseline fingerprint should not read their content —
+            // consistent with the changes lane's established rationale (a blocked
+            // entry must not be read first just to be discarded); an unreadable
+            // blocked name (like a chmod-000 .env) previously failed the whole
+            // fingerprint pass and cascaded into session-creation failure. dirty_paths
+            // keeps the full set, so the desktop branch's dirty-count semantics are
+            // unchanged.
             if relative_path_crosses_blocked_component(&change.relative_path) {
                 continue;
             }
@@ -402,11 +411,13 @@ pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChang
     } else {
         filesystem_changes(&root, baseline.as_ref())?
     };
-    // 凭据过滤必须先于 classify_origin:分类会对 git 工作区的 dirty 文件
-    // 读取内容并做 SHA-256 指纹,黑名单条目(如 .env)不能为了一次注定被
-    // 丢弃的回显先读一遍内容。列表与搜索不外泄凭据文件的存在(见
-    // list_workspace 的过滤注释);changes 车道同约束——名称/状态元数据
-    // 同样不得为黑名单组件回显。
+    // The credential filter must precede classify_origin: classification reads the
+    // content of dirty files in a git workspace and hashes them (SHA-256); a blocked
+    // entry (like .env) must not be read just to produce an echo destined to be
+    // discarded. Listing and search never reveal credential files' existence (see
+    // list_workspace's filtering comment); the changes lane carries the same
+    // constraint — name/status metadata must likewise never echo a blocked
+    // component.
     changes.retain(|change| !relative_path_crosses_blocked_component(&change.relative_path));
     for change in &mut changes {
         change.origin = classify_origin(&root, baseline.as_ref(), &change.relative_path)?;
@@ -435,8 +446,8 @@ pub fn workspace_branches(root: &Path) -> Result<WorkspaceBranches> {
         });
     }
     let current = git_branch(&root);
-    // 按最近提交时间倒序（committerdate），与 IDE 的分支列表习惯一致；
-    // 不再按名称排序。
+    // Sort by most recent commit time descending (committerdate), matching IDE
+    // branch-list conventions; no longer sorted by name.
     let output = git_output(
         &root,
         &[
@@ -460,9 +471,11 @@ pub fn workspace_branches(root: &Path) -> Result<WorkspaceBranches> {
     })
 }
 
-/// 脏工作区分支切换策略：carry = 直接 checkout（更改随工作区携带，冲突时
-/// 整体失败）；stash = 先 `git stash -u` 暂存，切换后自动 pop 恢复；
-/// commit = 先把全部更改（含未跟踪文件）提交到当前分支，再切换。
+/// Dirty-workspace branch switching strategies: carry = plain checkout (changes
+/// ride along with the workspace; any conflict fails the whole operation);
+/// stash = `git stash -u` first, then automatically pop after the switch;
+/// commit = commit all changes (including untracked files) to the current branch
+/// before switching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchSwitchMode {
     Carry,
@@ -481,13 +494,15 @@ impl BranchSwitchMode {
     }
 }
 
-/// 进程级互斥：串行化分支切换的完整 git 序列。并发调用（双开窗口、连点）会
-/// 把两次切换的 stash push/checkout/pop 交错成跨分支、跨 stash 条目的中间态，
-/// 回滚与报错都无法对应到单次操作。
+/// Process-level mutex: serializes a branch switch's full git sequence. Concurrent
+/// calls (two windows, rapid clicks) would interleave two switches' stash
+/// push/checkout/pop into intermediate states spanning branches and stash entries,
+/// leaving neither rollback nor error reporting attributable to a single operation.
 static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 
-/// refs/stash 当前指向；仓库没有任何 stash 条目时为 None。用于判断一次
-/// stash push 是否真的新建了条目（见 checkout_workspace_branch 的 Stash 模式）。
+/// What refs/stash currently points at; None when the repository has no stash
+/// entries. Used to tell whether a stash push actually created an entry (see
+/// checkout_workspace_branch's Stash mode).
 fn stash_head(root: &Path) -> Result<Option<String>> {
     match git_output(root, &["rev-parse", "-q", "--verify", "refs/stash"]) {
         Ok(head) => Ok(Some(head.trim().to_string())),
@@ -507,23 +522,26 @@ pub fn checkout_workspace_branch(
         bail!("当前工作区不是 Git 仓库");
     }
     let branch = branch.trim();
-    // 拒绝以 '-' 开头的分支名，避免被 git 误解析为选项。
+    // Reject branch names starting with '-' so git cannot misparse them as options.
     if branch.is_empty() || branch.starts_with('-') {
         bail!("无效的分支名: {branch}");
     }
-    // 只允许切换到已存在的本地分支。否则当传入名字恰好是工作区内的文件
-    // 路径时，`git checkout <name>` 会按 pathspec 从索引还原该文件，静默
-    // 丢弃未提交更改。
+    // Only allow switching to existing local branches. Otherwise, when the given
+    // name happens to be a file path inside the workspace, `git checkout <name>`
+    // restores that file from the index as a pathspec, silently discarding
+    // uncommitted changes.
     let known = git_output(&root, &["branch", "--format=%(refname:short)"])?;
     if !known.lines().map(str::trim).any(|name| name == branch) {
         bail!("分支不存在: {branch}");
     }
-    // Round-10 复审 minor(记录语义变化):git_status_entries 现按凭据策略
-    // 过滤 changes 车道,黑名单来源的 staged rename 目的地被丢弃——其唯一
-    // 变更就是这类改名的工作区在此处读作「干净」,走裸 checkout 快路径而
-    // 非 Stash/Commit 模式。快路径与 Carry 的 git 命令完全一致,方向 fail-
-    // safe(无数据损失),且泄露过滤必须对一切消费方生效,不能为此引入
-    // 未过滤的第二计数;分支 UI 的 dirty_count 同理低估。
+    // Round-10 review minor (documenting a semantic change): git_status_entries now
+    // filters the changes lane by the credential policy, dropping staged rename
+    // destinations with blocked origins — a workspace whose only change is such a
+    // rename reads as "clean" here and takes the bare-checkout fast path instead of
+    // Stash/Commit mode. The fast path's git commands are exactly Carry's, so the
+    // direction is fail-safe (no data loss); the leak filter must hold for every
+    // consumer, and introducing an unfiltered second count for this would defeat it;
+    // the branch UI's dirty_count is likewise an undercount by design.
     if git_status_entries(&root)?.is_empty() {
         git_output(&root, &["checkout", branch])?;
         return workspace_branches(&root);
@@ -533,14 +551,18 @@ pub fn checkout_workspace_branch(
             git_output(&root, &["checkout", branch])?;
         }
         BranchSwitchMode::Stash => {
-            // 暂存（含未跟踪文件）→ 切换 → 恢复。checkout 失败时先 pop 恢复
-            // 现场再报错；恢复也失败时必须说明更改仍完好保存在 stash 中，避免
-            // 现场看似丢失。切换后的 pop 冲突时 git 会保留该 stash 条目；注意
-            // 未跟踪文件可能仅存在于该条目中，必须先确认内容再清理，不能直接
-            // 引导 drop。
-            // push 可能不创建条目（status 非空但无可暂存内容，典型是仅子模块
-            // 工作区内容变更）：此时 pop 会误弹用户已有的 stash 条目并把其内容
-            // 应用到新分支。比对 push 前后 refs/stash 指向，只有新建了条目才 pop。
+            // Stash (including untracked files) → switch → restore. If checkout fails,
+            // pop to restore the scene before reporting; if the restore also fails, the
+            // error must state that the changes are safely kept in the stash so the
+            // scene does not look lost. When the post-switch pop conflicts, git keeps
+            // that stash entry; untracked files may exist only in that entry, so the
+            // content must be confirmed before any cleanup — never guide straight to
+            // drop.
+            // A push may create no entry (status non-empty but nothing stashable —
+            // typically only submodule worktree content changed): popping then would
+            // wrongly pop the user's existing stash entry and apply its content to the
+            // new branch. Compare refs/stash before and after the push; pop only when
+            // an entry was actually created.
             let prior_stash = stash_head(&root)?;
             git_output(
                 &root,
@@ -585,10 +607,11 @@ pub fn checkout_workspace_branch(
             let commit_args = checkout_commit_args(&root, message);
             let commit_refs: Vec<&str> = commit_args.iter().map(String::as_str).collect();
             if let Err(error) = git_commit_for_checkout(&root, &commit_refs) {
-                // Stash 臂失败时自行恢复现场；commit 模式的 `git add -A` 在
-                // commit 失败时（无身份、hook 拒绝）已经改写用户索引——报错必须
-                // 披露这一事实，而不是让变更静默留在暂存区（CLI 车道 round-40
-                // 同款披露，双端一致）。
+                // The Stash arm restores the scene itself on failure; in commit mode a
+                // failed `git commit` (no identity, hook refusal) leaves `git add -A`'s
+                // rewrite of the user's index in place — the error must disclose that
+                // fact rather than leaving changes silently staged (same disclosure as
+                // the CLI lane's round-40, keeping both ends consistent).
                 bail!("{error:#}；本次 `git add -A` 已暂存工作区——继续前请先 git status 检查");
             }
             git_output(&root, &["checkout", branch])?;
@@ -597,18 +620,22 @@ pub fn checkout_workspace_branch(
     workspace_branches(&root)
 }
 
-/// 提交模式车道的 `git commit` 参数（CLI `commit_command_args` 的镜像，同一份
-/// 加固语义，防止双端再次漂移）：
+/// The commit-mode lane's `git commit` arguments (a mirror of the CLI's
+/// `commit_command_args`, same hardening semantics, keeping the two ends from
+/// drifting apart again):
 ///
-/// - `commit.gpgsign=false` 是对用户 git 配置的显式偏离：本车道 git 的 stdin
-///   关闭且无截止时间，`commit.gpgsign=true` 用户的首次提交模式切换会停在
-///   GPG pinentry 提示上，把会话车道永久挂起。代价经文档披露：经本车道提交的
-///   commit 不带签名（CLI 车道同款语义，docs/pinvou-cli.md）。
-/// - 身份显式化：从用户配置（repo-local 优先，其后 global/system）读回身份并以
-///   `-c` 显式传入；环境中导出的 `GIT_AUTHOR_*`/`GIT_COMMITTER_*` 由
-///   [`git_commit_for_checkout`] 移除，不能覆盖这里解析出的身份。任何配置都读
-///   不到时 `user.useConfigOnly=true` 让 commit 如实失败，而不是伪造
-///   `user@hostname`。
+/// - `commit.gpgsign=false` is an explicit deviation from the user's git config:
+///   this lane runs git with stdin closed and no deadline, so a
+///   `commit.gpgsign=true` user's first commit-mode switch would stall on the GPG
+///   pinentry prompt and hang the session lane forever. The cost is disclosed in
+///   docs: commits made through this lane are unsigned (same semantics as the CLI
+///   lane, docs/pinvou-cli.md).
+/// - Explicit identity: the identity is read back from the user's config
+///   (repo-local first, then global/system) and passed explicitly via `-c`;
+///   `GIT_AUTHOR_*`/`GIT_COMMITTER_*` exported into the environment are removed by
+///   [`git_commit_for_checkout`] and cannot override the identity resolved here.
+///   When no configuration yields an identity, `user.useConfigOnly=true` makes the
+///   commit fail honestly instead of fabricating `user@hostname`.
 fn checkout_commit_args(root: &Path, message: &str) -> Vec<String> {
     let mut args = vec!["-c".to_owned(), "commit.gpgsign=false".to_owned()];
     match ambient_git_identity(root) {
@@ -629,10 +656,13 @@ fn checkout_commit_args(root: &Path, message: &str) -> Vec<String> {
     args
 }
 
-/// 环境身份（repo-local 优先，其后 global/system）——GUI 会话车道实际会以哪个
-/// 身份提交。只读 `git config` 探测：不跑 hooks。与 [`checkout_commit_args`]
-/// 的提交使用同一条 `strip_git_override_env` 通路，两边看到同一个有效仓库与
-/// 同一组配置文件；用户全局配置刻意可见——读的就是用户实际提交用的身份。
+/// The ambient identity (repo-local first, then global/system) — the identity the
+/// GUI session lane would actually commit with. A read-only `git config` probe: no
+/// hooks run. Uses the same `strip_git_override_env` path as
+/// [`checkout_commit_args`]'s commit, so both sides see the same effective
+/// repository and the same set of config files; the user's global config is
+/// deliberately visible — what is being read is the identity the user actually
+/// commits with.
 fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
     let capture = git_output(
         root,
@@ -654,10 +684,12 @@ fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
     Some((name?, email?))
 }
 
-/// 提交模式车道自己的 `git commit`：与 [`git_output`] 相同，但额外移除环境中
-/// 的身份变量（`GIT_AUTHOR_*`/`GIT_COMMITTER_*`，platform::process 的
-/// `GIT_IDENTITY_KEYS` 全表），使 [`checkout_commit_args`] 以 `-c` 显式传入的
-/// 身份真正生效——否则调用方 shell 导出的身份会覆盖用户配置解析出的身份。
+/// The commit-mode lane's own `git commit`: same as [`git_output`], but it
+/// additionally removes the identity variables from the environment
+/// (`GIT_AUTHOR_*`/`GIT_COMMITTER_*` — platform::process's full
+/// `GIT_IDENTITY_KEYS` table) so the identity [`checkout_commit_args`] passes
+/// explicitly via `-c` actually takes effect — otherwise an identity exported by
+/// the caller's shell would override the one resolved from the user's config.
 fn git_commit_for_checkout(root: &Path, arguments: &[&str]) -> Result<String> {
     let mut command = crate::platform::process::HiddenCommand::new("git");
     crate::platform::process::strip_git_override_env(&mut command);
@@ -862,7 +894,8 @@ fn diff_cache_get(session_id: &str, root: &Path, relative: &str) -> Option<Cache
 fn diff_cache_put(session_id: &str, root: &Path, relative: &str, text: String, truncated: bool) {
     let fingerprint = diff_fingerprint(root, relative);
     let mut cache = DIFF_CACHE.lock().unwrap_or_else(|error| error.into_inner());
-    // 简单上限：超限整体清空，避免进程内无限膨胀（纯内存，不落盘）。
+    // Simple cap: clear the whole cache when over the limit, avoiding unbounded
+    // in-process growth (memory only, never persisted).
     if cache.len() >= DIFF_CACHE_MAX_ENTRIES {
         cache.clear();
     }
@@ -879,36 +912,43 @@ fn diff_cache_put(session_id: &str, root: &Path, relative: &str, text: String, t
 pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Result<WorkspaceDiff> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path)?;
-    // 未跟踪文件的合成差异与 git diff（含已暂存）都包含文件内容；凭据组件
-    // 文件拒绝进入差异车道，与 preview_workspace_file 同策略。
+    // Both the synthetic untracked diff and git diff (including staged) carry file
+    // content; credential-component files are refused from the diff lane, same
+    // policy as preview_workspace_file.
     if relative_path_crosses_blocked_component(&relative) {
         bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
     }
     let path = root.join(&relative);
     ensure_path_within_workspace(&root, &path)?;
-    // Round-5 复审 BLOCKER:git pathspec 按目录前缀递归,`:(literal)` 只关
-    // 通配不关递归——`git diff -- ":(literal)src"` 会把已跟踪/已暂存的
-    // `src/.env` 完整补丁发给手机,而词法检查只看得到 "src" 这个无害祖先
-    // 名。目录(含整仓的空 relative)目标整体拒绝:差异车道按变更车道给出
-    // 的文件路径工作,目录级差异从来不是契约功能;文件级 pathspec 不递
-    // 归。Round-8 复审:目录从 worktree 消失(`git rm -r`/`rm -rf`/
-    // sparse-checkout/悬空链接)时 is_dir 不再成立,由 diff 臂内的 git 侧
-    // 展开检查(pathspec 命中条目必须恰为请求文件)兜住同一泄露。
+    // Round-5 review BLOCKER: git pathspecs recurse by directory prefix, and
+    // `:(literal)` turns off globbing but not recursion — `git diff -- ":(literal)src"`
+    // would send the full patch of the tracked/staged `src/.env` to the phone while
+    // the lexical check only sees the harmless ancestor name "src". Directory targets
+    // (including the whole-repo empty relative path) are refused wholesale: the diff
+    // lane works on file paths as given by the changes lane, and directory-level
+    // diffs were never a contract feature; file-level pathspecs do not recurse.
+    // Round-8 review: when the directory vanishes from the worktree (`git rm -r`/
+    // `rm -rf`/sparse-checkout/dangling links), is_dir no longer holds, and the git
+    // side's expansion check inside the diff arm (pathspec hits must be exactly the
+    // requested file) covers the same leak.
     if path.is_dir() {
         bail!("工作区差异仅支持文件路径: {relative}");
     }
-    // 解析腿(与 preview 车道同约束):落点经符号链接命中黑名单时,在任何
-    // 内容读取(含 diff 缓存的指纹哈希)之前拒绝。canonicalize 失败(已删
-    // 除的文件)保持原拼写,由下方 git 臂按词法腿处理。
+    // Resolution leg (same constraint as the preview lane): when the landing through
+    // a symlink hits the blacklist, refuse before any content read (including the
+    // diff cache's fingerprint hashing). A canonicalize failure (deleted file) keeps
+    // the original spelling and is handled by the git arm below via the lexical leg.
     if let Ok(landing) = std::fs::canonicalize(&path) {
         if path_crosses_blocked_component(&landing) {
             bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
         }
-        // Round-12 复审 P3:解析落点还要复查包含关系——canonicalize 只解
-        // 析链接,不保证落点仍在工作区内。preview 车道(resolve_existing_
-        // path)与 untracked_diff 都有这一腿,diff 的 git 臂虽只服务仓库
-        // 内容,这里把「canonicalize → 黑名单 → 包含」不变量在三个臂间
-        // 显式对齐,拒绝语义与 preview 一致。
+        // Round-12 review P3: the resolved landing must also be re-checked for
+        // containment — canonicalize resolves links but does not guarantee the landing
+        // stays inside the workspace. The preview lane (resolve_existing_path) and
+        // untracked_diff both have this leg; although the diff git arm only serves
+        // repository content, the "canonicalize → blacklist → containment" invariant
+        // is aligned explicitly across the three arms, keeping refusal semantics
+        // consistent with preview.
         ensure_path_within_workspace(&root, &landing)?;
     }
 
@@ -926,24 +966,31 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         // tracked `abx.txt`'s diff instead of its own. Same literal prefix
         // the tracked-ness oracle below uses.
         let literal = format!(":(literal){relative}");
-        // Round-8 复审 BLOCKER:上面的目录拒绝键在 worktree 存活上——
-        // `git rm -r src`/`rm -rf src`/sparse-checkout/悬空符号链接让磁盘
-        // 目录消失,is_dir 不再成立而 canonicalize 失败跳过解析腿,
-        // pathspec 仍按目录前缀递归展开,把已跟踪/已暂存的 `src/.env`
-        // 完整补丁(删除臂把旧凭据字节渲染成 `-` 行)发给手机。按 git 侧
-        // 的实际展开拒绝:pathspec 命中的 index 与 HEAD 条目必须恰好等
-        // 于请求的文件本身。已删除文件的删除差异不受影响(两条列表恰含
-        // 自身);未跟踪新文件两表皆空。ls-tree 失败按空处理:HEAD 未出
-        // 生(空仓库)时本就无已提交内容可展开,此时的目录展开由 ls-files
-        // 索引腿独立拒绝(下方需要 HEAD 的 `--cached` 臂在未出生 HEAD 下
-        // 并不会失败,不能指望它兜底);有效 HEAD 下 ls-tree 失败(对象
-        // 损坏)时,需要读同一批树的 diff 臂同样产不出内容。
-        // Round-11 复审 BLOCKER:展开检查原以 `!path.exists()` 为门——
-        // 但 `rm -rf src && echo x > src`(同名文件换目录)让 path 存在
-        // 且非目录,门把检查整个跳过,而泄露在 index/HEAD 侧:pathspec
-        // 照样按目录前缀展开出 `src/.env` 的删除补丁。走到这里 path 已
-        // 必非目录(is_dir 拒绝在其上),门没有任何正确性收益,展开检查
-        // 无条件执行(存在性只影响 canonicalize 腿,已在上方处理)。
+        // Round-8 review BLOCKER: the directory refusal above hinges on the worktree
+        // surviving — `git rm -r src`/`rm -rf src`/sparse-checkout/dangling symlinks
+        // make the on-disk directory disappear, is_dir no longer holds, a canonicalize
+        // failure skips the resolution leg, and the pathspec still expands recursively
+        // by directory prefix, sending the full patch of the tracked/staged `src/.env`
+        // (the deletion arm renders the old credential bytes as `-` lines) to the
+        // phone. Refuse based on git's actual expansion: the index and HEAD entries
+        // hit by the pathspec must be exactly the requested file itself. A deleted
+        // file's removal diff is unaffected (both lists contain exactly itself); an
+        // untracked new file empties both. An ls-tree failure is treated as empty:
+        // with an unborn HEAD (empty repo) there is no committed content to expand,
+        // and directory expansion in that state is independently refused by the
+        // ls-files index leg (the `--cached` arm below needs HEAD and does not fail
+        // under an unborn HEAD, so it cannot be relied on as a backstop); with a valid
+        // HEAD, an ls-tree failure (corrupt objects) means the diff arm that reads the
+        // same trees cannot produce content either.
+        // Round-11 review BLOCKER: the expansion check was originally gated on
+        // `!path.exists()` — but `rm -rf src && echo x > src` (a same-name file
+        // replacing the directory) makes path exist and not be a directory, the gate
+        // skipped the whole check, and the leak sat on the index/HEAD side: the
+        // pathspec still expanded `src/.env`'s deletion patch by directory prefix. By
+        // this point path is necessarily not a directory (the is_dir refusal sits
+        // above), so the gate buys no correctness; the expansion check now runs
+        // unconditionally (existence only affects the canonicalize leg, handled
+        // above).
         let index_entries = git_output(&root, &["ls-files", "-z", "--", literal.as_str()])?;
         let head_entries = git_output(
             &root,
@@ -966,24 +1013,29 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         if expands_beyond_request {
             bail!("工作区差异仅支持文件路径: {relative}");
         }
-        // Round-9 复审 BLOCKER:staged rename 的旧内容由 `--cached` 臂按
-        // 「新文件」渲染——pathspec 限定目的地时 git 无法与删除侧配对,
-        // `new file mode` 直接带出旧 blob 全文,而词法/解析腿只看得见清白
-        // 的目的地名。按 index-vs-HEAD 的改名/拷贝对重建 目的地→来源 映射,
-        // 请求路径是黑名单来源的改名/拷贝目标时整体拒绝(检测经
-        // --find-renames/--find-copies 在命令行强制,仓库 diff.renames
-        // 配置拆不散改名对)。改名对之外的无对形状属共享策略已记录的同名
-        // 别名残余——git 不再持有可追随的
-        // 链接,字节已落在一个真实的清白命名文件里,与 cp+add 及 agent
-        // 自行写入任意内容不可区分:cp+add、相似度低于检测阈值的改写
-        // (Round-9 已记),以及两个最顺手到达的无对形状——纯 `mv` 后
-        // `D .env|?? innocent.txt`、只 add 目的地侧的
-        // `D .env|A innocent.txt`(改写对只存在于 index-vs-HEAD,无对时
-        // 看不到配对)。关闭它们需要内容检查,超出本车道词法策略的范围
-        // (Round-10 复审 minor:补记形状)。case 不敏感文件系统上的
-        // Linux(非默认挂载)同理:字节精确解析腿会放行 `.ENV` 拼写
-        // (Round-10 复审 minor:环境约束记录)。改名会改写索引,diff 缓
-        // 存指纹随之失效,不存在跨改名命中旧缓存条的窗口。
+        // Round-9 review BLOCKER: a staged rename's old content is rendered as a "new
+        // file" by the `--cached` arm — with the pathspec limited to the destination,
+        // git cannot pair it with the deletion side, so `new file mode` carries the
+        // old blob's full text, while the lexical/resolution legs only see the clean
+        // destination name. Rebuild the destination→origin map from the index-vs-HEAD
+        // rename/copy pairs and refuse wholesale when the requested path is the
+        // rename/copy target of a blocked origin (detection is forced on the command
+        // line via --find-renames/--find-copies, so a repo's diff.renames config
+        // cannot split the pairs). Unpaired shapes beyond rename pairs are the
+        // same-name alias residual already recorded in the shared policy — git no
+        // longer holds a followable link, the bytes live in a real cleanly named file,
+        // indistinguishable from cp+add or the agent writing arbitrary content
+        // itself: cp+add, rewrites below the detection-similarity threshold (recorded
+        // in Round-9), and the two most conveniently reachable unpaired shapes — a
+        // pure `mv` leaving `D .env|?? innocent.txt`, and adding only the destination
+        // side leaving `D .env|A innocent.txt` (the rewrite pair exists only in
+        // index-vs-HEAD and the pairing is invisible when unpaired). Closing them
+        // requires content inspection, beyond this lane's lexical policy (Round-10
+        // review minor: shapes recorded). The same applies to Linux on case-insensitive
+        // filesystems (non-default mounts): the byte-exact resolution leg would let a
+        // `.ENV` spelling through (Round-10 review minor: environment constraint
+        // recorded). A rename rewrites the index, which invalidates the diff cache
+        // fingerprint, so there is no window where a rename hits a stale cache entry.
         if let Some(origin) = git_staged_rename_origins(&root)?.get(&relative) {
             if relative_path_crosses_blocked_component(origin) {
                 bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
@@ -1075,7 +1127,8 @@ fn truncate_to_byte_cap(text: &mut String, limit: usize) {
     text.truncate(boundary);
 }
 
-/// 校验相对路径落在工作区内，但不要求文件存在（git diff 可展示已删除文件）。
+/// Validates that a relative path stays inside the workspace, without requiring the
+/// file to exist (git diff can show deleted files).
 pub fn validate_workspace_relative_path(root: &Path, relative_path: &str) -> Result<()> {
     let relative = normalize_relative_path(relative_path)?;
     let path = root.join(&relative);
@@ -1090,8 +1143,9 @@ pub(super) fn resolve_workspace_references(
     let mut references = Vec::new();
     for raw in relative_paths {
         let relative = normalize_relative_path(raw)?;
-        // 词法判定与 preview 同约束:解析前的调用方拼写先过一次黑名单
-        // (注释所称的双重判定的前一半;解析后落点另有一次)。
+        // Lexical judgment under the same constraint as preview: the caller's spelling
+        // passes the blacklist once before resolution (the first half of the
+        // double-check the doc mentions; the resolved landing gets the second).
         if relative_path_crosses_blocked_component(&relative) {
             bail!("工作区引用途经凭据文件，拒绝读取: {relative}");
         }
@@ -1099,8 +1153,9 @@ pub(super) fn resolve_workspace_references(
             continue;
         }
         let absolute_path = resolve_existing_path(root, &relative, false)?;
-        // 凭据内容不得进入外部模型上下文：提示引用与 preview 同约束，词法
-        // 与解析后双重判定（同 preview_workspace_file）。
+        // Credential content must never enter the external model context: prompt
+        // references carry the same constraint as preview, with the lexical +
+        // post-resolution double check (same as preview_workspace_file).
         if path_crosses_blocked_component(&absolute_path) {
             bail!("工作区引用途经凭据文件，拒绝读取: {relative}");
         }
@@ -1120,10 +1175,12 @@ pub(super) fn resolve_workspace_references(
 }
 
 pub fn resolve_workspace_file(root: &Path, relative_path: &str) -> Result<PathBuf> {
-    // Round-15 复审(记录桌面豁免):本解析与 resolve_workspace_resource 不做
-    // 凭据组件检查——调用点(open/reveal/resource,以及 open_code_reader
-    // 的非 diff 类型)全部桌面命令,内容进本地外部应用/阅读器而非模型上
-    // 下文,手机不可达;Web 侧一律走 preview/search/diff 的双腿策略车道。
+    // Round-15 review (documenting the desktop exemption): this resolution, like
+    // resolve_workspace_resource, performs no credential-component check — the call
+    // sites (open/reveal/resource, plus open_code_reader's non-diff kinds) are all
+    // desktop commands whose content goes to local external apps/readers rather than
+    // model context, unreachable from the phone; the web side always goes through the
+    // two-leg policy lanes of preview/search/diff.
     let relative = normalize_relative_path(relative_path)?;
     resolve_existing_path(root, &relative, false)
 }
@@ -1143,9 +1200,11 @@ fn workspace_entry(root: &Path, path: PathBuf) -> Result<Option<WorkspaceEntry>>
         return Ok(None);
     }
     let relative_path = relative_text(root, &path)?;
-    // 凭据组件条目静默跳过（同 file_access::list_host_files 的模式）：列表与
-    // 搜索不外泄其存在；读取与差异车道另行显式拒绝。相对路径以工作区根为
-    // 基准，被列入的目录本身在黑名单内时其子项同样被跳过。
+    // Credential-component entries are silently skipped (the same pattern as
+    // file_access::list_host_files): listing and search never reveal their existence;
+    // the read and diff lanes refuse them explicitly instead. Relative paths are
+    // rooted at the workspace root; when a listed directory is itself blocked, its
+    // children are skipped too.
     if relative_path_crosses_blocked_component(&relative_path) {
         return Ok(None);
     }
@@ -1201,23 +1260,26 @@ fn normalize_relative_path(raw: &str) -> Result<String> {
     Ok(parts.join("/"))
 }
 
-/// 相对路径是否途经凭据黑名单组件（`.env`、`.aws`、`id_rsa`、
-/// `credentials.json` 等逐组件精确匹配,`.env.` 系变体按组件前缀匹配——
-/// 判定细则见 `path_policy::BLOCKED_COMPONENT_PREFIXES`）。判定复用
-/// `path_policy::check_sensitive_components`（内部经平台感知
-/// `path_component_eq`/`path_component_prefix`，macOS 默认卷大小写不敏感）；
-/// 其系统前缀黑名单均以 `/` 开头，相对路径不可能命中，这里等价于纯组件
-/// 判定。
-/// 策略意图见 file_ingest::validate_browsable_path：凭据内容不得进入外部
-/// 模型上下文——codex workspace 车道与附件摄入同约束。
+/// Whether a relative path crosses a credential blacklist component (`.env`, `.aws`,
+/// `id_rsa`, `credentials.json` etc. matched exactly per component; `.env.`-family
+/// variants matched by component prefix — see
+/// `path_policy::BLOCKED_COMPONENT_PREFIXES` for the detailed rules). The judgment
+/// reuses `path_policy::check_sensitive_components` (internally via the
+/// platform-aware `path_component_eq`/`path_component_prefix`; macOS default volumes
+/// are case-insensitive); its system-prefix blacklist entries all start with `/` and
+/// can never be hit by a relative path, so this is equivalent to the pure component
+/// check.
+/// For the policy's intent see file_ingest::validate_browsable_path: credential
+/// content must never enter the external model context — the codex workspace lanes
+/// carry the same constraint as attachment ingestion.
 fn relative_path_crosses_blocked_component(relative: &str) -> bool {
     crate::platform::path_policy::check_sensitive_components(Path::new(relative)).is_err()
 }
 
-/// 解析后（canonicalize）的绝对路径黑名单判定：与 file_ingest::
-/// validate_browsable_path 对 canonical 路径的组件判定同约束。调用方拼写的
-/// 词法检查拦不住「链接名清白」的符号链接（`notes.txt -> .env`），解析
-/// 落点必须再过一次黑名单。
+/// Blacklist judgment on the resolved (canonicalize) absolute path: the same
+/// constraint as file_ingest::validate_browsable_path's component check on canonical
+/// paths. The lexical check of the caller's spelling cannot stop a clean-named
+/// symlink (`notes.txt -> .env`); the resolved landing must pass the blacklist again.
 fn path_crosses_blocked_component(path: &Path) -> bool {
     crate::platform::path_policy::check_sensitive_components(path).is_err()
 }
@@ -1372,7 +1434,7 @@ fn file_kind(path: &Path) -> String {
     ) {
         return "text".to_string();
     }
-    // 无扩展名的常见文本文件名（Dockerfile、Makefile、LICENSE、.gitignore 等）。
+    // Common text file names without an extension (Dockerfile, Makefile, LICENSE, .gitignore, etc.).
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -1408,8 +1470,9 @@ fn file_kind(path: &Path) -> String {
     ) {
         return "text".to_string();
     }
-    // 扩展名白名单之外的内容嗅探：头部 8KB 无 NUL 且为合法 UTF-8 即按文本处理，
-    // 覆盖 .hbs/.ipynb/.cmake 等未列举扩展名及无扩展名的文本文件。
+    // Content sniffing beyond the extension whitelist: a head 8KB with no NUL and
+    // valid UTF-8 is treated as text, covering unlisted extensions like
+    // .hbs/.ipynb/.cmake and extension-less text files.
     if looks_like_text(path) {
         return "text".to_string();
     }
@@ -1429,7 +1492,8 @@ fn looks_like_text(path: &Path) -> bool {
     }
     match std::str::from_utf8(sample) {
         Ok(_) => true,
-        // 8KB 截断点恰好落在多字节字符中间时，容忍末尾不完整序列（≤4 字节）。
+        // When the 8KB cutoff lands mid multi-byte character, tolerate the trailing
+        // incomplete sequence (≤4 bytes).
         Err(error) => error.valid_up_to() > 0 && sample.len() - error.valid_up_to() <= 4,
     }
 }
@@ -1569,10 +1633,11 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
     crate::platform::process::strip_git_override_env(&mut command);
     let output = command
         .current_dir(root)
-        // -c status.renames=true:改名对是黑名单过滤的输入,Round-9 复审
-        // 对抗探针证实用户仓库配置 status.renames=false 会把 `git mv` 拆
-        // 成 `D`+`??`(目的地不被过滤、diff 车道照常渲染旧凭据 blob)。
-        // 检测在此强制开启,不随仓库配置漂移。
+        // -c status.renames=true: rename pairs are an input to the blacklist filter;
+        // the Round-9 review adversarial probe confirmed that a repo configured with
+        // status.renames=false splits a `git mv` into `D`+`??` (the destination escapes
+        // filtering and the diff lane still renders the old credential blob).
+        // Detection is forced on here and never drifts with repo config.
         .args([
             "-c",
             "status.renames=true",
@@ -1604,17 +1669,20 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
         let y = record[1] as char;
         let path = porcelain_record_path(record);
         if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
-            // Round-12 复审 P3:来源字段缺失的截断记录按 fail-closed 处理
-            // ——真实 git 不会产生这种形态,但其余畸形形态全部 fail-closed
-            // (旧守卫 `&& index < records.len()` 会放行无来源的目的地条目
-            // 且不消费任何记录):不推进、不回显。
+            // Round-12 review P3: a truncated record missing its origin field is
+            // handled fail-closed — real git never produces this shape, but every other
+            // malformed shape is fail-closed too (the old guard `&& index <
+            // records.len()` would let through a destination entry with no origin
+            // while consuming no records): no advance, no echo.
             if index >= records.len() {
                 continue;
             }
-            // Round-9 复审 BLOCKER:porcelain 的 R/C 记录是 `目的地 NUL
-            // 来源`,来源才是改名对里旧内容(黑名单名下的字节)的载体。
-            // 来源命中黑名单时,目的地条目整体不回显——它正是把旧字节
-            // 带出变更车道的载体;来源清白的改名照常列出。
+            // Round-9 review BLOCKER: porcelain's R/C record is `destination NUL
+            // origin`; the origin is the carrier of the rename pair's old content (the
+            // bytes under the blocked name). When the origin hits the blacklist, the
+            // destination entry is not echoed at all — it is exactly the vehicle that
+            // would carry the old bytes out of the changes lane; renames with a clean
+            // origin are listed as usual.
             let origin = porcelain_origin_path(records[index]);
             index += 1;
             if relative_path_crosses_blocked_component(&origin) {
@@ -1631,20 +1699,23 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
     Ok(changes)
 }
 
-/// `git status --porcelain=v1 -z` 里的 R/C 改名/拷贝对:目的地 → 来源。
-/// diff 车道据此拒绝黑名单来源的改名目的地(pathspec 限定目的地时
-/// `git diff --cached` 不做改名配对,旧 blob 会以「新文件」全文渲染,
-/// 见 workspace_diff 内的 Round-9 注释)。改名/拷贝对本就只存在于
-/// index-vs-HEAD,故映射直接取自 `diff --cached --name-status -z`:
-/// Round-11 复审 MAJOR——原先为取同一批 R/C 记录跑整仓
-/// `git status --porcelain`,把工作区+未跟踪全量遍历加到了每次 diff
-/// 缓存未命中上(活跃仓库里几乎每次查看差异都是未命中,10k 文件仓库
-/// 单次冷 status 约 0.3-2s)。`--find-renames`/`--find-copies` 在命令
-/// 行强制开启,不随仓库 diff.renames 配置漂移(与 changes 车道的
-/// status.renames 强制同理)。未出生 HEAD 下 git 与空树比较,命令照常
-/// 成功(此时不可能存在改名对,空映射即正确)。diff 输出的路径分量分
-/// 隔符在所有平台都是 `/`(status 的 Windows 反斜杠怪癖不适用于
-/// diff),`-z` 下不做 quotePath 转义。
+/// The R/C rename/copy pairs of `git status --porcelain=v1 -z`: destination →
+/// origin. The diff lane uses this to refuse rename destinations with blocked
+/// origins (with the pathspec limited to the destination, `git diff --cached` does
+/// no rename pairing and the old blob would be rendered in full as a "new file" —
+/// see the Round-9 comment inside workspace_diff). Rename/copy pairs only exist in
+/// index-vs-HEAD anyway, so the map comes directly from
+/// `diff --cached --name-status -z`: Round-11 review MAJOR — fetching the same R/C
+/// records previously ran a whole-repo `git status --porcelain`, adding a full
+/// worktree+untracked traversal to every diff cache miss (in an active repo almost
+/// every diff view is a miss; a cold status on a 10k-file repo takes roughly
+/// 0.3-2s). `--find-renames`/`--find-copies` are forced on the command line and
+/// never drift with the repo's diff.renames config (same rationale as the changes
+/// lane's status.renames forcing). Under an unborn HEAD git compares against the
+/// empty tree and the command still succeeds (no rename pairs can exist then, so an
+/// empty map is correct). The path component separator in diff output is `/` on all
+/// platforms (status's Windows backslash quirk does not apply to diff), and `-z`
+/// disables quotePath escaping.
 fn git_staged_rename_origins(root: &Path) -> Result<HashMap<String, String>> {
     let mut command = crate::platform::process::HiddenCommand::new("git");
     crate::platform::process::strip_git_override_env(&mut command);
@@ -1676,11 +1747,11 @@ fn git_staged_rename_origins(root: &Path) -> Result<HashMap<String, String>> {
         if status.is_empty() {
             continue;
         }
-        // 改名/拷贝记录 `R100\0<origin>\0<dest>\0`:diff 的 -z name-status
-        // 是来源在前、目的地在后(实测 `git mv a/.env a/innocent.txt` 输出
-        // `R100\0a/.env\0a/innocent.txt`),与 porcelain 的
-        // `R  dest\0origin` 两段顺序恰好相反,易踩。其余状态码
-        // (A/M/D/T/…)各带一个路径字段,原样跳过。
+        // Rename/copy records are `R100\0<origin>\0<dest>\0`: diff's -z name-status
+        // puts the origin first and the destination second (verified: `git mv a/.env
+        // a/innocent.txt` outputs `R100\0a/.env\0a/innocent.txt`) — exactly the
+        // reverse of porcelain's `R  dest\0origin` field order, easy to trip on. Other
+        // status codes (A/M/D/T/…) each carry one path field and are skipped as-is.
         if matches!(status[0] as char, 'R' | 'C') && index + 1 < fields.len() {
             let origin = porcelain_origin_path(fields[index]);
             let destination = porcelain_origin_path(fields[index + 1]);
@@ -1797,8 +1868,9 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String> {
     if !canonical.starts_with(&canonical_root) {
         bail!("未跟踪路径通过符号链接越出了工作区: {}", relative);
     }
-    // 越界链接已被上面的 containment 拦住;落在工作区内部的链接
-    // (`notes.md -> .env`)还需对解析后的落点过黑名单,与 preview 同约束。
+    // Out-of-bounds links were already caught by the containment check above; links
+    // landing inside the workspace (`notes.md -> .env`) still need the resolved
+    // landing to pass the blacklist, same constraint as preview.
     if path_crosses_blocked_component(&canonical) {
         bail!("工作区路径途经凭据文件，拒绝生成差异: {}", relative);
     }
@@ -1873,10 +1945,11 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// workspace 夹具目录：基目录是系统临时目录（与 attachments 夹具的
-    /// `$HOME` 基目录是两种有意的不同语义）。建目录 + Drop 清理脚手架复用
-    /// codex_acp 的共享 `TestDir` 实现（Drop 经 newtype 转发），本地只保留
-    /// workspace 语义的基目录与命名前缀。
+    /// Workspace fixture directory: the base directory is the system temp dir (a
+    /// deliberately different semantic from the attachments fixture's `$HOME` base).
+    /// The create + Drop cleanup scaffolding reuses codex_acp's shared `TestDir`
+    /// implementation (Drop forwarded through the newtype); locally only the
+    /// workspace-specific base directory and naming prefix are kept.
     struct TestDir(crate::features::codex_acp::TestDir);
 
     impl TestDir {
@@ -2089,22 +2162,22 @@ mod tests {
 
     #[test]
     fn diff_cache_hits_within_session_and_invalidates_on_file_change() {
-        // 无真实 git 仓库时 workspace_diff 走文件系统对比分支，内容随文件变化——正适合验证缓存失效。
+        // Without a real git repo, workspace_diff takes the filesystem-compare branch whose content tracks file changes — ideal for verifying cache invalidation.
         let root = TestDir::new("diff-cache");
         fs::write(root.path().join("main.py"), "print(1)\n").unwrap();
 
         let first = workspace_diff("s-1", root.path(), "main.py").unwrap();
         assert!(first.text.contains("print(1)"));
-        // 同会话、文件未变：命中缓存，内容一致。
+        // Same session, file unchanged: cache hit, identical content.
         let second = workspace_diff("s-1", root.path(), "main.py").unwrap();
         assert_eq!(first.text, second.text);
 
-        // 文件变化 → 指纹失效，重新计算出新内容。
+        // File change → fingerprint invalidated, new content recomputed.
         fs::write(root.path().join("main.py"), "print(2)\n").unwrap();
         let third = workspace_diff("s-1", root.path(), "main.py").unwrap();
         assert_ne!(first.text, third.text);
         assert!(third.text.contains("print(2)"));
-        // 稳定后再次命中缓存。
+        // After settling, the cache hits again.
         let fourth = workspace_diff("s-1", root.path(), "main.py").unwrap();
         assert_eq!(third.text, fourth.text);
     }
@@ -2357,11 +2430,12 @@ mod tests {
                 .err()
                 .expect("an escaping untracked symlink must be refused");
             let rendered = format!("{error:#}");
-            // Round-12 P3 的解析落点包含复查先于本臂的专用命名触发:越界
-            // 拒绝现在以「越过了项目根目录」更早发生(在任何内容读取之
-            // 前),untracked 腿的「越出了工作区」保持为纵深命名。两个消
-            // 息都只可能是越界拒绝——泄露保证(目标字节不出现在差异里)
-            // 由上面的 .err() 期望本身钉住。
+            // The Round-12 P3 resolved-landing containment re-check fires before this
+            // arm's dedicated naming: the escape refusal now happens earlier as "越过
+            // 了项目根目录" (before any content read), keeping the untracked leg's
+            // "越出了工作区" as defense-in-depth naming. Both messages can only be
+            // escape refusals — the leak guarantee (target bytes never appear in the
+            // diff) is pinned by the .err() expectation above itself.
             assert!(
                 rendered.contains("越出了工作区") || rendered.contains("越过了项目根目录"),
                 "the refusal must name the escape, got: {rendered}"
@@ -2379,11 +2453,13 @@ mod tests {
                 diff.text
             );
 
-            // (d) Round-5 复审 M4:workspace 内指向凭据文件的未跟踪符号链接
-            // 必须按解析后的落点拒绝。此前的 git 车道夹具只钉越界与本地直读,
-            // 删掉 untracked_diff 的落点黑名单检查时本模块全部用例仍然全绿
-            // (突变实测)——git 工作区里 `notes.md -> .env` 的差异会退化为
-            // 凭据字节外泄且无红测试。
+            // (d) Round-5 review M4: an untracked symlink inside the workspace
+            // pointing at a credential file must be refused by its resolved landing.
+            // The git-lane fixtures previously pinned only escape and local direct
+            // reads, so deleting untracked_diff's landing-blacklist check kept every
+            // case in this module green (mutant executed) — in a git workspace the
+            // `notes.md -> .env` diff would degrade into credential-byte exfiltration
+            // with no red test.
             fs::write(repo.join(".env"), "AWS_SECRETKEY=leak\n").unwrap();
             std::os::unix::fs::symlink(".env", repo.join("notes.md")).unwrap();
             let error = workspace_diff("sess-untracked-symlink", repo, "notes.md")
@@ -2499,10 +2575,11 @@ mod tests {
         assert_eq!(preview.text.as_deref(), Some("fn main() {}"));
     }
 
-    /// 凭据黑名单逐组件精确匹配，`.env.` 系变体按组件前缀匹配：`.env`、
-    /// `.aws/credentials`、`sub/.ssh/id_rsa`、`.env.local` 命中；
-    /// `.environment` 是不同前缀、放行（黑名单语义与 path_policy 一致，
-    /// 不做任意子串匹配）。
+    /// The credential blacklist matches exactly per component; `.env.`-family
+    /// variants match by component prefix: `.env`, `.aws/credentials`,
+    /// `sub/.ssh/id_rsa`, `.env.local` hit; `.environment` is a different prefix and
+    /// passes (blacklist semantics identical to path_policy, no arbitrary substring
+    /// matching).
     #[test]
     fn blocked_component_detection_is_exact_per_component() {
         assert!(relative_path_crosses_blocked_component(".env"));
@@ -2514,8 +2591,9 @@ mod tests {
         assert!(!relative_path_crosses_blocked_component("notes.md"));
     }
 
-    /// workspace 车道此前没有任何凭据策略：phone 端铸造的工作区 grant 把
-    /// preview 变成授区内凭据文件的自由读取口。preview 必须显式拒绝。
+    /// The workspace lanes previously had no credential policy at all: a phone-minted
+    /// workspace grant turned preview into free read access to credential files inside
+    /// the granted area. Preview must refuse them explicitly.
     #[test]
     fn preview_workspace_file_rejects_credential_components() {
         let root = TestDir::new("credential-preview");
@@ -2528,16 +2606,18 @@ mod tests {
             .expect("credential file preview must be rejected");
         assert!(error.to_string().contains("凭据"), "got: {error}");
         assert!(preview_workspace_file(root.path(), ".aws/credentials").is_err());
-        // 普通文件不受影响。
+        // Ordinary files are unaffected.
         fs::write(root.path().join("notes.md"), "hello\n").unwrap();
         assert!(preview_workspace_file(root.path(), "notes.md").is_ok());
     }
 
-    /// Round-8 复审 MAJOR:.git 内部是仓库绑定车道里最常见的凭据存储
-    /// (.git/config 的远端 URL 常内嵌 oauth2:TOKEN@ 形态凭据,旧式的
-    /// .git-credentials 早被拦而现代存储此前可读)。组件黑名单收入 .git
-    /// 后,preview/diff 对 .git 内部的词法腿在触盘前拒绝(对存在与否
-    /// 无感);仅共享前缀的 .gitignore 等普通文件不受影响。
+    /// Round-8 review MAJOR: .git internals are the most common credential store in
+    /// the repo-bound lane (.git/config's remote URLs often embed oauth2:TOKEN@-style
+    /// credentials; the legacy .git-credentials was blocked long ago while the modern
+    /// store stayed readable). After .git joined the component blacklist, the
+    /// preview/diff lexical legs refuse .git internals before touching the disk
+    /// (existence-agnostic); ordinary files that merely share the prefix, like
+    /// .gitignore, are unaffected.
     #[test]
     fn git_internals_are_refused_across_lanes() {
         let root = TestDir::new("git-internals");
@@ -2553,22 +2633,24 @@ mod tests {
             .err()
             .expect(".git/config preview must be refused");
         assert!(error.to_string().contains("凭据"), "got: {error}");
-        // 词法腿不触盘:不存在的 .git 内部拼写同样拒绝(无存在分叉)。
+        // The lexical leg never touches the disk: nonexistent .git-internal spellings are refused too (no existence fork).
         assert!(preview_workspace_file(root.path(), ".git/FETCH_HEAD").is_err());
         assert!(preview_workspace_file(root.path(), ".git/nope").is_err());
         let error = workspace_diff("git-int", root.path(), ".git/config")
             .err()
             .expect(".git/config diff must be refused");
         assert!(error.to_string().contains("凭据"), "got: {error}");
-        // 仅共享前缀的普通文件不受影响。
+        // Ordinary files that merely share the prefix are unaffected.
         let preview = preview_workspace_file(root.path(), ".gitignore").unwrap();
         assert_eq!(preview.text.as_deref(), Some("target/\n"));
     }
 
-    /// 列表与搜索静默跳过凭据组件条目（同 file_access::list_host_files 的
-    /// 模式）。Round-7 复审:被点名的黑名单目录从「空列表成功」改为整体
-    /// 拒绝——「成功空列表 vs 报错」的分叉本身会泄露黑名单目录的存在;
-    /// 拒绝在词法腿触发、不触盘,对存在与否无感(与 preview 车道同形)。
+    /// Listing and search silently skip credential-component entries (the same
+    /// pattern as file_access::list_host_files). Round-7 review: a named blocked
+    /// directory changed from "success with an empty list" to wholesale refusal —
+    /// the "success-empty-list vs error" fork itself would leak the blocked
+    /// directory's existence; the refusal fires on the lexical leg without touching
+    /// the disk and is existence-agnostic (same shape as the preview lane).
     #[test]
     fn list_and_search_skip_credential_components() {
         let root = TestDir::new("credential-listing");
@@ -2605,8 +2687,9 @@ mod tests {
         assert!(hit.iter().any(|entry| entry.relative_path == "notes.md"));
     }
 
-    /// 未跟踪差异与 git diff 都携带文件内容，凭据组件文件必须拒绝进入差异
-    /// 车道（非 git 工作区的未跟踪 `.env` 即可复现）。
+    /// Both the untracked diff and git diff carry file content; credential-component
+    /// files must be refused from the diff lane (reproducible with an untracked `.env`
+    /// in a non-git workspace).
     #[test]
     fn workspace_diff_rejects_credential_components() {
         let root = TestDir::new("credential-diff");
@@ -2621,14 +2704,16 @@ mod tests {
         assert!(workspace_diff("s-cred", root.path(), "sub/.ssh/id_rsa").is_err());
     }
 
-    /// Round-5 复审 BLOCKER:git pathspec 按目录前缀递归,`git diff --
-    /// ":(literal)src"` 会把已跟踪/已暂存的 `src/.env` 完整补丁发给手机
-    /// (词法检查只看得到无害祖先名 "src")。目录目标在差异车道整体拒绝;
-    /// 本钉在真实 git 仓库上同时锁住已跟踪未暂存与已暂存两条泄露臂,并钉
-    /// 住清白兄弟文件的差异仍然可用(功能不被一刀切)。Round-6 复审 M1:
-    /// 直接点名的凭据文件请求(最直接的敌意形状)也必须在 git 仓库上被
-    /// 两条检查腿拦住——词法腿(已删除文件 canonicalize 失败时唯一的
-    /// 防线)与解析腿。需要 git 二进制。
+    /// Round-5 review BLOCKER: git pathspecs recurse by directory prefix, so `git
+    /// diff -- ":(literal)src"` would send the full patch of the tracked/staged
+    /// `src/.env` to the phone (the lexical check only sees the harmless ancestor
+    /// name "src"). Directory targets are refused wholesale in the diff lane; this
+    /// pin locks both leak arms — tracked-unstaged and staged — on a real git repo,
+    /// and pins that an innocent sibling file's diff still works (the feature is not
+    /// cut off wholesale). Round-6 review M1: a directly named credential-file request
+    /// (the most direct hostile shape) must also be stopped on a git repo by both
+    /// check legs — the lexical leg (the only defense when canonicalize fails for a
+    /// deleted file) and the resolution leg. Requires the git binary.
     #[test]
     fn workspace_diff_refuses_directory_pathspecs_over_tracked_credentials() {
         if std::process::Command::new("git")
@@ -2654,44 +2739,46 @@ mod tests {
         fs::write(repo.join("src/.env"), "AWS_SECRETKEY=dirty\n").unwrap();
         fs::write(repo.join("src/innocent.txt"), "hello v2\n").unwrap();
 
-        // 已跟踪未暂存臂:祖先目录的 diff 不得携带凭据补丁。
+        // Tracked-unstaged arm: an ancestor directory's diff must not carry the credential patch.
         let error = workspace_diff("s-dir", repo, "src")
             .err()
             .expect("a directory pathspec must be refused in the diff lane");
         assert!(error.to_string().contains("文件路径"), "got: {error}");
 
-        // Round-6 复审 M1:直接点名的凭据文件(已跟踪未暂存)必须拒绝。
+        // Round-6 review M1: a directly named credential file (tracked-unstaged) must be refused.
         let error = workspace_diff("s-dir-file", repo, "src/.env")
             .err()
             .expect("a tracked-dirty credential file diff must be refused");
         assert!(error.to_string().contains("凭据"), "got: {error}");
 
-        // 已暂存臂与整仓拼写:同一形状。
+        // Staged arm and the whole-repo spelling: the same shape.
         run_git(repo, &["add", "src/.env", "src/innocent.txt"]);
         assert!(workspace_diff("s-dir", repo, "src").is_err());
         assert!(workspace_diff("s-dir", repo, ".").is_err());
-        // 已暂存的凭据文件点名请求:同一拒绝。
+        // A named request for the staged credential file: the same refusal.
         assert!(workspace_diff("s-dir-file", repo, "src/.env").is_err());
 
-        // Round-6 复审 M1:已删除的凭据文件——canonicalize 失败,解析腿
-        // 跳过,词法腿是唯一防线;删除差异(渲染旧凭据字节为 `-` 行)同样
-        // 不得离开差异车道。
+        // Round-6 review M1: the deleted credential file — canonicalize fails, the
+        // resolution leg skips, and the lexical leg is the only defense; the removal
+        // diff (rendering the old credential bytes as `-` lines) must likewise never
+        // leave the diff lane.
         fs::remove_file(repo.join("src/.env")).unwrap();
         let error = workspace_diff("s-dir-file", repo, "src/.env")
             .err()
             .expect("a deleted credential file's removal diff must be refused");
         assert!(error.to_string().contains("凭据"), "got: {error}");
 
-        // 文件级差异仍然工作:清白兄弟文件的补丁照常返回。
+        // File-level diffs still work: the innocent sibling file's patch returns as usual.
         let diff = workspace_diff("s-dir", repo, "src/innocent.txt").unwrap();
         assert!(diff.text.contains("+hello v2"), "got: {}", diff.text);
         assert!(!diff.text.contains("AWS_SECRETKEY"), "got: {}", diff.text);
 
-        // Round-8 复审 BLOCKER:整个目录从 worktree 消失(未暂存 rm -rf
-        // 与 `git add -A` 后的已暂存删除)时 is_dir 不再成立——pathspec
-        // 仍按前缀递归展开 index/HEAD 里存活的子项,必须按 git 侧展开
-        // 整体拒绝。已删除的清白文件的删除差异不受影响(ls-files/
-        // ls-tree 恰含自身)。
+        // Round-8 review BLOCKER: when a whole directory vanishes from the worktree
+        // (unstaged rm -rf, and the staged deletion after `git add -A`), is_dir no
+        // longer holds — the pathspec still expands the surviving index/HEAD children
+        // recursively by prefix, so the refusal must key on the git-side expansion.
+        // A deleted innocent file's removal diff is unaffected (ls-files/ls-tree
+        // contain exactly itself).
         fs::remove_file(repo.join("src/innocent.txt")).unwrap();
         let diff = workspace_diff("s-dir-del-file", repo, "src/innocent.txt").unwrap();
         assert!(diff.text.contains("-hello v2"), "got: {}", diff.text);
@@ -2707,10 +2794,11 @@ mod tests {
         assert!(error.to_string().contains("文件路径"), "got: {error}");
     }
 
-    /// Round-9 复审 BLOCKER:staged rename 的 porcelain 记录是
-    /// `目的地 NUL 来源`。来源在黑名单内时,变更车道不得回显目的地条目,
-    /// diff 车道必须拒绝目的地(否则 `--cached` 臂以「新文件」渲染旧
-    /// 凭据 blob 全文);来源清白的改名两条车道照常工作。
+    /// Round-9 review BLOCKER: a staged rename's porcelain record is `destination NUL
+    /// origin`. When the origin is blocked, the changes lane must not echo the
+    /// destination entry and the diff lane must refuse the destination (otherwise the
+    /// `--cached` arm renders the old credential blob in full as a "new file");
+    /// renames with a clean origin work as usual on both lanes.
     #[test]
     fn workspace_lanes_refuse_staged_renames_of_credential_files() {
         let repo = TestDir::new("rename-filter-r9");
@@ -2742,7 +2830,7 @@ mod tests {
             .expect("a staged rename destination with a blocked origin must be refused");
         assert!(error.to_string().contains("凭据"), "got: {error}");
 
-        // 对照:来源清白的改名照常列出,diff 照常服务。
+        // Control: a rename with a clean origin stays listed and its diff is served as usual.
         run_git(repo.path(), &["mv", "notes.txt", "docs.txt"]);
         let changes = workspace_changes("rename-ok", repo.path()).unwrap();
         assert!(
@@ -2760,9 +2848,11 @@ mod tests {
         let diff = workspace_diff("rename-ok-diff", repo.path(), "docs.txt").unwrap();
         assert!(diff.text.contains("hello"), "got: {}", diff.text);
 
-        // Round-9 复审对抗探针:仓库配置 status.renames=false 不得拆散改
-        // 名对(否则 `git mv` 退化为 `D`+`??`,目的地不被过滤、diff 车道
-        // 照常渲染旧凭据 blob)。检测在 spawn 层用 -c 强制,与配置漂移无关。
+        // Round-9 review adversarial probe: a repo configured with
+        // status.renames=false must not split the rename pair (otherwise `git mv`
+        // degrades to `D`+`??`, the destination escapes filtering, and the diff lane
+        // still renders the old credential blob). Detection is forced at spawn time
+        // with -c and is immune to config drift.
         run_git(repo.path(), &["config", "status.renames", "false"]);
         run_git(repo.path(), &["mv", "docs.txt", "moved.txt"]);
         let changes = workspace_changes("rename-cfg", repo.path()).unwrap();
@@ -2791,11 +2881,12 @@ mod tests {
         assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
-    /// Round-9 复审 minor:ls-files(index)腿的判别钉。HEAD 未出生时
-    /// ls-tree 降级为空,索引腿是唯一防线——删除它,`git diff --
-    /// ':(literal)src'` 会把「已暂存、未提交、随后整目录从 worktree 消
-    /// 失」的 src/.env 以 `+` 行渲染,而此前所有 fixture 的 HEAD 都含同
-    /// 批子项,索引腿被 ls-tree 腿遮蔽。
+    /// Round-9 review minor: the discriminating pin for the ls-files (index) leg.
+    /// With an unborn HEAD, ls-tree degrades to empty and the index leg is the only
+    /// defense — delete it and `git diff -- ':(literal)src'` renders the src/.env of
+    /// "staged, uncommitted, then the whole directory vanished from the worktree" as
+    /// `+` lines; in every earlier fixture HEAD contained the same children, so the
+    /// index leg was masked by the ls-tree leg.
     #[test]
     fn workspace_diff_index_leg_refuses_staged_directory_without_head() {
         let repo = TestDir::new("index-leg-r9");
@@ -2812,12 +2903,14 @@ mod tests {
         assert!(error.to_string().contains("文件路径"), "got: {error}");
     }
 
-    /// Round-11 复审 BLOCKER:同名文件换目录的形状——`rm -rf src &&
-    /// echo x > src` 让 path 存在且非目录,展开检查原以 `!path.exists()`
-    /// 为门,整个检查被跳过,而泄露在 index/HEAD 侧:pathspec 照样按目
-    /// 录前缀展开出 `src/.env` 的删除补丁(旧凭据字节渲染成 `-` 行)。
-    /// 展开检查必须无条件执行(到达此处 path 已必非目录,门没有正确性
-    /// 收益);已暂存臂(--cached 渲染 HEAD 侧删除)同一拒绝。
+    /// Round-11 review BLOCKER: the same-name-file-replaces-directory shape —
+    /// `rm -rf src && echo x > src` makes path exist and not be a directory; the
+    /// expansion check was originally gated on `!path.exists()`, skipping the whole
+    /// check, while the leak sat on the index/HEAD side: the pathspec still expanded
+    /// `src/.env`'s deletion patch by directory prefix (old credential bytes rendered
+    /// as `-` lines). The expansion check must run unconditionally (by this point path
+    /// is necessarily not a directory; the gate bought no correctness); the staged
+    /// arm (--cached rendering the HEAD-side deletion) gets the same refusal.
     #[test]
     fn workspace_diff_refuses_directory_replaced_by_same_name_file() {
         let repo = TestDir::new("dir-swap-r11");
@@ -2830,7 +2923,7 @@ mod tests {
         run_git(repo.path(), &["add", "src/.env", "src/innocent.txt"]);
         run_git(repo.path(), &["commit", "-m", "init"]);
 
-        // 未暂存换形:目录变同名文件,worktree 侧 path 存在。
+        // Unstaged swap: the directory became a same-name file, and the worktree-side path exists.
         fs::remove_dir_all(repo.path().join("src")).unwrap();
         fs::write(repo.path().join("src"), "payload\n").unwrap();
         let error = workspace_diff("dir-swap", repo.path(), "src")
@@ -2838,33 +2931,35 @@ mod tests {
             .expect("a directory replaced by a same-name file must still be refused");
         assert!(error.to_string().contains("文件路径"), "got: {error}");
 
-        // 已暂存换形:HEAD 侧的删除补丁(--cached 臂)同一拒绝。
+        // Staged swap: the HEAD-side deletion patch (--cached arm) gets the same refusal.
         run_git(repo.path(), &["add", "src"]);
         let error = workspace_diff("dir-swap-staged", repo.path(), "src")
             .err()
             .expect("a staged directory-replaced-by-file pathspec must still be refused");
         assert!(error.to_string().contains("文件路径"), "got: {error}");
 
-        // 对照一:reset 后 index/HEAD 仍把 src 记作目录(index 里存活
-        // src/.env),对「src」的请求在未暂存臂同样会展开出凭据删除补丁
-        // (`-AWS_SECRETKEY=…` 行),维持拒绝。
+        // Control 1: after reset, index/HEAD still record src as a directory (src/.env
+        // survives in the index), so a request for "src" would expand the credential
+        // deletion patch (`-AWS_SECRETKEY=…` lines) in the unstaged arm as well — the
+        // refusal holds.
         run_git(repo.path(), &["reset", "-q"]);
         let error = workspace_diff("dir-swap-reset", repo.path(), "src")
             .err()
             .expect("a swapped pathspec must stay refused while the index still tracks the old directory");
         assert!(error.to_string().contains("文件路径"), "got: {error}");
 
-        // 对照二:清白新文件的 diff 照常工作(展开检查两表恰含自身)。
+        // Control 2: an innocent new file's diff works as usual (both expansion lists contain exactly itself).
         fs::write(repo.path().join("docs.txt"), "visible\n").unwrap();
         let diff = workspace_diff("dir-swap-file", repo.path(), "docs.txt").unwrap();
         assert!(diff.text.contains("+visible"), "got: {}", diff.text);
         assert!(!diff.text.contains("AWS_SECRETKEY"), "got: {}", diff.text);
     }
 
-    /// Round-11 复审 MAJOR(判别钉):diff 车道的改名映射取自
-    /// `diff --cached --name-status`,检测在 spawn 层用
-    /// --find-renames/--find-copies 强制,仓库配置 diff.renames=false
-    /// 不得拆散改名对(与 changes 车道 status.renames 强制同理)。
+    /// Round-11 review MAJOR (discriminating pin): the diff lane's rename map comes
+    /// from `diff --cached --name-status`, with detection forced at spawn time via
+    /// --find-renames/--find-copies; a repo configured with diff.renames=false must
+    /// not split the rename pair (same rationale as the changes lane's status.renames
+    /// forcing).
     #[test]
     fn workspace_diff_rename_map_forces_detection_despite_diff_renames_config() {
         let repo = TestDir::new("rename-diff-cfg-r11");
@@ -2882,8 +2977,9 @@ mod tests {
         assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
-    /// Round-9 复审 minor:列表车道的解析腿判别钉——「链接名清白」的
-    /// 符号链接(docs -> .aws)的落点在黑名单目录上时拒绝列出。
+    /// Round-9 review minor: the list lane's resolution-leg discriminating pin — a
+    /// clean-named symlink (docs -> .aws) whose landing is a blocked directory must be
+    /// refused from listing.
     #[test]
     #[cfg(unix)]
     fn workspace_list_refuses_blocked_resolved_landing() {
@@ -2896,8 +2992,9 @@ mod tests {
         assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
-    /// 提示引用车道(`web_access_codex_acp_prompt` 的 workspace_references)
-    /// 与 preview 同约束:凭据内容不得经 ResourceLink 进入外部模型上下文。
+    /// The prompt-reference lane (web_access_codex_acp_prompt's
+    /// workspace_references) carries the same constraint as preview: credential
+    /// content must never enter the external model context via a ResourceLink.
     #[test]
     fn workspace_references_reject_credential_components() {
         let root = TestDir::new("credential-references");
@@ -2908,7 +3005,7 @@ mod tests {
             .err()
             .expect("credential prompt reference must be rejected");
         assert!(error.to_string().contains("凭据"), "got: {error}");
-        // `.env.` 系变体在前缀判定处被拦(无需落盘解析)。
+        // `.env.`-family variants are caught at the prefix judgment (no on-disk resolution needed).
         let error = resolve_workspace_references(root.path(), &[".env.production".to_string()])
             .err()
             .expect("env-variant prompt reference must be rejected");
@@ -2918,9 +3015,9 @@ mod tests {
         assert_eq!(resolved.len(), 1);
     }
 
-    /// 链接名清白的符号链接(`notes.txt -> .env`)必须在对解析后落点的
-    /// 判定处被拦:仅凭调用方拼写的词法检查会被绕过。preview 与未跟踪
-    /// 差异两条读取路径都钉住。
+    /// A clean-named symlink (`notes.txt -> .env`) must be caught at the judgment on
+    /// the resolved landing: a lexical check of the caller's spelling alone is
+    /// bypassed. Both read paths — preview and the untracked diff — are pinned.
     #[test]
     #[cfg(unix)]
     fn credential_symlink_alias_is_blocked_after_resolution() {
@@ -2939,16 +3036,18 @@ mod tests {
             .expect("the untracked-diff read must refuse the resolved credential target");
         assert!(error.to_string().contains("凭据"), "got: {error}");
 
-        // 提示引用车道同样拦截。
+        // The prompt-reference lane blocks it too.
         assert!(resolve_workspace_references(root.path(), &["notes.txt".to_string()]).is_err());
     }
 
-    /// Round-7 复审 M2:差异车道解析腿在「已跟踪文件类型变更」场景下是
-    /// 唯一防线——notes.txt 原是已跟踪普通文件,后被替换成指向 .env 的
-    /// 符号链接(脏的类型变更)。词法腿只看得到清白名;untracked 臂不
-    /// 参与(文件已跟踪);preview/untracked 的下游复检也不可达——只有
-    /// workspace_diff 级的 canonicalize 复检能拦住。删除该解析腿此前
-    /// 46/46 全绿(该腿完全无钉),本钉把回归变成红灯。
+    /// Round-7 review M2: in the "tracked file type-changed" scenario the diff lane's
+    /// resolution leg is the only defense — notes.txt was a tracked regular file later
+    /// replaced by a symlink pointing at .env (a dirty typechange). The lexical leg
+    /// only sees the clean name; the untracked arm is not involved (the file is
+    /// tracked); the downstream re-checks of preview/untracked are unreachable — only
+    /// workspace_diff's canonicalize re-check can stop it. Deleting that resolution
+    /// leg previously kept 46/46 green (the leg had no pin at all); this pin turns
+    /// that regression red.
     #[test]
     #[cfg(unix)]
     fn workspace_diff_resolved_leg_blocks_tracked_typechanged_symlink() {
@@ -2981,9 +3080,11 @@ mod tests {
         assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
-    /// Round-7 复审:列表车道对「被请求目录本身」的黑名单判定——目录级
-    /// 请求回空列表 vs 报错的分叉会泄露黑名单目录的存在,词法腿必须整体
-    /// 拒绝;清白目录照常可列,根目录列表的子项过滤保持不变。
+    /// Round-7 review: the list lane's blacklist judgment on "the requested directory
+    /// itself" — the empty-list-vs-error fork for directory requests would leak a
+    /// blocked directory's existence, so the lexical leg must refuse wholesale;
+    /// ordinary directories stay listable and the root listing's child filtering is
+    /// unchanged.
     #[test]
     fn list_refuses_blocked_directory_requests() {
         let root = TestDir::new("credential-list-dir");
@@ -3012,11 +3113,13 @@ mod tests {
         );
     }
 
-    /// Round-8 复审:词法腿(触盘前的 pre-stat 拒绝)对存在与否无感——
-    /// 不存在的被拦目录必须得到凭据拒绝而非「不存在」错误,否则
-    /// 「凭据拒绝 vs 不存在」的分叉本身泄露黑名单名是否存在(词法腿
-    /// 被删时解析腿对触盘 fixture 报同文,4/4 旧钉仍绿——live 突变已
-    /// 证;本钉是该腿唯一的判别钉)。
+    /// Round-8 review: the lexical leg (the pre-stat refusal before touching the
+    /// disk) is existence-agnostic — a nonexistent blocked directory must get the
+    /// credential refusal, not a "does not exist" error; otherwise the "credential
+    /// refusal vs not-found" fork itself leaks whether the blocked name exists (with
+    /// the lexical leg deleted, the resolution leg reports the same text for on-disk
+    /// fixtures and 4/4 old pins stayed green — proven by a live mutant; this pin is
+    /// that leg's only discriminating one).
     #[test]
     fn list_refuses_nonexistent_blocked_directory_lexically() {
         let root = TestDir::new("credential-list-nonexistent");
@@ -3028,8 +3131,9 @@ mod tests {
         assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
-    /// Round-7 复审:列表车道解析腿——「链接名清白」的符号链接指向凭据
-    /// 目录时同样拒绝(子项过滤挡不住「这个目录可列」的存在信号)。
+    /// Round-7 review: the list lane's resolution leg — a clean-named symlink pointing
+    /// at a credential directory is refused too (child filtering cannot stop the
+    /// "this directory is listable" existence signal).
     #[test]
     #[cfg(unix)]
     fn list_refuses_symlinked_blocked_directories() {
@@ -3044,8 +3148,8 @@ mod tests {
         assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
-    /// changes 车道与列表/搜索同约束:黑名单组件的存在本身(名称/状态
-    /// 元数据)不得回显给手机端。
+    /// The changes lane carries the same constraint as list/search: a blocked
+    /// component's very existence (name/status metadata) must never echo to the phone.
     #[test]
     fn workspace_changes_skip_credential_components() {
         let root = TestDir::new("credential-changes");
@@ -3065,17 +3169,22 @@ mod tests {
         );
     }
 
-    /// Round-6 复审:changes 车道 git 半边的过滤排序——凭据 retain 先于
-    /// `classify_origin` 的内容读取(SHA-256/来源分类),一个不可读的脏
-    /// `.env` 不得让整个 changes 调用失败,更不得出现在列表里。上方非 git
-    /// 钉只覆盖过滤本身;本钉在真实 git 仓库上锁住排序(EACCES 腿仅
-    /// unix;Windows 无 chmod 语义,过滤断言在所有平台都成立)。
-    /// Round-7 复审 M4:排序要真实可观察,必须先采集基线——没有基线时
-    /// `classify_origin` 在任何内容读取之前就短路成 "unknown",chmod 000
-    /// 的 `.env` 根本不会被读到,把 retain 挪到分类之后测试仍然全绿
-    /// (钉住的只是过滤,不是排序)。基线在权限收紧前采集(指纹正常),
-    /// 之后 `classify_origin` 对过滤幸存的清白文件求指纹;一旦排序退化,
-    /// 不可读的 `.env` 被求指纹 → EACCES → 整个调用失败,本测试即红。
+    /// Round-6 review: the ordering of the changes lane's git-half filtering — the
+    /// credential retain precedes `classify_origin`'s content reads (SHA-256/origin
+    /// classification); an unreadable dirty `.env` must not fail the whole changes
+    /// call, let alone appear in the list. The non-git pin above covers only the
+    /// filtering itself; this pin locks the ordering on a real git repo (the EACCES
+    /// leg is unix-only; Windows has no chmod semantics, and the filtering assertions
+    /// hold on all platforms).
+    /// Round-7 review M4: for the ordering to be genuinely observable, a baseline must
+    /// be captured first — without one, `classify_origin` short-circuits to "unknown"
+    /// before any content read, a chmod-000 `.env` is never read at all, and moving
+    /// the retain after classification keeps every assertion green (pinning only the
+    /// filter, not the ordering). The baseline is captured before permissions tighten
+    /// (fingerprints succeed); afterwards `classify_origin` fingerprints the filtered
+    /// survivors — the innocent files. If the ordering ever degrades, the unreadable
+    /// `.env` gets fingerprinted → EACCES → the whole call fails, turning this test
+    /// red.
     #[test]
     fn workspace_changes_git_arm_filters_credentials_before_content_classification() {
         if std::process::Command::new("git")
@@ -3088,7 +3197,7 @@ mod tests {
             );
             return;
         }
-        // baseline 文件路径派生自 PINVOU3_HOME,与改 home 的测试并发会互相误删目录。
+        // The baseline file path derives from PINVOU3_HOME; running concurrently with home-mutating tests would make them delete each other's directories.
         let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3130,10 +3239,12 @@ mod tests {
         let _ = fs::remove_file(baseline_path("s-changes-git"));
     }
 
-    /// 大小写变体经真实入口的端到端钉(macOS 独有意义:APFS 默认卷大小写
-    /// 不敏感,`.ENV` 会解析到磁盘上的 `.env`;词法检查经 path_component_eq
-    /// 的 ASCII 折叠在同平台上必须拦住它)。Linux 大小写敏感,同一拼写是
-    /// 另一个不存在的文件,断言平凡成立,故仅在 macOS 上运行。
+    /// End-to-end pin for case variants through the real entrance (macOS-specific:
+    /// APFS default volumes are case-insensitive, so `.ENV` resolves to the on-disk
+    /// `.env`; the lexical check must catch it on the same platform via
+    /// path_component_eq's ASCII folding). On case-sensitive Linux the same spelling
+    /// is a different nonexistent file and the assertion holds trivially, so this runs
+    /// on macOS only.
     #[test]
     #[cfg(target_os = "macos")]
     fn case_variant_spellings_are_blocked_end_to_end() {
@@ -3211,7 +3322,7 @@ mod tests {
     #[test]
     fn preview_kind_tolerates_utf8_boundary_at_sniff_cutoff() {
         let root = TestDir::new("utf8-boundary");
-        // 8191 个 ASCII + 一个三字节字符：8KB 采样正好切在该字符中间。
+        // 8191 ASCII bytes plus one three-byte character: the 8KB sample cuts exactly mid-character.
         let content = format!("{}中", "a".repeat(8191));
         fs::write(root.path().join("boundary.unknown"), content).unwrap();
         let preview = preview_workspace_file(root.path(), "boundary.unknown").unwrap();
@@ -3220,7 +3331,7 @@ mod tests {
 
     #[test]
     fn non_git_baseline_detects_added_modified_and_deleted_files() {
-        // baseline 文件路径派生自 PINVOU3_HOME，与改 home 的测试并发会互相误删目录。
+        // The baseline file path derives from PINVOU3_HOME; running concurrently with home-mutating tests would make them delete each other's directories.
         let _guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3333,7 +3444,7 @@ mod tests {
         let _ = fs::remove_file(&alias);
     }
 
-    /// 初始化一个含 main + feature 两个分支的 git 仓库；git 不可用时返回 None 跳过。
+    /// Initializes a git repo with main + feature branches; returns None to skip when git is unavailable.
     fn init_git_repo(label: &str) -> Option<TestDir> {
         let root = TestDir::new(label);
         let run = |args: &[&str]| {
@@ -3349,7 +3460,7 @@ mod tests {
         if !run(&["init", "-b", "main"]) {
             return None;
         }
-        // stash/commit 都会创建提交对象，测试环境未必有全局身份，仓库级配置兜底。
+        // Both stash and commit create commit objects; the test environment may lack a global identity, so repo-level config is the fallback.
         if !run(&["config", "user.email", "test@example.com"])
             || !run(&["config", "user.name", "test"])
         {
@@ -3393,7 +3504,7 @@ mod tests {
         let Some(root) = init_git_repo("branches-recency") else {
             return;
         };
-        // 在 feature 上多一个提交：feature 的 committerdate 更新，应排在 main 前。
+        // One extra commit on feature: feature's committerdate updates, so it should sort before main.
         git_output(root.path(), &["checkout", "feature"]).unwrap();
         rewrite_git_tracked(&root.path().join("file.txt"), "v2");
         git_output(
@@ -3432,7 +3543,7 @@ mod tests {
             checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Carry, None)
                 .unwrap();
         assert_eq!(result.current.as_deref(), Some("feature"));
-        // 空分支名与选项注入被拒绝。
+        // Empty branch names and option injection are refused.
         assert!(
             checkout_workspace_branch(root.path(), "  ", BranchSwitchMode::Carry, None).is_err()
         );
@@ -3440,12 +3551,13 @@ mod tests {
             checkout_workspace_branch(root.path(), "--force", BranchSwitchMode::Carry, None)
                 .is_err()
         );
-        // 未知模式被拒绝。
+        // Unknown modes are refused.
         assert!(BranchSwitchMode::parse("discard").is_err());
     }
 
-    /// 不存在的分支名若恰是工作区文件路径，裸 `git checkout <name>` 会按
-    /// pathspec 还原该文件、丢弃未提交更改；必须先校验分支存在。
+    /// When a nonexistent branch name happens to be a workspace file path, a bare
+    /// `git checkout <name>` restores that file as a pathspec and discards uncommitted
+    /// changes; branch existence must be validated first.
     #[test]
     fn checkout_workspace_branch_rejects_non_branch_pathspec() {
         let Some(root) = init_git_repo("checkout-pathspec") else {
@@ -3468,7 +3580,7 @@ mod tests {
         let Some(root) = init_git_repo("checkout-stash") else {
             return;
         };
-        // 未跟踪文件 + 已跟踪文件修改，stash 模式应全部携带并恢复。
+        // An untracked file plus a tracked-file modification: stash mode should carry and restore both.
         fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
         fs::write(root.path().join("scratch.txt"), "scratch").unwrap();
         let result =
@@ -3484,7 +3596,7 @@ mod tests {
             "scratch"
         );
         assert_eq!(result.dirty_count, 2);
-        // stash 已 pop，stash 列表应为空。
+        // The stash was popped; the stash list should be empty.
         let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
         assert!(stash_list.trim().is_empty());
     }
@@ -3528,10 +3640,13 @@ mod tests {
         assert!(content.contains("<<<<<<<"));
     }
 
-    /// Stash 模式下 checkout 失败：应先 pop 恢复现场再报错——更改回到工作区、
-    /// stash 列表清空、分支保持不变。checkout 失败用「目标分支指向的提交对象
-    /// 缺失」构造：git 对 ignored 文件/目录阻挡、只读目录等自然场景会静默
-    /// 处理甚至返回 0，对象缺失才是确定性的非零失败，且能通过本地分支名校验。
+    /// Stash mode with a failing checkout: pop to restore the scene before reporting —
+    /// changes return to the worktree, the stash list empties, and the branch stays
+    /// unchanged. The checkout failure is constructed as "the commit object the target
+    /// branch points at is missing": for natural scenarios like ignored-file/blocking
+    /// directories or read-only directories git can silently cope or even exit 0;
+    /// a missing object is the deterministic nonzero failure, and it passes the
+    /// local-branch-name validation.
     #[test]
     fn checkout_workspace_branch_stash_mode_restores_changes_on_checkout_failure() {
         let Some(root) = init_git_repo("checkout-stash-failure") else {
@@ -3553,7 +3668,7 @@ mod tests {
         )
         .unwrap();
         git_output(root.path(), &["checkout", "main"]).unwrap();
-        // 删除 feature 提交的松散对象：ref 仍在（分支列表校验可过），checkout 必败。
+        // Delete feature's loose commit object: the ref remains (passing the branch-list validation), so checkout must fail.
         let dangling = git_output(root.path(), &["rev-parse", "feature"]).unwrap();
         let dangling = dangling.trim();
         let object_path = root
@@ -3568,15 +3683,16 @@ mod tests {
             checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None)
                 .is_err()
         );
-        // 现场已恢复：dirty 更改回到工作区，stash 已 pop，仍在 main。
+        // Scene restored: the dirty changes are back in the worktree, the stash was popped, and the branch is still main.
         assert_eq!(
             fs::read_to_string(root.path().join("file.txt")).unwrap(),
             "v1-dirty"
         );
         let stash_list = git_output(root.path(), &["stash", "list"]).unwrap();
         assert!(stash_list.trim().is_empty());
-        // 不能用 workspace_branches 断言分支：其 --sort=-committerdate 需要读取
-        // 全部分支的提交对象，悬空的 feature ref 会让它整体报错。
+        // workspace_branches cannot assert the branch: its --sort=-committerdate needs
+        // every branch's commit objects, and the dangling feature ref would fail the
+        // whole call.
         assert_eq!(git_branch(root.path()).as_deref(), Some("main"));
     }
 
@@ -3592,16 +3708,17 @@ mod tests {
         assert!(result.branches.contains(&"main".to_string()));
     }
 
-    /// Stash 模式的 push 可能不创建条目（status 非空但无可暂存内容，典型是
-    /// 仅子模块工作区内容变更——status 显示 modified 但 push 是 no-op）：此时
-    /// pop 会误弹用户已有的 stash 条目并把其内容应用到新分支。应跳过恢复，
-    /// 用户 stash 原样保留。
+    /// In Stash mode the push may create no entry (status non-empty but nothing
+    /// stashable — typically only submodule worktree content changed, which status
+    /// shows as modified while push is a no-op): popping then would wrongly pop the
+    /// user's existing stash entry and apply its content to the new branch. The
+    /// restore must be skipped and the user's stash left untouched.
     #[test]
     fn checkout_workspace_branch_stash_mode_skips_pop_when_push_created_no_entry() {
         let Some(root) = init_git_repo("stash-noop-push") else {
             return;
         };
-        // 本地子模块仓库（file 协议克隆在新版 git 默认拒绝，需显式允许）。
+        // A local submodule repo (newer git refuses file-protocol clones by default; explicitly allowed).
         let sub = TestDir::new("stash-noop-push-sub");
         let sub_run = |args: &[&str]| {
             let mut command = crate::platform::process::HiddenCommand::new("git");
@@ -3633,16 +3750,16 @@ mod tests {
         )
         .unwrap();
         git_output(root.path(), &["commit", "-am", "add submodule"]).unwrap();
-        // 用户在切换前就存在的 stash 条目：本流程不得动它。
+        // The user's pre-existing stash entry: this flow must not touch it.
         fs::write(root.path().join("file.txt"), "user-edit").unwrap();
         git_output(root.path(), &["stash", "push", "-m", "user-stash"]).unwrap();
-        // 唯一剩余变更 = 子模块内容修改：push 不创建条目。
+        // The only remaining change = the submodule content modification: push creates no entry.
         fs::write(root.path().join("sub").join("lib.txt"), "dirty").unwrap();
         assert!(!git_status_entries(root.path()).unwrap().is_empty());
 
         checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Stash, None).unwrap();
         assert_eq!(git_branch(root.path()).as_deref(), Some("feature"));
-        // 用户 stash 未被弹出：file.txt 仍是 feature 分支的已提交内容。
+        // The user's stash was not popped: file.txt still holds feature's committed content.
         assert_eq!(
             fs::read_to_string(root.path().join("file.txt")).unwrap(),
             "v1"
@@ -3658,7 +3775,7 @@ mod tests {
         };
         fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
         fs::write(root.path().join("scratch.txt"), "scratch").unwrap();
-        // 空提交信息被拒绝。
+        // An empty commit message is refused.
         assert!(
             checkout_workspace_branch(root.path(), "feature", BranchSwitchMode::Commit, Some("  "))
                 .is_err()
@@ -3671,7 +3788,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.current.as_deref(), Some("feature"));
-        // 更改已提交到 main（原分支），目标分支工作区是干净的。
+        // The changes were committed to main (the original branch), leaving the target branch's worktree clean.
         assert_eq!(result.dirty_count, 0);
         let main_log = git_output(root.path(), &["log", "-1", "--format=%s", "main"]).unwrap();
         assert_eq!(main_log.trim(), "wip: before switch");
@@ -3683,10 +3800,12 @@ mod tests {
 
     #[test]
     fn checkout_workspace_branch_commit_mode_suppresses_gpg_signing() {
-        // 与 CLI 车道同款加固（round-40 评审，双端一致）：commit.gpgsign=true
-        // 用户的首次提交模式切换不能停在 GPG 签名上（本车道 stdin 关闭、无截止
-        // 时间，pinentry 提示会把会话车道永久挂起）。签名密钥钉一个必然不存在的
-        // key id，让「不抑制签名则提交必败」在任何机器上成立。
+        // The same hardening as the CLI lane (round-40 review, both ends consistent):
+        // a commit.gpgsign=true user's first commit-mode switch must not stall on GPG
+        // signing (this lane's stdin is closed with no deadline, and the pinentry
+        // prompt would hang the session lane forever). The signing key is pinned to a
+        // key id that certainly does not exist, so "without suppression the commit must
+        // fail" holds on any machine.
         let Some(root) = init_git_repo("checkout-commit-gpgsign") else {
             return;
         };
@@ -3711,9 +3830,9 @@ mod tests {
 
     #[test]
     fn checkout_workspace_branch_commit_mode_discloses_mutated_index_on_failure() {
-        // 拒绝型 pre-commit hook 让 commit 在 `git add -A` 之后失败（与无身份、
-        // 服务端 hook 拒绝同类）：报错必须披露索引已被改写，变更不能静默留在
-        // 暂存区。
+        // A rejecting pre-commit hook makes the commit fail after `git add -A` (same
+        // class as no-identity or server-side hook refusals): the error must disclose
+        // that the index was rewritten; changes must not sit silently staged.
         let Some(root) = init_git_repo("checkout-commit-disclosure") else {
             return;
         };
@@ -3737,7 +3856,7 @@ mod tests {
             error.contains("已暂存工作区"),
             "commit failure must disclose the mutated index: {error}"
         );
-        // 被改写的索引是事实而非措辞：变更确实已在暂存区。
+        // The rewritten index is a fact, not wording: the changes really are staged.
         let staged = git_output(root.path(), &["status", "--porcelain"]).unwrap();
         assert!(
             staged.contains("M  file.txt"),
@@ -3747,9 +3866,10 @@ mod tests {
 
     #[test]
     fn checkout_workspace_branch_commit_mode_prefers_config_identity_over_ambient_env() {
-        // 身份显式化：提交车道移除 GIT_AUTHOR_*/GIT_COMMITTER_* 环境变量，使
-        // `-c user.name=`（用户配置解析出的身份）真正生效——调用方 shell 导出的
-        // 身份不得覆盖它。
+        // Explicit identity: the commit lane removes the GIT_AUTHOR_*/GIT_COMMITTER_*
+        // env vars so the `-c user.name=` identity (resolved from the user's config)
+        // actually takes effect — an identity exported by the caller's shell must not
+        // override it.
         let Some(root) = init_git_repo("checkout-commit-identity") else {
             return;
         };
@@ -3791,8 +3911,9 @@ mod tests {
         let Some(root) = init_git_repo("checkout-conflict") else {
             return;
         };
-        // feature 分支上 file.txt 改为 v2 并提交；main 上未提交修改同一文件，
-        // carry 模式切换必然被 git 拒绝且工作区保持原样。
+        // On feature, file.txt is changed to v2 and committed; on main the same file has
+        // uncommitted modifications, so a carry-mode switch must be refused by git with
+        // the workspace left untouched.
         git_output(root.path(), &["checkout", "feature"]).unwrap();
         rewrite_git_tracked(&root.path().join("file.txt"), "v2");
         git_output(

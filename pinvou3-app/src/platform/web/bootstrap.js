@@ -66,10 +66,13 @@
     return;
   }
 
-  // invoke 拒绝的 Error 文案会经 bridge addSystemItem 进入界面。文案单一来源是
-  // shared/i18n.js 的 uiPlatformMisc.webClientErrors,由 React 入口按当前语言挂到
-  // window.PinvouWebClientStrings;此处保留中文兜底(纯脚本无法 import ES module)。
-  // 连接状态 message 不进 UI(WebConnectionStatus 统一使用 uiWebConnection 字典),无需本地化。
+  // Error messages from rejected invoke calls reach the UI through the bridge
+  // addSystemItem path. The single source for this copy is
+  // uiPlatformMisc.webClientErrors in shared/i18n.js; the React entry attaches
+  // it to window.PinvouWebClientStrings in the active language. These Chinese
+  // strings remain only as a fallback (a plain script cannot import ES
+  // modules). Connection-state messages never reach the UI (WebConnectionStatus
+  // uses the uiWebConnection dictionary exclusively), so they need no fallback.
   const FALLBACK_ERRORS = {
     stateNotReady: "远程控制状态尚未就绪，无法处理桌面端事件",
     unnegotiatedEvent: function (event) { return `桌面端发送了未协商的远程控制事件：${event}`; },
@@ -246,8 +249,10 @@
       else this.parkCredentialsMissing();
     }
 
-    // 缺凭证的阻断终态:online/visible/看门狗等任何重连路径都不得把它
-    // 转成注定失败的 join 重试循环(小转圈覆盖阻断卡),一律停回这张卡。
+    // Blocking terminal state for missing credentials: no reconnect path
+    // (online/visibilitychange/watchdog) may turn this into a join retry loop
+    // that is doomed to fail (the spinner would cover the blocking card).
+    // Every path parks back on this card.
     parkCredentialsMissing() {
       queueMicrotask(() => this.setConnection("credentials_missing", "远程控制链接缺少访问凭证。"));
     }
@@ -292,11 +297,14 @@
       this.connectStartedAt = Date.now();
       this.closingStartedAt = null;
       socket.addEventListener("open", () => {
-        // Round-23 复审 hardening:open 是四个 socket 事件里唯一没有身份
-        // 门的——close/error/message 都先核对事件归属再动周期状态。规范
-        // 兼容的浏览器里 CONNECTING 期 close() 不会送达 open,本门在现
-        // 有拓扑不可达;补上它与其余三门对称,晚到的陈旧 open 不再把
-        // join 帧经 sendRaw 发到后继的 socket 上(传输夹具钉住该方向)。
+        // Round-23 review hardening: open is the only one of the four socket
+        // events without an identity gate — close/error/message all verify
+        // event ownership before touching cycle state. In a spec-compliant
+        // browser a CONNECTING-phase close() means open is never delivered,
+        // so this gate is unreachable in the current topology; adding it keeps
+        // the gate symmetric with the other three, and a stale late open can
+        // no longer send the join frame through sendRaw onto a successor
+        // socket (the transport fixture pins that direction).
         if (this.socket !== socket) return;
         this.sendRaw({
           v: protocolVersion,
@@ -310,15 +318,20 @@
       });
       socket.addEventListener("message", (event) => this.handleMessage(event.data, socket));
       socket.addEventListener("close", () => {
-        // Round-16 复审 MAJOR-1:晚到的 close 只许处置它自己的 socket。
-        // CLOSING/CLOSED 救援会把 socket 引用先行摘除(this.socket=null),
-        // 其 close 事件因此可能在后继周期已经 join 之后才送达;若此时仍
-        // 无条件清旗标/再排重连,健康后继会被打回未协商态——下一个入站
-        // 事件撞上 !desktopCapabilitiesReady 就被 processRemoteEvent 判成
-        // incompatible_desktop 永久关门(probe 端到端复现)。身份不符的
-        // close 是纯噪声:旗标属于当前周期,与这颗旧 socket 无关。事件
-        // 处理失败主动摘除的 socket 同样落进门内,但那条路径自己排重连
-        // (handleRemoteEvent 的 catch),不依赖本处理器的无条件分支。
+        // Round-16 review MAJOR-1: a late close may only dispose of its own
+        // socket. The CLOSING/CLOSED rescue detaches the socket reference
+        // first (this.socket = null), so its close event can arrive after the
+        // successor cycle has already joined; if this handler still cleared
+        // flags or scheduled a reconnect unconditionally, the healthy successor
+        // would be knocked back to the unnegotiated state — the next inbound
+        // event then hits !desktopCapabilitiesReady and processRemoteEvent
+        // permanently shuts the door as incompatible_desktop (probe
+        // end-to-end reproduction). An identity-mismatched close is pure
+        // noise: the flags belong to the current cycle and have nothing to do
+        // with this old socket. A socket detached deliberately after event
+        // processing failed also falls inside this gate, but that path
+        // schedules its own reconnect (handleRemoteEvent's catch) and does not
+        // rely on this handler's unconditional branch.
         if (this.socket !== socket) return;
         this.socket = null;
         this.joined = false;
@@ -333,20 +346,27 @@
         if (!this.closedPermanently) this.scheduleReconnect("连接已断开，正在重试…");
       });
       socket.addEventListener("error", () => {
-        // Round-16 复审:与 close 处理器同一身份门——被救援摘除的 socket
-        // 晚到的 error 同样是噪声,不得把后继周期的旗标/投机计数打脏。
+        // Round-16 review: same identity gate as the close handler — a late
+        // error from a rescue-detached socket is likewise noise and must not
+        // smear the successor cycle's flags or speculative count.
         if (this.socket !== socket) return;
-        // 看门狗/网络恢复的投机关闭在半开 socket 上会先触发 error(部分
-        // 浏览器把失败的关闭握手报成 error+close):这与自然死亡不同——
-        // 验证尚未开始,既不能计入投机失败,也不能提前点亮 connecting,
-        // 否则「UI 保持 connected 直到验证失败」的语义随浏览器引擎分叉。
-        // 投机源 socket 的 error 交给 close 处理器统一收口(那边的身份门
-        // 同样不计数);非投机死亡保持原语义。
+        // The watchdog/network-recovery speculative close on a half-open
+        // socket surfaces as error first (some browsers report a failed
+        // closing handshake as error+close): unlike a natural death,
+        // verification has not started yet, so this must not count as a
+        // speculative failure nor light up connecting early — otherwise the
+        // "UI stays connected until verification fails" semantics fork across
+        // browser engines. The speculative source socket's error is left to
+        // the close handler for unified accounting (that identity gate does
+        // not count either); non-speculative deaths keep the original
+        // semantics.
         if (this.speculativeReconnect && socket === this.speculativeSource) return;
         this.noteSpeculativeFailure();
-        // 异常断线先于 close 触发 error:desktop_offline 的专属文案同样不得
-        // 被这里的 connecting 覆盖(close→scheduleReconnect 一侧有同款门),
-        // 否则离线窗口内的 TCP reset 会把「桌面端离线」换成误导性转圈。
+        // An abnormal disconnect fires error before close: the dedicated
+        // desktop_offline copy must not be overwritten by the connecting state
+        // here either (the close→scheduleReconnect side has the same guard),
+        // or a TCP reset inside the offline window would swap "desktop
+        // offline" for a misleading spinner.
         if (!this.closedPermanently && this.connectionState.status !== "desktop_offline") {
           this.setConnection("connecting", "连接异常，正在重试…");
         }
@@ -355,10 +375,12 @@
 
     scheduleReconnect(message) {
       if (this.closedPermanently || this.reconnectTimer) return;
-      // desktop_offline 的专属文案(「桌面端离线,保持页面打开」)会被紧随
-      // 其后的 close→scheduleReconnect 的 connecting 覆盖,用户在最长 60s
-      // 的退避窗口里只看得到「连接中」。桌面离线类失败保持该状态度过整个
-      // 退避窗口,由重连发起(connect)或 join ack 推进。
+      // The dedicated desktop_offline copy ("desktop offline, keep this page
+      // open") would otherwise be overwritten by the connecting state from the
+      // immediately following close→scheduleReconnect, leaving the user with
+      // nothing but "connecting" for the entire up-to-60s backoff window.
+      // Desktop-offline failures keep that status through the whole backoff
+      // window; only a reconnect attempt (connect) or the join ack advances it.
       if (!this.speculativeReconnect && this.connectionState.status !== "desktop_offline") {
         this.setConnection("connecting", message);
       }
@@ -426,37 +448,56 @@
         try { this.socket.close(); } catch { /* already closing */ }
         return;
       }
-      // Round-15 复审:CLOSING/CLOSED 态此前被永久忽略——投机 close() 在
-      // 静默掉线的链路上(NAT 超时、无 online 事件)可能永远收不到 close
-      // 事件,引擎的 closing-handshake 超时差异让「已连接但死链路」楔在
-      // 客户端自己的 45s/120s 常量之外。与 CONNECTING 楔口同一救援:超过
-      // 同一窗口仍在 CLOSING/CLOSED,丢弃 socket 引用并走普通退避重连。
-      // (Round-16 复审订正:原注释的「非投机」与实现不符;「与送达路径
-      // 严格同构」也不成立——送达路径对非 speculativeSource 的投机
-      // socket 会计一次投机失败(close 处理器的计账分支),救援不记,失
-      // 败阶梯晚一个周期补上;joined 后从 OPEN 静默被救的 socket 其实证
-      // 明过存活。真实的行为契约是:救援的死不计投机失败、不清
-      // speculativeReconnect,后继周期自己的 join 验证决定 UI 是否走出
-      // connected。)投机周期内 scheduleReconnect 的文案抑制是投机语义
-      // 本身,与送达路径一致;只有后继自己验证失败(close 先于 join ack
-      // 送达)才会计数升级。救援只摘 socket/closingStartedAt——joined/
-      // leaseId 等旗标保持旧周期值直到后继 join ack,与「瞬态断线不卸载
-      // UI」的既有设计一致。(Round-18 复审订正:「救援的死一律不计」只
-      // 对投机源 socket 成立;投机周期内被救援的后继(非
-      // speculativeSource)尚未通过 join 验证,其死按 close 处理器同一
-      // 验证分支计一次投机失败——否则全救援拓扑的阶梯永不前进,UI 永远
-      // 停在 connected。下方实现同步。)(Round-21 复审 reconciliation:
-      // 「救援只摘 socket/closingStartedAt、其余旗标保持旧值」与事件失败
-      // catch 路径(reset joined/desktopOnline/desktopCapabilitiesReady/
-      // leaseId 四旗,其注释称残留为跨周期泄漏)是有意分歧,不是疏漏:
-      // catch 路径发生在已投递的事件把周期状态污染之后,重置是止损;救
-      // 援发生在无投递事件的静默楔口,保留 UI/协商稳定是既有设计。代价
-      // 的诚实记录:后继 socket OPEN 到 join ack 之间的窗口里 sendJoined/
-      // sendRpc 闸门仍按旧周期开着——桌面在线时 relay 重打 lease_id,流
-      // 程不受影响;桌面离线时该窗口的 RPC 会收到 desktop_offline 并落进
-      // catch-all error 分支(UI 翻出错误、RPC 等满超时而非排队 flush)
-      // ——窗口一周期一次、下一周期 join ack 后闭合,按已接受取舍记录;
-      // 两种路径的对齐是行为变更,若做须带各自的楔口回归钉。)
+      // Round-15 review: CLOSING/CLOSED used to be ignored forever — a
+      // speculative close() on a silently dropped link (NAT timeout, no online
+      // event) may never receive a close event, and engine differences in
+      // closing-handshake timeouts leave "connected but dead" wedged beyond
+      // the client's own 45s/120s constants. Same rescue as the CONNECTING
+      // wedge: still CLOSING/CLOSED past the same window, drop the socket
+      // reference and fall through to the normal backoff reconnect.
+      // (Round-16 review correction: the original comment's "non-speculative"
+      // did not match the implementation, and "strictly isomorphic to the
+      // delivery path" did not hold either — the delivery path does count one
+      // speculative failure for a speculative socket that is not the
+      // speculativeSource (the close handler's accounting branch) while the
+      // rescue does not, so the failure ladder catches up a cycle later; a
+      // socket silently rescued from OPEN after joining had in fact proven
+      // liveness. The real behavioral contract: a rescue death does not count
+      // a speculative failure and does not clear speculativeReconnect; the
+      // successor cycle's own join verification decides whether the UI leaves
+      // connected.) The scheduleReconnect copy suppression inside a
+      // speculative cycle is the speculative semantics itself, consistent
+      // with the delivery path; only the successor's own verification failure
+      // (close arrives before the join ack) escalates the count. The rescue
+      // only detaches socket/closingStartedAt — joined/leaseId and the other
+      // flags keep their old-cycle values until the successor's join ack,
+      // matching the existing "a transient drop must not tear down the UI"
+      // design. (Round-18 review correction: "rescue deaths never count" only
+      // holds for the speculative source socket; a successor rescued inside a
+      // speculative cycle (not the speculativeSource) has not yet passed join
+      // verification, and its death counts one speculative failure via the
+      // same verification branch as the close handler — otherwise the ladder
+      // in an all-rescue topology never advances and the UI stays on
+      // connected forever. The implementation below matches.)(Round-21 review
+      // reconciliation: "the rescue only detaches socket/closingStartedAt and
+      // the other flags keep their old values" diverges deliberately from the
+      // event-failure catch path (which resets the four flags
+      // joined/desktopOnline/desktopCapabilitiesReady/leaseId and whose
+      // comment calls the residue a cross-cycle leak) — this is intentional,
+      // not an oversight: the catch path runs after a delivered event already
+      // polluted cycle state, so the reset is damage control; the rescue runs
+      // in a silent wedge with no delivered event, where preserving UI/
+      // negotiation stability is the established design. An honest record of
+      // the cost: in the window between the successor socket's OPEN and its
+      // join ack, the sendJoined/sendRpc gates are still open on the old
+      // cycle — with the desktop online, the relay re-mints lease_id and the
+      // flow is unaffected; with the desktop offline, RPCs in that window get
+      // desktop_offline and fall into the catch-all error branch (the UI
+      // surfaces the error and the RPC waits out its full timeout instead of
+      // queueing a flush) — the window occurs once per cycle and closes after
+      // the next cycle's join ack, recorded as an accepted trade-off;
+      // aligning the two paths would be a behavior change and, if ever done,
+      // must bring its own wedge regression pins.)
       if (
         this.socket.readyState === WebSocket.CLOSING
         || this.socket.readyState === WebSocket.CLOSED
@@ -469,14 +510,19 @@
         this.closingStartedAt = null;
         const rescued = this.socket;
         this.socket = null;
-        // Round-18 复审:救援替代了永远不会送达的 close 事件,因此必须把
-        // close 处理器的验证分支一同带过来——投机周期内被救援摘除的
-        // socket 若不是投机源本身(它是投机重连发出的后继,join ack 尚未
-        // 送达),它的死就是验证失败,必须计入失败阶梯;否则全救援拓扑
-        // (每颗 close 都楔死、永不送达)会让阶梯永远停在 0,UI 永远停留
-        // 在 connected,RPC 全部悬到各自的超时(probe 端到端复现)。计数
-        // 在 scheduleReconnect 之前:清掉 speculativeReconnect 后,本次
-        // 重连的文案不再被投机语义抑制,恢复对用户可见。
+        // Round-18 review: the rescue stands in for a close event that will
+        // never be delivered, so it must carry the close handler's
+        // verification branch along — if a socket detached by the rescue
+        // inside a speculative cycle is not the speculative source itself (it
+        // is a successor issued by the speculative reconnect whose join ack
+        // has not arrived), its death is a verification failure and must count
+        // toward the failure ladder; otherwise an all-rescue topology (every
+        // close wedged and never delivered) pins the ladder at 0 forever, the
+        // UI stays on connected forever, and every RPC hangs until its own
+        // timeout (probe end-to-end reproduction). The count happens before
+        // scheduleReconnect: once speculativeReconnect is cleared, this
+        // reconnect's copy is no longer suppressed by the speculative
+        // semantics and becomes visible to the user again.
         if (this.speculativeReconnect && rescued !== this.speculativeSource) {
           this.noteSpeculativeFailure();
         }
@@ -558,10 +604,12 @@
 
     bindNetworkListeners() {
       if (typeof window.addEventListener !== "function") return;
-      // Round-20 复审(披露落树):online/visibilitychange 对 CLOSING
-      // socket 的 cancel-then-noop(取消重连定时器,但对不可取消的
-      // CLOSING 态本身不做任何事)是有意的看门狗设计——CLOSING/CLOSED
-      // 由楔窗口救援路径处理,网络事件不与其竞争(round-15 披露记录)。
+      // Round-20 review (disclosure recorded in-tree): online/visibilitychange
+      // handling a CLOSING socket with cancel-then-noop (canceling the
+      // reconnect timer but otherwise doing nothing for the
+      // un-cancelable CLOSING state) is intentional watchdog design —
+      // CLOSING/CLOSED is owned by the wedge-window rescue path, and network
+      // events must not compete with it (round-15 disclosure).
       window.addEventListener("online", () => this.handleNetworkBecomeOnline());
       window.addEventListener("visibilitychange", () => {
         if (document.visibilityState !== "visible") return;
@@ -585,32 +633,45 @@
       if (typeof raw !== "string") return;
       let message;
       try { message = JSON.parse(raw); } catch { return; }
-      // Round-18 复审:与 close/error 事件门同一身份契约。周期状态帧
-      // (join ack / desktop_connection_state / desktop_snapshot /
-      // endpoint_revoked / endpoint_replaced / error)此前无身份门:被
-      // 救援或事件失败摘除的 socket 上在途的帧仍会在后继周期送达——
-      // 晚到的旧 join ack 会把已完成协商的后继打回未协商态(下一个入站
-      // 事件撞上 !desktopCapabilitiesReady 被 processRemoteEvent 判成
-      // incompatible_desktop 永久关门),晚到的 error/endpoint_replaced
-      // 会 this.socket.close()/closePermanently 波及健康后继。旗标属于
-      // 当前周期,旧 socket 的帧是纯噪声,连同 liveness 证据一起丢弃
-      // (事件分派链在 handleRemoteEvent 内另有同一身份门,两道闸口语义
-      // 一致)。
-      // Round-20 复审例外:非 TTL 的 endpoint_revoked 是链接级事实——
-      // relay 只在端点被真正吊销/人工撤销后发送,端点 id 由 relay 单调
-      // 铸造,被撤销的端点不可能再 join 成功(只会 endpoint_not_found),
-      // 旧 socket 送达的副本同样为真。整帧按噪声丢弃后,唯一副本落在
-      // 被摘除 socket 的窗口里时,真实撤销退化为 endpoint_not_found 的
-      // 「桌面离线」重试环(该码被客户端有意分类为瞬态),撤销卡片不可
-      // 达。非 TTL 撤销帧旁路身份门直接终态;TTL 臂保持受门——过期的
-      // desktop_offline_ttl_expired 副本会把健康后继打回 desktop_offline
-      // (rejoin 后的新副本自会送达当前 socket)。
-      // Round-22 复审:终态已确立后(closedPermanently)旁路必须停步——
-      // this.socket 已为 null,其余晚到帧都被下方身份门丢弃,唯独本旁路
-      // 会重入 closePermanently:重复派发连接事件(自恢复监听方)并把
-      // 已确立的终态卡片(如 endpoint_replaced 的「已在另一台浏览器中
-      // 打开」)覆盖成撤销文案。closePermanently 状态上幂等,故仅是
-      // 事件噪声/卡片翻转,不是稳定性缺陷;一行守卫关掉。
+      // Round-18 review: the same identity contract as the close/error event
+      // gates. Cycle-state frames (join ack / desktop_connection_state /
+      // desktop_snapshot /
+      // endpoint_revoked / endpoint_replaced / error) previously had no
+      // identity gate: frames still in flight on a socket detached by the
+      // rescue or by an event-failure would keep arriving into the successor
+      // cycle — a late old join ack would knock an already-negotiated
+      // successor back to the unnegotiated state (the next inbound event then
+      // hits !desktopCapabilitiesReady and processRemoteEvent permanently
+      // shuts the door as incompatible_desktop), and a late
+      // error/endpoint_replaced would this.socket.close()/closePermanently a
+      // healthy successor. The flags belong to the current cycle; frames from
+      // an old socket are pure noise and are dropped together with their
+      // liveness evidence (the event dispatch chain has its own identical
+      // identity gate inside handleRemoteEvent; the two gates share
+      // semantics).
+      // Round-20 review exception: a non-TTL endpoint_revoked is a link-level
+      // fact — the relay only sends it after the endpoint was truly revoked
+      // (manually or otherwise), endpoint ids are minted monotonically by the
+      // relay, and a revoked endpoint can never join successfully again (only
+      // endpoint_not_found), so a copy delivered by an old socket is equally
+      // true. If the frame is dropped wholesale as noise and its only copy
+      // lands in a detached socket's window, a real revocation degenerates
+      // into the endpoint_not_found "desktop offline" retry loop (the client
+      // deliberately classifies that code as transient) and the revocation
+      // card becomes unreachable. Non-TTL revocation frames bypass the
+      // identity gate straight to the terminal state; the TTL arm stays
+      // gated — an expired desktop_offline_ttl_expired copy would knock a
+      // healthy successor back to desktop_offline (a fresh copy after the
+      // rejoin will reach the current socket anyway).
+      // Round-22 review: once the terminal state is established
+      // (closedPermanently) the bypass must stop — this.socket is already
+      // null, every other late frame is dropped by the identity gate below,
+      // and only this bypass would re-enter closePermanently: re-dispatching
+      // connection events (to self-recovering listeners) and overwriting the
+      // established terminal card (e.g. endpoint_replaced's "opened in
+      // another browser") with the revocation copy. closePermanently is
+      // idempotent state-wise, so this is mere event noise / card flapping,
+      // not a stability defect; one guard line closes it.
       if (this.closedPermanently) return;
       if (
         sourceSocket !== this.socket
@@ -794,23 +855,31 @@
           this.desktopOnline = false;
           this.desktopCapabilitiesReady = false;
           this.leaseId = null;
-          // Round-25 复审 NIT:closedPermanently/连接语义在 catch 里同样
-          // 失效——楔窗时钟一并清零,使该字段「每条 detach 路径都清」的
-          // 文档契约字面成立(rescue/speculativeClose/connect 均已清)。
+          // Round-25 review NIT: closedPermanently/connection semantics also
+          // invalidate inside the catch — clear the wedge clock here too, so
+          // the documented "every detach path clears this field" contract
+          // holds literally (rescue/speculativeClose/connect all clear it).
           this.closingStartedAt = null;
           try { sourceSocket.close(); } catch { /* already closing */ }
           // Delegating the reconnect to the close event instead left a zombie
           // "connected" client with no transport whenever close() delivered
           // normally; scheduleReconnect self-guards, so the gated late
           // close/error events stay harmless.
-          // Round-19 复审:与救援同一验证分支(liveness 段的投机计数腿)——投机周期
-          // 内被事件失败摘除的 socket 若不是投机源本身,这次已证实的处理
-          // 失败必须计入失败阶梯并清掉投机旗标:不清旗标,本次重连文案仍
-          // 被投机语义压住一个周期(已证实的失败被宣布成「疑似」),阶梯
-          // 也少计一次。投机源自身仍按既有契约宽恕——它的死亡由我们
-          // 自己的投机 close 归因,而其继任周期自带 join 验证
-          // (round-25 修正:旧注「投机源从未通过 join 验证」不成立,
-          // 投机源可以已完全加入;该理由是承重的,按它改计数会回归阶梯)。
+          // Round-19 review: same verification branch as the rescue (the
+          // speculative-count leg of the liveness section) — if a socket
+          // detached by an event failure inside a speculative cycle is not the
+          // speculative source itself, this proven processing failure must
+          // count toward the failure ladder and clear the speculative flag:
+          // without clearing the flag, this reconnect's copy stays suppressed
+          // by the speculative semantics for one more cycle (a proven failure
+          // announced as "suspected"), and the ladder undercounts by one. The
+          // speculative source itself is still forgiven under the existing
+          // contract — its death is attributed by our own speculative close,
+          // and its successor cycle brings its own join verification
+          // (round-25 correction: the old note "the speculative source never
+          // passed join verification" does not hold — the speculative source
+          // may be fully joined; that rationale is load-bearing, and changing
+          // the count on its basis would regress the ladder).
           if (this.speculativeReconnect && sourceSocket !== this.speculativeSource) {
             this.noteSpeculativeFailure();
           }

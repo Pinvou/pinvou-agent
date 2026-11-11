@@ -144,9 +144,11 @@ impl WebSessionOperation {
     }
 }
 
-/// 三组 `web_*_result` 折叠器的公共实现：日志只留组标签 + 操作名 + 底层错误，
-/// 对外固定 wire code `{prefix}_{operation}_failed`，绝不外泄宿主路径等底层
-/// 错误细节。`stable_web_error_codes_are_locked` 钉死全部 wire code。
+/// Shared implementation of the three `web_*_result` folders: the log keeps
+/// only the group label + operation name + underlying error, while the
+/// outbound wire code is fixed at `{prefix}_{operation}_failed`, never
+/// leaking host paths or other underlying error detail.
+/// `stable_web_error_codes_are_locked` pins every wire code.
 fn web_operation_result<T, E: std::fmt::Display>(
     log_label: &str,
     prefix: &str,
@@ -189,11 +191,13 @@ fn fold_web_session_error(operation: WebSessionOperation, error: String) -> Stri
 /// make a losing admission race indistinguishable from a hard failure, so it
 /// keeps a dedicated stable code whose suffix preserves the classifier
 /// substring; the raw chain stays desktop-log-only like every other fold.
-/// Round-7 复审:判定锚定在预留段前缀上,而不是整链子串——调用方可控的
-/// session id 字符集允许 `session_turn_in_progress` 这样的合法 id,load/
-/// rollback 段会把它嵌进文本,按整链子串判定会把硬失败误报成可重试的忙
-/// 拒绝。忙拒绝只会经 `reserve Web chat turn: ` 段进入链条(engine 只会
-/// 裸 bail 这一个标记)。
+/// Round-7 review: the judgment anchors on the reservation-segment prefix,
+/// not a whole-chain substring — the caller-controllable session id charset
+/// permits legitimate ids like `session_turn_in_progress`, which the load/
+/// rollback segments would embed into the text; whole-chain substring
+/// matching would misreport a hard failure as a retryable busy refusal. Busy
+/// refusals enter the chain only via the `reserve Web chat turn: ` segment
+/// (the engine bails only that one bare marker).
 fn fold_web_chat_error(error: String) -> String {
     if error.contains("reserve Web chat turn: session_turn_in_progress") {
         log::warn!("[remote_control] Web session chat refused: turn already in progress");
@@ -244,15 +248,15 @@ pub fn web_access_disable(
     window: WebviewWindow,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<(), String> {
-    // 停链与启用同口径:辅助 WebView(code-reader/宠物等)里的脚本不得
-    // 静默切断用户的远程链接。
+    // Same gate as enable: auxiliary-WebView scripts must not cut the link.
     require_main_webview(&window)?;
     manager.stop_current()
 }
 
-/// 与 enable/revoke 同一口径:状态 payload 携带含 access_token 片段的配对
-/// URL,轮换会改写凭据——两者都只属于主 WebView 的设置入口,读者/宠物等
-/// 辅助 WebView 不得触发或轮询。
+/// Same caliber as enable/revoke: the status payload carries a pairing URL
+/// containing an access_token fragment and rotation rewrites credentials — both
+/// belong only to the main WebView's settings entrance; auxiliary WebViews such as
+/// reader/pet must not trigger or poll it.
 #[tauri::command]
 pub fn web_access_status(
     window: WebviewWindow,
@@ -363,15 +367,17 @@ pub struct WebHostFileListing {
 /// directory; native host paths are never accepted by ACP Web RPCs.
 ///
 /// Errors fold to the stable `web_session_list_host_files_failed` wire code
-/// (round-21 复审 M3):`list_host_files` 的错误臂携带桌面绝对路径——
-/// path 缺省时默认枚举 `$HOME`,canonical 化臂也会回显桌面解析路径——
-/// 裸 `?` 直传会把这些细节经 bridge/relay 送到手机侧。(Round-22 复审
-/// MAJOR-1:同一命令体内的 grant 铸造臂同样携路径——`issue_web_workspace_
-/// grant` 的 validate_browsable_path canonical 化臂、目录校验与身份采集
-/// 臂都带 `path.display()`/canonical 拼写,TOCTOU(列目录与铸造之间目录
-/// 被删/换)或 Windows 身份采集失败都会命中——必须与本命令的枚举臂走
-/// 同一折叠。)两条腿的原始链都只落桌面日志(`web_operation_result` 的
-/// log::warn)。
+/// (round-21 review M3): list_host_files' error arms carry desktop-absolute paths —
+/// with `path` absent the default enumerates `$HOME`, and the canonicalization arm
+/// echoes the resolved desktop path — a bare `?` would pass these details through
+/// bridge/relay to the phone side. (Round-22 review MAJOR-1: the grant-minting arm
+/// in the same command body carries paths too — `issue_web_workspace_grant`'s
+/// validate_browsable_path canonicalization arm, the directory validation arm, and
+/// the identity-collection arm all carry `path.display()`/canonical spellings;
+/// TOCTOU (the directory deleted/swapped between listing and minting) or a Windows
+/// identity-collection failure both hit them — they must fold the same way as this
+/// command's enumeration arm.) Both legs' raw chains land only in desktop logs
+/// (web_operation_result's log::warn).
 #[tauri::command]
 pub fn web_access_list_host_files(
     path: Option<String>,
@@ -379,9 +385,8 @@ pub fn web_access_list_host_files(
     window: WebviewWindow,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebHostFileListing, String> {
-    // 手机侧文件选择器经 Web RPC 调度,由主 WebView 的 bridge invoke(标签
-    // 即 main,放行);此 gate 拦截的是桌面辅助 WebView 直接 invoke 浏览
-    // $HOME 的路径。
+    // Phone-side picker via Web RPC (main-WebView bridge, label main, passes);
+    // blocks a desktop auxiliary WebView browsing $HOME directly.
     require_main_webview(&window)?;
     let listing = web_session_result(
         WebSessionOperation::ListHostFiles,
@@ -774,14 +779,17 @@ pub fn web_access_cancel_session_download(
 /// browser. The opaque handle is resolved only by `web_access_chat`.
 ///
 /// Errors fold to the stable `web_session_ingest_file_failed` wire code
-/// (round-22 复审 MAJOR-2):`ingest_file` 的校验臂携带 canonical 化后的
-/// 桌面绝对路径(`path {} is not a file`/`is not readable` 回显解析拼写,
-/// symlink 别名会回显真实目标),裸 `?` 直传会把这些细节连同中文原文经
-/// bridge/relay 落到手机侧的附件 chip 上。原始链只落桌面日志。
+/// (round-22 review MAJOR-2): ingest_file's validation arms carry canonicalized
+/// desktop-absolute paths (`path {} is not a file`/`is not readable` echo the
+/// resolved spelling; a symlink alias resolves to its real target), and a bare `?`
+/// would pass these details — Chinese originals included — through bridge/relay
+/// onto the phone side's attachment chip. The raw chain lands only in desktop logs.
 ///
-/// Round-23 复审补记(消费端):折叠码在 ACP 通道经受控错误正则落通用
-/// 失败文案;web 聊天附件 chip 亦渲染通用失败文案——桌面聊天对敏感路径
-/// 拒绝的具体文案刻意不跨 relay(隐私正向),消费端未做特判。
+/// Round-23 review addendum (consumer side): the folded code falls through the ACP
+/// channel's controlled-error regex to generic failure copy; the web chat attachment
+/// chip also renders generic failure copy — the desktop chat's specific copy for
+/// sensitive-path refusals deliberately does not cross the relay (privacy-positive);
+/// consumers do not special-case it.
 #[tauri::command]
 pub async fn web_access_ingest_file(
     path: String,
@@ -800,28 +808,31 @@ pub async fn web_access_ingest_file(
 /// opaque `WebAttachmentSummary` the host-file flow returns. Nothing survives
 /// past attachment consumption, eviction, or endpoint teardown.
 ///
-/// Round-23 复审补录:本命令的 append 臂与 ingest 侧的 cache 臂(manager
-/// 文本)仍以原始单语言(zh)文本出站——与 round-22 已披露的 tasks.rs
-/// CRUD 族同一疾病类(静态无路径文案、先于本链存在),按既定 follow-up
-/// 车道处理,不在本链夹带。Round-24 复审修正:tasks.rs 家族的「无路径」
-/// 表述只对 CRUD 成员的静态文案成立——同族的 runs-listing 命令
-/// (list_scheduled_task_runs)的错误链携带 `<home>/...` 绝对路径,已在
-/// round-24 本链内折叠(见 tasks.rs 的
-/// list_scheduled_task_runs_arms_fold_storage_prefixes);CRUD 成员仍按
-/// 车道披露,其错误链是否携带路径以后续核查为准,不再以「无路径」一概
-/// 而论。Round-25 复审修正:runs-listing 并非唯一泄漏成员——同车道
-/// (非 CRUD 读写车道)的 list_scheduled_tasks / read_scheduled_task /
-/// list_scheduled_runs 携带同一批 automation 链路径,已在 round-25 本
-/// 链内折叠(见 tasks.rs 的
-/// scheduled_read_list_commands_arms_fold_storage_prefixes)。Round-27
-/// 复审执行了 round-25 披露的「后续核查」并证实 CRUD/变更成员
-/// (create/update/delete/pause/resume/pin/run-now/mark-viewed)同样
-/// 经同一批 carrier 携带绝对路径(ensure_*_workspace 的
-/// workspace.display()、automation_manager 的 save/delete/read
-/// path.display()、kind sidecar 的 path.display())——round-27 本链内
-/// 已将八成员全部出口折叠(见 tasks.rs 的
-/// scheduled_crud_commands_arms_fold_storage_prefixes)。tasks.rs 家族
-/// 至此全车道折叠,残余仅余附件 upload/cache 臂的静态无路径文案。
+/// Round-23 review addendum: this command's append arm and the ingest-side cache
+/// arm (manager text) still egress as original single-language (zh) text — the same
+/// disease class as the round-22-disclosed tasks.rs CRUD family (static path-free
+/// copy predating this chain), handled in the established follow-up lane and not
+/// smuggled into this chain. Round-24 review correction: the tasks.rs family's
+/// "path-free" characterization only holds for the CRUD members' static copy — the
+/// same family's runs-listing command (list_scheduled_task_runs) had an error chain
+/// carrying `<home>/...` absolute paths, folded in this chain in round-24 (see
+/// tasks.rs's list_scheduled_task_runs_arms_fold_storage_prefixes); the CRUD
+/// members remained disclosed per-lane, with whether their error chains carry
+/// paths subject to follow-up audit rather than a blanket "path-free". Round-25
+/// review correction: runs-listing was not the only leaking member — the same lane
+/// (non-CRUD read/write lane) commands list_scheduled_tasks / read_scheduled_task /
+/// list_scheduled_runs carried the same batch of automation-chain paths, folded in
+/// this chain in round-25 (see tasks.rs's
+/// scheduled_read_list_commands_arms_fold_storage_prefixes). Round-27 review
+/// executed round-25's disclosed "follow-up audit" and confirmed the CRUD/mutation
+/// members (create/update/delete/pause/resume/pin/run-now/mark-viewed) also carry
+/// absolute paths through the same carriers (ensure_*_workspace's
+/// workspace.display(), automation_manager's save/delete/read path.display(), the
+/// kind sidecar's path.display()) — in round-27 this chain folded all eight
+/// members' exits (see tasks.rs's
+/// scheduled_crud_commands_arms_fold_storage_prefixes). The tasks.rs family is now
+/// folded on every lane; the only residual is the attachment upload/cache arms'
+/// static path-free copy.
 #[tauri::command]
 pub async fn web_access_upload_attachment_chunk(
     upload_id: String,
@@ -1070,8 +1081,9 @@ pub async fn web_access_create_codex_acp_session(
                     .as_ref()
                     .ok_or_else(|| "Web workspace authorization is missing".to_string())?
                     .verify_bound_path(path)?;
-                // reserve 与绑定之间用户可能已撤销授权:绑定时点复核旗标,
-                // 不让撤权前的 reservation 在 TTL 窗口内完成绑定。
+                // The user may have revoked authorization between reserve and bind:
+                // re-check the flag at bind time so a reservation made before the
+                // revocation cannot complete binding inside the TTL window.
                 manager.require_host_workspace_authorized()
             };
             let workspace_verifier = workspace_reservation.as_ref().map(|_| {
@@ -1576,8 +1588,9 @@ async fn web_access_chat_for_session(
     .await
 }
 
-/// Web 端只能续写未开启多智能体模式的会话。Web 界面没有专家卡/只读面板，
-/// 放行会让浏览器启动它看不到、也停不掉的子智能体。
+/// The web side may only continue sessions without multi-agent mode. The web UI has
+/// no expert cards/read-only panels; letting it through would let the browser spawn
+/// sub-agents it can neither see nor stop.
 fn ensure_web_chat_session_supported(multi_agent: bool) -> Result<(), String> {
     if multi_agent {
         return Err(
@@ -1587,10 +1600,12 @@ fn ensure_web_chat_session_supported(multi_agent: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// 浏览器本机上传的附件落在短生命周期暂存目录里。引擎会按 `IngestResult.path`
-/// 再次读取文件（图片拷贝进 workspace、超长文本注入路径供 `read_file`），因此
-/// 在把路径交给引擎之前先复制进该会话的 workspace 并改写 path，暂存目录的
-/// 清理就永远不会与后续读取竞争。桌面主机文件附件的路径原样保留。
+/// Attachments uploaded from the browser land in a short-lived staging directory.
+/// The engine re-reads the file via `IngestResult.path` (images are copied into the
+/// workspace; overlong texts inject the path for `read_file`), so before handing the
+/// path to the engine it is copied into that session's workspace and the path is
+/// rewritten — the staging directory's cleanup then never races the later reads.
+/// Desktop host-file attachment paths are kept as-is.
 fn stage_uploaded_attachments(
     mut attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     session_id: &str,
@@ -1751,9 +1766,9 @@ fn scoped_artifact_path(
     )
 }
 
-/// 产物读写族(ArtifactAccess)的公共折叠:impl 层错误内嵌绝对宿主路径
-/// (`read_artifact_text({path}): {e}` 等),一律折成稳定 wire code,
-/// 原生链只进桌面日志。
+/// Shared fold for the artifact read/write family (ArtifactAccess): impl-level
+/// errors embed absolute host paths (`read_artifact_text({path}): {e}` etc.) and are
+/// uniformly folded to the stable wire code; the raw chain lands only in desktop logs.
 fn web_artifact_access<T>(result: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     web_session_result(WebSessionOperation::ArtifactAccess, result())
 }
@@ -1899,26 +1914,29 @@ mod tests {
         );
     }
 
-    /// Round-9 复审 minor:折叠必须发生在命令边界——helper 级测试(直接
-    /// 驱动 fold_*)看不见接线,解除任一命令体的折叠会让原生错误链(宿主
-    /// 路径/中文原文)原样过继电器,而 helper 测试仍然全绿。按本 PR 的
-    /// gate-pin 惯例用 source-contract 钉住下列命令体的折叠接线(新
-    /// web-allowlisted 命令体应在此登记)。
+    /// Round-9 review minor: folding must happen at the command boundary —
+    /// helper-level tests (driving fold_* directly) cannot see the wiring, and
+    /// unwiring any command body's fold would let the raw error chain (host paths /
+    /// Chinese originals) cross the relay verbatim while the helper tests stay green.
+    /// Per this PR's gate-pin convention, the fold wiring of the command bodies below
+    /// is pinned as source contracts (new web-allowlisted command bodies should
+    /// register here).
     #[test]
     fn web_command_bodies_fold_errors_at_the_boundary() {
         let source = include_str!("remote_control.rs");
         for (fn_name, marker) in [
             (
                 "pub fn web_access_list_host_files(",
-                // Round-22 复审 MAJOR-1:命令体两条腿(枚举 + grant 铸造)
-                // 都必须走同一折叠——删掉任一腿的 web_session_result 接线
-                // 都让本钉红(接线回退此前对全部套件不可见,突变实证)。
+                // Round-22 review MAJOR-1: both legs of the command body (enumeration
+                // + grant minting) must go through the same fold — removing either
+                // leg's web_session_result wiring turns this pin red (the wiring
+                // rollback was previously invisible to every suite; mutant executed).
                 "WebSessionOperation::ListHostFiles",
             ),
             (
                 "pub async fn web_access_ingest_file(",
-                // Round-22 复审 MAJOR-2:同族旁系——校验臂回显 canonical
-                // 桌面路径,折叠接线同样按钉保护。
+                // Round-22 review MAJOR-2: same-family sibling — the validation arm
+                // echoes canonical desktop paths, and its fold wiring is pin-protected the same way.
                 "WebSessionOperation::IngestFile",
             ),
             ("pub async fn web_access_chat(", "fold_web_chat_error("),
@@ -1929,9 +1947,9 @@ mod tests {
             ("pub fn web_access_artifact_info(", "web_artifact_access("),
             (
                 "pub fn web_access_read_artifact_text(",
-                // 内层 web_artifact_access 才是凭据栅栏;钉外层
-                // ensure_web_artifact_response 时删掉内层仍全绿
-                // (Round-10 复审 minor)。
+                // The inner web_artifact_access is the credential fence; when pinning
+                // the outer ensure_web_artifact_response, deleting the inner layer kept
+                // every suite green (Round-10 review minor).
                 "web_artifact_access(",
             ),
             (
@@ -1972,16 +1990,19 @@ mod tests {
                 "{fn_name} must fold its errors at the command boundary ({marker})"
             );
         }
-        // Round-22 复审 MAJOR-1 补强:list_host_files 的行级 marker 在两腿
-        // (枚举 + grant 铸造)都出现,contains 对单腿回退是盲的(round-22
-        // 复审的突变 A——只回退一条腿——原样保绿)。两条腿的
-        // web_session_result 接线按计数钉死:删掉任一腿计数即变 1。
-        // Round-23 复审:计数前先滤除纯注释行,终止符表补齐
-        // `#[tauri::command]`/`fn ` 与兄弟循环同表——「单腿回退 + 窗内
-        // 注释提及 `web_session_result(`」的补偿突变此前保持全绿(注释把
-        // 计数补回 2;行级 marker 钉不受影响,它断言的是接线的存在性而非
-        // 计数)。(行首过滤口径:行尾 `//` 与块注释内的提及仍能掩护,按
-        // 已披露残留。)
+        // Round-22 review MAJOR-1 hardening: list_host_files' line-level marker
+        // appears in both legs (enumeration + grant minting), and contains is blind
+        // to a single-leg rollback (round-22 review's mutation A — rolling back one
+        // leg only — stayed green as-is). Both legs' web_session_result wiring is
+        // pinned by count: deleting either leg drops the count to 1.
+        // Round-23 review: pure comment lines are filtered before counting, and the
+        // terminator table gains `#[tauri::command]`/`fn ` — same table as the
+        // sibling loop — because the compensating mutation "single-leg rollback +
+        // a comment mention of `web_session_result(` inside the window" previously
+        // stayed green (the comment padded the count back to 2; the line-level marker
+        // pin is unaffected since it asserts the wiring's existence, not a count).
+        // (Line-start filtering caliber: mentions in trailing `//` comments and block
+        // comments can still shield it — a disclosed residual.)
         {
             let start = source
                 .find("pub fn web_access_list_host_files(")
@@ -2011,11 +2032,13 @@ mod tests {
 
     #[test]
     fn chat_busy_classifier_anchor_matches_its_producer() {
-        // Round-10 复审 minor:busy 分类锚定在 reservation 段,该前缀由
-        // reserve_turn 的 map_err 独家引入——改写生产者措辞或把分类器退回
-        // 裸 `session_turn_in_progress` 子串匹配,都会让手机端把硬失败
-        // 静默折成可重试的 busy(对账卡死),而字符串字面量测试仍全绿。
-        // 此处把生产者与锚点两端钉在一起。
+        // Round-10 review minor: the busy classifier anchors on the reservation
+        // segment, a prefix introduced exclusively by reserve_turn's map_err —
+        // rewriting the producer's wording or reverting the classifier to a bare
+        // `session_turn_in_progress` substring match would silently fold a hard
+        // failure into a retryable busy on the phone (reconciliation deadlock) while
+        // the string-literal tests stay green. Producer and anchor are pinned
+        // together here.
         let source = include_str!("remote_control.rs");
         assert!(
             source.contains("format!(\"reserve Web chat turn: {error:#}\")"),
@@ -2029,13 +2052,14 @@ mod tests {
 
     #[test]
     fn busy_producer_bail_stays_bare_in_the_engine() {
-        // Round-12 复审 P3:busy 锚点的另一端——engine.rs 的
-        // `anyhow::bail!("session_turn_in_progress")` 必须保持裸形态。该
-        // 错误串会被 reserve_turn 的 map_err 加上 reservation 前缀、再被
-        // 上面的分类器按整段识别;一旦这里被包上 `.context(...)` 或改写
-        // 文案,分类器失配,busy 拒绝折成通用 chat 失败,手机端远程回
-        // 合对账卡死(与上面同一失败方向——消费者端的钉看不见生产者端
-        // 的回归)。
+        // Round-12 review P3: the other end of the busy anchor — engine.rs's
+        // `anyhow::bail!("session_turn_in_progress")` must stay bare. That error
+        // string gets the reservation prefix from reserve_turn's map_err and is then
+        // recognized whole-segment by the classifier above; wrapping it in
+        // `.context(...)` or rewriting the copy here would break the classifier's
+        // match, folding the busy refusal into a generic chat failure and deadlocking
+        // the phone's remote-turn reconciliation (same failure direction as above —
+        // the consumer-side pin cannot see producer-side regressions).
         let source = include_str!("../../features/assistant/engine.rs");
         assert_eq!(
             source
@@ -2190,7 +2214,7 @@ mod tests {
             web_session_result(WebSessionOperation::ResetAuxSession, error).unwrap_err(),
             "web_session_reset_aux_session_failed"
         );
-        // Round-21 复审 M3:the phone file picker's browse lane carries
+        // Round-21 review M3: the phone file picker's browse lane carries
         // desktop-absolute paths in its native error arms (the $HOME default
         // when `path` is absent, and the canonicalized-path arm of
         // validate_browsable_path) — it folds through the same funnel; the
@@ -2199,7 +2223,7 @@ mod tests {
             web_session_result(WebSessionOperation::ListHostFiles, error).unwrap_err(),
             "web_session_list_host_files_failed"
         );
-        // Round-22 复审 MAJOR-2:the picker's attach lane is the sibling of
+        // Round-22 review MAJOR-2: the picker's attach lane is the sibling of
         // the browse lane above — its validation arms echo the canonicalized
         // desktop path (and a symlink alias resolves to its real target), so
         // it folds through the same funnel; the raw chain is desktop-log-only.
@@ -2269,7 +2293,7 @@ mod tests {
     #[test]
     fn web_chat_rejects_desktop_only_multiagent_sessions() {
         assert!(ensure_web_chat_session_supported(false).is_ok());
-        // 桌面开了多智能体开关的普通会话同样拒绝：Web 看不到也停不掉子智能体。
+        // Ordinary sessions with the desktop multi-agent toggle on are refused too: the web can neither see nor stop the sub-agents.
         assert!(ensure_web_chat_session_supported(true).is_err());
     }
 

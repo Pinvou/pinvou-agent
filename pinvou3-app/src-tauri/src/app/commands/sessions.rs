@@ -70,8 +70,9 @@ pub struct HiddenSessionListItem {
     pub title_attachment_names: Vec<String>,
 }
 
-/// 仅普通 chat 会话可用的命令守卫（transcript/产物由前端覆盖持久化的路径）。
-/// 重命名/置顶/归档/删除等元数据操作按 SessionKind 分发，不走这个守卫。
+/// Command guard for ordinary chat sessions only (transcript/artifacts have
+/// frontend-covered persistence paths). Metadata operations such as
+/// rename/pin/archive/delete dispatch by SessionKind and do not pass this guard.
 pub(super) fn ensure_chat_session(
     store: &SessionStore,
     id: &str,
@@ -168,11 +169,12 @@ fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetada
         .unwrap_or_default()
 }
 
-// ===================== 阶段 C: 多对话历史 =====================
+// ===================== Phase C: multi-conversation history =====================
 
-/// 列出所有 session 元数据，按 updated_at 倒序。前端历史面板渲染用。
-/// 返回 SessionMetadata 数组（id/title/时间/token/model/workspace 等字段）。
-/// 代码会话(ACP 与品悟原生)同样不进 chat 侧栏,由 list_codex_acp_sessions 单独提供。
+/// Lists all session metadata, sorted by updated_at descending. Used by the
+/// frontend history panel. Returns an array of SessionMetadata (id/title/times/
+/// token/model/workspace etc.). Code sessions (ACP and Pinvou-native) likewise stay
+/// out of the chat sidebar; list_codex_acp_sessions provides them separately.
 #[tauri::command]
 pub async fn list_sessions(
     store: State<'_, SessionStore>,
@@ -183,7 +185,7 @@ pub async fn list_sessions(
     metas.retain(|m| {
         matches!(store.session_kind(&m.id), Ok(SessionKind::Chat))
             && !acp_pool.is_acp_metadata(m)
-            // 原生代码会话（code_session 绑定）归属代码列表，不进 chat 侧栏
+            // Native code sessions (code_session binding) belong to the code list, not the chat sidebar
             && !acp_pool.agents().is_code_session(&m.id)
             && !store.is_hidden(&m.id)
     });
@@ -353,10 +355,12 @@ pub(crate) fn first_send_title_source<'a>(message: &'a str, fallback: Option<&'a
     }
 }
 
-/// 标题仍为默认值「新对话」时，用首条消息（或附件名兜底）派生会话标题（前 28 字符）。
+/// While the title is still the default "新对话", derives the session title from the
+/// first message (or attachment names as fallback; first 28 characters).
 ///
-/// ACP（codex_acp_prompt）与原生（chat）两条发送链路统一经此自动命名；
-/// 用户已重命名过的会话不会被覆盖。`title_source` 为空时不动作。
+/// Both send paths — ACP (codex_acp_prompt) and native (chat) — auto-name through
+/// here uniformly; sessions the user already renamed are never overwritten. Empty
+/// `title_source` is a no-op.
 pub(crate) fn apply_default_session_title(
     store: &SessionStore,
     session_id: &str,
@@ -442,21 +446,21 @@ mod default_session_title_tests {
         let id = session.metadata.id.clone();
         assert_eq!(session.metadata.title, "新对话");
 
-        // 默认标题：用首条消息命名（去首尾空白）
+        // Default title: name from the first message (trimmed)
         apply_default_session_title(&store, &id, "  帮我review这段代码  ").expect("auto title");
         assert_eq!(
             store.load(&id).expect("reload").metadata.title,
             "帮我review这段代码"
         );
 
-        // 已命名后不再被后续消息覆盖
+        // Once named, later messages do not overwrite
         apply_default_session_title(&store, &id, "第二条消息不应覆盖").expect("second call");
         assert_eq!(
             store.load(&id).expect("reload").metadata.title,
             "帮我review这段代码"
         );
 
-        // 空来源不动作；超长来源截断到 28 字符
+        // Empty source is a no-op; overlong sources truncate to 28 characters
         let session2 = store
             .create_new("model".to_string(), None, root.clone())
             .expect("create session 2");
@@ -667,7 +671,8 @@ mod session_mention_title_tests {
     }
 }
 
-/// 列出已从左侧任务列表收起的 session（含收起的定时运行会话）。前端设置页渲染用。
+/// Lists sessions hidden from the left task list (including hidden scheduled-run
+/// sessions). Used by the frontend settings page.
 #[tauri::command]
 pub async fn list_archived_sessions(
     store: State<'_, SessionStore>,
@@ -695,8 +700,9 @@ pub async fn list_archived_sessions(
         .collect())
 }
 
-/// 新建空 session 并设为 active。返回创建的 SessionMetadata。
-/// 引擎层的 session 状态切换由 chat() 下次发消息时自然处理（暂不发 SyncSession）。
+/// Creates a new empty session and sets it active. Returns the created SessionMetadata.
+/// The engine-level session state switch is handled naturally by chat() on the next
+/// message (no SyncSession sent for now).
 /// When `workspace` is Some, metadata.workspace uses that directory (for
 /// display); None keeps the status quo (pool.bridge.workspace, the home
 /// directory).
@@ -799,8 +805,9 @@ pub async fn create_session(
         super::projects::ProjectChoiceRecord::NotApplicable => {}
     }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
-    // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
-    // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
+    // Multi-session concurrency: no engine warm-up (lazy). A new empty session has no
+    // history; on its first chat, EnginePool.get_or_spawn spawns an engine with a
+    // dedicated workspace for it.
     Ok(metadata)
 }
 
@@ -888,12 +895,15 @@ pub struct DesktopSavedSession {
     transcript_revision: String,
 }
 
-/// 加载指定 session 的完整对话（含 messages）。
-/// 前端切换历史时调用 → 用返回的 messages 重渲染对话区。
+/// Loads the full conversation of the given session (including messages).
+/// Called when the frontend switches history → re-renders the conversation area
+/// with the returned messages.
 ///
-/// 读面登记（ADR-0024）：任何已持久化会话 id 均可加载（字符集校验与大小写别名
-/// 检查，无 id 类别拒绝）——它正是辅助面板自身的渲染承载：前端以服务端派生的
-/// aux id 调用本命令（`set_active=false`，aux 永不成为活动会话）。
+/// Read-side registration (ADR-0024): any persisted session id may be loaded
+/// (charset validation and case-alias checks, no id-class refusal) — it is exactly
+/// the aux panel's own rendering carrier: the frontend calls this command with the
+/// server-derived aux id (`set_active=false`; an aux session never becomes the
+/// active one).
 #[tauri::command]
 pub async fn load_session(
     id: String,
@@ -920,9 +930,12 @@ pub async fn load_session(
     if set_active.unwrap_or(true) {
         store.set_active(Some(id.clone()));
     }
-    // 多 session 并发:切换不再 SyncSession 替换全局引擎(那是旧单引擎模型)。该 session
-    // 有自己独立的 engine(已起则持有自己的上下文、还在跑就继续跑;未起则下次 chat 时
-    // lazy spawn 并注水这里返回的 messages)。本命令只切 active 指针 + 返回 messages 给前端渲染。
+    // Multi-session concurrency: switching no longer replaces a global engine via
+    // SyncSession (that was the old single-engine model). This session has its own
+    // independent engine (if started it keeps its own context and keeps running; if
+    // not it is lazily spawned on the next chat and rehydrated with the messages
+    // returned here). This command only flips the active pointer + returns messages
+    // for the frontend to render.
     let revision = match crate::features::sessions::transcript_revision(&session.messages) {
         Ok(revision) => revision,
         Err(error) => {
@@ -1027,8 +1040,9 @@ where
     result
 }
 
-/// 删除 session（含 artifacts 目录）。按 SessionKind 分发：定时运行会话联动
-/// 删除该次 Session、Run 与底座 Task（任务定义、共享工作间和其他运行保留）。
+/// Deletes a session (including its artifacts directory). Dispatches by SessionKind:
+/// scheduled-run sessions cascade-delete that run's Session, Run, and base Task
+/// (the task definition, shared workspace, and other runs are kept).
 #[tauri::command]
 pub async fn delete_session(
     id: String,
@@ -1105,14 +1119,16 @@ pub async fn delete_session(
         let _ = app.emit("session:deleted", payload.clone());
         crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
     }
-    // Round-22 复审 MAJOR-3:本命令在 Web 允许清单内,出口一次性折叠全部
-    // 内层错误链(级联删除、Agent 映射清理、定时联动删除)——
-    // store/retention 链携带 `<home>/...` 绝对路径(`write session {}`
-    // 等 context),裸传会经 bridge/relay 落到手机侧;损坏的
-    // session-agents.json 会让每次删除都稳定命中该形状。非路径细节
-    // (not found 等)保留。Round-25 复审修正:kind 判定臂在上方自带
-    // map_err 提前返回(`delete_session({id})` 前缀,固定文本、无路径),
-    // **不**经过本出口折叠——上句的「全部」只覆盖走进 result 的链。
+    // Round-22 review MAJOR-3: this command is on the web allowlist, and its exit
+    // folds every inner error chain in one place (cascade deletion, agent-mapping
+    // cleanup, scheduled cascade deletion) — the store/retention chains carry
+    // `<home>/...` absolute paths (`write session {}` and similar contexts) that
+    // would reach the phone side bare via bridge/relay; a corrupt session-agents.json
+    // would hit that shape on every delete. Non-path details (not found etc.) are
+    // kept. Round-25 review correction: the kind-dispatch arm above has its own
+    // map_err early return (`delete_session({id})` prefix, fixed text, no path) and
+    // does **not** go through this exit's fold — "every" above covers only chains
+    // that reach result.
     result.map_err(|error| crate::platform::paths::redact_storage_prefix(&error))
 }
 
@@ -1402,7 +1418,7 @@ pub async fn export_session(
     }))
 }
 
-/// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。
+/// Renames the session title. Ordinary and scheduled-run sessions share Session metadata.
 #[tauri::command]
 pub async fn rename_session(
     id: String,
@@ -1418,9 +1434,9 @@ pub async fn rename_session(
     }
     store
         .set_title(&id, title)
-        // Round-22 复审 MAJOR-3:web-allowlisted 命令,store 链携带存储
-        // 绝对路径(retention.rs 的 `write session {}` context),先折叠
-        // 再出站;非路径细节保留。
+        // Round-22 review MAJOR-3: web-allowlisted command; the store chain carries
+        // storage absolute paths (retention.rs's `write session {}` context) — fold
+        // before egress; non-path details are kept.
         .map_err(|e| {
             crate::platform::paths::redact_storage_prefix(&format!(
                 "rename_session({id}): {e:#}"
@@ -1430,7 +1446,7 @@ pub async fn rename_session(
     Ok(())
 }
 
-/// 设置历史对话置顶状态。普通会话与定时运行会话共用置顶表。
+/// Sets the pinned state of a history conversation. Ordinary and scheduled-run sessions share the pin table.
 #[tauri::command]
 pub async fn set_session_pinned(
     id: String,
@@ -1446,7 +1462,7 @@ pub async fn set_session_pinned(
             "set_session_pinned: auxiliary conversations are managed through their main session"
         ));
     }
-    // 先 load 一次确认 session 存在,避免置顶表残留无效 id。
+    // Load once first to confirm the session exists, so the pin table never keeps a stale id.
     store.load(&id).map_err(|e| {
         crate::platform::paths::redact_storage_prefix(&format!("set_session_pinned({id}): {e:#}"))
     })?;
@@ -1461,7 +1477,7 @@ pub async fn set_session_pinned(
     Ok(())
 }
 
-/// 设置 session 是否从左侧任务列表收起。普通会话与定时运行会话共用收起表。
+/// Sets whether a session is hidden from the left task list. Ordinary and scheduled-run sessions share the hidden table.
 #[tauri::command]
 pub async fn set_session_archived(
     id: String,
@@ -1475,7 +1491,7 @@ pub async fn set_session_archived(
             "set_session_archived: auxiliary conversations are managed through their main session"
         ));
     }
-    // 先 load 一次确认 session 存在,避免收起表残留无效 id。
+    // Load once first to confirm the session exists, so the hidden table never keeps a stale id.
     store.load(&id).map_err(|e| {
         crate::platform::paths::redact_storage_prefix(&format!("set_session_archived({id}): {e:#}"))
     })?;
@@ -1610,9 +1626,9 @@ pub(crate) fn reset_aux_session_finish<T, E>(
     outcome.1
 }
 
-/// 落盘 session 的产物 paths 列表。前端跟踪 File.write / File.edit 调用后调用,
-/// 在 TurnComplete 时落盘。重启/切换 session 后,
-/// 从 SavedSession.artifacts 重建前端产物列表。
+/// Persists the session's artifact paths list. Called by the frontend after tracking
+/// File.write / File.edit calls, persisted at TurnComplete. After a restart or
+/// session switch, the frontend rebuilds its artifact list from SavedSession.artifacts.
 #[tauri::command]
 pub async fn save_session_artifacts(
     id: String,
@@ -1625,27 +1641,31 @@ pub async fn save_session_artifacts(
     })
 }
 
-/// Round-22 复审 MAJOR-3 源钉:五个 web-allowlisted session 突变命令的
-/// 出站错误链必须折叠存储根——store/retention 链携带 `<home>/...` 绝对
-/// 路径(损坏的 session-agents.json 会让每次删除稳定命中)。窗口以下一
-/// 个命令体为界,测试模块不会混入。Round-24 复审(m2)补强:纯注释行
-/// 先滤除(round-23 补偿突变同一类),断言从 contains 升级为逐命令折叠
-/// 计数——set_session_pinned / set_session_archived 各有两个独立折叠臂
-/// 共占一个 marker,单臂回退此前保持全绿(旧文档「删除任一折叠即红」
-/// 实为「删除全部折叠即红」)。新增折叠臂时须同步计数表(枚举钉:新
-/// 增未折叠臂对本钉不可见)。
+/// Round-22 review MAJOR-3 source pin: the outbound error chains of the five
+/// web-allowlisted session mutation commands must fold the storage root — the
+/// store/retention chains carry `<home>/...` absolute paths (a corrupt
+/// session-agents.json would hit that shape on every delete). The window is bounded
+/// by the next command body, so the test module never mixes in. Round-24 review
+/// (m2) hardening: pure comment lines are filtered first (same class as the
+/// round-23 compensating mutation) and the assertions upgrade from contains to
+/// per-command fold counts — set_session_pinned / set_session_archived each have
+/// two independent fold arms sharing one marker, and a single-arm rollback used to
+/// stay green (the old doc's "deleting any fold turns red" was really "deleting all
+/// folds turns red"). New fold arms must update the count table in the same change
+/// (enumeration residual: a new unfolded arm is invisible to this pin).
 #[cfg(test)]
 #[test]
 fn web_session_mutations_fold_storage_prefixes() {
     const NEEDLE: &str = "crate::platform::paths::redact_storage_prefix(";
     for (fn_name, expected_folds, producers) in [
-        // delete_session 出口一次性折叠(覆盖全部内层臂)。
+        // delete_session's exit folds once for all (covering every inner arm).
         ("pub async fn delete_session(", 1, &[] as &[&str]),
         ("pub async fn rename_session(", 1, &[]),
-        // Round-27 复审 m5:双折叠命令补逐臂序牙——折叠必须紧跟各自的
-        // 生产调用(load 臂在 set_* 之前,set_* 臂在其后);「剥掉 load
-        // 臂折叠、在定文本臂垫一枚冗余折叠」的交换突变计数不变,序牙
-        // 转红。
+        // Round-27 review m5: dual-fold commands gain a per-arm order tooth — each
+        // fold must sit immediately after its own production call (the load arm
+        // before set_*, the set_* arm after it); the swap mutation "strip the load
+        // arm's fold, pad the fixed-text arm with a redundant fold" keeps the count
+        // unchanged and turns the order tooth red.
         (
             "pub async fn set_session_pinned(",
             2,
@@ -1804,19 +1824,22 @@ pub(super) fn read_session_sidecar(
         .map_err(|error| format!("failed to parse session {label} sidecar: {error}"))
 }
 
-/// 保存用户消息专业场景标签。sidecar 独立于 messages，但属于 session 持久数据，
-/// 因此通过后端共享给桌面端和 WebUI，而不是只留在某个宿主的 localStorage。
+/// Saves expert-scene labels for user messages. The sidecar is separate from
+/// messages but is part of the session's persisted data, so it is shared to desktop
+/// and WebUI through the backend rather than living only in one host's localStorage.
 #[tauri::command]
 pub async fn save_session_pinvou_scene_events(
     session_id: String,
     events: serde_json::Value,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
-    // Round-23 复审口径注记:本命令与 get_session_pinvou_scene_events、
-    // list_workspace_files 的裸 `?` 错误出口同族——当前可达的错误构造器
-    // (sidecar 的 std io Display / 固定 id 文本)均不内嵌路径,故未折叠
-    // (与 executor 交付臂的既定口径一致):未来任何内嵌绝对路径的错误
-    // 构造函数加入这些链时,必须同步接 redact_storage_prefix 折叠。
+    // Round-23 review caliber note: this command's bare `?` error exits are in the
+    // same family as get_session_pinvou_scene_events and list_workspace_files — the
+    // currently reachable error constructors (the sidecar's std io Display / fixed id
+    // text) embed no paths, so no folding (consistent with the executor delivery
+    // arm's established caliber): if any future path-embedding error constructor
+    // joins these chains, it must adopt redact_storage_prefix folding in the same
+    // change.
     ensure_chat_session(&store, &session_id, "save_session_pinvou_scene_events")?;
     let normalized = normalize_pinvou_scene_events(events)?;
     let path = crate::platform::paths::session_pinvou_scene_events(&session_id);
@@ -1855,9 +1878,10 @@ fn normalize_steered_messages(events: serde_json::Value) -> Result<serde_json::V
     )
 }
 
-/// 保存 mid-turn steer 消息的位置标记。steer 落盘与普通 admission 对齐、不含
-/// `<turn_meta>` 块，重载投影靠该 sidecar 恢复"非 turn admission"标记；独立于
-/// messages 持久化，桌面端与 WebUI 共享。
+/// Saves position markers for mid-turn steer messages. Steer persistence aligns
+/// with ordinary admission and contains no `<turn_meta>` block; the reload
+/// projection relies on this sidecar to restore the "non-turn admission" markers;
+/// persisted separately from messages, shared by desktop and WebUI.
 #[tauri::command]
 pub async fn save_session_steered_messages(
     session_id: String,
@@ -1999,8 +2023,8 @@ mod pinvou_scene_event_tests {
 
     #[test]
     fn scene_events_accept_personal_workbench_scene() {
-        // 个人工作台场景标签必须被后端接受并持久化，
-        // 否则 sidecar 重载后该消息的工作台标签会丢失。
+        // Personal-workbench scene labels must be accepted and persisted by the
+        // backend, otherwise the message's workbench label is lost after the sidecar reloads.
         let normalized = normalize_pinvou_scene_events(serde_json::json!([
             { "pos": 3, "scene": "work:personal-workbench" }
         ]))
@@ -2032,19 +2056,24 @@ mod pinvou_scene_event_tests {
     }
 }
 
-/// 扫描 session workspace 目录,返回实际存在的产物文件绝对路径(过滤隐藏/临时文件)。
-/// 前端切换 session 时用它对账 —— 让产物面板以**磁盘真相**为准,不受跟踪遗漏 /
-/// app 中途重启(内存跟踪丢失)影响。过滤规则直接复用 file_watcher::should_skip
-/// (单一事实源,含 workflow_audit.jsonl 基建日志——watcher 拦其 artifact:disk
-/// 事件,列表若返回它,同一文件就会"面板有、事件无"地漂移)。
+/// Scans the session workspace directory and returns absolute paths of artifact
+/// files that actually exist (hidden/temp files filtered out). The frontend uses it
+/// to reconcile when switching sessions — the artifact panel follows the **disk
+/// truth**, unaffected by tracking gaps or an app restart mid-session (in-memory
+/// tracking lost). The filter reuses file_watcher::should_skip directly (single
+/// source of truth, including the workflow_audit.jsonl infrastructure journal — the
+/// watcher intercepts its artifact:disk events; if the list returned it, the same
+/// file would drift "in panel, absent from events").
 #[tauri::command]
 pub async fn list_workspace_files(
     session_id: String,
     store: State<'_, SessionStore>,
     acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<Vec<String>, String> {
-    // 语义守卫:代码会话(品悟原生)没有“产物面板”概念——其文件浏览与变更 diff 走
-    // 代码模式的基线工作区面板,这里跳过顶层扫描,避免把工作区代码文件误当产物。
+    // Semantic guard: code sessions (Pinvou-native) have no "artifact panel" concept —
+    // their file browsing and change diffs go through the code mode's baseline
+    // workspace panel, so the top-level scan is skipped here to keep workspace code
+    // files from being mistaken for artifacts.
     if acp_pool.agents().is_code_session(&session_id) {
         return Ok(Vec::new());
     }
@@ -2118,13 +2147,13 @@ mod desktop_saved_session_contract_tests {
         };
         let value = serde_json::to_value(&response).expect("serialize DesktopSavedSession");
 
-        // 顶层必须带 snake_case 的 transcript_revision(WebSavedSession 同契约)。
+        // The top level must carry snake_case transcript_revision (same contract as WebSavedSession).
         assert_eq!(
             value.get("transcript_revision").and_then(|v| v.as_str()),
             Some(revision.as_str()),
             "load_session 响应必须携带 transcript_revision 字段"
         );
-        // SavedSession 其余字段通过 flatten 保留在顶层,不得嵌套丢失。
+        // SavedSession's other fields stay at the top level via flatten; they must not be lost to nesting.
         assert!(
             value.get("messages").is_some(),
             "flatten 后 messages 必须仍在顶层"
@@ -2144,9 +2173,10 @@ mod desktop_saved_session_contract_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 产物面板的 workspace 文件列表复用 file_watcher::should_skip 后，watcher
-    /// 拦截的基建日志（workflow_audit.jsonl）也必须从列表消失：否则同一文件
-    /// "面板有、artifact:disk 事件无"，前端对账永远对不齐。
+    /// After the artifact panel's workspace file list reuses file_watcher::should_skip,
+    /// the infrastructure journal the watcher intercepts (workflow_audit.jsonl) must
+    /// also disappear from the list: otherwise the same file is "in panel, absent
+    /// from artifact:disk events" and the frontend reconciliation never lines up.
     #[test]
     fn workspace_file_list_drops_the_audit_journal_and_temp_files() {
         // with_temp_home (not a straight-line env restore): a failing assert

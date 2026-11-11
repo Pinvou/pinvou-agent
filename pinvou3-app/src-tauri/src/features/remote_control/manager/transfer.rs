@@ -224,14 +224,16 @@ pub(super) fn discard_web_attachment_upload(inner: &mut Inner, upload_id: &str) 
         .retain(|id| id != upload_id);
 }
 
-/// 浏览器本机上传的桌面暂存根目录。目录布局 `uploads/webup_<token>/<file>`
-/// 与旧版远控上传一致。
+/// Desktop staging root for browser-native uploads. The directory layout
+/// `uploads/webup_<token>/<file>` matches the legacy remote-control upload
+/// layout.
 pub(crate) fn web_attachment_uploads_base() -> PathBuf {
     paths::pinvou3_home().join("uploads")
 }
 
-/// 清理上一次进程遗留的上传暂存目录（崩溃或强杀时正常清理不会执行）。
-/// 只清 `webup_` 前缀，避免波及 uploads 下的其他历史内容。
+/// Removes upload staging dirs left behind by a previous process (normal
+/// cleanup does not run on a crash or force kill). Only the `webup_` prefix
+/// is swept, so other historical content under uploads is untouched.
 pub(crate) fn sweep_stale_web_attachment_uploads() {
     let Ok(entries) = std::fs::read_dir(web_attachment_uploads_base()) else {
         return;
@@ -382,20 +384,26 @@ pub(super) fn take_web_session_download(
     Ok(inner.web_session_downloads.remove(download_id))
 }
 
-/// Round-15 复审:两个下载槽位都被「已就绪但无人拾取」的孤儿占住时
-/// (中继把 commit 响应丢了,手机拿不到 download_id,既无法拾取也无从
-/// 取消),重试会硬失败到 10 分钟 TTL Reaper 才自愈。 begin 在容量门
-/// (round-25 起为槽位+字节双维度)失败时先逐出最旧的 ready 条目,重试
-/// 导出会开新下载;存在未 ready 条目说明引擎仍在写入,不可作受害者,
-/// 保留既有容量错误。web_session_download_order
-/// 因此成为逐出顺序的承载者(此前只写不读的死重)。
-/// Round-16 复审(M2):受害判据加新鲜度窗——「ready」本身区分不出
-/// 「响应丢失的孤儿」与「手机已持 id、正在分块读取的下载」(chunk 读取
-/// 会刷新 last_touched),故只有停更超过
-/// `WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW` 的 ready 条目才可作
-/// 受害者;读中下载不会被逐出。真孤儿的清理最多延后一个窗口,仍远早
-/// 于 TTL;文档原句「手机从未收到其 id,字节必然无人认领」是过强断言,
-/// 以本窗口为实际边界。
+/// Round-15 review: when both download slots are held by "ready but never
+/// picked up" orphans (the relay lost the commit response, the phone never
+/// got the download_id, so it can neither pick up nor cancel), a retry
+/// would hard-fail until the 10-minute TTL Reaper self-heals. When begin
+/// fails the capacity gate (slots + bytes in two dimensions since round-25),
+/// it first evicts the oldest ready entry so the retried export can open a
+/// new download; a non-ready entry means the engine is still writing and
+/// cannot be the victim, so the existing capacity error is kept.
+/// web_session_download_order thereby becomes the carrier of the eviction
+/// order (previously write-only dead weight).
+/// Round-16 review (M2): the victim criteria add a freshness window —
+/// "ready" alone cannot distinguish a "response-lost orphan" from a
+/// "download the phone already holds an id for and is chunk-reading"
+/// (chunk reads refresh last_touched), so only ready entries untouched for
+/// longer than `WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW` may be
+/// victims; in-flight reads are never evicted. True-orphan cleanup is
+/// delayed by at most one window, still far earlier than the TTL; the doc's
+/// original claim "the phone never received its id, so the bytes are
+/// certainly unclaimed" was too strong — this window is the actual
+/// boundary.
 pub(super) fn evict_oldest_ready_session_download(inner: &mut Inner) -> bool {
     let now = Instant::now();
     let victim = inner
@@ -482,10 +490,12 @@ mod tests {
 
     /// A `last_touched` older than the TTL, without panicking on hosts whose
     /// monotonic clock started less than the TTL ago (fresh boot).
-    /// Round-20 复审(S05):二级回退 `now - WEB_SESSION_TRANSFER_TTL` 在
-    /// 开机不足 TTL 的主机上仍会 panic——与本文件新测试的受检回退同一
-    /// 约定,末级退化到当前时刻:条目按「未过期」处理,断言以干净失败
-    /// (红)替代测试进程崩溃。
+    /// Round-20 review (S05): the second fallback `now - WEB_SESSION_TRANSFER_TTL`
+    /// would still panic on hosts up for less than the TTL — following the
+    /// same convention as this file's new checked fallback, the final level
+    /// degrades to the current instant: the entry is treated as "not
+    /// expired", so an assertion fails cleanly (red) instead of crashing the
+    /// test process.
     fn expired_last_touched(now: Instant) -> Instant {
         now.checked_sub(WEB_SESSION_TRANSFER_TTL + Duration::from_secs(1))
             .or_else(|| now.checked_sub(WEB_SESSION_TRANSFER_TTL))
