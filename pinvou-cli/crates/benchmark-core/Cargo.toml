@@ -22,4 +22,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 futures.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+# `test-util` powers `#[tokio::test(start_paused = true)]` in the runner
+# contract tests (virtual time fires the 600 s local-phase fallback cap
+# instantly); test builds only — the production feature set is unchanged.
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
