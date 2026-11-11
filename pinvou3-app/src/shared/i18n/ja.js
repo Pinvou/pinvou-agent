@@ -211,7 +211,7 @@ const jaBase = {
           
          
         kbSearchPlaceholder: '例：先週のpdf、10mb以上の動画', 
-         kbNoResults: '一致するファイルがありません', kbScanningHint: 'インデックス作成中…スキャン済み',
+         kbNoResults: '一致するファイルがありません', kbScanningHint: 'インデックス作成中…スキャン済み', kbFilesShowingFirst: n => `先頭の ${n} 件のみ表示`, kbLoadMore: 'さらに読み込む',
         kbEmptyHint: 'まだインデックスがありません。このPCをスキャンすると全ファイルを高速検索し重複を検出できます。',
          
           
@@ -255,6 +255,7 @@ const jaBase = {
         kbImportProgress: 'ファイル進捗', kbCurrentFile: '現在のファイル：', kbChunkProgress: 'ブロック進捗', kbFailedFiles: '失敗したファイル', kbRetryFile: '再試行', kbImportErrors: '失敗', kbImportDoneWithErrors: '一部のファイルでインポート失敗',
         kbResumeImportFailed: 'インポートの再開に失敗しました', kbCancelImportFailed: 'インポートのキャンセルに失敗しました', kbRetryImportFailed: 'ファイルの再試行に失敗しました',
         kbLoadMoreFailedFiles: '失敗したファイルをさらに読み込む', kbLoadingFailedFiles: '読み込み中…', kbLoadFailedFilesFailed: '失敗したファイルの読み込みに失敗しました',
+        kbLoadMoreDocs: '文書をさらに読み込む',
         kbDeleteColl: 'コレクション削除', kbRemove: '削除', kbCollEmpty: '文書がありません。「ファイル追加」で追加。', kbNoCollFiles: 'ナレッジにファイルがありません', kbAllColls: 'すべて', kbDelCollConfirm: 'コレクション「{n}」を削除しますか？', kbDelCollWarn: 'このコレクションの索引（{c} 件の文書）のみ削除します。ディスク上の元ファイルは削除されません。', kbDelete: '削除', kbRemoveDocConfirm: 'ナレッジから「{n}」を削除しますか？', kbRemoveDocWarn: 'ナレッジ内の索引のみ削除します。ディスク上の元ファイルは影響を受けません。', kbRemoveFailed: '文書を削除できませんでした', 
                   kbCollNamePh: 'コレクション名', kbCollCatPh: 'カテゴリ（任意）', kbCancel: 'キャンセル', kbCreate: '作成',
         sysStatus: 'システム状態',  gpu: 'GPU', gpuUnavail: '状態を取得できません', 

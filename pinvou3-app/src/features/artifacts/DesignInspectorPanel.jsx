@@ -619,11 +619,13 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
               <span>{changesExpanded ? L.diCollapse : L.diExpand}</span>
             </button>
             {changesExpanded && (
+              // 全量渲染:容器 max-h-48 滚动,slice(-8)/slice(-6) 会让更早的
+              // 变更组/条目永远不可达(头部计数还在、内容却滚不到)。
               <div className="mt-1 max-h-48 overflow-y-auto space-y-2">
-                {Object.values(groupedChanges).slice(-8).map((group) => (
+                {Object.values(groupedChanges).map((group) => (
                   <div key={group.key} className="rounded-[8px] p-2 bg-white dark:bg-white/[0.04]">
                     <div className="mb-1 truncate font-semibold">{group.label} · {group.items.length}</div>
-                    {group.items.slice(-6).map((change) => (
+                    {group.items.map((change) => (
                       <div key={change.id} className="truncate">
                         {change.type === 'text' ? L.diChangeTypeText : change.property}: {change.oldValue || L.diEmpty} -&gt; {change.newValue || L.diEmpty}
                       </div>
