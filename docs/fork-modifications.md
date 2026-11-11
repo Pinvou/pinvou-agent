@@ -61,7 +61,7 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `11cba403d`，包含 #115–#122、#114/#125 与 #123/#124/#129/#131/#133/#134/#135；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为公开维护头 `6f7a3a748`，包含 #115–#122、#114/#125、#123/#124/#129/#131/#133/#134/#135 与 #136/#142/#148/#150/#152；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
@@ -70,7 +70,7 @@
 
 ## 0. 当前状态（2026-11-05）
 
-- 当前公开维护头与父仓 gitlink：`11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；本轮仅更新父仓引用，没有推进维护分支。
+- 当前公开维护头与父仓 gitlink：`6f7a3a748f408568468ace45aa5cdbb34f882d73`（2026-11-11）。#136 已合入为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`；本轮仅更新父仓引用，没有推进维护分支。
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 93 个提交，r1 `1fafee7e2` 之上 78 个；91 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
 - 实测 drift：540 files, +119210/-49666，净增 69544；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
@@ -122,6 +122,11 @@
 
 | Commit | 主题 | 说明 |
 |---|---|---|
+| `6f7a3a748` | deps | rusqlite 0.40.2→0.41.1（libsqlite3-sys 0.39.1，捆绑 SQLite 3.54.1）修 RUSTSEC-2026-0459/CVE-2026-119375（页缓存未初始化内存读取），rmcp 3.7→3.9 修 RUSTSEC-2026-0462，rio-vt 0.5.29；上游全工作区零 API 变更。父仓随动：`pinjou3-tauri` 与 `pinjou-knowledge` 声明位同批升至 0.41.1（`links = "sqlite3"` 单副本约束强制协同），`pinjou-cli` 工作区经共享解析传递更新 lock（#152） |
+| `e972a9a05` | feat 引擎 | 向宿主暴露 route 输出预算：自建一次性请求的宿主（Pinvou review summon）经公开 wrapper 复用路由生效的 max_tokens 上限，镜像 `context_input_budget_for_route` 先例、共享同一套计算而非各自重推导；纯增量 API，父仓本轮无消费点、接入列为后续项（#150） |
+| `5f15cce57` | fix TUI | todo 项 schema 的 required 集合移除 status：executor 本就把缺失 status 读作 Pending，字段不再强制必填，消除工具调用侧的无谓拒答（#148） |
+| `78804c83e` | fix 引擎 | 终态错误保留真实来源：模型侧与本地运行时错误的来源随最终选中错误一起传递，保留重试清空、本地覆盖与取消语义；内部 `TurnComplete` 新增 `error_source: Option<TurnErrorSource>`，线协议不变。父仓 forwarder 以 `_` 绑定适配，宿主错误面仍只呈现错误文本，来源呈现列为后续项（#142） |
+| `37be2844f` | fix 本地化 | 2026-10-07 审计批次的残留模型侧文案修复（squash 批次）；value-only 文案替换（#136） |
 | `11cba403d` | deps | undici 7.30.1 与 msal-node 7.1.2 的 npm lock 内刷新，关闭 `pinvou3-clean` 当时全部 4 条 open Dependabot 高危告警；仅 lockfile，无 manifest 或源码改动（#135） |
 | `8a4719fd4` | T3 本地化 | 清扫 locale 包过时模式文案：补完 rail→workbar 改名的非英文一半（11 个语言包 88 个 rail 词键），补齐多月未随英文发布的 must-translate 键并新增缺失门禁；全部 value-only 替换，`en.json` 与基线逐字节一致（#134） |
 | `4e75c6a07` | T3 | fetch_url 工具描述移除失实的 "sandboxed" 声明：改写为注明 Bash 工具的沙箱策略可能拒绝出站网络，fetch_url 本身是进程内 HTTP 客户端；citation 与 login-wall 句保持不变（#133） |
