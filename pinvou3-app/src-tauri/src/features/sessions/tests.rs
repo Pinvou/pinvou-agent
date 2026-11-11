@@ -5499,6 +5499,130 @@ fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
     assert!(store.restore_rewound_turns(&id).is_err());
 }
 
+/// Two undo rounds each consume exactly their own record (fingerprint
+/// removal, not position-based popping): truncate → undo → truncate again →
+/// undo must remove one record per undo in order and end with an empty
+/// sidecar. Going red if removal ever matches more than the fingerprint or
+/// pops a fixed position.
+#[test]
+fn undo_consumes_exactly_one_record_per_round_across_two_rounds() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        user_text("第二轮"),
+        assistant_text("答二"),
+        user_text("第三轮"),
+        assistant_text("答三"),
+    ];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+
+    store.truncate_to_user_turn(&id, 1, None).expect("rewind 1");
+    assert_eq!(rewound_records(&id).len(), 1);
+    let first_fingerprint = {
+        let records = rewound_records(&id);
+        (
+            records[0].rewound_at.clone(),
+            records[0].truncated_revision.clone(),
+        )
+    };
+    store.restore_rewound_turns(&id).expect("undo 1");
+    // Full consumption removes the sidecar file; assert via the store API
+    // (a raw read would hit NotFound).
+    assert!(
+        store
+            .latest_rewound_turns_record(&id)
+            .expect("read")
+            .is_none(),
+        "第一轮反悔必须消费掉自己的记录"
+    );
+    assert_eq!(
+        store.load(&id).expect("load").messages,
+        messages,
+        "第一轮反悔后 transcript 回到全量"
+    );
+
+    // Second rewind/undo round on the same session: the fingerprint of the
+    // new record differs from the consumed one (new rewound_at, new
+    // revision) and must still be removed exactly.
+    store.truncate_to_user_turn(&id, 2, None).expect("rewind 2");
+    let records = rewound_records(&id);
+    assert_eq!(records.len(), 1);
+    assert_ne!(
+        (
+            records[0].rewound_at.clone(),
+            records[0].truncated_revision.clone()
+        ),
+        first_fingerprint,
+        "第二轮记录必须带新指纹"
+    );
+    store.restore_rewound_turns(&id).expect("undo 2");
+    assert!(
+        store
+            .latest_rewound_turns_record(&id)
+            .expect("read")
+            .is_none(),
+        "第二轮反悔必须消费掉自己的记录"
+    );
+    assert_eq!(store.load(&id).expect("load").messages, messages);
+}
+
+/// r46 P1-2 (review): the undo pop phase must not consume the stale
+/// whole-map snapshot taken before `persist_then_reconcile`. The r46
+/// MAJOR-4 lock scoping releases the backup locks across the persist, so a
+/// peer (CLI undo, another GUI window, a concurrent rewind's push) may
+/// modify the map in that window; popping the stale snapshot's tail and
+/// persisting it whole is a last-writer-wins lost update. The pop must
+/// reload the latest map under the reacquired locks and remove exactly the
+/// consumed record by its fingerprint.
+#[test]
+fn undo_pop_reloads_the_map_under_reacquired_locks() {
+    let rewind = include_str!("rewind.rs");
+    let start = rewind
+        .find("pub fn restore_rewound_turns_detailed")
+        .expect("undo fn must exist");
+    let rest = &rewind[start..];
+    let body_end = [
+        "
+    fn ",
+        "
+    pub fn ",
+        "
+    pub(crate) fn ",
+    ]
+    .iter()
+    .filter_map(|marker| rest[1..].find(marker).map(|index| index + 1))
+    .min()
+    .unwrap_or(rest.len());
+    let body = &rest[..body_end];
+    assert!(
+        body.contains("let mut latest = load_rewound_turns_map()?;"),
+        "the pop phase must reload the latest map under the reacquired locks",
+    );
+    assert!(
+        body.contains("one.rewound_at == record.rewound_at"),
+        "the consumed record must be matched by fingerprint",
+    );
+    assert!(
+        !body.contains("records.pop()"),
+        "the undo path must not blind-pop a tail (r46 P1-2)",
+    );
+    assert!(
+        !body.contains("persist_rewound_turns_map(&backups)"),
+        "the stale pre-persist snapshot must never be persisted back",
+    );
+    assert!(
+        !body.contains("Some((record, backups))"),
+        "the stale snapshot must not be carried out of the lock scope",
+    );
+}
+
 /// A new turn sent after the rewind → undo is impossible; errors truthfully
 /// and the transcript is untouched.
 #[test]

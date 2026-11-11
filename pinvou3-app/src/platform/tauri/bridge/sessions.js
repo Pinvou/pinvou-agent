@@ -200,13 +200,17 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
     if (sessionStates[id]) {
       if (typeof stashEvictedSessionDraft !== "function") return false;
       if (!stashEvictedSessionDraft(id, sessionStates[id])) return false;
-      // r45 MAJOR-3 + r46 修订：busy / queued（待发送的排队追问）在场的会话
-      // 拒绝失效——但仅限显式传入 refuseWhenBusy 的压缩臂（自动压缩恰在
-      // turn 途中触发时排队追问正等待发送；delete sessionStates[id] 会连带
-      // 丢弃 queued 数组、busy 标记与所有权状态，r45 实证）。缺省不拒：
-      // r8-M1 回退跳过失效臂与 r11-M2 live 工作集清除臂需要照常失效（busy
-      // 缓存不清会比队列丢失更糟——切回即陈旧时间线）。两条拒绝腿的调用方
-      // 必须尊重 false 返回并跳过后续动作；队列跨重载保留属 v2。
+      // r45 MAJOR-3 + r46 revision: refuse invalidation for a session with
+      // busy / queued (pending-send queued follow-ups) state — but only in
+      // the compaction lane, which passes refuseWhenBusy explicitly (when
+      // auto-compaction fires mid-turn, a queued follow-up is waiting to be
+      // sent; deleting sessionStates[id] drops the queued array, the busy
+      // flag and the ownership state with it, per r45 evidence). Default is
+      // no refusal: the r8-M1 rewind skip lane and the r11-M2 live working
+      // set clear lane must keep invalidating (a stale busy cache beats a
+      // lost queue — switching back shows a stale timeline). Callers of the
+      // two refusal lanes must honor the false return and skip the follow-up
+      // action; keeping the queue across reloads is v2.
       const evicted = sessionStates[id];
       if (
         refuseWhenBusy &&

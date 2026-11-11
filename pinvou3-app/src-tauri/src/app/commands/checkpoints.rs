@@ -1050,9 +1050,10 @@ pub async fn rewind_to_turn(
     })
     .await
     .map_err(|error| format!("回退预检任务失败: {error}"))??;
-    // r46 MAJOR-1（GUI 镜像）：同边界活暂记在场 = 引导重试（崩溃尝试已完成
-    // apply，可能连 truncate 也已持久化）——跳过轮数门，让重试走完协议收尾
-    // （completion 臂会跳过注定失败的 at-boundary re-truncate）。
+    // r46 MAJOR-1 (GUI mirror): a live same-boundary pending marker means a
+    // guided retry (the crashed attempt already applied, truncate possibly
+    // persisted too) — skip the turn-count gate and let the retry finish the
+    // protocol (the completion arm skips the doomed at-boundary re-truncate).
     let pending_same_boundary = match checkpoints::peek_pending_rewind(&ledger)
         .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
     {
@@ -1234,10 +1235,12 @@ pub async fn rewind_to_turn(
         ),
         _ => None,
     };
-    // r46 MAJOR-1 completion arm（GUI 镜像）：转录已在边界（崩溃尝试已完成
-    // 截断持久化、暂记清理未跑）→ 跳过截断，直达收尾（clear + invalidate
-    // 在下方执行）。store 的 at-boundary 门会对重截断确定性拒绝，此处先行
-    // 短路并如实报告 0 新截断。
+    // r46 MAJOR-1 completion arm (GUI mirror): the transcript is already at
+    // the boundary (the crashed attempt persisted the truncation, the pending
+    // clear never ran) → skip the truncation and go straight to the tail
+    // (clear + invalidate run below). The store's at-boundary gate would
+    // deterministically refuse a re-truncation; short-circuit here and report
+    // zero new truncations honestly.
     let outcome = if pending_same_boundary && total_turns == keep_turns {
         Ok(crate::features::sessions::rewind::TruncateToTurnOutcome {
             rewound_turns: 0,

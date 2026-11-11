@@ -5839,15 +5839,32 @@ fn resolve_rewind_plan(
 /// (whose next persist resurrects the rewound-away turns, r24 minor 5)
 /// can be detected here — do not rewind a session whose GUI Code session
 /// may be mid-turn or merely open.
-/// r46 MAJOR-1: whether the session's latest rewind backup record exists -
-/// the guided-retry completion arm requires a real bound record (a planted
-/// pending marker with no backup behind it is refused). IO errors fail
-/// closed (no record = refuse).
-fn pending_has_bound_backup_record(store: &SessionStore, session: &str) -> bool {
+/// r46 MAJOR-1: the guided-retry completion verdict - the live pending is
+/// same-boundary, and its bound backup record proves the truncation
+/// committed (truncated_revision matches the CURRENT transcript revision).
+/// Sidecar-map consults live here so the rewind body keeps no sidecar-map
+/// literal (r28 M2's source pin stays meaningful). IO errors fail closed
+/// (no record = replay the idempotent protocol, never fake completion).
+fn pending_retry_completes(
+    store: &SessionStore,
+    session: &str,
+    pending_target: &str,
+    pending_keep: u32,
+    keep_turns: u32,
+    current_revision: &str,
+) -> bool {
+    if pending_keep != keep_turns {
+        return false;
+    }
     store
         .latest_rewound_turns_record(session)
-        .map(|record| record.is_some())
-        .unwrap_or(false)
+        .ok()
+        .and_then(|record| record)
+        .is_some_and(|record| {
+            record.pre_restore_checkpoint_id.as_deref() == Some(pending_target)
+                && !record.truncated_revision.is_empty()
+                && record.truncated_revision == current_revision
+        })
 }
 
 fn checkpoints_rewind(
@@ -5932,18 +5949,32 @@ fn checkpoints_rewind(
         crate::support::store_error("code", "checkpoints rewind", session, error)
     })?;
     if let Some((pending_target, pending_keep)) = live_pending {
-        if pending_keep == keep_turns {
-            // Same boundary: the guided-retry completion arm. The bound sidecar
-            // record must exist (guards against a planted pending marker).
-            // The bound backup record must exist (guards against a planted
-            // pending marker); the check lives in a helper so the rewind body
-            // itself keeps no sidecar-map consult (r28 M2's source pin stays
-            // meaningful).
-            if !pending_has_bound_backup_record(&store, session) {
-                return Err(CliError::failed(
-                    "pending_rewind_conflict: the pending marker's target is not bound to a rewind backup record",
-                ));
-            }
+        // r46 MAJOR-1 follow-up (review): discriminate the two crash states by
+        // the record's truncated_revision against the CURRENT transcript
+        // revision (both read before any mutation):
+        // - committed (revision matches): truncate persisted, only the
+        //   pending clear failed -> complete: clear + invalidate, report zero
+        //   new truncations.
+        // - not committed (apply done, truncate not yet): replay the
+        //   idempotent protocol below (matching reuses P1, prepare/apply are
+        //   idempotent, the truncate then completes).
+        // - record missing: a pending marker with no backup behind it is
+        //   planted/unrecoverable -> refuse honestly (existence-only checks
+        //   accepted it and reported success without replaying anything).
+        let current_revision =
+            pinvou3_lib::features::sessions::transcript_revision(&loaded.messages)
+                .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error:#}")))?;
+        // r28 M2: the completion verdict lives in a hoisted helper so the
+        // rewind body keeps no sidecar-map consult; its IO errors fail
+        // closed to the replay path (never a fake completion).
+        if pending_retry_completes(
+            &store,
+            session,
+            pending_target.as_str(),
+            pending_keep,
+            keep_turns,
+            &current_revision,
+        ) {
             checkpoints::clear_pending_rewind(&ledger);
             if let Err(error) = checkpoints::invalidate_turn_checkpoints_after(&ledger, keep_turns)
             {
@@ -5963,10 +5994,15 @@ fn checkpoints_rewind(
             );
             return Ok(success(render(output, human, &value)));
         }
-        return Err(CliError::failed(format!(
-            "pending_rewind_conflict: an unfinished rewind targeting checkpoint {}              (keeping {} turns) is still pending; complete or discard it first —              headless: retry `code checkpoints rewind` to that same checkpoint (the              guided retry completes it), or remove the pending marker in the session's              checkpoint ledger; desktop: sending a new message auto-reconciles it —              before rewinding to a different boundary ({})",
-            pending_target, pending_keep, keep_turns,
-        )));
+        if pending_keep != keep_turns {
+            return Err(CliError::failed(format!(
+                "pending_rewind_conflict: an unfinished rewind targeting checkpoint {}                  (keeping {} turns) is still pending; complete or discard it first —                  headless: retry `code checkpoints rewind` to that same checkpoint (the                  guided retry completes it), or remove the pending marker in the session's                  checkpoint ledger; desktop: sending a new message auto-reconciles it —                  before rewinding to a different boundary ({})",
+                pending_target, pending_keep, keep_turns,
+            )));
+        }
+        // Same boundary, truncation NOT committed: fall through to the
+        // ordinary flow (matching reuses P1, prepare/apply idempotent, the
+        // truncate completes the rewind).
     }
     if keep_turns >= total_turns {
         return Err(CliError::failed(format!(

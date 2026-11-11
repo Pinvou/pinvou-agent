@@ -513,9 +513,11 @@ impl SessionStore {
                 .and_then(|records| records.last().cloned())
                 .with_context(|| format!("会话 '{id}' 没有可反悔的回退记录"))?;
             // （持久化在锁作用域之外执行——见下方 persist_then_reconcile。）
-            Some((record, backups))
+            // r46 P1-2：不再把整图快照带出锁作用域——persist 释放锁的窗口里
+            // 对端可能改动 map，陈旧快照在删除阶段整图回写会抹掉对端改动。
+            Some(record)
         };
-        let Some((record, mut backups)) = record else {
+        let Some(record) = record else {
             unreachable!("with_context above guarantees a record");
         };
         let mut session = self
@@ -564,10 +566,21 @@ impl SessionStore {
         {
             let _backup_guard = REWIND_BACKUP_LOCK.lock();
             let _cross_process = lock_rewound_turns_file()?;
-            if let Some(records) = backups.get_mut(id) {
-                records.pop();
+            // r46 P1-2：重取锁后重载最新 map，只删除与本条指纹（rewound_at +
+            // truncated_revision）精确一致的记录。绝不按锁外快照 pop 尾部再整图
+            // 回写——persist 释放锁的窗口里对端（CLI/并发 undo）的推入会被
+            // last-writer-wins 抹掉，或弹掉对端新推的记录。指纹已不在场（对端
+            // 已消费本条）时保持 map 原样：重复恢复由上方条件复核天然拒绝。
+            let mut latest = load_rewound_turns_map()?;
+            if let Some(records) = latest.get_mut(id) {
+                if let Some(pos) = records.iter().rposition(|one| {
+                    one.rewound_at == record.rewound_at
+                        && one.truncated_revision == record.truncated_revision
+                }) {
+                    records.remove(pos);
+                }
             }
-            if let Err(error) = persist_rewound_turns_map(&backups) {
+            if let Err(error) = persist_rewound_turns_map(&latest) {
                 eprintln!("[sessions] remove consumed rewind backup for {id} failed: {error:#}");
             }
         }
