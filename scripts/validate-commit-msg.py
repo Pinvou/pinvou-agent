@@ -90,9 +90,9 @@ def validate_text(raw: str, label: str) -> list[str]:
     if semantic_desc != semantic_desc.strip():
         errors.append(f"{label}: description must not start or end with whitespace")
 
-    if len(semantic_desc) > 50:
+    if len(semantic_desc) > 72:
         errors.append(
-            f"{label}: description must be 50 characters or fewer, got {len(semantic_desc)}"
+            f"{label}: description must be 72 characters or fewer, got {len(semantic_desc)}"
         )
 
     if not any(char.isalpha() for char in semantic_desc):
