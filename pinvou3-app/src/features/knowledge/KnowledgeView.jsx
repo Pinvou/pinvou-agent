@@ -42,13 +42,19 @@ import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
  */
 
 const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false, outputsSkipped: [] };
-// The full document table (kb_documents limit:0) is unbounded, so the
-// module-level cache keeps only a bounded slice: a remount instantly shows
-// the first rows and loadColls() re-fetches the complete data after mount,
-// so the whole table no longer stays resident for the window's lifetime
-// after the view unmounts.
+// The document table (kb_documents) is paged at KB_DOCS_PAGE_SIZE with
+// offset continuation, so the module-level cache keeps only a bounded
+// slice of what has been loaded: a remount instantly shows the first
+// rows and loadColls() re-fetches page 0 after mount, so the table does
+// not stay resident for the window's lifetime after the view unmounts.
 const KB_ALL_DOCS_CACHE_CAP = 2000;
 const capCachedAllDocs = (docs) => (docs.length > KB_ALL_DOCS_CACHE_CAP ? docs.slice(0, KB_ALL_DOCS_CACHE_CAP) : docs);
+// 知识库文档表分页页大小:kb_documents 支持 offset 翻页(后端排序键带 id 决胜,
+// 相邻页全序稳定),替代原先 limit:0 的一次性拉取+整表渲染——扫描可覆盖 10 万+
+// 文件,整表无虚拟化渲染会把视图卡死。「加载更多」逐页追加,数据始终可达。
+const KB_DOCS_PAGE_SIZE = 200;
+// 文件管理 kb_search 单页行数(首页+续页同值),超出走 (mtime, id) keyset 游标续页。
+const KB_SEARCH_PAGE_SIZE = 200;
 
 const MODEL_PROGRESS_RADIUS = 31;
 const MODEL_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * MODEL_PROGRESS_RADIUS;
@@ -714,13 +720,42 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, [outputsOnly, scan ? scan.running : false, cat, query]);
 
-      const runSearch = async (catKey, text) => {
+      // 文件表分页:首页 limit=200,超出部分走后端已有的 (mtime, id) keyset
+      // 游标(store.rs search 的 ORDER BY f.mtime DESC, f.id DESC 全序契约)
+      // 以 mtimeBefore+idBefore 续页。「加载更多」逐页追加,扫表不再静默截断在前
+      // 200 行;截断期间展示「仅显示前 N 个文件」提示。扫描中轮询会整表重查,
+      // 加载更多仅在非扫描态出现。
+      const searchCursorOf = (page) => (page.length
+        ? { mtime: page[page.length - 1].mtime, id: page[page.length - 1].id }
+        : null);
+      const [searchPaging, setSearchPaging] = useState({ cursor: null, hasMore: false, loading: false });
+      const buildSearchQuery = (catKey, text, cursor) => {
         const c = CATS.find((x) => x.key === catKey) || CATS[0];
-        const q = { text: text || null, limit: 200 };
+        const q = { text: text || null, limit: KB_SEARCH_PAGE_SIZE };
         if (c.exts) q.exts = c.exts;
-        try { setResults(await invokeTauri('kb_search', { query: q }) || []); }
-        catch { setResults([]); }
+        if (cursor) { q.mtimeBefore = cursor.mtime; q.idBefore = cursor.id; }
+        return q;
+      };
+      const runSearch = async (catKey, text) => {
+        try {
+          const page = await invokeTauri('kb_search', { query: buildSearchQuery(catKey, text) }) || [];
+          setResults(page);
+          setSearchPaging({ cursor: searchCursorOf(page), hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
+        }
+        catch {
+          setResults([]);
+          setSearchPaging({ cursor: null, hasMore: false, loading: false });
+        }
         setSearched(true);
+      };
+      const loadMoreSearch = async () => {
+        if (!searchPaging.cursor || searchPaging.loading) return;
+        setSearchPaging((p) => ({ ...p, loading: true }));
+        try {
+          const page = await invokeTauri('kb_search', { query: buildSearchQuery(cat, query, searchPaging.cursor) }) || [];
+          setResults((prev) => [...prev, ...page]);
+          setSearchPaging({ cursor: searchCursorOf(page) || searchPaging.cursor, hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
+        } catch { setSearchPaging((p) => ({ ...p, loading: false })); }
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       useEffect(() => { if (sub === 'files') runSearch(cat, query); }, [cat, sub]);
@@ -757,6 +792,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       useEffect(() => { activeCollRef.current = activeColl; }, [activeColl]);
       const [docs, setDocs] = useState([]);
       const [allDocs, setAllDocs] = useState(kbCache.allDocs);
+      // kb_documents 分页状态(offset 续页):hasMore 以「整页返回」推断,
+      // hasMore=false 表示后面没有更多页。刷新路径(loadDocs/loadColls)重置回第 0 页。
+      const [docsPaging, setDocsPaging] = useState({ offset: 0, hasMore: false, loading: false });
+      const [allDocsPaging, setAllDocsPaging] = useState({ offset: 0, hasMore: false, loading: false });
       const [idx, setIdx] = useState(null);
       const [importError, setImportError] = useState('');
       const [failedFilesLoading, setFailedFilesLoading] = useState(false);
@@ -790,7 +829,23 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const [kbModel, setKbModel] = useState(kbCache.model); // embedding 模型部署状态(null=未知)
       const [kbCat, setKbCat] = useState('all'); // 知识库分类筛选 tab
 
-      const loadDocs = async (cid) => { try { setDocs(await invokeTauri('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch { /* silently degrade */ } };
+      const loadDocs = async (cid) => {
+        try {
+          const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
+          setDocs(page);
+          setDocsPaging({ offset: page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+        } catch { /* silently degrade */ }
+      };
+      const loadMoreDocs = async () => {
+        const cid = activeColl && activeColl.id;
+        if (!cid || docsPaging.loading) return;
+        setDocsPaging((p) => ({ ...p, loading: true }));
+        try {
+          const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: docsPaging.offset }) || [];
+          setDocs((prev) => [...prev, ...page]);
+          setDocsPaging({ offset: docsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+        } catch { setDocsPaging((p) => ({ ...p, loading: false })); }
+      };
       const loadColls = useCallback(async () => {
         try {
           const c = await invokeTauri('kb_collection_list') || [];
@@ -798,11 +853,31 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           setActiveColl((current) => (current ? c.find((item) => item.id === current.id) || null : null));
           kbCache.colls = c;
         } catch { /* silently degrade */ }
-        try { const d = await invokeTauri('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = capCachedAllDocs(d); } catch { /* silently degrade */ }
+        try {
+          const d = await invokeTauri('kb_documents', { collectionId: 0, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
+          setAllDocs(d);
+          setAllDocsPaging({ offset: d.length, hasMore: d.length >= KB_DOCS_PAGE_SIZE, loading: false });
+          kbCache.allDocs = capCachedAllDocs(d);
+        } catch { /* silently degrade */ }
         try { const ei = await invokeTauri('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
         try { const m = await invokeTauri('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
         try { replaceIndexState(await invokeTauri('kb_index_status')); } catch { /* silently degrade */ }
       }, [replaceIndexState]);
+      // 跨库总表「加载更多」:追加下一页并同步镜像进 kbCache(与 removeDocument
+      // 的缓存写法一致),翻页后缓存始终对应当前已加载的行。
+      const loadMoreAllDocs = async () => {
+        if (allDocsPaging.loading) return;
+        setAllDocsPaging((p) => ({ ...p, loading: true }));
+        try {
+          const page = await invokeTauri('kb_documents', { collectionId: 0, limit: KB_DOCS_PAGE_SIZE, offset: allDocsPaging.offset }) || [];
+          setAllDocs((prev) => {
+            const next = [...prev, ...page];
+            kbCache.allDocs = capCachedAllDocs(next);
+            return next;
+          });
+          setAllDocsPaging({ offset: allDocsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+        } catch { setAllDocsPaging((p) => ({ ...p, loading: false })); }
+      };
       // 本地文件与本地知识库两个分区依赖本机知识集数据；远程分区自行加载服务器数据。
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
       useEffect(() => {
@@ -1173,6 +1248,22 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                 </div>
                               </div>
                             );})}
+                            {(() => {
+                              // 截断披露+续页:仅当上一页返回满页(可能还有更多)时出现;
+                              // 扫描中轮询整表重查,续页暂停展示。全部加载完后页脚消失。
+                              if (scanning || !searchPaging.hasMore || results.length === 0) return null;
+                              return (
+                                <div className="mt-3 flex items-center justify-center gap-3 py-1">
+                                  <span className={`text-[12px] ${muted}`}>{t.kbFilesShowingFirst(results.length)}</span>
+                                  <button type="button" data-testid="kb-search-load-more" disabled={searchPaging.loading}
+                                    onClick={loadMoreSearch}
+                                    className={`flex items-center gap-1.5 rounded-full px-4 py-1.5 text-[12px] font-medium transition-colors text-[#0B57D0] hover:bg-[#0B57D0]/[0.06] disabled:cursor-default disabled:opacity-60 dark:text-[#A8C7FA] dark:hover:bg-white/[0.06]`}>
+                                    {searchPaging.loading ? <RefreshCw size={13} className="animate-spin" /> : <ChevronDown size={13} className="opacity-70" />}
+                                    {t.kbLoadMore}
+                                  </button>
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>
@@ -1643,6 +1734,20 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                             </div>
                           </div>
                         );})}
+                        {(() => {
+                          const paging = activeColl ? docsPaging : allDocsPaging;
+                          if (!paging.hasMore) return null;
+                          return (
+                            <div className="flex items-center justify-center border-t border-gray-400/10">
+                              <button type="button" data-testid="kb-docs-load-more" disabled={paging.loading}
+                                onClick={activeColl ? loadMoreDocs : loadMoreAllDocs}
+                                className={`flex items-center gap-1.5 px-4 py-2.5 text-[12px] font-medium transition-colors text-[#0B57D0] hover:bg-[#0B57D0]/[0.06] disabled:cursor-default disabled:opacity-60 dark:text-[#A8C7FA] dark:hover:bg-white/[0.06]`}>
+                                {paging.loading ? <RefreshCw size={13} className="animate-spin" /> : <ChevronDown size={13} className="opacity-70" />}
+                                {t.kbLoadMoreDocs}
+                              </button>
+                            </div>
+                          );
+                        })()}
                       </div>
                       );
                     })()}

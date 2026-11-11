@@ -664,7 +664,9 @@ try {
     && runtime.includes('cancel_without_active_prompt')
     && runtime.includes('runtime.busy.load(Ordering::Acquire)'),
   'app restart and stale stop must close orphaned ACP turns without cancelling an idle runtime');
-  assert.ok(runtime.includes('LoadSessionRequest::new(saved_id.clone(), workspace.clone())'));
+  // session/load is bounded by ACP_SESSION_LOAD_TIMEOUT (the load await sits
+  // inside tokio::time::timeout), so the request construction is multi-line.
+  assert.ok(runtime.includes('LoadSessionRequest::new(\n                                saved_id.clone(),\n                                workspace.clone(),\n                            )'));
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
   assert.ok(runtime.includes('apply_saved_mode('), 'saved Full Access mode must be restored after new/load');

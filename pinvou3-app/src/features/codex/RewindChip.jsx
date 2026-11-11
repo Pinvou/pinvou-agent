@@ -10,8 +10,6 @@ import { RotateCcw } from '../../components/icons.jsx';
 import { ModalShell } from '../../components/ModalShell.jsx';
 import { summarizeCheckpointChanges } from './checkpoints.js';
 
-const FILE_LIST_LIMIT = 8;
-
 function ChangeSummary({ summary, copy }) {
   if (!summary.total) {
     return <span className="text-gray-400">{copy.rewindNoChanges}</span>;
@@ -27,11 +25,11 @@ function ChangeSummary({ summary, copy }) {
 
 function ChangeFileList({ changes, copy }) {
   if (!changes.length) return null;
-  const visible = changes.slice(0, FILE_LIST_LIMIT);
-  const rest = changes.length - visible.length;
+  // 全量渲染：容器本身 max-h-44 滚动，截断到前 8 行只会让历史 diff 路径
+  // 在弹窗里不可达（计数还在、行却永不渲染）。
   return (
     <div className="mt-2 max-h-44 overflow-y-auto custom-scrollbar rounded-xl border border-black/[0.05] dark:border-white/[0.07]">
-      {visible.map((change, index) => (
+      {changes.map((change, index) => (
         <div key={`${change.path || 'file'}-${index}`}
           className="flex items-center gap-2 border-b border-black/[0.04] px-2.5 py-1.5 text-[11px] last:border-b-0 dark:border-white/[0.05]">
           <span className="shrink-0 rounded-md bg-black/[0.05] px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-white/[0.08] dark:text-gray-400">
@@ -42,9 +40,6 @@ function ChangeFileList({ changes, copy }) {
           </span>
         </div>
       ))}
-      {rest > 0 && (
-        <div className="px-2.5 py-1.5 text-[11px] text-gray-400">{copy.rewindMoreFiles(rest)}</div>
-      )}
     </div>
   );
 }

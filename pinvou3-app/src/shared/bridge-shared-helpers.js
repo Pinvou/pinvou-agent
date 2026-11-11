@@ -851,7 +851,7 @@
       // Refresh task badges/detail first, then replace the global run list from
       // the same retained backend state. The aggregate request has its own stale
       // response guard, so a concurrent archive/delete cannot resurrect a row.
-      Promise.resolve(refreshScheduledTaskData(20))
+      Promise.resolve(refreshScheduledTaskData(100))
         .catch(function () {})
         .then(function () { return loadScheduledTaskRecentRuns(); })
         .catch(function () {});
@@ -1277,7 +1277,7 @@
     const requests = [loadScheduledTasks()];
     if (selectedId) {
       requests.push(readScheduledTask(selectedId));
-      requests.push(loadScheduledTaskRuns(selectedId, limit || 20));
+      requests.push(loadScheduledTaskRuns(selectedId, limit || 100));
     }
     const promise = Promise.all(requests).finally(function () {
       if (scheduledTaskRefreshInFlight.value && scheduledTaskRefreshInFlight.value.promise === promise) {

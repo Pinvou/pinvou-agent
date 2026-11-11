@@ -3552,7 +3552,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   formatAttachmentError,
                 );
               }
-            } catch { /* A single failed read is silently dropped, as before; the rest of the pasted images proceed */ }
+            } catch (pasteError) {
+              // Per-image contract unchanged: one failed read is dropped, the rest proceed.
+              // The shared reader's 20 MB size pre-check rejects oversized pastes before any
+              // byte is read (device_upload_too_large code); log it with the localized copy
+              // for diagnostics — the composer has no inline error surface for paste reads.
+              const limitCopy = formatAttachmentLimitError(pasteError, t.uiAttachments);
+              if (limitCopy) console.warn('Chat paste image rejected:', limitCopy, pasteError);
+            }
           }
           return;
         }
