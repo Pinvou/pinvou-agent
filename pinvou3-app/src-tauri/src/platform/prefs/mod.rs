@@ -460,6 +460,70 @@ pub(crate) fn legacy_official_deepseek_base_url(base_url: &str) -> bool {
     normalized == "https://api.deepseek.com"
 }
 
+/// K3.1 family spellings on the official Kimi routes (moonshot platform
+/// `https://api.moonshot.ai|cn/v1` and Kimi Code
+/// `https://api.kimi.com/coding/v1`), case-insensitive on the model string
+/// and bracket-tolerant on the documented `[1m]` 1M declaration suffix
+/// (2026-11-04 review round 4). The contract attaches when the record
+/// carries a kimi/moonshot vendor
+/// stamp (the catalog rows stamp "kimi"; test/loopback fixtures ride the
+/// same stamp) OR the base URL resolves to the vendor's own official route
+/// (legacy migrated records may carry an empty vendor or the `moonshot`
+/// alias on those endpoints — 2026-11-04 review round 3). Records with no
+/// stamp on a non-official base are custom relay endpoints and keep their
+/// existing contract (effort passthrough). Also consumed by the bridge's
+/// effort resolution (the send-path default arm must resolve K3.1 to None —
+/// see `request_reasoning_effort_for_provider`) and mirrored by the
+/// frontend `isMoonshotK31ModelName` + `moonshotK31ContractAttaches`.
+pub(crate) fn is_moonshot_k31_route(vendor: &Option<String>, base_url: &str, model: &str) -> bool {
+    let vendor_stamped = vendor.as_deref().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "kimi" | "moonshot"
+        )
+    });
+    if !vendor_stamped && !is_official_kimi_route_base_url(base_url) {
+        return false;
+    }
+    // The `[1m]` declaration forms (k3.1-pro[1m] is the documented Kimi Code
+    // Claude Code declaration and the ACP catalog's Kimi Code models1m
+    // suggestion; kimi-k3.1-pro[1m] is its prefixed-platform composite — no
+    // platform page declares that spelling, re-verified 2026-11-05) are the
+    // same K3.1 models — strip the suffix before the exact match so the
+    // contract covers them too (2026-11-04 review round 4: the bare-only
+    // match let a stored "off" on a bracket spelling wire the
+    // vendor-rejected disable shape). Only the 1M declaration suffix is
+    // tolerated; anything else
+    // (versions, quantization tags) stays outside the exact-match contract.
+    // Bracket forms of NON-K3.1 ids (k3[1m] / kimi-k3[1m]) strip to non-K3.1
+    // spellings and keep their own contracts, as before.
+    let normalized = model.trim().to_ascii_lowercase();
+    let bare = normalized
+        .strip_suffix("[1m]")
+        .unwrap_or(normalized.as_str());
+    matches!(
+        bare,
+        "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" | "k3.1-pro" | "k3.1-pro-highspeed"
+    )
+}
+
+/// The vendor's own K3-family endpoints (mirrors the frontend
+/// `isExactMoonshotPlatformBaseUrl` / `isExactKimiCodeBaseUrl` and the
+/// foundation's exact-route gates). The normalization here is deliberately
+/// looser than the frontend mirror (all trailing slashes stripped and the
+/// whole URL lowercased, vs the frontend's single-slash strip and
+/// scheme/authority-only case folding), so the Rust attach set is a
+/// superset of the FE one: the FE can only hide the tier control for a
+/// record this side also treats, never the reverse — and the wire arm keys
+/// off this same predicate, so no illegal shape can slip through either
+/// way.
+fn is_official_kimi_route_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    normalized == "https://api.moonshot.ai/v1"
+        || normalized == "https://api.moonshot.cn/v1"
+        || normalized == "https://api.kimi.com/coding/v1"
+}
+
 pub(crate) fn legacy_local_route_base_url(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
@@ -600,6 +664,33 @@ impl SavedModel {
                 "max" | "maximum" | "xhigh" | "ultra" | "ultracode" => Some("max".to_string()),
                 _ => None,
             };
+        }
+        // Kimi K3.1 spellings (kimi-k3.1-pro[-highspeed] / k3.1-pro[-highspeed]):
+        // the vendor contract is always-reasoning — depth via top-level
+        // reasoning_effort low/high/max, and `thinking:{type:"disabled"}` is
+        // rejected with an error (models-overview: "参数约束也与 kimi-k3 完全
+        // 一致"). The base's exact-K3 route shapers only learn bare k3
+        // spellings, so ANY stored effort for these models — notably an
+        // "off" saved through the generic off/high switch the catalog used
+        // to offer — reaches the generic Moonshot arm and wires an illegal
+        // disable shape. Drop the field: the documented omission is valid
+        // and resolves to the vendor default (endpoint-specific — the Kimi
+        // Code models table documents omitted K3.1 effort as `high` on the
+        // coding-plan lane; the models-overview `max` wording is the
+        // platform-API surface). Downgrade note: this drop is one-way —
+        // configs saved by this build no longer carry K3.1 effort, and an
+        // older build reading them sees the field absent and re-applies
+        // its own ladder/default; the previously chosen tier is not
+        // recoverable (nothing corrupts). The contract attaches
+        // via the kimi/moonshot vendor stamp or the vendor's own official
+        // route (legacy migrated records may carry an empty vendor or the
+        // moonshot alias there); unstamped custom relay endpoints keep
+        // their existing contract. Mirrors the frontend tiers exit
+        // (isMoonshotK31ModelName) added in the same pass.
+        if self.reasoning_effort.is_some()
+            && is_moonshot_k31_route(&self.vendor, &self.base_url, &self.model)
+        {
+            self.reasoning_effort = None;
         }
     }
 
@@ -1091,6 +1182,18 @@ impl UserPrefs {
         let local_output_sentinel_changed = prefs.advanced.saved_models.iter().any(|model| {
             model.preset == ModelPreset::LocalVllm && model.max_output_tokens == Some(24_576)
         });
+        // The K3.1 stored-effort drop (`normalize_route_limits` nulls the
+        // field on any kimi/moonshot-stamped or official-route K3.1 record)
+        // is the same class as the sentinel above — but the flag cannot be
+        // detected from RAW metadata before migrate/normalize run: a
+        // vendorless record on a recognized overseas coding URL or a full
+        // `/chat/completions` URL only acquires its Kimi identity during
+        // `normalize_saved_model_metadata` (2026-11-05 review 5783266663 /
+        // 5783312297), so a raw pre-check misses it and the dropped effort
+        // stays on disk forever for sessions that only ever load. Snapshot
+        // the records before the rewrite pass and detect the actual change
+        // across the normalized result instead.
+        let pre_normalize_saved_models = prefs.advanced.saved_models.clone();
         // The #622 machine-written-local-off migration must persist its
         // marker even when no record matched: "migration ran" is what keeps
         // a later explicitly-saved `off` from being stripped by a
@@ -1106,9 +1209,16 @@ impl UserPrefs {
         // file, where not deleting is the benign orphan direction.
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
+        // Any saved_models drift across the rewrite pass — including a
+        // K3.1 record whose stored effort the drop arm cleared only after
+        // its vendor identity was stamped by the normalizers — counts as a
+        // normalization change (Snapshot comparison; see the comment above
+        // `pre_normalize_saved_models`).
+        let saved_models_changed = prefs.advanced.saved_models != pre_normalize_saved_models;
         let normalization_changed = minimax_endpoint_changed
             || local_model_alias_changed
             || local_output_sentinel_changed
+            || saved_models_changed
             || local_thinking_default_migrated
             || migration.settings_sanitized
             || memory_policy_changed
@@ -2168,6 +2278,140 @@ mod tests {
         });
     }
 
+    /// Kimi K3.1 spellings are always-reasoning on the vendor wire (depth
+    /// via top-level reasoning_effort; `thinking:{type:"disabled"}` is
+    /// rejected) and the base's exact-K3 shapers only learn bare k3, so any
+    /// stored effort — notably an "off" saved through the generic off/high
+    /// switch the catalog used to offer — would wire an illegal shape. The
+    /// load-path normalization drops the field (documented omission resolves
+    /// to the endpoint-specific vendor default — `high` on the Kimi Code
+    /// coding lane, `max` on the platform-API surface); non-K3.1 records are
+    /// untouched.
+    #[test]
+    fn normalize_drops_stored_effort_for_kimi_k31_models() {
+        let base = SavedModel {
+            id: "m1".into(),
+            name: "m1".into(),
+            alias: None,
+            preset: ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: Some("off".into()),
+            model: "kimi-k3.1-pro".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            provider_kind: None,
+            vendor: Some("kimi".into()),
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        };
+
+        for spelling in [
+            "kimi-k3.1-pro",
+            "kimi-k3.1-pro-highspeed",
+            "k3.1-pro",
+            "k3.1-pro-highspeed",
+            "KIMI-K3.1-PRO",
+            // The `[1m]` declaration forms are the same K3.1 models
+            // (k3.1-pro[1m] is the documented Kimi Code declaration and the
+            // ACP Kimi Code datalist entry; kimi-k3.1-pro[1m] its prefixed
+            // composite) — the stored-effort drop must cover them too, or a
+            // stored "off" picked through the generic ladder would wire the
+            // vendor-rejected disable shape (2026-11-04 review round 4).
+            "k3.1-pro[1m]",
+            "kimi-k3.1-pro[1m]",
+            "K3.1-PRO[1M]",
+            // The highspeed [1m] composites (round-9 review: the loop
+            // previously covered only the two non-highspeed composites;
+            // the matcher handles them via the same single-suffix strip).
+            "k3.1-pro-highspeed[1m]",
+            "kimi-k3.1-pro-highspeed[1m]",
+        ] {
+            let mut record = base.clone();
+            record.model = spelling.into();
+            record.normalize_route_limits();
+            assert_eq!(
+                record.reasoning_effort, None,
+                "stored effort is dropped for K3.1 spelling {spelling}"
+            );
+        }
+
+        // Legacy migrated records may carry an EMPTY vendor on the official
+        // endpoint: the resolved route plus the model spelling is the
+        // contract, so the drop applies there too (2026-11-04 review
+        // round 3 — the vendor stamp alone missed these).
+        let mut legacy = base.clone();
+        legacy.vendor = None;
+        legacy.normalize_route_limits();
+        assert_eq!(
+            legacy.reasoning_effort, None,
+            "an empty-vendor record on the official moonshot endpoint is still K3.1"
+        );
+        let mut aliased = base.clone();
+        aliased.vendor = Some("moonshot".into());
+        aliased.normalize_route_limits();
+        assert_eq!(
+            aliased.reasoning_effort, None,
+            "the moonshot vendor alias on the official endpoint is still K3.1"
+        );
+
+        // The `[1m]` suffix is only tolerated for K3.1 ids: bracket forms of
+        // NON-K3.1 spellings (k3[1m] / kimi-k3[1m]) strip to non-K3.1 models
+        // and keep their own contract — a stored value survives (2026-11-04
+        // review round 4).
+        for spelling in ["k3[1m]", "kimi-k3[1m]"] {
+            let mut record = base.clone();
+            record.model = spelling.into();
+            record.normalize_route_limits();
+            assert_eq!(
+                record.reasoning_effort,
+                Some("off".into()),
+                "non-K3.1 bracket spelling {spelling} keeps its stored effort"
+            );
+        }
+
+        // A custom relay endpoint with NO kimi vendor stamp keeps its
+        // existing contract (effort passthrough) — only the vendor's own
+        // routes (or a stamped record) carry the K3.1 thinking rejection.
+        let mut relay = base.clone();
+        relay.vendor = None;
+        relay.base_url = "https://relay.example/v1".into();
+        relay.normalize_route_limits();
+        assert_eq!(
+            relay.reasoning_effort,
+            Some("off".into()),
+            "an unstamped relay endpoint keeps the stored effort (its own contract)"
+        );
+
+        // The vendor STAMP arm alone (non-official base) also carries the
+        // contract — the main loop above exercises stamp+route combined, so
+        // pin the stamp arm in isolation, including the case/whitespace
+        // folding of the stamp value (2026-11-05 review).
+        for vendor_stamp in ["kimi", "Kimi", "MOONSHOT", " moonshot "] {
+            let mut stamped_relay = base.clone();
+            stamped_relay.vendor = Some(vendor_stamp.into());
+            stamped_relay.base_url = "https://relay.example/v1".into();
+            stamped_relay.normalize_route_limits();
+            assert_eq!(
+                stamped_relay.reasoning_effort, None,
+                "a kimi-stamped relay record drops the stored K3.1 effort (stamp arm alone; vendor {vendor_stamp:?})"
+            );
+        }
+
+        // A non-K3.1 kimi record (K3 rides the exact tiered route with its
+        // own off→low equivalence) keeps its stored effort.
+        let mut k3 = base.clone();
+        k3.model = "kimi-k3".into();
+        k3.reasoning_effort = Some("off".into());
+        k3.normalize_route_limits();
+        assert_eq!(k3.reasoning_effort, Some("off".into()));
+    }
+
     /// LocalVllm no longer forces a 24K output (stays None when not
     /// explicitly configured; declared uniformly by the runtime window
     /// tiers); the operator-owned predicate covers both local and custom
@@ -2725,6 +2969,167 @@ mod tests {
                 .find(|model| model["id"] == "custom-explicit")
                 .expect("custom on disk");
             assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
+            // PINVOU3_HOME restoration and temporary home reclamation are
+            // handled by `with_temp_home`'s Drop (also on assertion/panic
+            // paths); no hand-written restore block here.
+        });
+    }
+
+    /// The K3.1 stored-effort drop must persist through a load-only session,
+    /// not just the next explicit save: the drop flag feeds the
+    /// `normalization_changed` gate like every other load-path rewrite
+    /// (2026-11-05 review M1). One official-route K3.1 record (empty vendor —
+    /// the migrated-record shape) must lose the effort on disk; one unstamped
+    /// relay record carrying the same model id must keep its effort verbatim.
+    #[test]
+    fn load_persists_k31_effort_drop() {
+        with_temp_home("pinvou3-prefs-k31-effort-drop", || {
+            let mut prefs = UserPrefs::default();
+            // Already-migrated fixture (review 5783312297): the unrelated
+            // #622 migration independently triggers a save, which would let
+            // the disk assertion pass even without the K3.1 drop flag.
+            // Settling it here isolates this regression to the
+            // saved-models drift detection.
+            prefs.local_thinking_default_migrated = true;
+            prefs.advanced.saved_models.push(SavedModel {
+                id: "k31-official".into(),
+                name: "K3.1 Official".into(),
+                alias: None,
+                preset: ModelPreset::Kimi,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                // A stored tier the older builds could write: the vendor
+                // rejects the shape for K3.1, so the drop must clear it and
+                // the load lane must persist the cleared value.
+                reasoning_effort: Some("off".into()),
+                model: "kimi-k3.1-pro".into(),
+                base_url: "https://api.moonshot.cn/v1".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            });
+            prefs.advanced.saved_models.push(SavedModel {
+                id: "k31-relay".into(),
+                name: "K3.1 Relay".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                // The unstamped-relay passthrough negative: same model id on
+                // a custom endpoint keeps the contract it was saved with.
+                reasoning_effort: Some("high".into()),
+                model: "kimi-k3.1-pro".into(),
+                base_url: "https://relay.example.com/v1".into(),
+                provider_kind: Some(MODEL_PROVIDER_KIND_CUSTOM.into()),
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            });
+            prefs.advanced.saved_models.push(SavedModel {
+                id: "k31-suffixed".into(),
+                name: "K3.1 Suffixed Route".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                // The raw URL carries the full endpoint path users paste;
+                // the drop arm only matches after provider-metadata
+                // normalization strips the suffix, so this shape is the one
+                // the removed raw pre-check missed (round-8 review) — the
+                // snapshot-diff detection must keep covering it, and this
+                // pins the strip_chat_completions_suffix integration into
+                // normalize_provider_metadata (previously untested).
+                reasoning_effort: Some("off".into()),
+                model: "kimi-k3.1-pro".into(),
+                base_url: "https://api.moonshot.cn/v1/chat/completions".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            });
+            prefs.advanced.active_model_id = Some("k31-official".into());
+            let path = super::super::paths::settings_path();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&prefs).expect("serialize k31 prefs"),
+            )
+            .expect("write k31 prefs");
+
+            let loaded = UserPrefs::load();
+            let official = loaded
+                .model_by_id("k31-official")
+                .expect("official k31 model");
+            assert_eq!(
+                official.reasoning_effort, None,
+                "the in-memory stored K3.1 effort must already be dropped"
+            );
+            let relay = loaded.model_by_id("k31-relay").expect("relay k31 model");
+            assert_eq!(
+                relay.reasoning_effort,
+                Some("high".into()),
+                "the unstamped relay record must keep its effort passthrough"
+            );
+            let suffixed = loaded
+                .model_by_id("k31-suffixed")
+                .expect("suffixed k31 model");
+            assert_eq!(
+                suffixed.reasoning_effort, None,
+                "the suffixed official-route record must drop in memory"
+            );
+            assert_eq!(
+                suffixed.base_url, "https://api.moonshot.cn/v1",
+                "the suffix must be stripped by provider-metadata normalization"
+            );
+
+            // Key assertion: the drop was written back to disk (not just
+            // changed in memory) by the load-only session.
+            let persisted: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
+                    .expect("parse migrated prefs");
+            let models = persisted["advanced"]["saved_models"]
+                .as_array()
+                .expect("saved_models array");
+            let official_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "k31-official")
+                .expect("official k31 on disk");
+            assert!(
+                official_on_disk["reasoning_effort"].is_null(),
+                "the on-disk stored K3.1 effort must be cleared by the load-only session, got {}",
+                official_on_disk["reasoning_effort"]
+            );
+            let relay_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "k31-relay")
+                .expect("relay k31 on disk");
+            assert_eq!(relay_on_disk["reasoning_effort"], "high");
+            let suffixed_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "k31-suffixed")
+                .expect("suffixed k31 on disk");
+            assert!(
+                suffixed_on_disk["reasoning_effort"].is_null(),
+                "the on-disk suffixed-record effort must be cleared by the load-only session"
+            );
             // PINVOU3_HOME restoration and temporary home reclamation are
             // handled by `with_temp_home`'s Drop (also on assertion/panic
             // paths); no hand-written restore block here.

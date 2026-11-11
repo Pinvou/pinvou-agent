@@ -166,9 +166,24 @@ function hasStoredCredential(record) {
           </span>
         );
       }
-      const src = BRAND_ICON_BY_PRESET[preset] || (vendor && BRAND_ICON_BY_VENDOR[vendor]);
+      // Vendor-stamped rows must not inherit the shared preset's mark: the
+      // vendors added in the 2026-11-03 catalog refresh (mistral/meta/
+      // together/groq) and the aggregators (openrouter/siliconflow) ride
+      // preset openai_compatible and otherwise wear the OpenAI logo
+      // (2026-11-05 review) — a vendor stamp without a brand mark gets the
+      // neutral Globe tile instead, and the preset brand only wins when no
+      // vendor stamp exists (plain openai_compatible relays).
+      const vendorMark = vendor && BRAND_ICON_BY_VENDOR[vendor];
+      if (vendor && !vendorMark) {
+        return (
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/[0.18] dark:text-[#64B5F6]`}>
+            <Globe size={compact ? 17 : 19} strokeWidth={2.2} />
+          </span>
+        );
+      }
+      const src = vendorMark || BRAND_ICON_BY_PRESET[preset];
       if (!src) return null;
-      const darkBacked = preset === 'kimi';
+      const darkBacked = preset === 'kimi' || vendor === 'kimi';
       return (
         <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : ('bg-white border border-black/[0.08] dark:border-transparent')}`}>
           <img src={src} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
@@ -958,7 +973,17 @@ function hasStoredCredential(record) {
         <div className="space-y-4">
           {catalogGroups.map(group => (
             <section key={group.key}>
-              <div className={catalogSectionTitleClass}>{group.providerKind === PROVIDER_KIND_CODING_PLAN ? group.title : presetProviderLabel(group.preset, t)}</div>
+              {/* Header shows the group's own localized title (en/ja via the
+                  providerCatalog overlay, zh via the catalog's inline
+                  titles) — the raw preset label would misbrand every
+                  vendor group riding a shared preset as "OpenAI
+                  Compatible" (2026-11-04 round-4 review). The local group
+                  also has en/ja overlays but keeps its localized preset
+                  label on purpose: the overlay titles drop the (default)
+                  marker the preset label carries (本地模型（默认）), and
+                  the marker matters (corrected 2026-11-05 review — the
+                  earlier "no overlay" note was wrong). */}
+              <div className={catalogSectionTitleClass}>{group.key === 'local' ? presetProviderLabel(group.preset, t) : group.title}</div>
               <div className={catalogGroupClass}>
                 {group.items.map(item => {
                   const active = preset === group.preset && !item.custom && catalogItemMatchesModel(item, model);

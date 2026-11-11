@@ -1151,6 +1151,7 @@ dictZh.uiSettingsDetail.customModelTitles = {
   tencent_coding_plan:'自定义腾讯云 Coding Plan 模型', tencent_token_plan:'自定义腾讯云 Token Plan 模型', kimi_coding_plan:'自定义 Kimi Coding Plan 模型',
   volcengine_coding_plan:'自定义火山方舟 Coding Plan 模型', qwen_coding_plan:'自定义千问 Coding Plan 模型',
   openrouter:'自定义 OpenRouter 模型', siliconflow:'自定义硅基流动模型', siliconflow_global:'自定义硅基流动模型',
+  mistral:'自定义 Mistral 模型', meta:'自定义 Meta 模型', together:'自定义 Together 模型', groq:'自定义 Groq 模型',
 };
 
 // features/chat 后台任务指示器词条（uiChat 已存在，合并而非覆盖）

@@ -61,19 +61,19 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `f1eb10efc`，包含 #115–#122 与 #114/#125；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为公开维护头 `11cba403d`，包含 #115–#122、#114/#125 与 #123/#124/#129/#131/#133/#134/#135；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-10-28）
+## 0. 当前状态（2026-11-05）
 
-- 当前公开维护头与父仓 gitlink：`f1eb10efcfe2468fde42d1724d7f5f19d54b904c`（2026-10-28）。#114 已合入为 `fe90f72f9`，#125 为 `f1eb10efc`；本轮仅更新父仓引用，没有推进维护分支。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 86 个提交，r1 `1fafee7e2` 之上 71 个；84 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；本轮仅更新父仓引用，没有推进维护分支。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 93 个提交，r1 `1fafee7e2` 之上 78 个；91 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：525 files, +91397/-39288，净增 52109；255 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：540 files, +119210/-49666，净增 69544；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
@@ -96,8 +96,6 @@
 旧 r13 相对 v0.9.5 修改 110 个文件。与 v0.9.12 对照时，104 个旧修改文件也被上游改动，直接三方移植预计产生 57 个冲突文件。与此同时，上游已经吸收或重构了大量旧 patch，包括会话快照/恢复、编辑上一轮、压缩后 token、provider/model 路由、原生搜索、Windows UTF-8 Shell、JSON schema 修复与任务基础设施。
 
 因此本次从官方 `v0.9.12` tag 直接建立新分支，只重表达仍然缺失且必须位于底座生命周期内的语义；没有 merge 或 cherry-pick 旧 r13 冲突树。
-| `f1eb10efc` | T3：统一有界发现与精确名称技能指引；迁移 v11 捆绑发现技能并保留用户编辑（#125） |
-| `fe90f72f9` | T2：复用可证明的流式工具入参后缀；不确定片段保留原回退（#114） |
 
 ## 2. 旧 r13 逐项处置
 
@@ -124,6 +122,13 @@
 
 | Commit | 主题 | 说明 |
 |---|---|---|
+| `11cba403d` | deps | undici 7.30.1 与 msal-node 7.1.2 的 npm lock 内刷新，关闭 `pinvou3-clean` 当时全部 4 条 open Dependabot 高危告警；仅 lockfile，无 manifest 或源码改动（#135） |
+| `8a4719fd4` | T3 本地化 | 清扫 locale 包过时模式文案：补完 rail→workbar 改名的非英文一半（11 个语言包 88 个 rail 词键），补齐多月未随英文发布的 must-translate 键并新增缺失门禁；全部 value-only 替换，`en.json` 与基线逐字节一致（#134） |
+| `4e75c6a07` | T3 | fetch_url 工具描述移除失实的 "sandboxed" 声明：改写为注明 Bash 工具的沙箱策略可能拒绝出站网络，fetch_url 本身是进程内 HTTP 客户端；citation 与 login-wall 句保持不变（#133） |
+| `e2a0e14fd` | T3 底座登记批次 | tri-mode 安全模型（Plan/Auto/YOLO + 会话级 ask-on-guardrail 开关）引擎侧行为契约：host-armed guardrail prompts 与 authority-transition notice。武装发布粘滞、preview 计划姿态、runtime pump 尊重 force_prompt、status 后缀只报真实翻转、窄化 provenance 轮次不误报 "(host)" 转换行、Auto-Review 窄化降级结构化回执、协议 crate ChangeMode 载荷 serde 钉与隔离运行时诚实姿态回执等，经逐轮评审收敛；`forkguard_*` 行为名随本批次显著净增（#131） |
+| `4e560354c` | T1/T2 | 回移上游 run-completion API 与 Windows GNU LLVM bindings：两处 fork engine factory 暴露 cancel-safe 的精确 run 完成发布（正常/异常完成在自有 run future drop 后发布，直接构造器报告 NotObserved），exec 消费方在 Shutdown 投递与等待间共享两秒预算，替代原无界 Shutdown send 并保留原任务结果；rquickjs bindgen 仅对 Windows GNU LLVM 启用。无依赖版本或 lockfile 变更（#129） |
+| `449edbf0b` | T2 | 固定子任务身份与完整输出恢复：精确及历史 ID 不回退同名任务，resume/mail/wait/inspect 保留捕获身份与真实结果并如实报告 gone；typed tool_call_id 与默认 artifact 命名空间分离，classic session 输出复用不可变写入防规范化碰撞；partial FIFO 投递以仅测试编译的确定性钩子验证。结构化摘要恢复 footer 收敛到共享 helper `model_context_recovery_footer`（指纹随迁至 truncate.rs）（#124） |
+| `e5a8af221` | T2 | 释放被中断子任务永久滞留的写 claim（会话级写锁死锁根因）并让续接 spawn 继承 worktree 隔离路径规则；与 #119 六文件共享且 hunk 范围不相交，每项修复带红绿测试，F1 经变异验证（#123） |
 | `38dd961ea` | T1 | 重建 v0.9.12 宿主 facade、路由与嵌入边界 |
 | `a5c12e203` | T2 | 保留工具兼容、MCP secret 与执行期安全入口 |
 | `7dc1a429a` | T3 | 恢复宿主静态 prompt 所有权 |

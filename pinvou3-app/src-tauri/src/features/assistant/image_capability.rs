@@ -63,22 +63,182 @@ impl ImageInputMode {
     }
 }
 
-/// Moonshot always-thinking 模型判定(**探测专用**名单,真实链路不需要):
-/// 这些模型官方接入要求 `thinking: {"type":"enabled"}` 保持开启,省略该参数的
-/// 请求会被网关拒绝。真实链路由 bridge `request_reasoning_effort` 默认 high
-/// (底座翻译成 `thinking: {"type":"enabled"}`)天然满足,无名单;探测 payload
-/// 不带 reasoning 设置,必须按本名单显式注入 thinking,否则 kimi-for-coding
-/// 等模型的识图探测会 400 误判(2026-08 kimi-for-coding 实测)。
+/// Moonshot always-thinking model predicate (**probe-only** list; the real
+/// send path does not need it): models on this list officially require the
+/// `thinking: {"type":"enabled"}` field to stay on, and the gateway rejects
+/// requests that omit it. The real send path satisfies this naturally via the
+/// bridge `request_reasoning_effort` default of high (the base translates it
+/// into `thinking: {"type":"enabled"}`), so there is no list there; the probe
+/// payload carries no reasoning setting and must inject `thinking` explicitly
+/// per this list, otherwise the image probe for kimi-for-coding and friends
+/// misreports via a 400 (live-tested 2026-08, kimi-for-coding).
+///
+/// K3.1 spellings are deliberately NOT on this list (2026-11-04 round-4
+/// review): the documented K3-series contract on the platform API lane is
+/// the top-level `reasoning_effort` ladder (low/high/max; the omission
+/// default is endpoint-specific — `high` on the Kimi Code models-table
+/// lane, `max` per the models-overview platform wording) and the docs state
+/// the K2.x `thinking` parameter is not used ("不使用 K2.x 的 `thinking`
+/// 参数", platform.kimi.com/docs/api/chat), so omission is the
+/// documented-valid shape — the same shape the bridge send path resolves for
+/// K3.1. Scoped reading: this "no thinking parameter" statement describes
+/// the platform lane; the engine's own Kimi Code lane additionally wires a
+/// nested `thinking.effort` shape for its exact k3/k3-256k membership ids
+/// (which stay on this list below), so "K3 series" here means the
+/// platform-lane contract the K3.1 ids ride, not the Kimi Code shaper
+/// dialect (round-9 wording fix). The earlier inference "thinking cannot be
+/// turned off → omission is rejected too" wrongly extrapolated the K2.x
+/// live-tested omission rejection to K3.1; if a live probe ever shows the
+/// gateway rejecting omission for K3.1 as well, the fix is injecting
+/// top-level `reasoning_effort`, not `thinking` (to be regression-verified
+/// once a key is available).
+///
+/// This predicate only answers the thinking-parameter question. The separate
+/// completion-budget question ("does always-on reasoning consume the probe's
+/// max_tokens?") is answered by `moonshot_model_needs_reasoning_budget`
+/// below; K3.1 sits on that list while staying off this one, and one
+/// predicate must never serve both duties (sharing one boolean silently
+/// dropped the K3.1 probe budget to 64 — the round-5 review bug). Both
+/// predicates share the family constant below so the budget side is
+/// structurally a superset (family ∪ K3.1) instead of a copy-paste of these
+/// literals (round-9 review).
 pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    MOONSHOT_EXPLICIT_THINKING_FAMILY.contains(&normalized.as_str())
+}
+
+/// The legacy Moonshot probe family whose documented contract carries the
+/// top-level `thinking` parameter: the K2.x spellings and the exact-K3 ids
+/// (Kimi Code membership spellings included — the engine's Kimi Code lane
+/// wires a nested `thinking.effort` shape for these, while the platform
+/// lane shapes top-level effort; both stay on the thinking list). Shared
+/// verbatim by `moonshot_model_requires_explicit_thinking` (this family)
+/// and `moonshot_model_needs_reasoning_budget` (this family plus the K3.1
+/// composites). K3.1 spellings are deliberately NOT here: the platform API
+/// lane's K3 series resolves depth through the top-level `reasoning_effort`
+/// ladder and does not use the K2.x `thinking` parameter ("不使用 K2.x 的
+/// `thinking` 参数", platform.kimi.com/docs/api/chat) — see the
+/// contract note above `moonshot_model_requires_explicit_thinking`.
+const MOONSHOT_EXPLICIT_THINKING_FAMILY: &[&str] = &[
+    "k3",
+    "k3-256k",
+    "kimi-k3",
+    // kimi-k3[1m] is the moonshot preset's official `models1m` suggestion
+    // (the platform CC guide still documents it, re-verified 2026-11-04) —
+    // the bracket declaration form of the bare kimi-k3 entry above, and
+    // both lists are exact-match, so it needs its own entry to probe
+    // identically.
+    "kimi-k3[1m]",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-for-coding",
+    "kimi-for-coding-highspeed",
+    "kimi-k2.6",
+];
+
+/// The K3.1 spellings that join the budget list beyond the shared family:
+/// the four bare forms plus their reachable `[1m]` composites (2026-11-05
+/// review: k3.1-pro[1m] is the documented Kimi Code declaration and the ACP
+/// datalist entry; the composites must probe identically to their bare
+/// forms). The two highspeed `[1m]` composites deliberately go beyond the
+/// capability-table spellings: budget membership only needs the reachable
+/// stored forms, and over-covering is the safe direction.
+const MOONSHOT_K31_BUDGET_COMPOSITES: &[&str] = &[
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
+    "k3.1-pro",
+    "k3.1-pro-highspeed",
+    "k3.1-pro[1m]",
+    "kimi-k3.1-pro[1m]",
+    "k3.1-pro-highspeed[1m]",
+    "kimi-k3.1-pro-highspeed[1m]",
+];
+
+/// Moonshot always-reasoning budget predicate (**probe-only** list): models
+/// on this list always reason before answering, the reasoning text precedes
+/// the final answer and is billed against the completion budget, and the
+/// probe extractor only reads the final content — so a 64-token probe cap is
+/// consumed by reasoning before any color answer is produced, and a
+/// vision-capable model gets misreported as unverified. These models probe
+/// with the reasoning-tier cap instead
+/// (`IMAGE_CAPABILITY_TEST_MAX_TOKENS_THINKING`; live-tested 2026-08
+/// kimi-for-coding / k3). The membership is the shared explicit-thinking
+/// family above plus the K3.1 spellings: the four K3.1 spellings join per
+/// the same family contract — the models-overview page states both K3.1
+/// variants' parameter constraints are identical to kimi-k3
+/// (platform.kimi.com/docs/api/models-overview) — while they must keep the
+/// legacy `thinking` parameter omitted (see
+/// `moonshot_model_requires_explicit_thinking` above). Reachable `[1m]`
+/// composites are on this list so they probe identically to their bare
+/// forms: kimi-k3[1m] (the moonshot preset's models1m suggestion, part of
+/// the shared family) and the four K3.1 `[1m]` spellings (k3.1-pro[1m] is
+/// the documented Kimi Code declaration and the ACP datalist entry; the
+/// prefixed composites are tolerated stored forms — re-verified
+/// 2026-11-05). The k3[1m] spelling stays excluded: it is a Kimi Code
+/// alias-guidance declaration, not an API model id (the vendor's error
+/// reference distinguishes Claude Code declarations from API model ids),
+/// so the API contract defines no budget tier for it. The manual probe
+/// posts straight over HTTP — no foundation-side validator sits in that
+/// path — so nothing here filters what reaches the gateway; the list
+/// encodes the contract, and a raw bracket id that does reach the gateway
+/// is the API's rejection domain.
+///
+/// This is deliberately a separate predicate from
+/// `moonshot_model_requires_explicit_thinking`: budget selection answers
+/// "is this an always-reasoning family whose reasoning consumes the
+/// completion budget", while thinking-parameter injection answers "does the
+/// legacy `thinking` parameter contract require the field". The two
+/// responsibilities must not share one boolean — sharing one is exactly what
+/// dropped the K3.1 probe budget to 64 in the 2026-11-04 round-4 fix. The
+/// shared family constant keeps the superset relationship structural
+/// (budget = family ∪ K3.1) without merging the two duties (round-9
+/// review).
+pub fn moonshot_model_needs_reasoning_budget(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    MOONSHOT_EXPLICIT_THINKING_FAMILY.contains(&normalized.as_str())
+        || MOONSHOT_K31_BUDGET_COMPOSITES.contains(&normalized.as_str())
+}
+
+/// xAI's documented always-reasoning ids get the same probe-budget upgrade
+/// as the Moonshot K3-family as a DEFENSIVE choice: the docs state reasoning
+/// is billed against the completion budget (the same mechanism the K3.1 fix
+/// documents), so a 64-token probe could let reasoning alone exhaust the
+/// cap and a vision-capable model would come back "unverified" (empty or
+/// truncated final content — the extractor reads the final content only, so
+/// the misreport direction is "unverified", never a hard "unsupported").
+/// That failure mode is a mechanism-based expectation, not an observed
+/// endpoint behavior — no live probe is available in this environment (no
+/// key), so the upgrade stays defensive pending endpoint-specific
+/// confirmation. Documented grounds (docs.x.ai; the 4.7/4.20 ids re-checked
+/// 2026-11-03/04 in the round-8 review, grok-4.5/4.6 joined on the
+/// 2026-11-06 round-9 re-check): grok-4.7 — "reasoning cannot be disabled"
+/// with the low/medium/high/xhigh ladder (default high) documented on the
+/// model page and the September release notes; grok-4.5 / grok-4.6 — the
+/// reasoning guide groups 4.7/4.6/4.5 under one "cannot be disabled,
+/// default high" contract and each detail page documents "Reasoning
+/// efforts Supported: low, medium, high, xhigh — Default: high"
+/// (behavioral documentation, which is the basis on which they now join —
+/// the earlier "billing documentation alone" caution predates the
+/// detail-page effort tables); grok-4.20-0309-reasoning — the reasoning
+/// variant of the 4.20 family; grok-4.20-multi-agent-0309 —
+/// `reasoning.effort` controls the parallel-agent count, so reasoning is
+/// always on (the id left the settings catalog in the round-9 review over
+/// the Chat Completions wire incompatibility, but the budget arm stays for
+/// stored/custom configs and relay deployments). Exact ids on purpose: the
+/// wider `grok` capability substring stays a family admission. grok-4.3
+/// stays off the list on documented grounds: its reasoning is configurable
+/// ("Supports none (no reasoning at all), low, medium, and high", default
+/// low), so reasoning cannot trap the 64-token budget. The remaining
+/// variants (the non-reasoning 4.20 sibling, grok-build-0.1, grok-3) are
+/// documented non-always-reasoning and stay on the plain budget.
+pub fn xai_model_needs_reasoning_budget(model: &str) -> bool {
     matches!(
         model.trim().to_ascii_lowercase().as_str(),
-        "k3" | "k3-256k"
-            | "kimi-k3"
-            | "kimi-k2.7-code"
-            | "kimi-k2.7-code-highspeed"
-            | "kimi-for-coding"
-            | "kimi-for-coding-highspeed"
-            | "kimi-k2.6"
+        "grok-4.7"
+            | "grok-4.6"
+            | "grok-4.5"
+            | "grok-4.20-0309-reasoning"
+            | "grok-4.20-multi-agent-0309"
     )
 }
 
@@ -154,9 +314,12 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // understanding (volcengine docs 82379/1330310, 2026-09-11), so admitting
     // the whole family is justified.
     "doubao-seed",
-    // MiniMax: M3 and the newer M3.1-Flash-Preview support image (and video)
-    // input, M2.x does not, so the bare minimax substring must not be used
-    // (official docs, re-checked 2026-09-28). "minimax-m3" covers both.
+    // MiniMax: M3 and the newer M3.1 generation (GA id MiniMax-M3.1-Flash
+    // since the 2026-11-03 rename; the retired -Preview spelling survives
+    // as the row's legacyAlias for stored configs) support image (and
+    // video) input, M2.x does not, so the bare minimax substring must not
+    // be used (official docs, re-checked 2026-09-28). "minimax-m3" covers
+    // both spellings.
     "minimax-m3",
     // Zhipu: GLM-5.3-Flash is natively multimodal; glm-5.3 / glm-5.2 are
     // text-only, so the glm-5.3 prefix cannot be used as one substring
@@ -201,6 +364,27 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
 const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "k3",
     "k3-256k",
+    // K3.1 Pro (2026-10-23, kimi.com/code/docs): officially "native vision"
+    // like K3, but the bare-id spelling contains no "kimi-k3" substring and
+    // a bare "k3.1" or "k3" substring would over-match, so it rides the
+    // exact table like its K3 siblings. The highspeed variant carries the
+    // same constraints as the prefixed spelling — the models-overview page
+    // states both K3.1 spellings' "参数约束也与 `kimi-k3` 完全一致"
+    // (identical constraints to kimi-k3; re-checked 2026-11-04 — the
+    // "同一模型、参数约束完全一致，仅输出速度不同" sentence quoted here
+    // earlier is that page's K2.7 Code family wording, not K3.1's) — so the
+    // prefixed kimi-k3.1-pro-highspeed already resolves Supported through
+    // the "kimi-k3" substring entry, and the bare spelling joins this exact
+    // table on the same grounds as k3.1-pro (spelling-consistent: both
+    // spellings of each tier resolve identically).
+    "k3.1-pro",
+    "k3.1-pro-highspeed",
+    // The bare [1m] bracket declaration (the ACP datalists' models1m
+    // suggestion): dash-suffix tolerance cannot carry a "[1m]" remainder and
+    // the bare spelling has no "kimi-k3" substring, so unlike the prefixed
+    // forms (which ride the "kimi-k3" substring entry) it needs its own
+    // exact arm. Only the officially documented spellings join.
+    "k3.1-pro[1m]",
     "mimo-v2.5",
     // Tencent Token Plan official hyphenated parallel spelling (same as the
     // frontend minimax-m3 row's legacyAliases): it does not contain the
@@ -213,6 +397,39 @@ const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // (api-docs.deepseek.com/news260910, checked 2026-09-11).
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    // Meta Model API (2026-11-03 catalog refresh, dev.meta.ai): muse-spark-1.3
+    // (the current default) is officially multimodal (text/image/PDF/video
+    // input). muse-spark-1.1 / muse-spark-1.2 / muse-wonder-1.0 joined in
+    // the 2026-11-04 fix pass: the models page states all three Muse Spark
+    // versions take text, image, video, audio, and PDF input (and names 1.1
+    // as a served id in the quickstart troubleshooting), and the Muse Wonder
+    // section lists the same modalities — the earlier "no per-model
+    // modality statement covers 1.1" ground was refuted live. Exact
+    // equality (2026-11-05 review move: these are fully version-pinned
+    // ids, and the open-weight "Muse Spark Open" gateway deployments are a
+    // different supply chain that must keep resolving through its own
+    // (absent) entries — a substring entry would have admitted any
+    // deployment id embedding the base spelling, defeating that boundary;
+    // the same deepseek-v4-flash snapshot precedent as above).
+    "muse-spark-1.3",
+    "muse-spark-1.2",
+    "muse-spark-1.1",
+    "muse-wonder-1.0",
+    // Mistral (2026-11-03 catalog refresh): the models overview lists
+    // mistral-medium-latest as multimodal and mistral-small-latest with
+    // image understanding; codestral-latest carries no modality statement
+    // and stays Unknown. mistral-large-latest joined in the 2026-11-04 fix
+    // pass per models.dev (the base's reference source), which lists its
+    // modalities as text/image/pdf — docs.mistral.ai itself was unreachable
+    // from every channel on both passes, so the annotation is scoped to
+    // that source (re-check at the next refresh). Exact equality like the
+    // muse rows (2026-11-05 review): version-pinned ids; Mistral's dated
+    // snapshot spellings (mistral-medium-2312 style) do not embed the
+    // -latest suffix, so nothing real is lost and extended third-party
+    // spellings stay Unknown.
+    "mistral-medium-latest",
+    "mistral-small-latest",
+    "mistral-large-latest",
 ];
 
 /// 内置表查询:模型名(小写化)是否命中已验证多模态条目。
@@ -315,16 +532,157 @@ mod tests {
             "kimi-k2.6",
             "K3",
             "k3-256k",
+            // Official moonshot ACP models1m suggestion (platform CC
+            // guide, re-verified 2026-11-04) — the bracket declaration form
+            // of the bare kimi-k3 arm above.
+            "kimi-k3[1m]",
         ] {
             assert!(
                 moonshot_model_requires_explicit_thinking(name),
                 "{name} 应命中 always-thinking 名单"
             );
         }
-        for name in ["gpt-4o", "deepseek-v4-pro", "qwen-vl-max", "kimi-k2.5"] {
+        // K3.1 spellings (bare + [1m] declaration forms) deliberately do NOT
+        // hit the list (2026-11-04 round-4 review): the K3-series contract is
+        // the top-level reasoning_effort ladder and the docs state the K2.x
+        // `thinking` parameter is not used at all (platform.kimi.com
+        // docs/api/chat), so the documented-valid probe shape is omission —
+        // the same shape the bridge send path resolves for K3.1. The earlier
+        // "same class as bare-K3" arms extended the K2.x live-tested
+        // omission-rejection to a generation whose docs say otherwise; if a
+        // live probe ever shows the gateway rejecting omission for K3.1 too,
+        // the fix is a top-level reasoning_effort injection, not a thinking
+        // arm.
+        for name in [
+            "k3.1-pro",
+            "k3.1-pro-highspeed",
+            "kimi-k3.1-pro",
+            "kimi-k3.1-pro-highspeed",
+            "k3.1-pro[1m]",
+            "kimi-k3.1-pro[1m]",
+            // The highspeed [1m] composites complete the 8-spelling set at
+            // the predicate level too (the payload loop already covered all
+            // 8; round-9 review closes the predicate-level gap).
+            "k3.1-pro-highspeed[1m]",
+            "kimi-k3.1-pro-highspeed[1m]",
+        ] {
+            assert!(
+                !moonshot_model_requires_explicit_thinking(name),
+                "{name} walks the K3-series omission contract; thinking must not be injected"
+            );
+        }
+        // k3[1m] must NOT hit the list, but not because bare k3 rides the
+        // effort ladder — bare k3 IS in the list above. The ground is the
+        // API contract: `k3[1m]` is a Claude Code environment convention,
+        // not an API model id (crates/tui/src/config.rs
+        // KIMI_CODE_CLAUDE_ALIAS_GUIDANCE + validate_kimi_code_api_model_id
+        // reject it on the foundation's canonical Kimi Code endpoints).
+        // That validator does not sit on this probe's path — the manual
+        // probe posts via reqwest — so an arm would assert a tier the API
+        // contract does not define, not a shield that keeps the string
+        // from reaching the gateway.
+        for name in [
+            "gpt-4o",
+            "deepseek-v4-pro",
+            "qwen-vl-max",
+            "kimi-k2.5",
+            "k3[1m]",
+        ] {
             assert!(
                 !moonshot_model_requires_explicit_thinking(name),
                 "{name} 不应误判为 always-thinking"
+            );
+        }
+    }
+
+    #[test]
+    fn moonshot_reasoning_budget_list_covers_always_reasoning_families() {
+        // Pins the budget predicate independently of the thinking predicate:
+        // budget membership = always-reasoning families (reasoning billed
+        // against the completion budget), NOT the legacy thinking-parameter
+        // contract. All pre-existing thinking-list members keep the
+        // reasoning-tier probe budget, and the four K3.1 spellings join on
+        // the kimi-k3-identical contract (2026-11-04 round-5 review: the
+        // shared-boolean version dropped the K3.1 probe budget to 64).
+        for name in [
+            "k3",
+            "k3-256k",
+            "kimi-k3",
+            "kimi-k3[1m]",
+            "kimi-k2.7-code",
+            "kimi-k2.7-code-highspeed",
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+            "kimi-k2.6",
+            "kimi-k3.1-pro",
+            "kimi-k3.1-pro-highspeed",
+            "k3.1-pro",
+            "k3.1-pro-highspeed",
+            "Kimi-K3.1-Pro",
+            // Reachable [1m] composites probe identically to their bare
+            // forms (2026-11-05 review): k3.1-pro[1m] is the documented Kimi
+            // Code declaration and the ACP datalist entry; the prefixed
+            // composites are tolerated stored forms.
+            "k3.1-pro[1m]",
+            "kimi-k3.1-pro[1m]",
+            "k3.1-pro-highspeed[1m]",
+            "kimi-k3.1-pro-highspeed[1m]",
+        ] {
+            assert!(
+                moonshot_model_needs_reasoning_budget(name),
+                "{name} is an always-reasoning spelling; probe budget must stay at the reasoning tier"
+            );
+        }
+        // k3[1m] stays off the budget list: it is a declaration form the
+        // base's Kimi Code alias guidance fail-closes (not an API model
+        // id), so no meaningful probe reaches the budget question.
+        // Alongside plain non-Moonshot misses.
+        for name in ["k3[1m]", "gpt-4o", "deepseek-v4-pro", "kimi-k2.5"] {
+            assert!(
+                !moonshot_model_needs_reasoning_budget(name),
+                "{name} must not be given the reasoning-tier probe budget"
+            );
+        }
+    }
+
+    #[test]
+    fn xai_reasoning_budget_list_covers_always_reasoning_families() {
+        // Round-8 review: the xAI rows the catalog annotates image-capable
+        // probe at the reasoning tier like the K3.1 arms — defensively: the
+        // docs state reasoning cannot be disabled, so a 64-token probe
+        // could let reasoning eat the completion budget and misreport a
+        // vision-capable model as unverified (endpoint allocation
+        // unconfirmed; no live probe). Round-9 review: grok-4.5/4.6 join —
+        // their detail pages document "Reasoning efforts Supported:
+        // low/medium/high/xhigh, Default: high" and the reasoning guide's
+        // "cannot be disabled" covers them by name (behavioral docs, the
+        // same evidence class as grok-4.7).
+        for name in [
+            "grok-4.7",
+            "Grok-4.7",
+            " grok-4.7 ",
+            "grok-4.6",
+            "grok-4.5",
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-multi-agent-0309",
+        ] {
+            assert!(
+                xai_model_needs_reasoning_budget(name),
+                "{name} is a documented always-reasoning id; probe budget must stay at the reasoning tier"
+            );
+        }
+        // The non-reasoning sibling and the configurable-reasoning rows stay
+        // on the plain probe budget (grok-4.3 documents reasoning "none",
+        // default low, so reasoning cannot trap the budget).
+        for name in [
+            "grok-4.20-0309-non-reasoning",
+            "grok-4.3",
+            "grok-build-0.1",
+            "grok-3",
+        ] {
+            assert!(
+                !xai_model_needs_reasoning_budget(name),
+                "{name} must not be given the reasoning-tier probe budget"
             );
         }
     }
@@ -439,12 +797,9 @@ mod tests {
             // MiMo (2026-09-11): multimodal is mimo-v2.5; the text-only
             // mimo-v2.5-pro must not be caught by accident, hence the exact
             // equality table (see EXACT_VERIFIED_IMAGE_CAPABLE_MODELS).
-            // Note: one en-US MiMo model-list rendering shows a
-            // Full-modal Understanding cell for v2.5-pro that the zh-CN
-            // primary list lacks, against the deprecation page's text-only
-            // wording — the conservative
-            // annotation stays until the rows retire 2026-10-21 (see the
-            // frontend mimo group comment).
+            // The mimo rows left the frontend catalog in the 2026-11-03
+            // refresh (v2.5 retired 2026-10-21 per the deprecation page);
+            // this entry stays for stored configs of the retired rows.
             (ModelPreset::Mimo, "mimo-v2.5"),
             // The 2026-09-22 V2.6 series is omni-modal; all three tiers hit
             // the "mimo-v2.6" substring entry.
@@ -460,6 +815,36 @@ mod tests {
             (ModelPreset::OpenaiCompatible, "k3-256k"),
             (ModelPreset::Kimi, "kimi-k2.7-code"),
             (ModelPreset::Kimi, "kimi-k2.6"),
+            // 2026-11-03 refresh additions — per-entry anchors so silently
+            // deleting an entry cannot keep the suite green (qwen2-vl
+            // precedent): K3.1 Pro is natively multimodal (whats-new
+            // 2026-10-23; the highspeed variant is the same model per the
+            // models-overview page, so all four spellings resolve — the
+            // prefixed ones through the "kimi-k3" substring, the bare ones
+            // through the exact table).
+            (ModelPreset::Kimi, "kimi-k3.1-pro"),
+            (ModelPreset::Kimi, "kimi-k3.1-pro-highspeed"),
+            (ModelPreset::OpenaiCompatible, "k3.1-pro"),
+            (ModelPreset::OpenaiCompatible, "k3.1-pro-highspeed"),
+            // The documented [1m] declarations resolve like their base
+            // spellings (2026-11-04 fix pass: the bracket forms previously
+            // fell to Unknown — the exact table is equality-only and the
+            // prefixed bare forms ride the "kimi-k3" substring).
+            (ModelPreset::OpenaiCompatible, "k3.1-pro[1m]"),
+            (ModelPreset::Kimi, "kimi-k3.1-pro[1m]"),
+            // Meta muse family (dev.meta.ai: the models page states all
+            // three Muse Spark versions and Muse Wonder take
+            // text/image/PDF/video input — 2026-11-04 fix pass; 1.3 was
+            // pinned since the 2026-11-03 refresh) and the
+            // Mistral multimodal rows (mistral-large-latest per models.dev,
+            // the base's reference source — docs.mistral.ai unreachable).
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.3"),
+            (ModelPreset::OpenaiCompatible, "muse-wonder-1.0"),
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.2"),
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
+            (ModelPreset::OpenaiCompatible, "mistral-medium-latest"),
+            (ModelPreset::OpenaiCompatible, "mistral-small-latest"),
+            (ModelPreset::OpenaiCompatible, "mistral-large-latest"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(
@@ -478,8 +863,10 @@ mod tests {
         // - Text-only official models must stay Unknown (qwen3.7-max / glm-5.3 /
         //   glm-5.2 / MiniMax-M2.x per the 2026-09-11 vendor docs);
         // - deepseek-v4-pro is not on the official vision page;
-        // - mimo-v2.5-pro / muse-spark-1.1 are outside the builtin table and
-        //   must also resolve to Unknown;
+        // - mimo-v2.5-pro is outside the builtin table and must resolve to
+        //   Unknown (muse-spark-1.1 joined the supported matrix in the
+        //   2026-11-04 fix pass once the models page's all-versions
+        //   modality statement was verified live);
         // - unrelated custom names containing "k3" must not be mismatched by
         //   the substring (bare k3 is now admitted exactly);
         // - third-party gateway snapshot spellings (deepseek-v4-flash-202605
@@ -495,8 +882,17 @@ mod tests {
             (ModelPreset::Minimax, "MiniMax-M2.7"),
             (ModelPreset::Minimax, "MiniMax-M2.7-highspeed"),
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
-            (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
             (ModelPreset::OpenaiCompatible, "k3s-local-text"),
+            // 2026-11-03 conservative boundary pins, updated 2026-11-04:
+            // codestral-latest (no modality statement) and unrelated
+            // K3.1-suffixed names must stay Unknown (the exact table
+            // admits only the documented tiers, not suffix families).
+            // 2026-11-05 review: the muse rows moved to the exact table,
+            // so the "Muse Spark Open" deployment spellings they must not
+            // absorb are pinned here.
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.3-open"),
+            (ModelPreset::OpenaiCompatible, "codestral-latest"),
+            (ModelPreset::OpenaiCompatible, "k3.1-pro-max"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(

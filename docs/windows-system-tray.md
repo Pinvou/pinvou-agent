@@ -16,6 +16,10 @@ normally. Registration is checked on each close, so shell recovery can restore
 tray behavior for the same owned icon. Other operating systems retain their
 existing lifecycle behavior.
 
+Restoration uses the native main window, independently of browser child
+WebViews attached to it. Tray activation, repeated launches, the global
+shortcut and pet navigation continue to target the same existing window.
+
 Explicit exit cancels pending ACP startup/load/configuration requests before
 collecting sessions, so an unresponsive startup peer cannot hold the pool lock
 and prevent process termination. Ordinary long-running requests retain their
@@ -50,3 +54,7 @@ Before shipping, verify in a Windows desktop session:
    all app windows and the tray icon disappear and owned child processes stop.
 5. Relaunch a second instance while hidden. Confirm the existing main window
    appears rather than creating a second application process.
+6. Open the built-in browser and load a tab, then repeat the hide/restore
+   checks using the tray icon, Open menu, second launch, enabled global
+   shortcut and pet navigation. Repeat with the main window minimized;
+   confirm the browser tab and conversation remain intact.

@@ -548,7 +548,11 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
         "registry_sync",
         "start_registry_mcp_server",
         "request_user_input",
-        "revert_turn",
+        // Both are registered unconditionally on the agent surface and
+        // taught by base-rendered text (spillover footer / worker-record
+        // hints); pin them to the live catalog alongside the rest.
+        "retrieve_tool_result",
+        "handle_read",
         "todo_write",
         "workflow",
         "tool_search",
