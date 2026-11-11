@@ -26,11 +26,11 @@ use super::types::{
     PreferenceFile, ProfilePatch, RECENT_ACTIVITY_ACTIVE_MAX_STORED,
     RECENT_ACTIVITY_DEFAULT_TTL_DAYS, RECENT_WORK_ACTIVE_MAX_STORED,
     RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS, RecentWorkItem,
-    RuntimeMemorySnapshot, TIMED_MEMORY_ARCHIVED_MAX_STORED, TimedMemoryItem,
-    TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation, TurnMemoryCapture,
-    WorkContextFile, looks_like_profile_preference_text, normalize_preference_topic,
-    normalize_profile_label, normalize_timed_memory_kind, normalize_timed_memory_topic,
-    normalize_work_context_topic,
+    RuntimeMemorySnapshot, TIMED_MEMORY_ARCHIVED_MAX_STORED, TIMED_MEMORY_MAX_TTL_DAYS,
+    TimedMemoryItem, TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation,
+    TurnMemoryCapture, WorkContextFile, looks_like_profile_preference_text,
+    normalize_preference_topic, normalize_profile_label, normalize_timed_memory_kind,
+    normalize_timed_memory_topic, normalize_work_context_topic,
 };
 use super::util::{
     clean_candidate_sentence, clean_id, clean_scalar, clean_text, file_lifecycle_lock,
@@ -1000,7 +1000,7 @@ pub(super) fn upsert_timed_memory_unlocked(
     } else {
         CURRENT_FOCUS_DEFAULT_TTL_DAYS
     };
-    let ttl_days = ttl_days.unwrap_or(default_ttl).clamp(1, 90);
+    let ttl_days = ttl_days.unwrap_or(default_ttl).clamp(1, TIMED_MEMORY_MAX_TTL_DAYS);
     let text = clean_candidate_sentence(content, TIMED_TEXT_MAX_CHARS);
     if text.is_empty() || looks_sensitive(&text) {
         return Err(io::Error::new(
@@ -2073,7 +2073,7 @@ fn normalize_timed_memory(item: &mut TimedMemoryItem) {
     item.text = clean_text(&item.text, TIMED_TEXT_MAX_CHARS);
     item.source = clean_text(&item.source, 40);
     item.status = normalize_status_active_or_archived(&item.status);
-    item.ttl_days = item.ttl_days.clamp(1, 90);
+    item.ttl_days = item.ttl_days.clamp(1, TIMED_MEMORY_MAX_TTL_DAYS);
 }
 
 /// Whitespace-normalized content identity: collapse every whitespace run to

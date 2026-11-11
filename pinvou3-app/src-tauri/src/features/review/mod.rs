@@ -85,17 +85,28 @@ const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
   "coverage": [{"dimension":"维度名","coverage":"weak|missing","severity":"high|medium|low","text":"缺/薄弱在哪","suggestion":"建议补什么"}]
 }"#;
 
-/// 本地审查实测 5–19s，旧版 5s 必挂；放宽到 30s（设计 §3 的 5–30s 预期）。
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 本地审查实测 5–19s，旧版 5s 必挂；30s 在慢网关/长上下文（96k 字符全喂）下仍会
+/// 掐断健康审查，放宽到 120s 总预算（单次独立审查，召唤发起方可取消）。
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂 2 万字级长会话
-/// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§6）。
-const FULL_FEED_CHAR_LIMIT: usize = 24_000;
+/// （≈1.2 万 token）不崩；96000 字（≈5.6 万 token）仍在 256k 上下文预算内，
+/// 96000 字以内直接全喂，超过才投影降级（§6）。
+const FULL_FEED_CHAR_LIMIT: usize = 96_000;
 
 /// 产物上限（字符）。产物真相在 workspace 文件，整篇读、整篇喂——本地 256k 扛得住
 /// （实测 2 万字全喂稳）。常规产物（文档/邮件/代码）都在此内整篇喂；超此才截断+标注，
 /// 真超大产物的「不漏」解是 P1 map-reduce 分块全审。
-const ARTIFACT_CHAR_LIMIT: usize = 30_000;
+const ARTIFACT_CHAR_LIMIT: usize = 100_000;
+
+/// 单次审查输出预算（max_tokens）。旧值 1600 会被思考型模型的长 JSON 截断，
+/// 截断的 JSON 解析失败 → 整场审查报错；4000 容纳 5 条 issues + 建议的完整输出。
+/// OpenAI chat/completions 与 Anthropic Messages 两条车道共用同一预算。
+const REVIEW_MAX_TOKENS: u32 = 4000;
+
+/// 降级投影保留的 web_search 事实条数。超出部分不静默丢弃，在投影尾部
+/// 显式标注省略条数（见 project）。
+const FACT_PROJECTION_KEEP: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinvouPersona {
@@ -544,7 +555,7 @@ async fn model_review(
             &model_name,
             &prompt,
             user_content,
-            1600,
+            REVIEW_MAX_TOKENS,
             bridge.opencode_conversation_key("model-review"),
         )
         .await?
@@ -591,7 +602,7 @@ fn review_request_body(model: &str, prompt: &str, user_content: &str) -> Value {
             { "role": "system", "content": prompt },
             { "role": "user", "content": user_content }
         ],
-        "max_tokens": 1600,
+        "max_tokens": REVIEW_MAX_TOKENS,
         "stream": false,
         // 根治偶发非法 JSON(qwen36 长输出漏逗号/字符串内未转义引号,实测 line N col M 解析炸):
         // vLLM guided decoding token 级保证输出合法 JSON 语法,不靠事后 find('{')..rfind('}') 补救。
@@ -837,7 +848,7 @@ fn project(messages: &[Message]) -> String {
                             }
                         }
                     }
-                    "web_search" => facts.push(truncate_chars(content, 200)),
+                    "web_search" => facts.push(truncate_chars(content, 500)),
                     _ => {}
                 },
                 _ => {}
@@ -856,8 +867,14 @@ fn project(messages: &[Message]) -> String {
     }
     if !facts.is_empty() {
         out.push_str("\n\n【相关事实(搜索摘录)】\n");
-        for f in facts.iter().take(4) {
+        for f in facts.iter().take(FACT_PROJECTION_KEEP) {
             out.push_str(&format!("- {f}\n"));
+        }
+        // 超出保留数的事实不静默丢弃：显式标注省略条数，审查模型能察觉
+        // 还有事实没进来，需要时可让 Boss 重开全喂或缩小检索。
+        let omitted = facts.len().saturating_sub(FACT_PROJECTION_KEEP);
+        if omitted > 0 {
+            out.push_str(&format!("-（另有 {omitted} 条搜索事实未纳入投影）\n"));
         }
     }
     out
@@ -972,7 +989,7 @@ mod tests {
              live 2026-09-30: only 1 is allowed for this model"
         );
         assert_eq!(body["model"], "k3");
-        assert_eq!(body["max_tokens"], 1600);
+        assert_eq!(body["max_tokens"], REVIEW_MAX_TOKENS);
         assert_eq!(body["stream"], false);
         assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["messages"][0]["role"], "system");
@@ -1302,6 +1319,43 @@ mod tests {
         ];
         let projected = project(&messages);
         assert!(projected.contains("当前报价：100 元"), "{projected}");
+    }
+
+    #[test]
+    fn project_keeps_fact_cap_and_annotates_omitted_facts() {
+        // 超出 FACT_PROJECTION_KEEP 的事实不静默丢弃：保留前 N 条，尾部标注省略数。
+        let mut messages = vec![user_text("核对当前报价")];
+        for i in 0..FACT_PROJECTION_KEEP + 3 {
+            let id = format!("w{i}");
+            messages.push(assistant_tool(&id, "web_search", json!({"query": "报价"})));
+            messages.push(tool_result(&id, &format!("事实{i}：100 元")));
+        }
+        let p = project(&messages);
+        assert!(p.contains("事实0：100 元"), "第一条事实要留: {p}");
+        assert!(
+            p.contains(&format!("事实{}：100 元", FACT_PROJECTION_KEEP - 1)),
+            "保留数内的最后一条事实要留: {p}"
+        );
+        assert!(
+            !p.contains(&format!("事实{}：100 元", FACT_PROJECTION_KEEP)),
+            "保留数外的事实不逐条进投影: {p}"
+        );
+        assert!(
+            p.contains("另有 3 条搜索事实未纳入投影"),
+            "省略条数要显式标注: {p}"
+        );
+    }
+
+    #[test]
+    fn project_facts_without_overflow_has_no_omission_note() {
+        let messages = vec![
+            user_text("核对当前报价"),
+            assistant_tool("w1", "web_search", json!({"query": "报价"})),
+            tool_result("w1", "事实1：100 元"),
+        ];
+        let p = project(&messages);
+        assert!(p.contains("事实1：100 元"), "{p}");
+        assert!(!p.contains("未纳入投影"), "没省略就不要标注: {p}");
     }
 
     #[test]

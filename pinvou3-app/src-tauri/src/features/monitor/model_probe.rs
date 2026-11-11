@@ -13,11 +13,12 @@ use crate::core::model_endpoint::{is_anthropic_endpoint, models_probe_url, strip
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
-/// Upper bound on a buffered `/metrics` body. The poll runs at ~1 Hz and
-/// reqwest buffers the whole response in `text()`, so a misbehaving local
-/// endpoint must not balloon memory; a real vLLM export is tens to a few
-/// hundred KiB. Applies to the declared `Content-Length` only — chunked
-/// responses are bounded by the 3 s request timeout instead.
+/// Upper bound on a buffered `/metrics` body. The poll runs at ~1 Hz, so a
+/// misbehaving local endpoint must not balloon memory; a real vLLM export is
+/// tens to a few hundred KiB. Enforced twice: on the declared
+/// `Content-Length` before reading, and by streaming chunked bodies through
+/// [`read_bounded_metrics_body`] (no `Content-Length` to pre-check there —
+/// `text()` would have read them unbounded until the 3 s request timeout).
 const MAX_METRICS_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
 /// 当前模型运行态 + 本地 vLLM 指标。字段名暂保留 vllm 兼容前端。
@@ -389,7 +390,9 @@ async fn snapshot_for_model_config(
     let metrics_text = match metrics_resp {
         Some(r) if r.status().is_success() => match r.content_length() {
             Some(n) if n > MAX_METRICS_BODY_BYTES => None,
-            _ => r.text().await.ok(),
+            // Chunked responses carry no Content-Length: stream the body
+            // under the same bound instead of the unbounded `text()`.
+            _ => read_bounded_metrics_body(r).await,
         },
         _ => None,
     };
@@ -540,6 +543,27 @@ fn transport_class(err: &reqwest::Error) -> &'static str {
     } else {
         "network_error"
     }
+}
+
+/// Stream a `/metrics` body under [`MAX_METRICS_BODY_BYTES`]: chunked
+/// responses have no `Content-Length`, so the pre-check cannot bound them
+/// and an unbounded `text()` would read whatever the endpoint sends until
+/// the 3 s request timeout. Accumulate through `bytes_stream` and degrade to
+/// `None` (metrics unavailable) as soon as the accumulated body crosses the
+/// cap — the same streamed shape as the ima connector's JSON read, and the
+/// same outcome as an over-cap `Content-Length`.
+async fn read_bounded_metrics_body(response: reqwest::Response) -> Option<String> {
+    use futures_util::StreamExt;
+    let mut body: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.ok()?;
+        if body.len().saturating_add(chunk.len()) as u64 > MAX_METRICS_BODY_BYTES {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).ok()
 }
 
 fn parse_models_response(

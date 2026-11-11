@@ -36,10 +36,16 @@ const HEARTBEAT: u64 = 5000;
 /// 自行处置：全盘扫描把它们计入根的 walk 错误数（陈旧删除授权的否决项），
 /// 导入侧自行 flatten 跳过——两条入口对错误的处置不同，跳过语义因此不再
 /// 藏在这一层。
+///
+/// `on_skipped_file` 在每个被 Excluder **直接拒绝的文件** entry 上回调
+/// （round-51 limits audit：显式导入用它披露被排除规则剪掉的文件数）。被剪枝
+/// 的目录整株不枚举，其下文件既不走也不计——回调计数因此是被排除文件数的
+/// 下界。导入侧用计数披露；全盘扫描传空闭包保持原行为。
 pub(super) fn walk_pruned_with(
     root: &Path,
     ex: &Excluder,
     mut on_raw: impl FnMut(),
+    mut on_skipped_file: impl FnMut(),
 ) -> impl Iterator<Item = walkdir::Result<DirEntry>> {
     let mut raw = 0u64;
     WalkDir::new(root)
@@ -50,7 +56,11 @@ pub(super) fn walk_pruned_with(
             if raw.is_multiple_of(HEARTBEAT) {
                 on_raw();
             }
-            !skipped(ex, e)
+            let keep = !skipped(ex, e);
+            if !keep && e.file_type().is_file() {
+                on_skipped_file();
+            }
+            keep
         })
 }
 
@@ -73,7 +83,7 @@ pub fn scan(
     let mut walked: u64 = 0;
     let mut walk_errors: u64 = 0;
 
-    for entry in walk_pruned_with(root, ex, &mut on_raw) {
+    for entry in walk_pruned_with(root, ex, &mut on_raw, || {}) {
         let Ok(entry) = entry else {
             walk_errors += 1;
             continue;

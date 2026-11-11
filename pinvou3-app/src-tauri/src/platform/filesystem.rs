@@ -846,10 +846,12 @@ fn private_file_parent_and_name(path: &Path) -> io::Result<(&Path, &std::ffi::Os
 
 /// Read a regular private file without following the final component or a
 /// replaced parent directory. The directory handle remains pinned until the
-/// complete file body has been read.
+/// complete file body has been read. The body itself is bounded by the
+/// private-state read cap ([`MAX_PRIVATE_DATA_READ_BYTES`]) via
+/// [`read_capped`], matching the rest of the hardened private-read family:
+/// the anchored lane keeps the no-follow hardening but must not allocate
+/// without bound if a stale/swapped blob lands at the path.
 pub(crate) fn read_private_file_anchored(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    use std::io::Read as _;
-
     let (parent, name) = private_file_parent_and_name(path)?;
     let Some(directory) = open_existing_private_file_directory(parent)? else {
         return Ok(None);
@@ -857,9 +859,9 @@ pub(crate) fn read_private_file_anchored(path: &Path) -> io::Result<Option<Vec<u
     let Some(mut file) = directory.open_plain_file(name)? else {
         return Ok(None);
     };
-    let mut content = Vec::new();
-    file.read_to_end(&mut content)?;
-    Ok(Some(content))
+    read_capped(&mut file, MAX_PRIVATE_DATA_READ_BYTES)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+        .map(Some)
 }
 
 /// Atomically replace a private file relative to a pinned directory object.

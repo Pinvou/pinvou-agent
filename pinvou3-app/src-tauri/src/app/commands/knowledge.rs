@@ -371,6 +371,7 @@ async_command_passthrough!(
         state: State<'_, KnowledgeService>,
         collection_id: i64,
         limit: Option<usize>,
+        offset: Option<usize>,
     ) -> Result<Vec<Document>, String>
 );
 async_command_passthrough!(

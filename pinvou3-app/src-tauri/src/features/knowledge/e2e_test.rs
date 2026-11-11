@@ -287,7 +287,7 @@ fn full_l0_l1_e2e() {
     );
 
     // ───── L1：文档列表 + 计数 ─────
-    let docs = svc.l1().list_documents(cid, 0).expect("docs");
+    let docs = svc.l1().list_documents(cid, 0, 0).expect("docs");
     assert_eq!(docs.len(), 2, "应有 2 个文档");
     assert!(docs.iter().all(|d| d.parse_status == "parsed"));
     let coll = svc
@@ -302,7 +302,7 @@ fn full_l0_l1_e2e() {
 
     // ───── L1：删文档级联 ─────
     svc.l1().remove_document(docs[0].id).expect("remove doc");
-    let after = svc.l1().list_documents(cid, 0).expect("docs2");
+    let after = svc.l1().list_documents(cid, 0, 0).expect("docs2");
     assert_eq!(after.len(), 1, "删后应剩 1 文档");
 
     let _ = fs::remove_dir_all(&root);

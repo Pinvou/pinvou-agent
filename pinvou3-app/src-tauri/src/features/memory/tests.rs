@@ -2163,9 +2163,12 @@ fn memory_jsonl_writes_are_bounded() {
     );
     assert!(recent.len() <= RECENT_WORK_ACTIVE_MAX_STORED + RECENT_WORK_ARCHIVED_MAX_STORED);
 
-    let pending: Vec<PendingMemoryItem> = (0..120)
+    // Round-51 limits audit: the active (unconfirmed) bucket cap rose 20 →
+    // 200, so the fixture now feeds 260 pending + 60 resolved rows to still
+    // exercise the newest-first truncation the assertions pin.
+    let pending: Vec<PendingMemoryItem> = (0..320)
         .map(|i| {
-            let pending = i < 25;
+            let pending = i < 260;
             let ts = (now - Duration::minutes(i)).to_rfc3339();
             PendingMemoryItem {
                 id: format!("pending_{i}"),
@@ -2194,6 +2197,13 @@ fn memory_jsonl_writes_are_bounded() {
         PENDING_MEMORY_ACTIVE_MAX_STORED
     );
     assert!(pending.len() <= PENDING_MEMORY_ACTIVE_MAX_STORED + PENDING_MEMORY_RESOLVED_MAX_STORED);
+    // Newest-first retention: the most recent pending row survives, the
+    // overflow beyond the active cap is dropped oldest-first (same shape the
+    // never-store block below pins).
+    assert!(pending
+        .iter()
+        .any(|item| item.id == "pending_0" && item.status == PENDING_STATUS_PENDING));
+    assert!(!pending.iter().any(|item| item.id == "pending_259"));
 
     let never: Vec<NeverMemoryItem> = (0..205)
         .map(|i| NeverMemoryItem {
@@ -3425,16 +3435,19 @@ fn compact_timed_memory_store_dedupes_and_enforces_capacity() {
 }
 
 #[tokio::test]
-async fn organize_history_is_bounded_to_recent_twenty() {
+async fn organize_history_is_bounded_to_recent_two_hundred() {
     let _home = IsolatedPinvouHome::new("organize-history-bound");
     enable_memory_for_tests();
     let bridge = FakeOrganizeModel {
         base_url: "http://127.0.0.1:9".to_string(),
     };
-    for _ in 0..25 {
+    for _ in 0..(crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS + 5) {
         organize_memory_with_llm(&bridge, None).await.unwrap();
     }
-    assert_eq!(load_organize_history().len(), 20);
+    assert_eq!(
+        load_organize_history().len(),
+        crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS
+    );
 }
 
 #[tokio::test]

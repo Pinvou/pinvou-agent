@@ -366,10 +366,13 @@ impl L1Store {
     }
 
     /// 列出某知识集文档（collection_id<=0 则列出全部知识集的，按最近解析倒序，给"知识库内文件"表）。
+    /// `offset` 支持分页读取：排序键带 `d.id` 决胜（name 分支此前并列名次序不定，
+    /// 分页翻页会重/漏行），保证相邻两页的全序稳定。
     pub fn list_documents(
         &self,
         collection_id: i64,
         limit: usize,
+        offset: usize,
     ) -> rusqlite::Result<Vec<Document>> {
         let c = self.conn.lock();
         // Clamp the limit with the same policy as Store::search: a raw
@@ -381,17 +384,18 @@ impl L1Store {
         } else {
             limit.min(crate::features::knowledge::store::SEARCH_LIMIT_CAP)
         } as i64;
+        let off = offset as i64;
         let sql = if collection_id > 0 {
             "SELECT d.id,d.collection_id,c.name,d.path,d.name,d.ext,d.size,d.mtime,d.parse_status,d.n_chunks \
              FROM documents d JOIN collections c ON c.id=d.collection_id \
-             WHERE d.collection_id=?1 ORDER BY d.name LIMIT ?2"
+             WHERE d.collection_id=?1 ORDER BY d.name, d.id LIMIT ?2 OFFSET ?3"
         } else {
             "SELECT d.id,d.collection_id,c.name,d.path,d.name,d.ext,d.size,d.mtime,d.parse_status,d.n_chunks \
              FROM documents d JOIN collections c ON c.id=d.collection_id \
-             ORDER BY d.parsed_at DESC, d.id DESC LIMIT ?2"
+             ORDER BY d.parsed_at DESC, d.id DESC LIMIT ?2 OFFSET ?3"
         };
         let mut stmt = c.prepare(sql)?;
-        let rows = stmt.query_map(params![collection_id, lim], Self::document_from_row)?;
+        let rows = stmt.query_map(params![collection_id, lim, off], Self::document_from_row)?;
         rows.collect()
     }
 
@@ -1456,7 +1460,7 @@ mod tests {
             l1.ingest_import_item(&job_id, item_id, cid, &f, &AtomicBool::new(false)),
             ImportIngestOutcome::Completed
         ));
-        let docs = l1.list_documents(cid, 0).unwrap();
+        let docs = l1.list_documents(cid, 0, 0).unwrap();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].parse_status, "parsed");
         assert!(docs[0].n_chunks >= 1);
@@ -1648,7 +1652,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let document = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
+        let document = l1.list_documents(collection_id, 0, 0).unwrap().pop().unwrap();
         assert_eq!(document.parse_status, "skipped");
         assert_eq!(document.n_chunks, 0);
         let _ = fs::remove_dir_all(dir);
@@ -1677,7 +1681,7 @@ mod tests {
             ),
             ImportIngestOutcome::Completed
         ));
-        let before = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
+        let before = l1.list_documents(collection_id, 0, 0).unwrap().pop().unwrap();
 
         fs::write(&file, "取消后不能覆盖的全新内容").unwrap();
         let (jobs, job_id, item_id) = prepare_import(&l1, collection_id, &file);
@@ -1704,7 +1708,7 @@ mod tests {
             ImportIngestOutcome::Cancelled
         ));
 
-        let after = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
+        let after = l1.list_documents(collection_id, 0, 0).unwrap().pop().unwrap();
         assert_eq!(after.id, before.id);
         assert_eq!(after.parse_status, before.parse_status);
         assert_eq!(after.n_chunks, before.n_chunks);

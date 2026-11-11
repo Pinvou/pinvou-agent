@@ -23,7 +23,11 @@ use serde::{Deserialize, Serialize};
 /// v4：新增可恢复的批量导入任务、文件状态与分块暂存表。v4 现容忍两种物理形态：
 /// 本版本起的全新建库不再创建 collections.embed_model/embed_dim（从未有代码读写），
 /// 旧库的这两列原样保留——所有语句都走显式列清单，两形态行为一致，故不 bump 版本。
-const SCHEMA_VERSION: i64 = 4;
+///
+/// v5: knowledge_import_jobs 增加 skipped_by_excluder（显式导入的 Excluder 拒绝
+/// 文件数披露，round-51 limits audit——白名单把整个根剪空时此前只有幸存数可见）。
+/// v4→v5 迁移在 open() 的迁移分支里做容忍式 ALTER（重复列名为唯一预期失败）。
+const SCHEMA_VERSION: i64 = 5;
 
 /// Whether a store at `version` may be deleted and rebuilt on open.
 ///
@@ -157,7 +161,10 @@ CREATE TABLE IF NOT EXISTS knowledge_import_jobs (
     state           TEXT NOT NULL,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
-    finished_at     INTEGER
+    finished_at     INTEGER,
+    -- v5 披露列：显式导入遍历中被 Excluder 直接拒绝的文件数（目录整株剪枝
+    -- 时其下文件不可枚举，故为下界）。旧库经 open() 的迁移分支 ALTER 补列。
+    skipped_by_excluder INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_import_jobs_collection
     ON knowledge_import_jobs(collection_id, updated_at DESC);
@@ -411,11 +418,30 @@ impl Store {
             }
             w.execute_batch("PRAGMA synchronous = NORMAL;")?;
         } else {
-            // Fresh create / in-place v3 migration: the DDL batch and the
+            // Fresh create / in-place migration: the DDL batch and the
             // version write each take the write lock once; busy_timeout makes
             // them wait out the other process's short transaction instead of
             // failing immediately.
             w.execute_batch(SCHEMA)?;
+            // v4 → v5 column migration. The idempotent DDL batch above cannot
+            // add a column to an existing table (`CREATE TABLE IF NOT EXISTS`
+            // skips), so pre-v5 stores get the disclosure column through this
+            // tolerant ALTER. A fresh v5 database already has the column from
+            // the CREATE TABLE, and "duplicate column name" is then the only
+            // expected failure — tolerated; any other error is a real fault
+            // and must not be masked.
+            if let Err(error) = w.execute_batch(
+                "ALTER TABLE knowledge_import_jobs \
+                 ADD COLUMN skipped_by_excluder INTEGER NOT NULL DEFAULT 0;",
+            ) {
+                let duplicate = error
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .contains("duplicate column name");
+                if !duplicate {
+                    return Err(error);
+                }
+            }
             w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
@@ -1208,6 +1234,90 @@ mod tests {
         assert_eq!(name, "保留的知识集");
         assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(import_table, 1);
+        drop(conn);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// v4 → v5 migration pin (round-51 limits audit): a pre-v5 store's
+    /// `knowledge_import_jobs` row lacks the `skipped_by_excluder` disclosure
+    /// column, and the idempotent DDL batch cannot add it (CREATE TABLE IF
+    /// NOT EXISTS skips). `Store::open`'s tolerant ALTER must add the column
+    /// in place — keeping existing rows readable — and a fresh v5 database
+    /// (column already present) must take the duplicate-column arm without
+    /// surfacing an error. Without the migration every walk disclosure write
+    /// on an existing user store would fail.
+    #[test]
+    fn v4_database_gains_the_skipped_by_excluder_column_on_open() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_v4_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+        // A v4-shaped store: the import-jobs table in its pre-v5 column set,
+        // one existing job row, no disclosure column.
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE knowledge_import_jobs (\
+               id              TEXT PRIMARY KEY,\
+               collection_id   INTEGER NOT NULL,\
+               roots_json      TEXT NOT NULL,\
+               state           TEXT NOT NULL,\
+               created_at      INTEGER NOT NULL,\
+               updated_at      INTEGER NOT NULL,\
+               finished_at     INTEGER\
+             );\
+             INSERT INTO knowledge_import_jobs(id,collection_id,roots_json,state,created_at,updated_at)\
+             VALUES('kb-import-legacy',1,'[]','done',1,1);\
+             PRAGMA user_version=4;",
+        )
+        .unwrap();
+        drop(c);
+
+        let store = Store::open(&path).unwrap();
+        let conn = store.conn_arc();
+        let version: i64 = conn
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // The legacy row survived the migration ...
+        let legacy: i64 = conn
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_import_jobs WHERE id='kb-import-legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, 1);
+        // ... and the disclosure column is present with the pre-column
+        // default, then writable.
+        let skipped: i64 = conn
+            .lock()
+            .query_row(
+                "SELECT COALESCE(skipped_by_excluder,0) FROM knowledge_import_jobs \
+                 WHERE id='kb-import-legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(skipped, 0);
+        conn.lock()
+            .execute(
+                "UPDATE knowledge_import_jobs SET skipped_by_excluder=7 \
+                 WHERE id='kb-import-legacy'",
+                [],
+            )
+            .unwrap();
         drop(conn);
         drop(store);
         let _ = std::fs::remove_file(&path);

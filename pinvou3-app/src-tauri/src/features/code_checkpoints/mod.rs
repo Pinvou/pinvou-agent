@@ -27,7 +27,7 @@
 //! ```text
 //! <ledger>/checkpoints/
 //!   repo/        # 影子 git-dir（objects/refs/index/info/exclude）
-//!   index.json   # CheckpointIndex { version, entries }，按创建顺序，上限 20
+//!   index.json   # CheckpointIndex { version, entries }，按创建顺序，上限 100
 //! ```
 //!
 //! 恢复语义：`read-tree <commit>` + `checkout-index -f -a` 把快照内容写回执行根，
@@ -45,8 +45,11 @@ pub(crate) mod turns;
 pub(crate) use turns::count_user_turns;
 pub use turns::count_user_turns_in_json;
 
-/// 每会话保留的 checkpoint 上限（LRU，超出裁掉最老条目）。
-const MAX_CHECKPOINTS: usize = 20;
+/// 每会话保留的 checkpoint 上限（LRU，超出裁掉最老条目）。条目数远大于旧值
+/// （20）是安全的：影子仓库对象按内容寻址天然去重（未变更的树复用上一
+/// 提交），提升上限的边际存储成本很小；字节总量由 [`MAX_SHADOW_REPO_BYTES`]
+/// 单独把守，不会因条目上限放松而失守。
+const MAX_CHECKPOINTS: usize = 100;
 /// Cap on the diff preview's patch text (truncated beyond it; the `changes`
 /// list is unaffected).
 ///

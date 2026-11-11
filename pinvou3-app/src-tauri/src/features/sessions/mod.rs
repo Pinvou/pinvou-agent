@@ -167,11 +167,12 @@ pub(crate) use self::store::HEADLESS_SESSION_PREFIX;
 pub(crate) use self::store::MAX_HEADLESS_SESSIONS;
 /// Re-exported for the observer-filter test: the same sweep can also evict
 /// from the chat budget, and the test must pin that such evictions are NOT
-/// reported as headless ones. Gated to the same cfg as its only consumer
-/// (the `agentic_task` tests module) — a plain `#[cfg(test)]` re-export is
-/// unused, and therefore a `[lints]`-denied error, in every test build that
-/// compiles without `benchmark-hooks` (plain `cargo test`, rust-lint).
-#[cfg(all(test, feature = "benchmark-hooks"))]
+/// reported as headless ones. Consumers are the `agentic_task` tests module
+/// and the `session_creation` budget-gate tests (both `#[cfg(test)]`, no
+/// feature gate), so the re-export is a plain `#[cfg(test)]` one — a feature
+/// gate would leave it unused in plain `cargo test` builds, which is a
+/// `[lints]`-denied error.
+#[cfg(test)]
 pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
 /// Re-export the new-chat placeholder sentinel: the auto-rename trigger in
 /// the command layer must compare against the same value GUI-created and kept

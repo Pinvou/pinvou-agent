@@ -38,6 +38,11 @@ pub struct HostFileListing {
     pub parent: Option<String>,
     pub entries: Vec<HostFileEntry>,
     pub roots: Vec<HostFileRoot>,
+    /// Additive honesty marker: true when the directory holds more raw
+    /// entries than the [`MAX_HOST_ENTRIES`] response budget carries (the
+    /// tail used to be dropped silently). Web consumers tolerate additive
+    /// fields; `false` (or absence in older clients) = complete listing.
+    pub truncated: bool,
 }
 
 pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, String> {
@@ -56,9 +61,18 @@ pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, Str
         ));
     }
     let mut entries = Vec::new();
+    let mut truncated = false;
     let read_dir = std::fs::read_dir(&directory)
         .map_err(|error| format!("list host path {}: {error}", directory.display()))?;
-    for entry in read_dir.take(MAX_HOST_ENTRIES) {
+    // Same raw-entry bound as the former `read_dir.take(MAX_HOST_ENTRIES)`:
+    // the cap counts entries as yielded by the iterator (including ones the
+    // validation/metadata filters below skip), and a (MAX+1)-th raw entry
+    // proves truncation instead of guessing from the pushed count.
+    for (index, entry) in read_dir.enumerate() {
+        if index >= MAX_HOST_ENTRIES {
+            truncated = true;
+            break;
+        }
         let Ok(entry) = entry else { continue };
         let entry_path = entry.path();
         let Ok(authorized_path) = crate::features::files::file_ingest::validate_browsable_path(
@@ -92,6 +106,7 @@ pub fn list_host_files(requested: Option<String>) -> Result<HostFileListing, Str
         }),
         entries,
         roots: host_roots(),
+        truncated,
     })
 }
 
@@ -287,6 +302,69 @@ mod tests {
             listing.roots.iter().any(|root| root.path == listing.path),
             "home root should match the initial listing path"
         );
+        assert!(!listing.truncated, "an ordinary directory must not report truncation");
+    }
+
+    /// A directory holding more raw entries than the response budget must
+    /// report `truncated: true` instead of silently dropping the tail
+    /// (limits-audit 2026-11: the old `read_dir.take(MAX)` gave the web UI
+    /// no way to know entries were missing). Isolated HOME keeps the 5001
+    /// fixture files out of the developer's real home; entry names avoid the
+    /// sensitive-component blocklist.
+    #[test]
+    fn host_file_listing_reports_truncation_past_entry_budget() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "HOME",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+        ]);
+        // SAFETY: ENV_LOCK held via locked_env; env writes are serialized and
+        // restored on drop. HOME covers POSIX/macOS, USERPROFILE the Windows
+        // home source (HOMEDRIVE/HOMEPATH only matter when it is unset).
+        let home = std::env::temp_dir().join(format!(
+            "pinvou-remote-host-truncated-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("HOME", &home) };
+        unsafe { std::env::set_var("USERPROFILE", &home) };
+        let directory = home.join("bulk");
+        std::fs::create_dir_all(&directory).unwrap();
+        for index in 0..=MAX_HOST_ENTRIES {
+            std::fs::write(directory.join(format!("bulk-entry-{index:05}")), b"").unwrap();
+        }
+
+        let listing = list_host_files(Some(directory.to_string_lossy().into_owned()))
+            .expect("the isolated bulk directory should be browsable");
+        assert!(
+            listing.truncated,
+            "MAX_HOST_ENTRIES + 1 raw entries must set the truncation marker"
+        );
+        assert_eq!(
+            listing.entries.len(),
+            MAX_HOST_ENTRIES,
+            "the response budget itself stays at MAX_HOST_ENTRIES"
+        );
+
+        // Exactly MAX entries: the iterator exhausts, no truncation marker.
+        let last = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .last()
+            .expect("bulk entries exist");
+        std::fs::remove_file(&last).unwrap();
+        let exact = list_host_files(Some(directory.to_string_lossy().into_owned()))
+            .expect("the bulk directory should stay browsable");
+        assert!(
+            !exact.truncated,
+            "exactly MAX_HOST_ENTRIES entries must not report truncation"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

@@ -49,7 +49,7 @@ static PRE_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
-pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
+pub(crate) const MAX_SESSIONS_PER_KIND: usize = 500;
 
 /// The aux conversation's internal default title (Chinese constant): aux
 /// sessions never enter the regular session list, so this title is only used
@@ -76,7 +76,7 @@ pub(crate) const HEADLESS_SESSION_PREFIX: &str = "agentic_";
 /// only notice went to a stderr the desktop user never reads. Sized like the
 /// chat budget — a headless batch is exactly the workload that benefits from
 /// keeping recent runs inspectable.
-pub(crate) const MAX_HEADLESS_SESSIONS: usize = 50;
+pub(crate) const MAX_HEADLESS_SESSIONS: usize = 500;
 
 /// Placeholder title for a fresh chat session. One of the trilingual
 /// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes

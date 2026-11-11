@@ -44,12 +44,24 @@ pub const RECENT_WORK_ACTIVE_MAX_STORED: usize = 8;
 pub const RECENT_WORK_ARCHIVED_MAX_STORED: usize = 24;
 pub const CURRENT_FOCUS_DEFAULT_TTL_DAYS: i64 = 21;
 pub const RECENT_ACTIVITY_DEFAULT_TTL_DAYS: i64 = 14;
+/// Upper bound accepted for a user-supplied `ttl_days` on timed memories
+/// (`current_focus` / `recent_activity`). The clamp keeps the input in a
+/// sane range instead of trusting it blindly; 3650 (~10 years) leaves
+/// long-horizon goals expressible while still bounding a planted or
+/// garbage value (round-51 limits audit: 90 days silently clamped
+/// legitimate long ttl input with no disclosure).
+pub const TIMED_MEMORY_MAX_TTL_DAYS: i64 = 3650;
 pub const CURRENT_FOCUS_MAX_INJECTED: usize = 3;
 pub const RECENT_ACTIVITY_MAX_INJECTED: usize = 5;
 pub const CURRENT_FOCUS_ACTIVE_MAX_STORED: usize = 8;
 pub const RECENT_ACTIVITY_ACTIVE_MAX_STORED: usize = 20;
 pub const TIMED_MEMORY_ARCHIVED_MAX_STORED: usize = 40;
-pub const PENDING_MEMORY_ACTIVE_MAX_STORED: usize = 20;
+/// Unconfirmed (`pending_confirm`) candidate rows kept in the pending store.
+/// These are suggestions the user has NOT decided on; write-time compaction
+/// previously dropped the overflow silently at 20 (round-51 limits audit:
+/// rows are ~200 bytes, so 200 still bounds the store trivially while no
+/// longer discarding undecided suggestions behind the user's back).
+pub const PENDING_MEMORY_ACTIVE_MAX_STORED: usize = 200;
 pub const PENDING_MEMORY_RESOLVED_MAX_STORED: usize = 80;
 pub const NEVER_MEMORY_MAX_STORED: usize = 200;
 pub const MEMORY_REVIEW_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
