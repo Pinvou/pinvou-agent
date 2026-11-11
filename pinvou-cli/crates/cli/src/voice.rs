@@ -15,13 +15,15 @@
 //!   the divergence note in `features::voice::contract`), with the same
 //!   expected byte size, and the same `PINVOU3_ASR_CMD` / `PINVOU3_DEEPSPEECH2_CMD` /
 //!   `PADDLESPEECH_BIN` external-CLI fallback chain with the same `asr
-//!   --model --lang --input` protocol, 60 s default timeout and exit-code-6
+//!   --model --lang --input` protocol, 300 s default timeout and exit-code-6
 //!   "no speech" convention.
-//! - the NATIVE engine lane's wait budget is GUI parity by default: 300 s,
-//!   mirroring the app's `features::voice::voice_asr::transcribe` ("long
-//!   recordings can take minutes", voice_asr.rs), while the external-CLI
-//!   protocol lane keeps the 60 s default of the app's `run_local_asr_cli`;
-//!   both lanes honor the same `PINVOU3_ASR_TIMEOUT_SECS` /
+//! - both engine lanes' wait budgets default to 300 s ("long recordings can
+//!   take minutes", voice_asr.rs): the native lane mirrors the app's
+//!   `features::voice::voice_asr::transcribe` GUI parity, and the external-CLI
+//!   protocol lane — which the app's `run_local_asr_cli` still scopes at
+//!   60 s — is deliberately raised to the same 300 s here so a legitimate
+//!   long-recording transcription cannot die as a spurious `asr_timeout`
+//!   on either lane; both honor the same `PINVOU3_ASR_TIMEOUT_SECS` /
 //!   `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS` override (round-50 review: the
 //!   native lane previously borrowed the external lane's 60 s default
 //!   without disclosure).
@@ -1604,12 +1606,16 @@ fn asr_timeout_env_override_secs() -> Option<u64> {
         .filter(|secs| *secs > 0)
 }
 
-/// External-CLI protocol lane's wait budget: the module header scopes this
-/// lane as a mirror of the app's `run_local_asr_cli`, whose
-/// `local_asr_timeout` (`app/commands/voice.rs`) defaults to 60 s under the
-/// same env override.
+/// External-CLI protocol lane's wait budget. The module header scopes this
+/// lane as a mirror of the app's `run_local_asr_cli` (60 s under the same
+/// env override), but a wedged 60 s cut turns a legitimate long-recording
+/// transcription into a spurious `asr_timeout` — the same failure the
+/// native lane's round-50 raise fixed — so this lane aligns with the native
+/// engine budget instead. The env override still wins.
+const EXTERNAL_CLI_TIMEOUT_SECS: u64 = NATIVE_ENGINE_TIMEOUT_SECS;
+
 fn asr_timeout_secs() -> u64 {
-    asr_timeout_env_override_secs().unwrap_or(60)
+    asr_timeout_env_override_secs().unwrap_or(EXTERNAL_CLI_TIMEOUT_SECS)
 }
 
 /// Native engine lane's wait budget, GUI parity: the app's native lane
@@ -2960,8 +2966,8 @@ content-length: {}\r\n\r\n{}",
     /// (`voice_asr.rs`, "long recordings can take minutes") — borrowing
     /// the external-CLI lane's 60 s default cut legitimate long-recording
     /// transcriptions into spurious `asr_engine_error` timeouts, undisclosed.
-    /// The external-CLI lane keeps its own 60 s default, and the env override
-    /// (`PINVOU3_ASR_TIMEOUT_SECS`, falling back to
+    /// The external-CLI lane aligns with the same 300 s default, and the env
+    /// override (`PINVOU3_ASR_TIMEOUT_SECS`, falling back to
     /// `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS`) wins over either lane's default,
     /// with invalid values falling through.
     #[test]
@@ -2980,8 +2986,8 @@ content-length: {}\r\n\r\n{}",
             );
             assert_eq!(
                 asr_timeout_secs(),
-                60,
-                "the external-CLI lane keeps its scoped 60 s default"
+                300,
+                "the external-CLI lane aligns with the native 300 s default"
             );
         }
         {
@@ -3018,7 +3024,7 @@ content-length: {}\r\n\r\n{}",
                 300,
                 "an invalid override must fall through to the lane default"
             );
-            assert_eq!(asr_timeout_secs(), 60);
+            assert_eq!(asr_timeout_secs(), 300);
         }
     }
 

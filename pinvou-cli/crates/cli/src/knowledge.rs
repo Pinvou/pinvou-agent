@@ -154,7 +154,7 @@ const COLLECTIONS_USAGE: &str =
 const DOCUMENTS_USAGE: &str = "usage: pinvou knowledge documents <collection-id> [--limit N] | pinvou knowledge documents remove <doc-id> --yes";
 const INDEX_USAGE: &str = "usage: pinvou knowledge index <status [job-id]|cancel job-id|resume job-id|retry job-id item-id|failed job-id [--offset N --limit N]> (failed page: --offset defaults to 0, --limit to 50)";
 const MODEL_USAGE: &str = "usage: pinvou knowledge model <status|download|cancel> (download: needs network and the desktop model host; long-running)";
-const REMOTE_USAGE: &str = "usage: pinvou knowledge remote <connections|probe URL|collections|search <collection> <query>>";
+const REMOTE_USAGE: &str = "usage: pinvou knowledge remote <connections|probe URL|collections|search <collection> <query> [--limit N]>";
 const HOST_USAGE: &str = "usage: pinvou knowledge host status";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,6 +241,7 @@ pub enum KnowledgeCommand {
     RemoteSearch {
         collection: String,
         query: String,
+        limit: Option<usize>,
     },
     HostStatus,
 }
@@ -252,6 +253,13 @@ const UPDATE_OPTIONS: &[&str] = &["--name", "--category", "--description"];
 const DOCUMENT_OPTIONS: &[&str] = &["--limit"];
 const INDEX_FAILED_OPTIONS: &[&str] = &["--offset", "--limit"];
 const SEARCH_OPTIONS: &[&str] = &["--limit", "--ext", "--after", "--before"];
+const REMOTE_SEARCH_OPTIONS: &[&str] = &["--limit"];
+
+/// `remote search` result window: the GUI's default top-8, clamped to the
+/// same 1..50 envelope the server applies to `SearchRequest.limit`
+/// (`pinvou-knowledge` service search).
+const REMOTE_SEARCH_LIMIT_DEFAULT: usize = 8;
+const REMOTE_SEARCH_LIMIT_MAX: usize = 50;
 
 /// Boolean (valueless) flags, per subcommand.
 const DELETE_FLAGS: &[&str] = &["--yes"];
@@ -532,7 +540,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                 }
                 "search" => {
                     let (head, tail) = positionals(&rest[1..]);
-                    no_options(tail, "remote search")?;
+                    let (options, _) = parse_flags(tail, REMOTE_SEARCH_OPTIONS, &[])?;
                     let collection = head
                         .first()
                         .ok_or_else(|| {
@@ -545,7 +553,18 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                     if query.trim().is_empty() {
                         return Err(CliError::usage("knowledge remote search requires a query"));
                     }
-                    Ok(KnowledgeCommand::RemoteSearch { collection, query })
+                    // Same result window the server enforces
+                    // (`SearchRequest.limit` is clamped 1..50 service-side):
+                    // clamping at parse time keeps the CLI's effective window
+                    // identical while `--limit 0` still fails as the family's
+                    // positive-integer usage error.
+                    let limit = parse_positive(&options, "--limit")?
+                        .map(|limit| limit.clamp(1, REMOTE_SEARCH_LIMIT_MAX));
+                    Ok(KnowledgeCommand::RemoteSearch {
+                        collection,
+                        query,
+                        limit,
+                    })
                 }
                 _ => Err(CliError::usage(REMOTE_USAGE)),
             }
@@ -765,9 +784,11 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         KnowledgeCommand::RemoteConnections => remote_connections(output),
         KnowledgeCommand::RemoteProbe { url } => remote_probe(&url, output),
         KnowledgeCommand::RemoteCollections => remote_collections(output),
-        KnowledgeCommand::RemoteSearch { collection, query } => {
-            remote_search(&collection, &query, output)
-        }
+        KnowledgeCommand::RemoteSearch {
+            collection,
+            query,
+            limit,
+        } => remote_search(&collection, &query, limit, output),
         KnowledgeCommand::HostStatus => host_status(output),
     }
 }
@@ -1547,7 +1568,7 @@ fn documents(
         // app crate, so the CLI cannot import it; a second local copy of the
         // same number would silently desync the day upstream changes it, and
         // the guarantee is upstream's to keep.
-        .list_documents(collection_id, limit.unwrap_or(0))
+        .list_documents(collection_id, limit.unwrap_or(0), 0)
         .map_err(|error| feature_error("documents", error))?;
     let human = if documents.is_empty() {
         format!("no documents in collection {collection_id}")
@@ -2251,6 +2272,7 @@ mod phase_tests {
             total: 3,
             failed,
             current_path: None,
+            skipped_by_excluder: 0,
             current_chunks_done: 0,
             current_chunks_total: 0,
             updated_at: None,
@@ -2295,6 +2317,18 @@ fn render_index_state(state: &IndexState) -> String {
         format!("progress: {}/{}", state.done, state.total),
         format!("failed: {}", state.failed),
     ];
+    // Round-51 limits audit disclosure: the index rules' allowlist prunes
+    // silently by design, so the walk reports how many files it rejected.
+    // The line only renders when the count is non-zero, keeping output for
+    // unaffected jobs byte-identical; the JSON payload always carries the
+    // field (`skippedByExcluder`).
+    if state.skipped_by_excluder > 0 {
+        lines.push(format!(
+            "skipped by index rules: {} (files outside the indexable types; \
+             folders matched by exclusion rules are not descended into)",
+            state.skipped_by_excluder
+        ));
+    }
     if let Some(path) = &state.current_path {
         // The path originates from DB import rows (a Unix filename may
         // legally carry tab/newline/ESC): collapse it like every other
@@ -2648,11 +2682,14 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
 
 /// GUI `remote_kb_search(server_id, collection_ids, query, limit)` with the
 /// GUI's default limit of 8; the CLI's `collection` argument is a name, so
-/// it is resolved against each server's collections first.
+/// it is resolved against each server's collections first. `--limit` sizes
+/// the per-server result window (clamped 1..50 at parse time, the same
+/// envelope the server enforces) instead of pinning the GUI's top-8.
 #[cfg(feature = "product-backend")]
 fn remote_search(
     collection: &str,
     query: &str,
+    limit: Option<usize>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let service = open_remote_service()?;
@@ -2674,7 +2711,12 @@ fn remote_search(
                     Some(matched) => {
                         let collection_id = matched.id;
                         service
-                            .search(&server_id, vec![collection_id], remote_query.clone(), 8)
+                            .search(
+                                &server_id,
+                                vec![collection_id],
+                                remote_query.clone(),
+                                limit.unwrap_or(REMOTE_SEARCH_LIMIT_DEFAULT),
+                            )
                             .await
                             .map(|hits| (Some(collection_id), Some(hits), None))
                             .unwrap_or_else(|error| (Some(collection_id), None, Some(error)))
@@ -2806,6 +2848,7 @@ fn remote_collections(_output: OutputMode) -> Result<CliOutcome, CliError> {
 fn remote_search(
     _collection: &str,
     _query: &str,
+    _limit: Option<usize>,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     Err(crate::support::product_backend_not_enabled())

@@ -156,7 +156,7 @@ use pinvou3_lib::platform::credential_store::{
 
 const USAGE: &str = "usage: pinvou plugins <tools|skills|import|export|meta|recycle|readiness|enable|disable|project-skills> (see subcommand help: pinvou plugins <tools|skills|recycle>)";
 
-const TOOLS_USAGE: &str = "usage: pinvou plugins tools <list [--installed-only] | install <id> [--secret KEY=ENV_VAR_NAME...] | uninstall <id> --yes | auth <id> | oauth-login <id> [--timeout SECS] | oauth-cancel <id>>";
+const TOOLS_USAGE: &str = "usage: pinvou plugins tools <list [--installed-only] | install <id> [--secret KEY=ENV_VAR_NAME...] | uninstall <id> --yes | auth <id> | oauth-login <id> | oauth-cancel <id>>";
 
 const SKILLS_USAGE: &str = "usage: pinvou plugins skills <list [--installed-only] | install <id> | update <id> | uninstall <id> --yes>";
 
@@ -215,9 +215,6 @@ pub enum PluginsCommand {
     ToolsAuth {
         id: String,
     },
-    // `--timeout` is parsed and positively validated for argv compatibility
-    // (a bad value still fails as a usage error) but has no consumer after
-    // parsing: no login runs headless, so nothing reads the value.
     ToolsOauthLogin {
         id: String,
     },
@@ -276,7 +273,6 @@ pub enum PluginsCommand {
 }
 
 /// Flags that carry a value, per subcommand.
-const TOOLS_OAUTH_LOGIN_OPTIONS: &[&str] = &["--timeout"];
 const EXPORT_OPTIONS: &[&str] = &["--output"];
 const META_OPTIONS: &[&str] = &["--name", "--description"];
 const SCOPE_OPTIONS: &[&str] = &["--scope"];
@@ -418,11 +414,13 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "oauth-login" => {
             let id = require_id(tail.first())?;
-            let (options, _) = parse_flags(&tail[1..], TOOLS_OAUTH_LOGIN_OPTIONS, &[])?;
-            // Still validated (positively) for argv compatibility, then
-            // discarded: the value has no consumer after parsing.
-            let _validated =
-                crate::support::parse_family_positive::<u64>(&options, "--timeout", "plugins")?;
+            // The command always refuses headless (`oauth_login_unavailable_in_cli`),
+            // so nothing can ever consume a timeout here: the option is not
+            // accepted at all instead of being validated and discarded.
+            support::expect_no_arguments_message(
+                &tail[1..],
+                "plugins tools oauth-login accepts no options".to_owned(),
+            )?;
             Ok(PluginsCommand::ToolsOauthLogin { id })
         }
         "oauth-cancel" => {

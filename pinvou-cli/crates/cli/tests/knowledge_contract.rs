@@ -547,13 +547,54 @@ fn knowledge_parses_every_subcommand() {
         (&["pinvou", "knowledge", "remote", "collections"], "Knowledge(RemoteCollections)".into()),
         (
             &["pinvou", "knowledge", "remote", "search", "papers", "embeddings", "test"],
-            r#"Knowledge(RemoteSearch { collection: "papers", query: "embeddings test" })"#.into(),
+            r#"Knowledge(RemoteSearch { collection: "papers", query: "embeddings test", limit: None })"#.into(),
+        ),
+        (
+            &["pinvou", "knowledge", "remote", "search", "papers", "query", "--limit", "20"],
+            r#"Knowledge(RemoteSearch { collection: "papers", query: "query", limit: Some(20) })"#.into(),
         ),
         (&["pinvou", "knowledge", "host", "status"], "Knowledge(HostStatus)".into()),
     ];
     for (arguments, expected) in cases {
         assert_eq!(parsed_debug(arguments), expected, "{arguments:?}");
     }
+    // `remote search --limit` clamps to the server's request envelope
+    // (1..50) at parse time; `--limit 0` stays the family's
+    // positive-integer usage error.
+    assert_eq!(
+        parsed_debug(&[
+            "pinvou",
+            "knowledge",
+            "remote",
+            "search",
+            "papers",
+            "query",
+            "--limit",
+            "999"
+        ]),
+        r#"Knowledge(RemoteSearch { collection: "papers", query: "query", limit: Some(50) })"#,
+    );
+    assert!(parsed_debug(&[
+        "pinvou",
+        "knowledge",
+        "remote",
+        "search",
+        "papers",
+        "query",
+        "--limit",
+        "1"
+    ])
+    .contains("limit: Some(1)"));
+    assert_usage(&[
+        "pinvou",
+        "knowledge",
+        "remote",
+        "search",
+        "papers",
+        "query",
+        "--limit",
+        "0",
+    ]);
 }
 
 #[test]

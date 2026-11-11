@@ -375,7 +375,27 @@ impl KnowledgeClient {
     }
 
     pub async fn devices(&self) -> Result<Vec<DeviceGrant>, String> {
-        self.get("/api/v2/owner/devices?limit=200&offset=0").await
+        // The owner devices endpoint pages exactly like `documents_page`
+        // (limit + offset, with the server clamping the page size to 1..500
+        // in `list_devices_page`), so walk the pages until a short page ends
+        // the listing instead of silently dropping devices past the first
+        // fixed page.
+        const DEVICES_PAGE_LIMIT: usize = 500;
+        let mut devices = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let page: Vec<DeviceGrant> = self
+                .get(&format!(
+                    "/api/v2/owner/devices?limit={DEVICES_PAGE_LIMIT}&offset={offset}"
+                ))
+                .await?;
+            let fetched = page.len();
+            devices.extend(page);
+            if fetched < DEVICES_PAGE_LIMIT {
+                return Ok(devices);
+            }
+            offset += fetched;
+        }
     }
 
     pub async fn update_device(
