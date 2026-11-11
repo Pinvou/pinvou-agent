@@ -212,7 +212,7 @@ export const dictEn = {
   
  
         kbSearchPlaceholder: 'Try: pdf from last week, videos over 10mb', 
- kbNoResults: 'No matching files', kbScanningHint: 'Indexing… scanned',
+ kbNoResults: 'No matching files', kbScanningHint: 'Indexing… scanned', kbFilesShowingFirst: n => `Showing first ${n} files`, kbLoadMore: 'Load more',
         kbEmptyHint: 'No index yet. Scan this PC to instantly search all files and find duplicates.',
  
   
@@ -244,6 +244,7 @@ export const dictEn = {
         kbImportProgress: 'File progress', kbCurrentFile: 'Current file:', kbChunkProgress: 'Chunk progress', kbFailedFiles: 'Failed files', kbRetryFile: 'Retry', kbImportErrors: 'failed', kbImportDoneWithErrors: 'Import finished with errors',
         kbResumeImportFailed: 'Failed to continue import', kbCancelImportFailed: 'Failed to cancel import', kbRetryImportFailed: 'Failed to retry file',
         kbLoadMoreFailedFiles: 'Load more failed files', kbLoadingFailedFiles: 'Loading…', kbLoadFailedFilesFailed: 'Failed to load failed files',
+        kbLoadMoreDocs: 'Load more documents',
         kbDeleteColl: 'Delete collection', kbRemove: 'Remove', kbCollEmpty: 'No documents yet. Click "Add files".', kbNoCollFiles: 'No files in any knowledge base yet', kbAllColls: 'All', kbDelCollConfirm: 'Delete collection "{n}"?', kbDelCollWarn: 'Only removes the index for its {c} documents. Your original files on disk are NOT deleted.', kbDelete: 'Delete', kbRemoveDocConfirm: 'Remove "{n}" from the knowledge base?', kbRemoveDocWarn: 'Only deletes its index here. Your original file on disk is not affected.', kbRemoveFailed: 'Could not remove document', 
           kbCollNamePh: 'Collection name', kbCollCatPh: 'Category (optional)', kbCancel: 'Cancel', kbCreate: 'Create',
         kbEmbedOn: 'Semantic search on', kbEmbedOff: 'Semantic search off · full-text only', kbEmbedUnsupported: 'Local embedding models are not supported on this platform',
