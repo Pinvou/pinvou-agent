@@ -26,7 +26,10 @@ const IMA_BASE_URL: &str = "https://ima.qq.com";
 /// `skill_version` 上报 —— 曾经是 CLI 侧的无对齐护栏手抄镜像（round-9 review
 /// n2），与 IMA_SKILL_ID 同一批单一真相源。
 pub const IMA_SKILL_VERSION: &str = "1.1.8";
-const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+/// 响应体安全上限：`read_json_response` 按 `bytes_stream` 流式累计，超过即
+/// 中止读取（不会整段驻留内存），因此提高上限不改变内存边界，只放宽单次
+/// 工具调用可返回的文档体量（get_doc_content 的长文档合法超过 1 MiB）。
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 const READ_API_PATHS: &[&str] = &[
     "openapi/check_skill_update",
@@ -109,7 +112,7 @@ async fn read_json_response(response: reqwest::Response) -> Result<Value, String
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("读取 IMA 响应失败: {e}"))?;
         if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-            return Err("IMA 响应超过 1 MiB 安全上限。".to_string());
+            return Err("IMA 响应超过 16 MiB 安全上限。".to_string());
         }
         bytes.extend_from_slice(&chunk);
     }

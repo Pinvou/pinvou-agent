@@ -1058,7 +1058,7 @@ async fn process_spool_file<C: SessionCreator, N: SessionListNotifier + ?Sized>(
         }
     }
     // Round-17 (#657) MAJOR 1: the chat-budget gate. Tool-created sessions
-    // are plain ids competing for the user's 50-chat retention budget, and
+    // are plain ids competing for the user's chat retention budget, and
     // a looping model at tool pace reaches the cap within minutes — after
     // which every further save EVICTS a pre-existing conversation (with its
     // workspace and checkpoints) unattended, the exact headless
@@ -2593,6 +2593,7 @@ pub(crate) fn spawn_session_creation_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::sessions::MAX_SESSIONS_PER_KIND;
     use std::sync::Mutex as SyncMutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -4067,12 +4068,14 @@ mod tests {
     }
 
     /// Round-17 MAJOR 1 / round-18 MAJOR 2: the budget gate's semantics are
-    /// pinned by LITERAL mixed-id fixtures, not by seeding through the gate
-    /// itself (the round-17 form was its own oracle: 4 of 5 single-token
-    /// mutations stayed green and the realistic off-by-one hung the suite
-    /// while silently restoring the eviction behavior). Each assert here is
-    /// one mutation away from red: the headless-prefix exclusion, the cap
-    /// constant, and the fail-closed listing arm are all observed.
+    /// pinned by mixed-id fixtures seeded to the exact cap boundary (the
+    /// counts derive from `MAX_SESSIONS_PER_KIND`), not by seeding through
+    /// the gate itself (the round-17 form was its own oracle: 4 of 5
+    /// single-token mutations stayed green and the realistic off-by-one hung
+    /// the suite while silently restoring the eviction behavior). Each
+    /// assert here is one mutation away from red: the headless-prefix
+    /// exclusion, the pinned exclusion, and the fail-closed listing arm are
+    /// all observed.
     #[tokio::test]
     async fn budget_gate_counts_like_the_sweep() {
         use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
@@ -4090,7 +4093,11 @@ mod tests {
             );
             store.save_session_atomic(&session).unwrap();
         };
-        for index in 0..45 {
+        // The plain seeds stop 5 slots under the cap; the zzz phase below
+        // then tops the counted set up to exactly one under it, so every
+        // assert sits on the exact cap boundary: dropping the headless
+        // exclusion or drifting the cap constant turns an assert red.
+        for index in 0..(MAX_SESSIONS_PER_KIND - 5) {
             seed(&format!("budgetgate{index:04}"));
         }
         // Headless ids ride their OWN budget — dropping this exclusion from
@@ -4100,26 +4107,29 @@ mod tests {
         }
         assert!(
             !store.plain_chat_budget_full().unwrap(),
-            "45 plain + 5 headless: headless does not consume the chat budget"
+            "plain below the cap + 5 headless: headless does not consume the chat budget"
         );
         // The fixture's reqsrc01 record consumes one plain-chat slot, so
         // three zzz seeds (not four) leave the one-slot headroom.
-        seed("budgetgate_zzz46");
-        seed("budgetgate_zzz47");
-        seed("budgetgate_zzz48");
+        for index in 0..3 {
+            seed(&format!("budgetgate_zzz{index:04}"));
+        }
         assert!(
             !store.plain_chat_budget_full().unwrap(),
-            "49 plain (incl. the fixture requester): one slot left"
+            "plain one under the cap (incl. the fixture requester): one slot left"
         );
         seed("budgetgate_fff");
-        assert!(store.plain_chat_budget_full().unwrap(), "50 plain: at cap");
+        assert!(
+            store.plain_chat_budget_full().unwrap(),
+            "plain at the cap"
+        );
     }
 
     /// Round-19 minor (the reviewer's most-wanted pin): the PINNED
-    /// exclusion conjunct gets its own red — 45 plain + 5 pinned ⇒ NOT full
-    /// (pinned sessions sit outside the counted set exactly as the sweep
-    /// exempts them); the round-17 pinned-inclusive count turns this assert
-    /// red (50 counted ⇒ full).
+    /// exclusion conjunct gets its own red — plain seeds one under the cap
+    /// + 5 pinned ⇒ NOT full (pinned sessions sit outside the counted set
+    /// exactly as the sweep exempts them); the round-17 pinned-inclusive
+    /// count turns this assert red (over the cap counted ⇒ full).
     #[tokio::test]
     async fn budget_gate_exempts_pinned_sessions() {
         use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
@@ -4147,7 +4157,10 @@ mod tests {
             );
             store.save_session_atomic(&session).unwrap();
         };
-        for index in 0..45 {
+        // Plain seeds stop one fixture-slot under the cap (the fixture's
+        // reqsrc01 record consumes one plain-chat slot): a pinned-inclusive
+        // count reads the store as full, the exempt count reads it under.
+        for index in 0..(MAX_SESSIONS_PER_KIND - 5) {
             seed(&format!("budgetgateplain{index:04}"));
         }
         for index in 0..5 {
@@ -4155,7 +4168,7 @@ mod tests {
         }
         assert!(
             !store.plain_chat_budget_full().unwrap(),
-            "45 unpinned plain + 5 pinned: pinned sessions are exempt"
+            "unpinned plain under the cap + 5 pinned: pinned sessions are exempt"
         );
     }
 
@@ -4191,8 +4204,8 @@ mod tests {
         use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
         let _home = TempHome::new();
         let store = store_with_requester();
-        // 49 seeds + the fixture's reqsrc01 record = the 50-plain cap.
-        for index in 0..49 {
+        // (cap - 1) seeds + the fixture's reqsrc01 record = the plain cap.
+        for index in 0..(MAX_SESSIONS_PER_KIND - 1) {
             let session = create_saved_session_with_id_and_mode(
                 format!("budgetgatefull{index:04}"),
                 &[],
@@ -4241,9 +4254,9 @@ mod tests {
         use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
         let _home = TempHome::new();
         let store = store_with_requester();
-        // 48 seeds + the fixture's reqsrc01 record = 49 plain, one slot of
-        // headroom for the spooled create.
-        for index in 0..48 {
+        // (cap - 2) seeds + the fixture's reqsrc01 record = one under the
+        // cap, one slot of headroom for the spooled create.
+        for index in 0..(MAX_SESSIONS_PER_KIND - 2) {
             let session = create_saved_session_with_id_and_mode(
                 format!("budgetgatefree{index:04}"),
                 &[],

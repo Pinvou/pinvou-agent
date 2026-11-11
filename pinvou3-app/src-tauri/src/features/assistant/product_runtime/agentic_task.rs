@@ -387,7 +387,7 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// (under the same adoption rule as a submitted run).
 /// Caller-provided sessions are never auto-deleted.
 ///
-/// Persisting counts against the headless 50-session retention budget — a
+/// Persisting counts against the headless session retention budget — a
 /// bucket separate from the GUI chat budget — so a fresh run's prepare-time
 /// save evicts only previous headless sessions (pinned sessions are exempt
 /// from retention). The store's real eviction events drive a stderr warning
@@ -533,8 +533,8 @@ pub async fn run_agentic_task(
 }
 
 /// Session lifecycle after the turn — the KEEP_SESSION disposition cascade.
-/// Sessions persist by default (GUI parity — the 50-session retention cap
-/// applies), so the engine is reclaimed while the transcript, artifacts and
+/// Sessions persist by default (GUI parity — the headless-session retention
+/// cap applies), so the engine is reclaimed while the transcript, artifacts and
 /// timeline stay under the sessions root for later continuation through the
 /// request's `session_id` (a library surface; the one-shot CLI keeps its
 /// defaults today). Only an explicit
@@ -562,8 +562,8 @@ pub async fn run_agentic_task(
 /// submitted run.
 ///
 /// A caller-provided `session_id` (existing_session) is never auto-deleted by
-/// THIS run, but it is an ordinary chat session in the store: the 50-session
-/// retention sweep can still evict it later exactly like any GUI chat
+/// THIS run, but it is an ordinary chat session in the store: the retention
+/// sweep can still evict it later exactly like any GUI chat
 /// session. Only this run's eval observation mark is dropped, and the session
 /// is left in place for the caller.
 ///
@@ -1049,7 +1049,7 @@ fn retention_eviction_warning(evicted: &RetentionEvictionRecord) -> Option<Strin
 }
 
 /// Arm the store's retention-eviction observer for one run: the prepare-time
-/// save lands in the same 50-session store the GUI reads, and a fresh save at
+/// save lands in the same session store the GUI reads, and a fresh save at
 /// the cap evicts the oldest unpinned headless session(s) (pinned sessions
 /// are exempt). The store reports its real sweep deletions into the returned
 /// receiver, so the warning keys on the eviction event itself — a run that

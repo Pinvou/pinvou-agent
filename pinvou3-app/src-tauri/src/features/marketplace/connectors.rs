@@ -65,6 +65,36 @@ fn pip_index_rounds() -> [(&'static str, &'static [&'static str]); 2] {
     ]
 }
 
+/// Wall-clock budget for ONE `python3 -m pip install` invocation. pip's
+/// internal socket timeouts do not cover a wedged TCP connection or a hung
+/// resolver; without this bound a single wedged attempt blocked the
+/// install/repair lane indefinitely. Generous enough for large wheel chains
+/// on slow links; the retry ladder itself is unchanged, so the worst case is
+/// now bounded at 3 flag-attempts × 2 index rounds × this budget instead of
+/// unbounded.
+const PIP_INSTALL_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
+/// Failure diagnostics keep the last ~20 lines of the stream: the root cause
+/// often lives above the final line (resolver conflict tables print their
+/// header long before the summary line), and keeping only the last line used
+/// to lose it entirely. Omission of earlier lines is marked, never silent.
+const PIP_FAILURE_TAIL_LINES: usize = 20;
+
+/// Keep the last [`PIP_FAILURE_TAIL_LINES`] lines of a pip failure text,
+/// prefixing an omission marker when earlier lines were dropped.
+fn pip_failure_tail(text: &str) -> String {
+    let trimmed = text.trim();
+    let lines: Vec<&str> = trimmed.lines().collect();
+    if lines.len() <= PIP_FAILURE_TAIL_LINES {
+        return trimmed.to_string();
+    }
+    format!(
+        "…(earlier {} lines omitted)\n{}",
+        lines.len() - PIP_FAILURE_TAIL_LINES,
+        lines[lines.len() - PIP_FAILURE_TAIL_LINES..].join("\n")
+    )
+}
+
 /// 把 JSON 值以 pretty 形式写盘(迁移与 connector 注册共用)。
 /// 写前创建父目录：全新 PINVOU3_HOME 下 `bundle/` 尚不存在，直接写会 ENOENT。
 /// tmp + rename 原子落盘（经 `super::write_atomic_file` →
@@ -204,7 +234,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         //    the official source at pypi.org. The default index going first is
         //    deliberate — it respects the user's own pip.conf/corporate index;
         //    the mirror is only the last fallback.
-        let run = |extra: &[&str], index_args: &[&str]| -> std::io::Result<std::process::Output> {
+        let run = |extra: &[&str], index_args: &[&str]| -> Result<std::process::Output, String> {
             let mut cmd = std::process::Command::new(python_cmd);
             cmd.args([
                 "-m",
@@ -216,7 +246,14 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             cmd.args(extra);
             cmd.args(index_args);
             cmd.args(deps);
-            cmd.output()
+            // Bounded attempt: capture spills to temp files (stdin nulled, no
+            // pipe deadlock) and a wedged pip — stalled TCP, hung resolver —
+            // is kill-tree'd at the wall clock instead of blocking the
+            // install/repair lane forever.
+            crate::platform::process::output_with_timeout_and_kill_tree(
+                cmd,
+                PIP_INSTALL_ATTEMPT_TIMEOUT,
+            )
         };
         let attempts: [&[&str]; 3] = [
             &["--user"],
@@ -226,12 +263,14 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // The default-index round runs first (no -i, so the user's pip.conf /
         // corporate index keeps priority); only after the whole round fails do
         // we rerun once via Tsinghua TUNA (rounds defined in pip_index_rounds).
-        // The pip subprocess has no overall timeout: worst-case time doubles
-        // with the round count, same accounting as native_installer's
-        // multi-candidate fallback. Each round's own last error goes into the
-        // final error: keeping only the last round would hide the default-index
-        // root cause that triggered the mirror retry (same convention as the
-        // first-error causal chain in tmeet/npm).
+        // Each attempt is wall-clock bounded (PIP_INSTALL_ATTEMPT_TIMEOUT,
+        // kill-tree on expiry); the ladder is unchanged, so the worst case is
+        // 3 flag-attempts × 2 index rounds × that budget — bounded, where a
+        // wedged attempt used to block the lane indefinitely. Each round's own
+        // last error goes into the final error: keeping only the last round
+        // would hide the default-index root cause that triggered the mirror
+        // retry (same convention as the first-error causal chain in
+        // tmeet/npm).
         let mut round_errors: Vec<String> = Vec::new();
         for (round_label, index_args) in pip_index_rounds() {
             let mut last_err = String::new();
@@ -239,17 +278,19 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 match run(extra, index_args) {
                     Ok(o) if o.status.success() => return Ok(()),
                     Ok(o) => {
-                        last_err = String::from_utf8_lossy(&o.stderr)
-                            .trim()
-                            .lines()
-                            .last()
-                            .unwrap_or("")
-                            .to_string();
+                        last_err = pip_failure_tail(&String::from_utf8_lossy(&o.stderr));
                     }
-                    Err(e) => {
+                    // Only a spawn failure means "python3 missing": every
+                    // other error shape (timeout/overflow kill, wait or
+                    // capture-readback failure) is a failed attempt whose
+                    // cause belongs in the round error, not a missing PATH.
+                    Err(e) if e.starts_with("spawn ") => {
                         return Err(format!(
                             "cannot run {python_cmd} (make sure Python is installed and on PATH): {e}"
                         ));
+                    }
+                    Err(e) => {
+                        last_err = pip_failure_tail(&e);
                     }
                 }
             }

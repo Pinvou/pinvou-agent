@@ -234,8 +234,8 @@ pub fn voice_postprocess_max_tokens(mode: &str, retry: bool) -> u32 {
     // The budget is sized for the worst-case output of typical input (short
     // sentences up to a few hundred characters): edit must fit a full draft
     // rewrite, dictation/task must fit the restructured list. It does not
-    // cover the full expansion of the worst-case CJK output under the
-    // 4000-character input cap — oversized inputs instead take the safe
+    // cover the full expansion of the worst-case CJK output under the full
+    // input cap — oversized inputs instead take the safe
     // degradation chain of "reject → retry (+512) → fall back to the
     // rule-corrected text" via finish_reason=length, so a half-finished
     // rewrite is never silently written back, but smart restructuring does not
@@ -250,13 +250,26 @@ pub fn voice_postprocess_max_tokens(mode: &str, retry: bool) -> u32 {
 }
 
 /// Input truncation cap (characters) before the LLM: neither the ASR text nor
-/// the input-box draft should be passed through unbounded.
-pub const VOICE_POSTPROCESS_MAX_INPUT_CHARS: usize = 4000;
+/// the input-box draft should be passed through unbounded. 16000 covers the
+/// edit lane's realistic input-box drafts (dictation cannot approach it: 131s
+/// of ASR audio is a few hundred characters). Anything the cap clips is
+/// reported honestly — `postprocess_voice_text` sets the response's
+/// `truncated` flag so the frontend's postprocess_truncated fallback refuses
+/// the write-back instead of letting a rewrite covering only the prefix
+/// destroy the draft tail.
+pub const VOICE_POSTPROCESS_MAX_INPUT_CHARS: usize = 16000;
 
 pub fn truncate_voice_postprocess_input(text: &str) -> String {
     text.chars()
         .take(VOICE_POSTPROCESS_MAX_INPUT_CHARS)
         .collect()
+}
+
+/// Whether `text` exceeds the input cap and would be clipped by
+/// [`truncate_voice_postprocess_input`]. Call it on the untruncated string
+/// BEFORE truncating: the clipping itself must stay visible to the caller.
+pub fn voice_postprocess_input_clipped(text: &str) -> bool {
+    text.chars().count() > VOICE_POSTPROCESS_MAX_INPUT_CHARS
 }
 
 pub fn sanitize_voice_postprocess_output(text: &str) -> String {

@@ -18,8 +18,16 @@ use sha2::{Digest, Sha256};
 
 use crate::platform::hashing::sha256_file;
 
-const MAX_WHEEL_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_ENVIRONMENT_BYTES: u64 = 512 * 1024 * 1024;
+/// Per-wheel download cap. Integrity is guaranteed by the sha256 pin, so this
+/// bound only has to stop runaway downloads / bomb-like payloads. Legitimate
+/// ML-stack wheels (torch CPU ~200 MB, nvidia cu12 >500 MB) exceed the former
+/// 64 MiB, so the cap follows real dependency sizes.
+const MAX_WHEEL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Cumulative extraction cap for the whole Python environment (overflow-safe
+/// checked-add in `extract_wheel`); a torch/numpy stack legitimately exceeds
+/// the former 512 MiB. The per-wheel entry count (MAX_WHEEL_ENTRIES) still
+/// guards the bomb shape independently.
+const MAX_ENVIRONMENT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_WHEEL_ENTRIES: usize = 50_000;
 const PYTHON_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const COMPLETE_MARKER: &str = "environment.json";
@@ -721,7 +729,7 @@ fn localize_wheel_download_failure(
             wheel.name
         ),
         F::TooLarge => format!(
-            "Python dependency {} exceeds the 64 MiB safety limit",
+            "Python dependency {} exceeds the 2 GiB safety limit",
             wheel.name
         ),
         F::CreatePart(e) => format!("failed to create the wheel staging file: {e}"),
@@ -809,7 +817,7 @@ fn extract_wheel(
             .ok_or_else(|| "Python wheel extraction size overflow".to_string())?;
         if *extracted_bytes > MAX_ENVIRONMENT_BYTES {
             return Err(
-                "MCP Python dependencies exceed the 512 MiB extraction safety limit".to_string(),
+                "MCP Python dependencies exceed the 4 GiB extraction safety limit".to_string(),
             );
         }
         let output = site_packages.join(relative);
@@ -1186,7 +1194,7 @@ mod tests {
         );
         assert_eq!(
             text(&F::TooLarge),
-            "Python dependency pyfoo exceeds the 64 MiB safety limit"
+            "Python dependency pyfoo exceeds the 2 GiB safety limit"
         );
         assert_eq!(
             text(&F::CreatePart("denied".into())),

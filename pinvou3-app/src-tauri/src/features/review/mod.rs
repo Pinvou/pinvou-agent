@@ -97,19 +97,24 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
 const _: () = assert!(DEFAULT_TIMEOUT.as_secs() == 180);
 
 /// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂 2 万字级长会话
-/// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§6）。
-const FULL_FEED_CHAR_LIMIT: usize = 24_000;
+/// （≈1.2 万 token）不崩；96000 字（≈5.6 万 token）仍在 256k 上下文预算内，
+/// 96000 字以内直接全喂，超过才投影降级（§6）。
+const FULL_FEED_CHAR_LIMIT: usize = 96_000;
 
 /// 产物上限（字符）。产物真相在 workspace 文件，整篇读、整篇喂——本地 256k 扛得住
 /// （实测 2 万字全喂稳）。常规产物（文档/邮件/代码）都在此内整篇喂；超此才截断+标注，
 /// 真超大产物的「不漏」解是 P1 map-reduce 分块全审。
-const ARTIFACT_CHAR_LIMIT: usize = 30_000;
+const ARTIFACT_CHAR_LIMIT: usize = 100_000;
 
 /// 产物读取上限（字节）。先 stat 再读：极端路径下 AI 可能写出大数据文件，整读进
-/// 内存只为截前 30k 字符 = 为丢掉的内容付全量内存+阻塞读（r9 审 m8；与
+/// 内存只为截前 100k 字符 = 为丢掉的内容付全量内存+阻塞读（r9 审 m8；与
 /// deliverables.rs `MAX_LIST_SCAN_BYTES` 同款哲学）。超帽产物跳过、退对话流审查
 /// （与二进制产物同一退化路径）；常规产物（文档/代码/邮件）都在此内，行为不变。
 const ARTIFACT_READ_BYTE_CAP: u64 = 32 * 1024 * 1024;
+
+/// 降级投影保留的 web_search 事实条数。超出部分不静默丢弃，在投影尾部
+/// 显式标注省略条数（见 project）。
+const FACT_PROJECTION_KEEP: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinvouPersona {
@@ -1920,7 +1925,7 @@ fn project(messages: &[Message]) -> String {
                             }
                         }
                     }
-                    "web_search" => facts.push(truncate_chars(content, 200)),
+                    "web_search" => facts.push(truncate_chars(content, 500)),
                     _ => {}
                 },
                 _ => {}
@@ -1939,8 +1944,14 @@ fn project(messages: &[Message]) -> String {
     }
     if !facts.is_empty() {
         out.push_str("\n\n【相关事实(搜索摘录)】\n");
-        for f in facts.iter().take(4) {
+        for f in facts.iter().take(FACT_PROJECTION_KEEP) {
             out.push_str(&format!("- {f}\n"));
+        }
+        // 超出保留数的事实不静默丢弃：显式标注省略条数，审查模型能察觉
+        // 还有事实没进来，需要时可让 Boss 重开全喂或缩小检索。
+        let omitted = facts.len().saturating_sub(FACT_PROJECTION_KEEP);
+        if omitted > 0 {
+            out.push_str(&format!("-（另有 {omitted} 条搜索事实未纳入投影）\n"));
         }
     }
     out
@@ -4438,6 +4449,43 @@ mod tests {
         ];
         let projected = project(&messages);
         assert!(projected.contains("当前报价：100 元"), "{projected}");
+    }
+
+    #[test]
+    fn project_keeps_fact_cap_and_annotates_omitted_facts() {
+        // 超出 FACT_PROJECTION_KEEP 的事实不静默丢弃：保留前 N 条，尾部标注省略数。
+        let mut messages = vec![user_text("核对当前报价")];
+        for i in 0..FACT_PROJECTION_KEEP + 3 {
+            let id = format!("w{i}");
+            messages.push(assistant_tool(&id, "web_search", json!({"query": "报价"})));
+            messages.push(tool_result(&id, &format!("事实{i}：100 元")));
+        }
+        let p = project(&messages);
+        assert!(p.contains("事实0：100 元"), "第一条事实要留: {p}");
+        assert!(
+            p.contains(&format!("事实{}：100 元", FACT_PROJECTION_KEEP - 1)),
+            "保留数内的最后一条事实要留: {p}"
+        );
+        assert!(
+            !p.contains(&format!("事实{}：100 元", FACT_PROJECTION_KEEP)),
+            "保留数外的事实不逐条进投影: {p}"
+        );
+        assert!(
+            p.contains("另有 3 条搜索事实未纳入投影"),
+            "省略条数要显式标注: {p}"
+        );
+    }
+
+    #[test]
+    fn project_facts_without_overflow_has_no_omission_note() {
+        let messages = vec![
+            user_text("核对当前报价"),
+            assistant_tool("w1", "web_search", json!({"query": "报价"})),
+            tool_result("w1", "事实1：100 元"),
+        ];
+        let p = project(&messages);
+        assert!(p.contains("事实1：100 元"), "{p}");
+        assert!(!p.contains("未纳入投影"), "没省略就不要标注: {p}");
     }
 
     #[test]
