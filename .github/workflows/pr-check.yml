@@ -603,7 +603,7 @@ jobs:
       # installer code and a tampered artifact fails the gate here.
       - name: workflow lint (actionlint)
         run: |
-          curl --retry 3 -fsSL -o actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          curl --retry 3 --connect-timeout 15 --max-time 120 -fsSL -o actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum --check -
           tar -xzf actionlint.tar.gz actionlint
           ./actionlint -shellcheck= .github/workflows/*.yml
@@ -3316,7 +3316,7 @@ jobs:
           set -euo pipefail
           sudo mkdir -p /etc/apt/keyrings
           curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
-            --retry 3 --retry-delay 2 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo gpg --dearmor --yes -o /etc/apt/keyrings/pinvou-llvm.gpg
           echo "deb [signed-by=/etc/apt/keyrings/pinvou-llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" \
             | sudo tee /etc/apt/sources.list.d/pinvou-llvm-18.list > /dev/null

@@ -547,7 +547,7 @@ jobs:
           set -euo pipefail
           sudo mkdir -p /etc/apt/keyrings
           curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
-            --retry 3 --retry-delay 2 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo gpg --dearmor --yes -o /etc/apt/keyrings/pinvou-llvm.gpg
           echo "deb [signed-by=/etc/apt/keyrings/pinvou-llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" \
             | sudo tee /etc/apt/sources.list.d/pinvou-llvm-18.list > /dev/null
