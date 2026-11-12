@@ -2582,8 +2582,10 @@ mod tests {
             .unwrap();
         store.trash_collection(trashed_collection.id).unwrap();
 
-        // 回收站列表由 v1 includeDeleted 查询承担;这里只验证被删条目在
-        // 永久删除前仍被保留,清理行为由下方 permanent-delete 断言覆盖。
+        // The recycle-bin listing is owned by the v1 includeDeleted query;
+        // this only verifies the deleted entry is still retained before the
+        // permanent delete — the cleanup behavior is covered by the
+        // permanent-delete assertions below.
         assert!(store.document(trashed_document.id, true).unwrap().is_some());
         assert!(
             store

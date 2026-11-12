@@ -611,9 +611,11 @@ fn read_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, i64, Strin
     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
 }
 
-/// 去重键用全平台统一的路径同一性折叠（[`crate::platform::os::filesystem_path_identity_key`]，
-/// Windows 下大小写/分隔符不敏感），与 projects/sessions/codex_acp/remote_knowledge
-/// 各域一致；裸字符串键会把同一文件的不同拼写当成不同文件重复导入。
+/// The dedup key uses the platform-wide path-identity folding
+/// ([`crate::platform::os::filesystem_path_identity_key`] — case/separator
+/// insensitive on Windows), consistent with the projects/sessions/codex_acp/
+/// remote_knowledge domains; a bare string key would import different
+/// spellings of the same file as duplicates.
 pub(super) fn unique_existing_files(files: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut files: Vec<_> = files.into_iter().filter(|p| p.is_file()).collect();
     files.sort_by_key(|a| crate::platform::os::filesystem_path_identity_key(&a.to_string_lossy()));

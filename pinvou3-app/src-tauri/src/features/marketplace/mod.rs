@@ -839,7 +839,8 @@ pub fn unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
 /// 存量 mcp.json 条目的路径迁移：指向旧布局（`bundle/mcp-servers/<id>/`）的
 /// command/args 重写为新包目录（`bundles/<id>/mcp/`）。幂等；只改本 app 写的
 /// 文件（mcp.json）。按 mcp.json 的 server 键（= 工具 id）逐条重写，覆盖内嵌预设
-/// 与自定义/手放 MCP（不再只遍历内嵌清单）。
+/// and the custom/manually-placed MCP (no longer only walking the embedded
+/// manifests).
 pub fn migrate_mcp_json_paths() -> Result<(), String> {
     // 与其他 mcp.json 写方（add/remove_to_mcp_json）同一把跨进程文件锁串行化
     // （M-8；锁见 file_lock.rs）。
@@ -3283,8 +3284,10 @@ pub(crate) mod tests {
             )
             .unwrap();
 
-            // 新目录不存在：不重写、旧路径保留（返回值已收敛为 Result<(), String>，
-            // 跳过/重写的语义由下方文件内容断言钉住）
+            // The new directory does not exist: no rewrite, the old path
+            // stays (the return value has converged to Result<(), String>;
+            // the skip/rewrite semantics are pinned by the file-content
+            // assertions below).
             migrate_mcp_json_paths().unwrap();
             let content = std::fs::read_to_string(&mcp_path).unwrap();
             assert!(content.contains(&old_text), "新目录缺失时旧路径应保留");

@@ -1507,10 +1507,13 @@ fn sanitize_marker_text_scrubs_home_prefixes() {
     );
 }
 
-/// 规范化拼写钉(round-1 复审 N5):canonicalize() 拼写与普通拼写不同的
-/// 机器上(macOS /var→/private/var、symlink 化的 home),校验器错误里嵌
-/// 的是规范化拼写,规范化臂必须把它折叠掉。用指向临时目录的 symlink 构造
-/// 出「两种拼写必然不同」的环境,使该钉在任何平台都真实咬合。
+/// Canonical-spelling pin (round-1 review N5): on machines where the
+/// canonicalize() spelling differs from the plain spelling (macOS
+/// /var→/private/var, a symlinked home), the validator error embeds the
+/// canonical spelling and the canonicalization arm must fold it away. A
+/// symlink pointing into the temp dir constructs an environment where the
+/// two spellings necessarily differ, so the pin genuinely bites on every
+/// platform.
 #[test]
 fn sanitize_marker_text_scrubs_the_canonicalized_home_spelling() {
     let _env_lock = crate::platform::paths::tests::ENV_LOCK

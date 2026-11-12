@@ -761,7 +761,7 @@ impl ProjectStore {
     }
 
     /// Snapshot of the anti-materialization exclusion table (canonical keys).
-    /// 仅测试用（生产路径走 `never_materialize_display_roots`）。
+    /// Test-only (production paths go through `never_materialize_display_roots`).
     #[cfg(test)]
     pub fn never_materialize_roots(&self) -> Vec<String> {
         self.state.read().never_materialize_roots.clone()

@@ -900,10 +900,13 @@ impl L1Store {
     /// 配了 embedding 时的**相关性门控**：向量 top 余弦低于 [`RELEVANCE_MIN_COSINE`] 且
     /// FTS 也无命中 → 判定与知识集无关，返回空（调用方据此不注入）。纯 FTS 降级模式无
     /// 统一阈值，维持"有命中即返回"。
-    /// 带降级披露：嵌入器已挂载但本次查询向量计算失败时 `embed_query_failed` 为真
-    /// （本次静默降级纯 FTS）。嵌入器未挂载的降级不算（那是"未安装/未加载"路径，
-    /// 由调用方在检索前统一披露），调用方须把真值转成模型可见的警告，否则模型会把
-    /// 关键词结果当全量作答。
+    /// Carries a degraded disclosure: when the embedder is mounted but this
+    /// query's vector computation fails, `embed_query_failed` is true (this
+    /// pass degrades silently to pure FTS). A degradation with no embedder
+    /// mounted does not count (that is the "not installed/not loaded" path,
+    /// disclosed uniformly by the caller before retrieval); the caller must
+    /// turn the flag into a model-visible warning, otherwise the model would
+    /// answer as if the keyword results were exhaustive.
     pub fn retrieve_for_chat_multi_outcome(
         &self,
         collection_ids: &[i64],
@@ -1070,8 +1073,9 @@ fn now_epoch_secs() -> u64 {
 
 /// RRF 的排名→得分公式：`1.0/(K + rank + 1)`（rank 从 0 计），K=60 是
 /// 论文默认常数。混合检索合并（[`rrf_merge`]）与多库归并
-/// （[`L1Store::retrieve_for_chat_multi_outcome`]）共用同一公式与同一 K，
-/// 避免两处漂移。
+/// and the multi-collection merge
+/// ([`L1Store::retrieve_for_chat_multi_outcome`]) share one formula and one
+/// K, so the two cannot drift.
 const RRF_K: f64 = 60.0;
 
 fn rrf_score(rank: usize) -> f64 {
@@ -1455,7 +1459,8 @@ mod tests {
         assert_eq!(docs[0].parse_status, "parsed");
         assert!(docs[0].n_chunks >= 1);
 
-        // FTS（≥3 字符）—— 走对话检索通路(retrieve_for_chat_multi_outcome)
+        // FTS (>= 3 chars) — goes through the chat retrieval path
+        // (retrieve_for_chat_multi_outcome)
         let hits = l1
             .retrieve_for_chat_multi_outcome(&[cid], "交强险", 10)
             .unwrap()

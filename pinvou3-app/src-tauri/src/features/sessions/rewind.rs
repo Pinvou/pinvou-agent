@@ -254,18 +254,20 @@ fn quarantine_and_continue(
     path: &std::path::Path,
     parse_error: serde_json::Error,
 ) -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
-    // platform 的纳秒唯一名隔离原语（`stem.corrupt-<时间戳>.<纳秒>`）：秒级
-    // 后缀在同一秒内的二次损坏会覆盖首次取证（rename 静默替换既有目标），
-    // 与 code_checkpoints 的损坏隔离同款。
+    // platform's nanosecond unique-name quarantine primitive
+    // (`stem.corrupt-<timestamp>.<nanos>`): a same-second second corruption
+    // would overwrite the first forensic copy (rename silently replaces the
+    // existing target) — same shape as code_checkpoints' corruption
+    // isolation.
     match crate::platform::filesystem::quarantine_corrupt_file(path) {
         Ok(quarantine) => {
             eprintln!(
-                "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
+                "[sessions] corrupt rewind backup quarantined as {}; continuing empty: {parse_error:#}",
                 quarantine.display()
             );
         }
         Err(error) => {
-            eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+            eprintln!("[sessions] failed to quarantine the corrupt rewind backup: {error:#}");
         }
     }
     Ok(HashMap::new())

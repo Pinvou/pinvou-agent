@@ -627,10 +627,12 @@ where
     .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
-/// `*_cancel` 公共脚手架(飞书 / 企微 / 钉钉 / 腾讯会议四份字节相同块收编):
-/// 置取消标志 + tree-kill 当前长驻子进程(关二维码弹窗 / 超时时调)。
-/// 各连接器的 `*_cancel` Tauri 命令保持注册与命名不变,只按自己的
-/// [`ConnectorConn`] id 一行透传到本函数。
+/// Shared `*_cancel` scaffolding (the byte-identical blocks of the Feishu /
+/// WeCom / DingTalk / Tencent Meeting connectors fold in here): sets the
+/// cancel flag + tree-kills the current long-lived child process (closing
+/// the QR popup / the on-timeout invocation). Each connector's `*_cancel`
+/// Tauri command keeps its registration and name unchanged and forwards one
+/// line by its own [`ConnectorConn`] id into this function.
 pub(crate) async fn cancel_connect(app: AppHandle, id: &'static str) -> Result<Value, String> {
     let pid = app.state::<ConnectorConn>().cancel(id);
     if let Some(pid) = pid {

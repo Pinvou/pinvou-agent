@@ -531,8 +531,9 @@ impl BundleRegistry {
             });
         }
 
-        // list_skills 是一次全量遍历：2)/3) 两个技能源循环共用一次读取，
-        // 不重复走指纹（同 unavailable_tool_names_for 的 hoist 理由）。
+        // list_skills is one full traversal: the 2)/3) skill-source loops
+        // share a single read and do not walk the fingerprints twice (same
+        // hoist rationale as unavailable_tool_names_for).
         let skills = self.skill_manager.list_skills();
         // 2) 预置技能源（未被认领的独立成包）
         for skill in &skills {

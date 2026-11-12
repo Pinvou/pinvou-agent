@@ -5819,10 +5819,13 @@ mod tests {
 
     /// 接线钉(Round-11 复审 minor):确认必须针对进程内权威账本整体落盘
     /// (`persist_pending_revocations`),并同步维护 backlog;回退成「重读
-    /// 磁盘→删一条→重写」(`acknowledge_pending_revocation`,已在 round-1
-    /// 清扫中随其家族移除)会在抢救降级后拿空账本清掉内存里的兄弟条目。
-    /// 负向断言如今防的是这个名字/形状的辅助函数重新长回来。方法体需要
-    /// AppHandle,行为钉驱动不了,按本模块惯例以源码契约钉住。
+    /// "disk → delete one entry → rewrite" (`acknowledge_pending_revocation`,
+    /// removed with its family in the round-1 sweep) would, after the
+    /// salvage degradation, wipe the in-memory sibling entries with an empty
+    /// ledger. The negative assertion now guards against a helper with this
+    /// name/shape growing back. Its body needs an AppHandle, so a behavioral
+    /// pin cannot drive it — per this module's convention it is pinned as a
+    /// source-contract assertion.
     #[test]
     fn revocation_ack_persists_the_process_backlog_instead_of_rereading_disk() {
         let source = include_str!("mod.rs");
@@ -5848,9 +5851,11 @@ mod tests {
         );
     }
 
-    /// 行为钉(round-1 清扫 Coverage 回补):清空账本落盘必须按空账本语义
-    /// 删除文件(`remove_private_file`),而不是留下一个零条目账本给下一
-    /// 次 load 重新解析。被清扫掉的旧 ack 测试是这条分支唯一的覆盖。
+    /// Behavioral pin (round-1 sweep coverage backfill): persisting an
+    /// empty ledger must delete the file per the empty-ledger semantics
+    /// (`remove_private_file`) rather than leaving a zero-entry ledger for
+    /// the next load to re-parse. The swept-away old ack test was the only
+    /// coverage for this branch.
     #[test]
     fn persisting_an_emptied_revocation_ledger_removes_the_file() {
         let directory = std::env::temp_dir().join(format!(

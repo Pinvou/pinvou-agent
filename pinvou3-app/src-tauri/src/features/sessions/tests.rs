@@ -2236,10 +2236,12 @@ fn scheduled_terminal_token_persistence_does_not_replace_engine_state() {
     assert_eq!(later.system_prompt, before.system_prompt);
 }
 
-/// round-1 清扫 Coverage 回补:非零 total_tokens 一经写入,后续引擎快照
-/// 持久化(load→persist 路径)不得清零或重算。被清扫掉的 EngineCumulative
-/// 测试曾是这条非零基线的唯一守卫;现存测试的引擎持久断言都停在 0==0
-/// 基线上,回归成清零也能全绿。
+/// round-1 sweep coverage backfill: once a non-zero total_tokens is
+/// written, subsequent engine snapshot persistence (the load→persist path)
+/// must not zero it out or recompute it. The swept-away EngineCumulative
+/// test was the only guard for this non-zero baseline; the surviving
+/// tests' engine persistence assertions all sit at a 0==0 baseline, so a
+/// regression to zeroing would still be green.
 #[test]
 fn scheduled_engine_persist_preserves_nonzero_token_total_across_restarts() {
     let (store, _g) = isolated_store();
