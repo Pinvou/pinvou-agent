@@ -1972,16 +1972,24 @@ fn test_connection<S: CredentialStore>(
     // latter must surface as `credential_unavailable`, not masquerade as an
     // unauthenticated probe that the endpoint then 401s into `auth_invalid`
     // (the same mapping `show --reveal-key` applies).
-    let key = match resolve_saved_model_key_honest(store, &model) {
-        Ok(key) => key.unwrap_or_default(),
-        Err(error) => {
-            let probe = ConnectionProbe {
-                ok: false,
-                code: "credential_unavailable",
-                detail: Some(error.to_string()),
-                http_status: None,
-            };
-            return Ok(render_probe_outcome(&probe, output));
+    // Keyless parity (GUI probe ladder): a record that itself declares the
+    // endpoint keyless must probe credential-free even with a residual
+    // stored credential (hand-edited settings.json can carry both) — the
+    // GUI's test must exercise the posture the engine will reproduce.
+    let key = if model.declares_keyless_auth() {
+        String::new()
+    } else {
+        match resolve_saved_model_key_honest(store, &model) {
+            Ok(key) => key.unwrap_or_default(),
+            Err(error) => {
+                let probe = ConnectionProbe {
+                    ok: false,
+                    code: "credential_unavailable",
+                    detail: Some(error.to_string()),
+                    http_status: None,
+                };
+                return Ok(render_probe_outcome(&probe, output));
+            }
         }
     };
     let probe = run_connection_probe(&model.base_url, &key);
@@ -5591,6 +5599,85 @@ mod tests {
         assert!(
             error.to_string().contains("credential_unavailable"),
             "the refusal must name the credential: {error}"
+        );
+    }
+
+    /// Keyless parity with the GUI probe ladder: a record that declares the
+    /// endpoint keyless (`auth_mode = "none"`) must probe credential-free
+    /// even when a residual stored credential exists (hand-edited
+    /// settings.json can carry both) — `models test` must validate the
+    /// posture the engine will reproduce, not attach the stale secret.
+    #[test]
+    fn models_test_probes_credential_free_under_keyless_declaration() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _home = TempHome::new("probe-keyless-declaration");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-residual-stored");
+        let store = RecordingStore::new();
+
+        // Port 9 (discard) refuses fast: the probe completes offline either
+        // way, so the verdict difference is attributable to the guard alone.
+        let id = add_model(
+            &store,
+            "Keyless",
+            "M",
+            "http://127.0.0.1:9/v1",
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
+        assert!(
+            UserPrefs::load()
+                .model_by_id(&id)
+                .expect("model persisted")
+                .credential_ref
+                .is_some(),
+            "the fixture must hold a stored credential reference"
+        );
+        // Declare the endpoint keyless behind the saved record's back
+        // (hand-edited settings.json shape; the CLI has no toggle).
+        UserPrefs::update_transaction(|prefs| {
+            if let Some(record) = prefs
+                .advanced
+                .saved_models
+                .iter_mut()
+                .find(|model| model.id == id)
+            {
+                record.auth_mode = Some("none".to_string());
+            }
+            Ok(())
+        })
+        .expect("keyless declaration should save");
+
+        let outcome =
+            test_connection(&store, &id, OutputMode::Human).expect("a completed probe outcome");
+        let operations = store.operations();
+        assert!(
+            !operations.iter().any(|op| op.starts_with("get:")),
+            "the probe must not read the stored credential for a keyless-declared record: {operations:?}"
+        );
+        assert!(
+            !outcome.stdout.contains("credential_unavailable"),
+            "the declaration must bypass credential resolution entirely: {}",
+            outcome.stdout
+        );
+
+        // Reverse leg: the same record without the declaration resolves and
+        // uses the stored credential as before (no over-suppression).
+        UserPrefs::update_transaction(|prefs| {
+            if let Some(record) = prefs
+                .advanced
+                .saved_models
+                .iter_mut()
+                .find(|model| model.id == id)
+            {
+                record.auth_mode = None;
+            }
+            Ok(())
+        })
+        .expect("declaration clear should save");
+        let _ = test_connection(&store, &id, OutputMode::Human).expect("a completed probe outcome");
+        let operations = store.operations();
+        assert!(
+            operations.iter().any(|op| op.starts_with("get:")),
+            "an undeclared record keeps the stored-credential resolution: {operations:?}"
         );
     }
 }
