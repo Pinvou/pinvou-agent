@@ -682,6 +682,189 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
         return {"ok": False, "error": str(e)}
 
 
+# ── slides.items 的 per-layout anyOf 分支(2026-11-04)────────────────────
+# 背景:Kimi K3 受限解码对"深嵌套可选字段大负载"有最小合法补全倾向 —— 旧
+# 扁平 items 只把 layout 设为 required,模型反复只生成 layout+title 空壳页,
+# 其余可选字段全丢(2026-11-04 真实用户会话:7 次调用 5 次丢字段)。历史事故
+# 锚点:k3 曾连续 27 次发出 slides:[](itemless array 被补全成最小合法值
+# []);2026-11-04 复测,旧 schema 新鲜单轮已能生成 4KB+ 完整正文,27 连发
+# 不复现 —— 但长上下文/多轮失败锚定下的字段丢失仍真实存在。
+# 缓解手段 = per-layout anyOf:每分支显式 type:object、layout enum 收敛为
+# 单值(选分支即选版式)、required 只放该版式渲染函数会读且缺了会出空白
+# 正文的字段(2026-11-05 required 终审裁决:留空=业务异常才许 required;
+# agenda/end 空标题有语义完整兜底「目录」/「谢谢」,产出业务完整页,
+# title 因此退出该两分支 required)。2026-11-04 活体探针 A2:本形态是唯一一次 10 页构成完全达标,
+# 字节成本 +6%;对照组"全字段塞 required"= 模型填空值+乱选 enum(+76%
+# token,证伪)。walle 校验器已把 anyOf 列为正式成员(上游 ValidateAnyOf);
+# 而"分支须显式 type:object、type 不与 anyOf 同层"是 CodeWhale 引擎镜像
+# 自定的更严策略(f1eb10efc 起即有;walle lite 接受 type 与 anyOf 同层
+# —— 2026-11-05 对 MoonshotAI/walle 上游 main 实抓核实)。资源预算已于
+# 2026-11-05 对齐 walle conf.go 源默认(anyOf ≤500、properties 总数 ≤3000、
+# 嵌套深度 ≤30、enum 值 ≤1000、enum 字面量 ≤75000 字节;编码字节 120000 与
+# 枚举长度检查阈值 250 不变;源码对照,非文档条款),放宽需改 CodeWhale
+# 常量并同步父仓镜像脚本。本 schema 10 分支、47 个 properties,远在预算
+# 内:新增版式直接加分支即可(T11 引擎批经 CodeWhale #143–#147 上游合入后,
+# 由 close-out 换钉 PR 一并登记 fork-guard 指纹)。旧底座会把 anyOf 展平成
+# 单对象:required 交集退化为 ["layout"],即"其余字段全部可选"的旧行为,
+# 不会更糟,安全向后兼容。
+def _slides_item_branch(layout, layout_label, required, blurb, fields):
+    """构造 slides.items 的一个版式分支:显式 type:object + 该版式自己的 required。
+
+    required 只收渲染函数会读、缺了会出空白正文的字段(2026-11-05 终审
+    裁决单一标准:留空=业务异常才许 required);纯装饰字段(如
+    cover 的 subtitle/date、two_col 的栏标题)保持可选,避免把受限解码的
+    最小补全倾向逼成填空值(探针对照组已证伪)。agenda/end 的空标题渲染端
+    兜底为「目录」/「谢谢」,业务完整,不进 required。
+    """
+    properties = {
+        "layout": {
+            "type": "string",
+            "enum": [layout],
+            "description": "版式:%s" % layout_label,
+        },
+    }
+    properties.update(fields)
+    return {
+        "type": "object",
+        "description": blurb,
+        "properties": properties,
+        "required": required,
+    }
+
+
+_SLIDE_TITLE = {"type": "string", "description": "页标题"}
+
+# agenda/kpi 共享的条目 anyOf:字符串整条直接用;对象走 {num, label}。
+# num/label 都不进 required:agenda 自绘序号,label-only 是合法条目,渲染端
+# 对 None 回退 ""(_item_num_label);字典分支因此不得携带 required。
+_ITEMS_LEAF = {
+    "type": "array",
+    "items": {
+        "anyOf": [
+            {"type": "string"},
+            {
+                "type": "object",
+                "properties": {
+                    "num": {"type": "string", "description": "大数字,如 68%"},
+                    "label": {"type": "string", "description": "指标说明"},
+                },
+            },
+        ],
+    },
+}
+
+_SLIDES_ITEMS_ANY_OF = [
+    _slides_item_branch(
+        "cover", "封面页", ["layout", "title"],
+        "封面页:必填 title;subtitle/date 可选",
+        {
+            "title": {"type": "string", "description": "主标题"},
+            "subtitle": {"type": "string", "description": "副标题"},
+            "date": {"type": "string", "description": "日期"},
+        },
+    ),
+    _slides_item_branch(
+        "agenda", "目录页", ["layout", "items"],
+        "目录页:必填 items(章节条目数组,最多 6 条);title 可选,缺省「目录」",
+        {
+            "title": _SLIDE_TITLE,
+            "items": dict(_ITEMS_LEAF, description="章节条目数组(最多 6 条):字符串,或 {num, label}"),
+        },
+    ),
+    _slides_item_branch(
+        "section", "章节分隔页", ["layout", "title"],
+        "章节分隔页:只要 layout+title",
+        {"title": _SLIDE_TITLE},
+    ),
+    _slides_item_branch(
+        "bullets", "要点页", ["layout", "title", "bullets"],
+        "要点页:必填 bullets(要点字符串数组)",
+        {
+            "title": _SLIDE_TITLE,
+            "bullets": {"type": "array", "items": {"type": "string"},
+                        "description": "要点,每条一个字符串"},
+        },
+    ),
+    _slides_item_branch(
+        "two_col", "双栏对比页", ["layout", "title", "left", "right"],
+        "双栏对比页:必填 left/right 两栏要点;leftTitle/rightTitle 可选",
+        {
+            "title": _SLIDE_TITLE,
+            "leftTitle": {"type": "string", "description": "左栏标题"},
+            "left": {"type": "array", "items": {"type": "string"}, "description": "左栏要点"},
+            "rightTitle": {"type": "string", "description": "右栏标题"},
+            "right": {"type": "array", "items": {"type": "string"}, "description": "右栏要点"},
+        },
+    ),
+    _slides_item_branch(
+        "kpi", "大数字指标页", ["layout", "title", "items"],
+        "大数字指标页:必填 items(最多 4 个 {num, label})",
+        {
+            "title": _SLIDE_TITLE,
+            "items": dict(_ITEMS_LEAF, description="指标数组(最多 4 个):{num, label} 或字符串"),
+        },
+    ),
+    _slides_item_branch(
+        "chart", "图表页", ["layout", "title", "categories", "series"],
+        "图表页:必填 categories+series;chartType 缺省 bar",
+        {
+            "title": _SLIDE_TITLE,
+            "chartType": {"type": "string", "enum": ["bar", "line", "pie"],
+                          "description": "图表类型,缺省 bar"},
+            "categories": {"type": "array", "items": {"type": "string"},
+                           "description": "类目轴标签"},
+            "series": {
+                "type": "array",
+                "description": "数据系列,data 与 categories 等长",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        # name optional: single-series charts hide the
+                        # legend, so a forced invented name is pure
+                        # friction; the renderer falls back to "".
+                        "name": {"type": "string", "description": "系列名"},
+                        "data": {"type": "array", "items": {"type": "number"},
+                                 "description": "与 categories 等长的数值"},
+                    },
+                    "required": ["data"],
+                },
+            },
+        },
+    ),
+    _slides_item_branch(
+        "table", "表格页", ["layout", "title", "headers", "rows"],
+        "表格页:必填 headers+rows,每行与 headers 等长",
+        {
+            "title": _SLIDE_TITLE,
+            "headers": {"type": "array", "items": {"type": "string"}, "description": "表头"},
+            "rows": {
+                "type": "array",
+                "description": "行数据,每行是与 headers 等长的单元格数组",
+                "items": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    ),
+    _slides_item_branch(
+        "image", "图片页", ["layout", "title"],
+        "图片页:image 缺了显示占位框(不强制编造路径);bullets 作侧栏说明,caption 作图注",
+        {
+            "title": _SLIDE_TITLE,
+            "bullets": {"type": "array", "items": {"type": "string"},
+                        "description": "图片旁的说明要点"},
+            "image": {"type": "string", "description": "本地图片绝对路径(可选,缺了显示占位框)"},
+            "caption": {"type": "string", "description": "图注"},
+        },
+    ),
+    _slides_item_branch(
+        "end", "结尾页", ["layout"],
+        "结尾页:layout 即完整,标题缺省「谢谢」;subtitle 可选",
+        {
+            "title": _SLIDE_TITLE,
+            "subtitle": {"type": "string", "description": "副标题"},
+        },
+    ),
+]
+
 TOOL_DEFS = [{
     "name": "make_pptx",
     "description": (
@@ -699,96 +882,34 @@ TOOL_DEFS = [{
             "slides": {
                 "type": "array",
                 "description": (
-                    "deck 的 slides 数组。每页一个对象,`layout` 选版式,并**必须按版式填正文字段**"
-                    "(只给 title 会得到空白页!):\n"
-                    "- cover: {layout, title, subtitle, date}\n"
-                    "- agenda: {layout, title, items:[字符串,...]}\n"
-                    "- section: {layout, title}  ← 章节分隔页\n"
-                    "- bullets: {layout, title, bullets:[字符串,...]}\n"
-                    "- two_col: {layout, title, leftTitle, left:[字符串,...], rightTitle, right:[字符串,...]}\n"
-                    "- kpi: {layout, title, items:[{num, label},...]}  ← 最多4个大数字\n"
-                    "- chart: {layout, title, chartType:'bar'|'pie'|'line', categories:[字符串,...], series:[{name, data:[数字,...]},...]}\n"
-                    "- table: {layout, title, headers:[字符串,...], rows:[[单元格,...],...]}\n"
-                    "- image: {layout, title, bullets:[字符串,...], caption, image:<本地图片绝对路径，可选>}\n"
-                    "- end: {layout, title, subtitle}  ← 结尾页\n"
-                    "正文要有真实内容/数据,不要只放标题。"
+                    "deck 的 slides 数组。每页一个对象,`layout` 选版式,并**按版式填该分支"
+                    "required 的正文字段**(agenda/bullets/two_col/kpi/chart/table 缺正文"
+                    "字段会得到空白正文页)。每版式的必填字段已写进对应分支的 required:\n"
+                    "- cover: {title}(subtitle/date 可选)\n"
+                    "- agenda: {items}  章节条目数组;title 可选,缺省「目录」\n"
+                    "- section: {title}  ← 章节分隔页\n"
+                    "- bullets: {title, bullets}  要点数组\n"
+                    "- two_col: {title, left, right}(leftTitle/rightTitle 可选)\n"
+                    "- kpi: {title, items}  最多4个大数字\n"
+                    "- chart: {title, chartType?, categories, series}\n"
+                    "- table: {title, headers, rows}\n"
+                    "- image: {title}(image/bullets/caption 可选)\n"
+                    "- end: layout 即完整(subtitle 可选;标题缺省「谢谢」)  ← 结尾页\n"
+                    "正文版式(agenda/bullets/two_col/kpi/chart/table)要有真实内容/数据,不要只放标题。"
                 ),
-                # items must carry a concrete type: on constrained tool-call
-                # decoding channels (Kimi and friends) an itemless array is
-                # completed to its minimal valid value [] (observed live: k3
-                # emitted slides:[] 27 times in a row); structured items also
-                # give the constrained decoder a shape it can fill.
+                # Per-layout anyOf:每版式一分支,分支 required 即该版式语义必填
+                # 字段 —— 对受限解码(Kimi K3 等)的最小合法补全倾向的缓解手段。
+                # 历史锚点:k3 曾连续 27 次发出 slides:[](itemless array 被补全
+                # 成 []);2026-11-04 复测,新鲜单轮已不复现,但长上下文/多轮的
+                # 字段丢失仍在(真实会话 7 调 5 丢),见 _SLIDES_ITEMS_ANY_OF 上方
+                # 的完整注释。注意:items 节点只允许 description 与 anyOf 同层
+                # (MFJS 规范:type 不与 anyOf 同层)。
                 "items": {
-                    "type": "object",
-                    "required": ["layout"],
-                    "properties": {
-                        "layout": {
-                            "type": "string",
-                            "enum": ["cover", "agenda", "section", "bullets", "two_col",
-                                     "kpi", "chart", "table", "image", "end"],
-                            "description": "版式(必填)",
-                        },
-                        "title": {"type": "string", "description": "页标题"},
-                        "subtitle": {"type": "string", "description": "副标题(cover/end)"},
-                        "date": {"type": "string", "description": "日期(cover)"},
-                        "items": {
-                            "type": "array",
-                            "description": "agenda: 字符串数组; kpi: {num,label} 对象数组(最多4个)",
-                            "items": {
-                                "anyOf": [
-                                    {"type": "string"},
-                                    {"type": "object",
-                                     "properties": {
-                                         "num": {"type": "string", "description": "大数字,如 68%"},
-                                         "label": {"type": "string", "description": "指标说明"},
-                                     },
-                                     # num optional: agenda pages draw their
-                                     # own ordinals, so a label-only dict is
-                                     # a natural entry; the renderer falls
-                                     # back to "".
-                                     },
-                                ],
-                            },
-                        },
-                        "bullets": {"type": "array", "items": {"type": "string"},
-                                    "description": "要点(bullets/image)"},
-                        "leftTitle": {"type": "string", "description": "左栏标题(two_col)"},
-                        "left": {"type": "array", "items": {"type": "string"},
-                                 "description": "左栏要点(two_col)"},
-                        "rightTitle": {"type": "string", "description": "右栏标题(two_col)"},
-                        "right": {"type": "array", "items": {"type": "string"},
-                                  "description": "右栏要点(two_col)"},
-                        "chartType": {"type": "string", "enum": ["bar", "line", "pie"],
-                                      "description": "图表类型(chart)"},
-                        "categories": {"type": "array", "items": {"type": "string"},
-                                       "description": "类目轴(chart)"},
-                        "series": {
-                            "type": "array",
-                            "description": "数据系列(chart)",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    # name optional: single-series charts
-                                    # hide the legend, so a forced invented
-                                    # name is pure friction; the renderer
-                                    # falls back to "".
-                                    "name": {"type": "string", "description": "系列名"},
-                                    "data": {"type": "array", "items": {"type": "number"},
-                                             "description": "与 categories 等长的数值"},
-                                },
-                                "required": ["data"],
-                            },
-                        },
-                        "headers": {"type": "array", "items": {"type": "string"},
-                                    "description": "表头(table)"},
-                        "rows": {
-                            "type": "array",
-                            "description": "行数据,每行是与 headers 等长的单元格数组(table)",
-                            "items": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "caption": {"type": "string", "description": "图注(image)"},
-                        "image": {"type": "string", "description": "本地图片绝对路径(image,可选)"},
-                    },
+                    "description": (
+                        "一页 = 一个版式分支:layout 的单值 enum 选中分支,"
+                        "各分支 required 列出该版式必填字段"
+                    ),
+                    "anyOf": _SLIDES_ITEMS_ANY_OF,
                 },
             },
             "filename": {"type": "string", "description": "文件名(不含扩展名),缺省 演示文稿"},
