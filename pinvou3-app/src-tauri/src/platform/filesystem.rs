@@ -653,7 +653,9 @@ pub(crate) fn read_private_data_file_bytes_within(
 /// time only — a concurrent appender can grow the file between the gate and
 /// EOF (the fd pins the inode, so no swap is needed), and the former
 /// unbounded `read_to_end` would have read and allocated it whole.
-fn read_capped<R: std::io::Read>(reader: &mut R, cap: u64) -> io::Result<Vec<u8>> {
+/// Capped whole-read (Take = cap+1, over-cap → InvalidData). `pub(crate)` since
+/// the r4 review: the installed-skills listing lane reuses it for SKILL.md.
+pub(crate) fn read_capped<R: std::io::Read>(reader: &mut R, cap: u64) -> io::Result<Vec<u8>> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
     reader.take(cap + 1).read_to_end(&mut bytes)?;

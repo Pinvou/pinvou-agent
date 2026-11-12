@@ -2007,8 +2007,23 @@ fn fingerprint_of(files: &mut [(String, Vec<u8>)]) -> String {
     crate::platform::encoding::hex_lower(&digest.finalize())
 }
 
+/// Installed-skills listing reads SKILL.md whole for name/description; cap
+/// the read at the same 512 KiB the fork-side discovery/audit gate uses
+/// (AUDIT_MAX_SKILL_MD_BYTES), so a hand-placed oversized SKILL.md cannot
+/// balloon the listing either (r4 review). Over-cap reads as None — the same
+/// treatment as an unreadable file, consistent with discovery's "skill
+/// skipped" semantics.
+const MAX_SKILL_MD_READ_BYTES: u64 = 512 * 1024;
+
+fn read_skill_md_capped(md_path: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(md_path).ok()?;
+    let bytes =
+        crate::platform::filesystem::read_capped(&mut file, MAX_SKILL_MD_READ_BYTES).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
 fn read_skill_name(md_path: &Path) -> Option<String> {
-    read_skill_name_from_str(&std::fs::read_to_string(md_path).ok()?)
+    read_skill_name_from_str(&read_skill_md_capped(md_path)?)
 }
 
 /// 解析 SKILL.md frontmatter 的 `name:`(前两个 `---` 之间的第一个顶层 name 行)。
@@ -2037,7 +2052,7 @@ pub fn read_skill_name_from_str(content: &str) -> Option<String> {
 }
 
 fn read_skill_description(md_path: &Path) -> Option<String> {
-    let raw = read_skill_description_from_str(&std::fs::read_to_string(md_path).ok()?)?;
+    let raw = read_skill_description_from_str(&read_skill_md_capped(md_path)?)?;
     // 展示口径截断（与 MAX_DISPLAY_DESCRIPTION_CHARS 对齐）；备份/互洽校验用
     // `read_skill_description_from_str` 的原值，不截断。
     Some(
