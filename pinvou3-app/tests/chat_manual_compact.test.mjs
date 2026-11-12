@@ -146,6 +146,12 @@ for (const [label, section] of [['tauri', tauriCompaction], ['web', webCompactio
   assert.ok(section.includes('state.tokens = { input: postTokens, max: state.tokens.max };'), `${label}: 必须把 post_tokens 写入用量条`);
   assert.ok(section.includes('postTokens <= state.tokens.max'), `${label}: post_tokens 超窗守卫保留`);
   assert.ok(section.includes('兜底按墙钟（Date.now）而非 Rust 侧 Instant 单调钟'), `${label}: 墙钟兜底的取舍必须留档（提前解禁窗口是接受的代价，防止被误"修复"）`);
+  // 标记维护块的显式 notify 必须钉死：done 的 post_tokens 分支与 addSystemItem
+  // 各自的 notify 让任何计数断言都无法区分是谁通知的——删掉本块的 notify
+  // （start 置位/终态清除不再刷新订阅者，按钮禁用与接管 effect 双双失效）
+  // 的突变体此前全绿，只能按块文本钉。
+  assert.ok(section.includes('if (sid) {\n      if (phase === "start") state.compactingSessions[sid] = Date.now();\n      else delete state.compactingSessions[sid];\n      notify();\n    }'),
+    `${label}: 标记维护必须显式 notify（订阅刷新靠它，post_tokens 分支的通知覆盖不了本分支；删除该 notify 的突变体此前全绿）`);
 }
 // 双端同改的强约束：两条注册体从 listen 标记到 post_tokens 块尾必须逐字节
 // 一致——web 侧漂移不再只依赖上面 4 条字符串 pin 的间接覆盖。
@@ -210,6 +216,14 @@ assert.match(chatViewSource, /\}, \[compactingMap, manualCompact, chatItems, act
 // 无关 notify、被禁按钮点击不产生渲染）也要能在 15 分钟边界恢复按钮。
 assert.match(chatViewSource, /if \(!ctxCompactInFlight\) return;[\s\S]{0,500}setCompactHealTick\(current => current \+ 1\)/, '入口禁用期间必须排兜底到期 tick（自愈不能只靠被动重渲染）');
 assert.match(chatViewSource, /healBoundaryAt = Math\.min\(/, '兜底 tick 必须取桥接标记与手动标记过期边界的较早者');
+// 在途推导必须同时含两个来源，定义必须钉死（所有 pin 都引用名字，不钉定义
+// 的话，收窄成只取其一的突变体全绿——只取桥接标记会漏 invoke→start 窗口：
+// 守卫静默吞点击而按钮可点；只取手动标记会漏终态前的桥接窗口）。
+assert.match(chatViewSource, /const ctxCompactInFlight = compactingActive \|\| manualCompactActive;/, '在途推导必须同时含桥接标记与手动标记（只取其一会在另一窗口静默漏禁）');
+// 兜底边界两个操作数必须带 : Infinity 守卫：去掉守卫的 Math.min 在标记已
+// 释放（接管后的常态）时读 null.at 直接抛 TypeError，整个 ChatView 渲染
+// 崩溃——该突变体此前全绿（模式 pin 对操作数不敏感）。
+assert.match(chatViewSource, /compactingStartedAt \? compactingStartedAt \+ COMPACTING_FLAG_MAX_AGE_MS : Infinity[\s\S]{0,80}manualCompact \? manualCompact\.at \+ COMPACTING_FLAG_MAX_AGE_MS : Infinity/, '兜底边界两个操作数必须带 : Infinity 守卫（缺守卫在标记已释放的常态下抛 TypeError）');
 // 定时器卫生：清理与钳位必须钉住（此前删掉 clearTimeout 的泄漏突变体全绿）。
 assert.match(chatViewSource, /const healTimer = setTimeout\(/, '兜底必须经可清理的定时器句柄排 tick');
 assert.match(chatViewSource, /return \(\) => clearTimeout\(healTimer\);/, '兜底定时器必须随 effect 清理（在途窗口结束不得残留计时器）');
