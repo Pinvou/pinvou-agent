@@ -662,6 +662,29 @@ class SchemaContractWalkerTest(unittest.TestCase):
                  "floats": {"type": "number", "enum": [0.5, 1.5]},
              }}))
 
+    def test_non_finite_enum_literals_fail_closed(self):
+        # Wire reality, not an MFJS rule: serde_json cannot parse a
+        # tools/list payload carrying NaN/Infinity, so the request build
+        # fails before the validator runs and the tool is gone on every
+        # route. The kind-based enum strip classifies a non-finite float
+        # as an unsupported kind, which used to STRIP it — green over a
+        # schema no engine can ship. The check runs on the raw schema,
+        # before any strip, so removing it flips both fixtures green.
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"n": {"type": "number", "enum": [1.5, float("nan")]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("non-finite", message)
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"n": {"type": "integer", "enum": [1, float("inf")]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("non-finite", message)
+        # Finite floats keep their normal strip/matcher path untouched.
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"n": {"type": "number", "enum": [1.5, 2.5]}}}))
+
     def test_advisory_keywords_are_stripped_not_shipped(self):
         # The advisory set is exactly the nine keywords the engine removes
         # (title, $comment, $id, minLength, maxLength, minimum, maximum,

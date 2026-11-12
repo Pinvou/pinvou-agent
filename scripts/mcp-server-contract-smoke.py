@@ -771,6 +771,49 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
         offenders.append(f"{path}: $defs must be an object (MFJS InvalidKeywordValue drops the tool)")
 
 
+def _collect_non_finite_enum_offenders(node, path):
+    """Fail closed on NaN/Infinity enum literals. This is a wire reality,
+    not an MFJS rule: serde_json cannot parse a tools/list payload that
+    carries them, so the request build fails before the validator ever
+    runs — the tool is gone on the constrained route and broken on every
+    other. The kind-based enum strip classifies a non-finite float as an
+    unsupported kind, which stripped it and let the old red turn green; a
+    green here would bless a schema no engine can ship. Runs on the RAW
+    schema, before any strip, so the failure stays loud at every gitlink."""
+    offenders: list[str] = []
+
+    def walk(value, walk_path):
+        if not isinstance(value, dict):
+            return
+        subs = value.get("properties")
+        if isinstance(subs, dict):
+            for key, sub in subs.items():
+                walk(sub, f"{walk_path}.{key}")
+        definitions = value.get("$defs")
+        if isinstance(definitions, dict):
+            for key, sub in definitions.items():
+                walk(sub, f"{walk_path}.$defs.{key}")
+        branches = value.get("anyOf")
+        if isinstance(branches, list):
+            for index, branch in enumerate(branches):
+                walk(branch, f"{walk_path}.anyOf[{index}]")
+        additional = value.get("additionalProperties")
+        if isinstance(additional, dict):
+            walk(additional, f"{walk_path}.additionalProperties")
+        if isinstance(value.get("items"), dict):
+            walk(value["items"], f"{walk_path}.items")
+        values = value.get("enum")
+        if isinstance(values, list):
+            bad = [entry for entry in values
+                   if isinstance(entry, float) and not math.isfinite(entry)]
+            if bad:
+                offenders.append(
+                    f"{walk_path}: enum contains non-finite value(s) {bad!r} — NaN/Infinity cannot be carried by any JSON codec on the wire (the payload fails to parse before the validator runs)")
+
+    walk(node, path)
+    return offenders
+
+
 def check_schema_contract(tool_id: str, tools: list) -> int:
     """Guard every tool's inputSchema; return the number of tools walked.
 
@@ -796,6 +839,11 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
         if not isinstance(schema, dict):
             offenders.append(f"{tool_id}.{name}: inputSchema missing or not an object")
             continue
+        # Non-finite enum literals are checked on the RAW schema: the
+        # kind-based strip would silently remove them (unsupported kind),
+        # and no JSON codec can carry them anyway.
+        offenders.extend(_collect_non_finite_enum_offenders(
+            schema, f"{tool_id}.{name}"))
         wire_schema = _strip_mfjs_unsupported_enum_values(
             _strip_mfjs_advisory_keywords(schema))
         # The engine injects "properties": {} on bare type:object nodes
