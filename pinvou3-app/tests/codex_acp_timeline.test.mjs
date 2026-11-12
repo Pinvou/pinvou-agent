@@ -664,10 +664,17 @@ try {
     && runtime.includes('cancel_without_active_prompt')
     && runtime.includes('runtime.busy.load(Ordering::Acquire)'),
   'app restart and stale stop must close orphaned ACP turns without cancelling an idle runtime');
-  // session/load is bounded by ACP_SESSION_LOAD_TIMEOUT (the load await sits
-  // inside tokio::time::timeout), so the request construction is multi-line.
-  assert.ok(runtime.includes('LoadSessionRequest::new(\n                                saved_id.clone(),\n                                workspace.clone(),\n                            )'));
-  assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
+  // session/load is bounded by ACP_SESSION_LOAD_TIMEOUT: the load await sits
+  // inside tokio::time::timeout. Pinned with whitespace- and comma-tolerant
+  // regexes — a source-layout pin here desynced from the pin it guards when
+  // the fmt-only commit 8a57c3672d reflowed the construction onto one line
+  // (99 chars fit rustfmt's 100), turning this suite red with no behavior
+  // change on the Rust side.
+  assert.ok(
+    /tokio::time::timeout\(\s*ACP_SESSION_LOAD_TIMEOUT,\s*connection\s*\.send_request\(\s*LoadSessionRequest::new\(\s*saved_id\.clone\(\),\s*workspace\.clone\(\)\s*\)\s*\)\s*\.block_task\(\)\s*,?\s*\)/.test(runtime),
+    'the saved-session load await must stay wrapped in the ACP_SESSION_LOAD_TIMEOUT bound',
+  );
+  assert.ok(/NewSessionRequest::new\(\s*workspace\s*\)/.test(runtime));
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
   assert.ok(runtime.includes('apply_saved_mode('), 'saved Full Access mode must be restored after new/load');
   // Commit 22559510e extracted the repeated permission+elicitation settlement
