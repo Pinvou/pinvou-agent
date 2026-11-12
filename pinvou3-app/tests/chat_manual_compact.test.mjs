@@ -98,6 +98,12 @@ for (const bad of [undefined, 0, -5, 999999]) {
   assert.equal(state.tokens.input, inputBefore, `post_tokens=${bad} 不得更新用量条`);
 }
 
+// 场景 3b：边界——post_tokens 恰好等于窗口上限必须接受（守卫是 <= 而非
+// <；压缩后占用恰在窗口边缘是合法状态，改成 < 会让该合法值被拒）。
+emitCompaction({ phase: 'start' });
+emitCompaction({ phase: 'done', messages_before: 8, messages_after: 8, post_tokens: 131072, message: 'x' });
+assert.equal(state.tokens.input, 131072, 'post_tokens 恰等于窗口上限必须刷新用量条');
+
 // 场景 4：fail/cancel 终态同样清除标记——不能留下永久禁用的入口。
 for (const phase of ['fail', 'cancel']) {
   emitCompaction({ phase: 'start' });
@@ -128,7 +134,7 @@ const emitUsage = payload => listeners.get('chat:usage')({
 emitCompaction({ phase: 'start', session_id: 'session-2' });
 assert.ok(context.turnUsageDirty['session-2'], '压缩事件必须自置 turnUsageDirty（post_tokens 绕过 dirty 的前提）');
 emitUsage({ session_id: 'session-2', input_tokens: 40000 });
-assert.equal(state.tokens.input, 9500, '压缩轮后续累计 input 不可信，保留 post_tokens 值');
+assert.equal(state.tokens.input, 131072, '压缩轮后续累计 input 不可信，保留最近接受的 post_tokens 值');
 
 // ── web 双端源码契约：压缩 handler 必须同步维护标记并消费 post_tokens ──
 const tauriCompaction = source.slice(source.indexOf('listen("chat:compaction"'));
@@ -182,6 +188,15 @@ assert.match(chatViewSource, /setManualCompact\(current => \(current && current\
 // 不得以"该会话处于激活"为前提——压缩在后台完成时 effect 看不到
 // compactingActive，残留的手动标记会把按钮多禁一轮 TTL 并显示假"压缩中"。
 assert.match(chatViewSource, /if \(manualCompact && compactingMap && compactingMap\[manualCompact\.sid\]\) \{[\s\S]{0,300}setManualCompact\(current => \(current && current\.sid === manualCompact\.sid \? null : current\)\);/, '桥接 start 写入标记时必须立即释放手动标记（与会话激活无关）');
+// 释放 effect 的依赖数组必须钉住：缺 compactingMap 会漏掉桥接标记变化，
+// 缺 manualCompact 会闭包旧标记、清错会话。
+assert.match(chatViewSource, /\}, \[compactingMap, manualCompact\]\);/, 'start 接管释放 effect 必须声明 [compactingMap, manualCompact] 依赖');
+// 兜底自愈必须主动触发：入口禁用期间排到期 tick，完全空闲的应用（无任何
+// 无关 notify、被禁按钮点击不产生渲染）也要能在 15 分钟边界恢复按钮。
+assert.match(chatViewSource, /if \(!ctxCompactInFlight\) return;[\s\S]{0,500}setCompactHealTick\(current => current \+ 1\)/, '入口禁用期间必须排兜底到期 tick（自愈不能只靠被动重渲染）');
+assert.match(chatViewSource, /healBoundaryAt = Math\.min\(/, '兜底 tick 必须取桥接标记与手动标记过期边界的较早者');
+// 在途文案与提示 tip 必须实际挂到按钮上（i18n key 不得沦为死文案）。
+assert.match(chatViewSource, /title=\{ctxCompactInFlight \? t\.compactingNow : t\.compactNowTip\}/, 'compactingNow/compactNowTip 必须实际用于按钮');
 // 引擎懒启动错误映射：裸错误链不得直接露出（与代码车道 nativeCompactInactive 同款）。
 assert.match(chatViewSource, /raw\.includes\('session_engine_not_running'\) \? t\.uiCodex\.nativeCompactInactive : raw/, '引擎未运行必须映射本地化文案');
 assert.ok(!chatViewSource.includes('compactFailNotice'), '失败文案必须复用 uiCodex.compactFail，不得新开重复 key');

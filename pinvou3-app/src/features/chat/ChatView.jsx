@@ -1186,8 +1186,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // compactingSessions 与手动标记都存时间戳，读取按 15 分钟兜底自愈
       // （与 Rust MAX_COMPACTION_LATCH_AGE 同款，engine_pool.rs）：终态
       // 事件丢失（引擎被驱逐中止 forwarder、web 端桌面重启）时在途标记
-      // 过期失效，入口不会永久禁用。按会话记录（ChatView 切会话不
-      // remount，见上方 keyed-state 约定），A 会话入队中不误禁 B 会话。
+      // 过期失效，入口不会永久禁用。兜底按墙钟而非单调钟：时钟前拨或
+      // 休眠恢复会提前解禁（与 Rust Instant 语义存在窗口差，压缩超长时
+      // 重复入队的代价与 Rust 侧锁存过期一致，接受）。按会话记录
+      // （ChatView 切会话不 remount，见上方 keyed-state 约定），A 会话
+      // 入队中不误禁 B 会话。
       const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
       const [manualCompact, setManualCompact] = useState(null); // { sid, at }
       const compactingMap = bs && bs.compactingSessions;
@@ -1208,6 +1211,22 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           setManualCompact(current => (current && current.sid === manualCompact.sid ? null : current));
         }
       }, [compactingMap, manualCompact]);
+      // 兜底自愈的主动触发：入口禁用期间排一个到期 tick，完全空闲的应用也能在
+      // 15 分钟边界恢复按钮——否则终态丢失时要等下一次无关 notify 才重渲染，
+      // 而被禁用按钮的点击本身不产生渲染，会一直停在假"压缩中"。压缩在途
+      // 罕见，定时器仅存在于途期间，常态空闲零开销。
+      const [, setCompactHealTick] = useState(0);
+      useEffect(() => {
+        if (!ctxCompactInFlight) return;
+        const healBoundaryAt = Math.min(
+          compactingStartedAt ? compactingStartedAt + COMPACTING_FLAG_MAX_AGE_MS : Infinity,
+          manualCompact ? manualCompact.at + COMPACTING_FLAG_MAX_AGE_MS : Infinity,
+        );
+        const healDelayMs = healBoundaryAt - Date.now();
+        if (!Number.isFinite(healDelayMs)) return;
+        const healTimer = setTimeout(() => setCompactHealTick(current => current + 1), Math.max(healDelayMs, 0));
+        return () => clearTimeout(healTimer);
+      }, [ctxCompactInFlight, compactingStartedAt, manualCompact]);
       const handleManualCompact = useCallback(async () => {
         const sid = activeSessionId;
         if (!sid || manualCompactActive || compactingActive || busy) return;

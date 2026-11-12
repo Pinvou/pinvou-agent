@@ -581,12 +581,12 @@ function enforceLazyChunks() {
 // eviction protection lives in the bridge/shared helpers, which ride the
 // classic startup bundles on both platforms — outside this entry gate.
 // Both endpoints measured on the local node 24 toolchain: 486,097 →
-// 487,059 B desktop (+962 B: +789 feature entry, +158 review-fix
-// hardening, +15 marker-takeover release fix) and 127,777 → 127,777 B
-// web (byte-identical: the web entry chunk is untouched — ChatView rides
-// the web-only lazy chat-view group, and the bridge-side additions ride
-// the classic startup bundles). The desktop ceiling takes the next
-// thousand step (941 B headroom); the web
+// 487,290 B desktop (+1,193 B: +789 feature entry, +158 review-fix
+// hardening, +15 marker-takeover release fix, +231 gate self-heal tick)
+// and 127,777 → 127,777 B web (byte-identical in size: the web entry
+// chunk is untouched — ChatView rides the web-only lazy chat-view group,
+// and the bridge-side additions ride the classic startup bundles). The
+// desktop ceiling takes the next thousand step (710 B headroom); the web
 // ceiling stays 128_000 (223 B headroom above the measured web entry).
 // This cap does not promise headroom for unrelated main changes.
 export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
