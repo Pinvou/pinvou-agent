@@ -728,7 +728,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const searchCursorOf = (page) => (page.length
         ? { mtime: page[page.length - 1].mtime, id: page[page.length - 1].id }
         : null);
-      const [searchPaging, setSearchPaging] = useState({ gen: 0, cursor: null, hasMore: false, loading: false });
+      const [searchPaging, setSearchPaging] = useState({ gen: 0, cursor: null, hasMore: false, loading: false, query: null });
       const searchGenerationRef = useRef(0);
       // 续页追加去重:offset/keyset 分页在表并发变动时(扫描新增、导入插入)可能
       // 送回已展示过的行;按行的稳定键去重,重复 key 不再进渲染列表。已见集合每
@@ -752,20 +752,25 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         // 重复键)。runSearch 先自增代际,续页落地前校验,被取代即整体丢弃。
         const generation = ++searchGenerationRef.current;
         try {
-          const page = await invokeTauri('kb_search', { query: buildSearchQuery(catKey, text) }) || [];
+          const req = buildSearchQuery(catKey, text);
+          const page = await invokeTauri('kb_search', { query: req }) || [];
           if (generation !== searchGenerationRef.current) return;
           setResults(page);
-          setSearchPaging({ gen: generation, cursor: searchCursorOf(page), hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
+          // 游标连同产生它的首屏请求(text/exts/limit)一起钉进分页状态:「加载
+          // 更多」用钉住的请求拼游标续查,不读输入框里的实时文本——否则改了
+          // 搜索词再点续页,会用新词配旧游标、把另一轮筛选的续页接进旧结果
+          // (r4 review;与 gen 锚定同一血缘)。
+          setSearchPaging({ gen: generation, cursor: searchCursorOf(page), hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false, query: req });
         }
         catch {
           if (generation !== searchGenerationRef.current) return;
           setResults([]);
-          setSearchPaging({ gen: generation, cursor: null, hasMore: false, loading: false });
+          setSearchPaging({ gen: generation, cursor: null, hasMore: false, loading: false, query: null });
         }
         if (generation === searchGenerationRef.current) setSearched(true);
       };
       const loadMoreSearch = async () => {
-        if (!searchPaging.cursor || searchPaging.loading) return;
+        if (!searchPaging.cursor || !searchPaging.query || searchPaging.loading) return;
         // 续页合法性锚定在产生这页游标的那次重置(searchPaging.gen),不是点击时刻
         // 的最新代际:重置在途时旧 footer 仍可见,点击会拿旧 cursor 配新筛选发一条
         // 注定作废的请求——旧代际在落地时必被代际校验丢弃,这里在点击时就直接拒发。
@@ -773,7 +778,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         const generation = searchPaging.gen;
         setSearchPaging((p) => ({ ...p, loading: true }));
         try {
-          const page = await invokeTauri('kb_search', { query: buildSearchQuery(cat, query, searchPaging.cursor) }) || [];
+          // 用产生游标的那次搜索钉住的请求(text/exts)拼游标,不读实时输入框
+          // 文本(理由见 runSearch 的钉注)。
+          const page = await invokeTauri('kb_search', { query: { ...searchPaging.query, mtimeBefore: searchPaging.cursor.mtime, idBefore: searchPaging.cursor.id } }) || [];
           if (generation !== searchGenerationRef.current) return;
           setResults((prev) => dedupeAppendBy(prev, page, (row) => row.path));
           setSearchPaging({ gen: generation, cursor: searchCursorOf(page) || searchPaging.cursor, hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
@@ -871,8 +878,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           setDocsPaging({ gen: generation, offset: page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
         } catch {
           // 整表重置失败:清掉在途「加载更多」的 loading(其响应会因代际失配被
-          // 丢弃、不会自己清),否则旧分页的按钮永远转圈。
-          setDocsPaging((p) => ({ ...p, loading: false }));
+          // 丢弃、不会自己清),否则旧分页的按钮永远转圈;并把 hasMore 一并收起
+          // ——旧分页属于被取代的上一轮,续页点击必被代际校验拒发,死按钮只会
+          // 误导(r4 review)。
+          setDocsPaging((p) => ({ ...p, loading: false, hasMore: false }));
         }
       };
       const loadMoreDocs = async () => {
@@ -898,14 +907,19 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           kbCache.colls = c;
         } catch { /* silently degrade */ }
         try {
+          // 与 loadDocs 同序:先自增代际再发请求(此前是落地后才自增,重置在途
+          // 时新旧代际相等,921 行的拒发形同虚设——r4 review)。重置在途时的
+          // 「加载更多」点击随即被拒,不会拿旧 offset 配新表发注定作废的请求。
+          const generation = ++allDocsGenerationRef.current;
           const d = await invokeTauri('kb_documents', { collectionId: 0, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
-          allDocsGenerationRef.current += 1;
+          if (generation !== allDocsGenerationRef.current) return;
           setAllDocs(d);
-          setAllDocsPaging({ gen: allDocsGenerationRef.current, offset: d.length, hasMore: d.length >= KB_DOCS_PAGE_SIZE, loading: false });
+          setAllDocsPaging({ gen: generation, offset: d.length, hasMore: d.length >= KB_DOCS_PAGE_SIZE, loading: false });
           kbCache.allDocs = capCachedAllDocs(d);
         } catch {
-          // 整表重置失败:清掉在途「加载更多」的 loading,理由同 loadDocs。
-          setAllDocsPaging((p) => ({ ...p, loading: false }));
+          // 整表重置失败:清掉在途「加载更多」的 loading,理由同 loadDocs;
+          // hasMore 一并收起(死按钮,理由同 loadDocs 的 catch 注)。
+          setAllDocsPaging((p) => ({ ...p, loading: false, hasMore: false }));
         }
         try { const ei = await invokeTauri('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
         try { const m = await invokeTauri('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
