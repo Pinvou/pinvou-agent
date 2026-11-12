@@ -655,7 +655,6 @@ async fn model_review(
             bridge.opencode_conversation_key("model-review"),
         )
         .await?;
-<<<<<<< HEAD
         // stop_reason 映射进 parse 的诊断层（r5 审 m5）：Anthropic 的
         // "max_tokens" 与 OpenAI 的 "length" 同义（预算被推理吃满/输出截断）。
         // 不映射的话，parse_model_review_with_finish 给这个失败形态加的解释在
@@ -666,16 +665,6 @@ async fn model_review(
             .and_then(|reason| (reason == "max_tokens").then_some("length"));
         return parse_model_review_with_finish(&completion.text, finish_reason)
             .context("parse Pinvou review");
-=======
-        if completion.stop_reason.as_deref() == Some("max_tokens") {
-            log::warn!(
-                "[review] anthropic response truncated (stop_reason=max_tokens); the JSON \
-                 parse below will likely fail opaquely — raise REVIEW_MAX_TOKENS or shrink \
-                 the feed if this repeats"
-            );
-        }
-        return parse_model_review(&completion.text).context("parse Pinvou review");
->>>>>>> b45f3bf5e (fix(app): close the preview TOCTOU and bound the review artifact read)
     }
     // 路由身份与主对话同一解析：engine cfg.provider 正是 `provider()` 的产物
     // （engine_route_provider 除 Responses 改名外恒等），底座 `api_provider()`
