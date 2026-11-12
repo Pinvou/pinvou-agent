@@ -730,6 +730,10 @@ impl SavedModel {
             if self.endpoint_mode.as_deref() == Some("full_chat_completions") {
                 self.endpoint_mode = None;
             }
+            // 托管入口的鉴权由平台管理,不接收免鉴权声明:清空手改/残留的
+            // auth_mode,避免托管条目带着声明走进引擎后逐轮 401 且无法在
+            // UI 关闭(设置页对 coding_plan 不渲染免鉴权开关)。
+            self.auth_mode = None;
             return;
         }
         if self.provider_kind.as_deref() == Some(MODEL_PROVIDER_KIND_CODING_PLAN) {
@@ -2907,6 +2911,121 @@ mod tests {
                 "非免鉴权档位 {invalid:?} 必须清空（落回默认鉴权规则）"
             );
         }
+    }
+
+    /// 托管入口(coding_plan)的鉴权由平台管理,不接收免鉴权声明:按 URL 归类为
+    /// 托管端点的记录即使带着 auth_mode="none"(手改 settings.json)也在归一
+    /// 时清空,避免 UI 隐藏开关的托管条目带着声明走进引擎后逐轮 401。非托管
+    /// 端点的免鉴权声明不受影响。
+    #[test]
+    fn coding_plan_records_clear_keyless_declaration() {
+        let build = |base_url: &str, auth_mode: Option<&str>| {
+            let mut prefs = UserPrefs::default();
+            let mut model = SavedModel {
+                auth_mode: None,
+                id: "auth-mode-plan".into(),
+                name: "auth mode plan".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "plan-model".into(),
+                base_url: base_url.into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            model.auth_mode = auth_mode.map(str::to_string);
+            prefs.upsert_model(model);
+            prefs
+        };
+
+        let plan = build("https://coding.dashscope.aliyuncs.com/v1", Some("none"));
+        let plan_model = plan.model_by_id("auth-mode-plan").expect("model");
+        assert_eq!(
+            plan_model.provider_kind.as_deref(),
+            Some(MODEL_PROVIDER_KIND_CODING_PLAN),
+            "用例前置:该 URL 必须被归类为托管入口"
+        );
+        assert_eq!(plan_model.auth_mode, None, "托管入口不得携带免鉴权声明");
+
+        let custom = build("https://gateway.example.com/v1", Some("none"));
+        assert_eq!(
+            custom
+                .model_by_id("auth-mode-plan")
+                .expect("model")
+                .auth_mode
+                .as_deref(),
+            Some("none"),
+            "非托管端点的免鉴权声明必须保留"
+        );
+    }
+
+    /// 手改 settings.json 的 auth_mode 必须在 load 时归一并持久化:同义词统一
+    /// 为 "none" 且落盘,未知档位清空。upsert 与 load 共享同一归一函数,但
+    /// load 路径的触发与「归一差异才持久化」的门槛是独立行为,单独钉住。
+    #[test]
+    fn load_normalizes_and_persists_auth_mode_declaration() {
+        with_temp_home("pinvou3-prefs-auth-mode-load", || {
+            let mut prefs = UserPrefs::default();
+            prefs.advanced.saved_models.clear();
+            let mut model = SavedModel {
+                auth_mode: None,
+                id: "keyless-load".into(),
+                name: "Keyless".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "gateway-model".into(),
+                base_url: "https://gateway.example.com/v1".into(),
+                provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            model.auth_mode = Some(" No-Auth ".into());
+            prefs.advanced.saved_models.push(model);
+            prefs.advanced.active_model_id = Some("keyless-load".into());
+            let path = super::super::paths::settings_path();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&prefs).expect("serialize hand-edited prefs"),
+            )
+            .expect("write hand-edited prefs");
+
+            let loaded = UserPrefs::load();
+            assert_eq!(
+                loaded
+                    .model_by_id("keyless-load")
+                    .expect("model")
+                    .auth_mode
+                    .as_deref(),
+                Some("none"),
+                "load 必须把同义词档位归一为 \"none\""
+            );
+            let persisted = std::fs::read_to_string(&path).expect("reread persisted prefs");
+            assert!(
+                persisted.contains("\"auth_mode\": \"none\""),
+                "归一结果必须落盘"
+            );
+            assert!(!persisted.contains("No-Auth"), "原始手改档位不得残留");
+        });
     }
 
     #[test]
