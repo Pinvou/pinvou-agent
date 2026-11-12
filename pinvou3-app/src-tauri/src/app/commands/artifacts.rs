@@ -390,13 +390,24 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     }
     // Check the size before reading the whole file: reading an oversized
     // file into memory is pure waste, so reject up front with the same
-    // error shape as the post-read check below (which still guards the
-    // edge case of the file growing between the two checks).
-    if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > 25_000_000 {
+    // error shape as the post-read check below. The read itself is
+    // Take-bounded (cap + 1) like `read_artifact_text_impl` and the visual
+    // preview lane, so a file grown between the precheck and the read can
+    // no longer balloon memory either (r5 review).
+    const MAX_ARTIFACT_IMAGE_BYTES: u64 = 25_000_000;
+    if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > MAX_ARTIFACT_IMAGE_BYTES {
         return Err("图片过大(>25MB),请用外部打开".into());
     }
-    let bytes = std::fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
-    if bytes.len() > 25_000_000 {
+    let bytes = {
+        use std::io::Read;
+        let file = std::fs::File::open(&p).map_err(|e| format!("读取失败: {e}"))?;
+        let mut buf = Vec::new();
+        file.take(MAX_ARTIFACT_IMAGE_BYTES + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("读取失败: {e}"))?;
+        buf
+    };
+    if bytes.len() as u64 > MAX_ARTIFACT_IMAGE_BYTES {
         return Err("图片过大(>25MB),请用外部打开".into());
     }
     let ext = p
