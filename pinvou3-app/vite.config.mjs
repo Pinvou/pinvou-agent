@@ -608,6 +608,10 @@ function enforceLazyChunks() {
 // per-session marker map + the start-signal reconcile sweep (+215 B
 // desktop) → 487,810 B desktop (190 B headroom under the 488_000
 // ceiling, no re-cut needed); web unchanged (still size-identical).
+// Review 5876783763 wave: the reconcile arm orders by the monotonic
+// compaction sequence instead of two wall-clock/flag arms (−34 B
+// desktop) → 487,776 B desktop (224 B headroom under the 488_000
+// ceiling, no re-cut needed).
 export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 

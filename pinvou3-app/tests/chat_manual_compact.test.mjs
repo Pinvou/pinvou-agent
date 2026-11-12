@@ -41,6 +41,7 @@ const state = {
   thinking: { active: false },
   compactingSessions: {},
   compactionStarts: {},
+  compactionSeq: 0,
 };
 const context = {
   state,
@@ -86,7 +87,7 @@ const emitCompaction = payload => listeners.get('chat:compaction')({
 emitCompaction({ phase: 'start', id: 'compact-1', auto: false, message: 'Manual context compaction started' });
 const compactStartedAt = state.compactingSessions['session-1'];
 assert.ok(typeof compactStartedAt === 'number' && compactStartedAt > 0, 'start must set a timestamped compaction in-flight marker');
-assert.ok(state.compactionStarts['session-1'] > 0, 'start must also record the persistent per-session start signal (it survives the terminal, so coalesced start+terminal for a background session still reconciles)');
+assert.equal(state.compactionStarts['session-1'], 1, 'start must also record the persistent per-session start signal, carrying the bridge\'s monotonic compaction sequence (not a wall-clock time — review 5876783763)');
 assert.equal(state.chatItems.length, 1, 'the start system item is listed as usual');
 
 // Scenario 2: done clears the marker, and post_tokens is the
@@ -96,6 +97,7 @@ assert.equal(state.chatItems.length, 1, 'the start system item is listed as usua
 const notifyAfterStart = notifyCount;
 emitCompaction({ phase: 'done', id: 'compact-1', messages_before: 12, messages_after: 8, post_tokens: 9500, message: '12 → 8 messages' });
 assert.equal(state.compactingSessions['session-1'], undefined, 'the done terminal must clear the in-flight marker');
+assert.equal(state.compactionStarts['session-1'], 1, 'the start signal PERSISTS after the terminal (a coalesced start+terminal for a background session must stay reconcilable)');
 assert.equal(state.tokens.input, 9500, 'post_tokens must refresh the usage bar input');
 assert.equal(state.tokens.max, 131072, 'the real window denominator is unchanged');
 assert.ok(notifyCount > notifyAfterStart, 'the marker clear/usage refresh must notify the UI');
@@ -171,7 +173,7 @@ for (const [label, section] of [['tauri', tauriCompaction], ['web', webCompactio
   // block's notify (start set / terminal clear stopped refreshing
   // subscribers; both the button disable and the takeover effect went dead)
   // were green before, so the pin is by block text.
-  assert.ok(section.includes('if (sid) {\n      if (phase === "start") {\n        state.compactingSessions[sid] = Date.now();\n        state.compactionStarts[sid] = Date.now();\n      } else delete state.compactingSessions[sid];\n      notify();\n    }'),
+  assert.ok(section.includes('if (sid) {\n      if (phase === "start") {\n        state.compactingSessions[sid] = Date.now();\n        state.compactionSeq = (state.compactionSeq || 0) + 1;\n        state.compactionStarts[sid] = state.compactionSeq;\n      } else delete state.compactingSessions[sid];\n      notify();\n    }'),
     `${label}: the marker maintenance must notify explicitly (subscriber refreshes rely on it; the post_tokens branch's notify does not cover this branch — deleting it used to be green)`);
 }
 // The both-sides-must-move-together constraint, stated hard: from the
@@ -209,7 +211,7 @@ assert.match(chatViewSource, /if \(!sid \|\| manualCompactActive \|\| compacting
 // site (an error after a session switch still lands on the original
 // session); the manual marker must be set BEFORE the invoke and right next
 // to the try — between the enqueue and the bridge's start takeover the
-assert.match(chatViewSource, /const sid = activeSessionId;\s*if \(!sid[\s\S]*?setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: \{ at: Date\.now\(\), itemsAt: maxItemId \} \}\)\);\s*try \{/, 'sid must be captured before the invoke, and the session marker (with the item-id snapshot) set right next to it');
+assert.match(chatViewSource, /const sid = activeSessionId;\s*if \(!sid[\s\S]*?const seqAt = compactionSeq;\s*setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: \{ at: Date\.now\(\), seqAt, itemsAt: maxItemId \} \}\)\);\s*try \{/, 'sid must be captured before the invoke, and the session marker (with the sequence snapshot and item-id snapshot) set right next to it');
 assert.match(chatViewSource, /invokeTauri\('compact_now', \{ sessionId: sid \}\)/, 'the compaction command and its argument shape');
 // Per-session keying (ChatView does not remount on a session switch): a
 // boolean would disable B while A's enqueue is in flight.
@@ -238,11 +240,13 @@ assert.match(chatViewSource, /setManualCompactBySid\(current => \{\s*if \(!curre
 //     (background-finished compactions).
 assert.match(chatViewSource, /for \(const sid of Object\.keys\(current\)\)/, 'the reconcile sweep walks EVERY pending marker (review 5874108926 follow-up: background sessions reconcile too, not just the active one)');
 assert.match(chatViewSource, /if \(now - current\[sid\]\.at >= COMPACTING_FLAG_MAX_AGE_MS\) \{ drop\(sid\); continue; \}/, 'TTL release drops expired entries for every session (not just the active one)');
-assert.match(chatViewSource, /if \(startedAt && startedAt >= current\[sid\]\.at\) \{ drop\(sid\); continue; \}/, 'a start that landed after the click releases the marker even when the session is NOT active and the terminal coalesced with the start (A starts+completes while B is active)');
-assert.match(chatViewSource, /if \(flagAt && now - flagAt < COMPACTING_FLAG_MAX_AGE_MS\) drop\(sid\);/, 'a fresh bridge flag releases the session\'s marker even when it is NOT the active session (A starts while B is active, terminal not yet arrived)');
+assert.match(chatViewSource, /const startedSeq = startsMap \? startsMap\[sid\] : 0;/, 'the reconcile reads the session\'s last-start sequence');
+assert.match(chatViewSource, /if \(startedSeq > current\[sid\]\.seqAt\) \{ drop\(sid\); continue; \}/, 'a start with a sequence STRICTLY greater than the click snapshot releases the marker — even when the session is NOT active and the terminal coalesced with the start (A starts+completes while B is active); strictness plus the monotonic counter makes a prior same-millisecond start unable to clear a new marker');
+assert.ok(!chatViewSource.includes('if (flagAt && now - flagAt < COMPACTING_FLAG_MAX_AGE_MS) drop(sid);'), 'the fresh-flag arm is subsumed by the sequence arm (a fresh flag implies a start landed, i.e. a strictly greater sequence) — the dead arm must not return');
 assert.ok(!chatViewSource.includes('if (sid !== activeSessionId)'), 'the reconcile sweep must NOT skip non-active sessions — an active-only guard would strand background markers until TTL (the appearance-only pin above cannot see an if-false disable, so its absence is pinned directly)');
 assert.match(chatViewSource, /const startsMap = bs && bs\.compactionStarts;/, 'ChatView must read the persistent per-session start signal (the bridge survives terminals and prune-only merges)');
-assert.match(chatViewSource, /const flagAt = compactingMap \? compactingMap\[sid\] : 0;/, 'the sweep consults the GLOBAL flag map (all sessions), not an active-session lookup');
+assert.match(chatViewSource, /const compactionSeq = \(bs && bs\.compactionSeq\) \|\| 0;/, 'ChatView must read the bridge\'s monotonic compaction sequence (review 5876783763: the click snapshots it, the reconcile compares sequence numbers, not wall-clock times)');
+assert.match(chatViewSource, /for \(const sid of Object\.keys\(current\)\)/, 'the sweep consults the GLOBAL maps for ALL sessions (each sid\'s own start signal), not an active-session lookup');
 // (b) the start system-item fallback — when start and the terminal arrive
 //     in the same React batch (an instantly failing compaction), the bridge
 //     marker never appeared in any render and path (a) can never see it; start system items
@@ -307,7 +311,8 @@ assert.match(chatViewSource, /disabled=\{busy \|\| ctxCompactInFlight\}/, 'the d
 // (ii) the active-session reads key off activeSessionId (pinned above);
 // (iii) both release paths delete ONLY the matching sid's key — a B-side
 //     start or failure must not release A's entry.
-assert.match(chatViewSource, /setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: \{ at: Date\.now\(\), itemsAt: maxItemId \} \}\)\);/, 'A→B→A (i): an enqueue must spread the previous map so another session\'s pending marker survives');
+assert.match(chatViewSource, /const seqAt = compactionSeq;/, 'A→B→A (i): the click snapshots the compaction sequence (review 5876783763: replaces wall-clock ordering)');
+assert.match(chatViewSource, /setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: \{ at: Date\.now\(\), seqAt, itemsAt: maxItemId \} \}\)\);/, 'A→B→A (i): an enqueue must spread the previous map so another session\'s pending marker survives');
 assert.match(chatViewSource, /const drop = sid => \{\s*if \(next === current\) next = \{ \.\.\.current \};\s*delete next\[sid\];\s*\};/, 'A→B→A (iii): every release path drops only the matching sid\'s key from a copied map, never other sessions\' pending markers');
 
 // ── i18n: exactly one entry per locale (count-1 per language); duplicate keys must not regress ──

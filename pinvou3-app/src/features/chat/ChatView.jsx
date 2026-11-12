@@ -1230,8 +1230,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // session): lets the sweep reconcile a manual marker whose start and
       // terminal coalesced before any render while ANOTHER session was
       // active (review 5874108926 follow-up) — the chatItems fallback
-      // cannot, being the active session's projection only.
+      // cannot, being the active session's projection only. The signal's
+      // value is the bridge's monotonic compaction sequence number (NOT a
+      // wall-clock time — review 5876783763: timestamp ordering of
+      // persistent events breaks on same-millisecond collisions and clock
+      // rollbacks), so the sweep compares sequence numbers strictly.
       const startsMap = bs && bs.compactionStarts;
+      const compactionSeq = (bs && bs.compactionSeq) || 0;
       const compactingStartedAt = activeSessionId && compactingMap
         ? compactingMap[activeSessionId] : 0;
       const compactingActive = !!(compactingStartedAt && Date.now() - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS);
@@ -1264,18 +1269,19 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // deleted or evicted.
             if (now - current[sid].at >= COMPACTING_FLAG_MAX_AGE_MS) { drop(sid); continue; }
             // A start that landed AFTER this click reconciles the marker:
-            // the start signal survives the terminal and prune-only merges,
-            // so it covers starts and terminals that coalesced before any
-            // render. Any fresh start (auto or manual) takes the marker
-            // over — a click landing mid-turn may overlap a turn-internal
-            // auto compaction, and correlating by compact id would change
-            // both byte-pinned listener bodies (round-6 review M-2,
-            // recorded tradeoff). The fresh bridge flag stays as a
-            // secondary arm for the still-in-flight window.
-            const startedAt = startsMap ? startsMap[sid] : 0;
-            if (startedAt && startedAt >= current[sid].at) { drop(sid); continue; }
-            const flagAt = compactingMap ? compactingMap[sid] : 0;
-            if (flagAt && now - flagAt < COMPACTING_FLAG_MAX_AGE_MS) drop(sid);
+            // the start signal carries the bridge's compaction sequence
+            // number, and the click captured the sequence snapshot — a
+            // start strictly AFTER the click has a strictly greater
+            // sequence, regardless of wall-clock collisions or rollback
+            // (review 5876783763). The signal survives the terminal and
+            // prune-only merges, so it covers starts and terminals that
+            // coalesced before any render. Any fresh start (auto or
+            // manual) takes the marker over — a click landing mid-turn may
+            // overlap a turn-internal auto compaction, and correlating by
+            // compact id would change both byte-pinned listener bodies
+            // (round-6 review M-2, recorded tradeoff).
+            const startedSeq = startsMap ? startsMap[sid] : 0;
+            if (startedSeq > current[sid].seqAt) { drop(sid); continue; }
           }
           // The ACTIVE session keeps the start-item fallback: when start and
           // the terminal arrive in the same React batch (an instantly failing
@@ -1323,12 +1329,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const handleManualCompact = useCallback(async () => {
         const sid = activeSessionId;
         if (!sid || manualCompactActive || compactingActive || busy) return;
-        // Snapshot the item-id upper bound at click time: the start-item
-        // fallback release matches "a start newer than the click" against
-        // it (itemIds are monotonic across the whole bridge, comparable
-        // across compactions and items).
+        // Snapshot the item-id upper bound and the compaction sequence at
+        // click time: the releases match "a start newer than the click"
+        // against them (itemIds are monotonic across the whole bridge;
+        // compactionSeq is the bridge's monotonic start counter — a start
+        // after the click has a strictly greater sequence, immune to
+        // same-millisecond collisions and clock rollback, review
+        // 5876783763).
         const maxItemId = chatItems.reduce((max, item) => ((item && item.id > max) ? item.id : max), 0);
-        setManualCompactBySid(current => ({ ...current, [sid]: { at: Date.now(), itemsAt: maxItemId } }));
+        const seqAt = compactionSeq;
+        setManualCompactBySid(current => ({ ...current, [sid]: { at: Date.now(), seqAt, itemsAt: maxItemId } }));
         try {
           await invokeTauri('compact_now', { sessionId: sid });
         } catch (err) {
@@ -1348,7 +1358,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             return next;
           });
         }
-      }, [manualCompactActive, compactingActive, busy, activeSessionId, chatItems, flashQueuedNotice, t]);
+      }, [manualCompactActive, compactingActive, busy, activeSessionId, chatItems, compactionSeq, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;

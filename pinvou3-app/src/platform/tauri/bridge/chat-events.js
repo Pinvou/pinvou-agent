@@ -1268,10 +1268,19 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     // terminal and prune-only merges, so the UI can reconcile a manual
     // compact marker whose start and terminal coalesced before any render
     // (review 5874108926 follow-up) — cleared with the session.
+    // The compactionStarts signal carries the bridge's monotonic
+    // compaction sequence (NOT a wall-clock time — review 5876783763:
+    // timestamp ordering of persistent events breaks on
+    // same-millisecond collisions and clock rollbacks). It survives
+    // the terminal and prune-only merges, so the UI can reconcile a
+    // manual compact marker whose start and terminal coalesced before
+    // any render (review 5874108926 follow-up) — cleared with the
+    // session.
     if (sid) {
       if (phase === "start") {
         state.compactingSessions[sid] = Date.now();
-        state.compactionStarts[sid] = Date.now();
+        state.compactionSeq = (state.compactionSeq || 0) + 1;
+        state.compactionStarts[sid] = state.compactionSeq;
       } else delete state.compactingSessions[sid];
       notify();
     }

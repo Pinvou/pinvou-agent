@@ -205,6 +205,7 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
     // session deletion/eviction clears it together with turnUsageDirty.
     compactingSessions: {},
     compactionStarts: {},
+    compactionSeq: 0,
     monitor: null,
     backendOnline: null, // null=checking, true, false
     platformCapabilities: {
