@@ -212,9 +212,11 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
-    modeState: { mode: "yolo" },
+    modeState: { mode: "auto" },
     // Per-lane (work/code) global default modes (null = the lane was never
-    // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
+    // explicitly chosen; tri-mode resolution: code/bound→plan, unbound
+    // plain→auto — an explicit Auto choice surfaces as "auto" via the
+    // backend's *_auto companion flags). Source of truth for
     // the draft-state chip display and switches: fetched at startup via
     // get_mode_defaults, written back on draft switches via set_mode_default.
     modeDefaults: { work: null, code: null },
@@ -421,6 +423,9 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       webSessionUnavailable: "This session is no longer available on the desktop. Reopen it from the session list.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
+      toolGuardrailDenied: "Guardrail denied", toolGuardrailDeniedSessionDenied: "this exact operation was denied in this session (a changed request asks again)", toolGuardrailDeniedPlan: "Plan mode is read-only; denied", toolGuardrailDeniedAskOff: "ask-on-guardrail is off; denied outright",
+      webApprovalUnsupported: "⚠️ Approval needed — the web UI cannot decide it; the turn waits for a decision in the desktop app",
+      webAutoSendBlocked: "⚠️ Send blocked: this session is in Auto mode, which can raise approval cards the web UI cannot decide. Switch the session to Plan or Yolo with the mode chip, or continue in the desktop app.",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
@@ -552,6 +557,9 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       webSessionUnavailable: "このセッションはデスクトップ側で利用できなくなりました。セッション一覧から開き直してください。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
+      toolGuardrailDenied: "ガードレール拒否", toolGuardrailDeniedSessionDenied: "このセッションで拒否済みの操作です（内容が変われば再度確認）", toolGuardrailDeniedPlan: "Plan モードは読み取り専用のため拒否", toolGuardrailDeniedAskOff: "ガードレール確認がオフのため直接拒否",
+      webApprovalUnsupported: "⚠️ 承認が必要です — Web UI では決定できず、ターンはデスクトップアプリでの決定を待ちます",
+      webAutoSendBlocked: "⚠️ 送信をブロックしました: このセッションは Auto モードのため、Web UI では決定できない承認カードが出る可能性があります。モードチップで Plan または Yolo に切り替えるか、デスクトップアプリで続行してください。",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       gpuUnavailable: "GPU 情報を取得できません",
       superOn: "⚠️ スーパー権限が有効になりました", superOff: "スーパー権限が無効になりました",
@@ -683,6 +691,9 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       webSessionUnavailable: "该会话在桌面端已不可用，请从会话列表重新打开。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
+      toolGuardrailDenied: "守卫拦截", toolGuardrailDeniedSessionDenied: "该会话已拒绝此操作（换参数需重新请批）", toolGuardrailDeniedPlan: "Plan 模式为只读，已拒绝", toolGuardrailDeniedAskOff: "守卫询问已关闭，已直接拒绝",
+      webApprovalUnsupported: "⚠️ 需要审批——Web 端无法决策，turn 将在桌面端等待处理",
+      webAutoSendBlocked: "⚠️ 已拦截发送：该会话处于 Auto 档，可能弹出 Web 端无法决策的审批卡。请用模式芯片切换到 Plan 或 Yolo，或在桌面端继续。",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       gpuUnavailable: "GPU 信息不可用",
       superOn: "⚠️ 超级权限已开启", superOff: "超级权限已关闭",
@@ -801,6 +812,11 @@ function bt(key) { return pinvouSharedweb().bt(key); }
   // Web 草稿首条消息的本地提交记录。内容只留在当前页面内，用固定 RPC ID
   // 支撑断线重发与人工重试；切走草稿后不会把待发内容泄漏到其他会话。
   const firstTurnSubmissions = Object.create(null);
+  // Round-9: draft-materialization in-flight flag (draftEpoch scoped). The old fast path deduped a
+  // concurrent first send via chatItems deliveryState bubbles; after moving to ensureSession materialization
+  // that window has no UI trace to dedup on — the sendMessage entry guard and flag-set site jointly take over the old race contract.
+  let webDraftMaterializeInFlight = false;
+  let webDraftMaterializeEpoch = 0;
   const authoritativeTranscriptSyncs = Object.create(null);
   let authoritySyncTraceSequence = 0;
   function recordAuthoritySyncDiagnostic(event, details) {
@@ -1021,6 +1037,11 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
     if (state.activeSessionId === id) {
       state.activeSessionId = null;
       loadWorkingSetFrom(freshBuffer());
+      // freshBuffer's modeState is the generic default (auto); the draft
+      // display must be overridden with this lane's global default (see the
+      // shared leaveSessionView override — deleting the open session lands
+      // here on the web lane, and the chip must read the resolved default).
+      state.modeState = currentDraftModeState();
     }
   }
 
@@ -1338,6 +1359,8 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedweb().ro
       rerenderFromMessages();
     });
     buf.loadedFromDisk = true;
+    // After history first lands on this client, replay in-flight approvals (fail-open; see webReplayPendingApprovals).
+    webReplayPendingApprovals(sid);
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
@@ -1914,7 +1937,7 @@ function timeStr() { return pinvouSharedweb().timeStr(); }
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
-    // freshBuffer's modeState is the generic default (yolo); the draft
+    // freshBuffer's modeState is the generic default (auto); the draft
     // display must be overridden with this lane's global default (the work
     // lane's last_mode).
     state.modeState = currentDraftModeState();
@@ -1980,18 +2003,22 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
         getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
         await refreshHistoryList();
         await syncModeState();
-        // Two-lane semantics: the backend's plain default is always Yolo and
-        // lanes are only work/code; when the materializing session's lane
-        // global default is plan, apply it right now (the write becomes that
-        // session's own per-session record; the global default is
-        // unaffected).
+        // Two-lane semantics (#428 merged design into work): the backend resolves an unbound plain
+        // session to Auto (when no lane default applies); a user-chosen lane global default (plan /
+        // yolo / auto) is applied right now so it becomes this session's own per-session record (the
+        // global default is unaffected). Before the tri-mode reconciliation only "plan" was applied
+        // here and an explicit yolo/auto work default was silently dropped — a verbatim mirror of the
+        // desktop sessions.js materialization branch (yolo/auto go through set_session_mode; the
+        // confirmation gate already passed when the draft picked that mode, no re-prompt at materialization).
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
-        // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
-        // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
-        if (laneDefault === "plan") {
+        // Use the meta.id captured at materialization, not activeSessionId: the user may have
+        // switched away during the awaits above, and a mode command against the current active session would target the wrong object.
+        if (["plan", "yolo", "auto"].includes(laneDefault)) {
           try {
-            const laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            const laneModeState = laneDefault === "plan"
+              ? await invoke("set_plan_mode_next", { sessionId: meta.id })
+              : await invoke("set_session_mode", { sessionId: meta.id, mode: laneDefault });
             applyAuthoritativeModeState(meta.id, laneModeState);
           } catch (laneModeError) {
             runSyncOnSession(meta.id, function () {
@@ -2068,9 +2095,16 @@ function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedweb(
     const collections = results[3];
     const legacyCollection = results[4];
     const memory = results[5];
+    // tri-mode sub-state (reviewer P3): ask_on_guardrail must be preserved with the authoritative
+    // read; dropping it makes the mounted read-only indicator display ON-by-default when the remote
+    // has chosen OFF. A missing key projects as the backend's default_true (old payloads do not flip the toggle off).
     state.modeState = mode.ok && mode.value
-      ? { mode: mode.value.mode || "yolo", multiAgent: !!mode.value.multi_agent }
-      : { mode: "yolo", multiAgent: false };
+      ? {
+        mode: mode.value.mode || "auto",
+        multiAgent: !!mode.value.multi_agent,
+        askOnGuardrail: mode.value.ask_on_guardrail == null ? true : !!mode.value.ask_on_guardrail,
+      }
+      : { mode: "auto", multiAgent: false, askOnGuardrail: true };
     state.activePersona = persona.ok && persona.value && !deletedPersonaIds.has(persona.value.id) ? persona.value : null;
     if (snapshot.ok && snapshot.value && Array.isArray(snapshot.value.collections)) {
       applyMountedCollections(snapshot.value);
@@ -2337,6 +2371,10 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
     // selected. Start Shell reconciliation only after that rebuild; polling
     // earlier can attach task ids to a transient card which hydration replaces.
     scheduleShellPoll(id, true);
+    // After history first lands on this client (both the full-load and live-merge branches pass
+    // through here), replay in-flight approvals (fail-open; see webReplayPendingApprovals); the fast
+    // cached-buffer switch path already replayed at its own load time, so do not re-read.
+    webReplayPendingApprovals(id);
     const presentationSync = beginSessionPresentationSync(id, requestToken);
     publishSessionTranscriptReady(options);
     await presentationSync;
@@ -2794,7 +2832,167 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
 
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
-  function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
+  // Posture gate before a turn is admitted (review P2; shared by doSendFor / acceptPlan /
+  // editLastTurn, skeleton in webAutoAdmissionGate below): an Auto-mode session can pop approval
+  // cards the web face cannot decide or replay — the old behavior accepted everything here and only
+  // fell back to a post-hoc notice once the turn got stuck. Resolve the session posture before
+  // admission and explicitly refuse this unsupported execution path; escape hatches genuinely exist
+  // (the mode chip's setPlanModeNext/exitPlanToYolo and the Auto→Yolo setSessionMode are all on the
+  // web allowlist — only entering Auto remains blocked by ChatView's web gate; approval cards have no
+  // decision surface on the web). A posture-command failure does not block the send — the post-hoc
+  // notice remains the race backstop; same rejection surface as the remote-sync interception above (the Promise.reject flows through the caller's existing failure notice).
+  // Auto-block notice dedup (review receipt): the rejection must carry its own user-facing notice
+  // — previously it only threw, and both the composer path and background flushQueued behaved as
+  // silent no-ops. Notices are deduped per sid (512-cap oldest eviction, the same convention as
+  // webApprovalNoticeIds) so flushQueued's per-turn-end retries no longer spam; the sid is cleared
+  // when the session leaves Auto (chat:mode_changed), allowing one more notice on the next Auto entry.
+  const webAutoSendNoticeSids = new Map();
+  const WEB_AUTO_SEND_NOTICE_CAP = 512;
+  // Shared posture-gate skeleton (doSendFor / acceptPlan / editLastTurn, the review P2 gap fix; the
+  // aux chat admission surface has been under the same gate since the round-13 review — an aux session
+  // resolves like an unbound plain session, defaults to Auto, and is equally a turn-admission surface
+  // with no web approval decision face):
+  // all four are turn-admission surfaces — accept_plan and edit_last_turn admit a new execution turn
+  // just like web_access_chat (the multi-agent deny-send list also classifies edit_last_turn as execution).
+  // Auto posture is explicitly refused; the notice lands before the refusal: through runSyncOnSession it
+  // lands in sid's own buffer, so background retries annotate the right session; the throw keeps flowing
+  // through the caller's existing failure surface (the aux panel renders the localized sendFailed copy).
+  // get_mode_state failure is fail-open (the post-hoc notice remains the race backstop).
+  // opts.requireExecutablePostAccept (zhuowp 5780927743, third point): the admission surface must also
+  // verify **the mode that will actually execute** — after accept_plan opens the turn it restores
+  // pre_plan_mode (falling back to Auto when absent; a restarted Plan session falls back the same way);
+  // a Plan card entered from Auto passes the mode === "plan" gate check yet executes as Auto, and approval
+  // cards have no web decision face. The backend's get_mode_state projects post_accept_mode (the mirror of the claim-restoration line); a hit routes to exactly the same rejection surface as the current-mode Auto refusal (sharing the notice dedup).
+  function webAutoNoticeAndThrow(sid) {
+    runSyncOnSession(sid, function () {
+      if (webAutoSendNoticeSids.has(sid)) return;
+      webAutoSendNoticeSids.set(sid, true);
+      if (webAutoSendNoticeSids.size > WEB_AUTO_SEND_NOTICE_CAP) {
+        webAutoSendNoticeSids.delete(webAutoSendNoticeSids.keys().next().value);
+      }
+      addSystemItem(bt("webAutoSendBlocked"));
+    });
+    throw new Error(bt("webAutoSendBlocked"));
+  }
+  async function webAutoAdmissionGate(sid, admitted, opts) {
+    const modeState = await invoke("get_mode_state", { sessionId: sid }).catch(function () { return null; });
+    if (modeState && modeState.mode === "auto") {
+      webAutoNoticeAndThrow(sid);
+    }
+    if (modeState && opts && opts.requireExecutablePostAccept && modeState.post_accept_mode === "auto") {
+      webAutoNoticeAndThrow(sid);
+    }
+    return admitted();
+  }
+  // Direct dispatch surfaces (composer send, sendMessageToSession — the
+  // plan-stuck follow-up included — and any future caller) reserve the same
+  // per-session admission owner the queue flush holds, BEFORE the first
+  // await (review JensenChen28 5816589125 P2). The fence checks are
+  // synchronous but the gate's get_mode_state is not: two concurrent idle
+  // sends could both pass the fences and race their lookups, the later-typed
+  // message dispatching first when replies reverse. With the reservation the
+  // second send waits for the owner instead of starting a second lookup, so
+  // an in-flight head (flush or direct) always dispatches first and no two
+  // gate lookups for one sid can be in flight. flushQueued passes its own
+  // token so the head it shifted does not wait on itself; the queue-flush
+  // path keeps its own release discipline (requeue-before-release, review
+  // 5812242993) — the release here only covers tokens claimed by this call.
+  // Non-creating queue read: getBuffer would materialize a background
+  // buffer as a side effect, so the requeue check reads the session maps
+  // directly (round-20 review minor: parkedQueueHoldsPriority had the same
+  // latent side effect — dead branch today, trap for future callers).
+  function sidQueuedHeadHolds(sid) {
+    const queuedBuffer = sid === state.activeSessionId ? state : sessionStates[sid];
+    return !!(queuedBuffer && Array.isArray(queuedBuffer.queued) && queuedBuffer.queued.length > 0);
+  }
+  // The wait is bounded by the web RPC timeout that caps every owner hold.
+  // The requeue branch sits INSIDE the try on purpose (review round-20 M3):
+  // notify() deliberately rethrows subscriber errors, and a throw from the
+  // old pre-try branch escaped before the finally released the admission
+  // owner — the queue and every later gate lookup on the sid then wedged
+  // permanently (waitForAdmissionRelease has no timeout of its own). The
+  // flag is also set before notify() so even a caught subscriber error
+  // could not fall through to the gate and double-dispatch (queued copy +
+  // direct send).
+  async function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure, admission) {
+    const callerToken = admission && admission.token;
+    let ownerToken = callerToken;
+    let requeuedInsteadOfDispatch = false;
+    let directAccepted = false;
+    try {
+      if (ownerToken == null) {
+        while (flushAdmissionSids.has(sid)) {
+          await waitForAdmissionRelease(sid);
+        }
+        ownerToken = claimAdmission(sid);
+        // Requeue check after the owner wait (review JensenChen28
+        // 5821148893 P2): the explicit surface's free check runs inside
+        // sendMessageToSession, before this wait, and the wait window can
+        // both admit a flushed head (busy tops up) and re-park a rejected
+        // one (flushQueued's requeue-before-release discipline, review
+        // 5812242993 — busy false, head back in queued). Rechecking busy
+        // alone let the woken waiter run its own gate query and dispatch
+        // ahead of the parked head, violating the FIFO contract; the
+        // recheck must consult the session queue as well, and this message
+        // then lands on the queue tail — every earlier entry keeps its
+        // priority and the parked head keeps its disclosed
+        // wait-for-next-trigger retry semantics (this requeue does not
+        // schedule a flush of its own, so a rejection-parked head is not
+        // retried into an Auto-deny spin). The only reachable tokenless
+        // waiter is the explicit surface (the composer claims its owner
+        // synchronously behind its fences; aux and flushQueued carry
+        // tokens), so enqueueing with payloadText = text is safe —
+        // doSendFor carries no distinct payload parameter.
+        if (isBusyFor(sid) || sidQueuedHeadHolds(sid)) {
+          const requeueTarget = sid === state.activeSessionId
+            ? state
+            : sessionStates[sid];
+          if (requeueTarget && Array.isArray(requeueTarget.queued)) {
+            requeuedInsteadOfDispatch = true;
+            requeueTarget.queued.push(makeQueuedMessage(
+              ++itemIdSeq,
+              text,
+              text,
+              displayText,
+              attachmentsPayload || [],
+              meta || null,
+              restrictTools === true,
+            ));
+            notify();
+          }
+          // No queueable buffer (background session buffer not loaded):
+          // keep the direct dispatch; the backend's in-flight rejection
+          // notice is the existing backstop.
+        }
+      }
+      if (requeuedInsteadOfDispatch) return true;
+      const accepted = await webAutoAdmissionGate(sid, function () {
+        return doSendForAdmitted(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure);
+      });
+      directAccepted = accepted === true;
+      return accepted;
+    } finally {
+      if (callerToken == null) {
+        releaseAdmission(sid, ownerToken);
+        // Round-31 review (zhuowp 5854578975 P2, the direct-entry twin of the
+        // flush chain's release+top-up): when a direct send's terminal event
+        // and its asynchronous flush finish before its own RPC receipt, the
+        // done-triggered flush stands down against the owner this call still
+        // holds, and the release above was the LAST scheduled event — B stays
+        // queued with busy=false until an unrelated trigger. The
+        // release+top-up belongs only to calls initiated by flushQueued, so
+        // resume the missed idle drain here instead: after an accepted (not
+        // requeued/refused) direct handoff, if the turn surface is already
+        // down, drain the head once. The refused path keeps its disclosed
+        // wait-for-trigger semantics (no drain on resolved-false or a gate
+        // throw), and a successor that raced a fresh owner makes flushQueued
+        // stand down on the owner guard, preserving its ownership.
+        if (directAccepted && !isBusyFor(sid)) flushQueued(sid);
+      }
+    }
+  }
+
+  function doSendForAdmitted(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     const turnOwnerBuffer = getBuffer(sid);
     let submittedMessage = null;
@@ -2909,6 +3107,27 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
         return false;
       });
   }
+  // Admission owner (review JensenChen28 5804488461 P2): doSendFor's posture gate leaves busy false
+  // during the get_mode_state round trip, and several async triggers (mode_changed / turn-done /
+  // authoritative retry) can call flushQueued again inside that window — the second call would pass
+  // the busy check, shift off B, and start another lookup; if B's lookup settles first, B is admitted
+  // before A, breaking FIFO order. Hold the admission per sid until this doSendFor settles (accepted
+  // → busy is raised; refused → the head is re-queued); re-entrant flushes inside the window stand down.
+  const flushAdmissionSids = new Map();
+  let flushAdmissionSeq = 0;
+  // Sync check→set claim (no await may sit between the check and the set;
+  // single-threaded JS makes that atomic). Returns the new owner token, or
+  // null when the sid already has an in-flight owner.
+  function claimAdmission(sid) {
+    if (flushAdmissionSids.has(sid)) return null;
+    const admissionOwnerToken = ++flushAdmissionSeq;
+    flushAdmissionSids.set(sid, admissionOwnerToken);
+    return admissionOwnerToken;
+  }
+  // Admission token (review JensenChen28 5811525579 P2): the success arm's top-up drain can synchronously
+  // let a successor C take ownership of the same sid while predecessor B's tail cleanup runs later — a plain
+  // idempotent per-sid delete would erase the successor's ownership too, reopening the window (D,C reordering).
+  // Each admission carries an increasing token; a release only applies while its caller is still the current holder.
   // 本轮跑完(或被停止)后,若该 session 不忙且有排队消息 → 严格按 FIFO
   // 只发送队首一条。剩余消息留给后续 turn 的 done 继续逐条触发，避免把用户
   // 连续输入的多个独立任务合并成一个模型请求。
@@ -2921,6 +3140,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       return;
     }
     if (isBusyFor(sid)) return;            // 已在生成中（新一轮已起）→ 留给那轮的 done 再 flush
+    if (flushAdmissionSids.has(sid)) return; // admission already in flight: wait for it to settle (admitted/re-queued) before flushing
     const q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
     const item = q.shift();
@@ -2929,15 +3149,83 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       ? formatAttachmentDisplayText(item.text, attachments)
       : item.displayText;
     notify();
-    doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true)
+    const admissionToken = claimAdmission(sid);
+    if (admissionToken == null) {
+      // Unreachable today (no await sits between the owner guard above and
+      // this claim), but the head is already shifted here — park it back
+      // instead of losing it.
+      q.unshift(item);
+      return;
+    }
+    doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true, { token: admissionToken })
+      // Release + top-up drain on the accepted path (review JensenChen28 5811400272 P2): terminal
+      // forwarding (chat:done) and the web_access_chat receipt are two independent publication paths, and
+      // the receipt can land after this turn's terminal — at terminal time busy had dropped and the
+      // done-triggered flush was turned back by the in-flight owner; after releasing at the accepted settle,
+      // if busy is still down and the queue non-empty, drain the head once here (in a normal turn busy is
+      // raised, so this does not fire). The refused path does not drain: the head was re-queued by the catch
+      // below, and re-scheduling immediately would bypass the existing "wait for the next trigger" semantics and become an Auto-refusal spin.
+      .then(function (accepted) {
+        releaseAdmission(sid, admissionToken);
+        if (accepted === true && !isBusyFor(sid)) flushQueued(sid);
+      }, function (error) {
+        // No early release here (review asto18089 5812242993, M-3/error window): the error arm runs
+        // before the catch re-queue arm below — releasing here would open an owner-free gap in the microtask
+        // seam where the head is shifted off, busy is not raised, and the re-queue has not landed, and a queued
+        // microtask continuation could slip a direct send past the head through that seam. Release is left to the
+        // chain-tail backstop arm (it runs after the re-queue), so the refused path's release lands after the re-queue.
+        // Rethrow unchanged: the catch re-queue arm below needs this rejection to run.
+        throw error;
+      })
       .catch(function () {
+        // On failure keep the head in place (unshift back to the queue head) — same for an Auto-gate
+        // refusal: the head stays parked for a later turn-end flush retry, with the refusal explained
+        // by the deduped notice doSendFor posted (per-sid dedup, turn-end retries do not spam); the
+        // next flush after the session leaves Auto can send it.
         const retryQueue = sid === state.activeSessionId
           ? state.queued
           : (sessionStates[sid] && sessionStates[sid].queued);
         if (!retryQueue) return;
         retryQueue.unshift(item);
         notify();
+      })
+      // Release as soon as the admission settles (refused/accepted/re-queued, including the catch's own
+      // throw path): busy gates the turn itself, and FIFO resumes after done. The delete is idempotent and
+      // does not conflict with the success arm's early release; the error arm no longer releases (review
+      // 5812242993: release must happen after the re-queue) — this tail arm covers both the refused path and the catch's own throw path.
+      .then(function () { releaseAdmission(sid, admissionToken); },
+            function () { releaseAdmission(sid, admissionToken); });
+  }
+  // Admission release: delete only if this admission's token is still the sid's current holder — the
+  // success arm's top-up drain may already have let a successor take fresh ownership, and the predecessor's
+  // tail cleanup must not overreach and erase it.
+  // Releasing wakes the sid's admission waiters (acceptPlan / editLastTurn queue waiting for the owner to
+  // settle; see waitForAdmissionRelease). Waiters wake in registration order: promise continuations enter
+  // the microtask queue in resolve order, so the first woken (earliest registrant) wins the new owner in its
+  // loop re-check — a reverse traversal would let the latest registrant cut in line (round-19 review minor: the "first click wins admission" comment was overturned by LIFO wakeup).
+  function releaseAdmission(sid, token) {
+    if (flushAdmissionSids.get(sid) !== token) return;
+    flushAdmissionSids.delete(sid);
+    for (let i = 0; i < admissionReleaseWaiters.length; i++) {
+      if (admissionReleaseWaiters[i].sid !== sid) continue;
+      admissionReleaseWaiters[i].resolve();
+      admissionReleaseWaiters.splice(i, 1);
+      i -= 1;
+    }
+  }
+  // Admission waiters (review 5812242993 M-2): acceptPlan / editLastTurn are admission surfaces like the
+  // composer's direct send, but the direct-send queue fence only covers the composer — in the window where
+  // the head was just shifted off by the owner and busy is not yet raised, clicking a plan card / edit-resend
+  // would bypass the head and get admitted first (the same D,A reordering). Both wait in front of the gate for
+  // the in-flight owner to settle: release wakes them, the loop re-check guards against a successor having taken
+  // a new owner, and a hung owner is bounded by the web RPC 180s timeout, so the wait is bounded.
+  const admissionReleaseWaiters = [];
+  async function waitForAdmissionRelease(sid) {
+    while (flushAdmissionSids.has(sid)) {
+      await new Promise(function (resolve) {
+        admissionReleaseWaiters.push({ sid, resolve });
       });
+    }
   }
 
   async function sendMessageToSession(sessionId, text, meta) { return pinvouSharedweb().sendMessageToSession(sessionId, text, meta); }
@@ -2956,10 +3244,34 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // gate, and the aux-chat controller only console.warns send errors while
   // the panel renders the static localized sendFailed copy — the translated
   // text never reached the user on either lane.
-  function auxChatSendDispatch(sid, message) {
-    return IS_WEB
-      ? invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true })
-      : invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
+  async function auxChatSendDispatch(sid, message) {
+    if (!IS_WEB) {
+      return invoke("chat", { message, attachments: [], sessionId: sid, restrictTools: true });
+    }
+    // Round-13 review (M-4): the aux panel is a fourth turn-start surface
+    // and was the only one bypassing the Auto admission gate — an `aux-`
+    // session resolves like an unbound plain session (backend default
+    // Auto), so a panel chat could open a turn in exactly the posture the
+    // gate exists to refuse (the web face has no approval-card surface).
+    // Same gate, same deduped notice; the throw surfaces through the
+    // panel's existing sendFailed copy. The desktop arm keeps direct
+    // dispatch (cards are servable there).
+    // Reservation (review JensenChen28 5816589125 P2, same owner as
+    // doSendFor): the shared helper's busy check is synchronous, so two
+    // rapid panel sends would race their gate lookups — serialized here by
+    // the per-session admission owner (first-typed dispatches first).
+    let ownerToken = null;
+    while (ownerToken == null) {
+      ownerToken = claimAdmission(sid);
+      if (ownerToken == null) await waitForAdmissionRelease(sid);
+    }
+    try {
+      return await webAutoAdmissionGate(sid, function () {
+        return invoke("web_access_chat", { message, attachmentHandles: [], sessionId: sid, restrictTools: true });
+      });
+    } finally {
+      releaseAdmission(sid, ownerToken);
+    }
   }
   const auxChatShared = window.PinvouBridgeShared.create("auxChat", {
     state, invoke, bt,
@@ -2991,26 +3303,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     state.scheduledTaskPendingGuide = snapshot.scheduledTaskPendingGuide;
     state.scheduledTaskCreationSessionId = snapshot.scheduledTaskCreationSessionId;
     state.activeSkill = snapshot.activeSkill;
-  }
-
-  function consumeFirstTurnUiState(text, meta) {
-    const snapshot = {
-      scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
-      scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
-      activeSkill: state.activeSkill,
-    };
-    const requestedPayloadText = meta && meta.pinvouPayloadText
-      ? String(meta.pinvouPayloadText || "").trim()
-      : "";
-    let payloadText = requestedPayloadText || text;
-    let restrictTools = false;
-    if (state.scheduledTaskPendingGuide) {
-      payloadText = state.scheduledTaskPendingGuide + "\n\n" + (requestedPayloadText || text);
-      restrictTools = true;
-      state.scheduledTaskPendingGuide = null;
-    }
-    state.activeSkill = null;
-    return { snapshot, payloadText, restrictTools };
   }
 
   function seedAcceptedFirstTurn(sessionId, buffer, submission) {
@@ -3162,49 +3454,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     }
   }
 
-  function submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta) {
-    const prepared = consumeFirstTurnUiState(text, meta);
-    const clientMessageId = webRequestId("chat");
-    const requestId = "first_turn_" + clientMessageId;
-    const time = timeStr();
-    const optimisticItem = {
-      type: "user",
-      text: displayText,
-      time,
-      messageIndex: 0,
-      deliveryState: "sending",
-      deliveryError: "",
-      clientMessageId,
-    };
-    if (meta && meta.pinvouScene) optimisticItem.pinvouScene = meta.pinvouScene;
-    addChatItem(optimisticItem);
-    const submission = {
-      clientMessageId,
-      requestId,
-      draftEpoch: state.draftEpoch,
-      optimisticItemId: optimisticItem.id,
-      time,
-      displayText,
-      pinvouScene: meta && meta.pinvouScene,
-      readyAttachments: [...readyAttachments],
-      uiSnapshot: prepared.snapshot,
-      voiceOperationId: meta && meta.voiceOperationId,
-      args: {
-        message: prepared.payloadText,
-        attachmentHandles: attachmentsPayload.map(function (attachment) {
-          return attachment && attachment.handle;
-        }).filter(Boolean),
-        restrictTools: !!prepared.restrictTools,
-      },
-      inFlight: false,
-      lastErrorCode: "",
-      lastError: "",
-    };
-    firstTurnSubmissions[clientMessageId] = submission;
-    notify();
-    runFirstTurnSubmission(submission);
-  }
-
   function retryFirstTurn(clientMessageId) {
     const submission = firstTurnSubmissions[String(clientMessageId || "")];
     if (!submission || submission.inFlight || !firstTurnStillVisible(submission)) return;
@@ -3212,20 +3461,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       submission.requestId = "first_turn_" + webRequestId("retry");
     }
     runFirstTurnSubmission(submission);
-  }
-
-  // Return protocol (issue #406; mirrors the tauri bridge's sendMessage):
-  // - true         dispatched: sent or queued for delivery.
-  // Web first turn (no session yet): a first turn already in flight blocks a
-  // duplicate admission; otherwise the first turn dispatches through its own
-  // pipeline. Returns the send verdict for the caller.
-  function maybeSubmitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta) {
-    const existingFirstTurn = state.chatItems.some(function (item) {
-      return item && item.type === "user" && !!item.deliveryState;
-    });
-    if (existingFirstTurn) return false;
-    submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
-    return true;
   }
 
   // Materialization-abort recovery: the scoped restore owns the stripped body
@@ -3277,8 +3512,25 @@ function pinvouSharedwebN247496() {
     const displayText = formatAttachmentDisplayText(text, readyAttachments);
     const attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
 
-    if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {
-      return maybeSubmitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
+    // The first turn no longer takes the web_access_create_session_and_chat fast path (tri-mode review):
+    // the backend resolves an unbound plain session to Auto, so the fast path let the first turn run ungated
+    // in Auto before any posture gate, with no time to apply the lane default staged during the draft. Instead,
+    // materialize first (ensureSession below, which applies the three-mode lane default at materialization), then
+    // send through doSendFor's gated path — one extra relay round trip is acceptable; correctness first. The fast
+    // path's first-turn submission entries (maybeSubmitFirstWebTurn/submitFirstWebTurn/consumeFirstTurnUiState)
+    // were removed with the fast path; runFirstTurnSubmission and its retry surface (retryFirstTurn, still in the
+    // shared chat domain API) remain: they are driven only by records already in firstTurnSubmissions, and that
+    // ledger has no production writer anymore (voice_operation_lifecycle still pins its body by source
+    // slice; removing it belongs to that owner).
+
+    // Draft-materialization in-flight guard (round-9, taking over the old existingFirstTurn race contract):
+    // while the first message's ensureSession is in flight, a concurrent send of the same draft returns false
+    // directly — the old fast path deduped via chatItems deliveryState bubbles, and the new flow's materialization
+    // segment has no UI trace to dedup on yet, so the in-flight flag must be recorded explicitly (draftEpoch
+    // scoped: sends on a new draft are not dragged by an old draft's in-flight materialization).
+    if (!state.activeSessionId && webDraftMaterializeInFlight
+      && webDraftMaterializeEpoch === Number(state.draftEpoch || 0)) {
+      return false;
     }
 
     if (!state.activeSessionId) {
@@ -3288,37 +3540,45 @@ function pinvouSharedwebN247496() {
       // 错误会话（审计 #257）。
       const draftOwner = { sessionId: null, draftEpoch: Number(state.draftEpoch || 0),
         operationId: meta && meta.voiceOperationId, restored: false };
-      const materialized = await ensureSession(draftOwner);
-      // Materialization aborted (the session was switched away during the
-      // await) → restore against the original draft ownership; never write
-      // into whatever session is currently selected. (Mirrors the tauri lane,
-      // round-2 finding F3; ensureSession itself reports the real reason.)
-      if (!materialized || state.activeSessionId !== materialized) {
-        if (materialized) draftOwner.createdSessionId = materialized;
-        // Round-27 asto MAJOR 2(a), mirrors the tauri m2(a) write: the
-        // commit-then-navigate tail COMMITS the created session to a
-        // background buffer (the draft epoch is dead) even though
-        // ensureSession returned null — report it so the send closure's
-        // verdict mapping routes the chips to the created session. The web
-        // lane has no rollback tail (desktop-only), so any null-return with
-        // a createdSessionId binding is this shape.
-        if (!materialized && draftOwner.createdSessionId && meta) {
-          meta.materializedSessionId = draftOwner.createdSessionId;
+      // Round-9 in-flight flag: a concurrent send of the same draft inside the materialization window
+      // is refused at the entry (guard above). The finally covers every exit path — the aborted
+      // materialization's restore early-return must also clear the flag, or later sends on this draft stay false forever.
+      webDraftMaterializeInFlight = true;
+      webDraftMaterializeEpoch = Number(state.draftEpoch || 0);
+      try {
+        const materialized = await ensureSession(draftOwner);
+        // Materialization aborted (the session was switched away during the
+        // await) → restore against the original draft ownership; never write
+        // into whatever session is currently selected. (Mirrors the tauri lane,
+        // round-2 finding F3; ensureSession itself reports the real reason.)
+        if (!materialized || state.activeSessionId !== materialized) {
+          if (materialized) draftOwner.createdSessionId = materialized;
+          // Round-27 asto MAJOR 2(a), mirrors the tauri m2(a) write: the
+          // commit-then-navigate tail COMMITS the created session to a
+          // background buffer (the draft epoch is dead) even though
+          // ensureSession returned null — report it so the send closure's
+          // verdict mapping routes the chips to the created session. The web
+          // lane has no rollback tail (desktop-only), so any null-return with
+          // a createdSessionId binding is this shape.
+          if (!materialized && draftOwner.createdSessionId && meta) {
+            meta.materializedSessionId = draftOwner.createdSessionId;
+          }
+          return restoreAbortedMaterialization(text, draftOwner);
         }
-        return restoreAbortedMaterialization(text, draftOwner);
+        // Round-24 MAJOR (PR #586 review, mirrors the tauri lane): report the
+        // committed materialization through the caller-owned meta out-param —
+        // the composer's scope effect cannot observe a draft→session transition
+        // that lands while ChatView is unmounted, so the send closure records
+        // the ledger mapping itself. Lane boundary (round-27 asto MAJOR 2(b)):
+        // with the retired web_access_create_session_and_chat fast path, every
+        // web first send now goes through this ensureSession leg, so the
+        // materialization report covers the whole normal lane (the unreachable
+        // legacy first-turn slice has no dispatch exit and never settles a
+        // verdict of its own).
+        if (meta) meta.materializedSessionId = materialized;
+      } finally {
+        webDraftMaterializeInFlight = false;
       }
-      // Round-24 MAJOR (PR #586 review, mirrors the tauri lane): report the
-      // committed materialization through the caller-owned meta out-param —
-      // the composer's scope effect cannot observe a draft→session transition
-      // that lands while ChatView is unmounted, so the send closure records
-      // the ledger mapping itself. Lane boundary (round-27 asto MAJOR 2(b)):
-      // this covers the legacy-ensureSession first send; the optimistic
-      // web_access_create_session_and_chat first turn returns true BEFORE the
-      // create runs, so its settle precedes any materialization and no
-      // report can exist for it (async failure recovery is the retry-chip
-      // path, not a settle verdict) — disclosed in the PR's Current
-      // limitations.
-      if (meta) meta.materializedSessionId = materialized;
     }
     const sid = state.activeSessionId;
     // In-bridge submission gate (mirrors the tauri chat bridge): any future
@@ -3377,7 +3637,10 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
 
     // 排队式:当前 session 正在生成 → 这句进队列(不打断当前轮),本轮 chat:done 后自动发。
     // 输入框上方显示待发 chip(可✕撤销)。停止按钮仍只硬打断当前轮。
-    if (isBusyFor(sid) || state.queued.length > 0) {
+    // Queue as well while an admission owner is in flight (flushAdmissionSids): in the window where the
+    // head was just shifted off by the owner and busy is not yet raised, a direct send would bypass the head
+    // with its own posture lookup and, settling first, dispatch after-typed input ahead of the head's admission (the D,A reordering of review JensenChen28 5810381950 P2).
+    if (isBusyFor(sid) || state.queued.length > 0 || flushAdmissionSids.has(sid)) {
       const queuedPreparation = consumeUiTurnState();
       queuePrepared(queuedPreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
@@ -3403,7 +3666,8 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
     if (state.activeSessionId !== sid) {
       return abandonToOwnSession();
     }
-    if (isBusyFor(sid) || state.queued.length > 0) {
+    // During the authoritative hydrate an admission may already be in flight / the queue may have piled up: queue like above, a direct send must not jump ahead.
+    if (isBusyFor(sid) || state.queued.length > 0 || flushAdmissionSids.has(sid)) {
       const racedQueuePreparation = consumeUiTurnState();
       queuePrepared(racedQueuePreparation);
       if (!isBusyFor(sid)) flushQueued(sid);
@@ -3412,14 +3676,31 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
     }
 
     const preparation = consumeUiTurnState();
-    const accepted = await doSendFor(
-      sid,
-      preparation.payloadText,
-      displayText,
-      attachmentsPayload,
-      meta,
-      preparation.restrictTools,
-    );
+    let accepted;
+    try {
+      accepted = await doSendFor(
+        sid,
+        preparation.payloadText,
+        displayText,
+        attachmentsPayload,
+        meta,
+        preparation.restrictTools,
+      );
+    } catch (error) {
+      // The admission gate THROWS (Auto posture, review zhuowp 5785283622
+      // P2-2) — a rejection here is not the resolved-false path below, and
+      // without this catch the consumed pending task guide / active skill
+      // stayed consumed: retrying under a supported mode then sent only the
+      // visible text without the hidden guide and tool restriction the
+      // task-creation protocol needs. Every throw from doSendFor on this
+      // lane is pre-dispatch (doSendForAdmitted folds dispatch failures
+      // into a resolved false), so restoring is safe; the desktop lane has
+      // always restored in its catch. Rethrow keeps the caller's failure
+      // surface (the gate's per-session deduped notice already landed).
+      restoreUiTurnState(preparation.snapshot);
+      notify();
+      throw error;
+    }
     if (accepted) {
       // Do not clear files selected while the admission RPC was in flight.
       state.attachments = state.attachments.filter(function (attachment) {
@@ -3429,10 +3710,12 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
       settleAcceptedVoiceSubmission(meta, sid);
       return true;
     }
-    // Admission rejected (notice already surfaced by doSendFor): nothing was
-    // dispatched, so the cleared composer draft is the caller's to restore
-    // (issue #406 — it used to resolve undefined here and the draft was
-    // silently lost).
+    // Admission rejected: nothing was dispatched, so the cleared composer
+    // draft is the caller's to restore (issue #406 — it used to resolve
+    // undefined here and the draft was silently lost). The Auto send-gate
+    // rejection surfaces its own (per-session deduped) system notice inside
+    // doSendFor; other admission failures keep doSendForAdmitted's existing
+    // turn-error notice handling — no duplicate notice is added here.
     restoreUiTurnState(preparation.snapshot);
     notify();
     return false;
@@ -4062,6 +4345,163 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     }
   });
 
+  // Web host approval surface (tri-mode): the web bridge does not wire approval cards (no decide_approval
+  // wiring; the desktop two lanes are the product face). Approval requests must land as an explicit system
+  // notice — a silent approval wait in an Auto session renders on the web as an endless spinner with no way to
+  // know why (an explicit unsupported-capability signal, not a full approval workflow). One notice per
+  // approval_id (engine replays / remount re-feeds must not spam; the desktop dedups same-id cards, the web
+  // follows the same convention). Guardrail refusals map localized copy by stable key; mode broadcasts go
+  // through the authoritative convergence point (chip follows desktop/remote switches promptly); chat:approval_resolved has no card to converge, so it is not listened to.
+  const webApprovalNoticeIds = new Map();
+  const WEB_APPROVAL_NOTICE_CAP = 512;
+  listen("chat:approval_required", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const approvalId = String(p.approval_id || "");
+    if (!approvalId) return;
+    // Dedup key = session id + approval id (review P2): different sessions legitimately reuse the same
+    // approval id, and a global id-only Set would swallow the second session's waiting notice. Same shape
+    // and bound as the desktop chat-events tombstone (512 entries, oldest evicted — the web does not
+    // listen to chat:approval_resolved, so there is no clearing convergence event).
+    const dedupKey = String(p.session_id || "") + "\u0000" + approvalId;
+    if (webApprovalNoticeIds.has(dedupKey)) return;
+    webApprovalNoticeIds.set(dedupKey, true);
+    if (webApprovalNoticeIds.size > WEB_APPROVAL_NOTICE_CAP) {
+      webApprovalNoticeIds.delete(webApprovalNoticeIds.keys().next().value);
+    }
+    const tool = p.tool_name ? String(p.tool_name) : "";
+    addSystemItem(bt("webApprovalUnsupported") + (tool ? ": " + tool : ""), {
+      webApprovalUnsupported: true,
+      toolName: tool,
+    });
+  }); });
+  // chat:guardrail_denied notices deduped by stable key (round-13 review): a refusal with the same
+  // session, tool, and reason lands once across reconnect replays / remount re-feeds — same shape and
+  // bound as the approval_required dedup above (the backend deny payload carries the stable key; the payload has no approval id).
+  const webGuardrailNoticeKeys = new Map();
+  const WEB_GUARDRAIL_NOTICE_CAP = 512;
+  listen("chat:guardrail_denied", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const reason = String(p.reason || "");
+    const dedupKey = String(p.session_id || "") + "\u0000" + String(p.tool_name || "") + "\u0000" + reason;
+    if (webGuardrailNoticeKeys.has(dedupKey)) return;
+    webGuardrailNoticeKeys.set(dedupKey, true);
+    if (webGuardrailNoticeKeys.size > WEB_GUARDRAIL_NOTICE_CAP) {
+      webGuardrailNoticeKeys.delete(webGuardrailNoticeKeys.keys().next().value);
+    }
+    const reasonText = reason === "session_denied" ? bt("toolGuardrailDeniedSessionDenied")
+      : reason === "plan_mode" ? bt("toolGuardrailDeniedPlan")
+      : reason === "guardrail_ask_off" ? bt("toolGuardrailDeniedAskOff")
+      : reason;
+    addSystemItem(bt("toolGuardrailDenied") + ": " + (p.tool_name ? String(p.tool_name) + " — " : "") + reasonText, {
+      guardrailDenied: true,
+      toolName: String(p.tool_name || ""),
+      reason,
+    });
+  }); });
+  listen("chat:mode_changed", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    if (!p.session_id) return;
+    applyAuthoritativeModeState(String(p.session_id), p);
+    // Leaving Auto unlocks the next block notice (doSendFor's webAutoSendNoticeSids dedups by sid):
+    // after the same session re-enters Auto, the next blocked send may notify once more. A payload
+    // missing mode counts as non-Auto per applyModeFromState's authoritative fallback convention.
+    if (p.mode !== "auto") {
+      webAutoSendNoticeSids.delete(String(p.session_id));
+      // Round-13 review: a gate-refused queue head stays parked until the
+      // next turn-end; escaping Auto is exactly the moment it becomes
+      // sendable, so flush now instead of waiting for an unrelated trigger.
+      // flushQueued self-guards (busy/remote-turn) and re-gates each head.
+      flushQueued(String(p.session_id));
+    }
+    notify();
+  }); });
+
+  // Replay in-flight approvals for newly joined web clients (tri-mode): when a new tab/cursor joins, the
+  // in-flight approval's chat:approval_required was already sent and is not replayed, so the client knows
+  // nothing about the wait (the session looks idle, the stop button is missing, nothing explains the missing
+  // echo). When a session's history first loads on a client, read get_pending_approvals once (inside the
+  // access-policy allowlist, the same catch-up read as the desktop's session switch): approval ids not yet
+  // noticed reuse the webApprovalNoticeIds dedup (same key session\0approvalId) to land the same system
+  // notice — later live events dedup on the same key, no spam; a non-empty list also means a turn is waiting
+  // on an approval — use markRemoteTurn to restore the busy/remoteTurnActive face so the stop button renders.
+  // Do not fake approval cards (the web has no decision face). Read failures stay fail-open (continue
+  // silently; live chat:approval_required remains the main path); an in-flight marker per sid prevents overlapping loads from double-reading concurrently.
+  const webPendingApprovalsInFlight = Object.create(null);
+  // Replay terminal fence (review 5768948485 P2): if the bootstrap catch-up snapshot's promise settles later
+  // than this session's turn terminal (chat:done), the late return would still post the waiting notice and
+  // markRemoteTurn would raise busy — a finished session turns busy again, possibly with no later terminal to
+  // clear it. The desktop sessions.js approvalReplayTerminalSeq is the same-shaped precedent: record the
+  // session's terminal sequence before the snapshot is issued; on return, an advanced sequence invalidates the
+  // whole batch (no notice, no busy; live events remain the main path). Sequence entries are not deleted on
+  // buffer recycle (never reset to 0: a pre-terminal stale snapshot cannot resurrect via 0==0; entries only
+  // grow, and a session rebuilt after recycle keeping its high-water mark only loses one extra late notice —
+  // the fail-safe direction), capped at 512 oldest-evicted with in-flight-snapshot sids skipped — an entry
+  // evicted inside the in-flight window and re-armed to exactly the captured value would let a torn snapshot pass the fence again (the desktop pin, same convention).
+  const webApprovalReplayTerminalSeq = new Map();
+  const WEB_APPROVAL_REPLAY_SEQ_CAP = 512;
+  function bumpWebApprovalReplayTerminalSeq(sid) {
+    if (!sid) return;
+    const key = String(sid);
+    webApprovalReplayTerminalSeq.set(key, (webApprovalReplayTerminalSeq.get(key) || 0) + 1);
+    if (webApprovalReplayTerminalSeq.size > WEB_APPROVAL_REPLAY_SEQ_CAP) {
+      for (const candidate of webApprovalReplayTerminalSeq.keys()) {
+        if (webPendingApprovalsInFlight[candidate]) continue;
+        webApprovalReplayTerminalSeq.delete(candidate);
+        break;
+      }
+    }
+  }
+  function webApprovalReplayTerminalFence(sid) {
+    return webApprovalReplayTerminalSeq.get(String(sid)) || 0;
+  }
+  function webReplayPendingApprovals(sid) {
+    if (!sid || webPendingApprovalsInFlight[sid]) return;
+    webPendingApprovalsInFlight[sid] = true;
+    // The terminal fence is sampled before the snapshot is issued (after the concurrent re-entry marker).
+    const terminalFence = webApprovalReplayTerminalFence(sid);
+    invoke("get_pending_approvals", { sessionId: sid }).then(function (pending) {
+      const entries = Array.isArray(pending) ? pending : [];
+      if (!entries.length) return;
+      // Terminal fence check: a turn terminal landed for this session while the snapshot was in flight
+      // → the engine-side registry was already cleared by the terminal backstop; the late snapshot is a stale-state echo, invalidating the whole batch.
+      if (webApprovalReplayTerminalFence(sid) !== terminalFence) return;
+      runSyncOnSession(sid, function () {
+        entries.forEach(function (entry) {
+          const approvalId = String(entry && entry.approvalId || "");
+          if (!approvalId) return;
+          const dedupKey = String(sid) + "\u0000" + approvalId;
+          if (webApprovalNoticeIds.has(dedupKey)) return;
+          webApprovalNoticeIds.set(dedupKey, true);
+          if (webApprovalNoticeIds.size > WEB_APPROVAL_NOTICE_CAP) {
+            webApprovalNoticeIds.delete(webApprovalNoticeIds.keys().next().value);
+          }
+          const tool = entry && entry.toolName ? String(entry.toolName) : "";
+          addSystemItem(bt("webApprovalUnsupported") + (tool ? ": " + tool : ""), {
+            webApprovalUnsupported: true,
+            toolName: tool,
+          });
+        });
+        // Decoupled from notice dedup: the notice may have landed with an earlier load, but this
+        // client's buffer still needs busy/remoteTurnActive to render the stop button (a non-empty list
+        // ⇒ a turn really is waiting in the backend registry). markRemoteTurn is idempotent for already
+        // active turns and self-guards when localTurnOwned (never overriding local turn authority).
+        markRemoteTurn(sid, getBuffer(sid), false, "web_pending_approvals_replay");
+      });
+      notify();
+    }, function () {
+      // fail-open: a failed catch-up read posts nothing user-visible; live events remain the backstop.
+    }).then(function () {
+      delete webPendingApprovalsInFlight[sid];
+    }, function () {
+      // Round-13 review: the success handler can itself throw (notify()
+      // deliberately rethrows subscriber errors) — without this rejection
+      // twin the cleanup fulfillment handler is skipped and the in-flight
+      // flag leaks permanently, disabling replay (incl. the markRemoteTurn
+      // busy restore) for the session.
+      delete webPendingApprovalsInFlight[sid];
+    });
+  }
+
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     // Relay reconnects and the desktop event bridge may replay the last frame.
@@ -4286,6 +4726,10 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       // allocate a background buffer or persist the active Session into it.
       return;
     }
+    // Approval replay terminal-fence bump (consumed by webReplayPendingApprovals): an admitted turn's
+    // terminal advances this session's terminal sequence — if the catch-up snapshot is still in flight
+    // across it, the sequence mismatch on return invalidates the whole batch; the waiting notice/busy face must not be re-inserted into a finished session.
+    bumpWebApprovalReplayTerminalSeq(sid);
     const doneBuffer = sid ? getBuffer(sid) : null;
     // Match the Tauri client: rejected optimistic edits must hydrate the
     // unchanged authoritative transcript before another local turn starts.
@@ -4818,11 +5262,19 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
   async function toggleSuperPerm() { return pinvouSharedweb().toggleSuperPerm(); }
 
   // ── Mode state ───────────────────────────────────────────────────
-  // 会话级读取：await 挂起期间用户可能已切走，响应返回后必须校验发起时的
-  // sid 仍是 active，否则把结果定向写回 sid 自己的 buffer，不污染当前显示。
-  // 另加请求序号（modeSyncSeq 声明见文件顶部）：同一会话内并发读取乱序返回时，
-  // 旧响应不得覆盖新响应（A→B→A 快速切换时 #1 的慢响应覆盖 #3 的新值，审计；
-  // tauri 版 epoch 对齐）。权威写回一律 bump 该序号，见 applyAuthoritativeModeState。
+  // The single mapping from the backend modeState payload to the frontend shape (reviewer P3): the tri-mode
+  // sub-state ask_on_guardrail must be preserved with the read — the mappers used to drop the key, projecting
+  // the mounted read-only indicator ON-by-default for a missing value while the remote had chosen OFF. A missing
+  // key projects as the backend's default_true (old payloads do not flip the toggle off); the read-failure fallback is likewise on.
+  function mapModeState(ms) {
+    return {
+      // A missing key displays the conservative Auto lane default, never a lying Yolo (round-10 review,
+      // the same convention as the tauri lane's round-8 L7-4).
+      mode: (ms && ms.mode) || "auto",
+      multiAgent: !!(ms && ms.multi_agent),
+      askOnGuardrail: !ms || ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
+    };
+  }
   async function syncModeState() {
     const sid = state.activeSessionId;
     if (!sid) {
@@ -4837,31 +5289,42 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
       if (seq !== modeSyncSeq) return; // 已有更新的读取发起，本响应陈旧
       if (state.activeSessionId !== sid) {
         runSyncOnSession(sid, function () {
-          state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+          state.modeState = mapModeState(ms);
         });
         return;
       }
-      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+      state.modeState = mapModeState(ms);
     } catch {
       if (seq !== modeSyncSeq) return;
       if (state.activeSessionId !== sid) return;
-      state.modeState = { mode: "yolo", multiAgent: false };
+      state.modeState = { mode: "auto", multiAgent: false, askOnGuardrail: true };
     }
   }
 
   // ── lane global defaults (work/code split, aligned with the tauri bridge) ───────
-  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo。
+  // Draft-state (no active session) modeState: take the current lane's global default; bound drafts
+  // fall back to plan, unbound drafts to auto (same convention as the desktop convergence point, never the widest mode).
   function currentDraftModeState() {
-    const lane = state.modeLane === "code" ? "code" : "work";
+    const boundDraft = !!state.draftWorkspacePath;
+    // Bound drafts always show the code lane default (plan fallback, the safe
+    // side, same as the desktop bridge); unbound drafts follow the current
+    // lane (design was merged into work, #428) and fall back to auto, which
+    // is what the backend resolves for a fresh unbound plain session.
+    const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
-    return { mode: d || "yolo", multiAgent: false };
+    return { mode: d || (boundDraft ? "plan" : "auto"), multiAgent: false, askOnGuardrail: true };
   }
+  // The draft-default epoch discipline matches the tauri lane (round-8 L7-2 / round-9; the web side
+  // closed the gap in the round-10 review): in-flight reads must not override a newer write, and both
+  // the write's own response and the draft-display arm land only after verifying the captured epoch.
+  let modeDefaultsEpoch = 0;
   async function refreshModeDefaults() {
+    const epochAtRead = ++modeDefaultsEpoch;
     try {
       const defaults = await invoke("get_mode_defaults");
-      if (defaults) state.modeDefaults = defaults;
+      if (defaults && epochAtRead === modeDefaultsEpoch) state.modeDefaults = defaults;
     } catch { /* 读取失败保留旧值/缺省，不打扰交互 */ }
-    if (!state.activeSessionId) {
+    if (!state.activeSessionId && epochAtRead === modeDefaultsEpoch) {
       state.modeState = currentDraftModeState();
       notify();
     }
@@ -4871,31 +5334,48 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
   // The desktop-side companion queries for bound-workspace sessions have no
   // web backend counterpart (web/remote sessions carry no directory binding):
   // same-named stub methods keep the bridge API symmetric on both sides — the
-  // binding query always returns null (UI shows no binding indicator and the
-  // YOLO confirmation gate never fires), code permission prefs always read
-  // null, and the confirm write is a no-op.
+  // binding query always returns null (UI shows no binding indicator), code
+  // permission prefs always read null, and the confirm write is a no-op.
+  // Consequence (round-4, safe direction): needsYoloConfirmation(null) stays
+  // true forever, so a draft Yolo pick on web pops the confirmation modal on
+  // every click and confirming it is a no-op — the gate prompts repeatedly
+  // rather than ever skipping the risk notice. The confirm never lands a mode
+  // write; the modal is the honest dead end until the web confirm backend
+  // exists.
   async function getSessionWorkspaceBinding() { return null; }
   async function getCodePermissionPrefs() { return null; }
   async function confirmCodeYolo() { return null; }
   // 草稿态 chip 切换：写本 lane 全局默认（不物化会话——物化时由
   // ensureSession 把 lane 默认应用到新会话）。
   async function setDraftMode(target) {
+    // Any draft-default WRITE invalidates in-flight defaults reads, and the
+    // whole post-await body obeys the captured epoch (round-10 review, the
+    // same staleness discipline the tauri lane adopted): an out-of-order
+    // earlier write's response must not overwrite the fresher default or
+    // flip the draft display back to its target.
+    modeDefaultsEpoch += 1;
+    const epochAtWrite = modeDefaultsEpoch;
     const lane = state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
-      if (defaults) state.modeDefaults = defaults;
-      if (!state.activeSessionId) {
-        state.modeState = {
-          mode: target,
-          multiAgent: !!(state.modeState && state.modeState.multiAgent),
-        };
+      if (epochAtWrite === modeDefaultsEpoch) {
+        if (defaults) state.modeDefaults = defaults;
+        if (!state.activeSessionId) {
+          state.modeState = {
+            mode: target,
+            multiAgent: !!(state.modeState && state.modeState.multiAgent),
+            // The draft follows the lane global default; no session-level sub-state: project as the backend's default_true.
+            askOnGuardrail: true,
+          };
+        }
       }
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
   }
 
   // ── 卡片动作辅助 ─────────────────────────────────────────────────
-function patchItemById(id, patch) { return pinvouSharedweb().patchItemById(id, patch); }
+  // patchItemById's local delegation lost its last consumer when planStuckGo moved to targeted writes
+  // (patchItemByIdFor) and was removed (round-15 review D fix wave; the shared implementation still serves other lanes).
   function pushUserEcho(text, persist) {
     const item = { type: "user", text, time: timeStr() };
     let message = null;
@@ -4993,7 +5473,16 @@ function thinkingTool(name) { return pinvouSharedweb().thinkingTool(name); }
 function thinkingIdle() { return pinvouSharedweb().thinkingIdle(); }
 function stopThinking() { return pinvouSharedweb().stopThinking(); }
   function applyModeFromState(st) {
-    state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
+    // The tri-mode authoritative shape converges with the tauri applyAuthoritativeModeState shape:
+    // a missing ask_on_guardrail defaults to on (backend default_true; old payloads do not flip the
+    // toggle off); a missing multi_agent = the payload does not carry the field — keep the current display value, never mis-set false.
+    state.modeState = {
+      mode: st.mode || "auto",
+      multiAgent: st.multi_agent === undefined
+        ? !!(state.modeState && state.modeState.multiAgent)
+        : !!st.multi_agent,
+      askOnGuardrail: st.ask_on_guardrail == null ? true : !!st.ask_on_guardrail,
+    };
   }
 
   // 权威 modeState 写回收敛点（评审 P1，与 tauri 端对齐）：任何「invoke 返回 /
@@ -5002,6 +5491,10 @@ function stopThinking() { return pinvouSharedweb().stopThinking(); }
   // 散点直写漏 bump 一处，就重现「旧读取覆盖权威值」竞态。
   function applyAuthoritativeModeState(sid, st) {
     modeSyncSeq += 1;
+    // Leaving Auto unlocks the next block notice (same convention as the chat:mode_changed event arm):
+    // local authoritative write-backs (set_session_mode / exit_plan_to_yolo / accept_plan etc.) also
+    // count as "leaving Auto" — when the event payload is lost, the local write-back still unlocks, no longer depending on a single event surface.
+    if (!st || st.mode !== "auto") webAutoSendNoticeSids.delete(String(sid));
     runOnSession(sid, function () { applyModeFromState(st); });
   }
 
@@ -5013,6 +5506,70 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
   async function acceptPlan(itemId, planMarkdown, echo, planId) {
     const sid = state.activeSessionId;
     if (!sid) return;
+    // Posture gate (same as doSendFor, the review P2 gap fix): accepting a plan = accept_plan admits a new
+    // execution turn. Although a plan card is born in the Plan mode, once the desktop switches the session into
+    // Auto a leftover clickable card would still start an ungated turn on the web — resolve the posture before
+    // admission, explicitly refuse Auto (sharing the notice-dedup surface; the refusal must be observable); a
+    // get_mode_state failure is fail-open.
+    // requireExecutablePostAccept (zhuowp 5780927743, third point): mode === "auto" only blocks "the current
+    // mode is Auto"; a Plan card entered from Auto has current mode plan and passes the gate check, but accept_plan
+    // restores pre_plan_mode after opening the turn (falling back to Auto when absent) — the card would execute
+    // as Auto while approval cards have no web decision face. So acceptPlan additionally verifies the backend-
+    // projected post_accept_mode (the mirror of the claim-restoration line), explicitly refusing an acceptance
+    // that would fall back to Auto — exactly the existing Auto rejection surface (sharing notice dedup), no turn opened.
+    // While an admission owner is in flight, wait for it to settle first (review 5812242993 M-2): accept_plan is
+    // an admission surface like direct send, and the direct-send queue fence does not cover here — in the window
+    // where the head was shifted off by the owner and busy is not yet raised, clicking the card would get admitted ahead of the head (the same D,A reordering); after settling, if the head was admitted (busy raised), the isBusyFor recheck inside admitted silently yields.
+    // Round-20 (review M2): waiting without claiming still left an
+    // owner-free window — between the wait returning and this action's
+    // busy recheck, any flush trigger could claim the owner and shift the
+    // head, and this action's gate lookup then dispatched concurrently
+    // with the flushed head. Claim the same owner the direct surfaces use
+    // and hold it across the gate: composer sends queue at their fence,
+    // flushQueued stands down at the owner guard, and
+    // parkedQueueHoldsPriority releases before triggering the head's own
+    // dispatch. The finally's trailing flushQueued reopens the drain the
+    // hold paused (a turn terminal landing during the hold would otherwise
+    // leave the queue parked with no pending trigger).
+    while (flushAdmissionSids.has(sid)) {
+      await waitForAdmissionRelease(sid);
+    }
+    const admissionToken = claimAdmission(sid);
+    try {
+      return await webAutoAdmissionGate(sid, function () {
+        return acceptPlanAdmitted(sid, itemId, planMarkdown, echo, planId, admissionToken);
+      }, { requireExecutablePostAccept: true });
+    } finally {
+      releaseAdmission(sid, admissionToken);
+      flushQueued(sid);
+    }
+  }
+  // Parked queue head goes first (review JensenChen28 5816589125 P2): a
+  // gate rejection re-parks the head while this action's waiter is woken
+  // by the owner release, and a fresh click would otherwise start the
+  // action while a still-viable queued send sits parked. Trigger the
+  // head's dispatch and yield — the click is re-decided by the post-head
+  // busy/actionability rechecks on the next invocation, and the head's
+  // own dispatch (turn or deduped notice) keeps the bail observable.
+  // Shared by acceptPlan/editLastTurnAdmitted (complexity budget).
+  function parkedQueueHoldsPriority(sid, heldToken) {
+    // Non-creating queue read (round-20 review minor): getBuffer would
+    // materialize a background buffer as a side effect; read the session
+    // maps directly instead.
+    const parked = sid === state.activeSessionId
+      ? state.queued
+      : ((sessionStates[sid] && sessionStates[sid].queued) || null);
+    if (!parked || parked.length === 0) return false;
+    // Release before yielding (round-20 review M2): the caller now holds
+    // the admission owner across its gate, and flushQueued stands down
+    // while an owner is held — releasing here lets the head's own dispatch
+    // claim a fresh owner. Token identity makes the caller's finally
+    // release a no-op afterwards.
+    if (heldToken != null) releaseAdmission(sid, heldToken);
+    if (!isBusyFor(sid)) flushQueued(sid);
+    return true;
+  }
+  async function acceptPlanAdmitted(sid, itemId, planMarkdown, echo, planId, admissionToken) {
     const planTicket = String(planId || "").trim();
     if (!planTicket) {
       if (itemId) patchItemByIdFor(sid, itemId, { cardState: "frozen", statusLabel: bt("planHistorical"), resolved: true });
@@ -5020,6 +5577,7 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       notify();
       return;
     }
+    if (parkedQueueHoldsPriority(sid, admissionToken)) return;
     const planBuffer = getBuffer(sid);
     if (planBuffer && planBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
@@ -5157,6 +5715,32 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
   }
+  // tri-mode unified mode switch (review P2: the web face's Auto→Yolo escape used to be a dead button —
+  // ChatView's existence guard early-returned, and the Auto session's send gate locked the user into a
+  // mode they cannot send from). The sid capture follows the exitPlanToYolo contract: callers may pin
+  // the adjudicated session explicitly; a no-arg call reads live-active; no sid (draft state / empty
+  // adjudication) stays a pure no-op like the desktop, and composer-controls' fallback
+  // setSessionMode(null, 'auto') must not become a reachable enter-Auto write on the web. Authoritative
+  // write-backs all go through applyAuthoritativeModeState (the shared epoch table); failures notify on
+  // the triggering session, no optimistic rollback (this command has no optimistic flip).
+  // Entering Auto stays desktop-only: the web facade does not export decideApproval (approval cards
+  // have no browser decision face), and admitting entry would pin the session behind the send gate.
+  // (Wording precision, round-8 L6-F1: the `decide_approval` command itself is on the access-policy
+  // allowlist — that is forward-compat registration; multi-agent sessions have a separate server-side denylist. What is blocked is the facade export, not the protocol allowlist.)
+  async function setSessionMode(targetSessionId, mode, askOnGuardrail) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    try {
+      const args = { sessionId: sid, mode };
+      // Optional parameter: carried only when passed explicitly (undefined never hits the wire, keeping the protocol fingerprint minimal).
+      if (askOnGuardrail === true || askOnGuardrail === false) args.askOnGuardrail = askOnGuardrail;
+      const st = await invoke("set_session_mode", args);
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
+    notify();
+  }
   // 灯泡 toggle：plan ↔ yolo
 async function setPlanModeNext() { return pinvouSharedweb().setPlanModeNext(); }
   // plan-stuck / fallback / execution-stuck 卡片动作
@@ -5169,8 +5753,30 @@ async function planStuckReplan(itemId) { return pinvouSharedweb().planStuckRepla
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
-    patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo(sid);
+    // In-flight re-entry guard + mark handled only after the submit (the same discipline as the tauri lane's
+    // interaction.js planStuckGo, the web mirror of the round-14 fix; review round-15 D): the wait window spans
+    // one backend round trip; without a synchronous latch a second click dispatches a duplicate mode switch /
+    // duplicate follow-up turn. The old shape set resolved:true before the await — a rejected exit_plan_to_yolo
+    // left the card action-stripped with the exception unhandled (an unhandled onClick rejection); failure now
+    // restores clickability and surfaces a targeted notice. The exitPlanToYolo wrapper swallows errors internally
+    // (the exitPlanFailed system item), and the commit mark needs the rejection — invoke the same command directly.
+    let stuck = null;
+    runSyncOnSession(sid, function () {
+      stuck = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "plan_stuck" && candidate.id === itemId;
+      }) || null;
+    });
+    if (stuck && stuck.submitting) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
+    try {
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) {
+      patchItemByIdFor(sid, itemId, { submitting: false });
+      addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();
+      return;
+    }
+    patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
@@ -5199,6 +5805,32 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
     newText = (newText || "").trim();
     if (!newText) return;
     const sid = state.activeSessionId;
+    // Posture gate (same as doSendFor, the review P2 gap fix): edit_last_turn admits a new execution rerun
+    // turn (the multi-agent deny-send list also classifies it as execution) and must not start an ungated turn
+    // in Auto — resolve the posture before admission, explicitly refuse Auto (sharing the notice-dedup surface;
+    // the refusal must be observable); a get_mode_state failure is fail-open.
+    // While an admission owner is in flight, wait for it to settle first (review 5812242993 M-2, same as
+    // acceptPlan): the edit rerun is an admission surface too and must not jump ahead of a head already shifted
+    // off by the owner; after settling, if busy is already raised, the recheck inside admitted silently yields.
+    // Round-20 (review M2): same owner hold as acceptPlan — wait, claim,
+    // hold across the gate, release in finally, then reopen the drain.
+    while (flushAdmissionSids.has(sid)) {
+      await waitForAdmissionRelease(sid);
+    }
+    const admissionToken = claimAdmission(sid);
+    try {
+      return await webAutoAdmissionGate(sid, function () {
+        return editLastTurnAdmitted(sid, newText, admissionToken);
+      });
+    } finally {
+      releaseAdmission(sid, admissionToken);
+      flushQueued(sid);
+    }
+  }
+  async function editLastTurnAdmitted(sid, newText, admissionToken) {
+    // Same parked-queue yield as acceptPlanAdmitted (review JensenChen28
+    // 5816589125 P2); releases the held owner before triggering the head.
+    if (parkedQueueHoldsPriority(sid, admissionToken)) return;
     const editBuffer = getBuffer(sid);
     if (editBuffer && editBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
@@ -6602,7 +7234,12 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     acceptPlan,
     discardPlan,
     exitPlanToYolo,
+    // tri-mode unified mode switch: the Auto→Yolo escape is reachable on the web too (review P2);
+    // entering Auto remains blocked by ChatView's web gate (no approval decision face on the web).
+    setSessionMode,
     setPlanModeNext,
+    // tri-mode M1: draft-state three-mode switches uniformly go through the lane global default (called directly by ChatView's draft branch)
+    setDraftMode,
     setModeLane,
     // Web stubs for desktop-only capabilities (bound-workspace sessions / YOLO
     // confirmation gate; API symmetric on both sides)
