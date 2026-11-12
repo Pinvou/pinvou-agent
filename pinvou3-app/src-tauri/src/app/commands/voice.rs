@@ -1,9 +1,9 @@
 use super::prelude::*;
 use crate::features::voice::contract::{
     normalize_voice_postprocess_mode, sanitize_voice_postprocess_output,
-    truncate_voice_postprocess_input, voice_postprocess_input_clipped, voice_postprocess_max_tokens,
-    voice_postprocess_prompt, voice_postprocess_retry_prompt, voice_postprocess_timeout,
-    voice_postprocess_user_content,
+    truncate_voice_postprocess_input, voice_postprocess_input_clipped,
+    voice_postprocess_max_tokens, voice_postprocess_prompt, voice_postprocess_retry_prompt,
+    voice_postprocess_timeout, voice_postprocess_user_content,
 };
 use anyhow::{Context, Result as AnyResult, anyhow};
 use base64::Engine as _;
@@ -832,18 +832,22 @@ pub async fn postprocess_voice_text(
     // EA6a-3): detect clipping on the UNtruncated strings first and carry it
     // into the response's `truncated` flag, so the frontend's
     // postprocess_truncated fallback (bridge/voice.js) refuses the write-back
-    // instead of silently rewriting from a truncated prefix.
+    // instead of silently rewriting from a truncated prefix. Only the edit
+    // lane writes the draft back — outside edit mode the draft is reference
+    // context, so its clipping must not veto a dictation/task result that
+    // lost nothing.
     let input_clipped = voice_postprocess_input_clipped(request.text.trim())
         || request
             .raw_text
             .as_deref()
             .map(|text| voice_postprocess_input_clipped(text.trim()))
             .unwrap_or(false)
-        || request
-            .draft_text
-            .as_deref()
-            .map(|text| voice_postprocess_input_clipped(text.trim()))
-            .unwrap_or(false);
+        || (mode == "edit"
+            && request
+                .draft_text
+                .as_deref()
+                .map(|text| voice_postprocess_input_clipped(text.trim()))
+                .unwrap_or(false));
     if input_clipped {
         log::warn!(
             target: "pinvou.voice",
