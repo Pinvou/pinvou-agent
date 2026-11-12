@@ -295,6 +295,12 @@ mod tests {
 
     #[test]
     fn host_file_listing_accepts_the_default_home_directory() {
+        // list_host_files reads HOME twice per call (the listing path and
+        // host_roots); serialized under ENV_LOCK so a concurrent env-mutating
+        // test (the truncation fixture below) cannot flip HOME between those
+        // two reads. Without this gate the pair failed at default test
+        // parallelism (CI only passes because it pins --test-threads=1).
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["HOME", "USERPROFILE"]);
         let listing = list_host_files(None).expect("default home directory should be browsable");
 
         assert!(!listing.path.is_empty());
@@ -332,6 +338,15 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
+        // The ~5001 fixtures must go even when an assert below panics, or a
+        // red run leaves bulk files in temp_dir() behind it.
+        struct RemoveHomeOnDrop<'a>(&'a std::path::Path);
+        impl Drop for RemoveHomeOnDrop<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(self.0);
+            }
+        }
+        let _cleanup = RemoveHomeOnDrop(&home);
         unsafe { std::env::set_var("HOME", &home) };
         unsafe { std::env::set_var("USERPROFILE", &home) };
         let directory = home.join("bulk");
@@ -366,8 +381,6 @@ mod tests {
             !exact.truncated,
             "exactly MAX_HOST_ENTRIES entries must not report truncation"
         );
-
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
