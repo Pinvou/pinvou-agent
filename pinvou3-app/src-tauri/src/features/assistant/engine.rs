@@ -630,11 +630,14 @@ fn context_update_message_text(message: &Message) -> bool {
 }
 
 /// Count of era-boundary `<context_update>` drift deltas currently in the
-/// transcript. The frontend counts these on the replay path, but the live
-/// delivery never announces them (a drift delta produces no
-/// `chat:user_message`), so the committed-transcript event carries the
-/// authoritative cumulative total and the entry-table counter resyncs
-/// against it after every commit.
+/// transcript. The frontend counts these on the replay path; the live
+/// admission-shaped channel does not announce them in practice (a drift
+/// delta produces no `chat:user_message`), so the committed-transcript
+/// event carries the authoritative cumulative total and the entry-table
+/// counter resyncs against it after every commit — the committed count is
+/// authoritative regardless of what the live channel did (r8 wording: the
+/// frontend keeps a defensive admission-shaped increment for the shape, so
+/// "never" overstated one side of the contract).
 pub(crate) fn count_context_updates(messages: &[Message]) -> usize {
     messages
         .iter()

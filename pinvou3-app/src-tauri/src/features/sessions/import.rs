@@ -199,6 +199,8 @@ impl SessionStore {
             std::collections::HashSet::new();
         let mut total_bytes: u64 = 0;
         let mut member_count: usize = 0;
+        // 先于成员循环构造（r8）：早期 skip 探测命中时在循环内直接收工返回。
+        let mut summary = SessionImportSummary::default();
         for entry in archive
             .entries()
             .context("read archive members (is this a tar.xz session archive?)")?
@@ -250,20 +252,52 @@ impl SessionStore {
                     }
                     let session: SavedSession = serde_json::from_slice(&bytes)
                         .context("parse session.json (expected a SavedSession JSON)")?;
+                    // 早期 skip 探测（r8 minor）：exporter 把 session.json 放在
+                    // 首个成员，id 已存在时（re-import 的常态）到此即可收工——
+                    // 剩余成员的解压与 RAM 缓冲全部省去，不必等整个 2 GiB 上限
+                    // 的归档读完才报 skipped_existing。仅在尚未缓冲任何 artifacts
+                    // 时生效（敌意成员顺序则与现状一致，落到 store 层同一探测）；
+                    // 探测前置条件与 import_one_session_inner 完全同序（id 合法、
+                    // 非 aux/sched、非 code、schema 未超限），保证同一归档在两条
+                    // 路径下分类一致；探测只认「确认存在」（三态里的 Ok(_)），
+                    // NotFound/ stat 故障不在此早退，交 store 层按既有口径处理
+                    // （Unknown 在持锁窗口内如实报错）。
+                    if artifacts.is_empty() {
+                        let early_id = &session.metadata.id;
+                        if super::validators::validate_session_id(early_id).is_ok()
+                            && !super::validators::is_aux_session_id(early_id)
+                            && !super::validators::is_sched_session_id(early_id)
+                            && !self.is_code_session(early_id)
+                            && session.schema_version <= session_schema_version_ceiling()
+                            && std::fs::metadata(
+                                self.sessions_dir().join(format!("{early_id}.json")),
+                            )
+                            .is_ok()
+                        {
+                            summary.skipped_existing.push(early_id.clone());
+                            return Ok(summary);
+                        }
+                    }
                     record = Some(session);
                 }
                 "manifest.json" | "container.json" => {}
                 other => {
-                    // artifacts 目录名大小写必须精确：大小写不敏感文件系统
+                    // artifacts 目录名折叠拼写必须精确：大小写不敏感文件系统
                     // （APFS/NTFS）上 `Artifacts/x` 与 `artifacts/x` 落在同一
                     // 目录，静默走未知成员忽略会让用户以为已归档的文件无声
-                    // 消失——fail-closed 拒绝并指名成员。
+                    // 消失——fail-closed 拒绝并指名成员。比较走与成员去重
+                    // 同一张 `volume_fold_spelling`（r8）：NTFS $UpCase 还折叠
+                    // ı→I、ſ→s，纯 ASCII 比较放得过 `artıfactſ/x`（NTFS 上与
+                    // artifacts/x 同目录），让它掉进未知成员忽略被无声丢弃。
+                    // 折叠相等但拼写不同的成员一律拒绝（跨机方向的过拒与
+                    // `:` 分量拒绝同一 fail-closed 口径）。
                     let first_component = other.split('/').next().unwrap_or("");
-                    if first_component.eq_ignore_ascii_case("artifacts")
+                    if member_folded_spelling(first_component)
+                        == member_folded_spelling("artifacts")
                         && first_component != "artifacts"
                     {
                         bail!(
-                            "archive member {member_name} spells the artifacts directory with a different case; refusing to import"
+                            "archive member {member_name} spells the artifacts directory with a different case or folded spelling; refusing to import"
                         );
                     }
                     if let Some(relative) = other.strip_prefix("artifacts/") {
@@ -297,7 +331,6 @@ impl SessionStore {
         let Some(session) = record else {
             bail!("archive has no session.json member");
         };
-        let mut summary = SessionImportSummary::default();
         import_one_session(self, session, artifacts, &mut summary);
         Ok(summary)
     }
@@ -512,6 +545,20 @@ fn import_artifacts(store: &SessionStore, id: &str, artifacts: &[(String, Vec<u8
             }
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
+            // Reparse-point 收口（r8，与根目录的 canonicalize 包围校验同一
+            // 教条）：上面的 symlink_metadata 在部分工具链上看不到 Windows
+            // junction/reparse 目录（CodeWhale exporter 对根的注释原文）——
+            // create_dir_all 会跟随它把父级解析到 store 之外。落盘前把父级
+            // 经 canonicalize 重读，要求仍落在 canonical artifacts 目录之内，
+            // 否则拒绝（fail-closed，与逐级链接拒绝同一失败面）。
+            if let Ok(parent_resolved) = parent.canonicalize() {
+                let dir_resolved = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+                anyhow::ensure!(
+                    parent_resolved.starts_with(&dir_resolved),
+                    "{} resolves outside the session artifacts dir; refusing to import artifacts through it",
+                    parent.display()
+                );
+            }
         }
         crate::platform::filesystem::atomic_write_private(&target, bytes)
             .with_context(|| format!("write artifact {}", target.display()))?;
@@ -1254,6 +1301,123 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
     }
 
+    /// 非 ASCII 折叠变体对 fail-closed（r8）：`ı/İ`、`ſ/s` 这类 NTFS $UpCase
+    /// 折叠对是 `volume_fold_spelling` 升级存在的理由——ASCII 折叠放得过
+    /// 它们，`ışık.md`/`IŞIK.md` 在 NTFS/APFS 上会静默合并。此测试是折叠
+    /// 升级的专属回归钉：把 `member_folded_spelling` 退回纯 ASCII 折叠时
+    /// 上面的 ASCII 变体对照样合并（该测试仍绿），只有本测试会红。
+    /// ext4 上两类文件名可共存，fixture 可真实构造；折叠卷上跳过（与
+    /// `export_prescan_names_case_variant_artifact_pairs` 同款响度跳过）。
+    #[test]
+    fn import_rejects_non_ascii_case_variant_artifact_members() {
+        let (store, _lock, _env) = isolated_store();
+        let record = write_json_record(&store, "foldedcase1");
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-foldcase-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        let a = dir.join("ışık.md");
+        let b = dir.join("IŞIK.md");
+        let a_canonical = std::fs::canonicalize(&a).ok();
+        let b_canonical = std::fs::canonicalize(&b).ok();
+        if a_canonical.is_some() && a_canonical == b_canonical {
+            eprintln!(
+                "skipped import_rejects_non_ascii_case_variant_artifact_members: the local volume folds the non-ASCII case pair, the fixture cannot exist"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        std::fs::write(&a, b"one").expect("write fixture a");
+        std::fs::write(&b, b"two").expect("write fixture b");
+        let archive = build_archive(&[
+            (
+                "session.json",
+                &std::fs::read(&record).expect("read record"),
+            ),
+            ("artifacts/ışık.md", b"one"),
+            ("artifacts/IŞIK.md", b"two"),
+        ]);
+        let error = store
+            .import_archive(&archive)
+            .expect_err("non-ASCII case-variant artifact members must fail closed");
+        assert!(
+            format!("{error:#}").contains("duplicate or case-variant artifact members"),
+            "{error:#}"
+        );
+        assert!(
+            !store.sessions_dir().join("foldedcase1.json").exists(),
+            "nothing may persist from a rejected archive"
+        );
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// artifacts 目录名的折叠拼写别名（`artıfactſ`——NTFS $UpCase 下与
+    /// `artifacts` 同目录）必须拒绝而非掉进未知成员忽略被无声丢弃（r8）。
+    /// 与成员对的折叠比较同一张 `volume_fold_spelling` 口径。
+    #[test]
+    fn import_rejects_folded_spelling_artifacts_directory_alias() {
+        let (store, _lock, _env) = isolated_store();
+        let record = write_json_record(&store, "foldalias1");
+        let archive = build_archive(&[
+            (
+                "session.json",
+                &std::fs::read(&record).expect("read record"),
+            ),
+            ("artıfactſ/escape.md", b"payload"),
+        ]);
+        let error = store
+            .import_archive(&archive)
+            .expect_err("folded-spelling artifacts directory alias must be refused");
+        assert!(
+            format!("{error:#}").contains("different case or folded spelling"),
+            "{error:#}"
+        );
+        assert!(
+            !store.sessions_dir().join("foldalias1.json").exists(),
+            "nothing may persist from a rejected archive"
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    /// 早期 skip 探测的行为钉（r8）：id 已存在时，session.json（exporter 的
+    /// 首个成员）解析完即可收工——后续成员根本不读。用「record 的
+    /// session.json + 第二个 session.json」做可观察探针：早退生效 →
+    /// skipped_existing（第二个成员从未被读）；早退被拆掉 → 重复成员
+    /// fail-closed 拒绝，本测试转红。
+    #[test]
+    fn import_skips_existing_id_before_reading_later_members() {
+        let (store, _lock, _env) = isolated_store();
+        let record = write_json_record(&store, "earlyskip1");
+        let bytes = std::fs::read(&record).expect("read record");
+        // 先导入一次让 id 真正落在 store 里（skip 语义的前提），随后用
+        // 「同 id session.json + 第二个 session.json」做可观察探针。
+        let first = build_archive(&[("session.json", &bytes)]);
+        let first_summary = store
+            .import_archive(&first)
+            .expect("first import must land the record");
+        assert!(
+            first_summary.imported.iter().any(|id| id == "earlyskip1"),
+            "fixture precondition: {first_summary:?}"
+        );
+        let _ = std::fs::remove_file(&first);
+        let archive = build_archive(&[("session.json", &bytes), ("session.json", &bytes)]);
+        let summary = store
+            .import_archive(&archive)
+            .expect("existing id must skip before later members are read");
+        assert!(
+            summary.skipped_existing.iter().any(|id| id == "earlyskip1"),
+            "the existing id must be reported skipped: {summary:?}"
+        );
+        assert!(
+            summary.imported.is_empty() && summary.failed.is_empty(),
+            "skip must not touch other classifications: {summary:?}"
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
     /// code 会话记录拒绝（fork 同口径，review r2）：id 命中 codex sidecar
     /// 谓词（同机残留）时如实拒绝；跨机导入探测不到 sidecar，历史以普通
     /// 会话身份恢复——既定降级口径（见 import_one_session_inner 的注释）。
@@ -1508,7 +1672,7 @@ mod tests {
             format!("{error:#}").contains("weird:name.txt"),
             "the offending file must be named: {error:#}"
         );
-        // 不带 artifacts 的导出不经过扫描，照常成功。
+        // 不带 artifacts 的精简导出同样过账本扫描（walk 跳过、记录本体照记，r7 minor 5），照常成功。
         let summary_only = std::env::temp_dir().join(format!(
             "pinvou3-export-prescan2-{}-{}.tar.xz",
             std::process::id(),
@@ -1861,6 +2025,28 @@ mod tests {
         std::fs::remove_file(dir.join("small.txt")).expect("cleanup");
         ensure_artifacts_exportable(Some(&dir), 1024).expect("clean pre-scan passes");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 导出账本按档案实际携带的字节记账（r8 M3）：exporter 把 journal 长齐
+    /// 后的内存会话 `to_string_pretty` 成 session.json，而 on-disk 记录可能
+    /// 是无 journal 的裸导入产物（归档 ≈ 3× on-disk 而账本只记 2× → 导出
+    /// 成功、导入必拒）。源码钉：`ensure_artifacts_exportable` 的 record_bytes
+    /// 实参必须来自内存会话的序列化长度，不得回退为 on-disk stat。
+    #[test]
+    fn export_ledger_books_the_archived_serialization_length() {
+        let source = include_str!("store.rs");
+        let at = source
+            .find("ensure_artifacts_exportable(artifacts_dir.as_deref(),")
+            .unwrap_or_else(|| panic!("the export pre-scan call must exist"));
+        let window = &source[at.saturating_sub(900)..at];
+        assert!(
+            window.contains("serde_json::to_string_pretty(&session)"),
+            "the export ledger must book the archived serialization length, not the on-disk stat"
+        );
+        assert!(
+            !window.contains("record_bytes = std::fs::metadata"),
+            "the on-disk stat must not feed the ledger (journal-grown records archive ~2x larger)"
+        );
     }
 
     /// 导出预扫描不再静默跳过不可读目录与非 UTF-8 文件名（exporter 稍后

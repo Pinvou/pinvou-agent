@@ -2437,16 +2437,20 @@ mod fork_command_guard_pins {
     fn fork_command_pins_all_four_safety_gates() {
         let source = include_str!("sessions.rs");
         let block = fork_command_block(source);
-        // 门 1：turn-active 快速拒绝（友好文案先于原子预约）。
+        // 门 1：turn-active 快速拒绝（友好文案先于原子预约）。针是**完整
+        // if 行**（含 `if` 与 `{`）：裸调用名针会被 `if false &&` 禁用突变
+        // 骗绿——禁用后调用文本仍在（r8 M2：r7 波声称 verified red 的正是
+        // 这个突变，但裸针实况是绿的，此轮补上）。
         assert!(
-            block.contains("pool.is_turn_active(&session_id)"),
-            "the fork command must keep the turn-active fast reject"
+            block.contains("if pool.is_turn_active(&session_id) {"),
+            "the fork command must keep the turn-active fast reject (as a live `if` line, not an `if false &&`-disabled call)"
         );
         // 门 2：压缩探针（compaction 不占 turn 预约，turn-active 探针对它
-        // 失明——删除后压缩中分叉会以漂移序号落盘）。
+        // 失明——删除后压缩中分叉会以漂移序号落盘）。同为完整 if 行针
+        // （理由同门 1）。
         assert!(
-            block.contains("pool.is_compaction_in_flight(&session_id)"),
-            "the fork command must keep the compaction-in-flight probe"
+            block.contains("if pool.is_compaction_in_flight(&session_id) {"),
+            "the fork command must keep the compaction-in-flight probe (as a live `if` line, not an `if false &&`-disabled call)"
         );
         // 门 3：turn 预约持有到落盘结束（关闭半轮快照窗口；guard 绑定必须
         // 在 spawn_blocking 闭包内存活）。

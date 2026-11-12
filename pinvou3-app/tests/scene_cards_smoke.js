@@ -677,7 +677,7 @@ async function clickExactButton(page, text) {
   }
   await sleep(100);
   const externalPreviewLinks = await page.evaluate(() => window.__PINVOU_TEST_EXTERNAL_URLS || []);
-  rec('artifact HTML external links are handed by the host to the system-browser command and the iframe does not navigate',
+  rec('artifact HTML external links are handed by the host to the system-browser command via the postMessage relay',
     externalPreviewLinks.length === 1
       && externalPreviewLinks[0] === 'https://example.com/docs',
     JSON.stringify(externalPreviewLinks));

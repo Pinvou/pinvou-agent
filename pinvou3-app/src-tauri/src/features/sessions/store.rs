@@ -490,10 +490,22 @@ impl SessionStore {
         // `include_artifacts=false` 的精简导出同样生效（记录本体在两种
         // 模式下都进档案，r7 minor 5）；记录 stat 失败如实失败（load 刚
         // 成功，紧随其后的 stat 故障是异常态，折叠成 0 会低估账本）。
+        // 账本口径（r8 M3）：按**档案实际携带的字节**记账——exporter 把
+        // journal 长齐后的内存会话 `to_string_pretty` 成 session.json，而
+        // on-disk 记录可能是无 journal 的裸导入产物：归档时 session.json
+        // ≈ 消息+journal、container.json ≈ journal，实际 ≈ 3× on-disk 而
+        // 账本只记 2× on-disk → 「导出成功、导入必拒」。与底座
+        // `session_json`（crate 私有）同为 `to_string_pretty(&SavedSession)`
+        // 确定性序列化，长度逐字节一致；stat 保留为响度检查（stat 故障即
+        // 异常态，如实失败）。标题等无界字符串的字节随序列化长度自动入账。
         let record_path = self.manager.sessions_dir().join(format!("{id}.json"));
-        let record_bytes = std::fs::metadata(&record_path)
-            .with_context(|| format!("stat session record {}", record_path.display()))?
-            .len();
+        std::fs::metadata(&record_path)
+            .with_context(|| format!("stat session record {}", record_path.display()))?;
+        let record_bytes = serde_json::to_string_pretty(&session)
+            .map(|serialized| serialized.len() as u64)
+            .map_err(|error| {
+                anyhow::anyhow!("serialize session record for the export ledger: {error}")
+            })?;
         let artifacts_dir = if include_artifacts {
             deepseek_tui::session_export::session_artifacts_dir(self.manager.sessions_dir(), id)?
         } else {

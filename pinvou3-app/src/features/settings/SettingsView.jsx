@@ -2023,11 +2023,14 @@ function hasStoredCredential(record) {
               artifactsFailedCount,
             ),
             duration: artifactsFailedCount > 0 || (result.failed || []).length > 0 ? 8000 : 3000,
+            // multiline（r8）：长文案在窄窗口上单行 truncate 仍会裁掉补救指引
+            // 的尾部——四计数汇总只在有缺产/失败时才是长文案。
+            multiline: artifactsFailedCount > 0 || (result.failed || []).length > 0,
           });
         } catch (error) {
           const detail = String((error && error.message) || error || t.unknownError);
           console.warn('import session archive failed', error);
-          setSettingsToast({ text: `${t.uiSettings.importSessionsFailed}: ${detail}`, duration: 8000 });
+          setSettingsToast({ text: `${t.uiSettings.importSessionsFailed}: ${detail}`, duration: 8000, multiline: true });
         } finally {
           setImportingSessions(false);
         }

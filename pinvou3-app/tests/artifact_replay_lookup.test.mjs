@@ -294,6 +294,9 @@ for (const runtime of ['tauri', 'web']) {
       !rows.some(row => row.type === 'user' && typeof row.text === 'string' && row.text.includes('<context_update>')),
       'canonical deltas must not render as bubbles on replay',
     );
+    // 本 harness 的 lane 不带 seed-back hook（web 车道形态，web 无此钩子是
+    // 既定口径）——守卫因此合法跳过；hook 本身的在场由 context_update_counter
+    // 的 bridge.js 源码钉看住（r8 核对：删除 hook 文本会使该钉转红）。
     if (typeof h.lane.setRuntimeContextUpdatesPending === 'function') {
       assert.equal(
         buffer.runtimeContextUpdatesPending, 1,

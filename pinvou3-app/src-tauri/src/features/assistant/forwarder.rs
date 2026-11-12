@@ -2286,6 +2286,68 @@ mod transcript_commit_tests {
         assert_eq!(plain_total, Some(0));
     }
 
+    /// Every `emit_transcript_committed` call site must forward the computed
+    /// `context_updates_total` rather than discard it: the frontend's
+    /// authoritative resync trusts that field, and an arm that renames the
+    /// callback parameter to `_...` / emits a literal 0 blinds the resync for
+    /// that arm's commits while every counter unit test stays green (r8:
+    /// mutation-proven unpinned for three of the five arms; the helper-level
+    /// pin above only covers `persist_chat_snapshot` itself). Anchored on the
+    /// per-arm origin string (unique in production source) with a window that
+    /// must carry the parameter name as the emitted argument.
+    fn assert_commit_arm_forwards_total(source: &str, origin: &str, label: &str) {
+        let mut cursor = 0;
+        let mut arms = 0;
+        while let Some(found) = source[cursor..].find(origin) {
+            let start = cursor + found;
+            let window_end = (start + origin.len() + 400).min(source.len());
+            let window = &source[start..window_end];
+            assert!(
+                // 两种合法转发形态：闭包参数直传（`context_updates_total,`）
+                // 或原地重算（`count_context_updates(...)`，reclaimed 臂）。
+                window.contains("context_updates_total,")
+                    || window.contains("count_context_updates("),
+                "{label}: the {origin} commit arm must forward the computed context_updates_total"
+            );
+            assert!(
+                !window.contains("_context_updates_total"),
+                "{label}: the {origin} commit arm must not discard the total into an ignored parameter"
+            );
+            assert!(
+                !window.contains("context_updates_total: 0"),
+                "{label}: the {origin} commit arm must not emit a hardcoded zero total"
+            );
+            arms += 1;
+            cursor = start + origin.len();
+        }
+        assert!(
+            arms > 0,
+            "{label}: expected at least one {origin} commit arm"
+        );
+    }
+
+    #[test]
+    fn all_transcript_commit_arms_forward_the_computed_total() {
+        // Forwarder: slice at the first test module (the anchors below also
+        // appear in this test module's own string literals, and the guard must
+        // bite on the real emit sites only). Engine: searched whole — its
+        // first cfg(test) block sits BEFORE the reclaimed-fallback arm, and the
+        // origin literal is unique to the production emit site.
+        let forwarder = include_str!("forwarder.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or("");
+        let engine = include_str!("engine.rs");
+        // mid-turn engine_state_update arm + both terminal_fallback persist
+        // callbacks + the terminal cache-hit re-emit all carry the same origin
+        // string in forwarder.rs; the reclaimed-fallback arm lives in engine.rs.
+        // Anchors include the emit-literal quote+comma so prose comments that
+        // mention the origin name are not mistaken for arms.
+        assert_commit_arm_forwards_total(forwarder, "\"engine_state_update\",", "forwarder");
+        assert_commit_arm_forwards_total(forwarder, "\"terminal_fallback\",", "forwarder");
+        assert_commit_arm_forwards_total(engine, "\"reclaimed_fallback\",", "engine");
+    }
+
     #[test]
     fn failed_runtime_snapshot_does_not_publish_a_commit() {
         let _env = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

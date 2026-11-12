@@ -18,7 +18,7 @@ const checkpoints = readFileSync(new URL('../src/features/codex/checkpoints.js',
 {
   const at = settings.indexOf("await invokeTauri('import_session_archive')");
   assert.notStrictEqual(at, -1, 'SettingsView must invoke import_session_archive');
-  const body = settings.slice(Math.max(0, at - 400), at + 1400);
+  const body = settings.slice(Math.max(0, at - 400), at + 2200);
   // import_session_archive 不经引擎（纯本地 store + 原生对话框）：只挡并发
   // 重入，bridge 断连不再拦截（r7 minor——此前点击静默无响应）。
   assert.ok(body.includes('if (importingSessions) return;'), 'handler must guard re-entry (the command needs no engine, bridge availability must not silently no-op the click)');
@@ -26,6 +26,13 @@ const checkpoints = readFileSync(new URL('../src/features/codex/checkpoints.js',
   // 长文案（四计数 + 缺产物补救指引 / 失败详情）自带 8 秒时长，默认 pill
   // 的 3 秒会把恢复路径截掉（r7 minor）。
   assert.ok(body.includes('duration: 8000'), 'long import toasts must carry their own duration');
+  // multiline（r8）：80vw 单行 truncate 在窄窗口上仍会裁掉补救指引的尾部，
+  // 长文案（有缺产/失败）必须放开为可换行形态。
+  assert.ok(
+    body.includes('multiline: artifactsFailedCount > 0 || (result.failed || []).length > 0')
+      && body.includes('multiline: true'),
+    'long import toasts must opt into the multiline pill on BOTH the conditional success toast and the failure toast (r8 mutation 核对：只删条件腿本钉转红)',
+  );
   assert.ok(body.includes('t.uiSettings.importSessionsDone(') && body.includes('result.skipped_existing') && body.includes('result.artifacts_failed'), 'success toast must compose imported/skipped/failed counts plus the partial (missing-artifacts) count');
   assert.ok(body.includes('failure.reason'), 'per-record failure reasons must at least reach the console (count-only left users with "1 failed" and no cause)');
   assert.ok(body.includes('t.uiSettings.importSessionsFailed') && body.includes('${detail}'), 'failure must surface the localized failed toast with the backend detail');

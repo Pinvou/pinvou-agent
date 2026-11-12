@@ -1610,14 +1610,16 @@ const App = () => {
       }, [sidebarCodeListActive, taskListFilter]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
-      // settingsToast 接受字符串或 { text, duration }：默认 pill 按 3 秒的
-      // 短文案设计；导入汇总（四计数 + 缺产物补救指引）与导入/导出失败
+      // settingsToast 接受字符串或 { text, duration, multiline }：默认 pill 按
+      // 3 秒的短文案设计；导入汇总（四计数 + 缺产物补救指引）与导入/导出失败
       // 详情是长文案，3 秒 + 单行截断会把恢复路径整个吞掉（r7 minor），
-      // 长文案调用方自带 duration。
+      // 长文案调用方自带 duration；multiline（r8）再放开宽度截断——窄窗口上
+      // 80vw 单行仍会裁掉补救指引的尾部，改为可换行 + 圆角大卡形态。
       const [settingsToast, setSettingsToast] = useState('');
       const settingsToastText = (settingsToast && typeof settingsToast === 'object') ? settingsToast.text : settingsToast;
       const settingsToastDuration = (settingsToast && typeof settingsToast === 'object' && Number.isFinite(settingsToast.duration))
         ? settingsToast.duration : 3000;
+      const settingsToastMultiline = !!(settingsToast && typeof settingsToast === 'object' && settingsToast.multiline);
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
@@ -2881,8 +2883,8 @@ const App = () => {
           const detail = String((error && error.message) || error || t.unknownError);
           console.warn('export session archive failed', error);
           // 拒绝串指名文件并给出改法（长文案）：8 秒 + 默认时长会把恢复路径
-          // 读完之前就收走（r7 minor）。
-          setSettingsToast({ text: `${t.exportSessionFailed}: ${detail}`, duration: 8000 });
+          // 读完之前就收走（r7 minor）；multiline 放开窄窗口的单行截断（r8）。
+          setSettingsToast({ text: `${t.exportSessionFailed}: ${detail}`, duration: 8000, multiline: true });
         } finally {
           setExportingSessionIds(prev => {
             const next = new Set(prev);
@@ -3805,7 +3807,10 @@ const App = () => {
             // Layer sits above modal overlays (picker backdrop is z-[200]) so a
             // failure raised under an open dialog stays visible; a filesystem
             // path in the message must not push the pill past the viewport.
-            <div className="fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] truncate rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
+            // multiline（r8）：长文案（导入四计数 + 补救指引 / 失败详情）在
+            // 窄窗口上单行 truncate 仍会裁掉恢复路径的尾部——换行 + 2xl 圆角
+            // 卡形态，宽度上限不变。
+            <div className={`fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl ${settingsToastMultiline ? 'whitespace-normal break-words rounded-2xl leading-5' : 'truncate rounded-full'}`}>
               {settingsToastText}
             </div>,
             document.body

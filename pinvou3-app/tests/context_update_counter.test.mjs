@@ -196,9 +196,13 @@ listeners.get('chat:transcript_committed')({
 assert.equal(buffers['session-2'].runtimeContextUpdatesPending, 4, '后台会话按自身 sid 重同步');
 assert.equal(buffer1.runtimeContextUpdatesPending, 0, '活动会话计数不受其他会话提交影响');
 
-// ── 场景 8：无总数负载（旧后端）不得改动计数 ──
+// ── 场景 8：无总数负载（旧后端）不得改动计数。种子 pending=5（重放回种
+// 余量的形态）：`context_updates_total != null` 守卫被拆掉时 resync 会以
+// total=0 把 pending 钳到 0——本场景必须转红（r8：此前断言落在 pending
+// 已是 0 的状态上，守卫删除照样全绿，钉不住任何东西）。
+buffer1.runtimeContextUpdatesPending = 5;
 emitCommitted({ transcript_revision: 'rev-6' });
-assert.equal(buffer1.runtimeContextUpdatesPending, 0, '缺 context_updates_total 时保持原值');
+assert.equal(buffer1.runtimeContextUpdatesPending, 5, '缺 context_updates_total 时保持原值');
 
 // ── 纯函数单元：消费合计与钳制 ──
 const fakeItems = [
@@ -213,6 +217,7 @@ PinvouBridgeMessages.resyncRuntimeContextUpdatesPending(resyncBuffer, fakeItems,
 assert.equal(resyncBuffer.runtimeContextUpdatesPending, 0, '总数低于消费时钳制');
 PinvouBridgeMessages.resyncRuntimeContextUpdatesPending(resyncBuffer, fakeItems, 9);
 assert.equal(resyncBuffer.runtimeContextUpdatesPending, 4, 'pending = 总数 − 消费');
+assert.equal(resyncBuffer.runtimeContextUpdatesLastTotal, 9, '重同步必须记下最近权威总数（压缩重播种的数据源）');
 PinvouBridgeMessages.resyncRuntimeContextUpdatesPending(null, fakeItems, 9);
 PinvouBridgeMessages.resyncRuntimeContextUpdatesPending(resyncBuffer, undefined, 2);
 assert.equal(resyncBuffer.runtimeContextUpdatesPending, 2, '空 chatItems 视为零消费');
@@ -231,6 +236,18 @@ healItems[0].runtimeContextUpdatesBefore = 4; // 重新装备 vintage（上文�
 assert.equal(PinvouBridgeMessages.healRuntimeContextUpdatesVintageAfterCompaction(null, healItems, 20, 5), true, '无 buffer 仍清气泡 vintage');
 assert.equal(healItems[0].runtimeContextUpdatesBefore, 0, '无 buffer 腿照样清零气泡');
 
+// ── 基线重置的重播种腿（r8）──
+const reseedBuffer = { runtimeContextUpdatesPending: 0, runtimeContextUpdatesLastTotal: 4 };
+assert.equal(
+  PinvouBridgeMessages.healRuntimeContextUpdatesVintageAfterCompaction(reseedBuffer, [{ type: 'user', runtimeContextUpdatesBefore: 2 }], 20, 5),
+  true,
+);
+assert.equal(reseedBuffer.runtimeContextUpdatesPending, 4, '基线重置必须把待消费重播种为最近一次权威总数');
+assert.equal(reseedBuffer.runtimeContextUpdatesLastTotal, 4, '重播种不得改写 lastTotal');
+const staleBuffer = { runtimeContextUpdatesPending: 9 };
+assert.equal(PinvouBridgeMessages.healRuntimeContextUpdatesVintageAfterCompaction(staleBuffer, [], 20, 5), true);
+assert.equal(staleBuffer.runtimeContextUpdatesPending, 0, '无 lastTotal（旧后端从未上报总数）保持零基线');
+
 // ── 场景 9（r7 M2）：真重写压缩后计数基线重置，序号不再被老消费量钳死 ──
 // 现状：两个气泡携带 Before=1+2=3 的压缩前 vintage。压缩把旧增量从磁盘
 // 转写摘除（before=20 → after=5），若无重置，下一次权威重同步
@@ -238,7 +255,11 @@ assert.equal(healItems[0].runtimeContextUpdatesBefore, 0, '无 buffer 腿照样�
 // 低计——恰是计数器要修的形态）。
 emitCompaction({ phase: 'start' });
 emitCompaction({ phase: 'done', messages_before: 20, messages_after: 5, message: 'compacted 15 messages' });
-assert.equal(buffer1.runtimeContextUpdatesPending, 0, '真重写压缩后待消费计数基线清零');
+// r8 重播种：底座 SessionUpdated（persist，含压缩后总数）先于 done 到达，
+// buffer 的 lastTotal 已是压缩后存量——基线重置把待消费重播种为 lastTotal
+// 而非清零，压缩完成到下一次 persist 的窗口内 fork 序号即时正确。
+assert.equal(buffer1.runtimeContextUpdatesLastTotal, 1, '最近一次权威总数已随重同步记下');
+assert.equal(buffer1.runtimeContextUpdatesPending, 1, '真重写压缩后待消费重播种为压缩后存量（lastTotal）');
 const healedBubbles = state.chatItems.filter(item => item.type === 'user');
 assert.ok(healedBubbles.every(item => !item.runtimeContextUpdatesBefore), '压缩前气泡的老 vintage 必须清零');
 emitCommitted({ transcript_revision: 'rev-7', context_updates_total: 1 });
@@ -274,13 +295,22 @@ assert.ok(
   'transcript_committed 监听器必须接线 context_updates_total 重同步',
 );
 assert.ok(
-  chatEventsJs.includes('healRuntimeContextUpdatesVintageAfterCompaction'),
-  'compaction done 必须接线计数基线重置（r7 M2）',
+  chatEventsJs.includes('if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {'),
+  'tauri 车道的 compaction done 必须以完整 if 行接线计数基线重置（r7 M2 + r8 完整行针）',
 );
 const bridgeMessagesJs = read('src', 'shared', 'bridge-messages.js');
 assert.ok(
   bridgeMessagesJs.includes('healRuntimeContextUpdatesVintageAfterCompaction') && bridgeMessagesJs.includes('Number(after) >= Number(before)'),
   '基线重置必须落在 bridge-messages 的计数器原语旁（r7 M2）',
+);
+assert.ok(
+  bridgeMessagesJs.includes('runtimeContextUpdatesLastTotal'),
+  '压缩重播种的数据源（最近权威总数）必须落在同一计数器原语旁（r8）',
+);
+const webBridgeJs = read('src', 'platform', 'web', 'bridge.js');
+assert.ok(
+  webBridgeJs.includes('if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {'),
+  'web 车道的 compaction done 必须以完整 if 行接线基线重置（r8：完整行针同时咬住删除与 if false && 禁用——裸调用名针会被禁用突变骗绿）',
 );
 assert.ok(
   chatEventsJs.indexOf('remoteAdmissionKeys.includes(admissionKey)') <

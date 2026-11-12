@@ -274,6 +274,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const wrapRef = useRef(null);
       const frameRef = useRef(null);
       const naturalRef = useRef(null); // 当前 html 的内容自然尺寸缓存(在面板参考宽度下测得)
+      const openRelayLastAtRef = useRef(0); // 外链打开中继的限速时钟（见消息监听器）
       const [box, setBox] = useState(null); // { w, h, scale }
       const [ready, setReady] = useState(false);
       const managedZoom = zoomMode !== 'auto-width';
@@ -365,7 +366,17 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
             return;
           }
           const url = artifactPreviewExternalUrlFromMessage(data);
-          if (url && onOpenExternal) onOpenExternal(url);
+          if (url && onOpenExternal) {
+            // 打开中继限速（r8）：外链由后端直接 spawn 系统浏览器打开，没有
+            // 弹窗拦截器兜底——恶意页面可在循环里 postMessage 刷开浏览器。
+            // 帧侧的点击门槛父窗口无法校验（合成 click 与真实 click 不可分），
+            // 限速是父窗口侧唯一可执行的节制：同组件 1.5s 内只放行一次。
+            const now = Date.now();
+            if (now - openRelayLastAtRef.current >= 1500) {
+              openRelayLastAtRef.current = now;
+              onOpenExternal(url);
+            }
+          }
         };
         window.addEventListener('message', handlePreviewMessage);
         return () => window.removeEventListener('message', handlePreviewMessage);

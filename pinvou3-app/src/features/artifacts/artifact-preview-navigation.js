@@ -27,11 +27,18 @@ export function artifactPreviewExternalUrlFromMessage(data) {
   return normalizeUserExternalUrl(data.url);
 }
 
+// 尺寸自报上限（r8）：自报值原样进入帧/stage/wrap 的 CSS 尺寸，一个无上限
+// 的有限正数（1e9 量级）会把预览视图渲染成 ~1e8 px 的容器，渲染器布局
+// 直接挂起。10 万 px 已远超任何合理自然宽度（超长页 scrollWidth 也就数万），
+// 超限上报按无效数据处理（等价于父窗口的「空测量不入缓存」守卫）。
+const MAX_PREVIEW_REPORTED_DIMENSION = 100000;
+
 export function artifactPreviewContentSizeFromMessage(data) {
   if (!data || data.type !== ARTIFACT_PREVIEW_CONTENT_SIZE) return null;
   const w = Number(data.w);
   const h = Number(data.h);
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  if (w > MAX_PREVIEW_REPORTED_DIMENSION || h > MAX_PREVIEW_REPORTED_DIMENSION) return null;
   return { w, h };
 }
 
@@ -66,23 +73,30 @@ export function buildArtifactPreviewDocument(html) {
     // 内容自然尺寸上报：跨源 iframe 无法被父窗口测量（contentDocument 抛错），
     // 由帧内自报。scrollWidth/scrollHeight 为 0 的空测量不上报（等价于旧的
     // 父窗口侧「空测量不入缓存」守卫）；同尺寸去重，避免父子互相触发的死循环。
-    'var lastW=-1,lastH=-1;',
-    'function reportSize(){var de=document.documentElement,bd=document.body;',
+    // 上报统一在 window load 之后（r8）：load 前的 DCL/首轮观察读数是解析
+    // 中间态（异步图片/字体未就绪），被父窗口的首报缓存锁死会得到永久偏小
+    // 的自然尺寸——父窗口的「首报入缓存」语义保留，帧侧只把首报推迟到与旧
+    // onLoad 测量同一时点。
+    'var loaded=false,lastW=-1,lastH=-1;',
+    'function reportSize(){if(!loaded)return;var de=document.documentElement,bd=document.body;',
     'var w=Math.max(de?de.scrollWidth:0,bd?bd.scrollWidth:0);',
     'var h=Math.max(de?de.scrollHeight:0,bd?bd.scrollHeight:0);',
     'if(w>0&&h>0&&(w!==lastW||h!==lastH)){lastW=w;lastH=h;',
     'window.parent.postMessage({type:' + sizeType + ',w:w,h:h},"*");}}',
-    'document.addEventListener("DOMContentLoaded",reportSize);',
-    'window.addEventListener("load",reportSize);',
+    'window.addEventListener("load",function(){loaded=true;reportSize();});',
     'if(typeof ResizeObserver!=="undefined"){try{new ResizeObserver(reportSize).observe(document.documentElement);}catch(noop){}}',
     // ctrl+滚轮转发：父窗口无法再把 wheel 监听挂进帧文档，由帧内转发给父窗口
     // 的受控缩放；非 ctrl 滚动保持帧内默认行为。
     'document.addEventListener("wheel",function(e){if(e.ctrlKey){e.preventDefault();',
     'window.parent.postMessage({type:' + wheelType + ',deltaY:e.deltaY},"*");}},{passive:false,capture:true});',
-    // 父→帧命令通道：按需测量 + design runtime 安装中继。安装即在本帧内 eval——
-    // 该帧允许脚本执行，被安装方与本页脚本权限相同，无提权；失败经 design
-    // runtime 的错误通道回报父窗口（ArtifactsPanel 既有监听器消费）。
-    'window.addEventListener("message",function(e){var d=e&&e.data;if(!d)return;',
+    // 父→帧命令通道：按需测量 + design runtime 安装中继。命令只接受父窗口
+    // 自身发来的消息（r8：同一浏览上下文里兄弟 frame 可枚举 window.parent.frames
+    // 直投本帧——虽然本帧本就运行不可信脚本、安装无提权，但兄弟产物页不该
+    // 能向另一个预览帧注入命令）。安装即在本帧内 eval——该帧允许脚本执行，
+    // 被安装方与本页脚本权限相同，无提权；失败经 design runtime 的错误通道
+    // 回报父窗口（ArtifactsPanel 既有监听器消费）。
+    'window.addEventListener("message",function(e){if(e.source!==window.parent)return;',
+    'var d=e&&e.data;if(!d)return;',
     'if(d.type===' + requestType + '){reportSize();return;}',
     'if(d.type===' + installType + '&&typeof d.script==="string"&&d.script){',
     'try{(0,eval)(d.script);}catch(err){try{',

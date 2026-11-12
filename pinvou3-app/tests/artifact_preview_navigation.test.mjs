@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 
 import {
+  ARTIFACT_PREVIEW_CONTENT_SIZE,
+  ARTIFACT_PREVIEW_FRAME_WHEEL,
+  ARTIFACT_PREVIEW_INSTALL_RUNTIME,
   ARTIFACT_PREVIEW_OPEN_EXTERNAL,
+  ARTIFACT_PREVIEW_REQUEST_SIZE,
+  artifactPreviewContentSizeFromMessage,
   artifactPreviewExternalUrlFromMessage,
+  artifactPreviewFrameWheelFromMessage,
+  artifactPreviewInstallRuntimeMessage,
   buildArtifactPreviewDocument,
   normalizeUserExternalUrl,
 } from '../src/features/artifacts/artifact-preview-navigation.js';
@@ -105,15 +112,6 @@ assert.ok(
 console.log('artifact preview navigation tests passed');
 
 // ── sandbox 收紧后的 postMessage 通道（评审 r2 M2）──
-import {
-  ARTIFACT_PREVIEW_CONTENT_SIZE,
-  ARTIFACT_PREVIEW_FRAME_WHEEL,
-  ARTIFACT_PREVIEW_INSTALL_RUNTIME,
-  ARTIFACT_PREVIEW_REQUEST_SIZE,
-  artifactPreviewContentSizeFromMessage,
-  artifactPreviewFrameWheelFromMessage,
-  artifactPreviewInstallRuntimeMessage,
-} from '../src/features/artifacts/artifact-preview-navigation.js';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,6 +126,16 @@ assert.equal(artifactPreviewContentSizeFromMessage({ type: ARTIFACT_PREVIEW_CONT
 assert.equal(artifactPreviewContentSizeFromMessage({ type: ARTIFACT_PREVIEW_CONTENT_SIZE, w: '9;alert(1)', h: 1 }), null,
   '非数值尺寸必须拒绝');
 assert.equal(artifactPreviewContentSizeFromMessage({ type: 'untrusted-message' }), null);
+assert.equal(
+  artifactPreviewContentSizeFromMessage({ type: ARTIFACT_PREVIEW_CONTENT_SIZE, w: 1e9, h: 1e9 }),
+  null,
+  'unbounded size reports must be rejected (they verbatim-feed CSS dimensions; r8 clamp)',
+);
+assert.deepEqual(
+  artifactPreviewContentSizeFromMessage({ type: ARTIFACT_PREVIEW_CONTENT_SIZE, w: 4096, h: 2160 }),
+  { w: 4096, h: 2160 },
+  'sane reports pass the clamp untouched',
+);
 assert.equal(artifactPreviewFrameWheelFromMessage({ type: ARTIFACT_PREVIEW_FRAME_WHEEL, deltaY: -12 }), -12);
 assert.equal(artifactPreviewFrameWheelFromMessage({ type: ARTIFACT_PREVIEW_FRAME_WHEEL, deltaY: 'x' }), null);
 assert.deepEqual(
@@ -146,6 +154,9 @@ for (const fragment of [
   'new ResizeObserver(reportSize)',
   'lastW=-1,lastH=-1',
   '(0,eval)(d.script)',
+  'if(!loaded)return;',
+  'window.addEventListener("load",function(){loaded=true;reportSize();});',
+  'if(e.source!==window.parent)return;',
 ]) {
   assert.ok(doc.includes(fragment), `bootstrap 必须包含 ${fragment}`);
 }
@@ -179,7 +190,9 @@ assert.ok(!composerShared.includes('contentWindow.document'), '父窗口不得�
 assert.ok(composerShared.includes('artifactPreviewContentSizeFromMessage'), '测量必须来自帧内上报');
 assert.ok(composerShared.includes('artifactPreviewFrameWheelFromMessage'), 'ctrl+滚轮必须来自帧内转发');
 const panel = readFileSync(path.join(appRoot, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
-assert.ok(panel.includes('ARTIFACT_PREVIEW_INSTALL_RUNTIME'), 'design runtime 必须经消息中继安装');
+assert.ok(panel.includes('artifactPreviewInstallRuntimeMessage'), 'design runtime 必须经消息中继安装（共享 payload 构造器）');
+assert.ok(composerShared.includes('now - openRelayLastAtRef.current >= 1500'), '打开中继必须限速（后端 spawn 无弹窗拦截兜底，恶意页面可循环刷开；r8 mutation 核对：删除限速逻辑本钉转红）');
+assert.ok(panel.includes('!designFrameRef.current || event.source !== designFrameRef.current.contentWindow'), 'design 消息来源校验不得为 null 帧豁免（r8）');
 assert.ok(!panel.includes('.eval('), '父窗口不得再向跨源帧 eval 注入');
 
 console.log('artifact_preview_navigation: sandbox-hardening assertions passed');

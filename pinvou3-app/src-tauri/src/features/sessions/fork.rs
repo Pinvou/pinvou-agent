@@ -45,6 +45,13 @@
 //! 注意：persist 落盘后附带保留预算清扫（`persist_then_reconcile`），若
 //! store 超预算，最旧的记录——可能是刚分叉的源会话——会被清扫驱逐；与任何
 //! 新建会话同语义，非 fork 特有，但「从某会话分叉可能清掉它」值得知晓。
+//!
+//! 崩溃窗口披露（r8）：落盘与绑定复刻之间进程死亡会留下「有记录、无
+//! workspace 绑定 sidecar」的分支（引擎按无绑定姿态运行，mode_state 随之
+//! 落到默认）；绑定与祖先 provenance 两次 sidecar 写入之间的死亡则留下
+//! 「有绑定、无 provenance」。两条窗口都没有 boot 期 heal-forward（与
+//! create→bind 的既有窗口同一接受口径）；绑定*失败*（非崩溃）则按
+//! create_session_durable 同款口径回滚删除分支。
 
 use anyhow::Result;
 use chrono::Utc;
