@@ -3092,8 +3092,13 @@
   // 全量快照写的串行链：两个并发 settle（dismiss→再召唤，PR 注释明确背书的
   // 并发）各自 fire-and-forget 全量快照时，Tauri 异步命令并发执行，后完成的
   // 旧快照会盖掉新快照、永久丢 entry——与「各自入账/幂等入账」承诺矛盾
-  // （r5 审 m6）。链式排队后写序=入账序，而共享数组按 settle 到达序追加，
-  // 后一笔快照恒为前一笔超集，末笔必含全部。
+  // （r5 审 m6）。链式排队后写序=入账序（快照在 record/persist 时刻取而非
+  // fire 时刻取：fire 时数组可能已被 hydrate rebind 换成别的 session 的数组，
+  // 会拿 A 的 sid 写 B 的条目）。同一数组内后一笔快照恒为前一笔超集、末笔必
+  // 含全部；已知例外是 rebind 本身：切走再切回时若磁盘读回的数组尚未含在途
+  // save（本地盘 ms 级窗口），rebind 后的新快照会少那一笔——一条 entry 的
+  // 丢失窗口，核账退化成对旧账多核一轮（r8 审 minor 记载；修法=快照移到
+  // fire 时刻，但那会在切 session 后写错 sid，两害相权取记录不改形状）。
   let pinvouSaveChain = Promise.resolve();
   function recordPinvouReview(review, seq) {
     if (!state.activeSessionId || !review) return null;
@@ -3110,7 +3115,9 @@
       .then(function () {
         return invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot });
       })
-      .catch(function () {});
+      .catch(function (e) {
+        console.warn("save_session_pinvou_reviews failed (sid=" + sid + ")", e);
+      });
     return pos; // 供卡片记 reviewPos,裁决时按 pos 定位原 state 写 resolution
   }
 
@@ -3140,7 +3147,9 @@
       .then(function () {
         return invoke("save_session_pinvou_reviews", { sessionId: sid, reviews: snapshot });
       })
-      .catch(function () {});
+      .catch(function (e) {
+        console.warn("save_session_pinvou_reviews failed (sid=" + sid + ")", e);
+      });
     return pinvouSaveChain;
   }
 

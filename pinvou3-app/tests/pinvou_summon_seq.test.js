@@ -40,6 +40,17 @@ function extractSummonBlock(source) {
   return match[0];
 }
 
+// r9 审 m7：restore 路径解守卫（r5 修复）此前零自动化覆盖——删
+// `state.pinvouSummoning = false` 那行全绿。抽取真实 loadWorkingSetFrom
+// 行为级复放：守卫被解、弹窗被关、数组按 buffer rebind。
+function extractRestoreBlock(source) {
+  const match = source.match(
+    /function loadWorkingSetFrom\(buf\) \{[\s\S]*?toolMeta\.value = s\.toolMeta \|\| \{\};\n *\}\n/,
+  );
+  assert.ok(match, 'loadWorkingSetFrom 函数体未找到——抽取正则与源码漂移');
+  return match[0];
+}
+
 function makeDeferredInvoke(log) {
   const pending = [];
   const invoke = (command, payload) => {
@@ -240,17 +251,19 @@ test('stale settle records to the ledger but cannot inject into a newer summon n
   };
   vm.runInNewContext(
     `${extractSaveChainBlock(sharedBaseSource)}\n${extractSummonBlock(sharedBaseSource)}\n` +
-      'this.__summon = summonPinvou;',
+      'this.__summon = summonPinvou;\nthis.__dismiss = dismissPinvouReview;',
     sandbox,
     { filename: 'pinvou-summon-settle-gate.js' },
   );
 
   const first = sandbox.__summon(null, null); // seq 1, in flight
   assert.strictEqual(state.pinvouSummonSeq, 1, 'first summon takes seq 1');
-  // Dismiss contract (dismissPinvouReview): release the guard, close the
-  // modal, no cancel of the in-flight backend request.
-  state.pinvouSummoning = false;
-  state.pinvouModal = null;
+  // Dismiss via the REAL dismissPinvouReview (r9 审 m7：它就在上面抽出的链块
+  // span 里，手摆状态会让 dismiss 本体的漂移对测试不可见)。契约：解守卫、关窗、
+  // 不取消在途后端请求。
+  sandbox.__dismiss();
+  assert.strictEqual(state.pinvouSummoning, false, 'dismiss releases the guard');
+  assert.strictEqual(state.pinvouModal, null, 'dismiss closes the modal');
   const second = sandbox.__summon(null, null); // seq 2
   assert.strictEqual(state.pinvouSummonSeq, 2, 're-summon takes the next seq');
   assert.strictEqual(state.pinvouSummoning, true, 're-summon re-arms the guard');
@@ -306,4 +319,151 @@ test('stale settle records to the ledger but cannot inject into a newer summon n
   assert.strictEqual(log.length, 4, 'fresh settle save queued behind the stale save (chain)');
   pending[3].resolve(null);
   await drain();
+});
+
+// r9 审 m7：catch 分支的序号门此前零覆盖（成功路径有钉、错误路径没有）——
+// 被顶掉的旧 settle 若 reject，其错误不得写进新弹窗、不得解新守卫、也不入账
+// （recordPinvouReview 只在成功路径调用）。
+test('superseded error settle cannot write its error into the newer modal', async () => {
+  const log = [];
+  const { invoke, pending } = makeDeferredInvoke(log);
+  const state = {
+    activeSessionId: 's1',
+    pinvouSummoning: false,
+    pinvouSummonSeq: 0,
+    pinvouModal: null,
+    pinvouReviews: [],
+    messages: [{}, {}, {}],
+  };
+  const sandbox = {
+    invoke,
+    state,
+    notify: () => {},
+    console,
+    bt: (key) => key,
+    addSystemItem: () => {},
+  };
+  vm.runInNewContext(
+    `${extractSaveChainBlock(sharedBaseSource)}\n${extractSummonBlock(sharedBaseSource)}\n` +
+      'this.__summon = summonPinvou;\nthis.__dismiss = dismissPinvouReview;',
+    sandbox,
+    { filename: 'pinvou-summon-error-gate.js' },
+  );
+
+  const first = sandbox.__summon(null, null); // seq 1, in flight
+  sandbox.__dismiss();
+  const second = sandbox.__summon(null, null); // seq 2
+  assert.strictEqual(state.pinvouSummonSeq, 2, 're-summon takes the next seq');
+
+  // Stale settle (seq 1) REJECTS: the catch branch is seq-gated.
+  pending[0].reject(new Error('stale backend blew up'));
+  await drain();
+  await drain();
+  assert.strictEqual(
+    state.pinvouModal && state.pinvouModal.loading && !state.pinvouModal.error,
+    true,
+    'stale error must not write into the newer summon modal (catch branch gate)',
+  );
+  assert.strictEqual(
+    state.pinvouSummoning,
+    true,
+    'stale error finally must not release the newer summon guard',
+  );
+  assert.strictEqual(
+    state.pinvouReviews.length,
+    0,
+    'error settles record nothing to the ledger (recordPinvouReview is success-path only)',
+  );
+
+  // Fresh settle (seq 2) succeeds normally.
+  pending[1].resolve({ verdict: 'pass', issues: [] });
+  await first;
+  await second;
+  await drain();
+  assert.strictEqual(
+    state.pinvouModal && state.pinvouModal.review && state.pinvouModal.review.verdict,
+    'pass',
+    'fresh settle unaffected by the stale error',
+  );
+  assert.strictEqual(
+    state.pinvouSummoning,
+    false,
+    'fresh settle releases its own guard',
+  );
+  pending[2].resolve(null);
+  await drain();
+});
+
+// r9 审 m7：restore 路径解守卫（r5 修复 `state.pinvouSummoning = false`）此前
+// 只有注释守护，删行全绿。行为级复放真实 loadWorkingSetFrom：守卫被解、弹窗被
+// 关、reviews 数组按 buffer rebind（hydrate rebind 语义，同款是 save 链注释
+// 记载的丢失窗口来源）。
+test('session-buffer restore releases the summon guard and closes the modal (r5 fix pin)', async () => {
+  const state = {
+    pinvouSummoning: true,
+    pinvouModal: { loading: true },
+    pinvouReviews: [{ pos: 1, review: {} }],
+    messages: [],
+    chatItems: [],
+    artifacts: [],
+    composerDraft: '',
+    turnTimeline: [],
+    activeTurnTimelineId: null,
+    personaEvents: [],
+    pinvouSceneEvents: [],
+    turnDirtyArtifacts: [],
+    turnPresentedArtifacts: [],
+    busy: true,
+    queued: [],
+    activePersona: null,
+    mountedCollection: null,
+    mountedCollections: [],
+    mountedCollectionsRevision: 0,
+    planSnapshot: null,
+    modeState: null,
+    thinking: null,
+    tokens: null,
+  };
+  const sandbox = {
+    state,
+    restoreSteeredWorkingSet: null,
+    currentStreamText: { value: 'x' },
+    currentStreamId: { value: 1 },
+    pendingAssistantText: { value: 'x' },
+    pendingAssistantBlocks: { value: [{}] },
+    itemIdSeq: { value: 5 },
+    toolMeta: { value: {} },
+  };
+  vm.runInNewContext(
+    `${extractRestoreBlock(sharedBaseSource)}\nthis.__restore = loadWorkingSetFrom;`,
+    sandbox,
+    { filename: 'pinvou-restore-gate.js' },
+  );
+  sandbox.__restore({
+    messages: [],
+    chatItems: [],
+    artifacts: [],
+    pinvouReviews: [{ pos: 9, review: {} }],
+    stream: {},
+  });
+  assert.strictEqual(
+    state.pinvouSummoning,
+    false,
+    'restore must release the summon guard (r5: otherwise 品/悟 in the new session silently swallowed up to 180s)',
+  );
+  assert.strictEqual(
+    state.pinvouModal,
+    null,
+    'restore closes the review modal (session switch)',
+  );
+  assert.strictEqual(
+    state.pinvouReviews.length,
+    1,
+    'restore rebinds reviews to the session buffer array',
+  );
+  assert.strictEqual(
+    state.pinvouReviews[0].pos,
+    9,
+    'rebind takes the buffer array wholesale (hydrate rebind semantics)',
+  );
 });
