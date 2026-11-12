@@ -459,9 +459,26 @@ const REBIND_ACP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// session entrypoint indefinitely. 120s covers legitimate large-history
 /// restores (initialize itself gets 30s); on expiry the error is surfaced
 /// explicitly instead of falling through to the fresh-session path, because
-/// `session/new` rides the same connection and would hang on the same wedged
-/// peer while the pool lock is still held.
+/// the wedged peer would only burn the fresh path's own bound
+/// ([`ACP_SESSION_NEW_TIMEOUT`]) before failing anyway — the siblings ride
+/// the same connection and hold the same pool lock.
 const ACP_SESSION_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Upper bound on one `session/new` request inside the cold spawn. Every
+/// caller (fresh session, load-error fallback) runs while the pool-wide
+/// `sessions` lock is held, so the same wedged-peer hazard the load timeout
+/// closes applies here — an unbounded `session/new` blocked every ACP
+/// session entrypoint indefinitely. 120s parity with the load bound:
+/// legitimate creation is fast; only a wedged peer needs this long to fail.
+const ACP_SESSION_NEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Upper bound on one `session/set_config_option` / `session/set_mode`
+/// request. `restore_config_values` runs up to three rounds of these inside
+/// the spawn's pool-lock window, and the live `set_config_option`/`set_mode`
+/// paths hang on the same wedged peer. 30s matches the `initialize` bound:
+/// these are small requests, and expiry fails the individual restore as a
+/// skipped value (the spawn continues) or the live call as an error.
+const ACP_CONFIG_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Retry hints of at least this many milliseconds are phrased in seconds
 /// instead of raw ms, so long backoffs read as actionable waits.
@@ -5359,7 +5376,9 @@ impl AcpPool {
                 // exited-before-publish arm instead of letting them linger
                 // until the next spawn. No runtime exists in this arm — with
                 // no bridge the settlement is only the cancelled response in
-                // the shared maps, same as the Dead-arm None call.
+                // the shared maps, same as the NoRuntime and Missing arms'
+                // None calls (the Dead arm passes the removed runtime's
+                // bridge instead).
                 self.cancel_runtime_pending_cards(session_id, None).await;
                 diagnostics::write(
                     &operation_id,
@@ -6063,11 +6082,25 @@ async fn new_acp_session(
     workspace: &Path,
     backend: AgentBackend,
 ) -> Result<(String, Option<SessionModeState>, Vec<SessionConfigOption>)> {
-    let response = connection
-        .send_request(NewSessionRequest::new(workspace))
-        .block_task()
-        .await
-        .with_context(|| format!("{} ACP session/new 失败", backend.display_name()))?;
+    // Bounded like session/load (see ACP_SESSION_NEW_TIMEOUT): every caller
+    // runs inside the cold spawn while the pool-wide `sessions` lock is held,
+    // so an unbounded request on a wedged peer would block every ACP session
+    // entrypoint indefinitely.
+    let response = tokio::time::timeout(
+        ACP_SESSION_NEW_TIMEOUT,
+        connection
+            .send_request(NewSessionRequest::new(workspace))
+            .block_task(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "{} ACP session/new 超时（{} 秒无响应）",
+            backend.display_name(),
+            ACP_SESSION_NEW_TIMEOUT.as_secs()
+        )
+    })?
+    .with_context(|| format!("{} ACP session/new 失败", backend.display_name()))?;
     Ok((
         response.session_id.to_string(),
         response.modes,
@@ -6110,15 +6143,27 @@ async fn apply_config_option(
     if !config_option_supports(options, config_id, value_id) {
         bail!("ACP 配置项或取值不存在: {config_id}={value_id}");
     }
-    let response = connection
-        .send_request(SetSessionConfigOptionRequest::new(
-            acp_session_id.to_string(),
-            config_id.to_string(),
-            value_id,
-        ))
-        .block_task()
-        .await
-        .context("ACP session/set_config_option 失败")?;
+    // Bounded (see ACP_CONFIG_REQUEST_TIMEOUT): restore_config_values runs
+    // these inside the spawn's pool-lock window, and the live path hangs on
+    // the same wedged peer.
+    let response = tokio::time::timeout(
+        ACP_CONFIG_REQUEST_TIMEOUT,
+        connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                acp_session_id.to_string(),
+                config_id.to_string(),
+                value_id,
+            ))
+            .block_task(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "ACP session/set_config_option 超时（{} 秒无响应）",
+            ACP_CONFIG_REQUEST_TIMEOUT.as_secs()
+        )
+    })?
+    .context("ACP session/set_config_option 失败")?;
     // ACP 规定响应包含完整的最新配置集。配置项之间可能联动，必须以 Agent
     // 返回值整体替换，不能只在本地手工修改当前字段。
     *options = response.config_options;
@@ -6141,14 +6186,26 @@ async fn set_session_mode(
     if !mode_available() {
         bail!("ACP Agent 未上报会话模式: {mode_id}");
     }
-    connection
-        .send_request(SetSessionModeRequest::new(
-            acp_session_id.to_string(),
-            mode_id.to_string(),
-        ))
-        .block_task()
-        .await
-        .context("ACP session/set_mode 失败")?;
+    // Bounded (see ACP_CONFIG_REQUEST_TIMEOUT): the spawn path reaches this
+    // through apply_saved_mode inside the pool-lock window, and the live
+    // path hangs on the same wedged peer.
+    tokio::time::timeout(
+        ACP_CONFIG_REQUEST_TIMEOUT,
+        connection
+            .send_request(SetSessionModeRequest::new(
+                acp_session_id.to_string(),
+                mode_id.to_string(),
+            ))
+            .block_task(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "ACP session/set_mode 超时（{} 秒无响应）",
+            ACP_CONFIG_REQUEST_TIMEOUT.as_secs()
+        )
+    })?
+    .context("ACP session/set_mode 失败")?;
     write_current_mode(mode_id.to_string());
     Ok(())
 }
