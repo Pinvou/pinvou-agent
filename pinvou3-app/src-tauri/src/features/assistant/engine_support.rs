@@ -52,10 +52,14 @@ fn maybe_send_desktop_notification(
     let notification_state = app
         .try_state::<crate::platform::notifications::NotificationState>()
         .map(|state| state.should_notify(notify_key));
+    // Eval observation runs must stay quiet, and the predicate must be
+    // checked directly: riding `unwrap_or_else` on `notification_state`
+    // would be dead code — the app setup always manages that state, so the
+    // fallback arm is unreachable and observation sessions would bubble
+    // (fresh review 2026-11-12).
     #[cfg(feature = "benchmark-hooks")]
-    let should_notify = notification_state.unwrap_or_else(|| {
-        !crate::features::assistant::timing::eval_observation_enabled(session_id)
-    });
+    let should_notify = !crate::features::assistant::timing::eval_observation_enabled(session_id)
+        && notification_state.unwrap_or(true);
     #[cfg(not(feature = "benchmark-hooks"))]
     let should_notify = notification_state.unwrap_or(true);
     if should_notify {
@@ -90,8 +94,10 @@ pub(super) fn maybe_notify_task_completed(
 /// fires for sessions with a human operator — save a narrow window after
 /// `wait_for_scheduled_terminal`'s external-cancel deadline, where the
 /// unattended guard has already dropped but the engine may not be dead yet
-/// (at most one pref-gated, deduplicated bubble). Eval hosts suppress it the
-/// same way as completion notifications (observation runs must stay quiet).
+/// (at most one pref-gated bubble per distinct input id: the engine emits
+/// once per park, and the dedup bounds only same-id repeats). Eval hosts
+/// suppress it the same way as completion notifications (observation runs
+/// must stay quiet).
 pub(super) fn maybe_notify_input_needed(app: &AppHandle, session_id: &str, input_id: &str) {
     maybe_send_desktop_notification(
         app,
@@ -544,6 +550,27 @@ mod desktop_notification_wiring_pins {
             !completed.contains("needs_input_enabled")
                 && !completed.contains("notify_input_needed"),
             "the completion notification must not carry input wiring",
+        );
+    }
+
+    #[test]
+    fn eval_suppression_checks_the_predicate_directly() {
+        // The app setup always manages `NotificationState` (lib.rs), so an
+        // eval check riding `unwrap_or_else` on that state is unreachable —
+        // observation sessions would pass the gate and bubble. The
+        // predicate must be ANDed in front of the dedup fallback instead
+        // (fresh review 2026-11-12).
+        let gate = pinned_fn_body("fn maybe_send_desktop_notification(");
+        assert!(
+            gate.contains(
+                "!crate::features::assistant::timing::eval_observation_enabled(session_id)\
+                 &&notification_state.unwrap_or(true)",
+            ),
+            "eval suppression must AND the predicate before the dedup fallback",
+        );
+        assert!(
+            !gate.contains("unwrap_or_else"),
+            "the eval check must not ride unwrap_or_else on the always-managed dedup state",
         );
     }
 
