@@ -198,6 +198,10 @@ assert.match(chatViewSource, /\}, \[compactingMap, manualCompact\]\);/, 'start �
 // 无关 notify、被禁按钮点击不产生渲染）也要能在 15 分钟边界恢复按钮。
 assert.match(chatViewSource, /if \(!ctxCompactInFlight\) return;[\s\S]{0,500}setCompactHealTick\(current => current \+ 1\)/, '入口禁用期间必须排兜底到期 tick（自愈不能只靠被动重渲染）');
 assert.match(chatViewSource, /healBoundaryAt = Math\.min\(/, '兜底 tick 必须取桥接标记与手动标记过期边界的较早者');
+// 定时器卫生：清理与钳位必须钉住（此前删掉 clearTimeout 的泄漏突变体全绿）。
+assert.match(chatViewSource, /const healTimer = setTimeout\(/, '兜底必须经可清理的定时器句柄排 tick');
+assert.match(chatViewSource, /return \(\) => clearTimeout\(healTimer\);/, '兜底定时器必须随 effect 清理（在途窗口结束不得残留计时器）');
+assert.match(chatViewSource, /Math\.max\(healDelayMs, 0\)/, '到期延迟必须钳非负（时钟前拨时不得排负延迟 setTimeout）');
 // 在途文案与提示 tip 必须实际挂到按钮上（i18n key 不得沦为死文案）。
 assert.match(chatViewSource, /title=\{ctxCompactInFlight \? t\.compactingNow : t\.compactNowTip\}/, 'compactingNow/compactNowTip 必须实际用于按钮');
 // 可见内容默认是用量数字，动作名必须由 aria-label 提供给读屏（与代码车道
@@ -206,9 +210,12 @@ assert.match(chatViewSource, /aria-label=\{ctxCompactInFlight \? t\.compactingNo
 // 引擎懒启动错误映射：裸错误链不得直接露出（与代码车道 nativeCompactInactive 同款）。
 assert.match(chatViewSource, /raw\.includes\('session_engine_not_running'\) \? t\.uiCodex\.nativeCompactInactive : raw/, '引擎未运行必须映射本地化文案');
 assert.ok(!chatViewSource.includes('compactFailNotice'), '失败文案必须复用 uiCodex.compactFail，不得新开重复 key');
+// 失败反馈的送达必须钉住：flashQueuedNotice 是本特性唯一的错误反馈面，
+// 此前删掉整个调用全测试仍然全绿（映射表达式的 pin 不覆盖投递）。
+assert.match(chatViewSource, /flashQueuedNotice\(sid, \{ text: `\$\{t\.uiCodex\.compactFail\}: \$\{detail\}` \}\);/, '失败必须经 flashQueuedNotice 送达共享队列通知（删除该调用不得静默通过）');
 // UI 挂钩与禁用形状。
 assert.match(chatViewSource, /onClick=\{handleManualCompact\}/, '按钮必须实际接线点击处理器（卸掉 onClick 其余 pin 仍绿）');
-assert.match(chatViewSource, /data-testid="chat-ctx-compact"/, '按钮必须带 testid（smoke 可达）');
+assert.match(chatViewSource, /data-testid="chat-ctx-compact"/, '按钮必须带 testid（供 DOM/e2e 定位，不依赖文本内容）');
 assert.match(chatViewSource, /disabled=\{busy \|\| ctxCompactInFlight\}/, '禁用必须含 busy 与压缩在途');
 
 // ── i18n：每语言恰一份（count-1 per locale），重复 key 不得回流 ──
