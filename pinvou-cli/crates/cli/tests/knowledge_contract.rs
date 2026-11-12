@@ -408,6 +408,86 @@ fn refused_second_add_sources(home: &HomeGuard, run: impl Fn(&[&str])) {
     );
 }
 
+/// r5 review minor: `--offset` pages past the first window exactly like the
+/// GUI's offset pagination — consecutive pages must be disjoint and cover
+/// every document (the store's `d.id` tie-break keeps the page order stable,
+/// which the GUI continuation depends on).
+#[test]
+fn documents_offset_pages_are_disjoint_and_cover_every_document() {
+    let _env_guard = env_lock();
+    let home = temp_home("documents-offset");
+
+    let id = create_collection("paged");
+
+    let docs = home.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    let mut sources = Vec::new();
+    for index in 0..3 {
+        let source = docs.join(format!("note-{index}.txt"));
+        std::fs::write(
+            &source,
+            format!("Offset paging note {index} about embeddings."),
+        )
+        .unwrap();
+        sources.push(source.to_str().unwrap().to_owned());
+    }
+    let source_refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+    let id_string = id.to_string();
+    let mut invocation = vec![
+        "pinvou",
+        "knowledge",
+        "collections",
+        "add-sources",
+        id_string.as_str(),
+    ];
+    invocation.extend(source_refs);
+    let finished = run_json(&invocation);
+    assert_eq!(
+        finished["phase"],
+        serde_json::json!("done"),
+        "add-sources must wait for the import and report its final phase"
+    );
+
+    let page1 = run_json(&[
+        "pinvou",
+        "knowledge",
+        "documents",
+        &id.to_string(),
+        "--limit",
+        "2",
+    ]);
+    let page2 = run_json(&[
+        "pinvou",
+        "knowledge",
+        "documents",
+        &id.to_string(),
+        "--limit",
+        "2",
+        "--offset",
+        "2",
+    ]);
+    let ids = |page: &serde_json::Value| -> Vec<i64> {
+        page["documents"]
+            .as_array()
+            .expect("documents array")
+            .iter()
+            .map(|document| document["id"].as_i64().expect("document id"))
+            .collect()
+    };
+    let first = ids(&page1);
+    let second = ids(&page2);
+    assert_eq!(first.len(), 2, "page 1 honors --limit");
+    assert_eq!(second.len(), 1, "page 2 carries the remainder");
+    assert!(
+        first.iter().all(|id| !second.contains(id)),
+        "pages must be disjoint: {first:?} vs {second:?}"
+    );
+    let mut all = first;
+    all.extend(second);
+    all.sort_unstable();
+    assert_eq!(all.len(), 3, "both pages must cover every document");
+}
+
 // ---- parse-level coverage ----
 
 #[test]
@@ -471,11 +551,15 @@ fn knowledge_parses_every_subcommand() {
         ),
         (
             &["pinvou", "knowledge", "documents", "5"],
-            r#"Knowledge(Documents { collection_id: 5, limit: None })"#.into(),
+            r#"Knowledge(Documents { collection_id: 5, limit: None, offset: 0 })"#.into(),
         ),
         (
             &["pinvou", "knowledge", "documents", "5", "--limit", "10"],
-            r#"Knowledge(Documents { collection_id: 5, limit: Some(10) })"#.into(),
+            r#"Knowledge(Documents { collection_id: 5, limit: Some(10), offset: 0 })"#.into(),
+        ),
+        (
+            &["pinvou", "knowledge", "documents", "5", "--offset", "200"],
+            r#"Knowledge(Documents { collection_id: 5, limit: None, offset: 200 })"#.into(),
         ),
         (
             &["pinvou", "knowledge", "documents", "remove", "9", "--yes"],
@@ -702,6 +786,19 @@ fn knowledge_rejects_invalid_usage_with_exit_code_two() {
         vec!["pinvou", "knowledge", "documents", "5", "--limit"],
         vec!["pinvou", "knowledge", "documents", "5", "--limit", "0"],
         vec!["pinvou", "knowledge", "documents", "5", "--limit", "x"],
+        vec!["pinvou", "knowledge", "documents", "5", "--offset"],
+        vec!["pinvou", "knowledge", "documents", "5", "--offset", "-1"],
+        // usize::MAX parses but cannot be a SQLite i64 OFFSET: upstream it
+        // would wrap negative and silently serve page 0, so it is a usage
+        // error here (same out-of-range stance as the `index failed` lane).
+        vec![
+            "pinvou",
+            "knowledge",
+            "documents",
+            "5",
+            "--offset",
+            "18446744073709551615",
+        ],
         vec!["pinvou", "knowledge", "documents", "remove"],
         vec!["pinvou", "knowledge", "documents", "remove", "9", "--nope"],
         vec!["pinvou", "knowledge", "documents", "remove", "abc", "--yes"],
