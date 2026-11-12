@@ -1507,6 +1507,60 @@ fn sanitize_marker_text_scrubs_home_prefixes() {
     );
 }
 
+/// 规范化拼写钉(round-1 复审 N5):canonicalize() 拼写与普通拼写不同的
+/// 机器上(macOS /var→/private/var、symlink 化的 home),校验器错误里嵌
+/// 的是规范化拼写,规范化臂必须把它折叠掉。用指向临时目录的 symlink 构造
+/// 出「两种拼写必然不同」的环境,使该钉在任何平台都真实咬合。
+#[test]
+fn sanitize_marker_text_scrubs_the_canonicalized_home_spelling() {
+    let _env_lock = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let directory = std::env::temp_dir().join(format!(
+        "pinvou3-sanitize-canonical-{}-{}",
+        std::process::id(),
+        crate::platform::paths::tests::unique_suffix()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        let link = directory.join("linked-home");
+        std::os::unix::fs::symlink(&directory, &link).unwrap();
+        // SAFETY: ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &link) };
+        let canonical = link.canonicalize().unwrap();
+        assert!(
+            canonical != link,
+            "fixture must produce two distinct spellings"
+        );
+        let text = format!(
+            "apply {} {} failed: is a file",
+            link.join("workspaces/w-1").display(),
+            canonical.join("workspaces/w-1").display(),
+        );
+        let scrubbed = sanitize_marker_text(&text);
+        assert!(
+            !scrubbed.contains(&link.display().to_string())
+                && !scrubbed.contains(&canonical.display().to_string()),
+            "both spellings must scrub: {scrubbed}"
+        );
+        assert_eq!(
+            scrubbed.matches("<pinvou3-home>").count(),
+            2,
+            "each spelling folds once: {scrubbed}"
+        );
+        // SAFETY: ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+    }
+    #[cfg(not(unix))]
+    {
+        // No portable symlink construction here: the canonical spelling
+        // coincides with the plain one, which the sibling test covers.
+        let _ = &directory;
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
 /// Write a failure marker for an already-consumed spool file (the caller has
 /// quarantined it): a still-waiting MCP call receives the failure instead of
 /// hanging until its 5s timeout (design C4). The marker also unblocks the
