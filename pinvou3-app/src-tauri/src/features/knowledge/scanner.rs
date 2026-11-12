@@ -153,6 +153,31 @@ fn ext_of(p: &Path) -> Option<String> {
         .map(|s| s.to_lowercase())
 }
 
+/// 从单个路径 stat 出一条记录（watcher 增量用）。用 `symlink_metadata` 不跟随软链，
+/// 与扫描器 `follow_links(false)` 一致；symlink/socket 等返回 None 跳过。
+pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    let ft = md.file_type();
+    if !ft.is_file() && !ft.is_dir() {
+        return None;
+    }
+    let is_dir = ft.is_dir();
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Some(FileRecord {
+        path: path.to_str()?.to_string(),
+        name: path.file_name().and_then(|s| s.to_str())?.to_string(),
+        ext: if is_dir { None } else { ext_of(path) },
+        size: if is_dir { 0 } else { md.len() },
+        mtime,
+        is_dir,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

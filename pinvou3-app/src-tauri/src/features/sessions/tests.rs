@@ -2073,19 +2073,35 @@ fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts(
             scheduled_engine_state(
                 vec![text_message("assistant", "later turn")],
                 ScheduledRunMode::Yolo,
-                ScheduledTokenAccounting::PreservePersisted,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: 100,
+                    engine_total_tokens: 25,
+                },
             ),
         )
         .expect("persist later engine snapshot");
+    reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "same engine next turn")],
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: 100,
+                    engine_total_tokens: 40,
+                },
+            ),
+        )
+        .expect("persist cumulative same-engine snapshot");
 
     assert_eq!(
         reloaded
             .load(&id)
-            .expect("load preserved total")
+            .expect("load accumulated total")
             .metadata
             .total_tokens,
-        100,
-        "engine-state persistence must keep the durable token total"
+        140,
+        "same-engine cumulative usage must not be added twice"
     );
 }
 

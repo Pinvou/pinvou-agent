@@ -14,8 +14,9 @@ use std::sync::OnceLock;
 use serde::Serialize;
 
 /// 各 ingest 子模块需要的系统工具探测结果（启动时缓存一次）。
+/// `pub` 供 `file_ingest` 门面 re-export 给启动探测命令（detect_system_tools）。
 #[derive(Debug, Clone, Copy, Default, Serialize)]
-pub(super) struct SystemTools {
+pub struct SystemTools {
     pub pandoc: bool,
     pub pdftotext: bool,
     /// LibreOffice headless —— 用来转 .doc / .ppt / .xls 等旧 office 格式。
@@ -35,7 +36,7 @@ pub(super) struct SystemTools {
 static SYSTEM_TOOLS: OnceLock<SystemTools> = OnceLock::new();
 
 /// 启动时（或第一次 ingest 时）检测一次系统工具。
-pub(super) fn system_tools() -> SystemTools {
+pub fn system_tools() -> SystemTools {
     *SYSTEM_TOOLS.get_or_init(|| SystemTools {
         pandoc: crate::platform::os::pandoc_tool_exists(),
         pdftotext: crate::platform::os::pdf_tool_exists("pdftotext"),

@@ -1974,7 +1974,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const setRemoteCollectionEnabled = personasFeature.setRemoteCollectionEnabled;
   const removeRemoteCollection = personasFeature.removeRemoteCollection;
   const syncMountedCollection = personasFeature.syncMountedCollection;
-  const updaterFeature = installBridgeFeature("updater", { state, notify, invoke });
+  const updaterFeature = installBridgeFeature("updater", { state, notify, invoke, listen });
   const loadAppVersion = updaterFeature.loadAppVersion;
   const checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   const checkForUpdate = updaterFeature.checkForUpdate;
@@ -2015,6 +2015,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const appendVoiceText = voiceFeature.appendVoiceText;
   const knowledgeModelFeature = installBridgeFeature("knowledge-model", { state, notify, invoke, listen });
   const downloadKbModel = knowledgeModelFeature.downloadKbModel;
+  const cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
   const projectsFeature = installBridgeFeature("projects", { state, notify, invoke, listen });
   const loadProjects = projectsFeature.loadProjects;
@@ -2227,6 +2228,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     knowledge: {
       loadKnowledgeEmbedderAfterFirstFrame,
       downloadKbModel,
+      cancelKbModel,
       mountCollection,
       setCollectionEnabled,
       removeCollection,

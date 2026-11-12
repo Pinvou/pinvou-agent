@@ -186,6 +186,7 @@ command_protocol!(
         "resolve_conversation_attachment",
         "open_conversation_attachment",
         "reveal_conversation_attachment",
+        "detect_system_tools",
         "save_paste_image",
         "paste_clipboard_image",
     ]
@@ -244,6 +245,7 @@ command_protocol!(
         "kb_search",
         "kb_stats",
         "kb_model_status",
+        "kb_model_cancel",
         "kb_model_load_after_first_frame",
         "kb_model_download"
     ]
@@ -503,7 +505,11 @@ command_protocol!(
         "save_search_settings_and_restart"
     ]
 );
-command_protocol!(timeline_protocol, "timeline.rs", ["get_session_timeline"]);
+command_protocol!(
+    timeline_protocol,
+    "timeline.rs",
+    ["get_session_timeline", "get_session_stats"]
+);
 command_protocol!(
     startup_protocol,
     "startup.rs",
@@ -586,7 +592,10 @@ command_protocol!(
         "remote_kb_download_model",
         "remote_kb_devices",
         "remote_kb_update_device",
+        "remote_kb_update_collection",
         "remote_kb_remove_device",
+        "remote_kb_trashed_collections",
+        "remote_kb_trashed_documents",
         "remote_kb_permanently_delete_collection",
         "remote_kb_permanently_delete_document",
         "remote_kb_remove_connection",

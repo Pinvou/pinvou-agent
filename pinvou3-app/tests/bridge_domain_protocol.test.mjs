@@ -359,7 +359,7 @@ const expectedProtocolHashes = {
   // frontend progress consumer; completion still flips updateProgress to 100
   // in downloadAndInstallUpdate). tests/updater_progress_state.test.mjs was
   // removed along with the machinery it pinned.
-  updater: 'e5d3ffaed0548bca3a40ee4c8138a59f9a2add9474477d924d4ecd7b8efd73e6',
+  updater: '30a3762ee45f378d476efec934dc4be50522a02a5b9a97111191496510d4d7d4',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
@@ -426,7 +426,10 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // (set/get super permission) and the artifact reconcile/deliverable-index
 // pair (list_workspace_files, save_session_artifacts, list_deliverable_index)
 // joined the shared base.
-const expectedSharedBaseHash = '958fd067f00e3292857d33a5e80f4d615f2b3e792a6ce431672d3e50196ff219';
+// Recomputed for the kb_model_cancel port: the shared-base knowledge helper
+// gained invoke("kb_model_cancel") (cancelKbModel; facade-only, no UI caller
+// yet — same policy-denied-on-web shape as checkDependencies).
+const expectedSharedBaseHash = 'a64aa69acc3497455d3f1a1979ca29734e98b55280d2762821556b8a48de8641';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

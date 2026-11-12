@@ -17,9 +17,52 @@ function pinvouSharedtauriUpdater() {
   const state = context.state;
   const notify = context.notify;
   const invoke = context.invoke;
+  const listen = context.listen;
+  // Download-progress coalescing: a burst of `update:progress` events must
+  // collapse into ONE React-tree notification per interval (the latest
+  // percentage stays readable on state immediately), completion flushes at
+  // once, and cancel/failure clears any pending publication. The open
+  // backend streams the download and emits no `update:progress` events
+  // today (features/updater/mod.rs), so this listener is the frontend
+  // contract for a backend that resumes emitting them.
+  const UPDATE_PROGRESS_NOTIFY_INTERVAL_MS = 200;
+  /** @type {number | null} */
+  let updateProgressNotifyTimer = null;
+
+  function cancelScheduledUpdateProgressNotification() {
+    if (updateProgressNotifyTimer === null) return;
+    root.clearTimeout(updateProgressNotifyTimer);
+    updateProgressNotifyTimer = null;
+  }
+
+  /** @param {{ total?: unknown, downloaded?: unknown } | null | undefined} payload - Raw update progress event payload. */
+  function publishUpdateProgress(payload) {
+    const total = Number(payload && payload.total) || 0;
+    const downloaded = Number(payload && payload.downloaded) || 0;
+    const nextProgress = total > 0
+      ? Math.max(0, Math.min(100, Math.round((downloaded / total) * 100)))
+      : 0;
+    if (nextProgress === state.updateProgress) return;
+
+    state.updateProgress = nextProgress;
+    if (nextProgress >= 100) {
+      cancelScheduledUpdateProgressNotification();
+      notify();
+      return;
+    }
+    if (updateProgressNotifyTimer !== null) return;
+    updateProgressNotifyTimer = root.setTimeout(function () {
+      updateProgressNotifyTimer = null;
+      notify();
+    }, UPDATE_PROGRESS_NOTIFY_INTERVAL_MS);
+  }
   // ── 应用内升级 ───────────────────────────────────────────────────
   // Chain: check_for_update (compares the server's latest.json) → download_update (streamed download + sha256)
-  // → install_update (pkexec apt) → restart_app. Download progress emits no separate frontend event.
+  // → install_update (pkexec apt) → restart_app.
+  listen("update:progress", function (e) {
+    if (!state.updateDownloading || state.updateCancelling || state.updateProgress >= 100) return;
+    publishUpdateProgress(e.payload || {});
+  });
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
@@ -47,10 +90,12 @@ async function checkForUpdate() { return pinvouSharedtauriUpdater().checkForUpda
     const info = state.updateInfo;
     const shouldRestartAfterInstall = info.platform !== "windows";
     let installed = false;
+    cancelScheduledUpdateProgressNotification();
     state.updateDownloading = true; state.updateCancelling = false;
     state.updateProgress = 0; state.updateError = null; notify();
     try {
       const downloadResult = await invoke("download_update", { info: state.updateInfo });
+      cancelScheduledUpdateProgressNotification();
       state.updateProgress = 100; notify();
       state.updateInfo = info; // 复原：install 用发起时的版本元数据，不随静默检查漂移
       if (downloadResult && typeof downloadResult === "object" && downloadResult.installer_path) {
@@ -65,6 +110,7 @@ async function checkForUpdate() { return pinvouSharedtauriUpdater().checkForUpda
       if (state.updateCancelling) state.updateProgress = 0;
       else state.updateError = String(e);
     }
+    cancelScheduledUpdateProgressNotification();
     state.updateDownloading = false; state.updateCancelling = false; notify();
     if (installed && shouldRestartAfterInstall) restartApp();
     return installed;
@@ -73,6 +119,7 @@ async function checkForUpdate() { return pinvouSharedtauriUpdater().checkForUpda
   // 已进入 install(pkexec/apt)则无效(系统接管,装一半不能停)。
   function cancelUpdate() {
     if (!state.updateDownloading || state.updateCancelling) return;
+    cancelScheduledUpdateProgressNotification();
     state.updateCancelling = true; notify();
     invoke("cancel_download").catch(function () { /* 忽略,下载循环超时也会退 */ });
   }

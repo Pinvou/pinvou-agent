@@ -41,7 +41,9 @@ mod text_decode;
 #[path = "visual_preview.rs"]
 mod visual_preview;
 
-pub use ingest_deps::{DependencyCheckItem, check_dependencies, install_dependencies};
+pub use ingest_deps::{
+    DependencyCheckItem, SystemTools, check_dependencies, install_dependencies, system_tools,
+};
 pub use visual_preview::{
     image_file_to_data_uri, libreoffice_to_inline_html, ocr_image_for_kb, office_to_png_data_uris,
     pdf_to_png_data_uris,

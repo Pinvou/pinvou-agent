@@ -35,9 +35,12 @@ function pinvouSharedtauriKnowledgeModel() {
   // 知识库 embedding 模型按需下载（下载 → 校验 → 解压部署 → 热加载），进度走
   // kb_model:progress 事件。repair=true 时重新下载并验证候选模型，成功后原子替换旧目录。
 async function downloadKbModel(repair) { return pinvouSharedtauriKnowledgeModel().downloadKbModel(repair); }
+// 取消进行中的下载：后端在下一个网络数据块/校验边界生效，无需返回值。
+function cancelKbModel() { return pinvouSharedtauriKnowledgeModel().cancelKbModel(); }
 
     return {
-      downloadKbModel
+      downloadKbModel,
+      cancelKbModel
     };
   };
 })(window);

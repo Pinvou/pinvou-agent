@@ -185,6 +185,14 @@ pub async fn reveal_conversation_attachment(
     crate::platform::os::reveal_target(&path)
 }
 
+/// 返回系统工具检测结果（pandoc / pdftotext 是否可用）。
+/// 前端启动时调一次，缺工具时给一次性 toast 引导 apt install。
+#[tauri::command]
+pub async fn detect_system_tools()
+-> Result<crate::features::files::file_ingest::SystemTools, String> {
+    Ok(crate::features::files::file_ingest::system_tools())
+}
+
 /// 把剪贴板粘贴的图片 bytes 落盘到 `~/.pinvou3/pastes/<ts>-<name>` → 返回路径，
 /// 前端拿到 path 后再 invoke `ingest_file`。
 /// 只用于粘贴图片场景；文件选择器直接拿原 path，HTML5 拖拽走有界分块命令。
