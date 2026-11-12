@@ -154,8 +154,13 @@ for (const settingsI18nSource of settingsI18nSources) {
   );
   assert.match(
     settingsViewSource,
-    /auth_mode: !isLocalPreset && noAuth \? 'none' : null/,
-    'model form save payload must persist the keyless declaration via auth_mode',
+    /auth_mode: !isLocalPreset && !isCodingPlan && noAuth \? 'none' : null/,
+    'model form save payload must persist the keyless declaration via auth_mode (never for managed coding plans)',
+  );
+  assert.match(
+    settingsViewSource,
+    /initial\.provider_kind !== PROVIDER_KIND_CODING_PLAN && initial\.auth_mode === 'none'/,
+    'the keyless toggle state must stay off for managed coding-plan entries',
   );
   assert.match(
     settingsViewSource,
@@ -1403,15 +1408,6 @@ async function modalWidth(page, headingText) {
     const label = [...dialog.querySelectorAll('label,span')].find(node => (node.textContent || '').trim() === 'API 地址');
     return label.closest('div').querySelector('input');
   });
-  const dbgGeom = await page.evaluate(() => {
-    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
-    const row = [...dialog.querySelectorAll('label,span')].find(n => (n.textContent||'').trim()==='API 地址').closest('div');
-    const inputs = [...row.querySelectorAll('input')].map(i => { const r = i.getBoundingClientRect(); return { aria: i.getAttribute('aria-label'), x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), cx: Math.round(r.x + r.width/2), cy: Math.round(r.y + r.height/2) }; });
-    const first = inputs[0];
-    const hit = document.elementFromPoint(first.cx, first.cy);
-    return { inputs, hit: hit ? (hit.getAttribute('aria-label') || hit.tagName) : 'none' };
-  });
-  console.log('DBG-GEOM', JSON.stringify(dbgGeom));
   await tachyonUrlInput.click({ clickCount: 3 });
   await tachyonUrlInput.type('http://127.0.0.1:8001/v1');
   await clickModalExact(page, '高');
@@ -1426,16 +1422,6 @@ async function modalWidth(page, headingText) {
       selected: buttons.filter(node => node.className.includes('bg-[#007AFF]')).map(node => node.textContent.trim()),
     };
   });
-  const dbg = await page.evaluate(() => {
-    const calls = [...window.__SETTINGS_TEST__.calls];
-    const probes = calls.filter(c => c.cmd === 'probe_local_server_kind').map(c => JSON.stringify(c.args));
-    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
-    const row = [...dialog.querySelectorAll('label,span')].find(n => (n.textContent||'').trim()==='API 地址');
-    const inputs = row ? [...row.closest('div').querySelectorAll('input')].map(i => i.value) : 'NO ROW';
-    const saveCalls = calls.filter(c => c.cmd === 'save_model').length;
-    return { probesTail: probes.slice(-4), inputs, saveCalls };
-  });
-  console.log('DBG-TACHYON', JSON.stringify(dbg));
   rec('Tachyon probe keeps legacy high highlighted as effective medium',
     tachyonEffort.count === 4 && !tachyonEffort.hasHigh
       && tachyonEffort.selected.length === 1 && tachyonEffort.selected[0] === '中',

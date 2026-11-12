@@ -412,8 +412,9 @@ function hasStoredCredential(record) {
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
       // 「此端点无需鉴权」(auth_mode="none")：云端模型的显式免鉴权声明。本地预设
-      // 有独立的 localKeyEnabled 开关，不受它控制；coding_plan 是托管入口，不提供。
-      const [noAuth, setNoAuth] = useState(!initial.__new && initial.preset !== 'local_vllm' && initial.auth_mode === 'none');
+      // 有独立的 localKeyEnabled 开关，不受它控制；coding_plan 是托管入口，开关
+      // 不渲染，声明状态也不进入（手改 settings.json 的托管条目由后端归一清空）。
+      const [noAuth, setNoAuth] = useState(!initial.__new && initial.preset !== 'local_vllm' && initial.provider_kind !== PROVIDER_KIND_CODING_PLAN && initial.auth_mode === 'none');
       // 端口输入框（base_url 行内）的行内校验错误；与 localPortError（检测框）独立。
       const [baseUrlPortError, setBaseUrlPortError] = useState(null);
       const [localKeyEnabled, setLocalKeyEnabled] = useState(!initial.__new && initial.preset === 'local_vllm' && !!initial.has_secret);
@@ -538,8 +539,9 @@ function hasStoredCredential(record) {
         setReasoningEffort(reasoningEffortForModelSwitch({ preset: p, model: nextModel, vendor: group.vendor || vendor, base_url: nextBaseUrl }));
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
-        // 显式换模型/入口：免鉴权声明跟着端点走——新端点恢复默认的鉴权规则，
-        // 旧记录的 auth_mode 由保存时的 auth_mode 载荷（此处置 null）覆盖。
+        // 显式换模型/入口：免鉴权声明按记录重置。声明保存在模型条目上，手动
+        // 编辑 URL 不会自动清除（指向新端点是否免鉴权由用户判断；如需收回，
+        // 直接关开关即可），仅在显式切换模型/入口时恢复默认的鉴权规则。
         setNoAuth(false);
         setBaseUrlPortError(null);
         setCustomModel(!!item.custom);
@@ -563,6 +565,9 @@ function hasStoredCredential(record) {
       }
       function handleBaseUrlChange(value) {
         setBaseUrl(value);
+        // URL 已被直接编辑：旧端口校验错误针对的是改写前的地址，随编辑清除，
+        // 避免红色提示挂在已修正的 URL 上（端口框下次输入会重新校验）。
+        setBaseUrlPortError(null);
         renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
       }
       // 解析 http/https URL；其余 scheme（或无法解析）返回 null。端口框只在
@@ -577,15 +582,13 @@ function hasStoredCredential(record) {
         }
       }
       // base_url 的显式端口（无显式端口 = ''，即走 scheme 默认）。
-      function baseUrlPort(value) {
-        return parseHttpUrl(value)?.port || '';
-      }
       // 端口框输入 → 原位改写 base_url 的端口（保留 scheme/host/path）。
-      // 数字过滤后仍超出 1-65535（含 0）时只报错不改 URL，输入框值始终由
-      // base_url 派生，因此非法输入会被弹回上一个合法值。
+      // 校验口径与本地检测端口框一致：空串 = 移除显式端口（走 scheme 默认）；
+      // 非纯数字或超出 1-65535（含 0）只报错不改 URL，输入框值始终由 base_url
+      // 派生，因此非法输入会被弹回上一个合法值。
       function handleBaseUrlPortChange(raw) {
-        const digits = raw.replaceAll(/[^0-9]/g, ''); // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
-        if (digits === '') {
+        const trimmed = raw.trim();
+        if (trimmed === '') {
           const parsed = parseHttpUrl(baseUrl);
           if (!parsed) return;
           parsed.port = '';
@@ -593,14 +596,14 @@ function hasStoredCredential(record) {
           handleBaseUrlChange(parsed.toString().replace(/\/$/, ''));
           return;
         }
-        const port = Number(digits);
+        const port = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
         if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
           setBaseUrlPortError(settingsCopy.localPortInvalid);
           return;
         }
         const parsed = parseHttpUrl(baseUrl);
         if (!parsed) return;
-        parsed.port = digits;
+        parsed.port = String(port);
         setBaseUrlPortError(null);
         handleBaseUrlChange(parsed.toString().replace(/\/$/, ''));
       }
@@ -647,6 +650,9 @@ function hasStoredCredential(record) {
         finally { setImageTesting(false); }
       }
       const isLocalPreset = preset === 'local_vllm';
+      // base_url 的解析结果：端口框的回显值与只读态都由它派生（URL 不可解析
+      // 时端口框只读置空）。
+      const parsedBaseUrl = parseHttpUrl(baseUrl);
       const showProviderModelField = !isLocalPreset && !!activeProvider && Array.isArray(activeProvider.items) && activeProvider.items.length > 0;
       const showModelIdField = isLocalPreset || customModel || showProviderModelField;
       // API 地址字段：本地预设始终可见（端口写在 URL 里）；云端预设全部可见
@@ -719,7 +725,8 @@ function hasStoredCredential(record) {
             endpoint_mode: endpointMode || null,
             // 端点鉴权声明：勾选「此端点无需鉴权」存 "none"（后端归一、直通
             // 底座 auth_mode）；默认档存 null（按 provider/端点规则决定）。
-            auth_mode: !isLocalPreset && noAuth ? 'none' : null,
+            // coding_plan 是托管入口，不接收声明（开关对其不渲染）。
+            auth_mode: !isLocalPreset && !isCodingPlan && noAuth ? 'none' : null,
             // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
             image_capability_override: imageCapability || 'pinvou',
             vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
@@ -1395,7 +1402,7 @@ function hasStoredCredential(record) {
                     {!noAuth && renderApiKeyField({ withBorder: false })}
                     {showNoAuthToggle && renderNoAuthToggleRow(!noAuth)}
                   </div>
-                  {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                  {!noAuth && keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
               )}
               {showConfigFields && (
@@ -1428,16 +1435,18 @@ function hasStoredCredential(record) {
                         失效 → 编辑 URL 打错字，settings_ui_smoke 的 Tachyon
                         档位钉即此），独立行让 URL 行保持与既有表单一致的 DOM
                         契约。URL 不可解析（非 http/https）时只读，值由 baseUrl
-                        派生；清空 = 移除显式端口（走 scheme 默认）。 */}
+                        派生；清空 = 移除显式端口（走 scheme 默认）。显式写默认
+                        端口（https 443 / http 80）会被 WHATWG URL 规范化丢弃
+                        （等价 URL），端口框随之回显为空，属预期行为。 */}
                     {showBaseUrlField && renderInlineField({
                       label: settingsCopy.localPortLabel,
-                      value: parseHttpUrl(baseUrl) ? baseUrlPort(baseUrl) : '',
+                      value: parsedBaseUrl ? (parsedBaseUrl.port || '') : '',
                       onChange: e => handleBaseUrlPortChange(e.target.value),
                       placeholder: settingsCopy.localPortPlaceholder,
                       testId: 'model-form-base-url-port',
                       inputMode: 'numeric',
                       spellCheck: false,
-                      readOnly: !parseHttpUrl(baseUrl),
+                      readOnly: !parsedBaseUrl,
                     })}
                     {baseUrlPortError && <div className="px-4 pb-2 text-[12px] leading-4 text-[#FF3B30]">{baseUrlPortError}</div>}
                     {noAuth && <div className="px-4 pb-3 text-[12px] leading-4 text-[#8A8A8E] dark:text-[#8E8E93]">{settingsCopy.noAuthHint}</div>}
