@@ -1251,6 +1251,9 @@ fn add<S: CredentialStore>(
         provider_kind: metadata.provider_kind,
         vendor: metadata.vendor,
         endpoint_mode: metadata.endpoint_mode,
+        // CLI-created entries use the default auth posture; keyless
+        // declarations (`auth_mode = "none"`) are a settings-page concept.
+        auth_mode: None,
         image_capability_override: Default::default(),
         vision_model_id: metadata.vision_model_id,
         api_key: secret.unwrap_or_default(),
