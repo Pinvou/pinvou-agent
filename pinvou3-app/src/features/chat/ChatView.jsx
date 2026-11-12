@@ -1233,61 +1233,61 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         && Date.now() - activeManualCompact.at < COMPACTING_FLAG_MAX_AGE_MS);
       const ctxCompactInFlight = compactingActive || manualCompactActive;
       useEffect(() => {
-        // The bridge's start marker for this session landed → release the
-        // session's own manual marker immediately (matched by sid; other
-        // sessions' markers are untouched): from here on, disabling and
-        // terminal cleanup are the bridge marker's job alone. The release
-        // must not be conditioned on the session being active — a
-        // compaction finishing in the background (start/done arriving while
-        // another session is active) would never see compactingActive in
-        // this effect, and the leftover marker would keep the button
-        // disabled for another TTL and show a false "compacting" state.
-        // The takeover also requires the marker to be FRESH: an entry whose
-        // terminal event was lost lingers until the session is deleted or
-        // evicted, and with a bare existence check such a stale entry would
-        // instantly release a retry click's brand-new marker — the entry
-        // resets before the new start lands and a fast double click could
-        // enqueue twice.
-        // The takeover matches ANY fresh start for the session, auto or
-        // manual: when a click lands mid-turn through the busy event's
-        // delay, the enqueued manual compaction may overlap a turn-internal
-        // auto compaction whose start releases the manual marker early and
-        // reopens the double-enqueue window. With per-session markers the
-        // stale-entry cost stays bounded to the one sid (review
-        // 5874108926 P2: the previous single slot let a B-side queue erase
-        // A's marker outright); correlating by compact id would change both
-        // byte-pinned listener bodies and re-derive the protocol digests,
-        // which is not worth it (round-6 review M-2, recorded tradeoff).
-        // When start and the terminal event arrive in the same React batch
-        // (a compaction failing instantly, e.g. the provider 401s at once),
-        // the bridge marker never appears in any render and the existence
-        // takeover above can never see it; but start system items are an
-        // append-only projection (itemIds are monotonically increasing; a
-        // prune-only merge removes the start item — that residue falls back
-        // to the TTL), so the post-batch snapshot still contains it —
-        // releasing on "a start item newer than the click snapshot" keeps
-        // an instant failure from pinning the button for a full TTL
-        // (round-6 review M-1).
-        const entry = activeSessionId ? manualCompactBySid[activeSessionId] : undefined;
-        const takeoverFlagAt = entry && compactingMap ? compactingMap[activeSessionId] : 0;
-        const flagTookOver = !!(takeoverFlagAt && Date.now() - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS);
-        let itemTookOver = false;
-        if (!flagTookOver && entry) {
-          for (let i = chatItems.length - 1; i >= 0; i--) {
-            const item = chatItems[i];
-            if (!item || item.id <= entry.itemsAt) break; // ids are monotonic; stop past the click snapshot
-            if (item.type === 'system' && item.compactPhase === 'start') { itemTookOver = true; break; }
+        // Reconcile EVERY pending marker on each bridge-flag / items change,
+        // independent of the active session (review 5874108926 follow-up):
+        // a queue for A whose start lands while B is active must release
+        // A's entry — the start-item fallback cannot do that (chatItems is
+        // the active session's projection, and a prune-only terminal even
+        // removes A's start item), so only the global flag map reconciles
+        // background sessions. Without this sweep, returning to A inside
+        // the TTL window still shows "compacting" for an already-completed
+        // compaction.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- same shape as RightDock's stale-permit revocation: start takeover and TTL expiry must release the markers synchronously on the bridge change, or a finished compaction keeps its session's button disabled until the next unrelated render
+        setManualCompactBySid(current => {
+          const now = Date.now();
+          let next = current;
+          const drop = sid => {
+            if (next === current) next = { ...current };
+            delete next[sid];
+          };
+          for (const sid of Object.keys(current)) {
+            // TTL release for every session: an entry whose terminal event
+            // was lost expires here (the same bound the read-side freshness
+            // check applies), instead of lingering until the session is
+            // deleted or evicted.
+            if (now - current[sid].at >= COMPACTING_FLAG_MAX_AGE_MS) { drop(sid); continue; }
+            // A fresh bridge flag means the session's start landed: the
+            // marker's enqueue→start window is over and disabling continues
+            // under the bridge marker alone. Any fresh start (auto or
+            // manual) takes the marker over — a click landing mid-turn may
+            // overlap a turn-internal auto compaction, and correlating by
+            // compact id would change both byte-pinned listener bodies
+            // (round-6 review M-2, recorded tradeoff).
+            const flagAt = compactingMap ? compactingMap[sid] : 0;
+            if (flagAt && now - flagAt < COMPACTING_FLAG_MAX_AGE_MS) drop(sid);
           }
-        }
-        if (flagTookOver || itemTookOver) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- same shape as RightDock's stale-permit revocation: once start takes over, the manual marker must be released synchronously or it revives after the terminal clears the bridge marker and needlessly disables the button for another TTL
-          setManualCompactBySid(current => {
-            if (!current[activeSessionId]) return current;
-            const next = { ...current };
-            delete next[activeSessionId];
-            return next;
-          });
-        }
+          // The ACTIVE session keeps the start-item fallback: when start and
+          // the terminal arrive in the same React batch (an instantly failing
+          // compaction, e.g. the provider 401s at once), the bridge flag
+          // never appears in any render and the flag sweep above can never
+          // see it; but start system items are an append-only projection
+          // (itemIds are monotonically increasing; a prune-only merge removes
+          // the start item — that residue falls back to the TTL), so the
+          // post-batch snapshot still contains it — releasing on "a start
+          // item newer than the click snapshot" keeps an instant failure from
+          // pinning the button for a full TTL (round-6 review M-1).
+          const entry = activeSessionId ? current[activeSessionId] : undefined;
+          if (entry) {
+            let itemTookOver = false;
+            for (let i = chatItems.length - 1; i >= 0; i--) {
+              const item = chatItems[i];
+              if (!item || item.id <= entry.itemsAt) break; // ids are monotonic; stop past the click snapshot
+              if (item.type === 'system' && item.compactPhase === 'start') { itemTookOver = true; break; }
+            }
+            if (itemTookOver) drop(activeSessionId);
+          }
+          return next;
+        });
       }, [compactingMap, manualCompactBySid, chatItems, activeSessionId]);
       // Proactive fallback heal: while the entry is disabled, schedule one
       // tick at the expiry boundary so a completely idle app still

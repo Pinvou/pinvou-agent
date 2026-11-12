@@ -229,8 +229,11 @@ assert.match(chatViewSource, /setManualCompactBySid\(current => \{\s*if \(!curre
 //     entry must not take over (releasing the retry marker early would
 //     reopen the double-click window), independent of session activation
 //     (background-finished compactions).
-assert.match(chatViewSource, /const entry = activeSessionId \? manualCompactBySid\[activeSessionId\] : undefined;/, 'the takeover reads the ACTIVE session\'s own map entry (per-sid; review 5874108926 P2)');
-assert.match(chatViewSource, /const flagTookOver = !!\(takeoverFlagAt && Date\.now\(\) - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS\);/, 'a fresh bridge start must release the manual marker immediately (regardless of session activation); a stale entry must not take over, or it releases the retry marker early and reopens the double-click window');
+assert.match(chatViewSource, /for \(const sid of Object\.keys\(current\)\)/, 'the reconcile sweep walks EVERY pending marker (review 5874108926 follow-up: background sessions reconcile too, not just the active one)');
+assert.match(chatViewSource, /if \(now - current\[sid\]\.at >= COMPACTING_FLAG_MAX_AGE_MS\) \{ drop\(sid\); continue; \}/, 'TTL release drops expired entries for every session (not just the active one)');
+assert.match(chatViewSource, /if \(flagAt && now - flagAt < COMPACTING_FLAG_MAX_AGE_MS\) drop\(sid\);/, 'a fresh bridge flag releases the session\'s marker even when it is NOT the active session (A starts+completes while B is active)');
+assert.ok(!chatViewSource.includes('if (sid !== activeSessionId)'), 'the reconcile sweep must NOT skip non-active sessions — an active-only guard would strand background markers until TTL (the appearance-only pin above cannot see an if-false disable, so its absence is pinned directly)');
+assert.match(chatViewSource, /const flagAt = compactingMap \? compactingMap\[sid\] : 0;/, 'the sweep consults the GLOBAL flag map (all sessions), not an active-session lookup');
 // (b) the start system-item fallback — when start and the terminal arrive
 //     in the same React batch (an instantly failing compaction), the bridge
 //     marker never appeared in any render and path (a) can never see it; start system items
@@ -296,7 +299,7 @@ assert.match(chatViewSource, /disabled=\{busy \|\| ctxCompactInFlight\}/, 'the d
 // (iii) both release paths delete ONLY the matching sid's key — a B-side
 //     start or failure must not release A's entry.
 assert.match(chatViewSource, /setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: \{ at: Date\.now\(\), itemsAt: maxItemId \} \}\)\);/, 'A→B→A (i): an enqueue must spread the previous map so another session\'s pending marker survives');
-assert.match(chatViewSource, /setManualCompactBySid\(current => \{\s*if \(!current\[activeSessionId\]\) return current;\s*const next = \{ \.\.\.current \};\s*delete next\[activeSessionId\];\s*return next;\s*\}\);/, 'A→B→A (iii-start): the start takeover releases only the active session\'s key, never other sessions\' pending markers');
+assert.match(chatViewSource, /const drop = sid => \{\s*if \(next === current\) next = \{ \.\.\.current \};\s*delete next\[sid\];\s*\};/, 'A→B→A (iii): every release path drops only the matching sid\'s key from a copied map, never other sessions\' pending markers');
 
 // ── i18n: exactly one entry per locale (count-1 per language); duplicate keys must not regress ──
 for (const locale of ['en', 'zh', 'ja']) {
