@@ -422,6 +422,13 @@ pub struct SavedModel {
     pub vendor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_mode: Option<String>,
+    /// 用户对端点鉴权的显式声明（设置页「此端点无需鉴权」开关）：`Some("none")`
+    /// = 该端点不需要任何上游鉴权（自建网关/免鉴权服务）。落盘前经
+    /// `normalize_provider_metadata` 归一：仅保留底座
+    /// `auth_mode_disables_api_key` 认可的 no-auth 同义词并统一为 `"none"`，
+    /// 其余值（含空串）清空。None = 默认按 provider/端点规则决定是否要 Key。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
     /// 图片输入能力覆盖(设计 §6.3):Pinvou 走能力解析链;Enabled/Disabled 强制。
     #[serde(default)]
     pub image_capability_override: ImageCapabilityOverride,
@@ -696,6 +703,21 @@ impl SavedModel {
 
     fn normalize_provider_metadata(&mut self) {
         self.base_url = strip_chat_completions_suffix(&self.base_url);
+        // auth_mode 归一:仅保留底座 `auth_mode_disables_api_key` 认可的
+        // no-auth 同义词并统一为 "none";其余值(含空串/未知档位)清空,
+        // 防止手改 settings.json 写入底座不认识的档位后行为不可预期。
+        // 与底座的同义词表对齐(见 bridge::model_declares_no_auth)。
+        self.auth_mode = self
+            .auth_mode
+            .take()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| {
+                matches!(
+                    value.as_str(),
+                    "none" | "off" | "disabled" | "no_auth" | "no-auth" | "anonymous"
+                )
+            })
+            .map(|_| "none".to_string());
         // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
         // 存量配置在 load 时一次性改写,避免继续打已下线域名。
         if let Some(migrated) = migrated_minimax_base_url(&self.base_url) {
@@ -1449,6 +1471,7 @@ impl UserPrefs {
         let api_key = self.advanced.custom_api_key.clone().unwrap_or_default();
         let id = "default".to_string();
         self.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: id.clone(),
             name: model.clone(),
             alias: None,
@@ -1861,6 +1884,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.clear();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             alias: Some("  Daily assistant  ".to_string()),
             ..legacy.clone()
         });
@@ -1870,6 +1894,7 @@ mod tests {
         );
 
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             alias: Some("   ".to_string()),
             ..legacy
         });
@@ -1879,6 +1904,7 @@ mod tests {
     #[test]
     fn local_model_alias_is_cleared_by_upsert_and_normalization() {
         let local = SavedModel {
+            auth_mode: None,
             id: "local-model".into(),
             name: "Local model".into(),
             alias: Some("Must not persist".into()),
@@ -1934,6 +1960,7 @@ mod tests {
         // non-Linux while passing the ubuntu-only `rust-test` gate.
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: "local-model".into(),
             name: "Local model".into(),
             alias: Some("Legacy local alias".into()),
@@ -2290,6 +2317,7 @@ mod tests {
     #[test]
     fn normalize_drops_stored_effort_for_kimi_k31_models() {
         let base = SavedModel {
+            auth_mode: None,
             id: "m1".into(),
             name: "m1".into(),
             alias: None,
@@ -2419,6 +2447,7 @@ mod tests {
     #[test]
     fn normalize_keeps_local_output_unset_and_operator_owned_detection() {
         let mut local = SavedModel {
+            auth_mode: None,
             id: "m1".into(),
             name: "m1".into(),
             alias: None,
@@ -2519,6 +2548,7 @@ mod tests {
     #[test]
     fn normalize_reasoning_effort_canonicalizes_aliases_and_rejects_unknown() {
         let base = SavedModel {
+            auth_mode: None,
             id: "m1".into(),
             name: "m1".into(),
             alias: None,
@@ -2700,6 +2730,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "glm-coding".into(),
             name: "GLM-5-Turbo".into(),
             alias: None,
@@ -2739,6 +2770,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "glm-api".into(),
             name: "GLM API".into(),
             alias: None,
@@ -2783,6 +2815,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "minimax-api".into(),
             name: "MiniMax".into(),
             alias: None,
@@ -2808,6 +2841,74 @@ mod tests {
         assert_eq!(model.base_url, "https://api.minimaxi.com/v1");
     }
 
+    /// auth_mode 归一：底座 `auth_mode_disables_api_key` 认可的 no-auth 同义词
+    /// 统一存 "none"（大小写/首尾空白容忍）；未知档位与空串清空（落回默认的
+    /// provider/端点鉴权规则），防止手改 settings.json 写入无效档位后行为不可
+    /// 预期；None 原样保留。
+    #[test]
+    fn auth_mode_normalizes_to_the_none_family_or_clears() {
+        let build = |auth_mode: Option<&str>| {
+            let mut prefs = UserPrefs::default();
+            let mut model = SavedModel {
+                auth_mode: None,
+                id: "auth-mode-model".into(),
+                name: "auth mode".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "gateway-model".into(),
+                base_url: "https://gateway.example.com/v1".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            model.auth_mode = auth_mode.map(str::to_string);
+            prefs.upsert_model(model);
+            prefs
+        };
+
+        for synonym in [
+            "none",
+            "NONE",
+            " no-auth ",
+            "OFF",
+            "Disabled",
+            "no_auth",
+            "anonymous",
+        ] {
+            let prefs = build(Some(synonym));
+            assert_eq!(
+                prefs
+                    .model_by_id("auth-mode-model")
+                    .expect("model")
+                    .auth_mode
+                    .as_deref(),
+                Some("none"),
+                "no-auth 同义词 {synonym:?} 必须归一为 \"none\""
+            );
+        }
+        for invalid in [Some("api_key"), Some("oauth"), Some(""), Some("   "), None] {
+            let prefs = build(invalid);
+            assert_eq!(
+                prefs
+                    .model_by_id("auth-mode-model")
+                    .expect("model")
+                    .auth_mode,
+                None,
+                "非免鉴权档位 {invalid:?} 必须清空（落回默认鉴权规则）"
+            );
+        }
+    }
+
     #[test]
     fn load_persists_legacy_minimax_domain_migration() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -2823,6 +2924,7 @@ mod tests {
 
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: "minimax-api".into(),
             name: "MiniMax".into(),
             alias: None,
@@ -2879,6 +2981,7 @@ mod tests {
         with_temp_home("pinvou3-prefs-local-output-sentinel", || {
             let mut prefs = UserPrefs::default();
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "legacy-local".into(),
                 name: "Legacy Local".into(),
                 alias: None,
@@ -2902,6 +3005,7 @@ mod tests {
                 credential_action: None,
             });
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "custom-explicit".into(),
                 name: "Custom Explicit".into(),
                 alias: None,
@@ -2992,6 +3096,7 @@ mod tests {
             // saved-models drift detection.
             prefs.local_thinking_default_migrated = true;
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "k31-official".into(),
                 name: "K3.1 Official".into(),
                 alias: None,
@@ -3016,6 +3121,7 @@ mod tests {
                 credential_action: None,
             });
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "k31-relay".into(),
                 name: "K3.1 Relay".into(),
                 alias: None,
@@ -3039,6 +3145,7 @@ mod tests {
                 credential_action: None,
             });
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "k31-suffixed".into(),
                 name: "K3.1 Suffixed Route".into(),
                 alias: None,
@@ -3144,6 +3251,7 @@ mod tests {
     fn legacy_local_alias_prefs() -> UserPrefs {
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: "local-model".into(),
             name: "Local model".into(),
             alias: Some("Legacy local alias".into()),
@@ -3178,6 +3286,7 @@ mod tests {
         reasoning_effort: Option<&str>,
     ) -> SavedModel {
         SavedModel {
+            auth_mode: None,
             id: id.into(),
             name: id.into(),
             alias: None,
@@ -3459,6 +3568,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "m2".into(),
             name: "Kimi".into(),
             alias: None,
@@ -4315,6 +4425,7 @@ mod tests {
     fn refresh_classifies_a_fallback_miss_as_unavailable_not_missing() {
         let mut prefs = UserPrefs::default();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "m1".to_string(),
             name: "M1".to_string(),
             alias: None,

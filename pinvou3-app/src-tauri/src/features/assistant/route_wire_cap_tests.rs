@@ -166,6 +166,7 @@ async fn boot_wire_cap_engine(
     let mut bridge =
         Pinvou3Bridge::boot_with_workspace(project.to_path_buf()).expect("boot wire-cap bridge");
     let mut saved_model = crate::platform::prefs::SavedModel {
+        auth_mode: None,
         id: "wire-cap-model".to_string(),
         name: model.to_string(),
         alias: None,

@@ -1986,6 +1986,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         let active = SavedModel {
+            auth_mode: None,
             id: "saved-active".to_string(),
             name: "active".to_string(),
             alias: None,

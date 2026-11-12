@@ -206,11 +206,21 @@ fn configure_provider(
     api_key: &str,
     model: &str,
     reasoning_stream_style: Option<&str>,
+    no_auth: bool,
 ) {
     config.base_url = Some(base_url.to_string());
     config.api_key = Some(api_key.to_string());
     config.model = Some(model.to_string());
     config.reasoning_stream_style = reasoning_stream_style.map(str::to_string);
+    // `auth_mode = "none"` is the saved model's explicit keyless-endpoint
+    // declaration: the engine then short-circuits key resolution and
+    // suppresses credential-shaped request headers
+    // (`auth_mode_disables_api_key` + `is_upstream_auth_header`). Written
+    // into the ACTIVE route's table only — never the root `auth_mode`,
+    // which would disable auth for fallback providers too.
+    if no_auth {
+        config.auth_mode = Some("none".to_string());
+    }
 }
 
 fn is_official_deepseek_base_url(base_url: &str) -> bool {
@@ -1757,9 +1767,19 @@ impl Pinvou3Bridge {
         self.default_base_url_for_preset()
     }
 
+    /// Whether the saved model explicitly declares the endpoint keyless
+    /// (settings page 「此端点无需鉴权」→ `auth_mode = "none"`). Classification
+    /// reuses the foundation's `auth_mode_disables_api_key` so the app-side
+    /// gate and the engine-side key resolution can never drift apart.
+    fn model_declares_no_auth(model: &SavedModel) -> bool {
+        codewhale_config::auth_mode_disables_api_key(model.auth_mode.as_deref())
+    }
+
     /// Whether the user is required to configure an API Key. local_vllm and
     /// OpenAI-compatible services explicitly pointing at a local loopback
-    /// allow no auth; cloud/LAN addresses still require a Key by default.
+    /// allow no auth; cloud/LAN addresses still require a Key by default —
+    /// unless the model record explicitly declares the endpoint keyless
+    /// (`auth_mode = "none"`, see [`Self::model_declares_no_auth`]).
     pub fn api_key_required(&self) -> bool {
         // vLLM, Tachyon (驭光) and Ollama (including probed LAN Ollama) default
         // to no auth and the foundation also allows an empty key (Ollama
@@ -1767,6 +1787,9 @@ impl Pinvou3Bridge {
         // exempt.
         !matches!(self.provider().as_str(), "vllm" | "tachyon" | "ollama")
             && !base_url_uses_loopback(&self.base_url())
+            && !self
+                .effective_model()
+                .is_some_and(Self::model_declares_no_auth)
     }
 
     /// Default API base URL per vendor (the table lives in prefs
@@ -1789,6 +1812,13 @@ impl Pinvou3Bridge {
             }
         }
         if let Some(m) = self.effective_model() {
+            // auth_mode="none": the route sends no credentials and the engine
+            // short-circuits key resolution (auth_mode_disables_api_key), so
+            // skip the keyring/plaintext read entirely instead of materializing
+            // an inert secret.
+            if Self::model_declares_no_auth(m) {
+                return String::new();
+            }
             // Local vLLM/Tachyon needs no auth: when the user leaves the key
             // empty, fall back to local-no-auth (the base requires a non-empty
             // value). Tachyon rides the same placeholder — the probe can flip
@@ -1890,7 +1920,7 @@ impl Pinvou3Bridge {
             // that it was actually selected; a text model configured as a
             // vision model is blocked by the frontend probe gate.
             let api_key = Self::api_key_for_saved_model(vision);
-            if api_key.trim().is_empty() {
+            if api_key.trim().is_empty() && !Self::model_declares_no_auth(vision) {
                 eprintln!(
                     "[pinvou3-app] vision model {} has no usable credential; \
                      image_analyze disabled",
@@ -3326,6 +3356,9 @@ impl Pinvou3Bridge {
         let base_url = self.base_url();
         let model = self.model();
         let reasoning_stream_style = self.reasoning_stream_style(&provider);
+        let no_auth = self
+            .effective_model()
+            .is_some_and(Self::model_declares_no_auth);
         let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
         if provider == RESPONSES_ROUTE_PROVIDER {
             // Named-custom table for the OpenAI Responses wire: kind + wire
@@ -3340,7 +3373,14 @@ impl Pinvou3Bridge {
                 .or_default();
             entry.kind = Some("openai-compatible".to_string());
             entry.wire = Some("responses".to_string());
-            configure_provider(entry, &base_url, &api_key, &model, reasoning_stream_style);
+            configure_provider(
+                entry,
+                &base_url,
+                &api_key,
+                &model,
+                reasoning_stream_style,
+                no_auth,
+            );
         } else {
             // Write base_url + api_key into the provider config matching the provider
             let provider_config = match provider.as_str() {
@@ -3375,6 +3415,7 @@ impl Pinvou3Bridge {
                 &api_key,
                 &model,
                 reasoning_stream_style,
+                no_auth,
             );
         }
         if is_opencode_gateway_base_url(&base_url) {
@@ -5912,6 +5953,7 @@ mod tests {
         api_key: &str,
     ) {
         bridge.prefs.advanced.saved_models = vec![SavedModel {
+            auth_mode: None,
             id: "test-model".to_string(),
             name: model.to_string(),
             alias: None,
@@ -5939,6 +5981,7 @@ mod tests {
     /// directly, bypassing the system credential store.
     fn push_vision_model(bridge: &mut Pinvou3Bridge, id: &str, model: &str, api_key: &str) {
         bridge.prefs.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: id.to_string(),
             name: model.to_string(),
             alias: None,
@@ -6485,6 +6528,96 @@ mod tests {
             "",
         );
         assert!(cloud_compatible.api_key_required());
+    }
+
+    /// 「此端点无需鉴权」(auth_mode="none")：设置页的显式免鉴权声明必须
+    /// (a) 放开前端 gate（api_key_required→false）、(b) 跳过凭据读取
+    /// （api_key()→空串，即使记录上残留明文 key）、(c) 直通引擎路由表
+    /// （providers.<route>.auth_mode="none"，底座据此短路 key 解析并抑制
+    /// 鉴权头）。默认档（None）不得触碰路由表。
+    #[test]
+    fn keyless_declaration_relaxes_gate_and_writes_engine_auth_mode() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+
+        // 云端自定义网关 + 免鉴权：gate 放开、key 不读、auth_mode 进路由表。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "keyless-gateway-model",
+            "https://gateway.example.com/v1",
+            "residual-plaintext-key",
+        );
+        bridge.prefs.advanced.saved_models[0].auth_mode = Some("none".to_string());
+        assert!(
+            !bridge.api_key_required(),
+            "显式免鉴权声明必须放开 API Key gate"
+        );
+        assert!(
+            bridge.api_key().is_empty(),
+            "免鉴权路由不得读取/下发任何凭据（即使记录残留明文 key）"
+        );
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.provider.as_deref(), Some("openai"));
+        assert_eq!(
+            cfg.providers
+                .as_ref()
+                .expect("providers table")
+                .openai
+                .auth_mode,
+            Some("none".to_string()),
+            "auth_mode=\"none\" 必须写进激活路由的 provider 表"
+        );
+
+        // 同端点、默认档：gate 保持要求 Key，路由表不得被写入 auth_mode。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "authed-gateway-model",
+            "https://gateway.example.com/v1",
+            "",
+        );
+        assert!(bridge.api_key_required());
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.providers
+                .as_ref()
+                .expect("providers table")
+                .openai
+                .auth_mode,
+            None,
+            "默认档不得触碰路由表 auth_mode"
+        );
+
+        // DeepSeek 预设指到自建反代（非官方 URL）+ 免鉴权：这正是此前
+        // "Custom endpoint credentials for deepseek" 报错的场景——声明后
+        // 路由表携带 auth_mode，底座短路 key 解析，不再逐轮报错。
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-flash",
+            "http://192.168.1.10:8003/v1",
+            "",
+        );
+        bridge.prefs.advanced.saved_models[0].auth_mode = Some("none".to_string());
+        assert!(!bridge.api_key_required());
+        let cfg = bridge.build_dt_config();
+        assert_eq!(cfg.provider.as_deref(), Some("deepseek"));
+        let providers = cfg.providers.as_ref().expect("providers table");
+        assert_eq!(providers.deepseek.auth_mode, Some("none".to_string()));
+        assert_eq!(
+            providers.deepseek.base_url.as_deref(),
+            Some("http://192.168.1.10:8003/v1"),
+            "自定义端口/端点必须原样下发"
+        );
+        assert_eq!(cfg.api_key.as_deref(), Some(""));
     }
 
     /// §11.8/§11.9: is_local_endpoint uses the same resolution caliber as the
