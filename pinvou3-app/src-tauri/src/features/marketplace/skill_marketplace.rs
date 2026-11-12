@@ -5484,7 +5484,8 @@ mod tests {
             Some(value),
             "引号说明必须逐字读回: {md}"
         );
-        mgr.update_display_meta("q-skill", None, Some("  ")).unwrap();
+        mgr.update_display_meta("q-skill", None, Some("  "))
+            .unwrap();
         let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
         assert_eq!(
             read_skill_description_from_str(&md).as_deref(),

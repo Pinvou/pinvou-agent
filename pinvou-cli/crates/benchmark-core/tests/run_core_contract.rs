@@ -1340,8 +1340,7 @@ async fn unbounded_deadline_still_bounds_wedged_local_phases() {
             let error = result.expect_err("a wedged prepare must fail closed");
             assert_eq!(error.code(), "task_timeout", "{name}");
         } else {
-            let outcome =
-                result.expect("a wedged local phase must fail closed, not hang the run");
+            let outcome = result.expect("a wedged local phase must fail closed, not hang the run");
             assert_eq!(outcome.status(), TaskStatus::Timeout, "{name}");
             assert_eq!(
                 outcome.failure_reason(),
