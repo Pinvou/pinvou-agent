@@ -243,6 +243,13 @@ const MULTI_AGENT_ENABLED = can('multiAgent');
 // fall back to the default card.
 const COMPUTER_USE_ENABLED = can('computerUse');
 
+// 主车道手动压缩入口的在途兜底时限（15 分钟）：镜像 Rust
+// MAX_COMPACTION_LATCH_AGE（engine_pool.rs）。机制与墙钟取舍详见
+// ChatView 组件内压缩入口的注释块。置于模块作用域：它是不随渲染变化的
+// 常量，留在组件内会触发 react-hooks/exhaustive-deps（自愈 effect 读取
+// 它而依赖数组不含组件内值）。
+const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
+
 // Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
 // Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
 // and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
@@ -1189,9 +1196,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // 过期失效，入口不会永久禁用。兜底按墙钟而非单调钟：时钟前拨或
       // 休眠恢复会提前解禁（与 Rust Instant 语义存在窗口差，压缩超长时
       // 重复入队的代价与 Rust 侧锁存过期一致，接受）。按会话记录
-      // （ChatView 切会话不 remount，见上方 keyed-state 约定），A 会话
+      // （ChatView 切会话不 remount，状态按会话键控保留），A 会话
       // 入队中不误禁 B 会话。
-      const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
       const [manualCompact, setManualCompact] = useState(null); // { sid, at }
       const compactingMap = bs && bs.compactingSessions;
       const compactingStartedAt = activeSessionId && compactingMap
