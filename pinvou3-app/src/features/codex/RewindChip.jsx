@@ -6,6 +6,7 @@
 // 由视图层调 rewind_to_turn 编排（恢复代码 + 截断对话 + engine 回收重注水）。
 // 无 Turn 快照的边界是「仅回退对话」变体（conversationOnly），文案明示代码不回退。
 
+import { useState } from 'react';
 import { RotateCcw } from '../../components/icons.jsx';
 import { ModalShell } from '../../components/ModalShell.jsx';
 import { summarizeCheckpointChanges } from './checkpoints.js';
@@ -23,13 +24,20 @@ function ChangeSummary({ summary, copy }) {
   return <span>{parts.join(' · ')}</span>;
 }
 
+// 初始渲染有界：后端 changes 列表刻意不设总量上限（一轮可能脚手架出数万乃至
+// 20 万条目的工作区），一次性挂载全部行会冻结 webview。上方的摘要计数始终覆盖
+// 全量清单；「另有 N 个文件」原地展开，既保住初始渲染的界内成本，也让每一行的
+// diff 路径都可触达（旧的 8 行硬截断使尾部路径永远不可见，同样不可接受）。
+const REWIND_FILE_LIST_INITIAL_ROWS = 100;
+
 function ChangeFileList({ changes, copy }) {
+  const [expanded, setExpanded] = useState(false);
   if (!changes.length) return null;
-  // 全量渲染：容器本身 max-h-44 滚动，截断到前 8 行只会让历史 diff 路径
-  // 在弹窗里不可达（计数还在、行却永不渲染）。
+  const visible = expanded ? changes : changes.slice(0, REWIND_FILE_LIST_INITIAL_ROWS);
+  const hidden = changes.length - visible.length;
   return (
     <div className="mt-2 max-h-44 overflow-y-auto custom-scrollbar rounded-xl border border-black/[0.05] dark:border-white/[0.07]">
-      {changes.map((change, index) => (
+      {visible.map((change, index) => (
         <div key={`${change.path || 'file'}-${index}`}
           className="flex items-center gap-2 border-b border-black/[0.04] px-2.5 py-1.5 text-[11px] last:border-b-0 dark:border-white/[0.05]">
           <span className="shrink-0 rounded-md bg-black/[0.05] px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-white/[0.08] dark:text-gray-400">
@@ -40,6 +48,16 @@ function ChangeFileList({ changes, copy }) {
           </span>
         </div>
       ))}
+      {hidden > 0 && (
+        <button
+          type="button"
+          data-testid="rewind-more-files"
+          onClick={() => setExpanded(true)}
+          className="w-full px-2.5 py-1.5 text-left text-[11px] text-blue-600 hover:bg-black/[0.03] hover:text-blue-700 dark:text-blue-300 dark:hover:bg-white/[0.04]"
+        >
+          {copy.rewindMoreFiles(hidden)}
+        </button>
+      )}
     </div>
   );
 }

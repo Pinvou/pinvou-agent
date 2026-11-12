@@ -5582,6 +5582,11 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
       addSystemItem(limitError ? limitError.message : bt("pasteImageFailed") + e);
     }
   }
+  // Frontend-side paste pre-check rejections surface on the same inline
+  // system-item lane addPasteImage uses for its own rejections. The web paste
+  // handler is desktop-only today; the method still exists on the declared
+  // surface so shared feature code can call it unconditionally.
+  function notifyPasteRejected(text) { addSystemItem(text); }
   function releaseAttachmentOnDesktop(attachment) {
     // Accepts a composer attachment ({ result, uploadId }) or a bare
     // WebAttachmentSummary ({ handle }) carried by a queued message.
@@ -6643,6 +6648,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     // 附件
     addAttachmentByPath,
     addPasteImage,
+    notifyPasteRejected,
     removeAttachment,
     pickAndAttach,
     uploadDeviceFiles,

@@ -2380,6 +2380,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       addAttachmentByPath,
       addPasteImage,
       addPasteImageFromClipboard,
+      notifyPasteRejected: artifactsFeature.notifyPasteRejected,
       removeAttachment,
       pickAndAttach,
       uploadDeviceFiles,

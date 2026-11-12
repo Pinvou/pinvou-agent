@@ -19,7 +19,7 @@ export const desktopBridgeApi = {
   rendering: ['renderMarkdown'],
   remoteControl: ['refreshRemoteControlQr', 'revokeRemoteHostWorkspace', 'startRemoteControl', 'stopRemoteControl'],
   artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'openArtifactExternal', 'openContainingFolder', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
-  attachments: ['addAttachmentByPath', 'addPasteImage', 'addPasteImageFromClipboard', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'],
+  attachments: ['addAttachmentByPath', 'addPasteImage', 'addPasteImageFromClipboard', 'notifyPasteRejected', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'],
   files: [
     'pickFeedbackFiles',
     'pickFiles',
