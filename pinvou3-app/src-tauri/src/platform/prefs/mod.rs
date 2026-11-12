@@ -601,6 +601,15 @@ impl SavedModel {
             && self.provider_kind.as_deref() != Some("coding_plan")
     }
 
+    /// Whether this record explicitly declares the endpoint keyless
+    /// (`auth_mode = "none"` family, single source of truth
+    /// `codewhale_config::auth_mode_disables_api_key`). Probe surfaces
+    /// (app ladder, CLI `models test`) consult this so a residual stored
+    /// credential never rides a probe against a declared-keyless endpoint.
+    pub fn declares_keyless_auth(&self) -> bool {
+        codewhale_config::auth_mode_disables_api_key(self.auth_mode.as_deref())
+    }
+
     fn normalize_alias(&mut self) {
         if self.preset == ModelPreset::LocalVllm {
             self.alias = None;
