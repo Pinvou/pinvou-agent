@@ -665,14 +665,31 @@ try {
     && runtime.includes('runtime.busy.load(Ordering::Acquire)'),
   'app restart and stale stop must close orphaned ACP turns without cancelling an idle runtime');
   // session/load is bounded by ACP_SESSION_LOAD_TIMEOUT: the load await sits
-  // inside tokio::time::timeout. Pinned with whitespace- and comma-tolerant
-  // regexes — a source-layout pin here desynced from the pin it guards when
-  // the fmt-only commit 8a57c3672d reflowed the construction onto one line
-  // (99 chars fit rustfmt's 100), turning this suite red with no behavior
-  // change on the Rust side.
+  // inside tokio::time::timeout. Pinned with a whitespace- and comma-tolerant
+  // regex (trailing commas tolerated after every argument, the reflow rustfmt
+  // produces whenever the line crosses 100 cols) — the string-includes pin
+  // this replaces was layout-shaped and desynced from the code it guards when
+  // the load-session block got reflowed onto one line as part of commit
+  // e92afbb39f's ~114-line reflow of this file, turning this suite red with
+  // no behavior change on the Rust side.
   assert.ok(
-    /tokio::time::timeout\(\s*ACP_SESSION_LOAD_TIMEOUT,\s*connection\s*\.send_request\(\s*LoadSessionRequest::new\(\s*saved_id\.clone\(\),\s*workspace\.clone\(\)\s*\)\s*\)\s*\.block_task\(\)\s*,?\s*\)/.test(runtime),
+    /tokio::time::timeout\(\s*ACP_SESSION_LOAD_TIMEOUT,\s*connection\s*\.send_request\(\s*LoadSessionRequest::new\(\s*saved_id\.clone\(\),?\s*workspace\.clone\(\),?\s*\)\s*\)\s*\.block_task\(\)\s*,?\s*\)/.test(runtime),
     'the saved-session load await must stay wrapped in the ACP_SESSION_LOAD_TIMEOUT bound',
+  );
+  // The bound VALUES are part of the shipped contract (docs/multi-agent-acp.md
+  // documents 120s/120s/30s); pin the literals so a silent 120→60 or 30→10
+  // revert turns red — the wrap regex above pins the shape, not the numbers.
+  assert.ok(
+    /const ACP_SESSION_LOAD_TIMEOUT:\s*std::time::Duration\s*=\s*std::time::Duration::from_secs\(120\)/.test(runtime),
+    'ACP session/load bound must stay at 120s',
+  );
+  assert.ok(
+    /const ACP_SESSION_NEW_TIMEOUT:\s*std::time::Duration\s*=\s*std::time::Duration::from_secs\(120\)/.test(runtime),
+    'ACP session/new bound must stay at 120s',
+  );
+  assert.ok(
+    /const ACP_CONFIG_REQUEST_TIMEOUT:\s*std::time::Duration\s*=\s*std::time::Duration::from_secs\(30\)/.test(runtime),
+    'ACP config/mode request bound must stay at 30s',
   );
   assert.ok(/NewSessionRequest::new\(\s*workspace\s*\)/.test(runtime));
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');

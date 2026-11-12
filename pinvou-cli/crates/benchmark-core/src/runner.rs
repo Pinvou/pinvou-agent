@@ -514,6 +514,18 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// The 600s fallback value is documented shipped contract
+    /// (docs/gaia-benchmark.md); the behavioral phase test in
+    /// run_core_contract.rs runs under `start_paused` virtual time, which
+    /// fires ANY duration — pin the literal here so a silent
+    /// 600→600_000 loosening stays invisible no longer (r4 review).
+    #[test]
+    fn harness_local_phase_fallback_stays_at_600s() {
+        assert_eq!(
+            crate::runner::HARNESS_LOCAL_PHASE_FALLBACK,
+            std::time::Duration::from_secs(600)
+        );
+    }
     use super::{safe_failure_code, safe_tool_name};
 
     #[test]

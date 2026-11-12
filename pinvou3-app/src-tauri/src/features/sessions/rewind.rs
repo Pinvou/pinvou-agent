@@ -539,6 +539,15 @@ impl SessionStore {
 mod tests {
     use super::*;
 
+    /// The 10s wait is the r3 disclosed bound (bounded acquire of the
+    /// cross-process flock); the poll-loop behavior is exercised elsewhere,
+    /// but nothing pinned the VALUE — pin the literal so a silent
+    /// loosening/tightening turns red (r4 review).
+    #[test]
+    fn rewind_backup_lock_wait_stays_at_10s() {
+        assert_eq!(REWIND_BACKUP_LOCK_WAIT, std::time::Duration::from_secs(10));
+    }
+
     /// Round-41 review M2: the cross-process rewind lock is a real exclusive
     /// flock at the documented sibling path. `flock(2)` conflicts between two
     /// open file descriptions even within one process, so while the guard is
