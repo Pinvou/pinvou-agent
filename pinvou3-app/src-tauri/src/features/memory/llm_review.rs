@@ -611,8 +611,16 @@ pub(super) async fn send_memory_llm_request(
     }
     let mut body = memory_review_request_body(&model_name, prompt, user_content, max_tokens);
     apply_memory_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
+    // A keyless-declared endpoint receives no Authorization header at all —
+    // an empty `Bearer ` would contradict the toggle's "no credentials are
+    // sent" contract (keyed records keep the bearer; undeclared empty-key
+    // records keep the historical empty-bearer shape).
+    let mut request = client.post(url);
+    if !bridge.memory_declares_no_auth() {
+        request = request.bearer_auth(bridge.memory_api_key());
+    }
     let resp = crate::core::model_endpoint::with_opencode_session_header(
-        client.post(url).bearer_auth(bridge.memory_api_key()),
+        request,
         &base_url,
         &bridge.aux_conversation_key("memory-review"),
     )

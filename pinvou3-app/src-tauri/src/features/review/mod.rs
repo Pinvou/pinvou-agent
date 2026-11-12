@@ -676,8 +676,16 @@ async fn model_review(
         max_tokens_field,
     );
     apply_review_thinking_controls(&mut body, api, preset, &base_url, &model_name);
+    // A keyless-declared endpoint receives no Authorization header at all —
+    // an empty `Bearer ` would contradict the toggle's "no credentials are
+    // sent" contract (keyed records keep the bearer; undeclared empty-key
+    // records keep the historical empty-bearer shape).
+    let mut request = client.post(url);
+    if !bridge.effective_model_declares_no_auth() {
+        request = request.bearer_auth(bridge.api_key());
+    }
     let resp = crate::core::model_endpoint::with_opencode_session_header(
-        client.post(url).bearer_auth(bridge.api_key()),
+        request,
         &base_url,
         bridge.opencode_conversation_key("model-review"),
     )
