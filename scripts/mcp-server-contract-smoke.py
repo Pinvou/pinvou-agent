@@ -2,6 +2,7 @@
 """内置 MCP 契约矩阵：真实启动 stdio server，检查协议、工具调用与本地产物。"""
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -130,82 +131,357 @@ def content_json(response: dict) -> dict:
 
 
 # ── Model-visible schema contract ──────────────────────────────────────
-# Background (the k3 slides:[] incident): with `type: "array"` and no items,
-# constrained tool-call decoding channels (Kimi and friends) complete the
-# parameter to its minimal valid value [] (observed live: slides:[] emitted
-# 27 times in a row). The validator on that route (MFJS, CodeWhale
-# schema_sanitize.rs) is much stricter than JSON Schema, and every deviation
-# is the same silent failure — the whole tool is dropped (MissingType /
-# UnsupportedKeyword / InvalidSchemaNode), which is how #683 lost
-# evaluate_script. The shape set below is verified against the validator
-# source at the pinned gitlink, not assumed, and this guard enforces it:
-#   - every schema position holds an object; boolean and list values are
-#     InvalidSchemaNode, empty nodes are MissingType (the engine repairs
-#     exactly the items:{} shape, nothing else);
-#   - "type", where present, must be a single concrete MFJS string:
-#     list-typed ("type": ["array"]), non-string, and unknown values arrive
-#     typeless through the engine's string-only sanitizer and die with
-#     MissingType;
-#   - a node without "type" must carry anyOf — typeless annotation-only
-#     nodes ({"description": ...}, {"enum": ...}) are MissingType;
-#   - any keyword outside MFJS's ALLOWED_KEYWORDS is rejected outright
-#     (UnsupportedKeyword), so oneOf/allOf/patternProperties/prefixItems/
-#     contains/unevaluated*/... are banned here: a bundled server must never
-#     ship a schema the validator would silently discard. $ref/$dynamicRef/
-#     $recursiveRef are banned even though MFJS allows $ref, because this
-#     guard cannot follow the target and the shape underneath would go
-#     uninspected;
-#   - a keyword that survives the whitelist must still be admissible for its
-#     node's type (mfjs_keyword_allowed_for_type): `default` on an array or
-#     `enum`/`default` on an object is InvalidKeywordValue — the same silent
-#     drop (review #713 round 7, P2-3). Enum and default literals must match
-#     their node's type; required must name unique declared properties;
-#     minLength/maxLength (string), minItems/maxItems (array), and
-#     minimum/maximum (number/integer) reject foreign types, out-of-range
-#     literals, and inverted ranges (InvalidRange);
-#   - the parameters root must be a typed object without composition
-#     (RootMustBeObject);
-#   - the validator's resource budgets are mirrored exactly (anyOf ≤ 10
-#     branches, ≤ 100 total properties, property depth ≤ 5, ≤ 500 total enum
-#     values, ≤ 64 structural depth, ≤ 120000 encoded bytes) —
-#     ResourceLimitExceeded drops the tool like every other deviation.
-#   - anyOf keeps only the union's own siblings (MFJS InvalidKeywordValue
-#     otherwise) and every branch is walked and concretely typed; $defs
-#     interiors are walked so an unreferenced definition is no blind spot
-#     ($defs/$id are root-only for MFJS).
+# Policy (ruling of 2026-11-05): the published Moonshot documents are the
+# sole shipping basis for the constrained-decoding wire. A live probe may
+# only ever tighten that contract, never widen it — the 2026-11-04 probe
+# observations (a root anyOf union, pattern/format/$schema/prefixItems/
+# exclusive bounds/nested allOf accepted with 200 on the coding endpoint)
+# are recorded observations, never authority, and the per-route keyword
+# tiers that briefly admitted them were removed on exactly that basis:
+# every Moonshot route serves the same document and gets the same contract.
+#
+# The governing documents, fetched 2026-11-05:
+#   - MFJS specification
+#     (https://raw.githubusercontent.com/MoonshotAI/walle/main/docs/
+#     mfjs-spec.zh.md): the 字段定义 sections enumerate exactly
+#     description, default, anyOf, properties, additionalProperties, items,
+#     type, enum, required — plus $defs/$ref under restricted support
+#     ("$defs 必须定义在 schema 的根级别 (root level)；$ref 仅支持引用
+#     本文档内部的 subschema"). Its closing clause is the authority for
+#     every keyword it does not list: "若官方规范中的某些概念、关键字或
+#     特性在本文档中未被提及，则表示当前 MFJS 尚未提供官方支持。虽然将这些
+#     未列举的特性传入时可能不会被系统直接拦截，且可能被大模型观察到，但
+#     我们不保证它们能在最终的结构化输出中产生稳定、符合预期的结果".
+#   - Tool Use guide (https://platform.kimi.ai/docs/api/tool-use.md):
+#     "The root of `parameters` must be an `object`", and `strict` defaults
+#     to true ("true (default, omitting is equivalent to true)") — the
+#     schema is enforced on the wire, not advisory.
+#
+# The guard mirrors the T11 engine pipeline (schema_sanitize.rs — the
+# document-precise Moonshot face lands on the wire via CodeWhale #143, with
+# the provider faces in #144/#145/#146/#147) against exactly that document
+# set. Until the close-out re-pin lands that batch on this repository's
+# gitlink, the guard pins the TARGET contract: the parent's pinned tree
+# still runs the pre-T11 sanitizer, and the rules here converge with the
+# wire at the re-pin, not independently:
+#   - Advisory keywords are STRIPPED, not rejected. The specification's
+#     unsupported list names the annotation group outright ("暂不支持
+#     title、$comment 等描述性元数据，也不支持 format 格式注解字段");
+#     title/$comment/$id and the bound keywords (minLength/maxLength/
+#     minimum/maximum/minItems/maxItems) are unlisted, and the engine's
+#     strip_mfjs_advisory_keywords removes them before validation because
+#     removal is either semantics-lossless (annotations) or loses only soft
+#     constraints (bounds) — the tool still ships and the Moonshot wire
+#     carries only the documented set, while other providers keep receiving
+#     the full schema. The mirror strips the same nine keywords first
+#     (malformed values included: kimi_parameters_strips_bounds_instead_of_
+#     rejecting_them), then walks what remains.
+#   - Enums whose values are not homogeneous float/int/str scalars are
+#     stripped the same way ("枚举值我们只支持基础类型中的 float, int 和
+#     str，其它基础类型以及 object 和 array 暂不支持，并且不支持混合类型
+#     (List 中的每个枚举值的类型必须相同，如不可以 str + int)"); a
+#     surviving enum's values must still match its node's type. An EMPTY
+#     enum (or a non-array one) is deliberately left in place by the strip
+#     — the kind homogeneity check is vacuously true on an empty list —
+#     and fails closed in the validator (InvalidKeywordValue): stripping it
+#     would silently widen an unsatisfiable constraint into "anything
+#     goes" (kimi_parameters_empty_enum_fails_closed_in_the_validator), so
+#     the mirror keeps it too and the walk's own non-empty check flags it.
+#   - The fail-closed set keeps the whole-tool drop: pattern, format,
+#     $schema, prefixItems, exclusive bounds, and every other unlisted
+#     keyword ("暂不支持使用 prefixItems 或 unevaluatedItems
+#     等方式模拟实现元组（Tuple）", "暂不支持如 exclusiveMinimum，
+#     exclusiveMaximum，minContains, maxContains 等复杂校验定义", "暂不支持
+#     Meta-Schemas"), and a silent drop is the same failure for every
+#     deviation (MissingType / UnsupportedKeyword / InvalidSchemaNode).
+#     The MIRROR IS DELIBERATELY STRICTER THAN THE ENGINE on the union
+#     keywords: the engine does have partial equivalents this guard refuses
+#     to rely on — a single-branch nested allOf/oneOf collapses into its
+#     parent (collapse_single_element_unions), a nested oneOf converts to
+#     anyOf (normalize_kimi_compatibility), and root unions flatten
+#     wholesale — so only a MULTI-branch nested allOf genuinely fails
+#     closed engine-side (UnsupportedNestedAllOf). The mirror red-flags
+#     every oneOf/allOf form because the engine's rewrites are invisible to
+#     a guard that only sees the pre-sanitization schema; a red here is
+#     conservative, not an engine-behavior claim. Scalar `const` is the
+#     other deliberate-strictness case: the engine translates a scalar
+#     const through the const→enum landing (type inference included) and
+#     ships it, while an object/array const fails closed
+#     (UnsupportedConstLiteral); the mirror reds every const because it
+#     does not replicate that landing. #683's evaluate_script was lost to
+#     the empty-`items` class (MissingType), which the T11 engine now
+#     repairs (remove_empty_mfjs_items_schemas — flagged below, never
+#     replicated). $ref/$dynamicRef/$recursiveRef stay banned
+#     beyond the document's own $ref support because this guard cannot
+#     follow the target and the shape underneath would go uninspected (the
+#     engine inlines a root $ref before validation — same conservative
+#     posture: the mirror flags what the engine rewrites).
+#   - Every schema position holds an object; boolean and list values are
+#     InvalidSchemaNode, empty nodes are MissingType. THE ENGINE REPAIRS
+#     MORE THAN items:{} — this mirror deliberately flags the whole repair
+#     class instead of replicating it: remove_empty_mfjs_items_schemas
+#     removes an items:{} keyword entirely (JSON Schema's "items
+#     unconstrained"), ensure_properties_object replaces a non-object
+#     properties with {} at the root, prune_dangling_required strips
+#     required entries that name no declared property (and drops an emptied
+#     required), drop_dependent_keywords strips dependentSchemas/
+#     dependentRequired with a prompt note, inline_internal_kimi_root_ref
+#     inlines a root $ref, and an empty additionalProperties:{} is legal
+#     engine-side (the validator's allow-empty arm). The guard keeps
+#     flagging all of these: a red here is a false alarm in the safe
+#     direction, pointing at shapes the engine silently rewrites.
+#   - Bare type:object nodes are REPAIRED, not flagged: the engine injects
+#     "properties": {} on every node whose type is exactly the string
+#     "object" and that carries neither a properties nor an
+#     additionalProperties key (inject_properties_on_bare_objects, early in
+#     sanitize(); the injected key is never removed downstream). The mirror
+#     replicates the injection BEFORE measuring the encoded-byte budget —
+#     skipping it made the byte check a false green for exactly the shapes
+#     the injection inflates (1000 bare objects fit 120000 bytes raw but
+#     encode to ~136KB injected: ResourceLimitExceeded engine-side, green
+#     mirror-side).
+#   - "type", where present, must be a single concrete string: list-typed
+#     ("type": ["array"]), non-string, and unknown values arrive typeless
+#     through the engine's string-only sanitizer and die with MissingType.
+#   - A node without "type" must carry anyOf; a surviving keyword must be
+#     admissible for its node's type (mfjs_keyword_allowed_for_type):
+#     `enum` is scalar-type-only (an `enum` on an object or boolean node is
+#     InvalidKeywordValue) and its literals match the node's type;
+#     required names unique declared properties. `default` is the one
+#     keyword the specification deliberately keeps type-free — "这儿不做
+#     类型检查，需要调用者自行保证其值类型内容和所在位置期望的内容相匹配"
+#     (any position, any value, no type check) — and the doc-precise
+#     engine matches the document exactly (T11:
+#     kimi_parameters_ships_default_on_any_node_without_type_check), so
+#     the mirror admits `default` on every node and never checks its
+#     value.
+#   - The parameters root must be a typed object without composition
+#     (RootMustBeObject, the Tool Use root rule). A root union is flattened
+#     engine-side — on the conflicting documents the strict face wins
+#     (the specification lists anyOf as an applicator without authorizing
+#     it at a parameters root) — so the guard's root ban stays red on a
+#     root union: a false alarm in the safe direction that still matches
+#     the T11 engine's flattened wire shape.
+#   - Resource budgets are mirrored exactly (anyOf ≤ 500 branches, ≤ 3000
+#     total properties, property depth ≤ 30, ≤ 1000 total enum values, ≤ 64
+#     structural depth, ≤ 120000 encoded bytes, enums above 250 entries
+#     capped at 75000 combined literal bytes) — ResourceLimitExceeded drops
+#     the tool like every other deviation. Aligned to the walle conf.go
+#     source defaults (source comparison, not a document clause,
+#     2026-11-05); loosening one means changing the CodeWhale constants and
+#     this mirror in lockstep, not waiting for Moonshot.
+#   - anyOf keeps only the union's own siblings (description; root $defs)
+#     and every branch is walked and concretely typed; the aligned branch
+#     budget (500) and properties total (3000) leave the pptx per-layout
+#     union (10 branches, 47 properties) far inside the budgets — the
+#     union's real ceiling is the layout count, not the budget;
+#     $defs interiors are walked so an unreferenced definition is no blind
+#     spot ($defs is root-only).
+#
+# Background kept as observation record (the k3 slides:[] incident): with
+# `type: "array"` and no items, constrained decoding completes the parameter
+# to its minimal valid value [] — observed live 27 times in a row; the
+# 2026-11-04 retest no longer reproduces the 27-in-a-row on a fresh single
+# turn, but long-context/multi-turn field loss is still real (5 of 7 calls
+# in a real user session), which is why the pptx schema moved to a
+# per-layout anyOf whose branches carry the fields each layout's renderer
+# cannot draw without (pinvou3-app/resources/mcp-servers/pptx/server.py).
+# anyOf is a formal MFJS applicator (the specification's Applicator
+# section), so the nested union itself is document-backed; on the pre-anyOf
+# base a nested union flattens back to all-optional semantics, so the shape
+# degrades safely backward.
 _MFJS_CONCRETE_TYPES = ("string", "number", "integer", "boolean", "object", "array", "null")
+# The MFJS specification's supported keyword set, exactly: the nine 字段定义
+# entries plus $defs/$ref under restricted support. Everything unlisted is
+# either advisory (stripped before the walk, see below) or fail-closed
+# (UnsupportedKeyword drops the whole tool).
 _MFJS_ALLOWED_KEYWORDS = frozenset((
-    "$id", "$ref", "$defs", "anyOf", "properties", "additionalProperties",
-    "items", "type", "enum", "required", "maxLength", "minLength",
-    "maximum", "minimum", "maxItems", "minItems", "title", "description",
-    "default",
+    "$ref", "$defs", "anyOf", "properties", "additionalProperties",
+    "items", "type", "enum", "required", "default", "description",
 ))
+# The advisory keywords the specification does not list and the engine
+# strips from the wire before validation (strip_mfjs_advisory_keywords,
+# schema_sanitize.rs): annotations (semantics-lossless; "暂不支持 title、
+# $comment 等描述性元数据"), the document identity keyword $id, and the
+# min/max bound keywords (soft constraints the model may violate anyway).
+# Removal keeps the tool shippable, so the mirror strips them too — a
+# schema carrying them is compliant here because on the constrained route
+# they never reach the validator, while other providers still receive the
+# full schema. Everything unlisted and unstrippable (pattern, format,
+# $schema, prefixItems, exclusive bounds, oneOf, allOf) fails closed here
+# — see the fail-closed bullet above for the engine's partial equivalents
+# the mirror deliberately does not rely on.
+_MFJS_ADVISORY_KEYWORDS = (
+    "title", "$comment", "$id", "minLength", "maxLength",
+    "minimum", "maximum", "minItems", "maxItems",
+)
+
+
+def _strip_mfjs_advisory_keywords(schema):
+    """Mirror of strip_mfjs_advisory_keywords on a deep copy: visit the
+    schema-value positions (properties values, $defs entries, anyOf
+    branches, object-form additionalProperties, items), then delete the
+    advisory keys. oneOf/allOf need no visit: the containing node fails the
+    keyword whitelist before any advisory keyword inside could matter."""
+    node = copy.deepcopy(schema)
+
+    def walk(value):
+        if not isinstance(value, dict):
+            return
+        subs = value.get("properties")
+        if isinstance(subs, dict):
+            for sub in subs.values():
+                walk(sub)
+        definitions = value.get("$defs")
+        if isinstance(definitions, dict):
+            for sub in definitions.values():
+                walk(sub)
+        branches = value.get("anyOf")
+        if isinstance(branches, list):
+            for branch in branches:
+                walk(branch)
+        additional = value.get("additionalProperties")
+        if isinstance(additional, dict):
+            walk(additional)
+        if isinstance(value.get("items"), dict):
+            walk(value["items"])
+        for keyword in _MFJS_ADVISORY_KEYWORDS:
+            value.pop(keyword, None)
+
+    walk(node)
+    return node
+
+
+def _mfjs_enum_literal_kind(value):
+    """mfjs_literal_kind: str → String; JSON int → Integer (serde i64/u64);
+    JSON float → Number; bool/null/object/array → None (unsupported)."""
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number" if math.isfinite(value) else None
+    return None
+
+
+def _strip_mfjs_unsupported_enum_values(schema):
+    """Mirror of strip_mfjs_unsupported_enum_values on the same deep copy:
+    an enum whose values are not homogeneous float/int/str scalars is
+    removed — an unconstrained node stays shippable ("……并且不支持混合类型
+    (List 中的每个枚举值的类型必须相同，如不可以 str + int)"). An empty
+    enum is vacuously homogeneous (all() over an empty kind list), so the
+    engine's strip deliberately KEEPS it and the validator's non-empty
+    check drops the whole tool instead — stripping it would silently widen
+    an unsatisfiable constraint into "anything goes"
+    (kimi_parameters_empty_enum_fails_closed_in_the_validator); the mirror
+    keeps it too, and the walk's own non-empty check flags it. A non-array
+    enum is left in place for the walk to fail closed (a malformed keyword
+    is a schema bug, not a simplification opportunity). An enum-only node
+    therefore keeps no type and stays red, exactly the engine's
+    MissingType."""
+    node = copy.deepcopy(schema)
+
+    def walk(value):
+        if not isinstance(value, dict):
+            return
+        subs = value.get("properties")
+        if isinstance(subs, dict):
+            for sub in subs.values():
+                walk(sub)
+        definitions = value.get("$defs")
+        if isinstance(definitions, dict):
+            for sub in definitions.values():
+                walk(sub)
+        branches = value.get("anyOf")
+        if isinstance(branches, list):
+            for branch in branches:
+                walk(branch)
+        additional = value.get("additionalProperties")
+        if isinstance(additional, dict):
+            walk(additional)
+        if isinstance(value.get("items"), dict):
+            walk(value["items"])
+        values = value.get("enum")
+        if isinstance(values, list):
+            kinds = [_mfjs_enum_literal_kind(entry) for entry in values]
+            # Strip only when the engine strips: every value must have a
+            # scalar kind (the engine's Option collect yields None on the
+            # first bool/null/object/array) AND the kinds must disagree.
+            # An empty list is vacuously homogeneous and stays — the
+            # walker's non-empty check then fails it closed, exactly the
+            # engine's keep-then-reject split.
+            if kinds and (any(kind is None for kind in kinds)
+                          or len(set(kinds)) > 1):
+                value.pop("enum", None)
+
+    walk(node)
+    return node
+
+
+def _inject_properties_on_bare_objects(node):
+    """Mirror of inject_properties_on_bare_objects (schema_sanitize.rs),
+    applied in place BEFORE the encoded-bytes budget is measured: a schema
+    node whose "type" is exactly the string "object" and that carries
+    neither a "properties" nor an "additionalProperties" key (presence, any
+    value) gains an empty "properties" map (+16 encoded bytes per bare
+    object). The engine runs this pass early in its sanitize() recursion
+    and the later strips and repairs never remove the injected key, so the
+    wire bytes the validator counts include it — measuring the un-injected
+    encoding let a schema the engine rejects pass as a false green (1000
+    bare objects fit 120000 bytes raw but exceed it injected). The engine
+    recurses over the WHOLE value tree (every dict value and array element,
+    enum/default data positions included); so does this."""
+    if isinstance(node, dict):
+        if (node.get("type") == "object"
+                and "properties" not in node
+                and "additionalProperties" not in node):
+            node["properties"] = {}
+        for value in node.values():
+            _inject_properties_on_bare_objects(value)
+    elif isinstance(node, list):
+        for value in node:
+            _inject_properties_on_bare_objects(value)
+
+
 # Per-type keyword admissibility, mirroring mfjs_keyword_allowed_for_type in
-# schema_sanitize.rs: a keyword surviving the whitelist is still
-# InvalidKeywordValue when its node's type does not admit it — `default` on
-# an array and `enum`/`default` on an object are the same silent tool drop
-# (review #713 round 7, P2-3). type/title/description are admissible on
-# every node and root $defs/$id on the root, handled by the other rules.
+# schema_sanitize.rs exactly: a keyword surviving the whitelist is still
+# InvalidKeywordValue when its node's type does not admit it — `enum` on an
+# object or boolean node is the same silent tool drop. `default` is the one
+# keyword the specification deliberately keeps type-free ("这儿不做类型检查，
+# 需要调用者自行保证其值类型内容和所在位置期望的内容相匹配" — any value,
+# any node), and the doc-precise engine matches the document
+# (kimi_parameters_ships_default_on_any_node_without_type_check), so it is
+# admissible everywhere and its value is never checked. type/description are
+# admissible on every node and root $defs on the root, handled by the other
+# rules.
 _MFJS_KEYWORDS_FOR_TYPE = {
-    "object": ("properties", "required", "additionalProperties"),
-    "array": ("items", "minItems", "maxItems"),
-    "string": ("enum", "default", "minLength", "maxLength"),
-    "number": ("enum", "default", "minimum", "maximum"),
-    "integer": ("enum", "default", "minimum", "maximum"),
+    "object": ("properties", "required", "additionalProperties", "default"),
+    "array": ("items", "default"),
+    "string": ("enum", "default"),
+    "number": ("enum", "default"),
+    "integer": ("enum", "default"),
     "boolean": ("default",),
     "null": ("default",),
 }
 # Resource budgets, mirroring the validator constants exactly
-# (ResourceLimitExceeded raise sites in schema_sanitize.rs).
-_MFJS_MAX_ANY_OF_ITEMS = 10
-_MFJS_MAX_OBJECT_DEPTH = 5
-_MFJS_MAX_TOTAL_PROPERTIES = 100
-_MFJS_MAX_TOTAL_ENUM_VALUES = 500
+# (ResourceLimitExceeded raise sites in schema_sanitize.rs). Aligned to the
+# walle conf.go source defaults (source comparison, not a document clause,
+# 2026-11-05): MaxAnyOfItems=500, MaxTotalPropertiesKeysNum=3000,
+# MaxSchemaDepth=30, 1000 total enum values, 75000 enum literal bytes; the
+# encoded-bytes budget (120000) and the enum-length entry threshold (250)
+# stay unchanged. Loosening one means changing the CodeWhale constants and
+# this mirror in lockstep.
+_MFJS_MAX_ANY_OF_ITEMS = 500
+_MFJS_MAX_OBJECT_DEPTH = 30
+_MFJS_MAX_TOTAL_PROPERTIES = 3000
+_MFJS_MAX_TOTAL_ENUM_VALUES = 1000
 # validate_mfjs_enum's conditional literal budget: an enum with more than 250
-# entries may not carry more than 7500 combined literal bytes (str::len for
+# entries may not carry more than 75000 combined literal bytes (str::len for
 # strings, serde to_string() length for the numeric literals).
 _MFJS_ENUM_LENGTH_CHECK_THRESHOLD = 250
-_MFJS_MAX_ENUM_STRING_LENGTH = 7_500
+_MFJS_MAX_ENUM_STRING_LENGTH = 75_000
 _MFJS_MAX_SCHEMA_BYTES = 120_000
 _MFJS_MAX_STRUCTURAL_DEPTH = 64
 _MFJS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
@@ -226,23 +502,10 @@ def _mfjs_is_integer_value(value) -> bool:
             and abs(float(value)) <= _MFJS_MAX_SAFE_INTEGER)
 
 
-def _mfjs_is_u64(value) -> bool:
-    return (isinstance(value, int) and not isinstance(value, bool)
-            and 0 <= value <= 2 ** 64 - 1)
-
-
 _MFJS_ENUM_VALUE_MATCHERS = {
     "string": lambda values: all(isinstance(value, str) for value in values),
     "integer": lambda values: all(_mfjs_is_integer_value(value) for value in values),
     "number": lambda values: all(_mfjs_is_number(value) for value in values),
-}
-
-_MFJS_DEFAULT_VALUE_MATCHERS = {
-    "boolean": lambda value: isinstance(value, bool),
-    "null": lambda value: value is None,
-    "string": lambda value: isinstance(value, str),
-    "number": _mfjs_is_number,
-    "integer": _mfjs_is_integer_value,
 }
 
 
@@ -257,7 +520,10 @@ class _MfjsBudget:
         self.total_enum_values = 0
         self.properties_budget_reported = False
         self.enum_budget_reported = False
-        # serde_json::to_vec(parameters).len() at the validator's entry.
+        # serde_json::to_vec(parameters).len() at the validator's entry —
+        # measured on the POST-INJECTION tree: the engine's bare-object
+        # injection runs before validation and nothing downstream removes
+        # the injected key, so the wire bytes include it.
         self.encoded_bytes = len(json.dumps(
             root, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
@@ -332,12 +598,12 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
         offenders.append(
             f"{path}: unsupported keyword(s) {unsupported} — outside the verified MFJS shape set, the validator drops the whole tool"
         )
-    for annotation in ("title", "description"):
+    for annotation in ("description",):
+        # The only annotation the specification documents (title/$comment/
+        # $id are advisory and stripped before this walk).
         if annotation in node and not isinstance(node[annotation], str):
             offenders.append(
                 f"{path}: {annotation} must be a string (MFJS InvalidKeywordValue drops the tool)")
-    if "$id" in node and not isinstance(node["$id"], str):
-        offenders.append(f"{path}: $id must be a string (MFJS InvalidKeywordValue drops the tool)")
     if node_type is None and "anyOf" not in node:
         # Non-empty and typeless: annotation-only nodes ({"description":
         # ...}, {"enum": [...]}) and typeless containers are MissingType
@@ -346,14 +612,15 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
             f"{path}: no \"type\" and no anyOf — MFJS rejects typeless nodes with MissingType"
         )
     if "anyOf" in node:
-        # MFJS allows only title/description beside anyOf ($defs/$id at the
-        # root) and a non-empty branch list within the union budget;
-        # everything else is InvalidKeywordValue / ResourceLimitExceeded.
-        allowed_siblings = {"anyOf", "title", "description"} | ({"$defs", "$id"} if is_root else set())
+        # MFJS allows only description beside anyOf ($defs at the root) and
+        # a non-empty branch list within the union budget; everything else
+        # is InvalidKeywordValue / ResourceLimitExceeded. (title is advisory
+        # and stripped before this walk, so it can no longer appear here.)
+        allowed_siblings = {"anyOf", "description"} | ({"$defs"} if is_root else set())
         bad_siblings = sorted(set(node) - allowed_siblings)
         if bad_siblings:
             offenders.append(
-                f"{path}: anyOf sibling keyword(s) {bad_siblings} — MFJS allows only title/description beside anyOf"
+                f"{path}: anyOf sibling keyword(s) {bad_siblings} — MFJS allows only description beside anyOf"
             )
         branches = node.get("anyOf")
         if not isinstance(branches, list) or not branches:
@@ -366,18 +633,18 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
                               property_depth=property_depth,
                               structural_depth=structural_depth + 1, budget=budget)
     else:
-        if not is_root and ("$defs" in node or "$id" in node):
+        if not is_root and "$defs" in node:
             offenders.append(
-                f"{path}: $defs/$id outside the schema root — MFJS rejects them (InvalidKeywordValue tool drop)"
+                f"{path}: $defs outside the schema root — MFJS rejects them (InvalidKeywordValue tool drop)"
             )
         if node_type in _MFJS_CONCRETE_TYPES:
             # These per-node rules run in the validator only after the type
             # is established (everything past the MissingType raise), so
             # nodes already flagged typeless or non-concrete get no second
             # flag here.
-            allowed = {"type", "title", "description"} | set(_MFJS_KEYWORDS_FOR_TYPE[node_type])
+            allowed = {"type", "description"} | set(_MFJS_KEYWORDS_FOR_TYPE[node_type])
             if is_root:
-                allowed |= {"$defs", "$id"}
+                allowed |= {"$defs"}
             stray = sorted(set(node) - allowed)
             if stray:
                 offenders.append(
@@ -400,7 +667,7 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
                                 f"{path}: {budget.total_enum_values} total enum values exceed the MFJS budget of {_MFJS_MAX_TOTAL_ENUM_VALUES} (ResourceLimitExceeded drops the tool)")
                     # validate_mfjs_enum's conditional literal budget: once an
                     # enum holds more than 250 entries its combined literal
-                    # length must stay within 7500 bytes (str::len for the
+                    # length must stay within 75000 bytes (str::len for the
                     # string case, serde to_string() for numeric literals) or
                     # the validator raises ResourceLimitExceeded.
                     if len(values) > _MFJS_ENUM_LENGTH_CHECK_THRESHOLD:
@@ -412,44 +679,14 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
                         if encoded_length > _MFJS_MAX_ENUM_STRING_LENGTH:
                             offenders.append(
                                 f"{path}: enum of {len(values)} values carries {encoded_length} literal bytes — MFJS caps enums above {_MFJS_ENUM_LENGTH_CHECK_THRESHOLD} entries at {_MFJS_MAX_ENUM_STRING_LENGTH} (ResourceLimitExceeded drops the tool)")
-            if ("default" in node and node_type in _MFJS_DEFAULT_VALUE_MATCHERS
-                    and not _MFJS_DEFAULT_VALUE_MATCHERS[node_type](node["default"])):
-                # validate_mfjs_default: object/array nodes cannot carry a
-                # default at all (flagged by the per-type rule above).
-                offenders.append(
-                    f"{path}: default does not match type \"{node_type}\" (MFJS InvalidDefault drops the tool)")
-            for lo_kw, hi_kw in (("minLength", "maxLength"), ("minItems", "maxItems"),
-                                 ("minimum", "maximum")):
-                # Presence checks, mirroring the validator's obj.get(k).is_some()
-                # arms: an explicitly present null keyword value is
-                # present-and-invalid (validate_mfjs_bounds parses it and
-                # raises InvalidRange), never "keyword absent" — .get() alone
-                # cannot tell them apart because JSON null is Python None.
-                lo_present, hi_present = lo_kw in node, hi_kw in node
-                if not lo_present and not hi_present:
-                    continue
-                lo, hi = node.get(lo_kw), node.get(hi_kw)
-                if lo_kw == "minLength":
-                    expected_type, literal_ok = "string", _mfjs_is_u64
-                elif lo_kw == "minItems":
-                    expected_type, literal_ok = "array", _mfjs_is_u64
-                else:
-                    expected_type = "number/integer"
-                    literal_ok = (_mfjs_is_integer_value if node_type == "integer"
-                                  else _mfjs_is_number)
-                type_ok = (node_type in ("number", "integer")
-                           if expected_type == "number/integer"
-                           else node_type == expected_type)
-                if not type_ok:
-                    offenders.append(
-                        f"{path}: {lo_kw}/{hi_kw} require type \"{expected_type}\" (MFJS InvalidRange drops the tool)")
-                elif not ((not lo_present or literal_ok(lo))
-                          and (not hi_present or literal_ok(hi))):
-                    offenders.append(
-                        f"{path}: {lo_kw}/{hi_kw} hold an out-of-range literal (MFJS InvalidRange drops the tool)")
-                elif lo_present and hi_present and lo > hi:
-                    offenders.append(
-                        f"{path}: {lo_kw} must not exceed {hi_kw} (MFJS InvalidRange drops the tool)")
+            # `default` ships verbatim on any node with no value check —
+            # the specification's Any ("这儿不做类型检查……"), pinned
+            # engine-side by
+            # kimi_parameters_ships_default_on_any_node_without_type_check.
+            # There is deliberately nothing to validate here.
+            # (The min/max bound keywords are advisory: the strip above
+            # removed them before this walk, valid or malformed alike —
+            # losing only the soft constraint keeps the tool shippable.)
             if node_type == "object":
                 properties = node.get("properties")
                 if "properties" in node and not isinstance(properties, dict):
@@ -539,10 +776,16 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
     the call site and that print immediately raises NameError — without it
     the guard's wiring could be silently dismantled while the whole CI
     matrix stays green (this file's unit tests can only pin the walker's
-    internals, not the call site itself). The walk mirrors the validator's
-    whole rule set — shape, per-type keyword admissibility, enum/default
-    value typing, bounds, required⊆properties, and the resource budgets —
-    so a schema this guard accepts is not one the validator would drop.
+    internals, not the call site itself). The walk mirrors the engine's
+    full pipeline: the advisory-keyword and unsupported-enum strips run
+    first, the bare-object properties injection is replicated on the same
+    tree BEFORE the byte budget is measured (exactly the engine's
+    pre-validation transforms; the engine injects early and nothing
+    downstream removes the injected key), then the walker's whole rule set
+    applies to what the Moonshot wire would carry — shape, per-type keyword
+    admissibility, enum/default value typing, required⊆properties, and the
+    resource budgets — so a schema this guard accepts is not one the
+    validator would drop.
     """
     offenders: list[str] = []
     for tool in tools:
@@ -551,11 +794,17 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
         if not isinstance(schema, dict):
             offenders.append(f"{tool_id}.{name}: inputSchema missing or not an object")
             continue
-        budget = _MfjsBudget(schema)
+        wire_schema = _strip_mfjs_unsupported_enum_values(
+            _strip_mfjs_advisory_keywords(schema))
+        # The engine injects "properties": {} on bare type:object nodes
+        # early and nothing downstream removes the key, so the byte budget
+        # below must see the injected encoding (E19 parity).
+        _inject_properties_on_bare_objects(wire_schema)
+        budget = _MfjsBudget(wire_schema)
         if budget.encoded_bytes > _MFJS_MAX_SCHEMA_BYTES:
             offenders.append(
                 f"{tool_id}.{name}: inputSchema encodes to {budget.encoded_bytes} bytes — over the MFJS budget of {_MFJS_MAX_SCHEMA_BYTES} (ResourceLimitExceeded drops the tool)")
-        _walk_tool_schema(schema, f"{tool_id}.{name}", offenders, is_root=True, budget=budget)
+        _walk_tool_schema(wire_schema, f"{tool_id}.{name}", offenders, is_root=True, budget=budget)
     assert not offenders, (
         "Model-visible schema violates the contract:\n  " + "\n  ".join(offenders)
     )
