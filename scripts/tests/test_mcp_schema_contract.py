@@ -41,10 +41,11 @@ the pre-T11 sanitizer):
   engine-behavior claim: the engine has partial equivalents the mirror
   refuses to rely on (a single-branch nested union collapses, a nested
   oneOf converts to anyOf, root unions flatten wholesale), so only a
-  multi-branch nested allOf genuinely fails closed engine-side. Scalar
-  `const` is disclosed the same way — the engine ships a scalar const
-  through the const→enum landing (type inference included; an object/array
-  const fails closed with UnsupportedConstLiteral) while the mirror reds
+  multi-branch nested allOf genuinely fails closed engine-side. A
+  string/number `const` is disclosed the same way — the engine ships it
+  through the const→enum landing (type inference included; a bool/null or
+  object/array const fails closed with UnsupportedConstLiteral, the
+  scalar set being string/number only) while the mirror reds
   every const because it does not replicate the landing. #683's
   evaluate_script was lost to the empty-`items` class (MissingType), which
   the T11 engine now repairs (remove_empty_mfjs_items_schemas) — a repair

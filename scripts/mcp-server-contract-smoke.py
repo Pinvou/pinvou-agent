@@ -203,11 +203,12 @@ def content_json(response: dict) -> dict:
 #     closed engine-side (UnsupportedNestedAllOf). The mirror red-flags
 #     every oneOf/allOf form because the engine's rewrites are invisible to
 #     a guard that only sees the pre-sanitization schema; a red here is
-#     conservative, not an engine-behavior claim. Scalar `const` is the
-#     other deliberate-strictness case: the engine translates a scalar
-#     const through the const→enum landing (type inference included) and
-#     ships it, while an object/array const fails closed
-#     (UnsupportedConstLiteral); the mirror reds every const because it
+#     conservative, not an engine-behavior claim. A string/number `const`
+#     is the other deliberate-strictness case: the engine translates it
+#     through the const→enum landing (type inference included) and
+#     ships it, while a bool/null or object/array const fails closed
+#     (UnsupportedConstLiteral — the scalar set is string/number only);
+#     the mirror reds every const because it
 #     does not replicate that landing. #683's evaluate_script was lost to
 #     the empty-`items` class (MissingType), which the T11 engine now
 #     repairs (remove_empty_mfjs_items_schemas — flagged below, never
@@ -426,8 +427,11 @@ def _inject_properties_on_bare_objects(node):
     node whose "type" is exactly the string "object" and that carries
     neither a "properties" nor an "additionalProperties" key (presence, any
     value) gains an empty "properties" map (+16 encoded bytes per bare
-    object). The engine runs this pass early in its sanitize() recursion
-    and the later strips and repairs never remove the injected key, so the
+    object). The engine runs this pass early in its sanitize() recursion;
+    the mirror's later strips and repairs never remove the injected key,
+    and the engine's sole remover (sanitize_for_kimi's
+    type-beside-anyOf pushdown) only fires on a shape the sibling rule
+    already reds before injection — so on every guard-passed schema the
     wire bytes the validator counts include it — measuring the un-injected
     encoding let a schema the engine rejects pass as a false green (1000
     bare objects fit 120000 bytes raw but exceed it injected). The engine
@@ -524,8 +528,10 @@ class _MfjsBudget:
         self.enum_budget_reported = False
         # serde_json::to_vec(parameters).len() at the validator's entry —
         # measured on the POST-INJECTION tree: the engine's bare-object
-        # injection runs before validation and nothing downstream removes
-        # the injected key, so the wire bytes include it.
+        # injection runs before validation and, on every guard-passed
+        # shape, nothing downstream removes the injected key (the sole
+        # remover fires only where the sibling rule already red), so the
+        # wire bytes include it.
         self.encoded_bytes = len(json.dumps(
             root, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
@@ -825,12 +831,19 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
     full pipeline: the advisory-keyword and unsupported-enum strips run
     first, the bare-object properties injection is replicated on the same
     tree BEFORE the byte budget is measured (exactly the engine's
-    pre-validation transforms; the engine injects early and nothing
-    downstream removes the injected key), then the walker's whole rule set
+    pre-validation transforms; the engine injects early, and the one
+    engine pass that can remove the injected key — sanitize_for_kimi's
+    type-beside-anyOf pushdown — only fires on a shape the sibling rule
+    already reds before injection, so it cannot occur on a guard-passed
+    tree), then the walker's whole rule set
     applies to what the Moonshot wire would carry — shape, per-type keyword
     admissibility, enum/default value typing, required⊆properties, and the
-    resource budgets — so a schema this guard accepts is not one the
-    validator would drop.
+    resource budgets. Against the T11 face these rules mirror, a schema
+    this guard accepts is not one the validator would drop; against the
+    currently pinned pre-T11 face the strips and the loosened budgets run
+    ahead of the engine, and the pinned sanitizer would still reject some
+    guard-green schemas — the interim-face tripwire in the unit tests
+    keeps that window loud until the close-out re-pin.
     """
     offenders: list[str] = []
     for tool in tools:
@@ -847,8 +860,11 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
         wire_schema = _strip_mfjs_unsupported_enum_values(
             _strip_mfjs_advisory_keywords(schema))
         # The engine injects "properties": {} on bare type:object nodes
-        # early and nothing downstream removes the key, so the byte budget
-        # below must see the injected encoding (E19 parity).
+        # early and — on every shape this guard passes — nothing
+        # downstream removes the key (the sole remover, sanitize_for_kimi's
+        # type-beside-anyOf pushdown, fires only where the sibling rule
+        # already red), so the byte budget below must see the injected
+        # encoding (E19 parity).
         _inject_properties_on_bare_objects(wire_schema)
         budget = _MfjsBudget(wire_schema)
         if budget.encoded_bytes > _MFJS_MAX_SCHEMA_BYTES:

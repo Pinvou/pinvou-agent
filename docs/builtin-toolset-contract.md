@@ -191,12 +191,15 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
     engine-behavior claims, because the engine rewrites them before
     validation and a pre-sanitization guard cannot see the rewrite: (a) the
     union keywords — a single-branch nested `allOf`/`oneOf` collapses into
-    its parent, a nested `oneOf` converts to `anyOf`
-    (`normalize_kimi_compatibility`), and only a multi-branch nested `allOf`
-    genuinely fails closed (`UnsupportedNestedAllOf`); (b) a scalar `const`
-    — the engine translates it through the const→enum landing (type
-    inference included) and ships it, while an object/array `const` fails
-    closed (`UnsupportedConstLiteral`); the guard reds every `const`. #683's
+    its parent (`collapse_single_element_unions`), a nested `oneOf`
+    converts to `anyOf` (`normalize_kimi_compatibility`), and only a
+    multi-branch nested `allOf` genuinely fails closed
+    (`UnsupportedNestedAllOf`); (b) a string/number `const` — the engine
+    translates it through the const→enum landing (type inference included)
+    and ships it, while a bool/null or object/array `const` fails closed
+    (`UnsupportedConstLiteral`; the scalar set is string/number only —
+    `kimi_parameters_fails_closed_on_bool_and_null_const`); the guard reds
+    every `const`. #683's
     `evaluate_script` was lost to the empty-`items` class (`items:{}` →
     `MissingType`), which the engine repairs since CodeWhale #101
     (`remove_empty_mfjs_items_schemas`, already in the pinned tree; the T11
@@ -206,7 +209,8 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
     unambiguous and the specification lists `anyOf` as an applicator without
     authorizing it at a parameters root; on the conflicting documents the
     strict face wins, so a root `oneOf`/`anyOf`/`allOf` is flattened
-    engine-side (required groups merge — the pre-2026-11-04 behavior) and
+    engine-side (branch properties merge; branch required groups are
+    dropped to a prompt note — the pre-2026-11-04 behavior) and
     the schema guard stays red on one. Keep `parameters` a plain typed
     object. Two provider exceptions, each with its own documented basis:
     xAI admits sound all-object root unions (`sanitize_for_xai_parameters`,
@@ -270,15 +274,22 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   fully compliant 10-page deck, at +6% bytes, against an
   all-fields-required control falsified at +76% tokens with `strict:false`
   having no effect) is an observation recorded alongside, not the shipping
-  basis. The resource budgets no longer bound the union: they are aligned
-  to the walle conf.go source defaults (2026-11-05 — 500 branches / 3000
-  properties / depth 30), so the union's real ceiling is the layout count
-  and adding an 11th layout is an ordinary branch addition reviewed on its
-  own merits. On the pre-anyOf base the union
-  flattens back to all-optional semantics — the old behavior — so the shape
-  degrades safely backward. The schema guard mirrors the T11 engine
-  pipeline; its rules converge with that pipeline when the close-out re-pin
-  lands it on this repository's gitlink, not independently.
+  basis. The resource budgets stop bounding the union only once the T11
+  batch lands: they are aligned to the walle conf.go source defaults
+  (2026-11-05 — 500 branches / 3000 properties / depth 30), so after the
+  close-out re-pin the union's ceiling is the layout count and an 11th
+  layout is an ordinary branch addition. Until that re-pin, the pinned
+  engine still runs the pre-T11 sanitizer whose anyOf cap is 10 — the
+  union sits exactly at that cap, so a new layout added before the re-pin
+  fails the request build wholesale rather than passing quietly (the
+  guard's unit tests pin the pre-T11 face precisely so this window stays
+  loud). The nested union itself is legal on the pinned engine today: it
+  keeps nested multi-branch anyOf verbatim (flattening is a
+  root-composition-only pass) and its validator accepts the union, so the
+  shape does not wait on the re-pin. The schema guard mirrors the T11
+  engine pipeline; its rules converge with that pipeline when the
+  close-out re-pin lands it on this repository's gitlink, not
+  independently.
 - **Request-shape strips carry their own documentation** (2026-11-05
   posture): the engine's fixed-sampling strip on the Kimi Code membership
   endpoints (`api.kimi.com`/`api.kimi.ai`, path `coding/v1` — both hosts
