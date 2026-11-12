@@ -128,6 +128,45 @@ for (const settingsI18nSource of settingsI18nSources) {
     /localPortInvalid:/,
     'local model port validation message must be provided in every UI language',
   );
+  assert.match(
+    settingsI18nSource,
+    /noAuthToggleLabel:/,
+    'the keyless-endpoint toggle label must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /noAuthHint:/,
+    'the keyless-endpoint hint must be provided in every UI language',
+  );
+}
+// 「此端点无需鉴权」(auth_mode="none") 表单行为守卫：开关必须经
+// data-testid="model-form-no-auth-toggle" 驱动，且保存载荷必须携带
+// auth_mode（null=默认鉴权规则 / "none"=免鉴权声明，直通底座
+// auth_mode_disables_api_key）。缺任一即开关失效或声明丢失。
+{
+  const noAuthToggleSites = settingsViewSource.match(
+    /data-testid="model-form-no-auth-toggle"/g,
+  ) || [];
+  assert.strictEqual(
+    noAuthToggleSites.length,
+    1,
+    'the keyless-endpoint toggle must be rendered exactly once via its testid',
+  );
+  assert.match(
+    settingsViewSource,
+    /auth_mode: !isLocalPreset && noAuth \? 'none' : null/,
+    'model form save payload must persist the keyless declaration via auth_mode',
+  );
+  assert.match(
+    settingsViewSource,
+    /showBaseUrlField = !isCodingPlan/,
+    'the API base URL field (custom endpoint/port) must be visible for every non-coding-plan preset',
+  );
+  assert.match(
+    settingsViewSource,
+    /testId: 'model-form-base-url-port'/,
+    'the form must expose an explicit port field for the API base URL',
+  );
 }
 // Memory delete / feedback close confirm-dialog wiring (no native
 // window.confirm, testid pins) is asserted by tests/settings_window_confirm.test.mjs,
@@ -1364,6 +1403,15 @@ async function modalWidth(page, headingText) {
     const label = [...dialog.querySelectorAll('label,span')].find(node => (node.textContent || '').trim() === 'API 地址');
     return label.closest('div').querySelector('input');
   });
+  const dbgGeom = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const row = [...dialog.querySelectorAll('label,span')].find(n => (n.textContent||'').trim()==='API 地址').closest('div');
+    const inputs = [...row.querySelectorAll('input')].map(i => { const r = i.getBoundingClientRect(); return { aria: i.getAttribute('aria-label'), x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), cx: Math.round(r.x + r.width/2), cy: Math.round(r.y + r.height/2) }; });
+    const first = inputs[0];
+    const hit = document.elementFromPoint(first.cx, first.cy);
+    return { inputs, hit: hit ? (hit.getAttribute('aria-label') || hit.tagName) : 'none' };
+  });
+  console.log('DBG-GEOM', JSON.stringify(dbgGeom));
   await tachyonUrlInput.click({ clickCount: 3 });
   await tachyonUrlInput.type('http://127.0.0.1:8001/v1');
   await clickModalExact(page, '高');
@@ -1378,6 +1426,16 @@ async function modalWidth(page, headingText) {
       selected: buttons.filter(node => node.className.includes('bg-[#007AFF]')).map(node => node.textContent.trim()),
     };
   });
+  const dbg = await page.evaluate(() => {
+    const calls = [...window.__SETTINGS_TEST__.calls];
+    const probes = calls.filter(c => c.cmd === 'probe_local_server_kind').map(c => JSON.stringify(c.args));
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const row = [...dialog.querySelectorAll('label,span')].find(n => (n.textContent||'').trim()==='API 地址');
+    const inputs = row ? [...row.closest('div').querySelectorAll('input')].map(i => i.value) : 'NO ROW';
+    const saveCalls = calls.filter(c => c.cmd === 'save_model').length;
+    return { probesTail: probes.slice(-4), inputs, saveCalls };
+  });
+  console.log('DBG-TACHYON', JSON.stringify(dbg));
   rec('Tachyon probe keeps legacy high highlighted as effective medium',
     tachyonEffort.count === 4 && !tachyonEffort.hasHigh
       && tachyonEffort.selected.length === 1 && tachyonEffort.selected[0] === '中',

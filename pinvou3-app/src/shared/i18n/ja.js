@@ -1073,6 +1073,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   add:'追加', manualLocalModel:'ローカルモデルを手動追加',
   manualLocalModelDesc:'API URL とモデル ID を入力', cloudModels:'クラウドモデル',
   localModels:'ローカルモデル', toolCalling:'ツール呼び出し', apiKeyRequired:'API Key が必要',
+  noAuthToggleLabel:'API Key 不要', noAuthHint:'セルフホストのゲートウェイや認証不要のサービス向け：リクエストに Authorization ヘッダーを送らず、チャットにも API Key は不要です。',
   testBeforeSave:'保存前にサービスが利用可能かテストできます', modelContextWindowPlaceholder:'例: 1048576', modelContextWindowHint:'空欄ならシステム既定（未収録モデルは 128K の保守値）。新しいモデルは公式のコンテキスト長を入力してください（例: 1M なら 1048576）。',
   addProvider:provider=>`${provider} を追加`, editProvider:provider=>`${provider} を編集`,
   autoDetectLocalModel:'ローカルモデルを自動検出',
