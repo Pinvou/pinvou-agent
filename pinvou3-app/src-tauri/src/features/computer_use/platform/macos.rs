@@ -304,8 +304,9 @@ fn unproven_owner_ax_error(action: &str) -> ComputerUseError {
             "{action} refused: this Accessibility element's owner could not \
              be determined (the pid read on the element token failed), so it \
              is treated as possibly self-owned (fail-closed). Retry the \
-             action; a persistent failure means the element was destroyed or \
-             is invalid."
+             action; if the pid read keeps failing, this element cannot be \
+             used as a computer-use target — pick a fresh one (for example \
+             by re-activating the application or re-focusing the element)."
         ),
     )
 }
