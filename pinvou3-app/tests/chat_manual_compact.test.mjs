@@ -206,7 +206,7 @@ assert.match(chatViewSource, /const flagTookOver = !!\(takeoverFlagAt && Date\.n
 //     为界（旧 start 不得释放新标记）、只扫本会话（chatItems 是激活会话
 //     的投影）、只认 start 相位（done/fail/cancel 项不带该标记）。
 assert.match(chatViewSource, /itemsAt: maxItemId/, '点击必须快照条目 id 上界（界定"点击后新出现的 start 项"）');
-assert.match(chatViewSource, /item\.id > manualCompact\.itemsAt/, 'start 项兜底必须以点击快照为界（旧 start 不得释放新标记）');
+assert.match(chatViewSource, /item\.id <= manualCompact\.itemsAt/, 'start 项兜底必须以点击快照为界（旧 start 不得释放新标记）');
 assert.match(chatViewSource, /item\.type === 'system' && item\.compactPhase === 'start'/, 'start 系统项兜底释放必须钉住（start 与终态合批时桥接标记从未出现，只能靠它释放）');
 // 释放 effect 的依赖数组必须钉住：缺 compactingMap 会漏掉桥接标记变化，
 // 缺 manualCompact 会闭包旧标记、清错会话，缺 chatItems/activeSessionId

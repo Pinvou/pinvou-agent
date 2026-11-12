@@ -1239,7 +1239,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         if (!flagTookOver && manualCompact && manualCompact.sid === activeSessionId) {
           for (let i = chatItems.length - 1; i >= 0; i--) {
             const item = chatItems[i];
-            if (!item || !(item.id > manualCompact.itemsAt)) break; // id 单调，越过点击快照即可停
+            if (!item || item.id <= manualCompact.itemsAt) break; // id 单调，越过点击快照即可停
             if (item.type === 'system' && item.compactPhase === 'start') { itemTookOver = true; break; }
           }
         }
