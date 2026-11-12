@@ -1324,4 +1324,31 @@ mod voice_postprocess_tests {
             crate::core::reasoning_dialect::ReasoningDialect::QwenEnableThinking
         );
     }
+
+    /// Reproduced data-destruction regression (limits-audit r3 review M4):
+    /// the clip boundary and the detection must share the exact same edge, or
+    /// a rewrite computed from a clipped prefix prints `truncated: false` and
+    /// the frontend lets it destroy the draft tail. 16000 chars = clean
+    /// prefix; 16001 = clipped. CJK text pins char-count (not byte) semantics.
+    #[test]
+    fn voice_postprocess_clip_boundary_is_exact() {
+        use crate::features::voice::contract::VOICE_POSTPROCESS_MAX_INPUT_CHARS;
+        let at_cap = "字".repeat(VOICE_POSTPROCESS_MAX_INPUT_CHARS);
+        let over_cap = format!("{at_cap}一");
+        assert!(
+            !voice_postprocess_input_clipped(&at_cap),
+            "exactly-at-cap input must count as clean"
+        );
+        assert!(voice_postprocess_input_clipped(&over_cap));
+        // The truncation keeps exactly the cap in chars and pairs with the
+        // detection: what survives truncation is never "clipped", what is
+        // dropped always is.
+        let truncated = truncate_voice_postprocess_input(&over_cap);
+        assert_eq!(truncated.chars().count(), VOICE_POSTPROCESS_MAX_INPUT_CHARS);
+        assert_eq!(truncated, at_cap);
+        assert!(!voice_postprocess_input_clipped(&truncated));
+        // The disclosed VALUE is pinned too (the docs and the register row say
+        // 16000): a silent revert to the pre-audit 4000 must turn this red.
+        assert_eq!(VOICE_POSTPROCESS_MAX_INPUT_CHARS, 16000);
+    }
 }
