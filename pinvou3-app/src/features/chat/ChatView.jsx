@@ -1212,7 +1212,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // 以"该会话处于激活"为前提——压缩在后台完成（start/done 在别的
         // 会话激活期间到达）时 effect 永远看不到 compactingActive，残留
         // 的手动标记会把按钮多禁一轮 TTL 并显示假的"压缩中"。
-        if (manualCompact && compactingMap && compactingMap[manualCompact.sid]) {
+        // 接管还要求标记新鲜：终态丢失的过期条目要滞留到该会话被删除/
+        // 驱逐才清，若按"存在即接管"，重试点击刚置位的新标记会被旧条目
+        // 立即释放——新 start 落地前入口提前复位，快速二连击会重复入队。
+        const takeoverFlagAt = manualCompact && compactingMap ? compactingMap[manualCompact.sid] : 0;
+        if (takeoverFlagAt && Date.now() - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS) {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- 与 RightDock 的 stale-permit 撤销同款：start 接管后必须同步释放手动标记，否则终态清掉桥接标记后手动标记会复活、按钮被无谓多禁一轮 TTL
           setManualCompact(current => (current && current.sid === manualCompact.sid ? null : current));
         }

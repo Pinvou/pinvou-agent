@@ -187,7 +187,10 @@ assert.match(chatViewSource, /setManualCompact\(current => \(current && current\
 // 桥接层 start 写入该会话标记后必须立即释放手动标记（身份校验，只清本会话）；
 // 不得以"该会话处于激活"为前提——压缩在后台完成时 effect 看不到
 // compactingActive，残留的手动标记会把按钮多禁一轮 TTL 并显示假"压缩中"。
-assert.match(chatViewSource, /if \(manualCompact && compactingMap && compactingMap\[manualCompact\.sid\]\) \{[\s\S]{0,300}setManualCompact\(current => \(current && current\.sid === manualCompact\.sid \? null : current\)\);/, '桥接 start 写入标记时必须立即释放手动标记（与会话激活无关）');
+// 接管还必须要求标记新鲜：终态丢失的过期条目会滞留到删除/驱逐才清，
+// 按"存在即接管"会让重试点击刚置位的新标记被旧条目立即释放——
+// 新 start 落地前入口提前复位，快速二连击重复入队压缩。
+assert.match(chatViewSource, /const takeoverFlagAt = manualCompact && compactingMap \? compactingMap\[manualCompact\.sid\] : 0;\s*if \(takeoverFlagAt && Date\.now\(\) - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS\) \{[\s\S]{0,300}setManualCompact\(current => \(current && current\.sid === manualCompact\.sid \? null : current\)\);/, '桥接 start 写入新鲜标记时必须立即释放手动标记（与会话激活无关）；过期条目不得接管，否则重试标记被旧条目提前释放、重开双击窗口');
 // 释放 effect 的依赖数组必须钉住：缺 compactingMap 会漏掉桥接标记变化，
 // 缺 manualCompact 会闭包旧标记、清错会话。
 assert.match(chatViewSource, /\}, \[compactingMap, manualCompact\]\);/, 'start 接管释放 effect 必须声明 [compactingMap, manualCompact] 依赖');
