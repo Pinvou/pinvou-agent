@@ -1101,6 +1101,70 @@ mod tests {
                 "error sending request for url (http://x/): actively refused",
                 "connection_refused",
             ),
+            // Each keyword alternative pinned in isolation (round-1 review
+            // M1): deleting any single alternative must turn a row red.
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://dns-backed-host/)",
+                "dns_failed",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): tcp connect error: os error 10061",
+                "connection_refused",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): Name or service not known",
+                "dns_failed",
+            ),
+            // Arm ORDER pinned: a text matching two arms lands in the
+            // earlier one.
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (https://ssl.example.com/): failed to lookup address information",
+                "tls_error",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://dns-backed-host/): connection refused",
+                "dns_failed",
+            ),
+            // Structured flags lose to keyword text — the monitor inherits
+            // core's URL-word precedence, so a real connect/dns-class error
+            // on a URL embedding a TLS word classifies tls_error.
+            (
+                false,
+                false,
+                true,
+                "error sending request for url (https://ssl.example.com/)",
+                "tls_error",
+            ),
+            (
+                false,
+                true,
+                false,
+                "error sending request for url (https://ssl.example.com/)",
+                "tls_error",
+            ),
+            // Timeout outranks everything, keyword text included.
+            (
+                true,
+                false,
+                true,
+                "error sending request for url (https://ssl.example.com/): certificate unknown",
+                "timeout",
+            ),
             (false, false, false, "builder error", "network_error"),
         ];
         for (is_timeout, is_dns, is_connect, text, expected) in cases {
