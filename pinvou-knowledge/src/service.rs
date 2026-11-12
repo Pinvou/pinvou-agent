@@ -791,6 +791,21 @@ impl KnowledgeService {
             .map_err(|error| error.to_string())
     }
 
+    pub fn update_collection(
+        &self,
+        id: i64,
+        request: CreateCollectionRequest,
+    ) -> Result<Collection, String> {
+        let name = normalized_name(&request.name, "知识集")?;
+        self.store
+            .update_collection(id, &name, request.description.as_deref())
+            .map_err(|_| "知识集不存在或已删除".to_string())?;
+        self.store
+            .collection(id, false)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "知识集不存在或已删除".to_string())
+    }
+
     pub fn trash_collection(&self, id: i64) -> Result<(), String> {
         self.store
             .trash_collection(id)
@@ -812,6 +827,16 @@ impl KnowledgeService {
             .map_err(|_| "回收站中未找到该知识集".to_string())?;
         self.remove_managed_sources(paths);
         Ok(())
+    }
+
+    pub fn documents(
+        &self,
+        collection_id: i64,
+        include_deleted: bool,
+    ) -> Result<Vec<Document>, String> {
+        self.store
+            .list_documents(collection_id, include_deleted)
+            .map_err(|error| error.to_string())
     }
 
     pub fn documents_page(
