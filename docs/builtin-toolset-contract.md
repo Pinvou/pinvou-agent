@@ -438,7 +438,8 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   event ever arrives while the app keeps running (that deferral, a
   forwarder aborted by an engine recycle, a lost Drop notification on a
   full event channel at engine-drop time, or a forwarder task that
-  panicked on an earlier event), the wait is given up after 24h and the
+  panicked on an earlier event), the wait is given up after 24h of awake
+  time (a Windows clock may count sleep) and the
   message re-delivers; a crash loses the in-memory wait entirely, so the
   queued file re-delivers on the first poll after restart — either way
   possibly duplicating. The pending-file ceiling does NOT count in-flight
@@ -481,7 +482,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   confirmation under the current full-auto approval (the registered typed
   Ask rule is the latent pin awaiting the approval-mode split, not the
   `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
-  next boot; the done-marker window itself is the keyed-dedup horizon —
+  next boot; the marker write does not fsync, so a power-loss restart can
+  lose a written marker — that corner degrades to one duplicate, never
+  loss; the done-marker window itself is the keyed-dedup horizon —
   pruned after the 7-day retention, so a retried call older than that
   re-delivers; and for an UNKEYED send whose spool file persistently cannot
   be removed after delivery, the same body re-delivers on up to ten
@@ -533,7 +536,8 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   on the next poll (after ten dropped cycles the file is quarantined), a
   terminal event that never arrives while the app keeps running (the
   next-turn deferral, a forwarder aborted by a recycle, a lost Drop
-  notification, or a dead forwarder task) is given up after 24h and
+  notification, or a dead forwarder task) is given up after 24h of awake
+  time and
   re-delivers, and a crash
   loses the in-memory wait entirely — the queued file re-delivers on the
   first poll after restart (this replaces the former zero-trace loss
@@ -543,7 +547,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   armed so the poll cannot loop redeliveries at full cadence — the wait
   then expires at the 24h rate; every former loss trigger now degrades to
   at-least-once redelivery (possibly duplicating) instead of silent loss,
-  save the ten-cycle `steer_drop_limit` quarantine above — and four lossy
+  save the ten-cycle `steer_drop_limit` quarantine above — and five lossy
   channels that are not redeliveries: the finalizer writes the done marker
   on the terminal event without consulting the forwarder's
   transcript-persistence outcome, so a session persist that fails and
@@ -559,7 +563,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   marker in the post-marker replacement arm leaves that skip arm to
   remove the newest body untried at the next pass (the old body's commit
   is real and logged; the replacement body is not re-delivered —
-  disclosed in the arm's comment); a
+  disclosed in the arm's comment); and even a successful unlink can lose
+  the race to a concurrent poll pass: a replacement landing inside the
+  finalizer's tail can be consumed untried by that pass's
+  already-delivered skip within the same interleaving (the arm's comment
+  prices this same-pass variant); a
   macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
   double-deliver — since commit-time finalization that double-delivery

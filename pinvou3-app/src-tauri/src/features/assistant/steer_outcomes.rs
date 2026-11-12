@@ -20,8 +20,8 @@ static STEER_RESOLUTION_HOOK: OnceLock<SteerResolutionHook> = OnceLock::new();
 
 /// Register the steer terminal consumer. Only the first registration wins;
 /// a duplicate is rejected instead of silently overwriting (the registry
-/// refuses it and the registration site logs the refusal loudly — startup
-/// assembly must call this exactly once).
+/// refuses it and the registration site best-effort-writes the refusal to
+/// stderr — startup assembly must call this exactly once).
 pub fn register_steer_resolution_hook(hook: SteerResolutionHook) -> Result<(), ()> {
     STEER_RESOLUTION_HOOK.set(hook).map_err(|_| ())
 }
@@ -32,8 +32,8 @@ pub fn register_steer_resolution_hook(hook: SteerResolutionHook) -> Result<(), (
 /// drop — a turn that ENDS normally does not settle; the steer stays
 /// parked for the next turn's first drain). Silent when unregistered — safe
 /// because the registry only arms entries inside the delivery watcher's
-/// poll, and the watcher is spawned exactly once, in the GUI Builder's
-/// setup, right next to the hook registration this module exposes. The
+/// poll, and the watcher is spawned exactly once, later in the same GUI
+/// setup closure as the hook registration this module exposes. The
 /// windowless/headless host DOES build an engine pool and its forwarders
 /// run, but its Builder registers neither this hook nor a delivery
 /// watcher and hosts no steer initiator (no invoke handler, no scheduled
