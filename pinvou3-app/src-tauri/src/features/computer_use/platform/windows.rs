@@ -77,8 +77,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use super::super::backend::ComputerUseBackend;
 use super::super::guard::raw_element_binding;
 use super::super::types::{
-    Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
-    UiTreeOptions,
+    Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
+    ScrollDirection, UiTreeOptions,
 };
 use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
@@ -905,7 +905,9 @@ impl WindowsComputerUseBackend {
         // Chunk the hold so a stop/timeout latches within HOLD_CANCEL_POLL_MS
         // instead of waiting out the whole hold (up to 30 s). The keys are
         // always released by the common release below, whether the hold ran
-        // out or was cancelled.
+        // out or was cancelled — and a FAILED release is surfaced, never the
+        // "keys have been released" all-clear (same compensating-release
+        // merge as the physical X11 path).
         let mut remaining = hold;
         while remaining > Duration::ZERO {
             if self
@@ -913,10 +915,19 @@ impl WindowsComputerUseBackend {
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
-                let _ = release_reverse(&pressed, &mut self.enigo);
-                return Err(ComputerUseError::unavailable(
-                    "hold was cancelled (caller timeout or stop); the keys have been released",
-                ));
+                return Err(
+                    match release_reverse(&pressed, &mut self.enigo)
+                        .map_err(|err| map_input_err("key release", err))
+                    {
+                        Ok(()) => ComputerUseError::unavailable(
+                            "hold was cancelled (caller timeout or stop); the keys have been released",
+                        ),
+                        Err(release_error) => ComputerUseError::unavailable(format!(
+                            "hold was cancelled (caller timeout or stop); the compensating \
+                         release failed ({release_error}); the keys may still be held down"
+                        )),
+                    },
+                );
             }
             let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
             sleep(step);
@@ -977,6 +988,8 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             input: true,
             ui_tree: true,
             notes,
+            target: DisplayTarget::Physical,
+            target_note: String::new(),
         }
     }
 
