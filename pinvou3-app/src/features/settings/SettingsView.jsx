@@ -623,7 +623,9 @@ function hasStoredCredential(record) {
           ? ''
           : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         try {
-          const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id);
+          // noAuth 随请求下发：后端据此跳过已保存凭据回退（残留 key 不得
+          // 在保存前发往新填的 URL，与保存后的鉴权形态完全一致）。
+          const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
         } catch (e) {
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
@@ -656,7 +658,8 @@ function hasStoredCredential(record) {
           ? ''
           : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         try {
-          const result = await bridge.models.testImageInputCapability(model.trim(), baseUrl.trim(), testKey, initial.__new ? null : initial.id);
+          // 与 handleTest 同口径：noAuth 随请求下发，后端据此跳过已保存凭据回退。
+          const result = await bridge.models.testImageInputCapability(model.trim(), baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           setImageTestResult(normalizeImageCapabilityTestResult(result));
         } catch (e) {
           setImageTestResult({ status: 'error', verified: false, summary: String(e && e.message ? e.message : e), httpStatus: null });

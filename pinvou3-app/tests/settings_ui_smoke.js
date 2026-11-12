@@ -169,10 +169,26 @@ for (const settingsI18nSource of settingsI18nSources) {
     /if \(!isCodingPlan && noAuth\) return hasSavedKey \? 'delete' : 'replace'/,
     'the stored-credential delete action must stay scoped to non-managed keyless declarations (a stale toggle over a live coding-plan URL must not delete the credential)',
   );
+  // The keyless test-key posture exists at exactly two sites (handleTest +
+  // handleImageCapabilityTest); a plain assert.match would stay green when
+  // only ONE site regresses, so pin the count.
+  const keylessTestKeySites = settingsViewSource.match(
+    /!isLocalPreset && !isCodingPlan && noAuth\s*\?\s*''\s*:/g,
+  ) || [];
+  assert.strictEqual(
+    keylessTestKeySites.length,
+    2,
+    'connection AND image-capability tests must both refuse to send a typed key while the keyless declaration is active (a single-site regression must fail here)',
+  );
   assert.match(
     settingsViewSource,
-    /!isLocalPreset && !isCodingPlan && noAuth\s*\?\s*''\s*:/,
-    'connection/image-capability tests must not send a typed key while the keyless declaration is active',
+    /testModelConnection\(baseUrl\.trim\(\), testKey, initial\.__new \? null : initial\.id, !isLocalPreset && !isCodingPlan && noAuth\)/,
+    'the connection test must forward the keyless posture so the backend skips the saved-credential fallback (a pre-save probe must not transmit the stored key to the newly typed URL)',
+  );
+  assert.match(
+    settingsViewSource,
+    /testImageInputCapability\(model\.trim\(\), baseUrl\.trim\(\), testKey, initial\.__new \? null : initial\.id, !isLocalPreset && !isCodingPlan && noAuth\)/,
+    'the image-capability test must forward the keyless posture so the backend skips the saved-credential fallback',
   );
   assert.match(
     settingsViewSource,

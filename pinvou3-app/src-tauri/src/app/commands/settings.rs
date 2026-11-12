@@ -162,7 +162,22 @@ fn saved_model_for_probe<'a>(
 /// read. Each caller maps the read failure to its own result shape (the
 /// local-kind probe swallows it and continues credential-less; the
 /// connection/image probes surface a typed error).
-fn resolve_probe_key(api_key: &str, model_id: Option<&str>) -> Result<Option<String>, String> {
+///
+/// `no_auth` is the form's keyless posture (the "no API key needed"
+/// declaration active in the modal). It short-circuits the whole ladder:
+/// neither the typed key nor the record's saved credential may ride the
+/// probe — the test must exercise the same posture the form will save
+/// (mirrors `bridge::api_key`'s declaration-before-env/keyring ordering;
+/// the frontend already sends an empty key, this closes the saved-credential
+/// fallback it cannot see).
+fn resolve_probe_key(
+    api_key: &str,
+    model_id: Option<&str>,
+    no_auth: bool,
+) -> Result<Option<String>, String> {
+    if no_auth {
+        return Ok(None);
+    }
     let provided = api_key.trim();
     if !provided.is_empty() {
         return Ok(Some(provided.to_string()));
@@ -358,12 +373,13 @@ pub async fn probe_local_server_kind(
     // not block the probe (continue as credential-less) — with credentials
     // missing the probe still identifies auth-free endpoints; authenticated
     // endpoints 401 into generic, the same semantics as an unreachable probe.
-    let bearer = match resolve_probe_key(api_key.as_deref().unwrap_or(""), model_id.as_deref()) {
-        Ok(Some(key)) => Some(key.trim().to_string()).filter(|k| !k.is_empty()),
-        // Includes the swallowed credential-read failure: continue
-        // credential-less rather than blocking the probe.
-        _ => None,
-    };
+    let bearer =
+        match resolve_probe_key(api_key.as_deref().unwrap_or(""), model_id.as_deref(), false) {
+            Ok(Some(key)) => Some(key.trim().to_string()).filter(|k| !k.is_empty()),
+            // Includes the swallowed credential-read failure: continue
+            // credential-less rather than blocking the probe.
+            _ => None,
+        };
     let kind =
         crate::core::model_endpoint::probe_local_server_kind(&base_url, bearer.as_deref()).await;
     Ok(match kind {
@@ -695,8 +711,15 @@ pub async fn test_model_connection(
     base_url: String,
     api_key: String,
     model_id: Option<String>,
+    no_auth: Option<bool>,
 ) -> Result<ModelConnectionTestResult, String> {
-    Ok(probe_model_connection(&base_url, &api_key, model_id.as_deref()).await)
+    Ok(probe_model_connection(
+        &base_url,
+        &api_key,
+        model_id.as_deref(),
+        no_auth.unwrap_or(false),
+    )
+    .await)
 }
 
 /// 连接探测核心:GET models probe URL 验证服务可达与凭据可用。
@@ -705,6 +728,7 @@ pub async fn probe_model_connection(
     base_url: &str,
     api_key: &str,
     model_id: Option<&str>,
+    no_auth: bool,
 ) -> ModelConnectionTestResult {
     let url = crate::core::model_endpoint::models_probe_url(base_url);
     let parsed_url = match reqwest::Url::parse(&url) {
@@ -737,7 +761,7 @@ pub async fn probe_model_connection(
     // Anthropic 官方端点用 x-api-key + anthropic-version,不接受 Bearer。
     let is_anthropic = crate::core::model_endpoint::is_anthropic_api_url(&parsed_url);
     let mut req = client.get(parsed_url);
-    let key = match resolve_probe_key(api_key, model_id) {
+    let key = match resolve_probe_key(api_key, model_id, no_auth) {
         Ok(Some(key)) => key,
         Ok(None) => String::new(),
         Err(e) => {
@@ -1121,6 +1145,7 @@ pub async fn run_image_capability_probe(
     base_url: &str,
     api_key: &str,
     model_id: Option<&str>,
+    no_auth: bool,
 ) -> ImageCapabilityTestResult {
     let model = model.trim().to_string();
     if model.is_empty() {
@@ -1160,7 +1185,7 @@ pub async fn run_image_capability_probe(
             return image_capability_result("error", false, format!("测试初始化失败: {e}"), None);
         }
     };
-    let key = match resolve_probe_key(api_key, model_id) {
+    let key = match resolve_probe_key(api_key, model_id, no_auth) {
         Ok(Some(key)) => key,
         Ok(None) => String::new(),
         Err(e) => {
@@ -1237,8 +1262,16 @@ pub async fn test_image_input_capability(
     base_url: String,
     api_key: String,
     model_id: Option<String>,
+    no_auth: Option<bool>,
 ) -> Result<ImageCapabilityTestResult, String> {
-    Ok(run_image_capability_probe(&model, &base_url, &api_key, model_id.as_deref()).await)
+    Ok(run_image_capability_probe(
+        &model,
+        &base_url,
+        &api_key,
+        model_id.as_deref(),
+        no_auth.unwrap_or(false),
+    )
+    .await)
 }
 
 /// General settings field patch. Search, pet, the model list and the active model are managed by dedicated
@@ -2022,6 +2055,29 @@ mod tests {
             saved_model_for_probe(&prefs, None).map(|m| m.id.as_str()),
             Some("saved-active"),
             "未指定 id 时保留激活模型回退(显式测试连接的既有语义)"
+        );
+    }
+
+    #[test]
+    fn keyless_posture_suppresses_probe_key_fallback() {
+        // 免鉴权声明生效的表单,探测必须与保存后的鉴权形态一致:类型化 key 与
+        // 已保存凭据都不得外发(no_auth 短路整个 ladder,先于任何凭据读取)。
+        // 两条腿都不触 UserPrefs / 钥匙串 —— 短路发生在 load 之前。
+        assert_eq!(
+            resolve_probe_key("typed-key", Some("unused-id"), true).unwrap(),
+            None,
+            "no_auth 生效时类型化 key 也不得外发(防前端口径回退)"
+        );
+        assert_eq!(
+            resolve_probe_key("", Some("unused-id"), true).unwrap(),
+            None,
+            "no_auth 生效时已保存凭据回退必须被抑制(残留 key 不得发往新 URL)"
+        );
+        // 反方向:无声明的表单保持既有 ladder(类型化 key 优先),防过度短路。
+        assert_eq!(
+            resolve_probe_key("typed-key", None, false).unwrap(),
+            Some("typed-key".to_string()),
+            "无声明时类型化 key 优先的既有语义不变"
         );
     }
 

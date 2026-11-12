@@ -426,7 +426,11 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // (set/get super permission) and the artifact reconcile/deliverable-index
 // pair (list_workspace_files, save_session_artifacts, list_deliverable_index)
 // joined the shared base.
-const expectedSharedBaseHash = '958fd067f00e3292857d33a5e80f4d615f2b3e792a6ce431672d3e50196ff219';
+// Recomputed for the keyless-probe-posture wave: the test_model_connection /
+// test_image_input_capability invokes gained the form's noAuth posture arg
+// (the backend probe ladder must skip the saved-credential fallback while the
+// keyless declaration is active).
+const expectedSharedBaseHash = '8f4d964785b23ff932dbcba3780930f6029ae59ac7b2b50eb4d3e665f80a160a';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

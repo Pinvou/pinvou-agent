@@ -131,10 +131,10 @@ async function revealModelApiKey(id) { return pinvouSharedtauriSettings().reveal
   }
   // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
 async function switchModel(sessionId, modelId) { return pinvouSharedtauriSettings().switchModel(sessionId, modelId); }
-async function testModelConnection(baseUrl, apiKey, modelId) { return pinvouSharedtauriSettings().testModelConnection(baseUrl, apiKey, modelId); }
+async function testModelConnection(baseUrl, apiKey, modelId, noAuth) { return pinvouSharedtauriSettings().testModelConnection(baseUrl, apiKey, modelId, noAuth); }
   // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
   // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
-async function testImageInputCapability(model, baseUrl, apiKey, modelId) { return pinvouSharedtauriSettings().testImageInputCapability(model, baseUrl, apiKey, modelId); }
+async function testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth) { return pinvouSharedtauriSettings().testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth); }
   async function probeLocalServerKind(baseUrl, apiKey, modelId) {
     // 本地/内网 OpenAI 兼容端点的服务类型探测（vllm/ollama/lmstudio/generic）。
     // Rust 侧按 base_url TTL 缓存；命令失败（老版本桌面/命令被拒）在这里 reject，
