@@ -1000,7 +1000,9 @@ pub(super) fn upsert_timed_memory_unlocked(
     } else {
         CURRENT_FOCUS_DEFAULT_TTL_DAYS
     };
-    let ttl_days = ttl_days.unwrap_or(default_ttl).clamp(1, TIMED_MEMORY_MAX_TTL_DAYS);
+    let ttl_days = ttl_days
+        .unwrap_or(default_ttl)
+        .clamp(1, TIMED_MEMORY_MAX_TTL_DAYS);
     let text = clean_candidate_sentence(content, TIMED_TEXT_MAX_CHARS);
     if text.is_empty() || looks_sensitive(&text) {
         return Err(io::Error::new(

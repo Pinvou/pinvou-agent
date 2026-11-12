@@ -1193,8 +1193,7 @@ fn oauth_login_guards_and_cancel_behaviour() {
     // foundation crate the CLI does not link — deterministic, documented
     // exit-1 instead of a half-working reimplementation.
     run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
-    let message =
-        expect_failed(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]).to_string();
+    let message = expect_failed(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]).to_string();
     assert!(
         message.contains("oauth_login_unavailable_in_cli"),
         "message: {message}"
