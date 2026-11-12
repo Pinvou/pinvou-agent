@@ -649,11 +649,15 @@ class SchemaContractWalkerTest(unittest.TestCase):
         # The homogeneity split follows serde kinds, not JSON values:
         # 1 (Integer) and 2.5 (Number) are different kinds and the enum is
         # stripped; [1, 2] and [0.5, 1.5] are homogeneous and survive into
-        # the validator's own enum/type match.
+        # the validator's own enum/type match. The integer typing is what
+        # makes this pin bite: a Number-kind literal survives the number
+        # matcher (1 is a JSON number) but fails the integer matcher
+        # (2.5 is not integral), so a mirror that skips the strip flips
+        # this fixture red instead of green.
         self.assertIsNone(_contract_message(
             {"type": "object",
              "properties": {
-                 "mixed": {"type": "number", "enum": [1, 2.5]},
+                 "mixed": {"type": "integer", "enum": [1, 2.5]},
                  "ints": {"type": "integer", "enum": [1, 2]},
                  "floats": {"type": "number", "enum": [0.5, 1.5]},
              }}))
@@ -792,6 +796,20 @@ class SchemaContractWalkerTest(unittest.TestCase):
         # validate_mfjs_parameters (RootMustBeObject): function parameters
         # are always a typed object on the constrained route.
         message = _contract_message({"type": "string"})
+        self.assertIsNotNone(message)
+        self.assertIn("root must be type \"object\"", message)
+
+    def test_root_union_is_red(self):
+        # The root rule also bans composition: even a sound all-object
+        # anyOf on a typed object root — the shape xAI would admit under
+        # #144 — is RootMustBeObject on the Moonshot route. The typed
+        # root is what makes this pin bite the anyOf clause specifically:
+        # without "type": "object" the no-type arm fires regardless, and
+        # dropping the union clause from the root check would stay green.
+        message = _contract_message(
+            {"type": "object",
+             "anyOf": [{"type": "object", "properties": {}},
+                       {"type": "object", "properties": {}}]})
         self.assertIsNotNone(message)
         self.assertIn("root must be type \"object\"", message)
 
@@ -1070,32 +1088,24 @@ class SchemaContractWalkerTest(unittest.TestCase):
     def test_real_pptx_schema_anyof_budgets_measured(self):
         # The union duplicates layout/title across its 10 branches, so the
         # whole-document properties total is what the budget sees. Measure
-        # it the way the guard's _MfjsBudget does (every properties dict,
-        # recursed through anyOf/items/additionalProperties) and pin it
-        # inside the budget: at the 2026-11-04 shape it is 47 of the
-        # aligned 3000 (walle conf.go source default, 2026-11-05) — the
-        # binding constraint on the union is the layout count, not any
-        # budget; this pin stays as the drift guard, not silent growth.
-        def count(node):
-            total = 0
-            if not isinstance(node, dict):
-                return total
-            props = node.get("properties")
-            if isinstance(props, dict):
-                total += len(props)
-                for sub in props.values():
-                    total += count(sub)
-            for key in ("items", "additionalProperties"):
-                sub = node.get(key)
-                if isinstance(sub, dict):
-                    total += count(sub)
-                elif isinstance(sub, list):
-                    total += sum(count(entry) for entry in sub)
-            branches = node.get("anyOf")
-            if isinstance(branches, list):
-                total += sum(count(branch) for branch in branches)
-            return total
-        total = count(pptx_schema)
+        # it with the guard's own pipeline (the strips, the bare-object
+        # injection, then _MfjsBudget + _walk_tool_schema — the exact
+        # accumulation the validator's MfjsValidationState performs) so
+        # the measurement can never drift from the counting rule: at the
+        # 2026-11-04 shape it is 47 of the aligned 3000 (walle conf.go
+        # source default, 2026-11-05) — the binding constraint on the
+        # union is the layout count, not any budget; this pin stays as
+        # the drift guard, not silent growth.
+        wire_schema = smoke._strip_mfjs_unsupported_enum_values(
+            smoke._strip_mfjs_advisory_keywords(pptx_schema))
+        smoke._inject_properties_on_bare_objects(wire_schema)
+        budget = smoke._MfjsBudget(wire_schema)
+        offenders = []
+        smoke._walk_tool_schema(wire_schema, "make_pptx", offenders,
+                                is_root=True, budget=budget)
+        self.assertEqual(offenders, [],
+                         "real pptx schema must stay green through the guard pipeline")
+        total = budget.total_properties
         self.assertLessEqual(total, smoke._MFJS_MAX_TOTAL_PROPERTIES,
                              f"pptx schema holds {total} properties — over budget; "
                              "merge branches or widen deliberately")
