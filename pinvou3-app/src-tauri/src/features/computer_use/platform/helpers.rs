@@ -5,7 +5,7 @@
 //! stays unit-testable on every target.
 
 use super::super::guard::{self, for_each_folded_window};
-use super::super::types::{ComputerUseError, ScrollDirection};
+use super::super::types::{ComputerUseError, Key, ScrollDirection};
 use enigo::{Direction, Enigo, Keyboard};
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
@@ -20,6 +20,17 @@ pub(crate) const MAX_SCROLL_CLICKS: u32 = crate::features::computer_use::tool::M
 /// tool layer's consent labels, the `ui_tree` writers, and the Linux display
 /// names, all feeding [`sanitize_name`].
 pub(crate) const MAX_NAME_CHARS: usize = 80;
+
+/// Per-session cap on apps a virtual-display session may launch through
+/// `open`: launches past the cap are refused with a count-only error on
+/// every stack. The Linux stack counts its live (identity-verified) child
+/// records and prunes dead/unverifiable ones before the gate, so the cap
+/// there applies to LIVE apps only; the Windows and macOS stacks count
+/// total launches this session (their opened apps are not tracked the same
+/// way — Windows hands them to the kill-on-close job, macOS deliberately
+/// lets them outlive the session), so the cap there bounds the session's
+/// whole launch budget.
+pub(crate) const MAX_OPEN_CHILDREN: usize = 32;
 
 /// Wait before a click so the previous move has settled (the target process
 /// consumes mouse move events).
@@ -130,6 +141,52 @@ pub(crate) fn combine_drag_errors(
              the mouse button may still be pressed"
         ))),
     }
+}
+
+/// Merge the hold and key-release results of `hold_key` — the held-key twin
+/// of [`combine_drag_errors`] (same single-failure pass-through and
+/// kind-preservation rule). The release always runs, but a
+/// `Result::and`-style merge keeps only the FIRST error: a caller cancel plus
+/// a failed release then reported "the keys are released" while the release
+/// had actually failed — stranding keys undisclosed (the drag merge fixed the
+/// same inversion for the mouse button). The truthful wording mirrors the
+/// physical X11/Wayland hold paths: "release failed (...); the keys may
+/// still be held down".
+pub(crate) fn combine_hold_errors(
+    hold_result: Result<(), ComputerUseError>,
+    release_result: Result<(), ComputerUseError>,
+) -> Result<(), ComputerUseError> {
+    match (hold_result, release_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        // Only the hold was interrupted (caller cancel) and the release
+        // succeeded: the cancel verdict stands, now stating the outcome.
+        (Err(hold_error), Ok(())) => {
+            Err(hold_error.same_kind(format!("{hold_error}; the keys are released")))
+        }
+        // Only the release failed: the stranded-keys warning and the step
+        // label must both surface.
+        (Ok(()), Err(release)) => Err(release.same_kind(format!(
+            "key release failed ({release}); the keys may still be held down"
+        ))),
+        // Both: the cancel fact AND the failed release surface together —
+        // never the false "the keys are released" all-clear.
+        (Err(hold_error), Err(release)) => Err(hold_error.same_kind(format!(
+            "{hold_error}; its key release also failed ({release}); \
+             the keys may still be held down"
+        ))),
+    }
+}
+
+/// Chord key press order shared by the physical macOS backend and the
+/// virtual macOS stack (previously two byte-identical private copies):
+/// modifiers lead (stable order otherwise), so a chord's modifier mask is
+/// complete before the non-modifier keys land.
+pub(crate) fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
+    let mut ordered = keys.to_vec();
+    // The modifier set is `Key::is_modifier`'s definition — route through it
+    // so a future modifier variant updates every consumer at once.
+    ordered.sort_by_key(|key| !key.is_modifier());
+    ordered
 }
 
 /// Scroll direction → enigo (axis, signed clicks). enigo convention:
@@ -427,6 +484,27 @@ pub(crate) fn char_chunks(text: &str, chunk_chars: usize) -> Vec<&str> {
     chunks
 }
 
+/// Debug-escape model-supplied text for a log line (the redaction
+/// contract): a control character in the text — a `\n` above all — would
+/// otherwise forge subsequent log lines. `{:?}` on `&str` escapes exactly
+/// that class. Every log site that renders a model-supplied or recorded
+/// program name routes through this helper so the property has one
+/// audited home; each stack's test module additionally pins its own
+/// source against a plain-format revert (R11 M2: the R9/R10 `{:?}` sites
+/// had no pin at all, so the revert passed the whole suite).
+pub(crate) fn logged_program(text: &str) -> String {
+    format!("{text:?}")
+}
+
+/// The `open` capacity decision shared by all three stacks: `true` when a
+/// session at `count` recorded/launched apps must refuse the next launch.
+/// Extracted (R11) so the cap semantic has one pinned home — the Linux
+/// gate prunes dead records before the count, the Windows/macOS gates
+/// count lifetime launches, and both feed the same decision here.
+pub(crate) fn open_capacity_rejected(count: usize) -> bool {
+    count >= MAX_OPEN_CHILDREN
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +593,84 @@ mod tests {
         // A move-only failure is returned verbatim, kind included.
         let move_only = combine_drag_errors(Err(denied()), Ok(())).unwrap_err();
         assert!(matches!(move_only, ComputerUseError::Unavailable { .. }));
+    }
+
+    /// A hold-interrupt (caller cancel) sample for [`combine_hold_errors`].
+    fn cancelled_hold() -> ComputerUseError {
+        ComputerUseError::unavailable("hold_key was cancelled (caller timeout or stop)")
+    }
+
+    /// A key-release-failure sample for [`combine_hold_errors`].
+    fn failed_key_release() -> ComputerUseError {
+        ComputerUseError::failed("keyup: injected 0/1 events")
+    }
+
+    /// Lives here rather than in one backend so every target runs it (same
+    /// rule as the drag merge pin): a `Result::and` merge kept the FIRST
+    /// error, so a cancel plus a failed release reported "the keys are
+    /// released" and swallowed the release failure — keys could stay held
+    /// down undisclosed. Precedence pin: BOTH facts surface, and the false
+    /// all-clear never does.
+    #[test]
+    fn hold_error_merging_surfaces_stranded_keys() {
+        // Both succeed: nothing to merge.
+        assert!(combine_hold_errors(Ok(()), Ok(())).is_ok());
+        // Cancel + clean release: the cancel verdict now states the outcome.
+        let cancelled = combine_hold_errors(Err(cancelled_hold()), Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(cancelled.contains("hold_key was cancelled"), "{cancelled}");
+        assert!(cancelled.contains("the keys are released"), "{cancelled}");
+        // Release-only failure: the stranded-keys warning and the step label
+        // must both surface.
+        let release_only = combine_hold_errors(Ok(()), Err(failed_key_release()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            release_only.contains("key release failed"),
+            "{release_only}"
+        );
+        assert!(
+            release_only.contains("the keys may still be held down"),
+            "{release_only}"
+        );
+        // Both fail: the cancel fact AND the failed release surface together.
+        let both = combine_hold_errors(Err(cancelled_hold()), Err(failed_key_release()))
+            .unwrap_err()
+            .to_string();
+        assert!(both.contains("hold_key was cancelled"), "{both}");
+        assert!(both.contains("its key release also failed"), "{both}");
+        assert!(both.contains("the keys may still be held down"), "{both}");
+        assert!(
+            !both.contains("the keys are released"),
+            "the false all-clear must not appear when the release failed: {both}"
+        );
+    }
+
+    /// Kind preservation for the held-key merge (the cancel verdict is
+    /// `Unavailable` — category-based upstream handling keys on it; a release
+    /// failure carries its own kind through untouched).
+    #[test]
+    fn hold_error_merging_preserves_the_unavailable_kind() {
+        let merged =
+            combine_hold_errors(Err(cancelled_hold()), Err(failed_key_release())).unwrap_err();
+        assert!(
+            matches!(merged, ComputerUseError::Unavailable { .. }),
+            "the merged error must keep the cancel verdict's kind, got {merged}"
+        );
+        let release_only =
+            combine_hold_errors(Ok(()), Err(ComputerUseError::unavailable("portal died")))
+                .unwrap_err();
+        assert!(
+            matches!(release_only, ComputerUseError::Unavailable { .. }),
+            "a release failure's own kind must survive, got {release_only}"
+        );
+        assert!(
+            release_only
+                .to_string()
+                .contains("the keys may still be held down"),
+            "{release_only}"
+        );
     }
 
     #[test]
@@ -913,5 +1069,40 @@ mod tests {
         // The inverse hole: folding a C0 character to a space used to split a
         // term that the matcher would otherwise have found.
         assert!(screening_hit("D\u{0001}elete"), "C0 inside the term");
+    }
+
+    /// Mutation pin (R11 M2): `logged_program` is the ONE rendering path
+    /// for model-supplied/recorded program names in the logs — a plain
+    /// `{}` (or any unescaped rendering) would let a control character in
+    /// the name forge subsequent log lines. Reverting the helper's `{:?}`
+    /// to `{}` must fail here.
+    #[test]
+    fn logged_program_escapes_log_forgery_characters() {
+        let hostile = "p\n[computer_use] virtual display: swept orphan session dir /tmp/x";
+        let rendered = logged_program(hostile);
+        assert!(
+            !rendered.contains('\n'),
+            "a newline must never render raw in a log line: {rendered:?}"
+        );
+        assert_eq!(
+            rendered, "\"p\\n[computer_use] virtual display: swept orphan session dir /tmp/x\"",
+            "the escaping must be the Debug shape every call site has shipped"
+        );
+        // The plain shape (the mutation target) renders the raw text — the
+        // helper's output must differ from it for a control-character name.
+        assert_ne!(rendered, hostile);
+    }
+
+    /// Mutation pin (R11 minor): the `open` capacity semantic has one home.
+    /// The boundary is inclusive at the cap (the 32nd launch is accepted,
+    /// the 33rd refused — the Linux fixture and the Windows/macOS gates all
+    /// lean on this exact shape), so an off-by-one or a silently raised cap
+    /// must fail here.
+    #[test]
+    fn open_capacity_rejects_at_the_cap_and_passes_below() {
+        assert!(!open_capacity_rejected(0));
+        assert!(!open_capacity_rejected(MAX_OPEN_CHILDREN - 1));
+        assert!(open_capacity_rejected(MAX_OPEN_CHILDREN));
+        assert!(open_capacity_rejected(MAX_OPEN_CHILDREN + 1));
     }
 }

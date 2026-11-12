@@ -828,16 +828,40 @@ pub struct PetPrefs {
     pub enabled: bool,
 }
 
-/// Computer Use preferences. Only the master switch is stored: off by default; only after
+/// serde default for [`ComputerUsePrefs::prefer_virtual_display`]: the
+/// isolated virtual display is preferred by default ("whenever possible",
+/// user-confirmed scope decision) — opting OUT is the explicit user action.
+fn default_true() -> bool {
+    true
+}
+
+/// Computer Use preferences. The master switch is stored: off by default; only after
 /// the user explicitly enables it can the model see the `computer_use` tool. The switch is
 /// written by the dedicated `computer_use_set_enabled` command via a field-level
 /// transaction (same as PetPrefs, not part of the generic settings patch), and replayed at
 /// startup by lib.rs into `ComputerUseShared`'s AtomicBool; session grants are never
 /// persisted (they live only in memory).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ComputerUsePrefs {
     pub enabled: bool,
+    /// Prefer the isolated virtual display ("whenever possible"); the user
+    /// can turn it off in settings. Defaults to TRUE via `default_true` (both
+    /// the serde field default for legacy settings.json without the key and
+    /// the manual `Default` impl below). Written by the dedicated
+    /// `computer_use_set_virtual_display_preference` command via a field-level
+    /// transaction and replayed at startup into `ComputerUseShared`.
+    #[serde(default = "default_true")]
+    pub prefer_virtual_display: bool,
+}
+
+impl Default for ComputerUsePrefs {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            prefer_virtual_display: true,
+        }
+    }
 }
 
 /// 侧栏任务列表偏好。
@@ -2650,16 +2674,42 @@ mod tests {
     #[test]
     fn computer_use_enabled_defaults_off_and_round_trips() {
         // Older settings.json lacks the field: the serde container-level
-        // default falls back to false (off by default).
+        // default falls back to false (off by default). The virtual-display
+        // preference defaults the other way (TRUE — "whenever possible";
+        // opting out is the explicit user action), via the field-level
+        // `default_true` serde fn that also covers a computer_use object
+        // with only `enabled`.
         let legacy = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("zh-CN"));
         assert!(!legacy.computer_use.enabled);
+        assert!(legacy.computer_use.prefer_virtual_display);
         let enabled = UserPrefs::parse_settings(
             Some(r#"{"theme":"genesis","computer_use":{"enabled":true}}"#),
             Some("zh-CN"),
         );
         assert!(enabled.computer_use.enabled);
+        assert!(enabled.computer_use.prefer_virtual_display);
         let serialized = serde_json::to_string(&enabled).expect("UserPrefs serialize");
-        assert!(serialized.contains("\"computer_use\":{\"enabled\":true}"));
+        assert!(serialized.contains("\"computer_use\":{\"enabled\":true"));
+        // An explicit opt-out parses and round-trips verbatim (the pref must
+        // not be resurrected by an unrelated settings write).
+        let opted_out = UserPrefs::parse_settings(
+            Some(
+                r#"{"theme":"genesis","computer_use":{"enabled":true,"prefer_virtual_display":false}}"#,
+            ),
+            Some("zh-CN"),
+        );
+        assert!(opted_out.computer_use.enabled);
+        assert!(!opted_out.computer_use.prefer_virtual_display);
+        let serialized = serde_json::to_string(&opted_out).expect("UserPrefs serialize");
+        assert!(
+            serialized
+                .contains("\"computer_use\":{\"enabled\":true,\"prefer_virtual_display\":false}"),
+            "the explicit opt-out must round-trip verbatim: {serialized}"
+        );
+        // Fresh-install default: enabled off, virtual preferred on.
+        let fresh = UserPrefs::default();
+        assert!(!fresh.computer_use.enabled);
+        assert!(fresh.computer_use.prefer_virtual_display);
     }
 
     #[test]
