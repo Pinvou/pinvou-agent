@@ -212,6 +212,12 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       // Linux. Fail-closed so the settings toggle stays disabled until
       // load_platform_capabilities corrects the slice.
       globalShortcutsAvailable: false,
+      // Semantic selector for the computer-use virtual-display note row
+      // ("windows" | "macos" | "linux"). Fail-closed "": no per-platform
+      // note renders until load_platform_capabilities answers with the
+      // compiled target's selector — the notes are desktop product copy, so
+      // the web lane (which never loads the Tauri command) simply keeps "".
+      virtualDisplayNote: "",
     },
     settings: null,
     selectedPet: "lingling",
@@ -246,6 +252,12 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       // Defaults false (fail closed): on an unsupported OS the toggle must
       // not render enabled until the first get_status corrects the slice.
       platformSupported: false,
+      // The virtual-display projection defaults (virtualDisplayState/
+      // virtualDisplayDetail/preferVirtualDisplay/physicalSessionLive/
+      // sessionDisplayTarget/grantedTarget) are seeded by the computer_use
+      // feature itself at install time — bridge/computer_use.js is their
+      // single source (R13; previously both files carried copies and no
+      // test pinned either). Do not restate them here.
       sessionId: null,
       grantRequest: null,
       confirmRequest: null,
@@ -2395,6 +2407,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       confirm: computerUseFeature.confirm,
       deny: computerUseFeature.deny,
       setEnabled: computerUseFeature.setEnabled,
+      setVirtualDisplayPreference: computerUseFeature.setVirtualDisplayPreference,
       requestPermissions: computerUseFeature.requestPermissions,
       permissionStatus: computerUseFeature.permissionStatus,
     },

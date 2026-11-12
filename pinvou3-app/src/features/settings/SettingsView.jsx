@@ -1647,6 +1647,111 @@ function hasStoredCredential(record) {
     // Mirrors DOUBLE_CLICK_GUARD_MS in features/computer-use/ComputerUseConsent.jsx.
     const COMPUTER_USE_TOGGLE_GUARD_MS = 200;
     /**
+     * The virtual-display status hint lines under the preference row
+     * (extracted so the section component stays inside its
+     * cognitive-complexity budget). Driven by the status projection:
+     * "unavailable" renders the localized lead line plus the backend's
+     * English diagnostic (never localized, shown verbatim under the lead —
+     * the install guidance must stay visible exactly while a session runs
+     * on a probe-red host); a failed write replaces the status line with
+     * the error until the next attempt.
+     *
+     * R11: a live PHYSICAL session renders the dedicated live-physical
+     * line. "disabled"'s copy reads "Off —" (true about where NEW sessions
+     * will run) but contradicts a switch showing ON when the preference
+     * was flipped on mid-session — the exact artifact the R10 fix resolved
+     * for the "unavailable" leg, now completed for the "available" leg.
+     * "active" keeps its line and GAINS the live-physical line: with one
+     * virtual and one physical session both live, the aggregate word must
+     * not hide the session on the real screen. Fail-neutral: an older
+     * backend without the field keeps the previous rendering.
+     *
+     * R12: the live-physical copy is split into the FACT ("a session is
+     * currently using your real screen" — true whenever physicalSessionLive)
+     * and the future-isolation PROMISE ("new sessions will use the isolated
+     * display" — true only while the persisted preference is on AND the
+     * probe is up, i.e. never under "unavailable", and under "disabled"
+     * only while the switch is ON). The R11 single-line shape promised
+     * isolation under an OFF switch and next to the "no isolated display
+     * available" lead — an over-claim in both legs. Note the two
+     * projections: the switch binds `!== false` (default-on for a legacy
+     * backend's checked state) while the promise needs the strict
+     * `=== true` — promising isolation requires backend truth, not a
+     * default.
+     */
+    const VirtualDisplayStatusLines = ({ t, virtualError, virtualState, virtualDetail, physicalSessionLive, preferVirtual }) => {
+      const physicalLive = physicalSessionLive === true;
+      const promiseIsolated = preferVirtual === true;
+      // "disabled" + live physical + pref ON: the "Off —" copy would
+      // contradict the ON switch (the R11 artifact) — the fact + promise
+      // lines REPLACE it. With the pref OFF the "Off —" copy is true and
+      // stays, with the fact line appended.
+      const replaceDisabledLine = virtualState === 'disabled' && physicalLive && promiseIsolated;
+      const virtualHint = virtualState === 'ready'
+        ? t.uiComputerUse.virtualStateReady
+        : virtualState === 'active'
+          ? t.uiComputerUse.virtualStateActive
+          : replaceDisabledLine
+            ? null
+            : virtualState === 'disabled'
+              ? t.uiComputerUse.virtualStateDisabled
+              : null;
+      const virtualUnavailable = virtualState === 'unavailable';
+      // The FACT is true whenever a physical session is live — INCLUDING
+      // the replace-disabled leg: there the "Off —" copy is replaced, but
+      // the live-session fact must still render next to the promise (the
+      // user who flipped the preference ON mid-session must not lose the
+      // only line saying a session is driving their real screen right
+      // now; R13 — gating it on `!replaceDisabledLine` rendered the
+      // promise alone in that leg, contradicting the R12 split comment
+      // above).
+      const showFact = physicalLive;
+      // The promise rides only a state where the backend can deliver it:
+      // "active" proves the isolated stack is working, and the
+      // pref-ON "disabled" leg replaced the line above. "unavailable" (the
+      // probe is down) never promises.
+      const showPromise =
+        promiseIsolated && physicalLive && (replaceDisabledLine || virtualState === 'active');
+      return (
+        <>
+          <span className="block">{t.uiComputerUse.settingsVirtualHint}</span>
+          {virtualError ? (
+            <span className="block mt-0.5">
+              {/* The session truth survives the write error: a failed
+                  preference write used to replace ALL status lines,
+                  suppressing the live-physical fact while a session kept
+                  driving the user's real screen (R15). The fact is server
+                  truth, not an outcome of the failed write. */}
+              {showFact && (
+                <span className="block">{t.uiComputerUse.virtualStatePhysicalLive}</span>
+              )}
+              <span className="block">{virtualError}</span>
+            </span>
+          ) : virtualUnavailable ? (
+            <span className="block mt-0.5">
+              <span className="block">{t.uiComputerUse.virtualStateUnavailableLead}</span>
+              {virtualDetail && <span className="block">{virtualDetail}</span>}
+              {physicalLive && (
+                <span className="block">{t.uiComputerUse.virtualStatePhysicalLive}</span>
+              )}
+            </span>
+          ) : (
+            (virtualHint || showFact || showPromise) && (
+              <span className="block mt-0.5">
+                {virtualHint && <span className="block">{virtualHint}</span>}
+                {showFact && (
+                  <span className="block">{t.uiComputerUse.virtualStatePhysicalLive}</span>
+                )}
+                {showPromise && (
+                  <span className="block">{t.uiComputerUse.virtualStatePhysicalNextVirtual}</span>
+                )}
+              </span>
+            )
+          )}
+        </>
+      );
+    };
+    /**
      * Computer-use settings row as a self-contained component so the failed
      * write can surface an inline error (the old code did `catch(() => {})`,
      * so a failed enable looked like the switch bouncing back with no
@@ -1659,7 +1764,7 @@ function hasStoredCredential(record) {
      * rapid clicks cannot interleave contradictory set_enabled calls
      * (matching the consent dialog's single-flight standard).
      */
-    const ComputerUseSettingSection = ({ t }) => {
+    const ComputerUseSettingSection = ({ t, platformCapabilities }) => {
       const slice = useBridgeState(['computerUse']);
       const computerUse = (slice && slice.computerUse) || {};
       const [actionError, setActionError] = useState('');
@@ -1671,6 +1776,57 @@ function hasStoredCredential(record) {
       // consent dialog's useConsentAction flightRef.
       const flightRef = useRef({ busy: false, settledAt: 0 });
       const unsupported = computerUse.platformSupported === false;
+      // Virtual-display preference row (frozen status contract: the backend
+      // always reports `preferVirtualDisplay`). The switch binds to the
+      // PERSISTED PREFERENCE, not the derived state (review finding): an
+      // active virtual session with the preference off must show the switch
+      // OFF while the state-driven hint line below keeps describing the live
+      // session ("Agent is working in an isolated virtual display…") — the
+      // live backend's target was decided once, at creation, so the state
+      // legitimately disagrees with the preference. While the projection is
+      // still "unknown" (no authoritative read yet), the row stays RENDERED
+      // (discoverability: the user must see the option exists before the
+      // first status lands; hiding it here would fight the section's
+      // unsupported gate above, which remains the only hider) but the switch
+      // is disabled AND unchecked: unchecked because the slice's default
+      // (true, mirroring the backend default) is not an authoritative answer,
+      // and a checked-ON-disabled switch would assert a preference nobody
+      // confirmed yet. No authoritative read also means no preference write
+      // is submitted (an older backend without the command would only produce
+      // a confusing failure). Same single-flight pattern as the master toggle
+      // above, with its own ref so the two switches never block each other.
+      const virtualState = computerUse.virtualDisplayState || 'unknown';
+      const virtualUnknown = virtualState === 'unknown';
+      const virtualPref = computerUse.preferVirtualDisplay !== false;
+      const virtualDetail = typeof computerUse.virtualDisplayDetail === 'string'
+        ? computerUse.virtualDisplayDetail
+        : '';
+      const [virtualPending, setVirtualPending] = useState(false);
+      const [virtualError, setVirtualError] = useState('');
+      const virtualFlightRef = useRef({ busy: false, settledAt: 0 });
+      // Per-platform note rows: gated on the dedicated semantic capability
+      // `virtualDisplayNote` ("windows" | "macos" | "linux" from
+      // get_platform_capabilities) — the capability is the semantic source;
+      // an older proxy that keyed these rows off the dependency-installer
+      // bits (usesBundledDependencyInstaller / usesHomebrewDependencyInstaller)
+      // broke the moment installer semantics changed, so it is gone. Static
+      // product notes about the stack's real fidelity/lifecycle shape — they
+      // render whenever this platform has a note (not only while the feature
+      // toggle is on), so the absolute-sounding virtual hint above never
+      // stands on the page without its platform caveat next to it.
+      const showWindowsVirtualNote = platformCapabilities?.virtualDisplayNote === 'windows';
+      const showMacosVirtualNote = platformCapabilities?.virtualDisplayNote === 'macos';
+      const showLinuxVirtualNote = platformCapabilities?.virtualDisplayNote === 'linux';
+      // R16: when the capability is absent or unverified (an older proxy
+      // that predates `virtualDisplayNote`), all three platform note rows
+      // are skipped — the hint above, whose copy claims the display "never
+      // shows on your screen", would then stand on the page with NO caveat
+      // next to it, contradicting this block's own comment. The
+      // unknown-platform honesty line (the same fallback class the grant
+      // dialog uses) keeps the absolute claim from shipping unqualified on
+      // any backend.
+      const showUnknownVirtualNote =
+        !showWindowsVirtualNote && !showMacosVirtualNote && !showLinuxVirtualNote;
       // An emergency stop latches `stopped` without touching the toggle: the
       // switch still reads ON but every consent surface is dead until the
       // user toggles off and back on (set_enabled's re-enable is the only
@@ -1773,6 +1929,69 @@ function hasStoredCredential(record) {
               }}
             />
           </IOSRow>
+          {!unsupported && (
+            <IOSRow
+              label={t.uiComputerUse.settingsVirtualToggle}
+              desc={
+                <VirtualDisplayStatusLines
+                  t={t}
+                  virtualError={virtualError}
+                  virtualState={virtualState}
+                  virtualDetail={virtualDetail}
+                  physicalSessionLive={computerUse.physicalSessionLive}
+                  preferVirtual={computerUse.preferVirtualDisplay}
+                />
+              }
+            >
+              <IOSSwitch
+                checked={virtualUnknown ? false : virtualPref}
+                disabled={virtualPending || virtualUnknown}
+                onChange={(value) => {
+                  const flight = virtualFlightRef.current;
+                  if (flight.busy || Date.now() - flight.settledAt < COMPUTER_USE_TOGGLE_GUARD_MS) return;
+                  if (!bridge.available || !bridge.computerUse) return;
+                  flight.busy = true;
+                  setVirtualError('');
+                  setVirtualPending(true);
+                  // The wrapper re-reads the authoritative status before
+                  // resolving, so the switch and the hint line below it move
+                  // to the persisted value (or roll back on failure) without
+                  // a separate refresh here.
+                  bridge.computerUse.setVirtualDisplayPreference(value)
+                    .then(() => {
+                      flight.settledAt = Date.now();
+                    })
+                    .catch((error) => {
+                      setVirtualError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
+                    })
+                    .finally(() => {
+                      flight.busy = false;
+                      setVirtualPending(false);
+                    });
+                }}
+              />
+            </IOSRow>
+          )}
+          {showWindowsVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteWindows}
+            </div>
+          )}
+          {showMacosVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteMacos}
+            </div>
+          )}
+          {showLinuxVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteLinux}
+            </div>
+          )}
+          {showUnknownVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteUnknownPlatform}
+            </div>
+          )}
         </IOSSection>
       );
     };
@@ -2827,7 +3046,7 @@ function hasStoredCredential(record) {
                 </IOSRow>
               </IOSSection>
             )}
-            {canUseComputerUse && <ComputerUseSettingSection t={t} />}
+            {canUseComputerUse && <ComputerUseSettingSection t={t} platformCapabilities={platformCapabilities} />}
             {canInstallDependencies && <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}
