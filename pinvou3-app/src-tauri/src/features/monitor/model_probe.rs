@@ -1626,6 +1626,37 @@ mod tests {
             "the declared window must survive the auth_failed early-exit"
         );
 
+        // auth_failed without a declaration: the preset fallback fills the
+        // window at that exit too and the honesty notice rides along — the
+        // same construction as the offline legs. (The declared 401 case
+        // above carries an empty notices vec because a declaration is not
+        // flagged inferred, so only this leg pins the auth_failed
+        // `notices` field.)
+        let mock = models_mock::spawn(&[("/models", 401, "{}".into())]);
+        let auth_inferred = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            Some("secret"),
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(auth_inferred.health_status, HealthStatus::AuthFailed);
+        assert_eq!(
+            auth_inferred.max_model_len,
+            Some(262_144),
+            "the fallback window must survive the auth_failed early-exit"
+        );
+        assert!(
+            auth_inferred
+                .notices
+                .iter()
+                .any(|d| d.code == "context_window_inferred"),
+            "an inferred window must carry the honesty notice at the auth_failed exit: {:?}",
+            auth_inferred.notices
+        );
+
         // models_http_error (a local target served a non-401/403 HTTP
         // status, e.g. 503 while the engine restarts): the same declaration
         // survives the third early-exit verbatim, still not flagged
