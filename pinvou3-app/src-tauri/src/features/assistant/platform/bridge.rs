@@ -1806,19 +1806,22 @@ impl Pinvou3Bridge {
     /// Current active api_key (passed to the foundation's
     /// `DtConfig.api_key`).
     pub fn api_key(&self) -> String {
+        let model = self.effective_model();
+        // auth_mode="none" is an endpoint contract: the foundation's key
+        // resolution drops every credential source for such routes (env
+        // included), so the app side must not materialize one either — check
+        // the declaration BEFORE the DEEPSEEK_API_KEY env read and skip the
+        // keyring/plaintext read entirely instead of materializing an inert
+        // secret.
+        if model.is_some_and(Self::model_declares_no_auth) {
+            return String::new();
+        }
         if let Ok(v) = std::env::var("DEEPSEEK_API_KEY") {
             if !v.trim().is_empty() {
                 return v;
             }
         }
-        if let Some(m) = self.effective_model() {
-            // auth_mode="none": the route sends no credentials and the engine
-            // short-circuits key resolution (auth_mode_disables_api_key), so
-            // skip the keyring/plaintext read entirely instead of materializing
-            // an inert secret.
-            if Self::model_declares_no_auth(m) {
-                return String::new();
-            }
+        if let Some(m) = model {
             // Local vLLM/Tachyon needs no auth: when the user leaves the key
             // empty, fall back to local-no-auth (the base requires a non-empty
             // value). Tachyon rides the same placeholder — the probe can flip
@@ -6576,13 +6579,14 @@ mod tests {
             "DEEPSEEK_API_KEY",
         ]);
 
-        // 云端自定义网关 + 免鉴权：gate 放开、key 不读、auth_mode 进路由表。
+        // 云端自定义网关（带自定义端口）+ 免鉴权：gate 放开、key 不读、
+        // auth_mode 进路由表。
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,
             ModelPreset::OpenaiCompatible,
             "keyless-gateway-model",
-            "https://gateway.example.com/v1",
+            "https://gateway.example.com:8443/v1",
             "residual-plaintext-key",
         );
         bridge.prefs.advanced.saved_models[0].auth_mode = Some("none".to_string());
@@ -6590,20 +6594,28 @@ mod tests {
             !bridge.api_key_required(),
             "显式免鉴权声明必须放开 API Key gate"
         );
+        // env 注入的 key 同样不得物化：免鉴权是端点契约（底座丢弃全部凭据
+        // 来源），应用侧短路必须先于 DEEPSEEK_API_KEY 的读取。
+        // SAFETY: ENV_LOCK 由上方 locked_env() 持有，env 写入已串行。
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "env-injected-key") };
         assert!(
             bridge.api_key().is_empty(),
-            "免鉴权路由不得读取/下发任何凭据（即使记录残留明文 key）"
+            "免鉴权路由不得读取/下发任何凭据（记录残留明文 key 或 env key 都不行）"
         );
+        // SAFETY: ENV_LOCK 由 locked_env() 持有；后续断言回到无 env 基线。
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
         let cfg = bridge.build_dt_config();
         assert_eq!(cfg.provider.as_deref(), Some("openai"));
+        let providers = cfg.providers.as_ref().expect("providers table");
         assert_eq!(
-            cfg.providers
-                .as_ref()
-                .expect("providers table")
-                .openai
-                .auth_mode,
+            providers.openai.auth_mode,
             Some("none".to_string()),
             "auth_mode=\"none\" 必须写进激活路由的 provider 表"
+        );
+        assert_eq!(
+            providers.openai.base_url.as_deref(),
+            Some("https://gateway.example.com:8443/v1"),
+            "自定义端口必须随路由表原样下发（openai 路由）"
         );
 
         // 同端点、默认档：gate 保持要求 Key，路由表不得被写入 auth_mode。

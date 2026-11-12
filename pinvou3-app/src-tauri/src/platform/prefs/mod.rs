@@ -389,6 +389,22 @@ impl<'de> Deserialize<'de> for ImageCapabilityOverride {
     }
 }
 
+/// `auth_mode` 手改容错:非字符串 JSON 值(数字/布尔/数组/对象/null)一律按
+/// 未声明(None)处理,而不是让整份 settings.json 解析失败——解析失败会退化到
+/// 默认快照,下一次 `update_transaction` 落盘时会把默认快照+本次改动写回磁盘,
+/// 抹掉全部已存模型/偏好。字符串值(含空串、大小写、空白)仍交给
+/// `normalize_provider_metadata` 归一;缺字段走 `#[serde(default)]`。
+fn deserialize_auth_mode_lenient<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::String(text)) => Some(text),
+        _ => None,
+    })
+}
+
 /// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
 /// `id` 稳定(前端生成),被 `active_model_id` / session `model_id` 引用。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -427,7 +443,13 @@ pub struct SavedModel {
     /// `normalize_provider_metadata` 归一：仅保留底座
     /// `auth_mode_disables_api_key` 认可的 no-auth 同义词并统一为 `"none"`，
     /// 其余值（含空串）清空。None = 默认按 provider/端点规则决定是否要 Key。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 非字符串 JSON 值按未声明处理（见 [`deserialize_auth_mode_lenient`]），
+    /// 不让整份文档解析失败。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_auth_mode_lenient"
+    )]
     pub auth_mode: Option<String>,
     /// 图片输入能力覆盖(设计 §6.3):Pinvou 走能力解析链;Enabled/Disabled 强制。
     #[serde(default)]
@@ -706,17 +728,12 @@ impl SavedModel {
         // auth_mode 归一:仅保留底座 `auth_mode_disables_api_key` 认可的
         // no-auth 同义词并统一为 "none";其余值(含空串/未知档位)清空,
         // 防止手改 settings.json 写入底座不认识的档位后行为不可预期。
-        // 与底座的同义词表对齐(见 bridge::model_declares_no_auth)。
+        // 判定直接复用底座谓词(底座谓词内部做 trim/小写归一),同义词表
+        // 保持单一来源,不会与引擎侧判定漂移(见 bridge::model_declares_no_auth)。
         self.auth_mode = self
             .auth_mode
             .take()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| {
-                matches!(
-                    value.as_str(),
-                    "none" | "off" | "disabled" | "no_auth" | "no-auth" | "anonymous"
-                )
-            })
+            .filter(|value| codewhale_config::auth_mode_disables_api_key(Some(value.as_str())))
             .map(|_| "none".to_string());
         // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
         // 存量配置在 load 时一次性改写,避免继续打已下线域名。
@@ -3025,6 +3042,98 @@ mod tests {
                 "归一结果必须落盘"
             );
             assert!(!persisted.contains("No-Auth"), "原始手改档位不得残留");
+        });
+    }
+
+    /// 手改 auth_mode 为非字符串 JSON 值(数字/布尔等)不得拖垮整份
+    /// settings.json:字段级 deserialize 容错把它按未声明处理,已存记录与
+    /// 偏好原样保留;随后的 update_transaction 也必须把真实文档(而非解析
+    /// 失败时的默认快照)写回磁盘——否则任何一次保存都会抹掉全部已存模型。
+    #[test]
+    fn wrong_typed_auth_mode_degrades_to_unset_without_document_loss() {
+        with_temp_home("pinvou3-prefs-auth-mode-wrong-type", || {
+            let mut prefs = UserPrefs::default();
+            prefs.advanced.saved_models.clear();
+            let model = SavedModel {
+                auth_mode: None,
+                id: "keyless-wrong-type".into(),
+                name: "Keyless".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "gateway-model".into(),
+                base_url: "https://gateway.example.com/v1".into(),
+                provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            prefs.advanced.saved_models.push(model);
+            prefs.advanced.active_model_id = None;
+            let path = super::super::paths::settings_path();
+            // 结构体字面量写不出「auth_mode: 0」这个状态:序列化后向 JSON
+            // 注入非字符串值,模拟手改 settings.json。
+            let mut raw = serde_json::to_value(&prefs).expect("serialize prefs");
+            raw.get_mut("advanced")
+                .and_then(|advanced| advanced.get_mut("saved_models"))
+                .and_then(|models| models.as_array_mut())
+                .and_then(|models| models.first_mut())
+                .and_then(|model| model.as_object_mut())
+                .expect("saved_models array with a model object")
+                .insert("auth_mode".into(), serde_json::Value::from(0));
+            std::fs::write(
+                &path,
+                serde_json::to_string(&raw).expect("serialize raw prefs"),
+            )
+            .expect("write hand-edited prefs");
+
+            let loaded = UserPrefs::load();
+            assert_eq!(
+                loaded.advanced.saved_models.len(),
+                1,
+                "非字符串 auth_mode 不得让整份 settings.json 解析失败(否则退化到默认快照,已存模型消失)"
+            );
+            assert_eq!(
+                loaded
+                    .model_by_id("keyless-wrong-type")
+                    .expect("model survives the wrong-typed auth_mode")
+                    .auth_mode,
+                None,
+                "非字符串 auth_mode 必须按未声明处理"
+            );
+
+            // 后续保存必须基于真实文档落盘:若此处仍从默认快照写回,下面的
+            // 记录就会从磁盘上消失(整文档解析失败类的真实破坏面)。
+            let updated = UserPrefs::update_transaction(|prefs| {
+                prefs.advanced.active_model_id = Some("keyless-wrong-type".into());
+                Ok(())
+            })
+            .expect("update after lenient parse");
+            assert_eq!(
+                updated
+                    .model_by_id("keyless-wrong-type")
+                    .expect("model survives the transaction")
+                    .name,
+                "Keyless",
+                "事务落盘必须携带真实已存记录"
+            );
+            let persisted = std::fs::read_to_string(&path).expect("reread persisted prefs");
+            assert!(
+                persisted.contains("keyless-wrong-type"),
+                "后续保存不得把已存模型抹掉"
+            );
+            assert!(
+                persisted.contains("\"active_model_id\": \"keyless-wrong-type\""),
+                "事务改动必须落盘"
+            );
         });
     }
 
