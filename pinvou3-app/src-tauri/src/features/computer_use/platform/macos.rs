@@ -1789,13 +1789,15 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             // Label the abort reason faithfully: the target hung (consecutive
             // CannotComplete) / timeout / node budget exhausted. The hint must
             // match the reason: raising max_nodes only helps when the node
-            // budget tripped — a deadline-tripped or hung tree needs a
-            // SMALLER walk (fewer nodes/levels) to finish inside the time
-            // budget, and the caller cannot raise the deadline at all.
+            // budget tripped; a deadline-tripped tree needs a SMALLER walk
+            // (fewer nodes/levels) to finish inside the time budget; and a
+            // hung app needs to recover first — it fails via CannotComplete
+            // at any walk size, so "smaller walk" would misattribute the
+            // failure (r5 review).
             let (reason, hint) = if writer.errors.poisoned {
                 (
                     "the focused application stopped responding",
-                    "retry with a smaller max_depth/max_nodes so the walk completes within the time budget",
+                    "retry after the application recovers (e.g. re-focus it or wait), not with a smaller walk — an unresponsive app fails regardless of max_depth/max_nodes",
                 )
             } else if Instant::now() >= writer.deadline {
                 (

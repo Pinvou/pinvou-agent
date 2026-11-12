@@ -253,6 +253,7 @@ const jaBase = {
         kbStReady: '準備完了', kbStIndexing: '解析中', kbStPending: '保留',
         kbImportInterrupted: '未完了のインポートがあります', kbImportInterruptedHint: '前回までの進捗は保存されています。未完了のファイルまたはブロックから再開できます。', kbResumeImport: 'インポートを再開', kbCancelImport: 'タスクをキャンセル',
         kbImportProgress: 'ファイル進捗', kbCurrentFile: '現在のファイル：', kbChunkProgress: 'ブロック進捗', kbFailedFiles: '失敗したファイル', kbRetryFile: '再試行', kbImportErrors: '失敗', kbImportDoneWithErrors: '一部のファイルでインポート失敗',
+        kbImportDoneSkipped: 'インポート完了——一部のファイルがインデックス規則で除外されました', kbSkippedByExcluder: (n) => `${n} 件のファイルがインデックス規則で除外されました（未対応の形式、除外フォルダーは探索しません）`,
         kbResumeImportFailed: 'インポートの再開に失敗しました', kbCancelImportFailed: 'インポートのキャンセルに失敗しました', kbRetryImportFailed: 'ファイルの再試行に失敗しました',
         kbLoadMoreFailedFiles: '失敗したファイルをさらに読み込む', kbLoadingFailedFiles: '読み込み中…', kbLoadFailedFilesFailed: '失敗したファイルの読み込みに失敗しました',
         kbDocsShowingFirst: n => `先頭の ${n} 件のみ表示`,
@@ -817,6 +818,7 @@ cancel: 'キャンセル', chooseThisFolder: 'このフォルダーを選択', c
 currentFolder: path => `現在のフォルダー：${path}`, selectedCount: n => `${n} 件選択中`,
 thisComputer: 'この PC', home: 'ホーム', emptyFolder: 'このフォルダーに選択できる項目はありません',
 loadFailed: err => `読み込みに失敗しました：${err}`, workspaceNotAuthorized: '先にデスクトップでローカルフォルダーへの遠隔アクセスを許可してください', alreadyOpen: 'ファイル選択ダイアログはすでに開いています',
+listingTruncated: 'フォルダーが大きすぎるため、一部の項目のみ表示しています',
   },
   webClientErrors: {
 stateNotReady: '遠隔操作の状態が未準備のため、デスクトップのイベントを処理できません',

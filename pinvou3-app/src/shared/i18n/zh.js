@@ -243,6 +243,7 @@ export const dictZh = {
         kbStReady: '已就绪', kbStIndexing: '解析中', kbStPending: '待索引',
         kbImportInterrupted: '发现未完成的导入任务', kbImportInterruptedHint: '应用上次退出前的进度已保存，可从未完成的文件或分块继续。', kbResumeImport: '继续导入', kbCancelImport: '取消任务',
         kbImportProgress: '文件进度', kbCurrentFile: '当前文件：', kbChunkProgress: '分块进度', kbFailedFiles: '失败文件', kbRetryFile: '重试', kbImportErrors: '失败', kbImportDoneWithErrors: '导入完成，部分文件失败',
+        kbImportDoneSkipped: '导入完成——部分文件被索引规则跳过', kbSkippedByExcluder: (n) => `${n} 个文件被索引规则跳过（不支持的类型；命中排除规则的文件夹不展开）`,
         kbResumeImportFailed: '继续导入失败', kbCancelImportFailed: '取消导入失败', kbRetryImportFailed: '重试文件失败',
         kbLoadMoreFailedFiles: '加载更多失败文件', kbLoadingFailedFiles: '加载中…', kbLoadFailedFilesFailed: '加载失败文件失败',
         kbDocsShowingFirst: n => `仅显示前 ${n} 个文档`,
@@ -844,6 +845,7 @@ cancel: '取消', chooseThisFolder: '选择此文件夹', choose: '选择',
 currentFolder: path => `当前文件夹：${path}`, selectedCount: n => `已选择 ${n} 项`,
 thisComputer: '此电脑', home: '用户目录', emptyFolder: '此目录中没有可选内容',
 loadFailed: err => `读取失败：${err}`, workspaceNotAuthorized: '请先在桌面端允许远程访问本机目录', alreadyOpen: '已有文件选择器正在打开',
+listingTruncated: '目录过大，仅显示部分条目',
   },
   // platform/web/bootstrap.js 的 invoke 拒绝错误文案,由 React 入口挂到
   // window.PinvouWebClientStrings(纯脚本无法 import ES module,bootstrap 内置中文兜底)。

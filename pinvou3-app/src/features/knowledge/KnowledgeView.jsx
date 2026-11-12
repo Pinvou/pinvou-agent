@@ -1635,18 +1635,29 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     {importError}
                   </div>
                 )}
-                {idx && (idx.running || idx.resumable || idx.failed > 0) && (
+                {idx && (idx.running || idx.resumable || idx.failed > 0 || idx.skippedByExcluder > 0) && (
                   <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04]`}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className={`text-[14px] font-bold ${ink}`}>
-                          {idx.resumable ? t.kbImportInterrupted : (idx.running ? t.kbIndexing : t.kbImportDoneWithErrors)}
+                          {idx.resumable
+                            ? t.kbImportInterrupted
+                            : (idx.running
+                              ? t.kbIndexing
+                              : (idx.failed > 0 ? t.kbImportDoneWithErrors : t.kbImportDoneSkipped))}
                         </div>
                         {idx.resumable && <div className={`mt-1 text-[12px] ${muted}`}>{t.kbImportInterruptedHint}</div>}
                         <div className={`mt-2 text-[12px] ${muted}`}>
                           {t.kbImportProgress} {idx.done || 0}/{idx.total || 0}
                           {idx.failed > 0 ? ` · ${t.kbImportErrors} ${idx.failed}` : ''}
                         </div>
+                        {/* r5 review: the GUI payload always carried skippedByExcluder but
+                            nothing rendered it — an import whose files all got pruned by the
+                            index rules (or a name-excluded root) staged zero files and the
+                            panel showed nothing at all. */}
+                        {idx.skippedByExcluder > 0 && (
+                          <div className={`mt-1 text-[12px] ${muted}`}>{t.kbSkippedByExcluder(idx.skippedByExcluder)}</div>
+                        )}
                         {idx.currentPath && (
                           <div className={`mt-1 max-w-[760px] truncate text-[12px] ${muted}`} title={idx.currentPath}>
                             {t.kbCurrentFile} {idx.currentPath}

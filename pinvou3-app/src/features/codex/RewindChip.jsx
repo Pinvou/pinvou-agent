@@ -28,12 +28,15 @@ function ChangeSummary({ summary, copy }) {
 // 20 万条目的工作区），一次性挂载全部行会冻结 webview。上方的摘要计数始终覆盖
 // 全量清单；「另有 N 个文件」原地展开，既保住初始渲染的界内成本，也让每一行的
 // diff 路径都可触达（旧的 8 行硬截断使尾部路径永远不可见，同样不可接受）。
+// 展开本身也分批：一次点击只追加一批行——初始有界只挡住了首屏，展开那一击
+// 一次性挂载整份清单同样能冻结 webview（r5 review）。
 const REWIND_FILE_LIST_INITIAL_ROWS = 100;
+const REWIND_FILE_LIST_EXPAND_STEP = 200;
 
 function ChangeFileList({ changes, copy }) {
-  const [expanded, setExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(REWIND_FILE_LIST_INITIAL_ROWS);
   if (!changes.length) return null;
-  const visible = expanded ? changes : changes.slice(0, REWIND_FILE_LIST_INITIAL_ROWS);
+  const visible = changes.slice(0, visibleCount);
   const hidden = changes.length - visible.length;
   return (
     <div className="mt-2 max-h-44 overflow-y-auto custom-scrollbar rounded-xl border border-black/[0.05] dark:border-white/[0.07]">
@@ -52,7 +55,7 @@ function ChangeFileList({ changes, copy }) {
         <button
           type="button"
           data-testid="rewind-more-files"
-          onClick={() => setExpanded(true)}
+          onClick={() => setVisibleCount((count) => count + REWIND_FILE_LIST_EXPAND_STEP)}
           className="w-full px-2.5 py-1.5 text-left text-[11px] text-blue-600 hover:bg-black/[0.03] hover:text-blue-700 dark:text-blue-300 dark:hover:bg-white/[0.04]"
         >
           {copy.rewindMoreFiles(hidden)}
