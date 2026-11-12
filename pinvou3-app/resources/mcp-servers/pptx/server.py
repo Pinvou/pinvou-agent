@@ -11,6 +11,7 @@ pinvou_pptx —— spec 驱动的本地 PPT 渲染器（Phase A：10 版式 + 3 
 字体：Noto Sans SC（思源黑体同源，跨平台 + 本机可预览；Phase C 做字体嵌入彻底锁死）
 原则：模型只填 layout + 内容；坐标/配色/字体由模板定死 → 稳、不会摆崩；单页失败兜底不崩。
 """
+import copy
 import json
 import os
 import sys
@@ -702,11 +703,12 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
 # 2026-11-05 对齐 walle conf.go 源默认(anyOf ≤500、properties 总数 ≤3000、
 # 嵌套深度 ≤30、enum 值 ≤1000、enum 字面量 ≤75000 字节;编码字节 120000 与
 # 枚举长度检查阈值 250 不变;源码对照,非文档条款),放宽需改 CodeWhale
-# 常量并同步父仓镜像脚本。本 schema 10 分支、47 个 properties,远在预算
-# 内:新增版式直接加分支即可(T11 引擎批经 CodeWhale #143–#147 上游合入后,
-# 由 close-out 换钉 PR 一并登记 fork-guard 指纹)。旧底座会把 anyOf 展平成
-# 单对象:required 交集退化为 ["layout"],即"其余字段全部可选"的旧行为,
-# 不会更糟,安全向后兼容。
+# 常量并同步父仓镜像脚本。注意:对齐后的预算要等 T11 引擎批(CodeWhale
+# #143–#147)经 close-out 换钉 PR 落到父仓 gitlink 才生效;当前钉住的引擎
+# 仍是 pre-T11 面,anyOf 分支上限实为 10 —— 本 schema 10 分支恰好贴着该
+# 上限,换钉之前新增版式会先撞上 10 分支帽(整个 Moonshot 请求构建失败),
+# 换钉之后才是"加分支即可"。联合结构本身在当前引擎上即已合法:nested
+# 多分支 anyOf 原样保留并接受(展平只发生在根组合层),无需等待换钉。
 def _slides_item_branch(layout, layout_label, required, blurb, fields):
     """构造 slides.items 的一个版式分支:显式 type:object + 该版式自己的 required。
 
@@ -723,7 +725,11 @@ def _slides_item_branch(layout, layout_label, required, blurb, fields):
             "description": "版式:%s" % layout_label,
         },
     }
-    properties.update(fields)
+    # fields 常量(_SLIDE_TITLE、_ITEMS_LEAF)被多个分支复用;deepcopy 让每个
+    # 分支持有独立副本 —— 否则任何未来的进程内 schema 改写(如 strict 模式
+    # 的 nullable 标注)会经共享节点泄漏进全部版式分支。tools/list 走 JSON
+    # 序列化,副本与原对象的线上字节完全一致。
+    properties.update(copy.deepcopy(fields))
     return {
         "type": "object",
         "description": blurb,
