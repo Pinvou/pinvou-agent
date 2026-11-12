@@ -162,14 +162,15 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   - **Advisory keywords are stripped, not shipped** (2026-11-05): `title`,
     `$comment`, `$id` and the bound keywords (`minLength`/`maxLength`,
     `minimum`/`maximum`, `minItems`/`maxItems`) sit outside the documented
-    field set ("暂不支持 `title`、`$comment` 等描述性元数据"), and the engine
+    field set ("暂不支持 `title`、`$comment` 等描述性元数据，也不支持
+    `format` 格式注解字段"), and the engine
     (CodeWhale `strip_mfjs_advisory_keywords`) removes them from the Moonshot
     wire before validation instead of dropping the tool — removal is
     semantics-lossless (annotations) or loses only soft constraints (bounds).
     Bundled servers may keep them; other providers still receive the full
     schema, and malformed advisory values are stripped too, never rejected.
     Enums follow the same split: a homogeneous `float`/`int`/`str` enum
-    survives ("枚举值我们只支持基础类型中的 float, int 和 str，其它基础类型
+    survives ("在这儿枚举值我们只支持基础类型中的 float, int 和 str，其它基础类型
     以及 object 和 array 暂不支持，并且不支持混合类型 (List 中的每个枚举值的
     类型必须相同，如不可以 str + int)"); any other enum is stripped — except
     an EMPTY (or non-array) `enum`, which the strip deliberately leaves in
@@ -182,7 +183,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
     `exclusiveMinimum`/`exclusiveMaximum`, and every other unlisted keyword
     ("暂不支持使用 `prefixItems` 或 `unevaluatedItems` 等方式模拟实现元组
     （Tuple）", "暂不支持如 `exclusiveMinimum`，`exclusiveMaximum`，
-    `minContains`, `maxContains` 等复杂校验定义", "暂不支持 Meta-Schemas").
+    `minContains`, `maxContains` 等复杂校验定义", "暂不支持 Meta-Schemas，
+    也不支持任何基于 HTTP 的外部网络资源引用"), with `format` named by the
+    same metadata clause quoted above.
     The validator silently drops the whole tool for any of these. Two
     families are red in the guard as **deliberate strictness**, not
     engine-behavior claims, because the engine rewrites them before
@@ -195,8 +198,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
     inference included) and ships it, while an object/array `const` fails
     closed (`UnsupportedConstLiteral`); the guard reds every `const`. #683's
     `evaluate_script` was lost to the empty-`items` class (`items:{}` →
-    `MissingType`), which the T11 engine now repairs
-    (`remove_empty_mfjs_items_schemas`) — the guard keeps flagging that
+    `MissingType`), which the engine repairs since CodeWhale #101
+    (`remove_empty_mfjs_items_schemas`, already in the pinned tree; the T11
+    face keeps it) — the guard keeps flagging that
     repair class, never replicating it.
   - **Root unions stay banned on Moonshot**: the Tool Use root rule is
     unambiguous and the specification lists `anyOf` as an applicator without
@@ -214,7 +218,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
     fetched 2026-11-05) — so CodeWhale #146 narrowed the previously
     unconditional strip to the root-composition keywords Anthropic itself
     has rejected with recorded 400s (`oneOf`/`allOf`/`anyOf` at the top
-    level, recorded 2025-07) on the first-party Anthropic lane, while the
+    level; recorded response observations from 2025-07, stated in no
+    public document — under the posture below they are recorded context
+    that may only ever tighten the wire, and they scope this strip only)
+    on the first-party Anthropic lane, while the
     Anthropic-compatible lanes whose own documents claim full support
     (DeepSeek/MiniMax/Model Studio) receive `input_schema` verbatim; every
     unrecorded keyword ships verbatim everywhere
@@ -225,13 +232,18 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
     branches, ≤ 3000 total properties, property depth ≤ 30, ≤ 1000 total
     enum values, ≤ 120000 encoded bytes, and an enum above 250 entries is
     further capped at 75000 combined literal bytes (the encoded-bytes
-    budget and the enum-length entry threshold are unchanged). On top of
+    budget stays engine-local, and the enum-length entry threshold keeps
+    the engine's 250 where walle's own default is 2500 — the stricter
+    direction: more enums fall under the literal-byte cap here than
+    upstream would check; the six named budgets match walle's defaults
+    exactly). On top of
     those the engine carries a local whole-document recursion guard,
     structural depth ≤ 64 (`mfjs_schema_can_terminate`) — an engine
     implementation guard, not a walle budget, but it drops a tool the same
     way, so the guard pins it. These were
     previously the engine's own stricter mirror policy (10/100/5/500/7500);
-    aligning them to the walle source constants (`MaxAnyOfItems=500`,
+    aligning them to the walle source defaults (the struct defaults in
+    `DefaultValidatorConfig()`: `MaxAnyOfItems=500`,
     `MaxTotalPropertiesKeysNum=3000`, `MaxSchemaDepth=30`, verified against
     MoonshotAI/walle upstream main 2026-11-05) removes the divergence —
     loosening a budget further means changing the CodeWhale constants and
@@ -272,11 +284,15 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   endpoints (`api.kimi.com`/`api.kimi.ai`, path `coding/v1` — both hosts
   are the documented product, "Kimi Code API address — China
   `https://api.kimi.com/coding/v1`, Overseas
-  `https://api.kimi.ai/coding/v1`") rests on the Kimi Code guide's own
-  instruction to omit generic sampling ("omit them from requests",
-  https://www.kimi.com/code/docs/en/third-party-tools/codex.html,
-  re-verified 2026-11-05). The 2026-11-04 400 observation ("invalid
-  temperature: only 1 is allowed for this model") is the recorded
+  `https://api.kimi.ai/coding/v1`") rests on the Kimi guide's own
+  instruction to omit generic sampling ("`temperature=1.0`, `top_p=0.95`,
+  `n=1`, `presence_penalty=0`, and `frequency_penalty=0` are fixed; omit
+  them from requests", "Important limits",
+  https://platform.kimi.ai/docs/guide/kimi-k3-quickstart, re-verified
+  2026-11-12; the `base_url` sentence above is published on
+  https://www.kimi.com/code/docs/en/third-party-tools/codex.html, which
+  carries no sampling-parameter content). The 2026-11-04 400 observation
+  ("invalid temperature: only 1 is allowed for this model") is the recorded
   observation, not the basis.
 - **Pagination parameters** (existing precedent, mandatory alignment): a bounded
   count parameter (`turn_limit` in `read_session`; `limit` where a listing has

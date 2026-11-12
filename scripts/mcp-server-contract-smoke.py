@@ -470,9 +470,11 @@ _MFJS_KEYWORDS_FOR_TYPE = {
 # walle conf.go source defaults (source comparison, not a document clause,
 # 2026-11-05): MaxAnyOfItems=500, MaxTotalPropertiesKeysNum=3000,
 # MaxSchemaDepth=30, 1000 total enum values, 75000 enum literal bytes; the
-# encoded-bytes budget (120000) and the enum-length entry threshold (250)
-# stay unchanged. Loosening one means changing the CodeWhale constants and
-# this mirror in lockstep.
+# encoded-bytes budget (120000) stays engine-local and the enum-length
+# entry threshold (250) keeps the engine's value where walle's own default
+# is 2500 — the stricter direction (more enums fall under the literal-byte
+# cap here than upstream would check). Loosening one means changing the
+# CodeWhale constants and this mirror in lockstep.
 _MFJS_MAX_ANY_OF_ITEMS = 500
 _MFJS_MAX_OBJECT_DEPTH = 30
 _MFJS_MAX_TOTAL_PROPERTIES = 3000
