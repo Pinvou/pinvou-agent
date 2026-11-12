@@ -583,12 +583,19 @@ function enforceLazyChunks() {
 // Both endpoints measured on the local node 24 toolchain: 486,097 →
 // 487,290 B desktop (+1,193 B: +789 feature entry, +158 review-fix
 // hardening, +15 marker-takeover release fix, +231 gate self-heal tick)
-// and 127,777 → 127,777 B web (byte-identical in size: the web entry
-// chunk is untouched — ChatView rides the web-only lazy chat-view group,
-// and the bridge-side additions ride the classic startup bundles). The
-// desktop ceiling takes the next thousand step (710 B headroom); the web
-// ceiling stays 128_000 (223 B headroom above the measured web entry).
-// This cap does not promise headroom for unrelated main changes.
+// and 127,777 → 127,777 B web (byte-identical in size: none of the web
+// entry chunk's code changed — ChatView rides the web-only lazy
+// chat-view group, and the bridge-side additions ride the classic
+// startup bundles). The desktop ceiling takes the next thousand step
+// (710 B headroom); the web ceiling stays 128_000 (223 B headroom above
+// the measured web entry). This cap does not promise headroom for
+// unrelated main changes.
+//
+// Round-5 review fix wave, measured on the same toolchain: +75 B
+// desktop (fresh-flag takeover predicate in the release effect +
+// accessible action name on the entry button) → 487,365 B desktop
+// (635 B headroom under the 488_000 ceiling, no re-cut needed); web
+// 127,777 B unchanged (still size-identical, 223 B headroom).
 export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
