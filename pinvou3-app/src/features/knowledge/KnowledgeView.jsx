@@ -728,7 +728,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const searchCursorOf = (page) => (page.length
         ? { mtime: page[page.length - 1].mtime, id: page[page.length - 1].id }
         : null);
-      const [searchPaging, setSearchPaging] = useState({ cursor: null, hasMore: false, loading: false });
+      const [searchPaging, setSearchPaging] = useState({ gen: 0, cursor: null, hasMore: false, loading: false });
       const searchGenerationRef = useRef(0);
       // 续页追加去重:offset/keyset 分页在表并发变动时(扫描新增、导入插入)可能
       // 送回已展示过的行;按行的稳定键去重,重复 key 不再进渲染列表。已见集合每
@@ -737,7 +737,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         if (!page.length) return prev;
         const seen = new Set(prev.map(keyOf));
         const fresh = page.filter((row) => !seen.has(keyOf(row)));
-        return fresh.length === page.length ? [...prev, ...page] : [...prev, ...fresh];
+        return [...prev, ...fresh];
       };
       const buildSearchQuery = (catKey, text, cursor) => {
         const c = CATS.find((x) => x.key === catKey) || CATS[0];
@@ -755,24 +755,28 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           const page = await invokeTauri('kb_search', { query: buildSearchQuery(catKey, text) }) || [];
           if (generation !== searchGenerationRef.current) return;
           setResults(page);
-          setSearchPaging({ cursor: searchCursorOf(page), hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
+          setSearchPaging({ gen: generation, cursor: searchCursorOf(page), hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
         }
         catch {
           if (generation !== searchGenerationRef.current) return;
           setResults([]);
-          setSearchPaging({ cursor: null, hasMore: false, loading: false });
+          setSearchPaging({ gen: generation, cursor: null, hasMore: false, loading: false });
         }
         if (generation === searchGenerationRef.current) setSearched(true);
       };
       const loadMoreSearch = async () => {
         if (!searchPaging.cursor || searchPaging.loading) return;
-        const generation = searchGenerationRef.current;
+        // 续页合法性锚定在产生这页游标的那次重置(searchPaging.gen),不是点击时刻
+        // 的最新代际:重置在途时旧 footer 仍可见,点击会拿旧 cursor 配新筛选发一条
+        // 注定作废的请求——旧代际在落地时必被代际校验丢弃,这里在点击时就直接拒发。
+        if (searchPaging.gen !== searchGenerationRef.current) return;
+        const generation = searchPaging.gen;
         setSearchPaging((p) => ({ ...p, loading: true }));
         try {
           const page = await invokeTauri('kb_search', { query: buildSearchQuery(cat, query, searchPaging.cursor) }) || [];
           if (generation !== searchGenerationRef.current) return;
           setResults((prev) => dedupeAppendBy(prev, page, (row) => row.path));
-          setSearchPaging({ cursor: searchCursorOf(page) || searchPaging.cursor, hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
+          setSearchPaging({ gen: generation, cursor: searchCursorOf(page) || searchPaging.cursor, hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
         } catch {
           if (generation === searchGenerationRef.current) setSearchPaging((p) => ({ ...p, loading: false }));
         }
@@ -814,8 +818,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const [allDocs, setAllDocs] = useState(kbCache.allDocs);
       // kb_documents 分页状态(offset 续页):hasMore 以「整页返回」推断,
       // hasMore=false 表示后面没有更多页。刷新路径(loadDocs/loadColls)重置回第 0 页。
-      const [docsPaging, setDocsPaging] = useState({ offset: 0, hasMore: false, loading: false });
-      const [allDocsPaging, setAllDocsPaging] = useState({ offset: 0, hasMore: false, loading: false });
+      const [docsPaging, setDocsPaging] = useState({ gen: 0, offset: 0, hasMore: false, loading: false });
+      const [allDocsPaging, setAllDocsPaging] = useState({ gen: 0, offset: 0, hasMore: false, loading: false });
       const [idx, setIdx] = useState(null);
       const [importError, setImportError] = useState('');
       const [failedFilesLoading, setFailedFilesLoading] = useState(false);
@@ -853,6 +857,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // 「加载更多」若在重置后才落地,会把旧集的续页追加到新集的首页之后,还会用
       // 旧集的 offset 覆盖 docsPaging(下一次续页就翻错集了)。整表重载先自增代际,
       // 续页落地前校验,被取代即整体丢弃(与 failedPaginationRef 同一模式)。
+      // 续页的代际取自产生这页 offset 的那次重置(docsPaging.gen),不是点击时刻的
+      // 最新代际:重置在途时旧 footer 仍可见,点击会拿旧 offset 配新集发一条注定
+      // 作废的请求——旧代际在落地时必被校验丢弃,这里在点击时就直接拒发。
       const docsGenerationRef = useRef(0);
       const allDocsGenerationRef = useRef(0);
       const loadDocs = async (cid) => {
@@ -861,19 +868,24 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
           if (generation !== docsGenerationRef.current) return;
           setDocs(page);
-          setDocsPaging({ offset: page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
-        } catch { /* silently degrade */ }
+          setDocsPaging({ gen: generation, offset: page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+        } catch {
+          // 整表重置失败:清掉在途「加载更多」的 loading(其响应会因代际失配被
+          // 丢弃、不会自己清),否则旧分页的按钮永远转圈。
+          setDocsPaging((p) => ({ ...p, loading: false }));
+        }
       };
       const loadMoreDocs = async () => {
         const cid = activeColl && activeColl.id;
         if (!cid || docsPaging.loading) return;
-        const generation = docsGenerationRef.current;
+        if (docsPaging.gen !== docsGenerationRef.current) return;
+        const generation = docsPaging.gen;
         setDocsPaging((p) => ({ ...p, loading: true }));
         try {
           const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: docsPaging.offset }) || [];
           if (generation !== docsGenerationRef.current) return;
           setDocs((prev) => dedupeAppendBy(prev, page, (row) => row.id));
-          setDocsPaging({ offset: docsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+          setDocsPaging({ gen: generation, offset: docsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
         } catch {
           if (generation === docsGenerationRef.current) setDocsPaging((p) => ({ ...p, loading: false }));
         }
@@ -889,9 +901,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           const d = await invokeTauri('kb_documents', { collectionId: 0, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
           allDocsGenerationRef.current += 1;
           setAllDocs(d);
-          setAllDocsPaging({ offset: d.length, hasMore: d.length >= KB_DOCS_PAGE_SIZE, loading: false });
+          setAllDocsPaging({ gen: allDocsGenerationRef.current, offset: d.length, hasMore: d.length >= KB_DOCS_PAGE_SIZE, loading: false });
           kbCache.allDocs = capCachedAllDocs(d);
-        } catch { /* silently degrade */ }
+        } catch {
+          // 整表重置失败:清掉在途「加载更多」的 loading,理由同 loadDocs。
+          setAllDocsPaging((p) => ({ ...p, loading: false }));
+        }
         try { const ei = await invokeTauri('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
         try { const m = await invokeTauri('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
         try { replaceIndexState(await invokeTauri('kb_index_status')); } catch { /* silently degrade */ }
@@ -901,7 +916,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // 先自增代际,重置后才落地的续页整体丢弃。
       const loadMoreAllDocs = async () => {
         if (allDocsPaging.loading) return;
-        const generation = allDocsGenerationRef.current;
+        // 续页代际取自产生这页 offset 的那次重置(allDocsPaging.gen),理由同
+        // loadMoreDocs:重置在途时的点击直接拒发。
+        if (allDocsPaging.gen !== allDocsGenerationRef.current) return;
+        const generation = allDocsPaging.gen;
         setAllDocsPaging((p) => ({ ...p, loading: true }));
         try {
           const page = await invokeTauri('kb_documents', { collectionId: 0, limit: KB_DOCS_PAGE_SIZE, offset: allDocsPaging.offset }) || [];
@@ -911,7 +929,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             kbCache.allDocs = capCachedAllDocs(next);
             return next;
           });
-          setAllDocsPaging({ offset: allDocsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+          setAllDocsPaging({ gen: generation, offset: allDocsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
         } catch {
           if (generation === allDocsGenerationRef.current) setAllDocsPaging((p) => ({ ...p, loading: false }));
         }
@@ -1693,6 +1711,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                         return (
                         // biome-ignore lint/a11y/useKeyWithClickEvents: collection-card click is a shortcut; keyboard path handled by the in-card action buttons
                         // biome-ignore lint/a11y/noStaticElementInteractions: collection-card click hot zone; not a standalone interactive control
+                        // eslint-disable-next-line react-hooks/refs -- openColl→loadDocs touch the pagination generation refs only inside this event-callback-invoked async fn, never during render
                         <div key={c.id} onClick={() => openColl(c)} className={`p-4 rounded-2xl cursor-pointer transition-all ${panel} ${panelHover}`}
                           style={activeColl && activeColl.id === c.id ? { borderColor: collColor(c), boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 2px ${collColor(c)}55` } : panelShadow}>{/* isDark dynamic-value: 保留 (boxShadow 含运行时 collColor) */}
                           <div className="flex items-start gap-3">
