@@ -431,8 +431,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   at a drain/inject point or on an interrupt — during a live turn the
   stream loop drains the steer channel after every stream event and the
   turn resumes to commit accepted steers in the SAME turn (round-9), so
-  the case that waits for the target's NEXT turn's first drain is a steer
-  that landed after the turn's last drain. If no terminal
+  the cases that wait for the target's NEXT turn's first drain are a steer
+  that landed after the turn's last drain, and a steer parked before a
+  turn that exits FAILED (that exit settles nothing and injects
+  nothing). If no terminal
   event ever arrives while the app keeps running (that deferral, a
   forwarder aborted by an engine recycle, a lost Drop notification on a
   full event channel at engine-drop time, or a forwarder task that
@@ -505,7 +507,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   exhaustion arm's replaced branch). Either way the old
   body's terminal event ends nothing app-side (it is buffered as late and
   ages out), so that double-dispatch window ends when the newest body's
-  own delivery lands one retry backoff after the swap — not at the
+  own delivery lands — at whichever price the sub-arm above quotes (one
+  poll tick via the stale-release gate, one retry backoff via the
+  mid-delivery re-verify) — not at the
   terminal event and not the 24h wait; a semantically-equal body re-spools
   too but is held by the poll's stale-release gate without re-dispatching
   (the dedup happens at hold time, not spool time) until the earlier
