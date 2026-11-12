@@ -262,21 +262,15 @@ fn credential_state_for_display(
     }
 }
 
-#[tauri::command]
-pub async fn get_effective_model_config(
-    session_id: Option<String>,
-    pool: State<'_, EnginePool>,
-    store: State<'_, SessionStore>,
-) -> Result<EffectiveModelConfig, String> {
-    // 读 disk 最新 prefs，并按当前会话解析真正绑定的模型。
-    let mut bridge = pool.bridge.clone();
-    bridge.prefs = refresh_safe_prefs(UserPrefs::load());
-    let session_model_id = session_id
-        .as_deref()
-        .and_then(|id| store.session_model_id(id));
-    bridge.session_model = session_model_id
-        .as_deref()
-        .and_then(|id| bridge.prefs.model_by_id(id).cloned());
+/// Shared tail of [`get_effective_model_config`]: the display construction
+/// over an already-resolved bridge. Extracted so the keyless wiring
+/// (declaration → credential state + env-override list) is unit-pinnable,
+/// not just the pure display helper — a refactor that stops threading the
+/// declaration into this construction must fail a test, not a review.
+fn build_effective_model_config(
+    bridge: &crate::features::assistant::platform::bridge::Pinvou3Bridge,
+    env_api_key: bool,
+) -> EffectiveModelConfig {
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -284,9 +278,6 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
         env_overrides.push("base_url".to_string());
     }
-    let env_api_key = std::env::var(MODEL_API_KEY_ENV_OVERRIDE)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
     let declares_no_auth = bridge.effective_model_declares_no_auth();
     if env_api_key && !declares_no_auth {
         env_overrides.push("api_key".to_string());
@@ -303,7 +294,7 @@ pub async fn get_effective_model_config(
     // 运行时模型准备固定 passthrough（无后台托管凭据），是否要求用户 Key
     // 完全由 bridge 的鉴权判定（provider + base_url）决定。
     let requires_user_api_key = bridge.api_key_required();
-    Ok(EffectiveModelConfig {
+    EffectiveModelConfig {
         preset: preset.to_string(),
         model: bridge.model(),
         base_url: bridge.base_url(),
@@ -330,7 +321,28 @@ pub async fn get_effective_model_config(
             .and_then(|model| model.endpoint_mode.clone()),
         requires_user_api_key,
         env_overrides,
-    })
+    }
+}
+
+#[tauri::command]
+pub async fn get_effective_model_config(
+    session_id: Option<String>,
+    pool: State<'_, EnginePool>,
+    store: State<'_, SessionStore>,
+) -> Result<EffectiveModelConfig, String> {
+    // 读 disk 最新 prefs，并按当前会话解析真正绑定的模型。
+    let mut bridge = pool.bridge.clone();
+    bridge.prefs = refresh_safe_prefs(UserPrefs::load());
+    let session_model_id = session_id
+        .as_deref()
+        .and_then(|id| store.session_model_id(id));
+    bridge.session_model = session_model_id
+        .as_deref()
+        .and_then(|id| bridge.prefs.model_by_id(id).cloned());
+    let env_api_key = std::env::var(MODEL_API_KEY_ENV_OVERRIDE)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    Ok(build_effective_model_config(&bridge, env_api_key))
 }
 
 /// 「添加模型」方案:列出已保存模型 + 当前全局默认 id(前端高亮)。
@@ -2124,6 +2136,99 @@ mod tests {
             Some("typed-key".to_string()),
             "无声明时类型化 key 优先的既有语义不变"
         );
+    }
+
+    #[test]
+    fn effective_model_config_wiring_is_keyless_aware() {
+        // wiring 钉:纯函数钉守不住命令侧构造 —— 把 declaration 停止接入构造
+        // (调用点改传 false)的重构必须在这里变红,而不是靠评审肉眼。
+        use super::build_effective_model_config as build;
+        use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_model = std::env::var_os("DEEPSEEK_MODEL");
+        let old_base = std::env::var_os("DEEPSEEK_BASE_URL");
+        let old_provider = std::env::var_os("DEEPSEEK_PROVIDER");
+        let old_key = std::env::var_os("DEEPSEEK_API_KEY");
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe {
+            std::env::remove_var("DEEPSEEK_MODEL");
+            std::env::remove_var("DEEPSEEK_BASE_URL");
+            std::env::remove_var("DEEPSEEK_PROVIDER");
+            std::env::remove_var("DEEPSEEK_API_KEY");
+            std::env::set_var("DEEPSEEK_API_KEY", "env-injected-key");
+        }
+        let mut bridge = Pinvou3Bridge::test_fixture(None);
+        bridge.prefs.advanced.saved_models = vec![SavedModel {
+            auth_mode: Some("none".to_string()),
+            id: "wiring-model".to_string(),
+            name: "wiring".to_string(),
+            alias: None,
+            preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "wiring-model-name".to_string(),
+            base_url: "https://wiring.example/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: Default::default(),
+            has_secret: false,
+            credential_action: None,
+        }];
+        bridge.prefs.advanced.active_model_id = Some("wiring-model".to_string());
+        let config = build(&bridge, true);
+        assert_eq!(
+            config.credential_state,
+            CredentialState::Missing,
+            "免鉴权声明生效时 env key 不得把显示状态改写为 EnvOverride(wiring)"
+        );
+        assert!(
+            !config.env_overrides.contains(&"api_key".to_string()),
+            "免鉴权声明生效时 env_overrides 不得列出 api_key: {:?}",
+            config.env_overrides
+        );
+        // 反方向:同一构造在无声明时保持 env 覆盖的既有显示语义。
+        bridge.prefs.advanced.saved_models[0].auth_mode = None;
+        let config = build(&bridge, true);
+        assert_eq!(
+            config.credential_state,
+            CredentialState::EnvOverride,
+            "无声明记录的 env 覆盖显示语义不变(wiring)"
+        );
+        assert!(config.env_overrides.contains(&"api_key".to_string()));
+        if let Some(value) = old_model {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("DEEPSEEK_MODEL", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("DEEPSEEK_MODEL") };
+        }
+        if let Some(value) = old_base {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("DEEPSEEK_BASE_URL", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("DEEPSEEK_BASE_URL") };
+        }
+        if let Some(value) = old_provider {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("DEEPSEEK_PROVIDER", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        }
+        if let Some(value) = old_key {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("DEEPSEEK_API_KEY", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        }
     }
 
     #[test]

@@ -426,7 +426,7 @@ assert.equal(
 );
 assert.deepEqual(
   webProbedArgs,
-  { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: null, modelId: null },
+  { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: null, modelId: null, noAuth: false },
   'web probeLocalServerKind must normalize absent credentials to null',
 );
 assert.equal(
@@ -436,8 +436,18 @@ assert.equal(
 );
 assert.deepEqual(
   webProbedArgs,
-  { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'sk-form-key', modelId: 'model-1' },
+  { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: 'sk-form-key', modelId: 'model-1', noAuth: false },
   'web probeLocalServerKind must forward apiKey/modelId for authenticated endpoints',
+);
+assert.equal(
+  await api.models.probeLocalServerKind('http://127.0.0.1:11434/v1', '', null, true),
+  'ollama',
+  'web probeLocalServerKind must accept the keyless posture argument',
+);
+assert.deepEqual(
+  webProbedArgs,
+  { baseUrl: 'http://127.0.0.1:11434/v1', apiKey: null, modelId: null, noAuth: true },
+  'web probeLocalServerKind must forward the keyless posture for credential-free probes',
 );
 
 console.log('web bridge domain contract passed');
