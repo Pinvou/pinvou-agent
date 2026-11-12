@@ -251,7 +251,8 @@ async fn snapshot_for_model_config(
     // applies with probed=None) must keep filling the monitor card and the
     // progress-bar denominator while the engine is unreachable. Only these
     // early returns dropped the declaration (reported: local vLLM down →
-    // 上下文长度 stuck at "—" although the model form declares the window).
+    // "Context Length" stuck at "—" although the model form declares the
+    // window).
     // Scope: the two offline arms are `target_kind == "local"`-gated, so
     // keyless remote targets fall through to the happy path and already
     // kept the declaration; the auth_failed arm has no target_kind gate —
@@ -1568,7 +1569,8 @@ mod tests {
     /// configuration, not a runtime fact, so an unreachable local engine
     /// (connection refused — the monitor's normal idle state) must still
     /// display the user-declared window instead of blanking the context card
-    /// (reported: 上下文长度 stuck at "—" whenever the local vLLM was down).
+    /// (reported: "Context Length" stuck at "—" whenever the local vLLM was
+    /// down).
     /// The auth_failed verdict must not drop it either, and neither may a
     /// plain local HTTP error from the engine (503 while it restarts).
     /// Without a declaration
