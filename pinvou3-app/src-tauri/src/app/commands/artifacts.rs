@@ -21,7 +21,7 @@ pub(crate) struct ArtifactInfo {
 /// 几十 MB 以上就是内存尖峰 + UI 冻结。同文件的图片通道(25MB)已有同型 metadata
 /// 预检，文本通道此前无守卫（审计 tauri-app-a-008）。超限明确报错并提示外部打开，
 /// 绝不静默截断。
-pub(crate) const MAX_ARTIFACT_TEXT_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_ARTIFACT_TEXT_BYTES: u64 = 50 * 1024 * 1024;
 
 /// 读 artifact 文件的纯文本（md/json/txt 等）。文件不存在或不是文本 → 报错。
 /// 路径须为绝对路径且不触及凭据/系统敏感黑名单（validate_user_path，防逃逸）。
@@ -33,7 +33,7 @@ pub async fn read_artifact_text(path: String) -> Result<String, String> {
 pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     let p = validate_user_path(path)?;
     // Metadata 预检先于整读：读一个超限文件进内存是纯浪费（镜像图片通道的
-    // 同型检查；metadata 读取失败按 0 处理，落到 read_to_string 的常规 IO 错误）。
+    // 同型检查；metadata 读取失败按 0 处理，落到读路径的常规 IO 错误）。
     if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > MAX_ARTIFACT_TEXT_BYTES {
         return Err(format!(
             "文本产物过大(>50 MiB)，请用外部打开: {}",
@@ -43,7 +43,25 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     let _lifecycle = artifact_lifecycle_lock().lock();
     recover_interrupted_artifact_write(&p)
         .map_err(|e| format!("recover_artifact_text({}): {e}", p.display()))?;
-    std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
+    // 读本身也有界（Take 限长 = 上限 + 1）：metadata 预检与读取之间存在
+    // TOCTOU 窗口（生命周期锁恢复或并发写可能让文件在预检后长大），读侧
+    // 超限按同样的「过大」错误报出，绝不整读超限文件进内存。
+    let file =
+        std::fs::File::open(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))?;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        file.take(MAX_ARTIFACT_TEXT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("read_artifact_text({}): {e}", p.display()))?;
+    }
+    if bytes.len() as u64 > MAX_ARTIFACT_TEXT_BYTES {
+        return Err(format!(
+            "文本产物过大(>50 MiB)，请用外部打开: {}",
+            p.display()
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
 pub(super) const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;

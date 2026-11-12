@@ -3452,6 +3452,23 @@ async fn organize_history_is_bounded_to_recent_two_hundred() {
     );
 }
 
+/// The audited limits' VALUES are part of the disclosure (register row in
+/// docs/fork-modifications.md), so they are pinned literally — the mechanism
+/// tests above stay green if a constant silently reverts to its old
+/// pre-audit value (20/20/90).
+#[test]
+fn audited_memory_limit_values_match_the_register() {
+    assert_eq!(PENDING_MEMORY_ACTIVE_MAX_STORED, 200);
+    assert_eq!(
+        crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS,
+        200
+    );
+    assert_eq!(
+        crate::features::memory::types::TIMED_MEMORY_MAX_TTL_DAYS,
+        3650
+    );
+}
+
 #[tokio::test]
 async fn organize_scans_only_undecided_pending_candidates() {
     let _home = IsolatedPinvouHome::new("organize-pending-scope");

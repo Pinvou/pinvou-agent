@@ -551,7 +551,9 @@ fn transport_class(err: &reqwest::Error) -> &'static str {
 /// the 3 s request timeout. Accumulate through `bytes_stream` and degrade to
 /// `None` (metrics unavailable) as soon as the accumulated body crosses the
 /// cap — the same streamed shape as the ima connector's JSON read, and the
-/// same outcome as an over-cap `Content-Length`.
+/// same outcome as an over-cap `Content-Length`. Decoding is lossy (as the
+/// old `text()` path was): a stray invalid byte must degrade one metric line,
+/// not the whole probe.
 async fn read_bounded_metrics_body(response: reqwest::Response) -> Option<String> {
     use futures_util::StreamExt;
     let mut body: Vec<u8> = Vec::new();
@@ -563,7 +565,7 @@ async fn read_bounded_metrics_body(response: reqwest::Response) -> Option<String
         }
         body.extend_from_slice(&chunk);
     }
-    String::from_utf8(body).ok()
+    Some(String::from_utf8_lossy(&body).into_owned())
 }
 
 fn parse_models_response(
