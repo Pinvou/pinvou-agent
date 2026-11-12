@@ -3365,7 +3365,7 @@ impl RemoteControlManager {
 mod tests {
     use super::persistence::{
         load_config_from, load_or_initialize_rpc_ledger_at, load_pending_revocations_from,
-        queue_pending_revocation_at,
+        persist_pending_revocations_to, queue_pending_revocation_at,
     };
     use super::rpc::{WebSessionScope, web_session_scope};
     use super::*;
@@ -5819,9 +5819,10 @@ mod tests {
 
     /// 接线钉(Round-11 复审 minor):确认必须针对进程内权威账本整体落盘
     /// (`persist_pending_revocations`),并同步维护 backlog;回退成「重读
-    /// 磁盘→删一条→重写」(`acknowledge_pending_revocation`)会在抢救降
-    /// 级后拿空账本清掉内存里的兄弟条目。方法体需要 AppHandle,行为钉
-    /// 驱动不了,按本模块惯例以源码契约钉住。
+    /// 磁盘→删一条→重写」(`acknowledge_pending_revocation`,已在 round-1
+    /// 清扫中随其家族移除)会在抢救降级后拿空账本清掉内存里的兄弟条目。
+    /// 负向断言如今防的是这个名字/形状的辅助函数重新长回来。方法体需要
+    /// AppHandle,行为钉驱动不了,按本模块惯例以源码契约钉住。
     #[test]
     fn revocation_ack_persists_the_process_backlog_instead_of_rereading_disk() {
         let source = include_str!("mod.rs");
@@ -5845,6 +5846,27 @@ mod tests {
             "the disk-rereading acknowledgement must not come back; it drops salvaged \
              siblings when the on-disk ledger is absent"
         );
+    }
+
+    /// 行为钉(round-1 清扫 Coverage 回补):清空账本落盘必须按空账本语义
+    /// 删除文件(`remove_private_file`),而不是留下一个零条目账本给下一
+    /// 次 load 重新解析。被清扫掉的旧 ack 测试是这条分支唯一的覆盖。
+    #[test]
+    fn persisting_an_emptied_revocation_ledger_removes_the_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-web-revocation-empty-ledger-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        queue_pending_revocation_at(&path, test_pending_revocation("ep_retired")).unwrap();
+        assert!(path.exists());
+
+        persist_pending_revocations_to(&path, &PendingRevocationLedger::default())
+            .expect("persist the drained ledger");
+        assert!(!path.exists(), "an empty revocation ledger is removed");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     /// Round-14 复审 minor(source 契约钉):回放装载必须按「并集且内存
