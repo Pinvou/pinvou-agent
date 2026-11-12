@@ -6,7 +6,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {let pinvouSharedtauriSessionsCache = null;
 function pinvouSharedtauriSessions() {
-  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, loadScheduledTaskRecentRuns, reportSidecarReadFailure, historyRefreshTimer: { get value() { return historyRefreshTimer; }, set value(v) { historyRefreshTimer = v; } }, historyRefreshPending: { get value() { return historyRefreshPending; }, set value(v) { historyRefreshPending = v; } }, currentStreamText: { get value() { return context.currentStreamText; }, set value(v) { context.currentStreamText = v; } }, currentStreamId: { get value() { return context.currentStreamId; }, set value(v) { context.currentStreamId = v; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, toolMeta: { get value() { return context.toolMeta; }, set value(v) { context.toolMeta = v; } }, restoreSteeredWorkingSet, saveSteeredWorkingSet });
+  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, loadScheduledTaskRecentRuns, reportSidecarReadFailure, historyRefreshTimer: { get value() { return historyRefreshTimer; }, set value(v) { historyRefreshTimer = v; } }, historyRefreshPending: { get value() { return historyRefreshPending; }, set value(v) { historyRefreshPending = v; } }, currentStreamText: { get value() { return context.currentStreamText; }, set value(v) { context.currentStreamText = v; } }, currentStreamId: { get value() { return context.currentStreamId; }, set value(v) { context.currentStreamId = v; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, toolMeta: { get value() { return context.toolMeta; }, set value(v) { context.toolMeta = v; } }, restoreSteeredWorkingSet, saveSteeredWorkingSet, currentDraftModeState });
   return pinvouSharedtauriSessionsCache;
 }
 
@@ -34,6 +34,9 @@ function pinvouSharedtauriSessions() {
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
     const runSyncOnSession = context.runSyncOnSession;
+    // Approval-card replay (tri-mode): on session switch, re-insert missing approval cards from the backend registry.
+    const addChatItem = context.addChatItem;
+    const timeStr = context.timeStr;
     const resetPendingAssistant = context.resetPendingAssistant;
     const rerenderFromMessages = context.rerenderFromMessages;
     const syncModeState = context.syncModeState;
@@ -392,9 +395,9 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSes
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
-    // freshBuffer's modeState is the generic default (yolo); the draft
-    // display must be overridden with this lane's global default (the work
-    // lane's last_mode).
+    // freshBuffer's modeState is the generic default (auto, tri-mode); the
+    // draft display must be overridden with this lane's global default (the
+    // work lane's last_mode).
     state.modeState = currentDraftModeState();
     notify();
   }
@@ -631,7 +634,7 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
           // set_plan_mode_next here; apply only a mode the user explicitly
           // staged in draft state (the one-shot YOLO confirmation gate was
           // already passed by ChatView at draft switch time).
-          if (stagedDraftMode === "plan" || stagedDraftMode === "yolo") {
+          if (["plan", "yolo", "auto"].includes(stagedDraftMode)) {
             // Use the meta.id captured at materialization, not activeSessionId:
             // during the awaits above the user may have switched away, and
             // running the mode command against the current active session would
@@ -639,7 +642,9 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
             try {
               const stagedModeState = stagedDraftMode === "plan"
                 ? await invoke("set_plan_mode_next", { sessionId: meta.id })
-                : await invoke("exit_plan_to_yolo", { sessionId: meta.id });
+                : stagedDraftMode === "yolo"
+                ? await invoke("exit_plan_to_yolo", { sessionId: meta.id })
+                : await invoke("set_session_mode", { sessionId: meta.id, mode: "auto" });
               applyAuthoritativeModeState(meta.id, stagedModeState);
             } catch (stagedModeError) {
               runSyncOnSession(meta.id, function () {
@@ -648,18 +653,22 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
             }
           }
         } else {
-        // Two-lane semantics (#428 merged design into work): the backend's
-        // plain default is always Yolo and lanes are only work/code; when the
-        // materializing session's lane global default is plan, apply it right
-        // now (the write becomes that session's own per-session record; the
-        // global default is unaffected).
+        // Two-lane semantics (#428 merged design into work): the backend
+        // resolves unbound plain sessions to Auto when no lane default
+        // applies; an explicitly chosen lane global default (plan / yolo /
+        // auto) is applied right now so it becomes that session's own
+        // per-session record (the global default is unaffected). Before the
+        // tri-mode reconciliation only "plan" was applied here, silently
+        // dropping an explicit yolo/auto work default.
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
-        // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
-        // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
-        if (laneDefault === "plan") {
+        // Use the meta.id captured at materialization, not activeSessionId: the user
+        // may have switched away during the awaits above, and a mode command against the current active session would target the wrong object.
+        if (["plan", "yolo", "auto"].includes(laneDefault)) {
           try {
-            const laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            const laneModeState = laneDefault === "plan"
+              ? await invoke("set_plan_mode_next", { sessionId: meta.id })
+              : await invoke("set_session_mode", { sessionId: meta.id, mode: laneDefault });
             applyAuthoritativeModeState(meta.id, laneModeState);
           } catch (laneModeError) {
             runSyncOnSession(meta.id, function () {
@@ -766,6 +775,150 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     return remappedCurrentStreamId;
   }
 
+  // ── tri-mode approval-card replay (session-switch recovery) ─────────────────────
+  // Approval cards work like user_input cards: never in messages.json, no revival after
+  // disk hydration. The backend registers them when a card pops (pending_approvals); after every
+  // session switch this re-inserts the session's missing approval cards from the registry — covering
+  // both the first entry after a cold start and idempotent hot-buffer replay (deduped by approvalId, the same dedup key as chat-events.js live events).
+  // Read failures skip silently: recovery is best-effort and must not block the session switch.
+  function hasApprovalChatItem(approvalId) {
+    return !!approvalId && state.chatItems.some(function (item) {
+      return item && item.type === "approval" && item.approvalId === approvalId;
+    });
+  }
+  // Replay tombstones (review P2; same key and bound as chat-events.js): a
+  // get_pending_approvals snapshot may have raced a resolution from
+  // another surface - the live chat:approval_resolved that found no card
+  // left a tombstone blocking the stale snapshot from re-inserting the
+  // decided approval as an active card. Key includes the sid. Beyond-cap
+  // eviction skips entries pinned by an outstanding snapshot (see the
+  // window counter in replayPendingApprovals below; "the registry no
+  // longer re-presents the id" only holds for tombstones outside any
+  // in-flight window).
+  function approvalIsTombstoned(sid, approvalId) {
+    const map = state.approvalReplayTombstones;
+    return !!approvalId && !!map && map.has(String(sid) + "\u0000" + String(approvalId));
+  }
+  // Replay terminal-generation fence (review P3): if a turn terminal state lands between
+  // snapshot issue and return (chat:done has cleared the backend registry and settled in-place
+  // cards to cancelled — see chat-events.js's approvalReplayTerminalSeq bump), the whole snapshot
+  // batch is invalidated — a post-terminal return would re-insert engine-side dead approvals as active
+  // cards. Tombstones only block single decided ids, not a whole batch returning after the terminal; the next session switch replays from a fresh registry.
+  function approvalTerminalSeq(sid) {
+    const map = state.approvalReplayTerminalSeq;
+    return (map && map.get(String(sid))) || 0;
+  }
+  // In-flight replay window counter (reviewer P3): a resolved-tombstone
+  // created between snapshot issue and return may be the only evidence the
+  // return needs, so the 512-eviction must not drop it. Inside the window
+  // chat-events.tombstoneApproval records the key into
+  // approvalReplayPinnedTombstones and skips it at eviction; this side
+  // releases the pins (by sid prefix) once the window closes (the last
+  // outstanding snapshot returned AND its returned pending consumed or
+  // invalidated), so the pin set never accumulates across windows. The
+  // window must stay open through consumption: closing it at the read's
+  // return - before the approvalIsTombstoned filter below runs - let an
+  // in-window capacity reclaim evict the very tombstone the returned
+  // snapshot was about to consult (reviewer P2, reviews 5749588942 /
+  // 5749912714), resurrecting a decided approval as an active card.
+  function releaseApprovalReplayPins(sid) {
+    const pinned = state.approvalReplayPinnedTombstones;
+    if (!pinned) return;
+    const prefix = String(sid) + "\u0000";
+    for (const key of pinned) {
+      if (key.startsWith(prefix)) pinned.delete(key);
+    }
+  }
+  // Window-close reclaim (reviewer P3, review 5748578652): a window that
+  // pinned more records than the 512 cap leaves the map oversized, and the
+  // single-evict insert path in chat-events.tombstoneApproval can never
+  // shrink it back. Once this window's pins are released, the formerly
+  // pinned entries are evictable again - trim the oldest unpinned entries
+  // until the map is back within the cap (pins held by other sids' live
+  // windows stay protected). Ordering invariant (reviewer P2): this only
+  // fires after the last outstanding snapshot's returned pending has been
+  // consumed or invalidated - reclaiming while the return was still
+  // outstanding let the trim delete the unpinned pre-window tombstone the
+  // pending was about to be filtered against.
+  function reclaimApprovalReplayTombstones() {
+    const map = state.approvalReplayTombstones;
+    if (!map) return;
+    const pinned = state.approvalReplayPinnedTombstones;
+    for (const key of map.keys()) {
+      if (map.size <= 512) break;
+      if (pinned && pinned.has(key)) continue;
+      map.delete(key);
+    }
+  }
+  async function replayPendingApprovals(sid) {
+    if (!sid) return;
+    const terminalFence = approvalTerminalSeq(sid);
+    if (!state.approvalReplayInFlight) state.approvalReplayInFlight = new Map();
+    const flightKey = String(sid);
+    state.approvalReplayInFlight.set(flightKey, (state.approvalReplayInFlight.get(flightKey) || 0) + 1);
+    let pending = null;
+    try {
+      pending = await invoke("get_pending_approvals", { sessionId: sid }) || [];
+    } catch {
+      pending = null; // best-effort recovery: a read failure must not block the session switch
+    }
+    // Window-close ordering (review P2): the returned pending must be consumed (or invalidated)
+    // first; only the last outstanding return may close the window (release pins + reclaim). The
+    // close sits in the consumption block's finally: read failure (pending null), terminal-fence
+    // invalidation, or a consume/notify throw all still pass through here — error-path cleanup is never lost.
+    try {
+      if (!pending || !pending.length) return;
+      if (approvalTerminalSeq(sid) !== terminalFence) return;
+      let changed = false;
+      runSyncOnSession(sid, function () {
+        pending.forEach(function (entry) {
+          const approvalId = String(entry && entry.approvalId || "");
+          if (!approvalId || hasApprovalChatItem(approvalId)) return;
+          if (approvalIsTombstoned(sid, approvalId)) return;
+          addChatItem({
+            type: "approval",
+            approvalId,
+            toolName: String(entry.toolName || ""),
+            description: String(entry.description || ""),
+            intentSummary: entry.intentSummary == null ? "" : String(entry.intentSummary),
+            input: entry.input === undefined ? null : entry.input,
+            forcePrompt: !!entry.forcePrompt,
+            resolved: false,
+            cardState: "active",
+            submitting: false,
+            statusLabel: "",
+            time: timeStr(),
+          });
+          changed = true;
+        });
+      });
+      if (changed) notify();
+    } finally {
+      const remaining = (state.approvalReplayInFlight.get(flightKey) || 1) - 1;
+      if (remaining <= 0) {
+        state.approvalReplayInFlight.delete(flightKey);
+        releaseApprovalReplayPins(sid);
+        reclaimApprovalReplayTombstones();
+        // Deferred purge flush (review 5764675531): a buffer reclaim that
+        // arrived while this window was open deferred its terminal-seq entry
+        // deletion (dropping it mid-window would reset the fence under an
+        // in-flight snapshot and let a stale pre-terminal snapshot pass the
+        // default 0 == 0 check on return). The window is closed now — the
+        // in-flight counter is already zeroed above, so the entry can safely
+        // die with the buffer here and a reopen re-arms at 0.
+        if (state.approvalReplayTerminalSeqPurgePending
+          && state.approvalReplayTerminalSeqPurgePending.has(flightKey)) {
+          state.approvalReplayTerminalSeqPurgePending.delete(flightKey);
+          if (state.approvalReplayTerminalSeq) {
+            state.approvalReplayTerminalSeq.delete(flightKey);
+          }
+        }
+      } else {
+        state.approvalReplayInFlight.set(flightKey, remaining);
+      }
+    }
+  }
+
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function switchToSessionInternal(id, preserveScheduledRunContext, errorScope, options) {
     const requestToken = ++sessionSwitchRequestToken;
@@ -812,6 +965,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       await syncActivePersona();
       await syncMountedCollection();
       await loadMemoryOverview({ rehydratePending: true });
+      await replayPendingApprovals(id);
       if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== id) return false;
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
@@ -899,6 +1053,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     await syncActivePersona();
     await syncMountedCollection();
     await loadMemoryOverview({ rehydratePending: true });
+    await replayPendingApprovals(id);
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== saved.metadata.id) return false;
     notify();
     reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)

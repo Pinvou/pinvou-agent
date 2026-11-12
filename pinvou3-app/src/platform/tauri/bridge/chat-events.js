@@ -1105,6 +1105,20 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
       sweepUnpairedToolMeta();
+      // tri-mode approval-card terminal sweep (same treatment as the unpaired toolMeta sweep):
+      // by turn terminal time the backend registry has been cleared as a backstop (emit_chat_terminal
+      // → clear_pending); clicks on leftover active cards only get "approval not found". Terminal cards
+      // settle to cancelled in place, no longer clickable (the render layer maps localized terminal copy from cardState).
+      state.chatItems.forEach(function (item) {
+        if (item && item.type === "approval" && !item.resolved) {
+          item.submitting = false;
+          item.resolved = true;
+          item.cardState = "cancelled";
+        }
+      });
+      // Terminal-generation fence bump (review P3) + 512-cap eviction (review 5812242993):
+      // extracted into a helper to protect the chat:done sweep's complexity budget; semantics in the function comment below.
+      bumpApprovalReplayTerminalSeq(sid);
       // Refresh artifacts written in this turn in place when already presented.
       // Add only the first card for artifacts the model did not present, and
       // skip artifacts already presented in this turn or changed repeatedly.
@@ -1273,6 +1287,157 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       reason: String(p.reason || ""),
       risk: String(p.risk || ""),
     });
+  }); });
+
+  // ── tri-mode approval surface (plan/auto/yolo + ask-on-guardrail) ──────────────
+  // Approval cards work like user_input: never in messages.json; the card pops via the
+  // chat:approval_required event plus a get_pending_approvals replay on session switch
+  // (sessions.js). Idempotent dedup by approvalId (the same shape scan as hasChatItemForTool):
+  // the backend registry replaces the same approval in place, and event replay must not produce duplicate cards.
+  function hasChatItemForApproval(approvalId) {
+    return !!approvalId && state.chatItems.some(function (item) {
+      return item && item.type === "approval" && item.approvalId === approvalId;
+    });
+  }
+  // Approval replay tombstones (review P2): while a get_pending_approvals snapshot is in its
+  // await, the same approval may already have settled from another surface — the live
+  // chat:approval_resolved arrives first with no card to settle (snapshot in flight / background
+  // working set not yet replayed), and the stale snapshot's return would re-insert it as an active card.
+  // When a resolved lands empty the id goes into this session's tombstone; approval_required insertion and sessions.js's replay check the same key, so a late cross-await snapshot no longer resurrects decided approvals.
+  // Key includes the sid: approval ids are engine-assigned, never assumed
+  // globally unique. Cap = 512 oldest-first eviction. Dropping beyond the
+  // cap is safe because a tombstone only serves the in-flight snapshot
+  // window and the backend registry no longer re-presents the id — EXCEPT
+  // for tombstones created inside that window (reviewer P3): a
+  // get_pending_approvals snapshot issued on session switch may still
+  // contain a just-resolved approval whose tombstone is the only evidence
+  // blocking the late snapshot return; enough unrelated resolutions (absent
+  // card + nonterminal target turn, where the terminal-seq fence does not
+  // apply) can evict it before the return and resurrect a decided approval
+  // as an actionable card the backend never reauthorizes. Tombstones created
+  // while a snapshot is in flight are therefore pinned (sessions.js maintains
+  // the approvalReplayInFlight counter at snapshot issue/return and releases
+  // approvalReplayPinnedTombstones per sid when the window closes); eviction
+  // skips pinned entries, and the map may temporarily exceed the cap when
+  // every entry is pinned — the excess is reclaimed at window close
+  // (sessions.js trims the oldest unpinned entries back to the cap once the
+  // pins are released; the single-evict insert below alone would never
+  // shrink an oversized map back down).
+  function approvalTombstoneMap() {
+    if (!state.approvalReplayTombstones) state.approvalReplayTombstones = new Map();
+    return state.approvalReplayTombstones;
+  }
+  function tombstoneApproval(sid, approvalId) {
+    const map = approvalTombstoneMap();
+    const key = String(sid) + "\u0000" + String(approvalId);
+    const inFlight = (state.approvalReplayInFlight && state.approvalReplayInFlight.get(String(sid))) || 0;
+    if (inFlight > 0) {
+      if (!state.approvalReplayPinnedTombstones) state.approvalReplayPinnedTombstones = new Set();
+      state.approvalReplayPinnedTombstones.add(key);
+    }
+    if (map.size >= 512) {
+      for (const oldest of map.keys()) {
+        if (state.approvalReplayPinnedTombstones && state.approvalReplayPinnedTombstones.has(oldest)) continue;
+        map.delete(oldest);
+        break;
+      }
+    }
+    map.set(key, true);
+  }
+  function approvalIsTombstoned(sid, approvalId) {
+    return !!approvalId && approvalTombstoneMap().has(String(sid) + "\u0000" + String(approvalId));
+  }
+  listen("chat:approval_required", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const approvalId = String(p.approval_id || "");
+    if (!approvalId) return;
+    if (hasChatItemForApproval(approvalId)) return;
+    if (approvalIsTombstoned(p.session_id, approvalId)) return;
+    addChatItem({
+      type: "approval",
+      approvalId,
+      toolName: String(p.tool_name || ""),
+      description: String(p.description || ""),
+      intentSummary: p.intent_summary == null ? "" : String(p.intent_summary),
+      input: p.input === undefined ? null : p.input,
+      forcePrompt: !!p.force_prompt,
+      resolved: false,
+      cardState: "active",
+      submitting: false,
+      statusLabel: "",
+      time: timeStr(),
+    });
+    notify();
+  }); });
+
+  // Approval-decision convergence broadcast (tri-mode M5): the decision may come from a second
+  // window or a remote surface; once the backend's decide_approval settles it broadcasts the terminal
+  // state, and this surface's undecided same-id card settles in place. Applies to undecided cards only
+  // (idempotent): the initiator's optimistic terminal state and the terminal sweep's cancelled must not
+  // be overwritten by the echo. The payload carries no tool input (pinned at the backend payload
+  // construction site). Unknown/missing decision values are no-op (fail-neutral): a malformed payload must not map the card to "allowed" — leave it undecided for the authoritative echo / terminal sweep.
+  // decision "unknown" (host P2) is the backend's authoritative unknown-
+  // outcome disposition (ack + settle windows expired, registry entry
+  // dropped): the card moves to the non-decidable "unknown" state
+  // (resolved stays false - a late authoritative resolution event still
+  // reconciles it in place, and the turn-terminal sweep takes over
+  // otherwise), so the button face stops inviting a re-decision on a
+  // possibly-consumed approval. Any other unknown value stays a malformed
+  // no-op.
+  listen("chat:approval_resolved", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const approvalId = String(p.approval_id || "");
+    if (!approvalId) return;
+    const decision = String(p.decision || "");
+    if (!["deny", "allow", "allow_for_session", "unknown"].includes(decision)) return;
+    let changed = false;
+    state.chatItems.forEach(function (item) {
+      if (item && item.type === "approval" && item.approvalId === approvalId && !item.resolved) {
+        item.submitting = false;
+        if (decision === "unknown") {
+          item.cardState = "unknown";
+        } else {
+          item.resolved = true;
+          item.cardState = decision === "deny" ? "denied"
+            : decision === "allow_for_session" ? "allowed_session" : "allowed";
+        }
+        item.statusLabel = "";
+        changed = true;
+      }
+    });
+    // No undecided card to settle: the decision came from another surface inside the snapshot's
+    // in-flight window. Leave a tombstone — the in-flight snapshot's return must not re-insert
+    // this decided approval as an active card. A malformed payload missing session_id is a no-op
+    // (round-13 review: an undefined key can never match the replay path's sid key; the tombstone entry would be dead anyway).
+    if (!changed && p.session_id) tombstoneApproval(p.session_id, approvalId);
+    if (changed) notify();
+  }); });
+
+  // Guardrail hard deny (no card): reason is a stable English key (the backend's
+  // ApprovalDenyReason::reason_key); the frontend maps localized copy per key; unknown keys pass through verbatim for auditability.
+  listen("chat:guardrail_denied", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const reason = String(p.reason || "");
+    const reasonText = reason === "session_denied" ? bt("toolGuardrailDeniedSessionDenied")
+      : reason === "plan_mode" ? bt("toolGuardrailDeniedPlan")
+      : reason === "guardrail_ask_off" ? bt("toolGuardrailDeniedAskOff")
+      : reason;
+    const text = bt("toolGuardrailDenied") + ": " + (p.tool_name ? String(p.tool_name) + " — " : "") + reasonText;
+    addSystemItem(text, {
+      guardrailDenied: true,
+      toolName: String(p.tool_name || ""),
+      reason,
+    });
+  }); });
+
+  // Authoritative mode broadcast (fired by both local and remote switches): written back
+  // through the unified convergence point (epoch protection invalidates in-flight stale
+  // syncModeState reads). The payload only carries mode/ask_on_guardrail; applyAuthoritativeModeState keeps the current multiAgent value.
+  listen("chat:mode_changed", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    if (!p.session_id) return;
+    applyAuthoritativeModeState(String(p.session_id), p);
+    notify();
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
@@ -1482,6 +1647,63 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
     notify();
   });
 
+    // Called from bridge.js on session buffer eviction/deletion: the
+    // approval-replay terminal-seq entry dies with the buffer (the fence
+    // only guards a LIVE session's replay; keeping deleted/evicted entries
+    // was the one map the purge sweep missed — round-8 L7-3).
+    //
+    // Review 5764675531 (P2): reclaiming must not reset the fence generation
+    // while a replay window is open. If the sid is evicted mid-window and the
+    // entry dies here, a session reopen re-arms the fence at the default 0 —
+    // so a snapshot issued BEFORE the terminal bump (captured fence 0)
+    // returns after the bump and passes the 0 == 0 check, re-inserting a
+    // decided approval as an active card. Defer instead (same cross-module
+    // shared-state convention as approvalReplayInFlight): sessions.js drops
+    // the entry when the last window for this sid closes (flush in
+    // replayPendingApprovals' finally); with no window open the direct
+    // delete keeps the round-8 L7-3 hygiene unchanged.
+    // Terminal-generation fence bump + 512-cap eviction (review P3 / 5812242993): this session's
+    // approval replay generation advances at turn terminal — a get_pending_approvals snapshot
+    // issued before the terminal sees the changed generation on return and is invalidated as a
+    // whole batch, so it cannot re-insert engine-side dead approvals as active cards
+    // (consumed by sessions.js). Cap like the tombstone maps (512,
+    // oldest-insertion evicted): the seq map is pure staleness bookkeeping —
+    // an evicted session simply re-arms its replay window at 0 on the next
+    // done, which is the same fresh-lane state a restart would produce
+    // (round-8 L7-3: unbounded growth across app lifetime for sessions that
+    // never purge). Sids with an in-flight snapshot are skipped (same treatment as the web
+    // lane's bumpWebApprovalReplayTerminalSeq): if evicted inside the in-flight window, a session
+    // reopen re-arms the generation to 0, and a pre-terminal snapshot (captured 0) would pass the
+    // fence on return via 0==0, resurrecting a decided approval as an active card. Eviction takes the oldest non-in-flight entry; when all are in flight, eviction is skipped this round (the cap is
+    // briefly exceeded, fail-safe direction: one extra late notice is lost), and the next terminal resumes.
+    function bumpApprovalReplayTerminalSeq(sid) {
+      if (!state.approvalReplayTerminalSeq) {
+        state.approvalReplayTerminalSeq = new Map();
+      }
+      const approvalSeqMap = state.approvalReplayTerminalSeq;
+      approvalSeqMap.set(String(sid), (approvalSeqMap.get(String(sid)) || 0) + 1);
+      if (approvalSeqMap.size > 512) {
+        for (const candidate of approvalSeqMap.keys()) {
+          if (state.approvalReplayInFlight &&
+              (state.approvalReplayInFlight.get(candidate) || 0) > 0) continue;
+          approvalSeqMap.delete(candidate);
+          break;
+        }
+      }
+    }
+    function purgeApprovalReplayTerminalSeq(sid) {
+      const key = String(sid);
+      if (state.approvalReplayInFlight && (state.approvalReplayInFlight.get(key) || 0) > 0) {
+        if (!state.approvalReplayTerminalSeqPurgePending) {
+          state.approvalReplayTerminalSeqPurgePending = new Set();
+        }
+        state.approvalReplayTerminalSeqPurgePending.add(key);
+        return;
+      }
+      if (state.approvalReplayTerminalSeq) {
+        state.approvalReplayTerminalSeq.delete(key);
+      }
+    }
     return {
       authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline,
@@ -1489,6 +1711,7 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
       // the pending trailing edge for that sid
       cancelStreamRenderTimers,
       refreshActiveStreamRender,
+      purgeApprovalReplayTerminalSeq,
     };
   };
 })();

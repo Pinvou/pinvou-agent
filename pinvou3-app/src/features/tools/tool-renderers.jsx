@@ -591,9 +591,30 @@ const ToolOutput = ({ item, t }) => {
     // ==========================================
     // PlanStuckCard — Plan 模式 AI 撞只读保护(白名单/sandbox)的兜底卡
     // ==========================================
+    // tri-mode: the two continue paths split into Auto (per-action approval, default primary
+    // button, no Yolo gate) and Yolo (fully automatic, still through ChatView's one-time
+    // confirmation gate); onGo takes (itemId, targetMode). round-13 review: the old host-bridge
+    // direct-call fallback without onGo was removed — it bypassed the host's Yolo gate (the
+    // original #445 R9 MAJOR-1 shape); the only render site (ChatView) always passes onGo, and future hosts must enter through the host gate.
     const PlanStuckCard = ({ item, t, onGo }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const done = item.resolved;
+      // In-flight re-entry guard: the host bridge sets submitting for the wait window (same
+      // as decideApproval), disabling the button — a double-click no longer dispatches a duplicate mode switch / follow-up turn.
+      const pending = !!item.submitting;
+      // tri-mode: the Auto option renders only when the host supports planStuckGoAuto —
+      // on older backends the planStuckGo fallback would switch to Yolo under an Auto
+      // label (a semantic lie); hiding it is the honest degradation (only ⚡ Yolo remains).
+      const goAutoAvailable = !!(onGo && bridge.interaction && typeof bridge.interaction.planStuckGoAuto === 'function');
+      // Missing onGo is a wiring bug, not a downgrade path: refuse like the
+      // mode chip does instead of throwing a TypeError from the click
+      // handler (round-18 review minor; both render points pass onGo).
+      const goStuck = (target) => {
+        if (!onGo) return;
+        onGo(item.id, target);
+      };
+      const goYolo = () => goStuck('yolo');
+      const goAuto = () => goStuck('auto');
       return (
         <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
           <div className={`text-[13px] leading-relaxed mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
@@ -603,8 +624,11 @@ const ToolOutput = ({ item, t }) => {
             <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{item.statusLabel || t.handled}</div>
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
-              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => (onGo ? onGo(item.id) : bridge.interaction.planStuckGo(item.id))}>⚡ {t.stuckGo}</button>
+              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly || pending} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
+              {goAutoAvailable ? (
+                <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly || pending} onClick={goAuto}>{t.stuckGoAuto}</button>
+              ) : null}
+              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly || pending} onClick={goYolo}>⚡ {t.stuckGoYolo}</button>
             </div>
           )}
         </div>
@@ -709,4 +733,133 @@ const ToolOutput = ({ item, t }) => {
       );
     };
 
-export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard };
+    // ==========================================
+    // ApprovalCard — 🛡️ tri-mode approval card (per-tool-call approval)
+    // ==========================================
+    // The backend pops the card for promptable tools while ask-on-guardrail is armed (or
+    // in the Auto posture). Decisions go through decide_approval: allow (once only) /
+    // allow_for_session (silent allow for the same group in this session, grouping key scope) /
+    // deny (this session remembers the denial for this exact operation, exact approval key
+    // scope). Optimistic submitting state and terminal states are written back to the item by
+    // the bridge (interaction.decideApproval); this renders from the item only. full = the full
+    // original text (review P2: the full longer input must be viewable before approving, not just the 400-character prefix). Same rule as CodexAcpView's nativeApprovalInputView — both sites keep identical render semantics.
+    // Resolved status copy for the chat-lane approval card (round-20 review
+    // minor): known terminal tokens map to their copy, an unmapped token
+    // surfaces raw instead of defaulting to the permissive direction (a
+    // future terminal state must not render as "Allowed"), and a resolved
+    // card with no token at all keeps the legacy fallback (unreachable —
+    // every writer sets a token). Mirrors the native card's mapped-||-raw
+    // shape; extracted so the card component stays inside its complexity
+    // budget.
+    const approvalTerminalStatusText = (item, t) => {
+      if (item.statusLabel) return item.statusLabel;
+      if (item.cardState === 'denied') return t.approvalDenied;
+      if (item.cardState === 'allowed') return t.approvalAllowed;
+      if (item.cardState === 'allowed_session') return t.approvalAllowedSession;
+      if (item.cardState === 'cancelled') return t.uiCancelled;
+      return item.cardState ? String(item.cardState) : t.approvalAllowed;
+    };
+    const approvalInputView = (input) => {
+      if (input == null) return null;
+      if (typeof input === 'string') {
+        if (input.length > 400) {
+          return { pre: `${input.slice(0, 400)}…`, full: input };
+        }
+        return { pre: input };
+      }
+      if (typeof input !== 'object') return { pre: String(input) };
+      const keys = Object.keys(input);
+      // Small, shallow object → key: value lines (easier to scan than JSON); otherwise truncate the whole JSON.
+      if (keys.length > 0 && keys.length <= 6 && keys.every((key) => {
+        const value = input[key];
+        if (value == null || typeof value === 'object') return false;
+        return String(value).length <= 80 && key.length <= 40;
+      })) {
+        return { lines: keys.map(key => [key, String(input[key])]) };
+      }
+      let text;
+      try { text = JSON.stringify(input, null, 2) || String(input); } catch { text = String(input); }
+      if (text.length > 400) {
+        return { pre: `${text.slice(0, 400)}…`, full: text };
+      }
+      return { pre: text };
+    };
+    const ApprovalInputBlock = ({ inputView, t }) => {
+      if (!inputView) return null;
+      return (
+        <>
+          {inputView.lines ? (
+            <div className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] space-y-0.5`}>
+              {inputView.lines.map(([key, value]) => (
+                <div key={key}><span className="text-[#0B57D0] dark:text-[#8AB4F8]">{key}</span>: {value}</div>
+              ))}
+            </div>
+          ) : (
+            <pre className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.pre}</pre>
+          )}
+          {inputView.full ? (
+            <details className="mb-1">
+              <summary className="text-[12px] cursor-pointer select-none text-[#0B57D0] dark:text-[#8AB4F8]">{t.approvalShowFullInput}</summary>
+              <pre className={`text-[12px] font-mono rounded-lg p-2 mt-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.full}</pre>
+            </details>
+          ) : null}
+        </>
+      );
+    };
+    const ApprovalCard = ({ item, t, onDecide }) => {
+      const webReadOnly = multiAgentWebReadOnly();
+      const done = !!item.resolved;
+      const submitting = !done && !!item.submitting;
+      // Unknown outcome (host P2): the backend dropped the pending entry
+      // after the engine's ack+settle windows expired - the decision may
+      // still be late-committed, so the card must stop inviting a re-decision
+      // (a fresh click can only fail). resolved stays false, so a late
+      // authoritative resolution event still reconciles the card.
+      const unknownOutcome = !done && !submitting && item.cardState === 'unknown';
+      const lockButtons = submitting || webReadOnly || unknownOutcome;
+      const statusText = done
+        ? approvalTerminalStatusText(item, t)
+        : unknownOutcome ? t.approvalOutcomeUnknown
+        : submitting ? t.approvalSubmitting
+        : webReadOnly ? t.uiMultiAgent.webActionHint
+        : '';
+      const inputView = approvalInputView(item.input);
+      const decide = (decision) => {
+        if (onDecide) { onDecide(decision); return; }
+        if (bridge.available && bridge.interaction && typeof bridge.interaction.decideApproval === 'function') {
+          bridge.interaction.decideApproval(item.approvalId, decision);
+        }
+      };
+      return (
+        <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
+          <div className={`text-[14px] font-semibold mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
+            {t.approvalTitle}{' '}
+            <code className={`px-1.5 py-0.5 rounded text-[12px] font-mono bg-black/10 dark:bg-white/10`}>{item.toolName || t.uiToolRender.toolUnknown}</code>
+          </div>
+          {item.description ? (
+            <div className={`text-[13px] leading-relaxed mb-1.5 text-[#444746] dark:text-[#C4C7C5]`}>{item.description}</div>
+          ) : null}
+          {item.intentSummary ? (
+            <div className={`text-[12px] leading-relaxed mb-1.5 text-[#757575] dark:text-[#8E8E8E]`}>
+              <span className="font-medium">{t.approvalIntent}: </span>{item.intentSummary}
+            </div>
+          ) : null}
+          <ApprovalInputBlock inputView={inputView} t={t} />
+          <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
+          {done || unknownOutcome ? (
+            <div className={`text-[13px] font-medium text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={lockButtons} onClick={() => decide('allow')}>{t.approvalAllow}</button>
+                <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={lockButtons} onClick={() => decide('allow_for_session')}>{t.approvalAllowSession}</button>
+                <button type="button" className={cardBtnCls('danger') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={lockButtons} onClick={() => decide('deny')}>{t.approvalDeny}</button>
+              </div>
+              {statusText ? <div className={`mt-2 text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div> : null}
+            </>
+          )}
+        </div>
+      );
+    };
+
+export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard, ApprovalCard };

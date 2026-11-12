@@ -14,13 +14,17 @@
 /// 无记录 / 读取失败时的兜底 mode：Plan（只读方向是安全侧）。
 export const CODE_MODE_FALLBACK = 'plan';
 
+/// Valid tri-mode modes (plan/auto/yolo). auto = per-action approval mode:
+/// ordinary operations ask per action; workspace file writes need no confirmation.
+export const CODE_MODES = ['plan', 'auto', 'yolo'];
+
 /// 全局默认 mode：code lane 的 last_mode（草稿态显式切换时写入）；无记录
 /// （首次使用）→ Plan。
 /// prefs 为 get_code_permission_prefs 的返回（{ last_mode, yolo_confirmed }），
 /// 可能为 null（尚未拉到或读取失败）。
 export function nativeModeFallback(prefs) {
   const last = prefs && typeof prefs.last_mode === 'string' ? prefs.last_mode : null;
-  return last === 'plan' || last === 'yolo' ? last : CODE_MODE_FALLBACK;
+  return CODE_MODES.includes(last) ? last : CODE_MODE_FALLBACK;
 }
 
 /// 切 yolo 前是否需要弹一次性确认卡。prefs 缺失按未确认处理（安全方向：

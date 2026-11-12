@@ -1208,14 +1208,18 @@ try {
     && composerControls.includes("if (collection.source === 'remote') {")
     && composerControls.includes('if (onMount) onMount(collection.id);')
     && composerControls.includes('if (onUnmount) onUnmount();')
-    && composerControls.includes('if (onSwitch) { onSwitch(target, { isPlan, busy }); return; }'),
-  'extracted controls must keep explicit Code mounts local while preserving the bridge fallback');
+    && composerControls.includes('if (!onSwitch) return;')
+    && composerControls.includes('onSwitch(target, { isPlan, busy });')
+    && !composerControls.includes('bridge.interaction.setPlanModeNext')
+    && !composerControls.includes('bridge.interaction.exitPlanToYolo'),
+  'extracted controls must keep explicit Code mounts local while dispatching only through the gate-owning onSwitch (the old bridge fallback bypassed the ChatView Yolo gate — #445 R9 parity, review 5812242993)');
   // 等值守卫：点击已激活模式必须早退，避免代码车道 onSwitch 路径每次点击都触发
   // 冗余 refreshNativeControls（3 次 invoke）；ChatView bridge 路径同样受益。
-  assert.ok(composerControls.includes("(target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)"),
+  // tri-mode：三档（yolo/auto/plan）后早退收敛为单比较 target === activeMode。
+  assert.ok(composerControls.includes('if (target === activeMode) return;'),
   'ComposerModeChip must early-return when the clicked mode equals the active mode');
   const sharedModeSwitch = composerControls.slice(
-    composerControls.indexOf('async function switchTo(target)'),
+    composerControls.indexOf('function switchTo(target)'),
     composerControls.indexOf('const optCls'),
   );
   const nativeModeSwitch = codexView.slice(

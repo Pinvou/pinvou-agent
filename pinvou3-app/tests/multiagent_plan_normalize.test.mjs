@@ -456,7 +456,10 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   // The gap spans the whole spawn + SyncSession block, so code and comment
   // bytes ride along (engine cold-start phase timing is inserted between the
   // declaration and the EngineEntry insert). Keep headroom: this pins
-  // "computed once at spawn and recorded", not byte distance.
+  // "computed once at spawn and recorded", not byte distance. Distance
+  // 3200 → 4800 (round-11 review: measured 3148 at origin/main → 4088 at
+  // this head; the tri-mode spawn-site profile derivation widened the span —
+  // still far tighter than the sibling 12,000-gap pins in this file).
   assert.match(
     poolSource,
     /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,4800}spawned_at_ms,/,
@@ -469,8 +472,8 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   );
   assert.equal(
     (poolSource.match(/map\(\|e\| \(e\.engine\.clone\(\), e\.steer_incarnation\)\)/g) || []).length,
-    2,
-    'steer and withdraw_steer must read the incarnation from the entry as their generation (consumption wiring: reverting to spawned_at_ms revives the same-tick collision; both sites must stay locked)',
+    3,
+    'steer, withdraw_steer, and the ack-based handle_with_incarnation helper must each read the incarnation from the entry as their generation (consumption wiring: reverting to spawned_at_ms revives the same-tick collision; every site must stay locked)',
   );
   const transcriptsSource = read('src-tauri', 'src', 'features', 'multiagent', 'transcripts.rs');
   assert.match(
@@ -502,9 +505,13 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
     /build_multi_agent_dt_config[\s\S]{0,500}config\.fleet = Some\(snapshot\.fleet_config\(\)\.clone\(\)\)[\s\S]{0,12000}resolve_multi_agent_runtime_route_for_model/,
     '多智能体启动和每轮 route 都必须通过底座原生 fleet.profiles 注入专家',
   );
+  // Same 3200 → 4800 reset as the spawn-distance pin above: the span now
+  // covers the build_engine_config_for_multi_agent → _with_profile
+  // indirection added by this PR's profile-aware spawn seam (measured 4088
+  // at this head; the semantic chain itself is unchanged).
   assert.match(
     assistantBridgeSource,
-    /build_engine_config_for_multi_agent[\s\S]{0,3200}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
+    /build_engine_config_for_multi_agent[\s\S]{0,4800}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
     '初始名册必须把全局配置与实际 execution workspace 合并，允许项目同名 profile 按底座规则覆盖',
   );
   // Wave-2 拆分后 sessions 职责分散在 mod.rs 与 mode_state/store/retention 等
@@ -728,7 +735,7 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   );
   assert.match(
     interactionBridgeSource,
-    /previousMultiAgent[\s\S]{0,600}invoke\("set_multi_agent_mode"/,
+    /previousMultiAgent[\s\S]{0,900}invoke\("set_multi_agent_mode"/,
     '点击必须乐观翻转（名册装配与引擎同步可能耗时，等返回才翻拨杆像点了没反应），失败回滚',
   );
   assert.match(
@@ -897,8 +904,8 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
   assert.match(
     tauriBridgeSource,
-    /multiAgent: !!st\.multi_agent/,
-    'modeState 权威写回收敛点（applyAuthoritativeModeState）必须带 multiAgent，模式事件不得把开关状态冲掉',
+    /multiAgent: st\.multi_agent === undefined\s*\n\s*\? !!\(state\.modeState && state\.modeState\.multiAgent\)\s*\n\s*: !!st\.multi_agent/,
+    'modeState 权威写回收敛点（applyAuthoritativeModeState）必须带 multiAgent；模式事件负载不携带该字段时保留当前值（不得冲掉开关状态）',
   );
 });
 
@@ -1613,14 +1620,14 @@ function loadInteractionRuntime() {
     applyAuthoritativeModeState(sid, st) {
       if (sid) modeStateEpochs[sid] = (modeStateEpochs[sid] || 0) + 1;
       if (sid !== state.activeSessionId) calls.push('runSyncOnSession:' + sid);
-      state.modeState = { mode: st.mode || 'yolo', multiAgent: !!st.multi_agent };
+      state.modeState = { mode: st.mode || 'auto', multiAgent: !!st.multi_agent };
     },
     getBuffer() { return null; },
-    // 与 bridge.js 同构的草稿态显示解析：当前 lane 全局默认，缺省 yolo。
+    // 与 bridge.js 同构的草稿态显示解析：当前 lane 全局默认，未绑定缺省 auto。
     currentDraftModeState() {
       const lane = state.modeLane === 'code' ? 'code' : 'work';
       const d = state.modeDefaults && state.modeDefaults[lane];
-      return { mode: d || 'yolo', multiAgent: false };
+      return { mode: d || 'auto', multiAgent: false };
     },
     flushAssistantMessageToHistory() {},
     resetPendingAssistant() {},
@@ -1757,10 +1764,13 @@ test('lane switch refreshes the draft display; a draft switch writes the current
   const rt = loadInteractionRuntime();
   rt.state.activeSessionId = null;
   rt.state.modeDefaults = { work: 'plan', code: null };
-  // work → code: the draft display changes from work's default plan to
-  // code's default yolo.
+  // work → code: the draft display changes from work's default plan to the
+  // code lane's unset-default fallback. Production currentDraftModeState
+  // falls back to 'auto' for an unbound draft (what the backend resolves for
+  // a fresh unbound plain session) — the historical mock fallback 'yolo' was
+  // the worst-direction shape the round-10 review removed.
   rt.api.setModeLane('code');
-  assert.equal(rt.state.modeState.mode, 'yolo');
+  assert.equal(rt.state.modeState.mode, 'auto');
   rt.api.setModeLane('work');
   assert.equal(rt.state.modeState.mode, 'plan');
   // The historical value 'design' folds into work; there is no separate

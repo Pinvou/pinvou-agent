@@ -505,6 +505,12 @@ const NATIVE_CHAT_EVENTS = [
   // 冻结为 discarded。处理逻辑在 code-native-lane.js（applyNativeChatEvent 的
   // chat:plan_resolved 分支，与 bridge chat-events.js plan_resolved 对齐）。
   'chat:plan_resolved',
+  // tri-mode approval surface: card pops (idempotent dedup by approvalId), guardrail hard-deny
+  // notices, authoritative mode broadcasts (mode_changed goes through refreshNativeControls in the subscription callback; nothing visual changes in the lane).
+  'chat:approval_required',
+  'chat:approval_resolved',
+  'chat:guardrail_denied',
+  'chat:mode_changed',
   'chat:transient_error',
   'chat:done',
 ];
@@ -536,6 +542,117 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       onSubmit={submit}
       onCancel={actionable ? () => onCancelInput(item.toolCallId) : undefined}
     />
+  );
+}
+
+// The native lane's tri-mode approval card: structure mirrors the main chat ApprovalCard (tool-renderers.jsx);
+// decisions go through decide_approval with an explicit sessionId, never the bridge's global activeSession.
+// The lane is pure data and holds no copy: terminal states are stored as cardState (allowed / allowed_session /
+// denied / cancelled — shared by the turn-terminal sweep and cross-surface convergence echoes), mapped here by
+// key to localized copy (statusKey copy = uiCodex); buttons/titles reuse the root-level t.approval*.
+const NATIVE_APPROVAL_STATUS_COPY = {
+  allowed: 'nativeApprovalAllowed',
+  allowed_session: 'nativeApprovalAllowedSession',
+  denied: 'nativeApprovalDenied',
+  cancelled: 'nativeApprovalCancelled',
+};
+
+// chat:guardrail_denied's stable reason keys → short localized copy (uiCodex). Unknown keys pass through verbatim.
+function nativeGuardrailReasonText(reason, copy) {
+  const key = String(reason || '');
+  if (key === 'session_denied') return copy.nativeGuardrailDeniedSession;
+  if (key === 'plan_mode') return copy.nativeGuardrailDeniedPlan;
+  if (key === 'guardrail_ask_off') return copy.nativeGuardrailDeniedAskOff;
+  return key;
+}
+
+// Input view: small, shallow objects → key: value lines; otherwise the whole JSON is truncated
+// (the same rule as the main chat ApprovalCard's approvalInputView — both sites keep render semantics identical).
+function nativeApprovalInputView(input) {
+  if (input == null) return null;
+  // full = the full original text (review P2: the native approval card must also allow viewing the full longer input).
+  if (typeof input === 'string') {
+    if (input.length > 400) {
+      return { pre: `${input.slice(0, 400)}…`, full: input };
+    }
+    return { pre: input };
+  }
+  if (typeof input !== 'object') return { pre: String(input) };
+  const keys = Object.keys(input);
+  if (keys.length > 0 && keys.length <= 6 && keys.every((key) => {
+    const value = input[key];
+    if (value == null || typeof value === 'object') return false;
+    return String(value).length <= 80 && key.length <= 40;
+  })) {
+    return { lines: keys.map(key => [key, String(input[key])]) };
+  }
+  let text;
+  try { text = JSON.stringify(input, null, 2) || String(input); } catch { text = String(input); }
+  if (text.length > 400) {
+    return { pre: `${text.slice(0, 400)}…`, full: text };
+  }
+  return { pre: text };
+}
+
+function NativeApprovalCard({ item, responding, t, copy, onDecide }) {
+  const done = !!item.resolved;
+  const submitting = !done && !!responding;
+  // Unknown outcome (host P2): the backend dropped the pending entry after
+  // the engine's ack+settle windows expired; the card must stop inviting a
+  // re-decision (a fresh click can only fail). resolved stays false, so a
+  // late authoritative resolution event still reconciles the card.
+  const unknownOutcome = !done && !submitting && item.cardState === 'unknown';
+  // Status row never renders empty (round-19 review minor 14): submitting
+  // mirrors the main-lane card's feedback, an unmapped terminal cardState
+  // surfaces the raw token instead of a blank line.
+  const statusText = done
+    ? (copy[NATIVE_APPROVAL_STATUS_COPY[item.cardState]] || String(item.cardState || ''))
+    : unknownOutcome
+      ? (copy.nativeApprovalOutcomeUnknown || '')
+      : submitting ? (t.approvalSubmitting || '') : '';
+  const inputView = nativeApprovalInputView(item.input);
+  return (
+    <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
+      <div className={`text-[14px] font-semibold mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
+        {t.approvalTitle}{' '}
+        <code className={`px-1.5 py-0.5 rounded text-[12px] font-mono bg-black/10 dark:bg-white/10`}>{item.toolName || t.uiToolRender.toolUnknown}</code>
+      </div>
+      {item.description ? (
+        <div className={`text-[13px] leading-relaxed mb-1.5 text-[#444746] dark:text-[#C4C7C5]`}>{item.description}</div>
+      ) : null}
+      {item.intentSummary ? (
+        <div className={`text-[12px] leading-relaxed mb-1.5 text-[#757575] dark:text-[#8E8E8E]`}>
+          <span className="font-medium">{t.approvalIntent}: </span>{item.intentSummary}
+        </div>
+      ) : null}
+      {inputView ? (
+        inputView.lines ? (
+          <div className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] space-y-0.5`}>
+            {inputView.lines.map(([key, value]) => (
+              <div key={key}><span className="text-[#0B57D0] dark:text-[#8AB4F8]">{key}</span>: {value}</div>
+            ))}
+          </div>
+        ) : (
+          <pre className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.pre}</pre>
+        )
+      ) : null}
+      {inputView && inputView.full ? (
+        <details className="mb-1">
+          <summary className="text-[12px] cursor-pointer select-none text-[#0B57D0] dark:text-[#8AB4F8]">{copy.nativeApprovalShowFullInput}</summary>
+          <pre className={`text-[12px] font-mono rounded-lg p-2 mt-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.full}</pre>
+        </details>
+      ) : null}
+      <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
+      {done || unknownOutcome ? (
+        <div className={`text-[13px] font-medium text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('allow')}>{t.approvalAllow}</button>
+          <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('allow_for_session')}>{t.approvalAllowSession}</button>
+          <button type="button" className={cardBtnCls('danger') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('deny')}>{t.approvalDeny}</button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1011,6 +1128,7 @@ export function CodexAcpView({
     mode: CODE_MODE_FALLBACK,
     multiAgent: false,
     multiAgentAvailable: false,
+    askOnGuardrail: true,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // Grant-notice/picker mode source, agent-aware (review #484 round-8 m4):
@@ -1049,7 +1167,17 @@ export function CodexAcpView({
   const [codePermPrefs, setCodePermPrefs] = useState(null);
   // 待确认的 yolo 切换请求（{ draft }）；非 null 时渲染确认卡。
   const [pendingYoloSwitch, setPendingYoloSwitch] = useState(null);
+  // The confirmation card's generation (same contract as the chat lane's pendingChatYoloDialogGenRef,
+  // added in the round-10 review): bumped once per gate open and per session switch; when the in-flight
+  // confirm_code_yolo return settles, a generation mismatch invalidates the whole order — never clear a newer
+  // dialog nor continue an abandoned older confirmation (M4 targeting stays safe; this narrows "casually arming an abandoned session + swallowing the new card").
+  const pendingYoloDialogGenRef = useRef(0);
   const [yoloConfirmBusy, setYoloConfirmBusy] = useState(false);
+  // Same-tick latch (round-13 review, same as the chat lane's chatYoloConfirmBusyRef):
+  // state commits one render late — two clicks inside one commit frame both
+  // pass the `yoloConfirmBusy` check and dispatch duplicate invokes. The ref
+  // flips synchronously at entry and releases in finally.
+  const yoloConfirmBusyRef = useRef(false);
   // 知识库集合列表与 embedding 安装态由 ComposerKbSelector 内部经 bridge.knowledge
   // （kb_collection_list / kb_model_status，全局只读、不带会话）自行加载，代码页
   // 不再重复拉取（PR #214 统一底栏控件时移除 nativeKb* 本地变量）。
@@ -1159,6 +1287,11 @@ export function CodexAcpView({
     handoffMode: nativeDraftControlsHandoff?.mode,
     prefs: codePermPrefs,
   });
+  // Per-session "ask on guardrail hit" display value (tri-mode): ownership protection like mode —
+  // pre-refresh returns / a previous session's controls never bleed across; draft state and mid-switch display on (backend default_true).
+  const nativeAskOnGuardrail = activeId && nativeControlsSessionRef.current === activeId
+    ? nativeControls.askOnGuardrail !== false
+    : true;
   const nativeModelChoices = visibleUserModels((bs && bs.savedModels) || [])
     .map(model => ({ value: model.id, name: selectorMainLabel(model, t) || model.id }));
   const nativeSessionModelId = resolveNativeModelId({
@@ -1489,6 +1622,9 @@ export function CodexAcpView({
       mode: (modeState && modeState.mode) || nativeModeFallback(codePermPrefs),
       multiAgent: Boolean(modeState && modeState.multi_agent),
       multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available),
+      // Per-session "ask on guardrail hit" (tri-mode): backend default_true; on read failure / older
+      // backends without the key, display on — never flip the toggle off.
+      askOnGuardrail: modeState ? modeState.ask_on_guardrail !== false : true,
     };
     // 请求期间可能切换会话；旧响应不得覆盖新会话的模型/模式/多智能体展示。
     if (!canApplyNativeControlsRefresh({
@@ -1541,12 +1677,15 @@ export function CodexAcpView({
       if (staged.mountedId != null) {
         await invoke('session_mount_collection', { sessionId, collectionId: staged.mountedId });
       }
-      // 暂存 mode 两个方向都要应用：默认可能是 plan（全局首次），也可能是 yolo
-      // （last_mode 记忆）；只设单方向会让反方向暂存静默失效。
+      // All three staged mode directions must be applied: plan (global first-use / last_mode
+      // memory), yolo (last_mode memory), and auto (tri-mode per-action approval mode) — applying
+      // only some directions silently drops the others' staging (v3.5 added auto: the previous two branches missed the per-action approval mode).
       if (staged.mode === 'plan') {
         await invoke('set_plan_mode_next', { sessionId });
       } else if (staged.mode === 'yolo') {
         await invoke('exit_plan_to_yolo', { sessionId });
+      } else if (staged.mode === 'auto') {
+        await invoke('set_session_mode', { sessionId, mode: 'auto' });
       }
       if (hasMultiAgentSelection) {
         await invoke('set_multi_agent_mode', {
@@ -1641,10 +1780,30 @@ export function CodexAcpView({
   /// 【确认】调 confirm_code_yolo 写入全局标志后按原路径切换；【取消】留在
   /// 当前 mode。确认是 UI 层语义，后端 exit_plan_to_yolo 不强制门控。
   async function switchNativeMode(target, { isPlan } = {}) {
-    if (target === 'yolo' && isPlan) {
+    // The one-time Yolo confirmation gate applies to any switch into Yolo (v3.5 fix: in the old
+    // two-mode era the gate only hung on plan→yolo; after tri-mode, Auto → Yolo no longer detours
+    // through Plan, so the same gate must cover the direct path). Yolo→Yolo is intercepted by the chip's same-mode early return.
+    // Round-31 review (zhuowp 5854578975 P2): the preference lookup below is
+    // async, and a session switch inside that window both advances the dialog
+    // generation and clears any card (the switch-discards-confirmation
+    // contract). Capture the generation BEFORE the first await and discard an
+    // invalidated result before opening a card or continuing the switch — the
+    // late reply of a departed session must not reopen its discarded
+    // confirmation (its confirm would still arm that departed session), the
+    // same contract the confirm-save fence enforces on the confirm reply.
+    const genAtEntry = pendingYoloDialogGenRef.current;
+    if (target === 'yolo') {
       const prefs = await refreshCodePermPrefs();
+      if (pendingYoloDialogGenRef.current !== genAtEntry) return;
       if (needsYoloConfirmation(prefs)) {
-        setPendingYoloSwitch({ draft: !activeId });
+        // M4: the gate captures the originating session at entry (the chat lane's
+        // pendingChatYoloSwitchSidRef contract) — the confirmation may return after a session
+        // switch, so the landing must still be the session the gate popped on, never the
+        // live-active at confirm time (a session that never saw the gate).
+        // fromAuto pins the origin mode (the chat lane's action.via contract): the Auto→Yolo
+        // direct path and the Plan→Yolo return each go back to their originating command family after confirmation, keeping the two equivalent paths from silently diverging later.
+        pendingYoloDialogGenRef.current += 1;
+        setPendingYoloSwitch({ draft: !activeId, sid: activeId || null, fromAuto: !isPlan });
         return;
       }
     }
@@ -1663,42 +1822,119 @@ export function CodexAcpView({
   }
 
   /// mode chip 切换的实际执行路径（不含 yolo 确认门）。
-  async function performNativeModeSwitch(target, { isPlan } = {}) {
-    if (!activeId) {
+  /// `targetSessionId` explicitly pins the target session (M4: used by the gate's confirm return) —
+  /// the default reads live-active, matching the old behavior; a non-current target is switched without
+  /// refreshing this session's controls (the authoritative chat:mode_changed broadcast converges per session ownership on its own).
+  async function performNativeModeSwitch(target, { isPlan } = {}, targetSessionId) {
+    const sid = (typeof targetSessionId === 'string' && targetSessionId)
+      ? targetSessionId
+      : activeId;
+    if (!sid) {
+      // Web drafts likewise never land Auto (round-19 review M1, the same guard as ChatView's draft
+      // arm): the materialization surface below blocks Auto on the web explicitly, and letting a draft
+      // through would write the lane global default to auto — every future unbound session would
+      // materialize into the Auto dead-end behind the web send gate. autoRowDisabled already grays
+      // the menu row in all web states (including draft); this covers non-menu entries.
+      if (target === 'auto' && isWeb) return;
       stageDraftMode(target);
       return;
     }
+    const isActiveTarget = sid === activeId;
     setError('');
     try {
       if (target === 'plan' && !isPlan) {
-        await invoke('set_plan_mode_next', { sessionId: activeId });
+        await invoke('set_plan_mode_next', { sessionId: sid });
       } else if (target === 'yolo' && isPlan) {
-        await invoke('exit_plan_to_yolo', { sessionId: activeId });
+        await invoke('exit_plan_to_yolo', { sessionId: sid });
+      } else if (target === 'yolo') {
+        // Auto → Yolo (v3.5: the old code missed this branch and Yolo clicks silently no-oped):
+        // unified through set_session_mode (the backend hot-syncs the safety posture and broadcasts
+        // chat:mode_changed). The confirmation gate was already applied in switchNativeMode.
+        await invoke('set_session_mode', { sessionId: sid, mode: 'yolo' });
+      } else if (target === 'auto') {
+        // Auto (tri-mode per-action approval mode): no one-time confirmation gate (the gate is yolo-only).
+        // Unified through set_session_mode (the backend hot-syncs the safety posture and broadcasts chat:mode_changed).
+        // Web-face parity (same as ChatView, round-14): the web has no approval-card surface, so a native
+        // session's first send in Auto would be rejected by webAutoAdmissionGate — the Auto row is disabled on
+        // the web (the chip row is grayed in both draft and materialized states + this fallback refuses the
+        // write), avoiding routing a native session into the Auto dead-end the web face cannot serve via the
+        // code page (round-19 review M1: the draft arm previously missed the guard; both arms are now aligned).
+        if (isWeb) return;
+        await invoke('set_session_mode', { sessionId: sid, mode: 'auto' });
       }
-      await refreshNativeControls(activeId);
+      if (isActiveTarget) await refreshNativeControls(sid);
     } catch (err) { showError(err); }
+  }
+
+  /// Session-level ask-on-guardrail toggle (tri-mode): optimistic flip →
+  /// set_ask_on_guardrail → refreshNativeControls authoritative re-check.
+  /// On failure do NOT roll back to the value captured at request start:
+  /// two opposite writes that both reject would each restore their own
+  /// captured value, leaving the display at a setting neither write
+  /// committed (reviewer P3). Failure takes the same refreshNativeControls
+  /// authoritative re-read and converges to the backend truth; its
+  /// request-id generation + ownership guard drops this stale read when the
+  /// session switches or a newer authoritative refresh lands mid-flight
+  /// (same generation protection as chat:mode_changed).
+  async function toggleNativeAskOnGuardrail(enabled) {
+    const targetSessionId = activeId;
+    if (!targetSessionId) return; // draft state has no session-level toggle (follows the global default; written to the backend at materialization)
+    setNativeControls(current => (nativeControlsSessionRef.current === targetSessionId
+      ? { ...current, askOnGuardrail: Boolean(enabled) }
+      : current));
+    try {
+      await invoke('set_ask_on_guardrail', { sessionId: targetSessionId, enabled: Boolean(enabled) });
+      await refreshNativeControls(targetSessionId);
+    } catch (err) {
+      showError(err);
+      await refreshNativeControls(targetSessionId);
+    }
   }
 
   /// 确认卡【确认】：写全局 yolo 确认标志，成功后继续被中断的切换。
   async function confirmPendingYoloSwitch() {
     const pending = pendingYoloSwitch;
-    if (!pending || yoloConfirmBusy) return;
+    if (!pending || yoloConfirmBusy || yoloConfirmBusyRef.current) return;
+    // The second click of a same-tick double-click is blocked here (the ref flips synchronously, one frame before state commits).
+    yoloConfirmBusyRef.current = true;
     setYoloConfirmBusy(true);
+    const genAtConfirm = pendingYoloDialogGenRef.current;
     try {
       const prefs = await invoke('confirm_code_yolo');
       if (prefs) setCodePermPrefs(prefs);
+      // A generation mismatch (session switched / new gate opened inside the in-flight window) invalidates
+      // the whole order: do not clear the current dialog, do not continue the old confirmation (the chat lane's genAtConfirm narrowing).
+      if (pendingYoloDialogGenRef.current !== genAtConfirm) return;
       setPendingYoloSwitch(null);
       if (pending.draft) {
         stageDraftMode('yolo');
       } else {
-        await performNativeModeSwitch('yolo', { isPlan: true });
+        // M4: the landing is pinned to the session captured when the gate popped — even if the confirm
+        // return happens after a switch, the originating session is the one switched (live-active never saw
+        // this gate card and must not be casually armed into Yolo). The origin is pinned too (the chat lane's
+        // action.via contract): exit_plan_to_yolo and set_session_mode('yolo') are equivalent today; pinning
+        // the Plan→Yolo return and the Auto→Yolo direct path to their originating command families keeps them from silently diverging later (drift guard).
+        await performNativeModeSwitch('yolo', { isPlan: !pending.fromAuto }, pending.sid);
       }
     } catch (err) {
       showError(err);
     } finally {
+      yoloConfirmBusyRef.current = false;
       setYoloConfirmBusy(false);
     }
   }
+
+  /// Switching sessions discards the old session's yolo confirmation card (the same contract as the chat
+  /// lane's [activeSessionId] effect, aligned abandon semantics): the card belongs to the session that popped
+  /// the gate; left on screen after switching away it would be casually confirmed by the new session — the
+  /// confirm is still pinned to the originating session by M4 (safe), but the user has abandoned that
+  /// conversation, and continuing to arm it is inconsistent with the chat lane's "switch discards the card".
+  /// The captured sid lives in pendingYoloSwitch; nulling it clears both. This lane's confirmation card has no separate error/generation state, so no extra reset is needed.
+  useEffect(() => {
+    pendingYoloDialogGenRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the previous session's confirm card on session switch
+    setPendingYoloSwitch(null);
+  }, [activeId]);
 
   async function refreshSessions() {
     const next = await listAcpSessions();
@@ -1848,6 +2084,34 @@ export function CodexAcpView({
             lane.thinking = { active: true, startedAt: Date.now(), phase: 'thinking', toolName: null };
           }
         }
+        // tri-mode approval-card restoration: the same "pending registry → synthetic event" approach
+        // as user_input; applyNativeChatEvent dedups idempotently by approvalId. The query returns a
+        // serde camelCase PendingApproval, re-fed in the event payload's snake_case shape.
+        const terminalFence = lane.approvalReplayTerminalSeq || 0;
+        let pendingApprovals = await invoke('get_pending_approvals', { sessionId: id })
+          .catch(() => null);
+        if (sessionLoadRequestRef.current !== requestId) return null;
+        // Replay terminal-generation fence (review P3, mirroring the main lane's chat-events/sessions
+        // approvalReplayTerminalSeq): if a turn terminal lands while the snapshot is in flight, chat:done
+        // has already cleared the backend registry and settled in-place cards to cancelled — the late
+        // snapshot's return would re-insert engine-side dead approvals as active cards (their decisions
+        // would only get approval-not-found), so the whole batch is invalidated. sessionLoadRequestRef only
+        // guards session switches, not the same session's turn terminal; tombstones only block single decided ids.
+        if ((lane.approvalReplayTerminalSeq || 0) !== terminalFence) pendingApprovals = null;
+        ((pendingApprovals) || []).forEach(entry => {
+          if (!entry) return;
+          applyNativeChatEvent(lane, 'chat:approval_required', {
+            session_id: id,
+            approval_id: entry.approvalId,
+            tool_name: entry.toolName,
+            description: entry.description,
+            input: entry.input,
+            intent_summary: entry.intentSummary,
+            approval_key: entry.approvalKey,
+            approval_grouping_key: entry.approvalGroupingKey,
+            force_prompt: entry.forcePrompt,
+          });
+        });
         await refreshNativeControls(id);
         if (sessionLoadRequestRef.current !== requestId) return null;
         setNativeLaneTick(tick => tick + 1);
@@ -2661,6 +2925,12 @@ export function CodexAcpView({
       if (name === 'chat:turn_started' || name === 'chat:done') {
         refreshSessions().catch(() => {});
       }
+      if (name === 'chat:mode_changed' && sessionId === activeIdRef.current) {
+        // Authoritative mode broadcast (fired by both local and remote switches): the lane holds no mode
+        // display of its own; the footer chip's mode/askOnGuardrail is refreshed authoritatively via
+        // refreshNativeControls (internal request sequence + session ownership guard, the same path as a regular refresh).
+        refreshNativeControls(sessionId).catch(() => {});
+      }
       if (changed && sessionId === activeIdRef.current) {
         setNativeLaneTick(tick => tick + 1);
       }
@@ -3243,6 +3513,62 @@ export function CodexAcpView({
     setNativeLaneTick(tick => tick + 1);
   }
 
+  // The native lane's tri-mode approval-card decision: semantics mirror respondNativeInput — sid captured at
+  // entry (a session switch during the await must not write the terminal state into the wrong lane); success
+  // writes the terminal state per the decision (a successful decide_approval broadcasts chat:approval_resolved
+  // for other surfaces to converge; this lane's card settles in place from the return, a replayed same-id echo
+  // is a no-op on a decided card); failure only notifies — the backend restored the registry entry untouched, and the card stays active and retryable.
+  async function decideNativeApproval(approvalId, decision) {
+    if (!activeId || !approvalId) return;
+    const sid = activeId;
+    // In-flight re-entry guard (the same pattern as interaction.js decideApproval's card.submitting):
+    // `responding` is React state and commits one frame late — a double-click inside the same commit
+    // frame passes the disabled check twice and dispatches two decide_approval calls. Set submitting
+    // synchronously on the lane card object, refuse re-entry before the await, release in finally.
+    const card = getNativeLane(sid).items.find(item => (
+      item && item.type === 'approval' && item.approvalId === approvalId
+    ));
+    if (card) {
+      // resolved refuses re-entry too (round-10 review, same as the chat lane's decideApproval):
+      // in the window where the card has already settled in place (local settle / resolved echo /
+      // done sweep) but the button has not yet unmounted with the next frame, re-entry would only
+      // dispatch a redundant decide_approval the backend must reject and flash an error notice.
+      if (card.submitting || card.resolved) return;
+      card.submitting = true;
+    }
+    setRespondingSessionId(sid); setError('');
+    try {
+      await invoke('decide_approval', { sessionId: sid, approvalId, decision });
+      markNativeApprovalResolved(sid, approvalId, decision);
+    } catch (err) {
+      // Round-13 review (parity with the main lane's decideApproval): the
+      // failure is recorded on the ORIGINATING lane regardless of which
+      // session is now active — gating the only feedback on
+      // `sid === activeIdRef.current` dropped a failed interaction entirely
+      // when the user switched away mid-decision. The toast still fires when
+      // the user is watching this lane.
+      appendNativeSystemItem(getNativeLane(sid), `${codexCopy.nativeApprovalDecisionFailed}${err && err.message ? err.message : err}`);
+      if (sid === activeIdRef.current) showError(err);
+    } finally {
+      if (card) card.submitting = false;
+      setRespondingSessionId(current => current === sid ? null : current);
+    }
+  }
+
+  function markNativeApprovalResolved(sessionId, approvalId, decision) {
+    const lane = getNativeLane(sessionId);
+    const card = lane.items.find(item => (
+      item && item.type === 'approval' && item.approvalId === approvalId
+    ));
+    if (card) {
+      card.resolved = true;
+      card.cardState = decision === 'deny' ? 'denied'
+        : decision === 'allow_for_session' ? 'allowed_session'
+        : 'allowed';
+    }
+    setNativeLaneTick(tick => tick + 1);
+  }
+
   // 原生车道手动压缩：直接调 compact_now 命令（与 work 侧共享同一条命令）——调完后，
   // 进行中/结果由 chat:compaction 系统项呈现（compactStart/compactDone/compactFail）；
   // invoke 本身失败按 work 侧同款补一条 compactFail 系统提示项。
@@ -3392,6 +3718,17 @@ export function CodexAcpView({
         />
       );
     }
+    if (item.extensionType === 'approval' && item.legacyItem) {
+      return (
+        <NativeApprovalCard
+          item={item.legacyItem}
+          responding={responding}
+          t={t}
+          copy={codexCopy}
+          onDecide={(decision) => decideNativeApproval(item.legacyItem.approvalId, decision).catch(showError)}
+        />
+      );
+    }
     if (item.type === 'permission' && item.extensionType === 'careful_blocked') {
       return (
         <div className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[12px] text-red-600 dark:text-red-300">
@@ -3428,6 +3765,15 @@ export function CodexAcpView({
               legacy.risk,
               legacy.agentId,
             )}
+          </div>
+        );
+      }
+      if (legacy.guardrailDenied) {
+        // tri-mode guardrail hard deny (no card): localized copy mapped from the stable reason key; unknown keys pass through verbatim.
+        return (
+          <div className="px-1 text-[11px] text-gray-400">
+            {codexCopy.nativeGuardrailDenied}{legacy.toolName ? `: ${legacy.toolName} — ` : ': '}
+            {nativeGuardrailReasonText(legacy.reason, codexCopy)}
           </div>
         );
       }
@@ -4198,6 +4544,10 @@ export function CodexAcpView({
                         mode={nativeModeValue}
                         busy={busy || working}
                         onSwitch={switchNativeMode}
+                        askOnGuardrail={nativeAskOnGuardrail}
+                        askToggleDisabled={!activeId}
+                        onToggleAskOnGuardrail={toggleNativeAskOnGuardrail}
+                        autoRowDisabled={!!isWeb}
                       />
                       {nativeModelChoices.length > 0 && (
                         <ComposerModelSelector
@@ -4488,13 +4838,21 @@ export function CodexAcpView({
             copy={{
               title: t.modeYoloConfirmTitle,
               body: t.modeYoloConfirmBody,
-              hint: t.modeYoloConfirmHint,
+              hint: isWeb ? t.modeYoloConfirmHintWeb : t.modeYoloConfirmHint,
               ok: t.modeYoloConfirmOk,
               cancel: t.modeYoloConfirmCancel,
             }}
             busy={yoloConfirmBusy}
             onConfirm={confirmPendingYoloSwitch}
-            onCancel={() => setPendingYoloSwitch(null)}
+            onCancel={() => {
+              // Symmetric with the chat lane's cancel invalidation: bump the
+              // generation so a confirm already awaiting its save round-trip
+              // is discarded instead of proceeding after the user cancelled
+              // (sub-frame window between the busy commit and the disabled
+              // re-render).
+              pendingYoloDialogGenRef.current += 1;
+              setPendingYoloSwitch(null);
+            }}
           />
         )}
         {rewindTarget && (

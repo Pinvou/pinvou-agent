@@ -53,6 +53,25 @@ function loadInteractionRuntime() {
       return deferred[name];
     },
   };
+  // #263 注入的权威写回收敛点（bridge.js）：任何权威 modeState 写回必须经它
+  // （bump epoch + 定向写）。mock 镜像真实实现的 tri-mode 收敛形状（ask 缺省
+  // 开、multi_agent 缺失保留当前显示），走 runSyncMock 保留路由证据。它同时
+  // 是 chat:mode_changed 广播的落点（chat-events 处理器只做
+  // applyAuthoritativeModeState(sid, payload)），经 runtime.broadcastModeState
+  // 暴露给用例，模拟「广播在重读窗口内落地」。
+  function applyAuthoritativeModeStateMock(sid, st) {
+    epochTable[sid] = (epochTable[sid] || 0) + 1;
+    runSyncMock(sid, function () {
+      state.modeState = {
+        mode: st.mode || 'auto',
+        multiAgent: st.multi_agent === undefined
+          ? !!(state.modeState && state.modeState.multiAgent)
+          : !!st.multi_agent,
+        askOnGuardrail: st.ask_on_guardrail == null ? true : !!st.ask_on_guardrail,
+      };
+    });
+  }
+  runtime.broadcastModeState = applyAuthoritativeModeStateMock;
   runtime.api = factory({
     state,
     notify() { runtime.notifyCount += 1; },
@@ -62,16 +81,9 @@ function loadInteractionRuntime() {
     addChatItem() {},
     timeStr() { return ''; },
     runSyncOnSession: runSyncMock,
-    // #263 注入的权威写回收敛点（bridge.js）：任何权威 modeState 写回必须经它
-    // （bump epoch + 定向写）。mock 镜像真实实现，走 runSyncMock 保留路由证据。
     modeStateEpochs: epochTable,
     bumpModeStateEpoch(sid) { epochTable[sid] = (epochTable[sid] || 0) + 1; },
-    applyAuthoritativeModeState(sid, st) {
-      epochTable[sid] = (epochTable[sid] || 0) + 1;
-      runSyncMock(sid, function () {
-        state.modeState = { mode: st.mode || 'yolo', multiAgent: !!st.multi_agent };
-      });
-    },
+    applyAuthoritativeModeState: applyAuthoritativeModeStateMock,
     getBuffer() { return null; },
     flushAssistantMessageToHistory() {},
     resetPendingAssistant() {},
@@ -79,6 +91,14 @@ function loadInteractionRuntime() {
     currentStreamText: '',
     currentStreamId: 0,
     itemIdSeq: 1000,
+    // 草稿态显示解析（与 bridge.js currentDraftModeState 同构，未绑定缺省 auto）：
+    // refreshModeDefaults/setDraftMode 的草稿臂会调用它，缺失会把被测分支打成
+    // ReferenceError 而非断言失败。
+    currentDraftModeState() {
+      const lane = state.modeLane === 'code' ? 'code' : 'work';
+      const d = state.modeDefaults && state.modeDefaults[lane];
+      return { mode: d || 'auto', multiAgent: false };
+    },
     ensureSession: async () => (state.activeSessionId || 'chat-a'),
     sendMessage: async () => {},
     sendMessageToSession: async (sid) => {
@@ -92,6 +112,8 @@ function loadInteractionRuntime() {
     invoke(name, args) {
       calls.push(name);
       runtime.invokeCalls.push({ name, args });
+      const q = runtime.invokeQueue && runtime.invokeQueue[name];
+      if (q && q.length) return q.shift();
       if (deferred[name] && deferred[name].promise) return deferred[name].promise;
       return Promise.resolve({ mode: 'yolo', multi_agent: false });
     },
@@ -236,3 +258,171 @@ test('planStuckGo 补充指令失败定向提示：sendMessageToSession 抛错�
   assert.ok(String(rt.errorItems[0]).includes('planContinueFailed'),
     '失败提示必须携带 planContinueFailed 文案而非静默吞掉');
 });
+
+// ── 评审 P2/P3 修复回归：卡片可重试 + 失败后权威收敛 ──────────────────
+test('planStuckGoAuto 切换失败不落 resolved：卡保持可重试', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.chatItems.push({ id: 77, type: 'plan_stuck', resolved: false });
+  const setMode = rt.defer('set_session_mode');
+  const p = rt.api.planStuckGoAuto(77, 'chat-a');
+  setMode.reject(new Error('engine gone'));
+  await p;
+  const item = rt.state.chatItems.find(i => i.id === 77);
+  assert.equal(item.resolved, false,
+    'set_session_mode 失败不得把卡标成已处理（旧形态先 resolved:true 再早退，渲染层剥掉动作按钮后无重试路径）');
+  assert.ok(rt.errorItems.length >= 1, '失败必须落系统提示');
+  assert.ok(!rt.calls.some(c => String(c).startsWith('sendMessageToSession')),
+    '切换失败后不得继续发补充指令');
+});
+
+test('planStuckGoAuto 成功后才落 resolved 并发补充指令', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.chatItems.push({ id: 78, type: 'plan_stuck', resolved: false });
+  const setMode = rt.defer('set_session_mode');
+  const p = rt.api.planStuckGoAuto(78, 'chat-a');
+  setMode.resolve({ mode: 'auto', multi_agent: false });
+  await p;
+  const item = rt.state.chatItems.find(i => i.id === 78);
+  assert.equal(item.resolved, true, '切换提交成功后卡才落已处理');
+  assert.ok(rt.calls.includes('sendMessageToSession:chat-a'), '成功后发补充指令');
+});
+
+// ── 在途防重入（decideApproval 同款闩）：等待窗口横跨后端往返，双击的第
+// 二次点击若放行会派发重复的切换命令，并把补充指令重复排队成独立 turn。
+test('planStuckGoAuto 在途闩：双击的第二次点击不派发重复切换与重复补充指令', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.chatItems.push({ id: 79, type: 'plan_stuck', resolved: false });
+  const setMode = rt.defer('set_session_mode');
+  const first = rt.api.planStuckGoAuto(79, 'chat-a');
+  const second = rt.api.planStuckGoAuto(79, 'chat-a'); // 首次仍在途
+  setMode.resolve({ mode: 'auto', multi_agent: false });
+  await first;
+  await second;
+  const switches = rt.invokeCalls.filter(c => c.name === 'set_session_mode');
+  assert.equal(switches.length, 1, '在途窗口内的双击只允许一次 set_session_mode');
+  const sends = rt.calls.filter(c => c === 'sendMessageToSession:chat-a');
+  assert.equal(sends.length, 1, '补充指令恰好一条（放行第二次点击会排队成重复 turn）');
+});
+
+// 旧形态先 resolved:true 再 await exit_plan_to_yolo（无 try/catch）：切换被
+// 拒时卡片已被剥掉动作、异常成为 onClick 上的 unhandled rejection。与
+// planStuckGoAuto 的评审 P2 形态对齐：提交后才落已处理，失败恢复可点。
+test('planStuckGo 切换失败不落 resolved：卡保持可重试并定向提示', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.chatItems.push({ id: 80, type: 'plan_stuck', resolved: false });
+  const exit = rt.defer('exit_plan_to_yolo');
+  const p = rt.api.planStuckGo(80, 'chat-a');
+  exit.reject(new Error('engine gone'));
+  await p;
+  const item = rt.state.chatItems.find(i => i.id === 80);
+  assert.equal(item.resolved, false, '切换失败不得把卡标成已处理（旧形态先标已处理再裸 await）');
+  assert.equal(item.submitting, false, '失败后在途闩必须释放（卡可重试）');
+  assert.ok(rt.errorItems.length >= 1, '失败必须落系统提示');
+  assert.ok(!rt.calls.some(c => String(c).startsWith('sendMessageToSession')),
+    '切换失败后不得继续发补充指令');
+});
+
+test('setAskOnGuardrail 失败后重读 get_mode_state 收敛权威态', async () => {
+  const rt = loadInteractionRuntime();
+  const setAsk = rt.defer('set_ask_on_guardrail');
+  const p = rt.api.setAskOnGuardrail('chat-a', true);
+  setAsk.reject(new Error('persist failed'));
+  await p;
+  const reReads = rt.invokeCalls.filter(c => c.name === 'get_mode_state');
+  assert.ok(reReads.length >= 1,
+    '失败路径必须重读权威态（两个相反翻转都失败时各自回放捕获的乐观值，芯片会与持久值背离）');
+});
+
+// ── round-7：失败重读的 epoch 护栏 ──────────────────────────────────
+// 场景：toggle 失败 → 回滚 → 重读在途窗口内，chat:mode_changed 权威广播落地
+// （bump epoch + 经收敛点写回）。随后重读返回的是广播前的陈旧快照：epoch
+// 校验必须丢弃它，否则旧读取把广播值打回 pre-click 值，直到下一次事件。
+test('setAskOnGuardrail 失败重读窗口内落地的 mode_changed 广播存活', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.modeState = { mode: 'yolo', multiAgent: false, askOnGuardrail: false };
+  const setAsk = rt.defer('set_ask_on_guardrail');
+  const reRead = rt.defer('get_mode_state');
+  const p = rt.api.setAskOnGuardrail('chat-a', true);       // 乐观翻转 ask=true
+  setAsk.reject(new Error('persist failed'));               // 失败 → 回滚 ask=false
+  // setImmediate 排空微任务：跨 realm await 多耗 tick，须确保 catch 回滚已
+  // 落地、重读已发起，广播才算落在「重读窗口内」。
+  await new Promise(resolve => {
+    setImmediate(resolve);
+  });
+  // 广播在重读窗口内落地（负载形状同 chat:mode_changed：mode/ask_on_guardrail）。
+  rt.broadcastModeState('chat-a', { mode: 'plan', ask_on_guardrail: true });
+  reRead.resolve({ mode: 'yolo', multi_agent: false, ask_on_guardrail: false }); // 陈旧快照
+  await p;
+  assert.equal(rt.state.modeState.askOnGuardrail, true,
+    '广播值必须存活：陈旧重读快照被 epoch 校验丢弃（无护栏时被回写为 pre-click 值 false）');
+  assert.equal(rt.state.modeState.mode, 'plan', '广播写回的 mode 同样不得被陈旧快照覆盖');
+  assert.equal(rt.errorItems.length, 1, '失败提示恰好一条（重读护栏不改变失败路径的回滚与提示）');
+});
+
+// ── round-10 补钉：modeDefaultsEpoch 纪律（round-8 L7-2 / round-9 写响应序）──
+// 在途 get_mode_defaults 与陈旧的 set_mode_default 响应都不得覆盖更新的
+// 草稿默认写。此前的护栏完全无测试：删掉 epoch bump 或两处比较，全套保持绿。
+function microtaskFlush(n = 6) {
+  let p = Promise.resolve();
+  for (let i = 0; i < n; i += 1) p = p.then(() => {});
+  return p;
+}
+
+test('setDraftMode 使在途 get_mode_defaults 失效：陈旧读取不得落盘新写之前的默认值', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null;               // 草稿态
+  rt.state.modeLane = 'work';
+  const staleRead = Promise.withResolvers();
+  const writeResp = Promise.withResolvers();
+  rt.invokeQueue = {
+    get_mode_defaults: [staleRead.promise],
+    set_mode_default: [writeResp.promise],
+  };
+  const readP = rt.api.refreshModeDefaults();    // epochAtRead = 1
+  const writeP = rt.api.setDraftMode('plan');    // 入口 bump → epoch = 2, epochAtWrite = 2
+  await microtaskFlush();                        // 两边都到达各自 await
+  assert.deepEqual(rt.invokeCalls.map((c) => c.name), ['get_mode_defaults', 'set_mode_default'],
+    '前提：在途读与写都已发出');
+  staleRead.resolve({ work: 'yolo', code: 'yolo' });   // 陈旧读先返回
+  await readP;
+  assert.ok(!rt.state.modeDefaults || rt.state.modeDefaults.work !== 'yolo',
+    '陈旧读取不得写入 modeDefaults（写已 bump epoch 使其失效）');
+  assert.ok(!rt.state.modeDefaults || rt.state.modeDefaults.work === undefined,
+    '陈旧读取被整批丢弃，不得部分落地');
+  writeResp.resolve({ work: 'plan', code: 'yolo' });   // 本次写自己的响应（epoch 仍匹配）
+  await writeP;
+  assert.equal(rt.state.modeDefaults.work, 'plan', '写自身的响应按当前 epoch 落地');
+  assert.equal(rt.state.modeState.mode, 'plan', '草稿态显示跟随已提交的写');
+});
+
+test('并发两次 setDraftMode：先落盘的后写生效，陈旧的先写响应不得回写', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.activeSessionId = null;
+  rt.state.modeLane = 'work';
+  const respA = Promise.withResolvers();
+  const respB = Promise.withResolvers();
+  rt.invokeQueue = { set_mode_default: [respA.promise, respB.promise] };
+  const pa = rt.api.setDraftMode('yolo');        // bump → 1, epochAtWrite = 1
+  const pb = rt.api.setDraftMode('plan');        // bump → 2, epochAtWrite = 2
+  await microtaskFlush();
+  respB.resolve({ work: 'plan', code: 'yolo' }); // 后写先返回
+  respA.resolve({ work: 'yolo', code: 'yolo' }); // 先写后返回（陈旧响应）
+  await Promise.all([pa, pb]);
+  assert.equal(rt.state.modeDefaults.work, 'plan',
+    '后写的默认值必须存活，不得被先写的陈旧响应覆盖');
+  assert.equal(rt.state.modeState.mode, 'plan',
+    '草稿显示停留在后写（陈旧响应的草稿臂同样被 epoch 拦下）');
+});
+
+// ── 闩-生产者类型一致钉（评审 5812242993 M-1）──────────────────────────
+// planStuckGo / planStuckGoAuto 的在途闩查找的 type 字符串必须与生产者
+// （chat-events 落卡）逐字相同：曾有 "planStuck" vs "plan_stuck" 拼写漂移
+// 令闩在生产数据上恒死（双击双派发），而上面的用例播种假形态假绿。此钉
+// 直接比对两个源文件里的字面量,漂移即红。
+const chatEventsSource = fs.readFileSync(path.join(here, '..', 'src', 'platform', 'tauri', 'bridge', 'chat-events.js'), 'utf8');
+const producerTypes = [...chatEventsSource.matchAll(/addChatItem\(\{ type: "([^"]+)", toolName: meta && meta\.name, resolved: false/g)].map(m => m[1]);
+assert.ok(producerTypes.length >= 1, 'plan-stuck 卡生产者必须存在于 chat-events');
+const latchTypes = [...interactionBridgeSource.matchAll(/candidate\.type === "([^"]+)" && candidate\.id === itemId/g)].map(m => m[1]);
+assert.equal(latchTypes.length, 2, 'planStuckGo / planStuckGoAuto 各持一个在途闩');
+assert.ok(latchTypes.every(t => t === producerTypes[0]),
+  `闩查找 type（${latchTypes}）必须与生产者落卡 type（${producerTypes[0]}）逐字一致`);

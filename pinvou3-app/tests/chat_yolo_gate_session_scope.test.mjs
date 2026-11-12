@@ -40,8 +40,8 @@ assert.doesNotMatch(
 // 2. handleModeChipSwitch re-checks the latest ref value after the binding query await.
 assert.match(
   src,
-  /const sessionBinding = await resolveBindingForGate\(gateSid\);\s*\n[\s\S]*?if \(gateSid !== activeSessionIdRef\.current\) return;/,
-  'gate must re-check the active session after the binding query await',
+  /await resolveBindingForGate\(gateSid\);[\s\S]{0,200}?if \(gateSid !== activeSessionIdRef\.current\) return false;/,
+  'gate must re-check the active session after the binding query await (round-7 P2: the query result no longer feeds the adjudication, but the await and its staleness re-check stay)',
 );
 
 // 3. Re-check again after the prefs query await (the second await).
@@ -51,11 +51,15 @@ assert.ok(
   `both awaits (binding query + prefs read) must be followed by the ref re-check, found ${rechecks.length}`,
 );
 
-// 4. The confirm card re-checks the captured sid before exitPlanToYolo.
+// 4. The confirm card owns its dialog identity: the post-await generation
+//    check supersedes the old live-active sid re-read (a switch-away always
+//    bumps the generation via the session-switch effect, so a superseded
+//    confirm discards instead of consuming whichever refs are current —
+//    round-8 R8-1).
 assert.match(
   src,
-  /pendingChatYoloSwitchSidRef\.current !== activeSessionIdRef\.current/,
-  'confirm must re-verify the captured sid before exitPlanToYolo',
+  /await bridge\.interaction\.confirmCodeYolo\(\);[\s\S]{0,240}if \(pendingChatYoloDialogGenRef\.current !== genAtConfirm\) \{/,
+  'confirm must re-verify its dialog generation after the save round-trip before any dispatch (round-8 R8-1; supersedes the old live-active sid re-read)',
 );
 assert.match(
   src,
@@ -82,8 +86,8 @@ assert.doesNotMatch(
 //    opens.
 assert.match(
   src,
-  /if \(needsYoloConfirmation\(prefs\)\) \{\s*\n\s*pendingChatYoloSwitchSidRef\.current = gateSid;/,
-  'the confirm card must be driven by needsYoloConfirmation(prefs) and capture the gate sid',
+  /if \(needsYoloConfirmation\(prefs\)\) \{\s*\n[^\n]*\n[^\n]*\n\s*pendingChatYoloDialogGenRef\.current \+= 1;\s*\n\s*pendingChatYoloSwitchSidRef\.current = gateSid;/,
+  'the confirm card must be driven by needsYoloConfirmation(prefs), bump the dialog generation, and capture the gate sid (round-8 R8-1)',
 );
 
 // 8. Decision glue: the catch on binding query failure must fail closed and
@@ -109,13 +113,38 @@ assert.match(
 );
 assert.match(
   src,
+  /await bridge\.interaction\.exitPlanToYolo\(sidAtConfirm\);/,
+  'confirmChatYoloSwitch must pass the captured sid to exitPlanToYolo (captured before the await, round-8 R8-1)',
+);
+assert.doesNotMatch(
+  src,
   /await bridge\.interaction\.exitPlanToYolo\(pendingChatYoloSwitchSidRef\.current\);/,
-  'confirmChatYoloSwitch must pass the captured sid to exitPlanToYolo',
+  'confirmChatYoloSwitch must not re-read the shared sid ref after the await (round-8 R8-1)',
 );
 assert.doesNotMatch(
   src,
   /bridge\.interaction\.exitPlanToYolo\(\s*\)/,
   'the gate paths must not fall back to the live-active exitPlanToYolo() form (any call shape)',
+);
+
+// 10. 评审 P2：Auto→Yolo 逃生在 Web 必须可达，而进入 Auto 必须仍被挡住。
+//     Web 桥带 setSessionMode 后，存在性守卫不再区分表面：进入 Auto 若只
+//     靠守卫，浏览器用户会把会话切进一个自己无法发送（webAutoSendBlocked）
+//     也无法决策审批卡（decideApproval 不在 Web 白名单）的档位。
+//     Auto→Yolo 走同一命令、在 Web 可达；进入 Auto 显式挡 Web。
+const autoEntry = src.slice(
+  src.indexOf('if (target === \'auto\') {'),
+  src.indexOf("if (target !== 'yolo') return;"),
+);
+assert.match(
+  autoEntry,
+  /if \(isWeb \|\| typeof bridge\.interaction\.setSessionMode !== 'function'\) return;/,
+  'entering Auto must stay blocked on the web surface (approval cards have no web decision face)',
+);
+assert.match(
+  src,
+  /await bridge\.interaction\.setSessionMode\(gateSid, 'yolo'\)/,
+  'Auto→Yolo must route through the unified set_session_mode with the adjudicated sid',
 );
 
 console.log('chat_yolo_gate_session_scope: ok');
@@ -141,17 +170,22 @@ for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['
   );
 }
 
-// The bridge's planStuckGo must accept an explicit target session and pass the same sid to exitPlanToYolo.
+// The bridge's planStuckGo must accept an explicit target session and target
+// the yolo exit at the same adjudicated sid. The tauri lane invokes
+// exit_plan_to_yolo directly (the shared exitPlanToYolo wrapper swallows
+// failures internally, and planStuckGo's commit-marking needs the rejection
+// to keep the card actionable); the web lane still routes through the
+// wrapper. Either shape must carry the captured sid.
 for (const [label, bridgeSrc] of [['tauri interaction.js', tauriInteraction], ['web bridge.js', webBridge]]) {
   assert.match(
     bridgeSrc,
     /async function planStuckGo\(itemId, targetSessionId\)/,
     `${label} planStuckGo must accept the adjudicated session id`,
   );
-  const body = bridgeSrc.slice(bridgeSrc.indexOf('async function planStuckGo'), bridgeSrc.indexOf('async function planStuckGo') + 1200);
+  const body = bridgeSrc.slice(bridgeSrc.indexOf('async function planStuckGo'), bridgeSrc.indexOf('async function planStuckGo') + 3200);
   assert.match(
     body,
-    /await exitPlanToYolo\(sid\)/,
+    /await (exitPlanToYolo\(sid\)|invoke\("exit_plan_to_yolo", \{ sessionId: sid \}\))/,
     `${label} planStuckGo must target exitPlanToYolo at the adjudicated sid`,
   );
 }
@@ -171,18 +205,279 @@ assert.match(
 );
 assert.match(
   src,
-  /pendingChatYoloActionRef\.current = \{ kind: 'planStuckGo', itemId \};/,
-  'the Go path must record its pending action before adjudicating the gate',
+  /chatYoloGateAllows\(gateSid, \{ kind: 'planStuckGo', itemId \}\)/,
+  'the Go path must pass its pending action explicitly to the gate (no preset/default-fill race)',
 );
 assert.match(
   src,
-  /bridge\.interaction\.planStuckGo\(action\.itemId, pendingChatYoloSwitchSidRef\.current\)/,
-  'confirmation must dispatch planStuckGo with the captured sid',
+  /bridge\.interaction\.planStuckGo\(actionAtConfirm\.itemId, sidAtConfirm\)/,
+  'confirmation must dispatch planStuckGo with the pre-await captured sid (round-8 R8-1)',
 );
 assert.match(
   src,
-  /useEffect\(\(\) => \{\s*\n\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;/,
+  /useEffect\(\(\) => \{\s*\n(?:[^\n]*\n){0,3}?\s*pendingChatYoloDialogGenRef\.current \+= 1;\s*\n\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;/,
   'session switch must clear the pending action',
 );
 
-console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban)');
+// ── Review P2: canceling the confirm must dispose the pending action ─────────
+// The cancel callback used to only close the dialog, leaving the captured
+// pendingChatYoloActionRef (e.g. { kind: 'planStuckGo', itemId }) in place.
+// Within the same session the gate later fills the action only when it is
+// empty (`if (!pendingChatYoloActionRef.current)`), so a subsequent
+// mode-only Yolo entry re-opened the card on top of the stale action and
+// confirming executed the CANCELED continuation: the plan card got marked
+// handled and its continue command sent even though the user had canceled.
+// Same-session scope: the session-switch effect cannot be relied on (it only
+// fires on activeSessionId changes). Negative-first: on the unfixed source
+// this match fails (onCancel closes the dialog only); the fresh-confirm pins
+// above double as the negative control that a non-canceled Yolo confirm still
+// dispatches its own action.
+assert.match(
+  src,
+  /onCancel=\{\(\) => \{\n(?:[^\n]*\n){0,12}?\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;\s*\n\s*setPendingChatYoloSwitch\(false\);\s*\n\s*\}\}/,
+  'canceling the YOLO confirm must dispose the pending action (not just close the dialog)',
+);
+assert.doesNotMatch(
+  src,
+  /onCancel=\{\(\) => setPendingChatYoloSwitch\(false\)\}/,
+  'the cancel-only dialog close must not come back (stale pending action rider)',
+);
+
+// ── 评审 P2：Web 面的 Auto→Yolo 逃生 ──────────────────────────────────────
+// Web 桥此前缺 setSessionMode，ChatView 的存在性守卫让 Auto 会话的 Yolo
+// 动作在 Web 静默无操作（发送门把浏览器用户锁死在 Auto 档）。运行时行为
+// 由 web_bridge_domain_contract.test.mjs 钉；这里钉两侧源码契约：
+// 12. Web 桥的 setSessionMode 必须镜像桌面契约：entry 捕获 sid（显式裁决
+//     sid 优先）、统一 set_session_mode invoke、权威 modeState 写回、无
+//     sid 纯 no-op（composer-controls 的兜底 setSessionMode(null,'auto')
+//     在 Web 不得变成可达的进入-Auto 写入）。
+const webSetSessionMode = webBridge.slice(
+  webBridge.indexOf('async function setSessionMode'),
+  webBridge.indexOf('async function setSessionMode') + 1200,
+);
+assert.match(
+  webSetSessionMode,
+  /await invoke\("set_session_mode", args\)/,
+  'web setSessionMode must invoke the unified set_session_mode command',
+);
+assert.match(
+  webSetSessionMode,
+  /applyAuthoritativeModeState\(sid, st\)/,
+  'web setSessionMode must converge through the authoritative modeState write-back',
+);
+assert.match(
+  webSetSessionMode.slice(0, webSetSessionMode.indexOf('try {')),
+  /if \(!sid\) return;/,
+  'web setSessionMode must no-op without a session id before any invoke',
+);
+// 13. ChatView：进入 Auto 仍显式挡 Web（Web 门面不导出 decideApproval——
+//     审批卡无浏览器决策面；注意决定命令本身在 access-policy 白名单是前向
+//     兼容登记，挡的是门面导出），Auto→Yolo 走同一命令、在 Web 可达。
+const webAutoEntry = src.slice(
+  src.indexOf("if (target === 'auto') {"),
+  src.indexOf("if (target !== 'yolo') return;"),
+);
+assert.match(
+  webAutoEntry,
+  /if \(isWeb \|\| typeof bridge\.interaction\.setSessionMode !== 'function'\) return;/,
+  'entering Auto must stay blocked on the web surface (approval cards have no web decision face)',
+);
+assert.match(
+  src,
+  /await bridge\.interaction\.setSessionMode\(gateSid, 'yolo'\)/,
+  'Auto→Yolo must route through the unified set_session_mode with the adjudicated sid',
+);
+// 14. round-19 M1 (fresh review): the web draft arm must refuse Auto too, and
+//     the chip's Auto row must gray on web in BOTH states. The draft row
+//     previously stayed enabled while the dispatch silently swallowed the
+//     click (chat lane) or staged the lane-global default to auto (codex
+//     lane, M1 proper), materializing every future web session into the
+//     Auto dead end the materialized arm already refuses.
+assert.match(
+  src,
+  /if \(target === 'auto' && isWeb\) return;\s*\n\s*\/\/ Pass the draft dispatch explicitly/,
+  'web draft arm must refuse Auto before setDraftMode (the lane-global default would flip to auto)',
+);
+assert.match(
+  src,
+  /autoRowDisabled=\{!!isWeb\}/,
+  'chip Auto row must gray on web in draft and materialized states alike',
+);
+
+// ── Round-8 R8-1: the async confirm must own its dialog identity ────────────
+// The save round-trip (`await confirmCodeYolo()`) is the window where the
+// user can switch sessions, cancel, or open another confirm. The unfixed body
+// re-read the shared mutable refs AFTER the await; a superseded confirmation
+// then passed the live-active guard on the NEW session's state and dispatched
+// the newer dialog's not-yet-confirmed planStuckGo. The fix captures
+// (generation, sid, action) before the await, bumps the generation at every
+// invalidation point (gate open / cancel / session switch), and discards a
+// superseded outcome without touching the shared refs, flag, or error state.
+// Negative-first: on the unfixed source the capture pin and the no-reread pin
+// both fail.
+assert.match(
+  src,
+  /const genAtConfirm = pendingChatYoloDialogGenRef\.current;\s*\n\s*const sidAtConfirm = pendingChatYoloSwitchSidRef\.current;\s*\n\s*const actionAtConfirm = pendingChatYoloActionRef\.current;\s*\n\s*try \{\s*\n\s*await bridge\.interaction\.confirmCodeYolo\(\);/,
+  'the confirm must capture (gen, sid, action) before its save round-trip',
+);
+assert.doesNotMatch(
+  src,
+  /const action = pendingChatYoloActionRef\.current;/,
+  'the confirm must not re-read the shared action ref after the await (capture before the await instead)',
+);
+assert.match(
+  src,
+  /await bridge\.interaction\.confirmCodeYolo\(\);[\s\S]{0,240}if \(pendingChatYoloDialogGenRef\.current !== genAtConfirm\) \{[\s\S]{0,420}?return;/,
+  'a superseded confirm outcome must be discarded on the post-await generation check',
+);
+assert.match(
+  src,
+  /if \(needsYoloConfirmation\(prefs\)\) \{[\s\S]{0,240}pendingChatYoloDialogGenRef\.current \+= 1;/,
+  'gate open must bump the dialog generation (a new dialog owns the shared refs)',
+);
+assert.match(
+  src,
+  /onCancel=\{\(\) => \{[\s\S]{0,900}?pendingChatYoloDialogGenRef\.current \+= 1;[\s\S]{0,200}?pendingChatYoloSwitchSidRef\.current = null;[\s\S]{0,200}?pendingChatYoloActionRef\.current = null;/,
+  'cancel must bump the generation and dispose the captured action',
+);
+assert.match(
+  src,
+  /useEffect\(\(\) => \{\s*\n(?:[^\n]*\n){0,4}?[^\n]*R8-1[^\n]*\n\s*pendingChatYoloDialogGenRef\.current \+= 1;\s*\n\s*pendingChatYoloSwitchSidRef\.current = null;/,
+  'the session-switch effect must bump the generation before nulling the refs',
+);
+// Dispatch-origin discipline: the confirm dispatches the SAME command family
+// the click came from (Plan→Yolo exit / Auto→Yolo set_session_mode / draft
+// lane default) using the CAPTURED values, never the post-await refs.
+// Round-9 review fix: the action is an explicit gate parameter assigned
+// unconditionally — the old caller-side preset + `if (!ref.current)`
+// default-fill raced a gen-matched in-flight confirm whose success path
+// nulled the ref between preset and fill, arming the NEW dialog with the
+// bare `{ kind: 'modeChip' }` default (no `via`) whose confirm then fell
+// into the exitPlanToYolo branch.
+assert.match(
+  src,
+  /async function chatYoloGateAllows\(gateSid, action\)/,
+  'the gate must take the continue-action as an explicit parameter',
+);
+assert.match(
+  src,
+  /pendingChatYoloSwitchSidRef\.current = gateSid;[\s\S]{0,200}?pendingChatYoloActionRef\.current = action;\s*\n\s*setPendingChatYoloSwitch\(true\);/,
+  'gate open must assign the caller-passed action unconditionally before opening the card',
+);
+assert.doesNotMatch(
+  src,
+  /if \(!pendingChatYoloActionRef\.current\)/,
+  'the default-fill must not come back (a nulled ref mid-race armed the new dialog with the bare default)',
+);
+assert.match(
+  src,
+  /chatYoloGateAllows\(gateSid, \{ kind: 'modeChip', via: isPlan \? 'exitPlanToYolo' : 'sessionMode' \}\)/,
+  'the chip path must pass its dispatch origin explicitly to the gate',
+);
+assert.match(
+  src,
+  /chatYoloGateAllows\(null, \{ kind: 'modeChip', via: 'draftMode' \}\)/,
+  'the unbound draft path must pass the draft dispatch origin explicitly to the gate',
+);
+assert.match(
+  src,
+  /else if \(actionAtConfirm && actionAtConfirm\.via === 'sessionMode'\) \{\s*\n\s*await bridge\.interaction\.setSessionMode\(sidAtConfirm, 'yolo'\);/,
+  'the confirm must honor the captured origin (session-mode entries via set_session_mode)',
+);
+assert.match(
+  src,
+  /else if \(actionAtConfirm && actionAtConfirm\.via === 'draftMode'\) \{\s*\n\s*await bridge\.interaction\.setDraftMode\('yolo'\);/,
+  'the confirm must honor the captured origin (draft entries via setDraftMode)',
+);
+assert.match(
+  src,
+  /if \(pendingChatYoloDialogGenRef\.current === genAtConfirm\) \{\s*\n\s*setChatYoloConfirmError\(/,
+  'the failure path must gate its error write on the generation (no painting a newer dialog)',
+);
+
+// ── round-10: malformed/missing-mode display fallback must stay "auto" ─────────
+// The widest mode is the worst-direction lie: a missing or malformed `mode`
+// on an authoritative payload must display the conservative lane default,
+// never Yolo (round-8 L7-4 adopted this on the tauri lane; the round-10
+// review caught the web lane still carrying "yolo" fallbacks and three test
+// mocks encoding the pre-fix shape). These pins make a silent revert red in
+// whichever lane it lands. (Scheduled-task run-as-Yolo wire inputs and the
+// explicit draft `setDraftMode('yolo')` route are intentional Yolo literals
+// and are deliberately NOT banned.)
+const bridgeDir = path.join(here, '..', 'src', 'platform');
+const fpTauriBridge = fs.readFileSync(path.join(bridgeDir, 'tauri', 'bridge.js'), 'utf8').replace(/\r\n/g, '\n');
+const fpTauriInteraction = fs.readFileSync(path.join(bridgeDir, 'tauri', 'bridge', 'interaction.js'), 'utf8').replace(/\r\n/g, '\n');
+const fpWebBridge = fs.readFileSync(path.join(bridgeDir, 'web', 'bridge.js'), 'utf8').replace(/\r\n/g, '\n');
+const fpSharedHelpers = fs.readFileSync(path.join(here, '..', 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8').replace(/\r\n/g, '\n');
+
+// tauri: authoritative convergence + read fallbacks.
+assert.match(fpTauriBridge, /mode: st\.mode \|\| "auto"/,
+  'tauri authoritative fallback must display auto for a missing mode');
+assert.doesNotMatch(fpTauriBridge, /st\.mode \|\| "yolo"/,
+  'tauri authoritative fallback must never fall back to yolo');
+assert.match(fpTauriBridge, /modeState: \{ mode: "auto" \}/,
+  'tauri freshBuffer must initialize the generic default as auto');
+assert.match(fpTauriInteraction, /mode: ms\.mode \|\| "auto"/,
+  'tauri interaction read fallback must display auto');
+assert.doesNotMatch(fpTauriInteraction, /ms\.mode \|\| "yolo"/,
+  'tauri interaction read fallback must never fall back to yolo');
+assert.match(fpTauriInteraction, /\{ mode: "auto", multiAgent: false, askOnGuardrail: true \}/,
+  'tauri interaction absence fallback must be the auto shape');
+
+// web: bootstrap restore, syncModeState catch, mapModeState, authoritative convergence.
+assert.match(fpWebBridge, /: \{ mode: "auto", multiAgent: false, askOnGuardrail: true \}/,
+  'web bootstrap absence fallback must be the auto shape');
+assert.match(fpWebBridge, /mode: \(ms && ms\.mode\) \|\| "auto"/,
+  'web mapModeState fallback must display auto');
+assert.match(fpWebBridge, /mode: st\.mode \|\| "auto"/,
+  'web authoritative convergence fallback must display auto');
+assert.doesNotMatch(fpWebBridge, /\(ms && ms\.mode\) \|\| "yolo"/,
+  'web mapModeState fallback must never fall back to yolo');
+assert.doesNotMatch(fpWebBridge, /st\.mode \|\| "yolo"/,
+  'web authoritative convergence fallback must never fall back to yolo');
+
+// shared: freshBuffer generic default is auto (the draft override remains
+// load-bearing — lane defaults may legitimately be plan/yolo).
+assert.match(fpSharedHelpers, /modeState: \{ mode: "auto" \}/,
+  'shared freshBuffer generic default must be auto');
+
+// ── round-11: pin gaps closed by the fresh-review mutation probes ──────────────
+// 1) tauri unbound-draft landing fallback: flipping `boundDraft ? "plan" : "auto"`
+//    to "yolo" kept the whole node battery green (round-11 mutation probe) — the
+//    display-fallback pins above cover only the malformed-payload arms, not this
+//    lane-default arm of the same conservative-posture surface.
+assert.match(
+  fpTauriBridge,
+  /return \{ mode: d \|\| \(boundDraft \? "plan" : "auto"\), multiAgent: false \};/,
+  'tauri unbound-draft fallback must land on the conservative auto default',
+);
+// 2) ChatView confirm latch: the stale-state early return must release the ref —
+//    a click landing between the previous attempt's finally (sync ref release)
+//    and the queued state commit otherwise latches it true with nothing left to
+//    clear the button (dead confirm until remount).
+assert.match(
+  src,
+  /if \(chatYoloConfirmBusy\) \{[\s\S]{0,600}?chatYoloConfirmBusyRef\.current = false;\s*\n\s*return;\s*\n\s*\}/,
+  'the confirm latch must be released on the stale-state arm (dead-button guard)',
+);
+// 3) web mode-defaults epoch discipline (round-10 parity code; the round-11
+//    review found no pin drove it — deleting either guard kept the suite green;
+//    the runtime regressions cover the tauri harness only). Pin the entry bump
+//    and both epoch validations: defaults write + draft display arm.
+assert.match(
+  fpWebBridge,
+  /async function setDraftMode\(target\) \{[\s\S]{0,600}?modeDefaultsEpoch \+= 1;\s*\n\s*const epochAtWrite = modeDefaultsEpoch;/,
+  'web setDraftMode must bump the epoch at entry and capture it before the await',
+);
+assert.match(
+  fpWebBridge,
+  /async function refreshModeDefaults\(\) \{[\s\S]{0,160}?const epochAtRead = \+\+modeDefaultsEpoch;[\s\S]{0,200}?epochAtRead === modeDefaultsEpoch\) state\.modeDefaults = defaults;/,
+  'web refreshModeDefaults must validate the epoch before writing defaults',
+);
+assert.match(
+  fpWebBridge,
+  /if \(!state\.activeSessionId && epochAtRead === modeDefaultsEpoch\) \{\s*\n\s*state\.modeState = currentDraftModeState\(\);/,
+  'web draft display arm must be gated on the captured epoch',
+);
+
+console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban + fallback-posture pins)');

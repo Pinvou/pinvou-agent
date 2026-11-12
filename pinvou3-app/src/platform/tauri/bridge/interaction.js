@@ -81,16 +81,28 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
       if ((modeStateEpochs[sid] || 0) !== epoch) return;
       if (state.activeSessionId !== sid) {
         runSyncOnSession(sid, function () {
-          state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+          state.modeState = {
+            // tri-mode: the targeted-write branch's fallback uses the same worst-direction-safe
+            // auto as the active branch, no longer falling back to the widest yolo (round-9, aligned with the sibling branch).
+            mode: ms.mode || "auto",
+            multiAgent: !!ms.multi_agent,
+            askOnGuardrail: ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
+          };
         });
         return;
       }
-      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+      state.modeState = {
+        // tri-mode: the default fallback matches the backend's resolved default (unbound
+        // plain → auto), no longer displaying the widest yolo (round-2 M family: a read-failure fallback is the worst-direction lie).
+        mode: ms.mode || "auto",
+        multiAgent: !!ms.multi_agent,
+        askOnGuardrail: ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
+      };
     } catch {
       // get 失败同样不得用默认值覆盖已发生的权威改写。
       if ((modeStateEpochs[sid] || 0) !== epoch) return;
       if (state.activeSessionId !== sid) return;
-      state.modeState = { mode: "yolo", multiAgent: false };
+      state.modeState = { mode: "auto", multiAgent: false, askOnGuardrail: true };
     }
   }
 
@@ -100,12 +112,20 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
   // already-materialized session writes only that session's own record
   // (set_plan_mode_next and other per-session commands no longer leak into
   // globals in the backend).
+  // Draft-defaults writes get an epoch like the session reads: a
+  // get_mode_defaults issued BEFORE an in-flight setDraftMode (or
+  // setMultiAgentMode's draft branch) must not land after it and overwrite
+  // the just-written default with the pre-switch value — same staleness
+  // class the syncModeState epoch guards cover, on the draft surface
+  // (round-8 L7-2; the body's disclosure named only setDraftMode).
+  let modeDefaultsEpoch = 0;
   async function refreshModeDefaults() {
+    const epochAtRead = ++modeDefaultsEpoch;
     try {
       const defaults = await invoke("get_mode_defaults");
-      if (defaults) state.modeDefaults = defaults;
+      if (defaults && epochAtRead === modeDefaultsEpoch) state.modeDefaults = defaults;
     } catch { /* 读取失败保留旧值/缺省，不打扰交互 */ }
-    if (!state.activeSessionId) {
+    if (!state.activeSessionId && epochAtRead === modeDefaultsEpoch) {
       state.modeState = currentDraftModeState();
       notify();
     }
@@ -120,19 +140,34 @@ function setModeLane(lane) { return pinvouSharedtauriInteraction().setModeLane(l
   // materialization (the backend resolves only the code lane default for bound
   // sessions, never the work one).
   async function setDraftMode(target) {
+    // Any draft-default WRITE invalidates in-flight defaults reads (round-8
+    // L7-2 staleness discipline).
+    modeDefaultsEpoch += 1;
+    // The write's own response obeys the same discipline as the sibling read
+    // path above: capture the epoch after the invalidating bump and verify
+    // before applying — a defaults read issued after this write bumped the
+    // epoch again, and this stale response must not overwrite the fresher
+    // value that read lands (round-9).
+    const epochAtWrite = modeDefaultsEpoch;
     const boundDraft = !!state.draftWorkspacePath;
     // Bound drafts always write the code lane; unbound drafts follow the
     // current lane (two lanes, work/code; design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     try {
       const defaults = await invoke("set_mode_default", { lane, mode: target });
-      if (defaults) state.modeDefaults = defaults;
-      if (boundDraft) state.pendingDraftMode = target;
-      if (!state.activeSessionId) {
-        state.modeState = {
-          mode: target,
-          multiAgent: !!(state.modeState && state.modeState.multiAgent),
-        };
+      // The whole post-await body obeys the epoch, not just the defaults
+      // write (round-10 review): an out-of-order earlier write's response
+      // must not re-pin pendingDraftMode or flip the draft display back to
+      // its target after a fresher write already landed.
+      if (epochAtWrite === modeDefaultsEpoch) {
+        if (defaults) state.modeDefaults = defaults;
+        if (boundDraft) state.pendingDraftMode = target;
+        if (!state.activeSessionId) {
+          state.modeState = {
+            mode: target,
+            multiAgent: !!(state.modeState && state.modeState.multiAgent),
+          };
+        }
       }
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }
     notify();
@@ -349,8 +384,10 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
         // 后端返回为准。
         state.pendingDraftMultiAgent = !!enabled;
         state.modeState = {
-          mode: (state.modeState && state.modeState.mode) || "yolo",
+          // tri-mode: the default fallback uses the same worst-direction-safe auto as the active branch (round-9).
+          mode: (state.modeState && state.modeState.mode) || "auto",
           multiAgent: !!enabled,
+          askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
         };
         // 草稿分支会从 try 内提前返回，走不到函数末尾的 notify()。
         // 必须在这里主动发布快照，否则拨杆只能等下一次无关状态事件才刷新。
@@ -366,8 +403,10 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
       // 丢弃，权威值由下方 set_multi_agent_mode 返回后写回（审计意见）。
       bumpModeStateEpoch(sid);
       state.modeState = {
-        mode: (state.modeState && state.modeState.mode) || "yolo",
+        // tri-mode: the default fallback uses the same worst-direction-safe auto as the active branch (round-9).
+        mode: (state.modeState && state.modeState.mode) || "auto",
         multiAgent: !!enabled,
+        askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
       };
       notify();
       try {
@@ -378,8 +417,10 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
         // 全局 modeState 会把回滚砸进别的会话、报错落错聊天（复核 P1）。
         runOnSession(sid, function () {
           state.modeState = {
-            mode: (state.modeState && state.modeState.mode) || "yolo",
+            // tri-mode: the rollback fallback likewise takes the worst-direction-safe auto (round-9).
+            mode: (state.modeState && state.modeState.mode) || "auto",
             multiAgent: previousMultiAgent,
+            askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
           };
           addSystemItem(bt("switchModeFailed") + invokeError);
         });
@@ -405,8 +446,36 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
-    patchItemById(itemId, { resolved: true }); notify();
-    await exitPlanToYolo(sid);
+    // In-flight re-entry guard + mark handled only after the submit (same discipline as planStuckGoAuto
+    // below, review P2 shape): the wait window spans one backend round trip; without a synchronous latch a
+    // second click dispatches a duplicate mode switch / duplicate follow-up turn. The old shape set resolved:true
+    // before the await — a rejected exitPlanToYolo left the card action-stripped and the exception unhandled (an
+    // unhandled onClick rejection); failure now restores clickability and surfaces a targeted notice.
+    let stuck = null;
+    runSyncOnSession(sid, function () {
+      // The type must match the producer verbatim (chat-events drops the card as "plan_stuck"; the
+      // web lane consumes the same string): a "planStuck" spelling drift here once left the latch
+      // permanently dead on production data with double-click double-dispatch while tests seeded the
+      // fake shape and stayed green. tests/interaction_write_routing's latch-producer type pin locks this contract.
+      stuck = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "plan_stuck" && candidate.id === itemId;
+      }) || null;
+    });
+    if (stuck && stuck.submitting) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
+    try {
+      // Direct invoke (the planStuckGoAuto pattern): the shared exitPlanToYolo
+      // wrapper swallows failures internally (exitPlanFailed system item),
+      // so a rejected switch is undetectable through it — commit-marking
+      // needs the rejection to keep the card actionable.
+      const st = await invoke("exit_plan_to_yolo", { sessionId: sid });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) {
+      patchItemByIdFor(sid, itemId, { submitting: false });
+      addSystemItemFor(sid, bt("exitPlanFailed") + e); notify();
+      return;
+    }
+    patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
     // 补充指令必须发往触发会话：await exitPlanToYolo 期间用户可能已切走，
     // 直接 sendMessage 会把"继续执行"发到切换后的会话（审计遗漏补修）。
     // sendMessageToSession 校验失败（会话已删/对账中）会 throw，必须接住并
@@ -414,6 +483,169 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     try {
       await sendMessageToSession(sid, bt("planStuckGoPrompt"));
     } catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
+  }
+  // The plan-stuck card's continue-in-Auto (tri-mode): the same follow-up instruction as planStuckGo,
+  // but the switch target is Auto (per-action approval) instead of Yolo — the UI layer's one-time
+  // confirmation gate only applies to yolo, Auto passes no gate. The sid capture / targeted write-back follow the same contract as planStuckGo.
+  async function planStuckGoAuto(itemId, targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    // In-flight re-entry guard (the decideApproval/setMultiAgentMode pattern): the wait window of
+    // "mark handled only after the switch commits" (reviewer P2) spans one hot-sync round trip;
+    // without a synchronous latch a second click dispatches a duplicate set_session_mode and a
+    // duplicate queued follow-up turn. The catch keeps the card actionable and surfaces the error.
+    let stuck = null;
+    runSyncOnSession(sid, function () {
+      stuck = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "plan_stuck" && candidate.id === itemId;
+      }) || null;
+    });
+    if (stuck && stuck.submitting) return;
+    patchItemByIdFor(sid, itemId, { submitting: true }); notify();
+    try {
+      const st = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });
+      applyAuthoritativeModeState(sid, st);
+      patchItemByIdFor(sid, itemId, { resolved: true, submitting: false }); notify();
+    } catch (e) {
+      patchItemByIdFor(sid, itemId, { submitting: false });
+      addSystemItemFor(sid, bt("switchModeFailed") + e); notify(); return;
+    }
+    try { await sendMessageToSession(sid, bt("planStuckGoPrompt")); }
+    catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
+  }
+
+  // ── tri-mode unified mode switch / per-session ask-on-guardrail / approval-card decision ──────────
+  // The sid capture follows the exitPlanToYolo contract: callers may pin the target session
+  // explicitly; a no-arg call reads live-active. Authoritative write-backs all go through applyAuthoritativeModeState (the shared epoch table).
+  async function setSessionMode(targetSessionId, mode, askOnGuardrail) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    try {
+      const args = { sessionId: sid, mode };
+      // Optional parameter: carried only when passed explicitly (undefined never hits the wire, keeping the protocol fingerprint minimal).
+      if (askOnGuardrail === true || askOnGuardrail === false) args.askOnGuardrail = askOnGuardrail;
+      const st = await invoke("set_session_mode", args);
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
+    notify();
+  }
+  // Per-session "ask on guardrail hit" toggle: optimistic flip (the backend hot-syncs the engine's
+  // safety posture, which can take a while); on failure, roll back and notify on the triggering
+  // session (the setMultiAgentMode optimistic pattern). The optimistic write goes through
+  // runSyncOnSession(sid): an explicit sid parameter is also valid (not just live-active) — a bare
+  // global write would land the flip on the new session's face in the one-beat-lagging switch window (round-13 review).
+  async function setAskOnGuardrail(targetSessionId, enabled) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    let previousAsk = true;
+    runSyncOnSession(sid, function () {
+      previousAsk = (state.modeState && state.modeState.askOnGuardrail) !== false;
+      bumpModeStateEpoch(sid);
+      state.modeState = {
+        mode: (state.modeState && state.modeState.mode) || "auto",
+        multiAgent: !!(state.modeState && state.modeState.multiAgent),
+        askOnGuardrail: !!enabled,
+      };
+    });
+    notify();
+    try {
+      const st = await invoke("set_ask_on_guardrail", { sessionId: sid, enabled: !!enabled });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) {
+      runOnSession(sid, function () {
+        state.modeState = {
+          mode: (state.modeState && state.modeState.mode) || "auto",
+          multiAgent: !!(state.modeState && state.modeState.multiAgent),
+          askOnGuardrail: previousAsk,
+        };
+        addSystemItem(bt("switchModeFailed") + e);
+      });
+      // Reconcile from the persisted source of truth (reviewer P3): two
+      // opposite toggles that BOTH fail would each restore their captured
+      // optimistic value, leaving the chip showing enabled while the durable
+      // setting is disabled. The authoritative re-read converges the chip to
+      // what the backend actually kept; a re-read failure must not mask the
+      // original error, so the rollback value above stays the fallback.
+      // The syncModeState epoch discipline: captured before the re-read is issued, verified after
+      // the await returns — an authoritative chat:mode_changed broadcast landing in the window has
+      // bumped the epoch, making this read stale: skip the write-back (keep the rollback value above; the
+      // authoritative value already landed via the convergence point, else the old snapshot would punch it back until the next event — round-7 recheck).
+      const epoch = modeStateEpochs[sid] || 0;
+      try {
+        const ms = await invoke("get_mode_state", { sessionId: sid });
+        if ((modeStateEpochs[sid] || 0) === epoch) applyAuthoritativeModeState(sid, ms);
+      } catch { /* keep the optimistic rollback value */ }
+    }
+    notify();
+  }
+  // Approval-card decision round-trip (decide_approval): sid is captured at entry (the user may switch
+  // sessions during the await; writes must be targeted back to the triggering session — the acceptPlan
+  // contract). Optimistically marked submitting; success writes the terminal state (localized terminal copy mapped from cardState by the render layer), failure restores active.
+  async function decideApproval(approvalId, decision, targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid || !approvalId) return;
+    let card = null;
+    runSyncOnSession(sid, function () {
+      card = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "approval" && candidate.approvalId === approvalId;
+      }) || null;
+    });
+    if (!card || card.resolved) return;
+    // In-flight re-entry guard (the setMultiAgentMode pattern): a double-click faster than the
+    // re-render dispatches a second decide_approval; once the first has succeeded, the second
+    // only gets "approval not found" and pushes a failure notice into the session stream.
+    if (card.submitting) return;
+    const previous = { resolved: !!card.resolved, cardState: card.cardState || "active" };
+    runSyncOnSession(sid, function () { card.submitting = true; });
+    notify();
+    try {
+      await invoke("decide_approval", { sessionId: sid, approvalId, decision });
+      runSyncOnSession(sid, function () {
+        card.submitting = false;
+        card.resolved = true;
+        card.cardState = decision === "deny" ? "denied"
+          : decision === "allow_for_session" ? "allowed_session" : "allowed";
+        card.statusLabel = "";
+      });
+    } catch (e) {
+      runSyncOnSession(sid, function () {
+        card.submitting = false;
+        // M5: terminal cleanup (chat:done) may already have settled the card to cancelled in
+        // place during the await. Before restoring pre-call state we must yield to the terminal
+        // state — otherwise a cancelled card revives clickable and every later click appends
+        // another failure notice. A chat:approval_resolved echo likewise does not override decided
+        // cards (echo handling applies to undecided cards only).
+        // Unknown terminal (host P2): the backend broadcasts the decision "unknown" convergence
+        // event before returning Err; when the event lands first the card is already in the undecidable
+        // unknown state — restoring pre-call active would flip it back to clickable (re-inviting a click
+        // on a possibly consumed decision), so we must yield. When the event lands later this restores as usual and the convergence event then rewrites the card to unknown (undecided cards only); both arrival orders converge to undecidable.
+        if (card.cardState === "unknown") return;
+        if (!card.resolved) {
+          card.resolved = previous.resolved;
+          card.cardState = previous.cardState;
+        }
+      });
+      addSystemItemFor(sid, bt("approvalDecisionFailed") + e);
+    }
+    notify();
+  }
+  // The session's currently pending approval cards (for remount / session-switch recovery).
+  // Read failures are treated as empty — recovery is best-effort and must not block session switches.
+  async function getPendingApprovals(targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return [];
+    try { return await invoke("get_pending_approvals", { sessionId: sid }) || []; }
+    catch { return []; }
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -532,6 +764,11 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       setMultiAgentMode,
       planStuckReplan,
       planStuckGo,
+      planStuckGoAuto,
+      setSessionMode,
+      setAskOnGuardrail,
+      decideApproval,
+      getPendingApprovals,
       submitUserInput,
       cancelUserInput,
       editLastTurn,

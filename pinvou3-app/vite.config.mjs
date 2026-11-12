@@ -564,11 +564,54 @@ function enforceLazyChunks() {
 // gave back 62 B; the row's master-derivation rides the lazy SettingsView).
 // Same-base build against 65d2030a9 (the 2026-11-06 rebase base: the #832
 // squash now on main) measures 485,915 → 486,097 B desktop and
-// 127,596 → 127,777 B web on the local node 24 toolchain. The desktop
-// ceiling takes the next thousand step; the web ceiling stays 128_000
-// (223 B headroom above the measured web entry). This cap does not promise
-// headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 487_000;
+// 127,596 → 127,777 B web on the local node 24 toolchain. The web ceiling
+// stays 128_000 (223 B headroom above the measured web entry).
+//
+// 486_000 → 492_000 desktop only (tri-mode safety frontend, measured per
+// policy): the statically-imported chat graph grows by the tri-mode UI —
+// the approval card (ApprovalCard + input view in tool-renderers.jsx), the
+// tri-state mode chip with the ask-on-guardrail toggle row
+// (composer-controls.jsx), the auto-branch handlers in ChatView.jsx and
+// the zh strings for the new keys (zh.js rides the entry; en/ja ride the
+// lazy locale chunks). Same-base build against this branch's HEAD
+// measures 485,800 → 491,616 B desktop; build:web stays green under its
+// own ceiling. The desktop ceiling takes the next thousand step, leaving
+// 384 B headroom at the local node 24 measurement. The tauri bridge
+// classic scripts (bridge.js / bridge/*.js) are copied verbatim, not
+// bundled, so the bridge-side tri-mode additions do not move this entry.
+//
+// 492_000 → 496_000 desktop only (tri-mode round-2 fixes, measured per
+// policy): the ChatView draft-mode chip branch (setDraftMode routing +
+// the draft Yolo gate extension), the plan-stuck Auto availability guard
+// (tool-renderers.jsx) and the zh strings for the approval-cancelled key.
+// Same-base build measures 491,616 → 492,003 B desktop; build:web stays
+// green under its own ceiling. Round-9 correction: the raise to 496_000
+// took the FOURTH thousand step above the 492,003 measurement while this
+// comment claimed the "next thousand step" — every recorded precedent
+// takes the literal next step. Reset to the honest 493_000 after the
+// round-9 wave re-measured the entry at 492,861 B (round-8 confirm-gate
+// and round-9 web-gatenotice work ride the entry via ChatView), leaving
+// 139 B headroom at the local node 24 measurement. Round-15 re-measure
+// (review H): a clean build:ui on node 24 lands at 492,964 B — 36 B
+// headroom against this ceiling (the recorded 492,861/139 B did not
+// reproduce; treat the live number as the re-cut trigger). Round-16
+// re-measure (review 5812242993 fix wave): a clean build:ui on node 24
+// lands at 492,800 B — 200 B headroom (the admission-wait work in the web
+// bridge rides lazy chunks; the removed ComposerModeChip fallback offsets
+// the ChatView guard on this entry). Bridge classic
+// scripts remain copied verbatim (the chat-events approval_resolved
+// listener does not move this entry). Round-20 fix wave re-measure: a
+// clean build:ui on node 24 lands at 493,007 B — the English comment
+// rewrite of the ChatView/CodexAcpView/tool-renderers tri-mode blocks, the
+// codex Yolo-cancel generation bump, and the widened modeAutoUnsupported
+// hints ride this entry and crossed the 493,000 ceiling by 7 B (the
+// admission-owner machinery lives in web/bridge.js, still copied
+// verbatim). 493_000 → 494_000, the literal next thousand step per the
+// round-9 correction precedent; 993 B headroom at the local node 24
+// measurement. Rebase note (2026-11-14): the #833 toggle (+182 B desktop,
+// measured above) now rides this entry too; the 494_000 ceiling absorbs
+// it by subtraction, verified by a post-rebase clean build:ui.
+export const MAIN_ENTRY_BUDGET_BYTES = 494_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {

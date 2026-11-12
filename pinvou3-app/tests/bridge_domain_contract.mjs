@@ -15,7 +15,7 @@ export const desktopBridgeApi = {
   vllm: ['discoverLocalVllm'],
   multiAgent: ['listSubagentTranscripts', 'readSubagentTranscript'],
   models: ['deleteModel', 'getImageInputCapability', 'loadSessionModel', 'probeLocalServerKind', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
-  interaction: ['acceptPlan', 'cancelUserInput', 'confirmCodeYolo', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'getCodePermissionPrefs', 'inspectPinvou', 'planStuckGo', 'planStuckReplan', 'resolvePinvouReview', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
+  interaction: ['acceptPlan', 'cancelUserInput', 'confirmCodeYolo', 'decideApproval', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'getCodePermissionPrefs', 'getPendingApprovals', 'inspectPinvou', 'planStuckGo', 'planStuckGoAuto', 'planStuckReplan', 'resolvePinvouReview', 'setAskOnGuardrail', 'setDraftMode', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'setSessionMode', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'],
   remoteControl: ['refreshRemoteControlQr', 'revokeRemoteHostWorkspace', 'startRemoteControl', 'stopRemoteControl'],
   artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'openArtifactExternal', 'openContainingFolder', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
@@ -46,7 +46,15 @@ export const desktopOnlyBridgeApi = {
   voice: ['installVoiceAsr', 'setVoiceShortcutEnabled', 'syncVoiceShortcutRecording'],
   knowledge: ['downloadKbModel', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountRemoteCollection', 'removeRemoteCollection', 'setRemoteCollectionEnabled'],
   // 多智能体开关是桌面专属操作（ADR-0006）：Web 端只读呈现。
-  interaction: ['setMultiAgentMode'],
+  // tri-mode（plan/auto/yolo）安全模型：会话级守卫询问开关、审批卡决策与
+  // 挂起查询、plan-stuck 的 Auto 档继续——直连 Tauri 后端命令
+  // （set_ask_on_guardrail / decide_approval / get_pending_approvals），
+  // Web 端无对应决策面，保持桌面专属。setSessionMode 曾随之上列
+  // （评审 P2 前的「桌面专属」一刀切）：其 set_session_mode 命令本就在
+  // Web access-policy 白名单内，Web 桥现在同样暴露它——Auto→Yolo 的
+  // 逃生切换在 Web 必须可达（Auto 会话的发送门 otherwise 锁死浏览器
+  // 用户）；进入 Auto 仍由 ChatView 的 Web 门挡住（Web 面无法决策审批卡）。
+  interaction: ['decideApproval', 'getPendingApprovals', 'planStuckGoAuto', 'setAskOnGuardrail', 'setMultiAgentMode'],
   // Draft workspace selection needs the system directory dialog (TAURI.dialog)
   // and the create_session workspacePath parameter channel; the Web side has no
   // such backend, so ChatView's method-existence guard skips rendering the

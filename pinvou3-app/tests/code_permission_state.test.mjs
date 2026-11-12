@@ -51,6 +51,9 @@ try {
   assert.equal(nativeModeFallback({ last_mode: 'yolo', yolo_confirmed: true }), 'yolo', '跟随上次显式 mode');
   assert.equal(nativeModeFallback({ last_mode: 'plan', yolo_confirmed: true }), 'plan');
   assert.equal(nativeModeFallback({ last_mode: 'bogus', yolo_confirmed: false }), 'plan', '非法值兜底 Plan');
+  // tri-mode：全局默认接受 auto（逐项审批档），不塌回 Plan。
+  assert.equal(nativeModeFallback({ last_mode: 'auto', yolo_confirmed: true }), 'auto', '全局默认接受 auto');
+  assert.equal(nativeModeFallback({ last_mode: 'auto', yolo_confirmed: false }), 'auto', 'auto 与确认门无关，原样返回');
 
   // ── yolo 一次性确认门 ──────────────────────────────────────────
   assert.equal(needsYoloConfirmation(null), true, 'prefs 读取失败按未确认（安全方向）');
@@ -87,6 +90,13 @@ try {
     activeId: null, controlsSessionId: null, controlsMode: 'plan', draftMode: 'plan',
     prefs: { last_mode: 'yolo', yolo_confirmed: true },
   }), 'plan');
+  // tri-mode：auto 原样展示（会话实测 / 草稿暂存），不塌回 Plan 兜底。
+  assert.equal(resolveNativeModeValue({
+    activeId: 's1', controlsSessionId: 's1', controlsMode: 'auto', draftMode: null, prefs: null,
+  }), 'auto', '会话实测 auto 原样展示');
+  assert.equal(resolveNativeModeValue({
+    activeId: null, controlsSessionId: null, controlsMode: 'plan', draftMode: 'auto', prefs: null,
+  }), 'auto', '草稿暂存 auto 原样展示');
 
   // ── CodexAcpView.jsx 接线契约 ──────────────────────────────────
   // A staged model must remain visible throughout delayed activation. A late control
@@ -320,6 +330,107 @@ try {
   assert.match(view, /needsYoloConfirmation\(prefs\)/, '切 yolo 前过确认门');
   assert.doesNotMatch(view, /mountedId: null, mode: 'yolo'/, '不再写死 yolo 初始 mode');
   assert.doesNotMatch(view, /\|\| 'yolo'/, '不再有 || yolo 兜底');
+
+  // ── tri-mode：auto 目标永不弹一次性确认门（门只对 yolo）─────────────
+  // switchNativeMode 的确认门钉在 yolo 分支上（v3.5：不再绑定 isPlan——
+  // Auto→Yolo 直达同过一门，不再绕道 Plan）；auto 分支直调
+  // set_session_mode，不经门。取两个函数之间的源码切片做范围断言。
+  {
+    const gateBody = view.slice(
+      view.indexOf('async function switchNativeMode'),
+      view.indexOf('async function performNativeModeSwitch'),
+    );
+    assert.ok(gateBody.includes('async function switchNativeMode'), '切片必须命中 switchNativeMode');
+    assert.match(
+      gateBody,
+      /if \(target === 'yolo'\) \{[\s\S]*?needsYoloConfirmation\(prefs\)/,
+      '一次性确认门钉在 yolo 分支（对 plan/auto 来路一致生效）',
+    );
+    const performBody = view.slice(
+      view.indexOf('async function performNativeModeSwitch'),
+      view.indexOf('async function confirmPendingYoloSwitch'),
+    );
+    assert.match(
+      performBody,
+      /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,300}?\} else if \(target === 'yolo'\) \{[\s\S]{0,500}?invoke\('set_session_mode', \{ sessionId: sid, mode: 'yolo' \}\)/,
+      'Auto→Yolo 直达分支存在（旧代码缺失，Yolo 点击静默落空）',
+    );
+    assert.match(
+      performBody,
+      /\} else if \(target === 'auto'\)[\s\S]{0,1000}?invoke\('set_session_mode', \{ sessionId: sid, mode: 'auto' \}\)/,
+      'auto 目标直调 set_session_mode（后端热同步安全姿态），不弹确认门',
+    );
+    // round-19 评审 M1：web 草稿臂同样先拒 Auto 再暂存（草稿若放行会把
+    // lane 全局默认写成 auto，未来会话全部物化进 Web 发送门之后的死路，
+    // 与物化臂口径对齐）；Auto 菜单行在 Web 草稿态与物化态都置灰。
+    assert.match(
+      performBody,
+      /if \(!sid\) \{[\s\S]{0,700}?if \(target === 'auto' && isWeb\) return;[\s\S]{0,250}?stageDraftMode\(target\);/,
+      'web 草稿臂必须先拒 Auto 再 stageDraftMode（ChatView 草稿臂同款守卫）',
+    );
+    assert.match(
+      view,
+      /autoRowDisabled=\{!!isWeb\}/,
+      'Auto 菜单行在 Web 草稿态与物化态都置灰',
+    );
+    // 会话级「守卫命中时询问」开关：显式 sessionId 命令 + chip 接线。
+    assert.match(view, /invoke\('set_ask_on_guardrail', \{ sessionId: targetSessionId, enabled: Boolean\(enabled\) \}\)/,
+      '守卫询问开关走显式 sessionId 的 set_ask_on_guardrail');
+    assert.match(view, /askOnGuardrail=\{nativeAskOnGuardrail\}/, 'chip 传入会话归属保护下的展示值');
+    assert.match(view, /onToggleAskOnGuardrail=\{toggleNativeAskOnGuardrail\}/, 'chip 开关回调接线');
+    assert.match(view, /askOnGuardrail: modeState \? modeState\.ask_on_guardrail !== false : true/,
+      '控件权威读取按 default_true 缺省，旧后端无此键不把开关翻成关');
+    // round-9（PR #809 评审修复，chat 车道同约）：切会话弃置旧会话的 yolo
+    // 确认卡（确认卡属于弹门时的发起会话，不能被新会话顺手确认）；门在
+    // entry 捕获发起会话（M4）之外再钉来路档位（fromAuto）——确认按发起
+    // 命令族分派，exit_plan_to_yolo 与 set_session_mode('yolo') 今天等价，
+    // 钉住防两条路径日后静默分叉。
+    assert.match(
+      view,
+      /useEffect\(\(\) => \{[^}]*setPendingYoloSwitch\(null\);[^}]*\}, \[activeId\]\);/,
+      '切会话必须弃置旧会话的 yolo 确认卡（chat 车道弃置语义同约）',
+    );
+    assert.match(
+      view,
+      /setPendingYoloSwitch\(\{ draft: !activeId, sid: activeId \|\| null, fromAuto: !isPlan \}\)/,
+      '确认门捕获发起会话 sid 与来路档位（fromAuto 漂移守卫）',
+    );
+    assert.match(
+      view,
+      /performNativeModeSwitch\('yolo', \{ isPlan: !pending\.fromAuto \}, pending\.sid\)/,
+      '确认按来路命令族分派（Plan→exit_plan_to_yolo / Auto→set_session_mode）',
+    );
+    // round-10 parity 的钉缺口（round-11 评审）：codex 车道的确认卡代数纪律与
+    // chat 车道同构（chat 车道 6 钉、codex 车道 0 钉——删掉任一 guard 全套
+    // 测试保持绿）。钉住三件套：门开推进代数、切会话推进代数、确认回程
+    // 代数不匹配整单作废（不清对话框、不继续旧确认）。
+    assert.match(
+      view,
+      /pendingYoloDialogGenRef\.current \+= 1;\s*\n\s*setPendingYoloSwitch\(\{ draft: !activeId, sid: activeId \|\| null, fromAuto: !isPlan \}\)/,
+      '打开确认门必须推进对话框代数（genAtConfirm 捕获基线）',
+    );
+    assert.match(
+      view,
+      /useEffect\(\(\) => \{\s*\n\s*pendingYoloDialogGenRef\.current \+= 1;/,
+      '切会话必须推进对话框代数（弃置在途确认，chat 车道同约）',
+    );
+    assert.match(
+      view,
+      /const genAtConfirm = pendingYoloDialogGenRef\.current;[\s\S]{0,400}?if \(pendingYoloDialogGenRef\.current !== genAtConfirm\) return;/,
+      '确认回程代数不匹配必须整单作废（不清对话框、不继续旧确认）',
+    );
+    // round-31（zhuowp 5854578975 P2）：门内的偏好查询是异步的——查询在途时
+    // 切会话会推进代数并弃置确认卡（切会话弃置契约）。迟到回复必须在入口
+    // 按代次作废：首个 await 之前捕获代次，开卡或继续切换之前校验——离场
+    // 会话的迟到回复不得在其上重新弹卡（确认仍会武装备份离场会话），也不
+    // 得继续该会话的切换（确认回程栅栏覆盖 confirm 回复；此钉覆盖偏好回
+    // 复）。删除捕获或校验任一侧即红。
+    assert.match(
+      gateBody,
+      /const genAtEntry = pendingYoloDialogGenRef\.current;[\s\S]{0,300}?await refreshCodePermPrefs\(\);[\s\S]{0,200}?if \(pendingYoloDialogGenRef\.current !== genAtEntry\) return;/,
+      '偏好查询的迟到回复必须在开卡/继续切换前按入口代次作废（切会话弃置契约的入口孪生）',
+    );
+  }
 
   console.log('code_permission_state: ok');
 } finally {
