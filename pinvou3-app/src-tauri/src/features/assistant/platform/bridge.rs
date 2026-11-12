@@ -1874,6 +1874,11 @@ impl Pinvou3Bridge {
     /// does not fall back to the global `DEEPSEEK_API_KEY` env (that is the main model's override entry).
     /// Local vLLM/loopback no-auth scenarios return a placeholder key (the base requires a non-empty value).
     fn api_key_for_saved_model(model: &SavedModel) -> String {
+        // auth_mode="none" 的视觉模型与主路由同口径:跳过凭据读取,不把
+        // 残留的明文/钥匙串凭据发给免鉴权端点(见 `api_key()` 的同类短路)。
+        if Self::model_declares_no_auth(model) {
+            return String::new();
+        }
         let local_endpoint =
             model.preset == ModelPreset::LocalVllm || base_url_uses_loopback(&model.base_url);
         Self::credential_for_model(model, local_endpoint, "vision model")
@@ -6216,6 +6221,33 @@ mod tests {
         assert!(no_key.resolve_vision_model_config().is_none());
     }
 
+    /// auth_mode="none" 的视觉模型适用 rule-1 的免鉴权豁免:无凭据也不降级
+    /// image_analyze(免鉴权端点本就不需要凭据),且与主路由同口径跳过凭据
+    /// 读取——即使记录上残留明文 key 也不下发。
+    #[test]
+    fn vision_config_keeps_keyless_declared_model_registered() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        push_vision_model(&mut bridge, "vision-keyless", "gpt-4o", "residual-key");
+        bridge.prefs.advanced.saved_models[0].vision_model_id = Some("vision-keyless".to_string());
+        bridge.prefs.advanced.saved_models[1].auth_mode = Some("none".to_string());
+
+        let config = bridge
+            .resolve_vision_model_config()
+            .expect("免鉴权声明必须让视觉模型保持注册(不降级 image_analyze)");
+        assert_eq!(
+            config.api_key.as_deref(),
+            Some(""),
+            "免鉴权视觉模型不得下发任何凭据(即使记录残留明文 key)"
+        );
+    }
+
     /// §9.3 rule-1 vision-candidate capability caliber: a vision model's
     /// **own** override is not rejected at runtime — the selector already
     /// gates it with the image-recognition probe (only supported models can
@@ -10314,6 +10346,48 @@ mod tests {
             unsuppressed.engine_route_provider(),
             "openai",
             "gate and engine landing must agree under the pin"
+        );
+    }
+
+    /// The Responses named-custom table must carry the keyless declaration
+    /// too: `openai_responses` preset + auth_mode="none" →
+    /// `providers.<responses>.auth_mode = "none"` and an empty key (the
+    /// engine short-circuits key resolution; without the entry it would
+    /// still bail per-turn for unbound credentials on this wire).
+    #[test]
+    fn responses_named_table_carries_keyless_auth_mode() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut b = fixture_bridge();
+        set_active_model(
+            &mut b,
+            ModelPreset::OpenaiResponses,
+            "gpt-6-sol",
+            "https://gateway.example.test/v1",
+            "",
+        );
+        b.prefs.advanced.saved_models[0].auth_mode = Some("none".to_string());
+        assert!(!b.api_key_required(), "免鉴权声明必须放开 API Key gate");
+        let cfg = b.build_dt_config();
+        assert_eq!(cfg.provider.as_deref(), Some(RESPONSES_ROUTE_PROVIDER));
+        let table = cfg
+            .providers
+            .as_ref()
+            .and_then(|providers| providers.custom.get(RESPONSES_ROUTE_PROVIDER))
+            .expect("named responses table must be populated");
+        assert_eq!(
+            table.auth_mode.as_deref(),
+            Some("none"),
+            "免鉴权声明必须写进 Responses 命名自定义表"
+        );
+        assert_eq!(
+            table.api_key.as_deref(),
+            Some(""),
+            "免鉴权路由不得下发任何凭据"
         );
     }
 
