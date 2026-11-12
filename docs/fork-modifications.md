@@ -126,7 +126,7 @@
 | `e972a9a05` | T1/T2 | 引擎 route 输出预算对宿主暴露：新增公共只读包装供宿主查询各路线输出预算；纯增量、父仓透明 (#150) |
 | `5f15cce57` | T2 | todo 工具条目 status 默认值移出 required schema，恢复端可省略 status；相对上游的显式 fork-distinct schema 偏差，随本行登记 (#148) |
 | `78804c83e` | T2 | 保留终态错误的真实来源：内部 `TurnComplete` 增 `error_source: Option<TurnErrorSource>`（Model/Runtime 产方证据；不进线协议，parity 测试钉死 wire JSON 无该键）；父仓 forwarder 以 `error_source: _` 吸收 (#142) |
-| `37be2844f` | T3 | 残余模型面文案修复（2026-10-07 审计批次）：TUI 文案/工具描述/skills/fixtures 失实声明逐项更正；父仓透明 (#136) |
+| `37be2844f` | T3 | 残余模型面文案修复（2026-10-07 审计批次）：TUI 文案/工具描述/skills/fixtures 失实声明逐项更正；另携带三处行为变更——fim_edit 锚点歧义由静默取首选改为拒绝并报出现次数（新增 Prefix/SuffixAmbiguous 错误）、bundled skill 代际 12→13 强制刷新（legacy v4 正文按摘要退役）、commands 条目 schema 收紧 `additionalProperties: false`；父仓透明 (#136) |
 | `11cba403d` | deps | undici 7.30.1 与 msal-node 7.1.2 的 npm lock 内刷新，关闭 `pinvou3-clean` 当时全部 4 条 open Dependabot 高危告警；仅 lockfile，无 manifest 或源码改动（#135） |
 | `8a4719fd4` | T3 本地化 | 清扫 locale 包过时模式文案：补完 rail→workbar 改名的非英文一半（11 个语言包 88 个 rail 词键），补齐多月未随英文发布的 must-translate 键并新增缺失门禁；全部 value-only 替换，`en.json` 与基线逐字节一致（#134） |
 | `4e75c6a07` | T3 | fetch_url 工具描述移除失实的 "sandboxed" 声明：改写为注明 Bash 工具的沙箱策略可能拒绝出站网络，fetch_url 本身是进程内 HTTP 客户端；citation 与 login-wall 句保持不变（#133） |
