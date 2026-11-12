@@ -458,7 +458,11 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // record time (sid) instead of reading state.activeSessionId at fire time, so
 // the queued write cannot drift into a session the user switched to while the
 // chain was pending (r5 m6 fix); the invoke/listen command set is unchanged.
-const expectedSharedBaseHash = '26c590a7fff0b912eeacb4bf60028211be302fc965da4a484342369f2806b28f';
+// Recomputed for the keyless-probe-posture wave: the test_model_connection /
+// test_image_input_capability invokes gained the form's noAuth posture arg
+// (the backend probe ladder must skip the saved-credential fallback while the
+// keyless declaration is active).
+const expectedSharedBaseHash = 'a8f7fb4ba64b2869897a9332995a5eeb6dd7ca38a3b3eedf54d7a06daae7eca4';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
