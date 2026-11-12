@@ -352,7 +352,7 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     // 召唤审核读的是 workspace 内任意被指名的文件，多 GiB 文件整读进内存
     // 是纯内存尖峰（r4 review）。超硬读界的产物不杀死整个召唤，按「部分
     // 展示 + 明示」同一口径截断并在标注里写明。
-    let hard_cap = crate::app::commands::artifacts::MAX_ARTIFACT_TEXT_BYTES;
+    let hard_cap = crate::features::files::MAX_ARTIFACT_TEXT_BYTES;
     let mut bytes = Vec::new();
     {
         use std::io::Read;
