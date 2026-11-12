@@ -57,6 +57,134 @@ for (const settingsI18nSource of settingsI18nSources) {
     'chat streaming fade-in copy must be provided in every UI language',
   );
 }
+// Virtual-display preference row wiring (the R10 review: the row had no
+// rendering pin — a revert of the exact-equality capability gate or of the
+// preference binding passed every other test). The switch binds to the
+// PERSISTED preference (`virtualPref`), never to the derived state; while
+// the projection is unknown the switch renders disabled AND unchecked.
+assert.match(
+  settingsViewSource,
+  /checked=\{virtualUnknown \? false : virtualPref\}/,
+  'the virtual switch must bind to the persisted preference with the unknown-projection fail-neutral (not to the derived state)',
+);
+assert.doesNotMatch(
+  settingsViewSource,
+  /checked=\{[^}]*virtualDisplayState/,
+  'the virtual switch must never bind to the derived virtualDisplayState (a live session with the pref off must show the switch OFF)',
+);
+// Per-platform fidelity note rows: gated on the three-valued semantic
+// capability with EXACT equality — a truthy check would render the row for
+// unknown/absent capability values and unqualify the page.
+for (const notePlatform of ['windows', 'macos', 'linux']) {
+  assert.match(
+    settingsViewSource,
+    new RegExp(`platformCapabilities\\?\\.virtualDisplayNote === '${notePlatform}'`),
+    `the ${notePlatform} fidelity note row must gate on exact-equality of the virtualDisplayNote capability`,
+  );
+}
+// The "unavailable" status renders the localized lead line followed by the
+// backend's diagnostic detail (the install guidance must stay visible — the
+// guard passes "unavailable" through for live physical sessions precisely
+// so this branch keeps rendering during a session on a probe-red host).
+assert.match(
+  settingsViewSource,
+  /virtualUnavailable \? \(\s*<span className="block mt-0\.5">\s*<span className="block">\{t\.uiComputerUse\.virtualStateUnavailableLead\}<\/span>\s*\{virtualDetail &&/,
+  'the unavailable status branch must render the localized lead line and the backend detail (install guidance)',
+);
+// R11 + R12: the live-physical hint. A live PHYSICAL session with the
+// preference flipped ON mid-session used to render the "disabled" copy
+// ("Off —") next to a switch showing ON — the R11 fix replaced that copy
+// with a dedicated line, but the line's trailing clause promised future
+// isolation unconditionally, which is FALSE under an OFF switch and next
+// to the "no isolated display available" lead. R12 splits the copy into
+// the always-true FACT and a promise gated on the strict pref projection:
+// the "Off —" copy is replaced by fact+promise ONLY on a pref-ON leg,
+// appended as the fact on pref-OFF legs, and "unavailable" never promises.
+// Fail-neutral on both strict boolean projections.
+assert.match(
+  settingsViewSource,
+  /physicalSessionLive=\{computerUse\.physicalSessionLive\}/,
+  'the status-lines component must receive the raw status field',
+);
+assert.match(
+  settingsViewSource,
+  /preferVirtual=\{computerUse\.preferVirtualDisplay\}/,
+  'the status-lines component must receive the raw persisted preference (R12: the future-isolation promise is gated on it)',
+);
+assert.match(
+  settingsViewSource,
+  /const physicalLive = physicalSessionLive === true;/,
+  'the live-physical line must bind the strict boolean projection (fail-neutral against an older backend)',
+);
+assert.match(
+  settingsViewSource,
+  /const promiseIsolated = preferVirtual === true;/,
+  'the future-isolation promise must gate on the STRICT preference projection — promising isolation requires backend truth, not the switch\'s `!== false` default',
+);
+assert.match(
+  settingsViewSource,
+  /const replaceDisabledLine = virtualState === 'disabled' && physicalLive && promiseIsolated;/,
+  'only a pref-ON live-physical "disabled" leg may replace the "Off —" copy (the R11 artifact); a pref-OFF leg keeps the true "Off —" copy and appends the fact',
+);
+assert.match(
+  settingsViewSource,
+  /const showPromise =\s*\n\s*promiseIsolated && physicalLive && \(replaceDisabledLine \|\| virtualState === 'active'\);/,
+  'the promise must ride ONLY a pref-ON leg that can deliver it — never "unavailable" (the probe is down there) and never a pref-OFF "disabled" leg',
+);
+// R13: the FACT is true whenever a physical session is live — gating it on
+// `!replaceDisabledLine` rendered the promise ALONE in the replace-disabled
+// leg (pref flipped ON mid-session), hiding the "session on the real
+// screen" line the R11/R12 arc exists to keep visible. The regex below
+// fails both on the old gate and on any re-narrowing of it.
+assert.match(
+  settingsViewSource,
+  /const showFact = physicalLive;/,
+  'the live-physical FACT must render in every leg where a physical session is live — the replace-disabled leg must show fact + promise, not the promise alone',
+);
+assert.match(
+  settingsViewSource,
+  /virtualUnavailable \? \(\s*<span className="block mt-0\.5">\s*<span className="block">\{t\.uiComputerUse\.virtualStateUnavailableLead\}<\/span>\s*\{virtualDetail && <span className="block">\{virtualDetail\}<\/span>\}\s*\{physicalLive &&/,
+  'the unavailable branch must append the (fact-only) live-physical line when a physical session runs',
+);
+// R15: the fact survives the WRITE ERROR — a failed preference write used
+// to replace ALL status lines, suppressing the "session on the real
+// screen" fact while a physical session kept driving. The error branch
+// must render the fact line (bounded gap tolerates the explanatory
+// comment) before the error text.
+assert.match(
+  settingsViewSource,
+  /virtualError \? \(\s*<span className="block mt-0\.5">[\s\S]{0,400}\{showFact && \(\s*<span className="block">\{t\.uiComputerUse\.virtualStatePhysicalLive\}<\/span>\s*\)\}/,
+  'a failed preference write must not suppress the live-physical fact — the error branch renders the fact above the error text',
+);
+// R12 negative pin: the R11 single-line shape promised isolation
+// unconditionally ("the isolated display applies to new sessions") — the
+// over-claim must stay gone from every language, in both directions of a
+// revert (restoring the old English sentence or re-merging the promise
+// into the fact key).
+for (const settingsI18nSource of settingsI18nSources) {
+  assert.match(
+    settingsI18nSource,
+    /virtualStatePhysicalLive:/,
+    'every language must carry the live-physical fact copy',
+  );
+  assert.match(
+    settingsI18nSource,
+    /virtualStatePhysicalNextVirtual:/,
+    'every language must carry the gated future-isolation promise copy',
+  );
+  assert.ok(
+    !settingsI18nSource.includes('applies to new sessions'),
+    'the unconditioned R11 promise sentence must stay gone (en)',
+  );
+  assert.ok(
+    !settingsI18nSource.includes('隔离显示器将用于新会话'),
+    'the unconditioned R11 promise sentence must stay gone (zh)',
+  );
+  assert.ok(
+    !settingsI18nSource.includes('隔離ディスプレイは新しいセッションで有効になります'),
+    'the unconditioned R11 promise sentence must stay gone (ja)',
+  );
+}
 // Legacy handleDetect auto-fill path is deleted; only handleLocalDetect remains.
 assert.strictEqual(
   settingsViewSource.indexOf('async function handleDetect()'),
@@ -274,6 +402,25 @@ function injectSource() {
           taskCompletionNotificationsDefault: true,
           voiceShortcutNative: true,
         });
+        // R16: the computer-use settings section now EXECUTES in this smoke
+        // (previously it had only source-regex pins). The capability object
+        // above deliberately carries no virtualDisplayNote, so the
+        // unknown-platform honesty note must render next to the absolute
+        // hint. NB: this whole mock is a template literal — no backticks
+        // may appear in comments here.
+        case 'computer_use_get_status': return Promise.resolve({
+          enabled: true,
+          stopped: false,
+          platform_supported: true,
+          pending_confirm: null,
+          virtual_display_state: 'ready',
+          virtual_display_detail: null,
+          prefer_virtual_display: true,
+          physical_session_live: false,
+          session_display_target: null,
+        });
+        case 'computer_use_set_enabled': return Promise.resolve(null);
+        case 'computer_use_set_virtual_display_preference': return Promise.resolve(null);
         case 'get_settings': return Promise.resolve(settings);
         case 'update_settings':
           settings = Object.assign({}, settings, args.patch || {});
@@ -2362,6 +2509,43 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑱ 小窗口设置弹窗随窗口收缩且标签不竖排', Object.values(responsiveSettings).every(Boolean), JSON.stringify(responsiveSettings));
+
+  // R16: the computer-use settings section finally EXECUTES (the row
+  // previously had only source-regex pins). The capability mock carries no
+  // `virtualDisplayNote`, so the unknown-platform honesty note must render
+  // next to the absolute isolation hint (the M9 shape: the hint never
+  // stands on the page unqualified), and the switch must bind the
+  // persisted preference from the status payload (ON and clickable — the
+  // fail-neutral "unknown" default would render it disabled).
+  // The computer-use block renders inside the permissions/environment
+  // section (it is not a sidebar section of its own; renderPermissions
+  // hosts it next to the dependency-installer block).
+  await clickSettingsSection(page, '权限与环境');
+  await sleep(250);
+  const computerUseSection = await page.evaluate(() => {
+    const text = document.body.textContent || '';
+    // The virtual-display toggle row: the smallest div that mentions the
+    // row label AND contains a switch. Its aria-checked state must mirror
+    // the status payload's persisted preference (prefer_virtual_display:
+    // true in the mock), not the fail-neutral "unknown" default (which
+    // would render it off and disabled).
+    const rows = [...document.querySelectorAll('div')]
+      .filter(node => (node.textContent || '').includes('优先使用隔离的虚拟显示器'))
+      .filter(node => node.querySelector('[role="switch"]'))
+      .sort((a, b) => a.textContent.length - b.textContent.length);
+    const row = rows[0];
+    const sw = row && row.querySelector('[role="switch"]');
+    return {
+      toggleRow: !!row,
+      switchBoundOn: sw ? sw.getAttribute('aria-checked') === 'true' : false,
+      switchEnabled: sw ? sw.getAttribute('disabled') === null : false,
+      absoluteHint: text.includes('画面不会出现在你的屏幕上'),
+      readyState: text.includes('隔离显示器可用'),
+      unknownNote: text.includes('无法验证此平台的隔离限制'),
+      statusCalled: (window.__SETTINGS_TEST__.calls || []).some(c => c.cmd === 'computer_use_get_status'),
+    };
+  });
+  rec('⑱.5 电脑使用设置区真实渲染且无能力时显示诚实说明', Object.values(computerUseSection).every(Boolean), JSON.stringify(computerUseSection));
 
   await page.mouse.click(8, 8);
   await page.waitForFunction(() => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat', { timeout: 8000 });

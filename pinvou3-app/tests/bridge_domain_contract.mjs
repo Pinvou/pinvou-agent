@@ -36,7 +36,7 @@ export const desktopBridgeApi = {
   // Computer use drives the local machine: the desktop backend exposes it, the
   // web surface carries only rejecting stubs (the RPC allowlist excludes the
   // commands entirely, same policy as browser:*).
-  computerUse: ['confirm', 'deny', 'grant', 'permissionStatus', 'refreshStatus', 'requestPermissions', 'revoke', 'setEnabled', 'stop'],
+  computerUse: ['confirm', 'deny', 'grant', 'permissionStatus', 'refreshStatus', 'requestPermissions', 'revoke', 'setEnabled', 'setVirtualDisplayPreference', 'stop'],
 };
 
 // These methods intentionally depend on desktop lifecycle or local machine
