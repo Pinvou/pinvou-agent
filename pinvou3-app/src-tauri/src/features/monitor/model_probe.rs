@@ -251,8 +251,13 @@ async fn snapshot_for_model_config(
     // applies with probed=None) must keep filling the monitor card and the
     // progress-bar denominator while the engine is unreachable. Only these
     // early returns dropped the declaration (reported: local vLLM down →
-    // 上下文长度 stuck at "—" although the model form declares the window);
-    // the remote arms fall through to the happy path and already keep it.
+    // 上下文长度 stuck at "—" although the model form declares the window).
+    // Scope: the two offline arms are `target_kind == "local"`-gated, so
+    // keyless remote targets fall through to the happy path and already
+    // kept the declaration; the auth_failed arm has no target_kind gate —
+    // any probed target (a remote one with a rejected key included) took
+    // it too, which is why the window is computed before the probe and
+    // applied at all three returns.
     let (early_exit_window, early_exit_window_inferred) = probeless_display_window(
         configured_context,
         target_kind,
@@ -1475,6 +1480,24 @@ mod tests {
         assert_eq!(http_diag.code, "models_http_error");
         assert_eq!(http_diag.http_status, Some(500));
         assert!(http_diag.transport.is_none());
+        // This exit keeps the context window too: undeclared here, the
+        // preset fallback fills it and carries the honesty notice
+        // (LocalVllm's 262,144 for names the resolution chain does not
+        // know) — the same unified precedence as the other two early
+        // exits.
+        assert_eq!(
+            http_err.max_model_len,
+            Some(262_144),
+            "the fallback window must survive the models_http_error early-exit"
+        );
+        assert!(
+            http_err
+                .notices
+                .iter()
+                .any(|d| d.code == "context_window_inferred"),
+            "an inferred window must carry the honesty notice: {:?}",
+            http_err.notices
+        );
 
         // 401 with a key → auth_failed; the verdict is the answer, so no
         // refinement diagnostic rides along.
@@ -1546,7 +1569,9 @@ mod tests {
     /// (connection refused — the monitor's normal idle state) must still
     /// display the user-declared window instead of blanking the context card
     /// (reported: 上下文长度 stuck at "—" whenever the local vLLM was down).
-    /// The auth_failed verdict must not drop it either. Without a declaration
+    /// The auth_failed verdict must not drop it either, and neither may a
+    /// plain local HTTP error from the engine (503 while it restarts).
+    /// Without a declaration
     /// the inference/preset fallback fills the window and carries the
     /// `context_window_inferred` notice, same as the happy path.
     #[tokio::test]
@@ -1599,6 +1624,35 @@ mod tests {
             auth.max_model_len,
             Some(262_144),
             "the declared window must survive the auth_failed early-exit"
+        );
+
+        // models_http_error (a local target served a non-401/403 HTTP
+        // status, e.g. 503 while the engine restarts): the same declaration
+        // survives the third early-exit verbatim, still not flagged
+        // inferred.
+        let mock = models_mock::spawn(&[("/models", 503, "unavailable".into())]);
+        let http_err = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            Some(262_144),
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(http_err.health_status, HealthStatus::Offline);
+        assert_eq!(
+            http_err.max_model_len,
+            Some(262_144),
+            "the declared window must survive the models_http_error early-exit"
+        );
+        assert!(
+            http_err
+                .notices
+                .iter()
+                .all(|d| d.code != "context_window_inferred"),
+            "a declared window is not inferred: {:?}",
+            http_err.notices
         );
 
         // Without a declaration the preset fallback fills the window and the
