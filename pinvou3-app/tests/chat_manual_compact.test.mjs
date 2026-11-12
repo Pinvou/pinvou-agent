@@ -173,7 +173,7 @@ assert.match(chatViewSource, /if \(!sid \|\| manualCompactActive \|\| compacting
 // 命令只入队即返回：sid 必须在调用点捕获（切会话后错误仍落到原会话）；
 // 手动标记必须在 invoke 前置位且紧邻 try——入队到桥接 start 接管之间
 // 按钮不得复位，否则双击会重复入队压缩。
-assert.match(chatViewSource, /const sid = activeSessionId;\s*if \(!sid[\s\S]*?setManualCompact\(\{ sid, at: Date\.now\(\) \}\);\s*try \{/, 'sid 必须在 invoke 前捕获，手动标记置位紧邻 invoke');
+assert.match(chatViewSource, /const sid = activeSessionId;\s*if \(!sid[\s\S]*?setManualCompact\(\{ sid, at: Date\.now\(\), itemsAt: maxItemId \}\);\s*try \{/, 'sid 必须在 invoke 前捕获，手动标记（含条目 id 快照）置位紧邻 invoke');
 assert.match(chatViewSource, /invokeTauri\('compact_now', \{ sessionId: sid \}\)/, '压缩命令与参数形状');
 // 按会话 keying（ChatView 切会话不 remount）：布尔会在 A 入队中误禁 B。
 assert.match(chatViewSource, /const \[manualCompact, setManualCompact\] = useState\(null\);/, '手动入队状态必须按会话记录（{sid, at}）');
@@ -190,10 +190,22 @@ assert.match(chatViewSource, /setManualCompact\(current => \(current && current\
 // 接管还必须要求标记新鲜：终态丢失的过期条目会滞留到删除/驱逐才清，
 // 按"存在即接管"会让重试点击刚置位的新标记被旧条目立即释放——
 // 新 start 落地前入口提前复位，快速二连击重复入队压缩。
-assert.match(chatViewSource, /const takeoverFlagAt = manualCompact && compactingMap \? compactingMap\[manualCompact\.sid\] : 0;\s*if \(takeoverFlagAt && Date\.now\(\) - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS\) \{[\s\S]{0,300}setManualCompact\(current => \(current && current\.sid === manualCompact\.sid \? null : current\)\);/, '桥接 start 写入新鲜标记时必须立即释放手动标记（与会话激活无关）；过期条目不得接管，否则重试标记被旧条目提前释放、重开双击窗口');
+// 接管有两条独立释放路径，都必须钉住：
+// (a) 桥接标记存在且新鲜——常规路径；过期条目不得接管（重试标记被旧条目
+//     提前释放会重开双击窗口），与会话激活无关（后台完成的压缩）。
+assert.match(chatViewSource, /const flagTookOver = !!\(takeoverFlagAt && Date\.now\(\) - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS\);/, '桥接 start 写入新鲜标记时必须立即释放手动标记（与会话激活无关）；过期条目不得接管，否则重试标记被旧条目提前释放、重开双击窗口');
+// (b) start 系统项兜底——start 与终态同一 React 批次到达（秒败压缩）时，
+//     桥接标记从未在任何渲染中出现过，路径 (a) 永远看不到它；start 系统项
+//     是追加式投影，合批后的最终快照仍含它。三要素缺一不可：以点击快照
+//     为界（旧 start 不得释放新标记）、只扫本会话（chatItems 是激活会话
+//     的投影）、只认 start 相位（done/fail/cancel 项不带该标记）。
+assert.match(chatViewSource, /itemsAt: maxItemId/, '点击必须快照条目 id 上界（界定"点击后新出现的 start 项"）');
+assert.match(chatViewSource, /item\.id > manualCompact\.itemsAt/, 'start 项兜底必须以点击快照为界（旧 start 不得释放新标记）');
+assert.match(chatViewSource, /item\.type === 'system' && item\.compactPhase === 'start'/, 'start 系统项兜底释放必须钉住（start 与终态合批时桥接标记从未出现，只能靠它释放）');
 // 释放 effect 的依赖数组必须钉住：缺 compactingMap 会漏掉桥接标记变化，
-// 缺 manualCompact 会闭包旧标记、清错会话。
-assert.match(chatViewSource, /\}, \[compactingMap, manualCompact\]\);/, 'start 接管释放 effect 必须声明 [compactingMap, manualCompact] 依赖');
+// 缺 manualCompact 会闭包旧标记、清错会话，缺 chatItems/activeSessionId
+// 会让系统项兜底在合批渲染里看不到新 start 项。
+assert.match(chatViewSource, /\}, \[compactingMap, manualCompact, chatItems, activeSessionId\]\);/, 'start 接管释放 effect 必须声明 [compactingMap, manualCompact, chatItems, activeSessionId] 依赖');
 // 兜底自愈必须主动触发：入口禁用期间排到期 tick，完全空闲的应用（无任何
 // 无关 notify、被禁按钮点击不产生渲染）也要能在 15 分钟边界恢复按钮。
 assert.match(chatViewSource, /if \(!ctxCompactInFlight\) return;[\s\S]{0,500}setCompactHealTick\(current => current \+ 1\)/, '入口禁用期间必须排兜底到期 tick（自愈不能只靠被动重渲染）');

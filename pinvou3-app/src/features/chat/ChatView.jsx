@@ -1215,12 +1215,33 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // 接管还要求标记新鲜：终态丢失的过期条目要滞留到该会话被删除/
         // 驱逐才清，若按"存在即接管"，重试点击刚置位的新标记会被旧条目
         // 立即释放——新 start 落地前入口提前复位，快速二连击会重复入队。
+        // 接管匹配该会话任一新鲜 start，不区分 auto/manual：点击经 busy
+        // 事件延迟的竞态落进轮中时，入队的手动压缩可能与轮内自动压缩交叠，
+        // 自动 start 会提前释放手动标记、重开重复入队窗口——代价（一次
+        // 重复压缩，pool 无入队去重）与已披露的单槽覆盖窗口同级，接受；
+        // 按 compact id 关联需改双端字节钉住的监听体并重算协议摘要，得不
+        // 偿失（round-6 review M-2，记录取舍不修）。
+        // start 与终态同一 React 批次到达（秒败压缩，如 provider 立刻 401）
+        // 时，桥接标记从未出现在任何一次渲染里，上面的存在性接管永远看不
+        // 到它；而 start 系统项是追加式投影（itemId 单调递增；prune-only
+        // 合并会移除 start 项，该残留由 TTL 兜底），合批后的最终快照仍含
+        // 它——按"点击快照之后新出现的 start 系统项"兜底释放，秒败也不把
+        // 按钮钉满一轮 TTL（round-6 review M-1）。
         const takeoverFlagAt = manualCompact && compactingMap ? compactingMap[manualCompact.sid] : 0;
-        if (takeoverFlagAt && Date.now() - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS) {
+        const flagTookOver = !!(takeoverFlagAt && Date.now() - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS);
+        let itemTookOver = false;
+        if (!flagTookOver && manualCompact && manualCompact.sid === activeSessionId) {
+          for (let i = chatItems.length - 1; i >= 0; i--) {
+            const item = chatItems[i];
+            if (!item || !(item.id > manualCompact.itemsAt)) break; // id 单调，越过点击快照即可停
+            if (item.type === 'system' && item.compactPhase === 'start') { itemTookOver = true; break; }
+          }
+        }
+        if (flagTookOver || itemTookOver) {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- 与 RightDock 的 stale-permit 撤销同款：start 接管后必须同步释放手动标记，否则终态清掉桥接标记后手动标记会复活、按钮被无谓多禁一轮 TTL
           setManualCompact(current => (current && current.sid === manualCompact.sid ? null : current));
         }
-      }, [compactingMap, manualCompact]);
+      }, [compactingMap, manualCompact, chatItems, activeSessionId]);
       // 兜底自愈的主动触发：入口禁用期间排一个到期 tick，完全空闲的应用也能在
       // 15 分钟边界恢复按钮——否则终态丢失时要等下一次无关 notify 才重渲染，
       // 而被禁用按钮的点击本身不产生渲染，会一直停在假"压缩中"。压缩在途
@@ -1240,7 +1261,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const handleManualCompact = useCallback(async () => {
         const sid = activeSessionId;
         if (!sid || manualCompactActive || compactingActive || busy) return;
-        setManualCompact({ sid, at: Date.now() });
+        // 快照点击时的条目 id 上界：start 系统项兜底释放以此界定"点击之后
+        // 新出现的 start"（itemId 全桥单调递增，跨压缩/跨条目可比）。
+        const maxItemId = chatItems.reduce((max, item) => ((item && item.id > max) ? item.id : max), 0);
+        setManualCompact({ sid, at: Date.now(), itemsAt: maxItemId });
         try {
           await invokeTauri('compact_now', { sessionId: sid });
         } catch (err) {
@@ -1252,7 +1276,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // 失败即清：成功路径保持置位，直到桥接层 start 接管（effect）。
           setManualCompact(current => (current && current.sid === sid ? null : current));
         }
-      }, [manualCompactActive, compactingActive, busy, activeSessionId, flashQueuedNotice, t]);
+      }, [manualCompactActive, compactingActive, busy, activeSessionId, chatItems, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
