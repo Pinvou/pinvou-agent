@@ -2,7 +2,7 @@
 // 主车道手动压缩入口（ctx 用量行按钮）的契约测试：
 //   1. 行为层（vm 驱动 tauri chat-events 监听器）：chat:compaction start→终态
 //      维护 state.compactingSessions 在途标记；done 的 post_tokens 是压缩后
-//      准确占用（forwarder 为刷新用量条而加），先于 dirty guard 消费。
+//      占用的保守估计（forwarder 为刷新用量条而加），先于 dirty guard 消费。
 //   2. 源码契约层：ChatView 按钮守卫（busy/compacting/按会话入队）、
 //      session_engine_not_running 本地化映射、web 双端同改、i18n 每语言恰一份。
 // 复用 chat_usage_context_window.test.mjs 的 vm 装置。
@@ -140,6 +140,12 @@ for (const [label, section] of [['tauri', tauriCompaction], ['web', webCompactio
   assert.ok(section.includes('state.tokens = { input: postTokens, max: state.tokens.max };'), `${label}: 必须把 post_tokens 写入用量条`);
   assert.ok(section.includes('postTokens <= state.tokens.max'), `${label}: post_tokens 超窗守卫保留`);
 }
+// 双端同改的强约束：两条注册体从 listen 标记到 post_tokens 块尾必须逐字节
+// 一致——web 侧漂移不再只依赖上面 4 条字符串 pin 的间接覆盖。
+const compactionSpanTail = '        notify();\n      }\n    }';
+const spanToPostTokensTail = section => section.slice(0, section.indexOf(compactionSpanTail) + compactionSpanTail.length);
+assert.equal(spanToPostTokensTail(tauriCompaction), spanToPostTokensTail(webCompaction),
+  'tauri/web 压缩注册体公共前缀必须逐字节一致（标记维护 + post_tokens 消费双端同改）');
 
 // ── 桥接状态接线：字段进切片、两端 state 声明、删除/驱逐同清、驱逐保护 ──
 const sharedSource = read('src', 'shared', 'bridge-shared-helpers.js');
@@ -166,9 +172,15 @@ assert.match(chatViewSource, /invokeTauri\('compact_now', \{ sessionId: sid \}\)
 assert.match(chatViewSource, /const \[manualCompact, setManualCompact\] = useState\(null\);/, '手动入队状态必须按会话记录（{sid, at}）');
 assert.match(chatViewSource, /compactingStartedAt && Date\.now\(\) - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS/, '桥接在途标记必须按 15 分钟兜底自愈（镜像 MAX_COMPACTION_LATCH_AGE）');
 assert.match(chatViewSource, /manualCompact\.sid === activeSessionId\s*&& Date\.now\(\) - manualCompact\.at < COMPACTING_FLAG_MAX_AGE_MS/, '手动标记同样受兜底时限约束');
+// 兜底时限常量值必须钉死（上面的 pattern pin 对值不敏感）：改成长期值会让
+// 丢失终态的入口多禁一轮，改成 0 会让双击防护失效，且与驱逐保护的 15 分钟失同步。
+assert.ok(chatViewSource.includes('const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000'),
+  'ChatView 兜底时限常量值必须与 Rust MAX_COMPACTION_LATCH_AGE（15 分钟）钉死一致');
 assert.match(chatViewSource, /setManualCompact\(current => \(current && current\.sid === sid \? null : current\)\);/, '失败复位必须校验会话身份');
-// 桥接层 start 接管禁用后必须释放手动标记（身份校验，只清本会话）。
-assert.match(chatViewSource, /if \(compactingActive && activeSessionId\) \{[\s\S]{0,220}setManualCompact\(current => \(current && current\.sid === activeSessionId \? null : current\)\);/, '桥接 start 接管时必须释放手动标记');
+// 桥接层 start 写入该会话标记后必须立即释放手动标记（身份校验，只清本会话）；
+// 不得以"该会话处于激活"为前提——压缩在后台完成时 effect 看不到
+// compactingActive，残留的手动标记会把按钮多禁一轮 TTL 并显示假"压缩中"。
+assert.match(chatViewSource, /if \(manualCompact && compactingMap && compactingMap\[manualCompact\.sid\]\) \{[\s\S]{0,300}setManualCompact\(current => \(current && current\.sid === manualCompact\.sid \? null : current\)\);/, '桥接 start 写入标记时必须立即释放手动标记（与会话激活无关）');
 // 引擎懒启动错误映射：裸错误链不得直接露出（与代码车道 nativeCompactInactive 同款）。
 assert.match(chatViewSource, /raw\.includes\('session_engine_not_running'\) \? t\.uiCodex\.nativeCompactInactive : raw/, '引擎未运行必须映射本地化文案');
 assert.ok(!chatViewSource.includes('compactFailNotice'), '失败文案必须复用 uiCodex.compactFail，不得新开重复 key');
