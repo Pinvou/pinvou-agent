@@ -1351,6 +1351,8 @@ mod tests {
             );
 
             // 清空仍是桌面端动作：空值清掉字段，而不是被守卫拦下。
+            // 纯空白值与空值同义（SettingsView 在发送前先 trim），一并钉住
+            // (r5 review: 之前只钉了空串那条腿)。
             let cleared = tauri::async_runtime::block_on(update_memory_profile(
                 crate::features::memory::ProfilePatch {
                     call_name: Some(String::new()),
@@ -1368,6 +1370,16 @@ mod tests {
                     .call_name,
                 ""
             );
+            let cleared_by_whitespace = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    call_name: Some("   ".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect("a whitespace-only value is clear-intent, not a wipe refusal");
+            assert_eq!(cleared_by_whitespace.profile.identity.call_name, "");
         });
     }
 }
