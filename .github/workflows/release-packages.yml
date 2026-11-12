@@ -229,8 +229,11 @@ jobs:
           # steps below carry the same policy via a pointer comment.
 
       - name: 安装前端依赖
-        working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        working-directory: pinvoy3-app
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       # build.js 自动注入 config/platforms/linux overlay,并自动准备 codex bridge。
       # 只打 deb(config overlay 的 targets 也只列了 deb)。
@@ -385,8 +388,11 @@ jobs:
           # test_release_cache_policy.
 
       - name: 安装前端依赖
-        working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        working-directory: pinvoy3-app
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       # 连接器 CLI 不在构建期下载或打入安装包；用户首次连接时，应用按
       # connectors.lock.json 在线下载、校验并安装到用户目录。
@@ -583,8 +589,11 @@ jobs:
           # test_release_cache_policy.
 
       - name: 安装前端依赖
-        working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        working-directory: pinvoy3-app
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       # 全流程编排(scripts/ci-build-linux-loongarch64.sh,每步失败即停):
       # knowledge server 交叉 cargo build → SenseVoice 引擎交叉 cmake →
@@ -734,8 +743,11 @@ jobs:
           # test_release_cache_policy.
 
       - name: 安装前端依赖
-        working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        working-directory: pinvoy3-app
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       - name: 初始化 Windows 独立运行时
         working-directory: pinvou3-app
@@ -865,8 +877,11 @@ jobs:
           # test_release_cache_policy.
 
       - name: 安装前端依赖
-        working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        working-directory: pinvoy3-app
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       - name: 构建 dmg
         working-directory: pinvou3-app

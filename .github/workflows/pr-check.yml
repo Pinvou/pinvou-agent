@@ -667,9 +667,10 @@ jobs:
 
       - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
         run: |
-          # Bounded like the Rust-side installer (PIP_INSTALL_ATTEMPT_TIMEOUT):
-          # a wedged PyPI connection must fail the leg, not eat the job window.
-          timeout 1800 python3 -m pip install --quiet python-pptx python-docx
+          # Per-leg bound sized UNDER this job's 10-minute cap (1800s is the
+          # end-user installer value, which a 600s job can never honor): a
+          # wedged PyPI connection fails the leg, not the job.
+          timeout --kill-after=15 300 python3 -m pip install --quiet python-pptx python-docx
           fail=0
           for t in pinvou3-app/resources/mcp-servers/*/test_*.py; do
             [ -f "$t" ] || continue
@@ -718,15 +719,19 @@ jobs:
 
       - name: 安装前端依赖
         run: |
-          # Bounded like the pip lane (a wedged registry fails the leg, not the
-          # job window).
-          timeout 1800 npm ci --prefer-offline --no-audit
+          # Per-leg bound sized UNDER this job's 25-minute cap so a wedged
+          # registry fails the leg, not the job window (1800s would never
+          # fire here).
+          timeout --kill-after=15 600 npm ci --prefer-offline --no-audit
 
       # test:webui smoke (本 job 末尾) 会 spawn remote-control-relay/server.js,
       # 其顶层 require('ws') 解析自 remote-control-relay/node_modules,故必须装 relay 依赖。
       - name: 安装 Remote relay 依赖 (供 test:webui smoke)
         if: ${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
-        run: npm --prefix ../remote-control-relay ci --prefer-offline --no-audit
+        run: |
+          # Same wedged-registry class as the lane above; the relay tree is
+          # small, so 300s stays far under the job cap.
+          timeout --kill-after=15 300 npm --prefix ../remote-control-relay ci --prefer-offline --no-audit
 
       - name: ESLint (含 pet 缺失项,现已全覆盖)
         run: npm run lint:ui
@@ -1430,14 +1435,16 @@ jobs:
 
       - name: relay 依赖 (真实 relay e2e)
         if: ${{ github.event_name != 'push' }}
-        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+        # Wedged-registry bound (job cap is 120 minutes; 300s always fires first).
+        run: timeout --kill-after=15 300 npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
       - name: 浏览器驱动依赖 (真实 Chrome 下载 e2e)
         if: ${{ github.event_name != 'push' }}
         # real-browser driver 从 pinvou3-app/node_modules 加载 puppeteer-core。
         # npm --prefix pinvou3-app install 即使指定单包也会解析并安装项目完整依赖树，
         # 因此直接用 package-lock 驱动的 npm ci，避免额外维护一份硬编码版本并保证可复现。
-        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+        # Wedged-registry bound, same rationale as the relay lane above.
+        run: timeout --kill-after=15 600 npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       # Cache extraction itself can exhaust the build disk; unused SDKs must
       # go before the restore, not after it. Base tier only (this job needs
@@ -2853,7 +2860,8 @@ jobs:
       - name: Install frontend deps (universal bundle smoke, push only)
         if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        # Wedged-registry bound (job cap is 240 minutes; 600s always fires first).
+        run: timeout --kill-after=15 600 npm ci --prefer-offline --no-audit
 
       # The macOS 27+ strip=none workaround (folded in from mac-build.yml) is
       # removed: every stable toolchain since 1.98 (2026-09) contains the
