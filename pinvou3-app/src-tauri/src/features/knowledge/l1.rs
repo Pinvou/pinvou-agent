@@ -384,7 +384,10 @@ impl L1Store {
         } else {
             limit.min(crate::features::knowledge::store::SEARCH_LIMIT_CAP)
         } as i64;
-        let off = offset as i64;
+        // Clamp instead of casting: usize→i64 would wrap on a hostile offset
+        // (SQLite reads negative OFFSET as 0, silently serving page 0) — same
+        // policy as import_jobs.rs failed_files_page.
+        let off = i64::try_from(offset).unwrap_or(i64::MAX);
         let sql = if collection_id > 0 {
             "SELECT d.id,d.collection_id,c.name,d.path,d.name,d.ext,d.size,d.mtime,d.parse_status,d.n_chunks \
              FROM documents d JOIN collections c ON c.id=d.collection_id \
@@ -1652,7 +1655,11 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let document = l1.list_documents(collection_id, 0, 0).unwrap().pop().unwrap();
+        let document = l1
+            .list_documents(collection_id, 0, 0)
+            .unwrap()
+            .pop()
+            .unwrap();
         assert_eq!(document.parse_status, "skipped");
         assert_eq!(document.n_chunks, 0);
         let _ = fs::remove_dir_all(dir);
@@ -1681,7 +1688,11 @@ mod tests {
             ),
             ImportIngestOutcome::Completed
         ));
-        let before = l1.list_documents(collection_id, 0, 0).unwrap().pop().unwrap();
+        let before = l1
+            .list_documents(collection_id, 0, 0)
+            .unwrap()
+            .pop()
+            .unwrap();
 
         fs::write(&file, "取消后不能覆盖的全新内容").unwrap();
         let (jobs, job_id, item_id) = prepare_import(&l1, collection_id, &file);
@@ -1708,7 +1719,11 @@ mod tests {
             ImportIngestOutcome::Cancelled
         ));
 
-        let after = l1.list_documents(collection_id, 0, 0).unwrap().pop().unwrap();
+        let after = l1
+            .list_documents(collection_id, 0, 0)
+            .unwrap()
+            .pop()
+            .unwrap();
         assert_eq!(after.id, before.id);
         assert_eq!(after.parse_status, before.parse_status);
         assert_eq!(after.n_chunks, before.n_chunks);

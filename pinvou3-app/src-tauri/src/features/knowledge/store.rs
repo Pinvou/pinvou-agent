@@ -426,21 +426,29 @@ impl Store {
             // v4 → v5 column migration. The idempotent DDL batch above cannot
             // add a column to an existing table (`CREATE TABLE IF NOT EXISTS`
             // skips), so pre-v5 stores get the disclosure column through this
-            // tolerant ALTER. A fresh v5 database already has the column from
-            // the CREATE TABLE, and "duplicate column name" is then the only
-            // expected failure — tolerated; any other error is a real fault
-            // and must not be masked.
-            if let Err(error) = w.execute_batch(
-                "ALTER TABLE knowledge_import_jobs \
-                 ADD COLUMN skipped_by_excluder INTEGER NOT NULL DEFAULT 0;",
-            ) {
-                let duplicate = error
-                    .to_string()
-                    .to_ascii_lowercase()
-                    .contains("duplicate column name");
-                if !duplicate {
-                    return Err(error);
+            // ALTER. Column presence is checked structurally (PRAGMA
+            // table_info) instead of string-matching SQLite's error text: a
+            // fresh v5 database already has the column from the CREATE TABLE
+            // and skips the ALTER, a pre-v5 store takes it, and any real
+            // fault still propagates.
+            let column_present = {
+                let mut stmt = w.prepare("PRAGMA table_info(knowledge_import_jobs)")?;
+                let mut rows = stmt.query([])?;
+                let mut found = false;
+                while let Some(row) = rows.next()? {
+                    let name: String = row.get(1)?;
+                    if name.eq_ignore_ascii_case("skipped_by_excluder") {
+                        found = true;
+                        break;
+                    }
                 }
+                found
+            };
+            if !column_present {
+                w.execute_batch(
+                    "ALTER TABLE knowledge_import_jobs \
+                     ADD COLUMN skipped_by_excluder INTEGER NOT NULL DEFAULT 0;",
+                )?;
             }
             w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }

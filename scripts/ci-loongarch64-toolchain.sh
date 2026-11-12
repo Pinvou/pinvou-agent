@@ -201,7 +201,7 @@ else
 
   log "downloading $asset_url"
   curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
-    --retry 3 --retry-delay 2 --max-time 1800 \
+    --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 1800 \
     -o "$work_dir/$asset_name" "$asset_url" \
     || fail "download failed: $asset_url"
 
