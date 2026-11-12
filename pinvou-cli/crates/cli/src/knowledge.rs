@@ -255,9 +255,11 @@ const INDEX_FAILED_OPTIONS: &[&str] = &["--offset", "--limit"];
 const SEARCH_OPTIONS: &[&str] = &["--limit", "--ext", "--after", "--before"];
 const REMOTE_SEARCH_OPTIONS: &[&str] = &["--limit"];
 
-/// `remote search` result window: the GUI's default top-8, clamped to the
+/// `remote search` result window: the CLI keeps its own default of 8 (the
+/// GUI's default rose to 24 in the limits-audit batch, a frontend product
+/// choice — do not re-point the parity rationale at it), clamped to the
 /// same 1..50 envelope the server applies to `SearchRequest.limit`
-/// (`pinvou-knowledge` service search).
+/// (`pinjou-knowledge` service search).
 const REMOTE_SEARCH_LIMIT_DEFAULT: usize = 8;
 const REMOTE_SEARCH_LIMIT_MAX: usize = 50;
 
@@ -2680,11 +2682,13 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
     )
 }
 
-/// GUI `remote_kb_search(server_id, collection_ids, query, limit)` with the
-/// GUI's default limit of 8; the CLI's `collection` argument is a name, so
-/// it is resolved against each server's collections first. `--limit` sizes
-/// the per-server result window (clamped 1..50 at parse time, the same
-/// envelope the server enforces) instead of pinning the GUI's top-8.
+/// GUI `remote_kb_search(server_id, collection_ids, query, limit)`; the
+/// CLI's default stays 8 (the GUI's own default is now 24 after the
+/// limits-audit raise — the surfaces no longer share a default, so the CLI
+/// documents its own value instead of a GUI-parity claim). The CLI's
+/// `collection` argument is a name, so it is resolved against each server's
+/// collections first. `--limit` sizes the per-server result window (clamped
+/// 1..50 at parse time, the same envelope the server enforces).
 #[cfg(feature = "product-backend")]
 fn remote_search(
     collection: &str,
