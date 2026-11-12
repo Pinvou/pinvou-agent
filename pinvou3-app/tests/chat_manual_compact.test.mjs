@@ -200,6 +200,9 @@ assert.match(chatViewSource, /if \(!ctxCompactInFlight\) return;[\s\S]{0,500}set
 assert.match(chatViewSource, /healBoundaryAt = Math\.min\(/, '兜底 tick 必须取桥接标记与手动标记过期边界的较早者');
 // 在途文案与提示 tip 必须实际挂到按钮上（i18n key 不得沦为死文案）。
 assert.match(chatViewSource, /title=\{ctxCompactInFlight \? t\.compactingNow : t\.compactNowTip\}/, 'compactingNow/compactNowTip 必须实际用于按钮');
+// 可见内容默认是用量数字，动作名必须由 aria-label 提供给读屏（与代码车道
+// native-usage-chip 的 title/aria-label 同款；在途时可见文本即状态，随 title 同步）。
+assert.match(chatViewSource, /aria-label=\{ctxCompactInFlight \? t\.compactingNow : t\.compactNowTip\}/, '按钮必须带无障碍动作名（读屏不能只念用量数字）');
 // 引擎懒启动错误映射：裸错误链不得直接露出（与代码车道 nativeCompactInactive 同款）。
 assert.match(chatViewSource, /raw\.includes\('session_engine_not_running'\) \? t\.uiCodex\.nativeCompactInactive : raw/, '引擎未运行必须映射本地化文案');
 assert.ok(!chatViewSource.includes('compactFailNotice'), '失败文案必须复用 uiCodex.compactFail，不得新开重复 key');

@@ -4449,6 +4449,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   onClick={handleManualCompact}
                   disabled={busy || ctxCompactInFlight}
                   title={ctxCompactInFlight ? t.compactingNow : t.compactNowTip}
+                  aria-label={ctxCompactInFlight ? t.compactingNow : t.compactNowTip}
                   className="inline-flex items-center gap-1 hover:underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity">
                   {ctxCompactInFlight ? t.compactingNow : (
                     <>
