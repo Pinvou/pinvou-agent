@@ -6,8 +6,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#123-#135 merged plus the #154 limits-audit
-# branch (squash 841fe98fe + review fixwave 1d736ce8d).
+# Public maintenance after CodeWhale#123-#135 merged, the ride-along merged
+# PRs #136/#142/#148/#150/#152, and the #154 limits-audit branch (squash
+# 841fe98fe + review fixwave 1d736ce8d).
 EXPECTED_HEAD="1d736ce8dd64ab5ab67214bb7730bcfb25c48d96"
 EXPECTED_COMMITS=100
 # Published maintenance base of this integration.

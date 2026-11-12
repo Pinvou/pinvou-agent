@@ -269,8 +269,8 @@
 - `forkguard_api_provider_chain_tail_is_bing`
 - `all_unavailable_returns_actionable_error_without_private_details`
 - `forkguard_mcp_secret_resolver_supplies_values_without_process_env_writes`
-- `forkguard_write_primitive_enforces_the_64kib_boundary`
-- `forkguard_write_file_enforces_the_64kib_boundary`
+- `forkguard_write_primitive_enforces_the_256kib_boundary`
+- `forkguard_write_file_enforces_the_256kib_boundary`
 - `forkguard_benchmark_controls_are_explicit_and_default_off`
 - `forkguard_benchmark_repairs_only_unambiguous_read_actions`
 - `forkguard_benchmark_repairs_read_schema_and_attachments`
