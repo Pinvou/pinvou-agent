@@ -216,9 +216,13 @@ assert.match(chatViewSource, /return \(\) => clearTimeout\(healTimer\);/, '兜�
 assert.match(chatViewSource, /Math\.max\(healDelayMs, 0\)/, '到期延迟必须钳非负（时钟前拨时不得排负延迟 setTimeout）');
 // 在途文案与提示 tip 必须实际挂到按钮上（i18n key 不得沦为死文案）。
 assert.match(chatViewSource, /title=\{ctxCompactInFlight \? t\.compactingNow : t\.compactNowTip\}/, 'compactingNow/compactNowTip 必须实际用于按钮');
-// 可见内容默认是用量数字，动作名必须由 aria-label 提供给读屏（与代码车道
-// native-usage-chip 的 title/aria-label 同款；在途时可见文本即状态，随 title 同步）。
-assert.match(chatViewSource, /aria-label=\{ctxCompactInFlight \? t\.compactingNow : t\.compactNowTip\}/, '按钮必须带无障碍动作名（读屏不能只念用量数字）');
+// 可见内容默认是用量读数（ctxUsageText 独立成值，读屏名与可见内容共用），
+// 读屏名必须是"读数 + 动作名"的组合：aria-label 整体覆盖可访问名，若只放
+// 动作名，读屏用户反而丢失占用读数（round-6 review M-5）。在途时可见文本
+// 即状态，随 title 同步（与代码车道 native-usage-chip 同款）。
+assert.match(chatViewSource, /const ctxUsageText = ctxTokens && ctxTokens\.max > 0/, '用量读出文本必须独立成值（可见内容与读屏名共用一份）');
+assert.match(chatViewSource, /aria-label=\{ctxCompactInFlight \? t\.compactingNow : `\$\{ctxUsageText\}, \$\{t\.compactNowTip\}`\}/, '读屏名必须是用量读数+动作名的组合（只给动作名会让读屏丢失占用读数）');
+assert.match(chatViewSource, /\{ctxCompactInFlight \? t\.compactingNow : ctxUsageText\}/, '在途可见文案必须随状态切换（删掉切换的突变体此前全绿）');
 // 引擎懒启动错误映射：裸错误链不得直接露出（与代码车道 nativeCompactInactive 同款）。
 assert.match(chatViewSource, /raw\.includes\('session_engine_not_running'\) \? t\.uiCodex\.nativeCompactInactive : raw/, '引擎未运行必须映射本地化文案');
 assert.ok(!chatViewSource.includes('compactFailNotice'), '失败文案必须复用 uiCodex.compactFail，不得新开重复 key');

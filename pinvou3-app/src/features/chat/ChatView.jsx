@@ -1180,6 +1180,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [queuedEditCandidate, queued, activeSessionId, t, flashQueuedNotice]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
+      // 用量读出文本独立成值：按钮可见内容与读屏名共用一份。aria-label 不
+      // 得整体覆盖掉用量信息——此前读屏只听到动作名，占用读数（控件存在的
+      // 理由）反而丢了（round-6 review M-5），组合名 = 读数 + 动作提示。
+      const ctxUsageText = ctxTokens && ctxTokens.max > 0
+        ? `${t.ctxUsage} ${ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / ${formatCompactCount(ctxTokens.max)} · ${Math.round(ctxPct * 100)}%`
+        : '';
       // 手动压缩入口：点击 ctx 用量行触发 compact_now。进行中/结果由
       // chat:compaction 系统项呈现（与代码车道共享同一事件流，桥接层已
       // 渲染 compactStart/Done/Cancel）。命令本身只把 Op 入队即返回：轮次
@@ -4473,13 +4479,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   onClick={handleManualCompact}
                   disabled={busy || ctxCompactInFlight}
                   title={ctxCompactInFlight ? t.compactingNow : t.compactNowTip}
-                  aria-label={ctxCompactInFlight ? t.compactingNow : t.compactNowTip}
+                  aria-label={ctxCompactInFlight ? t.compactingNow : `${ctxUsageText}, ${t.compactNowTip}`}
                   className="inline-flex items-center gap-1 hover:underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity">
-                  {ctxCompactInFlight ? t.compactingNow : (
-                    <>
-                      {t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
-                    </>
-                  )}
+                  {ctxCompactInFlight ? t.compactingNow : ctxUsageText}
                 </button>
               </div>
             )}
