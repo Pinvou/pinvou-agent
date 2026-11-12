@@ -4521,7 +4521,10 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     // start 存时间戳：终态可能永不达（引擎驱逐会中止 forwarder，见
     // engine_pool.rs reclaim_engine_entry 注释；web 端桌面重启同样丢终态），
     // 读取侧按与 Rust MAX_COMPACTION_LATCH_AGE 同款的 15 分钟兜底自愈，
-    // 入口不会永久禁用。
+    // 入口不会永久禁用。兜底按墙钟（Date.now）而非 Rust 侧 Instant 单调钟：
+    // 时钟前拨/休眠恢复会提前解禁，压缩超过 15 分钟时入口先于引擎完成
+    // 重新允许点击——重复入队的代价与 Rust 侧锁存过期一致（pool.compact_now
+    // 无入队去重），接受；不为此引入对齐单调钟的额外机制。
     // done 携带的 post_tokens 是压缩后的占用估计（forwarder 为刷新用量条
     // 而加，Rust 侧为 estimated_input_tokens 保守估算）；压缩轮已置
     // turnUsageDirty，后续 usage 累计值不可信，用量条只能靠这里的

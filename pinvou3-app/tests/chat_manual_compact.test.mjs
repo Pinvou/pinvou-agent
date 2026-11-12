@@ -139,6 +139,7 @@ for (const [label, section] of [['tauri', tauriCompaction], ['web', webCompactio
   assert.ok(section.includes('else delete state.compactingSessions[sid];'), `${label}: 终态必须经 else 分支清标记（done/fail/cancel 全覆盖）`);
   assert.ok(section.includes('state.tokens = { input: postTokens, max: state.tokens.max };'), `${label}: 必须把 post_tokens 写入用量条`);
   assert.ok(section.includes('postTokens <= state.tokens.max'), `${label}: post_tokens 超窗守卫保留`);
+  assert.ok(section.includes('兜底按墙钟（Date.now）而非 Rust 侧 Instant 单调钟'), `${label}: 墙钟兜底的取舍必须留档（提前解禁窗口是接受的代价，防止被误"修复"）`);
 }
 // 双端同改的强约束：两条注册体从 listen 标记到 post_tokens 块尾必须逐字节
 // 一致——web 侧漂移不再只依赖上面 4 条字符串 pin 的间接覆盖。

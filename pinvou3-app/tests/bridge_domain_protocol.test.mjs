@@ -251,7 +251,7 @@ const expectedProtocolHashes = {
   // longer calls post_tokens "accurate" (Rust emits a conservative estimate).
   // Event names, invoke shapes and the payload contract unchanged; the web
   // twin carries the identical body.
-  chat: '31537f8ca2703da4b4824b4d483ef778684b60b37201b9640a5b1bdfe05d77c3',
+  chat: '7284ef69f9baaef43bed7038bffd62b768cbffb6c9e4e4f155d06fe429dbb58f',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
