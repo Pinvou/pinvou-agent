@@ -103,6 +103,12 @@ const FULL_FEED_CHAR_LIMIT: usize = 24_000;
 /// 真超大产物的「不漏」解是 P1 map-reduce 分块全审。
 const ARTIFACT_CHAR_LIMIT: usize = 30_000;
 
+/// 产物读取上限（字节）。先 stat 再读：极端路径下 AI 可能写出大数据文件，整读进
+/// 内存只为截前 30k 字符 = 为丢掉的内容付全量内存+阻塞读（r9 审 m8；与
+/// deliverables.rs `MAX_LIST_SCAN_BYTES` 同款哲学）。超帽产物跳过、退对话流审查
+/// （与二进制产物同一退化路径）；常规产物（文档/代码/邮件）都在此内，行为不变。
+const ARTIFACT_READ_BYTE_CAP: u64 = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinvouPersona {
     pub id: String,
@@ -216,14 +222,17 @@ pub async fn summon(
         let raw =
             model_review(bridge, COVERAGE_PROMPT, &build_context(messages, workspace)).await?;
         let mut review = apply_guard(raw, bridge.locale_tag());
-        // 悟镜头契约无 verdict（COVERAGE_PROMPT 不要求该键）；模型跑偏带出
-        // verdict 时强制 None——否则带 verdict 的悟 entry 会成为 ledger_from_entries
-        // latest 过滤的候选（filter 收 verdict 非空），重新打开
-        // ledger_skips_coverage_entry_for_relist 钉死的「悟当 latest、守门失效」
-        // bug（r5 审 NIT，apply_guard 原样透传 raw.verdict）。summon 走真 HTTP
-        // 无法单测，此行由 summon_coverage_forces_verdict_none 源钉护住——
-        // 删行=钉红（2026-11-10 r6 审 m2：该行此前无钉，注释亦未声称护住它）。
+        // 悟镜头契约无 verdict、也无 issues（COVERAGE_PROMPT 只要 coverage 框架
+        // +缺口清单）；apply_guard 原样透传两者，模型跑偏时各自重开一条洞：
+        // 带 verdict 的悟 entry 会成为 ledger_from_entries latest 过滤的候选
+        // （filter 收 verdict 非空），重开「悟当 latest、守门失效」bug（r5 审
+        // NIT）；带 issues 的悟 entry 同样进 latest/内容扫描候选（filter 亦收
+        // issues 非空），下一轮品的核账会把悟的跑偏杂音当上轮账目（r9 审 m1）。
+        // summon 走真 HTTP 无法单测，两行由 summon_coverage_forces_verdict_none
+        // 源钉护住——删行=钉红（2026-11-10 r6 审 m2：verdict 半边；2026-11-12
+        // r9 审：补 issues 半边）。
         review.verdict = None;
+        review.issues = Vec::new();
         review.artifact_path = artifact_path;
         return Ok(review);
     }
@@ -354,6 +363,10 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     // read_to_string 对二进制产物(.docx/.pdf/.xlsx 等)静默失败返回 None——该类
     // session 退化成只凭对话流审查。文本抽取是后续功能候选(P1),当前形态刻意
     // 如此(2026-11-09 审:把已知限制写进代码,别只活在 PR 描述里)。
+    // 超帽产物同样跳过（r9 审 m8）：整读进内存只为截前 30k 字符不划算。
+    if !artifact_within_read_cap(&abs) {
+        return None;
+    }
     let content = std::fs::read_to_string(&abs).ok()?;
     let n = content.chars().count();
     let bounded = if n > ARTIFACT_CHAR_LIMIT {
@@ -365,6 +378,13 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
         content
     };
     Some((path, bounded))
+}
+
+/// 产物读取字节帽判定（r9 审 m8）。stat 失败按超帽处理（读不到 = 跳过、退对话流）。
+fn artifact_within_read_cap(abs: &std::path::Path) -> bool {
+    std::fs::metadata(abs)
+        .map(|m| m.len() <= ARTIFACT_READ_BYTE_CAP)
+        .unwrap_or(false)
 }
 
 /// 账目是否已被 Boss 结清、核账不再核（§5）：accept=缺陷接受现状、confirmed=需核实但 Boss
@@ -932,12 +952,15 @@ fn canonical_minimax_model_is_m3(model: &str) -> bool {
 ///
 /// **刻意不收（窄于引擎全集，分歧在此记载）**：Openrouter/Arcee 的近期型号
 /// 大表（arcee/gemma/glm/kimi/minimax/nemotron/qwen canonical 行 + deepseek
-/// slug 行）与 NIM/Novita/Fireworks/Sglang/Vllm/Deepinfra 的 deepseek slug
-/// 行、OpencodeGo 允许表——底座均为私有 fn（公开 API 只暴露 custom 门，公开
-/// 包装不覆盖型号表；手抄即再造一张要随底座漂移的表），且全部仅 env pin
-/// （`DEEPSEEK_PROVIDER`）可达：vendor 表产不出这些身份，官方目录/UI 存
-/// vendor 前缀存储形，裸别名属手写配置。引擎收、审查透传；若日后宿主可产出
-/// 这些身份或底座公开型号表，先补镜像再删本段。
+/// slug 行）、aggregator canonical 半臂对 Volcengine/WanjieArk（引擎对 Doubao
+/// 路由的裸 deepseek 别名先 canonical 再 slug；宿主 vendor 表产得出 Volces/
+/// Openrouter 身份（bridge.rs:1285,1292），故这几条**不是**仅 env pin 可达，
+/// r9 审订正旧注）、NIM/Novita/Fireworks/Sglang/Vllm/Deepinfra 的 deepseek
+/// slug 行与 OpencodeGo 允许表——底座均为私有 fn（公开 API 只暴露 custom 门，
+/// 公开包装不覆盖型号表；手抄即再造一张要随底座漂移的表）。可达形态兜底：官方
+/// 目录/UI 存 vendor 前缀存储形，裸别名属手写配置——引擎收敛、审查透传时发
+/// raw 以**可见** model_not_found 失败（非静默腐蚀），先见错再补镜像；若日后
+/// 底座公开型号表或目录改收裸别名，先补镜像再删本段。
 ///
 /// 引擎同款 custom-endpoint 前置门（`wire_model_for_provider_route` 首臂，
 /// crates/tui/src/config.rs:1497；契约 crates/config/src/lib.rs:4921——自定义
@@ -1372,14 +1395,23 @@ fn review_max_tokens_field(api: ApiProvider, base_url: &str, model: &str) -> &'s
 /// - OpenAI 推理家族（Openai kind × gpt-5.5[+日期快照]/gpt-5.6 系/codex 名单）：
 ///   `reasoning_effort=low`（底座 `apply_openai_reasoning_effort` low 档同款；名单
 ///   逐字镜像 `model_is_openai_reasoning_family`）。非推理家族（gpt-4o、gpt-6-sol
-///   等）与未知网关：线材不表达档位，思考 native 开 → 不发字段。
+///   等）与未知网关：线材不表达档位，思考 native 开 → 不发字段。**已知路由类空档
+///   （r8 审 minor b，r9 审补此记载）**：官方 OpenAI 端点 × gpt-5.x 时宿主身份
+///   解析为 Custom（bridge.rs 的 Responses 重映射）——底座主对话走 /v1/responses
+///   发 `reasoning.effort`，本审查走 chat-completions 且零字段：永不关闭仍成立
+///   （不发禁用字段、thinking native 开），但「最低档」在该路由类静默漂到厂商
+///   默认；chat-completions 是否收这些 id 仅 shape 级核对、未 live-probe。
 /// - xAI：grok-4.5|4.6 在精确 api.x.ai/v1 端点收顶层档位 → `reasoning_effort=low`
 ///   （底座 `apply_xai_grok_4_6_reasoning_effort`；grok-4.7——Xai preset 默认——
 ///   不收档位，两端都不发；非第一方网关两端也都不发）。
-/// - 其余 kind（Anthropic/DeepseekAnthropic/MinimaxAnthropic/Openmodel、Custom、
+/// - 其余 kind（Anthropic/MinimaxAnthropic/Openmodel、Custom、
 ///   Stepfun/Sakana/LongCat/OpencodeGo/Zen、Mistral（low 档底座实发为空）、
 ///   Telecomjs/Edenai/Concentrate、Antigravity 墓碑等）：底座 low 档零字段 →
-///   审查零字段。
+///   审查零字段。（旧注把 DeepseekAnthropic 列在零字段臂——不准：Deepseek 臂
+///   的 base 含 api.deepseek.com 判定会先吃掉官方 /anthropic 基址，审查发
+///   effort+enabled；但该路由审查本就拼 {base}/chat/completions 会 404、字段
+///   无从生效，且仅 `DEEPSEEK_PROVIDER` env pin 可达——非可观测线材分歧，
+///   r9 审 NIT 订正。）
 /// - **Anthropic preset 例外**：preset Anthropic 在 `model_review` 里走 Messages
 ///   直连，不经本函数、当前不发思考字段——主对话 Messages adapter 会在 low 档写
 ///   `thinking:{enabled,budget_tokens}`/`{adaptive}`（client/anthropic.rs），省略
@@ -1414,7 +1446,15 @@ fn apply_review_thinking_controls(
         // ollama.com 的已记载拓宽）。
         if is_exact_https_host_path(base_url, "ollama.com", "v1") {
             body["reasoning_effort"] = json!("low");
-        } else {
+        } else if !matches!(
+            crate::core::always_thinking::always_thinking_spec(model),
+            Some(crate::core::always_thinking::AlwaysThinkingSpec::NoControl)
+        ) {
+            // NoControl 同底座跳过（r8 审 minor a 形状漂移，r9 收口）：主对话对
+            // always_thinking 表的 NoControl 型号（kimi-k2.7/deepseek-r1/
+            // qwen3-thinking/minimax-m2）不发任何字段；照发 think=true 语义等价
+            // 但形状漂移。非思考型硬 400 的取舍两端一致（#622：宿主默认 effort
+            // high → think=true），NoControl 之外行为不变。
             body["think"] = json!(true);
         }
         return;
@@ -2161,6 +2201,25 @@ mod tests {
             "qwen3:8b",
         );
         assert_eq!(ollama["think"], json!(true), "{ollama}");
+
+        // r9 审 minor a 收口：本地 NoControl 型号（kimi-k2.7，always_thinking 表）
+        // 不发 think——底座主对话对 NoControl 解析零字段（宿主 effort None），审查
+        // 同款跳过；删跳过=此断言红（形状漂移复活）。
+        let mut ollama_nocontrol = json!({});
+        apply_review_thinking_controls(
+            &mut ollama_nocontrol,
+            review_api("ollama"),
+            ModelPreset::OpenaiCompatible,
+            "http://127.0.0.1:11434/v1",
+            "kimi-k2.7",
+        );
+        assert!(
+            ollama_nocontrol
+                .as_object()
+                .expect("body object")
+                .is_empty(),
+            "本地 NoControl 不发 think 字段（与底座零字段一致）: {ollama_nocontrol}"
+        );
 
         // Ollama 托管云（精确 https://ollama.com/v1）：引擎升级为 OllamaCloud，
         // 用 reasoning_effort 线而非 think（config provider.rs is_exact_ollama_cloud_route）。
@@ -3629,6 +3688,52 @@ mod tests {
              a stray model verdict rides the ledger latest filter (it accepts \
              non-null verdicts) and re-opens the coverage-as-latest gate bug; \
              apply_guard passes raw verdict through unchanged"
+        );
+        assert!(
+            region.contains("review.issues = Vec::new();"),
+            "the coverage lens must also clamp stray model issues to empty at \
+             the summon layer: the latest filter and the reconcile content scan \
+             both accept non-empty issues, so a stray 悟 issues array would win \
+             max-seq and feed the next 品 reconcile (r9 review m1); apply_guard \
+             passes raw issues through unchanged"
+        );
+    }
+
+    /// r9 审 m8：产物读取字节帽——超大文件跳过（退对话流审查），不为截 30k
+    /// 字符整读进内存。行为钉 helper 本体；调用点用源钉（删调用=红）。
+    #[test]
+    fn latest_artifact_file_caps_oversize_reads() {
+        let ws = tempfile::tempdir().expect("tempdir");
+        let small = ws.path().join("small.txt");
+        std::fs::write(&small, b"hello artifact").expect("write small");
+        assert!(
+            artifact_within_read_cap(&small),
+            "normal artifact within cap must be readable"
+        );
+
+        let big = ws.path().join("big.txt");
+        std::fs::write(&big, vec![b'a'; (ARTIFACT_READ_BYTE_CAP + 1) as usize]).expect("write big");
+        assert!(
+            !artifact_within_read_cap(&big),
+            "oversize artifact must be skipped, not fully read into memory"
+        );
+
+        let missing = ws.path().join("missing.txt");
+        assert!(
+            !artifact_within_read_cap(&missing),
+            "unreadable artifact = skip (same degradation as binary files)"
+        );
+
+        // 只扫生产区（tests module 之前）——self-反引：include_str 全文含本测试
+        // 自身的 needle 文本，删调用点也恒绿（r9 突变复核抓出）；也不能锚
+        // #[cfg(test)] 首现（生产区 182 行有 cfg 辅助项）。
+        let source = include_str!("mod.rs");
+        let prod_end = source.find("mod tests {").expect("tests module present");
+        assert!(
+            source[..prod_end].contains("if !artifact_within_read_cap(&abs) {"),
+            "the cap guard must be wired into latest_artifact_file before \
+             read_to_string; deleting the call site re-opens the unbounded \
+             read (r9 review m8)"
         );
     }
 
