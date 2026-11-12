@@ -773,6 +773,50 @@ pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
     {
         connector_conn.kill_all_pids();
     }
+    // computer_use arm: the linux virtual display stack (Xvfb/WM trees) is NOT
+    // kill_on_drop-wired, so a clean exit or restart would otherwise orphan it
+    // until the next startup sweep. Kill pidfile-recorded trees from THIS
+    // process now. Peer-instance safety: the single-instance plugin
+    // (tauri-plugin-single-instance) makes a concurrent second instance
+    // impossible, and the sweep only ever reaches pidfiles under THIS home's
+    // virtual-display root whose recorded identity (role + kernel start time)
+    // verifies — the worst a bypassed single-instance edge could hit is a
+    // same-user peer's genuine, correctly targeted trees (an availability
+    // loss, never a wrong kill). Sweep failures are logged inside the sweep
+    // and never block shutdown (non-fatal by contract).
+    features::computer_use::sweep_virtual_display_orphans();
+    // In-memory sessions: tool Drop is not guaranteed on the exit path, and
+    // process death does NOT undo a synthetic press already posted into a
+    // target app (a CGEventPostToPid press leaves the app button-held after
+    // our process is gone). Fire the same emergency release the stop paths
+    // use (releases all three buttons, closes persistent grants) and wait a
+    // bounded, completion-driven grace: healthy sub-second releases return
+    // early, a wedged cleanup gives up at the budget (R13 — the flat 2 s
+    // sleep paid the full budget even when every release finished in
+    // milliseconds). The grace is paid ONLY when a session is actually
+    // registered: the shared state is managed unconditionally, so an
+    // ungated wait taxed every quit and restart of the app — including
+    // users who never enabled computer use — with zero sessions live (R11
+    // minor). The blocking wait rides spawn_blocking so the harvest never
+    // parks a tokio worker; the exit path still awaits it via block_on.
+    // A worker wedged mid-action cannot be waited out here (the control
+    // request's budget is minutes) — that residual strand stays, disclosed
+    // by the macOS target note; the Linux stack evaporates with Xvfb and
+    // the Windows job's kill-on-close fires at process death regardless.
+    const RELEASE_GRACE: std::time::Duration = std::time::Duration::from_millis(2000);
+    if let Some(shared) =
+        app.try_state::<std::sync::Arc<features::computer_use::ComputerUseShared>>()
+    {
+        if shared.backends.has_live_sessions() {
+            let shared = std::sync::Arc::clone(&shared);
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                shared
+                    .backends
+                    .emergency_release_all_and_wait(RELEASE_GRACE);
+            })
+            .await;
+        }
+    }
 }
 
 /// Every `app.restart()` call must pass through this funnel. The browser first saves
@@ -1231,7 +1275,11 @@ pub fn run() {
             // the .manage()'d State. settings.json's computer_use.enabled is
             // the single source of truth for the toggle; it is replayed into
             // the AtomicBool at startup (the computer_use_set_enabled command
-            // owns the later persist-to-disk → flip-flag flow).
+            // owns the later persist-to-disk → flip-flag flow). The virtual
+            // display preference rides the same replay (same persist → flip
+            // command shape), followed by the cheap availability probe so
+            // the first status read answers "ready"/"unavailable" instead of
+            // the unprobed placeholder.
             let computer_use_shared =
                 std::sync::Arc::new(features::computer_use::ComputerUseShared::new());
             // Replay the persisted toggle through the same platform gate the
@@ -1239,10 +1287,23 @@ pub fn run() {
             // stale `enabled: true` in settings.json must not flip the
             // in-memory flag (it would keep the tool model-visible while
             // every call dies at the capability check).
+            let computer_use_prefs = crate::platform::prefs::UserPrefs::load().computer_use;
             computer_use_shared.set_enabled(
-                crate::platform::prefs::UserPrefs::load().computer_use.enabled
-                    && features::computer_use::backend_supported(),
+                computer_use_prefs.enabled && features::computer_use::backend_supported(),
             );
+            computer_use_shared.set_display_pref(computer_use_prefs.prefer_virtual_display);
+            // (set_display_pref already refreshed the availability snapshot —
+            // no second probe here.)
+            // Main-thread dispatch channel for the platform layer: the macOS
+            // virtual display creation hops onto the main run loop through
+            // it (linux/windows call sites ignore the helper). Stored once
+            // at setup; dispatching before this point answers false and the
+            // callers fall back explicitly.
+            features::computer_use::set_main_thread_app_handle(app.handle().clone());
+            // Crash-orphan sweep for the virtual display stacks (linux
+            // pidfiles; a no-op elsewhere). Once, at setup — never per
+            // session.
+            features::computer_use::sweep_virtual_display_orphans();
             app.manage(computer_use_shared.clone());
             let tool_factory: crate::features::assistant::engine_pool::EngineToolFactory = {
                 let computer_use_shared = computer_use_shared.clone();
@@ -1651,6 +1712,7 @@ pub fn run() {
             commands::computer_use::computer_use_deny,
             commands::computer_use::computer_use_confirm,
             commands::computer_use::computer_use_set_enabled,
+            commands::computer_use::computer_use_set_virtual_display_preference,
             commands::computer_use::computer_use_request_permissions,
             commands::computer_use::computer_use_permission_status,
             commands::connectors::refresh_connector_auth_gates,
