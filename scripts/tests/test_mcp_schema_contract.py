@@ -415,11 +415,19 @@ class SchemaContractWalkerTest(unittest.TestCase):
         # at an anyOf level is exactly the drift the per-layout pptx
         # branches must not regress into — a red here is the mirror being
         # stricter than the engine, not an engine-behavior claim.
+        # On this bare typed fixture the injection pass adds "properties"
+        # alongside "type" in the offender list, so the assertion pins
+        # 'type' MEMBERSHIP in that list: admitting type beside anyOf
+        # (converging with sanitize_for_kimi) leaves ['properties'] as the
+        # only offender, this message keeps existing, and the missing
+        # 'type' entry turns the pin red — the exact relaxation this red
+        # exists to catch can no longer slip through silently.
         message = _contract_message(
             {"type": "object",
              "properties": {"x": {"type": "object", "anyOf": [{"type": "string"}]}}})
         self.assertIsNotNone(message)
         self.assertIn("anyOf sibling", message)
+        self.assertIn("'type'", message)
 
     def test_content_schema_keyword_is_red(self):
         # contentSchema would otherwise be a hiding spot for an itemless
@@ -761,6 +769,20 @@ class SchemaContractWalkerTest(unittest.TestCase):
                         "exclusiveMaximum"):
             self.assertIn(f"'{keyword}'", message)
 
+    def test_min_max_contains_stay_red_not_stripped(self):
+        # The same complex-validation clause names minContains/maxContains,
+        # but unlike the bound keywords they have NO advisory-strip
+        # equivalent in the engine — they fail closed on the whitelist.
+        # Pin that placement: moving them into the advisory tuple would
+        # turn this red green, and no other test would notice.
+        for keyword in ("minContains", "maxContains"):
+            message = _contract_message(
+                {"type": "object",
+                 "properties": {"a": {"type": "string", keyword: 1}}})
+            self.assertIsNotNone(message)
+            self.assertIn("unsupported keyword", message)
+            self.assertIn(f"'{keyword}'", message)
+
     def test_dollar_schema_keyword_is_red(self):
         # Meta-Schemas are unsupported outright ("暂不支持 Meta-Schemas");
         # the closing clause fail-closes the keyword.
@@ -790,6 +812,19 @@ class SchemaContractWalkerTest(unittest.TestCase):
         message = _contract_message({"type": "object", "required": ["a"]})
         self.assertIsNotNone(message)
         self.assertIn("required must name unique declared properties", message)
+
+    def test_required_with_non_dict_properties_is_red(self):
+        # The validate_mfjs_required order branch the flat fixture above
+        # cannot reach: a required LIST beside a non-dict properties value
+        # fails on "required requires a properties object" (distinct from
+        # the properties-shape offender the same fixture also trips). The
+        # assertion names that branch's own message, so muting it turns
+        # this pin red even though the fixture stays red overall — the
+        # branch cannot hide behind its co-offender.
+        message = _contract_message(
+            {"type": "object", "properties": None, "required": ["a"]})
+        self.assertIsNotNone(message)
+        self.assertIn("required requires a properties object", message)
 
     def test_properties_must_be_object_is_red(self):
         # A list at the properties keyword itself previously fell out of the
@@ -1020,10 +1055,29 @@ class SchemaContractWalkerTest(unittest.TestCase):
             {"type": "object", "properties": {"e": {"type": "string", "enum": enum}}}))
 
     def test_encoded_bytes_budget_is_enforced(self):
-        schema = {"type": "object",
-                  "properties": {"d": {"type": "string",
-                                       "description": "x" * (smoke._MFJS_MAX_SCHEMA_BYTES + 100)}}}
-        message = _contract_message(schema)
+        # Hardcoded boundaries (120000/120001), not sizes derived from the
+        # constant: a fixture sized from smoke._MFJS_MAX_SCHEMA_BYTES
+        # tracks the constant and stays green under drift, red-proofing
+        # nothing. Like every sibling budget pin, both sides are literal —
+        # drifting the constant in either direction flips one arm red. If
+        # the constant legitimately changes (close-out re-pin), update
+        # these two literals with it.
+        def schema_at(total):
+            probe = json.dumps(
+                {"type": "object",
+                 "properties": {"d": {"type": "string", "description": ""}}},
+                separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            pad = total - len(probe)
+            self.assertGreaterEqual(pad, 0, "boundary below fixed overhead")
+            return {"type": "object",
+                    "properties": {"d": {"type": "string",
+                                         "description": "x" * pad}}}
+
+        # No advisory keywords and no bare objects: the strips and the
+        # injection are byte-neutral on this fixture, so the encoded size
+        # is exactly the constructed size.
+        self.assertIsNone(_contract_message(schema_at(120000)))
+        message = _contract_message(schema_at(120001))
         self.assertIsNotNone(message)
         self.assertIn("over the MFJS budget of", message)
 
@@ -1065,6 +1119,37 @@ class SchemaContractWalkerTest(unittest.TestCase):
              "properties": {"e": {"type": "string", "enum": ["a", "b"]},
                             "s": {"type": "string"}},
              "additionalProperties": False}))
+
+    @unittest.skipIf(
+        not (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs").exists(),
+        "pinned CodeWhale tree not populated (cannot read schema_sanitize.rs)")
+    def test_pinned_engine_face_is_pre_t11(self):
+        # Tripwire for the guard's interim window. The guard pins the T11
+        # TARGET contract (advisory strip, keep-then-fail-closed enums,
+        # budgets 500/3000/30/1000/75000) while the parent's gitlink still
+        # pins the pre-T11 sanitizer (anyOf cap 10, no advisory strip,
+        # budgets 10/5/100/500/7500) — so between now and the close-out
+        # re-pin, a schema this guard green-lights can still be dropped by
+        # the engine that actually ships. This tripwire keeps that window
+        # loud instead of silent: it fails the moment the pinned face
+        # changes, which is exactly when the mirror must be reconciled.
+        # When the re-pin lands, THIS TEST GOES RED BY DESIGN — update the
+        # asserted face here, flip the interim notes in the guard header,
+        # the contract doc, and the pptx schema comment, and only then
+        # treat the target contract as the shipped one.
+        source = (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs"
+                  ).read_text(encoding="utf-8")
+        self.assertIn(
+            "MFJS_MAX_ANY_OF_ITEMS: usize = 10", source,
+            "the pinned engine's anyOf cap changed — the close-out re-pin may "
+            "have landed: reconcile the mirror constants with the new pinned "
+            "face, flip the interim notes, and update this tripwire")
+        self.assertNotIn(
+            "strip_mfjs_advisory_keywords", source,
+            "the pinned engine now carries the T11 advisory strip — the "
+            "close-out re-pin may have landed: reconcile the mirror constants "
+            "with the new pinned face, flip the interim notes, and update "
+            "this tripwire")
 
     @unittest.skipIf(pptx_schema is None, "python-pptx not installed (cannot load the pptx server schema)")
     def test_real_pptx_schema_is_green(self):
