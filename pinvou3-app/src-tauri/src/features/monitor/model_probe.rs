@@ -1151,22 +1151,23 @@ mod tests {
                 "error sending request for url (http://dns-backed-host/): connection refused",
                 "dns_failed",
             ),
-            // Structured flags lose to keyword text — the monitor inherits
-            // core's URL-word precedence, so a real connect/dns-class error
-            // on a URL embedding a TLS word classifies tls_error.
+            // Review 5875813001 P1/P2: the structured flags answer before
+            // the keyword arms (DNS over connect, per core's contract), so
+            // a URL embedding a TLS word no longer biases a real
+            // connect/dns-class error into tls_error.
             (
                 false,
                 false,
                 true,
                 "error sending request for url (https://ssl.example.com/)",
-                "tls_error",
+                "connection_refused",
             ),
             (
                 false,
                 true,
                 false,
                 "error sending request for url (https://ssl.example.com/)",
-                "tls_error",
+                "dns_failed",
             ),
             // Timeout outranks everything, keyword text included.
             (

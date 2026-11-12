@@ -823,16 +823,20 @@ pub fn transport_code_for(
     // 5875009923 P3): `err.to_string()`'s Display embeds the full requested
     // URL, so a refused request to a URL like `http://127.0.0.1/tls` would
     // hit the "tls" keyword arm and be misclassified as `tls_error` even
-    // though `is_connect` is true. The keyword arms stay as the fallback
-    // for text-only callers (settings/CLI surfaces pass no structured
-    // flags), whose texts carry no request URL to bias them.
+    // though the structured flags say otherwise. DNS precedence is kept
+    // over the generic connect flag per this helper's own contract —
+    // hyper-util files resolver failures under its Connect kind, so
+    // `is_dns` only classifies if it runs first (review 5875813001 P2).
+    // The keyword arms stay as the fallback for text-only callers
+    // (settings/CLI surfaces pass no structured flags), whose texts carry
+    // no request URL to bias them.
     let lower = display_text.to_lowercase();
     if is_timeout {
         "timeout"
-    } else if is_connect {
-        "connection_refused"
     } else if is_dns {
         "dns_failed"
+    } else if is_connect {
+        "connection_refused"
     } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
         "tls_error"
     } else if lower.contains("dns")

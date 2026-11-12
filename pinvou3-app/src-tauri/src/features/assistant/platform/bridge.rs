@@ -7789,7 +7789,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// 排除钉:aux 会话保持最小指令面,origin 条目(审计溯源)不得进入。
+    /// Exclusion pin: aux sessions keep the minimal instruction surface;
+    /// the origin note (audit provenance) must not enter.
     #[test]
     fn aux_sessions_do_not_carry_the_origin_note() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
