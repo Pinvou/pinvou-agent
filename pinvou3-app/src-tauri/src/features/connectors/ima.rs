@@ -467,6 +467,15 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
 
+    #[test]
+    fn ima_response_cap_stays_at_16mib() {
+        // Mutation tripwire: the CLI mirrors this constant by value (it cannot
+        // import this `pub(crate)` const), so pin the shipped value here too —
+        // a silent 16→1 revert turns red on both sides of the mirror
+        // (r5 review).
+        assert_eq!(MAX_RESPONSE_BYTES, 16 * 1024 * 1024);
+    }
+
     /// Initialize the code scope with the given deny ids while the scope lock
     /// still works (the DenyAll sync then requires a real write). Routes onto
     /// the canonical seed helper in scope.rs.

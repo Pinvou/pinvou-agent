@@ -4623,6 +4623,15 @@ mod tests {
     use crate::ExitCode;
     use std::ffi::OsString;
 
+    #[test]
+    fn ima_response_cap_stays_at_16mib() {
+        // Mutation tripwire for the `ima.rs` mirror: the two constants live in
+        // crates that cannot import each other's `pub(crate)` const, so this
+        // pins the shipped value — the exact desync class this mirror already
+        // hit once (1 MiB vs 16 MiB) (r5 review).
+        assert_eq!(IMA_MAX_RESPONSE_BYTES, 16 * 1024 * 1024);
+    }
+
     /// Unique temp root for this process: `<label>-<pid>-<nanos>` under the
     /// system temp dir. Path construction only — callers keep their own
     /// create/write/cleanup. (Deliberately NOT used where the path must key

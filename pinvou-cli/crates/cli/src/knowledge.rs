@@ -30,7 +30,8 @@
 //!   semantics" below): the started state, the wait and the final state all
 //!   happen in one command, like `scan start`.
 //! - documents → `L1Store::{list_documents, remove_document}` (`--limit`
-//!   omitted maps to the GUI's 0 = default page of 500).
+//!   omitted maps to the GUI's 0 = default page of 500; `--offset N` pages
+//!   like the GUI's offset pagination).
 //! - index status/cancel/resume/retry/failed → `KnowledgeService::
 //!   {index_status, cancel_index_job, resume_index, retry_index_item,
 //!   failed_index_files}` (`cancel_index_job` is the CLI-facing id-taking
@@ -151,7 +152,7 @@ const USAGE: &str = "usage: pinvou knowledge <scan|stats|type-counts|collections
 const SCAN_USAGE: &str = "usage: pinvou knowledge scan <start [--root DIR]|status|cancel>";
 const COLLECTIONS_USAGE: &str =
     "usage: pinvou knowledge collections <list|create|update|delete|add-sources>";
-const DOCUMENTS_USAGE: &str = "usage: pinvou knowledge documents <collection-id> [--limit N] | pinvou knowledge documents remove <doc-id> --yes";
+const DOCUMENTS_USAGE: &str = "usage: pinvou knowledge documents <collection-id> [--limit N] [--offset N] | pinvou knowledge documents remove <doc-id> --yes";
 const INDEX_USAGE: &str = "usage: pinvou knowledge index <status [job-id]|cancel job-id|resume job-id|retry job-id item-id|failed job-id [--offset N --limit N]> (failed page: --offset defaults to 0, --limit to 50)";
 const MODEL_USAGE: &str = "usage: pinvou knowledge model <status|download|cancel> (download: needs network and the desktop model host; long-running)";
 const REMOTE_USAGE: &str = "usage: pinvou knowledge remote <connections|probe URL|collections|search <collection> <query> [--limit N]>";
@@ -189,6 +190,7 @@ pub enum KnowledgeCommand {
     Documents {
         collection_id: i64,
         limit: Option<usize>,
+        offset: usize,
     },
     DocumentsRemove {
         doc_id: i64,
@@ -250,7 +252,7 @@ pub enum KnowledgeCommand {
 const SCAN_START_OPTIONS: &[&str] = &["--root"];
 const CREATE_OPTIONS: &[&str] = &["--name", "--category", "--description"];
 const UPDATE_OPTIONS: &[&str] = &["--name", "--category", "--description"];
-const DOCUMENT_OPTIONS: &[&str] = &["--limit"];
+const DOCUMENT_OPTIONS: &[&str] = &["--limit", "--offset"];
 const INDEX_FAILED_OPTIONS: &[&str] = &["--offset", "--limit"];
 const SEARCH_OPTIONS: &[&str] = &["--limit", "--ext", "--after", "--before"];
 const REMOTE_SEARCH_OPTIONS: &[&str] = &["--limit"];
@@ -389,6 +391,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                 Ok(KnowledgeCommand::Documents {
                     collection_id,
                     limit: parse_positive(&options, "--limit")?,
+                    offset: parse_offset(&options)?,
                 })
             }
         }
@@ -434,26 +437,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                     let (head, tail) = positionals(&rest[1..]);
                     let job_id = exactly_one(head, "an index job id")?.to_owned();
                     let (options, _) = parse_flags(tail, INDEX_FAILED_OPTIONS, &[])?;
-                    let offset = match option(&options, "--offset") {
-                        None => 0,
-                        Some(value) => {
-                            let parsed = value.parse::<usize>().map_err(|_| {
-                                CliError::usage("knowledge --offset must be a non-negative integer")
-                            })?;
-                            // The value lands upstream as a SQLite i64 (e.g. `index failed
-                            // --offset`); a larger usize would wrap negative in the cast and
-                            // silently serve page 0 again. Rejected as usage, like every
-                            // other out-of-range numeric flag in the family, rather than
-                            // answered with a misleading empty page.
-                            if parsed > i64::MAX as usize {
-                                return Err(CliError::usage(format!(
-                                    "knowledge --offset must be at most {max} (got {value})",
-                                    max = i64::MAX
-                                )));
-                            }
-                            parsed
-                        }
-                    };
+                    let offset = parse_offset(&options)?;
                     let limit = parse_positive(&options, "--limit")?;
                     Ok(KnowledgeCommand::IndexFailed {
                         job_id,
@@ -676,6 +660,29 @@ fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>,
     crate::support::parse_family_positive::<usize>(options, name, "knowledge")
 }
 
+/// Shared `--offset` parse for the paging lanes (`index failed`, `documents`):
+/// defaults to 0 and rejects values that cannot land upstream as a SQLite
+/// i64 (a larger usize would wrap negative in the cast and silently serve
+/// page 0 again). Rejected as usage, like every other out-of-range numeric
+/// flag in the family, rather than answered with a misleading empty page.
+fn parse_offset(options: &[(&str, &str)]) -> Result<usize, CliError> {
+    match option(options, "--offset") {
+        None => Ok(0),
+        Some(value) => {
+            let parsed = value.parse::<usize>().map_err(|_| {
+                CliError::usage("knowledge --offset must be a non-negative integer")
+            })?;
+            if parsed > i64::MAX as usize {
+                return Err(CliError::usage(format!(
+                    "knowledge --offset must be at most {max} (got {value})",
+                    max = i64::MAX
+                )));
+            }
+            Ok(parsed)
+        }
+    }
+}
+
 /// Stable error for `model download`: the feature orchestration and its
 /// cancel/downloading state live behind model_download.rs privates that the
 /// parent module cannot reach, and the download path requires the app
@@ -756,7 +763,8 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         KnowledgeCommand::Documents {
             collection_id,
             limit,
-        } => documents(collection_id, limit, output),
+            offset,
+        } => documents(collection_id, limit, offset, output),
         KnowledgeCommand::IndexStatus { job_id } => index_status(job_id.as_deref(), output),
         KnowledgeCommand::IndexCancel { job_id } => index_cancel(&job_id, output),
         KnowledgeCommand::IndexResume { job_id } => index_resume(&job_id, output),
@@ -1548,10 +1556,12 @@ fn collections_add_sources(
 // ───────────────────────── documents ─────────────────────────
 
 /// GUI `kb_documents`: `limit` omitted maps to the GUI's 0 = default page of
-/// 500 (`L1Store::list_documents`).
+/// 500, and `--offset N` pages past the first window exactly like the GUI's
+/// offset pagination (`L1Store::list_documents`).
 fn documents(
     collection_id: i64,
     limit: Option<usize>,
+    offset: usize,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
@@ -1570,7 +1580,7 @@ fn documents(
         // app crate, so the CLI cannot import it; a second local copy of the
         // same number would silently desync the day upstream changes it, and
         // the guarantee is upstream's to keep.
-        .list_documents(collection_id, limit.unwrap_or(0), 0)
+        .list_documents(collection_id, limit.unwrap_or(0), offset)
         .map_err(|error| feature_error("documents", error))?;
     let human = if documents.is_empty() {
         format!("no documents in collection {collection_id}")
@@ -2255,7 +2265,7 @@ mod index_state_result_tests {
 
 #[cfg(test)]
 mod phase_tests {
-    use super::{IndexState, display_phase};
+    use super::{IndexState, display_phase, render_index_state};
 
     fn state(
         running: bool,
@@ -2306,6 +2316,20 @@ mod phase_tests {
             "done"
         );
         assert_eq!(display_phase(&state(false, false, false, None, 0)), "idle");
+    }
+
+    #[test]
+    fn render_surface_carries_a_nonzero_excluder_count() {
+        // r5 review: the >0 disclosure branch had no test — the only fixture
+        // pinned 0, so a reverted line would ship green.
+        let mut nonzero = state(false, false, false, Some("j"), 0);
+        nonzero.skipped_by_excluder = 3;
+        let rendered = render_index_state(&nonzero);
+        assert!(rendered.contains("skipped by index rules: 3"), "{rendered}");
+        // Zero stays byte-absent from the human surface (the disclosure is
+        // conditional; the JSON payload always carries the field).
+        let zero = render_index_state(&state(false, false, false, Some("j"), 0));
+        assert!(!zero.contains("skipped by index rules"), "{zero}");
     }
 }
 
