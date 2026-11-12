@@ -34,12 +34,21 @@ const settingsView = stripComments(source('features/settings/SettingsView.jsx'))
 // displays off.
 assert.match(settingsView, /checked=\{inputNeededNotif && taskCompletedNotif\}/);
 assert.match(settingsView, /disabled=\{!taskCompletedNotif\}/);
+// Anchor existence first: a bare indexOf comparison passes vacuously once
+// its needle disappears (-1 < any positive index), so a renamed row or
+// gate would silently stop pinning anything.
+const masterRowAt = settingsView.indexOf('taskNotice');
+const gateAt = settingsView.indexOf('canConfigureDesktopNotifications &&');
+const inputRowAt = settingsView.indexOf('inputNotice');
+assert.ok(masterRowAt >= 0, 'the master row (taskNotice) must exist for the ordering pin');
+assert.ok(gateAt >= 0, 'the canConfigureDesktopNotifications gate must exist for the placement pin');
+assert.ok(inputRowAt >= 0, 'the input row (inputNotice) must exist for the ordering pins');
 assert.ok(
-  settingsView.indexOf('taskNotice') < settingsView.indexOf('inputNotice'),
+  masterRowAt < inputRowAt,
   'the input row must render in the same section, after the master row',
 );
 assert.ok(
-  settingsView.indexOf('canConfigureDesktopNotifications &&') < settingsView.indexOf('inputNotice'),
+  gateAt < inputRowAt,
   'the input row must live inside the canConfigureDesktopNotifications gate',
 );
 
