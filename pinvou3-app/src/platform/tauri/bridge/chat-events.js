@@ -1264,9 +1264,15 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     // are untrustworthy and the usage bar can only be refreshed by this
     // post_tokens — it must not be swallowed by the dirty semantics.
     const sid = e.payload && e.payload.session_id;
+    // The compactionStarts signal is persistent BY DESIGN: it survives the
+    // terminal and prune-only merges, so the UI can reconcile a manual
+    // compact marker whose start and terminal coalesced before any render
+    // (review 5874108926 follow-up) — cleared with the session.
     if (sid) {
-      if (phase === "start") state.compactingSessions[sid] = Date.now();
-      else delete state.compactingSessions[sid];
+      if (phase === "start") {
+        state.compactingSessions[sid] = Date.now();
+        state.compactionStarts[sid] = Date.now();
+      } else delete state.compactingSessions[sid];
       notify();
     }
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });

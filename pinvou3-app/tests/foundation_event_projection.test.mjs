@@ -27,6 +27,7 @@ const state = {
   tokens: { input: 0, max: 0 },
   thinking: { active: false },
   compactingSessions: {},
+  compactionStarts: {},
 };
 const copy = {
   compactCancel: 'Context compaction canceled',

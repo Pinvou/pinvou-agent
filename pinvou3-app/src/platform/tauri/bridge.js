@@ -204,6 +204,7 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
     // saveWorkingSetTo's explicit fields), so session swaps don't touch it;
     // session deletion/eviction clears it together with turnUsageDirty.
     compactingSessions: {},
+    compactionStarts: {},
     monitor: null,
     backendOnline: null, // null=checking, true, false
     platformCapabilities: {

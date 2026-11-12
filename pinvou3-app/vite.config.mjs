@@ -603,6 +603,11 @@ function enforceLazyChunks() {
 // and the module-scope readout derivation) → 487,594 B desktop
 // (406 B headroom under the 488_000 ceiling, no re-cut needed); web
 // 127,777 B unchanged (still size-identical, 223 B headroom).
+//
+// Review 5874108926 fix waves, measured on the same toolchain: the
+// per-session marker map + the start-signal reconcile sweep (+215 B
+// desktop) → 487,810 B desktop (190 B headroom under the 488_000
+// ceiling, no re-cut needed); web unchanged (still size-identical).
 export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 

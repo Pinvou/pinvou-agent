@@ -1225,6 +1225,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // paths remove only the matching entry.
       const [manualCompactBySid, setManualCompactBySid] = useState({});
       const compactingMap = bs && bs.compactingSessions;
+      // The bridge's persistent per-session start signal (set at start,
+      // survives terminals and prune-only merges, cleared with the
+      // session): lets the sweep reconcile a manual marker whose start and
+      // terminal coalesced before any render while ANOTHER session was
+      // active (review 5874108926 follow-up) — the chatItems fallback
+      // cannot, being the active session's projection only.
+      const startsMap = bs && bs.compactionStarts;
       const compactingStartedAt = activeSessionId && compactingMap
         ? compactingMap[activeSessionId] : 0;
       const compactingActive = !!(compactingStartedAt && Date.now() - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS);
@@ -1256,13 +1263,17 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // check applies), instead of lingering until the session is
             // deleted or evicted.
             if (now - current[sid].at >= COMPACTING_FLAG_MAX_AGE_MS) { drop(sid); continue; }
-            // A fresh bridge flag means the session's start landed: the
-            // marker's enqueue→start window is over and disabling continues
-            // under the bridge marker alone. Any fresh start (auto or
-            // manual) takes the marker over — a click landing mid-turn may
-            // overlap a turn-internal auto compaction, and correlating by
-            // compact id would change both byte-pinned listener bodies
-            // (round-6 review M-2, recorded tradeoff).
+            // A start that landed AFTER this click reconciles the marker:
+            // the start signal survives the terminal and prune-only merges,
+            // so it covers starts and terminals that coalesced before any
+            // render. Any fresh start (auto or manual) takes the marker
+            // over — a click landing mid-turn may overlap a turn-internal
+            // auto compaction, and correlating by compact id would change
+            // both byte-pinned listener bodies (round-6 review M-2,
+            // recorded tradeoff). The fresh bridge flag stays as a
+            // secondary arm for the still-in-flight window.
+            const startedAt = startsMap ? startsMap[sid] : 0;
+            if (startedAt && startedAt >= current[sid].at) { drop(sid); continue; }
             const flagAt = compactingMap ? compactingMap[sid] : 0;
             if (flagAt && now - flagAt < COMPACTING_FLAG_MAX_AGE_MS) drop(sid);
           }
@@ -1288,7 +1299,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           }
           return next;
         });
-      }, [compactingMap, manualCompactBySid, chatItems, activeSessionId]);
+      }, [compactingMap, startsMap, manualCompactBySid, chatItems, activeSessionId]);
       // Proactive fallback heal: while the entry is disabled, schedule one
       // tick at the expiry boundary so a completely idle app still
       // re-enables the button at the 15-minute edge — otherwise, with a

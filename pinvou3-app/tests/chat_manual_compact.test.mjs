@@ -40,6 +40,7 @@ const state = {
   tokens: { input: 40000, max: 131072 },
   thinking: { active: false },
   compactingSessions: {},
+  compactionStarts: {},
 };
 const context = {
   state,
@@ -85,6 +86,7 @@ const emitCompaction = payload => listeners.get('chat:compaction')({
 emitCompaction({ phase: 'start', id: 'compact-1', auto: false, message: 'Manual context compaction started' });
 const compactStartedAt = state.compactingSessions['session-1'];
 assert.ok(typeof compactStartedAt === 'number' && compactStartedAt > 0, 'start must set a timestamped compaction in-flight marker');
+assert.ok(state.compactionStarts['session-1'] > 0, 'start must also record the persistent per-session start signal (it survives the terminal, so coalesced start+terminal for a background session still reconciles)');
 assert.equal(state.chatItems.length, 1, 'the start system item is listed as usual');
 
 // Scenario 2: done clears the marker, and post_tokens is the
@@ -158,7 +160,7 @@ const tauriCompaction = source.slice(source.indexOf('listen("chat:compaction"'))
 const webSource = read('src', 'platform', 'web', 'bridge.js');
 const webCompaction = webSource.slice(webSource.indexOf('listen("chat:compaction"'));
 for (const [label, section] of [['tauri', tauriCompaction], ['web', webCompaction]]) {
-  assert.ok(section.includes('if (phase === "start") state.compactingSessions[sid] = Date.now();'), `${label}: start must set a timestamped marker (the read side heals off it)`);
+  assert.ok(section.includes('state.compactingSessions[sid] = Date.now();'), `${label}: start must set a timestamped marker (the read side heals off it)`);
   assert.ok(section.includes('else delete state.compactingSessions[sid];'), `${label}: the terminal must clear the marker via the else branch (done/fail/cancel all covered)`);
   assert.ok(section.includes('state.tokens = { input: postTokens, max: state.tokens.max };'), `${label}: post_tokens must be written into the usage bar`);
   assert.ok(section.includes('postTokens <= state.tokens.max'), `${label}: the post_tokens over-window guard is retained`);
@@ -169,7 +171,7 @@ for (const [label, section] of [['tauri', tauriCompaction], ['web', webCompactio
   // block's notify (start set / terminal clear stopped refreshing
   // subscribers; both the button disable and the takeover effect went dead)
   // were green before, so the pin is by block text.
-  assert.ok(section.includes('if (sid) {\n      if (phase === "start") state.compactingSessions[sid] = Date.now();\n      else delete state.compactingSessions[sid];\n      notify();\n    }'),
+  assert.ok(section.includes('if (sid) {\n      if (phase === "start") {\n        state.compactingSessions[sid] = Date.now();\n        state.compactionStarts[sid] = Date.now();\n      } else delete state.compactingSessions[sid];\n      notify();\n    }'),
     `${label}: the marker maintenance must notify explicitly (subscriber refreshes rely on it; the post_tokens branch's notify does not cover this branch — deleting it used to be green)`);
 }
 // The both-sides-must-move-together constraint, stated hard: from the
@@ -185,13 +187,18 @@ assert.equal(spanToPostTokensTail(tauriCompaction), spanToPostTokensTail(webComp
 // declarations, deletion/eviction clear it, eviction protection ──
 const sharedSource = read('src', 'shared', 'bridge-shared-helpers.js');
 assert.ok(sharedSource.includes('"compactingSessions"'), 'STATE_SLICE_FIELDS.chat must declare compactingSessions (both lanes share the constant in their snapshots)');
+assert.ok(sharedSource.includes('"compactionStarts"'), 'STATE_SLICE_FIELDS.chat must declare compactionStarts (the start signal must reach the UI snapshot)');
 assert.ok(sharedSource.includes('Date.now() - state.compactingSessions[id] < 15 * 60 * 1000'), 'capacity-eviction protection must read the in-flight marker against the fallback bound (an expired marker does not protect)');
 const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
 assert.equal(tauriBridgeSource.split('compactingSessions: {}').length - 1, 1, 'the tauri state must declare compactingSessions');
+assert.equal(tauriBridgeSource.split('compactionStarts: {}').length - 1, 1, 'the tauri state must declare compactionStarts');
 assert.equal(webSource.split('compactingSessions: {}').length - 1, 1, 'the web state must declare compactingSessions');
+assert.equal(webSource.split('compactionStarts: {}').length - 1, 1, 'the web state must declare compactionStarts');
 const tauriSessionsSource = read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
 assert.equal(tauriSessionsSource.split('delete state.compactingSessions[id]').length - 1, 3, 'the tauri deletion/eviction sites must clear the marker too (all three)');
+assert.equal(tauriSessionsSource.split('delete state.compactionStarts[id]').length - 1, 3, 'the tauri deletion/eviction sites must clear the start signal too (all three)');
 assert.equal(webSource.split('delete state.compactingSessions[id]').length - 1, 3, 'the web deletion/eviction sites must clear the marker too (all three)');
+assert.equal(webSource.split('delete state.compactionStarts[id]').length - 1, 3, 'the web deletion/eviction sites must clear the start signal too (all three)');
 
 // ── ChatView source contract: the guard, per-session enqueue, the error
 // mapping, and the testability hooks ──
@@ -231,8 +238,10 @@ assert.match(chatViewSource, /setManualCompactBySid\(current => \{\s*if \(!curre
 //     (background-finished compactions).
 assert.match(chatViewSource, /for \(const sid of Object\.keys\(current\)\)/, 'the reconcile sweep walks EVERY pending marker (review 5874108926 follow-up: background sessions reconcile too, not just the active one)');
 assert.match(chatViewSource, /if \(now - current\[sid\]\.at >= COMPACTING_FLAG_MAX_AGE_MS\) \{ drop\(sid\); continue; \}/, 'TTL release drops expired entries for every session (not just the active one)');
-assert.match(chatViewSource, /if \(flagAt && now - flagAt < COMPACTING_FLAG_MAX_AGE_MS\) drop\(sid\);/, 'a fresh bridge flag releases the session\'s marker even when it is NOT the active session (A starts+completes while B is active)');
+assert.match(chatViewSource, /if \(startedAt && startedAt >= current\[sid\]\.at\) \{ drop\(sid\); continue; \}/, 'a start that landed after the click releases the marker even when the session is NOT active and the terminal coalesced with the start (A starts+completes while B is active)');
+assert.match(chatViewSource, /if \(flagAt && now - flagAt < COMPACTING_FLAG_MAX_AGE_MS\) drop\(sid\);/, 'a fresh bridge flag releases the session\'s marker even when it is NOT the active session (A starts while B is active, terminal not yet arrived)');
 assert.ok(!chatViewSource.includes('if (sid !== activeSessionId)'), 'the reconcile sweep must NOT skip non-active sessions — an active-only guard would strand background markers until TTL (the appearance-only pin above cannot see an if-false disable, so its absence is pinned directly)');
+assert.match(chatViewSource, /const startsMap = bs && bs\.compactionStarts;/, 'ChatView must read the persistent per-session start signal (the bridge survives terminals and prune-only merges)');
 assert.match(chatViewSource, /const flagAt = compactingMap \? compactingMap\[sid\] : 0;/, 'the sweep consults the GLOBAL flag map (all sessions), not an active-session lookup');
 // (b) the start system-item fallback — when start and the terminal arrive
 //     in the same React batch (an instantly failing compaction), the bridge
@@ -245,7 +254,7 @@ assert.match(chatViewSource, /item\.type === 'system' && item\.compactPhase === 
 // The release effect's dependency array must be pinned: without
 // compactingMap a bridge-marker change is missed, without
 // manualCompactBySid the effect closes over a stale map and clears the
-assert.match(chatViewSource, /\}, \[compactingMap, manualCompactBySid, chatItems, activeSessionId\]\);/, 'the start-takeover release effect must declare the [compactingMap, manualCompactBySid, chatItems, activeSessionId] deps');
+assert.match(chatViewSource, /\}, \[compactingMap, startsMap, manualCompactBySid, chatItems, activeSessionId\]\);/, 'the release effect must declare the [compactingMap, startsMap, manualCompactBySid, chatItems, activeSessionId] deps (a stale startsMap misses background starts)');
 // The fallback heal must be proactive: while the entry is disabled, a tick
 // is scheduled at the expiry boundary so a completely idle app (no
 // unrelated notify, and a click on a disabled button produces no render)

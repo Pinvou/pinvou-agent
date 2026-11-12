@@ -251,7 +251,11 @@ const expectedProtocolHashes = {
   // longer calls post_tokens "accurate" (Rust emits a conservative estimate).
   // Event names, invoke shapes and the payload contract unchanged; the web
   // twin carries the identical body.
-  chat: '7284ef69f9baaef43bed7038bffd62b768cbffb6c9e4e4f155d06fe429dbb58f',
+  // Recomputed for review 5874108926 follow-up: the chat:compaction
+  // marker-maintenance block also records the persistent per-session
+  // compactionStarts signal (no invoke/listen surface change — the body
+  // text is part of the pinned call argument).
+  chat: 'b041c6b4ebdbd11bcf5caa514478face3c96664285b62a39cc670cb72cb00e09',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

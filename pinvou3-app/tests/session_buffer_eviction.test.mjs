@@ -79,6 +79,7 @@ function loadTauriSessionsFeature(overrides) {
     thinking: false,
     tokens: { input: 0, max: 0 },
     compactingSessions: {},
+    compactionStarts: {},
     turnTimeline: [],
     activeTurnTimelineId: null,
     personaEvents: [],

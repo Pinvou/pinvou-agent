@@ -238,6 +238,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     // saveWorkingSetTo's explicit fields), so session swaps don't touch it;
     // session deletion/eviction clears it together with turnUsageDirty.
     compactingSessions: {},
+    compactionStarts: {},
     // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
@@ -953,6 +954,7 @@ function isProtectedScheduledBuffer(id, buf) { return pinvouSharedweb().isProtec
       delete sessionStates[id];
       delete turnUsageDirty[id];
       delete state.compactingSessions[id];
+      delete state.compactionStarts[id];
       // personaPlaceholderTitles is lightweight session metadata (the marker
       // for placeholder titles that auto-rename may override); rehydration
       // never restores it, so capacity eviction must keep it and only real
@@ -997,6 +999,7 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
       delete sessionStates[id];
       delete turnUsageDirty[id];
       delete state.compactingSessions[id];
+      delete state.compactionStarts[id];
       // personaPlaceholderTitles survives capacity eviction (see the
       // comment at the scheduled eviction site); only purgeSessionBuffer
       // (real deletion) cleans it.
@@ -1015,6 +1018,7 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
     delete evictedSessionDrafts[id];
     delete turnUsageDirty[id];
     delete state.compactingSessions[id];
+    delete state.compactionStarts[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
     // The scene-events localStorage key is cleaned together with session deletion, avoiding unbounded accumulation across historical sessions.
@@ -4540,9 +4544,15 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     // are untrustworthy and the usage bar can only be refreshed by this
     // post_tokens — it must not be swallowed by the dirty semantics.
     const sid = e.payload && e.payload.session_id;
+    // The compactionStarts signal is persistent BY DESIGN: it survives the
+    // terminal and prune-only merges, so the UI can reconcile a manual
+    // compact marker whose start and terminal coalesced before any render
+    // (review 5874108926 follow-up) — cleared with the session.
     if (sid) {
-      if (phase === "start") state.compactingSessions[sid] = Date.now();
-      else delete state.compactingSessions[sid];
+      if (phase === "start") {
+        state.compactingSessions[sid] = Date.now();
+        state.compactionStarts[sid] = Date.now();
+      } else delete state.compactingSessions[sid];
       notify();
     }
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
