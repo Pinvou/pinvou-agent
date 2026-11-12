@@ -39,9 +39,9 @@ pub use connectors::tmeet::{TMEET_MIN_VERSION, TMEET_NPM_SPEC};
 pub use connectors::wecom::WECOM_MIN_VERSION;
 // The CLI's connectors ima lanes and the plugins readiness table consume the
 // app's status computation instead of re-deriving it (the CLI keeps only its
-// documented credential-store degrade wrapper): the skill id, the status
-// struct and the store-parameterized status read were crate-private, which
-// forced a hand mirror of both the constant and the readiness predicate.
+// documented credential-store degrade wrapper): the skill id and the
+// store-parameterized status read were crate-private, which forced a hand
+// mirror of both the constant and the readiness predicate.
 pub use connectors::ima::{IMA_SKILL_ID, IMA_SKILL_VERSION, status_with_store};
 // `pub` for the headless CLI (`pinvou artifacts list`): the shared
 // `deliverable_index` fn (with its `DeliverableIndex`/`DeliverableItem`

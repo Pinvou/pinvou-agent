@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 /// Loopback endpoint of the bundled local host service — the single source
 /// for every spelling of it (host status/reporting, the owner register/rebind
 /// calls, and the desktop's kb-model host-refresh filter; the connection
-/// store persists exactly this normalized form).
+/// store persists exactly this normalized form). Call sites may pass the
+/// bare `127.0.0.1:3210` form interchangeably: `normalize_user_endpoint`
+/// defaults the scheme, so both spellings persist identically.
 pub(crate) const LOCAL_ENDPOINT: &str = "https://127.0.0.1:3210";
 
 #[derive(Debug, Clone, Serialize)]
