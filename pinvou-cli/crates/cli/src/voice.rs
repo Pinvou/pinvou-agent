@@ -100,8 +100,9 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::voice::contract::{
     asr_dir, asr_download_max_bytes, current_model_spec, engine_binary_name,
     kimi_supports_disabled_thinking, sanitize_voice_postprocess_output,
-    truncate_voice_postprocess_input, voice_postprocess_max_tokens, voice_postprocess_prompt,
-    voice_postprocess_retry_prompt, voice_postprocess_timeout, voice_postprocess_user_content,
+    truncate_voice_postprocess_input, voice_postprocess_input_clipped,
+    voice_postprocess_max_tokens, voice_postprocess_prompt, voice_postprocess_retry_prompt,
+    voice_postprocess_timeout, voice_postprocess_user_content,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2008,9 +2009,15 @@ fn postprocess(
         CliError::usage("voice postprocess requires exactly one of --text or --text-file")
     })?;
     // Same input hygiene as the ASR text: regular files only, 64 KiB cap,
-    // then the app's 4000-character model-input truncation
-    // (`truncate_voice_postprocess_input` is applied to the draft there too).
+    // then the app's `VOICE_POSTPROCESS_MAX_INPUT_CHARS` model-input
+    // truncation (`truncate_voice_postprocess_input` is applied to the draft
+    // there too).
     let draft_input = read_source(draft, draft_file, "draft")?;
+    // Clip detection on the UNtruncated draft, taken before `draft_text`
+    // consumes the raw string below.
+    let draft_clipped = draft_input
+        .as_deref()
+        .is_some_and(|draft| voice_postprocess_input_clipped(draft.trim()));
     let draft_text = draft_input
         .map(|draft| truncate_voice_postprocess_input(draft.trim()))
         .filter(|draft| !draft.is_empty());
@@ -2025,25 +2032,34 @@ fn postprocess(
         ));
     }
     let raw_text = truncate_voice_postprocess_input(raw_input.trim());
+    // GUI parity (`app/commands/voice.rs`): detect clipping on the UNtruncated
+    // strings and OR it into the reported `truncated` flag — a rewrite
+    // computed from a clipped prefix must never print `Truncated: false`. The
+    // draft is the rewrite target only in edit mode; outside edit mode it is
+    // reference context, so its clipping must not flag the result.
+    let input_clipped = voice_postprocess_input_clipped(raw_input.trim())
+        || (matches!(mode, PostprocessMode::Edit) && draft_clipped);
     if raw_text.is_empty() {
         // Mirror of the GUI early return: pure-noise input short-circuits to
-        // an empty result without touching the model.
+        // an empty result without touching the model. `truncated` still
+        // carries input clipping (edit mode can clip a non-empty draft).
         let value = serde_json::json!({
             "text": "",
             "mode": mode.as_str(),
             "source": "empty",
-            "truncated": false,
+            "truncated": input_clipped,
             "omitted_stages": POSTPROCESS_OMITTED_STAGES,
         });
         // The empty short-circuit discloses the omitted GUI stages exactly
         // like the model path does: same JSON field, same line set (the
-        // `Truncated: false` line keeps the human schema branch-independent,
+        // `Truncated:` line keeps the human schema branch-independent,
         // mirroring the model path below), same trailing Note line.
         return Ok(success(render(
             output,
             format!(
-                "Mode: {}\nSource: empty\nTruncated: false\nText:\n{}",
+                "Mode: {}\nSource: empty\nTruncated: {}\nText:\n{}",
                 mode.as_str(),
+                input_clipped,
                 POSTPROCESS_NOTE
             ),
             &value,
@@ -2144,17 +2160,20 @@ fn postprocess(
         async move { work.await.map_err(std::convert::Into::into) }
     })
     .map_err(|error| CliError::failed(format!("voice postprocess failed: {error:#}")))?;
+    // Input clipping ORs into the reported flag (see above): the model output
+    // itself may be complete, but it was computed from a clipped prefix.
+    let truncated = host_result.truncated || input_clipped;
     let value = serde_json::json!({
         "text": host_result.text,
         "mode": mode_str,
         "source": "llm",
-        "truncated": host_result.truncated,
+        "truncated": truncated,
         "omitted_stages": POSTPROCESS_OMITTED_STAGES,
     });
     let human = format!(
         "Mode: {}\nSource: llm\nTruncated: {}\nText: {}\n{}",
         mode_str,
-        host_result.truncated,
+        truncated,
         // The text is model output parsing an untrusted document: the same
         // ESC/bidi block sanitizer as the transcribe lane applies (JSON mode
         // keeps the verbatim bytes via serde).
