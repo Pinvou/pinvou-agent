@@ -430,7 +430,12 @@ impl Store {
             // table_info) instead of string-matching SQLite's error text: a
             // fresh v5 database already has the column from the CREATE TABLE
             // and skips the ALTER, a pre-v5 store takes it, and any real
-            // fault still propagates.
+            // fault still propagates. Known one-time race: the desktop app
+            // and the CLI opening the SAME pre-v5 store concurrently can
+            // both observe column-absent; the loser's ALTER fails loudly
+            // ("duplicate column name"), that open errors, and the next
+            // open takes the steady-state branch — no corruption, no
+            // silent recovery. Accepted for a one-time migration window.
             let column_present = {
                 let mut stmt = w.prepare("PRAGMA table_info(knowledge_import_jobs)")?;
                 let mut rows = stmt.query([])?;

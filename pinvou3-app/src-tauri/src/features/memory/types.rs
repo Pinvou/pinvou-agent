@@ -421,9 +421,12 @@ pub(super) fn normalize_profile_label(value: &str, topic: &str) -> String {
 /// honesty: the GUI save path does NOT gate wipe-shaped labels today —
 /// SettingsView only trims and `update_memory_profile` applies the patch
 /// unguarded, so a whitespace/over-long GUI label is silently normalized
-/// (possibly to `""`). The guard itself also short-circuits on a
-/// trim-empty value, so a whitespace CLI value bypasses it too — that
-/// lane is closed CLI-side by parse refusal; this logic stays as-is.
+/// (possibly to `""`). UPDATE, limits-audit batch: that gap is now closed —
+/// `update_memory_profile` calls this predicate before any write and refuses
+/// with the same message as the CLI lane, so a GUI label can no longer wipe
+/// the stored value silently. The trim-empty short-circuit below still means
+/// a whitespace CLI value bypasses the predicate — that lane is closed
+/// CLI-side by parse refusal; this logic stays as-is.
 pub fn profile_label_would_be_wiped(value: &str, topic: &str) -> bool {
     !value.trim().is_empty() && normalize_profile_label(value, topic).is_empty()
 }
