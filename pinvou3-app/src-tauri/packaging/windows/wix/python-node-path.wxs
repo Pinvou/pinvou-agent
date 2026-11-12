@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="PythonNodeRuntimeEnvironment" Guid="9e743eff-fde1-4479-af1e-9599dbbee0d8">
+        <RegistryValue Root="HKLM"
+                       Key="Software\pinvou\pinvou3"
+                       Name="PythonNodeRuntimeEnvironment"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+        <Environment Id="PinvouPythonExecutable"
+                     Name="PINVOU3_PYTHON"
+                     Value="[INSTALLDIR]runtime\python\pythonw.exe"
+                     Action="set"
+                     Part="all"
+                     System="yes"
+                     Permanent="no" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

@@ -1,7 +1,8 @@
 param(
   [switch]$ForceLfsPull,
   [switch]$CacheKeyOnly,
-  [switch]$OnnxOnly
+  [switch]$OnnxOnly,
+  [switch]$ImportFunctionsOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,28 +36,36 @@ $runtimeRoot = Join-Path $repoRoot $runtimePath
 $runtimeLockPath = Join-Path $repoRoot "pinvou3-app\src-tauri\config\platforms\windows\runtime\x86_64.lock.json"
 $resolverCacheRoot = Join-Path $repoRoot "pinvou3-app\src-tauri\target\windows-runtime"
 $resolverLockPath = Join-Path $resolverCacheRoot ".resolver.lock"
+$lfsStorageRoot = Join-Path $resolverCacheRoot "lfs-storage"
 $cacheSchema = "v5"
 
 function Invoke-Git {
   param(
     [string]$WorkingDirectory,
     [string[]]$Arguments,
-    [string]$FailureMessage
+    [string]$FailureMessage,
+    [string]$GitCommand = "git"
   )
 
-  $output = @()
-  $exitCode = 1
+  $gitExecutable = [string](
+    Get-Command -Name $GitCommand -CommandType Application -ErrorAction Stop |
+      Select-Object -First 1 -ExpandProperty Source
+  )
+  if ([string]::IsNullOrWhiteSpace($gitExecutable)) {
+    throw "Unable to resolve the Git executable: $GitCommand"
+  }
   $previousErrorActionPreference = $ErrorActionPreference
+  $exitCode = $null
   try {
-    # Windows PowerShell 5.1 can turn normal native stderr progress into a
-    # terminating NativeCommandError while ErrorActionPreference is Stop.
+    # Windows PowerShell 5.1 converts native stderr into ErrorRecord objects.
+    # Git writes normal fetch progress to stderr, so only its exit code may
+    # decide success; keep the captured stderr for diagnostics on real errors.
     $ErrorActionPreference = "Continue"
-    $output = @(& git -C $WorkingDirectory @Arguments 2>&1)
+    $output = & $gitExecutable -C $WorkingDirectory @Arguments 2>&1
     $exitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
   }
-
   if ($exitCode -ne 0) {
     throw "$FailureMessage $($output -join ' ')"
   }
@@ -123,6 +132,19 @@ function Get-LfsPointerPaths {
   )
 }
 
+function Update-RuntimeSubmoduleWithoutLfsSmudge {
+  $previousSkipSmudge = [Environment]::GetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE", "Process")
+  try {
+    [Environment]::SetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE", "1", "Process")
+    Invoke-Git -WorkingDirectory $repoRoot -Arguments @(
+      "-c", "submodule.$runtimePath.update=checkout",
+      "submodule", "update", "--init", "--checkout", "--", $runtimePath
+    ) -FailureMessage "Unable to initialize the private Windows runtime submodule. Confirm repository access and retry." | Out-Null
+  } finally {
+    [Environment]::SetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE", $previousSkipSmudge, "Process")
+  }
+}
+
 function Enter-RuntimeResolverLock {
   param([int]$TimeoutSeconds = 120)
 
@@ -145,6 +167,10 @@ function Enter-RuntimeResolverLock {
   }
 }
 
+if ($ImportFunctionsOnly) {
+  return
+}
+
 $expectedCommit = Get-GitlinkCommit
 $lockSha256 = Get-RuntimeLockSha256
 $cacheKey = "pinvou3-windows-runtime-$cacheSchema-$expectedCommit-$($lockSha256.Substring(0, 16))"
@@ -157,16 +183,7 @@ $resolverLock = Enter-RuntimeResolverLock
 try {
   $currentCommit = Get-CurrentRuntimeCommit
   if ($currentCommit -ne $expectedCommit) {
-    $previousSkipSmudge = [Environment]::GetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE")
-    try {
-      if ($OnnxOnly) { [Environment]::SetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE", "1") }
-      Invoke-Git -WorkingDirectory $repoRoot -Arguments @(
-        "-c", "submodule.$runtimePath.update=checkout",
-        "submodule", "update", "--init", "--checkout", "--", $runtimePath
-      ) -FailureMessage "Unable to initialize the private Windows runtime submodule. Confirm repository access and retry." | Out-Null
-    } finally {
-      [Environment]::SetEnvironmentVariable("GIT_LFS_SKIP_SMUDGE", $previousSkipSmudge)
-    }
+    Update-RuntimeSubmoduleWithoutLfsSmudge
 
     $currentCommit = Get-CurrentRuntimeCommit
     if ($currentCommit -ne $expectedCommit) {
@@ -177,13 +194,13 @@ try {
     Write-Host "Reused private Windows runtime submodule checkout: $expectedCommit"
   }
 
-  $trackedPaths = @(Get-LfsTrackedPaths)
-  $pointerPaths = if ($ForceLfsPull) { $trackedPaths } else { @(Get-LfsPointerPaths) }
+  New-Item -ItemType Directory -Path $lfsStorageRoot -Force | Out-Null
+  $pointerPaths = if ($ForceLfsPull) { @(Get-LfsTrackedPaths) } else { @(Get-LfsPointerPaths) }
   if ($OnnxOnly) {
     $pointerPaths = @($pointerPaths | Where-Object { $_ -like "*/onnxruntime-win-x64-*-runtime.zip" })
   }
   if ($ForceLfsPull -or $pointerPaths.Count -gt 0) {
-    $lfsArguments = @("lfs", "pull")
+    $lfsArguments = @("-c", "lfs.storage=$lfsStorageRoot", "lfs", "pull")
     if ($OnnxOnly -or (-not $ForceLfsPull -and $pointerPaths.Count -gt 0)) {
       $lfsArguments += "--include=$($pointerPaths -join ',')"
       $lfsArguments += "--exclude="
@@ -204,6 +221,7 @@ try {
   }
 
   Write-Host "Windows runtime Jenkins cache key: $cacheKey"
+  Write-Host "Windows runtime external Git LFS storage: $lfsStorageRoot"
   Write-Output "PINVOU3_WINDOWS_RUNTIME_CACHE_KEY=$cacheKey"
 } finally {
   if ($null -ne $resolverLock) {
