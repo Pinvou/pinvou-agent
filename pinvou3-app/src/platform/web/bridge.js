@@ -231,10 +231,12 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     artifactChange: { seq: 0, path: "", event: "", sessionId: "", at: 0 },
     // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
     sessionBusy: {},
-    // 上下文压缩进行中的会话 { session_id: 置位时刻毫秒时间戳 }。chat:compaction start 置位、
-    // done/fail/cancel 终态清除；主车道压缩入口据此禁用（与代码车道
-    // code-native-lane 的 lane.compacting 同机制）。不属于工作集（saveWorkingSetTo
-    // 的显式字段表之外），切会话 swap 不影响；会话删除/驱逐时随 turnUsageDirty 一并清除。
+    // Sessions with a compaction in flight, { session_id: set-at epoch ms }.
+    // chat:compaction start sets it and done/fail/cancel clears it; the main
+    // lane's compact entry disables off it (the same mechanism as the code
+    // lane's lane.compacting). Outside the working set (not among
+    // saveWorkingSetTo's explicit fields), so session swaps don't touch it;
+    // session deletion/eviction clears it together with turnUsageDirty.
     compactingSessions: {},
     // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
     queued: [],
@@ -4516,19 +4518,27 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
-    // 压缩在途标记：start 置位、终态（done/fail/cancel）清除，供主车道压缩入口
-    // 禁用按钮（与代码车道 code-native-lane 的 lane.compacting 同机制）。
-    // start 存时间戳：终态可能永不达（引擎驱逐会中止 forwarder，见
-    // engine_pool.rs reclaim_engine_entry 注释；web 端桌面重启同样丢终态），
-    // 读取侧按与 Rust MAX_COMPACTION_LATCH_AGE 同款的 15 分钟兜底自愈，
-    // 入口不会永久禁用。兜底按墙钟（Date.now）而非 Rust 侧 Instant 单调钟：
-    // 时钟前拨/休眠恢复会提前解禁，压缩超过 15 分钟时入口先于引擎完成
-    // 重新允许点击——重复入队的代价与 Rust 侧锁存过期一致（pool.compact_now
-    // 无入队去重），接受；不为此引入对齐单调钟的额外机制。
-    // done 携带的 post_tokens 是压缩后的占用估计（forwarder 为刷新用量条
-    // 而加，Rust 侧为 estimated_input_tokens 保守估算）；压缩轮已置
-    // turnUsageDirty，后续 usage 累计值不可信，用量条只能靠这里的
-    // post_tokens 刷新，因此不得被 dirty 语义拦下。
+    // The compaction in-flight marker: start sets it, a terminal
+    // (done/fail/cancel) clears it, and the main lane's compact entry
+    // disables off it (the same mechanism as the code lane's
+    // lane.compacting). start stores a timestamp: the terminal event may
+    // never arrive (evicting the engine aborts its forwarder — see the
+    // reclaim_engine_entry comment in engine_pool.rs; a desktop restart on
+    // the web side loses it the same way), so the read side heals after 15
+    // minutes, the same fallback as Rust's MAX_COMPACTION_LATCH_AGE, and
+    // the entry is not disabled forever. The fallback reads the wall clock
+    // (Date.now), not a Rust-side monotonic Instant: a clock jump or resume
+    // from sleep re-enables early, and a compaction running past 15 minutes
+    // re-enables the entry before the engine finishes — the cost of a
+    // duplicate enqueue equals the Rust latch expiring (pool.compact_now
+    // does not coalesce enqueues), which is accepted; no extra
+    // monotonic-clock alignment machinery is introduced for it.
+    // The post_tokens carried by done is a post-compaction usage estimate
+    // (the forwarder gained it to refresh the usage bar; the Rust side
+    // computes it as a conservative estimated_input_tokens). The compaction
+    // turn already set turnUsageDirty, so subsequent usage accumulations
+    // are untrustworthy and the usage bar can only be refreshed by this
+    // post_tokens — it must not be swallowed by the dirty semantics.
     const sid = e.payload && e.payload.session_id;
     if (sid) {
       if (phase === "start") state.compactingSessions[sid] = Date.now();

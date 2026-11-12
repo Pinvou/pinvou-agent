@@ -243,11 +243,13 @@ const MULTI_AGENT_ENABLED = can('multiAgent');
 // fall back to the default card.
 const COMPUTER_USE_ENABLED = can('computerUse');
 
-// 主车道手动压缩入口的在途兜底时限（15 分钟）：镜像 Rust
-// MAX_COMPACTION_LATCH_AGE（engine_pool.rs）。机制与墙钟取舍详见
-// ChatView 组件内压缩入口的注释块。置于模块作用域：它是不随渲染变化的
-// 常量，留在组件内会触发 react-hooks/exhaustive-deps（自愈 effect 读取
-// 它而依赖数组不含组件内值）。
+// The manual compact entry's in-flight fallback bound (15 minutes),
+// mirroring Rust's MAX_COMPACTION_LATCH_AGE (engine_pool.rs). See the
+// compact-entry comment block inside the ChatView component for the
+// mechanism and the wall-clock tradeoff. Module scope: it is a
+// render-invariant constant, and keeping it inside the component would
+// trip react-hooks/exhaustive-deps (the heal effect reads it while its
+// dependency array has no component-local values).
 const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
 
 // Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
@@ -1180,107 +1182,160 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [queuedEditCandidate, queued, activeSessionId, t, flashQueuedNotice]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
-      // 用量读出文本独立成值：按钮可见内容与读屏名共用一份。aria-label 不
-      // 得整体覆盖掉用量信息——此前读屏只听到动作名，占用读数（控件存在的
-      // 理由）反而丢了（round-6 review M-5），组合名 = 读数 + 动作提示。
+      // The usage readout text is its own value: the button's visible
+      // content and its screen-reader name share it. The aria-label must
+      // not overwrite the usage outright — screen readers previously heard
+      // only the action name and lost the usage readout (the very reason
+      // the control exists; round-6 review M-5) — so the composed name is
+      // readout + action hint.
       const ctxUsageText = ctxTokens && ctxTokens.max > 0
         ? `${t.ctxUsage} ${ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / ${formatCompactCount(ctxTokens.max)} · ${Math.round(ctxPct * 100)}%`
         : '';
-      // 手动压缩入口：点击 ctx 用量行触发 compact_now。进行中/结果由
-      // chat:compaction 系统项呈现（与代码车道共享同一事件流，桥接层已
-      // 渲染 compactStart/Done/Cancel）。命令本身只把 Op 入队即返回：轮次
-      // 进行中压缩会排队到轮末才跑，所以 busy（当前会话 turn）与
-      // compactingSessions（桥接层 chat:compaction start→终态在途标记，与
-      // 代码车道 lane.compacting 同机制）都必须禁用入口，否则点击在轮末前
-      // 无任何反馈，且按钮复位后重复点击会重复入队压缩。手动标记从点击
-      // 一直保持到桥接层 start 写入标记（见下方 effect，无需该会话处于
-      // 激活），而非 invoke 返回即清——入队到 start 之间按钮不得复位，
-      // 否则双击会重复入队压缩。
-      // compactingSessions 与手动标记都存时间戳，读取按 15 分钟兜底自愈
-      // （与 Rust MAX_COMPACTION_LATCH_AGE 同款，engine_pool.rs）：终态
-      // 事件丢失（引擎被驱逐中止 forwarder、web 端桌面重启）时在途标记
-      // 过期失效，入口不会永久禁用。兜底按墙钟而非单调钟：时钟前拨或
-      // 休眠恢复会提前解禁（与 Rust Instant 语义存在窗口差，压缩超长时
-      // 重复入队的代价与 Rust 侧锁存过期一致，接受）。按会话记录
-      // （ChatView 切会话不 remount，状态按会话键控保留），A 会话
-      // 入队中不误禁 B 会话。
-      const [manualCompact, setManualCompact] = useState(null); // { sid, at }
+      // Manual compact entry: clicking the ctx usage row triggers
+      // compact_now. Progress/result surface as chat:compaction system
+      // items (shared with the code lane's event stream; the bridge already
+      // renders compactStart/Done/Cancel). The command itself only enqueues
+      // the Op and returns: a compaction requested mid-turn queues until the
+      // turn ends, so both busy (the current session's turn) and
+      // compactingSessions (the bridge's chat:compaction start→terminal
+      // in-flight marker, the same mechanism as the code lane's
+      // lane.compacting) must disable the entry — otherwise a click gives no
+      // feedback before the turn ends, and a click after the button resets
+      // would enqueue the compaction twice. The manual marker is kept from
+      // the click until the bridge's start marker lands (see the effect
+      // below; the session need not stay active), not cleared when invoke
+      // returns — between enqueue and start the button must not reset, or a
+      // double click would enqueue the compaction twice.
+      // Both compactingSessions and the manual markers carry timestamps and
+      // heal at read time after 15 minutes (the same fallback as Rust's
+      // MAX_COMPACTION_LATCH_AGE, engine_pool.rs): when a terminal event is
+      // lost (the engine is evicted and aborts its forwarder, or the desktop
+      // restarts on the web side) the in-flight marker expires and the entry
+      // is not disabled forever. The fallback reads the wall clock, not a
+      // monotonic one: a clock jump or resume from sleep re-enables early
+      // (a window differs from Rust's Instant semantics; re-enqueueing an
+      // over-long compaction costs the same as the Rust latch expiring, and
+      // that tradeoff is accepted). Markers are retained PER SESSION
+      // (review 5874108926 P2): ChatView does not remount on a session
+      // switch, so a single { sid, at } slot let a queue for B overwrite the
+      // queue for A before A's bridge start arrived — switching back to A
+      // then showed no marker and a second click could enqueue a second
+      // CompactContext for A (the pool does not coalesce these), costing an
+      // extra lossy summary. The map keys markers by sid and the release
+      // paths remove only the matching entry.
+      const [manualCompactBySid, setManualCompactBySid] = useState({});
       const compactingMap = bs && bs.compactingSessions;
       const compactingStartedAt = activeSessionId && compactingMap
         ? compactingMap[activeSessionId] : 0;
       const compactingActive = !!(compactingStartedAt && Date.now() - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS);
-      const manualCompactActive = !!(manualCompact && manualCompact.sid === activeSessionId
-        && Date.now() - manualCompact.at < COMPACTING_FLAG_MAX_AGE_MS);
+      const activeManualCompact = activeSessionId ? manualCompactBySid[activeSessionId] : undefined;
+      const manualCompactActive = !!(activeManualCompact
+        && Date.now() - activeManualCompact.at < COMPACTING_FLAG_MAX_AGE_MS);
       const ctxCompactInFlight = compactingActive || manualCompactActive;
       useEffect(() => {
-        // 桥接层 start 已写入该会话的标记 → 立即释放手动标记（身份校验，
-        // 只清本会话）：此后禁用与终态清理由桥接标记独自负责。释放不能
-        // 以"该会话处于激活"为前提——压缩在后台完成（start/done 在别的
-        // 会话激活期间到达）时 effect 永远看不到 compactingActive，残留
-        // 的手动标记会把按钮多禁一轮 TTL 并显示假的"压缩中"。
-        // 接管还要求标记新鲜：终态丢失的过期条目要滞留到该会话被删除/
-        // 驱逐才清，若按"存在即接管"，重试点击刚置位的新标记会被旧条目
-        // 立即释放——新 start 落地前入口提前复位，快速二连击会重复入队。
-        // 接管匹配该会话任一新鲜 start，不区分 auto/manual：点击经 busy
-        // 事件延迟的竞态落进轮中时，入队的手动压缩可能与轮内自动压缩交叠，
-        // 自动 start 会提前释放手动标记、重开重复入队窗口——代价（一次
-        // 重复压缩，pool 无入队去重）与已披露的单槽覆盖窗口同级，接受；
-        // 按 compact id 关联需改双端字节钉住的监听体并重算协议摘要，得不
-        // 偿失（round-6 review M-2，记录取舍不修）。
-        // start 与终态同一 React 批次到达（秒败压缩，如 provider 立刻 401）
-        // 时，桥接标记从未出现在任何一次渲染里，上面的存在性接管永远看不
-        // 到它；而 start 系统项是追加式投影（itemId 单调递增；prune-only
-        // 合并会移除 start 项，该残留由 TTL 兜底），合批后的最终快照仍含
-        // 它——按"点击快照之后新出现的 start 系统项"兜底释放，秒败也不把
-        // 按钮钉满一轮 TTL（round-6 review M-1）。
-        const takeoverFlagAt = manualCompact && compactingMap ? compactingMap[manualCompact.sid] : 0;
+        // The bridge's start marker for this session landed → release the
+        // session's own manual marker immediately (matched by sid; other
+        // sessions' markers are untouched): from here on, disabling and
+        // terminal cleanup are the bridge marker's job alone. The release
+        // must not be conditioned on the session being active — a
+        // compaction finishing in the background (start/done arriving while
+        // another session is active) would never see compactingActive in
+        // this effect, and the leftover marker would keep the button
+        // disabled for another TTL and show a false "compacting" state.
+        // The takeover also requires the marker to be FRESH: an entry whose
+        // terminal event was lost lingers until the session is deleted or
+        // evicted, and with a bare existence check such a stale entry would
+        // instantly release a retry click's brand-new marker — the entry
+        // resets before the new start lands and a fast double click could
+        // enqueue twice.
+        // The takeover matches ANY fresh start for the session, auto or
+        // manual: when a click lands mid-turn through the busy event's
+        // delay, the enqueued manual compaction may overlap a turn-internal
+        // auto compaction whose start releases the manual marker early and
+        // reopens the double-enqueue window. With per-session markers the
+        // stale-entry cost stays bounded to the one sid (review
+        // 5874108926 P2: the previous single slot let a B-side queue erase
+        // A's marker outright); correlating by compact id would change both
+        // byte-pinned listener bodies and re-derive the protocol digests,
+        // which is not worth it (round-6 review M-2, recorded tradeoff).
+        // When start and the terminal event arrive in the same React batch
+        // (a compaction failing instantly, e.g. the provider 401s at once),
+        // the bridge marker never appears in any render and the existence
+        // takeover above can never see it; but start system items are an
+        // append-only projection (itemIds are monotonically increasing; a
+        // prune-only merge removes the start item — that residue falls back
+        // to the TTL), so the post-batch snapshot still contains it —
+        // releasing on "a start item newer than the click snapshot" keeps
+        // an instant failure from pinning the button for a full TTL
+        // (round-6 review M-1).
+        const entry = activeSessionId ? manualCompactBySid[activeSessionId] : undefined;
+        const takeoverFlagAt = entry && compactingMap ? compactingMap[activeSessionId] : 0;
         const flagTookOver = !!(takeoverFlagAt && Date.now() - takeoverFlagAt < COMPACTING_FLAG_MAX_AGE_MS);
         let itemTookOver = false;
-        if (!flagTookOver && manualCompact && manualCompact.sid === activeSessionId) {
+        if (!flagTookOver && entry) {
           for (let i = chatItems.length - 1; i >= 0; i--) {
             const item = chatItems[i];
-            if (!item || item.id <= manualCompact.itemsAt) break; // id 单调，越过点击快照即可停
+            if (!item || item.id <= entry.itemsAt) break; // ids are monotonic; stop past the click snapshot
             if (item.type === 'system' && item.compactPhase === 'start') { itemTookOver = true; break; }
           }
         }
         if (flagTookOver || itemTookOver) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- 与 RightDock 的 stale-permit 撤销同款：start 接管后必须同步释放手动标记，否则终态清掉桥接标记后手动标记会复活、按钮被无谓多禁一轮 TTL
-          setManualCompact(current => (current && current.sid === manualCompact.sid ? null : current));
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- same shape as RightDock's stale-permit revocation: once start takes over, the manual marker must be released synchronously or it revives after the terminal clears the bridge marker and needlessly disables the button for another TTL
+          setManualCompactBySid(current => {
+            if (!current[activeSessionId]) return current;
+            const next = { ...current };
+            delete next[activeSessionId];
+            return next;
+          });
         }
-      }, [compactingMap, manualCompact, chatItems, activeSessionId]);
-      // 兜底自愈的主动触发：入口禁用期间排一个到期 tick，完全空闲的应用也能在
-      // 15 分钟边界恢复按钮——否则终态丢失时要等下一次无关 notify 才重渲染，
-      // 而被禁用按钮的点击本身不产生渲染，会一直停在假"压缩中"。压缩在途
-      // 罕见，定时器仅存在于途期间，常态空闲零开销。
+      }, [compactingMap, manualCompactBySid, chatItems, activeSessionId]);
+      // Proactive fallback heal: while the entry is disabled, schedule one
+      // tick at the expiry boundary so a completely idle app still
+      // re-enables the button at the 15-minute edge — otherwise, with a
+      // lost terminal event, the button would wait for the next unrelated
+      // notify to re-render, and a click on the disabled button produces no
+      // render at all, leaving the false "compacting" state stuck. An
+      // in-flight compaction is rare, the timer exists only while one is,
+      // and the idle state pays zero overhead.
       const [, setCompactHealTick] = useState(0);
       useEffect(() => {
         if (!ctxCompactInFlight) return;
         const healBoundaryAt = Math.min(
           compactingStartedAt ? compactingStartedAt + COMPACTING_FLAG_MAX_AGE_MS : Infinity,
-          manualCompact ? manualCompact.at + COMPACTING_FLAG_MAX_AGE_MS : Infinity,
+          activeManualCompact ? activeManualCompact.at + COMPACTING_FLAG_MAX_AGE_MS : Infinity,
         );
         const healDelayMs = healBoundaryAt - Date.now();
         if (!Number.isFinite(healDelayMs)) return;
         const healTimer = setTimeout(() => setCompactHealTick(current => current + 1), Math.max(healDelayMs, 0));
         return () => clearTimeout(healTimer);
-      }, [ctxCompactInFlight, compactingStartedAt, manualCompact]);
+      }, [ctxCompactInFlight, compactingStartedAt, activeManualCompact]);
       const handleManualCompact = useCallback(async () => {
         const sid = activeSessionId;
         if (!sid || manualCompactActive || compactingActive || busy) return;
-        // 快照点击时的条目 id 上界：start 系统项兜底释放以此界定"点击之后
-        // 新出现的 start"（itemId 全桥单调递增，跨压缩/跨条目可比）。
+        // Snapshot the item-id upper bound at click time: the start-item
+        // fallback release matches "a start newer than the click" against
+        // it (itemIds are monotonic across the whole bridge, comparable
+        // across compactions and items).
         const maxItemId = chatItems.reduce((max, item) => ((item && item.id > max) ? item.id : max), 0);
-        setManualCompact({ sid, at: Date.now(), itemsAt: maxItemId });
+        setManualCompactBySid(current => ({ ...current, [sid]: { at: Date.now(), itemsAt: maxItemId } }));
         try {
           await invokeTauri('compact_now', { sessionId: sid });
         } catch (err) {
           const raw = String(err && err.message ? err.message : err || '');
-          // 引擎懒启动，重启后未发过消息的会话没有可压缩的上下文——与代码
-          // 车道一致，把该错误映射为本地化指引文案而不是裸错误链。
+          // The engine starts lazily; a session that never sent a message
+          // after a restart has nothing to compact — same as the code lane,
+          // map that error to localized guidance instead of a raw error
+          // chain.
           const detail = raw.includes('session_engine_not_running') ? t.uiCodex.nativeCompactInactive : raw;
           flashQueuedNotice(sid, { text: `${t.uiCodex.compactFail}: ${detail}` });
-          // 失败即清：成功路径保持置位，直到桥接层 start 接管（effect）。
-          setManualCompact(current => (current && current.sid === sid ? null : current));
+          // A failure clears this session's own entry; the success path
+          // stays set until the bridge's start takes over (the effect).
+          setManualCompactBySid(current => {
+            if (!current[sid]) return current;
+            const next = { ...current };
+            delete next[sid];
+            return next;
+          });
         }
       }, [manualCompactActive, compactingActive, busy, activeSessionId, chatItems, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
