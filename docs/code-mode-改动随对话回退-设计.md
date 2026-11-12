@@ -52,7 +52,7 @@
 ```text
 <ledger>/checkpoints/
   repo/        # 影子 git-dir（--work-tree=执行根，从不触碰用户 .git）
-  index.json   # CheckpointIndex { version, entries }，上限 20 LRU
+  index.json   # CheckpointIndex { version, entries }，上限 100 LRU
 ```
 
 核心语义（移植自 feat 分支，均已有测试）：
@@ -109,12 +109,12 @@ feat 分支没有的部分，本方案新增：
 |---|---|
 | 系统无 git 二进制 | 快照失败 warn 不阻断 turn；该会话无回退入口（ADR-0006 修订后合法的降级） |
 | 工作区快照失败（磁盘满等） | 同上，该轮无入口，如实记日志 |
-| 目标 turn 的 checkpoint 已被 LRU（上限 20）淘汰 | 入口按 checkpoint 可用性渲染；老节点仅允许「仅回退对话」，文案明示代码不回退 |
+| 目标 turn 的 checkpoint 已被 LRU（上限 100）淘汰 | 入口按 checkpoint 可用性渲染；老节点仅允许「仅回退对话」，文案明示代码不回退 |
 | 会话运行中 | 忙碌门拒绝回退 |
 | 临时会话（两根相同） | exclude 自递归规则已覆盖（移植自带测试） |
 | 空目录创建 | git 只跟踪文件内容，空目录不进快照、不出现在 diff 预览（固有语义，非 bug）；目录内一旦有文件即正常覆盖，回退时 `clean -fd` 连空目录一并清除，恢复语义完整。不做占位文件 hack（污染用户项目） |
 | shell 后台任务跨 turn 写入 | turn 边界快照只覆盖快照时刻的工作区；exec_shell 后台任务在 turn 结束后的迟到写入不归属任何 turn，回退可能带上它们（best-effort，不承诺） |
-| LRU 预算共享 | PreRestore 条目与 Turn 快照共享 index 上限 20：频繁回退会加速淘汰可用 Turn 快照，老节点更早退化为「仅回退对话」。v1 接受，不分开计价 |
+| LRU 预算共享 | PreRestore 条目与 Turn 快照共享 index 上限 100：频繁回退会加速淘汰可用 Turn 快照，老节点更早退化为「仅回退对话」。v1 接受，不分开计价 |
 
 ## 6. 共享执行根：三道防线
 

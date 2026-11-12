@@ -36,7 +36,11 @@ export function collectClipboardImages(event) {
 export function readPasteImageAsBytes(file) {
   return new Promise((resolve, reject) => {
     if (file && typeof file.size === 'number' && file.size > PASTE_IMAGE_MAX_BYTES) {
-      const tooLarge = new Error('paste image exceeds the 20 MB attachment cap');
+      // Derived from the constant so the message cannot drift from the cap
+      // it describes (developer-facing only; users see the localized copy).
+      const tooLarge = new Error(
+        `paste image exceeds the ${Math.round(PASTE_IMAGE_MAX_BYTES / (1024 * 1024))} MB attachment cap`,
+      );
       tooLarge.code = 'device_upload_too_large';
       reject(tooLarge);
       return;
