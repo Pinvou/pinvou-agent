@@ -2072,30 +2072,36 @@ mod tests {
 
     #[test]
     fn notification_patch_updates_only_carried_switches() {
+        // Seed every switch to the OPPOSITE of its platform default: a
+        // mutation that rebuilds the table from `NotificationPrefs::default()`
+        // and overwrites only the carried fields must then differ from the
+        // seed on every platform, not just where the platform default
+        // happens to disagree with the seed (fresh review 2026-11-12).
+        let defaults = crate::platform::prefs::NotificationPrefs::default();
         let mut current = UserPrefs::default();
-        current.notifications.enabled = true;
-        current.notifications.task_completed = true;
-        current.notifications.needs_input = true;
+        current.notifications.enabled = !defaults.enabled;
+        current.notifications.task_completed = !defaults.task_completed;
+        current.notifications.needs_input = !defaults.needs_input;
 
         apply_general_settings_patch(
             &mut current,
             GeneralSettingsPatch {
                 notifications: Some(NotificationPrefsPatch {
-                    needs_input: Some(false),
+                    needs_input: Some(defaults.needs_input),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
         );
 
-        assert!(!current.notifications.needs_input);
-        assert!(
-            current.notifications.enabled,
-            "unlisted switches must not be reset"
+        assert_eq!(current.notifications.needs_input, defaults.needs_input);
+        assert_eq!(
+            current.notifications.enabled, !defaults.enabled,
+            "an uncarried switch must survive as seeded, not reset to the platform default",
         );
-        assert!(
-            current.notifications.task_completed,
-            "unlisted switches must not be reset"
+        assert_eq!(
+            current.notifications.task_completed, !defaults.task_completed,
+            "an uncarried switch must survive as seeded, not reset to the platform default",
         );
     }
 
@@ -2105,29 +2111,35 @@ mod tests {
         // master switch) likewise merges only carried fields: the persisted
         // needs_input intent must not reset with the master patch, or
         // switching the master off->on silently loses the persisted
-        // input-notice intent.
+        // input-notice intent. Same opposite-of-default seeding as the
+        // needs_input-only test above, so a Default-rebuild mutation fails
+        // on every platform.
+        let defaults = crate::platform::prefs::NotificationPrefs::default();
         let mut current = UserPrefs::default();
-        current.notifications.enabled = true;
-        current.notifications.task_completed = true;
-        current.notifications.needs_input = true;
+        current.notifications.enabled = !defaults.enabled;
+        current.notifications.task_completed = !defaults.task_completed;
+        current.notifications.needs_input = !defaults.needs_input;
 
         apply_general_settings_patch(
             &mut current,
             GeneralSettingsPatch {
                 notifications: Some(NotificationPrefsPatch {
-                    enabled: Some(false),
-                    task_completed: Some(false),
+                    enabled: Some(defaults.enabled),
+                    task_completed: Some(defaults.task_completed),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
         );
 
-        assert!(!current.notifications.enabled);
-        assert!(!current.notifications.task_completed);
-        assert!(
-            current.notifications.needs_input,
-            "an uncarried needs_input must not be reset"
+        assert_eq!(current.notifications.enabled, defaults.enabled);
+        assert_eq!(
+            current.notifications.task_completed,
+            defaults.task_completed
+        );
+        assert_eq!(
+            current.notifications.needs_input, !defaults.needs_input,
+            "an uncarried needs_input must survive as seeded, not reset to the platform default",
         );
     }
 
