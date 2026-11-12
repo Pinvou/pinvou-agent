@@ -171,6 +171,26 @@
       Math.max(0, totalNormalized - runtimeContextUpdatesConsumedTotal(chatItems));
   }
 
+  // 压缩真重写（messages_before > messages_after）后的计数基线重置（r7 M2）：
+  // 旧漂移增量随转写改写被摘除，而客户端气泡仍携带压缩前的
+  // runtimeContextUpdatesBefore 老 vintage——权威重同步 pending = total −
+  // consumed 会被老消费量钳在 0，此后每个新增量都补不回来（fork/rewind
+  // 序号整体低计，恰是计数器要修的形态）。重置基线（待消费清零 + 气泡
+  // 计数清零）后，下一次 transcript_committed 从一致基线收敛。prune-only
+  // （before === after，转写未被改写）不动基线：增量与气泡仍一一对应，
+  // 重置反而抬高 pending。返回是否有改动（调用方决定是否 notify）。
+  function healRuntimeContextUpdatesVintageAfterCompaction(buffer, chatItems, before, after) {
+    if (!Number.isFinite(Number(before)) || !Number.isFinite(Number(after)) || Number(after) >= Number(before)) return false;
+    if (buffer) buffer.runtimeContextUpdatesPending = 0;
+    let healed = false;
+    for (const item of chatItems || []) {
+      if (!item || item.type !== "user" || !item.runtimeContextUpdatesBefore) continue;
+      item.runtimeContextUpdatesBefore = 0;
+      healed = true;
+    }
+    return healed;
+  }
+
   function isInternalRuntimeUserMessage(value) {
     return isContextUpdateRuntimeMessage(value) ||
       containsOnlyInternalRuntimeMetadata(value) ||
@@ -212,6 +232,7 @@
     // pending = payload.context_updates_total − consumed-on-bubbles.
     runtimeContextUpdatesConsumedTotal,
     resyncRuntimeContextUpdatesPending,
+    healRuntimeContextUpdatesVintageAfterCompaction,
     isInternalUserMessage,
     isKnownInternalMetadataBlock,
     isInternalUserMessageProvenance,

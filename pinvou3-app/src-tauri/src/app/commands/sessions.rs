@@ -2415,3 +2415,70 @@ fn first_send_title_source_strips_message_then_mention() {
         "both blocks strip outermost-first, leaving the body"
     );
 }
+
+/// fork 命令层安全门的源码契约钉（r7 M3，与 projects.rs 的 live-push block
+/// 钉同一先例）：四道门没有任何行为测试可达（fork 命令体不在任何套件里跑），
+/// 删除任一门（压缩探针/预约持有/fence 获取）此前全绿。源码钉把「静默删除」
+/// 变成红灯；行为语义由 store 层 fork 测试与前端契约测试各管一段。
+#[cfg(test)]
+mod fork_command_guard_pins {
+    /// fork_session 命令体（从 `pub async fn fork_session` 到收尾事件）。
+    fn fork_command_block(source: &str) -> &str {
+        let start = source
+            .find("pub async fn fork_session")
+            .unwrap_or_else(|| panic!("fork_session command must exist"));
+        let end = source[start..]
+            .find("pub async fn create_session")
+            .unwrap_or_else(|| panic!("fork_session must be followed by create_session"));
+        &source[start..start + end]
+    }
+
+    #[test]
+    fn fork_command_pins_all_four_safety_gates() {
+        let source = include_str!("sessions.rs");
+        let block = fork_command_block(source);
+        // 门 1：turn-active 快速拒绝（友好文案先于原子预约）。
+        assert!(
+            block.contains("pool.is_turn_active(&session_id)"),
+            "the fork command must keep the turn-active fast reject"
+        );
+        // 门 2：压缩探针（compaction 不占 turn 预约，turn-active 探针对它
+        // 失明——删除后压缩中分叉会以漂移序号落盘）。
+        assert!(
+            block.contains("pool.is_compaction_in_flight(&session_id)"),
+            "the fork command must keep the compaction-in-flight probe"
+        );
+        // 门 3：turn 预约持有到落盘结束（关闭半轮快照窗口；guard 绑定必须
+        // 在 spawn_blocking 闭包内存活）。
+        let reserve_at = block
+            .find(".reserve_turn(&session_id)")
+            .unwrap_or_else(|| panic!("the fork command must reserve the turn slot"));
+        assert!(
+            block[reserve_at..].contains("let _reservation = reservation;"),
+            "the reservation guard must be held inside the blocking closure"
+        );
+        // 门 4：projects rebind fence 先于落盘获取（sibling-writer 契约；
+        // 删除后分支 sidecar 可落进 rebind 的候选快照-翻译窗口）。
+        let fence_at = block
+            .find("rebind_fence()")
+            .unwrap_or_else(|| panic!("the fork command must take the projects rebind fence"));
+        let fork_at = block
+            .find("fork_session_record(")
+            .unwrap_or_else(|| panic!("the fork command must call fork_session_record"));
+        assert!(
+            fence_at < fork_at,
+            "the fence must be acquired before the record write"
+        );
+        // 门序：两道快速拒绝都在原子预约之前（预约是第一个不可重入动作）。
+        let turn_at = block
+            .find("pool.is_turn_active(&session_id)")
+            .expect("turn gate");
+        let compact_at = block
+            .find("pool.is_compaction_in_flight(&session_id)")
+            .expect("compaction gate");
+        assert!(
+            turn_at < compact_at && compact_at < reserve_at,
+            "fast rejects must precede the atomic reservation"
+        );
+    }
+}

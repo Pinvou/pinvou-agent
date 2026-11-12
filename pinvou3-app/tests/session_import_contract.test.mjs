@@ -18,9 +18,14 @@ const checkpoints = readFileSync(new URL('../src/features/codex/checkpoints.js',
 {
   const at = settings.indexOf("await invokeTauri('import_session_archive')");
   assert.notStrictEqual(at, -1, 'SettingsView must invoke import_session_archive');
-  const body = settings.slice(Math.max(0, at - 400), at + 1100);
-  assert.ok(body.includes('if (!bridge.available || importingSessions) return;'), 'handler must guard bridge availability and re-entry');
+  const body = settings.slice(Math.max(0, at - 400), at + 1400);
+  // import_session_archive 不经引擎（纯本地 store + 原生对话框）：只挡并发
+  // 重入，bridge 断连不再拦截（r7 minor——此前点击静默无响应）。
+  assert.ok(body.includes('if (importingSessions) return;'), 'handler must guard re-entry (the command needs no engine, bridge availability must not silently no-op the click)');
   assert.ok(body.includes('if (!result) return;'), 'user cancel (null) must return silently');
+  // 长文案（四计数 + 缺产物补救指引 / 失败详情）自带 8 秒时长，默认 pill
+  // 的 3 秒会把恢复路径截掉（r7 minor）。
+  assert.ok(body.includes('duration: 8000'), 'long import toasts must carry their own duration');
   assert.ok(body.includes('t.uiSettings.importSessionsDone(') && body.includes('result.skipped_existing') && body.includes('result.artifacts_failed'), 'success toast must compose imported/skipped/failed counts plus the partial (missing-artifacts) count');
   assert.ok(body.includes('failure.reason'), 'per-record failure reasons must at least reach the console (count-only left users with "1 failed" and no cause)');
   assert.ok(body.includes('t.uiSettings.importSessionsFailed') && body.includes('${detail}'), 'failure must surface the localized failed toast with the backend detail');
@@ -48,8 +53,16 @@ assert.match(
 );
 assert.match(
   chatView,
-  /forkEntries=\{busy \? undefined : forkEntries\}/,
-  'fork entries must hide entirely while a turn is in flight',
+  /forkEntries=\{\(busy \|\| ctxCompactInFlight\) \? undefined : forkEntries\}/,
+  'fork entries must hide entirely while a turn or a compaction is in flight',
+);
+// 压缩进行中（ctxCompactInFlight）整表隐藏：空闲会话的手动压缩全程 busy
+// 都是 false（compaction 不占 turn 预约），单独的 busy 门挡不住「点击必报
+// 错」入口（r7 M1——锚定 forkSupported 块防 ChatView 他处同名表达式撑绿）。
+assert.match(
+  chatView,
+  /const forkSupported = !!\([\s\S]*?&& !ctxCompactInFlight/,
+  'fork support must gate on compaction-in-flight (the Rust probe rejects and the raw diagnostic would toast on click)',
 );
 assert.match(
   chatView,
@@ -117,6 +130,19 @@ assert.match(
   chatView,
   /t\.uiConversation\.forkFailed/,
   'fork failure must surface the localized notice with detail',
+);
+// 自动切换失败路径 resolve(false) 而非 reject：布尔为假必须补专用提示，
+// 否则 forkSwitchFailed 的 catch 臂是死代码、失败只落桥接层通用条目
+// （r7 minor 2）。
+assert.match(
+  chatView,
+  /switched = await bridge\.sessions\.switchToSession\(forked\.id\);/,
+  'the auto-switch result must be consumed (the bridge resolves false on failure, it never rejects)',
+);
+assert.match(
+  chatView,
+  /if \(!switched && chatViewMountedRef\.current && activeSessionIdRef\.current === sourceSessionId\)/,
+  'a failed auto-switch must flash the dedicated forkSwitchFailed notice while still on the source session',
 );
 
 // 4. 时间线按钮：只有处理器与入口表同时在场才渲染，testid 稳定；渲染判定

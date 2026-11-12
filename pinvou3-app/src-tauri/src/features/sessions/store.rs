@@ -481,24 +481,25 @@ impl SessionStore {
     ) -> Result<deepseek_tui::session_export::SessionArchiveSummary> {
         validate_session_id(id)?;
         let session = self.load(id)?;
-        if include_artifacts {
-            // 闭合导出→导入循环：导入侧对成员名 fail-closed（`:` 分量挡
-            // Windows 盘符/ADS，`\` 归一化防改名），exporter 本身不校验
-            // 文件名——凡导入必拒/必改名的文件在此处先行失败并指名，归档
-            // 永不产出「导出成功、导入必拒」的产物。目录不存在（Ok(None)）
-            // 即无可扫描，直接放行。记录本体字节计入同一张账本（导入侧
-            // 把 session.json 也计入总量并受单成员上限）。
-            if let Some(dir) = deepseek_tui::session_export::session_artifacts_dir(
-                self.manager.sessions_dir(),
-                id,
-            )? {
-                let record_bytes =
-                    std::fs::metadata(self.manager.sessions_dir().join(format!("{id}.json")))
-                        .map(|meta| meta.len())
-                        .unwrap_or(0);
-                super::import::ensure_artifacts_exportable(&dir, record_bytes)?;
-            }
-        }
+        // 闭合导出→导入循环：导入侧对成员名 fail-closed（`:` 分量挡
+        // Windows 盘符/ADS，`\` 归一化防改名），exporter 本身不校验
+        // 文件名——凡导入必拒/必改名的文件在此处先行失败并指名，归档
+        // 永不产出「导出成功、导入必拒」的产物。目录不存在（Ok(None)）
+        // 即无可扫描，直接放行。记录本体字节计入同一张账本（导入侧
+        // 把 session.json 也计入总量并受单成员上限）。预扫描对
+        // `include_artifacts=false` 的精简导出同样生效（记录本体在两种
+        // 模式下都进档案，r7 minor 5）；记录 stat 失败如实失败（load 刚
+        // 成功，紧随其后的 stat 故障是异常态，折叠成 0 会低估账本）。
+        let record_path = self.manager.sessions_dir().join(format!("{id}.json"));
+        let record_bytes = std::fs::metadata(&record_path)
+            .with_context(|| format!("stat session record {}", record_path.display()))?
+            .len();
+        let artifacts_dir = if include_artifacts {
+            deepseek_tui::session_export::session_artifacts_dir(self.manager.sessions_dir(), id)?
+        } else {
+            None
+        };
+        super::import::ensure_artifacts_exportable(artifacts_dir.as_deref(), record_bytes)?;
         // write_session_archive takes the session-store ROOT since the
         // engine-side confinement rework: it derives, validates and confines
         // the artifacts dir itself (invalid ids and links under the store are

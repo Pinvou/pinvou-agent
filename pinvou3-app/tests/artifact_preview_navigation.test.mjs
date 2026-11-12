@@ -153,6 +153,22 @@ for (const fragment of [
 assert.ok(doc.includes('if(d.type===' + JSON.stringify(ARTIFACT_PREVIEW_REQUEST_SIZE) + '){reportSize();return;}'),
   'request-size 必须触发帧内重新测量');
 
+// 组装后的 bootstrap 必须是合法可解析脚本（r7 R2 根因回归钉）：分片齐全
+// 不等于可执行——收尾括号失衡（IIFE 体先于 addEventListener 闭括号收口）
+// 曾让整段脚本解析失败、一个字都不执行，尺寸自报/滚轮转发/外链中继/
+// 运行时安装同时死路，而上面所有分片 pin 保持全绿。srcdoc 的脚本体直接
+// 过解析器，语法损坏在此红灯。
+// （doc 字符串里的闭合标签即普通 `</script>` 字面值；本文件自身的源码里
+// 该序列按项目惯例以 \u003C 转义书写，避免截断本测试文件的 script 上下文。）
+const bootstrapBody = doc.slice(
+  doc.indexOf('<script>') + '<script>'.length,
+  doc.indexOf('</scr' + 'ipt>'),
+);
+assert.doesNotThrow(
+  () => { new Function(bootstrapBody); },
+  'assembled bootstrap must parse as valid JavaScript — a fragment-complete but syntactically broken script silently kills every frame relay',
+);
+
 // 组件契约：iframe 不再持有 allow-same-origin（导入产物是第三方可控输入，
 // 同源 srcdoc 脚本可直达 window.parent.__TAURI__）；测量/缩放/安装走消息通道。
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

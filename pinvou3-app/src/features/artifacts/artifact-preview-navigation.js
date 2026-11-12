@@ -87,8 +87,14 @@ export function buildArtifactPreviewDocument(html) {
     'if(d.type===' + installType + '&&typeof d.script==="string"&&d.script){',
     'try{(0,eval)(d.script);}catch(err){try{',
     'window.parent.postMessage({source:"pinvou-design-runtime",type:"pinvou:design-runtime-error",payload:{error:String(err)}},"*");',
+    // 收尾顺序：`}`(catch err) `}`(install if) `}`(function(e) 回调) `)`
+    // （addEventListener 调用）`}`（IIFE 函数体）`)`（IIFE 分组括号）`();`
+    // （调用）。此前写成 `})();`——IIFE 体先于 addEventListener 的闭括号
+    // 收口，多出的 `}` 吞掉分组括号后整段 bootstrap 语法错误、一个字都不
+    // 执行：尺寸自报/滚轮转发/外链中继/运行时安装全部死路，而旧探针在
+    // 更早处崩溃从未跑到这些用例（r7 R2 的真正根因）。
     '}catch(noop){}}}}',
-    '})();',
+    ')})();',
   ].join('');
   // \u003c escape keeps the literal "</script>" out of the source so it is not truncated when inlined into HTML.
   // margin:0 stays (the zoom measurer assumes no UA body margin); the canvas

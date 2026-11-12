@@ -36,6 +36,7 @@ const state = {
   queued: [],
   thinking: { active: false },
   busy: false,
+  compactingSessions: {},
 };
 const buffers = {
   'session-1': { runtimeContextUpdatesPending: 0, remoteAdmissionKeys: [], messages: [], localTurnOwned: false },
@@ -88,6 +89,9 @@ const context = {
   addSystemItem(text, meta = {}) {
     context.addChatItem({ type: 'system', text, ...meta });
   },
+  addOrMergePruneCompaction(compactId) {
+    context.addSystemItem('prune-rollup', { compactId, compactPruneRollup: true });
+  },
   timeStr() { return '12:00'; },
   startThinking() {},
   stopThinking() {},
@@ -117,6 +121,10 @@ const emitUserMessage = payload => listeners.get('chat:user_message')({
 });
 const emitCommitted = payload => listeners.get('chat:transcript_committed')({
   event: 'chat:transcript_committed',
+  payload: { session_id: 'session-1', ...payload },
+});
+const emitCompaction = payload => listeners.get('chat:compaction')({
+  event: 'chat:compaction',
   payload: { session_id: 'session-1', ...payload },
 });
 
@@ -209,6 +217,50 @@ PinvouBridgeMessages.resyncRuntimeContextUpdatesPending(null, fakeItems, 9);
 PinvouBridgeMessages.resyncRuntimeContextUpdatesPending(resyncBuffer, undefined, 2);
 assert.equal(resyncBuffer.runtimeContextUpdatesPending, 2, '空 chatItems 视为零消费');
 
+// ── 纯函数单元：压缩真重写后的基线重置（r7 M2）──
+const healBuffer = { runtimeContextUpdatesPending: 7 };
+const healItems = [{ type: 'user', runtimeContextUpdatesBefore: 3 }, { type: 'assistant', text: 'r' }];
+assert.equal(PinvouBridgeMessages.healRuntimeContextUpdatesVintageAfterCompaction(healBuffer, healItems, 20, 5), true, '真重写必须报告有改动');
+assert.equal(healBuffer.runtimeContextUpdatesPending, 0, '真重写必须清零待消费计数');
+assert.equal(healItems[0].runtimeContextUpdatesBefore, 0, '真重写必须清零气泡老 vintage');
+assert.equal(healItems[1].runtimeContextUpdatesBefore, undefined, '非用户气泡不受影响');
+assert.equal(PinvouBridgeMessages.healRuntimeContextUpdatesVintageAfterCompaction(healBuffer, healItems, 5, 5), false, 'prune-only（before === after）不得动基线');
+assert.equal(PinvouBridgeMessages.healRuntimeContextUpdatesVintageAfterCompaction(healBuffer, healItems, 5, 8), false, '消息增长（after > before）不得动基线');
+assert.equal(PinvouBridgeMessages.healRuntimeContextUpdatesVintageAfterCompaction(healBuffer, healItems, 'x', 5), false, '非数值载荷不得动基线');
+healItems[0].runtimeContextUpdatesBefore = 4; // 重新装备 vintage（上文断言已清零）
+assert.equal(PinvouBridgeMessages.healRuntimeContextUpdatesVintageAfterCompaction(null, healItems, 20, 5), true, '无 buffer 仍清气泡 vintage');
+assert.equal(healItems[0].runtimeContextUpdatesBefore, 0, '无 buffer 腿照样清零气泡');
+
+// ── 场景 9（r7 M2）：真重写压缩后计数基线重置，序号不再被老消费量钳死 ──
+// 现状：两个气泡携带 Before=1+2=3 的压缩前 vintage。压缩把旧增量从磁盘
+// 转写摘除（before=20 → after=5），若无重置，下一次权威重同步
+// pending = max(0, 1 − 3) = 0，此后每个新增量都补不回来（fork 序号整体
+// 低计——恰是计数器要修的形态）。
+emitCompaction({ phase: 'start' });
+emitCompaction({ phase: 'done', messages_before: 20, messages_after: 5, message: 'compacted 15 messages' });
+assert.equal(buffer1.runtimeContextUpdatesPending, 0, '真重写压缩后待消费计数基线清零');
+const healedBubbles = state.chatItems.filter(item => item.type === 'user');
+assert.ok(healedBubbles.every(item => !item.runtimeContextUpdatesBefore), '压缩前气泡的老 vintage 必须清零');
+emitCommitted({ transcript_revision: 'rev-7', context_updates_total: 1 });
+assert.equal(buffer1.runtimeContextUpdatesPending, 1, '重置后从一致基线收敛：pending = 压缩后存量 − 0');
+emitUserMessage({ content: 'fourth prompt', base_transcript_revision: 'rev-8' });
+assert.equal(lastUserBubble().runtimeContextUpdatesBefore, 1, '压缩后首个新气泡携带压缩后增量');
+
+// ── 场景 10（r7 M2 对照腿）：prune-only（before === after，转写未被改写）
+// 不得动基线——增量与气泡仍一一对应，重置反而会抬高 pending ──
+emitUserMessage({ content: CANONICAL_UPDATE, base_transcript_revision: 'rev-9' });
+const pendingBeforePruneOnly = buffer1.runtimeContextUpdatesPending;
+const beforeValuesBeforePruneOnly = state.chatItems
+  .filter(item => item.type === 'user')
+  .map(item => item.runtimeContextUpdatesBefore || 0);
+emitCompaction({ phase: 'done', auto: true, messages_before: 5, messages_after: 5, message: '0 removed, messages unchanged' });
+assert.equal(buffer1.runtimeContextUpdatesPending, pendingBeforePruneOnly, 'prune-only 压缩不得重置待消费计数');
+assert.deepEqual(
+  state.chatItems.filter(item => item.type === 'user').map(item => item.runtimeContextUpdatesBefore || 0),
+  beforeValuesBeforePruneOnly,
+  'prune-only 压缩不得清零气泡携带的计数',
+);
+
 // ── 源码契约层 ──
 const chatJs = read('src', 'platform', 'tauri', 'bridge', 'chat.js');
 assert.ok(
@@ -220,6 +272,15 @@ assert.ok(
   chatEventsJs.includes('resyncRuntimeContextUpdatesPending') &&
   chatEventsJs.includes('payload.context_updates_total'),
   'transcript_committed 监听器必须接线 context_updates_total 重同步',
+);
+assert.ok(
+  chatEventsJs.includes('healRuntimeContextUpdatesVintageAfterCompaction'),
+  'compaction done 必须接线计数基线重置（r7 M2）',
+);
+const bridgeMessagesJs = read('src', 'shared', 'bridge-messages.js');
+assert.ok(
+  bridgeMessagesJs.includes('healRuntimeContextUpdatesVintageAfterCompaction') && bridgeMessagesJs.includes('Number(after) >= Number(before)'),
+  '基线重置必须落在 bridge-messages 的计数器原语旁（r7 M2）',
 );
 assert.ok(
   chatEventsJs.indexOf('remoteAdmissionKeys.includes(admissionKey)') <

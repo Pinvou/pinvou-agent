@@ -15,7 +15,10 @@ use deepseek_tui::user_turn_prompt_indices;
 
 /// 会话日志中的真实用户 turn 数（不含 tool_result、运行时内部信封、纯图片
 /// turn 与 pre-provenance 历史里的压缩摘要头 turn——与底座 Editable 分类
-/// 同口径）。checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时
+/// 同口径）。唯一计入的运行时形态：canonical `<context_update>` 漂移增量
+/// 无 provenance 载体、按底座分类就是 Editable turn 边界（序号计数器的
+/// 存在前提，见 `count_user_turns_counts_canonical_context_update_as_era_boundary`）。
+/// checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时
 /// 调用）。era 由传入的完整消息列表推导；对被截段的 `removed_messages`
 /// 切片，era 取切片自身（通常不含 provenance 载体，退回宽松口径）。
 pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
@@ -151,6 +154,34 @@ mod tests {
             count_user_turns(&messages),
             3,
             "post-provenance history counts the pasted header turn (base era contract)"
+        );
+    }
+
+    /// 序号计数器的存在前提（r7 minor 10）：底座 era 分类把 canonical
+    /// `<context_update>` 漂移增量记为 Editable turn 边界——前端计数器、
+    /// fork/rewind 序号与 `count_context_updates` 全部建立在这一前提上。
+    /// 底座若未来把它改判 runtime-owned（provenance/`<turn_meta>` 族），
+    /// 本钉先红，防止整个机制反向静默漂移。消息形状按底座
+    /// `context_update_message` 的合成（prefix_cache.rs）以字面量钉住。
+    #[test]
+    fn count_user_turns_counts_canonical_context_update_as_era_boundary() {
+        const CONTEXT_UPDATE_PREFIX: &str = "<context_update>\nSession context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):\n";
+        let delta = Message {
+            role: "user".into(),
+            content: vec![ContentBlock::Text {
+                text: format!("{CONTEXT_UPDATE_PREFIX}\n- removed line\n</context_update>"),
+                cache_control: None,
+            }],
+        };
+        let messages = vec![
+            text_message("user", "第一轮"),
+            delta,
+            text_message("user", "第二轮"),
+        ];
+        assert_eq!(
+            count_user_turns(&messages),
+            3,
+            "a canonical <context_update> drift delta is an Editable era boundary (base contract the ordinal counters are built on)"
         );
     }
 

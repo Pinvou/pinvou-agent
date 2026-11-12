@@ -256,9 +256,12 @@ pub(super) fn backfill_workspace_binding_cache(
 /// [`SessionStore::session_workspace_binding_probe`]）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WorkspaceBindingProbe {
-    /// 有绑定：分支复刻该绑定；roots 与绑定来自**同一份** sidecar 快照
-    /// （单次读取，见探测函数文档）。
-    Bound(PathBuf, Vec<PathBuf>),
+    /// 有绑定：分支复刻该绑定；roots 与显式祖先 provenance（round-40
+    /// zhuowp P2 的对齐产物，keychain 交付依赖它跨越项目变更存活）与绑定
+    /// 来自**同一份** sidecar 快照（单次读取，见探测函数文档）。分支必须
+    /// 复刻全部三元组——丢 provenance 的复刻会让分支在对齐项目变更后
+    /// 静默失去祖先授权（r7 minor 7）。
+    Bound(PathBuf, Vec<PathBuf>, Vec<PathBuf>),
     /// 确认无绑定：分支保持无绑定（不误造绑定）。
     Unbound,
     /// 不可判定：sidecar 读失败 / 解析失败 / 版本超前。fork fail-closed 拒绝。
@@ -300,10 +303,10 @@ impl SessionStore {
         let payload = match std::fs::read(self.session_workspace_sidecar_path(id)) {
             Ok(payload) => payload,
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                // sidecar 不存在：缓存命中时绑定仍以缓存为准（roots 空集），
-                // 否则确认无绑定。
+                // sidecar 不存在：缓存命中时绑定仍以缓存为准（roots 与
+                // provenance 空集），否则确认无绑定。
                 return match cached_path {
-                    Some(path) => WorkspaceBindingProbe::Bound(path, Vec::new()),
+                    Some(path) => WorkspaceBindingProbe::Bound(path, Vec::new(), Vec::new()),
                     None => WorkspaceBindingProbe::Unbound,
                 };
             }
@@ -320,6 +323,7 @@ impl SessionStore {
                 WorkspaceBindingProbe::Bound(
                     backfill_workspace_binding_cache(&self.session_workspaces, id, sidecar.path),
                     sidecar.workspace_roots,
+                    sidecar.explicit_ancestor_roots,
                 )
             }
             Ok(sidecar) => {

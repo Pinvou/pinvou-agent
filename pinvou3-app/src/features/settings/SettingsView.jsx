@@ -1997,7 +1997,9 @@ function hasStoredCredential(record) {
       // 处理器住在懒加载的 SettingsView 里（不再占主入口 chunk）。
       const [importingSessions, setImportingSessions] = useState(false);
       const handleImportSessionArchive = useCallback(async () => {
-        if (!bridge.available || importingSessions) return;
+        // import_session_archive 不经引擎（纯本地 store + 原生对话框）：
+        // bridge 断连不拦截，只挡并发重入（r7 minor）。
+        if (importingSessions) return;
         setImportingSessions(true);
         try {
           const result = await invokeTauri('import_session_archive');
@@ -2008,17 +2010,24 @@ function hasStoredCredential(record) {
           for (const failure of [...(result.failed || []), ...(result.artifacts_failed || [])]) {
             console.warn(`[sessions] import ${failure.session_id}: ${failure.reason}`);
           }
-          setSettingsToast(t.uiSettings.importSessionsDone(
-            (result.imported || []).length,
-            (result.skipped_existing || []).length,
-            (result.failed || []).length,
-            // 部分导入（缺 artifacts）计数：Rust SessionImportSummary.artifacts_failed。
-            (result.artifacts_failed || []).length,
-          ));
+          const artifactsFailedCount = (result.artifacts_failed || []).length;
+          setSettingsToast({
+            // 四计数汇总 + 缺产物补救指引是长文案：单行 pill 3 秒会把「删会话
+            // 重导入」的恢复路径整个截掉（重导入又命中 skip-existing）——
+            // 长文案自带 8 秒时长（r7 minor）。
+            text: t.uiSettings.importSessionsDone(
+              (result.imported || []).length,
+              (result.skipped_existing || []).length,
+              (result.failed || []).length,
+              // 部分导入（缺 artifacts）计数：Rust SessionImportSummary.artifacts_failed。
+              artifactsFailedCount,
+            ),
+            duration: artifactsFailedCount > 0 || (result.failed || []).length > 0 ? 8000 : 3000,
+          });
         } catch (error) {
           const detail = String((error && error.message) || error || t.unknownError);
           console.warn('import session archive failed', error);
-          setSettingsToast(`${t.uiSettings.importSessionsFailed}: ${detail}`);
+          setSettingsToast({ text: `${t.uiSettings.importSessionsFailed}: ${detail}`, duration: 8000 });
         } finally {
           setImportingSessions(false);
         }

@@ -620,7 +620,16 @@ function enforceLazyChunks() {
 // The web entry measured 126,661 B at the wave tip and stays under 129_000
 // (the tauri-only counter plumbing does not ride the web entry). This cap
 // does not promise headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 490_000;
+//
+// PR #835 r7 review-fix wave owns the 490_000 → 491_000 desktop raise: the
+// compaction-latched fork entry gate + real switch-failure surfacing, the
+// compaction counter-baseline reset wiring, the embedded rebind-marker
+// classification fallback, and the bootstrap parse-safety harness on the
+// preview frame surface. Measured at the wave tip on the reconciled stack:
+// 490,073 B desktop (73 B over the old ceiling). The web entry measured
+// 126,790 B and stays under 129_000. This cap does not promise headroom
+// for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 491_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {

@@ -618,6 +618,12 @@ fn context_update_message_text(message: &Message) -> bool {
             text.push_str(block_text);
         }
     }
+    // 预筛（r7 perf minor）：绝大多数用户消息不含该标记——先扫描拒绝，
+    // 免掉每个 persist 对整份转写的第二份全量拷贝（`replace` 无条件分配，
+    // `trim` 只借不分配）。contains 落空即不可能匹配前缀，语义不变。
+    if !text.contains("<context_update>") {
+        return false;
+    }
     let normalized = text.trim().replace("\r\n", "\n");
     normalized.starts_with(CONTEXT_UPDATE_MESSAGE_PREFIX)
         && normalized.ends_with("\n</context_update>")

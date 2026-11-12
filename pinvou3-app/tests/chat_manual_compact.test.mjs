@@ -62,6 +62,9 @@ const context = {
     context.addChatItem({ type: 'system', text, ...meta });
   },
   addOrMergePruneCompaction(compactId) { pruneMerges.push(compactId); },
+  // r7 M2 压缩真重写腿的计数基线重置会取会话 buffer；该装置无 buffer 状态，
+  // 空实现即「无 buffer 时重置按空操作收敛」。
+  getBuffer() { return null; },
   timeStr() { return '12:00'; },
   flushPendingTextBlock() {
     if (!context.pendingAssistantText) return;

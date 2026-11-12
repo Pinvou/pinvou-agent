@@ -31,13 +31,16 @@
 //! 注入与 mode_state 的绑定派生默认全部按解析到的绑定走，分支不复刻就会
 //! 静默降级成无绑定会话（绑定会话的默认姿态偏 Plan、无绑定偏 Yolo；用户
 //! 显式设过的会话级 mode 按 id 键存、不随分支走，分支以默认值注水——与
-//! 新建会话一致）。fork 命令持有 projects rebind fence（sibling-writer
-//! 契约，review #484 round-11 M3）：绑定源探测/复刻与 rebind 的候选快照-
-//! 翻译窗口互斥，分支 sidecar 不会带着改绑前的旧路径逃出翻译。绑定源
-//! sidecar 损坏/版本超前时三态探针如实拒绝（而非当无绑定放行）。代码会话
-//! （原生品悟 Engine 车道）的绑定在代码会话侧车而非本 store，无法照搬，
-//! 分叉对其如实拒绝。新会话引擎按既有 lazy respawn 路径在首次发送时接管，
-//! 无需在此触碰 pool。
+//! 新建会话一致）。复刻含 keychain 全三元组：绑定路径、workspace roots
+//! 与显式祖先 provenance（`explicit_ancestor_roots`，round-40 zhuowp P2
+//! 的对齐产物——交付用它让祖先授权跨越项目变更存活，丢 provenance 的
+//! 复刻会让分支在项目变更后静默失去祖先授权，r7 minor 7）。fork 命令持有
+//! projects rebind fence（sibling-writer 契约，review #484 round-11 M3）：
+//! 绑定源探测/复刻与 rebind 的候选快照-翻译窗口互斥，分支 sidecar 不会带着
+//! 改绑前的旧路径逃出翻译。绑定源 sidecar 损坏/版本超前时三态探针如实拒绝
+//! （而非当无绑定放行）。代码会话（原生品悟 Engine 车道）的绑定在代码会话
+//! 侧车而非本 store，无法照搬，分叉对其如实拒绝。新会话引擎按既有 lazy
+//! respawn 路径在首次发送时接管，无需在此触碰 pool。
 //!
 //! 注意：persist 落盘后附带保留预算清扫（`persist_then_reconcile`），若
 //! store 超预算，最旧的记录——可能是刚分叉的源会话——会被清扫驱逐；与任何
@@ -81,20 +84,24 @@ impl SessionStore {
         // mode_state 安全姿态随之降级，恰是绑定复刻要消灭的形态。绑定与
         // roots 在锁外一次读取：fork 命令持有 projects rebind fence（见
         // sessions.rs fork_session），rebind 无法在读取与落盘之间改写绑定。
-        let (parent_workspace, parent_roots) = match self
+        let (parent_workspace, parent_roots, parent_ancestor_roots) = match self
             .session_workspace_binding_probe(session_id)
         {
-            // 绑定与 roots 来自同一份 sidecar 快照（单次读取）：warm 缓存下
-            // sidecar 损坏/不可读走 Unknown fail-closed，不再经
+            // 绑定/roots/provenance 来自同一份 sidecar 快照（单次读取）：warm
+            // 缓存下 sidecar 损坏/不可读走 Unknown fail-closed，不再经
             // `session_workspace_roots` 的 `unwrap_or_default` 折叠成静默空
             // roots（review r2）。
-            super::workspace_bindings::WorkspaceBindingProbe::Bound(path, roots) => {
-                (Some(path), roots)
-            }
+            super::workspace_bindings::WorkspaceBindingProbe::Bound(
+                path,
+                roots,
+                ancestor_roots,
+            ) => (Some(path), roots, ancestor_roots),
             super::workspace_bindings::WorkspaceBindingProbe::Unknown => anyhow::bail!(
                 "无法读取源会话的工作区绑定（文件损坏或由更新版本写入）；为避免分支静默降级为无绑定会话，已拒绝分叉"
             ),
-            super::workspace_bindings::WorkspaceBindingProbe::Unbound => (None, Vec::new()),
+            super::workspace_bindings::WorkspaceBindingProbe::Unbound => {
+                (None, Vec::new(), Vec::new())
+            }
         };
         // load→persist 对与 delete/驱逐串行（与 truncate_to_user_turn 同一
         // 口径，delete 的文档写明该锁正是为此存在）：没有它，源会话在 load
@@ -149,11 +156,35 @@ impl SessionStore {
         // 孤儿数据。
         drop(mutation);
         if let Some(parent_workspace) = parent_workspace {
-            if let Err(error) = self.bind_session_workspace_with_roots(
-                &forked.metadata.id,
-                parent_workspace,
-                parent_roots,
-            ) {
+            let bind_result = self
+                .bind_session_workspace_with_roots(
+                    &forked.metadata.id,
+                    parent_workspace,
+                    parent_roots.clone(),
+                )
+                .and_then(|()| {
+                    // 显式祖先 provenance 复刻（绑定写完即刻回填，`Ok(false)`
+                    // 只在 sidecar 缺失时出现——上一行刚写过，不可达，按失败
+                    // 处理保持全有或全无）。回填失败的分支同样按绑定失败口径
+                    // 回滚：带一半 keychain（有 roots 无 provenance）的分支在
+                    // 对齐项目变更后会静默失去祖先授权，恰是复刻要消灭的形态。
+                    if parent_ancestor_roots.is_empty() {
+                        return Ok(());
+                    }
+                    self.set_session_workspace_roots_with_explicit_ancestors(
+                        &forked.metadata.id,
+                        parent_roots.clone(),
+                        parent_ancestor_roots.clone(),
+                    )
+                    .and_then(|written| {
+                        if written {
+                            Ok(())
+                        } else {
+                            anyhow::bail!("restored sidecar missing after bind")
+                        }
+                    })
+                });
+            if let Err(error) = bind_result {
                 // 绑定失败的分支正是本复刻要消灭的「无绑定降级」形态，
                 // 按新建会话的绑定失败回滚口径（create_session_durable）
                 // 删除刚落盘的分支。
@@ -639,6 +670,89 @@ mod tests {
         assert!(
             store.session_workspace_binding(&forked.id).is_some(),
             "branch carries the repaired binding"
+        );
+    }
+
+    /// keychain provenance 复刻（r7 minor 7）：对齐车道写入的
+    /// `explicit_ancestor_roots` 必须随分支复刻——交付用它让祖先授权跨越
+    /// 项目变更存活，丢 provenance 的分支会在项目变更后静默失去祖先授权
+    /// （round-40 zhuowp P2 要防的同一形态，复刻层不得重新引入）。
+    #[test]
+    fn fork_replicates_explicit_ancestor_provenance() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let mut session = store.load(&source.metadata.id).expect("load");
+        session.messages = vec![turn_prompt("对齐源的一轮"), assistant_text("回复")];
+        store.save(&session).expect("seed");
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou3-fork-ancestors-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(workspace.join("granted")).expect("mkdir workspace");
+        std::fs::create_dir_all(workspace.join("nested")).expect("mkdir ancestors");
+        store
+            .bind_session_workspace_with_roots(
+                &source.metadata.id,
+                workspace.clone(),
+                vec![workspace.join("nested")],
+            )
+            .expect("bind source");
+        store
+            .set_session_workspace_roots_with_explicit_ancestors(
+                &source.metadata.id,
+                vec![workspace.join("nested")],
+                vec![workspace.join("nested")],
+            )
+            .expect("record ancestor provenance");
+        let forked = store
+            .fork_session_record(&source.metadata.id, 1)
+            .expect("fork");
+        assert_eq!(
+            store.session_explicit_ancestor_roots(&forked.id),
+            vec![workspace.join("nested")],
+            "branch must carry the source's explicit-ancestor provenance"
+        );
+        assert_eq!(
+            store.session_workspace_roots(&forked.id),
+            vec![workspace.clone(), workspace.join("nested")],
+            "branch must carry the source's workspace roots (cwd-first normalization) alongside the provenance"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// 全量分支腿（`keep_turns == total_turns`，r7 minor 4）：切点即末尾，
+    /// 旧实现误索引 `turn_prompt_indices[keep]` 会在这一腿越界 panic——
+    /// 用户在最新一轮点分叉是合法动作，必须有行为钉。
+    #[test]
+    fn fork_full_branch_at_latest_turn_clones_everything() {
+        let (store, _lock, _env) = isolated_store();
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let mut session = store.load(&source.metadata.id).expect("load");
+        session.messages = vec![
+            turn_prompt("第一轮"),
+            assistant_text("答一"),
+            turn_prompt("第二轮"),
+            assistant_text("答二"),
+            turn_prompt("第三轮"),
+            assistant_text("答三"),
+        ];
+        store.save(&session).expect("seed");
+        let forked = store
+            .fork_session_record(&source.metadata.id, 3)
+            .expect("fork at the latest turn");
+        assert_eq!(
+            forked.message_count, 6,
+            "full branch keeps the whole transcript"
+        );
+        assert_eq!(
+            forked.forked_from_message_count,
+            Some(6),
+            "lineage captures the full source length"
         );
     }
 }

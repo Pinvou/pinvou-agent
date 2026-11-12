@@ -139,7 +139,13 @@ impl SessionStore {
             // （钳到上限+1），避免 read_to_end 倍增扩容把峰值推到 ~1.5×。
             let file = std::fs::File::open(path).context("read session record")?;
             let declared = file.metadata().map(|meta| meta.len()).unwrap_or(0);
-            let mut bytes = Vec::with_capacity(declared.min(MAX_MEMBER_BYTES + 1) as usize);
+            // 预置与归档分支同一口径钳到预置上限（r7 minor）：稀疏文件可虚报
+            // 逻辑长度，钳死「读取任何字节前」的预留放大。
+            let mut bytes = Vec::with_capacity(
+                declared
+                    .min(MAX_MEMBER_BYTES + 1)
+                    .min(MAX_MEMBER_PRESIZE_BYTES) as usize,
+            );
             file.take(MAX_MEMBER_BYTES + 1)
                 .read_to_end(&mut bytes)
                 .with_context(|| format!("read {}", path.display()))?;
@@ -189,6 +195,8 @@ impl SessionStore {
 
         let mut record: Option<SavedSession> = None;
         let mut artifacts: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut seen_artifact_folded: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut total_bytes: u64 = 0;
         let mut member_count: usize = 0;
         for entry in archive
@@ -266,15 +274,15 @@ impl SessionStore {
                             format!("archive member {member_name} is not importable")
                         })?;
                         // 成员冲突 fail-closed（与 session.json 重复成员同一
-                        // 口径）：重名成员经原子覆盖静默 last-wins；大小写
-                        // 变体对（Notes/a.txt + notes/a.txt）在大小写不敏感
-                        // 文件系统（APFS/NTFS）上静默合并成一条——两者都是
-                        // 无声丢失，拒绝并指名成员。
-                        let candidate_folded = relative.to_ascii_lowercase();
-                        if artifacts.iter().any(|(existing, _)| {
-                            *existing == relative
-                                || existing.to_ascii_lowercase() == candidate_folded
-                        }) {
+                        // 口径）：重名成员经原子覆盖静默 last-wins；大小写/
+                        // 折叠变体对（Notes/a.txt + notes/a.txt，含 ſ/K/ı 与
+                        // 非 ASCII 大小写）在大小写不敏感文件系统（APFS/NTFS，
+                        // 折叠语义见 `volume_fold_spelling`）上静默合并成一条
+                        // ——两者都是无声丢失，拒绝并指名成员。折叠名进
+                        // HashSet：O(1) 查重（r7 minor：每成员线性扫描 +
+                        // 比较内分配在 1 万成员上限上是 ~5×10⁷ 次分配）。
+                        let candidate_folded = member_folded_spelling(relative);
+                        if !seen_artifact_folded.insert(candidate_folded) {
                             bail!(
                                 "archive contains duplicate or case-variant artifact members (conflicts with {member_name}); refusing to import"
                             );
@@ -408,7 +416,10 @@ fn import_one_session_inner(
     // 之前：落盘的记录从一开始就带本机指针。
     if artifacts_result.is_ok() && !artifacts.is_empty() && !session.artifacts.is_empty() {
         let root = store.sessions_dir();
-        if let Ok(Some(dir)) = deepseek_tui::session_export::session_artifacts_dir(&root, &id) {
+        // helper 调用在此充当存在性 + canonical 包围校验的门（实体确已落进
+        // 本机 store 的 sessions/<id>/artifacts）；返回的 canonical 目录本身
+        // 不再用于拼指针（拼写与本机会话 compat join 一致，见下方赋值处）。
+        if let Ok(Some(_)) = deepseek_tui::session_export::session_artifacts_dir(&root, &id) {
             let member_relatives: std::collections::HashSet<&str> = artifacts
                 .iter()
                 .map(|(relative, _)| relative.as_str())
@@ -427,7 +438,14 @@ fn import_one_session_inner(
                     // 同机往返：指针已指向本机实落点，保持。
                     continue;
                 }
-                record.storage_path = dir.join(relative);
+                // 指针拼写与本机会话的 compat join 拼法一致（root 直拼，非
+                // canonicalize 的 verbatim 形）：`dir` 是读侧 confinement 的
+                // canonical 返回（Windows 上带 `\\?\` 前缀 + 8.3 展开），照抄
+                // 会让恢复记录里的指针与本机原生会话拼写不一致（r7 minor）；
+                // 实体落点已由 session_artifacts_dir 的 canonical 包围校验
+                // 保证，relative 又经解析期校验无 `..`/绝对分量，root 直拼
+                // 与 dir 指向同一物理位置。
+                record.storage_path = root.join(&id).join("artifacts").join(relative);
             }
         }
     }
@@ -516,20 +534,43 @@ fn import_artifacts(store: &SessionStore, id: &str, artifacts: &[(String, Vec<u8
 /// 记账（session.json + manifest.json + container.json + artifacts），而本
 /// 预扫描只数 artifacts 文件与记录本体。container.json 内嵌整份会话
 /// journal（由记录的 messages 投影而来，字节量 ≤ 记录本体），manifest.json
-/// 内嵌元数据与成员索引（≈ 每成员百字节，1 MiB 覆盖 1 万成员上限）。不
+/// 内嵌元数据与成员索引（基数 + 每成员全名，见 GENERATED_MEMBER_BYTES_*，
+/// 按实际成员数累计——平铺 1 MiB 在 1 万个长名成员下低估，r7 minor）。不
 /// 预留的话，账本边缘的归档（≥9998 个 artifacts 文件，或 artifacts+记录
 /// 恰低于总量而 artifacts+记录×2+索引超总量）仍会「导出成功、导入必拒」
 /// ——正是本函数存在要堵的洞。
 const GENERATED_MEMBER_COUNT: usize = 3;
-const GENERATED_MEMBER_BYTES_ALLOWANCE: u64 = 1024 * 1024;
+/// manifest.json 成员索引的每成员字节余量：pretty JSON 的每条索引 ≈ 固定
+/// 骨架 ~50 字节 + 全名（`artifacts/<relative>`）；取 64 字节对齐余量，
+/// 按实际成员数累计（平铺 1 MiB 在 1 万个 255 字节长名下低估 ~2 MB——
+/// 账本边缘的归档仍会「导出成功、导入必拒」，r7 minor）。元数据骨架的
+/// 基数另计入 [`GENERATED_MEMBER_BYTES_BASE`]。
+const GENERATED_MEMBER_BYTES_PER_ARTIFACT: u64 = 64;
+const GENERATED_MEMBER_BYTES_BASE: u64 = 64 * 1024;
 
-pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path, record_bytes: u64) -> Result<()> {
+/// 成员名的卷拼写折叠（与 `volume_fold_spelling` 同一语义，慢路径包装）：
+/// 导入方/导出预扫描的重名折叠必须覆盖 NTFS `$UpCase`（ſ→s、K→k、ı→I）
+/// 与 APFS 的 Unicode 简单折叠，纯 ASCII 折叠会把 `IŞIK.md`/`ışık.md` 这类
+/// 变体对放进大小写不敏感卷上静默合并（r7 minor）。跨机方向的过拒（ext4
+/// 上可共存的变体对被指名拒绝）与 `:`/尾点拒绝同一 fail-closed 口径。
+fn member_folded_spelling(relative: &str) -> String {
+    crate::platform::os::volume_fold_spelling(relative)
+}
+
+/// `artifacts_dir = None`（`include_artifacts=false` 的精简导出）时跳过
+/// 目录遍历，只做记录本体账本——精简归档仍含 session.json + container.json，
+/// 单成员/总量上限的镜像对它同样适用（r7 minor 5）。
+pub(crate) fn ensure_artifacts_exportable(
+    artifacts_dir: Option<&Path>,
+    record_bytes: u64,
+) -> Result<()> {
     fn walk(
         dir: &Path,
         relative: &str,
         problems: &mut Vec<String>,
         total_bytes: &mut u64,
         member_count: &mut usize,
+        manifest_bytes: &mut u64,
         seen_folded: &mut std::collections::HashSet<String>,
     ) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -572,6 +613,7 @@ pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path, record_bytes: u6
                     problems,
                     total_bytes,
                     member_count,
+                    manifest_bytes,
                     seen_folded,
                 );
             } else if file_type.is_file() {
@@ -620,22 +662,30 @@ pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path, record_bytes: u6
                         "artifacts/{child_relative}: {reason} (rename or remove this file and retry the export)"
                     ));
                 }
-                // 大小写变体对检测：大小写敏感文件系统（ext4）上
-                // `Notes/a.txt` 与 `notes/a.txt` 可以共存并通过上面的单文件
-                // 校验，导入方现在对大小写变体对 fail-closed（同一张失败
-                // 口径），导出侧必须先行指名，维持「导出必可导入」不变式。
-                let normalized_folded = normalized.to_ascii_lowercase();
+                // 大小写/折叠变体对检测：大小写敏感文件系统（ext4）上
+                // `Notes/a.txt` 与 `notes/a.txt`（含 ſ/K/ı 与非 ASCII 大小写
+                // 变体）可以共存并通过上面的单文件校验，导入方现在对折叠
+                // 变体对 fail-closed（同一张折叠口径），导出侧必须先行指名，
+                // 维持「导出必可导入」不变式。
+                let normalized_folded = member_folded_spelling(&normalized);
                 if !seen_folded.insert(normalized_folded) {
                     problems.push(format!(
                         "artifacts/{child_relative}: another artifact file differs only by name case (the importer refuses ambiguous case-variant members); rename one of the two files and retry the export"
                     ));
                 }
+                // manifest 成员索引按实际全名累计（`artifacts/<relative>` +
+                // 固定骨架），长名/海量成员的索引不再被平铺余量低估。
+                *manifest_bytes = manifest_bytes.saturating_add(
+                    (child_relative.len() as u64 + "artifacts/".len() as u64)
+                        .saturating_add(GENERATED_MEMBER_BYTES_PER_ARTIFACT),
+                );
             }
         }
     }
     let mut problems = Vec::new();
     let mut total_bytes = 0u64;
     let mut member_count = 0usize;
+    let mut manifest_bytes = 0u64;
     // 记录本体计入同一张账本：不镜像的话「artifacts 恰低于总量 + 多 MB
     // 记录」或超大记录仍会导出成功、导入必拒。
     if record_bytes > MAX_MEMBER_BYTES {
@@ -645,20 +695,32 @@ pub(crate) fn ensure_artifacts_exportable(artifacts_dir: &Path, record_bytes: u6
     }
     // 同一张账本，含导出器自产成员的预留（见 GENERATED_* 常量）：
     // session.json（记录本体）+ container.json（journal ≤ 记录本体）+
-    // manifest.json（索引余量）。
+    // manifest.json 索引基数（每成员全名余量在 walk 中累计、walk 后并入）。
     total_bytes = total_bytes
         .saturating_add(record_bytes)
         .saturating_add(record_bytes)
-        .saturating_add(GENERATED_MEMBER_BYTES_ALLOWANCE);
+        .saturating_add(GENERATED_MEMBER_BYTES_BASE);
     let mut seen_folded = std::collections::HashSet::new();
-    walk(
-        artifacts_dir,
-        "",
-        &mut problems,
-        &mut total_bytes,
-        &mut member_count,
-        &mut seen_folded,
-    );
+    if let Some(artifacts_dir) = artifacts_dir {
+        walk(
+            artifacts_dir,
+            "",
+            &mut problems,
+            &mut total_bytes,
+            &mut member_count,
+            &mut manifest_bytes,
+            &mut seen_folded,
+        );
+    }
+    // manifest 索引余量在 walk 后并入总账本再对总量上限复核：按实际成员
+    // 全名累计，长名/海量成员不再被平铺余量低估（r7 minor）。仅总量维度
+    // 需要这次收尾复核——单成员维度 manifest 不参与。
+    total_bytes = total_bytes.saturating_add(manifest_bytes);
+    if total_bytes > MAX_TOTAL_BYTES && problems.is_empty() {
+        problems.push(format!(
+            "artifacts/: archive ledger (artifacts + record + the archive's own members) exceeds the {MAX_TOTAL_BYTES}-byte total import cap (remove or thin this session's artifacts and retry the export)"
+        ));
+    }
     if member_count.saturating_add(GENERATED_MEMBER_COUNT) > MAX_MEMBER_COUNT {
         problems.push(format!(
             "artifacts/: more than {} files exceed the member-count import cap once the archive's own members are counted (thin this session's artifacts and retry the export)",
@@ -1289,7 +1351,10 @@ mod tests {
 
     /// 导出预扫描的大小写变体对检测：ext4 上可共存的 `Reports/` 与 `reports/`
     /// 同名文件会让导入 fail-closed（成员整路径大小写折叠后重名），导出侧
-    /// 必须先行指名（「导出必可导入」不变式）。
+    /// 必须先行指名（「导出必可导入」不变式）。大小写不敏感卷（NTFS/APFS
+    /// 默认）上两个目录名折叠进同一条目，变体对在盘面上不可构造——探测
+    /// 折叠即自跳过（与本文件 chmod/root 前提自跳过同一口径）；折叠谓语
+    /// 本身由 `import_rejects_case_variant_artifact_members` 平台无关地钉住。
     #[test]
     fn export_prescan_names_case_variant_artifact_pairs() {
         let (store, _lock, _env) = isolated_store();
@@ -1302,6 +1367,17 @@ mod tests {
             .join("artifacts");
         std::fs::create_dir_all(base.join("Reports")).expect("mkdir Reports");
         std::fs::create_dir_all(base.join("reports")).expect("mkdir reports");
+        let reports_canonical =
+            std::fs::canonicalize(base.join("Reports")).expect("canonicalize Reports");
+        let variant_canonical =
+            std::fs::canonicalize(base.join("reports")).expect("canonicalize reports");
+        if reports_canonical == variant_canonical {
+            // 大小写不敏感卷：fixture 前提（变体对可共存）不成立，跳过。
+            eprintln!(
+                "skipped export_prescan_names_case_variant_artifact_pairs: the local volume folds name case, a case-variant directory pair cannot exist"
+            );
+            return;
+        }
         std::fs::write(base.join("Reports/a.txt"), b"one").expect("write");
         std::fs::write(base.join("reports/a.txt"), b"two").expect("write");
         let archive = std::env::temp_dir().join(format!(
@@ -1625,12 +1701,12 @@ mod tests {
     #[test]
     fn import_enforces_member_count_cap() {
         let (store, _lock, _env) = isolated_store();
-        let members: Vec<(&str, &[u8])> = (0..=MAX_MEMBER_COUNT)
-            .map(|index| {
-                let name: &'static str =
-                    Box::leak(format!("artifacts/f{index}.txt").into_boxed_str());
-                (name, b"x".as_slice())
-            })
+        let names: Vec<String> = (0..=MAX_MEMBER_COUNT)
+            .map(|index| format!("artifacts/f{index}.txt"))
+            .collect();
+        let members: Vec<(&str, &[u8])> = names
+            .iter()
+            .map(|name| (name.as_str(), b"x".as_slice()))
             .collect();
         let archive = build_archive(&members);
         let error = store
@@ -1665,10 +1741,14 @@ mod tests {
             .mode();
         std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
             .expect("chmod sessions dir");
-        // root 下 chmod 不拦截（探针仍成功）：本测试的平台前提不成立，跳过。
+        // root 下 chmod 不拦截（探针仍成功）：本测试的平台前提不成立，跳过
+        // （响亮跳过——静默 return 会让 root 化 CI 把零覆盖误读成绿）。
         if std::fs::metadata(sessions_dir.join("probeio1.json")).is_ok() {
             std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
                 .expect("restore permissions");
+            eprintln!(
+                "skipped import_reports_stat_fault_instead_of_overwriting_existing_record: running as root, the 0o000 precondition does not hold"
+            );
             return;
         }
         let summary = store.import_archive(&second).expect("summary returned");
@@ -1763,7 +1843,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir empty artifacts dir");
         // 单成员腿：记录本体超 512 MiB 上限（数值即可，无需落大文件）。
-        let error = ensure_artifacts_exportable(&dir, MAX_MEMBER_BYTES + 1)
+        let error = ensure_artifacts_exportable(Some(&dir), MAX_MEMBER_BYTES + 1)
             .expect_err("oversized record must fail the pre-scan");
         assert!(
             format!("{error:#}").contains("session record exceeds"),
@@ -1771,7 +1851,7 @@ mod tests {
         );
         // 总量腿：记录顶到总量上限 + 任一 artifact 文件即超 2 GiB 总账。
         std::fs::write(dir.join("small.txt"), b"x").expect("seed tiny artifact");
-        let error = ensure_artifacts_exportable(&dir, MAX_TOTAL_BYTES)
+        let error = ensure_artifacts_exportable(Some(&dir), MAX_TOTAL_BYTES)
             .expect_err("record at total cap leaves no room for artifacts");
         assert!(
             format!("{error:#}").contains("total import cap"),
@@ -1779,7 +1859,7 @@ mod tests {
         );
         // 干净目录 + 适中记录照常放行（预扫描未误伤正常会话）。
         std::fs::remove_file(dir.join("small.txt")).expect("cleanup");
-        ensure_artifacts_exportable(&dir, 1024).expect("clean pre-scan passes");
+        ensure_artifacts_exportable(Some(&dir), 1024).expect("clean pre-scan passes");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1832,6 +1912,9 @@ mod tests {
         if std::fs::read_dir(&locked).is_ok() {
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(original))
                 .expect("restore permissions");
+            eprintln!(
+                "skipped export_prescan_reports_unreadable_dirs_and_non_utf8_names (unreadable-dir leg): running as root, the 0o000 precondition does not hold"
+            );
             return;
         }
         let error = store

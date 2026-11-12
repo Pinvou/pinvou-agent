@@ -1610,7 +1610,14 @@ const App = () => {
       }, [sidebarCodeListActive, taskListFilter]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
+      // settingsToast 接受字符串或 { text, duration }：默认 pill 按 3 秒的
+      // 短文案设计；导入汇总（四计数 + 缺产物补救指引）与导入/导出失败
+      // 详情是长文案，3 秒 + 单行截断会把恢复路径整个吞掉（r7 minor），
+      // 长文案调用方自带 duration。
       const [settingsToast, setSettingsToast] = useState('');
+      const settingsToastText = (settingsToast && typeof settingsToast === 'object') ? settingsToast.text : settingsToast;
+      const settingsToastDuration = (settingsToast && typeof settingsToast === 'object' && Number.isFinite(settingsToast.duration))
+        ? settingsToast.duration : 3000;
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
@@ -2873,7 +2880,9 @@ const App = () => {
           // 恢复路径留在 console 里（review finding）。
           const detail = String((error && error.message) || error || t.unknownError);
           console.warn('export session archive failed', error);
-          setSettingsToast(`${t.exportSessionFailed}: ${detail}`);
+          // 拒绝串指名文件并给出改法（长文案）：8 秒 + 默认时长会把恢复路径
+          // 读完之前就收走（r7 minor）。
+          setSettingsToast({ text: `${t.exportSessionFailed}: ${detail}`, duration: 8000 });
         } finally {
           setExportingSessionIds(prev => {
             const next = new Set(prev);
@@ -3291,9 +3300,9 @@ const App = () => {
 
       useEffect(() => {
         if (!settingsToast) return;
-        const timer = setTimeout(() => setSettingsToast(''), 3000);
+        const timer = setTimeout(() => setSettingsToast(''), settingsToastDuration);
         return () => clearTimeout(timer);
-      }, [settingsToast]);
+      }, [settingsToast, settingsToastDuration]);
 
       async function handleToggleSuperPerm() {
         const target = !superPerm;
@@ -3797,7 +3806,7 @@ const App = () => {
             // failure raised under an open dialog stays visible; a filesystem
             // path in the message must not push the pill past the viewport.
             <div className="fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] truncate rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
-              {settingsToast}
+              {settingsToastText}
             </div>,
             document.body
           )}

@@ -13,7 +13,7 @@ const assistant = (...content) => ({ role: 'assistant', content });
 const user = (...content) => ({ role: 'user', content });
 const plain = value => JSON.parse(JSON.stringify(value));
 
-function createReplay(runtime, { busy = true, onAdd = () => {}, renderMarkdown = text => `<p>${text}</p>`, source = helperSource, onSet = () => {} } = {}) {
+function createReplay(runtime, { busy = true, onAdd = () => {}, renderMarkdown = text => `<p>${text}</p>`, source = helperSource, onSet = () => {}, buffer = null, internalAwareDisplay = false } = {}) {
   const state = { messages: [], chatItems: [], activeSessionId: 'replay-session', busy, pinvouSceneEvents: [] };
   const itemIdSeq = { value: 0 };
   const window = {};
@@ -44,14 +44,22 @@ function createReplay(runtime, { busy = true, onAdd = () => {}, renderMarkdown =
   Object.assign(context, {
     state, itemIdSeq: 0, toolMeta: {},
     emitPersonaAt: persona.emitPersonaAt,
-    userMessageDisplayText: blocks => blocks.filter(b => b.type === 'text').map(b => b.text).join('') || '',
+    // internalAwareDisplay: 用真实分类器（bridge-messages.js 同 context 装载）
+    // 还原 host 的 display-text 语义——完全内部的 user 消息（canonical
+    // <context_update>）落下不渲染，走重放的「落下分支」计数。
+    userMessageDisplayText: blocks => {
+      const text = blocks.filter(b => b.type === 'text').map(b => String(b.text || '')).join('');
+      if (!text) return '';
+      if (internalAwareDisplay && window.PinvouBridgeMessages?.isInternalRuntimeUserMessage?.(text)) return '';
+      return text;
+    },
     updateToolItem: terminal.updateToolItem,
     PLAN_TOOLS: new Set(['update_plan', 'checklist_write', 'todo_write']),
     renderMarkdown,
     isSteeredMessagePos: () => false,
     // <context_update> 尾随计数回种钩子的 buffer 取面：无 buffer（返回
     // null）时钩子按空操作收敛（见 setRuntimeContextUpdatesPending）。
-    getBuffer: () => null,
+    getBuffer: () => buffer,
   });
   const lane = vm.runInContext(`(${hostSource.slice(start, end)})`, context);
   // Both addChatItem and the host hook must share the sequence cell.
@@ -248,5 +256,49 @@ for (const runtime of ['tauri', 'web']) {
     const rows = h.replay(messages);
     assert.deepEqual(plain(cards(rows).map(c => [c.path, c.title, c.id])), [['fresh.md', 'again', 2], ['old.md', 'old.md', 4]]);
     assert.equal(old.title, 'old');
+  });
+
+  // <context_update> 序号计数的回放腿行为钉（r7 M3：此前只有 bridge.js 的
+  // 出现性 pin——杀死「尾随余量回种」或「落下分支累加」，重启后的 fork/
+  // rewind 序号整体低计，而全部套件保持绿）。装置形状：canonical 漂移增量
+  // 夹在两个真实轮之间（随下一气泡下发）+ 一个尾随增量（回种 buffer）。
+  test(`${runtime}: replay counts canonical context_update boundaries and seeds the trailing remainder`, () => {
+    const canonicalDelta = () => ({ type: 'text', text: [
+      '<context_update>',
+      'Session context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):',
+      '',
+      '- stale pinned line',
+      '</context_update>',
+    ].join('\n') });
+    const buffer = { runtimeContextUpdatesPending: 0 };
+    const h = createReplay(runtime, {
+      buffer,
+      internalAwareDisplay: true,
+      source: helperSource + '\n' + fs.readFileSync(path.join(appRoot, 'src/shared/bridge-messages.js'), 'utf8'),
+    });
+    const rows = h.replay([
+      user({ type: 'text', text: 'turn one' }),
+      assistant({ type: 'text', text: 'reply one' }),
+      user(canonicalDelta()),
+      user({ type: 'text', text: 'turn two' }),
+      assistant({ type: 'text', text: 'reply two' }),
+      user(canonicalDelta()),
+    ]);
+    const turnTwo = rows.find(row => row.type === 'user' && row.text === 'turn two');
+    assert.ok(turnTwo, 'the real turn must still render');
+    assert.equal(
+      turnTwo.runtimeContextUpdatesBefore, 1,
+      'the mid-stream canonical delta must ride onto the next user bubble',
+    );
+    assert.ok(
+      !rows.some(row => row.type === 'user' && typeof row.text === 'string' && row.text.includes('<context_update>')),
+      'canonical deltas must not render as bubbles on replay',
+    );
+    if (typeof h.lane.setRuntimeContextUpdatesPending === 'function') {
+      assert.equal(
+        buffer.runtimeContextUpdatesPending, 1,
+        'the trailing remainder must seed back into the session buffer (post-restart ordinals)',
+      );
+    }
   });
 }

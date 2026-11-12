@@ -1255,6 +1255,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     }
   }); });
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）本就贴着 30 上限；r7 M2 的计数基线重置以单个条件位并入 done 腿（实现在 bridge-messages 的计数器原语旁），内聚高于拆分
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
@@ -1319,6 +1320,14 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
     if (phase === "done") {
+      // <context_update> 计数基线在真重写（after < before）后重置（r7 M2）：
+      // 压缩把旧漂移增量从磁盘转写里摘除，而客户端气泡仍携带压缩前的
+      // 老 vintage——不重置的话权威重同步会被老消费量钳在 0（序号整体
+      // 低计）。实现与 prune-only 语义见 bridge-messages 的
+      // healRuntimeContextUpdatesVintageAfterCompaction；返回是否有改动。
+      if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {
+        notify();
+      }
       const postTokens = Number(e.payload && e.payload.post_tokens);
       if (Number.isFinite(postTokens) && postTokens > 0 && postTokens <= state.tokens.max) {
         state.tokens = { input: postTokens, max: state.tokens.max };
