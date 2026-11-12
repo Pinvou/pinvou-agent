@@ -66,10 +66,12 @@ if ! python3 -c 'import pptx, docx' >/dev/null 2>&1; then
 fi
 run_required python3 scripts/mcp-server-contract-smoke.py
 if [ ! -x "$ROOT/pinvou3-app/node_modules/.bin/vite" ]; then
-  run_required npm --prefix pinvou3-app ci --prefer-offline --no-audit
+  # Bounded like the pip lane above (r4 review): a wedged npm registry must
+  # fail the leg, not eat the job window.
+  run_required timeout 1800 npm --prefix pinvou3-app ci --prefer-offline --no-audit
 fi
 if [ ! -d "$ROOT/remote-control-relay/node_modules/ws" ]; then
-  run_required npm --prefix remote-control-relay ci --prefer-offline --no-audit
+  run_required timeout 1800 npm --prefix remote-control-relay ci --prefer-offline --no-audit
 fi
 run_required npm --prefix pinvou3-app run build:ui
 run_required npm --prefix remote-control-relay test

@@ -717,7 +717,10 @@ jobs:
             remote-control-relay/package-lock.json
 
       - name: 安装前端依赖
-        run: npm ci --prefer-offline --no-audit
+        run: |
+          # Bounded like the pip lane (a wedged registry fails the leg, not the
+          # job window).
+          timeout 1800 npm ci --prefer-offline --no-audit
 
       # test:webui smoke (本 job 末尾) 会 spawn remote-control-relay/server.js,
       # 其顶层 require('ws') 解析自 remote-control-relay/node_modules,故必须装 relay 依赖。
