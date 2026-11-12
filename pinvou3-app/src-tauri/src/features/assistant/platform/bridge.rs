@@ -561,6 +561,10 @@ impl crate::features::memory::MemoryReviewModel for Pinvou3Bridge {
         self.api_key()
     }
 
+    fn memory_declares_no_auth(&self) -> bool {
+        self.effective_model_declares_no_auth()
+    }
+
     fn memory_model_preset(&self) -> ModelPreset {
         self.effective_model_owned()
             .map(|model| model.preset)
@@ -1773,6 +1777,20 @@ impl Pinvou3Bridge {
     /// gate and the engine-side key resolution can never drift apart.
     fn model_declares_no_auth(model: &SavedModel) -> bool {
         codewhale_config::auth_mode_disables_api_key(model.auth_mode.as_deref())
+    }
+
+    /// Whether the effective (active) model record declares the endpoint
+    /// keyless. The direct-HTTP feature paths that build their own requests
+    /// (voice postprocess, model review, memory organize) consult this before
+    /// attaching a bearer so a keyless declaration suppresses the
+    /// Authorization header there exactly like the engine route does —
+    /// otherwise those features would send an empty `Bearer ` against the
+    /// "no credentials are sent" contract the toggle's copy promises.
+    pub(crate) fn effective_model_declares_no_auth(&self) -> bool {
+        self.effective_model_owned()
+            .as_ref()
+            .map(Self::model_declares_no_auth)
+            .unwrap_or(false)
     }
 
     /// Whether the user is required to configure an API Key. local_vllm and
@@ -6563,6 +6581,36 @@ mod tests {
             "",
         );
         assert!(cloud_compatible.api_key_required());
+    }
+
+    #[test]
+    fn effective_model_declares_no_auth_tracks_the_active_record() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        // 直连 HTTP 特性（voice/review/memory）的 bearer 抑制以激活记录的
+        // 免鉴权声明为准:无记录、或有记录但无声明时保持既有 bearer 行为。
+        let mut bridge = fixture_bridge();
+        assert!(
+            !bridge.effective_model_declares_no_auth(),
+            "无激活记录时不得声明免鉴权"
+        );
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "bearer-posture-model",
+            "https://bearer.example.com:9443/v1",
+            "typed-key",
+        );
+        assert!(!bridge.effective_model_declares_no_auth());
+        bridge.prefs.advanced.saved_models[0].auth_mode = Some("none".to_string());
+        assert!(
+            bridge.effective_model_declares_no_auth(),
+            "激活记录的免鉴权声明必须驱动直连 HTTP 特性的 bearer 抑制"
+        );
     }
 
     /// 「此端点无需鉴权」(auth_mode="none")：设置页的显式免鉴权声明必须

@@ -214,6 +214,26 @@ for (const settingsI18nSource of settingsI18nSources) {
     /probeLocalServerKind\(probeBaseUrl, probeApiKey, modelId, noAuth\)/,
     'the tier probe must forward the keyless posture flag so the backend skips the saved-credential fallback',
   );
+  // The keyless UI derivation must follow the same managed scope as the save
+  // payload: with the toggle ON and the URL edited to a managed host the
+  // toggle row disappears, so the hint/key-row/reveal-error gates must fall
+  // back to the undeclared shape too — otherwise the form deadlocks (hint
+  // visible, toggle gone, key row hidden, typed key silently dropped).
+  assert.match(
+    settingsViewSource,
+    /const noAuthActive = !isLocalPreset && !isCodingPlan && noAuth;/,
+    'the keyless UI derivation must scope the declaration out of managed endpoints exactly like the save payload does',
+  );
+  assert.match(
+    settingsViewSource,
+    /!noAuthActive && renderApiKeyField\(\{ withBorder: false \}\)/,
+    'the API key row must reappear when the live URL is a managed endpoint under a stale keyless toggle',
+  );
+  assert.match(
+    settingsViewSource,
+    /noAuthActive && <div className="px-4 pb-3/,
+    'the keyless hint must disappear when the live URL is a managed endpoint (the payload already stores a null declaration there)',
+  );
   assert.match(
     settingsViewSource,
     /showBaseUrlField = !isCodingPlan/,

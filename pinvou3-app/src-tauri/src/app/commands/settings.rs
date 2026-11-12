@@ -244,6 +244,24 @@ pub struct EffectiveModelConfig {
     pub env_overrides: Vec<String>,
 }
 
+/// Effective-credential-state display. A keyless declaration is the endpoint
+/// contract — no code path reads a credential for such a route — so an env
+/// key override must not render as the record's credential state (or list
+/// `api_key` among the live env overrides); the record state (normally
+/// Missing after the keyless save deleted the credential) is the truthful
+/// display. Undeclared records keep the historical env-override precedence.
+fn credential_state_for_display(
+    env_api_key: bool,
+    declares_no_auth: bool,
+    record_state: CredentialState,
+) -> CredentialState {
+    if env_api_key && !declares_no_auth {
+        CredentialState::EnvOverride
+    } else {
+        record_state
+    }
+}
+
 #[tauri::command]
 pub async fn get_effective_model_config(
     session_id: Option<String>,
@@ -269,7 +287,8 @@ pub async fn get_effective_model_config(
     let env_api_key = std::env::var(MODEL_API_KEY_ENV_OVERRIDE)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
-    if env_api_key {
+    let declares_no_auth = bridge.effective_model_declares_no_auth();
+    if env_api_key && !declares_no_auth {
         env_overrides.push("api_key".to_string());
     }
     if std::env::var("DEEPSEEK_PROVIDER").is_ok_and(|provider| provider == bridge.provider()) {
@@ -289,14 +308,14 @@ pub async fn get_effective_model_config(
         model: bridge.model(),
         base_url: bridge.base_url(),
         api_key: String::new(),
-        credential_state: if env_api_key {
-            CredentialState::EnvOverride
-        } else {
+        credential_state: credential_state_for_display(
+            env_api_key,
+            declares_no_auth,
             effective
                 .as_ref()
                 .map(|model| model.credential_state)
-                .unwrap_or(CredentialState::Missing)
-        },
+                .unwrap_or(CredentialState::Missing),
+        ),
         has_secret: effective
             .as_ref()
             .map(|model| model.has_secret)
@@ -2104,6 +2123,36 @@ mod tests {
             resolve_probe_key("typed-key", None, false).unwrap(),
             Some("typed-key".to_string()),
             "无声明时类型化 key 优先的既有语义不变"
+        );
+    }
+
+    #[test]
+    fn credential_state_display_respects_keyless_declaration() {
+        use super::credential_state_for_display as display;
+        // 免鉴权声明是端点契约:任何代码路径都不会为该路由读取凭据,env 覆盖
+        // 不得伪装成记录的凭据状态(无凭据可覆盖),记录自身状态才是真实显示。
+        assert_eq!(
+            display(true, true, CredentialState::Missing),
+            CredentialState::Missing,
+            "声明免鉴权时 env key 不得显示为 EnvOverride"
+        );
+        // 反方向矩阵:未声明记录保持 env 覆盖优先;无 env 时一律记录状态。
+        assert_eq!(
+            display(true, false, CredentialState::Missing),
+            CredentialState::EnvOverride,
+            "未声明记录的 env 覆盖显示语义不变"
+        );
+        assert_eq!(
+            display(true, false, CredentialState::Configured),
+            CredentialState::EnvOverride
+        );
+        assert_eq!(
+            display(false, true, CredentialState::Missing),
+            CredentialState::Missing
+        );
+        assert_eq!(
+            display(false, false, CredentialState::Configured),
+            CredentialState::Configured
         );
     }
 

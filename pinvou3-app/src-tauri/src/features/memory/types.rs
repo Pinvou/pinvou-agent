@@ -19,6 +19,14 @@ pub trait MemoryReviewModel {
     fn memory_base_url(&self) -> String;
     fn memory_api_key(&self) -> String;
     fn memory_model_preset(&self) -> ModelPreset;
+    /// Whether the effective model record declares the endpoint keyless
+    /// (`auth_mode = "none"`): the memory review request must then omit the
+    /// Authorization header instead of sending an empty `Bearer ` (the
+    /// toggle's "no credentials are sent" contract). Default `false` keeps
+    /// non-bridge impls (test doubles) on the historical always-bearer shape.
+    fn memory_declares_no_auth(&self) -> bool {
+        false
+    }
     /// UI locale (BCP 47 tag, e.g. "zh-Hans"/"en"/"ja"). The memory review prompt
     /// body is Chinese, so an output-language directive is appended per locale,
     /// mirroring the review-side `output_language_directive` precedent; the
