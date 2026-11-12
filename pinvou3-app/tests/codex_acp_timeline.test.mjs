@@ -666,14 +666,16 @@ try {
   'app restart and stale stop must close orphaned ACP turns without cancelling an idle runtime');
   // session/load is bounded by ACP_SESSION_LOAD_TIMEOUT: the load await sits
   // inside tokio::time::timeout. Pinned with a whitespace- and comma-tolerant
-  // regex (trailing commas tolerated after every argument, the reflow rustfmt
-  // produces whenever the line crosses 100 cols) — the string-includes pin
-  // this replaces was layout-shaped and desynced from the code it guards when
-  // the load-session block got reflowed onto one line as part of commit
-  // e92afbb39f's ~114-line reflow of this file, turning this suite red with
-  // no behavior change on the Rust side.
+  // regex: trailing commas are tolerated after every argument and after both
+  // closing parens, so every rustfmt reflow shape matches — one-arg-per-line
+  // inside `new`, the whole call on one line, and `send_request`'s argument
+  // broken onto its own line with a trailing comma (r5 review; the string-
+  // includes pin this replaces was layout-shaped and desynced from the code
+  // it guards when the load-session block got reflowed onto one line as part
+  // of commit e92afbb39f's ~114-line reflow of this file, turning this suite
+  // red with no behavior change on the Rust side).
   assert.ok(
-    /tokio::time::timeout\(\s*ACP_SESSION_LOAD_TIMEOUT,\s*connection\s*\.send_request\(\s*LoadSessionRequest::new\(\s*saved_id\.clone\(\),?\s*workspace\.clone\(\),?\s*\)\s*\)\s*\.block_task\(\)\s*,?\s*\)/.test(runtime),
+    /tokio::time::timeout\(\s*ACP_SESSION_LOAD_TIMEOUT,\s*connection\s*\.send_request\(\s*LoadSessionRequest::new\(\s*saved_id\.clone\(\),?\s*workspace\.clone\(\),?\s*\),?\s*\)\s*\.block_task\(\)\s*,?\s*\)/.test(runtime),
     'the saved-session load await must stay wrapped in the ACP_SESSION_LOAD_TIMEOUT bound',
   );
   // The bound VALUES are part of the shipped contract (docs/multi-agent-acp.md
@@ -691,7 +693,10 @@ try {
     /const ACP_CONFIG_REQUEST_TIMEOUT:\s*std::time::Duration\s*=\s*std::time::Duration::from_secs\(30\)/.test(runtime),
     'ACP config/mode request bound must stay at 30s',
   );
-  assert.ok(/NewSessionRequest::new\(\s*workspace\s*\)/.test(runtime));
+  assert.ok(
+    /NewSessionRequest::new\(\s*workspace\s*\)/.test(runtime),
+    'a missing saved session must rebuild through session/new on the same workspace',
+  );
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
   assert.ok(runtime.includes('apply_saved_mode('), 'saved Full Access mode must be restored after new/load');
   // Commit 22559510e extracted the repeated permission+elicitation settlement

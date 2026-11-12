@@ -35,10 +35,12 @@ test('renders every hard limit in all supported languages', () => {
     );
     // Track the backend cap (files/ingest_archive.rs MAX_ARCHIVE_ENTRIES,
     // raised 50→200 by the limits-audit batch — the r4 review found six user
-    // copy strings still claiming 50).
+    // copy strings still claiming 50). The number is matched exactly (not as
+    // a bare /200/ substring, which a "1200 entries" copy regression would
+    // also satisfy) — r5 review.
     assert.match(
       formatAttachmentLimitError(ATTACHMENT_LIMIT_ERROR_CODES.archiveTooManyEntries, dictionary.uiAttachments),
-      /200/,
+      /(^|\D)200(\D|$)/,
     );
     assert.match(
       formatAttachmentLimitError(ATTACHMENT_LIMIT_ERROR_CODES.archiveExpandedTooLarge, dictionary.uiAttachments),

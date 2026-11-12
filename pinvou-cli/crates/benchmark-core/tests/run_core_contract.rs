@@ -1313,6 +1313,12 @@ async fn some_deadline_cuts_off_the_same_slow_backend() {
 /// caps instantly.
 #[tokio::test(start_paused = true)]
 async fn unbounded_deadline_still_bounds_wedged_local_phases() {
+    // Outer regression guard per leg: under paused time the inner 600s
+    // fallback fires first in the correct case (the wrapper never trips),
+    // and if a bound ever regresses to a bare unbounded future the wrapper
+    // turns the regression into a clean assert instead of a hung test
+    // binary with zero diagnostics (r5 review).
+    const REGRESSION_GUARD: std::time::Duration = std::time::Duration::from_secs(6_600);
     for (name, behavior, expect_run_task_err) in [
         ("prepare", BackendBehavior::PendingPrepare, true),
         ("output", BackendBehavior::PendingResolveOutput, false),
@@ -1320,8 +1326,9 @@ async fn unbounded_deadline_still_bounds_wedged_local_phases() {
     ] {
         let backend = Arc::new(MockBackend::with_behavior(behavior));
         let runner = NativeAgentRunner::new(backend);
-        let result = runner
-            .run_task(
+        let result = tokio::time::timeout(
+            REGRESSION_GUARD,
+            runner.run_task(
                 &BenchmarkTask::new(
                     format!("unbounded-{name}"),
                     None,
@@ -1334,8 +1341,12 @@ async fn unbounded_deadline_still_bounds_wedged_local_phases() {
                     ),
                 ),
                 &RunContext::new(format!("unbounded-{name}")),
-            )
-            .await;
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!("{name}: the 600s local-phase cap regressed to an unbounded future")
+        });
         if expect_run_task_err {
             let error = result.expect_err("a wedged prepare must fail closed");
             assert_eq!(error.code(), "task_timeout", "{name}");
@@ -1357,8 +1368,9 @@ async fn unbounded_deadline_still_bounds_wedged_local_phases() {
     let backend = Arc::new(MockBackend::default());
     let runner =
         NativeAgentRunner::with_private_inputs(backend, Arc::new(PendingAttachmentResolver));
-    let result = runner
-        .run_task(
+    let result = tokio::time::timeout(
+        REGRESSION_GUARD,
+        runner.run_task(
             &BenchmarkTask::new(
                 "unbounded-attachment",
                 None,
@@ -1371,8 +1383,12 @@ async fn unbounded_deadline_still_bounds_wedged_local_phases() {
                 ),
             ),
             &RunContext::new("unbounded-attachment"),
-        )
-        .await;
+        ),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!("attachment: the 600s local-phase cap regressed to an unbounded future")
+    });
     let error = result.expect_err("a wedged attachment resolution must fail closed");
     assert_eq!(error.code(), "task_timeout");
 }
