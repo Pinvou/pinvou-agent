@@ -59,8 +59,10 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // resolves None → the engine falls to 128K, while the monitor page has the
     // prefs "grok-4.20" substring fallback of 1M — the two diverge, hence the
     // same-value override (re-checked as 1M on the docs.x.ai model page on
-    // 2026-09-11). Note this entry also matches the -0309- spellings via
-    // suffix tolerance; both values are identical, so there is no conflict.
+    // 2026-09-11). The -0309- spellings carry their own same-value rows
+    // below, so nothing resolves through this entry (an earlier note
+    // claiming suffix tolerance also matched them was wrong — corrected
+    // 2026-11-06).
     ("grok-4.20-reasoning", 1_000_000),
     // The base known table only lists claude-fable-5 exactly; claude-fable-5-1
     // would miss and fall to the "unknown-name claude wildcard 200K" fallback;
@@ -70,11 +72,15 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     ("claude-fable-5-1", 1_000_000),
     // claude-sonnet-5-5 (catalog row since 2026-10-13) has no base row — the
     // exact known table stops at claude-sonnet-5 — and would fall to the
-    // "unknown-name claude wildcard 200K" fallback, while the whole 5.5
-    // generation (fable/opus/sonnet/haiku) is officially 1M context / 128K
-    // output (platform.claude.com models-overview comparison table; the
-    // Anthropic preset fallback meters non-haiku at 1M). Same trap
-    // claude-fable-5-1 hit; model_name_matches also tolerates future
+    // "unknown-name claude wildcard 200K" fallback, while the 5.5
+    // generation is officially 1M context / 128K output per the vendor's
+    // model pages (the Haiku 5.5 model page states "a 1M token context
+    // window, and up to 128k output tokens"; the overview comparison table
+    // documents the same figures for the whole 5.5 generation — attribution
+    // re-verified first-hand 2026-11-05, the same-day "5 generation only"
+    // correction was itself wrong; the Anthropic preset fallback meters
+    // non-haiku at 1M). Same
+    // trap claude-fable-5-1 hit; model_name_matches also tolerates future
     // -date/snapshot suffixes.
     ("claude-sonnet-5-5", 1_000_000),
     // claude-haiku-5-5 (same refresh) also rides the engine wildcard to
@@ -132,7 +138,7 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // without it the engine falls to 128K and diverges from the monitor
     // page's Openai preset fallback. Official context is 1,050,000 per the
     // Azure Foundry capability table (gpt-6.1-sol, 2026-09-29; page updated
-    // 2026-10-08). Openai preset default since 2026-10-13, so this row is
+    // 2026-10-29). Openai preset default since 2026-10-13, so this row is
     // load-bearing for `resolved_context_window(default_model())` (the
     // engine-side resolution has no prefs fallback — see the monitor
     // `preset_default_models_resolve_engine_context_window` test).
@@ -144,6 +150,26 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
 /// PINVOU_OVERRIDES it is consulted after the base, so it only fills gaps and
 /// never overrides values.
 const PINVOU_KNOWN: &[(&str, u32)] = &[
+    // grok-4.20-multi-agent-0309 (docs.x.ai detail page, 1M) rides here, not
+    // PINVOU_OVERRIDES (round-9 review placement): the base chain has no row
+    // for the id at all, which is this table's contract, and a future
+    // upstream row then wins automatically. The id left the settings
+    // catalog in the round-9 review (Chat Completions wire incompatibility
+    // — see the xai group comment) but stored/custom configs can still
+    // carry it; without a row here the engine would fall to 128K while the
+    // monitor's Xai "grok-4.20" substring fallback shows 1M.
+    ("grok-4.20-multi-agent-0309", 1_000_000),
+    // gpt-6.1-terra (2026-10-26, developers.openai.com changelog/models) is
+    // the 6.1 efficient tier: 1,050,000 context / 128,000 output per the
+    // Azure Foundry capability table (page updated 2026-10-29). Known-table
+    // placement per the round-9 review (the base chain has no gpt-6-family
+    // row — the OVERRIDES contract reserves that table for base-catalogued
+    // rows whose value lags; several older OVERRIDES rows are fill-gap
+    // placements that predate this wording — moving them to KNOWN is
+    // follow-up material, and both tables resolve identically while the
+    // base misses); without it the engine falls to 128K and
+    // diverges from the monitor page's Openai preset fallback of 1.05M.
+    ("gpt-6.1-terra", 1_050_000),
     // The Kimi K3 direct-platform model is officially rated at 1M tokens
     // (platform.kimi.com/docs/models).
     ("kimi-k3", 1_048_576),
@@ -221,10 +247,49 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // model from glm-5.3 (multimodal, 200 tokens/s), so it is listed
     // explicitly.
     ("glm-5.3-flashx", 1_000_000),
-    // MiniMax M3.1 Flash Preview (2026-09, platform.minimax.cn model intro):
-    // 1M context; the base's minimax rows are exact spellings that cannot
+    // MiniMax M3.1 Flash (GA since 2026-10-19, platform.minimax.cn): 1M
+    // context; the base's minimax rows are exact spellings that cannot
     // cover the m3.1 wire id (the ".1" remainder does not start with '-').
-    ("minimax-m3.1-flash-preview", 1_000_000),
+    // The row is spelled with the GA wire id; the retired "-Preview" id
+    // (the 2026-09 catalog spelling) rides the suffix tolerance of
+    // model_name_matches, so stored configs of either generation resolve.
+    ("minimax-m3.1-flash", 1_000_000),
+    // Kimi K3.1 Pro (2026-10-23, platform.kimi.com models page): officially
+    // "1M token context window" ("100 万 token 上下文窗口"); the base kimi
+    // rows stop at k3/k2.x exact ids that cannot cover the k3.1 wire id.
+    ("kimi-k3.1-pro", 1_048_576),
+    // Kimi Code group spelling of the same model (the bare rows left the
+    // kimi_coding_plan catalog group in the round-5 deferral — the pinned
+    // child's replay gate does not yet recognize K3.1, see that group's
+    // deferral comment — but ACP datalist / stored / custom configs still
+    // carry them). model_name_matches has no
+    // vendor-prefix tolerance, so the kimi-k3.1-pro row above cannot carry
+    // it, and the base kimi-code arms are exact "k3" / "k3-256k" only —
+    // without this row the bare spelling resolves None → the engine falls
+    // to 128K while the FE row documents 1M. The -highspeed suffix rides
+    // the tolerance of this row: platform.kimi.com/docs/api/models-overview
+    // states both K3.1 spellings carry kimi-k3's constraints verbatim
+    // ("参数约束也与 `kimi-k3` 完全一致" — the same 1M window; note that the
+    // "同一模型、参数约束完全一致（仅输出速度不同）" wording on the same page
+    // belongs to the kimi-k2.7-code/-highspeed family, not to K3.1), so the
+    // highspeed variant is the same 1M window — re-checked 2026-11-03.
+    ("k3.1-pro", 1_048_576),
+    // muse-spark-1.3 (Meta group headline row, 2026-11-03 refresh):
+    // officially 1,048,576 context per the dev.meta.ai quickstart, fetched
+    // live 2026-11-04 ("Limits: context 1048576" in the coding-agent setup
+    // block; the models page states the same 1,048,576-token window — this
+    // closes the earlier "re-verify when reachable" TODO). No base chain
+    // row exists (the base default is muse-spark-1.2), so without it the
+    // engine falls to 128K while the FE row documents 1M.
+    ("muse-spark-1.3", 1_048_576),
+    // muse-wonder-1.0 (joined the Meta group in the 2026-11-04 fix pass):
+    // the models page positions Muse Wonder as Meta's most capable model
+    // ("Muse Wonder is on Model API") with "a 1,048,576-token context
+    // window"; the base chain has no wonder row at all, so without this
+    // row the engine falls to 128K while the FE row documents 1M. The
+    // models page states no output figure for Wonder, so no output anchor
+    // is invented here.
+    ("muse-wonder-1.0", 1_048_576),
 ];
 
 /// 解析 pinvou3 已知模型的上下文窗口。
@@ -281,12 +346,21 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     ("gpt-6-luna", 128_000),
     ("gpt-6-astra", 128_000),
     // gpt-6.1-sol: officially documented Max Output Tokens 128,000 on the
-    // same Azure capability table as above (page updated 2026-10-08) — a
+    // same Azure capability table as above (page updated 2026-10-29 — the
+    // 2026-10-08 stamp in earlier revisions drifted; round-8 review) — a
     // first-party official figure, unlike the corroborated gpt-6 rows above.
     ("gpt-6.1-sol", 128_000),
-    // claude-sonnet-5-5 / claude-haiku-5-5: Max Output 128K for the whole
-    // 5.5 generation per the models-overview comparison table (checked
-    // 2026-10-13; the exact-match base output table stops at claude-sonnet-5
+    // gpt-6.1-terra rides the same family capability table (added to the
+    // catalog in the 2026-11-03 refresh) — same first-party figure and the
+    // same Responses-wire reasoning-as-output concern as its siblings.
+    ("gpt-6.1-terra", 128_000),
+    // claude-sonnet-5-5 / claude-haiku-5-5: Max Output 128K per the
+    // vendor's model pages (the Haiku 5.5 model page states "a 1M token
+    // context window, and up to 128k output tokens" — checked 2026-10-13;
+    // the models-overview comparison table also documents the same 1M/128K
+    // figures for the whole 5.5 generation (attribution re-verified
+    // first-hand 2026-11-05, the same-day "5 generation only" correction
+    // was itself wrong); the exact-match base output table stops at claude-sonnet-5
     // / claude-haiku-4-5). Without these rows the route output fact stays
     // Unverified at the 64K automatic-request floor; the intersection keeps
     // the effective cap at 64K — this anchors the documented fact and its
@@ -334,6 +408,68 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // flashx wire id, so it resolves None. The dot spelling cannot
     // suffix-inherit the dash rows under model_name_matches either.
     ("glm-5.3-flashx", 131_072),
+    // Kimi K3.1 Pro (2026-10-23 flagship, all four K3.1 spellings — the
+    // settings catalog now rides the prefixed/bracket forms after the
+    // round-5 bare-row deferral, the bare forms stay reachable through the
+    // ACP datalist and custom entry): the
+    // official API docs document max_completion_tokens "默认为 131072，最大
+    // 可设置为 1048576" for the whole K3 series incl. the highspeed variant
+    // (platform.kimi.com/docs/api/chat, re-checked 2026-11-03). The hard
+    // cap is registered; the engine still intersects with its 64K
+    // automatic-request default, so without these rows the K2-sunset
+    // migration target fail-closes to the 8192 uncatalogued guess — an 8×
+    // regression against the 64K automatic-request cap kimi-k3 rides (its
+    // catalogued figure is 131,072; the engine's 64K request cap is what
+    // the 8× arithmetic compares against). The bare Kimi Code
+    // spelling needs its own row (no vendor-prefix tolerance); both
+    // -highspeed spellings ride the suffix tolerance of their rows (the
+    // models-overview page states both K3.1 spellings carry kimi-k3's
+    // constraints verbatim — see the PINVOU_KNOWN comment).
+    ("kimi-k3.1-pro", 1_048_576),
+    ("k3.1-pro", 1_048_576),
+    // The [1m] bracket declarations of the same models (the ACP datalists'
+    // models1m suggestions carry k3.1-pro[1m] on the Kimi Code preset and
+    // kimi-k3[1m] on the moonshot preset; kimi-k3.1-pro[1m] has no datalist
+    // entry — it is the prefixed-platform composite of the same model, no
+    // platform page declares that spelling, and it is covered defensively
+    // alongside the documented forms; round-9 wording fix aligning with the
+    // prefs/FE comments):
+    // model_name_matches tolerates dash-suffixes only, so the bracket
+    // spellings miss every row above (the context side survives via the
+    // `1m` substring hint; the output side would fail-close to 8192).
+    // Same models, same documented constraints (models-overview page), so
+    // the same figures apply. k3[1m] deliberately has no row: the base
+    // fail-closes that spelling as a Claude Code convention (config.rs
+    // KIMI_CODE_CLAUDE_ALIAS_GUIDANCE), so it never reaches a real route.
+    ("kimi-k3.1-pro[1m]", 1_048_576),
+    ("k3.1-pro[1m]", 1_048_576),
+    ("kimi-k3[1m]", 1_048_576),
+    // muse-spark-1.3: officially 131,072 output per the dev.meta.ai
+    // quickstart, fetched live 2026-11-04 ("Limits: context 1048576,
+    // output 131072" in the coding-agent setup block — this closes the
+    // earlier "re-verify when reachable" TODO). Without it the
+    // operator-tier quartile branch
+    // `(window/4).clamp(1, 8192)` re-clamps the declared 1M window to
+    // 8192 — the same truncation this table exists to stop.
+    ("muse-spark-1.3", 131_072),
+    // MiniMax-M3.1-Flash (GA 2026-10-19): the protocol API references
+    // carried the figure at the 2026-11-04 fetch — max_completion_tokens:
+    // "For MiniMax-M3.1-Flash and MiniMax-M3 the recommended value is
+    // 131072 (128K) and the maximum is 524288 (512K)" (platform.minimax.io
+    // / platform.minimax.cn api-reference; that fetch also refuted the
+    // earlier "no published figure" premise — the figure-free pages were
+    // the overview/FAQ/guide pages — and the base's bundled snapshot
+    // already records M3 output 524288). The 2026-11-06 round-11 re-check
+    // found the figure on NO current MiniMax docs page any more (both
+    // protocol refs CN+EN, api-overview, text-ai-sdk, guides, models,
+    // release-notes, FAQ, pricing, blog), so the citation rests on the
+    // 2026-11-04 fetch alone — re-verify at the next refresh. The 524288
+    // anchor stays registered as the app-side cap per the deepseek-flash
+    // precedent; the engine's 64K automatic-request intersection governs
+    // the effective wire cap exactly as for the K3.1 rows above, so the GA
+    // id stops riding the 8192 uncatalogued fail-close. The retired
+    // "-Preview" spelling rides the suffix tolerance.
+    ("minimax-m3.1-flash", 524_288),
 ];
 
 /// Documented max-output anchors for models the base catalog has no output
@@ -461,7 +597,25 @@ mod tests {
             ("mimo-v2.6-pro-ultraspeed", 1_000_000),
             ("grok-4.7", 500_000),
             ("glm-5.3-flashx", 1_000_000),
+            ("minimax-m3.1-flash", 1_000_000),
+            // The retired "-Preview" catalog spelling (2026-09) rides the
+            // suffix tolerance of the GA row above.
             ("minimax-m3.1-flash-preview", 1_000_000),
+            ("kimi-k3.1-pro", 1_048_576),
+            // The Kimi Code spelling is a separate wire id (no vendor-prefix
+            // tolerance) with its own row; the highspeed suffix rides the
+            // tolerance of both K3.1 rows (same model per the
+            // models-overview page, re-checked 2026-11-03).
+            ("k3.1-pro", 1_048_576),
+            ("k3.1-pro-highspeed", 1_048_576),
+            ("kimi-k3.1-pro-highspeed", 1_048_576),
+            // Meta group headline row: no base chain row exists (the base
+            // default is muse-spark-1.2), so the supplemental row keeps the
+            // engine at the documented 1M instead of the 128K fallback.
+            ("muse-spark-1.3", 1_048_576),
+            // muse-wonder-1.0 (2026-11-04 fix pass): no base chain row; the
+            // models page documents the 1,048,576-token window.
+            ("muse-wonder-1.0", 1_048_576),
         ] {
             assert_eq!(resolved_context_window(model), Some(expected), "{model}");
         }
@@ -494,6 +648,12 @@ mod tests {
             resolved_context_window("grok-4.20-0309-non-reasoning"),
             Some(1_000_000)
         );
+        // The multi-agent 4.20 row (2026-11-03 catalog refresh) carries the
+        // same 1M figure and no base row of its own.
+        assert_eq!(
+            resolved_context_window("grok-4.20-multi-agent-0309"),
+            Some(1_000_000)
+        );
         // The pre-retirement legacy spelling kept by the ACP preset: the base
         // has no row, so without the override the engine falls to 128K and
         // diverges from the monitor page's prefs "grok-4.20" substring
@@ -524,6 +684,20 @@ mod tests {
         // base gpt-6-family row), so removing the row would turn the monitor
         // `preset_default_models_resolve_engine_context_window` red too.
         assert_eq!(resolved_context_window("gpt-6.1-sol"), Some(1_050_000));
+        // gpt-6.1-terra (2026-11-03 catalog row) rides the same anchor
+        // logic as its 6.1 sibling.
+        assert_eq!(resolved_context_window("gpt-6.1-terra"), Some(1_050_000));
+        // MiniMax M3.1 Flash went GA (2026-10-19): the GA wire id and the
+        // retired "-Preview" spelling must both resolve through the same
+        // row.
+        assert_eq!(
+            resolved_context_window("MiniMax-M3.1-Flash"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            resolved_context_window("MiniMax-M3.1-Flash-Preview"),
+            Some(1_000_000)
+        );
         // gemini-4-argon (GA 2026-10-13, catalog row since 2026-10-14) rides
         // the same anchor logic as gemini-3.8-flash: no base row exists (the
         // base gemini rows stop at 3.7/3.1), and the monitor's Gemini
@@ -543,6 +717,8 @@ mod tests {
         // 128,000 (Azure capability table), riding the same Responses-wire
         // reasoning-as-output concern as the gpt-6 rows above.
         assert_eq!(resolved_output_limit("gpt-6.1-sol"), Some(128_000));
+        // gpt-6.1-terra joins the same family table (2026-11-03 refresh).
+        assert_eq!(resolved_output_limit("gpt-6.1-terra"), Some(128_000));
         // gpt-5.4-mini rides the Responses wire too (prefix predicate) and has
         // no base output row; without the anchor it fail-closes to 8192 while
         // reasoning meters as output on that wire.
@@ -610,6 +786,47 @@ mod tests {
             Some(384_000)
         );
         assert_eq!(resolved_output_limit("glm-5.3-flashx"), Some(131_072));
+        // K3.1 Pro (2026-11-03 fix wave): the documented hard cap keeps the
+        // K2-sunset migration target off the 8192 uncatalogued fail-close.
+        // All four spellings must resolve — the bare Kimi Code id carries
+        // no vendor prefix, and the highspeed variants are the same model
+        // (models-overview page), so they ride the suffix tolerance.
+        assert_eq!(resolved_output_limit("kimi-k3.1-pro"), Some(1_048_576));
+        assert_eq!(
+            resolved_output_limit("kimi-k3.1-pro-highspeed"),
+            Some(1_048_576)
+        );
+        assert_eq!(resolved_output_limit("k3.1-pro"), Some(1_048_576));
+        assert_eq!(resolved_output_limit("k3.1-pro-highspeed"), Some(1_048_576));
+        // The [1m] bracket declarations miss every dash-tolerant row (the
+        // remainder does not start with '-'), so they carry their own rows
+        // (2026-11-04 fix pass); k3[1m] stays unanchored (base fail-closes
+        // it as a CC convention).
+        assert_eq!(resolved_output_limit("kimi-k3.1-pro[1m]"), Some(1_048_576));
+        assert_eq!(resolved_output_limit("k3.1-pro[1m]"), Some(1_048_576));
+        assert_eq!(resolved_output_limit("kimi-k3[1m]"), Some(1_048_576));
+        assert_eq!(resolved_output_limit("k3[1m]"), None);
+        // muse-spark-1.3: the documented 131,072 output keeps the declared
+        // 1M window from re-clamping to 8192 in the operator quartile
+        // branch (quickstart figure first-hand verified 2026-11-04).
+        assert_eq!(resolved_output_limit("muse-spark-1.3"), Some(131_072));
+        // muse-wonder-1.0 deliberately stays output-unanchored: the docs
+        // publish only the context window for it, and inventing an output
+        // figure would put it on the 64K-intersection chain unanchored —
+        // pin the None so a future corrupted row is caught.
+        assert_eq!(resolved_output_limit("muse-wonder-1.0"), None);
+        // MiniMax-M3.1-Flash: "recommended 131072 / maximum 524288" was
+        // fetched live from the protocol API references on 2026-11-04; the
+        // 2026-11-06 round-11 re-check found the figure on no current
+        // MiniMax page any more, so the anchor stays as the app-side
+        // registered cap per the deepseek-flash precedent (the engine's
+        // 64K intersection governs the effective wire cap). The retired
+        // "-Preview" spelling rides the suffix tolerance.
+        assert_eq!(resolved_output_limit("minimax-m3.1-flash"), Some(524_288));
+        assert_eq!(
+            resolved_output_limit("MiniMax-M3.1-Flash-Preview"),
+            Some(524_288)
+        );
         // Ids the base resolves stay None here: neither matches a table row
         // under model_name_matches ("deepseek-v4-flash" does not carry the
         // "deepseek-flash" row as a dash-suffix prefix; "glm-5.3-flash" is
@@ -628,6 +845,19 @@ mod tests {
     fn explicit_window_wins_and_codewhale_remains_the_base_catalog() {
         assert_eq!(resolved_context_window("kimi-k3-256k"), Some(256_000));
         assert_eq!(resolved_context_window("kimi-k3-1m"), Some(1_048_576));
+        // The bracket [1m] spellings match no override row (dash-suffix
+        // tolerance only), so their context survives via the explicit `1m`
+        // substring hint — pin it so a narrowed hint cannot silently drop
+        // the bracket forms' context.
+        assert_eq!(
+            resolved_context_window("kimi-k3.1-pro[1m]"),
+            Some(1_048_576)
+        );
+        assert_eq!(resolved_context_window("k3.1-pro[1m]"), Some(1_048_576));
+        // Round-8 pin: kimi-k3[1m] (the moonshot preset's models1m
+        // suggestion) rides the same hint — it had no direct context pin,
+        // so a kimi-3-specific hint narrowing could silently drop it.
+        assert_eq!(resolved_context_window("kimi-k3[1m]"), Some(1_048_576));
         assert_eq!(
             resolved_context_window("gpt-5.6-sol"),
             deepseek_tui::models::context_window_for_model("gpt-5.6-sol")
