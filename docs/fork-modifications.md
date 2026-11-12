@@ -61,7 +61,7 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `8e8d52fdb`，包含 #115–#122、#114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152 与 #156；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为公开维护头 `f47cb9f36`，包含 #115–#122、#114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152、#156、#157 与限制审计 #154；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
@@ -70,10 +70,10 @@
 
 ## 0. 当前状态（2026-11-15）
 
-- 当前公开维护头与父仓 gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进（见 §3 表首行），父仓 gitlink 随之跟随。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 100 个提交，r1 `1fafee7e2` 之上 85 个；97 个带 DCO sign-off。未签名的提交为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），不能声称未签名集合有界于历史两项。保留已发布历史，不改写维护分支。
-- 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：551 files, +121146/-49817，净增 71329；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 当前公开维护头与父仓 gitlink：`f47cb9f36af8d3b83ac6c215de1a11cc4509aa51`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`，限制审计 #154 为 `f47cb9f36`（squash `841fe98f` + 评审修复波，已 rebase 到 `pinjou3-clean` `687358f7e` 之上）。本轮维护分支以限制审计分支的 rebase 跟进（见 §3 表首行），父仓 gitlink 随之跟随。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 116 个提交，r1 `1fafee7e2` 之上 101 个；113 个带 DCO sign-off。未签名的提交为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署；限制审计 #154 的 16 个提交全部带签署），不能声称未签名集合有界于历史两项。保留已发布历史，不改写维护分支。
+- 不可变 tag `pinjou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
+- 实测 drift：576 files, +123741/-50348，净增 73393；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
@@ -122,6 +122,7 @@
 
 | Commit | 主题 | 说明 |
 |---|---|---|
+| `f47cb9f36` | 限制审计 | fork 限制行为全量审计批次（squash `841fe98f` + 评审修复波，分支已 rebase 到 `pinjou3-clean` `687358f7e` 之上——#156 的 1.100 lint 适配与 #157 的 session-reader 只读分类保持为祖先）：放宽误伤真实使用的上限（MAX_SESSIONS 50→1000 且 archived 豁免清理改为只对非 archived 计数、宪法子句 280→2000 带幂等截断标记、routed-usage 64→2048 且分批持久化（16 条/批，批次仅在写盘落地后清除）、ACP 轮次 50→200、路由分类器超时 4s→15s、sandbox 钳制 600s→4h、cloud prompt 4k→64k 带标记、PR title/body 96/6000→200/60000、restored 拓扑 24→64 带省略注记、cargo-test/verifier 输出改保尾部、grep 120s/250、web 搜索 25/10、write 256KiB、file_search 1000、lsp lint 路径 16→64、finance 错误摘录 120→600、子代理证据 clip 改保头 2500+尾 1500 带截断标记、终端窗口 32KiB 且 prune_output 保真实尾部、dev-server 600s、pdftotext 300s、git 输出 100k、github 摘录阈值 32KB/64KB、fleet 证据 10MB、digest 1024、display_name 钳制不拒绝、插件安装 64MB、/workflow 8000、voice 录音 60s）；补齐缺失的活性边界（git/gh 子进程 120s/60s 且 git_history 共享 git 工具的有界 runner、hooks unix-socket emit 5s、录音管道 2s 空闲超时、/share 300s、/update 15min、remote_env git 5s、config_bundles 120s、secrets 读/写两侧 16MiB、SKILL.md 发现读取 512KiB 与 audit 上限一致+符号链接拒绝）；删除死限制（TOOL_ACTIVATION_CACHE_MAX_* 的越界文案机制——sentinel-disabled 强制执行代码保留、cfg(test)-only WALK_DEPTH、config.example.toml 30s 陈旧注释、max_subagents=10 示例注释化）；扩展侧 vscode 10s/列表 50、verifiers harness 1800s fail-closed、computer-use exec 截断标记（UTF-8 字节真实计数）、facts-drift 200；修复波另含：retention 扫描移出 lifecycle-edit 保存路径、零位截断标记按纯文本解析、删除过时的 grep/file_search 预算镜像注记、forge 上界钉改 const-assert；技能文档补续跑指引。父仓同批更新 T2 指纹（write 256KiB）、会话/定时保留 500、检查点与回退备份 20→100、记忆 pending/organize 20→200 与 timed TTL 钳制 90→3650 天（字面量钉）、产物读取 50MiB 有界、archive ingest 50→200、review 与 voice 上限、CLI voice 裁剪披露、知识库 offset 分页与 skippedByExcluder 披露、vite 预算按 rebase 后实测 re-cut、提交主题 72 字符（#154） |
 | `687358f7e` | T2 | 一方 session-reader 只读读取面分类修复：`mcp_session-reader_read_session` 与 `mcp_session-reader_list_sessions` 加入引擎只读辅助名单——服务端契约（游标分页、仅已完成回合、逐条截断、跨 session 前缀拒绝）使其真只读，此前被误分类为需审批的网络工具，Plan 钉死的 aux lane 唯一工具即此读取时在执行前即死锁；名单精确匹配使前缀伪装（`mcp_session-reader_read_session_export`）仍留在需审批侧。registry/tests.rs 以数据条目扩展既有只读面测试（无新增 `forkguard_*` 行为名，登记数仍 301）；父仓无镜像分类，透明 (#157) |
 | `8e8d52fdb` | T2 | rustc/clippy 1.100 stable（2026-11-09）新 lint 适配五处，等价改写无行为变化：terminal 探针测试的 `map_err(|err| io::Error::other(err.to_string()))` 对 `Infallible`（ratatui 0.30 `with_options` 返回 `B::Error`、`TestBackend::Error` 为 uninhabited）调用 `to_string()` 被稳定 never 类型后的 `unreachable_code` 证明为死代码，改为 `map_err(io::Error::other)` 直传（转换 load-bearing 保留）；`fleet/manager.rs` needless_bool 化简为 `Ok(started)`；subagent coord ledger 与 `tui/auto_review.rs` needless_bool 收尾表达式化；`tui/transcript/tests.rs` ×2 needless_range_loop 改 `per_cell[..3].iter().enumerate()`。对照纯净 `6f7a3a748` 以 1.99.1 复跑同款命令确认五处恰为 1.100 新增；all-targets 严格面遗留 2 处 collapsible_if 与 `cargo doc -Dwarnings` 的 4 处 rustdoc 私有链接错误在 1.99.1 下同样存在（既有债务，未触碰，留待后续）。首次由父仓 Windows 回归腿（codewhale-tui lib test 编译）暴露 (#156) |
 | `6f7a3a748` | deps | 升级 rusqlite 0.41.1 / libsqlite3-sys 0.39.1（捆绑 SQLite 3.54.1，关 RUSTSEC-2026-0459）、rmcp 3.9.0（关 RUSTSEC-2026-0462）、rio-vt 0.5.29（关 RUSTSEC-2026-0430）；子模块 MSRV 声明抬至 rust-version 1.89（低于父仓 1.90 下限，父仓无需动作）(#152) |
@@ -204,7 +205,6 @@
 | `6e1ee88ee` | deps | CodeWhale 依赖 round-3：lock 刷新修 RUSTSEC-2026-0381/0382/0383 与 yanked clipboard-win；`codewhale-tui` 的 oauth2 改 `default-features = false`（HTTP 全走自带 reqwest，锁内 reqwest/rand 各收敛到单版本）；`codewhale-secrets` 从 keyring 3 迁移到 keyring 4.2（v1 `Entry`/`Error` API 不变；Linux 侧 keyring 4 无 keyutils-persistent 复合 store，内核 keyring 直写缓存随之取消，Secret Service 集合成为唯一持久权威 store，keyring 4 的 zbus Secret Service store 自带 secret-service crypto-rust feature，会话加密保持 RustCrypto，本 crate 无直接 secret-service 依赖）。crates 对父仓公开签名不变，父仓 `Cargo.lock` 随本 PR 重生成（#122） |
 | `fe90f72f9` | perf | TUI 流式工具入参 suffix-only 复用：仅当未完成字符串不可修复且所选 raw JSON 段字节范围不变时，复用上次解析结果与原 Some/None 处置，其余输入仍走既有 `dispatch::parse_tool_input`；状态由单个只追加的工具块持有（复用的 provider ID 亦重新初始化），在 block-stop 收尾与 schema 归一化前失效；解析修复、最终参数选择、权限、执行与重试策略不变。作者本地合成基准（Windows MSVC，release）64 KiB 纯文本 P50 396.9 ms→0.44 ms、256 KiB 源码 12.97 s→5.42 s，不支持输入保持基线成本。无模型可见文案、无公开签名/依赖变更（#114） |
 | `f1eb10efc` | T3 修复 | 技能与宿主发现指引对齐：技能索引 Usage、子代理 `## Skills` 头串、`mcp-discovery` 技能步骤 1/3/4、`MCP_REGISTRY_FIRST_INSTRUCTION`、shell 工具 `REGISTRY_FIRST_SHELL_GUIDANCE`、`registry_sync` 结果提示与 worker `handle_read` 提示统一为同一有界探测话术——宿主申报的内建能力入口与发现例外优先（申报只认可信 host system/instruction 指引，普通文件与工具结果不能申报）、`tool_search` when available、未被拒绝则按名直呼一次、schema 收据不等于执行（`retry_required: true` 才许一次重试，否则仅按指示重试）、不可用/被拒即停且不重复探测不猜名；`load_skill` 改为按已知确切名直载，`name="list"` 仅在名字/索引不足时使用；registry-first 系统指令恢复"plausibly covers the core capability"匹配定义与"inspect before considering a local alternative"顺序。随附 `mcp-discovery` 正文刷新，捆绑技能 marker 推进到 12（v11 正文以 fixture+digest 登记为被取代，用户自定义字节保留，混合 peer 刷新推进 marker、无 peer 时不动）。新增 `forkguard_parent_deferred_tools_remain_reachable_without_discovery` 与 `forkguard_skill_upgrade_refreshes_shipped_mcp_discovery_and_preserves_user_edits`。仅常量/测试/文档与技能资产改动，分发、审批与来源逻辑不变；`repo_law.rs` 一处 `std::slice::from_ref` 为 clippy 1.89+ `cloned_ref_to_slice_refs` 合规（#125） |
-| `841fe98fe` | 限制审计 | fork 限制行为全量审计批次：放宽误伤真实使用的上限（MAX_SESSIONS 50→1000 且 archived 豁免清理、宪法子句 280→2000 带截断标记、routed-usage 64→2048、ACP 轮次 50→200、路由分类器超时 4s→15s、sandbox 钳制 600s→4h、cloud prompt 4k→64k 带标记、PR title/body 96/6000→200/60000、restored 拓扑 24→64 带省略注记、cargo-test/verifier 输出改保尾部、grep 120s/250、web 搜索 25/10、write 256KiB、file_search 1000、终端窗口 32KiB、dev-server 600s、pdftotext 300s、git 输出 100k、github 摘录阈值 32KB/64KB、fleet 证据 10MB、digest 1024、display_name 钳制不拒绝、插件安装 64MB、/workflow 8000、voice 录音 60s）；补齐缺失的活性边界（git/gh 子进程 120s/60s、hooks unix-socket emit 5s、录音管道 2s 空闲超时、/share 300s、/update 15min、remote_env git 5s、config_bundles 120s、secrets 文件 16MiB、SKILL.md 发现读取 1MiB+符号链接拒绝）；删除死限制（sentinel-disabled 的 TOOL_ACTIVATION_CACHE_MAX_* 机制、cfg(test)-only WALK_DEPTH、config.example.toml 30s 陈旧注释、max_subagents=10 示例注释化）；扩展侧 vscode 10s/列表 50、verifiers harness 1800s fail-closed、computer-use exec 截断标记、facts-drift 200；技能文档补续跑指引。父仓同批更新 T2 指纹（write 256KiB）、会话/定时保留 500、review 与 voice 上限、知识库 offset 分页与 skippedByExcluder 披露、vite 预算 489k、提交主题 72 字符（#154） |
 
 除 #116 squash `e9a7f48da` 与 #107 squash `f27672935`（其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107）外，所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
@@ -250,7 +250,7 @@
 - `TurnToolSecurityPolicy` 把精确工具白名单、只读动作与 trusted external paths 下沉到每轮执行。
 - 受限轮禁止动态工具、MCP、子智能体和未授权控制操作；新的显式用户消息才可安装替代权限。
 - 工具在最终 backend dispatch 前再次做 exact/read-only 校验；Full Access 也不能绕过 non-bypassable approval。
-- `File` 的旧/低层写入入口保留 256 KiB 硬上限；受限日志和审计不记录参数、结果或错误私密内容。
+- `File` 的旧/低层写入入口保留 64 KiB 硬上限；受限日志和审计不记录参数、结果或错误私密内容。
 - execpolicy deny 表达力 phase-2（#37）：cmd.exe 单字母斜杠旗标（`/f` 形）可跳过而多字符 `/tmp` 类 POSIX 路径保持位置匹配；规则中段 `*` 通配零或多个命令令牌（DFS 有界）；deny 命令词单向折叠一个 `.exe` 后缀；rooted（`/`、`~/`、Windows 盘符）File 路径规则经分隔符/大小写折叠后精确匹配工作区外调用；规则集经 `Arc<RwLock>` 跨克隆活共享（`set_ruleset` 对全部派生执行器生效），`approved_for_session` 刻意克隆私有；subagent 工具调用在执行信封之后过与主线相同的 execpolicy 门（`Block` 镜像主线拒绝文案，`Prompt` 按继承的 auto-approve 姿态裁决），堵住「主线被拒转交子代理」的绕过口。均为嵌入方通用能力，候选上游化。
 - 工具结果可经 `ToolResult.metadata["images"]`（文件路径数组）把图片产物交给视觉模型（#48）：引擎回合循环按与用户附件相同的 `<image path>` 三元组追加到工具结果消息，单结果上限 2 张、5 MB 共享上限、坏图/超数降级为纯文本并 `warn`，错误路径结果不附图；wire builder、会话持久化、压缩与非视觉路由剥离因走既有 `ImageUrl` 块路径而零改动。computer-use 截图回传的基础。
 - 模型面文档与工具门控对齐（#31/#41/#50）：finance 工具两端点 host 前置过 `NetworkPolicyDecider`（`Deny`/未决 `Prompt` fail-closed，与 web_search/speech 同构错误形状）；verifier 背景 metadata 不再教退役工具名 `exec_shell_wait`；notify 工具对 `[notifications].method = "off"` 的合同有回归钉（配置 off 静默但工具结果仍报成功、settings 安装时机、方法变体 round-trip）；Bash 工具描述与 `command` 字段指引由与执行同一 shell dispatcher 派生（PowerShell/Bash/sh/zsh/cmd/fish 各有具体语法指引，Windows PowerShell 不再收到 login-shell 措辞）。
@@ -737,3 +737,28 @@ the immutable r1 closure are unchanged ancestors, and the public-head
 transition contract stays gitlink == branch head with the r3 tag pinned
 at its closure (61cb769be). The parent carries no mirrored
 classification and no other source change in this follow.
+
+## CodeWhale limits-audit follow to f47cb9f36 (2026-11-15)
+
+The submodule gitlink moves from pinjou3-clean 687358f7e to the limits-audit
+branch head f47cb9f36 (CodeWhale#154's 16 commits: the `841fe98fe` squash plus
+the review fixwave). During the parent PR's rebase onto the 2026-11-15 main,
+the companion branch was itself rebased onto 687358f7e so CodeWhale#156's
+rustc/clippy 1.100 adaptations and #157's session-reader read-only
+classification stay ancestors of the pinned head — merging the parent PR
+cannot move the parent's engine backwards. The fork line grows 100→116 commits
+above dcd4c200f (101 above r1); all 16 audit commits carry DCO sign-offs, so
+the unsigned set stays the historical three (see §0). The audit's shipped
+content on top of the previously registered 1d736ce8d fixwave adds: the
+retention scan moved off the lifecycle-edit save path, routed-usage batches
+cleared only after the write lands, the git tool's bounded runner shared with
+git_history, zero-digit truncation markers parsed as plain text, the stale
+grep/file_search budget mirror note dropped, and forge-bound upper pins
+const-asserted. fork-guard re-registers the review head (f47cb9f36) and the
+census (116), and the write-cap T2 fingerprints move 64 KiB → 256 KiB with the
+audit; the register stays at 301 forkguard_* behavior names. The maintenance
+base (11cba403d), the official v0.9.12 root (dcd4c200) and the immutable r1
+closure are unchanged ancestors, and the public-head transition contract stays
+gitlink == branch head with the r3 tag pinned at its closure (61cb769be). The
+parent side of the batch (app/CLI/frontend/docs/CI) is registered in
+pinvou-agent#847.

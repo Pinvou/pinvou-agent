@@ -63,7 +63,7 @@
 
 - Every ordinary shell execution overlays hook/task environment values, including an empty map. `CommandSpec::with_env` previously replaced the constructor's entire map and removed `PYTHONIOENCODING=utf-8`, so Python reverted to its Windows locale encoding while PowerShell and the tool's output readers expected UTF-8. Merge overlays instead, and resolve explicit Windows variable overrides case-insensitively. Keep the sanitizer, explicit overrides, and Python's file/default-text encoding policy unchanged.
 - The common shell builder covers foreground, background/PTY, interactive, and encoded PowerShell retry execution. Pre-existing direct `CommandSpec::program` consumers, including the read-only direct-argv command lane and `codew sandbox run`, do not seed that shell default and are outside this fix's claim.
-- Integrated: current gitlink is public maintenance `8e8d52fdb`, containing #115–#122, #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152 plus #156. Earlier candidate test receipts below retain their original execution boundaries.
+- Integrated: current gitlink is public maintenance `f47cb9f36`, containing #115–#122, #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152, #156, #157 and the limits audit #154. Earlier candidate test receipts below retain their original execution boundaries.
 - Parent ancestry-gate regressions isolate inherited `GIT_*` variables in both fixture Git calls and gate subprocesses. Under selectors aimed at a disposable foreign repository, the three real topology conditions still produce their expected results while the foreign repository, worktree and index stay byte-identical. The topology/fingerprint boundary is asserted explicitly so inserted layers cannot be silently skipped.
 - The default Windows child-environment regression holds the process environment lock and sets a GBK sentinel before probing empty/unrelated overlays. It cannot inherit a process/registry UTF-8 workaround and falsely pass. The probe uses the detected shell syntax, exercises encoded commands only for PowerShell, and enforces a 30-second timeout with child cleanup. Reintroducing the old replacing `with_env` while the outer process had `PYTHONIOENCODING=utf-8` made this strengthened regression fail (0 passed, 1 failed); the final source was restored byte-for-byte before passing verification.
 - Native end-to-end regressions run the actual lowercase `bash` tool and background ShellManager with a GBK parent environment, Python stdout/stderr, and 64 KiB of preceding output. They require Windows Python on PATH and a PowerShell dispatcher; run from PowerShell or cmd with `SHELL` unset. Opt in with `cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`; set `CODEWHALE_TEST_PYTHON` to select an interpreter.
@@ -72,10 +72,10 @@
 
 ## Current state (2026-11-15)
 
-- Public maintenance and parent gitlink: `687358f7efde6abd3592737b8ec48adc74ba5a84` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`. This round maintenance followed with one session-reader read-only classification commit (see the top row of the commit-sequence table) and the parent gitlink followed.
-- Measured history: 100 commits above upstream v0.9.12 `dcd4c200f`, 85 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits are #107 `f27672935`, #116 `e9a7f48da1` and #157 `687358f7e` (the CodeWhale-side squash merge landed without a sign-off; the parent-side follow commit carries one). Published maintenance history is preserved.
+- Public maintenance and parent gitlink: `f47cb9f36af8d3b83ac6c215de1a11cc4509aa51` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`, limits-audit #154 as `f47cb9f36` (squash `841fe98f` + review fixwave, rebased onto `pinjou3-clean` `687358f7e`). This round maintenance followed with the rebased limits-audit branch (see the top row of the commit-sequence table) and the parent gitlink followed.
+- Measured history: 116 commits above upstream v0.9.12 `dcd4c200f`, 101 above r1 `1fafee7e2`; 113 carry DCO sign-offs. The unsigned commits are #107 `f27672935`, #116 `e9a7f48da1` and #157 `687358f7e` (the CodeWhale-side squash merge landed without a sign-off; the parent-side follow commit carries one; all 16 limits-audit #154 commits carry sign-offs). Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
-- Measured drift: 551 files, +121146/-49817, net +71329; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
+- Measured drift: 576 files, +123741/-50348, net +73393; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 
 ### 2026-10-23 batch maintenance integration (#115/#116/#117)
 
@@ -120,6 +120,7 @@ These upstream tests were replaced, not silently deleted, because registered Pin
 
 | Commit | Topic |
 |---|---|
+| `f47cb9f36` | Limits audit (#154: squash `841fe98fe` + review fixwave, the branch rebased onto `pinjou3-clean` `687358f7e` so #156 and #157 stay ancestors): loosen caps that bit real use (MAX_SESSIONS 50→1000 with archived-exempt janitor cap, constitution clause 280→2000 with idempotent truncation marker, routed usage 64→2048 batched with batches cleared only after the write lands, ACP rounds 50→200, PR title/body 200/60000, tools tail-keep/grep 120s/250/web 25/10/write 256KiB/terminal 32KiB head+tail, lsp 16→64, finance 120→600, subagent evidence head+tail, plugin install 64MB, /workflow 8000, voice 60s); add missing liveness bounds (git/gh bounded children 120s/60s with git_history sharing the git tool's bounded runner, hooks socket emit 5s, recorder idle 2s, gist 300s, update 15min, secrets 16MiB read+write, SKILL.md 512KiB + symlink reject, verifiers 1800s fail-closed); delete dead limits (TOOL_ACTIVATION prose machinery — sentinel-disabled enforcement retained, cfg(test) WALK_DEPTH); fixwave additions: retention scan off the lifecycle-edit save path, zero-digit truncation markers parsed as plain text, stale grep/file_search budget mirror note dropped, forge-bound upper pins const-asserted. The full zh enumeration row in `fork-modifications.md` is the authoritative detail (#154) |
 | `687358f7e` | T2: read-only classification fix for the host's first-party session-reader read surface — `mcp_session-reader_read_session` and `mcp_session-reader_list_sessions` join the engine's read-only helper list by exact tool name; the server-side contract (cursor pagination, completed turns only, per-item truncation, cross-session prefixes refused) makes them genuinely read-only, and the previous misclassification as approval-required network tools dead-ended a Plan-pinned aux lane whose sole tool was the scoped read before execution. Exact-name matching keeps prefixed impostors (`mcp_session-reader_read_session_export`) on the approval-required side. registry/tests.rs extends the existing read-surface test with data entries (no new `forkguard_*` behavior names, the register stays at 301); the parent has no mirrored classification and is transparent (#157) |
 | `8e8d52fdb` | T2: five equivalent rewrites for rustc/clippy 1.100 stable (2026-11-09) new lints, no behavior change — the terminal probe test's `map_err(|err| io::Error::other(err.to_string()))` calls `to_string()` on an `Infallible` (ratatui 0.30 `with_options` returns `B::Error`; `TestBackend::Error` is uninhabited), provably dead once 1.100 stabilized the never type and upgraded `unreachable_code`; now `map_err(io::Error::other)` passed as a function value (the conversion is load-bearing and stays); `fleet/manager.rs` needless_bool reduced to `Ok(started)`; subagent coord ledger and `tui/auto_review.rs` needless_bool tails become boolean expressions; `tui/transcript/tests.rs` ×2 needless_range_loop rewritten to `per_cell[..3].iter().enumerate()`. Re-running the same commands on pristine `6f7a3a748` with 1.99.1 confirms these five are exactly the 1.100-new findings; the strict all-targets surface still carries 2 `collapsible_if` errors and 4 rustdoc private-link errors under `cargo doc -Dwarnings` that exist identically on 1.99.1 (pre-existing debt, untouched, left for a follow-up). First surfaced via the parent Windows regression leg (codewhale-tui lib test compile) (#156) |
 | `6f7a3a748` | deps: rusqlite 0.41.1 / libsqlite3-sys 0.39.1 (bundled SQLite 3.54.1, closes RUSTSEC-2026-0459), rmcp 3.9.0 (closes RUSTSEC-2026-0462), rio-vt 0.5.29 (closes RUSTSEC-2026-0430); the declared submodule MSRV moves to rust-version 1.89 (below the parent's 1.90 floor, no parent action) (#152) |
@@ -634,3 +635,28 @@ the immutable r1 closure are unchanged ancestors, and the public-head
 transition contract stays gitlink == branch head with the r3 tag pinned
 at its closure (61cb769be). The parent carries no mirrored
 classification and no other source change in this follow.
+
+## CodeWhale limits-audit follow to f47cb9f36 (2026-11-15)
+
+The submodule gitlink moves from pinjou3-clean 687358f7e to the limits-audit
+branch head f47cb9f36 (CodeWhale#154's 16 commits: the `841fe98fe` squash plus
+the review fixwave). During the parent PR's rebase onto the 2026-11-15 main,
+the companion branch was itself rebased onto 687358f7e so CodeWhale#156's
+rustc/clippy 1.100 adaptations and #157's session-reader read-only
+classification stay ancestors of the pinned head — merging the parent PR
+cannot move the parent's engine backwards. The fork line grows 100→116 commits
+above dcd4c200f (101 above r1); all 16 audit commits carry DCO sign-offs, so
+the unsigned set stays the historical three (see §0). The audit's shipped
+content on top of the previously registered 1d736ce8d fixwave adds: the
+retention scan moved off the lifecycle-edit save path, routed-usage batches
+cleared only after the write lands, the git tool's bounded runner shared with
+git_history, zero-digit truncation markers parsed as plain text, the stale
+grep/file_search budget mirror note dropped, and forge-bound upper pins
+const-asserted. fork-guard re-registers the review head (f47cb9f36) and the
+census (116), and the write-cap T2 fingerprints move 64 KiB → 256 KiB with the
+audit; the register stays at 301 forkguard_* behavior names. The maintenance
+base (11cba403d), the official v0.9.12 root (dcd4c200) and the immutable r1
+closure are unchanged ancestors, and the public-head transition contract stays
+gitlink == branch head with the r3 tag pinned at its closure (61cb769be). The
+parent side of the batch (app/CLI/frontend/docs/CI) is registered in
+pinvou-agent#847.
