@@ -21,8 +21,34 @@ use super::ingest_deps::{
 /// 单张预览图片的大小预检上限：本函数产出的 data URI 会整段塞进 IPC 帧与
 /// iframe `srcDoc`，读取前先显式拒绝异常大的文件，避免超大文件整个读进
 /// 内存再 base64（约 1.33×）后进 IPC。正常输入（soffice/pdftoppm 生成的
-/// 页图、≤20 MiB 上传产物图）远低于此线；触线即报错，不做静默降级。
+/// 页图、≤20 MiB 上传产物图）远低于此线；触线即报错——唯一吞掉该错误的
+/// 是 `inline_html_images` 的 office-HTML 内联兜底（保留未内联的原 src，
+/// iframe 加载不到，与历史行为一致），直连调用方一律向上报错。
 const MAX_PREVIEW_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// metadata 预检只是建议性快筛；读取侧同样限长（Take = 上限 + 1）：预检与
+/// 读取之间存在 TOCTOU 窗口（并发写可让文件在预检后长大），读侧超限按同
+/// 样的「超限」错误报出，绝不整读超限文件进内存（镜像 read_artifact_text
+/// 的同型读界；r4 review）。
+fn read_image_capped(path: &Path) -> Result<Vec<u8>, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("读图失败: {e}"))?;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        file.take(MAX_PREVIEW_IMAGE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("读图失败: {e}"))?;
+    }
+    if bytes.len() as u64 > MAX_PREVIEW_IMAGE_BYTES {
+        return Err(format!(
+            "图片文件超过 {} MiB 预览上限（{} 字节），已拒绝内联: {}",
+            MAX_PREVIEW_IMAGE_BYTES / (1024 * 1024),
+            bytes.len(),
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
 
 /// 单个图片文件 → `data:image/...;base64,...`。
 pub fn image_file_to_data_uri(path: &Path) -> Result<String, String> {
@@ -36,7 +62,7 @@ pub fn image_file_to_data_uri(path: &Path) -> Result<String, String> {
             path.display()
         ));
     }
-    let bytes = std::fs::read(path).map_err(|e| format!("读图失败: {e}"))?;
+    let bytes = read_image_capped(path)?;
     let mime =
         crate::platform::filesystem::image_mime_type(path).unwrap_or("application/octet-stream");
     Ok(format!(

@@ -348,9 +348,38 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     if !in_ws {
         return None;
     }
-    let content = std::fs::read_to_string(&abs).ok()?;
+    // 读侧同样限长（Take = 上限 + 1，镜像 read_artifact_text 的读界）：
+    // 召唤审核读的是 workspace 内任意被指名的文件，多 GiB 文件整读进内存
+    // 是纯内存尖峰（r4 review）。超硬读界的产物不杀死整个召唤，按「部分
+    // 展示 + 明示」同一口径截断并在标注里写明。
+    let hard_cap = crate::app::commands::artifacts::MAX_ARTIFACT_TEXT_BYTES;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        let Ok(file) = std::fs::File::open(&abs) else {
+            return None;
+        };
+        if file.take(hard_cap + 1).read_to_end(&mut bytes).is_err() {
+            return None;
+        }
+    }
+    let read_capped = bytes.len() as u64 > hard_cap;
+    // 未触线保持严格 UTF-8（与原 read_to_string 同语义，坏字节 → 跳过该
+    // 产物）；仅当字节截断可能切在字符中间时才容忍尾部损字。
+    let content = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) if read_capped => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        Err(_) => return None,
+    };
     let n = content.chars().count();
-    let bounded = if n > ARTIFACT_CHAR_LIMIT {
+    let bounded = if read_capped {
+        let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
+        format!(
+            "{head}\n\n…（产物超过 {} MiB 硬读界，仅读前 {} MiB；如需全审，让 Boss 拆分产物。P1 改 map-reduce 分块全审）",
+            hard_cap / (1024 * 1024),
+            hard_cap / (1024 * 1024),
+        )
+    } else if n > ARTIFACT_CHAR_LIMIT {
         let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
         format!(
             "{head}\n\n…（产物共 {n} 字，这里是前 {ARTIFACT_CHAR_LIMIT} 字；后半未展示，如需审让 Boss 指定。P1 改 map-reduce 分块全审）"
@@ -548,7 +577,7 @@ async fn model_review(
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
     if preset == ModelPreset::Anthropic {
-        let content = crate::core::model_endpoint::post_anthropic_messages(
+        let completion = crate::core::model_endpoint::post_anthropic_messages(
             &client,
             &base_url,
             &bridge.api_key(),
@@ -558,9 +587,15 @@ async fn model_review(
             REVIEW_MAX_TOKENS,
             bridge.opencode_conversation_key("model-review"),
         )
-        .await?
-        .text;
-        return parse_model_review(&content).context("parse Pinvou review");
+        .await?;
+        if completion.stop_reason.as_deref() == Some("max_tokens") {
+            log::warn!(
+                "[review] anthropic response truncated (stop_reason=max_tokens); the JSON \
+                 parse below will likely fail opaquely — raise REVIEW_MAX_TOKENS or shrink \
+                 the feed if this repeats"
+            );
+        }
+        return parse_model_review(&completion.text).context("parse Pinvou review");
     }
     let mut body = review_request_body(&model_name, &prompt, user_content);
     apply_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
