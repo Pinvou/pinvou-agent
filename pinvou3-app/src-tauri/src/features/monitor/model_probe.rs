@@ -245,6 +245,31 @@ async fn snapshot_for_model_config(
     };
     let metrics_applicable = target_kind == "local";
 
+    // The early-exit snapshots below carry no probe result, but the context
+    // window is configuration, not a runtime fact: the declared window (or
+    // the inference fallback — the same unified precedence the happy path
+    // applies with probed=None) must keep filling the monitor card and the
+    // progress-bar denominator while the engine is unreachable. Only these
+    // early returns dropped the declaration (reported: local vLLM down →
+    // 上下文长度 stuck at "—" although the model form declares the window);
+    // the remote arms fall through to the happy path and already keep it.
+    let (early_exit_window, early_exit_window_inferred) = probeless_display_window(
+        configured_context,
+        target_kind,
+        preset,
+        configured_model.as_deref(),
+    );
+    let early_exit_notices: Vec<MonitorDiagnostic> = if early_exit_window_inferred {
+        vec![MonitorDiagnostic {
+            code: "context_window_inferred".to_string(),
+            http_status: None,
+            transport: None,
+            endpoint: None,
+        }]
+    } else {
+        Vec::new()
+    };
+
     // 1) /models 健康
     let models_url = models_probe_url(upstream);
     let mut request = client.get(models_url).timeout(Duration::from_secs(3));
@@ -278,6 +303,8 @@ async fn snapshot_for_model_config(
                 target_kind: target_kind.to_string(),
                 metrics_applicable,
                 health_status: HealthStatus::AuthFailed,
+                max_model_len: early_exit_window,
+                notices: early_exit_notices.clone(),
                 ..VllmSnapshot::default()
             });
         }
@@ -296,6 +323,8 @@ async fn snapshot_for_model_config(
                         transport: None,
                         endpoint: endpoint_root(Some(r.url())),
                     }),
+                    max_model_len: early_exit_window,
+                    notices: early_exit_notices.clone(),
                     ..VllmSnapshot::default()
                 });
             }
@@ -323,6 +352,8 @@ async fn snapshot_for_model_config(
                         transport: Some(transport_class(&err)),
                         endpoint: endpoint_root(err.url()),
                     }),
+                    max_model_len: early_exit_window,
+                    notices: early_exit_notices.clone(),
                     ..VllmSnapshot::default()
                 });
             }
@@ -741,6 +772,27 @@ fn display_context_window(
         (Some(_), _) => None,
     };
     crate::core::model_context::resolve_context_window(configured, probed, inferred)
+}
+
+/// The probe-less display window for the early-exit snapshots (offline /
+/// auth_failed): the happy path's unified precedence with `probed = None`,
+/// because no listing was parsed. The inference input is the configured name
+/// only — the early exits never have a served name (the listing is exactly
+/// what failed), so this matches the happy path's configured arm. The second
+/// return value flags "the inferred fallback was actually adopted", feeding
+/// the same `context_window_inferred` notice the happy path pushes.
+fn probeless_display_window(
+    configured: Option<u32>,
+    target_kind: &str,
+    preset: ModelPreset,
+    configured_model: Option<&str>,
+) -> (Option<u32>, bool) {
+    display_context_window(
+        configured,
+        target_kind,
+        None,
+        infer_context_window(preset, configured_model),
+    )
 }
 
 /// Downgrade to `Mismatch` when the configured model name differs from the
@@ -1486,6 +1538,91 @@ mod tests {
         assert!(
             mismatch.diagnostic.is_none(),
             "mismatch is self-describing and carries no refinement"
+        );
+    }
+
+    /// Early-exit snapshots keep the context window: the window is
+    /// configuration, not a runtime fact, so an unreachable local engine
+    /// (connection refused — the monitor's normal idle state) must still
+    /// display the user-declared window instead of blanking the context card
+    /// (reported: 上下文长度 stuck at "—" whenever the local vLLM was down).
+    /// The auth_failed verdict must not drop it either. Without a declaration
+    /// the inference/preset fallback fills the window and carries the
+    /// `context_window_inferred` notice, same as the happy path.
+    #[tokio::test]
+    async fn snapshot_early_exits_keep_the_context_window() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        // Transport-refused local target with the user-declared window: the
+        // declaration survives the offline early-exit verbatim (and is not
+        // flagged as inferred — a declaration is configuration).
+        let refused = snapshot_for_model_config(
+            "http://127.0.0.1:1",
+            Some("qwen36_35b_256k".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            Some(262_144),
+        )
+        .await
+        .expect("a local target yields a snapshot even when unreachable");
+        assert_eq!(refused.health_status, HealthStatus::Offline);
+        assert_eq!(
+            refused.max_model_len,
+            Some(262_144),
+            "the declared window must survive the offline early-exit"
+        );
+        assert!(
+            refused
+                .notices
+                .iter()
+                .all(|d| d.code != "context_window_inferred"),
+            "a declared window is not inferred: {:?}",
+            refused.notices
+        );
+
+        // auth_failed (401 with a key): the same declaration survives.
+        let mock = models_mock::spawn(&[("/models", 401, "{}".into())]);
+        let auth = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            Some("secret"),
+            Some(262_144),
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(auth.health_status, HealthStatus::AuthFailed);
+        assert_eq!(
+            auth.max_model_len,
+            Some(262_144),
+            "the declared window must survive the auth_failed early-exit"
+        );
+
+        // Without a declaration the preset fallback fills the window and the
+        // honesty notice rides along (LocalVllm's fallback is 262,144 for
+        // names the resolution chain does not know), exactly like the happy
+        // path's inferred-window notice.
+        let offline = snapshot_for_model_config(
+            "http://127.0.0.1:1",
+            Some("totally-unknown-name".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot even when unreachable");
+        assert_eq!(offline.health_status, HealthStatus::Offline);
+        assert_eq!(offline.max_model_len, Some(262_144));
+        assert!(
+            offline
+                .notices
+                .iter()
+                .any(|d| d.code == "context_window_inferred"),
+            "an inferred window must carry the honesty notice: {:?}",
+            offline.notices
         );
     }
 
