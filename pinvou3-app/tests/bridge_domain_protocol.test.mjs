@@ -379,7 +379,11 @@ const expectedProtocolHashes = {
   // set_global_shortcut_config invoke (the dedicated command owns both the
   // plugin registration and the prefs persistence; update_settings stays
   // untouched).
-  settings: '981a53b39cce9c689425c458bdab7c73119e3e8e6c2298b9a5e3160d35380ef3',
+  // Recomputed for the keyless-aware tier probe: probe_local_server_kind's
+  // invoke payload gains `noAuth` (the form's keyless posture suppresses the
+  // retained form key and the saved-credential fallback for the automatic
+  // probe, same caliber as the two test commands).
+  settings: 'cded938320d66a29d605f1a3c2fb0f880f489409861bfc7c24d741f1c6e67fd1',
   // Recomputed for the reintroduced update:progress listener: the 200 ms
   // download-progress coalescing machinery (trailing throttle, completion
   // flush, cancel/failure cleanup) is back as the frontend contract for the
