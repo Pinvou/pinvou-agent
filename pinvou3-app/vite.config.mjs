@@ -596,6 +596,13 @@ function enforceLazyChunks() {
 // accessible action name on the entry button) → 487,365 B desktop
 // (635 B headroom under the 488_000 ceiling, no re-cut needed); web
 // 127,777 B unchanged (still size-identical, 223 B headroom).
+//
+// Round-6 review fix wave, measured on the same toolchain: +229 B
+// desktop (start-system-item takeover fallback with a click-time item-id
+// snapshot, shared ctxUsageText value with the composed accessible name,
+// and the module-scope readout derivation) → 487,594 B desktop
+// (406 B headroom under the 488_000 ceiling, no re-cut needed); web
+// 127,777 B unchanged (still size-identical, 223 B headroom).
 export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
