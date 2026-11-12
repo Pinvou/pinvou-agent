@@ -677,13 +677,7 @@ function hasStoredCredential(record) {
       // （默认填官方端点，用户可改指向自建网关/带自定义端口的反代）。coding_plan
       // 是托管入口，端点由平台管理，不开放编辑。
       const showBaseUrlField = !isCodingPlan;
-      // 「免鉴权」的 UI 活性:noAuth 是表单状态,但托管入口上开关不渲染 ——
-      // 开着开关把 URL 改写成托管端点会让开关行消失,而载荷侧 auth_mode 与
-      // 凭据删除都已按 !isCodingPlan 同口径归一。UI 渲染(开关、Key 行、提示)
-      // 必须跟随同一口径回到未声明形态,否则出现「提示在、开关无、Key 行藏」
-      // 的死局,且开关开着时输入的 key 会被静默丢弃。
-      const noAuthActive = !isLocalPreset && !isCodingPlan && noAuth;
-      const showCustomCloudKeyField = !isLocalPreset && customModel && !noAuthActive;
+      const showCustomCloudKeyField = !isLocalPreset && customModel && !noAuth;
       const showLocalKeyField = isLocalPreset && localKeyEnabled;
       const showNoAuthToggle = !isLocalPreset && !isCodingPlan;
       const showDisplayNameField = isLocalPreset && !initial.__new;
@@ -1426,10 +1420,10 @@ function hasStoredCredential(record) {
               {!isLocalPreset && !customModel && (
                 <section>
                   <div className={formGroup}>
-                    {!noAuthActive && renderApiKeyField({ withBorder: false })}
-                    {showNoAuthToggle && renderNoAuthToggleRow(!noAuthActive)}
+                    {!noAuth && renderApiKeyField({ withBorder: false })}
+                    {showNoAuthToggle && renderNoAuthToggleRow(!noAuth)}
                   </div>
-                  {!noAuthActive && keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                  {!noAuth && keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
               )}
               {showConfigFields && (
@@ -1476,7 +1470,7 @@ function hasStoredCredential(record) {
                       readOnly: !parsedBaseUrl,
                     })}
                     {baseUrlPortError && <div className="px-4 pb-2 text-[12px] leading-4 text-[#FF3B30]">{baseUrlPortError}</div>}
-                    {noAuthActive && <div className="px-4 pb-3 text-[12px] leading-4 text-[#8A8A8E] dark:text-[#8E8E93]">{settingsCopy.noAuthHint}</div>}
+                    {noAuth && <div className="px-4 pb-3 text-[12px] leading-4 text-[#8A8A8E] dark:text-[#8E8E93]">{settingsCopy.noAuthHint}</div>}
                     {/* Context window (optional for cloud models): a newly released
                         model ID not yet in the catalog cannot be resolved by it, so
                         the runtime falls back to the conservative 128K window.
