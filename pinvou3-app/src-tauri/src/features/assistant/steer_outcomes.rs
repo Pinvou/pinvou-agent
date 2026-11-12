@@ -27,8 +27,10 @@ pub fn register_steer_resolution_hook(hook: SteerResolutionHook) -> Result<(), (
 }
 
 /// Fan a steer terminal out: committed=true = the engine wrote it into the
-/// transcript; false = the engine dropped it (turn termination /
-/// withdrawal / generation invalidation). Silent when unregistered — safe
+/// transcript; false = the engine dropped it (a cancelled/interrupted
+/// turn's settlement, a withdrawal, generation invalidation, or an engine
+/// drop — a turn that ENDS normally does not settle; the steer stays
+/// parked for the next turn's first drain). Silent when unregistered — safe
 /// because the registry only arms entries inside the delivery watcher's
 /// poll, and the watcher is spawned exactly once, in the GUI Builder's
 /// setup, right next to the hook registration this module exposes. The

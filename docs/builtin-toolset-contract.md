@@ -538,9 +538,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   loses the in-memory wait entirely — the queued file re-delivers on the
   first poll after restart (this replaces the former zero-trace loss
   channel where a keyed retry was answered "delivered" from a marker
-  written at steer-Ok); every former loss trigger now degrades to
+  written at steer-Ok); a commit whose done-marker write and spool
+  removal BOTH fail (a read-only spool root) keeps the registration
+  armed so the poll cannot loop redeliveries at full cadence — the wait
+  then expires at the 24h rate; every former loss trigger now degrades to
   at-least-once redelivery (possibly duplicating) instead of silent loss,
-  save the ten-cycle `steer_drop_limit` quarantine above — and three lossy
+  save the ten-cycle `steer_drop_limit` quarantine above — and four lossy
   channels that are not redeliveries: the finalizer writes the done marker
   on the terminal event without consulting the forwarder's
   transcript-persistence outcome, so a session persist that fails and
@@ -552,7 +555,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   body's landed marker (µs-scale, disclosed in the arm's comment rather
   than promised closed); and a crash between the marker write and the
   re-verify leaves the marker answering the newest body "delivered" so
-  the skip arm removes it untried; a
+  the skip arm removes it untried; likewise a failed unlink of the fresh
+  marker in the post-marker replacement arm leaves that skip arm to
+  remove the newest body untried at the next pass (the old body's commit
+  is real and logged; the replacement body is not re-delivered —
+  disclosed in the arm's comment); a
   macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
   double-deliver — since commit-time finalization that double-delivery
