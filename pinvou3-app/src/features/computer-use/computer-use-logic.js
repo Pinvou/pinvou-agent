@@ -167,6 +167,19 @@ export function bannerErrorReset(wasShown, showBanner) {
   return { resetError: false, wasShown: false };
 }
 
+// Fail-neutral target resolution for the consent surfaces. Newer backends
+// mark grant/confirm payloads — and the granted slice (grantedTarget) — with
+// target "virtual" when the agent operates inside the isolated virtual
+// display. Anything else, including old payloads without the field, means the
+// user's physical screen: a missing or malformed value must resolve to
+// "physical", never to a guess, so the dialogs can only ever under-claim
+// isolation, not over-claim it. computerUseConsentView needs no change of its
+// own: it passes grantRequest/confirmRequest through by reference, so the
+// target field rides along to the dialogs that ask this helper.
+export function computerUseTarget(value) {
+  return value === 'virtual' ? 'virtual' : 'physical';
+}
+
 export function computerUseConsentView(slice) {
   const enabled = !!(slice && slice.enabled);
   if (!enabled) {

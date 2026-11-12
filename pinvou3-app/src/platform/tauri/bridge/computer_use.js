@@ -27,6 +27,123 @@
     // Latest refresh wins: a slow get_status for a session the user already
     // navigated away from must not overwrite a newer snapshot.
     let statusRequestSeq = 0;
+
+    // Single source for the virtual-display slice defaults (R13): the
+    // consent base (enabled/granted/stopped/platformSupported) stays in
+    // bridge.js's state literal, and THIS factory seeds the virtual-display
+    // projection at install time. Previously both files carried copies of
+    // these values and no test pinned either — a drift to a non-fail-closed
+    // default (e.g. virtualDisplayState "ready") would have defeated the
+    // cold-start rendering behind a green suite. Only ABSENT keys are
+    // seeded: the installer runs during bridge setup (before the state
+    // reaches any subscriber), and tests may pre-seed a field to simulate a
+    // value an older publish already landed.
+    const VIRTUAL_DISPLAY_SLICE_DEFAULTS = {
+      virtualDisplayState: "unknown",
+      virtualDisplayDetail: "",
+      preferVirtualDisplay: true,
+      physicalSessionLive: false,
+      sessionDisplayTarget: null,
+      grantedTarget: "physical",
+    };
+    for (const [key, value] of Object.entries(VIRTUAL_DISPLAY_SLICE_DEFAULTS)) {
+      if (!(key in state.computerUse)) state.computerUse[key] = value;
+    }
+
+    // Virtual-display status projection (fail-closed). The status payload
+    // carries camelCase virtualDisplayState ("active" | "ready" |
+    // "unavailable" | "disabled") plus an English diagnostic string in
+    // virtualDisplayDetail, and the persisted preference flag
+    // preferVirtualDisplay (frozen contract, always serialized). Mapping
+    // rules:
+    // - state/detail keys absent (backend predates the feature): null patch,
+    //   the slice's "unknown" defaults stay untouched — the settings row
+    //   stays out of the way until a backend that knows the feature answers;
+    // - state carried but unrecognized (or non-string): RESET to the
+    //   fail-closed defaults ("unknown" / "") instead of keeping the previous
+    //   value (review finding — the mirror-clearing shape of
+    //   sessionDisplayTargetPatch): a stale "active"/"ready" from an earlier
+    //   snapshot must never survive an answer the backend no longer
+    //   justifies, and the raw string is never copied verbatim into the UI;
+    // - preferVirtualDisplay: key-only-when-present, fail-neutral — absent
+    //   ⇒ keep the current value; carried as a boolean ⇒ mirror it; any
+    //   non-boolean ⇒ ignored.
+    // The snake_case spellings are accepted the same way buildConfirmRequest
+    // accepts them: hand-rolled or test payloads, never the shipped backend
+    // shape.
+    const VIRTUAL_DISPLAY_STATES = ["active", "ready", "unavailable", "disabled"];
+    function virtualDisplayPatch(raw) {
+      if (!raw || typeof raw !== "object") return null;
+      const rawState = typeof raw.virtualDisplayState === "string"
+        ? raw.virtualDisplayState
+        : (typeof raw.virtual_display_state === "string" ? raw.virtual_display_state : null);
+      const carried = "virtualDisplayState" in raw || "virtual_display_state" in raw;
+      if (!carried) return null;
+      const patch = rawState && VIRTUAL_DISPLAY_STATES.includes(rawState)
+        ? {
+            virtualDisplayState: rawState,
+            virtualDisplayDetail: typeof raw.virtualDisplayDetail === "string"
+              ? raw.virtualDisplayDetail
+              : (typeof raw.virtual_display_detail === "string" ? raw.virtual_display_detail : ""),
+          }
+        : { virtualDisplayState: "unknown", virtualDisplayDetail: "" };
+      const pref = "preferVirtualDisplay" in raw
+        ? raw.preferVirtualDisplay
+        : ("prefer_virtual_display" in raw ? raw.prefer_virtual_display : undefined);
+      if (typeof pref === "boolean") patch.preferVirtualDisplay = pref;
+      // physicalSessionLive (R11): key-only-when-present, boolean-only —
+      // same fail-neutral rule as preferVirtualDisplay. An older backend
+      // predates the field and the slice keeps its `false` default (the
+      // settings hint's live-physical line simply never renders for it).
+      const physical = "physicalSessionLive" in raw
+        ? raw.physicalSessionLive
+        : ("physical_session_live" in raw ? raw.physical_session_live : undefined);
+      if (typeof physical === "boolean") patch.physicalSessionLive = physical;
+      return patch;
+    }
+
+    // Per-session banner truth (fail-closed): the status carries
+    // sessionDisplayTarget ("virtual" | "physical" | null) from the guard's
+    // session-target registry, so a window reload — which loses the
+    // event-derived grantedTarget — reconciles the banner's variant from
+    // server truth. Mapping rules:
+    // - key absent (backend predates the field): null patch, the slice's
+    //   defaults stay untouched (same key-only-when-present rule as the
+    //   virtual-display fields above);
+    // - "virtual"/"physical": mirror it AND reconcile grantedTarget from it
+    //   — the status answer wins over the event-derived value because the
+    //   registry row is written by the backend-creation path the events only
+    //   describe;
+    // - null (no live backend row) or an unrecognized string: clear the
+    //   mirror only; grantedTarget keeps its event-derived value (null
+    //   carries no target information, and the banner must never guess
+    //   "virtual" — fail-neutral).
+    const SESSION_DISPLAY_TARGETS = ["virtual", "physical"];
+    function sessionDisplayTargetPatch(raw) {
+      if (!raw || typeof raw !== "object") return null;
+      const rawTarget =
+        typeof raw.sessionDisplayTarget === "string"
+          ? raw.sessionDisplayTarget
+          : (typeof raw.session_display_target === "string" ? raw.session_display_target : null);
+      const carried = "sessionDisplayTarget" in raw || "session_display_target" in raw;
+      if (!carried) return null;
+      if (SESSION_DISPLAY_TARGETS.includes(rawTarget)) {
+        return { sessionDisplayTarget: rawTarget, grantedTarget: rawTarget };
+      }
+      return { sessionDisplayTarget: null };
+    }
+
+    // The grant request rides the resolved target when the backend marked the
+    // session "virtual" (the agent will work inside the isolated virtual
+    // display). Old payloads without the field keep the exact old shape
+    // { sessionId } so the dialogs fall back to the physical copy downstream
+    // (fail-neutral) — same key-only-when-present rule as typePreviewFull.
+    function buildGrantRequest(sid, pending) {
+      const request = { sessionId: sid };
+      if (pending && pending.grantTarget === "virtual") request.target = "virtual";
+      return request;
+    }
+
     // macOS permission prompts (screen recording / accessibility) fire once per
     // app run, on the first enable; elsewhere the command is a no-op.
     let permissionsRequested = false;
@@ -117,13 +234,18 @@
     // pending map; compare by value so an unchanged dialog does not count as a
     // change. detailKey digests the full request content (English summary,
     // structured action fields, typed-text preview), so any visible change
-    // counts and identical re-sends stay no-ops.
+    // counts and identical re-sends stay no-ops. `target` joins the comparison
+    // (review finding): a flipped-target re-request for the same session —
+    // e.g. a physical re-request after a denied virtual one — must republish
+    // so the dialog copy flips; a grant request has no detailKey, so without
+    // the target term the stale dialog copy would stay on screen.
     function sameRequest(a, b) {
       if (a === b) return true;
       if (!a || !b) return false;
       return (
         a.sessionId === b.sessionId &&
         a.confirmId === b.confirmId &&
+        (a.target || null) === (b.target || null) &&
         (a.detailKey || null) === (b.detailKey || null)
       );
     }
@@ -168,12 +290,38 @@
         if (raw.pending_grant && !pending.grant) {
           pending.grant = true;
           pending.grantAt = Date.now();
+          // Seed the request's target from the SAME status payload's
+          // per-session display target (server truth for the live pending
+          // grant, written once at backend creation — never a previous
+          // epoch's EVENT value). Without it, a reload/event-less
+          // resurfacing renders the PHYSICAL grant copy for a virtual
+          // session: copy that promises per-action confirmations the
+          // virtual target structurally never raises. Scope note (R12):
+          // this seeds on the false→true transition only, so a successor
+          // backend that re-registers a DIFFERENT target while
+          // `pending_grant` never drops keeps the already-seeded value on
+          // the resurfaced dialog — a previous epoch's REGISTRY value can
+          // survive here; the Allow-time `grantedTarget` is re-reconciled
+          // from live status, which bounds the effect. Only concrete
+          // "virtual"/"physical" values are copied (fail-neutral: absent,
+          // null, or unknown targets leave the physical fallback).
+          const sessionTarget = sessionDisplayTargetPatch(raw);
+          if (sessionTarget && sessionTarget.sessionDisplayTarget) {
+            pending.grantTarget = sessionTarget.sessionDisplayTarget;
+          }
         } else if (
           !raw.pending_grant &&
           pending.grant &&
           (pending.grantAt || 0) <= snapshotAt
         ) {
           pending.grant = false;
+          // The epoch's target dies with it (review finding): a stale
+          // grantTarget must not survive into the next grant epoch. The
+          // reconcile-true branch now SEEDS a fresh target from the live
+          // status's session truth, so an event-less resurfacing renders
+          // the right dialog copy instead of the fail-neutral physical
+          // default.
+          delete pending.grantTarget;
         }
       }
     }
@@ -229,6 +377,7 @@
         // predates the session-less form — leave the slice untouched.
         if (raw) {
           pruneDeletedSessionPending();
+          const virtual = virtualDisplayPatch(raw);
           const patch = {
             enabled: !!raw.enabled,
             // The draft screen has no session: leave no previous session's id
@@ -260,6 +409,19 @@
             confirmRequest: null,
             platformSupported: !!(raw.platform_supported || raw.platformSupported),
           };
+          // The virtual-display fields ride only when the status actually
+          // carries them: the settings page polls this session-less form at
+          // cold start (no session needed to probe availability), but an
+          // older backend's answer must not grow the keys and flip the row's
+          // no-op detection on every poll.
+          if (virtual) Object.assign(patch, virtual);
+          // Same ride-along rule for the banner-truth mirror: a session-less
+          // answer carries null (no session → no registry row), which clears
+          // a previous session's stale target the same way granted/requests
+          // are cleared above; an older backend's answer carries no key and
+          // must not grow one.
+          const sessionLessTarget = sessionDisplayTargetPatch(raw);
+          if (sessionLessTarget) Object.assign(patch, sessionLessTarget);
           // Same no-op discipline as publish(): this branch also rides every
           // SettingsView mount, so an unchanged slice must not re-render.
           if (sliceChanged(state.computerUse, patch)) {
@@ -272,15 +434,26 @@
       pruneDeletedSessionPending();
       reconcileServerTruth(sid, raw, snapshotAt);
       const pending = pendingBySession[sid] || null;
-      publish(sid, {
+      const patch = {
         sessionId: sid,
         enabled: !!(raw && raw.enabled),
         granted: !!(raw && raw.granted),
         stopped: !!(raw && raw.stopped),
         platformSupported: !!(raw && (raw.platform_supported || raw.platformSupported)),
-        grantRequest: pending && pending.grant ? { sessionId: sid } : null,
+        grantRequest: pending && pending.grant ? buildGrantRequest(sid, pending) : null,
         confirmRequest: pending && pending.confirm ? pending.confirm : null,
-      });
+      };
+      const virtual = virtualDisplayPatch(raw);
+      if (virtual) Object.assign(patch, virtual);
+      // Banner-truth reconciliation: the status's per-session target (when
+      // the backend carries the field) wins over the event-derived
+      // grantedTarget, so the banner shows the right variant after a window
+      // reload — where no grant_required event was ever seen. A null/absent
+      // row leaves the mirror cleared but the event-derived value standing
+      // (fail-neutral, see sessionDisplayTargetPatch).
+      const sessionTarget = sessionDisplayTargetPatch(raw);
+      if (sessionTarget) Object.assign(patch, sessionTarget);
+      publish(sid, patch);
       return raw;
     }
 
@@ -295,8 +468,24 @@
         throw localizeKnownError(error);
       }
       const pending = pendingEntry(sid);
-      if (pending) pending.grant = false;
-      publish(sid, { granted: true, stopped: false, grantRequest: null });
+      // grantedTarget records WHERE the granted session operates so the
+      // banner can pick its copy; physical is the fail-neutral answer for a
+      // request that never carried the field. Read BEFORE the cleanup below.
+      const grantedTarget = pending && pending.grantTarget === "virtual" ? "virtual" : "physical";
+      if (pending) {
+        pending.grant = false;
+        // The epoch's target dies with the grant (review finding): a stale
+        // grantTarget left behind would resurface as virtual copy for a
+        // LATER event-less request of this session (reconcileServerTruth
+        // raises pending.grant without writing a target).
+        delete pending.grantTarget;
+      }
+      publish(sid, {
+        granted: true,
+        stopped: false,
+        grantRequest: null,
+        grantedTarget,
+      });
     }
 
     async function revoke(sessionId) {
@@ -312,16 +501,22 @@
       const pending = pendingEntry(sid);
       if (pending) {
         pending.grant = false;
+        // The epoch's target dies with the revoke (review finding, same rule
+        // as grant()/reconcileServerTruth): no stale virtual copy may
+        // resurface with a later event-less request of this session.
+        delete pending.grantTarget;
         pending.confirm = null;
       }
-      publish(sid, { granted: false, grantRequest: null, confirmRequest: null });
+      publish(sid, { granted: false, grantRequest: null, confirmRequest: null, grantedTarget: "physical" });
     }
 
     async function stop() {
       const sid = state.activeSessionId;
       // Stop is an escape hatch: the banner must clear immediately, not after
       // the IPC round-trip. A failure re-reads the authoritative status.
-      publish(sid, { granted: false, stopped: true });
+      // grantedTarget resets with the banner: a stale "virtual" must not
+      // leak into the next grant epoch's copy.
+      publish(sid, { granted: false, stopped: true, grantedTarget: "physical" });
       try {
         await invoke("computer_use_stop");
       } catch (error) {
@@ -484,6 +679,28 @@
       return invoke("computer_use_request_permissions");
     }
 
+    // Virtual-display preference (desktop-only command, deliberately off the
+    // web access-policy allowlist like the rest of this domain). There is no
+    // optimistic slice write for the preference itself — the settings switch
+    // binds to the persisted preference (slice field preferVirtualDisplay),
+    // so the status re-read below is what moves the switch; a failed invoke
+    // leaves the switch on the authoritative value and surfaces the
+    // localized error.
+    async function setVirtualDisplayPreference(enabled) {
+      const target = !!enabled;
+      try {
+        await invoke("computer_use_set_virtual_display_preference", { enabled: target });
+      } catch (error) {
+        throw localizeKnownError(error);
+      }
+      // The command refreshes the cached availability probe and broadcasts
+      // computer_use:state_changed (whose listener re-reads status), but the
+      // switch's own promise must resolve with the fresh state already
+      // applied — the explicit re-read also covers windows that missed the
+      // broadcast.
+      await refreshStatus(state.activeSessionId);
+    }
+
     // macOS TCC grant snapshot ({supported, screen_recording, accessibility}).
     // Advisory only: a permission granted after this app process launched
     // still reads false until the app restarts — the settings UI pairs a
@@ -540,6 +757,12 @@
       if (typeof typePreviewFull === "string" && typePreviewFull) {
         request.typePreviewFull = typePreviewFull;
       }
+      // Target attribution (backend contract): "virtual" marks an action the
+      // agent performs inside the isolated virtual display. Same
+      // key-only-when-present rule as typePreviewFull: old payloads keep
+      // their exact shape and the dialog renders the physical copy
+      // (fail-neutral — a missing field must never guess "virtual").
+      if (payload.target === "virtual") request.target = "virtual";
       // Value digest for sameRequest: any visible content change must
       // re-render the dialog, identical re-sends must stay no-ops.
       request.detailKey = JSON.stringify([
@@ -560,6 +783,12 @@
         const pending = pendingEntry(sid);
         pending.grant = true;
         pending.grantAt = Date.now();
+        // Target rides the pending entry so both the live dialog and the
+        // switch-back resurfacing (refreshStatus rebuilds the request from
+        // this entry) keep the virtual attribution. Written on EVERY request
+        // (not merged): a physical re-request after a denied virtual one must
+        // not inherit the stale target. Absent field → physical.
+        pending.grantTarget = payload.target === "virtual" ? "virtual" : "physical";
         // A live per-action confirmation must survive a grant request: the
         // renderer shows the grant dialog first when both are pending, and
         // wiping the confirm here left no dialog after Allow.
@@ -582,7 +811,7 @@
         // flag still latched here is frontend residue (e.g. from a stop that
         // predates a re-enable); clearing it keeps the dialog reachable even
         // if the refresh below has not landed yet.
-        publish(sid, { stopped: false, grantRequest: { sessionId: sid } });
+        publish(sid, { stopped: false, grantRequest: buildGrantRequest(sid, pending) });
       });
       listen("computer_use:confirm_required", function (event) {
         const payload = (event && event.payload) || {};
@@ -623,6 +852,7 @@
       confirm,
       deny,
       setEnabled,
+      setVirtualDisplayPreference,
       requestPermissions,
       permissionStatus,
     };
