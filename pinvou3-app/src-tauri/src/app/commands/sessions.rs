@@ -1516,10 +1516,19 @@ async fn get_or_create_aux_session_inner(
     store
         .load(&session_id)
         .map_err(|e| format!("get_or_create_aux_session: main session not found: {e:#}"))?;
-    store
-        .get_or_create_aux_session(&session_id)
-        .map(|metadata| AuxSessionBinding { id: metadata.id })
-        .map_err(|e| format!("get_or_create_aux_session: {e:#}"))
+    // Both the create and reuse legs do sidecar IO inside the store's synchronous methods (the reuse leg's
+    // confirmation-absence probe + the mode pin also RMW two files under a std Mutex, fsync-heavy) — the same
+    // discipline as the mode chip command family: join onto a blocking worker instead of parking the runtime
+    // worker (round-15 review B1: this is the remaining sibling after join_blocking fixed the chip command family).
+    let worker_store = store.inner().clone();
+    let sid = session_id.clone();
+    let metadata = super::settings::join_blocking("get_or_create_aux_session", move || {
+        worker_store
+            .get_or_create_aux_session(&sid)
+            .map_err(|e| format!("get_or_create_aux_session: {e:#}"))
+    })
+    .await?;
+    Ok(AuxSessionBinding { id: metadata.id })
 }
 
 /// Atomically restart a main session's auxiliary conversation (M6): if an

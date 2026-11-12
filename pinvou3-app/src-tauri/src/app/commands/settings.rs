@@ -32,6 +32,33 @@ pub async fn get_settings() -> Result<UserPrefs, String> {
     Ok(refresh_safe_prefs(UserPrefs::load()))
 }
 
+/// Tri-mode safety: the global "ask on guardrail hit" default (new sessions
+/// seed their per-session toggle from it). Read from the store's in-memory
+/// mirror — the setter below keeps mirror and settings.json in lockstep, so
+/// the mirror is both fresh for this run and free of a disk round-trip.
+#[tauri::command]
+pub async fn get_ask_on_guardrail_default(store: State<'_, SessionStore>) -> Result<bool, String> {
+    Ok(store.code_permission_prefs().ask_on_guardrail_default)
+}
+
+/// Tri-mode safety: set the global ask-on-guardrail default. Persists
+/// through the settings transaction (cross-process settings.json.lock —
+/// joined on a blocking worker, same rationale as confirm_code_yolo) and
+/// updates the store's in-memory mirror; returns the new value.
+#[tauri::command]
+pub async fn set_ask_on_guardrail_default(
+    enabled: bool,
+    store: State<'_, SessionStore>,
+) -> Result<bool, String> {
+    let store = store.inner().clone();
+    join_blocking("set_ask_on_guardrail_default", move || {
+        store
+            .set_ask_on_guardrail_default(enabled)
+            .map(|prefs| prefs.ask_on_guardrail_default)
+    })
+    .await
+}
+
 fn prepare_prefs_for_save(
     mut prefs: UserPrefs,
     store: &dyn CredentialStore,

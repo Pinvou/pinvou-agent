@@ -210,7 +210,11 @@ command_protocol!(
         "submit_user_input",
         "cancel_user_input",
         "get_pending_user_inputs",
-        "summon_pinvou"
+        "summon_pinvou",
+        "decide_approval",
+        "get_pending_approvals",
+        "set_session_mode",
+        "set_ask_on_guardrail"
     ]
 );
 command_protocol!(
@@ -248,6 +252,46 @@ command_protocol!(
         "kb_model_download"
     ]
 );
+
+/// round-10 补钉：审批记忆随会话删除清空（claim 2 的唯一实现线）是
+/// composition root 里的一行——`session_purged_hook` 内的
+/// `pending_approvals::clear_session`。钩子机制与 clear_session 行为各有
+/// 行为钉，但这行接线此前删掉全绿。邻座两条 clear（timing/pending_user_input）
+/// 一并钉住，防未来的 hook 体检把审批记忆漏掉。
+#[test]
+fn session_purged_hook_clears_approval_memory() {
+    let app_entrypoint = include_str!("../../lib.rs");
+    // 钩子体内含多层 `);`（邻居 clear 的参数收尾），按首个 `);` 切会截断——
+    // 改取注册点之后的固定窗口。
+    let hook = app_entrypoint
+        .split("register_session_purged_hook(")
+        .nth(1)
+        .expect("the session purged hook must be registered in lib.rs");
+    // Round-13: floor the fixed window to a char boundary — lib.rs carries
+    // multibyte comments, and a blind byte slice would panic with an opaque
+    // "not a char boundary" instead of a real assertion if a future edit
+    // straddles the offset.
+    let window_end = hook.len().min(1500);
+    let window_end = hook
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|i| *i <= window_end)
+        .last()
+        .unwrap_or(0);
+    let body = &hook[..window_end];
+    assert!(
+        body.contains("crate::features::assistant::pending_approvals::clear_session("),
+        "the purged hook must clear approval memory (grant/denial/pending) for the deleted session"
+    );
+    assert!(
+        body.contains("pending_user_input::clear_session("),
+        "pre-existing neighbor clear (pending_user_input) must stay wired"
+    );
+    assert!(
+        body.contains("timing::clear_session("),
+        "pre-existing neighbor clear (timing) must stay wired"
+    );
+}
 
 #[test]
 fn preinstalled_model_startup_commands_are_not_registered() {
@@ -485,6 +529,8 @@ command_protocol!(
     "settings.rs",
     [
         "get_settings",
+        "get_ask_on_guardrail_default",
+        "set_ask_on_guardrail_default",
         "submit_feedback",
         "get_effective_model_config",
         "list_models",
@@ -942,5 +988,37 @@ async fn legacy_list_deliverable_index_shell_keeps_the_bare_array_contract() {
     assert!(
         rows.is_empty(),
         "legacy shell degrades a scan failure to an empty array"
+    );
+}
+
+/// 评审 5812242993（MINOR）：decide_approval 的授予/拒绝缓存写必须先过会话
+/// 存活门——engine 往返期间会话被并发删除时，从未重绑会话（origin_generation
+/// = None）的 None==Null 代比对恒过，迟交缓存会写进已消亡会话且无人清除；
+/// agentic id 进程内复用时同族 key 即成跨生命周期放行。门是命令层一行接线
+/// （`session_live` 采样自 durable_session_record_is_absent），行为面难做
+/// 端到端（需要整条 tauri 命令栈），按本文件先例用源码钉锁住：删门即红。
+#[test]
+fn decide_approval_gates_memory_writes_on_session_liveness() {
+    let body = include_str!("interaction.rs");
+    let start = body
+        .find("let session_live = !store.durable_session_record_is_absent(&session_id);")
+        .expect("decide_approval must sample session liveness before the cache writes");
+    // interaction.rs 同样携带多字节注释，盲切字节会 panic 在 char boundary
+    // 上（同文件 session_purged_hook 钉的 round-13 教训）：按字符边界取窗。
+    let window_end = body.len().min(start + 1600);
+    let window_end = body
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|i| *i <= window_end)
+        .last()
+        .unwrap_or(0);
+    let window = &body[start..window_end];
+    assert!(
+        window.contains("decision == \"allow_for_session\" && session_live"),
+        "the grant write must be gated on session liveness (stale grant into a deleted session must not be recorded)"
+    );
+    assert!(
+        window.contains("decision == \"deny\" && session_live"),
+        "the denial write must be gated on session liveness (same leak, fail-safe direction)"
     );
 }

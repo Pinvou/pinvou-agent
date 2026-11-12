@@ -3,10 +3,22 @@
 /// `remote_control:tools_changed`（其它窗口/实例借此刷新开关状态）。
 /// `pub(super)`: the builtin-plugin feature switch (commands::builtin) reuses
 /// the same wrap-up.
-pub(super) async fn refresh_tools_and_broadcast(app: &AppHandle, pool: &EnginePool) {
+pub(super) async fn refresh_tools_and_broadcast(
+    app: &AppHandle,
+    pool: &EnginePool,
+) -> Result<(), String> {
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
-    pool.refresh_permission_rulesets().await;
+    // The ruleset delivery failure rides the command result (round-32 review
+    // Jensen 5863866339 P2): a cancelled send means that engine resumes on
+    // its OLD hard-deny rules, so the caller must surface it instead of
+    // reporting success. The cross-window notice still fires below either
+    // way — the toggles DID persist, other windows/instances must refresh
+    // their switch state.
+    let ruleset_result = pool
+        .refresh_permission_rulesets()
+        .await
+        .map_err(|error| format!("refresh_permission_rulesets: {error:#}"));
     let payload = serde_json::json!({});
     let _ = app.emit("remote_control:tools_changed", payload.clone());
     crate::features::remote_control::forward_app_event(
@@ -14,6 +26,7 @@ pub(super) async fn refresh_tools_and_broadcast(app: &AppHandle, pool: &EnginePo
         "remote_control:tools_changed",
         payload,
     );
+    ruleset_result
 }
 
 /// pinvou3 工具开关(按会话类型 scope 持久):设置当前被关掉的连接器
@@ -40,7 +53,7 @@ pub async fn set_disabled_connectors(
         .await?;
     // 连接器禁用影响其 companion skills 的可见性（组合目录排除集变化）：
     // 重写在线会话组合目录 + 热刷工具白名单 + 热刷 CLI 硬拦截规则集（execpolicy）。
-    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(())
 }
 
@@ -81,7 +94,7 @@ pub async fn set_bundle_visibility(
     })
     .await
     .map_err(|e| format!("set_bundle_visibility join: {e}"))??;
-    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(())
 }
 
@@ -196,7 +209,7 @@ pub async fn enable_marketplace_packages(
         // Identical finalization to the other switch writers (round-16 minor
         // 9: previously re-inlined the same seven statements). Skipped only
         // when the batch was refused (round-10 Major 2) and no state changed.
-        refresh_tools_and_broadcast(&app, pool.inner()).await;
+        refresh_tools_and_broadcast(&app, pool.inner()).await?;
     }
     Ok(outcome)
 }
@@ -228,7 +241,7 @@ pub async fn set_project_skills_enabled(
     // broadcast the tool change (other windows/instances refresh their toggle
     // state from it). A write failure was propagated by the `?` above, so this
     // never broadcasts success for state that did not persist.
-    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(())
 }
 
@@ -282,7 +295,7 @@ pub async fn refresh_connector_auth_gates(
     // enabled. The aggregate verdict is still returned verbatim: this
     // projects persisted state, it does not soften the failure.
     let result = connector_cli_domain::refresh_connector_auth_gates().await;
-    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(result?)
 }
 
@@ -319,7 +332,7 @@ pub async fn feishu_apply_skills(
     // sessions with their pre-connect catalogs/rules. This projects the
     // persisted state; the error verdict is returned verbatim below.
     let result = feishu_domain::feishu_apply_skills().await;
-    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(result?)
 }
 async_command_passthrough!(feishu_domain, feishu_skills_state() -> Result<Value, String>);
@@ -353,7 +366,7 @@ pub async fn wecom_apply_skills(
     // connector remains enabled — so an early `?` would leave existing
     // sessions with their pre-connect catalogs/rules. This projects the
     // persisted state; the error verdict is returned verbatim below.
-    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(result?)
 }
 async_command_passthrough!(wecom_domain, wecom_skills_state() -> Result<Value, String>);
@@ -387,7 +400,7 @@ pub async fn dingtalk_apply_skills(
     // connector remains enabled — so an early `?` would leave existing
     // sessions with their pre-connect catalogs/rules. This projects the
     // persisted state; the error verdict is returned verbatim below.
-    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(result?)
 }
 async_command_passthrough!(dingtalk_domain, dingtalk_skills_state() -> Result<Value, String>);
@@ -421,7 +434,7 @@ pub async fn tmeet_apply_skills(
     // connector remains enabled — so an early `?` would leave existing
     // sessions with their pre-connect catalogs/rules. This projects the
     // persisted state; the error verdict is returned verbatim below.
-    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(result?)
 }
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
@@ -449,7 +462,9 @@ pub async fn ima_connect(
     let result = ima_domain::ima_connect(client_id, api_key).await?;
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
-    pool.refresh_permission_rulesets().await;
+    pool.refresh_permission_rulesets()
+        .await
+        .map_err(|error| format!("refresh_permission_rulesets: {error:#}"))?;
     Ok(result)
 }
 
@@ -463,7 +478,9 @@ pub async fn ima_logout(pool: State<'_, EnginePool>) -> Result<Value, String> {
     let result = ima_domain::ima_logout().await?;
     pool.refresh_live_sessions_skills().await;
     pool.refresh_disallowed_tools().await;
-    pool.refresh_permission_rulesets().await;
+    pool.refresh_permission_rulesets()
+        .await
+        .map_err(|error| format!("refresh_permission_rulesets: {error:#}"))?;
     Ok(result)
 }
 use super::prelude::*;

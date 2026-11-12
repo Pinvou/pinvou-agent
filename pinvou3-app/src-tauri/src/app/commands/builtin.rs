@@ -37,6 +37,6 @@ pub async fn set_builtin_feature_enabled(
     })
     .await
     .map_err(|error| format!("set_builtin_feature_enabled join: {error}"))??;
-    super::connectors::refresh_tools_and_broadcast(&app, pool.inner()).await;
+    super::connectors::refresh_tools_and_broadcast(&app, pool.inner()).await?;
     Ok(registry)
 }
