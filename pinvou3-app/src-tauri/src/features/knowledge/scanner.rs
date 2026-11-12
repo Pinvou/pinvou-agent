@@ -57,7 +57,14 @@ pub(super) fn walk_pruned_with(
                 on_raw();
             }
             let keep = !skipped(ex, e);
-            if !keep && e.file_type().is_file() {
+            if !keep && (e.file_type().is_file() || e.depth() == 0) {
+                // Depth 0 is the walk root itself: a root whose own name an
+                // exclusion rule rejects enumerates NOTHING, so without this
+                // count the disclosure cannot distinguish "root pruned by
+                // name" from "genuinely empty" — the exact silent shape the
+                // skippedByExcluder surface exists to expose (r5 review).
+                // Nested pruned directories stay uncounted (the documented
+                // lower bound).
                 on_skipped_file();
             }
             keep

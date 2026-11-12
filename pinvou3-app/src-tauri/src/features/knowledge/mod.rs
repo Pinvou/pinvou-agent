@@ -2338,6 +2338,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// r5 review: a root whose own basename an exclusion rule matches
+    /// enumerates NOTHING — before the depth-0 count, that shape staged zero
+    /// files AND reported zero skips, indistinguishable from a genuinely
+    /// empty folder on every surface (the skippedByExcluder disclosure and
+    /// the GUI import card both stay silent). The root itself now counts as
+    /// the one rejected entry.
+    #[test]
+    fn expand_import_roots_counts_a_name_excluded_root() {
+        let base = std::env::temp_dir().join(format!(
+            "pinvou3-kb-excluded-root-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let root = base.join("node_modules");
+        std::fs::create_dir_all(&root).expect("excluded walk root");
+        // A file inside proves the subtree was never walked: if the root
+        // were (wrongly) descended, this file would show up in `files`.
+        std::fs::write(root.join("index.js"), b"module.exports = 1;").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let noop = || {};
+        let (files, skipped) = expand_import_roots(&[root.clone()], &cancel, &noop);
+        assert_eq!(files.len(), 0, "a name-excluded root is not descended into");
+        assert_eq!(skipped, 1, "the excluded root itself is the counted entry");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Round-44 review: the collapse parks the zombie's collection badge at
     /// "pending" (the dead importer's close-out never runs), and a second
     /// call on the now-terminal row takes the benign 0-row arm instead of
