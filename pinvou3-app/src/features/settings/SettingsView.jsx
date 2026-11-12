@@ -593,7 +593,7 @@ function hasStoredCredential(record) {
           if (!parsed) return;
           parsed.port = '';
           setBaseUrlPortError(null);
-          handleBaseUrlChange(parsed.toString().replace(/\/$/, ''));
+          handleBaseUrlChange(serializeParsedBaseUrl(parsed));
           return;
         }
         const port = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
@@ -605,12 +605,23 @@ function hasStoredCredential(record) {
         if (!parsed) return;
         parsed.port = String(port);
         setBaseUrlPortError(null);
-        handleBaseUrlChange(parsed.toString().replace(/\/$/, ''));
+        handleBaseUrlChange(serializeParsedBaseUrl(parsed));
+      }
+      // URL API 的 toString 在空路径时补一个尾斜杠；只剥这个补出来的斜杠，
+      // 不顺手动用户自己写的路径尾斜杠（如 .../v1/ —— 与直接编辑 URL 行的
+      // 行为一致，手动输入不归一化）。
+      function serializeParsedBaseUrl(parsed) {
+        const serialized = parsed.toString();
+        return parsed.pathname === '/' ? serialized.replace(/\/$/, '') : serialized;
       }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
-        const testKey = keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        // 测试连接要与保存后的鉴权形态一致：免鉴权声明生效时不携带已输入
+        // 的 key（开关开着时 key 行隐藏，但已输入的 key 仍残留 state）。
+        const testKey = !isLocalPreset && !isCodingPlan && noAuth
+          ? ''
+          : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         try {
           const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id);
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
@@ -640,7 +651,10 @@ function hasStoredCredential(record) {
       async function handleImageCapabilityTest() {
         if (!bridge.available || !bridge.models.testImageInputCapability) return;
         setImageTesting(true); setImageTestResult(null);
-        const testKey = keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        // 与 handleTest 同口径：免鉴权声明生效时不携带残留的已输入 key。
+        const testKey = !isLocalPreset && !isCodingPlan && noAuth
+          ? ''
+          : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         try {
           const result = await bridge.models.testImageInputCapability(model.trim(), baseUrl.trim(), testKey, initial.__new ? null : initial.id);
           setImageTestResult(normalizeImageCapabilityTestResult(result));
@@ -691,8 +705,11 @@ function hasStoredCredential(record) {
       // 保存时的凭据编辑动作（云端/自定义路径）：免鉴权声明显式删除已存凭据
       // （避免留下永远用不到的明文/钥匙串残留），本就没有凭据时 replace 落成
       // missing 即可；其余沿用既有语义（新填/首次保存 → replace，否则保留）。
+      // 与 auth_mode 载荷同口径排除 coding_plan：托管归属随 base_url 实时
+      // 判定，开关开着时把 URL 改写成托管端点会隐藏开关行，但 noAuth 状态
+      // 残留——凭据删除不得被这个残留触发（声明不落盘却删了凭据）。
       function cloudCredentialAction() {
-        if (noAuth) return hasSavedKey ? 'delete' : 'replace';
+        if (!isCodingPlan && noAuth) return hasSavedKey ? 'delete' : 'replace';
         return apiKey.trim() || initial.__new || !hasSavedKey ? 'replace' : 'keep_existing';
       }
       // 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」

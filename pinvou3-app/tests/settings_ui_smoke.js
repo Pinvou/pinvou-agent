@@ -142,7 +142,9 @@ for (const settingsI18nSource of settingsI18nSources) {
 // 「此端点无需鉴权」(auth_mode="none") 表单行为守卫：开关必须经
 // data-testid="model-form-no-auth-toggle" 驱动，且保存载荷必须携带
 // auth_mode（null=默认鉴权规则 / "none"=免鉴权声明，直通底座
-// auth_mode_disables_api_key）。缺任一即开关失效或声明丢失。
+// auth_mode_disables_api_key）。缺任一即开关失效或声明丢失。凭据删除
+// 动作与两条测试路径必须与 auth_mode 载荷同口径排除托管档/免鉴权态，
+// URL 行的渲染点必须与赋值同在（防止中途加条件把字段藏掉）。
 {
   const noAuthToggleSites = settingsViewSource.match(
     /data-testid="model-form-no-auth-toggle"/g,
@@ -164,8 +166,28 @@ for (const settingsI18nSource of settingsI18nSources) {
   );
   assert.match(
     settingsViewSource,
+    /if \(!isCodingPlan && noAuth\) return hasSavedKey \? 'delete' : 'replace'/,
+    'the stored-credential delete action must stay scoped to non-managed keyless declarations (a stale toggle over a live coding-plan URL must not delete the credential)',
+  );
+  assert.match(
+    settingsViewSource,
+    /!isLocalPreset && !isCodingPlan && noAuth\s*\?\s*''\s*:/,
+    'connection/image-capability tests must not send a typed key while the keyless declaration is active',
+  );
+  assert.match(
+    settingsViewSource,
     /showBaseUrlField = !isCodingPlan/,
     'the API base URL field (custom endpoint/port) must be visible for every non-coding-plan preset',
+  );
+  assert.match(
+    settingsViewSource,
+    /showBaseUrlField && renderInlineField/,
+    'the base URL field gate must hold at the render site, not only at the assignment',
+  );
+  assert.match(
+    settingsViewSource,
+    /parsed\.pathname === '\/' \? serialized\.replace/,
+    'port rewrites must only strip the slash WHATWG serialization adds, never a user-typed path slash',
   );
   assert.match(
     settingsViewSource,
