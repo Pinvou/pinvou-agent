@@ -4096,7 +4096,9 @@ mod tests {
         // The plain seeds stop 5 slots under the cap; the zzz phase below
         // then tops the counted set up to exactly one under it, so every
         // assert sits on the exact cap boundary: dropping the headless
-        // exclusion or drifting the cap constant turns an assert red.
+        // exclusion turns an assert red. The asserts are cap-relative by
+        // design — the seeds follow the constant, so drifting the cap value
+        // itself stays green (only caps below the seed floors would break).
         for index in 0..(MAX_SESSIONS_PER_KIND - 5) {
             seed(&format!("budgetgate{index:04}"));
         }
@@ -4119,10 +4121,7 @@ mod tests {
             "plain one under the cap (incl. the fixture requester): one slot left"
         );
         seed("budgetgate_fff");
-        assert!(
-            store.plain_chat_budget_full().unwrap(),
-            "plain at the cap"
-        );
+        assert!(store.plain_chat_budget_full().unwrap(), "plain at the cap");
     }
 
     /// Round-19 minor (the reviewer's most-wanted pin): the PINNED

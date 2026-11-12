@@ -70,7 +70,7 @@ v0.9.12 的模型侧名称以 model-visible canonical 名称为准（§2 白名�
 
 | 模型侧名称 | 形态 | 说明 |
 |---|---|---|
-| `bash`、`read`、`write`、`edit` | 独立小契约工具 | 文件与前台 shell 从 v0.9.x action family 迁出；`write` 单次内容硬上限 64 KiB（`CodeWhale/crates/tui/src/tools/file_tool.rs` 工具描述与 `file/tests.rs` 边界测试） |
+| `bash`、`read`、`write`、`edit` | 独立小契约工具 | 文件与前台 shell 从 v0.9.x action family 迁出；`write` 单次内容硬上限 256 KiB（`CodeWhale/crates/tui/src/tools/file_tool.rs` 工具描述与 `file/tests.rs` 边界测试） |
 | `list_dir`、`file_search`、`grep_files` | 独立小契约工具 | 重新作为独立 canonical 工具发布（`canonical_action.rs:209` "published standalone tools again"），不再是 `File` 家族的子动作 |
 | `Git`、`Web` | action family | 子动作经 `action` 参数分派，别名表见 `CANONICAL_ACTION_ALIASES`（`canonical_action.rs:19`） |
 | `terminal/run` 等 | 持久终端工具 | 精确名五件套，见 §2 |

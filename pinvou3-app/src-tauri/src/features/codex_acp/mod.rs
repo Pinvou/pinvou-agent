@@ -5353,6 +5353,14 @@ impl AcpPool {
                     .entry(session_id.to_string())
                     .or_default()
                     .record_crash_at(Instant::now());
+                // The failed generation may have registered pending cards
+                // before dying (the `session/load` timeout in particular fires
+                // after `initialize`), so settle them here like the
+                // exited-before-publish arm instead of letting them linger
+                // until the next spawn. No runtime exists in this arm — with
+                // no bridge the settlement is only the cancelled response in
+                // the shared maps, same as the Dead-arm None call.
+                self.cancel_runtime_pending_cards(session_id, None).await;
                 diagnostics::write(
                     &operation_id,
                     "session:spawn_failed",
@@ -5779,72 +5787,70 @@ impl AcpPool {
         };
         // Record whether spawn resumed or created the session so restart recovery
         // can report whether history survived. Missing or failed load creates fresh.
-        let (acp_session_id, mut mode_state, mut config_options, resumed_session) =
-            if initialized.agent_capabilities.load_session {
-                if let Some(saved_id) = saved.acp_session_id.clone() {
-                    replay_suppressed.store(true, Ordering::Release);
-                    let loaded = match tokio::time::timeout(
-                        ACP_SESSION_LOAD_TIMEOUT,
-                        connection
-                            .send_request(LoadSessionRequest::new(
-                                saved_id.clone(),
-                                workspace.clone(),
-                            ))
-                            .block_task(),
-                    )
-                    .await
-                    {
-                        Ok(loaded) => loaded,
-                        Err(_) => {
-                            let error = anyhow::anyhow!(
-                                "{} ACP session/load 超时（{} 秒无响应）",
-                                backend.display_name(),
+        let (acp_session_id, mut mode_state, mut config_options, resumed_session) = if initialized
+            .agent_capabilities
+            .load_session
+        {
+            if let Some(saved_id) = saved.acp_session_id.clone() {
+                replay_suppressed.store(true, Ordering::Release);
+                let loaded = match tokio::time::timeout(
+                    ACP_SESSION_LOAD_TIMEOUT,
+                    connection
+                        .send_request(LoadSessionRequest::new(saved_id.clone(), workspace.clone()))
+                        .block_task(),
+                )
+                .await
+                {
+                    Ok(loaded) => loaded,
+                    Err(_) => {
+                        let error = anyhow::anyhow!(
+                            "{} ACP session/load 超时（{} 秒无响应）",
+                            backend.display_name(),
+                            ACP_SESSION_LOAD_TIMEOUT.as_secs()
+                        );
+                        eprintln!(
+                            "[pinvou3-app] {} ACP 恢复会话超时，中止会话重建: {error}",
+                            backend.display_name()
+                        );
+                        diagnostics::write(
+                            operation_id,
+                            "session:load_timeout",
+                            format!(
+                                "session_id={pinvou_session_id} saved_acp_session_id={saved_id} timeout_secs={} error={error:#}",
                                 ACP_SESSION_LOAD_TIMEOUT.as_secs()
-                            );
-                            eprintln!(
-                                "[pinvou3-app] {} ACP 恢复会话超时，中止会话重建: {error}",
-                                backend.display_name()
-                            );
-                            diagnostics::write(
-                                operation_id,
-                                "session:load_timeout",
-                                format!(
-                                    "session_id={pinvou_session_id} saved_acp_session_id={saved_id} timeout_secs={} error={error:#}",
-                                    ACP_SESSION_LOAD_TIMEOUT.as_secs()
-                                ),
-                            );
-                            replay_suppressed.store(false, Ordering::Release);
-                            return Err(error);
-                        }
-                    };
-                    replay_suppressed.store(false, Ordering::Release);
-                    match loaded {
-                        Ok(response) => (
-                            saved_id,
-                            response.modes,
-                            response.config_options.unwrap_or_default(),
-                            true,
-                        ),
-                        Err(error) => {
-                            eprintln!(
-                                "[pinvou3-app] {} ACP 恢复会话失败，改建新会话: {error}",
-                                backend.display_name()
-                            );
-                            let (id, modes, options) =
-                                new_acp_session(&connection, &workspace, backend).await?;
-                            (id, modes, options, false)
-                        }
+                            ),
+                        );
+                        replay_suppressed.store(false, Ordering::Release);
+                        return Err(error);
                     }
-                } else {
-                    let (id, modes, options) =
-                        new_acp_session(&connection, &workspace, backend).await?;
-                    (id, modes, options, false)
+                };
+                replay_suppressed.store(false, Ordering::Release);
+                match loaded {
+                    Ok(response) => (
+                        saved_id,
+                        response.modes,
+                        response.config_options.unwrap_or_default(),
+                        true,
+                    ),
+                    Err(error) => {
+                        eprintln!(
+                            "[pinvou3-app] {} ACP 恢复会话失败，改建新会话: {error}",
+                            backend.display_name()
+                        );
+                        let (id, modes, options) =
+                            new_acp_session(&connection, &workspace, backend).await?;
+                        (id, modes, options, false)
+                    }
                 }
             } else {
                 let (id, modes, options) =
                     new_acp_session(&connection, &workspace, backend).await?;
                 (id, modes, options, false)
-            };
+            }
+        } else {
+            let (id, modes, options) = new_acp_session(&connection, &workspace, backend).await?;
+            (id, modes, options, false)
+        };
         restore_config_values(
             &connection,
             &acp_session_id,

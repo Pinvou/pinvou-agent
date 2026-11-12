@@ -119,8 +119,9 @@ pub(crate) const DOWNLOAD_READ_IDLE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
 
 /// 归档类工件下载（连接器 native_installer / marketplace python_dependencies）
-/// 的总时长上限：归档有 128/64 MiB 的硬上限，总量上限可计算；慢链路要求
-/// ~150 KB/s 也能完成。reqwest 0.13 的 blocking 客户端没有 read_timeout，
+/// 的总时长上限：归档有 2 GiB（wheel）/4 GiB（environment）的硬上限，总量
+/// 上限可计算；预算按常见的远小于上限的归档设定，2 GiB 满额需 ~2.4 MB/s，
+/// 慢链路会超时并整链重跑。reqwest 0.13 的 blocking 客户端没有 read_timeout，
 /// 只能以总时长兜底，与 async 下载器的空闲上限是两种互补策略。
 /// `pub`：headless CLI 的连接器归档下载经 platform facade 复用同一常量
 /// （与 [`NPM_MIRROR_REGISTRY`] 同一 crate 边界形状），避免漂移的本地副本。
