@@ -783,7 +783,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           const page = await invokeTauri('kb_search', { query: { ...searchPaging.query, mtimeBefore: searchPaging.cursor.mtime, idBefore: searchPaging.cursor.id } }) || [];
           if (generation !== searchGenerationRef.current) return;
           setResults((prev) => dedupeAppendBy(prev, page, (row) => row.path));
-          setSearchPaging({ gen: generation, cursor: searchCursorOf(page) || searchPaging.cursor, hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false });
+          // 续页成功后必须把钉住的请求(query)带进新状态:守卫要求 searchPaging.query
+          // 存在,漏写会让第二次「加载更多」起全部静默拒绝(r5 review)。
+          setSearchPaging({ gen: generation, cursor: searchCursorOf(page) || searchPaging.cursor, hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false, query: searchPaging.query });
         } catch {
           if (generation === searchGenerationRef.current) setSearchPaging((p) => ({ ...p, loading: false }));
         }
