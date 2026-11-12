@@ -124,7 +124,7 @@
 |---|---|---|
 | `6f7a3a748` | deps | 升级 rusqlite 0.41.1 / libsqlite3-sys 0.39.1（捆绑 SQLite 3.54.1，关 RUSTSEC-2026-0459）、rmcp 3.9.0（关 RUSTSEC-2026-0462）、rio-vt 0.5.29（关 RUSTSEC-2026-0430）；子模块 MSRV 声明抬至 rust-version 1.89（低于父仓 1.90 下限，父仓无需动作）(#152) |
 | `e972a9a05` | T1/T2 | 引擎 route 输出预算对宿主暴露：新增公共只读包装供宿主查询各路线输出预算；纯增量、父仓透明 (#150) |
-| `5f15cce57` | T2 | todo 工具条目 status 默认值移出 required schema，恢复端可省略 status；相对上游的显式 fork-distinct schema 偏差，随本行登记 (#148) |
+| `5f15cce57` | T2 | todo 工具条目 status 默认值移出 required schema，恢复端可省略 status；相对上游的显式 fork-distinct schema 偏差，随本行登记；fork-guard 以 schema 指纹×2（`"required": ["content"]` 与含 Defaults to pending 的描述行）加两条 #148 测试的按名 pinned 执行钉守护（二者不以 `forkguard_` 命名，改名/删除即响红）(评审 JensenChen28 5871983071) (#148) |
 | `78804c83e` | T2 | 保留终态错误的真实来源：内部 `TurnComplete` 增 `error_source: Option<TurnErrorSource>`（Model/Runtime 产方证据；不进线协议，parity 测试钉死 wire JSON 无该键）；父仓 forwarder 以 `error_source: _` 吸收 (#142) |
 | `37be2844f` | T3 | 残余模型面文案修复（2026-10-07 审计批次）：TUI 文案/工具描述/skills/fixtures 失实声明逐项更正；另携带三处行为变更——fim_edit 锚点歧义由静默取首选改为拒绝并报出现次数（新增 Prefix/SuffixAmbiguous 错误）、bundled skill 代际 12→13 强制刷新（legacy v4 正文按摘要退役）、commands 条目 schema 收紧 `additionalProperties: false`；父仓透明 (#136) |
 | `11cba403d` | deps | undici 7.30.1 与 msal-node 7.1.2 的 npm lock 内刷新，关闭 `pinvou3-clean` 当时全部 4 条 open Dependabot 高危告警；仅 lockfile，无 manifest 或源码改动（#135） |
