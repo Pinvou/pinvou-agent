@@ -2236,6 +2236,61 @@ fn scheduled_terminal_token_persistence_does_not_replace_engine_state() {
     assert_eq!(later.system_prompt, before.system_prompt);
 }
 
+/// round-1 清扫 Coverage 回补:非零 total_tokens 一经写入,后续引擎快照
+/// 持久化(load→persist 路径)不得清零或重算。被清扫掉的 EngineCumulative
+/// 测试曾是这条非零基线的唯一守卫;现存测试的引擎持久断言都停在 0==0
+/// 基线上,回归成清零也能全绿。
+#[test]
+fn scheduled_engine_persist_preserves_nonzero_token_total_across_restarts() {
+    let (store, _g) = isolated_store();
+    let scheduled = store
+        .create_scheduled_run(scheduled_profile("task-nonzero-token-preserve"))
+        .expect("create scheduled run");
+    let id = scheduled.metadata.id.clone();
+    store
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("user", "first turn")],
+                ScheduledRunMode::Plan,
+            ),
+        )
+        .expect("persist baseline engine state");
+    store
+        .persist_scheduled_token_total(&id, 100, 0)
+        .expect("write nonzero terminal total");
+
+    // A later engine snapshot arrives (next scheduled turn): the durable
+    // total must ride through untouched.
+    let after_engine = store
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![
+                    text_message("user", "first turn"),
+                    text_message("assistant", "second turn"),
+                ],
+                ScheduledRunMode::Plan,
+            ),
+        )
+        .expect("persist later engine state");
+    assert_eq!(after_engine.metadata.total_tokens, 100);
+
+    let reloaded = reopen_store(&store).expect("restart");
+    let from_disk = reloaded.load(&id).expect("load after restart");
+    assert_eq!(from_disk.metadata.total_tokens, 100);
+    let after_reboot_engine = reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "third turn")],
+                ScheduledRunMode::Yolo,
+            ),
+        )
+        .expect("persist engine state after restart");
+    assert_eq!(after_reboot_engine.metadata.total_tokens, 100);
+}
+
 #[test]
 fn checked_scheduled_delete_removes_profile_json_and_runtime_directory() {
     let (store, _g) = isolated_store();
