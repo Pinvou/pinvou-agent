@@ -91,7 +91,7 @@ Data flow: aux panel send (unchanged wire) → pool `send_reserved_user_message`
 | A4 | Side chat on a task with no aux-relevant question | The model does NOT call the tool gratuitously (instructions say when-not-to) | ○ Manual | P1 |
 | A5 | Aux transcript with a tool call | The aux panel renders the `read_session` card (generic MCP card or neutral item) without breakage | ● executing `projectAuxChatTurns … generic tool item (A5)` (`aux_chat_state.test.mjs`) + contract pin (`aux_chat_panel_contract.test.mjs`) + ○ manual render check | P0 |
 
-### B — spawn-config invariants (rewrite of `bridge.rs:6439` `aux_session_tools_are_scoped_read_only_on_spawn_and_send`)
+### B — spawn-config invariants (rewrite of `bridge.rs:7829` `aux_session_tools_are_scoped_read_only_on_spawn_and_send`)
 
 | # | Scenario | Expected | Verification | Pri |
 |---|---|---|---|---|

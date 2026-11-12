@@ -470,7 +470,7 @@ pinvou3-app/src/platform/tauri/bridge/scheduled.js
 1. 新增/明确样式语义：
    - `iosInsetSurface`：弹窗内部嵌入式浅灰块背景。
    - `iosSeparator`（配合 `border-b`）：嵌入式设置组内部行分割线。
-   - 浮层菜单/时间滚轮/删除确认等独立层沿用普通 `border` 工具类（`border-black/5 dark:border-white/15`），未引入独立 token。
+   - 浮层菜单/时间滚轮沿用十六进制描边（`border-[#DFE1E5] dark:border-[#3A3B3E]`），删除确认浮层复用 `iosSeparator`；两者均未再新增独立 token（`border-black/5 dark:border-white/15` 一族仅用于任务列表卡片）。
 
 2. 去掉以下嵌入式容器的外层 `border`：
    - 新建任务/基于模板创建任务的计划设置组。
