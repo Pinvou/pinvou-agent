@@ -251,12 +251,17 @@ pub fn voice_postprocess_max_tokens(mode: &str, retry: bool) -> u32 {
 
 /// Input truncation cap (characters) before the LLM: neither the ASR text nor
 /// the input-box draft should be passed through unbounded. 16000 covers the
-/// edit lane's realistic input-box drafts (dictation cannot approach it: 131s
-/// of ASR audio is a few hundred characters). Anything the cap clips is
-/// reported honestly — `postprocess_voice_text` sets the response's
-/// `truncated` flag so the frontend's postprocess_truncated fallback refuses
-/// the write-back instead of letting a rewrite covering only the prefix
-/// destroy the draft tail.
+/// edit lane's realistic input-box drafts (dictation cannot approach it —
+/// minutes of continuous speech stay in the hundreds of characters, and the
+/// cap exists for the draft, not the dictation). Two honest limits ride with
+/// the cap: anything it clips is reported via the response's `truncated`
+/// flag (`postprocess_voice_text` and the CLI lane both OR input clipping
+/// into it) so the frontend's postprocess_truncated fallback refuses the
+/// write-back instead of letting a rewrite covering only the prefix destroy
+/// the draft tail; and the wall-clock budget (`voice_postprocess_timeout`)
+/// is NOT scaled with this cap — a near-cap draft must finish its rewrite in
+/// the same 12s edit window, so oversized inputs usually end in a timeout
+/// error (safe: no write-back) rather than a completed rewrite.
 pub const VOICE_POSTPROCESS_MAX_INPUT_CHARS: usize = 16000;
 
 pub fn truncate_voice_postprocess_input(text: &str) -> String {
