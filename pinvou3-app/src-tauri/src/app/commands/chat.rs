@@ -422,14 +422,18 @@ pub(crate) async fn chat_with_reservation(
     }
 }
 
-/// Server-side wall-clock bound for one steer enqueue, matching the
-/// frontend's STEER_INVOKE_TIMEOUT_MS (25s, platform/tauri/bridge/chat.js): a
-/// healthy engine reserves capacity synchronously, so only a real wedge (an
-/// engine task alive but not draining its steer channel) ever hits this. The
-/// two budgets are deliberately the same magnitude — whichever settles first,
-/// the frontend's failure recovery and its late-success compensating
-/// withdrawal are both correct (see `steer_chat`'s failure-modes note).
-const STEER_CHAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+/// Server-side wall-clock bound for one steer enqueue, sitting deliberately
+/// BELOW the frontend's STEER_INVOKE_TIMEOUT_MS (25s,
+/// platform/tauri/bridge/chat.js): a healthy engine reserves capacity
+/// synchronously, so only a real wedge (an engine task alive but not draining
+/// its steer channel) ever hits this, and the 5s head start lets the
+/// backend's specific "nothing was enqueued" diagnosis actually win the race
+/// against the frontend's generic timeout instead of being masked by it
+/// (r4 review: two equal budgets launch ~simultaneously, so the backend's
+/// error was mostly unreachable). Whichever side settles first, the
+/// frontend's failure recovery and its late-success compensating withdrawal
+/// are both correct (see `steer_chat`'s failure-modes note).
+const STEER_CHAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Mid-turn inject: while the current turn is still running, deliver a
 /// user message to the next step boundary. The foundation's
@@ -452,8 +456,9 @@ const STEER_CHAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2
 ///   waiting for capacity (it does not error immediately); if the target
 ///   turn changes while waiting, it reports "steer target changed". A wedged
 ///   engine task that never drains is now bounded server-side too
-///   (STEER_CHAT_TIMEOUT): the command settles Err instead of leaking the
-///   task after the frontend's own 25s fallback has given up. The timeout
+///   (STEER_CHAT_TIMEOUT): the command settles Err with the specific
+///   nothing-enqueued diagnosis before the frontend's own 25s fallback has
+///   given up. The timeout
 ///   cancels the future at the `reserve_owned()` await, i.e. BEFORE a permit
 ///   or registration exists — nothing was enqueued, so no `chat:steer_dropped`
 ///   event is owed and the plain failure-recovery path (remove chip, restore
@@ -495,7 +500,7 @@ pub async fn steer_chat(
             // Same outcome style as the foundation's own bounded failure
             // ("steer target changed while waiting for channel capacity"):
             // an Err the frontend maps to its failure-recovery path.
-            log::warn!("[pinvou3][chat] steer_chat timed out after 25s waiting for engine channel capacity sid={sid}");
+            log::warn!("[pinvou3][chat] steer_chat timed out after 20s waiting for engine channel capacity sid={sid}");
             "steer_chat timed out waiting for engine channel capacity; nothing was enqueued".to_string()
         })?
         .map_err(|e| format!("steer_chat: {e:#}"))
