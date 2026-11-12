@@ -85,8 +85,7 @@ fn lock_rewound_turns_file() -> Result<std::fs::File> {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
             Err(std::fs::TryLockError::Error(error)) => {
-                return Err(error)
-                    .with_context(|| format!("锁定回退备份失败: {}", path.display()));
+                return Err(error).with_context(|| format!("锁定回退备份失败: {}", path.display()));
             }
         }
     }

@@ -393,19 +393,14 @@ fn load_topic_memory_source<T: Default>(
 /// in pinvou-cli/crates/cli/src/memory.rs states the same split). Returns
 /// the explicit rejection message for the first wipe-shaped label, or None
 /// when the patch may proceed.
-fn memory_profile_patch_rejection(
-    patch: &crate::features::memory::ProfilePatch,
-) -> Option<String> {
+fn memory_profile_patch_rejection(patch: &crate::features::memory::ProfilePatch) -> Option<String> {
     for (topic, value) in [
         ("call_name", &patch.call_name),
         ("assistant_alias", &patch.assistant_alias),
     ] {
-        if value
-            .as_deref()
-            .is_some_and(|label| {
-                crate::features::memory::profile_label_would_be_wiped(label, topic)
-            })
-        {
+        if value.as_deref().is_some_and(|label| {
+            crate::features::memory::profile_label_would_be_wiped(label, topic)
+        }) {
             return Some(format!(
                 "memory_profile_label_rejected: the {topic} label does not survive the \
                  profile normalization (at most twelve characters after the \

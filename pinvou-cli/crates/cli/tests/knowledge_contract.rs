@@ -574,17 +574,19 @@ fn knowledge_parses_every_subcommand() {
         ]),
         r#"Knowledge(RemoteSearch { collection: "papers", query: "query", limit: Some(50) })"#,
     );
-    assert!(parsed_debug(&[
-        "pinvou",
-        "knowledge",
-        "remote",
-        "search",
-        "papers",
-        "query",
-        "--limit",
-        "1"
-    ])
-    .contains("limit: Some(1)"));
+    assert!(
+        parsed_debug(&[
+            "pinvou",
+            "knowledge",
+            "remote",
+            "search",
+            "papers",
+            "query",
+            "--limit",
+            "1"
+        ])
+        .contains("limit: Some(1)")
+    );
     assert_usage(&[
         "pinvou",
         "knowledge",

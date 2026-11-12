@@ -2200,9 +2200,11 @@ fn memory_jsonl_writes_are_bounded() {
     // Newest-first retention: the most recent pending row survives, the
     // overflow beyond the active cap is dropped oldest-first (same shape the
     // never-store block below pins).
-    assert!(pending
-        .iter()
-        .any(|item| item.id == "pending_0" && item.status == PENDING_STATUS_PENDING));
+    assert!(
+        pending
+            .iter()
+            .any(|item| item.id == "pending_0" && item.status == PENDING_STATUS_PENDING)
+    );
     assert!(!pending.iter().any(|item| item.id == "pending_259"));
 
     let never: Vec<NeverMemoryItem> = (0..205)

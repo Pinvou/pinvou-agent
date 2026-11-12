@@ -2748,7 +2748,10 @@ fn chat_retention_does_not_evict_scheduled_conversation() {
 
     assert!(store.scheduled_session_exists(&scheduled.metadata.id));
     assert!(store.scheduled_profile(&scheduled.metadata.id).is_some());
-    assert_eq!(store.list().expect("chat list").len(), MAX_SESSIONS_PER_KIND);
+    assert_eq!(
+        store.list().expect("chat list").len(),
+        MAX_SESSIONS_PER_KIND
+    );
     let pruned = deletions
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

@@ -302,7 +302,10 @@ mod tests {
             listing.roots.iter().any(|root| root.path == listing.path),
             "home root should match the initial listing path"
         );
-        assert!(!listing.truncated, "an ordinary directory must not report truncation");
+        assert!(
+            !listing.truncated,
+            "an ordinary directory must not report truncation"
+        );
     }
 
     /// A directory holding more raw entries than the response budget must

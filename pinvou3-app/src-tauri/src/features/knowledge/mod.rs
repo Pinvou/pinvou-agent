@@ -944,11 +944,15 @@ fn expand_import_roots(
         }
         // 导入侧沿用「错误即跳过」：导入的目的是收录可读文件，单个不可读
         // 子树不否定其余条目（与全盘扫描的删除授权不同，那边必须否决）。
-        for entry in
-            scanner::walk_pruned_with(root, &ex, || heartbeat(), || {
+        for entry in scanner::walk_pruned_with(
+            root,
+            &ex,
+            || heartbeat(),
+            || {
                 skipped_by_excluder += 1;
-            })
-            .flatten()
+            },
+        )
+        .flatten()
         {
             if cancel.load(Ordering::Relaxed) {
                 break;

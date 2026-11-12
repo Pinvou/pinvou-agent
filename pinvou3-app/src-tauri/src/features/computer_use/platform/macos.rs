@@ -1803,7 +1803,10 @@ impl ComputerUseBackend for MacosComputerUseBackend {
                     "retry with a smaller max_depth/max_nodes so the walk completes within the time budget",
                 )
             } else {
-                ("the node budget was exhausted", "pass a larger max_nodes to see more")
+                (
+                    "the node budget was exhausted",
+                    "pass a larger max_nodes to see more",
+                )
             };
             let _ = writeln!(
                 out,
