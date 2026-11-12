@@ -27,8 +27,9 @@ const IMA_BASE_URL: &str = "https://ima.qq.com";
 /// n2），与 IMA_SKILL_ID 同一批单一真相源。
 pub const IMA_SKILL_VERSION: &str = "1.1.8";
 /// 响应体安全上限：`read_json_response` 按 `bytes_stream` 流式累计，超过即
-/// 中止读取（不会整段驻留内存），因此提高上限不改变内存边界，只放宽单次
-/// 工具调用可返回的文档体量（get_doc_content 的长文档合法超过 1 MiB）。
+/// 中止读取，内存峰值始终 ≤ 本上限（1 → 16 MiB 把单次工具调用可返回的文档
+/// 体量与缓冲上界一起抬高了 16 倍——get_doc_content 的长文档合法超过
+/// 1 MiB，代价是有意的）。
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 const READ_API_PATHS: &[&str] = &[

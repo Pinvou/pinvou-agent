@@ -39,13 +39,13 @@ const REBIND_BASELINE_DRAIN_DEADLINE: Duration = Duration::from_secs(60);
 /// (review #463 round-13) — a figure that covers ONLY this eviction tail
 /// (round-24 review M4; the realistic tail ceiling is ~20s with the ≤5s
 /// shell-finalize join, perf minor 10). The PRE-TAIL phases hold the same
-/// process-wide gate with no deadline: the metadata loop has no per-candidate
-/// bound, and the baseline drain's gate hold is now bounded by
+/// process-wide gate with no deadline: the metadata loop still has no
+/// per-candidate bound, and while the baseline drain is now bounded by
 /// REBIND_BASELINE_DRAIN_DEADLINE (60s, abandon-and-continue — see that
-/// constant), so a large run (hundreds of sessions, multi-MB transcripts,
-/// big destination baselines) can no longer hold the gate for minutes.
-/// Ten seconds is far above the normal tail cost (idle sessions are reclaimed
-/// without waiting) and far below a user-visible hang.
+/// constant), a large run (hundreds of sessions, multi-MB transcripts, big
+/// destination baselines) can still hold the gate for minutes through the
+/// metadata loop. Ten seconds is far above the normal tail cost (idle
+/// sessions are reclaimed without waiting) and far below a user-visible hang.
 const REBIND_EVICT_TAIL_BUDGET: Duration = Duration::from_secs(10);
 
 /// Root replacement with member expulsion — the GUI update lane's §9.9
@@ -2299,7 +2299,8 @@ pub async fn rebind_workspace_root(
             // — so the rebind report itself is unchanged; only the log
             // carries the shortfall.
             eprintln!(
-                "[projects] rebind baseline drain abandoned past its 60s deadline: {abandoned_baselines} of {deferred_total} baseline recapture(s) left unobserved (best-effort; self-heals on next use)"
+                "[projects] rebind baseline drain abandoned past its {}s deadline: {abandoned_baselines} of {deferred_total} baseline recapture(s) left unobserved (best-effort; self-heals on next use)",
+                REBIND_BASELINE_DRAIN_DEADLINE.as_secs()
             );
         }
     }
