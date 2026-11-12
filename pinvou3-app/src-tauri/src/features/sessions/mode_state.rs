@@ -33,6 +33,17 @@ use crate::platform::prefs::{CodePermissionPrefs, UserPrefs};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 
+/// Test-only crash seam for the shared→companion sidecar write pair
+/// (round-9 minor 1, mirroring the rebind pair's
+/// `inject_rebind_crash_after_legacy_rewrite`): armed by
+/// [`SessionStore::inject_mode_pair_crash_after_shared_write`], consumed
+/// once by `apply_session_mode_mutation_locked` right after the shared
+/// write lands, simulating a process crash in the load-bearing window.
+/// Production never arms it, so the pair is a no-op there.
+#[cfg(test)]
+static MODE_PAIR_CRASH_AFTER_SHARED_WRITE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 // ── 类型定义（session 域聚合，由 sessions 正式 re-export） ──
 
 /// A knowledge collection mounted into a session with an enabled flag, so the
@@ -80,6 +91,23 @@ pub struct SessionModeState {
     pub pending_persona_body: Option<String>,
     /// 当前激活 mode。`build_send_message_op` 用这个值。
     pub mode: SerializableMode,
+    /// Session-scoped "ask on guardrail hit" switch (tri-mode safety model). When enabled, execpolicy
+    /// denial surfaces / non-bypass holds / typed ask hits escalate into approval cards (the Ask stance naturally
+    /// raises a card), disabled means hard-deny per the stance. Defaults to the global `ask_on_guardrail_default`
+    /// (true) and resets on new sessions. Independent flips persist even for sessions **without a mode entry**:
+    /// `set_ask_on_guardrail` writes the explicit override into the `_ask_on_guardrail.json`
+    /// sidecar (no mode entry minted), merged with the in-memory override mirror at boot —
+    /// "only sessions with a mode entry have an independent switch" is pre-PR semantics, superseded by
+    /// the current behavior pinned by `ask_on_guardrail_toggle_persists_for_entry_less_sessions`
+    /// (round-8 L2-4 documentation fix).
+    #[serde(default = "default_true")]
+    pub ask_on_guardrail: bool,
+    /// The mode to return to after accept_plan (the mode from before entering Plan). Memory-only: after a restart
+    /// Plan sessions resolve via `resolved_default_mode`, without pinning a process-relative value (see
+    /// the rationale in `durable_mode_entry`). `None` = Plan was never entered; accept falls back to
+    /// Auto (the new work-lane default).
+    #[serde(skip)]
+    pub(crate) pre_plan_mode: Option<SerializableMode>,
     /// 当前可操作方案的服务端 ticket。新 plan_ready 会替换旧 ticket；
     /// accept/discard 必须 compare-and-consume，防多端旧卡重复执行。
     #[serde(default)]
@@ -112,10 +140,16 @@ pub struct SessionModeState {
     pub multi_agent: bool,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for SessionModeState {
     fn default() -> Self {
         Self {
             mode: SerializableMode::Yolo,
+            ask_on_guardrail: default_true(),
+            pre_plan_mode: None,
             pending_plan_id: None,
             plan_claim_in_flight: None,
             active_persona: None,
@@ -125,6 +159,53 @@ impl Default for SessionModeState {
             mounted_remote_collections: Vec::new(),
             mounted_collections_revision: 0,
             multi_agent: false,
+        }
+    }
+}
+
+impl SessionModeState {
+    /// The execution mode an `accept_plan` on this state would resume into
+    /// (`claim_pending_plan`'s restore projection: `pre_plan_mode`, falling
+    /// back to Auto — tri-mode safety, "approving a plan approves the work,
+    /// not full-auto permission"). Mirrors the claim line exactly, including
+    /// the rebooted-Plan fallback (a restored session has `pre_plan_mode =
+    /// None` and accepts into Auto). Surfaced on the `get_mode_state` view
+    /// so the web face can refuse an accept whose effective execution mode
+    /// is Auto BEFORE a turn opens (review zhuowp 5780927743 third: the
+    /// plan-mode admission guard only read the current `mode == "plan"` and
+    /// waved a card through that then executed under Auto — a posture the
+    /// web face cannot serve, since it has no approval-card decision
+    /// surface).
+    pub fn post_accept_mode(&self) -> SerializableMode {
+        if self.mode == SerializableMode::Plan {
+            self.pre_plan_mode.unwrap_or(SerializableMode::Auto)
+        } else {
+            self.mode
+        }
+    }
+
+    /// A fresh mode-state entry for a session being materialized NOW (the
+    /// `mode_state` fallback, `mode_state_entry`, and every `or_insert_with`
+    /// mint site). Identical to [`Default::default`] except the per-session
+    /// ask-on-guardrail toggle seeds from [`Self::ask_on_guardrail_seed`]
+    /// (explicit override first, then the global
+    /// `code_permission.ask_on_guardrail_default` preference; tri-mode):
+    /// sessions absent from `_ask_on_guardrail.json` follow that global
+    /// default — hardcoding `true` here ignored the user's "silent
+    /// hard-deny" opt-out until the session got an explicit toggle write.
+    /// Explicit per-session overrides keep winning, and an
+    /// already-materialized entry is never re-seeded by this ctor.
+    ///
+    /// The ask-on-guardrail seeding point for fresh entries lives in
+    /// [`Self::ask_on_guardrail_seed`] (explicit override first, then the
+    /// pref); the runtime mint sites route through that helper, so a pref
+    /// change only has one production seeding contract to update.
+    /// (`Default::default()` stays for serde round-trips and field-spread
+    /// bases only.)
+    fn default_for_new_session(ask_on_guardrail_default: bool) -> Self {
+        Self {
+            ask_on_guardrail: ask_on_guardrail_default,
+            ..Self::default()
         }
     }
 }
@@ -150,12 +231,18 @@ mod type_tests {
             SerializableMode::Yolo.to_app_mode(),
             AppMode::Agent
         ));
+        assert!(matches!(
+            SerializableMode::Auto.to_app_mode(),
+            AppMode::Agent
+        ));
     }
 
     #[test]
     fn serializes_to_snake_case() {
         let s = SessionModeState {
             mode: SerializableMode::Plan,
+            ask_on_guardrail: true,
+            pre_plan_mode: None,
             pending_plan_id: Some("plan-1".to_string()),
             plan_claim_in_flight: None,
             active_persona: None,
@@ -195,6 +282,16 @@ fn folded_collections(state: &SessionModeState) -> Vec<MountedCollection> {
 // ── SessionStore 行为 impl ──
 
 impl SessionStore {
+    /// Test-only: arm the crash seam in
+    /// [`Self::apply_session_mode_mutation_locked`] so the next mode-pair
+    /// persist returns right after the shared `_session_mode_states.json`
+    /// write, leaving the companion `_session_auto_modes.json` untouched —
+    /// the exact between-writes crash window whose durable residue the
+    /// write-order invariant constrains.
+    #[cfg(test)]
+    pub(crate) fn inject_mode_pair_crash_after_shared_write() {
+        MODE_PAIR_CRASH_AFTER_SHARED_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     /// The session's entry in the durable `_session_mode_states.json`, if any.
     ///
     /// This — not [`Self::mode_state`]'s resolved fallback — is what a failed
@@ -213,7 +310,22 @@ impl SessionStore {
     /// for an unreadable file, where a stale answer still beats inventing an
     /// absence.
     pub fn durable_mode_entry(&self, id: &str) -> Option<SerializableMode> {
-        let file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        // The shared-map + companion read pair must be atomic against the
+        // writers: every mutator RMWs the two files under
+        // `session_mode_states_io` (`apply_session_mode_mutation_locked`'s
+        // caller contract), and this reader is the one consumer that
+        // re-persists what it read (headless `PlanModeRestore`). Without the
+        // lock a read straddling the Auto upsert's two writes resolves the
+        // stale arm, and a failed run then restore-persists the pre-switch
+        // mode over the user's fresher choice (round-13 review). Short
+        // two-file read; writers already tolerate blocking on this mutex.
+        // No internal caller holds it (grep: only the leaf writers do).
+        let _io = self.session_mode_states_io.lock();
+        // Accessor, not the literal: the quarantine flag compares against
+        // `shared_mode_map_file_name()`, so a rename must move both sites
+        // together (round-10 review).
+        let file = crate::platform::paths::sessions_root()
+            .join(crate::features::sessions::sidecars::shared_mode_map_file_name());
         match std::fs::read_to_string(&file) {
             // A parse failure falls through to the cache rather than
             // reporting an absence the file does not actually state.
@@ -222,26 +334,50 @@ impl SessionStore {
                     std::collections::HashMap<String, SerializableMode>,
                 >(&content)
                 {
-                    return entries.remove(id);
+                    if let Some(mode) = entries.remove(id) {
+                        // Same companion overlay as the boot load: `plan` +
+                        // `true` flag reads back as the explicit Auto choice.
+                        return Some(Self::resolve_sidecar_mode(
+                            mode,
+                            &Self::read_session_auto_modes(),
+                            id,
+                        ));
+                    }
+                    return None;
                 }
             }
             // Absent is authoritative — the mutation path removes the file
-            // when its last entry goes away.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            // when its last entry goes away. NOT after a quarantine though
+            // (round-9 minor): quarantining a corrupt parse also removes the
+            // file, and that absence is unknown state, not a statement any
+            // writer made — inventing an absence here lets a headless Plan
+            // run "repair" it by clearing the durable mode, a widening when
+            // the resolved default is Yolo. Same fault discipline as the
+            // durable pin reader: stale cache beats invented absence, and a
+            // one-way process-level quarantine flag keeps the conservative
+            // answer until the next restart.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if crate::features::sessions::sidecars::shared_mode_map_quarantined() {
+                    // fall through to the cache below
+                } else {
+                    return None;
+                }
+            }
             Err(_) => {}
         }
         self.session_mode_states.read().get(id).cloned()
     }
 
     pub fn mode_state(&self, id: &str) -> SessionModeState {
-        self.mode_states
-            .read()
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| SessionModeState {
-                mode: self.resolved_default_mode(id),
-                ..SessionModeState::default()
-            })
+        // Resolved BEFORE the read lock: the fallback entry's ask_on_guardrail
+        // seeds through `ask_on_guardrail_seed` (explicit override first —
+        // see `default_for_new_session`).
+        let fallback = SessionModeState {
+            mode: self.resolved_default_mode(id),
+            ask_on_guardrail: self.ask_on_guardrail_seed(id),
+            ..SessionModeState::default()
+        };
+        self.mode_states.read().get(id).cloned().unwrap_or(fallback)
     }
 
     pub(crate) fn is_code_session(&self, id: &str) -> bool {
@@ -256,22 +392,53 @@ impl SessionStore {
     /// mis-operation and injection surface; the safety posture follows the
     /// binding, not the mode), fall back to the global `code_permission.last_mode`
     /// (None = the user has never used it → read-only Plan on first use);
-    /// unbound plain sessions default to Yolo (the work lane's global default is
-    /// applied by the frontend at session materialization; the backend no longer
-    /// distinguishes a plain-side lane — design merged into work, see
-    /// `set_mode_default`).
+    /// unbound plain sessions default to Auto (tri-mode per-call approval).
+    /// An explicitly chosen work lane global default (plan/yolo/auto) is
+    /// applied by the frontend at session materialization — it becomes the
+    /// session's own record, so this resolution only covers the "no explicit
+    /// default" case; the backend itself does not distinguish a plain-side
+    /// lane (design merged into work, see `set_mode_default`).
     pub(crate) fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) || self.session_workspace_binding(id).is_some() {
-            self.code_permission
-                .read()
-                .last_mode
-                .unwrap_or(SerializableMode::Plan)
+            let cp = self.code_permission.read();
+            // Tri-mode (M2): the explicit-Auto choice lives in the companion
+            // flag; the legacy field never carries "auto" (settings.json
+            // vocabulary stays parseable by pre-tri-mode binaries).
+            if cp.last_mode_auto {
+                return SerializableMode::Auto;
+            }
+            cp.last_mode.unwrap_or(SerializableMode::Plan)
         } else {
-            SerializableMode::Yolo
+            // Tri-mode safety: new unbound plain sessions start in Auto
+            // (per-call approval cards, in-workspace writes modal-free), not
+            // in full-auto Yolo.
+            SerializableMode::Auto
         }
     }
 
+    /// The store's canonical fresh-entry mint for an id-level read-modify-
+    /// write: materializes with the caller's resolved default mode and seeds
+    /// `ask_on_guardrail` from the global preference (one seeding point —
+    /// [`Self::default_for_new_session`]). An existing entry is returned
+    /// untouched, so a later preference change never re-arms a session that
+    /// already materialized.
+    ///
+    /// Instance method (not an associated fn) precisely so the seed cannot
+    /// drift from `code_permission_prefs()`. Lock discipline, stated as it
+    /// actually is (round-8 L2-1; corrected round-11): `clear_mode_and_persist`
+    /// / `set_multi_agent` hoist the seed resolution BEFORE their io lock
+    /// (predicate + sidecar reason, see their docs); `set_mode` /
+    /// `set_mode_and_persist` do not route through this helper — they mint
+    /// inline in `set_mode_in_memory` — while THIS helper's callers (the
+    /// loaders and `set_multi_agent`) resolve the seed either before or
+    /// without the io lock. The seed is safe today only because the
+    /// predicate reads in-memory state plus one workspace-sidecar read and
+    /// the pref is a plain mirror read, but a predicate that ever re-entered
+    /// a mode writer would self-deadlock on the non-reentrant io mutex. Keep
+    /// the predicate side-effect-free, or hoist the resolution like the
+    /// persist paths.
     pub(crate) fn mode_state_entry<'m>(
+        &self,
         states: &'m mut HashMap<String, SessionModeState>,
         id: &str,
         default_mode: SerializableMode,
@@ -280,6 +447,7 @@ impl SessionStore {
             .entry(id.to_string())
             .or_insert_with(|| SessionModeState {
                 mode: default_mode,
+                ask_on_guardrail: self.ask_on_guardrail_seed(id),
                 ..SessionModeState::default()
             })
     }
@@ -313,9 +481,32 @@ impl SessionStore {
     /// state and the durable-read cache (`session_mode_states`) without
     /// touching the sidecar file.
     fn set_mode_in_memory(&self, id: &str, mode: SerializableMode) {
+        // Fresh-entry seed resolved BEFORE the write lock (same reason as
+        // `clear_mode_and_persist`: the pref/predicate mirror reads must not
+        // sit under the mode-states guard). A minted entry resolves its mode
+        // from `resolved_default_mode` — the same default every other mint
+        // site uses, i.e. the mode the UI actually showed before this write.
+        // (Minting the historical `Default` sentinel Yolo here made a
+        // first-ever Plan write record `pre_plan_mode = Yolo`, and plan
+        // acceptance then landed in persisted full-auto — precisely what the
+        // tri-mode accept contract forbids.)
+        let resolved_default = self.resolved_default_mode(id);
+        let ask_on_guardrail_seed = self.ask_on_guardrail_seed(id);
         {
             let mut m = self.mode_states.write();
-            let entry = m.entry(id.to_string()).or_default();
+            let entry = m.entry(id.to_string()).or_insert_with(|| SessionModeState {
+                mode: resolved_default,
+                ask_on_guardrail: ask_on_guardrail_seed,
+                ..SessionModeState::default()
+            });
+            // Tri-mode safety: remember the mode Plan was entered from so
+            // `accept_plan` returns execution there (fallback Auto). A
+            // re-entry into Plan refreshes the record; leaving Plan for
+            // anything other than accept leaves the record (harmless —
+            // only accept consumes it).
+            if mode == SerializableMode::Plan && entry.mode != SerializableMode::Plan {
+                entry.pre_plan_mode = Some(entry.mode);
+            }
             entry.mode = mode;
             entry.pending_plan_id = None;
             entry.plan_claim_in_flight = None;
@@ -380,7 +571,7 @@ impl SessionStore {
             // 与本文件其他 setter 同惯例：物化条目时用解析出的默认 mode，
             // 不得 or_default()——那会把从未切换过 mode 的 code 会话从
             // Plan 只读默认静默翻成 Yolo 自动批准。
-            let entry = Self::mode_state_entry(&mut m, id, default);
+            let entry = self.mode_state_entry(&mut m, id, default);
             let previous = entry.multi_agent;
             entry.multi_agent = enabled;
             previous
@@ -487,10 +678,10 @@ impl SessionStore {
         {
             let mut m = self.mode_states.write();
             for id in ids {
-                if sessions_dir.join(format!("{id}.json")).is_file() {
+                if !session_record_absent_for_sweep(&sessions_dir, &id) {
                     // 同 set_multi_agent：物化条目用解析出的默认 mode，
                     // 避免 or_default() 把 code 会话翻成 Yolo。
-                    Self::mode_state_entry(&mut m, &id, self.resolved_default_mode(&id))
+                    self.mode_state_entry(&mut m, &id, self.resolved_default_mode(&id))
                         .multi_agent = true;
                 } else {
                     ghosts = true;
@@ -513,7 +704,7 @@ impl SessionStore {
     ) -> Option<SessionModeState> {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let entry = Self::mode_state_entry(&mut states, id, default_mode);
+        let entry = self.mode_state_entry(&mut states, id, default_mode);
         if entry.mode != SerializableMode::Plan || entry.plan_claim_in_flight.is_some() {
             return None;
         }
@@ -525,14 +716,17 @@ impl SessionStore {
         let accepted_state = {
             let default_mode = self.resolved_default_mode(id);
             let mut states = self.mode_states.write();
-            let entry = Self::mode_state_entry(&mut states, id, default_mode);
+            let entry = self.mode_state_entry(&mut states, id, default_mode);
             if entry.mode != SerializableMode::Plan
                 || entry.pending_plan_id.as_deref() != Some(plan_id)
                 || entry.plan_claim_in_flight.is_some()
             {
                 bail!("plan_not_active");
             }
-            entry.mode = SerializableMode::Yolo;
+            // Tri-mode safety: execution after plan approval returns to the
+            // mode the session was in before entering Plan (fallback Auto) —
+            // approving a plan approves the work, not full-auto permission.
+            entry.mode = entry.pre_plan_mode.unwrap_or(SerializableMode::Auto);
             entry.pending_plan_id = None;
             entry.plan_claim_in_flight = Some(plan_id.to_string());
             entry.clone()
@@ -559,8 +753,9 @@ impl SessionStore {
     pub(crate) fn restore_pending_plan_claim(&self, id: &str, plan_id: &str) -> Result<()> {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let entry = Self::mode_state_entry(&mut states, id, default_mode);
-        if entry.mode != SerializableMode::Yolo
+        let entry = self.mode_state_entry(&mut states, id, default_mode);
+        let claimed_mode = entry.pre_plan_mode.unwrap_or(SerializableMode::Auto);
+        if entry.mode != claimed_mode
             || entry.pending_plan_id.is_some()
             || entry.plan_claim_in_flight.as_deref() != Some(plan_id)
         {
@@ -575,7 +770,7 @@ impl SessionStore {
     pub(crate) fn discard_pending_plan(&self, id: &str, plan_id: &str) -> Result<SessionModeState> {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let entry = Self::mode_state_entry(&mut states, id, default_mode);
+        let entry = self.mode_state_entry(&mut states, id, default_mode);
         if entry.mode != SerializableMode::Plan
             || entry.pending_plan_id.as_deref() != Some(plan_id)
             || entry.plan_claim_in_flight.is_some()
@@ -623,15 +818,15 @@ impl SessionStore {
     #[cfg(test)]
     pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
-        Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode).active_persona =
-            persona_id;
+        self.mode_state_entry(&mut self.mode_states.write(), id, default_mode)
+            .active_persona = persona_id;
     }
 
     /// Publish the selected persona and its one-shot body as one state change.
     pub fn set_persona(&self, id: &str, persona_id: Option<String>, pending_body: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let state = self.mode_state_entry(&mut states, id, default_mode);
         state.active_persona = persona_id;
         state.pending_persona_body = pending_body;
     }
@@ -645,7 +840,7 @@ impl SessionStore {
     #[cfg(test)]
     pub fn set_pending_persona_body(&self, id: &str, body: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
-        Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode)
+        self.mode_state_entry(&mut self.mode_states.write(), id, default_mode)
             .pending_persona_body = body;
     }
 
@@ -774,7 +969,7 @@ impl SessionStore {
     {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let state = self.mode_state_entry(&mut states, id, default_mode);
         let current = folded_collections(state);
         let mut normalized = Vec::new();
         for collection in update(current) {
@@ -964,7 +1159,7 @@ impl SessionStore {
     {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let state = self.mode_state_entry(&mut states, id, default_mode);
         let mut normalized = Vec::new();
         for collection in update(state.mounted_remote_collections.clone()) {
             if collection.server_id.trim().is_empty()
@@ -1006,11 +1201,39 @@ impl SessionStore {
         upserts: &[(String, SerializableMode)],
         removes: &[String],
     ) -> Result<()> {
+        // Downgrade compatibility (reviewer P2, mirroring the settings.json
+        // lane's `*_auto` companion discipline): the shared map keeps the
+        // pre-tri-mode vocabulary — an explicit Auto is durably `"plan"`
+        // there plus a `true` flag in `_session_auto_modes.json`, so a
+        // pre-tri-mode binary sharing PINVOU3_HOME strict-parses the whole
+        // map instead of quarantining it and rebuilding every other session's
+        // choice from empty on its next write; Auto itself degrades
+        // conservatively to Plan in that binary's view.
+        //
+        // The map write lands first: a crash between the two writes leaves
+        // the conservative `plan` durable without the flag (reads back as
+        // Plan), never an Auto flag over an un-collapsed entry — that is the
+        // AUTO upsert's window. The Plan downshift of a flagged Auto is the
+        // one residual: the shared-map entry already reads `plan` (the
+        // collapse value), so the RMW is a no-op there and the crash window
+        // is the entire companion removal — a stale `true` flag over `plan`
+        // reads back as Auto on a new binary (old binary sees Plan; the
+        // widening stays below Yolo, docs/safety-modes.md §9 old-writer
+        // boundary). Both RMWs run under the caller's io mutex, so the pair
+        // cannot interleave with another mutator's write.
+        let mut companion: Vec<(String, bool)> = Vec::with_capacity(upserts.len());
+        let mapped: Vec<(String, SerializableMode)> = upserts
+            .iter()
+            .map(|(id, mode)| {
+                companion.push((id.clone(), *mode == SerializableMode::Auto));
+                (id.clone(), Self::collapse_auto_for_sidecar(*mode))
+            })
+            .collect();
         crate::features::sessions::sidecars::mutate_json_map_file(
-            "_session_mode_states.json",
+            crate::features::sessions::sidecars::shared_mode_map_file_name(),
             |entries: &mut std::collections::HashMap<String, SerializableMode>| {
                 let mut changed = false;
-                for (id, mode) in upserts {
+                for (id, mode) in &mapped {
                     if entries.get(id) != Some(mode) {
                         entries.insert(id.clone(), mode.clone());
                         changed = true;
@@ -1021,7 +1244,106 @@ impl SessionStore {
                 }
                 changed
             },
+        )?;
+        // Test-only crash seam (round-9 minor 1, mirroring the rebind pair's
+        // `inject_rebind_crash_after_legacy_rewrite`): the shared→companion
+        // write order is the load-bearing downgrade invariant — the crash
+        // window must leave the conservative `plan` durable WITHOUT the flag,
+        // never the reverse pair. The seam stops here with the shared write
+        // already on disk so a reorder-to-companion-first regression fails
+        // the crash-window test instead of passing invisibly.
+        #[cfg(test)]
+        if MODE_PAIR_CRASH_AFTER_SHARED_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        crate::features::sessions::sidecars::mutate_json_map_file(
+            "_session_auto_modes.json",
+            |entries: &mut std::collections::HashMap<String, bool>| {
+                let mut changed = false;
+                for (id, auto) in &companion {
+                    changed |= if *auto {
+                        entries.insert(id.clone(), true) != Some(true)
+                    } else {
+                        entries.remove(id).is_some()
+                    };
+                }
+                for id in removes {
+                    changed |= entries.remove(id).is_some();
+                }
+                changed
+            },
         )
+    }
+
+    /// The durable map value for a mode: the shared `_session_mode_states.json`
+    /// keeps the pre-tri-mode vocabulary (`plan`/`yolo` only — see the
+    /// `SerializableMode` compat doc), so an explicit Auto collapses to `plan`
+    /// there; the companion flag in `_session_auto_modes.json` carries the
+    /// actual choice.
+    fn collapse_auto_for_sidecar(mode: SerializableMode) -> SerializableMode {
+        match mode {
+            SerializableMode::Auto => SerializableMode::Plan,
+            other => other,
+        }
+    }
+
+    /// The durable explicit-Auto flags (`_session_auto_modes.json`):
+    /// `true` restores the collapsed `plan` map entry as Auto on every read
+    /// path ([`Self::load_session_mode_states`], [`Self::durable_mode_entry`]).
+    /// Unreadable/absent file reads as empty — the collapsed `plan` value is
+    /// the safe degradation, never a silent widening.
+    fn read_session_auto_modes() -> std::collections::HashMap<String, bool> {
+        let file = crate::platform::paths::sessions_root().join("_session_auto_modes.json");
+        match std::fs::read_to_string(&file) {
+            // Absent file = no explicit Auto overrides recorded: the normal
+            // quiet path, not a fault.
+            Err(_) => Default::default(),
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(parsed) => parsed,
+                // Corrupt companion: fail conservative (empty map, every
+                // recorded Auto degrades to Plan) but LOUD, same as the
+                // sibling loaders — silent skips are exactly what makes
+                // "explicitly switched, reverted after restart"
+                // undebuggable (sidecar discipline doc). The write path
+                // quarantines loudly; only the corrupt-before-first-write
+                // window lands here (round-8 L2-2).
+                Err(error) => {
+                    eprintln!(
+                        "[sessions] corrupt _session_auto_modes.json (Auto overrides degrade to Plan): {error}"
+                    );
+                    Default::default()
+                }
+            },
+        }
+    }
+
+    /// Resolve one map entry against the companion flags: `plan` + `true`
+    /// flag is the durable spelling of an explicit Auto choice. A flag
+    /// without a map entry resolves to `mode` unchanged — the map entry is
+    /// the existence authority (the funnel removes both together; a crash
+    /// between them can only leave a stale flag, which the next upsert of
+    /// the session recomputes).
+    ///
+    /// The flag upgrades only an entry still holding the Auto-collapse
+    /// value (`plan`). An entry that reads `yolo` was written after the
+    /// Auto choice by the only writer that cannot know the companion file
+    /// — a pre-tri-mode binary's explicit switch — and that acknowledged
+    /// map write wins: overlaying the stale flag would silently resurrect
+    /// Auto over the persisted Yolo (review P2). Residual (unresolvable
+    /// without a format change): a pre-tri-mode binary explicitly writing
+    /// `plan` over a recorded Auto is byte-identical to the collapse value,
+    /// so that explicit Plan still resolves back to Auto; the new UI can
+    /// re-pick Plan with one switch.
+    fn resolve_sidecar_mode(
+        mode: SerializableMode,
+        auto_flags: &std::collections::HashMap<String, bool>,
+        id: &str,
+    ) -> SerializableMode {
+        if mode == SerializableMode::Plan && auto_flags.get(id).copied().unwrap_or(false) {
+            SerializableMode::Auto
+        } else {
+            mode
+        }
     }
 
     /// Restore every session's per-session mode at boot: merge into
@@ -1046,7 +1368,8 @@ impl SessionStore {
     /// this replaced completed the migration implicitly by rewriting the
     /// in-memory map on every save.)
     pub fn load_session_mode_states(&self) {
-        let states_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
+        let states_file = crate::platform::paths::sessions_root()
+            .join(crate::features::sessions::sidecars::shared_mode_map_file_name());
         let legacy_file = crate::platform::paths::sessions_root().join("_code_mode_states.json");
         let (source, from_legacy) = if states_file.exists() {
             (states_file, false)
@@ -1059,7 +1382,7 @@ impl SessionStore {
             Ok(c) => c,
             Err(_) => return,
         };
-        let modes: std::collections::HashMap<String, SerializableMode> =
+        let mut modes: std::collections::HashMap<String, SerializableMode> =
             match serde_json::from_str(&content) {
                 Ok(m) => m,
                 Err(e) => {
@@ -1067,6 +1390,54 @@ impl SessionStore {
                     return;
                 }
             };
+        // Companion-flag overlay before any consumer: `plan` + `true` flag is
+        // the durable spelling of an explicit Auto (the shared map keeps the
+        // pre-tri-mode vocabulary for downgrade parsing — see
+        // `apply_session_mode_mutation_locked`). Applied before the legacy
+        // migration so the materialized map, the persisted mirror, and the
+        // mint loop below all see the resolved mode.
+        {
+            let auto_flags = Self::read_session_auto_modes();
+            if !auto_flags.is_empty() {
+                for (id, mode) in modes.iter_mut() {
+                    *mode = Self::resolve_sidecar_mode(*mode, &auto_flags, id);
+                }
+            }
+        }
+        // Boot-time ghost sweep (retention parity with the multi-agent flags
+        // loader): a crash between the session-record delete and the sidecar
+        // purge leaves a dead id's entry behind, and a recycled id would
+        // silently inherit its mode — and, via the seeding point, its
+        // ask-on-guardrail override — through the boot mint. The shared map
+        // entry is the existence authority for the companion flag, so the
+        // funnel removes both together. Boot-time only: no concurrent writer
+        // holds the io mutex yet.
+        let sessions_dir = crate::platform::paths::sessions_root();
+        let ghost_ids: Vec<String> = modes
+            .keys()
+            .filter(|id| session_record_absent_for_sweep(&sessions_dir, id))
+            .cloned()
+            .collect();
+        if !ghost_ids.is_empty() {
+            match Self::apply_session_mode_mutation_locked(&[], &ghost_ids) {
+                Ok(()) => {
+                    for id in &ghost_ids {
+                        modes.remove(id);
+                    }
+                    eprintln!(
+                        "[sessions] swept {} ghost session mode entries",
+                        ghost_ids.len()
+                    );
+                }
+                Err(error) => {
+                    // Keep booting with the in-memory map intact: modes for
+                    // live sessions are still correct and the next boot
+                    // retries the sweep (same tolerance as the legacy
+                    // migration below).
+                    eprintln!("[sessions] sweep ghost session mode entries failed: {error:#}");
+                }
+            }
+        }
         if from_legacy && !modes.is_empty() {
             let upserts: Vec<(String, SerializableMode)> = modes
                 .iter()
@@ -1091,9 +1462,21 @@ impl SessionStore {
             let mut persisted = self.session_mode_states.write();
             *persisted = modes.clone();
         }
+        // Boot minting seeds the toggle from the CURRENT global default: the
+        // override map is not loaded yet at this point (its file is merged
+        // AFTER this by `load_ask_on_guardrail_overrides`, which also applies
+        // explicit choices to the entries minted here). Later mints in this
+        // run go through `ask_on_guardrail_seed` and consult the loaded map.
+        // Resolved before the write lock — the mirror read is in-memory only.
+        let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
         let mut states = self.mode_states.write();
         for (id, mode) in modes {
-            states.entry(id).or_default().mode = mode;
+            states
+                .entry(id)
+                .or_insert_with(|| {
+                    SessionModeState::default_for_new_session(ask_on_guardrail_default)
+                })
+                .mode = mode;
         }
     }
 
@@ -1101,41 +1484,113 @@ impl SessionStore {
         *self.code_permission.read()
     }
 
+    /// The folded view returned to the frontend by the command line (get_code_permission_prefs / confirm_code_yolo /
+    /// set_ask_on_guardrail_default), with the same folding as
+    /// [`Self::mode_defaults`]: an explicit Auto choice persists via the `last_mode_auto`
+    /// companion flag and legacy fields never carry "auto", but the view folds the flag back into
+    /// `last_mode = Some(Auto)` — the codex draft chip resolves the global default from `last_mode`
+    /// (`nativeModeFallback`); reading only the legacy fields would display a post-restart explicit Auto as
+    /// Plan, diverging from `resolved_default_mode`'s actual behavior (a display-vs-behavior
+    /// fork, and the fork direction is the wider Auto). The raw mirror still goes through
+    /// [`Self::code_permission_prefs`] (the companion-flag disk-shape test depends on it).
+    pub fn code_permission_prefs_view(&self) -> CodePermissionPrefs {
+        let mut prefs = self.code_permission_prefs();
+        if prefs.last_mode_auto {
+            prefs.last_mode = Some(SerializableMode::Auto);
+        }
+        prefs
+    }
+
     /// View of the per-lane global default modes (in-memory mirror; the disk
-    /// truth for work lives in settings.json `mode_defaults.work`, for code in
-    /// `code_permission.last_mode`).
+    /// truth for work lives in settings.json `mode_defaults.work[_auto]`, for
+    /// code in `code_permission.last_mode[_auto]`). An explicit Auto choice
+    /// is folded back into the view here so callers keep seeing one
+    /// vocabulary: the legacy fields deliberately never carry "auto"
+    /// (pre-tri-mode binaries would fail the whole settings.json parse).
     pub fn mode_defaults(&self) -> ModeDefaultsView {
         let defaults = self.mode_defaults.read();
+        let code = self.code_permission.read();
         ModeDefaultsView {
-            work: defaults.work,
-            code: self.code_permission.read().last_mode,
+            work: if defaults.work_auto {
+                Some(SerializableMode::Auto)
+            } else {
+                defaults.work
+            },
+            code: if code.last_mode_auto {
+                Some(SerializableMode::Auto)
+            } else {
+                code.last_mode
+            },
         }
     }
 
     /// An explicit draft-state switch writes the matching lane's global
     /// default mode (two-lane semantics: switches in already-materialized
-    /// sessions never touch this). Updates the in-memory mirror first
-    /// (effective immediately for this run), then persists settings.json in a
-    /// field-level transaction; a write failure only logs (same tolerance as
-    /// set_mode).
-    pub fn set_mode_default(&self, lane: ModeLane, mode: SerializableMode) {
-        match lane {
-            ModeLane::Code => {
-                self.code_permission.write().last_mode = Some(mode);
-            }
-            ModeLane::Work => {
-                self.mode_defaults.write().work = Some(mode);
-            }
-        }
-        if let Err(error) = UserPrefs::update_transaction(|prefs| {
-            match lane {
-                ModeLane::Code => prefs.code_permission.last_mode = Some(mode),
-                ModeLane::Work => prefs.mode_defaults.work = Some(mode),
-            }
-            Ok(())
-        }) {
+    /// sessions never touch this). Persists settings.json in a field-level
+    /// transaction and publishes the in-memory mirror inside the same
+    /// critical section (post_commit — mirror and disk stay totally ordered
+    /// against concurrent transactions). A write failure returns `Err` and
+    /// leaves both untouched — the failure MUST reach the command layer
+    /// (review JensenChen28 5780647695 + zhuowp 5780927743 second): the
+    /// log-only tolerance left the caller answering `Ok(stale defaults)`,
+    /// so both IPC bridges stored the old default while the draft chip was
+    /// already drawn as the target — a later session materialized with the
+    /// OLD backend default while the UI claimed the switch landed. Unlike
+    /// `set_mode` (session-local, lenient), this value drives the
+    /// draft→session admission posture, so the caller decides the user
+    /// face: keep the authoritative state and surface the error.
+    pub fn set_mode_default(&self, lane: ModeLane, mode: SerializableMode) -> Result<(), String> {
+        // Tri-mode (M2): `Auto` never enters the legacy `last_mode`/`work`
+        // vocabulary — a pre-tri-mode binary parsing the unknown enum variant
+        // fails the WHOLE settings.json (every unrelated preference falls
+        // back to system-locale defaults, and its next settings save then
+        // durably rewrites them). The choice rides the dedicated `*_auto`
+        // companion flags, which old binaries simply drop (unknown bool);
+        // the legacy fields only ever carry Plan/Yolo.
+        let legacy = if mode == SerializableMode::Auto {
+            None
+        } else {
+            Some(mode)
+        };
+        let auto_flag = mode == SerializableMode::Auto;
+        // Mirror publication goes through post_commit (round-11 review): same critical-section semantics as confirm_code_yolo /
+        // set_ask_on_guardrail_default — if the mirror were written outside the lock, two interleaved
+        // transactions could leave mirror/disk on different commits, and reads would be split until restart. On
+        // commit failure the mirror is not published (this run answers stale values until the next successful commit, consistent with disk);
+        // the failure propagates along the command return path (review 5780647695): on bridge/frontend failure the authoritative
+        // state is kept and the error surfaced, instead of accepting the old default as success while drawing the chip as the target.
+        UserPrefs::update_transaction_with_post_commit(
+            move |prefs| {
+                match lane {
+                    ModeLane::Code => {
+                        prefs.code_permission.last_mode_auto = auto_flag;
+                        prefs.code_permission.last_mode = legacy;
+                    }
+                    ModeLane::Work => {
+                        prefs.mode_defaults.work_auto = auto_flag;
+                        prefs.mode_defaults.work = legacy;
+                    }
+                }
+                Ok(())
+            },
+            move || match lane {
+                ModeLane::Code => {
+                    let mut cp = self.code_permission.write();
+                    cp.last_mode_auto = auto_flag;
+                    cp.last_mode = legacy;
+                }
+                ModeLane::Work => {
+                    let mut md = self.mode_defaults.write();
+                    md.work_auto = auto_flag;
+                    md.work = legacy;
+                }
+            },
+        )
+        .map(|_| ())
+        .map_err(|error| {
             eprintln!("[sessions] persist mode default for {lane:?} failed: {error}");
-        }
+            error
+        })
     }
 
     /// After the accept flow (`claim_pending_plan` switching to Yolo) is
@@ -1151,27 +1606,279 @@ impl SessionStore {
     /// touching disk, and the in-memory return to Plan stays consistent with
     /// disk.
     pub(crate) fn persist_accepted_yolo_mode(&self, id: &str) {
+        // Tri-mode safety: plan approval returns to the pre-plan mode
+        // (fallback Auto), so the persisted value is whatever the in-memory
+        // claim recorded — the function name is historical. The claim read
+        // sits INSIDE the io critical section (round-9 minor, same order as
+        // `set_mode`): reading it before the lock let a concurrent set_mode
+        // landing in the read→lock window be overwritten here by the stale
+        // value, both in the mirror and on disk, reopening the session in
+        // its pre-switch mode.
         let _io = self.session_mode_states_io.lock();
+        let accepted_mode = {
+            let states = self.mode_states.read();
+            states
+                .get(id)
+                .map(|entry| entry.mode)
+                .unwrap_or(SerializableMode::Auto)
+        };
         self.session_mode_states
             .write()
-            .insert(id.to_string(), SerializableMode::Yolo);
-        if let Err(error) = Self::apply_session_mode_mutation_locked(
-            &[(id.to_string(), SerializableMode::Yolo)],
-            &[],
-        ) {
+            .insert(id.to_string(), accepted_mode);
+        if let Err(error) =
+            Self::apply_session_mode_mutation_locked(&[(id.to_string(), accepted_mode)], &[])
+        {
             // The session id is deliberately kept out of the message: boot
             // logs persist to disk and must not accumulate raw session
             // identifiers (CodeQL cleartext-logging gate).
-            eprintln!("[sessions] persist accepted yolo mode failed: {error:#}");
+            eprintln!("[sessions] persist accepted plan mode failed: {error:#}");
+        }
+    }
+
+    /// Set the session's ask-on-guardrail toggle (tri-mode safety). The
+    /// toggle rides the in-memory mode-state entry when one exists and
+    /// persists into its own `_ask_on_guardrail.json` sidecar (a
+    /// `HashMap<String, bool>` of explicit overrides — sessions absent from
+    /// the file follow the global `ask_on_guardrail_default`). A session
+    /// with NO materialized mode entry still records the toggle in the
+    /// sidecar and the in-memory override mirror — the toggle is durable
+    /// user intent and must not silently vanish; it does **not** mint a mode
+    /// entry (that would pin a mode the user never chose), and the next
+    /// mint consults the override via `ask_on_guardrail_seed` (crate-private).
+    /// Same critical-section discipline as [`Self::set_mode`]: the durable
+    /// RMW runs under the shared io mutex — but unlike `set_mode`
+    /// (log-only), a failed persist returns `Err`. The sidecar RMW runs
+    /// FIRST and the in-memory entry/override mirror is published only after
+    /// it succeeds (reviewer P3): releasing those locks before the write let
+    /// a concurrent reader consume the new value even when the write
+    /// subsequently failed and rolled back — rollback does not retract an
+    /// already-consumed posture. The RMW depends on nothing in memory, so
+    /// the reorder is behavior-neutral on success and makes the failure path
+    /// a no-op: no reader ever sees a value the sidecar does not carry
+    /// (fail-consistent; docs §3.1 of safety-modes.md). The command layer
+    /// publishes its broadcast only on `Ok`, so the frontend's existing
+    /// catch rolls back its optimistic toggle and surfaces the failure.
+    pub fn set_ask_on_guardrail(&self, id: &str, enabled: bool) -> Result<()> {
+        let _io = self.session_mode_states_io.lock();
+        Self::apply_ask_on_guardrail_mutation_locked(&[(id, enabled)], &[])?;
+        // Post-success publication: an entry-less session records the
+        // override only (sidecar + mirror below) and does not mint a mode
+        // entry — the next mint consults the mirror via
+        // [`Self::ask_on_guardrail_seed`].
+        if let Some(entry) = self.mode_states.write().get_mut(id) {
+            entry.ask_on_guardrail = enabled;
+        }
+        self.ask_on_guardrail_overrides
+            .write()
+            .insert(id.to_string(), enabled);
+        Ok(())
+    }
+
+    /// THE ask-on-guardrail seeding point for fresh-entry mints: an explicit
+    /// per-session override (recorded by [`Self::set_ask_on_guardrail`] even
+    /// before the session had a mode entry, and mirrored from the sidecar at
+    /// boot) wins over the global `ask_on_guardrail_default` preference.
+    /// Every mint site must seed through this — seeding from the bare
+    /// preference silently dropped a toggle recorded for an entry-less
+    /// session the moment the entry materialized (or at the boot merge,
+    /// which only touches entries that already exist).
+    pub(crate) fn ask_on_guardrail_seed(&self, id: &str) -> bool {
+        if let Some(enabled) = self.ask_on_guardrail_overrides.read().get(id) {
+            return *enabled;
+        }
+        self.code_permission_prefs().ask_on_guardrail_default
+    }
+
+    /// Id-level RMW for `_ask_on_guardrail.json`; caller holds
+    /// `session_mode_states_io`.
+    pub(crate) fn apply_ask_on_guardrail_mutation_locked(
+        upserts: &[(&str, bool)],
+        removals: &[&str],
+    ) -> Result<()> {
+        crate::features::sessions::sidecars::mutate_json_map_file(
+            "_ask_on_guardrail.json",
+            |entries: &mut std::collections::HashMap<String, bool>| {
+                let mut changed = false;
+                for (id, enabled) in upserts {
+                    if entries.get(*id) != Some(enabled) {
+                        entries.insert((*id).to_string(), *enabled);
+                        changed = true;
+                    }
+                }
+                for id in removals {
+                    changed |= entries.remove(*id).is_some();
+                }
+                changed
+            },
+        )
+    }
+
+    /// Boot merge of `_ask_on_guardrail.json`: applies explicit toggles to
+    /// the mode-state entries boot minting materialized AND fills the
+    /// in-memory override mirror, so entries minted LATER in this run
+    /// (toggle written while entry-less, then a mode write materializes the
+    /// entry) seed through `ask_on_guardrail_seed` (crate-private) and keep the
+    /// recorded choice. Called after `load_session_mode_states`.
+    pub fn load_ask_on_guardrail_overrides(&self) {
+        let file = crate::platform::paths::sessions_root().join("_ask_on_guardrail.json");
+        // A missing file is the norm (the home of sessions whose switch was never flipped), so stay silent; read IO failures (permission/IO
+        // errors) are logged as loudly as corruption — same discipline: silent skips would make "the switch all
+        // back to defaults after restart" undiagnosable (round-9 minor).
+        let content = match std::fs::read_to_string(&file) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                eprintln!(
+                    "[sessions] _ask_on_guardrail.json read failed, skipping override merge: \
+                     {file:?}: {error}"
+                );
+                return;
+            }
+        };
+        // Corruption/truncation is logged loudly — matching the read-side discipline of load_session_mode_states:
+        // silent skips would make "the switch all back to defaults after restart" undiagnosable.
+        let Ok(mut overrides) =
+            serde_json::from_str::<std::collections::HashMap<String, bool>>(&content)
+        else {
+            eprintln!(
+                "[sessions] _ask_on_guardrail.json unreadable, skipping override merge: {file:?}"
+            );
+            return;
+        };
+        // Boot-time ghost sweep for the override mirror (the mode-map
+        // loader's sweep cannot own this: it early-returns when its own
+        // sidecar file is absent, so an override ghost left by the same
+        // crash window — record deleted, purge interrupted — would survive
+        // forever and re-arm a recycled id through the seeding point
+        // (`ask_on_guardrail_seed`). Sweeping here pins the invariant
+        // unconditionally: after boot, no override survives for an id
+        // without a session record file. Boot-time only: no concurrent
+        // writer holds the io mutex yet.
+        let sessions_dir = crate::platform::paths::sessions_root();
+        let ghost_ids: Vec<String> = overrides
+            .keys()
+            .filter(|id| session_record_absent_for_sweep(&sessions_dir, id))
+            .cloned()
+            .collect();
+        if !ghost_ids.is_empty() {
+            let ghost_refs: Vec<&str> = ghost_ids.iter().map(String::as_str).collect();
+            match Self::apply_ask_on_guardrail_mutation_locked(&[], &ghost_refs) {
+                Ok(()) => {
+                    for id in &ghost_ids {
+                        overrides.remove(id);
+                    }
+                    eprintln!(
+                        "[sessions] swept {} ghost ask-on-guardrail overrides",
+                        ghost_ids.len()
+                    );
+                }
+                Err(error) => {
+                    // Keep booting with the parsed map intact (same
+                    // tolerance as the mode-map loaders); the next boot
+                    // retries the sweep.
+                    eprintln!(
+                        "[sessions] sweep ghost ask-on-guardrail overrides failed: {error:#}"
+                    );
+                }
+            }
+        }
+        {
+            let mut mirror = self.ask_on_guardrail_overrides.write();
+            *mirror = overrides.clone();
+        }
+        let mut states = self.mode_states.write();
+        for (id, enabled) in overrides {
+            if let Some(entry) = states.get_mut(&id) {
+                entry.ask_on_guardrail = enabled;
+            }
         }
     }
 
     pub fn confirm_code_yolo(&self) -> Result<CodePermissionPrefs, String> {
-        UserPrefs::update_transaction(|prefs| {
-            prefs.code_permission.yolo_confirmed = true;
-            Ok(())
-        })?;
-        self.code_permission.write().yolo_confirmed = true;
-        Ok(self.code_permission_prefs())
+        // Mirror publication goes through post_commit (round-10 review): inside the USER_PREFS_LOCK critical section it is
+        // totally ordered against concurrent transactions — publishing outside the lock could leave two interleaved
+        // transactions' mirror/disk on different commits (split reads until restart). Same critical-section semantics as update_transaction_with_post_commit's
+        // keyring cleanup hook.
+        UserPrefs::update_transaction_with_post_commit(
+            |prefs| {
+                prefs.code_permission.yolo_confirmed = true;
+                Ok(())
+            },
+            || self.code_permission.write().yolo_confirmed = true,
+        )?;
+        Ok(self.code_permission_prefs_view())
+    }
+
+    /// Tri-mode safety: set the global ask-on-guardrail default (new
+    /// sessions seed their per-session toggle from it; sessions absent from
+    /// `_ask_on_guardrail.json` resolve against it). Same two-step shape as
+    /// [`Self::confirm_code_yolo`]: settings.json field-level transaction
+    /// first, then the in-memory mirror — the mirror is what
+    /// `code_permission_prefs()` readers (and the session-materialization
+    /// path) see, so skipping it would leave this run answering the stale
+    /// value until restart.
+    pub fn set_ask_on_guardrail_default(
+        &self,
+        enabled: bool,
+    ) -> Result<CodePermissionPrefs, String> {
+        // Mirror publication goes through post_commit (round-10 review): with the mirror write left outside the lock, two
+        // concurrent toggles could leave the mirror on the earlier commit and the disk on the later one,
+        // after which the getter and seeding points answer stale values until restart. Publishing inside the critical section keeps the mirror totally ordered with
+        // settings.json (this value alternates, so idempotency cannot be relied on — unlike
+        // confirm_code_yolo's always-true write).
+        UserPrefs::update_transaction_with_post_commit(
+            |prefs| {
+                prefs.code_permission.ask_on_guardrail_default = enabled;
+                Ok(())
+            },
+            || self.code_permission.write().ask_on_guardrail_default = enabled,
+        )?;
+        Ok(self.code_permission_prefs_view())
+    }
+}
+
+/// Existence decision for the boot sweep (round-11 review): the same discipline as
+/// `SessionStore::durable_session_record_is_absent` — only NotFound counts as "session record deleted"; any
+/// transient stat failure (EIO/EACCES/ENOTDIR) is treated as alive
+/// (unknown is never absent in a destructive path). `Path::is_file()` returns false for every
+/// stat failure and would delete live sessions' explicit mode / ask sidecars as ghosts.
+fn session_record_absent_for_sweep(sessions_dir: &std::path::Path, id: &str) -> bool {
+    matches!(
+        std::fs::metadata(sessions_dir.join(format!("{id}.json"))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+#[cfg(test)]
+mod sweep_probe_tests {
+    use super::session_record_absent_for_sweep;
+
+    /// NotFound → ghost (sweepable); record exists → alive; any other stat failure → treat as alive
+    /// (fail-closed: the sweep prefers missing a ghost over deleting a live one). The non-NotFound failure arm is
+    /// deterministically constructed with a session id containing NUL: std rejects interior NULs in each platform's own path conversion (Unix
+    /// via `run_with_cstr`, Windows via WTF-8→UTF-16 `to_u16s`, both producing `InvalidInput` before
+    /// any OS call) — the ENOTDIR shape ("sessions_dir
+    /// itself is a file") is POSIX-specific; Windows maps "a path component is a file"
+    /// to NotFound, so the same failure cannot be expressed on that platform.
+    #[test]
+    fn sweep_absence_probe_is_not_found_only() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-sweep-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root");
+        std::fs::write(root.join("live.json"), b"{}").expect("live record");
+
+        assert!(session_record_absent_for_sweep(&root, "ghost000000000000"));
+        assert!(!session_record_absent_for_sweep(&root, "live"));
+        assert!(!session_record_absent_for_sweep(
+            &root,
+            "transient\u{0}fault"
+        ));
+        std::fs::remove_dir_all(&root).ok();
     }
 }

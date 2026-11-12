@@ -355,11 +355,15 @@ pub(super) fn apply_scheduled_turn_policy(
     Ok(())
 }
 
+/// The `None` arm denies (round-19 review minor 13): unreachable today — the
+/// caller gates on `scheduled_profile.is_some()` — but a missing profile must
+/// default to the strict direction, so a future guard change that ever makes
+/// `None` reachable fails closed instead of silently auto-approving.
 pub(super) fn scheduled_tool_should_auto_approve(
     profile: Option<&ScheduledRunProfile>,
     approval_force_prompt: bool,
 ) -> bool {
-    profile.is_none_or(|profile| profile.auto_approve && !approval_force_prompt)
+    profile.is_some_and(|profile| profile.auto_approve && !approval_force_prompt)
 }
 
 #[cfg(test)]
@@ -609,6 +613,95 @@ mod desktop_notification_wiring_pins {
         assert!(
             !body.contains("*/"),
             "the balancing close must be consumed with the span",
+        );
+    }
+
+    /// Review P2: windowless hosts (`pinvou agent run` and other boot lanes) have no approval decision
+    /// consumer, so interactive approvals must decline deterministically instead of pinning the task to the deadline. The forward
+    /// command body cannot be built in a unit test, so per repo convention this pins the assembly order: the windowless arm sits after the scheduled
+    /// unattended arm (task-preservation policy unchanged) and before the interactive surface; inside the arm only the deterministic
+    /// decline (deny_tool_call) happens — no pending registration, no approval event — a card no one
+    /// can answer must not be minted.
+    #[test]
+    fn forkguard_forwarder_windowless_arm_declines_without_minting_a_card() {
+        let src = include_str!("forwarder.rs");
+        let production = src.split("#[cfg(test)]").next().expect("non-empty source");
+        let scheduled_at = production
+            .find("scheduled_tool_should_auto_approve(")
+            .expect("the scheduled unattended arm must stay first");
+        // Anchor from the scheduled arm: the UserInputRequired routing now
+        // carries its own (earlier) windowless marker — round-11 typed-ask
+        // decline — so a file-global find would shadow this arm.
+        let windowless_at = scheduled_at
+            + production[scheduled_at..]
+                .find("windowless_host::is_windowless_host()")
+                .expect("the windowless host arm is missing from the ApprovalRequired routing");
+        let interactive_at = scheduled_at
+            + production[scheduled_at..]
+                .find("approval_surface_decision(")
+                .expect("the interactive arm must stay last");
+        assert!(
+            scheduled_at < windowless_at && windowless_at < interactive_at,
+            "arm order: scheduled stored-policy → windowless decline → interactive surface"
+        );
+        let arm = &production[windowless_at..interactive_at];
+        assert!(
+            arm.contains("deny_tool_call("),
+            "the windowless arm must resolve the ask deterministically with a decline"
+        );
+        assert!(
+            arm.contains("windowless host has no approval consumer"),
+            "the decline must name its reason in the boot-lane log line"
+        );
+        assert!(
+            !arm.contains("pending_approvals::record("),
+            "a card no one can answer must not be minted"
+        );
+        assert!(
+            !arm.contains("approval_required"),
+            "the windowless arm must not raise an approval event"
+        );
+        assert!(
+            !arm.contains("approve_tool_call("),
+            "the decline is fail-safe: no grant path in the windowless arm"
+        );
+    }
+
+    /// round-11 review MAJOR: the `Event::UserInputRequired` (typed ask) routing previously had
+    /// only scheduled/interactive arms — windowless hosts fell into the interactive arm, and a confirmation
+    /// card no one can answer pinned the agentic run to the whole-task timeout (run reported timeout instead of
+    /// an explainable result). This pin locks the third arm between scheduled and interactive: inside the arm a
+    /// deterministic cancellation (cancel_user_input, funneled by the base into a tool result), no pending
+    /// registration, and no `chat:user_input_required`.
+    #[test]
+    fn forkguard_forwarder_windowless_typed_ask_declines_without_minting() {
+        let src = include_str!("forwarder.rs");
+        let production = src.split("#[cfg(test)]").next().expect("non-empty source");
+        let typed_at = production
+            .find("Event::UserInputRequired")
+            .expect("the typed-ask routing must stay in the forwarder");
+        let windowless_at = production[typed_at..]
+            .find("windowless_host::is_windowless_host()")
+            .expect("the windowless host arm is missing from the UserInputRequired routing");
+        let interactive_at = production[typed_at..]
+            .find("pending_user_input::record(")
+            .expect("the interactive arm must keep the pending registration");
+        assert!(
+            windowless_at < interactive_at,
+            "arm order: scheduled stored-policy → windowless decline → interactive pending"
+        );
+        let arm = &production[typed_at + windowless_at..typed_at + interactive_at];
+        assert!(
+            arm.contains("cancel_user_input("),
+            "the windowless typed-ask arm must resolve the ask deterministically with a cancel"
+        );
+        assert!(
+            arm.contains("windowless host has no input consumer"),
+            "the decline must name its reason in the boot-lane log line"
+        );
+        assert!(
+            !arm.contains("chat:user_input_required"),
+            "the windowless arm must not raise a user-input event"
         );
     }
 }

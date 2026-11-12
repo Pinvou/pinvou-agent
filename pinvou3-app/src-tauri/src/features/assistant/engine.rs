@@ -213,7 +213,12 @@ impl TurnAdmissionMetadata {
         Self {
             action: "accept_plan",
             plan_id,
-            mode: SerializableMode::Yolo,
+            // The flat `mode` is what remote/relay consumers read
+            // (`user_payload` emits it as `payload["mode"]`); it must carry
+            // the accepted session's actual mode, not the historical Yolo
+            // sentinel. The frontend reads the truthful `mode_state` either
+            // way, so the stale hard-code only lied to non-frontend readers.
+            mode: mode_state.mode,
             mode_state,
         }
     }
@@ -564,6 +569,20 @@ pub(crate) fn emit_chat_terminal(
 ) {
     // turn 终态兜底清空挂起的输入请求（取消/中断时可能没有对应 tool_end）。
     crate::features::assistant::pending_user_input::clear_session(session_id);
+    // Approval cards are the same: in an interrupted turn the engine-side approvals were dropped with the turn,
+    // so the pending registry is swept as a fallback and leftover cards must not survive across turns.
+    // **The detached-worker approval exception**: its approval id is the key to a subagent oneshot (detached
+    // workers deliberately outlive the parent turn and may be sitting in `WaitingForUser` right now), so a silent
+    // drop = permanently stranding the worker — deny each of them deterministically (see the split variant docs).
+    // Grants/denials are session-level memory that **survives across turns** ("allow for this session" semantics;
+    // the TUI also clears only on session/workspace switch) — they are removed at session deletion via clear_session in the lib.rs session-cleanup handler.
+    let child_approval_ids =
+        crate::features::assistant::pending_approvals::clear_pending_returning_child_ids(
+            session_id,
+        );
+    if !child_approval_ids.is_empty() {
+        deny_child_approvals_after_terminal(app, session_id, child_approval_ids);
+    }
     let payload = json!({
         "session_id": session_id,
         // Turn identity: terminal events must carry the generation so the
@@ -588,6 +607,40 @@ pub(crate) fn emit_chat_terminal(
     );
     let _ = app.emit("chat:done", payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
+}
+
+/// Deterministic denial of detached-worker approvals at the parent turn's terminal state (id source: see
+/// `clear_pending_returning_child_ids`). Engine live → the deny routes through the base
+/// `route_child_approval_decision` to the subagent oneshot; the worker receives the denial and
+/// finishes up on its own. Engine already reaped (handle_for has no live entry) → the oneshot settles as
+/// `Unavailable` when the receiver drops, likewise without stranding. Detached task: the terminal emission must not be blocked by engine I/O
+/// (chat:done must land first, then the frontend gate reopens).
+fn deny_child_approvals_after_terminal(
+    app: &AppHandle,
+    session_id: &str,
+    child_approval_ids: Vec<String>,
+) {
+    let denied_count = child_approval_ids.len();
+    let app = app.clone();
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        let pool = app.state::<crate::features::assistant::engine_pool::EnginePool>();
+        let Some(engine) = pool.handle_for(&session_id).await else {
+            eprintln!(
+                "[pinvou3-app] turn terminal: {denied_count} detached-worker approval(s) left \
+                 pending while the engine is already reclaimed; their workers resolve to \
+                 Unavailable via the dropped oneshot receivers"
+            );
+            return;
+        };
+        for approval_id in child_approval_ids {
+            if let Err(error) = engine.handle.deny_tool_call(approval_id).await {
+                eprintln!(
+                    "[pinvou3-app] detached-worker approval deny after terminal failed: {error:#}"
+                );
+            }
+        }
+    });
 }
 
 pub(crate) fn emit_transcript_committed(
@@ -1768,9 +1821,27 @@ impl AppEngine {
             None
         };
         // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
+        // Tri-mode safety: one mode_state read feeds both the swarm switch
+        // and the safety-profile derivation threaded into the spawn config
+        // (the pool's post-spawn arming separately syncs the live posture).
+        // An UNATTENDED spawn always composes the Full profile — a scheduled
+        // run AND a windowless host alike: the stored mode is an interactive
+        // posture, and deriving Floor from a stored Yolo would drop the
+        // sensitive-face mechanical gate (credential destroy/exfil/
+        // persistence) for exactly the runs nobody watches — see
+        // `SafetyRuleProfile::for_engine_lane`. The windowless marker makes
+        // the headless/agentic boot lanes (`run_windowless_host`) unattended
+        // too: no window means no card consumer (round-9 P1).
+        let mode_state = store.mode_state(session_id);
+        let safety_profile =
+            crate::features::assistant::safety_deny_rules::SafetyRuleProfile::for_engine_lane(
+                mode_state.mode,
+                scheduled_unattended_spawn
+                    || crate::features::assistant::windowless_host::is_windowless_host(),
+            );
         let multi_agent_enabled = scheduled_profile.is_none()
             && bridge.multi_agent_mode_available(session_id)
-            && store.mode_state(session_id).multi_agent;
+            && mode_state.multi_agent;
         let roots = if scheduled_profile.is_some() {
             // 定时任务保留既有 profile/fallback 解析；其 ledger 可能是用户选择的
             // automation workspace，下面不会对它执行任何旧投影删除。
@@ -1785,6 +1856,10 @@ impl AppEngine {
                 .session_roots(session_id)
                 .with_context(|| format!("resolve managed session roots for {session_id}"))?
         };
+        // Comparison baseline for identity capture (capture_workspace_identity below): it is exactly these roots
+        // that derive engine_config.workspace, and the protocol uses them to check whether the roots were
+        // rebind-switched inside the capture window (the clone is taken before the owning move).
+        let identity_expected_roots = roots.clone();
         if scheduled_profile.is_none() {
             // 仅对可证明由 Pinvou 管理的 session ledger 做旧投影迁移。定时任务
             // 的 execution/ledger 可以是用户选择的自动化工作区，绝不能按文件名
@@ -1818,14 +1893,19 @@ impl AppEngine {
                 // a plain session, which inherits none of these limits. The
                 // swarm switch and the session's multi_agent switch share one
                 // source (the mode_state just read above).
-                bridge.build_engine_config_for_multi_agent(
+                bridge.build_engine_config_for_multi_agent_with_profile(
                     session_id,
                     roots,
                     snapshot,
                     multi_agent_enabled,
+                    safety_profile,
                 )
             }
-            None => bridge.build_engine_config_for_session_roots(session_id, roots),
+            None => bridge.build_engine_config_for_session_roots_with_profile(
+                session_id,
+                roots,
+                safety_profile,
+            ),
         };
         if scheduled_unattended_spawn {
             engine_config.subagents_enabled = false;
@@ -1865,6 +1945,46 @@ impl AppEngine {
         );
 
         let workspace = engine_config.workspace.clone();
+        // This instance's emitting identity (directory + workspace generation) must form **one consistent snapshot**
+        // (reviews JensenChen28 5768924092 and zhuowp 5768948485 P2-a round 2; the single identity boundary is
+        // zhuowp 5780927743 P2): `capture_workspace_identity` puts the two generation reads and the roots resolution
+        // (the closure below, the SessionStore read path) inside **one pending_approvals store-lock critical section**,
+        // mutually exclusive with the rebind publication fence
+        // (projects.rs via `commit_rebind_publication`, same lock order) —
+        // the capture either sees the complete pre-commit state (old root + old generation) or the complete post-commit state
+        // (new root + new generation + grants cleared); the two-step commit's intermediate state (new root published,
+        // approval memory not yet invalidated) is unobservable, and instances started inside the window have no old-directory grants left to reuse. Inside the closure,
+        // `roots != identity_expected_roots` (resolved above, the same roots fed into
+        // engine_config.workspace) or a before/after generation mismatch → invalidate the round and retry;
+        // retries exhausted → fail-closed refusal of this spawn (covering the accomplished drift of "the rebind landed entirely
+        // between the resolution above and this capture"; the residual disclosure lives in that function's doc). The closure
+        // may only walk SessionStore/bridge read paths (downstream of the lock order) and must not call back into
+        // pending_approvals lock-taking functions (std Mutex is not reentrant). The value travels to the
+        // forwarder with the spawn, and the async body does not read it live again (see the forwarder-side parameter and source
+        // pin); the forwarder capture point is pinned to this wiring shape by the helper's pin.
+        let (_, instance_workspace_generation) =
+            crate::features::assistant::pending_approvals::capture_workspace_identity(
+                session_id,
+                &Some(identity_expected_roots),
+                || {
+                    if scheduled_profile.is_some() {
+                        // The same scheduled branch as the roots resolution above: a store-resolution failure falls
+                        // back to the bridge with the same yardstick; a legitimate fallback must not be misjudged as tearing.
+                        Some(
+                            store
+                                .session_roots(session_id)
+                                .unwrap_or_else(|_| bridge.session_roots(session_id)),
+                        )
+                    } else {
+                        // Plain Session: a failed store validation = the session ledger vanished
+                        // mid-spawn; the None-vs-expected mismatch is refused by the protocol as
+                        // tearing (fail-closed), without introducing a panic.
+                        store.session_roots(session_id).ok()
+                    }
+                },
+            )
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("capture consistent workspace identity for {session_id}"))?;
         let handle = spawn_engine(engine_config, &dt_config);
         // Record the provider route this spawn resolved onto the session
         // record. These two fields are not wire-inert diagnostics: the
@@ -1906,6 +2026,7 @@ impl AppEngine {
             store,
             bridge.clone(),
             workspace.clone(),
+            instance_workspace_generation,
             session_id.to_string(),
             turn_events.clone(),
             scheduled_profile,
@@ -1998,7 +2119,32 @@ impl AppEngine {
     pub async fn send_headless_user_message(
         &self,
         content: String,
+        mode: SerializableMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+    ) -> Result<()> {
+        let approval =
+            crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(
+                mode,
+            );
+        self.send_reserved_user_message_impl(
+            content,
+            mode.to_app_mode(),
+            approval,
+            persona_reminder,
+            restrict_tools,
+        )
+        .await
+    }
+
+    /// Historical AppMode-level entry kept for the forced-restrict wrapper's
+    /// closure shape; posture arrives resolved (tri-mode safety).
+    #[allow(dead_code)]
+    async fn send_reserved_user_message_impl(
+        &self,
+        content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
@@ -2031,6 +2177,7 @@ impl AppEngine {
                 self.send_reserved_user_message(
                     content,
                     mode,
+                    approval,
                     persona_reminder,
                     restrict_tools,
                     expert_snapshot,
@@ -2047,6 +2194,7 @@ impl AppEngine {
         &self,
         content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         // Proof token, not the caller's `bool`: only the pool's policy
         // (`turn_restrict_tools`) can mint it (PR #433 review S2(b)). The value
@@ -2060,6 +2208,7 @@ impl AppEngine {
         let op = self.build_interactive_send_message_op(
             content,
             mode,
+            approval,
             persona_reminder,
             restrict_tools.restricts_tools_for(&self.session_id),
             expert_snapshot,
@@ -2085,6 +2234,7 @@ impl AppEngine {
         &self,
         content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
@@ -2098,6 +2248,7 @@ impl AppEngine {
                 &self.session_id,
                 content,
                 mode,
+                approval,
                 persona_reminder,
                 restrict_tools,
                 &self.workspace,
@@ -2115,6 +2266,7 @@ impl AppEngine {
                 &self.session_id,
                 content,
                 mode,
+                approval,
                 persona_reminder,
                 restrict_tools,
             )
@@ -2166,10 +2318,18 @@ impl AppEngine {
     }
 
     fn profiled_send_op(&self, content: String, profile: &ScheduledRunProfile) -> Result<Op> {
+        // Scheduled runs are unattended: the profile's own
+        // apply_scheduled_turn_policy overrides the approval fields right
+        // below, so the pre-override posture stays the historical
+        // (true, Auto) — nothing can answer a card mid-run regardless.
         let mut op = self.bridge.build_send_message_op(
             &self.session_id,
             content,
             profile.execution_mode().to_app_mode(),
+            crate::features::assistant::platform::bridge::TurnApprovalPosture {
+                auto_approve: true,
+                approval_mode: deepseek_tui::ApprovalMode::Auto,
+            },
             Some(SCHEDULED_TURN_REMINDER.to_string()),
             false,
         )?;
@@ -2537,7 +2697,7 @@ mod turn_lifecycle_tests {
         EmittedTerminal, TranscriptOperation, TurnAdmissionMetadata, TurnBoundCancelAction,
         TurnIdentity, TurnLifecycle, turn_bound_cancel_action,
     };
-    use crate::features::sessions::SessionModeState;
+    use crate::features::sessions::{SerializableMode, SessionModeState};
     use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
     use std::sync::Arc;
@@ -3554,7 +3714,14 @@ mod turn_lifecycle_tests {
         reservation
             .set_admission_metadata(TurnAdmissionMetadata::accept_plan(
                 "plan-ticket".to_string(),
-                SessionModeState::default(),
+                // Non-Yolo accepted mode on purpose: the flat `mode` field
+                // must mirror mode_state.mode (the accepted truth), not a
+                // hard-coded Yolo sentinel — Auto pins that the wire payload
+                // tells the truth for every accepted mode.
+                SessionModeState {
+                    mode: SerializableMode::Auto,
+                    ..SessionModeState::default()
+                },
             ))
             .expect("accept metadata");
         reservation
@@ -3578,8 +3745,10 @@ mod turn_lifecycle_tests {
             .user_payload("session-plan");
         assert_eq!(payload["action"], "accept_plan");
         assert_eq!(payload["plan_id"], "plan-ticket");
-        assert_eq!(payload["mode"], "yolo");
-        assert_eq!(payload["mode_state"]["mode"], "yolo");
+        // Flat mode = the accepted session's mode (Auto here), never a stale
+        // Yolo sentinel; it must agree with mode_state.mode.
+        assert_eq!(payload["mode"], "auto");
+        assert_eq!(payload["mode_state"]["mode"], "auto");
         assert_eq!(payload["content"], "✅ 就这么干");
         let fallback = reclaimed
             .fallback
@@ -3985,7 +4154,12 @@ mod scheduled_turn_tests {
         let auto = profile(true);
         assert!(scheduled_tool_should_auto_approve(Some(&auto), false));
         assert!(!scheduled_tool_should_auto_approve(Some(&auto), true));
-        assert!(scheduled_tool_should_auto_approve(None, true));
+        // The None arm is unreachable in production (the caller gates on
+        // scheduled_profile.is_some()) but must fail closed — a missing
+        // profile denies rather than silently auto-approving (round-19
+        // review minor 13).
+        assert!(!scheduled_tool_should_auto_approve(None, false));
+        assert!(!scheduled_tool_should_auto_approve(None, true));
     }
 
     #[test]
@@ -4178,12 +4352,7 @@ mod live_tests {
         // both — the old "skip first turn" branch, along with the warmed_sessions set it
         // read, was removed long ago; do not assume it still exists here.
         engine
-            .send_headless_user_message(
-                prompts[0].to_string(),
-                SerializableMode::Yolo.to_app_mode(),
-                None,
-                false,
-            )
+            .send_headless_user_message(prompts[0].to_string(), SerializableMode::Yolo, None, false)
             .await
             .expect("send_headless_user_message #1");
 
@@ -4234,7 +4403,7 @@ mod live_tests {
                         engine
                             .send_headless_user_message(
                                 prompts[1].to_string(),
-                                SerializableMode::Yolo.to_app_mode(),
+                                SerializableMode::Yolo,
                                 None,
                                 false,
                             )
@@ -4377,6 +4546,65 @@ mod tests {
             span.contains("engine_config.subagents_enabled = false;"),
             "the unattended spawn must disable subagents — the deterministic \
              delegation-disable leg of the recursion shield (round-34 M4)"
+        );
+    }
+
+    /// Tri-mode safety (scheduled lane): the spawn-time ruleset profile must
+    /// derive through the ENGINE LANE (`for_engine_lane`), not the bare
+    /// `for_mode` — an unattended scheduled spawn of a stored-Yolo session
+    /// must compose Full, or the sensitive-face mechanical gate silently
+    /// disappears for unattended automations. `spawn_for_session` cannot run
+    /// in unit tests (AppHandle + live bridge), so pin the wiring: the
+    /// lane-aware derivation sits in the spawn body between the one
+    /// `mode_state` read and the profile-threading spawn-config builders.
+    #[test]
+    fn unattended_spawn_derives_the_safety_profile_through_the_engine_lane() {
+        let source = include_str!("engine.rs");
+        // Strip line comments so a commented-out call cannot satisfy the pin
+        // (same mutation class as unattended_spawn_disables_subagents_in_source).
+        let live = source
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let production = live
+            .split("mod tests {")
+            .next()
+            .expect("the production half of engine.rs present");
+        let body = production
+            .split("pub(crate) async fn spawn_for_session(")
+            .nth(1)
+            .expect("the spawn_for_session body present");
+        let mode_read_at = body
+            .find("let mode_state = store.mode_state(session_id);")
+            .expect("the spawn body must read the session mode state once");
+        let derivation_at = body
+            .find("SafetyRuleProfile::for_engine_lane(")
+            .expect("the spawn body must derive the profile through for_engine_lane");
+        let lane_at = body[derivation_at..]
+            .find("scheduled_unattended_spawn")
+            .expect("the unattended lane flag must thread the derivation");
+        let config_at = body
+            .find("build_engine_config_for_session_roots_with_profile(")
+            .expect("the profile must thread the spawn config");
+        // Round-9 P1: the unattended lane flag must include the windowless
+        // host marker — a headless/agentic run reusing a stored-Yolo session
+        // composes Floor otherwise, and no card consumer exists there to
+        // restore the gate.
+        let derivation_args = &body[derivation_at..config_at.max(derivation_at + 1)];
+        assert!(
+            derivation_args.contains("is_windowless_host()"),
+            "the spawn-site unattended lane must OR in the windowless host \
+             marker (round-9 P1)"
+        );
+        assert!(
+            mode_read_at < derivation_at && derivation_at < config_at && lane_at > 0,
+            "ordering: mode read → lane-aware profile derivation → spawn config"
+        );
+        assert!(
+            !body.contains("SafetyRuleProfile::for_mode("),
+            "the bare mode-derived profile must not return at the spawn site \
+             (a revert re-opens the unattended Floor regression)"
         );
     }
 

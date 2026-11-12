@@ -225,6 +225,36 @@ pub struct RebindWorkspacePrefixOutcome {
     pub sidecar_final_stale: Vec<String>,
 }
 
+/// Typed failure of [`SessionAgentStore::rebind_workspace_prefix`] that
+/// surfaced AFTER a subset of the run's bindings was already durably
+/// published (review 5784078802). Today's only such arm is the
+/// divergence-repair persist: its rollback restores just the re-keyed
+/// records, so every index-pass move the earlier whole-table persist
+/// committed stays effective, as does every orphan whose sidecar write
+/// succeeded (the sidecar IS its binding). `published_affected` carries
+/// exactly that effective population so the command layer can run the
+/// identity-switch invalidation before the rebind gate unlocks — mapping
+/// every Err to an empty affected set left a moved session's old-directory
+/// grant answering new-directory requests.
+#[derive(Debug)]
+pub struct RebindPrefixError {
+    /// (session_id, effective path) pairs whose binding was durably
+    /// published before the failure — the same population the success path
+    /// would have reported as moved. Divergence records whose re-key failed
+    /// are excluded: the runtime resolver reads the index, so their
+    /// pre-run binding is still the effective one.
+    pub published_affected: Vec<(String, PathBuf)>,
+    message: String,
+}
+
+impl std::fmt::Display for RebindPrefixError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RebindPrefixError {}
+
 /// Session ids that own a directory under the code-session sidecar root.
 ///
 /// Single source of truth for every scan that walks this directory — the boot
@@ -603,6 +633,35 @@ fn take_injected_persist_failure(path: &Path) -> bool {
         }
         None => false,
     }
+}
+
+/// Test-only DEFERRED persist-failure seam: arms a failure that lets the
+/// next `skip` whole-table persists succeed and fails the one after. The
+/// partial-publication regression needs exactly that shape — the rebind's
+/// index-pass persist must succeed FIRST so its moves are durably published,
+/// then the divergence-repair persist fails (review 5784078802). Keyed by
+/// store path like [`take_injected_persist_failure`] so parallel tests never
+/// see one another's fault. Production never arms it.
+#[cfg(test)]
+static DEFERRED_PERSIST_FAILURE_SKIPS: std::sync::Mutex<Vec<(PathBuf, u32)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Tracks the deferred seam for `path`: decrements while skips remain,
+/// consumes the entry and reports a failure once they are exhausted.
+#[cfg(test)]
+fn take_deferred_persist_failure(path: &Path) -> bool {
+    let mut deferred = DEFERRED_PERSIST_FAILURE_SKIPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(index) = deferred.iter().position(|(armed, _)| armed == path) else {
+        return false;
+    };
+    if deferred[index].1 > 0 {
+        deferred[index].1 -= 1;
+        return false;
+    }
+    deferred.remove(index);
+    true
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -1663,6 +1722,13 @@ impl SessionAgentStore {
         // persists a stale boot-era table over a peer's committed write.
         let _section = self.lock_and_reload()?;
         let mut affected: Vec<(String, PathBuf)> = Vec::new();
+        // Review 5784078802: ids moved by the INDEX pass below. Once the
+        // pass's whole-table persist succeeds these are durably published
+        // (the runtime resolver reads the index), and no later failure arm
+        // rolls them back — the divergence-repair rollback covers only the
+        // re-keyed records. The typed error arm distinguishes them from the
+        // sidecar-pass additions to decide what stays effective on failure.
+        let mut index_moved: Vec<String> = Vec::new();
         let mut sidecar_final_stale: Vec<String> = Vec::new();
         // Original bindings of the mutated records, kept so a persist
         // failure can roll memory back to the on-disk state (review #463
@@ -1726,6 +1792,7 @@ impl SessionAgentStore {
                     }
                 }
                 affected.push((session_id.clone(), next));
+                index_moved.push(session_id.clone());
             }
         }
         if let Err(error) = self.persist() {
@@ -1905,7 +1972,46 @@ impl SessionAgentStore {
             }
         }
         if !index_rekeys.is_empty() {
-            self.commit_index_rekeys(&index_rekeys)?;
+            if let Err(error) = self.commit_index_rekeys(&index_rekeys) {
+                // Review 5784078802 (P2): this failure rolls back ONLY the
+                // re-keyed divergence records. Every index-pass move the
+                // earlier whole-table persist committed stays durably
+                // published, and an orphan whose sidecar write succeeded has
+                // its binding (the sidecar itself) published. A divergence
+                // record is NOT effective — the runtime resolver reads the
+                // index, so its failed re-key leaves the pre-run binding in
+                // force. Carry the published population through the typed
+                // error so the command layer invalidates those sessions'
+                // approval memory before the rebind gate unlocks; mapping
+                // every Err to an empty affected set re-opened the window
+                // where an old-directory grant answers a new-directory
+                // request.
+                let records = self.records.read();
+                let published_affected: Vec<(String, PathBuf)> = affected
+                    .iter()
+                    .filter(|(session_id, _)| {
+                        index_moved.iter().any(|sid| sid == session_id)
+                            || !records.contains_key(session_id)
+                    })
+                    .cloned()
+                    .collect();
+                drop(records);
+                return Err(anyhow::Error::new(RebindPrefixError {
+                    published_affected,
+                    // Round-13 review: carry the stale-sidecar disclosure
+                    // through the failure too — the sidecar/retry passes ran
+                    // BEFORE this arm, so sessions whose rewrite (and retry)
+                    // failed are already durably stale under `from` even
+                    // though the run aborts here. Dropping the list narrowed
+                    // the failure report; a rerun still converges them via
+                    // the on-disk prefix scan.
+                    message: format!(
+                        "rebind divergence-repair persist failed: {error:#}; {} moved-session \
+                         sidecar(s) already final-stale (rerun converges them)",
+                        sidecar_final_stale.len()
+                    ),
+                }));
+            }
         }
         // Post-pass fence (review #463 round-8 minor 8). The rebind gate
         // serializes rebinds only, so a concurrent bind/remove can land in the
@@ -2436,9 +2542,19 @@ impl SessionAgentStore {
             .push(self.path.clone());
     }
 
+    /// Fail the whole-table persistence that comes after `skip` successful
+    /// ones for this store (see [`DEFERRED_PERSIST_FAILURE_SKIPS`]).
+    #[cfg(test)]
+    pub(crate) fn inject_persist_failure_after_skips(&self, skip: u32) {
+        DEFERRED_PERSIST_FAILURE_SKIPS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((self.path.clone(), skip));
+    }
+
     fn persist_records(&self, records: &HashMap<String, SessionAgentRecord>) -> Result<()> {
         #[cfg(test)]
-        if take_injected_persist_failure(&self.path) {
+        if take_injected_persist_failure(&self.path) || take_deferred_persist_failure(&self.path) {
             anyhow::bail!("injected session agent persist failure");
         }
         if let Some(parent) = self.path.parent() {
@@ -4011,6 +4127,121 @@ mod tests {
             "{ not json",
             "the corrupt file is left untouched for recovery"
         );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Review 5784078802 (P2): the divergence-repair persist can fail AFTER
+    /// the index pass already durably published bindings. The typed error
+    /// must carry exactly that published population — s1 (matching
+    /// index+sidecar, moved and persisted) yes; s2 (divergence repair whose
+    /// re-key failed, index still at its pre-run binding) no — so the
+    /// command layer can invalidate s1's old-directory grant while leaving
+    /// s2's untouched. Mapping every Err to an empty set re-opened the
+    /// window where an old-directory grant answers a new-directory request.
+    #[test]
+    fn rebind_prefix_error_carries_the_published_population() {
+        let (root, store) = store_fixture("pinvou3-codex-rebind-partial-pub-");
+        let from = root.join("from");
+        let to = root.join("to");
+        let elsewhere = root.join("elsewhere");
+        for dir in [&from, &to, &elsewhere] {
+            fs::create_dir_all(dir).unwrap();
+        }
+
+        // S1: matching index + sidecar at `from` — a normal rebind member.
+        store
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                vec![from.clone()],
+            )
+            .unwrap();
+        // S2: index at `elsewhere`, sidecar stranded at `from` — the
+        // interrupted-earlier-run divergence the repair pass re-keys.
+        store
+            .bind_code_native_session(
+                "s2",
+                CodexWorkspaceKind::Project,
+                Some(elsewhere.clone()),
+                vec![elsewhere.clone()],
+            )
+            .unwrap();
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "s2"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(from.clone()),
+                workspace_roots: vec![from.clone()],
+                explicit_ancestor_roots: Vec::new(),
+                bound_at: None,
+            },
+        )
+        .unwrap();
+        touch_owner_record(&store.path, "s1");
+        touch_owner_record(&store.path, "s2");
+        // S3: an ORPHAN — sidecar at `from`, owner record present, no INDEX
+        // record (the never-indexed / index-lost shape the rewrite pass
+        // still serves through its owner gate). The sidecar IS its binding,
+        // so its rewrite is durable publication exactly like the index pass
+        // (round-13 review: the failure-arm filter's orphan disjunct had no
+        // test — deleting `|| !records.contains_key(..)` dropped s3 from the
+        // invalidation set and stayed green).
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "s3"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(from.clone()),
+                workspace_roots: vec![from.clone()],
+                explicit_ancestor_roots: Vec::new(),
+                bound_at: None,
+            },
+        )
+        .unwrap();
+        touch_owner_record(&store.path, "s3");
+
+        // The index-pass persist (first) succeeds so s1's move is durable;
+        // the divergence-repair persist (second) fails.
+        store.inject_persist_failure_after_skips(1);
+
+        let error = store
+            .rebind_workspace_prefix(&from, &to)
+            .expect_err("the armed rekey-persist failure must fail the run");
+        let typed = error
+            .downcast_ref::<RebindPrefixError>()
+            .expect("a post-publication failure must stay typed");
+        assert_eq!(
+            typed.published_affected,
+            vec![
+                ("s1".to_string(), to.clone()),
+                ("s3".to_string(), to.clone())
+            ],
+            "the durably published index move AND the orphan's sidecar-owned move ride the \
+             error — not the failed re-key"
+        );
+
+        // The published binding survives the error (resolver reads the
+        // index), while the failed re-key rolled back to its pre-run path.
+        assert_eq!(
+            store.get("s1").workspace_path.as_deref(),
+            Some(to.as_path()),
+            "s1's index move was persisted before the failure and must stay"
+        );
+        assert_eq!(
+            store.get("s2").workspace_path.as_deref(),
+            Some(elsewhere.as_path()),
+            "the divergence re-key rolled back — s2's effective binding is unchanged"
+        );
+        // The orphan's binding IS the sidecar, already rewritten to `to`
+        // before the failure — it must ride the typed error so the command
+        // layer invalidates it (its old-directory grant would otherwise
+        // answer new-directory requests).
+        let s3_sidecar =
+            read_code_session_sidecar(&store.path, "s3").expect("orphan s3's sidecar must exist");
+        assert_eq!(s3_sidecar.workspace_path.as_deref(), Some(to.as_path()));
 
         fs::remove_dir_all(&root).unwrap();
     }

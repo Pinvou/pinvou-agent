@@ -153,12 +153,19 @@ impl SessionPolicy {
         Some(PLAN_REMINDER)
     }
 
-    /// 审批参数（auto_approve, approval_mode）：本期两模式同为「全自动 + Auto」，
-    /// 与 D-2 前共享 op 的写死值逐字节一致（行为不变）。S-1 安全分化（
-    /// docs/code-mode-解耦与权限持久化-改动说明.md 挂起项）落地时按模式差异化，
-    /// 调用点已策略取数，无需再动共享链路。
-    pub fn approval_params(&self) -> (bool, ApprovalMode) {
-        (true, ApprovalMode::Auto)
+    /// Approval parameters (auto_approve, approval_mode) — valued by the session's tri-mode safety tier
+    /// (S-1 landed; replaces the two-mode hard-coded "full-auto + Auto").
+    ///
+    /// Mapping table: see [`crate::core::mode_state::SerializableMode::approval_params`].
+    /// Production call sites now read `SerializableMode::approval_params` directly (the engine_pool
+    /// send line / platform::bridge); this method now has only test callers and remains as test glue
+    /// (it must no longer be referenced as a production compatibility layer). `ask_on_guardrail` is session-level
+    /// runtime state, not mode identity; it does not go through this object — the bridge reads it straight from mode_state.
+    pub fn approval_params_for_mode(
+        &self,
+        mode: crate::core::mode_state::SerializableMode,
+    ) -> (bool, ApprovalMode) {
+        mode.approval_params()
     }
 }
 
@@ -267,17 +274,28 @@ mod tests {
         }
     }
 
-    /// R-2 行为不变断言：两模式审批参数均为「全自动 + Auto」，与 D-2 前共享 op
-    /// 的写死值一致；S-1 分化时改这里并补差异断言。
+    /// S-1 tri-mode assertion: approval parameters are valued by the session's safety tier — Plan = the read-only normalized
+    /// stance (false, Suggest), Auto=(false, Suggest), Yolo=(true, Bypass);
+    /// `approval_params()` (the static compatibility path) is the Auto tier on both product axes.
     #[test]
-    fn approval_params_are_full_auto_for_both_modes_for_now() {
-        for mode in [SessionMode::Plain, SessionMode::Code] {
-            let (auto_approve, approval_mode) = SessionPolicy::for_mode(mode).approval_params();
-            assert!(auto_approve, "{mode:?} 本期必须全自动(行为不变)");
+    fn approval_params_follow_the_tri_mode_safety_postures() {
+        use crate::core::mode_state::SerializableMode;
+        for product_mode in [SessionMode::Plain, SessionMode::Code] {
+            let policy = SessionPolicy::for_mode(product_mode);
             assert_eq!(
-                approval_mode,
-                ApprovalMode::Auto,
-                "{mode:?} 本期必须 Auto(行为不变)"
+                policy.approval_params_for_mode(SerializableMode::Plan),
+                (false, ApprovalMode::Suggest),
+                "{product_mode:?} Plan 档"
+            );
+            assert_eq!(
+                policy.approval_params_for_mode(SerializableMode::Auto),
+                (false, ApprovalMode::Suggest),
+                "{product_mode:?} Auto 档"
+            );
+            assert_eq!(
+                policy.approval_params_for_mode(SerializableMode::Yolo),
+                (true, ApprovalMode::Bypass),
+                "{product_mode:?} Yolo 档"
             );
         }
     }

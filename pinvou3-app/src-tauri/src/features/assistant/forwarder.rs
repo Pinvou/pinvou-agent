@@ -292,6 +292,7 @@ pub(crate) fn spawn_event_forwarder(
     store: SessionStore,
     bridge: Pinvou3Bridge,
     execution_workspace: PathBuf,
+    instance_workspace_generation: Option<u64>,
     session_id: String,
     turn_events: broadcast::Sender<EngineTurnSignal>,
     scheduled_profile: Option<ScheduledRunProfile>,
@@ -314,6 +315,18 @@ pub(crate) fn spawn_event_forwarder(
     tauri::async_runtime::spawn(async move {
         let mut tool_inputs: std::collections::HashMap<String, (String, serde_json::Value)> =
             std::collections::HashMap::new();
+        // This instance's emitting workspace generation (reviews JensenChen28 5764675531 and zhuowp
+        // 5766212059/5766526920, semantics per round-4 P2 sub-gap a): the forwarder runs one task per engine
+        // incarnation, and **at spawn time** the caller captures that instance's identity generation at the same
+        // synchronous point that pins `engine_config.workspace`, passing it in
+        // with spawn (parameter, signature above). The async body must not read `workspace_generation`
+        // live — the task's first execution may already be past the rebind bind-commit-point
+        // generation advance, and a live read then would stamp the directory-A cold-start instance with generation B,
+        // letting card raises and decisions pass the atomic comparison and write the old directory's grants/denials into new-generation memory. The card-raise
+        // registration (ApprovalRequired → record) carries the passed-in identity generation; decision writes do the
+        // atomic invalidation comparison against the card's registered generation (remember_grant/denial): the old instance's cards are refused
+        // whole under the new generation (fail-safe re-ask), while the new instance's (new cwd) cards carry
+        // the advanced generation and land as usual.
         let mut turn_tracker = TurnCompletionTracker::default();
         let mut scheduled_engine_total_tokens = 0_u64;
         let mut scheduled_persistence_error: Option<String> = None;
@@ -708,6 +721,28 @@ pub(crate) fn spawn_event_forwarder(
                                 );
                             }
                         });
+                    } else if crate::features::assistant::windowless_host::is_windowless_host() {
+                        // round-11 review: the same funnel as the ApprovalRequired windowless arm
+                        // above — a windowless host (headless / benchmark / evaluation
+                        // boot lane) has no one to answer a typed ask, so registering a pending entry and
+                        // emitting an input-confirmation event would only pin the unattended task to the whole-task timeout (run
+                        // reports timeout instead of an explainable result). Semantics per safety-modes §5
+                        // "windowless host deterministic decline": the base funnels the cancellation into a
+                        // tool result, the model can reroute and continue, and the task completes (the fail-safe
+                        // direction). No pending registration, no event: a confirmation card no one can answer
+                        // must not be minted.
+                        eprintln!(
+                            "[pinvou3-app] declining user input id={} (windowless host has no input consumer)",
+                            id
+                        );
+                        let h = approve_handle.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = h.cancel_user_input(id).await {
+                                eprintln!(
+                                    "[pinvou3-app] windowless user-input decline failed: {error:#}"
+                                );
+                            }
+                        });
                     } else {
                         // 普通对话继续交给前端或远程控制端处理。登记 pending，
                         // 供前端 remount 后经 get_pending_user_inputs 恢复确认卡。
@@ -847,44 +882,175 @@ pub(crate) fn spawn_event_forwarder(
                 Event::ApprovalRequired {
                     id,
                     tool_name,
+                    description,
+                    input,
+                    approval_key,
+                    approval_grouping_key,
+                    intent_summary,
                     approval_force_prompt,
-                    ..
                 } => {
                     // 多智能体会话与普通对话共用同一套审批语义（ADR-0006）：
                     // 只有无人值守的初始定时执行使用任务保存的批准策略；
-                    // 其余会话按普通对话处理。
-                    let should_approve = if scheduled_profile.is_some()
-                        && scheduled_unattended.load(Ordering::Acquire)
-                    {
-                        scheduled_tool_should_auto_approve(
+                    // All other sessions go through the tri-mode interactive approval surface (silent approval / hard-deny / card).
+                    if scheduled_profile.is_some() && scheduled_unattended.load(Ordering::Acquire) {
+                        let should_approve = scheduled_tool_should_auto_approve(
                             scheduled_profile.as_ref(),
                             approval_force_prompt,
-                        )
+                        );
+                        eprintln!(
+                            "[pinvou3-app] {} tool {} id={}",
+                            if should_approve {
+                                "auto-approving"
+                            } else {
+                                "denying"
+                            },
+                            tool_name,
+                            id
+                        );
+                        let h = approve_handle.clone();
+                        let id_clone = id.clone();
+                        tokio::spawn(async move {
+                            let result = if should_approve {
+                                h.approve_tool_call(id_clone).await
+                            } else {
+                                h.deny_tool_call(id_clone).await
+                            };
+                            if let Err(e) = result {
+                                eprintln!(
+                                    "[pinvou3-app] scheduled approval decision failed: {e:#}"
+                                );
+                            }
+                        });
+                    } else if crate::features::assistant::windowless_host::is_windowless_host() {
+                        // Review P2: windowless hosts (`pinvou agent run` / benchmark /
+                        // evaluation boot lanes) have no decision consumer — no window, no approval surface,
+                        // while the shared pool's turn posture (auto-approve) + storage arming would raise the
+                        // promptable surfaces (repo-law hold / typed ask / sandbox escalation /
+                        // execpolicy denial escalation / force_prompt hold) as interactive approvals.
+                        // A card no one can answer pins the task to the deadline. The semantic choice (same
+                        // direction as safety-modes §3.4 "deterministic allow/deny never raises a card"):
+                        // deterministic decline — the tool does not run, the model sees the denial and can
+                        // reroute, and the task completes. Declining is the fail-safe direction
+                        // (granting would equal silently executing work nobody approved); a force_prompt
+                        // hold also declines — it asks for a human, and there is none here.
+                        // No pending registration, no approval event: a card no one can answer must not be minted,
+                        // and the decline enters the transcript only through the engine's own tool denial. Unattended
+                        // scheduled runs keep the task-preservation arm above (non-force tools
+                        // can still be deterministically allowed), so this arm sits after it.
+                        eprintln!(
+                            "[pinvou3-app] declining tool {} id={} (windowless host has no approval consumer)",
+                            tool_name, id
+                        );
+                        let h = approve_handle.clone();
+                        let id_clone = id.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = h.deny_tool_call(id_clone).await {
+                                eprintln!("[pinvou3-app] windowless decline failed: {error:#}");
+                            }
+                        });
                     } else {
-                        true
-                    };
-                    eprintln!(
-                        "[pinvou3-app] {} tool {} id={}",
-                        if should_approve {
-                            "auto-approving"
-                        } else {
-                            "denying"
-                        },
-                        tool_name,
-                        id
-                    );
-                    let h = approve_handle.clone();
-                    let id_clone = id.clone();
-                    tokio::spawn(async move {
-                        let result = if should_approve {
-                            h.approve_tool_call(id_clone).await
-                        } else {
-                            h.deny_tool_call(id_clone).await
+                        use crate::features::assistant::pending_approvals::{
+                            ApprovalSurfaceDecision, approval_surface_decision,
                         };
-                        if let Err(e) = result {
-                            eprintln!("[pinvou3-app] scheduled approval decision failed: {e:#}");
+                        let mode_state = store.mode_state(&session_id);
+                        // Branch order (see the approval_surface_decision docs):
+                        // denial cache (exact key) > Plan defense > grant cache (grouping key)
+                        // > tri-mode stance. The grant/denial read paths carry the session dimension — the caches are
+                        // session-level memory and must not allow/implicate across sessions.
+                        let decision = approval_surface_decision(
+                            mode_state.mode,
+                            mode_state.ask_on_guardrail,
+                            approval_force_prompt,
+                            crate::features::assistant::pending_approvals::session_granted(
+                                &session_id,
+                                &approval_grouping_key,
+                            ),
+                            crate::features::assistant::pending_approvals::session_denied(
+                                &session_id,
+                                &approval_key,
+                            ),
+                        );
+                        match decision {
+                            ApprovalSurfaceDecision::ApproveSilently => {
+                                eprintln!(
+                                    "[pinvou3-app] session-granted auto-approving tool {} id={}",
+                                    tool_name, id
+                                );
+                                let h = approve_handle.clone();
+                                let id_clone = id.clone();
+                                tokio::spawn(async move {
+                                    if let Err(error) = h.approve_tool_call(id_clone).await {
+                                        eprintln!(
+                                            "[pinvou3-app] granted approval decision failed: {error:#}"
+                                        );
+                                    }
+                                });
+                                // No event: a silent approval has no card to raise, and ToolCallStarted already showed the call.
+                            }
+                            ApprovalSurfaceDecision::Deny(reason) => {
+                                eprintln!(
+                                    "[pinvou3-app] denying tool {} id={} reason={}",
+                                    tool_name,
+                                    id,
+                                    reason.reason_key()
+                                );
+                                let h = approve_handle.clone();
+                                let id_clone = id.clone();
+                                tokio::spawn(async move {
+                                    if let Err(error) = h.deny_tool_call(id_clone).await {
+                                        eprintln!(
+                                            "[pinvou3-app] guardrail deny decision failed: {error:#}"
+                                        );
+                                    }
+                                });
+                                // Hard-deny notice: reason is a stable English key (reason_key); the frontend
+                                // i18n maps the copy from it. No raw input, keeping sensitive arguments out of the event stream.
+                                // The payload goes through the single constructor (pending_approvals); its field set is pinned.
+                                let payload = crate::features::assistant::pending_approvals::guardrail_denied_payload(
+                                    &session_id,
+                                    &tool_name,
+                                    reason.reason_key(),
+                                );
+                                let _ = app.emit("chat:guardrail_denied", payload.clone());
+                                crate::features::remote_control::forward_app_event(
+                                    &app,
+                                    "chat:guardrail_denied",
+                                    payload,
+                                );
+                            }
+                            ApprovalSurfaceDecision::ShowCard => {
+                                // Register as pending, for decide_approval to settle and for the frontend to restore the card on remount.
+                                // The event payload is constructed from the same source as the registry (single constructor + key-set pin,
+                                // round-8 L3-F2) — field drift is no longer a two-place hand sync.
+                                let pending = crate::features::assistant::pending_approvals::PendingApproval {
+                                    approval_id: id.clone(),
+                                    tool_name: tool_name.clone(),
+                                    description: description.clone(),
+                                    input: input.clone(),
+                                    intent_summary: intent_summary.clone(),
+                                    approval_key: approval_key.clone(),
+                                    approval_grouping_key: approval_grouping_key.clone(),
+                                    force_prompt: approval_force_prompt,
+                                    created_at_ms: crate::features::assistant::pending_approvals::now_ms(),
+                                    // record stamps the registered generation via the third argument: this instance's
+                                    // emitting workspace generation snapshotted at spawn; the construction side leaves it empty.
+                                    request_workspace_generation: None,
+                                };
+                                crate::features::assistant::pending_approvals::record(
+                                    &session_id,
+                                    pending.clone(),
+                                    instance_workspace_generation,
+                                );
+                                let payload = crate::features::assistant::pending_approvals::approval_required_payload(&session_id, &pending);
+                                let _ = app.emit("chat:approval_required", payload.clone());
+                                crate::features::remote_control::forward_app_event(
+                                    &app,
+                                    "chat:approval_required",
+                                    payload,
+                                );
+                            }
                         }
-                    });
+                    }
                     // 不重复 emit chat:tool_start —— 上游 ToolCallStarted（带完整 input）
                     // 已先于 ApprovalRequired fire，前端已收到正确的 args。
                     // 之前在此 emit 会用 args=null 覆盖前端 toolMeta，导致产物路径丢失。
@@ -2323,6 +2489,146 @@ mod transcript_persist_pins {
         }
         out.push_str(rest);
         out
+    }
+
+    /// Review 5764675531 (P2-a) as tightened by 5766477612 / 5766212059 /
+    /// 5766526920 (P2-b): the pending-approval card must be stamped with the
+    /// EMITTING INSTANCE's workspace generation, and that identity must be
+    /// CAPTURED AT THE SPAWN SITE — the same await-free sync block that
+    /// resolves the roots and fixes `engine_config.workspace` in
+    /// `AppEngine::spawn_for_session` — then handed into this forwarder as a
+    /// spawn parameter. The async body must NOT re-read
+    /// `workspace_generation`: its first execution may already be past a
+    /// rebind's binding-commit advance, so a current-read would stamp a
+    /// cold-started A-directory instance with the B generation, pass the
+    /// decision-time comparison, and let A-directory memory land in the B
+    /// era. Mutation: moving the capture back into this async body (the
+    /// defect shape) fails the no-current-read assert and the engine-side
+    /// spawn-site anchor; dropping the parameter breaks the signature and
+    /// record asserts (store-side behavioral coverage in
+    /// pending_approvals::forkguard_pending_card_stamps_emitting_instance_generation
+    /// and forkguard_coldstart_identity_survives_rebind_before_first_mint).
+    #[test]
+    fn approval_card_stamps_the_spawn_captured_instance_generation() {
+        let body = forwarder_body();
+        let flattened: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        // The identity arrives as a spawn parameter, never as a body read:
+        // the async body must contain no `workspace_generation(` call at all
+        // (`instance_workspace_generation` alone does not match this needle,
+        // the `::` guard keeps the parameter name from satisfying it).
+        assert_eq!(
+            flattened.matches("::workspace_generation(").count(),
+            0,
+            "the forwarder async body must not re-read the session generation; \
+             the identity is captured at the spawn site and passed in"
+        );
+        assert!(
+            flattened.contains("instance_workspace_generation:Option<u64>,"),
+            "the forwarder must receive the spawn-site captured identity as a parameter"
+        );
+        assert_eq!(
+            flattened.matches("instance_workspace_generation").count(),
+            2,
+            "the parameter appears exactly twice: signature and record argument"
+        );
+        assert!(
+            flattened.contains("record(&session_id,pending.clone(),instance_workspace_generation,"),
+            "the pending card must be stamped with the spawn-captured instance generation"
+        );
+    }
+
+    /// Engine-side anchor for the same review chain (P2-b as tightened by
+    /// the second round, reviews 5768924092 / 5768948485 P2-a): the
+    /// identity capture must go through the detect-retry protocol
+    /// (`pending_approvals::capture_workspace_identity`) — a single
+    /// `workspace_generation(` read is forbidden because the generation
+    /// store lock and the SessionStore roots lock share no critical
+    /// section, so a rebind commit on another thread can tear a lone
+    /// read pair into "A-directory runtime + B-generation stamp". The
+    /// helper call must sit in `AppEngine::spawn_for_session`'s await-free
+    /// sync block, materialized after the workspace is fixed
+    /// (`let workspace = engine_config.workspace.clone()`) and before the
+    /// engine/forwarder spawns, must compare against the roots that fed
+    /// `engine_config.workspace` (`identity_expected_roots`), and its
+    /// generation must flow into `spawn_event_forwarder`. Mutation:
+    /// replacing the helper call with a direct `workspace_generation(`
+    /// read fails the no-single-read assert; deleting the capture (or
+    /// moving it anywhere after the spawn) fails the ordering anchors;
+    /// the protocol semantics live in pending_approvals' behavioral tests.
+    #[test]
+    fn spawn_site_captures_instance_identity_next_to_workspace_fixation() {
+        let src = include_str!("engine.rs");
+        let signature = "pub(crate) async fn spawn_for_session(";
+        let start = src.find(signature).expect("spawn_for_session must exist");
+        let rest = &src[start + signature.len()..];
+        let end = [
+            "\n    pub async fn ",
+            "\n    pub fn ",
+            "\n    pub(crate) async fn ",
+            "\n    pub(crate) fn ",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(src.len(), |offset| start + signature.len() + offset);
+        let body: String = src[start..end]
+            .split('\n')
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let flattened: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        // No direct single generation read may survive in the spawn body:
+        // the capture must run the detect-retry protocol instead (the `::`
+        // guard keeps the `instance_workspace_generation` parameter name
+        // from satisfying the needle).
+        assert_eq!(
+            flattened.matches("::workspace_generation(").count(),
+            0,
+            "spawn_for_session must not single-read workspace_generation; \
+             the identity capture must go through the detect-retry protocol"
+        );
+        let capture = "crate::features::assistant::pending_approvals::capture_workspace_identity(";
+        assert_eq!(
+            flattened.matches(capture).count(),
+            1,
+            "spawn_for_session must capture the instance identity through the \
+             detect-retry helper exactly once"
+        );
+        assert!(
+            flattened.contains("&Some(identity_expected_roots)"),
+            "the protocol must compare against the roots that fed \
+             engine_config.workspace (both tear directions rejected)"
+        );
+        let fixation = flattened
+            .find("letworkspace=engine_config.workspace.clone();")
+            .expect("workspace fixation must be materialized in spawn_for_session");
+        let engine_spawn = flattened
+            .find("lethandle=spawn_engine(engine_config,&dt_config);")
+            .expect("the engine spawn must stay in the sync block");
+        let capture_at = flattened
+            .find(capture)
+            .expect("the capture statement must exist");
+        assert!(
+            fixation < capture_at && capture_at < engine_spawn,
+            "the identity capture must sit between workspace fixation and the \
+             engine spawn (one await-free sync block)"
+        );
+        assert!(
+            flattened.contains("workspace.clone(),instance_workspace_generation,"),
+            "the captured identity must be handed to the forwarder spawn"
+        );
+        // The whole capture..spawn tail must be await-free so the capture
+        // and the workspace fixation are one atomic snapshot.
+        let tail = &flattened[fixation..engine_spawn];
+        assert!(
+            !tail.contains(".await"),
+            "no await may interleave workspace fixation, the identity capture, \
+             and the spawns"
+        );
     }
 
     #[test]

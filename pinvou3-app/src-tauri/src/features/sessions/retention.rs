@@ -721,7 +721,12 @@ impl SessionStore {
         // the unconditional call costs only a file read. A surviving ghost id
         // would resurrect the switch state after restart, and the
         // workspace-rebuild linkage would act on it.
-        let multi_agent_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        // Lane-neutral name (round-20 review minor): this eviction set feeds
+        // the multi-agent flag purge below AND the ask-on-guardrail durable
+        // purge further down — a multi-agent-specific name invited a future
+        // refactor to narrow or delete it and silently change the ask purge's
+        // eviction set.
+        let eviction_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         // Each io guard is scoped to its own mutation: the purge hooks at the
         // end of this function must fire with every store-side lock released
         // (the store.rs contract on notify_session_purged) — a future hook
@@ -729,7 +734,7 @@ impl SessionStore {
         // the non-reentrant in-process mutexes.
         {
             let _io = self.multi_agent_flags_io.lock();
-            if let Err(error) = Self::apply_multi_agent_mutation_locked(&[], &multi_agent_refs) {
+            if let Err(error) = Self::apply_multi_agent_mutation_locked(&[], &eviction_refs) {
                 eprintln!(
                     "[sessions] update _multi_agent.json after retention purge failed: {error:#}"
                 );
@@ -741,18 +746,37 @@ impl SessionStore {
             modes.retain(|id, _| !contains(id.as_str()));
         }
         // Purge modes against the DURABLE file with the full eviction set —
-        // NOT just the ids this process's boot-time map knows. Unlike the
-        // multi-agent flags, the mode sidecar has no boot-time ghost cleanup
-        // (`load_session_mode_states` merges every durable entry
-        // unconditionally), so a mode another process persisted after boot
-        // would otherwise survive its session's eviction forever and re-arm
-        // on id reuse: a recycled `agentic_{pid}_{counter}` id would reopen
-        // in the ghost mode instead of the default.
+        // NOT just the ids this process's boot-time map knows. The boot-time
+        // ghost sweep added with the tri-mode sidecars cleans orphaned ids at
+        // startup, but this purge remains load-bearing for post-boot writes:
+        // a mode another process (or a later in-run writer) persisted after
+        // boot would otherwise survive its session's eviction forever and
+        // re-arm on id reuse: a recycled `agentic_{pid}_{counter}` id would
+        // reopen in the ghost mode instead of the default.
         {
             let _modes_io = self.session_mode_states_io.lock();
             if let Err(error) = Self::apply_session_mode_mutation_locked(&[], ids) {
                 eprintln!(
                     "[sessions] update _session_mode_states.json after retention purge failed: {error:#}"
+                );
+            }
+        }
+
+        // Same ghost-id reasoning for the ask-on-guardrail overrides: a dead
+        // session's toggle surviving eviction would (a) accumulate forever
+        // and (b) silently re-arm a RECYCLED id via the seeding point
+        // (`ask_on_guardrail_seed` consults this map/sidecar at mint).
+        // Durable file purge covers toggles another process persisted after
+        // boot, same as the mode purge above.
+        {
+            let mut overrides = self.ask_on_guardrail_overrides.write();
+            overrides.retain(|id, _| !contains(id.as_str()));
+        }
+        {
+            let _modes_io = self.session_mode_states_io.lock();
+            if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[], &eviction_refs) {
+                eprintln!(
+                    "[sessions] update _ask_on_guardrail.json after retention/delete purge failed: {error:#}"
                 );
             }
         }
@@ -876,6 +900,18 @@ impl SessionStore {
         );
         ids.extend(
             self.hidden_sessions
+                .read()
+                .keys()
+                .filter(is_stale_scheduled_id)
+                .cloned(),
+        );
+        // Round-20 (review minor): collect from the ask-on-guardrail
+        // overrides map as well — a stale `sched-*` toggle that lives in no
+        // other in-memory map was invisible to this sweep (the boot ghost
+        // sweep covered it, but that sweep early-returns on an unreadable
+        // ask file, so this was the only belt-and-suspenders gap).
+        ids.extend(
+            self.ask_on_guardrail_overrides
                 .read()
                 .keys()
                 .filter(is_stale_scheduled_id)

@@ -98,19 +98,94 @@ const MAX_RPC_COMMAND_BYTES: usize = 128;
 /// 模型执行或改变运行中 turn 状态的入口统一拦截——此前只拦了输入框，
 /// 编辑重发/计划裁决/取消审批/停止生成都能绕过（复核 P1）。桌面端不经本
 /// 漏斗，不受影响。
+///
+/// Permission-changing entries are in the same class as execution entries (tri-mode safety model): `decide_approval`
+/// can approve a pending tool execution (= letting one round of execution through on the desktop's behalf), `set_session_mode`
+/// can switch the session to Yolo (Bypass + auto-approval), and `set_ask_on_guardrail` can flip
+/// Yolo's baseline guardrail from raising a card to silently hard-denying (or back) — all three change the session's safety
+/// posture and sit on the same interception surface as `accept_plan`/`exit_plan_to_yolo`.
+/// `get_pending_approvals` is a pure read (used to restore approval cards) and stays allowed.
 const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "accept_plan",
     "cancel_generation",
     "cancel_shell_task",
     "cancel_user_input",
     "compact_now",
+    "decide_approval",
     "discard_plan",
+    // Round-19 review (M2): the tri-mode unification made set_plan_mode_next
+    // a full posture write — it routes through the same
+    // publish_session_mode_change sequence (engine hot-sync via
+    // Op::ChangeMode + chat:mode_changed) and set_mode_in_memory clears
+    // pending_plan_id/plan_claim_in_flight (discard_plan-class semantics).
+    // Same class as set_session_mode/exit_plan_to_yolo, so it belongs on
+    // this list even though the write direction (Plan) is restrictive.
+    "set_plan_mode_next",
+    "web_access_set_codex_acp_mode",
+    // Round-14 review (same-class twins of the two entries above): the ACP
+    // config option IS the mode write path (the saved-mode restore drives
+    // posture through set_config_option with option id "mode"), and
+    // web_access_respond_codex_acp_permission is the direct decide_approval
+    // analog. Both are inert for multi-agent sessions today (a session is
+    // never both multi-agent and external ACP) — denylisted for the same
+    // "keep the promise total" reason as web_access_set_codex_acp_mode.
+    "web_access_set_codex_acp_config_option",
+    "web_access_respond_codex_acp_permission",
+    // Round-15 review (same-class twins, third sweep): the elicitation
+    // responder is the direct submit_user_input analog (user input fed into
+    // a running external ACP agent), and web_access_cancel_codex_acp is the
+    // cancel_generation-class entry for the ACP runtime. Both are inert for
+    // multi-agent sessions today for the same reason as the two above —
+    // denylisted so the "web is read-only on multi-agent execution surfaces"
+    // promise stays total instead of relying on today's invalid combination.
+    "web_access_respond_codex_acp_elicitation",
+    "web_access_cancel_codex_acp",
+    // Round-19 review (M3, fourth sweep): web_access_codex_acp_prompt is the
+    // ACP runtime's execution feed — the direct web_access_chat /
+    // submit_user_input analog (a full user prompt/turn into a running
+    // external ACP agent, guarded only by is_acp). Inert for multi-agent
+    // sessions today like every twin above; denylisted so the sweep's
+    // "remaining twins" enumeration is finally exhaustive instead of
+    // relying on today's invalid combination.
+    "web_access_codex_acp_prompt",
     "edit_last_turn",
     "exit_plan_to_yolo",
+    "set_ask_on_guardrail",
+    "set_session_mode",
     "submit_user_input",
     "summon_pinvou",
     "web_access_chat",
+    // Deliberate EXCLUSION, documented so the list stays self-describing
+    // (round-20 review minor): `set_mode_default` writes the GLOBAL posture
+    // default for NEW sessions only — it never touches a running session's
+    // posture, so it is not in this list's class ("web is read-only on
+    // multi-agent EXECUTION surfaces"). The web draft chip legitimately
+    // needs it (the web face has no other way to express the lane default),
+    // and the command predates the tri-mode split. Revisit only if the
+    // default ever becomes a live-posture write.
 ];
+
+/// Pure decision core (round-15 review I2: the three-arm decision previously had no behavioral coverage — mutants that
+/// inverted is_multi_agent, removed the contains check, or removed the aux bypass all stayed green). The host wrapper
+/// only projects the AppHandle into two booleans and delegates; this function is the single source of truth for the decision semantics.
+fn multi_agent_web_scope_decision(
+    command: &str,
+    is_aux_shaped: bool,
+    is_multi_agent: bool,
+) -> Result<(), String> {
+    if is_aux_shaped {
+        return Ok(());
+    }
+    if !MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command) {
+        return Ok(());
+    }
+    if is_multi_agent {
+        return Err(format!(
+            "{command} is not available for desktop-only multi-agent Sessions over Web"
+        ));
+    }
+    Ok(())
+}
 
 fn validate_multi_agent_session_web_scope(
     app: &AppHandle,
@@ -139,24 +214,17 @@ fn validate_multi_agent_session_web_scope(
     // chat for exactly the heaviest users. The denylist's "web is read-only"
     // promise is scoped to the multi-agent EXECUTION surface, not to its
     // side chat.
-    if crate::features::sessions::is_aux_session_id(session_id) {
-        return Ok(());
-    }
-    if !MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command) {
-        return Ok(());
-    }
     let is_multi_agent = {
         use tauri::Manager as _;
         app.state::<crate::features::sessions::SessionStore>()
             .mode_state(session_id)
             .multi_agent
     };
-    if is_multi_agent {
-        return Err(format!(
-            "{command} is not available for desktop-only multi-agent Sessions over Web"
-        ));
-    }
-    Ok(())
+    multi_agent_web_scope_decision(
+        command,
+        crate::features::sessions::is_aux_session_id(session_id),
+        is_multi_agent,
+    )
 }
 
 const MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
@@ -330,12 +398,16 @@ fn client_state_ready(value: &Value) -> bool {
 const RUST_FORWARDED_EVENTS: &[&str] = &[
     "acp:event",
     "artifact:disk",
+    "chat:approval_required",
+    "chat:approval_resolved",
     "chat:compaction",
     "chat:delta",
+    "chat:mode_changed",
     "chat:reasoning_start",
     "chat:reasoning_delta",
     "chat:reasoning_done",
     "chat:done",
+    "chat:guardrail_denied",
     "chat:steer_committed",
     "chat:steer_dropped",
     "chat:plan_ready",
@@ -3952,6 +4024,35 @@ mod tests {
         assert!(RUST_FORWARDED_EVENTS.contains(&"session:persona_changed"));
         assert!(policy.events.contains("multiagent:agent_progress"));
         assert!(RUST_FORWARDED_EVENTS.contains(&"multiagent:agent_progress"));
+        // round-10 supplementary pin: the four tri-mode events and the four approval/mode commands previously had
+        // no assertions on either the JS or the Rust side — deleting any entry from the whitelist or the forwarding
+        // table kept the whole suite green while the web announcer/catch-up/convergence surface silently died (bootstrap filters events and commands by policy).
+        for event in [
+            "chat:approval_required",
+            "chat:approval_resolved",
+            "chat:guardrail_denied",
+            "chat:mode_changed",
+        ] {
+            assert!(
+                policy.events.contains(event),
+                "tri-mode event {event} must stay in the web access policy"
+            );
+            assert!(
+                RUST_FORWARDED_EVENTS.contains(&event),
+                "tri-mode event {event} must stay in the relay forward table"
+            );
+        }
+        for command in [
+            "decide_approval",
+            "get_pending_approvals",
+            "set_session_mode",
+            "set_ask_on_guardrail",
+        ] {
+            assert!(
+                policy.commands.contains(command),
+                "tri-mode command {command} must stay in the web access policy (forward-compat registration)"
+            );
+        }
     }
 
     #[test]
@@ -4632,6 +4733,9 @@ mod tests {
     /// `cancel_generation`、`cancel_shell_task` 与 `cancel_user_input` 同属改变
     /// 运行中 turn 状态的取消类入口（前者终态整个生成并级联取消子智能体，
     /// 后者可终止委派子智能体正在执行的 shell 任务），必须一并封禁。
+    /// `decide_approval`/`set_session_mode`/`set_ask_on_guardrail` are permission-
+    /// changing entries: approving tool execution, switching to Yolo auto-approval, flipping the guardrail-card
+    /// toggle — the same interception surface as the execution class; `get_pending_approvals` is a pure read, stays allowed.
     #[test]
     fn multi_agent_web_denylist_blocks_execution_but_not_viewing() {
         for command in [
@@ -4646,21 +4750,92 @@ mod tests {
             "cancel_user_input",
             "compact_now",
             "summon_pinvou",
+            "decide_approval",
+            "set_session_mode",
+            "set_ask_on_guardrail",
+            // Round-13 review (consistency): the ACP lane's posture command
+            // is inert for multi-agent sessions today (the pool reconfigures
+            // through set_multi_agent_mode, not the ACP mode), but it is the
+            // same permission-changing class as set_session_mode — keep the
+            // "web is read-only on multi-agent execution surfaces" promise
+            // total instead of relying on today's invalid combination.
+            "web_access_set_codex_acp_mode",
+            // Round-14 review (same-class twins): the ACP config option IS
+            // the mode write path (saved-mode restore drives posture through
+            // set_config_option with option id "mode"), and
+            // web_access_respond_codex_acp_permission is the direct
+            // decide_approval analog. Same inertness, same rationale.
+            "web_access_set_codex_acp_config_option",
+            "web_access_respond_codex_acp_permission",
+            // Round-15 review (third sweep): the elicitation responder is
+            // the submit_user_input analog for the ACP runtime, and
+            // web_access_cancel_codex_acp is the cancel_generation-class
+            // entry. Same promise-totality rationale.
+            "web_access_respond_codex_acp_elicitation",
+            "web_access_cancel_codex_acp",
+            // Round-19 review (M2): the tri-mode unification turned
+            // set_plan_mode_next into a full posture write (shared
+            // publish_session_mode_change sequence + plan-ticket discard),
+            // so it is the same permission-changing class as
+            // set_session_mode/exit_plan_to_yolo even though the direction
+            // (Plan) is restrictive.
+            "set_plan_mode_next",
+            // Round-19 review (M3, fourth sweep): the ACP runtime's
+            // execution feed — the direct web_access_chat/submit_user_input
+            // analog. Same promise-totality rationale; closes the sweep's
+            // enumeration.
+            "web_access_codex_acp_prompt",
         ] {
             assert!(
                 super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
-                "执行入口 {command} 必须在 Web 只读封禁表内（复核 P1）"
+                "执行/权限变更入口 {command} 必须在 Web 只读封禁表内（复核 P1）"
             );
         }
         for command in [
             "get_session_timeline",
             "get_mode_state",
+            "get_pending_approvals",
             "web_access_cancel_session_download",
             "web_access_load_session_chunk",
+            // Round-20 review: the exclusion itself is pinned so an
+            // accidental "completeness" addition turns red. The global
+            // posture default for NEW sessions is not in the denylist's
+            // class (it never touches a running session's posture) and the
+            // web draft chip legitimately needs it — see the constant's
+            // exclusion note.
+            "set_mode_default",
         ] {
             assert!(
                 !super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
                 "只读查看 {command} 必须放行——Web 只读横幅要能取数"
+            );
+        }
+    }
+
+    /// Behavioral coverage (round-15 review I2): all four arms of `multi_agent_web_scope_decision` —
+    /// the aux bypass, non-blocked commands allowed, multi-agent + blocked denied (the error carries the
+    /// command name), non-multi-agent + blocked allowed (normal sessions keep working). Previously there was
+    /// only a constant-membership pin; mutants that inverted is_multi_agent or deleted the contains check stayed green.
+    #[test]
+    fn multi_agent_web_scope_decision_arms_are_behavioral() {
+        // Blocked table + multi-agent → deny, the error surface carries the command name (actionable).
+        let err = super::multi_agent_web_scope_decision("set_session_mode", false, true)
+            .expect_err("denylisted write must be refused for a multi-agent session");
+        assert!(err.contains("set_session_mode"), "错误必须带命令名: {err}");
+        // Blocked table + non-aux shape + non-multi-agent → allow (normal sessions keep working over Web).
+        super::multi_agent_web_scope_decision("set_session_mode", false, false)
+            .expect("ordinary sessions keep web access to non-posture commands");
+        // aux-shaped id → bypass (including blocked-table commands; the isolated pure-QA-surface threat model does not apply).
+        super::multi_agent_web_scope_decision("web_access_chat", true, true)
+            .expect("aux ids bypass the denylist scope for any command");
+        // Non-blocked command + multi-agent → allow (pure read surfaces must be able to fetch data).
+        super::multi_agent_web_scope_decision("get_mode_state", false, true)
+            .expect("read-only commands stay reachable for multi-agent sessions");
+        // Blocked table command-by-command + multi-agent → all denied (the decision core consumes the whole table, guarding against contains being removed).
+        for command in super::MULTI_AGENT_WEB_EXECUTION_DENYLIST {
+            assert!(
+                super::multi_agent_web_scope_decision(command, false, true).is_err(),
+                "denylisted {command} must be refused through the decision core"
             );
         }
     }

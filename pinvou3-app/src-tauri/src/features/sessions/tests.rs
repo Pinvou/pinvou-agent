@@ -22,7 +22,7 @@ use std::sync::Arc;
 // Crate-visible helpers exercised directly by the suite (not re-exported by
 // the facade because they are internal collaboration seams).
 use super::scheduled::ScheduledProfileRegistry;
-use super::store::{HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
+use super::store::{AUX_SESSION_TITLE, HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
 use super::validators::generate_session_id;
 
 /// RAII teardown for `isolated_store`. Field order is drop order: env is
@@ -172,6 +172,10 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
     reopened.load_pinned_sessions();
     reopened.load_hidden_sessions();
     reopened.load_session_mode_states();
+    // 生产 boot 在 load_session_mode_states 之后立即合并 `_ask_on_guardrail.json`
+    // （store.rs 的 boot 顺序）；helper 同序补上，重启断言不必各自记得手动
+    // 加载 override 镜像（漏掉的测试会静默测到空镜像）。
+    reopened.load_ask_on_guardrail_overrides();
     {
         let _mutation = reopened.scheduled_mutation.lock();
         reopened.enforce_session_retention_locked()?;
@@ -2157,7 +2161,12 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
         store.scheduled_profile(&id).expect("agent profile").mode,
         ScheduledRunMode::Agent
     );
-    assert_eq!(store.mode_state(&id).mode, SerializableMode::Yolo);
+    // Tri-mode: the scheduled profile carries the run's execution mode
+    // (Agent → AppMode::Agent) via the profile and engine state; the
+    // interactive mode-state layer has no entry for this scheduled session,
+    // so it resolves the unbound plain default — Auto, not the historical
+    // Yolo.
+    assert_eq!(store.mode_state(&id).mode, SerializableMode::Auto);
 
     let reloaded = reopen_store(&store).expect("restart after agent persistence");
     assert_eq!(
@@ -2167,7 +2176,7 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
             .mode,
         ScheduledRunMode::Agent
     );
-    assert_eq!(reloaded.mode_state(&id).mode, SerializableMode::Yolo);
+    assert_eq!(reloaded.mode_state(&id).mode, SerializableMode::Auto);
     assert_eq!(
         reloaded
             .load(&id)
@@ -3193,6 +3202,17 @@ fn boot_prunes_only_stale_scheduled_runtime_sidecars() {
     store.save_session_models();
     store.save_pinned_sessions();
     store.save_hidden_sessions();
+    // Round-20 (review minor): the scheduled sweep must also collect stale
+    // ids from the ask-on-guardrail overrides map — seed an override for the
+    // stale id and a survivor for the live one. The stale override lives in
+    // NO other in-memory map (mode_states et al. are not seeded here), so
+    // this exercises the overrides collection arm specifically.
+    store
+        .set_ask_on_guardrail(&live, true)
+        .expect("persist live ask override");
+    store
+        .set_ask_on_guardrail(&stale, false)
+        .expect("persist stale ask override");
     std::fs::remove_file(store.manager.sessions_dir().join(format!("{stale}.json")))
         .expect("simulate stale profile after session loss");
     let reloaded = reopen_store(&store).expect("reboot and prune sidecars");
@@ -3203,6 +3223,17 @@ fn boot_prunes_only_stale_scheduled_runtime_sidecars() {
     assert!(!reloaded.session_models.read().contains_key(&stale));
     assert!(!reloaded.pinned_sessions.read().contains_key(&stale));
     assert!(!reloaded.hidden_sessions.read().contains_key(&stale));
+    {
+        let overrides = reloaded.ask_on_guardrail_overrides.read();
+        assert!(
+            overrides.contains_key(&live),
+            "the live id's ask override survives the scheduled sweep"
+        );
+        assert!(
+            !overrides.contains_key(&stale),
+            "the stale id's ask override is evicted by the scheduled sweep"
+        );
+    }
     for sidecar in [
         "_session_models.json",
         "_pinned_sessions.json",
@@ -3987,7 +4018,10 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
     let claim = store
         .claim_pending_plan(sid, "plan-1")
         .expect("claim current plan");
-    assert_eq!(claim.accepted_state().mode, SerializableMode::Yolo);
+    // 首次 Plan 写入铸条目（resolved 默认 Auto，pre_plan_mode = Some(Auto)）：
+    // accept 回 Auto——「批准方案≠批准全自动」（v3.5 对账：旧断言 Yolo 钉的
+    // 正是已修复的铸造哨兵泄漏）。
+    assert_eq!(claim.accepted_state().mode, SerializableMode::Auto);
     assert!(claim.accepted_state().pending_plan_id.is_none());
     assert!(store.claim_pending_plan(sid, "plan-1").is_err());
     drop(claim);
@@ -4000,7 +4034,7 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
         .expect("reclaim current plan")
         .commit();
     let committed = store.mode_state(sid);
-    assert_eq!(committed.mode, SerializableMode::Yolo);
+    assert_eq!(committed.mode, SerializableMode::Auto);
     assert!(committed.pending_plan_id.is_none());
     assert!(store.claim_pending_plan(sid, "plan-1").is_err());
 
@@ -4017,6 +4051,281 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
     assert_eq!(discarded.mode, SerializableMode::Plan);
     assert!(discarded.pending_plan_id.is_none());
     assert!(store.discard_pending_plan(sid, "plan-2").is_err());
+}
+
+/// Tri-mode v3.5 回归钉（评审 B2）：首次模式写入是 Plan 的未物化会话，
+/// accept 必须落 resolved 默认（Auto），不得落铸造哨兵 Yolo——「批准方案
+/// ≠批准全自动」在其最常见的 GUI 路径（芯片 Plan → 批准）上成立。显式
+/// Yolo → Plan → accept 则如约回到 Yolo（用户自己选的模式）。
+#[test]
+fn first_plan_write_accept_returns_to_resolved_default_not_yolo_sentinel() {
+    let (store, _g) = isolated_store();
+    let sid = "first-plan-accept-session";
+    // 真实会话记录：启动幽灵清扫以记录文件为存活权威（与 multi-agent
+    // 清扫同一规则），重启断言的 durable 条目必须属于真实存在的会话。
+    store
+        .save_session_atomic(&chat_model_session(sid.to_string()))
+        .expect("materialize session record");
+    // Chip 在首次切换前显示的正是这个 resolved 默认。
+    assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
+    store
+        .set_mode(sid, SerializableMode::Plan)
+        .expect("enter plan");
+    store
+        .register_pending_plan(sid, "plan-1".to_string())
+        .expect("register plan");
+    let claim = store.claim_pending_plan(sid, "plan-1").expect("claim");
+    assert_eq!(
+        claim.accepted_state().mode,
+        SerializableMode::Auto,
+        "首次 Plan 写入后 accept 不得回到铸造哨兵 Yolo"
+    );
+    claim.commit();
+    assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
+    // 重启不丢：accept 落定的 Auto 是持久化记录，不是 fallback 巧合——
+    // entry-less 的 resolved fallback 恰好也是 Auto，`mode_state` 区分不了
+    // 持久与回退，必须断言 durable 条目本身（round-2 评审：空真断言）。
+    assert_eq!(
+        store.durable_mode_entry(sid),
+        Some(SerializableMode::Auto),
+        "accept 落定的默认必须落成 durable 条目，而非依赖 fallback"
+    );
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(
+        reopened.durable_mode_entry(sid),
+        Some(SerializableMode::Auto)
+    );
+    assert_eq!(reopened.mode_state(sid).mode, SerializableMode::Auto);
+
+    // 显式 Yolo → Plan → accept：回到用户进 Plan 前的模式。
+    let sid2 = "explicit-yolo-plan-session";
+    store
+        .set_mode(sid2, SerializableMode::Yolo)
+        .expect("explicit yolo");
+    store
+        .set_mode(sid2, SerializableMode::Plan)
+        .expect("enter plan");
+    store
+        .register_pending_plan(sid2, "plan-2".to_string())
+        .expect("register plan");
+    let claim2 = store.claim_pending_plan(sid2, "plan-2").expect("claim");
+    assert_eq!(
+        claim2.accepted_state().mode,
+        SerializableMode::Yolo,
+        "显式进 Plan 前的 Yolo 是用户选择，accept 如约返回"
+    );
+    claim2.commit();
+}
+
+/// Tri-mode v3.5（评审 M1/minor-5）：对尚无 mode 条目的会话翻转
+/// ask-on-guardrail，选择必须持久化，并在后续物化与重启后仍然生效——
+/// 不得静默丢弃用户的安全选择（也不得为存开关而钉死一个 mode）。
+#[test]
+fn ask_on_guardrail_toggle_persists_for_entry_less_sessions() {
+    let (store, _g) = isolated_store();
+    let sid = "entryless-toggle-session";
+    // 真实会话记录（保持 entry-less：不写 mode）：启动幽灵清扫以记录文件
+    // 为存活权威，重启断言的 override 必须属于真实存在的会话。
+    store
+        .save_session_atomic(&chat_model_session(sid.to_string()))
+        .expect("materialize session record");
+    // 无条目：解析值 = 全局默认。
+    let global_default = store.mode_state(sid).ask_on_guardrail;
+    store
+        .set_ask_on_guardrail(sid, !global_default)
+        .expect("toggle");
+    // 仍无 mode 条目物化，但 override 已可读。
+    assert_eq!(store.mode_state(sid).ask_on_guardrail, !global_default);
+    assert_eq!(
+        store.session_mode_states.read().get(sid),
+        None,
+        "toggle 不得为 entry-less 会话钉死 mode"
+    );
+    // 后续物化（模式写入铸条目）继承 override，不被全局默认冲掉。
+    store
+        .set_mode(sid, SerializableMode::Plan)
+        .expect("materialize");
+    assert_eq!(store.mode_state(sid).ask_on_guardrail, !global_default);
+    assert_eq!(store.mode_state(sid).mode, SerializableMode::Plan);
+    // 重启：sidecar 覆盖在 boot 合并后仍然生效。
+    let reopened = reopen_store(&store).expect("reboot");
+    reopened.load_ask_on_guardrail_overrides();
+    assert_eq!(reopened.mode_state(sid).ask_on_guardrail, !global_default);
+}
+
+/// 启动幽灵清扫（retention 对齐，评审 round-7）：会话记录删除与 mode/
+/// ask-on-guardrail sidecar 清理之间崩溃（绕过 store.delete 直接删记录文件
+/// 模拟）留下的幽灵条目，重启后必须被清扫——mode 条目、显式 Auto 伴随旗与
+/// 守卫询问覆盖一并移除，回收 id 不得经铸造点静默继承幽灵的选择；幸存
+/// 会话的条目原样保留（两个会话只幽灵化一个，断言非平凡）。
+#[test]
+fn boot_ghost_sweep_clears_dead_id_mode_and_guardrail_override() {
+    let (store, _guard) = isolated_store();
+    let ghost_id = store
+        .create_new("ghost".into(), None, std::env::temp_dir())
+        .expect("create ghost")
+        .metadata
+        .id;
+    let survivor_id = store
+        .create_new("survivor".into(), None, std::env::temp_dir())
+        .expect("create survivor")
+        .metadata
+        .id;
+
+    // 幽灵：显式 Auto（共享表折叠 "plan" + 伴随旗 true）+ 关闭守卫询问；
+    // 幸存者：同样显式 Auto + 显式开启覆盖——重启后必须原样恢复。
+    store
+        .set_mode(&ghost_id, SerializableMode::Auto)
+        .expect("ghost mode");
+    store
+        .set_mode(&survivor_id, SerializableMode::Auto)
+        .expect("survivor mode");
+    store
+        .set_ask_on_guardrail(&ghost_id, false)
+        .expect("ghost toggle");
+    store
+        .set_ask_on_guardrail(&survivor_id, true)
+        .expect("survivor toggle");
+
+    // 模拟崩溃窗口：不经过 store.delete 的 purge，直接删会话记录文件。
+    std::fs::remove_file(paths::sessions_root().join(format!("{ghost_id}.json")))
+        .expect("crash: delete record file only");
+
+    let reopened = reopen_store(&store).expect("reboot");
+    // 幽灵 mode 条目从共享表与内存镜像两侧清除。
+    let durable_modes: std::collections::HashMap<String, SerializableMode> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_mode_states.json"))
+            .expect("mode sidecar"),
+    )
+    .expect("parse mode sidecar");
+    assert!(
+        !durable_modes.contains_key(&ghost_id),
+        "幽灵 mode 条目必须在启动清扫中移除: {durable_modes:?}"
+    );
+    assert!(
+        !reopened.session_mode_states.read().contains_key(&ghost_id),
+        "内存镜像不得再有幽灵 mode 条目"
+    );
+    // 显式 Auto 伴随旗随共享表条目一并清除（funnel 同一次移除两张表）。
+    let auto_flags: std::collections::HashMap<String, bool> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_auto_modes.json"))
+            .expect("auto companion sidecar"),
+    )
+    .expect("parse auto companion sidecar");
+    assert!(
+        !auto_flags.contains_key(&ghost_id),
+        "幽灵的显式 Auto 伴随旗必须一并清除: {auto_flags:?}"
+    );
+    // 幽灵的守卫询问覆盖从 sidecar 与镜像两侧移除，回收 id 只能跟随全局
+    // 默认（true），不得继承幽灵的关闭选择。
+    let overrides: std::collections::HashMap<String, bool> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_ask_on_guardrail.json"))
+            .expect("guardrail sidecar"),
+    )
+    .expect("parse guardrail sidecar");
+    assert!(
+        !overrides.contains_key(&ghost_id),
+        "幽灵 ask-on-guardrail 覆盖必须在启动清扫中移除: {overrides:?}"
+    );
+    assert!(
+        !reopened
+            .ask_on_guardrail_overrides
+            .read()
+            .contains_key(&ghost_id),
+        "覆盖镜像不得再有幽灵条目"
+    );
+    assert!(
+        reopened.mode_state(&ghost_id).ask_on_guardrail,
+        "回收 id 不得经铸造点继承幽灵的关闭选择"
+    );
+    // 幸存会话原样：共享表、伴随旗、覆盖与解析视图全部保留。
+    assert_eq!(
+        durable_modes.get(&survivor_id),
+        Some(&SerializableMode::Plan),
+        "幸存者的 Auto 折叠值必须原样保留"
+    );
+    assert_eq!(
+        auto_flags.get(&survivor_id),
+        Some(&true),
+        "幸存者的显式 Auto 伴随旗必须原样保留"
+    );
+    assert_eq!(
+        overrides.get(&survivor_id),
+        Some(&true),
+        "幸存者的显式开启覆盖必须原样保留"
+    );
+    assert_eq!(
+        reopened.mode_state(&survivor_id).mode,
+        SerializableMode::Auto,
+        "幸存会话的显式 Auto 必须原样恢复"
+    );
+    assert!(
+        reopened.mode_state(&survivor_id).ask_on_guardrail,
+        "幸存会话的显式开启覆盖必须原样恢复"
+    );
+}
+
+/// Tri-mode（评审 P2）：ask-on-guardrail 持久化失败必须作为失败上报，
+/// 不得 Ok(()) 把回滚后的旧值当权威状态广播——命令层拿到 Err 才会跳过
+/// publish,前端既有 catch 才会回滚并提示。副作用断言:内存条目与
+/// override 镜像都精确回到调用前状态。
+#[cfg(unix)]
+#[test]
+fn ask_on_guardrail_persist_failure_returns_err_and_rolls_back() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (store, guard) = isolated_store();
+    let sid = "persist-failure-toggle-session";
+    // 物化条目:rollback 走 entry 回写路径(与 entry-less 的 override 移除
+    // 路径相对)。先落到 Plan,条目的 guardrail 默认继承全局默认。
+    store
+        .set_mode(sid, SerializableMode::Plan)
+        .expect("materialize");
+    let seeded = store.mode_state(sid).ask_on_guardrail;
+    let toggled = !seeded;
+    store
+        .set_ask_on_guardrail(sid, toggled)
+        .expect("first toggle");
+    assert_eq!(store.mode_state(sid).ask_on_guardrail, toggled);
+
+    // 把 sessions 目录变成只读:原子写 rename 需要目录写权限,必然失败。
+    let sessions_dir = crate::platform::paths::sessions_root();
+    let mut perms = std::fs::metadata(&sessions_dir)
+        .expect("sessions dir")
+        .permissions();
+    let original_dir_mode = perms.mode();
+    perms.set_mode(0o555);
+    std::fs::set_permissions(&sessions_dir, perms).expect("chmod sessions dir");
+
+    let outcome = store.set_ask_on_guardrail(sid, seeded);
+
+    // 恢复权限:TestHomeGuard 清理临时目录需要可写。
+    let mut restore = std::fs::metadata(&sessions_dir)
+        .expect("sessions dir")
+        .permissions();
+    restore.set_mode(original_dir_mode);
+    std::fs::set_permissions(&sessions_dir, restore).expect("restore sessions dir");
+
+    let error = outcome.expect_err("persist failure must surface as Err, not Ok(())");
+    assert!(
+        !error.to_string().is_empty(),
+        "the error must carry the persist failure detail"
+    );
+    // 内存条目保持翻转后的旧值(不是本次要写入的值),mode 不受牵连。
+    // publish-after-persist 重排(评审 P3)后这不是"回滚"而是"从未发布":
+    // 持久化先行,失败路径不触碰 entry/override 镜像,读者永远看不到
+    // 侧车不携带的值(瞬态发布窗不复存在)。
+    assert_eq!(
+        store.mode_state(sid).ask_on_guardrail,
+        toggled,
+        "in-memory entry must stay at the pre-call value (never published)"
+    );
+    assert_eq!(
+        store.mode_state(sid).mode,
+        SerializableMode::Plan,
+        "the failed guardrail toggle must not disturb the session mode"
+    );
+    let _ = guard; // ENV_LOCK 守卫活到断言结束
 }
 
 /// Mode-switch loop (the core contract after the foundation regressed to two
@@ -4036,23 +4345,24 @@ fn mode_switch_loop_preserves_orthogonal_state() {
     let (store, _g) = isolated_store();
     let sid = "s-loop";
 
-    // starts at the default Yolo, loaded with orthogonal state
-    assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
+    // starts at the tri-mode default (unbound plain session → Auto), loaded
+    // with orthogonal state
+    assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
     store.set_pending_persona_body(sid, Some("PENDING BODY".into()));
     store.set_mounted_collection(sid, Some(42));
     store.set_active_persona(sid, Some("expert-x".into()));
 
-    // two round trips of the loop: Yolo →(set_plan_mode_next)→ Plan
-    // →(accept/exit)→ Yolo
+    // two round trips of the loop: Auto →(set_plan_mode_next)→ Plan
+    // →(accept/exit)→ Auto
     for _ in 0..2 {
         store
             .set_mode(sid, SerializableMode::Plan)
             .expect("set chat plan mode");
         assert_eq!(store.mode_state(sid).mode, SerializableMode::Plan);
         store
-            .set_mode(sid, SerializableMode::Yolo)
-            .expect("set chat yolo mode");
-        assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
+            .set_mode(sid, SerializableMode::Auto)
+            .expect("set chat auto mode");
+        assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
     }
 
     // all three orthogonal fields preserved
@@ -4067,6 +4377,118 @@ fn mode_switch_loop_preserves_orthogonal_state() {
         st.active_persona.as_deref(),
         Some("expert-x"),
         "切 mode 清了人格"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tri-mode safety: the global `ask_on_guardrail_default` preference seeds
+// every fresh mode-state entry (the `mode_state` fallback AND every mint
+// site, boot included); explicit `_ask_on_guardrail.json` overrides keep
+// winning and already-materialized entries are never re-seeded in-process.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ask_on_guardrail_default_seeds_fresh_and_unmaterialized_sessions() {
+    let (store, _g) = isolated_store();
+    let sid = "s-ask-seed";
+
+    // (a) Default pref (true): a session with no entry resolves armed.
+    assert!(
+        store.mode_state(sid).ask_on_guardrail,
+        "the fallback for an unmaterialized session must follow the global default (true)"
+    );
+
+    // (b) The global "silent hard-deny" opt-out disarms a FRESH session
+    // before it has any explicit per-session state — both the read-side
+    // fallback and the mint side of an explicit set_mode.
+    store
+        .set_ask_on_guardrail_default(false)
+        .expect("persist ask_on_guardrail_default=false");
+    assert!(
+        !store.mode_state("s-ask-fresh").ask_on_guardrail,
+        "the fallback must answer ask_on_guardrail_default=false"
+    );
+    store
+        .set_mode("s-ask-mint", SerializableMode::Auto)
+        .expect("mint entry via set_mode");
+    assert!(
+        !store.mode_state("s-ask-mint").ask_on_guardrail,
+        "a fresh entry minted by set_mode must seed from ask_on_guardrail_default=false"
+    );
+
+    // (c) An explicit per-session override wins over the global opt-out.
+    store
+        .set_ask_on_guardrail("s-ask-mint", true)
+        .expect("write per-session override");
+    assert!(
+        store.mode_state("s-ask-mint").ask_on_guardrail,
+        "the explicit _ask_on_guardrail.json override must beat the global default"
+    );
+    let overrides: std::collections::HashMap<String, bool> = serde_json::from_str(
+        &std::fs::read_to_string(
+            crate::platform::paths::sessions_root().join("_ask_on_guardrail.json"),
+        )
+        .expect("override sidecar must exist"),
+    )
+    .expect("override sidecar must stay valid JSON");
+    assert_eq!(
+        overrides.get("s-ask-mint"),
+        Some(&true),
+        "the explicit armed choice must be durably recorded"
+    );
+}
+
+#[test]
+fn ask_on_guardrail_materialized_entry_is_not_reseeded_but_boot_mint_follows_the_pref() {
+    let (store, _g) = isolated_store();
+    let sid = "s-ask-pinned";
+
+    // Materialize while the global default is still true (fresh home pref).
+    store
+        .set_mode(sid, SerializableMode::Auto)
+        .expect("materialize entry");
+    assert!(store.mode_state(sid).ask_on_guardrail);
+    store
+        .set_ask_on_guardrail_default(false)
+        .expect("flip the global default off");
+    assert!(
+        store.mode_state(sid).ask_on_guardrail,
+        "a materialized entry must NOT be re-seeded by a later default change"
+    );
+    // …while a session still without an entry keeps seeding from the new default.
+    store
+        .set_mode("s-ask-late", SerializableMode::Auto)
+        .expect("mint entry after the flip");
+    assert!(!store.mode_state("s-ask-late").ask_on_guardrail);
+
+    // Boot remint: the durable toggle for a session absent from the override
+    // sidecar IS "follow the global default" (the field's documented
+    // semantics), so a persisted-mode session without an explicit override
+    // re-seeds from the CURRENT pref at boot, while an explicit override
+    // recorded before the flip keeps winning.
+    seed_session(&store, "s-ask-boot-armed", 0);
+    seed_session(&store, "s-ask-boot-opted", 0);
+    store
+        .set_mode("s-ask-boot-armed", SerializableMode::Auto)
+        .expect("persist armed boot session mode");
+    store
+        .set_mode("s-ask-boot-opted", SerializableMode::Auto)
+        .expect("persist opted boot session mode");
+    store
+        .set_ask_on_guardrail("s-ask-boot-opted", true)
+        .expect("record explicit override pre-flip");
+    store
+        .set_ask_on_guardrail_default(false)
+        .expect("flip the global default off before reboot");
+    let rebooted = reopen_store(&store).expect("reopen");
+    rebooted.load_ask_on_guardrail_overrides();
+    assert!(
+        !rebooted.mode_state("s-ask-boot-armed").ask_on_guardrail,
+        "boot mint of a persisted-mode session without an override must seed from the current default"
+    );
+    assert!(
+        rebooted.mode_state("s-ask-boot-opted").ask_on_guardrail,
+        "the explicit override must survive the reboot and the default flip"
     );
 }
 
@@ -4495,7 +4917,10 @@ fn ghost_ids_are_reconciled_away_on_load() {
 
 /// 蜂群开关物化 mode 条目时必须用解析出的默认 mode，不得 `or_default()`：
 /// 从未切换过 mode 的 code 会话默认是 Plan 只读，开一次开关不能把它静默
-/// 翻成 Yolo 自动批准（既覆盖 set_multi_agent，也覆盖启动恢复路径）。
+/// 翻成 Yolo 自动批准。`set_multi_agent`（谓词可用）物化 Plan；启动恢复
+/// 路径的装载先于 code-session predicate 注册（生产环境同样在 Tauri setup
+/// 钩子里才注册），物化的是无谓词进程的解析默认 Auto——两条恢复路都绝不
+/// 得回到 `or_default()` 的 Yolo。
 #[test]
 fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
     let (store, _guard) = isolated_store();
@@ -4518,7 +4943,10 @@ fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
         "code 会话开蜂群不得把默认 mode 翻成 Yolo"
     );
 
-    // 启动恢复路径：新 store 从 sidecar 恢复开关，同样不得物化 Yolo。
+    // 启动恢复路径：新 store 从 sidecar 恢复开关。启动时装载 multi-agent
+    // flag 时 code-session predicate 尚未注册（生产环境同样如此），物化的
+    // mode 条目只能解析无谓词进程的默认——tri-mode 的 Auto。钉住的不变量：
+    // 恢复绝不物化 Yolo（or_default 的旧行为），开关本身不丢。
     let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
         .expect("reboot store");
     let second_predicate_id = id.clone();
@@ -4528,8 +4956,8 @@ fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
     assert!(reloaded.mode_state(&id).multi_agent, "开关恢复");
     assert_eq!(
         reloaded.mode_state(&id).mode,
-        SerializableMode::Plan,
-        "启动恢复同样不得把 code 会话翻成 Yolo"
+        SerializableMode::Auto,
+        "启动恢复不得把会话物化成 Yolo（or_default 的旧行为）"
     );
 }
 
@@ -4596,6 +5024,46 @@ fn retention_purge_also_updates_multi_agent_flags() {
     );
 }
 
+/// Round-13 review: the ask-on-guardrail override purge block inside
+/// `purge_session_side_maps` had no test — deleting the block (or dropping
+/// the durable mutation call) compiled green, silently reopening the
+/// recycled-id re-arm hazard the block's own comment warns about. Mirror of
+/// the multi-agent sibling above: toggle persists durably → purge wipes the
+/// in-memory override AND the `_ask_on_guardrail.json` sidecar entry.
+#[test]
+fn retention_purge_also_updates_ask_on_guardrail_overrides() {
+    let (store, _guard) = isolated_store();
+    let chat = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = chat.metadata.id.clone();
+    // Persist an explicit override (the default is `true`, so flip OFF to
+    // make the sidecar entry observable).
+    store
+        .set_ask_on_guardrail(&id, false)
+        .expect("persist ask override");
+    let file = paths::sessions_root().join("_ask_on_guardrail.json");
+    assert!(
+        file.is_file(),
+        "the explicit override must reach the sidecar"
+    );
+    assert!(
+        !store.mode_state(&id).ask_on_guardrail,
+        "the pre-purge override must read back OFF"
+    );
+
+    store.purge_session_side_maps(std::slice::from_ref(&id));
+
+    assert!(
+        store.mode_state(&id).ask_on_guardrail,
+        "内存中的显式覆盖必须随 purge 一并清除（回收 id 回落全局默认 true）"
+    );
+    assert!(
+        !file.exists(),
+        "自动清理后 _ask_on_guardrail.json 不得残留幽灵 id"
+    );
+}
+
 #[test]
 fn retention_purge_notifies_session_purged_hooks() {
     let (store, _guard) = isolated_store();
@@ -4642,8 +5110,9 @@ fn code_session_first_use_defaults_to_plan() {
     // Never used code mode (no per-session record, global last_mode=None) →
     // read-only Plan.
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
-    // plain sessions keep the Yolo status quo.
-    assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Yolo);
+    // Tri-mode: unbound plain sessions default to Auto (per-call approval
+    // cards), no longer the historical full-auto Yolo.
+    assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Auto);
 }
 
 #[test]
@@ -4661,16 +5130,227 @@ fn code_session_default_follows_code_lane_default() {
     assert!(store.code_permission_prefs().last_mode.is_none());
     // A draft-state write of the code lane global default → new code
     // sessions' defaults follow; existing sessions are unaffected.
-    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("persist lane default");
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Yolo);
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
-    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect("persist lane default");
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
+}
+
+/// 命令线折叠视图：显式 Auto 全局默认以 `last_mode_auto` 伴随旗持久化（
+/// legacy 字段保持 None，磁盘形状另有 pin），`code_permission_prefs_view`
+/// 把旗折回 `last_mode = Some(Auto)`——codex 草稿芯片按 `last_mode` 解析，
+/// 不折叠会把重启后的显式 Auto 显示成 Plan（display 与
+/// `resolved_default_mode` 行为背离）。legacy 写入原样透传。
+#[test]
+fn code_permission_prefs_view_folds_auto_companion_flag() {
+    let (store, _g) = isolated_store();
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Auto)
+        .expect("persist lane default");
+    // 原始镜像：legacy 字段永不携带 "auto"（companion-flag 磁盘形状）。
+    assert!(store.code_permission_prefs().last_mode.is_none());
+    assert!(store.code_permission_prefs().last_mode_auto);
+    // 折叠视图：Auto 回到 last_mode，旗与显示词表并存。
+    let view = store.code_permission_prefs_view();
+    assert_eq!(view.last_mode, Some(SerializableMode::Auto));
+    assert!(view.last_mode_auto);
+    // legacy 写入（Plan/Yolo）原样透传，旗随之清除。
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect("persist lane default");
+    let view = store.code_permission_prefs_view();
+    assert_eq!(view.last_mode, Some(SerializableMode::Plan));
+    assert!(!view.last_mode_auto);
+}
+
+/// Persist-failure propagation (review JensenChen28 5780647695 + zhuowp
+/// 5780927743 second finding): a failed settings write must reach the
+/// command layer as `Err`. The log-only tolerance answered
+/// `Ok(stale defaults)`, so both IPC bridges filed the old default while
+/// the draft chip was already drawn as the target — a session materialized
+/// afterwards ran the OLD backend posture while the UI claimed the switch
+/// landed. The in-memory mirror must also stay untouched (post_commit
+/// never runs on a failed save), and a successful write after recovery
+/// lands normally (control arm — the success-path behavior is unchanged).
+/// Mutation (red): reverting set_mode_default to the log-only form fails
+/// the expect_err.
+#[test]
+fn set_mode_default_persist_failure_propagates_and_keeps_mirror() {
+    let (store, _g) = isolated_store();
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("control write succeeds");
+    // settings.json becomes a directory: save_unlocked must fail (the lock
+    // file is a sibling, so this is a genuine persistence failure, not a
+    // lock-acquisition failure).
+    let settings = crate::platform::paths::settings_path();
+    std::fs::remove_file(&settings).ok();
+    std::fs::create_dir_all(&settings).expect("blocker fixture");
+    let error = store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect_err("a failed settings save must propagate to the command layer");
+    assert!(
+        error.contains("save settings failed"),
+        "the propagated error must be the persistence failure itself: {error}"
+    );
+    // 镜像不发布：本 run 答的仍是上一次成功提交的值（与磁盘一致）。
+    assert_eq!(
+        store.mode_defaults().code,
+        Some(SerializableMode::Yolo),
+        "a failed save must leave the authoritative mirror untouched"
+    );
+    // 恢复写路径后成功提交照常（对照臂：成功路径行为不变）。
+    std::fs::remove_dir_all(&settings).ok();
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect("recovered write succeeds");
+    assert_eq!(store.mode_defaults().code, Some(SerializableMode::Plan));
+}
+
+/// Effective execution mode projection (review zhuowp 5780927743 third
+/// finding): `post_accept_mode` must mirror `claim_pending_plan`'s restore
+/// line — a Plan entered from Auto resumes Auto (the web face must refuse
+/// such accepts BEFORE a turn opens: it has no approval-card surface), a
+/// Plan entered from Yolo resumes Yolo, and the rebooted-Plan shape
+/// (pre_plan_mode None) falls back to Auto. Mutation (red): returning
+/// `self.mode` unconditionally (ignoring pre_plan_mode) fails the first
+/// and third asserts.
+#[test]
+fn post_accept_mode_mirrors_claim_restore() {
+    let (store, _g) = isolated_store();
+    with_code_sessions(&store, &["pam-1"]);
+    store
+        .set_mode("pam-1", SerializableMode::Auto)
+        .expect("auto");
+    store
+        .set_mode("pam-1", SerializableMode::Plan)
+        .expect("plan");
+    assert_eq!(
+        store.mode_state("pam-1").post_accept_mode(),
+        SerializableMode::Auto,
+        "a Plan entered from Auto must project Auto as the post-accept mode"
+    );
+    store
+        .set_mode("pam-1", SerializableMode::Yolo)
+        .expect("yolo");
+    assert_eq!(
+        store.mode_state("pam-1").post_accept_mode(),
+        SerializableMode::Yolo,
+        "a non-Plan mode projects itself"
+    );
+    store
+        .set_mode("pam-1", SerializableMode::Plan)
+        .expect("plan");
+    assert_eq!(
+        store.mode_state("pam-1").post_accept_mode(),
+        SerializableMode::Yolo,
+        "a Plan entered from Yolo must project Yolo"
+    );
+    // Rebooted Plan session: the restored entry carries pre_plan_mode = None
+    // and claim falls back to Auto — the projection must say the same.
+    let mut restored = store.mode_state("pam-1");
+    restored.pre_plan_mode = None;
+    assert_eq!(
+        restored.post_accept_mode(),
+        SerializableMode::Auto,
+        "a Plan without a remembered origin must fall back to Auto"
+    );
+}
+
+/// Tri-mode (M2) end-to-end: an explicit Auto lane default persists via the
+/// dedicated `*_auto` companion flags — settings.json never carries the
+/// `"auto"` literal, so a pre-tri-mode binary keeps parsing the whole file
+/// (an unknown variant there fails the parse and its next save would
+/// durably rewrite every unrelated preference from fallback defaults).
+#[test]
+fn set_mode_default_auto_persists_via_companion_flag_and_keeps_settings_legacy_parseable() {
+    let (store, _g) = isolated_store();
+    store
+        .set_mode_default(ModeLane::Work, SerializableMode::Auto)
+        .expect("persist lane default");
+    assert_eq!(
+        store.mode_defaults().work,
+        Some(SerializableMode::Auto),
+        "the view folds the companion flag back to Some(Auto)"
+    );
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Auto)
+        .expect("persist lane default");
+    assert_eq!(store.mode_defaults().code, Some(SerializableMode::Auto));
+    // Code-session resolution reads the companion flag, not a lost legacy
+    // value; the unbound-plain default is unchanged.
+    with_code_sessions(&store, &["m2-code-1"]);
+    assert_eq!(
+        store.mode_state("m2-code-1").mode,
+        SerializableMode::Auto,
+        "a fresh code session follows the explicit Auto default"
+    );
+    assert_eq!(
+        store.mode_state("m2-plain").mode,
+        SerializableMode::Auto,
+        "unbound plain default unchanged"
+    );
+    // The on-disk settings.json stays parseable by a pre-tri-mode binary.
+    let raw = std::fs::read_to_string(crate::platform::paths::settings_path())
+        .expect("set_mode_default persisted settings.json");
+    assert!(
+        !raw.contains("\"auto\""),
+        "settings.json must never carry the auto literal: {raw}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("settings.json parses");
+    assert_eq!(
+        parsed["mode_defaults"]["work_auto"],
+        serde_json::json!(true),
+        "{raw}"
+    );
+    assert_eq!(
+        parsed["code_permission"]["last_mode_auto"],
+        serde_json::json!(true),
+        "{raw}"
+    );
+    assert!(parsed["code_permission"]["last_mode"].is_null(), "{raw}");
+    // Explicit Plan/Yolo choices clear the companion flag and return to the
+    // legacy vocabulary (the work lane's Auto choice is untouched — per-lane
+    // independence).
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("persist lane default");
+    let raw = std::fs::read_to_string(crate::platform::paths::settings_path())
+        .expect("read settings.json");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("settings.json parses");
+    assert_eq!(
+        parsed["code_permission"]["last_mode_auto"],
+        serde_json::json!(false),
+        "{raw}"
+    );
+    assert_eq!(
+        parsed["code_permission"]["last_mode"],
+        serde_json::json!("yolo"),
+        "{raw}"
+    );
+    assert_eq!(
+        parsed["mode_defaults"]["work_auto"],
+        serde_json::json!(true),
+        "{raw}"
+    );
+    assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
+    // Reboot: the Auto choice survives via the companion flags.
+    store
+        .set_mode_default(ModeLane::Work, SerializableMode::Auto)
+        .expect("persist lane default");
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Auto));
 }
 
 /// A plain chat session bound to a user working directory: its default mode
 /// aligns with the code safety posture (Plan on first use, following the code
-/// lane's global default); unbound plain sessions stay on Yolo.
+/// lane's global default); unbound plain sessions default to the tri-mode
+/// Auto.
 #[test]
 fn workspace_bound_plain_session_defaults_to_plan_like_code() {
     let (store, _g) = isolated_store();
@@ -4684,23 +5364,27 @@ fn workspace_bound_plain_session_defaults_to_plan_like_code() {
         .expect("bind");
 
     // Never used (global last_mode=None) → read-only Plan on first use;
-    // unbound plain stays Yolo.
+    // unbound plain stays on the tri-mode Auto default.
     assert_eq!(
         store.mode_state(&bound.metadata.id).mode,
         SerializableMode::Plan
     );
     assert_eq!(
         store.mode_state("plain-unbound").mode,
-        SerializableMode::Yolo
+        SerializableMode::Auto
     );
 
     // The code lane's global default applies to bound plain sessions as well.
-    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("persist lane default");
     assert_eq!(
         store.mode_state(&bound.metadata.id).mode,
         SerializableMode::Yolo
     );
-    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Plan)
+        .expect("persist lane default");
 
     let _ = std::fs::remove_dir_all(&bound_dir);
 }
@@ -4709,6 +5393,13 @@ fn workspace_bound_plain_session_defaults_to_plan_like_code() {
 fn code_mode_persists_per_session_across_restart() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2", "code-3"]);
+    // 真实会话记录：重启断言涉及的 code-1/code-2 必须是真实存在的会话
+    // （启动幽灵清扫以记录文件为存活权威）；code-3 只做 fallback 断言。
+    for id in ["code-1", "code-2"] {
+        store
+            .save_session_atomic(&chat_model_session(id.to_string()))
+            .expect("materialize code session record");
+    }
     store
         .set_mode("code-1", SerializableMode::Yolo)
         .expect("code-1 yolo");
@@ -4742,15 +5433,21 @@ fn code_mode_persists_per_session_across_restart() {
     assert_eq!(on_disk.get("code-2"), Some(&SerializableMode::Plan));
 }
 
-/// After an accepted plan is confirmed (commit), the session's Yolo joins
-/// the per-session persistence;
-/// no global lane default is touched (two-lane semantics); a failed-commit
-/// rollback writes nothing to disk, and the in-memory Plan stays consistent
-/// with disk.
+/// After an accepted plan is confirmed (commit), the accepted mode joins the
+/// per-session persistence (tri-mode: the mode Plan was entered from — here
+/// the fallback Auto, because the session entered Plan straight from its
+/// default without an explicit switch); no global lane default is touched
+/// (two-lane semantics); a failed-commit rollback writes nothing to disk,
+/// and the in-memory Plan stays consistent with disk.
 #[test]
-fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
+fn code_session_accepted_mode_persists_on_commit_not_rollback() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2"]);
+    // 真实会话记录：重启断言的 code-1 必须是真实存在的会话（启动幽灵清扫
+    // 以记录文件为存活权威）；code-2 只做 fallback 断言。
+    store
+        .save_session_atomic(&chat_model_session("code-1".to_string()))
+        .expect("materialize code-1 record");
     // Never explicitly switched → defaults to Plan on first use.
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
     store
@@ -4762,7 +5459,9 @@ fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
     let claim = store
         .claim_pending_plan("code-1", "plan-1")
         .expect("claim plan-1");
-    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
+    // Tri-mode: execution after approval returns to the pre-Plan mode — the
+    // Auto fallback here (never explicitly switched), not full-auto Yolo.
+    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Auto);
     drop(claim);
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
     assert!(store.code_permission_prefs().last_mode.is_none());
@@ -4778,11 +5477,11 @@ fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
         .commit();
     assert!(store.code_permission_prefs().last_mode.is_none());
 
-    // Restart: per-session restores Yolo; a new code session falls back to
-    // the global default (untouched → Plan).
+    // Restart: per-session restores the accepted Auto; a new code session
+    // falls back to the global default (untouched → Plan).
     let reopened = reopen_store(&store).expect("reboot");
     with_code_sessions(&reopened, &["code-1", "code-2"]);
-    assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Yolo);
+    assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Auto);
     assert_eq!(reopened.mode_state("code-2").mode, SerializableMode::Plan);
 }
 
@@ -4790,6 +5489,11 @@ fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
 fn plain_session_mode_persists_across_restart() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1"]);
+    // 真实会话记录：重启断言的 plain-1 必须是真实存在的会话（启动幽灵
+    // 清扫以记录文件为存活权威）。
+    store
+        .save_session_atomic(&chat_model_session("plain-1".to_string()))
+        .expect("materialize plain-1 record");
     store
         .set_mode("plain-1", SerializableMode::Plan)
         .expect("plain plan");
@@ -4817,8 +5521,12 @@ fn mode_lane_defaults_round_trip_and_validate() {
     let (store, _g) = isolated_store();
     assert_eq!(store.mode_defaults().work, None);
     assert_eq!(store.mode_defaults().code, None);
-    store.set_mode_default(ModeLane::Work, SerializableMode::Plan);
-    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    store
+        .set_mode_default(ModeLane::Work, SerializableMode::Plan)
+        .expect("persist lane default");
+    store
+        .set_mode_default(ModeLane::Code, SerializableMode::Yolo)
+        .expect("persist lane default");
     assert_eq!(store.mode_defaults().work, Some(SerializableMode::Plan));
     assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
     // Persisted to settings.json + the mirror restored after restart.
@@ -4962,6 +5670,11 @@ fn legacy_design_default_survives_unrelated_prefs_write() {
 #[test]
 fn legacy_code_mode_states_file_is_loaded_as_fallback() {
     let (store, _g) = isolated_store();
+    // 真实会话记录：启动幽灵清扫以记录文件为存活权威，legacy 迁移的
+    // 条目必须属于真实存在的会话。
+    store
+        .save_session_atomic(&chat_model_session("code-legacy".to_string()))
+        .expect("materialize code-legacy record");
     let legacy = paths::sessions_root().join("_code_mode_states.json");
     std::fs::write(
         &legacy,
@@ -4990,6 +5703,13 @@ fn legacy_code_mode_states_file_is_loaded_as_fallback() {
 #[test]
 fn legacy_mode_states_survive_a_later_unrelated_mode_write() {
     let (store, _g) = isolated_store();
+    // 真实会话记录：启动幽灵清扫以记录文件为存活权威，迁移断言涉及的
+    // legacy 会话必须真实存在（fresh-session 只验证无关写入，不需要）。
+    for id in ["legacy-plan", "legacy-yolo"] {
+        store
+            .save_session_atomic(&chat_model_session(id.to_string()))
+            .expect("materialize legacy session record");
+    }
     let legacy = paths::sessions_root().join("_code_mode_states.json");
     std::fs::write(
         &legacy,
@@ -5598,6 +6318,304 @@ fn delete_main_session_cascades_to_aux_session() {
         store.aux_session_id(&main.metadata.id).is_none(),
         "the forward query must report no aux once both records are gone"
     );
+}
+
+/// Creation-time aux posture init (review JensenChen28 5801173510): an aux
+/// record without its own mode-state entry resolves through
+/// `resolved_default_mode` to the unbound-plain default Auto — the one
+/// posture the web admission gate refuses (the web face has no
+/// approval-card surface), and the aux lane has no mode control of its own,
+/// so a default-created aux dead-ended on its first send. Creation pins the
+/// parent's current effective mode, substituting the safe tier Plan when
+/// that posture is Auto; explicit Plan/Yolo parents are inherited verbatim.
+/// The pin is the session's own durable record: it survives a reboot and is
+/// visible through the same `mode_state` projection the web gate reads
+/// (`get_mode_state`).
+#[test]
+fn aux_session_mode_is_pinned_at_creation() {
+    let (store, _g) = isolated_store();
+
+    // Default parent (no explicit mode record → the Auto fallback): the aux
+    // must not borrow the posture the web face cannot serve — it gets the
+    // safe tier Plan, so the default create → first send chain passes the
+    // web admission gate without any manual mode assignment.
+    let main_auto = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create auto parent");
+    let aux_auto = store
+        .create_aux_session(&main_auto.metadata.id)
+        .expect("create aux of default parent");
+    assert_eq!(
+        store.mode_state(&main_auto.metadata.id).mode,
+        SerializableMode::Auto,
+        "precondition: an untouched parent resolves the Auto fallback"
+    );
+    assert_eq!(
+        store.mode_state(&aux_auto.id).mode,
+        SerializableMode::Plan,
+        "a default-created aux must be pinned to the safe tier, not the Auto fallback"
+    );
+
+    // Explicit parent postures the web face serves are inherited verbatim
+    // (Yolo is the parent's own confirmed opt-out mirrored to its side
+    // panel; Plan is read-only).
+    let main_yolo = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create yolo parent");
+    store
+        .set_mode(&main_yolo.metadata.id, SerializableMode::Yolo)
+        .expect("set parent yolo");
+    let aux_yolo = store
+        .create_aux_session(&main_yolo.metadata.id)
+        .expect("create aux of yolo parent");
+    assert_eq!(
+        store.mode_state(&aux_yolo.id).mode,
+        SerializableMode::Yolo,
+        "an explicit Yolo parent's aux inherits the parent posture"
+    );
+
+    let main_plan = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create plan parent");
+    store
+        .set_mode(&main_plan.metadata.id, SerializableMode::Plan)
+        .expect("set parent plan");
+    let aux_plan = store
+        .create_aux_session(&main_plan.metadata.id)
+        .expect("create aux of plan parent");
+    assert_eq!(
+        store.mode_state(&aux_plan.id).mode,
+        SerializableMode::Plan,
+        "an explicit Plan parent's aux inherits the parent posture"
+    );
+
+    // The pin is durable and does not depend on the creating process: a
+    // rebooted store reports the same pinned postures (the reuse leg of
+    // get_or_create_aux_session returns the record untouched, so the pin
+    // never re-resolves afterwards).
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(
+        reopened.mode_state(&aux_auto.id).mode,
+        SerializableMode::Plan
+    );
+    assert_eq!(
+        reopened.mode_state(&aux_yolo.id).mode,
+        SerializableMode::Yolo
+    );
+    assert_eq!(
+        reopened.mode_state(&aux_plan.id).mode,
+        SerializableMode::Plan
+    );
+}
+
+/// Legacy aux records (review JensenChen28 5802339766): aux conversations
+/// materialized by pre-tri-mode builds carry no mode-state record at all,
+/// and the web admission gate refuses the resulting Auto resolution with no
+/// aux mode control to escape it — the only recovery this PR originally
+/// offered was the panel's restart, which deletes the old transcript. The
+/// reuse leg of `get_or_create_aux_session` must initialize the missing
+/// record on reuse (Auto substituted with the safe tier Plan, and the pin
+/// must survive a reboot through the same projection the web gate reads),
+/// while an existing durable entry — a pin inherited from a since-switched
+/// parent — is an explicit choice and is returned verbatim.
+#[test]
+fn aux_mode_pin_initializes_legacy_record_on_reuse() {
+    let (store, _g) = isolated_store();
+
+    // A pre-tri-mode record: build the aux the old create path built — the
+    // same derived id and record shape, minus the posture pin.
+    let parent = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create parent");
+    let aux_id = SessionStore::aux_session_id_for(&parent.metadata.id);
+    let mut legacy = create_saved_session_with_id_and_mode(
+        aux_id.clone(),
+        &[],
+        &parent.metadata.model,
+        &parent.metadata.workspace,
+        0,
+        None,
+        None,
+    );
+    legacy.metadata.title = AUX_SESSION_TITLE.to_string();
+    store.save(&legacy).expect("persist the legacy aux record");
+    assert_eq!(
+        store.mode_state(&aux_id).mode,
+        SerializableMode::Auto,
+        "precondition: a legacy record without a mode entry resolves the Auto fallback"
+    );
+
+    // Reuse (not create — the record loads) initializes the missing entry;
+    // the default parent's Auto is substituted with the safe tier Plan, the
+    // same substitution the creation-time pin applies.
+    let reused = store
+        .get_or_create_aux_session(&parent.metadata.id)
+        .expect("reuse the legacy aux record");
+    assert_eq!(reused.id, aux_id, "reuse must return the existing record");
+    assert_eq!(
+        store.mode_state(&aux_id).mode,
+        SerializableMode::Plan,
+        "a legacy aux record must be pinned to the safe tier on reuse"
+    );
+
+    // The init is durable: a rebooted store reports the same pinned posture
+    // through the projection the web admission gate reads.
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(reopened.mode_state(&aux_id).mode, SerializableMode::Plan);
+
+    // An existing durable entry is never re-resolved: an aux pinned Yolo by
+    // a since-switched parent keeps the explicit posture on reuse.
+    let yolo_parent = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create yolo parent");
+    store
+        .set_mode(&yolo_parent.metadata.id, SerializableMode::Yolo)
+        .expect("set parent yolo");
+    store
+        .create_aux_session(&yolo_parent.metadata.id)
+        .expect("create pinned aux");
+    let aux_yolo = SessionStore::aux_session_id_for(&yolo_parent.metadata.id);
+    store
+        .set_mode(&yolo_parent.metadata.id, SerializableMode::Plan)
+        .expect("switch the parent away from yolo");
+    store
+        .get_or_create_aux_session(&yolo_parent.metadata.id)
+        .expect("reuse the pinned aux record");
+    assert_eq!(
+        store.mode_state(&aux_yolo).mode,
+        SerializableMode::Yolo,
+        "a durable aux entry is an existing choice and must survive a parent mode switch"
+    );
+}
+
+/// The reuse-leg init may only write when the shared mode map's absence is a
+/// statement a writer made. The probe's fault arms (round-19 review: the
+/// claimed "transient error / corruption / quarantine → skip" discipline had
+/// no red arm — deleting the `Err(_) => false` arms or the quarantine check
+/// kept the suite green) are pinned through the observable reuse outcome:
+/// unknown state skips the pin (a later clean probe self-heals), confirmed
+/// absence pins.
+#[test]
+fn aux_reuse_init_skips_when_the_shared_map_state_is_unknown() {
+    let (store, _g) = isolated_store();
+
+    // Confirmed absence (no shared map at all): the probe's yes arm — the
+    // legacy record gets the safe-tier pin on reuse.
+    let parent = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create parent");
+    let aux_id = SessionStore::aux_session_id_for(&parent.metadata.id);
+    let mut legacy = create_saved_session_with_id_and_mode(
+        aux_id.clone(),
+        &[],
+        &parent.metadata.model,
+        &parent.metadata.workspace,
+        0,
+        None,
+        None,
+    );
+    legacy.metadata.title = AUX_SESSION_TITLE.to_string();
+    store.save(&legacy).expect("persist the legacy aux record");
+    let reused = store
+        .get_or_create_aux_session(&parent.metadata.id)
+        .expect("reuse with an absent map is a confirmed absence");
+    assert_eq!(reused.id, aux_id);
+    assert_eq!(
+        store.mode_state(&aux_id).mode,
+        SerializableMode::Plan,
+        "confirmed absence must init the pin (the probe's yes arm)"
+    );
+
+    // Corrupt shared map (parse failure = unknown state): the reuse leg must
+    // skip the init instead of trusting a map it cannot read.
+    let map = paths::sessions_root()
+        .join(crate::features::sessions::sidecars::shared_mode_map_file_name());
+    std::fs::write(&map, b"{broken").expect("write a corrupt shared map");
+    let parent2 = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create second parent");
+    let aux_id2 = SessionStore::aux_session_id_for(&parent2.metadata.id);
+    let mut legacy2 = create_saved_session_with_id_and_mode(
+        aux_id2.clone(),
+        &[],
+        &parent2.metadata.model,
+        &parent2.metadata.workspace,
+        0,
+        None,
+        None,
+    );
+    legacy2.metadata.title = AUX_SESSION_TITLE.to_string();
+    store.save(&legacy2).expect("persist the second legacy aux");
+    let reused2 = store
+        .get_or_create_aux_session(&parent2.metadata.id)
+        .expect("reuse under a corrupt map skips, it does not error");
+    assert_eq!(reused2.id, aux_id2);
+    assert_eq!(
+        store.mode_state(&aux_id2).mode,
+        SerializableMode::Auto,
+        "a corrupt (unknown) map must not authorize the init"
+    );
+
+    // Quarantine arm: a mutation quarantines the corrupt map (renames it
+    // away); that absence is nobody's statement either, so the probe must
+    // keep refusing until a clean writer re-creates the map.
+    store
+        .set_mode(&parent2.metadata.id, SerializableMode::Plan)
+        .expect("the mutation path quarantines the corrupt map and proceeds");
+    assert!(
+        !map.exists(),
+        "precondition: the corrupt map was quarantined away"
+    );
+    assert!(
+        crate::features::sessions::sidecars::shared_mode_map_quarantined(),
+        "precondition: the quarantine flag is live for this probe"
+    );
+    store
+        .get_or_create_aux_session(&parent2.metadata.id)
+        .expect("reuse under a quarantine-backed absence skips");
+    assert_eq!(
+        store.mode_state(&aux_id2).mode,
+        SerializableMode::Auto,
+        "quarantine-backed absence must not authorize the init"
+    );
+
+    // A clean mutation re-creates the map as a real writer artifact; the
+    // absence behind it is once again a confirmed absence and re-authorizes
+    // the init.
+    let parent3 = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create third parent");
+    store
+        .set_mode(&parent3.metadata.id, SerializableMode::Auto)
+        .expect("a clean mutation re-creates the shared map");
+    let aux_id3 = SessionStore::aux_session_id_for(&parent3.metadata.id);
+    let mut legacy3 = create_saved_session_with_id_and_mode(
+        aux_id3.clone(),
+        &[],
+        &parent3.metadata.model,
+        &parent3.metadata.workspace,
+        0,
+        None,
+        None,
+    );
+    legacy3.metadata.title = AUX_SESSION_TITLE.to_string();
+    store.save(&legacy3).expect("persist the third legacy aux");
+    store
+        .get_or_create_aux_session(&parent3.metadata.id)
+        .expect("reuse after the map is a real writer artifact");
+    assert_eq!(
+        store.mode_state(&aux_id3).mode,
+        SerializableMode::Plan,
+        "absence backed by a live writer map re-authorizes the init"
+    );
+
+    // Test hygiene: the quarantine latch is process-global and sticky by
+    // design (it only clears at restart). Leaving it set would poison every
+    // later absence-probe test in this process (a fresh env's absent map
+    // would read as quarantine-backed unknown). This test is the suite's
+    // only setter, so reset it on the way out.
+    crate::features::sessions::sidecars::SHARED_MODE_MAP_QUARANTINED
+        .store(false, std::sync::atomic::Ordering::Release);
 }
 
 /// A failed aux cascade delete aborts the whole delete (round-26 minor
@@ -9202,6 +10220,180 @@ fn mode_persist_keeps_entries_written_after_boot() {
 }
 
 #[test]
+fn session_auto_mode_is_downgrade_parseable_via_companion_flag() {
+    let (store, _g) = isolated_store();
+    // 真实会话记录：启动幽灵清扫以记录文件为存活权威；auto-a/plan-b 持有
+    // mode 写入，old-c 是旧二进制重写共享表后断言存活的会话，都必须真实
+    // 存在。
+    for id in ["auto-a", "plan-b"] {
+        store
+            .save_session_atomic(&chat_model_session(id.to_string()))
+            .expect("materialize session record");
+    }
+    store
+        .set_mode_and_persist("auto-a", SerializableMode::Auto)
+        .expect("persist auto mode");
+    store
+        .set_mode_and_persist("plan-b", SerializableMode::Plan)
+        .expect("persist plan mode");
+
+    // The reviewer scenario: a pre-tri-mode binary strict-parses the shared
+    // map. Its vocabulary has no Auto variant, so an "auto" literal in the
+    // file fails the WHOLE map (quarantine + rebuild-from-empty on the next
+    // write, losing every other session's choice). The collapsed vocabulary
+    // must parse under the old reader instead.
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    let old_reader: std::collections::HashMap<String, OldSidecarMode> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read mode file"))
+            .expect("pre-tri-mode binary must parse the whole map (no quarantine)");
+    assert_eq!(
+        old_reader.get("auto-a"),
+        Some(&OldSidecarMode::Plan),
+        "Auto must collapse to the conservative plan value in the shared map"
+    );
+    assert_eq!(old_reader.get("plan-b"), Some(&OldSidecarMode::Plan));
+
+    let companion: std::collections::HashMap<String, bool> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_auto_modes.json"))
+            .expect("read companion flag file"),
+    )
+    .expect("companion flag file must be valid JSON");
+    assert_eq!(
+        companion,
+        std::collections::HashMap::from([("auto-a".to_string(), true)]),
+        "the explicit Auto choice must ride the companion flag file only"
+    );
+
+    // Simulate the old binary's next write: it rewrites the map from what it
+    // parsed (preserving every entry) and cannot know the companion file.
+    // The new binary must still restore Auto from the untouched companion,
+    // and the old binary's own entry must survive.
+    let mut rewritten: std::collections::HashMap<String, String> = old_reader
+        .iter()
+        .map(|(id, mode)| {
+            (
+                id.clone(),
+                match mode {
+                    OldSidecarMode::Plan => "plan".to_string(),
+                    OldSidecarMode::Yolo => "yolo".to_string(),
+                },
+            )
+        })
+        .collect();
+    rewritten.insert("old-c".to_string(), "yolo".to_string());
+    std::fs::write(
+        &file,
+        serde_json::to_string(&rewritten).expect("serialize rewrite"),
+    )
+    .expect("old-binary map rewrite");
+    // old-c 的记录文件同样要真实存在（下一次 load 的幽灵清扫以它为存活权威）。
+    store
+        .save_session_atomic(&chat_model_session("old-c".to_string()))
+        .expect("materialize old-c record");
+
+    store.load_session_mode_states();
+    assert_eq!(
+        store.durable_mode_entry("auto-a"),
+        Some(SerializableMode::Auto),
+        "the companion flag must restore Auto after an old binary rewrote the map"
+    );
+    assert_eq!(
+        store.durable_mode_entry("plan-b"),
+        Some(SerializableMode::Plan),
+        "sessions the old binary preserved must keep their choices"
+    );
+    assert_eq!(
+        store.durable_mode_entry("old-c"),
+        Some(SerializableMode::Yolo),
+        "the old binary's own write must survive"
+    );
+
+    // Same-session overwrite (review P2): the old binary explicitly
+    // switches auto-a itself to Yolo. The map entry now says `yolo` while
+    // the untouched companion still says true — the acknowledged map write
+    // must win, or the upgraded reader silently resurrects Auto over the
+    // user's persisted Yolo.
+    let mut overwritten = rewritten;
+    overwritten.insert("auto-a".to_string(), "yolo".to_string());
+    std::fs::write(
+        &file,
+        serde_json::to_string(&overwritten).expect("serialize overwrite"),
+    )
+    .expect("old-binary same-session overwrite");
+    store.load_session_mode_states();
+    assert_eq!(
+        store.durable_mode_entry("auto-a"),
+        Some(SerializableMode::Yolo),
+        "an acknowledged old-binary Yolo write must beat the stale companion flag"
+    );
+}
+
+#[test]
+fn mode_pair_crash_after_shared_write_leaves_conservative_plan() {
+    // Round-9 minor 1: the shared→companion write ORDER is the load-bearing
+    // downgrade invariant, but it had no test seam — a reorder to
+    // companion-first kept the whole suite green while flipping the crash
+    // window's residue. The explicit-Auto upsert is the interesting shape:
+    // the crash must leave the collapsed `plan` WITHOUT the companion flag
+    // (reads back as the conservative Plan), never a `true` flag over the
+    // still-seeded Yolo entry (which would boot as Auto — a widening the
+    // user's crashed switch never asked for).
+    let (store, _g) = isolated_store();
+    store
+        .save_session_atomic(&chat_model_session("crash-a".to_string()))
+        .expect("materialize session record");
+    store
+        .set_mode_and_persist("crash-a", SerializableMode::Yolo)
+        .expect("seed a stored Yolo first");
+
+    SessionStore::inject_mode_pair_crash_after_shared_write();
+    store
+        .set_mode_and_persist("crash-a", SerializableMode::Auto)
+        .expect("the simulated crash returns without an error");
+
+    let shared: std::collections::HashMap<String, String> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_mode_states.json"))
+            .expect("the shared map write landed before the crash"),
+    )
+    .expect("shared map parses");
+    assert_eq!(
+        shared.get("crash-a").map(String::as_str),
+        Some("plan"),
+        "the collapsed Auto must be the durable residue of the crash window"
+    );
+    match std::fs::read_to_string(paths::sessions_root().join("_session_auto_modes.json")) {
+        Ok(content) => {
+            let companion: std::collections::HashMap<String, bool> =
+                serde_json::from_str(&content).expect("companion file parses");
+            assert!(
+                !companion.get("crash-a").copied().unwrap_or(false),
+                "the companion flag must not land in the crash window"
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => panic!("companion read failed: {e}"),
+    }
+
+    // Next boot: the crashed window reads back as the conservative Plan —
+    // never the seeded Yolo, never the interrupted Auto.
+    store.load_session_mode_states();
+    assert_eq!(
+        store.durable_mode_entry("crash-a"),
+        Some(SerializableMode::Plan),
+        "the crash window's residue must read back as the conservative Plan"
+    );
+}
+
+/// The pre-tri-mode reader's vocabulary: no Auto variant. Mirrors the enum
+/// shape an old binary compiles (strict snake_case deserialization).
+#[derive(Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OldSidecarMode {
+    Plan,
+    Yolo,
+}
+
+#[test]
 fn model_persist_keeps_entries_written_after_boot() {
     let (store, _g) = isolated_store();
     let file = paths::sessions_root().join("_session_models.json");
@@ -9539,8 +10731,9 @@ fn retention_purge_removes_durable_mode_entries_written_after_boot() {
     .expect("write candidate record");
     // A mode entry another process persisted after this store booted: the
     // in-memory map has never seen it, so a purge keyed on the map would
-    // leave it behind — and the mode sidecar has no boot-time ghost cleanup,
-    // so the ghost would survive forever and re-arm on id reuse.
+    // leave it behind. The boot ghost sweep only cleans ids dead at startup;
+    // post-boot ghosts are this durable purge's job — without it they would
+    // survive forever and re-arm on id reuse.
     let mode_file = crate::platform::paths::sessions_root().join("_session_mode_states.json");
     let payload = serde_json::json!({ "modeghost-victim": "plan" });
     std::fs::write(&mode_file, payload.to_string()).expect("write ghost mode entry");
@@ -9717,6 +10910,46 @@ fn set_mode_and_persist_fails_loud_on_a_corrupt_mode_file() {
         SerializableMode::Yolo,
         "the lenient path must still switch the in-memory mode"
     );
+}
+
+/// `durable_mode_entry` 的隔离旗回退（round-9 minor；round-10 评审实证该分支
+/// 可整段删除而全套保持绿）：共享表损坏被一次性隔离后，durable 读的 NotFound
+/// 是「未知态」而非任何写者声明的缺席，必须回退 boot 缓存而不是编造缺无——
+/// 否则 headless Plan run 会把 quarantine 后的未知态「修复」成 resolved_default
+/// （resolved 默认比存量宽时是一次静默升宽）。缓存 miss 的 None 依旧合法。
+#[test]
+fn durable_mode_entry_falls_back_to_boot_cache_while_quarantined() {
+    let (store, _g) = isolated_store();
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    // 先落一条 durable Yolo（文件 + boot 缓存都有）。
+    store
+        .set_mode("quarantine-cache", SerializableMode::Yolo)
+        .expect("seed the durable entry");
+    assert_eq!(
+        store.durable_mode_entry("quarantine-cache"),
+        Some(SerializableMode::Yolo)
+    );
+    // 损坏共享表 → 一次持久化失败 → 隔离旗置位、损坏文件被挪走。
+    std::fs::write(&file, "{ not json").expect("seed a corrupt mode file");
+    assert!(
+        store
+            .set_mode_and_persist("quarantine-headless", SerializableMode::Plan)
+            .is_err(),
+        "corrupt mode file must fail the durable persist loudly"
+    );
+    assert!(!file.exists(), "the corrupt mode file is quarantined aside");
+    assert!(
+        sidecars::shared_mode_map_quarantined(),
+        "the process-level quarantine flag must be set"
+    );
+    // 隔离后的 durable 读：磁盘缺席是未知态，回退缓存值而不是编造 None。
+    assert_eq!(
+        store.durable_mode_entry("quarantine-cache"),
+        Some(SerializableMode::Yolo),
+        "quarantined absence must fall back to the boot cache, not invent None"
+    );
+    // 缓存 miss 的 None 仍是合法读（不得反过来编造条目）。
+    assert_eq!(store.durable_mode_entry("never-cached"), None);
 }
 
 /// `SessionStore::delete` runs under `scheduled_mutation` (the round-12

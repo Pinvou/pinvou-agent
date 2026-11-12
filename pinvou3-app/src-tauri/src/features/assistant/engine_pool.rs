@@ -69,8 +69,11 @@ use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::{Pinvou3Bridge, base_url_uses_local_or_private};
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::product_runtime::note_stderr;
+use crate::features::assistant::safety_deny_rules::SafetyRuleProfile;
 use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
-use crate::features::sessions::{ScheduledRunProfile, SessionStore, transcript_revision};
+use crate::features::sessions::{
+    ScheduledRunProfile, SessionModeState, SessionStore, transcript_revision,
+};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
 // The idle-reclaim threshold and sweep interval (IDLE_EVICT_AFTER_SECS /
@@ -1792,6 +1795,24 @@ pub struct EnginePool {
     #[cfg(any(feature = "benchmark-hooks", test))]
     eval_model_snapshots: EvalModelSnapshots,
     turn_locks: SessionTurnLocks,
+    /// Per-session serialization for the safety-posture snapshot/handoff
+    /// (round-31 review zhuowp 5854578975 P2): sync_session_safety_posture
+    /// snapshots the store and publishes the snapshot to the live engine.
+    /// On a multi-thread runtime the calling task can be preempted between
+    /// its clone and the publish; a concurrent newer write+sync that
+    /// completes inside that window lets the older call publish its stale
+    /// snapshot LAST — every command still succeeds, the store reads the
+    /// new value, the engine keeps the old one, and expected guardrail
+    /// questions stay suppressed until the next write or respawn (the
+    /// engine-side revisions are assigned in publish-arrival order and
+    /// cannot recognize an older host snapshot). Holding this gate from
+    /// before the snapshot until after both publications makes the
+    /// snapshot→publish handoff follow store-mutation order: a later sync
+    /// always clones a state at least as new as everything published
+    /// before it, so publishes stay monotonic. Same Weak-map shape as
+    /// [`SessionTurnLocks`], but a SEPARATE map — sharing the turn-lock map
+    /// would serialize hot posture syncs behind live turns.
+    safety_sync_locks: SessionTurnLocks,
     turn_lifecycles: SessionTurnLifecycles,
     shell_managers: SessionShellManagers,
     turn_shell_tasks: SessionTurnShellTasks,
@@ -1903,6 +1924,143 @@ fn require_live_engine_for_steer<T>(engine: Option<T>, session_id: &str) -> Resu
     engine.with_context(|| format!("no live engine for session '{session_id}' to steer"))
 }
 
+/// Shared pure derivation for the tri-mode safety sync — both the hot sync
+/// after a mode/arming change ([`EnginePool::sync_session_safety_posture`])
+/// and the spawn-time arming
+/// ([`EnginePool::arm_spawned_session_safety_posture`]) map the session's
+/// persisted mode state onto the engine's `Op::ChangeMode` posture here, so
+/// the two paths cannot drift.
+///
+/// Field-by-field:
+/// - mode + approval: `SerializableMode::to_app_mode` /
+///   `approval_params` (Plan/Auto → (false, Suggest), Yolo → (true,
+///   Bypass)) — the same mapping every per-turn send op carries;
+/// - allow_shell/trust_mode: the exact arms of the per-turn send op
+///   (`Pinvou3Bridge::build_send_message_op_with_hooks`) —
+///   Agent=(pool allow_shell, true), Plan=(true, true),
+///   Operate=(allow_shell, false). `SerializableMode` never produces
+///   Operate; the arm mirrors the send op so a future mode mapping cannot
+///   silently diverge between the two op families;
+/// - configured_sandbox_mode: `None`. ChangeMode REPLACES the whole
+///   posture, but pinvou3 never configures a foundation sandbox mode
+///   (engine configs are built from `DtConfig::default()`, whose
+///   `sandbox_mode` is None — the safety_deny_rules module docs pin the
+///   same fact), so `None` re-states the constructed value instead of
+///   clearing an override;
+/// - ask_on_guardrail: `Some(flag)` — carried explicitly on every sync
+///   because the op replaces the posture wholesale; `None` (leave
+///   unchanged) is for senders that only touch the other fields.
+fn safety_change_mode_op(mode_state: &SessionModeState, allow_shell: bool) -> Op {
+    let mode = mode_state.mode.to_app_mode();
+    let (auto_approve, approval_mode) = mode_state.mode.approval_params();
+    let (op_allow_shell, trust_mode) = match mode {
+        AppMode::Agent => (allow_shell, true),
+        AppMode::Plan => (true, true),
+        AppMode::Operate => (allow_shell, false),
+    };
+    Op::ChangeMode {
+        mode,
+        allow_shell: op_allow_shell,
+        trust_mode,
+        auto_approve,
+        approval_mode,
+        configured_sandbox_mode: None,
+        ask_on_guardrail: Some(mode_state.ask_on_guardrail),
+    }
+}
+
+#[cfg(test)]
+mod safety_change_mode_op_tests {
+    //! Truth-table for the hot-sync op's `allow_shell`/`trust_mode` arms.
+    //! The arms mirror the per-turn send op table
+    //! (`build_send_message_op_with_hooks`) by comment only — a flipped arm
+    //! compiles green and would drift the standing posture from the send
+    //! posture between a sync and the next send. `SerializableMode` never
+    //! produces `Operate`, so the defensive `Operate` arm stays
+    //! comment-mirrored; the two reachable `AppMode::Agent` postures (Auto
+    //! and Yolo) and `Plan` are pinned executing here.
+    use super::*;
+    use crate::core::mode_state::SerializableMode;
+
+    #[test]
+    fn safety_change_mode_op_arms_mirror_the_send_op_table() {
+        let pool_allow_shell = false;
+        let mut state = SessionModeState::default();
+
+        // Yolo → Agent arm: pool allow_shell passes through, trust stays on,
+        // approval params map to (true, Bypass).
+        state.mode = SerializableMode::Yolo;
+        state.ask_on_guardrail = true;
+        let Op::ChangeMode {
+            mode,
+            allow_shell: op_allow_shell,
+            trust_mode,
+            auto_approve,
+            approval_mode,
+            configured_sandbox_mode,
+            ask_on_guardrail,
+        } = safety_change_mode_op(&state, pool_allow_shell)
+        else {
+            panic!("safety_change_mode_op must produce Op::ChangeMode");
+        };
+        assert!(matches!(mode, AppMode::Agent));
+        assert_eq!(
+            op_allow_shell, pool_allow_shell,
+            "Agent arm passes the pool allow_shell through"
+        );
+        assert!(trust_mode, "Agent arm keeps trust_mode on");
+        assert!(auto_approve, "Yolo maps to auto_approve=true");
+        assert!(
+            matches!(approval_mode, deepseek_tui::ApprovalMode::Bypass),
+            "Yolo maps to the Bypass approval posture"
+        );
+        assert!(configured_sandbox_mode.is_none());
+        assert_eq!(
+            ask_on_guardrail,
+            Some(true),
+            "the ask flag rides every sync"
+        );
+
+        // Auto → Agent arm: same shell/trust arms, Suggest posture.
+        state.mode = SerializableMode::Auto;
+        let Op::ChangeMode {
+            auto_approve,
+            approval_mode,
+            ..
+        } = safety_change_mode_op(&state, pool_allow_shell)
+        else {
+            panic!("safety_change_mode_op must produce Op::ChangeMode");
+        };
+        assert!(!auto_approve, "Auto maps to auto_approve=false");
+        assert!(
+            matches!(approval_mode, deepseek_tui::ApprovalMode::Suggest),
+            "Auto maps to the Suggest approval posture"
+        );
+
+        // Plan arm: read-only shell allowance forced on, trust on, Suggest.
+        state.mode = SerializableMode::Plan;
+        let Op::ChangeMode {
+            mode,
+            allow_shell: op_allow_shell,
+            trust_mode,
+            auto_approve,
+            approval_mode,
+            ..
+        } = safety_change_mode_op(&state, pool_allow_shell)
+        else {
+            panic!("safety_change_mode_op must produce Op::ChangeMode");
+        };
+        assert!(matches!(mode, AppMode::Plan));
+        assert!(
+            op_allow_shell,
+            "Plan arm forces allow_shell=true regardless of the pool flag"
+        );
+        assert!(trust_mode, "Plan arm keeps trust_mode on");
+        assert!(!auto_approve);
+        assert!(matches!(approval_mode, deepseek_tui::ApprovalMode::Suggest));
+    }
+}
+
 /// Steer ids are generation-scoped at the pool boundary. The foundation mints
 /// per-handle ordinal ids (`steer-{n}`) whose counter resets whenever an
 /// engine is rebuilt (idle reclaim / model switch), so a raw id is ambiguous
@@ -1994,6 +2152,7 @@ impl EnginePool {
             #[cfg(any(feature = "benchmark-hooks", test))]
             eval_model_snapshots: EvalModelSnapshots::default(),
             turn_locks: SessionTurnLocks::default(),
+            safety_sync_locks: SessionTurnLocks::default(),
             turn_lifecycles: SessionTurnLifecycles::default(),
             shell_managers: SessionShellManagers::default(),
             turn_shell_tasks: SessionTurnShellTasks::default(),
@@ -2840,6 +2999,12 @@ impl EnginePool {
         turn_lifecycle.prune_stale_transcript_rules();
         let sync_session_ms = elapsed_ms(sync_session_started);
 
+        // Tri-mode safety: arm the engine with the session's persisted
+        // posture + mode-derived deny ruleset before it is published in the
+        // entries table (see arm_spawned_session_safety_posture for the
+        // ordering and the never-fail contract).
+        self.arm_spawned_session_safety_posture(session_id, &engine);
+
         self.entries.lock().await.insert(
             session_id.to_string(),
             EngineEntry {
@@ -2892,6 +3057,34 @@ impl EnginePool {
             .await
             .get(session_id)
             .map(|e| e.engine.clone())
+    }
+
+    /// Atomic (engine, incarnation) snapshot for the approval-decision path:
+    /// the decision sends on the returned handle and may only restore a
+    /// removed pending approval while this exact engine incarnation is still
+    /// the live entry (an eviction/rebuild between the send and the failure
+    /// arm must not resurrect a decision surface whose engine-side approval
+    /// died with the old engine). One entries-lock read keeps the pair
+    /// consistent — same shape as the steer() snapshot.
+    pub(crate) async fn handle_with_incarnation(
+        &self,
+        session_id: &str,
+    ) -> Option<(AppEngine, u64)> {
+        self.entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| (e.engine.clone(), e.steer_incarnation))
+    }
+
+    /// The live entry's engine incarnation, or None when not running. The
+    /// restore-fence comparator for [`Self::handle_with_incarnation`].
+    pub(crate) async fn engine_incarnation(&self, session_id: &str) -> Option<u64> {
+        self.entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| e.steer_incarnation)
     }
 
     /// Reclaim a session's engine: cancel the running turn → Shutdown the
@@ -3149,7 +3342,20 @@ impl EnginePool {
         // must still emit session:deleted — gating the event on overall
         // success left clients buffering a stale transcript for a session
         // that no longer exists.
-        let created = self.store.get_or_create_aux_session(main_id);
+        // The create half (including the reuse leg's confirmed-absent probe
+        // and the mode pin's two-file RMW under the sidecar io mutex) is
+        // sync sidecar IO — join it on a blocking worker like the other
+        // pool persistence awaits (round-15 review B1) instead of parking
+        // the runtime worker that also drives the engine pumps.
+        let worker_store = self.store.clone();
+        let worker_main = main_id.to_string();
+        let created = tokio::task::spawn_blocking(move || {
+            worker_store.get_or_create_aux_session(&worker_main)
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("reset_aux_chat_session: create-half join failed: {error}")
+        })?;
         Ok((deleted_aux, created))
     }
 
@@ -3954,6 +4160,10 @@ impl EnginePool {
             content,
             display_message,
             mode,
+            crate::features::assistant::platform::bridge::TurnApprovalPosture {
+                auto_approve: true,
+                approval_mode: deepseek_tui::ApprovalMode::Auto,
+            },
             restrict_tools_for_turn,
             expert_snapshot,
             expert_candidates,
@@ -4071,6 +4281,7 @@ impl EnginePool {
         content: String,
         display_message: Message,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         restrict_tools_for_turn: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         expert_candidates: Vec<String>,
@@ -4092,6 +4303,7 @@ impl EnginePool {
             session_id,
             content,
             mode,
+            approval,
             restrict_tools_for_turn,
             expert_snapshot,
             expert_candidates,
@@ -4115,6 +4327,7 @@ impl EnginePool {
         session_id: &str,
         content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         restrict_tools_for_turn: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         expert_candidates: Vec<String>,
@@ -4225,6 +4438,7 @@ impl EnginePool {
                 engine.send_reserved_user_message(
                     content,
                     mode,
+                    approval,
                     reminder,
                     restrict_tools,
                     expert_snapshot,
@@ -4395,14 +4609,26 @@ impl EnginePool {
         let pending_injections = self.store.take_pending_turn_injections(session_id);
         let (match_text, engine_content, display_message) =
             assemble_delivery_turn(&content, pending_injections.persona_body());
-        let expert_snapshot = (self.store.mode_state(session_id).multi_agent
+        // One store read feeds the whole delivery: the expert-snapshot
+        // decision and the approval posture must adjudicate against the SAME
+        // mode snapshot — two separate reads could straddle a mode flip and
+        // pair an old expert decision with a new posture (round-8 L4-5
+        // TOCTOU; bounded consequence, one-read-by-construction closes it).
+        let delivery_mode_state = self.store.mode_state(session_id);
+        let expert_snapshot = (delivery_mode_state.multi_agent
             && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
         let expert_candidates = expert_snapshot
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&match_text))
             .unwrap_or_default();
-        let mode = self.store.mode_state(session_id).mode.to_app_mode();
+        let session_mode = delivery_mode_state.mode;
+        // Tri-mode safety (S-1): posture from the session's SerializableMode.
+        let approval =
+            crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(
+                session_mode,
+            );
+        let mode = session_mode.to_app_mode();
         let (reservation, _turn_gate) = self
             .admit_reserved_turn(
                 session_id,
@@ -4417,6 +4643,7 @@ impl EnginePool {
                 session_id,
                 engine_content,
                 mode,
+                approval,
                 false,
                 expert_snapshot,
                 expert_candidates,
@@ -4914,26 +5141,252 @@ impl EnginePool {
         }
     }
 
+    /// The session's execpolicy deny ruleset as its CURRENT tri-mode state
+    /// dictates, for a SPECIFIC engine incarnation
+    /// ([`SafetyRuleProfile::for_engine_lane`]): interactive engines compose
+    /// the safety families under the session's mode-derived profile
+    /// ([`SafetyRuleProfile::for_mode`]); an unattended scheduled-run engine
+    /// always composes Full. Shared by the spawn arming, the one-session
+    /// refresh, and the global broadcast so one engine's ruleset is built
+    /// exactly one way across all of them. There is no "mode unavailable"
+    /// fallback here: the store always answers (`mode_state` resolves the
+    /// lane default), which IS the documented fallback — callers with
+    /// genuinely no store information (tests, static fixtures) use
+    /// `bridge.scope_deny_ruleset` (Full) directly.
+    fn session_scope_ruleset_for_engine(
+        &self,
+        session_id: &str,
+        engine: &AppEngine,
+    ) -> codewhale_execpolicy::Ruleset {
+        let profile = SafetyRuleProfile::for_engine_lane(
+            self.store.mode_state(session_id).mode,
+            engine.scheduled_run_engine
+                || crate::features::assistant::windowless_host::is_windowless_host(),
+        );
+        self.bridge.scope_deny_ruleset_for_mode(session_id, profile)
+    }
+
     /// execpolicy hard-deny hot refresh (scope gate channel ③ + safety net):
     /// after connector/skill toggles are persisted or the super-permission
     /// toggle changes, recompute the deny ruleset per session scope (CLI
     /// binary names + disabled skill script paths + sensitive-data/privilege
     /// rules) and broadcast it to every running engine so it hard-denies from
-    /// the next turn. Newly spawned / rebuilt engines get the initial value
-    /// from build_engine_config_for_session_roots — both share
-    /// `bridge.scope_deny_ruleset`.
-    pub async fn refresh_permission_rulesets(&self) {
+    /// the next turn. Each session's ruleset composes under ITS OWN
+    /// mode-derived safety profile (a Yolo session keeps the Floor face; the
+    /// sudo toggle must not re-tighten a Yolo session behind its back).
+    /// Newly spawned / rebuilt engines get the initial value from the spawn
+    /// config — both share `session_scope_ruleset_for_mode`.
+    ///
+    /// Delivery failures are RETURNED, not swallowed (round-32 review
+    /// Jensen 5863866339 P2): a timed-out send is cancelled, so an engine
+    /// whose mailbox was congested for the bound resumes on its OLD
+    /// hard-deny rules — newly disabled connector/skill scripts or the sudo
+    /// state would never reach it while callers report success. Every other
+    /// session is still delivered before the error lists the failed ones;
+    /// a failed engine keeps its previous ruleset until the next refresh
+    /// trigger or respawn (the documented round-8 L4-4 residual).
+    pub async fn refresh_permission_rulesets(&self) -> Result<()> {
         let targets = self.live_engine_targets().await;
+        let mut failures = Vec::new();
         for (sid, engine) in targets {
-            if let Err(e) = engine
-                .handle
-                .send(Op::SetPermissionRuleset {
-                    ruleset: self.bridge.scope_deny_ruleset(&sid),
-                })
-                .await
-            {
-                eprintln!("[engine_pool] refresh_permission_rulesets {sid} failed: {e:?}");
+            // Round-32 review (Jensen 5861595605 P2): this broadcast is a
+            // third mode-derived publisher, so each per-session snapshot→send
+            // joins the same posture gate as the one-session sync/refresh —
+            // an ungated broadcast could snapshot a session's OLD mode and
+            // publish its ruleset AFTER a newer gated sync, leaving the live
+            // engine on the stale profile until the next toggle. Gates are
+            // taken one session at a time, so no multi-gate ordering is
+            // possible. Round-32 review (Jensen 5862685010 P2): once the
+            // gate is held, the send can no longer stay unbounded — a wedged
+            // engine would hold this session's gate forever and wedge every
+            // later posture sync/refresh for it (users could not complete
+            // safety-mode changes), so the send gets the same
+            // TURN_GATE_AWAIT_TIMEOUT bound as the one-session publisher,
+            // with the gate retained through the send's outcome; the gate
+            // releases on the way out either way. Round-32 review (Jensen
+            // 5863866339 P2): the cancelled send is a REAL delivery failure
+            // — it is collected and returned below instead of vanishing
+            // into a logged-only success.
+            let gate = self.safety_sync_locks.for_session(&sid).await;
+            let _sync_gate = gate.lock().await;
+            let send = engine.handle.send(Op::SetPermissionRuleset {
+                ruleset: self.session_scope_ruleset_for_engine(&sid, &engine),
+            });
+            match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, send).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => failures.push(format!("{sid}: ruleset send failed: {e:?}")),
+                Err(e) => failures.push(format!(
+                    "{sid}: ruleset send did not settle within \
+                     {TURN_GATE_AWAIT_TIMEOUT:?} (engine may be wedged): {e:?}"
+                )),
             }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "refresh_permission_rulesets: delivery failed for {} session(s) — their \
+                 engines keep the previous ruleset until the next refresh trigger or \
+                 respawn: {}",
+                failures.len(),
+                failures.join("; ")
+            )
+        }
+    }
+
+    /// execpolicy hard-deny hot refresh for ONE session: rebuild the deny
+    /// ruleset under that session's mode-derived safety profile and send it
+    /// to the session's live engine only. A session with no live engine is a
+    /// no-op (`Ok`) — its next spawn reads the initial value from the spawn
+    /// config. Called on the mode-change path (a Yolo⇄other switch changes
+    /// the profile); identical-profile sends rebuild the same ruleset, so
+    /// the caller never needs to track the previous mode.
+    pub async fn refresh_session_permission_ruleset(&self, session_id: &str) -> Result<()> {
+        // Same per-session gate as sync_session_safety_posture (round-31
+        // review zhuowp 5854578975 P2): this refresh is the ruleset half of
+        // the posture handoff and is also awaited directly by commands, so
+        // its own snapshot→publish must hold the same gate — otherwise a
+        // concurrent sync could interleave an older ruleset publish between
+        // this snapshot and its publish. Round-32 review (Jensen 5861595605
+        // P2): `for_session` only FETCHES the gate's Arc — it is the two-step
+        // `.lock().await` (the same shape as every turn-lock site) that
+        // actually ACQUIRES it; a bare binding excludes nothing.
+        let gate = self.safety_sync_locks.for_session(session_id).await;
+        let _sync_gate = gate.lock().await;
+        self.refresh_session_permission_ruleset_locked(session_id)
+            .await
+    }
+
+    /// Locked inner half of [`Self::refresh_session_permission_ruleset`]:
+    /// callers already holding the per-session posture gate
+    /// (`sync_session_safety_posture`) go through here — the tokio mutex is
+    /// not reentrant, so re-taking the gate inside sync would deadlock.
+    async fn refresh_session_permission_ruleset_locked(&self, session_id: &str) -> Result<()> {
+        let Some(engine) = self.handle_for(session_id).await else {
+            return Ok(());
+        };
+        // Bounded like send_ordinary_disallowed_tools: the send parks on the
+        // engine mailbox's bounded channel, and this future is awaited
+        // directly by the set_session_mode / set_ask_on_guardrail commands —
+        // an unbounded await is the #525/#483 parked-command class (a wedged
+        // engine would hold the flip's caller forever). On timeout the
+        // refresh reports failure honestly; the engine keeps its previous
+        // ruleset until the next refresh trigger, same residual as any
+        // failed send (round-8 L4-4).
+        tokio::time::timeout(
+            TURN_GATE_AWAIT_TIMEOUT,
+            engine.handle.send(Op::SetPermissionRuleset {
+                ruleset: self.session_scope_ruleset_for_engine(session_id, &engine),
+            }),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "refresh_session_permission_ruleset {session_id}: send did not settle within \
+             {TURN_GATE_AWAIT_TIMEOUT:?} (engine may be wedged)"
+            )
+        })?
+        .context(format!(
+            "refresh_session_permission_ruleset {session_id}: send failed"
+        ))
+    }
+
+    /// Sync a session's live engine with its persisted tri-mode safety state
+    /// (mode posture + ask_on_guardrail arming). Sends Op::ChangeMode with the
+    /// full posture so the engine's next turn and its <turn_meta> reflect the
+    /// change; a no-op (Ok) when the session has no live engine.
+    ///
+    /// Also refreshes the session's permission ruleset: the safety profile is
+    /// a pure function of the mode, so the refresh is exactly the Yolo⇄other
+    /// lane change's ruleset swap and an identical no-op otherwise — the
+    /// caller never has to track the previous mode. Both sends are attempted
+    /// INDEPENDENTLY: a failed change-mode send must not skip the ruleset
+    /// swap (mode/approval self-heal on the next send via the per-turn
+    /// posture, but the ruleset would stay on the old profile until the next
+    /// refresh trigger). The change-mode send uses `try_send` (refresh-class
+    /// op, same class as the foundation's posture edits) so a wedged engine
+    /// cannot park the caller; a failed send IS an error — the caller
+    /// surfaces it instead of letting the engine silently run on a stale
+    /// posture.
+    pub async fn sync_session_safety_posture(&self, session_id: &str) -> Result<()> {
+        // Round-31 review (zhuowp 5854578975 P2): hold the per-session gate
+        // from BEFORE the store snapshot until after both publishes. Without
+        // it, this call can clone ask=false, be preempted on a multi-thread
+        // runtime, and publish Some(false) after a concurrent newer
+        // write+sync published Some(true) — both commands succeed, the store
+        // reads true, the live engine keeps false, and expected guardrail
+        // questions stay suppressed until the next write or respawn (the
+        // engine assigns revisions in publish-arrival order, so it cannot
+        // recognize the older host snapshot; ordinary sends carry no ask
+        // field and preserve the stale value). Under the gate a later sync
+        // always clones a state at least as new as everything published
+        // before it, so the snapshot→publish handoff follows store-mutation
+        // order. All awaits inside stay bounded (try_send does not park;
+        // the ruleset send keeps its timeout), so a wedged engine cannot
+        // hold this gate forever. Round-32 review (Jensen 5861595605 P2):
+        // `for_session` only FETCHES the gate's Arc — acquiring it is the
+        // two-step `.lock().await` (same shape as every turn-lock site); a
+        // bare binding excludes nothing, so the round-31 wave's gate never
+        // actually serialized anything.
+        let gate = self.safety_sync_locks.for_session(session_id).await;
+        let _sync_gate = gate.lock().await;
+        let Some(engine) = self.handle_for(session_id).await else {
+            // No live engine: nothing to sync — the next spawn arms the
+            // persisted posture (arm_spawned_session_safety_posture).
+            return Ok(());
+        };
+        let mode_state = self.store.mode_state(session_id);
+        let op = safety_change_mode_op(&mode_state, self.bridge.allow_shell());
+        let change_mode_result = engine.handle.try_send(op).context(format!(
+            "sync_session_safety_posture {session_id}: change-mode send failed"
+        ));
+        let ruleset_result = self
+            .refresh_session_permission_ruleset_locked(session_id)
+            .await;
+        match (change_mode_result, ruleset_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(change_mode), Err(ruleset)) => {
+                eprintln!(
+                    "[engine_pool] sync_session_safety_posture {session_id}: ruleset refresh \
+                     also failed after the change-mode failure: {ruleset:?}"
+                );
+                Err(change_mode)
+            }
+        }
+    }
+
+    /// Spawn-time arming (tri-mode safety): queue the freshly spawned
+    /// engine's persisted posture (`Op::ChangeMode`, full field set via
+    /// [`safety_change_mode_op`]) and its mode-derived deny ruleset
+    /// (`Op::SetPermissionRuleset`) so the engine's FIRST turn already runs
+    /// the session's lane — a Yolo session must not spend even its first
+    /// turn on the Full deny face, and an armed session's guardrail mapping
+    /// must be live before the first tool call.
+    ///
+    /// Called BEFORE the entry is published in the entries table: ops queue
+    /// in channel order, so any handle a concurrent sender clones after the
+    /// publish carries the arming ahead of it. Must never block or fail the
+    /// spawn — `try_send` (a full queue still guarantees the engine drains
+    /// before the sender's own turn op) and a failed send is logged, not
+    /// propagated: the per-turn send ops re-carry mode/approval anyway, so
+    /// the worst case is a first turn without the arming flag, not a broken
+    /// session.
+    fn arm_spawned_session_safety_posture(&self, session_id: &str, engine: &AppEngine) {
+        let mode_state = self.store.mode_state(session_id);
+        let op = safety_change_mode_op(&mode_state, self.bridge.allow_shell());
+        if let Err(error) = engine.handle.try_send(op) {
+            log::warn!(
+                "[engine_pool] spawn arming {session_id} change-mode send failed: {error:#}"
+            );
+        }
+        if let Err(error) = engine.handle.try_send(Op::SetPermissionRuleset {
+            // Engine-lane form: an unattended scheduled spawn armed from a
+            // stored Yolo must keep the spawn config's Full ruleset, not
+            // clobber it with the mode-derived Floor.
+            ruleset: self.session_scope_ruleset_for_engine(session_id, engine),
+        }) {
+            log::warn!("[engine_pool] spawn arming {session_id} ruleset send failed: {error:#}");
         }
     }
 
@@ -4981,6 +5434,22 @@ impl EnginePool {
         // and are unchanged. Folding the merge into the dispatch seam keeps
         // the wiring itself pinned by an executing test (round-31 M9-rust).
         let engine = self.get_or_spawn(session_id).await?;
+        // Tri-mode posture re-carry (round-8 L4-3): Op::EditLastTurn carries
+        // no posture fields, so the replay runs on the engine's STANDING
+        // posture. The per-turn posture self-heal ("next send re-derives")
+        // never engages on this seam — after a failed or lagging hot sync,
+        // an edit-resend would execute the stale posture with no
+        // re-derivation. Re-sync before the op so the standing posture
+        // matches the store: bounded sends (try_send + the timeout-bounded
+        // ruleset refresh), and a failure is logged, not fatal — the edit
+        // itself still goes out on the best-known posture, exactly the
+        // trade the mode-publish path documents.
+        if let Err(error) = self.sync_session_safety_posture(session_id).await {
+            eprintln!(
+                "[engine_pool] edit-resend posture sync for {session_id} failed: {error:#}; \
+                 the resend runs on the engine's standing posture"
+            );
+        }
         // Round-12 (#657) BLOCKER 1: edit-and-resend is an attended seam too
         // and bypasses send_reserved_user_message — restore here as well,
         // after the reservation is acquired (same reasoning as the send
@@ -10075,6 +10544,304 @@ mod scheduled_model_tests {
         );
     }
 
+    /// Tri-mode safety (scheduled lane): every ruleset sent to a LIVE engine
+    /// (spawn arming + both hot refreshes) must compose through the
+    /// engine-lane form, or a refresh would clobber the unattended spawn's
+    /// Full ruleset with the mode-derived Floor behind the run's back. The
+    /// pool cannot be unit-constructed (needs an AppHandle), so pin the
+    /// wiring: the lane-aware builder exists at all three send sites and the
+    /// mode-blind form is gone entirely.
+    #[test]
+    fn live_engine_ruleset_sends_route_through_the_engine_lane_profile() {
+        let src = include_str!("engine_pool.rs");
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        assert!(
+            !src.contains("session_scope_ruleset_for_mode("),
+            "the mode-blind ruleset builder must stay deleted (it cannot see \
+             the engine's unattended lane)"
+        );
+        let arm_body = production_body(src, "fn arm_spawned_session_safety_posture(");
+        assert!(
+            arm_body.contains("session_scope_ruleset_for_engine(session_id, engine)"),
+            "spawn arming must arm the engine's own lane composition"
+        );
+        let refresh_body = production_body(src, "async fn refresh_permission_rulesets(");
+        assert!(
+            refresh_body.contains("session_scope_ruleset_for_engine(&sid, &engine)"),
+            "the global broadcast must compose per engine incarnation"
+        );
+        // Round-31 (review zhuowp 5854578975 P2): the composition lives in the
+        // gate-holding inner half now — the public fn takes the per-session
+        // posture gate and delegates, so pin the inner body (and the public
+        // gate wiring in the posture pin below).
+        let one_body = production_body(src, "async fn refresh_session_permission_ruleset_locked(");
+        assert!(
+            one_body.contains("session_scope_ruleset_for_engine(session_id, &engine)"),
+            "the one-session refresh must compose for the live engine's lane"
+        );
+    }
+
+    /// Tri-mode posture wiring pin (round-8 L4-1): the four per-turn posture
+    /// derivations, the mode-publish hot sync, and the ChangeMode arming
+    /// carry were the PR's central invariant with zero executable coverage —
+    /// mutation-think: hard-coding any derivation to (true, Auto), deleting
+    /// the sync call, or dropping the ask_on_guardrail field all compiled
+    /// green. Comment-stripped source pins, same discipline as the ruleset
+    /// pins above. The scheduled hard-code is the DOCUMENTED exception and
+    /// is pinned as such (its doc says apply_scheduled_turn_policy
+    /// overrides), so a second undocumented hard-code cannot hide beside it.
+    #[test]
+    fn session_approval_posture_derivations_and_hot_sync_are_wired() {
+        // 1. Attended chat send derives the posture from the session mode.
+        let chat_src = include_str!("../../app/commands/chat.rs");
+        let chat_body = production_body(chat_src, "pub async fn chat(");
+        assert!(
+            chat_body.contains("TurnApprovalPosture::from_serialized_mode("),
+            "the attended chat send must derive the posture from the session's SerializableMode"
+        );
+        assert!(
+            chat_body.contains("approval,"),
+            "the chat send must thread the derived posture into the pool seam"
+        );
+        // 2. accept_plan carries the claimed mode's posture on the wire.
+        let interaction_src = include_str!("../../app/commands/interaction.rs");
+        let accept_body = production_body(interaction_src, "pub async fn accept_plan(");
+        assert!(
+            accept_body.contains("TurnApprovalPosture::from_serialized_mode("),
+            "accept_plan must derive the posture from the claimed mode state"
+        );
+        assert!(
+            accept_body.contains("approval,"),
+            "accept_plan must thread the posture into the pool seam"
+        );
+        // 3. The watcher delivery derives the posture in the pool seam.
+        let pool_src = include_str!("engine_pool.rs");
+        let pool_src = &pool_src[..pool_src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let delivery_body =
+            production_body(pool_src, "pub(crate) async fn deliver_messaging_turn(");
+        assert!(
+            delivery_body.contains("TurnApprovalPosture::from_serialized_mode("),
+            "the watcher delivery must derive the posture from the session mode"
+        );
+        assert!(
+            delivery_body.contains("approval,"),
+            "the delivery must thread the posture into the submission core"
+        );
+        // 4. Mode publish hot-syncs the live engine; failure logs, never swallows
+        //    into a missing broadcast.
+        let publish_body =
+            production_body(interaction_src, "async fn publish_session_mode_change(");
+        assert!(
+            publish_body.contains("sync_engine_safety_posture(session_id, pool)"),
+            "mode publish must hot-sync the engine posture via ChangeMode"
+        );
+        assert!(
+            publish_body.contains("emit_mode_changed("),
+            "mode publish must broadcast the authoritative mode regardless of sync outcome"
+        );
+        // 5. The ChangeMode op carries the arming flag — dropping the field
+        //    would silently disarm every hot sync.
+        let op_body = production_body(pool_src, "fn safety_change_mode_op(");
+        assert!(
+            op_body.contains("ask_on_guardrail: Some(mode_state.ask_on_guardrail)"),
+            "the ChangeMode op must carry the session's arming flag"
+        );
+        // 6. The scheduled/unattended send keeps its DOCUMENTED hard-coded
+        //    (true, Auto) pre-override posture right next to the override
+        //    call — a second undocumented hard-code cannot hide beside it
+        //    without this pin drifting red on the pair.
+        let engine_src = include_str!("engine.rs");
+        let sched_body = production_body(engine_src, "fn profiled_send_op(");
+        assert!(
+            sched_body.contains("auto_approve: true"),
+            "the scheduled send keeps the documented (true, Auto) pre-override posture"
+        );
+        assert!(
+            sched_body.contains("apply_scheduled_turn_policy(&mut op, profile, route, compaction)"),
+            "the scheduled posture must flow through the documented policy override"
+        );
+        // 7. Round-31 (review zhuowp 5854578975 P2): the posture handoff is
+        //    serialized per session. The sync takes the per-session gate
+        //    BEFORE its store snapshot and publishes the ruleset through the
+        //    locked inner refresh; the public one-session refresh takes the
+        //    same gate for its direct-command callers. Deleting the gate (or
+        //    snapshotting before it) lets a preempted older call publish a
+        //    stale ask snapshot last while every command still succeeds — the
+        //    all-success ordering defect; re-entering the public gate-taking
+        //    refresh from the sync would deadlock on the non-reentrant mutex.
+        //    Round-32 (review Jensen 5861595605 P2): `for_session` only
+        //    FETCHES the gate's Arc, and the round-31 wave bound it bare —
+        //    the pin above passed with nothing acquired. So every gated site
+        //    must also pin the actual acquisition (`gate.lock().await`, the
+        //    two-step turn-lock shape), and the global broadcast
+        //    (`refresh_permission_rulesets`) is a third mode-derived
+        //    publisher whose per-session snapshot→send must join the gate.
+        let sync_body = production_body(pool_src, "pub async fn sync_session_safety_posture(");
+        let gate_at = sync_body
+            .find("self.safety_sync_locks.for_session(session_id).await")
+            .expect("the sync must take the per-session posture gate");
+        let snapshot_at = sync_body
+            .find("self.store.mode_state(session_id)")
+            .expect("the sync must snapshot the store");
+        assert!(
+            gate_at < snapshot_at,
+            "the posture gate must be held BEFORE the store snapshot (publish-order discipline)"
+        );
+        assert!(
+            sync_body.contains("let _sync_gate = gate.lock().await;"),
+            "the sync must actually ACQUIRE the fetched gate — a bare Arc \
+             binding excludes nothing (round-32 Jensen 5861595605)"
+        );
+        assert!(
+            sync_body.contains("refresh_session_permission_ruleset_locked(session_id)"),
+            "the sync must publish the ruleset through the locked inner refresh"
+        );
+        assert!(
+            !sync_body.contains("refresh_session_permission_ruleset(session_id)"),
+            "the sync must not re-enter the public gate-taking refresh (non-reentrant gate deadlock)"
+        );
+        let refresh_body =
+            production_body(pool_src, "pub async fn refresh_session_permission_ruleset(");
+        assert!(
+            refresh_body.contains("self.safety_sync_locks.for_session(session_id).await")
+                && refresh_body.contains("let _sync_gate = gate.lock().await;"),
+            "the public one-session refresh must hold the same posture gate for direct-command callers"
+        );
+        let broadcast_body = production_body(pool_src, "pub async fn refresh_permission_rulesets(");
+        let broadcast_gate_at = broadcast_body
+            .find("self.safety_sync_locks.for_session(&sid).await")
+            .expect("the global ruleset broadcast must gate each per-session publish");
+        let broadcast_snapshot_at = broadcast_body
+            .find("session_scope_ruleset_for_engine(&sid, &engine)")
+            .expect("the global broadcast must compose the per-session ruleset");
+        assert!(
+            broadcast_gate_at < broadcast_snapshot_at
+                && broadcast_body.contains("let _sync_gate = gate.lock().await;"),
+            "the broadcast must ACQUIRE the session gate before its snapshot/send \
+             (round-32 Jensen 5861595605: it is a third mode-derived publisher)"
+        );
+        // Round-32 (review Jensen 5862685010 P2): with the gate held, an
+        // unbounded broadcast send would let a wedged engine hold the gate
+        // forever and wedge every later posture sync/refresh for that
+        // session — pin the same TURN_GATE_AWAIT_TIMEOUT bound the
+        // one-session publisher uses, alongside the gate retention.
+        assert!(
+            broadcast_body.contains("tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, send)"),
+            "the broadcast's gate-held send must be bounded (TURN_GATE_AWAIT_TIMEOUT) \
+             so a wedged engine cannot hold the session gate forever \
+             (round-32 Jensen 5862685010)"
+        );
+        // Round-32 (review Jensen 5863866339 P2): the bounded send's timeout
+        // CANCELS the delivery, so swallowing it into a logged-only success
+        // lets a congested engine resume on its OLD hard-deny rules while
+        // callers report the toggle complete. Pin the honest failure shape:
+        // the broadcast returns Result, collects every per-session failure,
+        // and bails naming them; the callers surface it (pinned cross-file
+        // in the ruleset caller pins below).
+        assert!(
+            broadcast_body.contains("(&self) -> Result<()>")
+                && broadcast_body.contains("failures.push(format!(")
+                && broadcast_body.contains("anyhow::bail!("),
+            "the broadcast must collect per-session delivery failures and RETURN them \
+             — a cancelled send is a real failure (congested engine keeps its OLD \
+             hard-deny rules), not a log-and-succeed (round-32 Jensen 5863866339)"
+        );
+        // 8. Round-32 caller propagation pins (review Jensen 5863866339 P2):
+        //    every caller of the broadcast must surface the delivery failure
+        //    instead of reporting success past it. The wrap-up helpers keep
+        //    their own contracts (refresh_tools_and_broadcast still emits the
+        //    cross-window notice but returns the ruleset result; hot_refresh
+        //    propagates), and the security-tightening super-permission toggle
+        //    maps the error into its command result.
+        let connectors_src = include_str!("../../app/commands/connectors.rs");
+        let wrapup_body = production_body(
+            connectors_src,
+            "pub(super) async fn refresh_tools_and_broadcast(",
+        );
+        assert!(
+            wrapup_body.contains("let ruleset_result") && wrapup_body.contains("ruleset_result"),
+            "refresh_tools_and_broadcast must return the ruleset delivery result — \
+             the toggles persist and the notice still fires, but the failure rides \
+             the command result (round-32 Jensen 5863866339)"
+        );
+        let interaction_src = include_str!("../../app/commands/interaction.rs");
+        let toggle_body = production_body(interaction_src, "pub async fn set_super_permission(");
+        assert!(
+            toggle_body.contains("refresh_permission_rulesets()")
+                && toggle_body.contains("map_err(|error| format!(\"refresh_permission_rulesets"),
+            "the super-permission toggle must surface ruleset delivery failures \
+             (round-32 Jensen 5863866339)"
+        );
+        let ima_body = production_body(connectors_src, "pub async fn ima_connect(");
+        let ima_out_body = production_body(connectors_src, "pub async fn ima_logout(");
+        assert!(
+            ima_body.contains("map_err(|error| format!(\"refresh_permission_rulesets")
+                && ima_out_body.contains("map_err(|error| format!(\"refresh_permission_rulesets"),
+            "the ima login/logout commands must surface ruleset delivery failures \
+             (round-32 Jensen 5863866339)"
+        );
+        let marketplace_src = include_str!("../../app/commands/marketplace.rs");
+        let hot_body = production_body(marketplace_src, "async fn hot_refresh(");
+        assert!(
+            hot_body.contains("-> Result<(), String>")
+                && hot_body.contains("map_err(|error| format!(\"refresh_permission_rulesets"),
+            "marketplace hot_refresh must propagate ruleset delivery failures to its \
+             install/uninstall commands (round-32 Jensen 5863866339)"
+        );
+    }
+
+    /// Round-32 behavioral companion to the posture-gate pins (review Jensen
+    /// 5861595605 P2): the pins above can only require the `lock()` SHAPE —
+    /// this test executes the gate primitive the production sync/refresh/
+    /// broadcast acquire and proves it actually excludes. A second
+    /// acquisition of the SAME session stays blocked while the first guard
+    /// is alive (the round-31 bind-without-lock shape completes immediately
+    /// and goes red here), the gate is acquirable again after release, and a
+    /// different session stays independent so the broadcast's one-at-a-time
+    /// gating cannot cross-block.
+    #[tokio::test]
+    async fn safety_sync_gate_acquire_excludes_concurrent_holders() {
+        let locks = SessionTurnLocks::default();
+        let held = locks.for_session("session-gate-exclusion").await;
+        let _guard = held.lock().await;
+
+        // Same session: a second acquire must NOT complete while held. Under
+        // correct code the mutex is exclusively held, so this cannot flake;
+        // under the bind-without-lock regression the attempt returns at once.
+        let gate = locks.for_session("session-gate-exclusion").await;
+        let blocked =
+            tokio::time::timeout(std::time::Duration::from_millis(200), gate.lock()).await;
+        assert!(
+            blocked.is_err(),
+            "a second holder of the same session gate must stay blocked while \
+             the first guard is alive — a bind-without-lock regression \
+             completes immediately here"
+        );
+
+        // After the holder releases, the same session's gate is acquirable
+        // again (for_session reuses the live registry entry, so this is the
+        // SAME mutex the first holder owned).
+        drop(_guard);
+        let reacquired = tokio::time::timeout(std::time::Duration::from_millis(200), gate.lock())
+            .await
+            .expect("the gate must be acquirable after the holder releases it");
+        drop(reacquired);
+
+        // Different sessions stay independent: with session A re-held,
+        // session B still acquires immediately.
+        let again = locks.for_session("session-gate-exclusion").await;
+        let _re_guard = again.lock().await;
+        let other = locks.for_session("session-gate-other").await;
+        let _other_guard =
+            tokio::time::timeout(std::time::Duration::from_millis(200), other.lock())
+                .await
+                .expect("a different session's gate must stay independent of a held one");
+    }
+
     /// The production body of the fn starting at `signature`, with line
     /// comments stripped: prose routinely mentions code verbatim (the reclaim
     /// closure says "once forwarder.abort() below"), and a naive
@@ -11550,6 +12317,50 @@ mod tests {
             span.contains(") && entry.engine.scheduled_run_engine == scheduled_unattended"),
             "reuse must be CONJOINED with the run-engine class — the clause \
              that keeps interactive continuations off the run engine (round-35 M1)"
+        );
+    }
+
+    /// Round-9 P1: the deny-ruleset hot-refresh/arming helper must derive
+    /// its engine-lane profile with the windowless-host fact ORed into the
+    /// unattended flag — a windowless headless/agentic run reusing a
+    /// stored-Yolo session would otherwise compose Floor at every hot
+    /// refresh (sudo/connector/mode toggles), silently re-tightening to the
+    /// mode-derived face that drops the credential-destroy/exfil/persistence
+    /// mechanical gate exactly where no card consumer exists. Source-pin the
+    /// helper body: the spawn config pins its own derivation
+    /// (unattended_spawn_derives_the_safety_profile_through_the_engine_lane),
+    /// this pin holds the refresh side of the same invariant.
+    #[test]
+    fn ruleset_refresh_lane_includes_the_windowless_host_marker() {
+        let source = include_str!("engine_pool.rs");
+        let span = source
+            .split("fn session_scope_ruleset_for_engine")
+            .nth(1)
+            .expect("the ruleset-lane helper present")
+            .split("fn ")
+            .next()
+            .expect("the helper body present")
+            .split('\n')
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            span.contains("SafetyRuleProfile::for_engine_lane("),
+            "the helper must derive through the engine lane"
+        );
+        assert!(
+            span.contains("engine.scheduled_run_engine"),
+            "the scheduled-run leg must stay in the lane flag"
+        );
+        assert!(
+            span.contains("windowless_host::is_windowless_host()"),
+            "the windowless-host leg must OR into the lane flag — the \
+             hot refresh of a windowless stored-Yolo engine would \
+             otherwise downgrade Full to the mode-derived Floor (round-9 P1)"
         );
     }
 }
