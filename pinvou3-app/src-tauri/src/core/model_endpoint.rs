@@ -819,19 +819,28 @@ pub fn transport_code_for(
     is_connect: bool,
     display_text: &str,
 ) -> &'static str {
+    // Structured reqwest flags answer BEFORE the keyword arms (review
+    // 5875009923 P3): `err.to_string()`'s Display embeds the full requested
+    // URL, so a refused request to a URL like `http://127.0.0.1/tls` would
+    // hit the "tls" keyword arm and be misclassified as `tls_error` even
+    // though `is_connect` is true. The keyword arms stay as the fallback
+    // for text-only callers (settings/CLI surfaces pass no structured
+    // flags), whose texts carry no request URL to bias them.
     let lower = display_text.to_lowercase();
     if is_timeout {
         "timeout"
+    } else if is_connect {
+        "connection_refused"
+    } else if is_dns {
+        "dns_failed"
     } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
         "tls_error"
-    } else if is_dns
-        || lower.contains("dns")
+    } else if lower.contains("dns")
         || lower.contains("lookup")
         || lower.contains("name or service not known")
     {
         "dns_failed"
-    } else if is_connect
-        || lower.contains("connection refused")
+    } else if lower.contains("connection refused")
         || lower.contains("os error 10061")
         || lower.contains("actively refused")
     {

@@ -7709,12 +7709,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 回归钉(prompt-optimization-evaluation README "Scheduled-origin
-    /// follow-up"):`runtime:scheduled-request-origin` 曾在压入 engine
-    /// config 后被六行之后的 `cfg.instructions` 整体替换丢弃,从未抵达任何
-    /// 引擎。修复后该条目必须在 session 指令栈装配「之后」追加:栈首仍是
-    /// `pinvou3:instructions`(栈未被替换),origin 条目恒为末位且只出现
-    /// 一次,内容携带会话 id。普通会话与 scheduled 会话同路径。
+    /// Regression pin (the prompt-optimization-evaluation README's
+    /// "Scheduled-origin follow-up"): the `runtime:scheduled-request-origin`
+    /// note used to be dropped wholesale six lines later when
+    /// `cfg.instructions` replaced the pushed engine config, never reaching
+    /// any engine. After the fix the entry must be appended AFTER the
+    /// session instruction stack is assembled: the stack head is still
+    /// `pinvou3:instructions` (the stack is not replaced), the origin note
+    /// is always the last entry and appears exactly once, carrying the
+    /// session id. Ordinary and scheduled sessions share this path.
     #[test]
     fn origin_note_appends_after_the_session_instruction_stack() {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);

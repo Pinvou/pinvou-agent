@@ -1087,6 +1087,17 @@ mod tests {
                 "error sending request for url (http://x/)",
                 "connection_refused",
             ),
+            // Review 5875009923 P3: the structured flags answer before the
+            // keyword arms — a refused request whose URL embeds "tls" must
+            // stay connection_refused, not inherit the tls keyword from the
+            // URL text.
+            (
+                false,
+                false,
+                true,
+                "error sending request for url (http://127.0.0.1/tls): tcp connect error: Connection refused (os error 111)",
+                "connection_refused",
+            ),
             (
                 false,
                 false,
