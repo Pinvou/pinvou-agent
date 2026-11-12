@@ -62,7 +62,6 @@ impl LifecycleResyncSignal {
 /// CDP session over one browser-level WebSocket. Commands match by ID and events
 /// dispatch through a channel.
 pub struct CdpSession {
-    port: u16,
     write: Mutex<futures_util::stream::SplitSink<Ws, WsMessage>>,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
@@ -146,7 +145,6 @@ impl CdpSession {
                 .await;
         let (write, _read) = ws.split();
         Self {
-            port: 0,
             write: Mutex::new(write),
             next_id: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
@@ -234,7 +232,6 @@ pub async fn connect(port: u16) -> anyhow::Result<Connected> {
     let (events_tx, events_rx) = mpsc::channel(128);
     let lifecycle_resync = Arc::new(LifecycleResyncSignal::default());
     let session = Arc::new(CdpSession {
-        port,
         write: Mutex::new(write),
         next_id: AtomicU64::new(1),
         pending: Mutex::new(HashMap::new()),
