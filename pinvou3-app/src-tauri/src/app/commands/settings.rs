@@ -186,16 +186,33 @@ fn resolve_probe_key(
 }
 
 fn resolve_saved_model_key(model_id: Option<&str>) -> Result<Option<String>, String> {
+    resolve_saved_model_key_with(&SystemCredentialStore::new(), model_id)
+}
+
+fn resolve_saved_model_key_with(
+    store: &dyn CredentialStore,
+    model_id: Option<&str>,
+) -> Result<Option<String>, String> {
     let prefs = UserPrefs::load();
     let Some(model) = saved_model_for_probe(&prefs, model_id) else {
         return Ok(None);
     };
+    // Server-side backstop: a record that itself declares the endpoint keyless
+    // must never surface a stored credential through this ladder, regardless
+    // of which caller (or client version) is asking. The frontend posture flag
+    // covers the form flow, but a hand-edited settings.json can carry both
+    // `auth_mode = "none"` and a live `credential_ref` (normalization clears
+    // the declaration only for local/managed records, never the credential),
+    // and the vision-model picker probes a *different* saved record whose
+    // posture the edited form cannot know. Mirrors `bridge::api_key`'s
+    // declaration-before-keyring ordering.
+    if codewhale_config::auth_mode_disables_api_key(model.auth_mode.as_deref()) {
+        return Ok(None);
+    }
     let Some(reference) = &model.credential_ref else {
         return Ok(None);
     };
-    SystemCredentialStore::new()
-        .get(reference)
-        .map_err(|e| e.user_message())
+    store.get(reference).map_err(|e| e.user_message())
 }
 
 #[tauri::command]
@@ -364,6 +381,7 @@ pub async fn probe_local_server_kind(
     base_url: String,
     api_key: Option<String>,
     model_id: Option<String>,
+    no_auth: Option<bool>,
 ) -> Result<String, String> {
     if !crate::features::assistant::platform::bridge::base_url_uses_local_or_private(&base_url) {
         return Ok("generic".to_string());
@@ -373,13 +391,21 @@ pub async fn probe_local_server_kind(
     // not block the probe (continue as credential-less) — with credentials
     // missing the probe still identifies auth-free endpoints; authenticated
     // endpoints 401 into generic, the same semantics as an unreachable probe.
-    let bearer =
-        match resolve_probe_key(api_key.as_deref().unwrap_or(""), model_id.as_deref(), false) {
-            Ok(Some(key)) => Some(key.trim().to_string()).filter(|k| !k.is_empty()),
-            // Includes the swallowed credential-read failure: continue
-            // credential-less rather than blocking the probe.
-            _ => None,
-        };
+    // `no_auth` is the form's keyless posture (absent = false, matching the
+    // other probe commands for older web/remote-control callers): while the
+    // declaration is active, neither the retained form key nor the record's
+    // saved credential may ride the automatic tier probe — it hits the very
+    // URL the user is declaring keyless, before any save.
+    let bearer = match resolve_probe_key(
+        api_key.as_deref().unwrap_or(""),
+        model_id.as_deref(),
+        no_auth.unwrap_or(false),
+    ) {
+        Ok(Some(key)) => Some(key.trim().to_string()).filter(|k| !k.is_empty()),
+        // Includes the swallowed credential-read failure: continue
+        // credential-less rather than blocking the probe.
+        _ => None,
+    };
     let kind =
         crate::core::model_endpoint::probe_local_server_kind(&base_url, bearer.as_deref()).await;
     Ok(match kind {
@@ -2079,6 +2105,115 @@ mod tests {
             Some("typed-key".to_string()),
             "无声明时类型化 key 优先的既有语义不变"
         );
+    }
+
+    #[test]
+    fn keyless_record_suppresses_saved_credential_in_probe_ladder() {
+        // 服务端兜底:记录自身声明免鉴权时,resolve_saved_model_key 不得返回已存
+        // 凭据 —— 无论哪个调用方/客户端版本询问。手改 settings.json 可以同时携带
+        // 声明与活着的 credential_ref(load 归一化只清 local/managed 记录的声明,
+        // 从不清凭据),视觉模型选择器探测的还是「另一条」表单姿态覆盖不到的记录,
+        // 所以防线必须落在 ladder 里而不是前端口径上。
+        use super::resolve_saved_model_key_with as ladder;
+        use crate::platform::credential_store::CredentialError;
+        struct SeededStore;
+        impl CredentialStore for SeededStore {
+            fn get(
+                &self,
+                reference: &CredentialReference,
+            ) -> Result<Option<String>, CredentialError> {
+                let seeded = reference.account.ends_with("seeded");
+                if seeded {
+                    Ok(Some("sk-residual-stored-key".to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+            fn set(
+                &self,
+                _reference: &CredentialReference,
+                _value: &str,
+            ) -> Result<(), CredentialError> {
+                Ok(())
+            }
+            fn delete(&self, _reference: &CredentialReference) -> Result<(), CredentialError> {
+                Ok(())
+            }
+        }
+        let record = |auth_mode: Option<&str>, ref_seeded: bool| SavedModel {
+            auth_mode: auth_mode.map(str::to_string),
+            id: "ladder-fixtured".to_string(),
+            name: "fixture".to_string(),
+            alias: None,
+            // Cloud preset on purpose: the declaration only survives
+            // normalization on non-local, non-managed records (local_vllm
+            // clears it on save by design, which would mute this fixture).
+            preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "fixture-model".to_string(),
+            base_url: "https://fixture.example/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: Some(CredentialReference::for_model(if ref_seeded {
+                "ladder-seeded"
+            } else {
+                "ladder-unseeded"
+            })),
+            credential_state: Default::default(),
+            has_secret: ref_seeded,
+            credential_action: None,
+        };
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-probe-ladder-keyless-guard-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let persist = |model: SavedModel| {
+            UserPrefs::update_transaction(|initial| {
+                initial.migrate_models();
+                initial.advanced.saved_models = vec![model];
+                initial.advanced.active_model_id = Some("ladder-fixtured".to_string());
+                Ok(())
+            })
+            .expect("ladder fixture should save");
+        };
+        // 同义词档位("DISABLED ")与裸声明同一口径:守卫在 store 读取之前命中,
+        // 残留 credential_ref 不得外发(ladder 从磁盘加载,落盘的声明才生效)。
+        persist(record(Some("DISABLED "), true));
+        assert_eq!(
+            ladder(&SeededStore, Some("ladder-fixtured")).unwrap(),
+            None,
+            "免鉴权声明必须服务端抑制已存凭据(防前端口径回退)"
+        );
+        // 反方向:无声明时既有行为不变 —— 已存凭据照常解析,防守卫过度短路。
+        persist(record(None, true));
+        assert_eq!(
+            ladder(&SeededStore, Some("ladder-fixtured"))
+                .unwrap()
+                .as_deref(),
+            Some("sk-residual-stored-key"),
+            "无声明记录的已存凭据解析语义不变"
+        );
+
+        if let Some(value) = old_home {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::set_var("PINVOU3_HOME", value) };
+        } else {
+            // SAFETY: same ENV_LOCK guard as above.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

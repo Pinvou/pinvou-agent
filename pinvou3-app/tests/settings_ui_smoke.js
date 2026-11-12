@@ -18,6 +18,10 @@ const settingsViewSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),
   'utf8',
 );
+const localServerTiersSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'local-server-tiers.jsx'),
+  'utf8',
+);
 const settingsI18nSources = ['zh', 'en', 'ja'].map((lang) => fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'i18n', `${lang}.js`),
   'utf8',
@@ -143,7 +147,8 @@ for (const settingsI18nSource of settingsI18nSources) {
 // data-testid="model-form-no-auth-toggle" 驱动，且保存载荷必须携带
 // auth_mode（null=默认鉴权规则 / "none"=免鉴权声明，直通底座
 // auth_mode_disables_api_key）。缺任一即开关失效或声明丢失。凭据删除
-// 动作与两条测试路径必须与 auth_mode 载荷同口径排除托管档/免鉴权态，
+// 动作与全部三条探测路径（连接测试 / 图片能力测试 / 自动思考档位探测）
+// 必须与 auth_mode 载荷同口径排除托管档/免鉴权态，
 // URL 行的渲染点必须与赋值同在（防止中途加条件把字段藏掉）。
 {
   const noAuthToggleSites = settingsViewSource.match(
@@ -189,6 +194,25 @@ for (const settingsI18nSource of settingsI18nSources) {
     settingsViewSource,
     /testImageInputCapability\(model\.trim\(\), baseUrl\.trim\(\), testKey, initial\.__new \? null : initial\.id, !isLocalPreset && !isCodingPlan && noAuth\)/,
     'the image-capability test must forward the keyless posture so the backend skips the saved-credential fallback',
+  );
+  // The automatic tier probe is the third probe path in the same form: under
+  // the keyless posture it must drop the retained form key AND forward the
+  // posture flag (the backend then skips the saved-credential fallback).
+  // Both halves are pinned — dropping either reopens the credential-to-keyless-URL leak.
+  assert.match(
+    settingsViewSource,
+    /trimInputs: true,\s*noAuth,\s*\}\)/,
+    'the model form must forward its keyless posture into the reasoning-tier probe hook (the automatic tier probe is a third credential path)',
+  );
+  assert.match(
+    localServerTiersSource,
+    /const probeApiKey = noAuth \? '' : trimInputs \? apiKey\.trim\(\) : apiKey;/,
+    'the tier probe must drop the retained form key while the keyless posture is active',
+  );
+  assert.match(
+    localServerTiersSource,
+    /probeLocalServerKind\(probeBaseUrl, probeApiKey, modelId, noAuth\)/,
+    'the tier probe must forward the keyless posture flag so the backend skips the saved-credential fallback',
   );
   assert.match(
     settingsViewSource,

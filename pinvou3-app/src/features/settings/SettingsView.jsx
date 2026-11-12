@@ -493,6 +493,7 @@ function hasStoredCredential(record) {
         modelId: initial.__new ? null : initial.id,
         debounceMs: 400,
         trimInputs: true,
+        noAuth,
       });
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
