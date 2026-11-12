@@ -1349,6 +1349,32 @@ async fn unbounded_deadline_still_bounds_wedged_local_phases() {
             );
         }
     }
+    // Fourth local phase on the same None-deadline lane: attachment
+    // resolution (per-attachment fresh cap — docs/gaia-benchmark.md's
+    // "附件解析按附件逐个计 600 秒"). The resolver's resolve_attachment
+    // pends forever; virtual time fires the fallback cap instantly and the
+    // run must fail closed like the other wedged phases.
+    let backend = Arc::new(MockBackend::default());
+    let runner =
+        NativeAgentRunner::with_private_inputs(backend, Arc::new(PendingAttachmentResolver));
+    let result = runner
+        .run_task(
+            &BenchmarkTask::new(
+                "unbounded-attachment",
+                None,
+                ExecutionRequest::native_turn(
+                    PrivateInputHandle::new("private"),
+                    vec![AttachmentHandle::new("attachment")],
+                    None,
+                    ToolPolicyId::new("smoke/v1"),
+                    OutputContract::new("text/v1"),
+                ),
+            ),
+            &RunContext::new("unbounded-attachment"),
+        )
+        .await;
+    let error = result.expect_err("a wedged attachment resolution must fail closed");
+    assert_eq!(error.code(), "task_timeout");
 }
 
 /// Minimal adapter so `resume_adapter`'s manifest gates can be exercised end
