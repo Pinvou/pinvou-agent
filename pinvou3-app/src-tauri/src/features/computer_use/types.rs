@@ -343,7 +343,8 @@ pub struct UiTreeOptions {
 #[derive(Debug, Clone)]
 pub enum ComputerUseError {
     /// This platform/session does not support the capability (e.g. the portal does not offer
-    /// RemoteDesktop, an unimplemented backend).
+    /// RemoteDesktop, an unimplemented backend), or a policy refusal on a supported
+    /// platform (e.g. macOS refusing self-targeted Accessibility reads).
     Unsupported {
         capability: &'static str,
         detail: String,

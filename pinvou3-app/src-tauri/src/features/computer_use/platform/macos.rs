@@ -273,6 +273,14 @@ const SELF_TARGETED_ACCESSIBILITY: &str = "self_targeted_accessibility";
 /// input (mouse/keyboard via CGEvent) still works inside Pinvou's own
 /// windows; only the AX element reads are refused.
 fn self_owned_ax_error(action: &str) -> ComputerUseError {
+    // Activating the target does not move a query point out of this
+    // process's own windows, so element_at_point must change coordinates
+    // instead of only re-activating.
+    let retry = if action == "element_at_point" {
+        "then retry with coordinates over the target application's own windows"
+    } else {
+        "then retry"
+    };
     ComputerUseError::unsupported(
         SELF_TARGETED_ACCESSIBILITY,
         format!(
@@ -280,7 +288,24 @@ fn self_owned_ax_error(action: &str) -> ComputerUseError {
              Accessibility elements from the computer-use worker thread makes \
              macOS WebKit abort the whole process (its accessibility bridge is \
              main-thread-only). Activate the target application first (for \
-             example by clicking one of its windows or via open -a), then retry."
+             example by clicking one of its windows or via open -a), {retry}."
+        ),
+    )
+}
+
+/// Explicit error for AX elements whose ownership cannot be proven foreign
+/// (the token-local pid read failed). Same refusal and capability as a
+/// positive self-pid match, but an honest diagnosis: the crash-boundary
+/// message above would misstate what happened here.
+fn unproven_owner_ax_error(action: &str) -> ComputerUseError {
+    ComputerUseError::unsupported(
+        SELF_TARGETED_ACCESSIBILITY,
+        format!(
+            "{action} refused: this Accessibility element's owner could not \
+             be determined (the pid read on the element token failed), so it \
+             is treated as possibly self-owned (fail-closed). Retry the \
+             action; a persistent failure means the element was destroyed or \
+             is invalid."
         ),
     )
 }
@@ -303,7 +328,10 @@ fn ensure_not_self_owned(
 ) -> Result<(), ComputerUseError> {
     match element_pid {
         Some(pid) if pid != self_pid => Ok(()),
-        _ => Err(self_owned_ax_error(action)),
+        Some(_) => Err(self_owned_ax_error(action)),
+        // Cannot prove the element is foreign: refuse, with the pid-read
+        // failure diagnosed separately from a positive self-pid match.
+        None => Err(unproven_owner_ax_error(action)),
     }
 }
 
@@ -345,7 +373,9 @@ unsafe fn cf_number_i32(number: *const c_void) -> Option<i32> {
     let mut out: i32 = 0;
     // SAFETY: number is a valid CFNumberRef from a window-list dictionary;
     // out is a valid stack local. CFNumberGetValue converts across number
-    // types when lossless (the window server stores the pid as SInt64).
+    // types when lossless (CGWindow.h documents kCGWindowOwnerPID as a
+    // 32-bit signed integer; a wider stored value would still convert
+    // losslessly for every pid).
     let ok = unsafe {
         CFNumberGetValue(
             number,
@@ -420,9 +450,11 @@ unsafe fn window_bounds(dict: *const c_void) -> Option<WindowBounds> {
 /// CGWindowListCopyWindowInfo documents no thread affinity (off-main calls
 /// are common practice) and needs no TCC grant (only the owner pid and
 /// bounds are read; window titles are not). On enumeration failure the
-/// check degrades to "no self window found" and the hit-test proceeds;
-/// refusing every hit-test on a transient window-server failure would cost
-/// more than that residual window. Note the post-hit-test pid guard cannot
+/// check degrades to "no self window found" and the hit-test proceeds:
+/// CGWindow.h scopes the NULL return to no GUI session or a disabled
+/// window server — a state in which the hit-test itself fails as well, so
+/// fail-closed would refuse the same set of calls in practice. Note the
+/// post-hit-test pid guard cannot
 /// back this check up for our own web-view windows: a self-owned hit that
 /// reaches the web bridge aborts inside the hit-test, before any pid guard
 /// runs — the guard only catches non-aborting self hits (native AppKit AX
@@ -2234,8 +2266,31 @@ mod tests {
         );
         assert!(error.to_string().contains("cannot target Pinvou itself"));
         // Unknown ownership fails closed: an element that cannot be proven
-        // foreign is not touched.
-        assert!(ensure_not_self_owned(None, self_pid, "element_at_point").is_err());
+        // foreign is not touched — with its own honest diagnosis, not the
+        // self-target crash message (the pid read failed; self-ownership
+        // was not proven).
+        let unknown = ensure_not_self_owned(None, self_pid, "element_at_point")
+            .expect_err("unknown ownership is refused");
+        assert!(
+            matches!(
+                &unknown,
+                ComputerUseError::Unsupported { capability, .. }
+                    if *capability == SELF_TARGETED_ACCESSIBILITY
+            ),
+            "unexpected error: {unknown:?}"
+        );
+        let unknown_text = unknown.to_string();
+        assert!(unknown_text.contains("could not be determined"));
+        assert!(!unknown_text.contains("cannot target Pinvou itself"));
+        // element_at_point remediation names the coordinate fix: activating
+        // the target does not move the query point out of our own windows.
+        let point_text = self_owned_ax_error("element_at_point").to_string();
+        assert!(point_text.contains("coordinates over the target application's own windows"));
+        assert!(
+            !self_owned_ax_error("ui_tree")
+                .to_string()
+                .contains("coordinates over")
+        );
     }
 
     #[test]
