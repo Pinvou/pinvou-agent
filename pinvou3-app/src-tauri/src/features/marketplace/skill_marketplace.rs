@@ -1418,8 +1418,7 @@ impl SkillMarketplaceManager {
         }
         match desc {
             Some(desc) => {
-                let content = std::fs::read_to_string(&md_path)
-                    .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
+                let content = read_skill_md_capped_strict(&md_path)?;
                 // 先纯校验/改写（rewrite 无 IO）：值不可表达（控制字符/结构畸形）
                 // 时在任何落盘之前报错——备份 key 与 SKILL.md 都不被触碰，不留下
                 // 「命令 Err 但 extra 已写入」的中间态。引号/反斜杠经无损渲染器
@@ -1444,8 +1443,7 @@ impl SkillMarketplaceManager {
                 let Some(backup) = self.bundle_store.skill_desc_backup(bundle_id)? else {
                     return Ok(());
                 };
-                let content = std::fs::read_to_string(&md_path)
-                    .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
+                let content = read_skill_md_capped_strict(&md_path)?;
                 // 当前 frontmatter 值已是原值（用户手动改回/已恢复）→ 不重写，
                 // 只清备份 key。空备份哨兵 = 原本没有 description → 删行恢复。
                 let current = read_skill_description_from_str(&content);
@@ -2008,18 +2006,39 @@ fn fingerprint_of(files: &mut [(String, Vec<u8>)]) -> String {
 }
 
 /// Installed-skills listing reads SKILL.md whole for name/description; cap
-/// the read at the same 512 KiB the fork-side discovery/audit gate uses
-/// (AUDIT_MAX_SKILL_MD_BYTES), so a hand-placed oversized SKILL.md cannot
-/// balloon the listing either (r4 review). Over-cap reads as None — the same
-/// treatment as an unreadable file, consistent with discovery's "skill
-/// skipped" semantics.
-const MAX_SKILL_MD_READ_BYTES: u64 = 512 * 1024;
+/// the read at the same 512 KiB the fork-side discovery/audit gate uses,
+/// so a hand-placed oversized SKILL.md cannot balloon the listing either
+/// (r4 review). Over-cap reads as None — the same treatment as an
+/// unreadable file, consistent with discovery's "skill skipped" semantics.
+/// Aliased to the fork gate's own const (the dependency is in this crate's
+/// graph) so the two gates cannot drift (r5 review).
+const MAX_SKILL_MD_READ_BYTES: u64 = deepseek_tui::skills::audit::AUDIT_MAX_SKILL_MD_BYTES;
 
 fn read_skill_md_capped(md_path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(md_path).ok()?;
     let bytes =
         crate::platform::filesystem::read_capped(&mut file, MAX_SKILL_MD_READ_BYTES).ok()?;
     String::from_utf8(bytes).ok()
+}
+
+/// Same cap as [`read_skill_md_capped`], but loud: the display-edit lanes
+/// are user-driven writes over the same file, so a hand-placed oversized
+/// SKILL.md must fail the edit with a readable reason instead of being
+/// silently skipped (the listing would never even show that skill) —
+/// an unbounded `read_to_string` was the last whole-file allocation left
+/// on this tree (r5 review).
+fn read_skill_md_capped_strict(md_path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(md_path)
+        .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
+    let bytes = crate::platform::filesystem::read_capped(&mut file, MAX_SKILL_MD_READ_BYTES)
+        .map_err(|e| {
+            format!(
+                "读取 {} 失败: {e}（SKILL.md 超过 {} KiB 审读上限）",
+                md_path.display(),
+                MAX_SKILL_MD_READ_BYTES / 1024
+            )
+        })?;
+    String::from_utf8(bytes).map_err(|e| format!("{} 不是有效 UTF-8: {e}", md_path.display()))
 }
 
 fn read_skill_name(md_path: &Path) -> Option<String> {

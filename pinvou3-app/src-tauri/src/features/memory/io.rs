@@ -30,7 +30,7 @@ use super::types::{
     TimedMemoryItem, TopicMigrationJournal, TopicMutation, TopicRead, TopicReconciliation,
     TurnMemoryCapture, WorkContextFile, looks_like_profile_preference_text,
     normalize_preference_topic, normalize_profile_label, normalize_timed_memory_kind,
-    normalize_timed_memory_topic, normalize_work_context_topic,
+    normalize_timed_memory_topic, normalize_work_context_topic, profile_label_would_be_wiped,
 };
 use super::util::{
     clean_candidate_sentence, clean_id, clean_scalar, clean_text, file_lifecycle_lock,
@@ -361,6 +361,45 @@ pub fn update_profile(patch: ProfilePatch) -> io::Result<MemoryProfile> {
     let path = profile_path();
     write_json_atomic(&path, &profile)?;
     Ok(profile)
+}
+
+/// The identity labels whose STORED value (read raw, before any
+/// `normalize`) would be emptied by normalization. `load_profile`
+/// normalizes on read, so by the time `update_profile` applies a patch the
+/// stored value is already gone in memory and a patch that only touches
+/// `language` would persist the emptied label behind a success payload.
+/// The surface guards (app command + CLI) call this before writing and
+/// refuse with the same `memory_profile_label_rejected` contract — a patch
+/// that sets the label itself is judged by the same rule on its own value
+/// and needs no stored check (r5 review).
+pub fn stored_wipe_shaped_identity_labels() -> io::Result<Vec<&'static str>> {
+    let path = profile_path();
+    let raw = match read_text_recovering(&path, |raw| {
+        serde_json::from_str::<serde_json::Value>(raw).is_ok()
+    }) {
+        Ok(raw) => raw,
+        // No file (or unreadable/invalid): nothing stored to destroy —
+        // update_profile's own error path owns those cases.
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(invalid_data)?;
+    let mut wiped = Vec::new();
+    for (topic, key) in [
+        ("call_name", "call_name"),
+        ("assistant_alias", "assistant_alias"),
+    ] {
+        if let Some(label) = value
+            .get("identity")
+            .and_then(|identity| identity.get(key))
+            .and_then(|v| v.as_str())
+        {
+            if profile_label_would_be_wiped(label, topic) {
+                wiped.push(topic);
+            }
+        }
+    }
+    Ok(wiped)
 }
 
 pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {

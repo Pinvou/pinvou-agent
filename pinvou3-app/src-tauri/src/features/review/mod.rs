@@ -588,14 +588,22 @@ async fn model_review(
             bridge.opencode_conversation_key("model-review"),
         )
         .await?;
-        if completion.stop_reason.as_deref() == Some("max_tokens") {
-            log::warn!(
-                "[review] anthropic response truncated (stop_reason=max_tokens); the JSON \
-                 parse below will likely fail opaquely — raise REVIEW_MAX_TOKENS or shrink \
-                 the feed if this repeats"
+        let parse_result = parse_model_review(&completion.text);
+        if parse_result.is_err() && completion.stop_reason.as_deref() == Some("max_tokens") {
+            // Name the real cause instead of an opaque parse failure: a
+            // truncated completion's JSON cannot survive the brace
+            // extraction, and on this protocol `max_tokens` INCLUDES
+            // thinking tokens, so a default-thinking model can spend the
+            // budget before emitting any JSON (r5 review).
+            anyhow::bail!(
+                "model review output hit the {}-token budget \
+                 (stop_reason=max_tokens; max_tokens includes thinking tokens \
+                 on this protocol) before emitting valid JSON — raise the \
+                 budget or shrink the feed",
+                REVIEW_MAX_TOKENS
             );
         }
-        return parse_model_review(&completion.text).context("parse Pinvou review");
+        return parse_result.context("parse Pinvou review");
     }
     let mut body = review_request_body(&model_name, &prompt, user_content);
     apply_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
@@ -612,15 +620,32 @@ async fn model_review(
         crate::core::model_endpoint::error_for_status_with_body(resp, "chat/completions status")
             .await?;
     let value: Value = resp.json().await.context("parse chat/completions json")?;
-    let content = value
+    let choice = value
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|c| c.first())
-        .and_then(|c| c.get("message"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let content = choice
+        .get("message")
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    parse_model_review(content).context("parse Pinvou review")
+    let parse_result = parse_model_review(content);
+    if parse_result.is_err()
+        && choice.get("finish_reason").and_then(Value::as_str) == Some("length")
+    {
+        // Same named-cause contract as the Anthropic lane: an opaque parse
+        // error would send operators hunting for a prompt problem when the
+        // output budget is the real cause (r5 review).
+        anyhow::bail!(
+            "model review output hit the {}-token budget \
+             (finish_reason=length) before emitting valid JSON — raise the \
+             budget or shrink the feed",
+            REVIEW_MAX_TOKENS
+        );
+    }
+    parse_result.context("parse Pinvou review")
 }
 
 /// One-shot Chat Completions body for model review. Field set mirrors the

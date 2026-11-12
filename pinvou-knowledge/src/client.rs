@@ -379,11 +379,17 @@ impl KnowledgeClient {
         // (limit + offset, with the server clamping the page size to 1..500
         // in `list_devices_page`), so walk the pages until a short page ends
         // the listing instead of silently dropping devices past the first
-        // fixed page.
+        // fixed page. The walk itself is bounded: a hostile or broken server
+        // that always answers full pages (ignoring `offset`) would otherwise
+        // loop forever and grow the Vec without limit (r5 review).
         const DEVICES_PAGE_LIMIT: usize = 500;
+        // 200 full pages = 100k devices, ~100x any plausible real fleet; the
+        // cap converts the pathological server from a hang into a loud error.
+        const DEVICES_MAX_PAGES: usize = 200;
+        let device_cap = DEVICES_MAX_PAGES * DEVICES_PAGE_LIMIT;
         let mut devices = Vec::new();
         let mut offset = 0usize;
-        loop {
+        for _ in 0..DEVICES_MAX_PAGES {
             let page: Vec<DeviceGrant> = self
                 .get(&format!(
                     "/api/v2/owner/devices?limit={DEVICES_PAGE_LIMIT}&offset={offset}"
@@ -396,6 +402,10 @@ impl KnowledgeClient {
             }
             offset += fetched;
         }
+        Err(format!(
+            "device listing exceeded {DEVICES_MAX_PAGES} full pages \
+             ({device_cap} devices); the server is ignoring the offset parameter"
+        ))
     }
 
     pub async fn update_device(
