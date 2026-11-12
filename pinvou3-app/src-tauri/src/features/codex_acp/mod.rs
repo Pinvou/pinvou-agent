@@ -5374,11 +5374,16 @@ impl AcpPool {
                 // before dying (the `session/load` timeout in particular fires
                 // after `initialize`), so settle them here like the
                 // exited-before-publish arm instead of letting them linger
-                // until the next spawn. No runtime exists in this arm — with
-                // no bridge the settlement is only the cancelled response in
-                // the shared maps, same as the NoRuntime and Missing arms'
-                // None calls (the Dead arm passes the removed runtime's
-                // bridge instead).
+                // until the next spawn. This is the bridgeless BACKSTOP: the
+                // load-timeout abort settles its own generation's cards
+                // through its event bridge inside `spawn_session` (there the
+                // doomed bridge is still alive and emits
+                // permission_resolved/elicitation_resolved + journal
+                // entries); this arm covers the failure paths that have no
+                // bridge to emit through, so the settlement is only the
+                // cancelled response in the shared maps, same as the
+                // NoRuntime and Missing arms' None calls (the Dead arm
+                // passes the removed runtime's bridge instead).
                 self.cancel_runtime_pending_cards(session_id, None).await;
                 diagnostics::write(
                     &operation_id,
@@ -5840,6 +5845,16 @@ impl AcpPool {
                             ),
                         );
                         replay_suppressed.store(false, Ordering::Release);
+                        // The doomed generation's request handlers were live
+                        // from `initialize`, so cards registered during the
+                        // load window must settle THROUGH this generation's
+                        // event bridge: the get_or_spawn Err arm can only
+                        // settle bridgelessly (no event reaches the
+                        // frontend, no journal entry) once the runtime here
+                        // is dropped (r5 review; same class the module's
+                        // own review #463 fixed for the rebind paths).
+                        self.cancel_runtime_pending_cards(pinvou_session_id, Some(&event_bridge))
+                            .await;
                         return Err(error);
                     }
                 };
@@ -6561,6 +6576,14 @@ mod tests {
                 && spawn.contains("if !lifecycle_for_elicitation.is_running()"),
             "the card handlers must deny frames from a dead generation \
              instead of inserting cards no runtime will settle"
+        );
+        assert!(
+            handlers.contains("cancel_runtime_pending_cards(")
+                && handlers.contains("Some(&event_bridge)"),
+            "the load-timeout abort must settle the doomed generation's \
+             cards THROUGH its own event bridge — a bridgeless backstop \
+             emits no permission_resolved/elicitation_resolved and leaves \
+             the card visible until the next info refresh (r5 review)"
         );
         let missing = production_body(src, "async fn get_or_spawn");
         assert!(
