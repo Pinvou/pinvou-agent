@@ -575,17 +575,20 @@ function enforceLazyChunks() {
 // manual-compaction entry hardens in the always-mounted chat surface —
 // busy/compacting click gate, session-keyed in-flight state with a
 // 15-minute lost-terminal self-heal (mirroring the Rust
-// MAX_COMPACTION_LATCH_AGE), localized engine-error mapping, and the
-// shared compactingSessions bridge slice with eviction protection. All
-// render-path UI in ChatView; it cannot defer without breaking the
-// composer footer. Both endpoints measured on the local node 24
-// toolchain: 486,097 → 487,044 B desktop (+947 B: +789 feature entry,
-// +158 review-fix hardening) and 127,777 → 127,777 B web (byte-identical
-// — after the #833 delivery-pipeline refactor the shared slice registry
-// rides the chat-view group on web). The desktop ceiling takes the next
-// thousand step (956 B headroom); the web ceiling stays 128_000 (223 B
-// headroom above the measured web entry). This cap does not promise
-// headroom for unrelated main changes.
+// MAX_COMPACTION_LATCH_AGE), and localized engine-error mapping. All of
+// that is ChatView render-path code; it cannot defer without breaking the
+// composer footer. The shared compactingSessions bridge slice with
+// eviction protection lives in the bridge/shared helpers, which ride the
+// classic startup bundles on both platforms — outside this entry gate.
+// Both endpoints measured on the local node 24 toolchain: 486,097 →
+// 487,059 B desktop (+962 B: +789 feature entry, +158 review-fix
+// hardening, +15 marker-takeover release fix) and 127,777 → 127,777 B
+// web (byte-identical: the web entry chunk is untouched — ChatView rides
+// the web-only lazy chat-view group, and the bridge-side additions ride
+// the classic startup bundles). The desktop ceiling takes the next
+// thousand step (941 B headroom); the web
+// ceiling stays 128_000 (223 B headroom above the measured web entry).
+// This cap does not promise headroom for unrelated main changes.
 export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 

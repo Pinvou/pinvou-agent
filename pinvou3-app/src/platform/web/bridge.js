@@ -231,7 +231,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     artifactChange: { seq: 0, path: "", event: "", sessionId: "", at: 0 },
     // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
     sessionBusy: {},
-    // 上下文压缩进行中的会话 { session_id: true }。chat:compaction start 置位、
+    // 上下文压缩进行中的会话 { session_id: 置位时刻毫秒时间戳 }。chat:compaction start 置位、
     // done/fail/cancel 终态清除；主车道压缩入口据此禁用（与代码车道
     // code-native-lane 的 lane.compacting 同机制）。不属于工作集（saveWorkingSetTo
     // 的显式字段表之外），切会话 swap 不影响；会话删除/驱逐时随 turnUsageDirty 一并清除。
