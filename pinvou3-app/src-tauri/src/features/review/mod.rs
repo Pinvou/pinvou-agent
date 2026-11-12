@@ -106,12 +106,6 @@ const FULL_FEED_CHAR_LIMIT: usize = 96_000;
 /// 真超大产物的「不漏」解是 P1 map-reduce 分块全审。
 const ARTIFACT_CHAR_LIMIT: usize = 100_000;
 
-/// 产物读取上限（字节）。先 stat 再读：极端路径下 AI 可能写出大数据文件，整读进
-/// 内存只为截前 100k 字符 = 为丢掉的内容付全量内存+阻塞读（r9 审 m8；与
-/// deliverables.rs `MAX_LIST_SCAN_BYTES` 同款哲学）。超帽产物跳过、退对话流审查
-/// （与二进制产物同一退化路径）；常规产物（文档/代码/邮件）都在此内，行为不变。
-const ARTIFACT_READ_BYTE_CAP: u64 = 32 * 1024 * 1024;
-
 /// 降级投影保留的 web_search 事实条数。超出部分不静默丢弃，在投影尾部
 /// 显式标注省略条数（见 project）。
 const FACT_PROJECTION_KEEP: usize = 12;
@@ -370,13 +364,39 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     // read_to_string 对二进制产物(.docx/.pdf/.xlsx 等)静默失败返回 None——该类
     // session 退化成只凭对话流审查。文本抽取是后续功能候选(P1),当前形态刻意
     // 如此(2026-11-09 审:把已知限制写进代码,别只活在 PR 描述里)。
-    // 超帽产物同样跳过（r9 审 m8）：整读进内存只为截前 30k 字符不划算。
-    if !artifact_within_read_cap(&abs) {
-        return None;
+    // 读侧同样限长（Take = 上限 + 1，镜像 read_artifact_text 的读界；取代 r9 审
+    // m8 的 stat 预检——stat→read 之间存在 TOCTOU 窗，有界读在读取侧一次闭合）：
+    // 召唤审核读的是 workspace 内任意被指名的文件，多 GiB 文件整读进内存
+    // 是纯内存尖峰（r4 review）。超硬读界的产物不杀死整个召唤，按「部分
+    // 展示 + 明示」同一口径截断并在标注里写明。
+    let hard_cap = crate::app::commands::artifacts::MAX_ARTIFACT_TEXT_BYTES;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        let Ok(file) = std::fs::File::open(&abs) else {
+            return None;
+        };
+        if file.take(hard_cap + 1).read_to_end(&mut bytes).is_err() {
+            return None;
+        }
     }
-    let content = std::fs::read_to_string(&abs).ok()?;
+    let read_capped = bytes.len() as u64 > hard_cap;
+    // 未触线保持严格 UTF-8（与原 read_to_string 同语义，坏字节 → 跳过该
+    // 产物）；仅当字节截断可能切在字符中间时才容忍尾部损字。
+    let content = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) if read_capped => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        Err(_) => return None,
+    };
     let n = content.chars().count();
-    let bounded = if n > ARTIFACT_CHAR_LIMIT {
+    let bounded = if read_capped {
+        let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
+        format!(
+            "{head}\n\n…（产物超过 {} MiB 硬读界，仅读前 {} MiB；如需全审，让 Boss 拆分产物。P1 改 map-reduce 分块全审）",
+            hard_cap / (1024 * 1024),
+            hard_cap / (1024 * 1024),
+        )
+    } else if n > ARTIFACT_CHAR_LIMIT {
         let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
         format!(
             "{head}\n\n…（产物共 {n} 字，这里是前 {ARTIFACT_CHAR_LIMIT} 字；后半未展示，如需审让 Boss 指定。P1 改 map-reduce 分块全审）"
@@ -385,13 +405,6 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
         content
     };
     Some((path, bounded))
-}
-
-/// 产物读取字节帽判定（r9 审 m8）。stat 失败按超帽处理（读不到 = 跳过、退对话流）。
-fn artifact_within_read_cap(abs: &std::path::Path) -> bool {
-    std::fs::metadata(abs)
-        .map(|m| m.len() <= ARTIFACT_READ_BYTE_CAP)
-        .unwrap_or(false)
 }
 
 /// 账目是否已被 Boss 结清、核账不再核（§5）：accept=缺陷接受现状、confirmed=需核实但 Boss
@@ -642,6 +655,7 @@ async fn model_review(
             bridge.opencode_conversation_key("model-review"),
         )
         .await?;
+<<<<<<< HEAD
         // stop_reason 映射进 parse 的诊断层（r5 审 m5）：Anthropic 的
         // "max_tokens" 与 OpenAI 的 "length" 同义（预算被推理吃满/输出截断）。
         // 不映射的话，parse_model_review_with_finish 给这个失败形态加的解释在
@@ -652,6 +666,16 @@ async fn model_review(
             .and_then(|reason| (reason == "max_tokens").then_some("length"));
         return parse_model_review_with_finish(&completion.text, finish_reason)
             .context("parse Pinvou review");
+=======
+        if completion.stop_reason.as_deref() == Some("max_tokens") {
+            log::warn!(
+                "[review] anthropic response truncated (stop_reason=max_tokens); the JSON \
+                 parse below will likely fail opaquely — raise REVIEW_MAX_TOKENS or shrink \
+                 the feed if this repeats"
+            );
+        }
+        return parse_model_review(&completion.text).context("parse Pinvou review");
+>>>>>>> b45f3bf5e (fix(app): close the preview TOCTOU and bound the review artifact read)
     }
     // 路由身份与主对话同一解析：engine cfg.provider 正是 `provider()` 的产物
     // （engine_route_provider 除 Responses 改名外恒等），底座 `api_provider()`

@@ -21,7 +21,7 @@ pub(crate) struct ArtifactInfo {
 /// 几十 MB 以上就是内存尖峰 + UI 冻结。同文件的图片通道(25MB)已有同型 metadata
 /// 预检，文本通道此前无守卫（审计 tauri-app-a-008）。超限明确报错并提示外部打开，
 /// 绝不静默截断。
-const MAX_ARTIFACT_TEXT_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const MAX_ARTIFACT_TEXT_BYTES: u64 = 50 * 1024 * 1024;
 
 /// 读 artifact 文件的纯文本（md/json/txt 等）。文件不存在或不是文本 → 报错。
 /// 路径须为绝对路径且不触及凭据/系统敏感黑名单（validate_user_path，防逃逸）。
