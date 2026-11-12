@@ -49,6 +49,19 @@
 //! the thread), so the struct relies on auto Send alone (Enigo already has an
 //! internal unsafe impl Send); no hand-written unsafe impl is needed.
 //!
+//! Self-targeting boundary: AX queries are safe on this background thread
+//! only for *foreign* targets — HIServices marshals those to the target
+//! application's main thread via XPC. A query that resolves to this very
+//! process is dispatched in-process on the calling thread instead, and
+//! reading our own WKWebView-backed window's accessibility bridge then runs
+//! WebKit main-thread-only code, which deliberately aborts the whole process
+//! (crashDueToApplicationCallingMainThreadOnlyWebKitAPIFromBackgroundThread;
+//! crash pinvou3-tauri-2026-11-12-101011: computer use killed the app when
+//! Pinvou itself was the focused application). ui_tree/focused_element
+//! refuse self-owned focused applications and element_at_point refuses
+//! points inside own windows (ensure_not_self_owned, checked before any
+//! attribute read); coordinate-only input (mouse/keyboard) is unaffected.
+//!
 //! Autorelease-pool invariant: the backend worker thread has no Obj-C
 //! runloop and no autorelease pool. Every ObjC/CF call on the input/capture
 //! paths below (and in [`super::screen_capture_kit`]) must therefore return
@@ -85,7 +98,10 @@ use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXVal
 use objc2_core_foundation::{
     CFRetained, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
 };
-use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
+use objc2_core_graphics::{
+    CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo,
+    CGWindowListOption, kCGWindowBounds, kCGWindowOwnerPID,
+};
 use objc2_foundation::{NSPoint, NSSize, NSString};
 
 use super::super::backend::ComputerUseBackend;
@@ -176,6 +192,12 @@ unsafe extern "C" {
         key_callbacks: *const c_void,
         value_callbacks: *const c_void,
     ) -> *const c_void;
+    /// const void * CFDictionaryGetValue(CFDictionaryRef, const void *key).
+    fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+    /// Boolean CFNumberGetValue(CFNumberRef, CFNumberType, void *); the
+    /// Boolean return follows the u8 convention (see CFBooleanGetValue),
+    /// CFNumberType is a C enum (int).
+    fn CFNumberGetValue(number: *const c_void, number_type: i32, value: *mut c_void) -> u8;
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -229,6 +251,215 @@ fn accessibility_error() -> ComputerUseError {
 /// failed (fail-closed).
 fn focused_chain_error(attribute: &str, err: AXError) -> ComputerUseError {
     ComputerUseError::failed(format!("reading {attribute} failed: AXError({})", err.0))
+}
+
+/// Capability string for self-targeted Accessibility reads (kept stable for
+/// downstream classification).
+const SELF_TARGETED_ACCESSIBILITY: &str = "self_targeted_accessibility";
+
+/// Explicit error for self-targeted Accessibility reads. Coordinate-only
+/// input (mouse/keyboard via CGEvent) still works inside Pinvou's own
+/// windows; only the AX element reads are refused.
+fn self_owned_ax_error(action: &str) -> ComputerUseError {
+    ComputerUseError::unsupported(
+        SELF_TARGETED_ACCESSIBILITY,
+        format!(
+            "{action} cannot target Pinvou itself: reading this app's own \
+             Accessibility elements from the computer-use worker thread makes \
+             macOS WebKit abort the whole process (its accessibility bridge is \
+             main-thread-only). Activate the target application first (for \
+             example by clicking one of its windows or via open -a), then retry."
+        ),
+    )
+}
+
+/// Refuses AX reads on elements owned by this process before any attribute
+/// is read: HIServices dispatches Accessibility queries targeting the
+/// *calling* process in-process on the calling thread (foreign targets are
+/// marshalled to their application's main thread via XPC and are safe), and
+/// any attribute read on our own WKWebView-backed window then runs WebKit
+/// main-thread-only code on this worker — WebKit deliberately aborts the
+/// whole process there (see the module docs, crash
+/// pinvou3-tauri-2026-11-12-101011). Unknown ownership also fails closed: an
+/// element that cannot be proven foreign is not touched. `element_pid` and
+/// `self_pid` are separate parameters so tests can pin both sides without
+/// real AX elements.
+fn ensure_not_self_owned(
+    element_pid: Option<libc::pid_t>,
+    self_pid: libc::pid_t,
+    action: &str,
+) -> Result<(), ComputerUseError> {
+    match element_pid {
+        Some(pid) if pid != self_pid => Ok(()),
+        _ => Err(self_owned_ax_error(action)),
+    }
+}
+
+/// The pid owning `element`, read from the local element token:
+/// AXUIElementGetPid answers from the token itself (the pid is recorded at
+/// creation time), it never messages the owning application and does not
+/// touch the web view's accessibility bridge — safe on any thread. `None`
+/// on error (fail-closed callers refuse to traverse).
+fn element_pid(element: &AXUIElement) -> Option<libc::pid_t> {
+    let mut pid: libc::pid_t = 0;
+    // SAFETY: the out pointer is a valid stack local for the duration of the
+    // call; the call is a pure token-property read with no thread affinity.
+    let err = unsafe { element.pid(NonNull::from(&mut pid)) };
+    (err == AXError::Success).then_some(pid)
+}
+
+/// CFNumberType values (CFNumber.h C enum; not generated by
+/// objc2-core-foundation).
+const CF_NUMBER_SINT32_TYPE: i32 = 3;
+const CF_NUMBER_FLOAT64_TYPE: i32 = 6;
+
+/// CFDictionaryGetValue by raw key pointer (`None` when the key is absent).
+/// Declared manually per the module CF-layer note: CFDictionary's generic
+/// default parameters are crate-private.
+unsafe fn dict_value(dict: *const c_void, key: *const c_void) -> Option<*const c_void> {
+    // SAFETY: both pointers are valid CF objects borrowed for the duration
+    // of the call.
+    let value = unsafe { CFDictionaryGetValue(dict, key) };
+    (!value.is_null()).then_some(value)
+}
+
+/// Reads a CFNumber as i32 (`None` when the value is missing/not a number or
+/// the conversion fails).
+unsafe fn cf_number_i32(number: *const c_void) -> Option<i32> {
+    let mut out: libc::pid_t = 0;
+    // SAFETY: number is a valid CFNumberRef from a window-list dictionary;
+    // out is a valid stack local. CFNumberGetValue converts across number
+    // types when lossless.
+    let ok = unsafe {
+        CFNumberGetValue(
+            number,
+            CF_NUMBER_SINT32_TYPE,
+            NonNull::from(&mut out).cast::<c_void>().as_ptr(),
+        )
+    };
+    (ok != 0).then_some(out)
+}
+
+/// Reads a CFNumber as f64 (`None` when the value is missing/not a number or
+/// the conversion fails).
+unsafe fn cf_number_f64(number: *const c_void) -> Option<f64> {
+    let mut out: f64 = 0.0;
+    // SAFETY: same as cf_number_i32.
+    let ok = unsafe {
+        CFNumberGetValue(
+            number,
+            CF_NUMBER_FLOAT64_TYPE,
+            NonNull::from(&mut out).cast::<c_void>().as_ptr(),
+        )
+    };
+    (ok != 0).then_some(out)
+}
+
+/// One on-screen window's usable geometry from CGWindowList (global point
+/// space, top-left origin — the same space as the CGEvent coordinates of
+/// element hit-tests). Split from the enumeration so the containment rule
+/// is unit-testable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WindowBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Half-open containment (the right/bottom edges belong to the neighbouring
+/// window — close enough to hit-test z-order expectations for a
+/// self-exclusion check).
+fn point_in_window_bounds(px: f64, py: f64, bounds: &WindowBounds) -> bool {
+    px >= bounds.x
+        && px < bounds.x + bounds.width
+        && py >= bounds.y
+        && py < bounds.y + bounds.height
+}
+
+/// Parses a kCGWindowBounds dictionary ({X, Y, Width, Height} CFNumbers).
+unsafe fn window_bounds(dict: *const c_void) -> Option<WindowBounds> {
+    let read = |name: &str| -> Option<f64> {
+        let key = NSString::from_str(name);
+        // SAFETY: dict is a valid CFDictionaryRef from the window list; the
+        // NSString bridges to CFString for the key.
+        let value = unsafe { dict_value(dict, Retained::as_ptr(&key).cast()) }?;
+        // SAFETY: value is the CFNumber stored under the documented bounds
+        // key of this window dictionary.
+        unsafe { cf_number_f64(value) }
+    };
+    Some(WindowBounds {
+        x: read("X")?,
+        y: read("Y")?,
+        width: read("Width")?,
+        height: read("Height")?,
+    })
+}
+
+/// Whether the global screen point lies inside an on-screen window owned by
+/// this process. This preempts the element hit-test: when the point is
+/// inside our own WKWebView-backed window, the hit-test itself would
+/// dispatch into WebKit's accessibility bridge in-process and abort the
+/// process before any element pid could be checked (see the module docs).
+/// CGWindowListCopyWindowInfo is documented thread-safe and needs no TCC
+/// grant (only the owner pid and bounds are read; window titles are not).
+/// On enumeration failure the check degrades to "no self window found" and
+/// the hit-test proceeds — the element-pid guard after the hit-test stays
+/// the second line of defense, and refusing every hit-test on a transient
+/// window-server failure would cost more than the residual race.
+fn point_inside_self_window(x: i32, y: i32) -> bool {
+    let self_pid = std::process::id() as libc::pid_t;
+    // SAFETY: documented thread-safe CoreGraphics query; window id 0 makes
+    // the list relative to all on-screen windows. The returned array is +1
+    // and released under CFRetained.
+    let Some(list) = CGWindowListCopyWindowInfo(
+        CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements,
+        0,
+    ) else {
+        return false;
+    };
+    let list_ptr = CFRetained::as_ptr(&list).cast::<c_void>().as_ptr();
+    // SAFETY: list_ptr is the +1 CFArray returned above; the indices are in
+    // range by construction. Entries are CFDictionary objects per the
+    // CGWindowList contract; null entries are skipped.
+    let count = unsafe { CFArrayGetCount(list_ptr) };
+    for index in 0..count {
+        // SAFETY: index is in range (bounded by the count read above).
+        let window = unsafe { CFArrayGetValueAtIndex(list_ptr, index) };
+        if window.is_null() {
+            continue;
+        }
+        // SAFETY: window is a valid CFDictionaryRef from the window list;
+        // the keys are the documented kCGWindow* constants.
+        let Some(pid_value) =
+            (unsafe { dict_value(window, NonNull::from(kCGWindowOwnerPID).as_ptr().cast()) })
+        else {
+            continue;
+        };
+        // SAFETY: pid_value is the CFNumber stored under kCGWindowOwnerPID.
+        let Some(pid) = (unsafe { cf_number_i32(pid_value) }) else {
+            continue;
+        };
+        if pid != self_pid {
+            continue;
+        }
+        // SAFETY: window is the same valid CFDictionaryRef as above; the key
+        // is the documented kCGWindowBounds constant.
+        let Some(bounds_value) =
+            (unsafe { dict_value(window, NonNull::from(kCGWindowBounds).as_ptr().cast()) })
+        else {
+            continue;
+        };
+        // SAFETY: bounds_value is the CFDictionary stored under
+        // kCGWindowBounds.
+        let Some(bounds) = (unsafe { window_bounds(bounds_value) }) else {
+            continue;
+        };
+        if point_in_window_bounds(x as f64, y as f64, &bounds) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Triggers the system dialogs for both TCC grants (Screen Recording +
@@ -1114,19 +1345,30 @@ fn write_tree_node(
     }
 }
 
+/// The focused application element (AXFocusedApplication on the system-wide
+/// element). `None` when there is no focused application or the read fails —
+/// the tree is unavailable in both cases. This probe is safe for a
+/// self-focused system: the attribute answers at the application level
+/// without dispatching into the web view's accessibility bridge.
+fn focused_application(system: &AXUIElement, names: &AxNames) -> Option<CFRetained<AXUIElement>> {
+    match ax_ui_element(system, &names.focused_application) {
+        Ok(Some(app)) => Some(app),
+        // No focused application or failed read: the tree is unavailable.
+        _ => None,
+    }
+}
+
 /// The tree root: the focused application's focused window; when the app has
-/// no focused window (hidden/menu-bar-only) or the read fails, degrade to the
-/// application root (including the menu bar etc., bounded by the depth/node
-/// budgets).
-fn focused_window_root(system: &AXUIElement, names: &AxNames) -> Option<CFRetained<AXUIElement>> {
-    let app = match ax_ui_element(system, &names.focused_application) {
-        Ok(Some(app)) => app,
-        // No focused application: the tree is unavailable.
-        _ => return None,
-    };
+/// no focused window (hidden/menu-bar-only) or the read fails, degrade to
+/// the application root (including the menu bar etc., bounded by the
+/// depth/node budgets). The caller must have proven `app` not self-owned
+/// (ensure_not_self_owned): these reads are AX IPC for foreign apps, but
+/// would run in-process (and abort on WebKit's main-thread-only assert) for
+/// self.
+fn focused_window_root(app: CFRetained<AXUIElement>, names: &AxNames) -> CFRetained<AXUIElement> {
     match ax_ui_element(&app, &names.focused_window) {
-        Ok(Some(window)) => Some(window),
-        _ => Some(app),
+        Ok(Some(window)) => window,
+        _ => app,
     }
 }
 
@@ -1766,11 +2008,24 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         // dragging down the worker thread. Failures are ignored (falls back
         // to the default timeout).
         let _ = unsafe { system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
-        let Some(root) = focused_window_root(&system, &names) else {
+        // The focused-application probe is safe for a self-focused system:
+        // the attribute answers at the application level without dispatching
+        // into the web view's accessibility bridge.
+        let Some(app) = focused_application(&system, &names) else {
             return Err(ComputerUseError::unavailable(
                 "no focused application is available for ui_tree",
             ));
         };
+        // Refuse before ANY attribute of the app element is read: when the
+        // focused application is this process, the reads below would
+        // dispatch into WebKit's main-thread-only accessibility bridge on
+        // this worker thread and abort the whole process.
+        ensure_not_self_owned(
+            element_pid(&app),
+            std::process::id() as libc::pid_t,
+            "ui_tree",
+        )?;
+        let root = focused_window_root(app, &names);
         let mut out = String::new();
         let mut writer = TreeWriter {
             next_index: 0,
@@ -1815,6 +2070,13 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         let system = unsafe { AXUIElement::new_system_wide() };
         // SAFETY: same as ui_tree.
         let _ = unsafe { system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
+        // Preempt the hit-test: when the point lies inside one of this app's
+        // own windows, the hit-test itself would dispatch into WebKit's
+        // accessibility bridge in-process (before an element pid could be
+        // checked) and abort the whole process.
+        if point_inside_self_window(x, y) {
+            return Err(self_owned_ax_error("element_at_point"));
+        }
         let mut raw: *const AXUIElement = std::ptr::null();
         let Some(out) = NonNull::new(&mut raw) else {
             return Err(ComputerUseError::failed(
@@ -1845,6 +2107,15 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         let element = CfObject(ptr).into_ui_element().ok_or_else(|| {
             ComputerUseError::failed("element hit-test returned an unexpected CF type")
         })?;
+        // Second line of defense for the enumeration→hit-test race (our own
+        // window moving under the cursor between the two): the pid read is
+        // token-local (no AX IPC) and must precede every attribute read on
+        // the element.
+        ensure_not_self_owned(
+            element_pid(&element),
+            std::process::id() as libc::pid_t,
+            "element_at_point",
+        )?;
         let mut errors = AttrErrors::new();
         let info = read_node_info(&element, &names, &mut errors, true);
         // When role/subrole/description of the hit element are all
@@ -1875,6 +2146,15 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             Ok(None) => return Ok(None),
             Err(err) => return Err(focused_chain_error("AXFocusedApplication", err)),
         };
+        // Refuse before ANY attribute of the app element is read (see
+        // ui_tree: a self-owned focused application would abort the process
+        // on WebKit's main-thread-only accessibility assert). The probe read
+        // above is application-level and does not touch the web view.
+        ensure_not_self_owned(
+            element_pid(&app),
+            std::process::id() as libc::pid_t,
+            "focused_element",
+        )?;
         let window = match ax_ui_element(&app, &names.focused_window) {
             Ok(Some(window)) => window,
             Ok(None) => return Ok(None),
@@ -1901,6 +2181,62 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_owned_guard_accepts_foreign_and_rejects_self_or_unknown() {
+        let self_pid: libc::pid_t = 4242;
+        // A foreign pid is allowed (AX reads marshal to the target's main
+        // thread via XPC).
+        assert!(ensure_not_self_owned(Some(1), self_pid, "ui_tree").is_ok());
+        assert!(ensure_not_self_owned(Some(self_pid + 7), self_pid, "ui_tree").is_ok());
+        // The self pid must be refused: reading any attribute of our own
+        // WKWebView-backed window from this worker thread makes WebKit
+        // deliberately abort the whole process (crash
+        // pinvou3-tauri-2026-11-12-101011, thread computer-use-backend).
+        let error = ensure_not_self_owned(Some(self_pid), self_pid, "ui_tree")
+            .expect_err("self-owned targets are refused");
+        assert!(
+            matches!(
+                &error,
+                ComputerUseError::Unsupported { capability, .. }
+                    if *capability == SELF_TARGETED_ACCESSIBILITY
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert!(error.to_string().contains("cannot target Pinvou itself"));
+        // Unknown ownership fails closed: an element that cannot be proven
+        // foreign is not touched.
+        assert!(ensure_not_self_owned(None, self_pid, "element_at_point").is_err());
+    }
+
+    #[test]
+    fn window_bounds_containment_is_half_open() {
+        let bounds = WindowBounds {
+            x: 100.0,
+            y: -50.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        // Top-left corner inside; negative global coordinates (secondary
+        // display placed up/left) work the same.
+        assert!(point_in_window_bounds(100.0, -50.0, &bounds));
+        assert!(point_in_window_bounds(899.0, 549.0, &bounds));
+        assert!(point_in_window_bounds(500.0, 0.0, &bounds));
+        // Right and bottom edges are outside (half-open).
+        assert!(!point_in_window_bounds(900.0, 0.0, &bounds));
+        assert!(!point_in_window_bounds(500.0, 550.0, &bounds));
+        // Outside on each axis.
+        assert!(!point_in_window_bounds(99.9, 0.0, &bounds));
+        assert!(!point_in_window_bounds(500.0, -50.1, &bounds));
+        // Degenerate (zero-size) windows contain nothing.
+        let empty = WindowBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        assert!(!point_in_window_bounds(0.0, 0.0, &empty));
+    }
 
     #[test]
     fn key_mapping_covers_named_keys_and_functions() {
