@@ -319,6 +319,13 @@ fn interrupted_job_from_stall(home: &HomeGuard, name: &str, tree: &str) -> (i64,
     );
     let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
     assert_eq!(settled["phase"], serde_json::json!("interrupted"));
+    // The JSON contract carries `skippedByExcluder` on EVERY index status —
+    // including legacy jobs whose v4→v5 migration COALESCEs the column to 0 —
+    // so consumers key off a stable field, not field presence.
+    assert!(
+        settled.get("skippedByExcluder").is_some(),
+        "index status JSON must always carry skippedByExcluder: {settled}"
+    );
     let job_id = settled["jobId"]
         .as_str()
         .expect("the interrupted job is named for resuming")
@@ -574,7 +581,7 @@ fn knowledge_parses_every_subcommand() {
         ]),
         r#"Knowledge(RemoteSearch { collection: "papers", query: "query", limit: Some(50) })"#,
     );
-    assert!(
+    assert_eq!(
         parsed_debug(&[
             "pinvou",
             "knowledge",
@@ -584,8 +591,8 @@ fn knowledge_parses_every_subcommand() {
             "query",
             "--limit",
             "1"
-        ])
-        .contains("limit: Some(1)")
+        ]),
+        r#"Knowledge(RemoteSearch { collection: "papers", query: "query", limit: Some(1) })"#,
     );
     assert_usage(&[
         "pinvou",
