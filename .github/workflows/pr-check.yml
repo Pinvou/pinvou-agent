@@ -667,7 +667,9 @@ jobs:
 
       - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
         run: |
-          python3 -m pip install --quiet python-pptx python-docx
+          # Bounded like the Rust-side installer (PIP_INSTALL_ATTEMPT_TIMEOUT):
+          # a wedged PyPI connection must fail the leg, not eat the job window.
+          timeout 1800 python3 -m pip install --quiet python-pptx python-docx
           fail=0
           for t in pinvou3-app/resources/mcp-servers/*/test_*.py; do
             [ -f "$t" ] || continue
