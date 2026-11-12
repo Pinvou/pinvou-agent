@@ -735,6 +735,13 @@ impl SavedModel {
             .take()
             .filter(|value| codewhale_config::auth_mode_disables_api_key(Some(value.as_str())))
             .map(|_| "none".to_string());
+        // 本地档与托管档同理:设置页对 local_vllm 不渲染免鉴权开关(本地端点的
+        // 无凭据豁免已按 provider/环回规则内置),手改的声明同样不可在 UI 关闭
+        // (会让 api_key() 短路掉 LOCAL_VLLM_API_KEY 占位,鉴权 vLLM 逐轮 401),
+        // load 时一并清空;表单保存路径本就写 null。
+        if self.preset == ModelPreset::LocalVllm {
+            self.auth_mode = None;
+        }
         // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
         // 存量配置在 load 时一次性改写,避免继续打已下线域名。
         if let Some(migrated) = migrated_minimax_base_url(&self.base_url) {
@@ -2983,6 +2990,62 @@ mod tests {
                 .as_deref(),
             Some("none"),
             "非托管端点的免鉴权声明必须保留"
+        );
+    }
+
+    /// 手改的免鉴权声明在 local_vllm 上同样不可在 UI 关闭(设置页不渲染该
+    /// 开关,本地无凭据豁免已按 provider/环回规则内置),load/upsert 归一时
+    /// 一并清空;云端自定义端点的声明不受影响。
+    #[test]
+    fn local_vllm_records_clear_keyless_declaration() {
+        let build = |preset: ModelPreset, auth_mode: Option<&str>| {
+            let mut prefs = UserPrefs::default();
+            let mut model = SavedModel {
+                auth_mode: None,
+                id: "auth-mode-local".into(),
+                name: "auth mode local".into(),
+                alias: None,
+                preset,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "local-model".into(),
+                base_url: "http://127.0.0.1:8000/v1".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            model.auth_mode = auth_mode.map(str::to_string);
+            prefs.upsert_model(model);
+            prefs
+        };
+
+        let local = build(ModelPreset::LocalVllm, Some("none"));
+        assert_eq!(
+            local
+                .model_by_id("auth-mode-local")
+                .expect("model")
+                .auth_mode,
+            None,
+            "本地档不得携带免鉴权声明(设置页无法关闭的声明会让鉴权 vLLM 逐轮 401)"
+        );
+
+        let cloud = build(ModelPreset::OpenaiCompatible, Some("none"));
+        assert_eq!(
+            cloud
+                .model_by_id("auth-mode-local")
+                .expect("model")
+                .auth_mode
+                .as_deref(),
+            Some("none"),
+            "云端自定义端点的免鉴权声明必须保留"
         );
     }
 
