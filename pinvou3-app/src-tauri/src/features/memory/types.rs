@@ -59,8 +59,9 @@ pub const TIMED_MEMORY_ARCHIVED_MAX_STORED: usize = 40;
 /// Unconfirmed (`pending_confirm`) candidate rows kept in the pending store.
 /// These are suggestions the user has NOT decided on; write-time compaction
 /// previously dropped the overflow silently at 20 (round-51 limits audit:
-/// rows are ~200 bytes, so 200 still bounds the store trivially while no
-/// longer discarding undecided suggestions behind the user's back).
+/// rows are ~200 bytes, so 200 bounds the store trivially). Overflow past the
+/// cap is still dropped silently, oldest first — the raise makes that drop a
+/// rare tail event, it does not add an eviction notice.
 pub const PENDING_MEMORY_ACTIVE_MAX_STORED: usize = 200;
 pub const PENDING_MEMORY_RESOLVED_MAX_STORED: usize = 80;
 pub const NEVER_MEMORY_MAX_STORED: usize = 200;
