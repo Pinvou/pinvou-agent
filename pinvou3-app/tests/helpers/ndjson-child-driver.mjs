@@ -16,6 +16,7 @@ export function spawnNdjsonChild({
   let stdout = '';
   let stderrOutput = '';
   let nextId = 1;
+  let lastId = 0;
   const pending = new Map();
   const responses = [];
 
@@ -40,6 +41,7 @@ export function spawnNdjsonChild({
   const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
   const startRequest = (method, params = {}) => {
     const id = nextId++;
+    lastId = id;
     const response = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         if (!pending.delete(id)) return;
@@ -55,6 +57,7 @@ export function spawnNdjsonChild({
   return {
     child,
     responses,
+    get lastId() { return lastId; },
     stderrText: () => stderrOutput,
     send,
     notify(method, params = {}) {
