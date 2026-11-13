@@ -5869,6 +5869,104 @@ async fn open_action_fails_explicitly_on_a_physical_backend() {
     );
 }
 
+/// R18: `MockState.open_error` existed but NO test ever set it — the field's
+/// doc claimed it pins that "a failed open propagates without a receipt
+/// pid" while the tool layer's failed-open path (error result, no receipt,
+/// execution surface untouched, failed audit record) was untested.
+#[tokio::test]
+async fn open_error_surfaces_without_a_receipt() {
+    let (fixture, _restore) = fixture();
+    {
+        let mut mock = fixture.mock.lock();
+        mock.display_target = DisplayTarget::Virtual;
+        mock.open_error = Some("the open cleanup tracker failed".to_string());
+    }
+    fixture.shared.grant_session("s-test");
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "open", "program": "xeyes", "args": ["-foo"]}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    // Backend failures come back as a soft error result (the tool never
+    // throws for backend errors — the model reads the message).
+    let content = result
+        .ok()
+        .map(|r| r.content)
+        .expect("execution returns a result");
+    assert!(
+        content.contains("the open cleanup tracker failed"),
+        "the backend error must surface verbatim: {content}"
+    );
+    assert!(
+        !content.contains("spawned") && !content.contains("pid "),
+        "a failed open must NOT carry a receipt pid (a success receipt would \
+         make the model judge the desktop against an app it believes runs): \
+         {content}"
+    );
+    {
+        let mock = fixture.mock.lock();
+        assert!(
+            mock.opened.is_empty(),
+            "the failed open must not reach the execution surface: {:?}",
+            mock.opened
+        );
+    }
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
+    let value: Value = raw
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("valid jsonl line"))
+        .find(|value| value["action"] == "open")
+        .expect("the failed open must leave an audit record");
+    assert_eq!(
+        value["result"], "error",
+        "the open failure must be audited as an error, not ok: {raw}"
+    );
+}
+
+/// R18: the registry row must outrank the preference+probe re-derivation in
+/// `resolved_display_target` — a regression reordering the legs mislabels a
+/// live virtual session's audit records whenever the row and the probe
+/// disagree. Discriminator (host-independent): a Virtual registry row +
+/// preference OFF + a COLD cache — the master switch is OFF, so the input
+/// precheck's Disabled rejection fires BEFORE any capability read (the
+/// R9 read-only precheck), keeping `ToolState.display_target` None — and
+/// the preference+probe re-derivation would answer physical (preference
+/// off collapses the decision to physical regardless of the probe), so a
+/// probe-first reordering flips this record's display_target to
+/// "physical", exactly the mislabel the row-first chain exists to prevent.
+#[tokio::test]
+async fn rejected_audit_target_trusts_the_registry_row_before_the_probe() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.set_display_pref(false);
+    // The switch flips the session rows clear (revoke_all_sessions), so the
+    // row is written AFTER the flip — mirroring a factory that registered a
+    // target before the switch landed mid-creation.
+    fixture.shared.set_enabled(false);
+    fixture
+        .shared
+        .set_session_target("s-test", DisplayTarget::Virtual);
+    let _ = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 1, "y": 2}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let raw = std::fs::read_to_string(session_audit_path()).expect("audit jsonl exists");
+    let value: Value = raw
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("valid jsonl line"))
+        .find(|value| value["action"] == "mouse_move")
+        .expect("the Disabled-rejected call must leave an audit record");
+    assert_eq!(
+        value["display_target"], "virtual",
+        "the registry row must outrank the preference+probe re-derivation \
+         (a probe-first reordering answers \"physical\" here): {raw}"
+    );
+}
+
 /// `open` parameter validation mirrors the schema: program required and
 /// non-empty, NUL rejected, args must be strings, over-cap inputs rejected.
 #[test]

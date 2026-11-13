@@ -298,6 +298,14 @@ mod tests {
         let record = AuditRecord::new("s1", "screenshot", "observe").finish("rejected", None, 0);
         log.append(&record).unwrap_or(());
         let raw = fs::read_to_string(log.path()).unwrap_or_default();
+        // R18: assert the append and the read actually happened — on an
+        // infra failure both unwrap_ors fall through to an empty `raw` and
+        // the skip assertion below would pass vacuously.
+        assert_eq!(
+            raw.lines().count(),
+            1,
+            "the fixture must append and read exactly one record: {raw}"
+        );
         assert!(
             !raw.contains("display_target"),
             "unset display_target must be skipped, not serialized null: {raw}"
