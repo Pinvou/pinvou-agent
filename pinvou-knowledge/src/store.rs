@@ -366,6 +366,22 @@ impl Store {
         })
     }
 
+    pub fn update_collection(
+        &self,
+        id: i64,
+        name: &str,
+        description: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let changed = self.conn.lock().execute(
+            "UPDATE collections SET name=?2,description=?3,updated_at=?4 WHERE id=?1 AND deleted_at IS NULL",
+            params![id, name, description, now()],
+        )?;
+        if changed == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
+
     pub fn trash_collection(&self, id: i64) -> rusqlite::Result<()> {
         let mut connection = self.conn.lock();
         let transaction = connection.transaction()?;
@@ -520,6 +536,14 @@ impl Store {
             .map(|stored| stored.document)
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         Ok((document, true))
+    }
+
+    pub fn list_documents(
+        &self,
+        collection_id: i64,
+        include_deleted: bool,
+    ) -> rusqlite::Result<Vec<Document>> {
+        self.list_documents_page(collection_id, include_deleted, None, 0)
     }
 
     pub fn list_documents_page(
@@ -1265,6 +1289,20 @@ impl Store {
                 )
                 .optional()
         })?;
+        if let Some(grant) = &device
+            && !grant.revoked
+        {
+            // Authentication must remain responsive while a large index
+            // transaction owns the primary connection. Presence updates are
+            // telemetry, so skip rather than queue behind that transaction.
+            if let Some(connection) = self.conn.try_lock() {
+                let timestamp = now();
+                let _ = connection.execute(
+                    "UPDATE devices SET last_seen_at=?2 WHERE id=?1 AND (last_seen_at IS NULL OR last_seen_at<?3)",
+                    params![grant.id, timestamp, timestamp - 60],
+                );
+            }
+        }
         Ok(device.filter(|grant| !grant.revoked))
     }
 

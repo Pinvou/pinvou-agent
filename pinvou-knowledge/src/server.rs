@@ -115,7 +115,7 @@ pub fn router(service: Arc<KnowledgeService>) -> Router {
         )
         .route(
             "/api/v1/collections/{id}",
-            axum::routing::delete(delete_collection),
+            put(update_collection).delete(delete_collection),
         )
         .route("/api/v1/collections/{id}/restore", post(restore_collection))
         .route(
@@ -500,6 +500,20 @@ async fn create_collection(
     ))
 }
 
+async fn update_collection(
+    State(service): State<Arc<KnowledgeService>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(request): Json<CreateCollectionRequest>,
+) -> ApiResult<Json<Collection>> {
+    require_access(&service, &headers, true)?;
+    Ok(Json(
+        service
+            .update_collection(id, request)
+            .map_err(ApiError::bad_request)?,
+    ))
+}
+
 async fn delete_collection(
     State(service): State<Arc<KnowledgeService>>,
     headers: HeaderMap,
@@ -531,7 +545,11 @@ async fn documents(
     Query(query): Query<DocumentListQuery>,
 ) -> ApiResult<Json<Vec<Document>>> {
     require_access(&service, &headers, query.include_deleted)?;
-    let documents = service.documents_page(id, query.include_deleted, query.limit, query.offset);
+    let documents = if query.limit.is_none() && query.offset == 0 {
+        service.documents(id, query.include_deleted)
+    } else {
+        service.documents_page(id, query.include_deleted, query.limit, query.offset)
+    };
     Ok(Json(documents.map_err(ApiError::internal)?))
 }
 
