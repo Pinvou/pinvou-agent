@@ -3005,19 +3005,40 @@ impl EnginePool {
         // ordering and the never-fail contract).
         self.arm_spawned_session_safety_posture(session_id, &engine);
 
-        self.entries.lock().await.insert(
-            session_id.to_string(),
-            EngineEntry {
-                engine: engine.clone(),
-                forwarder,
-                runtime_model: prepared,
-                mcp_config_revision,
-                native_window_pending,
-                spawned_at_ms,
-                steer_incarnation,
-                last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
-            },
-        );
+        {
+            // Publication + posture catch-up under ONE entries lock hold
+            // (zhuowp round-4 P2): the pre-spawn arm read the persisted mode
+            // state before this engine existed, so a concurrent
+            // set_ask_on_guardrail could persist a newer flag, find no
+            // handle in handle_for, skip the live sync, and report success —
+            // leaving the spawned engine armed with the stale snapshot while
+            // ordinary sends carry no ask carrier to repair it. Holding the
+            // entries lock across the insert and the fresh re-read
+            // guarantees every later handle_for queues its ops AFTER this
+            // reconciled ChangeMode: the spawned engine can never stay on
+            // the pre-spawn snapshot.
+            let mut entries = self.entries.lock().await;
+            entries.insert(
+                session_id.to_string(),
+                EngineEntry {
+                    engine: engine.clone(),
+                    forwarder,
+                    runtime_model: prepared,
+                    mcp_config_revision,
+                    native_window_pending,
+                    spawned_at_ms,
+                    steer_incarnation,
+                    last_active_epoch_ms: AtomicU64::new(Self::now_epoch_ms()),
+                },
+            );
+            let fresh_state = self.store.mode_state(session_id);
+            let op = safety_change_mode_op(&fresh_state, self.bridge.allow_shell());
+            if let Err(error) = engine.handle.try_send(op) {
+                log::warn!(
+                    "[engine_pool] spawn posture catch-up {session_id} change-mode send failed: {error:#}"
+                );
+            }
+        }
         crate::features::assistant::timing::record_engine_ready(
             session_id,
             crate::features::assistant::timing::EngineAcquireTiming {

@@ -459,10 +459,13 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   // "computed once at spawn and recorded", not byte distance. Distance
   // 3200 → 4800 (round-11 review: measured 3148 at origin/main → 4088 at
   // this head; the tri-mode spawn-site profile derivation widened the span —
-  // still far tighter than the sibling 12,000-gap pins in this file).
+  // still far tighter than the sibling 12,000-gap pins in this file) → 6000
+  // (round-4 zhuowp review: the posture catch-up under the entries lock rides
+  // in the same gap by design — the recorded value is still computed once at
+  // spawn).
   assert.match(
     poolSource,
-    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,4800}spawned_at_ms,/,
+    /let spawned_at_ms = Self::now_epoch_ms\(\);[\s\S]{0,6000}spawned_at_ms,/,
     'the engine must record its epoch timestamp for transcript zombie-worker screening (computed once at spawn; the steer-id generation comes from the process-monotonic incarnation sequence, zhuowp re-review P1-2)',
   );
   assert.match(
