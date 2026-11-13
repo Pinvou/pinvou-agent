@@ -149,9 +149,10 @@ pub(crate) fn combine_drag_errors(
 /// `Result::and`-style merge keeps only the FIRST error: a caller cancel plus
 /// a failed release then reported "the keys are released" while the release
 /// had actually failed — stranding keys undisclosed (the drag merge fixed the
-/// same inversion for the mouse button). The truthful wording mirrors the
-/// physical X11/Wayland hold paths: "release failed (...); the keys may
-/// still be held down".
+/// same inversion for the mouse button). THE merge for every stack since
+/// R18: the physical X11/Wayland/Windows/macOS hold paths delegate their
+/// cancel-path merge here instead of carrying four drifted inline copies
+/// ("release failed (...); the keys may still be held down").
 pub(crate) fn combine_hold_errors(
     hold_result: Result<(), ComputerUseError>,
     release_result: Result<(), ComputerUseError>,

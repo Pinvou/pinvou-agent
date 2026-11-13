@@ -97,9 +97,9 @@ use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
     DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS,
     MACOS_UNICODE_STRING_UTF16_UNITS, MAX_NAME_CHARS, MAX_TREE_DEPTH, MAX_TREE_NODES,
-    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints,
-    map_scroll, map_xcap_err, normalize_typed_newlines, ordered_chord_keys, pick_monitor,
-    release_reverse, sanitize_name, screening_hit, split_type_runs, utf16_chunks,
+    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, combine_hold_errors,
+    drag_waypoints, map_scroll, map_xcap_err, normalize_typed_newlines, ordered_chord_keys,
+    pick_monitor, release_reverse, sanitize_name, screening_hit, split_type_runs, utf16_chunks,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -1326,26 +1326,20 @@ impl MacosComputerUseBackend {
         // HOLD_CANCEL_POLL_MS instead of waiting out the whole hold (up to
         // 30 s). The keys are always released, whether the hold ran out or
         // was cancelled — and a FAILED release is surfaced, never the
-        // "keys have been released" all-clear (same compensating-release
-        // merge as the physical X11 path).
+        // all-clear (the shared combine_hold_errors merge — the same helper
+        // the virtual stacks and the other physical paths use, R18).
         let mut remaining = hold;
         while remaining > Duration::ZERO {
             if cancel
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
-                return Err(
-                    match release_reverse(&pressed, enigo)
-                        .map_err(|err| map_input_err("key release", err))
-                    {
-                        Ok(()) => ComputerUseError::unavailable(
-                            "hold was cancelled (caller timeout or stop); the keys have been released",
-                        ),
-                        Err(release_error) => ComputerUseError::unavailable(format!(
-                            "hold was cancelled (caller timeout or stop); the compensating \
-                             release failed ({release_error}); the keys may still be held down"
-                        )),
-                    },
+                return combine_hold_errors(
+                    Err(ComputerUseError::unavailable(
+                        "hold was cancelled (caller timeout or stop)",
+                    )),
+                    release_reverse(&pressed, enigo)
+                        .map_err(|err| map_input_err("key release", err)),
                 );
             }
             let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
