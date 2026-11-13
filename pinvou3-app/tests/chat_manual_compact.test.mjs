@@ -211,17 +211,34 @@ assert.match(chatViewSource, /if \(!sid \|\| manualCompactActive \|\| compacting
 // site (an error after a session switch still lands on the original
 // session); the manual marker must be set BEFORE the invoke and right next
 // to the try — between the enqueue and the bridge's start takeover the
-assert.match(chatViewSource, /const sid = activeSessionId;\s*if \(!sid[\s\S]*?const seqAt = compactionSeq;\s*setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: \{ at: Date\.now\(\), seqAt, itemsAt: maxItemId \} \}\)\);\s*try \{/, 'sid must be captured before the invoke, and the session marker (with the sequence snapshot and item-id snapshot) set right next to it');
+// button must not reset. The admission object is captured in a variable:
+// it IS the request's generation, and the failure path clears by reference
+// equality so an older rejection cannot erase a newer request's marker for
+// the same session (zhuowp round-3 P2).
+assert.match(chatViewSource, /const sid = activeSessionId;\s*if \(!sid[\s\S]*?const seqAt = compactionSeq;[\s\S]*?const admission = \{ at: Date\.now\(\), seqAt, itemsAt: maxItemId \};[\s\S]*?setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: admission \}\)\);\s*try \{/, 'sid must be captured before the invoke, and the admission generation object (with the sequence snapshot and item-id snapshot) set right next to it');
 assert.match(chatViewSource, /invokeTauri\('compact_now', \{ sessionId: sid \}\)/, 'the compaction command and its argument shape');
 // Per-session keying (ChatView does not remount on a session switch): a
 // boolean would disable B while A's enqueue is in flight.
-assert.match(chatViewSource, /const \[manualCompactBySid, setManualCompactBySid\] = useState\(\{\}\);/, 'the manual enqueue state must be keyed by session (a per-sid map, not a single slot)');
+// The state is SEEDED FROM the module store and written through to it
+// (zhuowp round-3 P2): main.jsx renders ChatView only for the chat view, so
+// a settings round-trip unmounts it — plain state would discard the
+// admission while its queued Web RPC lives on, and the remounted view would
+// re-enable the button over the in-flight request.
+assert.match(chatViewSource, /const \[manualCompactBySid, setManualCompactBySidState\] = useState\(manualCompactAdmissionStore\.map\);/, 'the manual enqueue state must be seeded from the module store so a remount inherits the pending admission');
+assert.match(chatViewSource, /const setManualCompactBySid = \(updater\) => setManualCompactBySidState\(\(current\) => \{\s*const next = typeof updater === 'function' \? updater\(current\) : updater;\s*manualCompactAdmissionStore\.map = next;\s*return next;\s*\}\);/, 'every update must write through to the module store (the render mirror alone dies with the component)');
+assert.match(chatViewSource, /const manualCompactAdmissionStore = \{ map: \{\} \};/, 'the admission store must live at module scope (survives ChatView unmount/remount)');
 assert.match(chatViewSource, /compactingStartedAt && Date\.now\(\) - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS/, 'the bridge in-flight marker must heal after 15 minutes (mirroring MAX_COMPACTION_LATCH_AGE)');
+// The heal timer schedules only STILL-FRESH boundaries (zhuowp round-3 P3):
+// an already-expired bridge timestamp winning the min would fire once
+// immediately and leave the fresh manual marker's expiry unscheduled — the
+// idle view then never re-enables at the real boundary, and re-running the
+// effect cannot repair it (its deps are unchanged by the tick).
+assert.match(chatViewSource, /const boundaries = \[\];\s*if \(compactingStartedAt && now - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS\) \{\s*boundaries\.push\(compactingStartedAt \+ COMPACTING_FLAG_MAX_AGE_MS\);\s*\}\s*if \(activeManualCompact && now - activeManualCompact\.at < COMPACTING_FLAG_MAX_AGE_MS\) \{\s*boundaries\.push\(activeManualCompact\.at \+ COMPACTING_FLAG_MAX_AGE_MS\);\s*\}\s*if \(!boundaries\.length\) return;/, 'the heal timer must consider only still-fresh boundaries (an expired bridge timestamp must not preempt the fresh manual marker\'s expiry)');
 assert.match(chatViewSource, /const activeManualCompact = activeSessionId \? manualCompactBySid\[activeSessionId\] : undefined;/, 'the active session reads its OWN marker from the map (review 5874108926 P2: per-sid retention, not a single slot)');
 assert.match(chatViewSource, /manualCompactActive = !!\(activeManualCompact\s*&& Date\.now\(\) - activeManualCompact\.at < COMPACTING_FLAG_MAX_AGE_MS\)/, 'the manual marker is bound by the same fallback TTL');
 assert.ok(chatViewSource.includes('const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000'),
   'the ChatView fallback bound must stay pinned to Rust MAX_COMPACTION_LATCH_AGE (15 minutes)');
-assert.match(chatViewSource, /setManualCompactBySid\(current => \{\s*if \(!current\[sid\]\) return current;\s*const next = \{ \.\.\.current \};\s*delete next\[sid\];\s*return next;\s*\}\);/, 'a failure releases only the failed session\'s entry (identity-checked, per-sid: queueing for B must not clear A\'s pending marker)');
+assert.match(chatViewSource, /setManualCompactBySid\(current => \{[\s\S]*?if \(current\[sid\] !== admission\) return current;[\s\S]*?const next = \{ \.\.\.current \};\s*delete next\[sid\];\s*return next;\s*\}\);/, 'a failure releases only THIS request\'s admission (reference-equality generation: a newer same-session request that overwrote the slot must survive an older rejection — zhuowp round-3 P2)');
 // Once the bridge's start marker lands for a session, its own manual
 // marker must be released immediately (identity-checked, per session);
 // the release must not be conditioned on the session being active — when
@@ -262,8 +279,8 @@ assert.match(chatViewSource, /\}, \[compactingMap, startsMap, manualCompactBySid
 // The fallback heal must be proactive: while the entry is disabled, a tick
 // is scheduled at the expiry boundary so a completely idle app (no
 // unrelated notify, and a click on a disabled button produces no render)
-assert.match(chatViewSource, /if \(!ctxCompactInFlight\) return;[\s\S]{0,500}setCompactHealTick\(current => current \+ 1\)/, 'a fallback expiry tick must be scheduled while the entry is disabled (the heal cannot rely on passive re-renders)');
-assert.match(chatViewSource, /healBoundaryAt = Math\.min\(/, 'the fallback tick must take the earlier of the bridge and manual marker expiry boundaries');
+assert.match(chatViewSource, /if \(!ctxCompactInFlight\) return;[\s\S]{0,1000}setCompactHealTick\(current => current \+ 1\)/, 'a fallback expiry tick must be scheduled while the entry is disabled (the heal cannot rely on passive re-renders)');
+assert.match(chatViewSource, /const healDelayMs = Math\.min\(\.\.\.boundaries\) - now;/, 'the fallback tick must take the earliest FRESH boundary (bridge and manual marker; already-expired boundaries are not schedulable — zhuowp round-3 P3)');
 // The in-flight derivation must include both sources and its definition
 // must be pinned (every pin references the names; without pinning the
 // definition, a mutant narrowing it to either source alone is green —
@@ -271,12 +288,12 @@ assert.match(chatViewSource, /const ctxCompactInFlight = compactingActive \|\| m
 // Both fallback boundary operands must keep the : Infinity guard: without
 // it Math.min reads null.at once the marker is released (the normal state
 // after a takeover), throwing a TypeError that crashes the whole ChatView
-assert.match(chatViewSource, /compactingStartedAt \? compactingStartedAt \+ COMPACTING_FLAG_MAX_AGE_MS : Infinity[\s\S]{0,80}activeManualCompact \? activeManualCompact\.at \+ COMPACTING_FLAG_MAX_AGE_MS : Infinity/, 'both fallback boundary operands must keep the : Infinity guard (without it the released-marker normal state throws a TypeError)');
+assert.match(chatViewSource, /if \(compactingStartedAt && now - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS\) \{[\s\S]{0,200}activeManualCompact && now - activeManualCompact\.at < COMPACTING_FLAG_MAX_AGE_MS\) \{[\s\S]{0,200}if \(!boundaries\.length\) return;/, 'both fresh-boundary operands must keep their truthiness guards plus the empty-collection early return (the released-marker normal state must not dereference null.at — zhuowp round-3 P3)');
 // Timer hygiene: the cleanup and the clamp must be pinned (a mutant
 // deleting clearTimeout used to be green).
 assert.match(chatViewSource, /const healTimer = setTimeout\(/, 'the fallback tick must go through a clearable timer handle');
 assert.match(chatViewSource, /return \(\) => clearTimeout\(healTimer\);/, 'the fallback timer must be cleaned up with the effect (no timer may outlive the in-flight window)');
-assert.match(chatViewSource, /Math\.max\(healDelayMs, 0\)/, 'the expiry delay must be clamped non-negative (a clock jump must not schedule a negative-delay setTimeout)');
+assert.match(chatViewSource, /const healDelayMs = Math\.min\(\.\.\.boundaries\) - now;\s*if \(healDelayMs <= 0\) return;/, 'the expiry delay must be provably positive before scheduling (only fresh boundaries are collected and a non-positive delay returns instead of scheduling — the clock-jump clamp, zhuowp round-3 P3)');
 // The in-flight copy and the hint tip must actually reach the button (the
 // i18n keys must not become dead copy).
 assert.match(chatViewSource, /title=\{ctxCompactInFlight \? t\.compactingNow : t\.compactNowTip\}/, 'compactingNow/compactNowTip must actually be used by the button');
@@ -312,7 +329,7 @@ assert.match(chatViewSource, /disabled=\{busy \|\| ctxCompactInFlight\}/, 'the d
 // (iii) both release paths delete ONLY the matching sid's key — a B-side
 //     start or failure must not release A's entry.
 assert.match(chatViewSource, /const seqAt = compactionSeq;/, 'A→B→A (i): the click snapshots the compaction sequence (review 5876783763: replaces wall-clock ordering)');
-assert.match(chatViewSource, /setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: \{ at: Date\.now\(\), seqAt, itemsAt: maxItemId \} \}\)\);/, 'A→B→A (i): an enqueue must spread the previous map so another session\'s pending marker survives');
+assert.match(chatViewSource, /setManualCompactBySid\(current => \(\{ \.\.\.current, \[sid\]: admission \}\)\);/, 'A→B→A (i): an enqueue must spread the previous map so another session\'s pending marker survives (the slot value is the request\'s generation object — zhuowp round-3 P2)');
 assert.match(chatViewSource, /const drop = sid => \{\s*if \(next === current\) next = \{ \.\.\.current \};\s*delete next\[sid\];\s*\};/, 'A→B→A (iii): every release path drops only the matching sid\'s key from a copied map, never other sessions\' pending markers');
 
 // ── i18n: exactly one entry per locale (count-1 per language); duplicate keys must not regress ──

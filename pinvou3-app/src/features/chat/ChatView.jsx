@@ -252,6 +252,15 @@ const COMPUTER_USE_ENABLED = can('computerUse');
 // dependency array has no component-local values).
 const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
 
+// Pre-start manual-compaction admission markers, held OUTSIDE the component
+// (zhuowp round-3 P2): main.jsx renders ChatView only for the chat view, so
+// opening settings unmounts it — a useState map would discard the admission
+// while its queued Web RPC lives on, and the remounted view would re-enable
+// the button for a second, duplicate (billed, lossy) compaction. The module
+// store survives remounts; the useState mirror inside ChatView only drives
+// re-renders and re-seeds from the store at mount.
+const manualCompactAdmissionStore = { map: {} };
+
 // Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
 // Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
 // and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
@@ -1223,7 +1232,17 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // CompactContext for A (the pool does not coalesce these), costing an
       // extra lossy summary. The map keys markers by sid and the release
       // paths remove only the matching entry.
-      const [manualCompactBySid, setManualCompactBySid] = useState({});
+      // Seeded from the module store (not fresh state): a remount — settings
+      // round-trip re-creates this component — must inherit the still-pending
+      // admission instead of re-enabling the button over a queued Web RPC
+      // (zhuowp round-3 P2). The write-through wrapper keeps the store and
+      // the render mirror identical on every update.
+      const [manualCompactBySid, setManualCompactBySidState] = useState(manualCompactAdmissionStore.map);
+      const setManualCompactBySid = (updater) => setManualCompactBySidState((current) => {
+        const next = typeof updater === 'function' ? updater(current) : updater;
+        manualCompactAdmissionStore.map = next;
+        return next;
+      });
       const compactingMap = bs && bs.compactingSessions;
       // The bridge's persistent per-session start signal (set at start,
       // survives terminals and prune-only merges, cleared with the
@@ -1317,13 +1336,21 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const [, setCompactHealTick] = useState(0);
       useEffect(() => {
         if (!ctxCompactInFlight) return;
-        const healBoundaryAt = Math.min(
-          compactingStartedAt ? compactingStartedAt + COMPACTING_FLAG_MAX_AGE_MS : Infinity,
-          activeManualCompact ? activeManualCompact.at + COMPACTING_FLAG_MAX_AGE_MS : Infinity,
-        );
-        const healDelayMs = healBoundaryAt - Date.now();
-        if (!Number.isFinite(healDelayMs)) return;
-        const healTimer = setTimeout(() => setCompactHealTick(current => current + 1), Math.max(healDelayMs, 0));
+        const now = Date.now();
+        // Only still-fresh boundaries are schedulable: an already-expired
+        // bridge timestamp winning the min would fire once immediately and
+        // leave the fresh marker's expiry unscheduled (zhuowp round-3 P3).
+        const boundaries = [];
+        if (compactingStartedAt && now - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS) {
+          boundaries.push(compactingStartedAt + COMPACTING_FLAG_MAX_AGE_MS);
+        }
+        if (activeManualCompact && now - activeManualCompact.at < COMPACTING_FLAG_MAX_AGE_MS) {
+          boundaries.push(activeManualCompact.at + COMPACTING_FLAG_MAX_AGE_MS);
+        }
+        if (!boundaries.length) return;
+        const healDelayMs = Math.min(...boundaries) - now;
+        if (healDelayMs <= 0) return;
+        const healTimer = setTimeout(() => setCompactHealTick(current => current + 1), healDelayMs);
         return () => clearTimeout(healTimer);
       }, [ctxCompactInFlight, compactingStartedAt, activeManualCompact]);
       const handleManualCompact = useCallback(async () => {
@@ -1338,7 +1365,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // 5876783763).
         const maxItemId = chatItems.reduce((max, item) => ((item && item.id > max) ? item.id : max), 0);
         const seqAt = compactionSeq;
-        setManualCompactBySid(current => ({ ...current, [sid]: { at: Date.now(), seqAt, itemsAt: maxItemId } }));
+        // The entry object IS this request's admission generation: the
+        // failure path clears by reference equality, so a newer request for
+        // the same session (which overwrites the slot with its own object)
+        // survives an older, late-arriving rejection (zhuowp round-3 P2).
+        const admission = { at: Date.now(), seqAt, itemsAt: maxItemId };
+        setManualCompactBySid(current => ({ ...current, [sid]: admission }));
         try {
           await invokeTauri('compact_now', { sessionId: sid });
         } catch (err) {
@@ -1349,10 +1381,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // chain.
           const detail = raw.includes('session_engine_not_running') ? t.uiCodex.nativeCompactInactive : raw;
           flashQueuedNotice(sid, { text: `${t.uiCodex.compactFail}: ${detail}` });
-          // A failure clears this session's own entry; the success path
+          // A failure clears ONLY this request's admission; the success path
           // stays set until the bridge's start takes over (the effect).
+          // Reference equality pins the generation: sid-keyed clearing alone
+          // would let an old rejection erase a newer request's marker for
+          // the same session and re-enable a second click over it
+          // (zhuowp round-3 P2).
           setManualCompactBySid(current => {
-            if (!current[sid]) return current;
+            if (current[sid] !== admission) return current;
             const next = { ...current };
             delete next[sid];
             return next;
