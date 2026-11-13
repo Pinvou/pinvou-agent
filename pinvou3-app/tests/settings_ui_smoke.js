@@ -128,8 +128,8 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const showPromise =\s*\n\s*promiseIsolated && physicalLive && \(replaceDisabledLine \|\| virtualState === 'active'\);/,
-  'the promise must ride ONLY a pref-ON leg that can deliver it — never "unavailable" (the probe is down there) and never a pref-OFF "disabled" leg',
+  /const showPromise =\s*\n\s*promiseIsolated &&\s*\n\s*physicalLive &&\s*\n\s*!virtualDetail &&\s*\n\s*\(replaceDisabledLine \|\| virtualState === 'active'\);/,
+  'the promise must ride ONLY a pref-ON leg that can deliver it — never "unavailable" (the probe is down there), never a pref-OFF "disabled" leg, and never a leg carrying a non-empty backend detail (an "active" row can ride a red snapshot; promising isolation while the next creation resolves physical is the R18 hole)',
 );
 // R13: the FACT is true whenever a physical session is live — gating it on
 // `!replaceDisabledLine` rendered the promise ALONE in the replace-disabled
@@ -153,7 +153,7 @@ assert.match(
 // comment) before the error text.
 assert.match(
   settingsViewSource,
-  /virtualError \? \(\s*<span className="block mt-0\.5">[\s\S]{0,400}\{showFact && \(\s*<span className="block">\{t\.uiComputerUse\.virtualStatePhysicalLive\}<\/span>\s*\)\}/,
+  /virtualError \? \(\s*<span className="block mt-0\.5">[\s\S]{0,800}\{showFact && \(\s*<span className="block">\{t\.uiComputerUse\.virtualStatePhysicalLive\}<\/span>\s*\)\}/,
   'a failed preference write must not suppress the live-physical fact — the error branch renders the fact above the error text',
 );
 // R12 negative pin: the R11 single-line shape promised isolation
