@@ -278,17 +278,23 @@ def test_slides_schema_items_pin():
     branches = items.get("anyOf")
     assert isinstance(branches, list) and branches, "items must be an anyOf union, got %r" % branches
     # One branch per layout. The count is the layout set, NOT a budget
-    # boundary: the constrained-route resource budgets are aligned to the
-    # walle conf.go source defaults since 2026-11-05 (anyOf ≤ 500 branches,
-    # ≤ 3000 properties, depth ≤ 30), so 10 branches sit far inside them.
+    # boundary on the TARGET face: the constrained-route resource budgets
+    # are aligned to the walle conf.go source defaults since 2026-11-05
+    # (anyOf ≤ 500 branches, ≤ 3000 properties, depth ≤ 30), but that is
+    # the T11 target budget. The currently pinned pre-T11 engine still
+    # caps anyOf at 10, so these 10 branches sit exactly AT the shipped
+    # limit — adding a layout before the close-out re-pin hits the
+    # 10-branch cap (the whole Moonshot request build fails).
     assert len(branches) == len(server.LAYOUTS), \
         "one branch per layout (%d), got %d" % (len(server.LAYOUTS), len(branches))
     # Per-branch required = exactly the fields the renderer reads and draws
     # a blank body without; pure-decoration fields stay optional (the probe's
     # all-fields-required control produced blank values + enum guessing).
-    # 2026-11-05 required 终审裁决:required 只许"留空=业务异常"。agenda/end
-    # 的渲染端对空标题有语义完整兜底(目录/谢谢),空标题产出业务完整页,
-    # title 退出分支 required;其余 8 分支不变。
+    # 2026-11-05 required final ruling: a field may be required only when
+    # leaving it blank is a business error. agenda/end render semantically
+    # complete fallback pages (table of contents / thank you) for a blank
+    # title, so title left those branches' required; the other 8 branches
+    # are unchanged.
     expected_required = {
         "cover": ["layout", "title"],
         "agenda": ["layout", "items"],

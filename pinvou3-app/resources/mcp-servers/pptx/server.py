@@ -683,40 +683,60 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
         return {"ok": False, "error": str(e)}
 
 
-# ── slides.items 的 per-layout anyOf 分支(2026-11-04)────────────────────
-# 背景:Kimi K3 受限解码对"深嵌套可选字段大负载"有最小合法补全倾向 —— 旧
-# 扁平 items 只把 layout 设为 required,模型反复只生成 layout+title 空壳页,
-# 其余可选字段全丢(2026-11-04 真实用户会话:7 次调用 5 次丢字段)。历史事故
-# 锚点:k3 曾连续 27 次发出 slides:[](itemless array 被补全成最小合法值
-# []);2026-11-04 复测,旧 schema 新鲜单轮已能生成 4KB+ 完整正文,27 连发
-# 不复现 —— 但长上下文/多轮失败锚定下的字段丢失仍真实存在。
-# 缓解手段 = per-layout anyOf:每分支显式 type:object、layout enum 收敛为
-# 单值(选分支即选版式)、required 只放该版式渲染函数会读且缺了会出空白
-# 正文的字段(2026-11-05 required 终审裁决:留空=业务异常才许 required;
-# agenda/end 空标题有语义完整兜底「目录」/「谢谢」,产出业务完整页,
-# title 因此退出该两分支 required)。2026-11-04 活体探针 A2:本形态是唯一一次 10 页构成完全达标,
-# 字节成本 +6%;对照组"全字段塞 required"= 模型填空值+乱选 enum(+76%
-# token,证伪)。walle 校验器已把 anyOf 列为正式成员(上游 ValidateAnyOf);
-# 而"分支须显式 type:object、type 不与 anyOf 同层"是 CodeWhale 引擎镜像
-# 自定的更严策略(f1eb10efc 起即有;walle lite 接受 type 与 anyOf 同层
-# —— 2026-11-05 对 MoonshotAI/walle 上游 main 实抓核实)。资源预算已于
-# 2026-11-05 对齐 walle conf.go 源默认(anyOf ≤500、properties 总数 ≤3000、
-# 嵌套深度 ≤30、enum 值 ≤1000、enum 字面量 ≤75000 字节;编码字节 120000 与
-# 枚举长度检查阈值 250 不变;源码对照,非文档条款),放宽需改 CodeWhale
-# 常量并同步父仓镜像脚本。注意:对齐后的预算要等 T11 引擎批(CodeWhale
-# #143–#147)经 close-out 换钉 PR 落到父仓 gitlink 才生效;当前钉住的引擎
-# 仍是 pre-T11 面,anyOf 分支上限实为 10 —— 本 schema 10 分支恰好贴着该
-# 上限,换钉之前新增版式会先撞上 10 分支帽(整个 Moonshot 请求构建失败),
-# 换钉之后才是"加分支即可"。联合结构本身在当前引擎上即已合法:nested
-# 多分支 anyOf 原样保留并接受(展平只发生在根组合层),无需等待换钉。
+# ── per-layout anyOf branches for slides.items (2026-11-04) ───────────────
+# Background: Kimi K3 constrained decoding tends toward minimal legal
+# completions on "large payloads with deeply nested optional fields" — the
+# old flat items marked only layout required, so the model repeatedly
+# produced layout+title shells and dropped every other optional field
+# (2026-11-04 real user session: 7 calls, 5 with dropped fields). Incident
+# anchor: k3 once emitted slides:[] 27 times in a row (an itemless array
+# gets completed to the minimal legal value []); a 2026-11-04 retest showed
+# the old schema already producing 4KB+ complete bodies in a fresh single
+# turn, and the 27-in-a-row run did not reproduce — but field loss under
+# long-context / multi-turn failure anchoring is still real.
+# Mitigation = per-layout anyOf: each branch is an explicit type:object,
+# the layout enum collapses to a single value (picking the branch picks the
+# layout), and required carries only the fields the layout's render function
+# reads whose absence yields a blank body (2026-11-05 required final ruling:
+# a field may be required only when leaving it blank is a business error;
+# agenda/end render the semantically complete fallback pages 「目录」/「谢谢」
+# (table of contents / thank you) for a blank title, so title left those two
+# branches' required). 2026-11-04 live probe A2: this shape was the only run
+# where all 10 pages met the layout brief, at +6% byte cost; the control
+# group ("every field required") produced blank values + enum guessing
+# (+76% tokens, disproved). The walle validator lists anyOf as a first-class
+# member (upstream ValidateAnyOf); "branches must be explicit type:object
+# and type must not share a level with anyOf" is the CodeWhale engine
+# mirror's own stricter policy (in place since f1eb10efc; walle lite accepts
+# type beside anyOf — verified against MoonshotAI/walle upstream main on
+# 2026-11-05). The resource budgets were aligned to the walle conf.go source
+# defaults on 2026-11-05 (anyOf ≤500, total properties ≤3000, nesting depth
+# ≤30, enum values ≤1000, enum literals ≤75000 bytes; encoded bytes 120000
+# and the enum-length check threshold 250 unchanged; source comparison, not
+# a documented clause). Loosening them means changing the CodeWhale
+# constants and syncing the parent-repo mirror scripts. Note: the aligned
+# budgets only take effect once the T11 engine batch (CodeWhale #143–#147)
+# lands on the parent gitlink through the close-out re-pin PR; the currently
+# pinned engine is still the pre-T11 face whose anyOf branch cap is in fact
+# 10 — this schema's 10 branches sit exactly at that cap, so adding a layout
+# before the re-pin hits the 10-branch cap first (the whole Moonshot request
+# build fails); only after the re-pin is it "just add a branch". The union
+# itself is already legal on the current engine: nested multi-branch anyOf
+# is kept and accepted as-is (flattening happens only at the root
+# combination level), with no need to wait for the re-pin.
 def _slides_item_branch(layout, layout_label, required, blurb, fields):
-    """构造 slides.items 的一个版式分支:显式 type:object + 该版式自己的 required。
+    """Build one per-layout branch of slides.items: explicit type:object
+    plus that layout's own required.
 
-    required 只收渲染函数会读、缺了会出空白正文的字段(2026-11-05 终审
-    裁决单一标准:留空=业务异常才许 required);纯装饰字段(如
-    cover 的 subtitle/date、two_col 的栏标题)保持可选,避免把受限解码的
-    最小补全倾向逼成填空值(探针对照组已证伪)。agenda/end 的空标题渲染端
-    兜底为「目录」/「谢谢」,业务完整,不进 required。
+    required takes only the fields the render function reads whose absence
+    yields a blank body (2026-11-05 final ruling, single criterion: a field
+    may be required only when leaving it blank is a business error);
+    pure-decoration fields (cover's subtitle/date, two_col's column titles)
+    stay optional, so constrained decoding's minimal-completion tendency is
+    not pushed into filling blanks (disproved by the probe's control group).
+    agenda/end fall back on the render side to 「目录」/「谢谢」 for a blank
+    title — a complete page either way — so their title stays out of
+    required.
     """
     properties = {
         "layout": {
@@ -725,10 +745,12 @@ def _slides_item_branch(layout, layout_label, required, blurb, fields):
             "description": "版式:%s" % layout_label,
         },
     }
-    # fields 常量(_SLIDE_TITLE、_ITEMS_LEAF)被多个分支复用;deepcopy 让每个
-    # 分支持有独立副本 —— 否则任何未来的进程内 schema 改写(如 strict 模式
-    # 的 nullable 标注)会经共享节点泄漏进全部版式分支。tools/list 走 JSON
-    # 序列化,副本与原对象的线上字节完全一致。
+    # The fields constants (_SLIDE_TITLE, _ITEMS_LEAF) are shared by several
+    # branches; deepcopy gives each branch its own copy — otherwise any
+    # future in-process schema rewrite (such as strict mode's nullable
+    # annotation) would leak through the shared nodes into every layout
+    # branch. tools/list goes through JSON serialization, so the copies are
+    # byte-identical to the originals on the wire.
     properties.update(copy.deepcopy(fields))
     return {
         "type": "object",
@@ -740,9 +762,11 @@ def _slides_item_branch(layout, layout_label, required, blurb, fields):
 
 _SLIDE_TITLE = {"type": "string", "description": "页标题"}
 
-# agenda/kpi 共享的条目 anyOf:字符串整条直接用;对象走 {num, label}。
-# num/label 都不进 required:agenda 自绘序号,label-only 是合法条目,渲染端
-# 对 None 回退 ""(_item_num_label);字典分支因此不得携带 required。
+# Shared items anyOf for agenda/kpi: a whole-string entry is used as-is; an
+# object goes through {num, label}. Neither num nor label enters required:
+# agenda draws its own numbering and a label-only entry is legal — the
+# renderer falls back to "" for None (_item_num_label); the object branch
+# therefore must not carry required.
 _ITEMS_LEAF = {
     "type": "array",
     "items": {
@@ -903,13 +927,18 @@ TOOL_DEFS = [{
                     "- end: layout 即完整(subtitle 可选;标题缺省「谢谢」)  ← 结尾页\n"
                     "正文版式(agenda/bullets/two_col/kpi/chart/table)要有真实内容/数据,不要只放标题。"
                 ),
-                # Per-layout anyOf:每版式一分支,分支 required 即该版式语义必填
-                # 字段 —— 对受限解码(Kimi K3 等)的最小合法补全倾向的缓解手段。
-                # 历史锚点:k3 曾连续 27 次发出 slides:[](itemless array 被补全
-                # 成 []);2026-11-04 复测,新鲜单轮已不复现,但长上下文/多轮的
-                # 字段丢失仍在(真实会话 7 调 5 丢),见 _SLIDES_ITEMS_ANY_OF 上方
-                # 的完整注释。注意:items 节点只允许 description 与 anyOf 同层
-                # (MFJS 规范:type 不与 anyOf 同层)。
+                # Per-layout anyOf: one branch per layout, each branch's
+                # required listing that layout's semantically required fields
+                # — the mitigation for constrained decoding's (Kimi K3 et
+                # al.) minimal legal-completion tendency. Incident anchor:
+                # k3 once emitted slides:[] 27 times in a row (an itemless
+                # array gets completed to []); the 2026-11-04 retest no
+                # longer reproduced it on a fresh single turn, but field
+                # loss under long context / multi-turn remains (real
+                # session: 7 calls, 5 dropped) — see the full comment above
+                # _SLIDES_ITEMS_ANY_OF. Note: the items node allows only
+                # description beside anyOf (MFJS spec: type must not share
+                # a level with anyOf).
                 "items": {
                     "description": (
                         "一页 = 一个版式分支:layout 的单值 enum 选中分支,"
