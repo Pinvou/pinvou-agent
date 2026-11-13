@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 
 use super::SessionStore;
 use super::scheduled::{SCHEDULED_PROFILE_SCHEMA_VERSION, ScheduledProfileRegistry};
-use super::scheduled::{ScheduledEngineState, ScheduledRunProfile};
+use super::scheduled::{ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting};
 use super::store::{HEADLESS_SESSION_PREFIX, MAX_HEADLESS_SESSIONS, MAX_SESSIONS_PER_KIND};
 use super::validators::validate_session_id;
 use super::validators::{
@@ -40,6 +40,14 @@ use deepseek_tui::artifacts::{ArtifactKind, ArtifactRecord};
 use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
 use deepseek_tui::session_manager::{SavedSession, SessionMetadata};
 use std::path::PathBuf;
+
+/// Absolute lifetime total from the spawn-time durable base plus the
+/// engine-cumulative usage accumulated since that spawn. The single encoding
+/// shared by `persist_scheduled_engine_state` and
+/// `persist_scheduled_token_total`; the result replaces the stored value.
+fn scheduled_lifetime_total(base_total_tokens: u64, engine_total_tokens: u64) -> u64 {
+    base_total_tokens.saturating_add(engine_total_tokens)
+}
 
 #[cfg(test)]
 static SCHEDULED_RUNTIME_DELETE_FAULTS: LazyLock<parking_lot::Mutex<HashMap<String, ErrorKind>>> =
@@ -1038,7 +1046,17 @@ impl SessionStore {
             .manager
             .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for engine persistence"))?;
-        // load→persist never touches total_tokens; that IS the preserve.
+        match state.token_accounting {
+            // load→persist never touches total_tokens; that IS the preserve.
+            ScheduledTokenAccounting::PreservePersisted => {}
+            ScheduledTokenAccounting::EngineCumulative {
+                base_total_tokens,
+                engine_total_tokens,
+            } => {
+                session.metadata.total_tokens =
+                    scheduled_lifetime_total(base_total_tokens, engine_total_tokens);
+            }
+        }
         let mode_label = state.mode.as_label();
 
         session.metadata.updated_at = Utc::now();
@@ -1074,7 +1092,8 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for token persistence"))?;
         session.metadata.updated_at = Utc::now();
-        session.metadata.total_tokens = base_total_tokens.saturating_add(engine_total_tokens);
+        session.metadata.total_tokens =
+            scheduled_lifetime_total(base_total_tokens, engine_total_tokens);
 
         self.persist_then_reconcile_with(
             &session,
