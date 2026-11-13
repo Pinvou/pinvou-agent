@@ -81,7 +81,7 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // `include: ["reasoning.encrypted_content"]`; replay matches the captured
 // provider tag). Foundation side: CodeWhale PR #79, squash-merged into
 // pinvou3-clean as `3035a022e` and carried by the pinned head `0bc868ff0`.
-const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
+pub(crate) const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 
 /// Canonical persisted `(model_provider, model_provider_id)` pair for the
 /// engine route `build_dt_config` resolved (its `cfg.provider`).
@@ -1454,7 +1454,7 @@ impl Pinvou3Bridge {
     /// `wire = "responses"`) on a GPT×Responses hit. Consumed solely by
     /// `build_dt_config`; the divergence from `provider()` is declared here
     /// and in the [`Self::uses_responses_wire`] docs.
-    fn engine_route_provider(&self) -> String {
+    pub(crate) fn engine_route_provider(&self) -> String {
         if self.uses_responses_wire() {
             RESPONSES_ROUTE_PROVIDER.to_string()
         } else {

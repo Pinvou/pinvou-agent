@@ -18,7 +18,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::features::assistant::platform::bridge::{Pinvou3Bridge, prefs::ModelPreset};
+use crate::features::assistant::platform::bridge::{
+    Pinvou3Bridge, RESPONSES_ROUTE_PROVIDER, prefs::ModelPreset,
+};
 
 const PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问，召之即来。
 
@@ -651,11 +653,18 @@ async fn model_review(
     // 按 ApiProvider::parse（大小写不敏感 + 别名表 + deepseek-cn 特例）解析，
     // 不可解析兜底 Deepseek。审查按同一 ApiProvider 分类，raw 字符串臂全部
     //退役——规范 slug/大小写/别名拼写不再与引擎劈开（2026-11-07 r3 审 M3/M7）。
-    let api = bridge.build_dt_config().api_provider();
+    let wire_api = bridge.build_dt_config().api_provider();
     // 线材型号按引擎同款家族表规范化（canonical_wire_model_for_review 注）：
     // 决策与线材同吃规范 id，别名拼写与引擎不再劈开（2026-11-09 r5 审 m1/m2）；
     // 自定义端点按引擎同款门原样透传（r6 审 M1）。
-    let model_name = canonical_wire_model_for_review(api, &base_url, &model_name);
+    let model_name = canonical_wire_model_for_review(wire_api, &base_url, &model_name);
+    // The control-plane identity is re-derived from the wire/vendor this
+    // one-shot request actually uses (see review_chat_wire_api): canonical
+    // naming and the numeric budget deliberately keep the route identity —
+    // only the chat controls consume the re-derived vendor, so a gpt-5.x
+    // chat request on the official picker's route (pinvou_responses) is not
+    // silently degraded to `max_tokens` + no effort field.
+    let api = review_chat_wire_api(wire_api, &bridge.engine_route_provider(), &model_name);
     // Token 上限字段同样镜像引擎（review_max_tokens_field 文档注）：换名集合里的
     // 路由发 max_completion_tokens，其余保持 max_tokens。
     let max_tokens_field = review_max_tokens_field(api, &base_url, &model_name);
@@ -1299,6 +1308,32 @@ fn review_max_tokens_field(api: ApiProvider, base_url: &str, model: &str) -> &'s
         "max_completion_tokens"
     } else {
         "max_tokens"
+    }
+}
+
+/// Re-derives the vendor identity the review's chat-dialect controls key
+/// off. The auxiliary review request deliberately speaks the Chat dialect
+/// (the token-field selector and the thinking controls mirror the engine's
+/// chat layer), but the route identity from `build_dt_config()` describes
+/// the MAIN conversation's wire: the official OpenAI picker's engine route
+/// lands on the named Responses route (`RESPONSES_ROUTE_PROVIDER`), whose
+/// `api_provider()` is Custom. On that route the one-shot chat request
+/// targets OpenAI itself, and a gpt-5.x chat request is the OpenAI
+/// reasoning family — the chat controls must classify it as Openai or the
+/// request silently keeps `max_tokens` and omits `reasoning_effort=low`
+/// (route identity is the main conversation's, not this request's vendor).
+/// Everything else keeps the route identity: the numeric output budget has
+/// already flowed through the engine's route-effective calculation, and
+/// canonical wire naming stays on the route identity too (the canonical
+/// table has no Openai/Custom-specific arms — behavior-neutral there).
+fn review_chat_wire_api(wire_api: ApiProvider, route_provider: &str, model: &str) -> ApiProvider {
+    if wire_api == ApiProvider::Custom
+        && route_provider == RESPONSES_ROUTE_PROVIDER
+        && openai_reasoning_family_model(&model.trim().to_ascii_lowercase())
+    {
+        ApiProvider::Openai
+    } else {
+        wire_api
     }
 }
 
@@ -1975,6 +2010,51 @@ mod tests {
     /// 测试直接传现场字符串（含别名/大小写拼写），把归一行为一并钉住。
     fn review_api(provider: &str) -> ApiProvider {
         ApiProvider::parse(provider).unwrap_or(ApiProvider::Deepseek)
+    }
+
+    #[test]
+    fn review_chat_wire_api_reclassifies_the_responses_route_for_chat_controls() {
+        // The official picker route: route identity is the named Responses
+        // provider whose api_provider() is Custom, but the one-shot chat
+        // request targets OpenAI itself and gpt-5.x is the reasoning
+        // family — the controls must see Openai (zhuowp round-2 P2).
+        assert_eq!(
+            review_chat_wire_api(
+                review_api("custom"),
+                RESPONSES_ROUTE_PROVIDER,
+                "gpt-5.6-terra"
+            ),
+            ApiProvider::Openai
+        );
+        assert_eq!(
+            review_chat_wire_api(review_api("custom"), RESPONSES_ROUTE_PROVIDER, "gpt-5.5"),
+            ApiProvider::Openai
+        );
+        // Non-family models on the same route keep the route identity.
+        assert_eq!(
+            review_chat_wire_api(review_api("custom"), RESPONSES_ROUTE_PROVIDER, "kimi-k3"),
+            review_api("custom")
+        );
+        // The reclassification never overrides a resolved vendor identity.
+        assert_eq!(
+            review_chat_wire_api(review_api("moonshot"), RESPONSES_ROUTE_PROVIDER, "gpt-5.5"),
+            review_api("moonshot")
+        );
+        // A plain custom route (not the named Responses provider) keeps the
+        // route identity — the finding scopes to the picker's route.
+        assert_eq!(
+            review_chat_wire_api(review_api("custom"), "my_custom_gateway", "gpt-5.5"),
+            review_api("custom")
+        );
+        // Case spellings of the family still reclassify.
+        assert_eq!(
+            review_chat_wire_api(
+                review_api("custom"),
+                RESPONSES_ROUTE_PROVIDER,
+                "GPT-5.5-Codex"
+            ),
+            ApiProvider::Openai
+        );
     }
 
     /// 思考永不关闭（2026-11-06 产品决策）：各家族落到最低思考档/显式开。
