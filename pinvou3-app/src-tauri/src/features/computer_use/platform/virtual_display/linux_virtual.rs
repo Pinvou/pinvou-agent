@@ -2165,13 +2165,21 @@ impl ComputerUseBackend for VirtualX11Backend {
             // (a dead pid in the recorded-children list is dead weight —
             // every identity gate would only ever skip it) and state the
             // real outcome instead of logging "launched" for an app we
-            // killed (R16).
+            // killed (R16). The RECEIPT must not claim a running pid either
+            // (R18): a success would make the model judge the follow-up
+            // screenshot against a desktop it believes holds the app.
             log::warn!(
                 "[computer_use] virtual display: killed and reaped {} on {} \
                  (pid {pid}) after the reaper-thread failure",
                 logged_program(program),
                 self.display
             );
+            return Err(ComputerUseError::unavailable(
+                "open: the app was terminated right after launch because \
+                 its cleanup tracker could not be started; it is not \
+                 running, so use the follow-up screenshot to confirm the \
+                 desktop state and try again",
+            ));
         } else {
             self.record_child(program, pid, starttime);
             // The program text is model-supplied; it renders ONLY through
@@ -2759,10 +2767,13 @@ mod tests {
         assert_ne!(first, second, "two urandom draws must differ");
     }
 
-    /// The keysym table covers EVERY `Key` variant (no wildcard arm exists, so
-    /// a new variant breaks this test's variant list construction first) and
-    /// pins representative values, including the non-obvious ones (xdotool
-    /// resolves X keysym NAMES: Prior/Next/BackSpace, super for Meta).
+    /// The keysym table covers EVERY `Key` variant — the real guard is the
+    /// wildcard-free `keysym_name` match, whose compile break on a new
+    /// variant must be resolved by ADDING the variant's mapping (adding a
+    /// `_ =>` wildcard arm would silence the compile break AND this test's
+    /// error-arm asserts at once) — and pins representative values,
+    /// including the non-obvious ones (xdotool resolves X keysym NAMES:
+    /// Prior/Next/BackSpace, super for Meta).
     #[test]
     fn keysym_table_covers_every_key_variant() {
         let mut variants = vec![
@@ -3511,6 +3522,72 @@ mod tests {
             3,
             "all held-handle liveness probes (server_alive, detect_dead_wm, \
              verify_wm_management) must re-confirm a wait error through /proc"
+        );
+    }
+
+    /// R18: the parser test feeds bytes straight into
+    /// `stat_state_and_starttime`, so it cannot see a revert of the READ
+    /// SITES back to `read_to_string` — the exact R9 defect (a child whose
+    /// prctl comm is non-UTF-8 fails the whole read, and every
+    /// identity-gated kill skips a LIVE app with a false "already exited"
+    /// log) silently returning while every other test stays green. The
+    /// byte-read call shape must exist at both sites.
+    #[test]
+    fn identity_reads_stay_lossy_byte_reads() {
+        let prod = production_source();
+        assert_eq!(
+            prod.matches(r#"std::fs::read(format!("/proc/{pid}/stat"))"#)
+                .count(),
+            2,
+            "process_runs and process_starttime must both read the stat file \
+             as BYTES (lossy-converted in the parser) — a read_to_string \
+             revert fails the read on non-UTF-8 comm and skips live apps \
+             from every identity-gated kill"
+        );
+    }
+
+    /// R18: the grace-expiry wind-down arm of `verify_wm_management` was
+    /// pinned nowhere — a live WM that never publishes the EWMH marker must
+    /// be terminated, its claim dropped, and its pidfile record pruned when
+    /// the grace expires (neither the died-before-managing arm nor the
+    /// mid-session arm covers it; deleting the whole arm left every leg
+    /// green while production misclaimed a managed display and stranded a
+    /// live recorded WM). Real child process, real pidfile assertions; no
+    /// X server, so the EWMH check answers false every tick and the grace
+    /// (3 s) runs out deterministically.
+    #[test]
+    fn unmanaging_wm_is_wound_down_at_grace_expiry() {
+        let dir = tempfile::Builder::new()
+            .prefix("pinvou3-cu-wm-grace-")
+            .tempdir()
+            .expect("temp session dir");
+        let wm = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep fixture");
+        let _leak_guard = KillOnDrop(wm.id());
+        let mut backend = backend_with_wm(Some(wm), dir.path());
+        std::fs::write(dir.path().join(PIDFILE_NAME), "{}").expect("seed pidfile");
+        backend.verify_wm_management("mutter");
+        assert!(
+            backend.wm.is_none(),
+            "a live WM that never takes management must be wound down at \
+             grace expiry"
+        );
+        assert!(
+            backend.wm_program.is_none(),
+            "the managed-display claim must be dropped at grace expiry"
+        );
+        let file: PidFile = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(PIDFILE_NAME)).expect("pidfile"),
+        )
+        .expect("parse pidfile");
+        assert_eq!(
+            file.wm_pid, None,
+            "the wound-down WM's record must be pruned from the pidfile"
         );
     }
 
