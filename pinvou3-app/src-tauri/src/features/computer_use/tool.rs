@@ -179,8 +179,9 @@ struct ToolState {
     /// The display target this session's backend was created for (the
     /// ONE-TIME creation decision recorded in `Capabilities.target`), cached
     /// at the first capability read. `None` until then: the payload/audit
-    /// boundaries fall back to the resolved preference (see
-    /// [`resolved_display_target`]) instead of guessing.
+    /// boundaries fall back to the session's registry row, then to the
+    /// resolved preference (see [`resolved_display_target`]) instead of
+    /// guessing.
     display_target: Option<DisplayTarget>,
     /// Whether the backend's model-facing fidelity note
     /// (`Capabilities.target_note`) has been surfaced on an action result
@@ -874,10 +875,11 @@ fn shot_result_text(shot: &ShotOutcome, target: DisplayTarget) -> String {
     // `target_marker` below): tells the model which
     // display it is acting on without any parsing cost — the frontend only
     // parses the path, so this string is frozen. On the virtual target the
-    // user's mouse and keyboard are untouched (on the Linux and Windows
-    // stacks the screen is too; on macOS an opened app can pass through the
-    // user's desktop while it is moved in); on the physical target
-    // disruption should be minimized and announced.
+    // user's mouse and keyboard are untouched (NO stack keeps every session
+    // pixel off the user's screen, though — each platform's escape residual
+    // lives in the target note: Linux raw-Wayland, Windows broker-launched
+    // apps and the desktop-by-name pull-out, macOS the AX move); on the
+    // physical target disruption should be minimized and announced.
     text.push('\n');
     text.push_str(target_marker(target));
     // Review finding: at the minimum scale floor the PNG can still exceed
