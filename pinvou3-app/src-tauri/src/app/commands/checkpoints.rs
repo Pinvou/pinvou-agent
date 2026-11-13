@@ -1054,12 +1054,11 @@ pub async fn rewind_to_turn(
     // guided retry (the crashed attempt already applied, truncate possibly
     // persisted too) — skip the turn-count gate and let the retry finish the
     // protocol (the completion arm skips the doomed at-boundary re-truncate).
-    let pending_same_boundary = match checkpoints::peek_pending_rewind(&ledger)
-        .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
-    {
-        Some(pending) => pending.keep_turns == keep_turns,
-        None => false,
-    };
+    let live_pending = checkpoints::peek_pending_rewind(&ledger)
+        .map_err(|error| format!("读取回退暂记失败: {error:#}"))?;
+    let pending_same_boundary = live_pending
+        .as_ref()
+        .is_some_and(|pending| pending.keep_turns == keep_turns);
     if pending_same_boundary {
         log::info!(
             "[pinvou3][checkpoints] guided retry: same-boundary pending is live, skipping the turn-count gate sid={session_id}"
@@ -1068,6 +1067,53 @@ pub async fn rewind_to_turn(
         return Err(format!(
             "会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾"
         ));
+    }
+    // r47 MAJOR-2（评审）：提交态完成臂移到 prepare/apply 之前。原臂挂在截断
+    // 阶段，实际不可达——提交崩溃态下暂记 revision 为 R0、转录已在 R1，
+    // matching_pending_pre_restore 按不匹配返回 None，流程在到达该臂之前就以
+    // 「发送新消息」文案报错；唯一入口是伪造 pending_rewind.json，而那条路径
+    // 会跳过 store 的 at-boundary 确定拒绝、无 sidecar 凭据地报告
+    // rewound_turns: 0 假成功。现在臂要求与 CLI 完全相同的三态证明：同边界 +
+    // sidecar 记录绑定到暂记的 pre_restore_id（与桌面对账配对的同一字段）+
+    // 记录 truncated_revision 等于当前 revision。无证明 → 照常落回普通流程
+    // （写入侧 r36-M2 守卫如实拒绝）；有证明 → 非破坏性收尾：清暂记、作废
+    // 被弃分支、如实报告 0 新截断。
+    if let Some(pending) = live_pending
+        .as_ref()
+        .filter(|pending| pending.keep_turns == keep_turns)
+    {
+        let committed = store
+            .inner()
+            .latest_rewound_turns_record(&session_id)
+            .ok()
+            .and_then(|record| record)
+            .is_some_and(|record| {
+                record.pre_restore_checkpoint_id.as_deref() == Some(pending.pre_restore_id.as_str())
+                    && !record.truncated_revision.is_empty()
+                    && record.truncated_revision == *transcript_revision
+            });
+        if committed {
+            checkpoints::clear_pending_rewind(&ledger);
+            let ledger_completion = ledger.clone();
+            if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+                invalidate_abandoned_turn_checkpoints(&ledger_completion, keep_turns);
+            })
+            .await
+            {
+                eprintln!(
+                    "[checkpoints] 作废被截分支检查点任务异常（回退已生效，仅清理未做）: {error}"
+                );
+            }
+            log::info!(
+                "[pinvou3][checkpoints] guided retry: committed-crash state completed non-destructively sid={session_id}"
+            );
+            return Ok(RewindToTurnResult {
+                restored_checkpoint: None,
+                rewound_turns: 0,
+                degraded: false,
+                had_compaction: false,
+            });
+        }
     }
     let plan = resolve_rewind_plan(entries, keep_turns, conversation_only)?;
 
@@ -1241,18 +1287,15 @@ pub async fn rewind_to_turn(
     // (clear + invalidate run below). The store's at-boundary gate would
     // deterministically refuse a re-truncation; short-circuit here and report
     // zero new truncations honestly.
-    let outcome = if pending_same_boundary && total_turns == keep_turns {
-        Ok(crate::features::sessions::rewind::TruncateToTurnOutcome {
-            rewound_turns: 0,
-            had_compaction: false,
-        })
-    } else {
-        tauri::async_runtime::spawn_blocking(move || {
-            store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
-        })
-        .await
-        .map_err(|error| format!("截断对话任务失败: {error}"))?
-    }
+    // r47 MAJOR-2（评审）：提交态已在 prepare 之前由完成臂非破坏性收尾，
+    // 不再存在「同边界且转录已在边界」却要跳过截断的可达路径——此前的伪造
+    // outcome 臂（绕过 store 的 at-boundary 确定拒绝、无 sidecar 凭据报告
+    // rewound_turns: 0）已删除；协议矛盾态由写入侧 r36-M2 守卫如实拒绝。
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
+    })
+    .await
+    .map_err(|error| format!("截断对话任务失败: {error}"))?
     .map_err(|error| match &restored_checkpoint {
         // 代码已回退而对话未截断：备份未写成 → undo 记录不存在，「撤销回退」
         // 不可用；独立的 restore 入口已移除。可执行的自救只有重试回退（恢复
@@ -1767,10 +1810,15 @@ mod tests {",
         );
     }
 
-    /// r28 M2(a) pin：rewind_to_turn 的复用判定不得查 sidecar 绑定记录——
-    /// matcher 的 revision 匹配已是提交判定器（r25 MAJOR-3），绑定记录在
-    /// revision 匹配时只能是 persist 分裂窗（复用恰恰正确）。复活绑定记录
-    /// 否决（r26-M1 类）必须在此变红。
+    /// r28 M2(a) pin，r47 MAJOR-2 演进修订：rewind_to_turn 的**复用判定**
+    /// 不得让 sidecar 绑定记录否决 revision 匹配的复用（r25 MAJOR-3：绑定
+    /// 记录在 revision 匹配时只能是 persist 分裂窗，复用恰恰正确）。r47
+    /// MAJOR-2 后该函数体新增了恰好一处**受制裁的** sidecar 查询——提交态
+    /// 完成臂的证明（配对 pre_restore_id + truncated_revision，由
+    /// the_committed_crash_completion_arm_is_reachable_and_proven 位置钉管）。
+    /// 本钉据此从「全禁」收紧为「配额」：函数体对
+    /// latest_rewound_turns_record 的引用必须恰好一次——任何新增的、未经
+    /// 上述位置钉覆盖的查询（r26-M1 类复活否决）都会超出配额而变红。
     #[test]
     fn rewind_reuse_does_not_consult_the_sidecar_record() {
         let src = include_str!("checkpoints.rs");
@@ -1778,24 +1826,17 @@ mod tests {",
             .find("pub async fn rewind_to_turn(")
             .expect("rewind_to_turn must exist");
         let rest = &src[fn_start..];
-        let body_end = [
-            "
-pub ",
-            "
-pub(super) ",
-            "
-async fn ",
-            "
-fn ",
-        ]
-        .iter()
-        .filter_map(|marker| rest.find(marker))
-        .min()
-        .map_or(rest.len(), |offset| offset);
+        let body_end = ["\npub ", "\npub(super) ", "\nasync fn ", "\nfn "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .map_or(rest.len(), |offset| offset);
         let body = &rest[..body_end];
-        assert!(
-            !body.contains("latest_rewound_turns_record"),
-            "rewind_to_turn 的复用判定不得查 sidecar 绑定记录（r28 M2：否则 persist 分裂窗被否决、P1 孤儿化）"
+        let consults = body.matches("latest_rewound_turns_record").count();
+        assert_eq!(
+            consults, 1,
+            "rewind_to_turn 对 sidecar 绑定记录的查询必须恰好一次（r28 M2(a) 复用
+             判定禁查 + r47 MAJOR-2 完成臂唯一制裁查询）：实际 {consults} 次"
         );
     }
 
@@ -1901,6 +1942,178 @@ fn ",
     /// r34 M5 pin：破坏性命令族的 aux 显式拒绝——raw IPC 直调不得经
     /// truncate_to_user_turn 改写 aux transcript（文件头声明已按实际行为改写）。
     /// 删除任一拒绝必须变红（命令体无法单测直调，源码 pin 是本项目惯例）。
+    /// r47 MAJOR-3 (review, mutation audit exp.3): the r44-minor-5
+    /// compaction-latch POST-FLAG recheck in both destructive gates was
+    /// claimed pinned, but the presence-only needle was satisfied by the
+    /// entry gate — deleting the post-flag recheck stayed green. The pin is
+    /// positional: each destructive gate must contain a SECOND
+    /// `is_compaction_in_flight` probe placed AFTER
+    /// `begin_execution_root_rewind` (the flag-set point whose in-window
+    /// re-entry the recheck exists to catch). Deleting a recheck drops that
+    /// gate to a single occurrence and goes red.
+    #[test]
+    fn compaction_latch_is_rechecked_after_the_root_flag_in_both_gates() {
+        let src = include_str!("checkpoints.rs");
+        let src = &src[..src
+            .find(
+                "#[cfg(test)]
+mod tests {",
+            )
+            .expect("test module marker must exist")];
+        for signature in [
+            "pub async fn rewind_to_turn(",
+            "pub async fn undo_last_rewind(",
+        ] {
+            let body = production_body(src, signature);
+            let first = body
+                .find("pool.is_compaction_in_flight(&session_id)")
+                .unwrap_or_else(|| panic!("{signature} must probe the compaction latch (r22 R2)"));
+            let flag_at = body
+                .find("pool.begin_execution_root_rewind(&execution)")
+                .unwrap_or_else(|| panic!("{signature} must set the execution-root rewind flag"));
+            let recheck = body[first + 1..]
+                .find("pool.is_compaction_in_flight(&session_id)")
+                .map(|offset| first + 1 + offset)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{signature} must RECHECK the compaction latch after the root flag                          (r44 minor 5 / r47 MAJOR-3: the post-flag recheck was unpinned)"
+                    )
+                });
+            assert!(
+                recheck > flag_at,
+                "{signature}: the latch recheck must sit after the root-flag set                  (entry probe: {first}, flag: {flag_at}, recheck: {recheck})"
+            );
+        }
+    }
+
+    /// r47 MAJOR-3 (review, mutation audit exp.4): the r28-B1 POST-truncate
+    /// engine eviction in the replay arm was claimed pinned, but the pin's
+    /// single needle was satisfied by the PRE-apply eviction — replacing only
+    /// the post-truncate call with a plain `evict` stayed green. Positional
+    /// pin: within `reconcile_pending_rewind`, an `evict_if_present` call
+    /// must exist AFTER the replay's truncate call. Swapping the post-truncate
+    /// call to a plain evict (or deleting it) removes that occurrence.
+    #[test]
+    fn the_replay_arms_post_truncate_evict_is_evict_if_present() {
+        let src = include_str!("checkpoints.rs");
+        let start = src
+            .find("fn reconcile_pending_rewind(")
+            .expect("reconcile_pending_rewind must exist");
+        let rest = &src[start..];
+        let body_end = [
+            "
+fn ", "
+pub ", "
+#[",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(rest.len(), |offset| offset);
+        let body = &rest[..body_end];
+        let truncate_at = body
+            .find("truncate_to_user_turn")
+            .expect("the replay arm must truncate the transcript");
+        let after_truncate = &body[truncate_at..];
+        assert!(
+            after_truncate.contains("pool.evict_if_present(session_id)"),
+            "the replay arm must evict_if_present the live engine AFTER the replay truncate              (r28 B1 / r47 MAJOR-3: a plain evict invalidates the in-flight              message reservation and its no-entry arm voids the guard)"
+        );
+    }
+
+    /// r47 MAJOR-2 (review): the GUI committed-crash completion arm must (a)
+    /// live BEFORE prepare_restore — the truncation-stage placement was
+    /// unreachable (matching_pending_pre_restore returns None on the
+    /// revision mismatch, so the flow errored before reaching the arm; the
+    /// only way in was a planted pending, which the arm answered with a
+    /// fabricated zero-truncation success and no sidecar proof), (b) pair on
+    /// the pending's pre_restore_id (the desktop reconcile's field — NOT the
+    /// disjoint target Turn-snapshot id space), and (c) the old
+    /// `pending_same_boundary && total_turns == keep_turns` fabricated arm
+    /// must be gone.
+    #[test]
+    fn the_committed_crash_completion_arm_is_reachable_and_proven() {
+        let src = include_str!("checkpoints.rs");
+        let start = src
+            .find("pub async fn rewind_to_turn(")
+            .expect("rewind_to_turn must exist");
+        let rest = &src[start..];
+        let body_end = ["\npub ", "\nasync fn ", "\nfn "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .map_or(rest.len(), |offset| offset);
+        let body = &rest[..body_end];
+        let pairing_at = body
+            .find("== Some(pending.pre_restore_id.as_str())")
+            .expect(
+                "the completion arm must pair the sidecar record's PreRestore id with \
+                 the pending's pre_restore_id (r47 MAJOR-1/2)",
+            );
+        let prepare_at = body
+            .find("checkpoints::prepare_restore(")
+            .expect("prepare_restore call must exist");
+        let revision_at = body
+            .find("record.truncated_revision == *transcript_revision")
+            .expect("the completion arm must prove the truncation committed");
+        let clear_at = body
+            .find("checkpoints::clear_pending_rewind(&ledger)")
+            .expect("the completion arm must clear the pending");
+        assert!(
+            pairing_at < prepare_at && revision_at < prepare_at,
+            "the completion arm must run BEFORE prepare_restore - r47 MAJOR-2: past \
+                 prepare it is unreachable in the state it exists for"
+        );
+        assert!(
+            clear_at < prepare_at,
+            "the completion arm's pending clear must precede prepare_restore"
+        );
+        assert!(
+            !body.contains("pending_same_boundary && total_turns == keep_turns"),
+            "the old fabricated truncation-stage arm must be gone - r47 MAJOR-2: \
+                 protocol-contradictory condition, reachable only by planting a \
+                 pending_rewind.json, which it answered with a fake success"
+        );
+    }
+
+    /// r47 minor 2 (review): the five commands' ACP lane closures were
+    /// dead-on-the-wire unpinned - replacing `|id| acp_pool.is_acp(id)` with
+    /// `|_| false` was invisible to every suite, i.e. the exact wiring-loss
+    /// class this PR pins elsewhere (the six `ACP_CHAT_LANE_REJECTED` sites).
+    /// One needle per command body: the closure must actually consult the
+    /// pool. Swapping any closure to `|_| false` removes that body's needle
+    /// and goes red.
+    #[test]
+    fn every_lane_gate_closure_consults_the_acp_pool() {
+        let src = include_str!("checkpoints.rs");
+        let src = &src[..src
+            .find("\n#[cfg(test)]\nmod tests {")
+            .expect("test module marker must exist")];
+        for (signature, needle) in [
+            ("pub async fn list_checkpoints(", "acp_pool.is_acp(id)"),
+            ("pub async fn checkpoint_diff(", "acp_pool.is_acp(id)"),
+            ("pub async fn rewind_to_turn(", "acp_pool.is_acp(id)"),
+            ("pub async fn undo_last_rewind(", "acp_pool.is_acp(id)"),
+            ("pub async fn rewind_undo_state(", "acp_inner.is_acp(id)"),
+        ] {
+            let start = src
+                .find(signature)
+                .unwrap_or_else(|| panic!("{signature} must exist"));
+            let rest = &src[start..];
+            let body_end = ["\npub ", "\nasync fn ", "\nfn ", "\n#["]
+                .iter()
+                .filter_map(|marker| rest.find(marker))
+                .min()
+                .map_or(rest.len(), |offset| offset);
+            let body = &rest[..body_end];
+            assert!(
+                body.contains(needle),
+                "{signature} must consult its lane predicate ({needle}) - r47 minor 2: \
+                 a |_| false swap must go red"
+            );
+        }
+    }
+
     #[test]
     fn destructive_commands_refuse_aux_sessions() {
         let src = include_str!("checkpoints.rs");

@@ -1402,7 +1402,14 @@ pub fn run() {
                                 .map(|value| value.as_secs() as i64)
                                 .unwrap_or_default();
                             std::thread::spawn(move || {
+                                // r47 minor 6（评审）：失败必须留痕——本钩子是
+                                // 回退后失效作废的触发器，静默 return 会让作废
+                                // 缺席且无任何可排查信号（本 PR 自立的 fail-loud
+                                // 惯例要求记日志）。
                                 let Ok(roots) = store.session_roots(&sid) else {
+                                    eprintln!(
+                                        "[pinvou3] rewind invalidate hook skipped for {sid}: session_roots resolution failed"
+                                    );
                                     return;
                                 };
                                 let kept = crate::features::code_checkpoints::count_user_turns(&messages);

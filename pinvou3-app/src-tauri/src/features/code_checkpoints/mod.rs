@@ -2203,8 +2203,16 @@ impl PendingRewind {
     /// r41 M4：跨 crate 只读投影——拒绝文案必须插值暂记的真实目标与
     /// keepTurns（此前布尔包装丢失字段，CLI 文案插值了当前请求的目标、
     /// 指认错误险源）。pub(crate) 字段对 CLI crate 不可见，经此快照暴露。
-    pub fn public_target_fields(&self) -> (String, u32) {
-        (self.checkpoint_id.clone(), self.keep_turns)
+    /// r47 MAJOR-1（评审）：第三元 pre_restore_id——CLI 完成臂的判别必须
+    /// 配对 PreRestore/undo id（sidecar 记录的 preRestoreCheckpointId），
+    /// 而非目标 Turn 快照 id；两个 id 空间不相交，比较目标 id 恒假
+    /// （GUI 侧对账即按 pre_restore_id 配对，见 app/commands/checkpoints.rs）。
+    pub fn public_target_fields(&self) -> (String, u32, String) {
+        (
+            self.checkpoint_id.clone(),
+            self.keep_turns,
+            self.pre_restore_id.clone(),
+        )
     }
 }
 
@@ -2419,7 +2427,7 @@ pub fn live_pending_rewind_present(ledger_root: &Path) -> Result<bool> {
 /// 暂记。拒绝文案必须插值暂记的真实字段，而 CLI crate 无法命名 pub(crate)
 /// 的 `PendingRewind`（布尔包装丢失字段正是 r41-M4 文案指认错误险源的根
 /// 因）。窥视无副作用（非破坏性，见 peek_pending_rewind），IO 错误上抛。
-pub fn peek_pending_rewind_target(ledger_root: &Path) -> Result<Option<(String, u32)>> {
+pub fn peek_pending_rewind_target(ledger_root: &Path) -> Result<Option<(String, u32, String)>> {
     Ok(peek_pending_rewind(ledger_root)?.map(|pending| pending.public_target_fields()))
 }
 
@@ -2550,8 +2558,12 @@ const WRITE_FENCE_STALE_SECS: u64 = 1800;
 /// （apply↔diff 互斥）与账本根键（r43 M1：create 的 add -A 与 apply 的
 /// 多子进程窗口互斥——prepare 的 PreRestore 腿同为影子 index 写者，CLI 的
 /// prepare 落进 GUI 的 apply 窗口即 r42-M5 同型错误成功）各取一个命名空间。
-/// 系统临时目录是两进程共享的机器本地唯一稳定锚（跨用户场景不共享，按既有
-/// 披露口径接受）。DefaultHasher 的跨进程稳定性由同版本 std 保证——GUI 与
+/// 系统临时目录是两进程共享的机器本地稳定锚。r47 minor 10（评审）措辞修正：
+/// POSIX 的 /tmp（mode 1777）跨用户同样可见可写——围栏文件对同机其他用户
+/// 并非不可见； 固定键哈希也意味着同机进程可预先种植围栏文件（fence
+/// pre-planting）。两者都只影响围栏的 advisory 性质（错误形态是「多等一轮/
+/// 误降级跳过」，不产生错误互斥、不破坏数据），按既有披露口径接受；
+/// DefaultHasher 的跨进程稳定性由同版本 std 保证——GUI 与
 /// CLI 同仓同构建；未来 std 变更导致两侧寻址漂移时，围栏退化为「互不可见」
 /// （与修复前等价），不会产生错误互斥。
 fn write_fence_path(key: &Path, scope: &str) -> PathBuf {
@@ -3507,6 +3519,77 @@ pub(crate) fn git_available() -> bool {
 mod tests {
     use super::*;
     use crate::features::code_checkpoints::turns::is_step_budget_notification;
+
+    /// r47 MAJOR-3 (review, mutation audit exp.1): the four invalidate/drop
+    /// entry points' ledger write fences were claimed pinned since r45/r46
+    /// but no suite guarded them — deleting all four
+    /// `try_acquire_ledger_write_fence` acquisitions left every suite green.
+    /// One pin per production fn body: each must acquire the fence (the
+    /// mechanics have their own behavioral tests; what was missing is the
+    /// WIRING at exactly these four writers). Deleting any acquisition
+    /// removes that fn's needle and goes red.
+    #[test]
+    fn the_four_invalidate_drop_writers_acquire_the_ledger_fence() {
+        let source = include_str!("mod.rs");
+        for signature in [
+            "pub fn invalidate_turn_checkpoints_after(",
+            "pub fn invalidate_turn_checkpoints_after_created_until(",
+            "pub fn invalidate_stale_turn_checkpoints(",
+            "pub fn drop_checkpoint(",
+        ] {
+            let start = source
+                .find(signature)
+                .unwrap_or_else(|| panic!("{signature} must exist"));
+            let rest = &source[start..];
+            let body_end = [
+                "
+pub ",
+                "
+fn ",
+                "
+pub(crate) ",
+                "
+#[",
+            ]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .unwrap_or(rest.len());
+            let body = &rest[..body_end];
+            assert!(
+                body.contains("try_acquire_ledger_write_fence(&fence_key)"),
+                "{signature} must acquire the ledger write fence (r47 MAJOR-3:                  the fence wiring was claimed pinned but was not)"
+            );
+        }
+    }
+
+    /// r47 MAJOR-3 (review, mutation audit exp.2): the production clean args
+    /// must be SEEDED from RESTORE_CLEAN_ARGS — reverting the call site to a
+    /// hardcoded `["clean", "-fd"]` (the exact `140e03aec` merge-regression
+    /// class) must go red. The constant's own content (-q) is pinned too:
+    /// the #784 quiet-capture immunity lives in that flag, and the constant
+    /// test that invokes the value directly cannot see a call-site revert.
+    #[test]
+    fn production_clean_args_are_seeded_from_the_constant() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("let mut clean_args: Vec<String> =")
+            .expect("the production clean-args seeding must exist");
+        let window = &source[start..start + 400];
+        assert!(
+            window.contains("RESTORE_CLEAN_ARGS.iter().map(|s| s.to_string()).collect()"),
+            "the production clean must be seeded from RESTORE_CLEAN_ARGS,              not a hardcoded literal (r46 MAJOR-2 / r47 MAJOR-3)"
+        );
+        assert!(
+            RESTORE_CLEAN_ARGS.contains(&"-q"),
+            "RESTORE_CLEAN_ARGS must keep -q (#784: the capture-cap immunity)"
+        );
+        assert!(
+            RESTORE_CLEAN_ARGS.contains(&"-fd"),
+            "RESTORE_CLEAN_ARGS must keep the force-delete legs"
+        );
+    }
+
     use deepseek_tui::models::{ContentBlock, Message, Role};
 
     /// Round-12 复审 P2:快照路径的 add -A 之后必须紧跟 purge。工作树

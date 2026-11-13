@@ -208,6 +208,12 @@ check-then-act 窗口为「复检返回 → apply 启动」（毫秒级）；app
 
 ## 12. 已知限制（2026-08-21 设计审阅留痕；同日后两项已落地）
 
+- **SECRET_EXCLUDES 交叉引用**（r47 补登记）：影子快照/恢复路径的秘密排除集以
+  `SECRET_EXCLUDES` 常量为准（`pinjou3-app/src-tauri/src/features/code_checkpoints/mod.rs:139`），
+  由 create/restore 两侧的 icase purge 腿与 clean `-e` 腿共同消费；本设计 §5/§12
+  提及的「秘密排除」行为一律以该常量及其注释为单一事实来源，修订排除集时须
+  同步评估 clean `-e` 顺序与影子腿的字符类形式（r19 M5/M1 前提）。
+
 - **compaction 摘要残留**：`merge_compaction_summary` 把压缩摘要合进 system_prompt 并持久化；回退只截 messages，system_prompt 不动——经历过压缩的会话回退后，模型上下文可能带着描述「被截掉的未来」的摘要。v1 落地最低限度方案：`rewind_to_turn` 返回 `hadCompaction`（按底座 marker 字面量检测），前端回退后如实提示「该会话经历过对话压缩，回退后上下文可能仍含早期摘要」；system_prompt 同步修正后续迭代评估。
 - **compaction 导致 turn 计数漂移**：`count_user_turns` 按当前消息序列计数，compaction 替换序列后 user prompt 数量变化，checkpoint 的 turn 号（压缩前计数）与新序列错位，chip 对齐可能失准。turn 序号漂移有三个来源（截断/压缩/编辑），本设计只处理了截断（§4 步骤 5）。彻底解法是持久化稳定 turn 锚（动存储格式），v2 评估。（2026-10-12 r5 评审缓解：压缩载体消息在两车道重载投影中被过滤，不再渲染为幻影用户轮；list_checkpoints 响应携带后端 count_user_turns，前端时间线计数与之不一致时不渲染回退入口——把「错点回退却报成功」降级为诚实拒绝，durable 重载后两侧计数重新对齐（比对在发送在途时容忍恰差 1 的在途轮次，busy→false 边沿收紧为精确比对——避免每轮发送期间入口整体消失）。注意对齐的只是计数——checkpoint 身份仍是压缩前登记的，压缩前打的 Turn 快照不被作废，计数通过后仍可能恢复出压缩前时代的快照（身份级错位）；彻底解法仍是持久化稳定 turn 锚，v2 评估。）
 - **代码反悔缺 UI 入口**：已落地（2026-08-21）。`rewind_undo_state`（可反悔 ⟺ sidecar 有备份 + 回退后未发新轮次/尾部未被编辑 + 绑定的回滚点仍在）+ `undo_last_rewind`（恢复代码到该次回退绑定的 PreRestore + 对话从 sidecar 还原 + engine 重建；restore 自身会再打 PreRestore，反悔可再反悔）+ 时间线「撤销回退」chip（发过新轮次自动消失）。

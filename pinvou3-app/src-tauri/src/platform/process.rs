@@ -88,7 +88,12 @@ pub(crate) fn strip_git_override_env(command: &mut Command) {
 /// provided explicitly via `-c` by the caller; `GIT_AUTHOR_*` exported by the
 /// host shell must not leak into snapshot commits.
 pub(crate) fn strip_all_git_env(command: &mut Command) {
-    for key in GIT_OVERRIDE_KEYS.iter().copied().chain(GIT_IDENTITY_KEYS) {
+    for key in GIT_OVERRIDE_KEYS
+        .iter()
+        .copied()
+        .chain(GIT_IDENTITY_KEYS)
+        .chain(GIT_TRACE_KEYS)
+    {
         command.env_remove(key);
     }
 }
@@ -165,6 +170,25 @@ pub const GIT_IDENTITY_KEYS: [&str; 6] = [
     "GIT_COMMITTER_NAME",
     "GIT_COMMITTER_EMAIL",
     "GIT_COMMITTER_DATE",
+];
+
+/// r47 minor 10 (checkpoints review): shadow-repository-only trace strip. A
+/// host-exported GIT_TRACE (or any family member) turns every shadow-git
+/// invocation into a writer to the host-controlled destination —
+/// `GIT_TRACE=<absolute path>` APPENDS trace output to that file for the
+/// whole command, an unexpected write sink during snapshot/restore, and
+/// `GIT_TRACE=1/2` spews command lines (including `-c` overrides) to stderr
+/// where callers capture output. Deliberately NOT in
+/// [`GIT_OVERRIDE_KEYS`]: operations on the user's real worktree follow the
+/// behavior of the user's own git, diagnostics included.
+pub const GIT_TRACE_KEYS: [&str; 7] = [
+    "GIT_TRACE",
+    "GIT_TRACE_PACK_ACCESS",
+    "GIT_TRACE_PERFORMANCE",
+    "GIT_TRACE_PACKET",
+    "GIT_TRACE_CURL",
+    "GIT_TRACE_CURL_NO_DATA",
+    "GIT_TRACE_SETTINGS",
 ];
 
 fn is_windows_command_script(executable: &Path) -> bool {
@@ -1110,6 +1134,20 @@ mod tests {
             .copied()
             .chain(GIT_IDENTITY_KEYS)
             .collect();
+        // r47 minor 10 (checkpoints review): the trace family must be stripped
+        // by the SHADOW-hardened variant (an absolute-path GIT_TRACE is an
+        // unexpected write sink during snapshot/restore) while staying off the
+        // subset list above (real-worktree ops keep the user's git behavior).
+        let hardened: std::collections::BTreeSet<&str> = GIT_OVERRIDE_KEYS
+            .iter()
+            .copied()
+            .chain(GIT_IDENTITY_KEYS)
+            .chain(GIT_TRACE_KEYS)
+            .collect();
+        assert!(
+            hardened.contains("GIT_TRACE") && hardened.contains("GIT_TRACE_PACKET"),
+            "the shadow-hardened strip must remove the GIT_TRACE family"
+        );
         for key in GIT_IDENTITY_KEYS {
             assert!(strengthened.contains(key), "full strip must cover {key}");
         }

@@ -497,6 +497,14 @@ assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not ret
 // way the sessions twins are pinned by session_nav_race.
 assert.equal(typeof api.chat.addSystemItem, 'function',
   'chat factory must export callable addSystemItem (r8 incident class / r42 minor 10)');
+// r47 minor 3 (checkpoints review): the curated-map VALUES for the two
+// sessions functions are pinned callable the same way - the presence-only
+// key assert above cannot see the r8 shape where the factory exports the
+// function but the curated map points at `undefined`.
+assert.equal(typeof api.sessions.switchToSessionInternal, 'function',
+  'sessions factory must export callable switchToSessionInternal (r47 minor 3)');
+assert.equal(typeof api.sessions.invalidateSessionBuffer, 'function',
+  'sessions factory must export callable invalidateSessionBuffer (r47 minor 3)');
 assert.equal(api.getState, undefined, 'flat state facade must not return');
 
 function sourceFiles(directory) {

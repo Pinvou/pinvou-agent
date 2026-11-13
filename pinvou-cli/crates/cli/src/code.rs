@@ -5848,7 +5848,7 @@ fn resolve_rewind_plan(
 fn pending_retry_completes(
     store: &SessionStore,
     session: &str,
-    pending_target: &str,
+    pending_pre_restore_id: &str,
     pending_keep: u32,
     keep_turns: u32,
     current_revision: &str,
@@ -5861,7 +5861,13 @@ fn pending_retry_completes(
         .ok()
         .and_then(|record| record)
         .is_some_and(|record| {
-            record.pre_restore_checkpoint_id.as_deref() == Some(pending_target)
+            // r47 MAJOR-1 (review): pair on the PreRestore/undo id - the same
+            // field the desktop reconcile matches (app/commands/checkpoints.rs
+            // binds `record.pre_restore_checkpoint_id == pending.pre_restore_id`).
+            // The pending's OTHER id (`checkpoint_id`) is the target Turn
+            // snapshot's id, a disjoint id space; comparing against it is
+            // constant-false and wedges headless recovery forever.
+            record.pre_restore_checkpoint_id.as_deref() == Some(pending_pre_restore_id)
                 && !record.truncated_revision.is_empty()
                 && record.truncated_revision == current_revision
         })
@@ -5938,17 +5944,20 @@ fn checkpoints_rewind(
     let messages = serde_json::to_value(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error}")))?;
     let total_turns = count_user_turns_exact(&messages)?;
-    // r46 MAJOR-1: the pending peek comes FIRST - a crash between apply and
-    // truncate leaves the transcript at kept_turns, so the bounds and plan
-    // checks must not run before the guided retry is detected. A same-boundary
-    // pending (the retry the refusal copy prescribes) completes the rewind:
-    // clear the marker, invalidate the abandoned branch, report zero new
-    // truncations. A different boundary is refused; no pending falls through
-    // to the ordinary bounds/plan gates.
+    // r46 MAJOR-1: the pending peek comes FIRST, before the bounds and plan
+    // checks, so the guided retry is detected before those gates can
+    // misclassify the crash window. Two crash states exist (the reviewer's
+    // r47 premise correction): a crash between apply and truncate leaves the
+    // transcript FULL (the replay path below handles it); a crash AFTER the
+    // truncate persisted leaves the transcript AT the kept boundary - that is
+    // the committed state the completion arm finishes (clear the marker,
+    // invalidate the abandoned branch, report zero new truncations). A
+    // different boundary is refused; no pending falls through to the
+    // ordinary bounds/plan gates.
     let live_pending = checkpoints::peek_pending_rewind_target(&ledger).map_err(|error| {
         crate::support::store_error("code", "checkpoints rewind", session, error)
     })?;
-    if let Some((pending_target, pending_keep)) = live_pending {
+    if let Some((pending_target, pending_keep, pending_pre_restore)) = live_pending {
         // r46 MAJOR-1 follow-up (review): discriminate the two crash states by
         // the record's truncated_revision against the CURRENT transcript
         // revision (both read before any mutation):
@@ -5970,7 +5979,7 @@ fn checkpoints_rewind(
         if pending_retry_completes(
             &store,
             session,
-            pending_target.as_str(),
+            pending_pre_restore.as_str(),
             pending_keep,
             keep_turns,
             &current_revision,
@@ -5996,7 +6005,12 @@ fn checkpoints_rewind(
         }
         if pending_keep != keep_turns {
             return Err(CliError::failed(format!(
-                "pending_rewind_conflict: an unfinished rewind targeting checkpoint {}                  (keeping {} turns) is still pending; complete or discard it first —                  headless: retry `code checkpoints rewind` to that same checkpoint (the                  guided retry completes it), or remove the pending marker in the session's                  checkpoint ledger; desktop: sending a new message auto-reconciles it —                  before rewinding to a different boundary ({})",
+                "pending_rewind_conflict: an unfinished rewind targeting checkpoint {} \
+                 (keeping {} turns) is still pending; complete or discard it first — \
+                 headless: retry `code checkpoints rewind` to that same checkpoint (the \
+                 guided retry completes it), or remove the pending marker in the session's \
+                 checkpoint ledger; desktop: sending a new message auto-reconciles it — \
+                 before rewinding to a different boundary ({})",
                 pending_target, pending_keep, keep_turns,
             )));
         }
@@ -6006,7 +6020,8 @@ fn checkpoints_rewind(
     }
     if keep_turns >= total_turns {
         return Err(CliError::failed(format!(
-            "cannot_rewind: the session currently has {total_turns} turns; cannot rewind past              turn {keep_turns}"
+            "cannot_rewind: the session currently has {total_turns} turns; cannot rewind \
+             past turn {keep_turns}"
         )));
     }
     let checkpoint = resolve_rewind_plan(&entries, keep_turns)?;
@@ -6246,7 +6261,7 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     // live, which is exactly the replay-arm safety the r24-M2 clear wanted.
     let live_pending = checkpoints::peek_pending_rewind_target(&ledger)
         .map_err(|error| crate::support::store_error("code", "checkpoints undo", session, error))?;
-    if let Some((pending_target, pending_keep)) = live_pending {
+    if let Some((pending_target, pending_keep, _pending_pre_restore)) = live_pending {
         return Err(CliError::failed(format!(
             "pending_rewind_conflict: an unfinished rewind targeting checkpoint {} \
              (keeping {} turns) is still pending; complete or discard it first — \

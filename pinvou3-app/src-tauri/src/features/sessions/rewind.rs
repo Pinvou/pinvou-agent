@@ -562,10 +562,26 @@ impl SessionStore {
         // 会话并再次 lock 备份互斥量，不会再撞上本函数持有的同线程锁。
         self.persist_then_reconcile(&session, "rewind undo restore")?;
         // 记录删除失败只留孤儿数据；反悔条件②（turn 数已不等于 kept_turns）会
-        // 自然挡住重复恢复，不算失败，如实记日志。
+        // 自然挡住重复恢复，不算失败，如实记日志。r47 minor 1（评审）：清理腿
+        // 的跨进程 flock 获取失败也不得用 `?` 整体报错——此时对话已恢复并
+        // 持久化，报「恢复失败需人工处理」是失实分类；与截断孪生（上方
+        // lock_rewound_turns_file 的 Err 腿）同款：降级为如实记日志，孤儿
+        // 记录由条件②天然拒绝。
         {
             let _backup_guard = REWIND_BACKUP_LOCK.lock();
-            let _cross_process = lock_rewound_turns_file()?;
+            let _cross_process = match lock_rewound_turns_file() {
+                Ok(file) => file,
+                Err(error) => {
+                    eprintln!(
+                        "[sessions] rewind backup cleanup skipped for {id} (cross-process lock unavailable: {error:#}); the conversation is restored and the orphan record will be refused by the undo condition re-check"
+                    );
+                    return Ok(RestoredRewindTurns {
+                        messages: restored,
+                        kept_turns: record.kept_turns,
+                        restored_turns,
+                    });
+                }
+            };
             // r46 P1-2：重取锁后重载最新 map，只删除与本条指纹（rewound_at +
             // truncated_revision）精确一致的记录。绝不按锁外快照 pop 尾部再整图
             // 回写——persist 释放锁的窗口里对端（CLI/并发 undo）的推入会被
