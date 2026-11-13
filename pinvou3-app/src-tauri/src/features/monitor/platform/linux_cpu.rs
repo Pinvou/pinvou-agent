@@ -1,35 +1,66 @@
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use parking_lot::Mutex;
 
 use super::super::CpuSnapshot;
-use super::super::cpu_math::{SystemDeltaState, SystemTicks};
+use super::super::cpu_math::{SystemDeltaState, SystemTicks, clamp_pct};
 
 /// `/proc` 中 CPU 时间的基本频率。内核 USER_HZ 在 Tauri 支持的架构
 /// （x86_64/aarch64/riscv64 等）上都恒为 100，唯一例外是已废弃的 alpha
 /// （1024，非 Tauri 目标）；Rust std 无 sysconf 接口，按 100 换算与 procps/top 一致。
 const USER_HZ: f64 = 100.0;
 
-/// CPU 名称在进程生命周期内不变，采样每秒一次也不必重复读 /proc。
-static CPU_NAME: OnceLock<String> = OnceLock::new();
+/// CPU 名称与逻辑核数在进程生命周期内不变，采样每秒一次也不必重复读 /proc。
+static CPU_IDENTITY: OnceLock<(String, u32)> = OnceLock::new();
 
-static CPU_SAMPLE_STATE: OnceLock<Mutex<SystemDeltaState>> = OnceLock::new();
+static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
+
+#[derive(Debug, Default)]
+struct CpuSampleState {
+    system: SystemDeltaState,
+    process: Option<ProcessTicks>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProcessTicks {
+    cpu_secs: f64,
+    sampled_at: Instant,
+}
 
 pub fn cpu_snapshot() -> Option<CpuSnapshot> {
-    let name = cpu_name();
+    let (name, logical_processors) = cpu_identity();
     let current = read_system_ticks();
-    let state = CPU_SAMPLE_STATE.get_or_init(|| Mutex::new(SystemDeltaState::default()));
+    let process = read_process_ticks();
+    let state = CPU_SAMPLE_STATE.get_or_init(|| Mutex::new(CpuSampleState::default()));
     let mut state = state.lock();
+
+    let total_usage_pct = state.system.absorb(current);
+    let process_usage_pct = match (state.process, process) {
+        (Some(prev), Some(current)) => process_usage_pct(prev, current, logical_processors),
+        _ => None,
+    };
+    if process.is_some() {
+        state.process = process;
+    }
 
     Some(CpuSnapshot {
         name,
-        total_usage_pct: state.absorb(current),
+        total_usage_pct,
+        process_usage_pct,
+        logical_processors,
     })
 }
 
-fn cpu_name() -> String {
-    CPU_NAME
-        .get_or_init(|| read_cpuinfo_model_name().unwrap_or_else(|| "CPU".to_string()))
+fn cpu_identity() -> (String, u32) {
+    CPU_IDENTITY
+        .get_or_init(|| {
+            let logical_processors = std::thread::available_parallelism()
+                .map(|n| n.get() as u32)
+                .unwrap_or(0);
+            let name = read_cpuinfo_model_name().unwrap_or_else(|| "CPU".to_string());
+            (name, logical_processors)
+        })
         .clone()
 }
 
@@ -37,6 +68,15 @@ fn read_system_ticks() -> Option<SystemTicks> {
     let text = std::fs::read_to_string("/proc/stat").ok()?;
     let line = text.lines().next()?;
     parse_proc_stat_total(line)
+}
+
+fn read_process_ticks() -> Option<ProcessTicks> {
+    let text = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let ticks = parse_proc_self_stat_cpu_ticks(&text)?;
+    Some(ProcessTicks {
+        cpu_secs: ticks as f64 / USER_HZ,
+        sampled_at: Instant::now(),
+    })
 }
 
 /// 解析 `/proc/stat` 首行 `cpu  user nice system idle iowait irq softirq steal ...`。
@@ -63,6 +103,17 @@ fn parse_proc_stat_total(line: &str) -> Option<SystemTicks> {
     })
 }
 
+/// 解析 `/proc/self/stat` 的 utime+stime 节拍数。comm 字段（第 2 列）可能含空格，
+/// 必须从最后一个 `)` 之后取字段：剩余序列第 12/13 个 token 对应全字段序的
+/// utime(14)/stime(15)。
+fn parse_proc_self_stat_cpu_ticks(text: &str) -> Option<u64> {
+    let after_comm = text.rsplit_once(')')?.1;
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some(utime + stime)
+}
+
 fn read_cpuinfo_model_name() -> Option<String> {
     let text = std::fs::read_to_string("/proc/cpuinfo").ok()?;
     parse_cpuinfo_model_name(&text)
@@ -79,6 +130,31 @@ fn parse_cpuinfo_model_name(text: &str) -> Option<String> {
             }
         })
         .filter(|s| !s.is_empty())
+}
+
+fn process_usage_pct(
+    prev: ProcessTicks,
+    current: ProcessTicks,
+    logical_processors: u32,
+) -> Option<f64> {
+    if logical_processors == 0 {
+        return None;
+    }
+    // f64 无 checked_sub：计数器回绕时差值为负，直接按无进展处理。
+    let cpu_delta = current.cpu_secs - prev.cpu_secs;
+    if cpu_delta <= 0.0 {
+        return None;
+    }
+    let elapsed_secs = current
+        .sampled_at
+        .checked_duration_since(prev.sampled_at)?
+        .as_secs_f64();
+    if elapsed_secs <= 0.0 {
+        return None;
+    }
+    Some(clamp_pct(
+        cpu_delta * 100.0 / elapsed_secs / logical_processors as f64,
+    ))
 }
 
 #[cfg(test)]
@@ -112,6 +188,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_proc_self_stat_handles_spaced_comm() {
+        // comm 含空格/括号：必须从最后一个 ')' 之后定位字段。after 序列第 11/12
+        // 个 token 是 utime(14)/stime(15)：下方 fixture 对应 100/200 → 合计 300。
+        let text = "12345 (python3 -m t) R 1 2 3 4 5 6 7 8 9 10 100 200 0 0 \
+                    20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(300));
+        // 真实 /proc/self/stat 快照（comm 无空格）同样按最后 ')' 解析。
+        let text = "4242 (pinvou3-tauri) S 4241 4242 4242 0 -1 4194304 12345 0 0 0 \
+                    9876 5432 0 0 20 0 12 0 0 0 0 0 0 0 0 0 0";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(9876 + 5432));
+    }
+
+    #[test]
+    fn parse_proc_self_stat_rejects_truncated_input() {
+        // ')' 之后字段不足 utime（12 个）时返回 None 而非 panic。
+        let text = "1 (sh) S 0 1 1 0 -1 4194560";
+        assert!(parse_proc_self_stat_cpu_ticks(text).is_none());
+    }
+
+    #[test]
+    fn process_usage_accounts_for_logical_processors() {
+        let now = Instant::now();
+        let prev = ProcessTicks {
+            cpu_secs: 0.0,
+            sampled_at: now,
+        };
+        let current = ProcessTicks {
+            cpu_secs: 1.0,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        // 1 秒耗 1 CPU 秒 / 4 核 = 25%
+        assert_eq!(process_usage_pct(prev, current, 4), Some(25.0));
+    }
+
+    #[test]
+    fn process_usage_returns_none_without_cpu_progress() {
+        let now = Instant::now();
+        let sample = ProcessTicks {
+            cpu_secs: 1.0,
+            sampled_at: now,
+        };
+        assert_eq!(process_usage_pct(sample, sample, 4), None);
+    }
+
+    #[test]
     fn parse_cpuinfo_extracts_model_name() {
         let text =
             "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: AMD Ryzen 9\nflags\t: fpu\n";
@@ -129,5 +250,6 @@ mod tests {
         // （需要两次采样），但结构本身可用。
         let snapshot = cpu_snapshot().expect("Linux CPU snapshot should include basic identity");
         assert!(!snapshot.name.trim().is_empty());
+        assert!(snapshot.logical_processors > 0);
     }
 }
