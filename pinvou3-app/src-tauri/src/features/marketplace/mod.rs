@@ -678,8 +678,8 @@ fn tool_source_contract(source: &store::BundleSource) -> &'static str {
 
 // 对外 pub 面保持不变:类型从 types 子模块 re-export。
 pub use types::{
-    ConfigField, MarketplaceToolInfo, RemoteOAuthConfig, RemoteServer, SecretEnv, SecretHeader,
-    ToolManifest,
+    ConfigField, MarketplaceToolInfo, MarketplaceToolValidation, RemoteOAuthConfig, RemoteServer,
+    SecretEnv, SecretHeader, ToolManifest,
 };
 
 // PR #302 拆分后,这些函数已搬到 scope.rs;为保持 mod.rs 兼容面,在此 re-export。

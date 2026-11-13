@@ -222,6 +222,15 @@ pub struct MarketplaceToolInfo {
     pub visibility: Option<String>,
 }
 
+/// 远程 MCP 连接校验结果：除 connected 外返回发现的工具清单
+/// （`validation::validate_remote_connection`；不声明校验的工具 tools 为空表）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceToolValidation {
+    pub tool_id: String,
+    pub connected: bool,
+    pub tools: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
