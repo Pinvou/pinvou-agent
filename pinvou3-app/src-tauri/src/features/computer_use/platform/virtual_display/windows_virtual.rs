@@ -247,14 +247,11 @@ pub(crate) fn probe() -> VirtualAvailability {
 /// Pure probe core over an injectable existence check (unit-testable
 /// without machine state).
 fn explorer_missing_with(explorer_exists: impl Fn(&str) -> bool) -> Option<String> {
-    // Same resolution as `explorer_launch_plan` below: a set-but-empty
-    // WINDIR must not make the probe and the spawn disagree on the binary
-    // path (probe/spawn one-resolution invariant).
-    let windir = std::env::var("WINDIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "C:\\Windows".to_string());
-    let explorer = format!("{windir}\\explorer.exe");
+    // The SAME resolver `explorer_launch_plan` spawns through: a set-but-
+    // empty WINDIR must not make the probe and the spawn disagree on the
+    // binary path (probe/spawn one-resolution invariant — the R17 fix,
+    // now structurally unable to drift because there is one resolution).
+    let explorer = explorer_path(std::env::var("WINDIR").ok().as_deref());
     if explorer_exists(&explorer) {
         return None;
     }
@@ -262,6 +259,18 @@ fn explorer_missing_with(explorer_exists: impl Fn(&str) -> bool) -> Option<Strin
         "the hidden-desktop shell {explorer} was not found; the virtual display needs \
          the Windows shell to run its session"
     ))
+}
+
+/// The hidden-desktop shell's path from a raw `WINDIR` env value: a
+/// set-but-empty or absent value falls back to `C:\Windows`. ONE resolver
+/// for the probe and the spawn plan (pure, unit-pinned — the probe test's
+/// existence closures cannot observe the filter, so the filter is pinned
+/// here).
+fn explorer_path(windir: Option<&str>) -> String {
+    let dir = windir
+        .filter(|value| !value.is_empty())
+        .unwrap_or("C:\\Windows");
+    format!("{dir}\\explorer.exe")
 }
 
 /// Real existence check for the probe.
@@ -622,6 +631,70 @@ fn key_to_vk(key: Key) -> Result<u16, ComputerUseError> {
     }
 }
 
+/// Whether a character's US-layout face is the SHIFTED face of its key
+/// position: `'+'` is Shift+=, and every uppercase letter is Shift+letter.
+/// Posting such a key position PLAIN delivers the unshifted face — a plain
+/// `VK_OEM_PLUS` decodes as `=`, so `key "plus"` typed `=` while reporting
+/// success (R18; the physical stack derives the same property from
+/// `VkKeyScanExW`'s shift-state high byte and reroutes it — its own test
+/// calls the shape the defect scenario). `char_to_vk` maps the key
+/// POSITION, and [`chord_shift_plan`] decides whether the Shift state must
+/// ride the chord. Pure, unit-pinned.
+fn char_requires_shift(c: char) -> bool {
+    if c.is_ascii_uppercase() {
+        return true;
+    }
+    // The shifted faces of the OEM positions `char_to_vk` maps. (The model's
+    // chord vocabulary only reaches `'+'` today — the tokenizer normalizes
+    // single characters to lowercase — but the table is the honest class,
+    // not just the reachable case.)
+    matches!(
+        c,
+        '+' | ':' | '"' | '<' | '>' | '?' | '~' | '{' | '|' | '}' | '_'
+    )
+}
+
+/// Whether [`Self::chord_to`] must synthesize the Shift state for the
+/// chord's character keys. A shifted character rides fine when `Shift` is
+/// already among the modifiers (`shift+plus` posts `VK_OEM_PLUS` under a
+/// held `VK_SHIFT` and always has). Solo, the shift wrap is synthesized:
+/// `VK_SHIFT` joins the ordered list between the modifiers and the
+/// character, so it presses first and releases (in reverse) right after —
+/// and [`chord_message_plan`] still derives the pairs from the full list,
+/// keeping an Alt-held chord's system pairs. Beside ANOTHER non-modifier
+/// key the character is refused: the shift wrap cannot be scoped to just
+/// that key, the same contract the physical stack applies to shifted
+/// characters in multi-key chords (explicit refusal, `type` for text).
+enum ShiftSynthesis {
+    None,
+    Insert,
+}
+
+/// Pure decision so the shape is pinable without a desktop (the whole file
+/// is cfg(windows); this runs in the Windows CI leg). Refusals echo no
+/// character (the message lands in the audit log verbatim).
+fn chord_shift_plan(modifiers: &[&Key], rest: &[&Key]) -> Result<ShiftSynthesis, ComputerUseError> {
+    let shifted = rest
+        .iter()
+        .any(|key| matches!(&**key, Key::Char(c) if char_requires_shift(*c)));
+    if !shifted {
+        return Ok(ShiftSynthesis::None);
+    }
+    let shift_held = modifiers.iter().any(|key| matches!(**key, Key::Shift));
+    if shift_held {
+        return Ok(ShiftSynthesis::None);
+    }
+    if rest.len() == 1 {
+        Ok(ShiftSynthesis::Insert)
+    } else {
+        Err(ComputerUseError::failed(
+            "a shifted character cannot share a chord with other keys (the \
+             Shift state it needs cannot be scoped to just that key); use \
+             the type action for text, or press it as a solo chord",
+        ))
+    }
+}
+
 /// Single-character key → VK for the standard US layout's key positions
 /// (VK codes for letters/digits equal their ASCII; punctuation maps to the
 /// OEM VKs). Chars without a key position refuse explicitly — never a
@@ -755,13 +828,9 @@ fn validate_open_request(program: &str, args: &[String]) -> Result<(), ComputerU
 /// listing into every early screenshot, leaking private names into
 /// agent-visible output. The tray window appears with a bare launch too.
 fn explorer_launch_plan(windir: Option<&str>) -> (String, String) {
-    let windir = windir
-        .filter(|value| !value.is_empty())
-        .unwrap_or("C:\\Windows");
-    (
-        format!("{windir}\\explorer.exe"),
-        "explorer.exe".to_string(),
-    )
+    // The probe's resolver: a set-but-empty WINDIR cannot make the spawn
+    // plan disagree with what the probe checked.
+    (explorer_path(windir), "explorer.exe".to_string())
 }
 
 /// `GetDIBits` returns the number of scan lines copied as an `i32` (it can
@@ -1227,10 +1296,12 @@ unsafe impl Send for SendableDesktop {}
 /// session's monitor layout changes — not per capture; the physical
 /// backend's historical one-bitmap-per-screenshot leak is the trap this
 /// pool + the `GetGuiResources` tripwire exist to prevent). The ONE
-/// per-capture allocation is the output byte buffer `read_rgba` hands to
-/// the `Capture` (ownership transfers with the frame, so it cannot live in
-/// this pool); it is a plain move-out `Vec`, not a GDI object — no handle
-/// leak class.
+/// per-capture GDI-object allocation is the output byte buffer `read_rgba`
+/// hands to the `Capture` (ownership transfers with the frame, so it cannot
+/// live in this pool); it is a plain move-out `Vec`, not a GDI object — no
+/// handle-leak class. (Per-capture transient scratch also exists — the
+/// Z-walk's window list, per-window class names — but none of it is a GDI
+/// object.)
 struct GdiPool {
     /// The desktop's screen DC — a compatible-DC reference ONLY. Never
     /// blitted FROM (a hidden desktop has no DWM; that read is black).
@@ -1832,6 +1903,16 @@ struct WindowsVirtualDesktopBackend {
     /// error (the same gate shape as the Linux stack's live-record cap —
     /// the job bounds blast radius but never refused a runaway open loop).
     opened_app_count: usize,
+    /// The window (and client point) that received the split
+    /// `mouse_down`'s last press, consumed by the matching `mouse_up`:
+    /// real input is captured by the window that received the press
+    /// (SetCapture semantics — the same rule the drag path pins its
+    /// waypoints to), so the up must go back to THAT window even after the
+    /// pointer moved, not to whatever the cursor now hovers over (the
+    /// re-hit-test shape stranded the pressed state in the press target and
+    /// delivered an orphan up to a bystander — R18). A stale target's
+    /// post fails and surfaces honestly.
+    held_press: Option<(MouseButton, HWND, i32, i32)>,
 }
 
 // SAFETY: the raw OS handles (HDESK / HANDLE / HWND) are kernel objects that
@@ -1917,6 +1998,7 @@ impl WindowsVirtualDesktopBackend {
             cancel: None,
             capture_wedges: 0,
             opened_app_count: 0,
+            held_press: None,
         };
 
         // 3. Attach the worker thread (this thread — BackendHandle runs the
@@ -2227,11 +2309,22 @@ impl WindowsVirtualDesktopBackend {
         // Modifiers lead, the rest keep the given order (shared with the
         // pin via partition_modifiers_first).
         let (modifiers, rest) = partition_modifiers_first(keys);
-        let ordered: Vec<u16> = modifiers
+        let synth_shift = matches!(chord_shift_plan(&modifiers, &rest)?, ShiftSynthesis::Insert);
+        let mut ordered: Vec<u16> = modifiers
             .iter()
             .chain(rest.iter())
             .map(|key| key_to_vk(**key))
             .collect::<Result<_, _>>()?;
+        // A shifted character's key position posted plain delivers its
+        // UNSHIFTED face — `key "plus"` used to type `=` while reporting
+        // success (R18). `VK_SHIFT` joins between the modifiers and the
+        // character: pressed first, released (in reverse) right after the
+        // character, mapped through the same scan-code/extended lparam
+        // helper as every other key, and included in the list the
+        // whole-chord message plan is derived from.
+        if synth_shift {
+            ordered.insert(modifiers.len(), VK_SHIFT.0);
+        }
         let focus = self.keyboard_target()?;
         // SAFETY: parent-walk on a desktop window from the attached worker.
         let top = unsafe { top_level_of(focus) };
@@ -2561,17 +2654,32 @@ impl ComputerUseBackend for WindowsVirtualDesktopBackend {
         };
         let (down, _, _, mark) = mouse_button_messages(button);
         self.focus_dance(target);
-        self.post(target, down, mark, pack_mouse_lparam(client_x, client_y))
+        self.post(target, down, mark, pack_mouse_lparam(client_x, client_y))?;
+        // Only a successfully delivered press is remembered (a failed down
+        // pressed nothing); a re-press overwrites — the newest press is the
+        // one the matching up must release.
+        self.held_press = Some((button, target, client_x, client_y));
+        Ok(())
     }
 
     fn mouse_up(&mut self, button: MouseButton) -> Result<(), ComputerUseError> {
+        let (_, _, up, _) = mouse_button_messages(button);
+        // Deliver the up to the REMEMBERED press target at the press point
+        // (SetCapture semantics — see the `held_press` field doc). A
+        // different button's up does not consume the record: the press it
+        // names is still held.
+        if let Some((pressed_button, target, client_x, client_y)) = self.held_press.take() {
+            if pressed_button == button {
+                return self.post(target, up, 0, pack_mouse_lparam(client_x, client_y));
+            }
+            self.held_press = Some((pressed_button, target, client_x, client_y));
+        }
         let point = self.cursor_point()?;
         let Some((target, client_x, client_y)) = self.hit_test_at(point.x, point.y) else {
             // An up with no window under the cursor is a harmless no-op —
             // the emergency release path relies on this being non-fatal.
             return Ok(());
         };
-        let (_, _, up, _) = mouse_button_messages(button);
         self.post(target, up, 0, pack_mouse_lparam(client_x, client_y))
     }
 
@@ -3275,6 +3383,113 @@ mod tests {
         );
     }
 
+    /// R18: a shifted character's key position posted plain delivers its
+    /// UNSHIFTED face — `key "plus"` used to type `=` while reporting
+    /// success (the physical stack's `map_char_with_plan` classifies the
+    /// same input NeedsModifier and its own test calls the shape the defect
+    /// scenario). Pins the shifted-face table, the chord plan (synthesize
+    /// solo / already-held stays / refuse beside another key), and the call
+    /// site that wires the plan into `chord_to` (the helper pin cannot see
+    /// a bypass — the R16 `chord_message_plan` precedent).
+    #[test]
+    fn char_faces_pin_the_shift_table_and_the_chord_plan() {
+        for c in [
+            'A', 'Z', '+', ':', '"', '<', '>', '?', '~', '{', '|', '}', '_',
+        ] {
+            assert!(char_requires_shift(c), "'{c}' is a shifted face");
+        }
+        for c in [
+            'a', 'z', '0', '9', ' ', '=', ',', '-', '.', '/', ';', '`', '[', '\\', ']', '\'',
+        ] {
+            assert!(!char_requires_shift(c), "'{c}' is an unshifted face");
+        }
+        let solo_plus: Vec<&Key> = vec![&Key::Char('+')];
+        let solo_s: Vec<&Key> = vec![&Key::Char('s')];
+        let ctrl: Vec<&Key> = vec![&Key::Control];
+        assert!(
+            matches!(
+                chord_shift_plan(&[], &solo_plus),
+                Ok(ShiftSynthesis::Insert)
+            ),
+            "a solo shifted character synthesizes the Shift wrap"
+        );
+        assert!(
+            matches!(
+                chord_shift_plan(&ctrl, &solo_plus),
+                Ok(ShiftSynthesis::Insert)
+            ),
+            "ctrl+plus must still deliver '+' (synthesize the wrap around the \
+             held modifier)"
+        );
+        assert!(
+            matches!(
+                chord_shift_plan(&[&Key::Shift], &solo_plus),
+                Ok(ShiftSynthesis::None)
+            ),
+            "shift+plus holds the state already — no synthesis (the shape that \
+             worked before the fix must keep working)"
+        );
+        assert!(
+            matches!(chord_shift_plan(&ctrl, &solo_s), Ok(ShiftSynthesis::None)),
+            "unshifted faces never synthesize"
+        );
+        let multi = vec![&Key::Char('+'), &Key::F4];
+        assert!(
+            chord_shift_plan(&[], &multi).is_err(),
+            "a shifted character beside another key is refused — the wrap \
+             cannot be scoped to just that key (the physical contract)"
+        );
+        let src = production_source();
+        assert_eq!(
+            src.matches("chord_shift_plan(&modifiers, &rest)").count(),
+            1,
+            "chord_to must consult the shift plan — deleting the call or \
+             mapping shifted faces straight to VKs (the R18 defect shape) \
+             must fail this pin"
+        );
+    }
+
+    /// The message-level delivery shapes stay wired: the modifier partition
+    /// is consulted through the shared helper (a bypass restores the R9
+    /// per-key shape), the type path's character runs stay WM_CHAR-only
+    /// (re-adding a KEYDOWN/UP wrap doubles newlines/tabs through
+    /// TranslateMessage), the double-click message only ever rides a class
+    /// that registered CS_DBLCLKS (hardcoding `true` delivers DBLCLK to
+    /// classes that never asked for it — the R3 regression), and the split
+    /// release stays pinned to the remembered press target (the R18
+    /// re-hit-test shape delivered orphan ups to bystander windows).
+    #[test]
+    fn delivery_shapes_stay_wired() {
+        let src = production_source();
+        assert_eq!(
+            src.matches("partition_modifiers_first(").count(),
+            2,
+            "definition + the chord_to call site: an inline partition in \
+             chord_to (the bypass shape) drops the count and fails here"
+        );
+        assert_eq!(
+            src.matches("WM_KEYDOWN").count(),
+            9,
+            "the type path's character runs must ride WM_CHAR only — \
+             re-wrapping them in KEYDOWN/UP pairs (TranslateMessage then \
+             doubles the WM_CHAR) changes this count"
+        );
+        assert_eq!(
+            src.matches("window_class_accepts_dblclk(").count(),
+            2,
+            "definition + the live class query at the click call site: \
+             hardcoding accepts_dblclk = true delivers DBLCLK to classes \
+             that never registered CS_DBLCLKS"
+        );
+        assert_eq!(
+            src.matches("self.held_press").count(),
+            3,
+            "mouse_down stores the press target and mouse_up consumes (and \
+             restores on a button mismatch) it — a re-hit-test mouse_up \
+             loses the record and fails this pin"
+        );
+    }
+
     /// The model-facing disclosure strings must keep their residuals: the
     /// broker escape (R8 major), the shared-clipboard channel (R9 major),
     /// and the no-DWM composite / message-injection limits. Extracted into
@@ -3732,6 +3947,22 @@ mod tests {
         let (spaced_app, spaced_cmd) = explorer_launch_plan(Some(r"D:\ Win"));
         assert_eq!(spaced_app, "D:\\ Win\\explorer.exe");
         assert_eq!(spaced_cmd, "explorer.exe");
+        // R18: the set-but-empty filter lives in the ONE resolver both the
+        // probe and this plan share — the probe test's existence closures
+        // cannot observe it, so the filter is pinned here. Deleting the
+        // filter would make the probe answer "\explorer.exe" while the
+        // spawn plan resolved "C:\Windows\explorer.exe" (the exact
+        // probe/spawn disagreement the R17 wave closed).
+        assert_eq!(explorer_path(Some("")), r"C:\Windows\explorer.exe");
+        assert_eq!(explorer_path(None), r"C:\Windows\explorer.exe");
+        assert_eq!(explorer_path(Some(r"D:\Wins")), r"D:\Wins\explorer.exe");
+        assert_eq!(
+            production_source().matches("explorer_path(").count(),
+            3,
+            "definition + the probe's resolution + the spawn plan's \
+             resolution: two divergent resolvers is the drift this pin \
+             refuses"
+        );
     }
 
     /// The probe core answers the actionable detail exactly when the shell
