@@ -3652,13 +3652,21 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
         "the posture sync must stay gated on a live engine (no engine = no \
          emission trigger, next spawn arms the persisted posture)"
     );
-    // v3.5（评审 minor-8）：引擎热同步失败不得吞掉 `chat:mode_changed`——
-    // store 写已落库，广播照发、错误只记日志；发布函数体内不得再出现把
-    // 同步错误 `?` 上抛的写法（上抛 = 前端回滚一个已持久化的切换）。
+    // zhuowp round-4 P2（翻转 v3.5 minor-8 的取舍）：live 同步失败必须上抛——
+    // 旧的 log-and-succeed 让 UI 报告新模式而 live engine 仍持旧 ruleset，且
+    // 普通发送不带 ruleset 替换、无法自愈。store 写已落库，因此错误以可见
+    // 失败浮出（用户重试切换即对已持久化模式重跑同步、治愈引擎）；广播只在
+    // 同步成功后发出，任何 surface 都不会在引擎仍持旧 ruleset 时被告知新模式。
     assert!(
-        !publish.contains("sync_engine_safety_posture(session_id, pool).await?"),
-        "a failed posture sync must be logged, not propagated (the store \
-         write already persisted; the next send re-derives the posture)"
+        publish.contains("sync_engine_safety_posture(session_id, pool).await?"),
+        "a failed posture sync must propagate: reporting success while the \
+         live engine holds the previous ruleset silently desyncs enforcement \
+         (ordinary sends carry no ruleset replacement)"
+    );
+    assert!(
+        !publish.contains("eprintln!"),
+        "the log-and-succeed shape must stay deleted (a failed sync must not \
+         broadcast or report success)"
     );
 }
 

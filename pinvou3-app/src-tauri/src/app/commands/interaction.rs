@@ -912,26 +912,20 @@ pub(super) fn ensure_mode_target_session(
 /// then broadcast `chat:mode_changed` (desktop emit + remote forwarding) so mode chips on all surfaces
 /// converge immediately. Returns the refreshed full mode state.
 ///
-/// An engine hot-sync failure does **not** fail the publication: the store's mode write already landed before
-/// this (the command writes first, then publishes) and the next send self-heals by assembling the op from the
-/// store mode; throwing the error back would only make the frontend roll back an actually persisted switch while
-/// other ends stay on the old mode. Failures are logged loudly and the broadcast still carries the store's authoritative state.
+/// A failed live sync now FAILS the publication (zhuowp round-4 P2): the previous log-and-succeed shape
+/// let the UI report the new mode while the live engine kept the previous ruleset, and ordinary sends
+/// carry no ruleset replacement, so nothing repaired the discrepancy. The store's mode write has already
+/// landed (the command writes first, then publishes), so the error surfaces as a visible failure against
+/// an already-persisted switch: the user can retry the toggle, and the retry re-runs the sync against the
+/// persisted mode and heals the engine. The broadcast fires only after the sync succeeded, so no surface
+/// is told the new mode while the engine still holds the old ruleset.
 async fn publish_session_mode_change(
     session_id: &str,
     store: &SessionStore,
     pool: &EnginePool,
     app: &AppHandle,
 ) -> Result<SessionModeState, String> {
-    if let Err(error) = sync_engine_safety_posture(session_id, pool).await {
-        // No session id (cleartext-logging discipline), and an honest statement of the self-heal boundary: the
-        // per-send op only re-derives the mode/approval posture; the ask flag rides only on `Op::ChangeMode`
-        // and re-arms at the next mode/ask write or respawn.
-        eprintln!(
-            "[commands] publish_session_mode_change: engine posture sync failed (mode/approval \
-             posture re-derives on the next send; the ask flag re-arms on the next mode/ask \
-             write or respawn): {error:#}"
-        );
-    }
+    sync_engine_safety_posture(session_id, pool).await?;
     let state = store.mode_state(session_id);
     emit_mode_changed(app, session_id, state.mode, state.ask_on_guardrail);
     Ok(state)
