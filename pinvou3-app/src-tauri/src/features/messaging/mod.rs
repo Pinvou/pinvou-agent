@@ -994,7 +994,14 @@ pub fn resolve_pending_steer(steer_id: &str, committed: bool) {
     let _ = std::fs::create_dir_all(done_dir());
     let mut marker_landed = false;
     if let Some(stem) = entry.spool_path.file_stem().and_then(|s| s.to_str()) {
-        match std::fs::write(done_dir().join(format!("{stem}.json")), b"") {
+        match std::fs::write(
+            done_dir().join(format!("{stem}.json")),
+            // The marker vouches for THIS verified body generation (zhuowp
+            // round-3 P2): a same-stem replacement carries a different
+            // fingerprint, so the skip arm delivers it instead of
+            // answering "delivered".
+            body_fingerprint(&entry.original).as_bytes(),
+        ) {
             Ok(()) => marker_landed = true,
             Err(error) => log::warn!(
                 "[messaging] done marker write failed for {stem:?} after steer commit \
@@ -1385,7 +1392,7 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
         .unwrap_or("")
         .to_string();
     let done_marker = done_dir().join(format!("{stem}.json"));
-    if done_marker.exists() {
+    if done_marker_vouches_for_current(&done_marker, path) {
         // A1 (round-4): this skip is a disposition of an accepted message —
         // same-user spool surgery or a stale-backup replay lands here, and
         // without an audit record the message disappears silently. Audit
@@ -1419,6 +1426,25 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
             skip_audited.insert(stem);
         }
         return Processed::Done(std::sync::Arc::clone(&original));
+    }
+    if done_marker.exists() {
+        // The marker vouches for a DIFFERENT body generation (zhuowp
+        // round-3 P2: the commit tail writes the fingerprint of the body
+        // it verified before the replacement check — a same-key producer
+        // can replace the file in that window). It must not suppress this
+        // body. When the first read is still current, fall through and
+        // deliver the undelivered replacement; when the file has moved
+        // under us, hand back for a fresh pass instead of shipping the
+        // stale read as a duplicate (the mid-delivery re-verify below
+        // would only catch it after the delivery landed).
+        if replaced_since_first_read(path, Some(&original)) {
+            return Processed::Retry(
+                std::sync::Arc::clone(&original),
+                anyhow::anyhow!(
+                    "done marker is for another body generation; re-reading the newest body"
+                ),
+            );
+        }
     }
     // (Round-8 REQUIRED-3: the reference for the mid-delivery re-verify is
     // the FIRST read's bytes — a second snapshot captured here leaves the
@@ -1477,7 +1503,9 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
                 // Round-11 minor 2: a silent marker-write failure means the
                 // keyed retry re-delivers the whole message with zero trace
                 // — at least say so.
-                if let Err(error) = std::fs::write(&done_marker, b"") {
+                if let Err(error) =
+                    std::fs::write(&done_marker, body_fingerprint(&original).as_bytes())
+                {
                     log::warn!(
                         "[messaging] done marker write failed for {:?} (a keyed retry will re-deliver): {error}",
                         done_marker
@@ -1605,6 +1633,44 @@ fn replaced_since_first_read(path: &Path, original: Option<&std::sync::Arc<Vec<u
     }
 }
 
+/// The body generation a done marker vouches for: the SHA-256 of the exact
+/// bytes. zhuowp round-3 P2: markers used to be empty files whose bare
+/// existence suppressed ANY same-stem body, so a commit-tail marker written
+/// for body A answered a same-key replacement B "delivered" — the skip arm
+/// removed B untried and its retries answered "delivered" too. The marker
+/// now carries the fingerprint of the body its writer vouches for, and
+/// every consumer compares it against the bytes currently on disk (see
+/// [`done_marker_vouches_for_current`]).
+fn body_fingerprint(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+/// Whether the done marker at `marker` vouches for the bytes currently at
+/// `path`. A missing marker vouches for nothing; so does an EMPTY one —
+/// the pre-fingerprint format re-delivers its body once (the disclosed
+/// duplicate direction), never loses it. An unreadable or oversize current
+/// body does not match (the poll re-reads it fresh on the next pass).
+fn done_marker_vouches_for_current(marker: &Path, path: &Path) -> bool {
+    let Ok(marker_fp) = std::fs::read_to_string(marker) else {
+        return false;
+    };
+    let marker_fp = marker_fp.trim();
+    if marker_fp.is_empty() {
+        return false;
+    }
+    read_bounded(path)
+        .map(|current| body_fingerprint(&current) == marker_fp)
+        .unwrap_or(false)
+}
+
 /// Retry bookkeeping per file: attempt count + last attempt time (for
 /// backoff). Entries are removed on every terminal path.
 #[derive(Default)]
@@ -1656,9 +1722,12 @@ impl RetryState {
             // that keeps retrying the removal, and the terminal audit with
             // it) unreachable. Such a file stays due: the skip arm
             // re-attempts the removal each poll and never re-delivers.
-            let marker_exists = name
-                .strip_suffix(".json")
-                .is_some_and(|stem| done_dir().join(format!("{stem}.json")).exists());
+            let marker_exists = name.strip_suffix(".json").is_some_and(|stem| {
+                done_marker_vouches_for_current(
+                    &done_dir().join(format!("{stem}.json")),
+                    &spool_root().join(name),
+                )
+            });
             if !marker_exists {
                 return false;
             }
@@ -2241,6 +2310,14 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                             // entry re-armed a same-name re-spool's
                             // quarantine after one failure).
                             let record = read_record_for_audit(&path);
+                            // The fingerprint must be captured BEFORE the
+                            // quarantine move: the marker vouches for the
+                            // exact stuck bytes (zhuowp round-3 P2), and a
+                            // fresh same-stem re-spool carries a different
+                            // fingerprint, so it is delivered instead of
+                            // suppressed.
+                            let stop_gap_fp =
+                                read_bounded(&path).map(|cur| body_fingerprint(&cur).into_bytes());
                             quarantine(&path);
                             // Round-21 M-1: the stop-gap must not share the
                             // quarantine's precondition — the rename fails
@@ -2254,7 +2331,9 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                                 .unwrap_or(&name);
                             let _ = std::fs::create_dir_all(done_dir());
                             let stop_gap = done_dir().join(format!("{stem}.json"));
-                            if let Err(marker_error) = std::fs::write(&stop_gap, b"") {
+                            if let Err(marker_error) =
+                                std::fs::write(&stop_gap, stop_gap_fp.as_deref().unwrap_or(b""))
+                            {
                                 log::warn!(
                                     "[messaging] stop-gap done-marker write failed for {:?}: {marker_error}",
                                     stop_gap
@@ -2708,6 +2787,108 @@ mod spool_pipeline_tests {
         .await;
         assert!(matches!(outcome, Processed::Done(..)));
         assert_eq!(*delivery.calls.borrow(), 2);
+    }
+
+    /// zhuowp round-3 P2, the committed-tail interleaving at the skip arm:
+    /// the marker on disk vouches for generation A, but a same-key producer
+    /// replaced the body with B before this pass read it. The old bare
+    /// existence check answered "delivered" and removed B untried; the
+    /// generation comparison must deliver B instead, and the Done arm must
+    /// re-bind the marker to the delivered generation.
+    #[tokio::test]
+    async fn done_marker_for_another_generation_delivers_the_replacement() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let body_a = record_json("mid", Some("k1"));
+        let body_b = record_json("mid", Some("k1")).replace("正文", "更正后的正文");
+        assert_ne!(body_a, body_b, "fixture guard: B really differs");
+        std::fs::write(spool.join("mid.json"), &body_b).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(
+            done_dir().join("mid.json"),
+            body_fingerprint(body_a.as_bytes()),
+        )
+        .unwrap();
+        let delivery = SwappingDelivery {
+            replacement: None,
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut skip_audited = std::collections::HashSet::new();
+        let outcome = process_spool_file(
+            &spool.join("mid.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut skip_audited,
+            &mut None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Processed::Done(..)),
+            "B is undelivered: the poll delivers it, not the already-delivered skip"
+        );
+        assert_eq!(
+            *delivery.calls.borrow(),
+            1,
+            "the replacement must be DELIVERED, not removed under A's marker"
+        );
+        let marker = std::fs::read_to_string(done_dir().join("mid.json")).unwrap();
+        assert_eq!(
+            marker.trim(),
+            body_fingerprint(body_b.as_bytes()),
+            "the Done arm must re-bind the marker to the delivered generation"
+        );
+    }
+
+    /// zhuowp round-3 P2, the negative control: a marker whose fingerprint
+    /// matches the current body still suppresses (the comparison must not
+    /// decay into re-delivering everything).
+    #[tokio::test]
+    async fn done_marker_matching_the_current_body_still_skips() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let body = record_json("mid", Some("k1"));
+        std::fs::write(spool.join("mid.json"), &body).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(
+            done_dir().join("mid.json"),
+            body_fingerprint(body.as_bytes()),
+        )
+        .unwrap();
+        let delivery = SwappingDelivery {
+            replacement: None,
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut skip_audited = std::collections::HashSet::new();
+        let outcome = process_spool_file(
+            &spool.join("mid.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut skip_audited,
+            &mut None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Processed::Done(..)),
+            "a vouching marker keeps the already-delivered skip"
+        );
+        assert_eq!(*delivery.calls.borrow(), 0, "nothing re-delivered");
+    }
+
+    #[test]
+    fn body_fingerprint_is_stable_sha256() {
+        // SHA-256("a") — the fingerprint must be the plain hex digest, not
+        // a process-keyed hash: markers persist across restarts (retention).
+        assert_eq!(
+            body_fingerprint(b"a"),
+            "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+        );
+        assert_ne!(body_fingerprint(b"a"), body_fingerprint(b"b"));
     }
 
     /// Round-8 M5: a keyed retry re-spools with a fresh `created_at` — the
@@ -5038,7 +5219,7 @@ mod spool_pipeline_tests {
             ("was replaced while removals kept", "Some(&original)"),
             (
                 "stop-gap done-marker write failed",
-                "std::fs::write(&stop_gap, b\"\")",
+                "stop_gap_fp.as_deref().unwrap_or(b\"\")",
             ),
             (
                 "removal failed {fails} times: {error}",
@@ -5646,7 +5827,14 @@ mod spool_pipeline_tests {
         // delivery path writes it before the Done arm's removal).
         std::fs::write(spool.join("locked.json"), record_json("locked", Some("k1"))).unwrap();
         std::fs::create_dir_all(done_dir()).unwrap();
-        std::fs::write(done_dir().join("locked.json"), b"").unwrap();
+        // The marker must VOUCH for the current body (zhuowp round-3 P2):
+        // a non-vouching (empty/foreign-generation) marker makes the skip
+        // arm fall through to delivery instead of suppressing.
+        std::fs::write(
+            done_dir().join("locked.json"),
+            body_fingerprint(record_json("locked", Some("k1")).as_bytes()),
+        )
+        .unwrap();
         let fake = FakeDelivery {
             outcome: Ok(DeliveryOutcome::Steered("steer-42@7".to_string())),
             calls: Rc::new(RefCell::new(0)),
@@ -5729,10 +5917,28 @@ mod spool_pipeline_tests {
             .insert("stuck.json".to_string(), MAX_DELIVERY_ATTEMPTS as u32);
         // No `.done/stuck.json` on disk: the ceiling freeze holds.
         assert!(!retries.due("stuck.json"));
-        // The carve-out: the same file with its marker written stays due.
+        // The carve-out is now GENERATION-BOUND (zhuowp round-3 P2): only a
+        // marker that vouches for the current bytes stays due — a bare
+        // existence check would freeze a replaced body that the skip arm
+        // no longer suppresses.
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
         std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(spool.join("stuck.json"), record_json("stuck", Some("k9"))).unwrap();
         std::fs::write(done_dir().join("stuck.json"), b"").unwrap();
-        assert!(retries.due("stuck.json"));
+        assert!(
+            !retries.due("stuck.json"),
+            "an empty (non-vouching) marker no longer opens the carve-out: the body is not suppressed, so freezing it serves the gate"
+        );
+        std::fs::write(
+            done_dir().join("stuck.json"),
+            body_fingerprint(record_json("stuck", Some("k9")).as_bytes()),
+        )
+        .unwrap();
+        assert!(
+            retries.due("stuck.json"),
+            "a vouching marker keeps the carve-out: the delivered body's removal is what the skip arm retries"
+        );
         // Below the ceiling the gate arm is not entered (marker irrelevant).
         *retries.removal_failures.get_mut("stuck.json").unwrap() -= 1;
         std::fs::remove_file(done_dir().join("stuck.json")).unwrap();
@@ -6175,7 +6381,11 @@ mod spool_pipeline_tests {
         let exec_root = sessions.session_roots("tgt0001").expect("roots").execution;
         std::fs::create_dir_all(&exec_root).unwrap();
         std::fs::create_dir_all(done_dir()).unwrap();
-        std::fs::write(done_dir().join("dup.json"), b"").unwrap();
+        std::fs::write(
+            done_dir().join("dup.json"),
+            body_fingerprint(record_json("dup", Some("k1")).as_bytes()),
+        )
+        .unwrap();
         let fake = FakeDelivery {
             outcome: Ok(DeliveryOutcome::Steered("steer-44@9".to_string())),
             calls: Rc::new(RefCell::new(0)),
