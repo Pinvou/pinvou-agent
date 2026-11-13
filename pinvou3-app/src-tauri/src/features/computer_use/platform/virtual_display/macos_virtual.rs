@@ -684,9 +684,18 @@ fn rects_intersect(a: CGRect, b: CGRect) -> bool {
 /// the virtual display exactly on top of it.
 fn union_right_edge(except: u32) -> f64 {
     let others = other_display_bounds(except);
+    // No readable list: fall back to the main display alone.
+    let fallback = CGDisplayBounds(CGMainDisplayID());
+    union_right_edge_of(&others, fallback)
+}
+
+/// The pure shape behind [`union_right_edge`], extracted so the R2
+/// regression (reverting to the main-only right edge — which dropped the
+/// display onto an external monitor at `(main_width, 0)`) is
+/// mutation-pinnable on the macOS leg instead of passing every suite
+/// silently (R18). `main_bounds` answers only when `others` is empty.
+fn union_right_edge_of(others: &[(u32, CGRect)], main_bounds: CGRect) -> f64 {
     if others.is_empty() {
-        // No readable list: fall back to the main display alone.
-        let main_bounds = CGDisplayBounds(CGMainDisplayID());
         return main_bounds.origin.x + main_bounds.size.width;
     }
     others
@@ -1214,11 +1223,24 @@ fn pid_has_window_on_display(pid: i32, display_id: u32, session_pids: &[(i32, In
     let within_grace = session_pids.iter().any(|(recorded, discovered)| {
         *recorded == pid && now.duration_since(*discovered) < SESSION_OWNERSHIP_GRACE
     });
-    on_screen_windows().iter().any(|window| {
-        window.pid == pid
-            && window.normal_level
-            && (within_grace && window.intersects(bounds) || window.contained_in(bounds))
-    })
+    on_screen_windows()
+        .iter()
+        .any(|window| pid_window_qualifies(pid, window, bounds, within_grace))
+}
+
+/// The pure decision inside [`pid_has_window_on_display`], extracted so the
+/// grace/containment split is behaviorally pinnable on the macOS leg: a
+/// window that merely INTERSECTS the display qualifies only within the
+/// session's ownership grace; past the grace (or for an unknown pid) the
+/// window must sit FULLY inside — reverting the predicate to bare
+/// intersection let a recycled pid's window on the user's desktop receive
+/// pid-posted input (the pre-R3 shape; until this pin the revert passed
+/// every suite — R18). The `pid > 0` guard mirrors [`targetable_at`]'s.
+fn pid_window_qualifies(pid: i32, window: &HitWindow, bounds: CGRect, within_grace: bool) -> bool {
+    pid > 0
+        && window.pid == pid
+        && window.normal_level
+        && (within_grace && window.intersects(bounds) || window.contained_in(bounds))
 }
 
 /// Whether `pid` currently owns ANY on-screen normal-level window, on any
@@ -1584,13 +1606,14 @@ const OPEN_PID_DISCOVER_TIMEOUT: Duration = Duration::from_secs(5);
 /// FAILED `open` (bad app name, missing bundle) exits in well under this.
 const OPEN_EXIT_STATUS_BUDGET: Duration = Duration::from_secs(3);
 /// How long an unconfirmed newcomer (owner name does not match the launched
-/// program, but the window IS inside the virtual display's bounds) is held
-/// while discovery keeps looking for the program's own window. Bounded so
-/// the overall budget never extends past [`OPEN_PID_DISCOVER_TIMEOUT`];
-/// afterwards the first IN-BOUNDS newcomer wins (out-of-bounds windows —
-/// the user's own desktop windows — are never claimed by the fallback;
-/// residual mis-attribution among in-bounds windows is disclosed in
-/// `Capabilities::notes`).
+/// program, but the window OVERLAPS the virtual display's bounds — the
+/// discovery fallback's intersects-based exception, not strict containment)
+/// is held while discovery keeps looking for the program's own window.
+/// Bounded so the overall budget never extends past
+/// [`OPEN_PID_DISCOVER_TIMEOUT`]; afterwards the first OVERLAPPING
+/// newcomer wins (fully out-of-bounds windows — the user's own desktop
+/// windows — are never claimed by the fallback; residual mis-attribution
+/// among in-bounds windows is disclosed in `Capabilities::notes`).
 const DISCOVER_NAME_GRACE: Duration = Duration::from_millis(1000);
 /// How long a recorded session pid stays drivable WHEREVER its window is
 /// (the launch + AX-move transition; the direct-exec path waits for the
@@ -3368,9 +3391,12 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
     let deadline = Instant::now() + ACTIVATION_POLL_TIMEOUT;
     let (tx, rx) = mpsc::channel::<CreatedDisplay>();
     let dispatched = super::super::dispatch_to_main_thread(Box::new(move || {
-        // The closure holds the main thread only for the build + the ≤1 s
+        // The closure holds the main thread for the build + the ≤1 s
         // id-read grace (see DISPLAY_ID_GRACE); when the id does not appear
-        // it runs the legacy full poll here, exactly the pre-split behavior.
+        // within that grace it runs the legacy full activation poll HERE —
+        // up to ACTIVATION_POLL_TIMEOUT (5 s) on the main thread, exactly
+        // the pre-split freeze ceiling (the sibling DISPLAY_ID_GRACE doc
+        // states the same trade truthfully).
         let _ = tx.send(create_and_read_id(
             deadline.min(Instant::now() + DISPLAY_ID_GRACE),
             deadline,
@@ -4319,6 +4345,113 @@ mod tests {
         &src[..tests_start]
     }
 
+    /// R18: the park bounds' two wiring contracts were pinned nowhere. (a)
+    /// Both origin-pin scopes must exclude main from `others` — dropping
+    /// either filter makes the pinned rect self-intersect main's own
+    /// at-origin bounds, so `pin_main`/`pin_applied` go permanently false:
+    /// the origin pin never applies on main-not-at-origin hosts even when
+    /// safe, and main-involving owned overlaps stop tripping the R16 trip
+    /// guard (the same hole through a different door). (b) The park bound
+    /// rides the union of ALL displays through `union_right_edge_of` —
+    /// reverting to the main-only right edge dropped the virtual display
+    /// exactly onto an external monitor at `(main_width, 0)` (the R2
+    /// major), which this behavioral pin makes visible again.
+    #[test]
+    fn park_bounds_keep_their_main_exclusions_and_union() {
+        let prod = production_source();
+        assert_eq!(
+            prod.matches(".filter(|(id, _)| *id != main)").count(),
+            2,
+            "park_right_of_main's origin-pin scope AND ensure_parked's \
+             pin_applied scope must both exclude main"
+        );
+        assert_eq!(
+            prod.matches("union_right_edge_of(").count(),
+            2,
+            "definition + the wrapper call: a revert of union_right_edge to \
+             a main-only computation drops the pure fn and fails here"
+        );
+        let mk = |x: f64, w: f64| CGRect {
+            origin: CGPoint { x, y: 0.0 },
+            size: CGSize {
+                width: w,
+                height: 800.0,
+            },
+        };
+        let main = mk(0.0, 1440.0);
+        // The R2 regression shape: an external display at (main_width, 0).
+        let external = [(2u32, mk(1440.0, 1920.0))];
+        assert_eq!(
+            union_right_edge_of(&external, main),
+            1440.0 + 1920.0,
+            "the union must reach past the external display's right edge — \
+             parking at main's 1440 would drop the display onto it"
+        );
+        // Main participates too (the wrapper feeds every other display
+        // except the virtual one — main included).
+        let with_main = [(1u32, main), (2u32, mk(1440.0, 1920.0))];
+        assert_eq!(union_right_edge_of(&with_main, main), 1440.0 + 1920.0);
+        // No readable list → the main-only fallback.
+        assert_eq!(union_right_edge_of(&[], main), 1440.0);
+        // A display left of main (negative coords) contributes but cannot
+        // pull the edge left of main's own.
+        let left = [(3u32, mk(-1920.0, 1920.0))];
+        assert_eq!(union_right_edge_of(&left, main), 0.0);
+    }
+
+    /// R18: the grace/containment split inside `pid_has_window_on_display`
+    /// (the remembered-target re-verification) was pinned nowhere —
+    /// reverting the predicate to bare intersection (the pre-R3 shape its
+    /// own doc says it closes: a recycled pid's window on the user's
+    /// desktop receiving pid-posted input) passed every suite. Extracted
+    /// into `pid_window_qualifies` and pinned here.
+    #[test]
+    fn pid_window_qualification_pins_the_grace_and_containment_split() {
+        let vd = CGRect {
+            origin: CGPoint { x: 1440.0, y: 0.0 },
+            size: CGSize {
+                width: 1280.0,
+                height: 800.0,
+            },
+        };
+        let mk = |pid: i32, x: f64, normal: bool| HitWindow {
+            pid,
+            x,
+            y: 10.0,
+            width: 60.0,
+            height: 40.0,
+            normal_level: normal,
+            owner_name: None,
+        };
+        // Contained (fully inside) — qualifies in and out of grace.
+        let contained = mk(101, 1500.0, true);
+        assert!(pid_window_qualifies(101, &contained, vd, true));
+        assert!(pid_window_qualifies(101, &contained, vd, false));
+        // Overhanging (intersects vd, hangs into the user's desktop):
+        // grace only.
+        let overhanging = mk(202, 1400.0, true);
+        assert!(pid_window_qualifies(202, &overhanging, vd, true));
+        assert!(
+            !pid_window_qualifies(202, &overhanging, vd, false),
+            "past the grace a merely-intersecting window must NOT qualify — \
+             the bare-intersection revert (the pre-R3 recycled-pid shape) \
+             fails here"
+        );
+        // The pid > 0 guard (posting to pid 0 is a silent no-op that would
+        // report success while nothing received the event).
+        assert!(!pid_window_qualifies(0, &mk(0, 1500.0, true), vd, true));
+        assert!(!pid_window_qualifies(-7, &mk(-7, 1500.0, true), vd, true));
+        // A different pid's window never qualifies; a non-normal-level
+        // window (e.g. a floating overlay) never qualifies.
+        assert!(!pid_window_qualifies(101, &overhanging, vd, true));
+        assert!(!pid_window_qualifies(
+            101,
+            &mk(101, 1500.0, false),
+            vd,
+            true
+        ));
+    }
+
     /// The hit-test's OWNERSHIP scope (the isolation contract, pinned pure):
     /// a window containing the point is targetable when its pid is one the
     /// session launched, or its window sits fully inside the display bounds;
@@ -4380,6 +4513,29 @@ mod tests {
             &[],
             now
         ));
+        // R18: the pid > 0 guard (a hypothetical pid-0/None-owned window
+        // must never become a target — posting to pid 0 is a silent no-op
+        // that would report success while nothing received the event). No
+        // fixture had pid <= 0, so deleting the guard passed every leg.
+        let pidless = HitWindow {
+            pid: 0,
+            x: 1500.0,
+            y: 10.0,
+            width: 60.0,
+            height: 40.0,
+            normal_level: true,
+            owner_name: None,
+        };
+        assert!(!targetable_at(&pidless, point_inside_both, vd, &[], now));
+        assert!(!targetable_at(
+            &pidless,
+            point_inside_both,
+            vd,
+            &[(0, now)],
+            now
+        ));
+        let negative = HitWindow { pid: -7, ..pidless };
+        assert!(!targetable_at(&negative, point_inside_both, vd, &[], now));
         // The ownership exemption is DEADLINE-BOUND: past the grace the
         // session pid's window must sit inside the display like everyone
         // else's — a quit app's RECYCLED pid (whose new window lives on the
