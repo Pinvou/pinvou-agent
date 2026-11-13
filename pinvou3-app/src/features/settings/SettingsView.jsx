@@ -1709,9 +1709,19 @@ function hasStoredCredential(record) {
       // The promise rides only a state where the backend can deliver it:
       // "active" proves the isolated stack is working, and the
       // pref-ON "disabled" leg replaced the line above. "unavailable" (the
-      // probe is down) never promises.
+      // probe is down) never promises — and neither does any leg carrying a
+      // non-empty `virtualDetail`: the detail is the backend's recorded
+      // "something is wrong" fact (e.g. the last virtual creation failed),
+      // and a live "active" row CAN ride a red snapshot (the vocabulary
+      // answers the session's own target, not the probe). Promising
+      // isolation while the next creation would resolve physical is the
+      // R18 hole; the detail gate keeps the promise silent until the
+      // backend's own fact clears (the detail renders under "unavailable").
       const showPromise =
-        promiseIsolated && physicalLive && (replaceDisabledLine || virtualState === 'active');
+        promiseIsolated &&
+        physicalLive &&
+        !virtualDetail &&
+        (replaceDisabledLine || virtualState === 'active');
       return (
         <>
           <span className="block">{t.uiComputerUse.settingsVirtualHint}</span>
