@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use pinvou_knowledge::client::RemoteKnowledgeProbe;
 use pinvou_knowledge::model::{
     AccessScope, Collection, DeviceGrant, Document, JoinRequestRecord, ModelStatus, SearchHit,
-    ShareCreated, ShareRecord, UpdateDeviceRequest,
+    ShareCreated, ShareRecord, TrashedDocument, UpdateDeviceRequest,
 };
 use tauri::{AppHandle, Emitter, State};
 
@@ -266,12 +266,41 @@ pub async fn remote_kb_update_device(
 }
 
 #[tauri::command]
+pub async fn remote_kb_update_collection(
+    state: State<'_, RemoteKnowledgeService>,
+    server_id: String,
+    id: i64,
+    name: String,
+    description: Option<String>,
+) -> Result<Collection, String> {
+    state
+        .update_collection(&server_id, id, name, description)
+        .await
+}
+
+#[tauri::command]
 pub async fn remote_kb_remove_device(
     state: State<'_, RemoteKnowledgeService>,
     server_id: String,
     device_id: String,
 ) -> Result<(), String> {
     state.remove_device(&server_id, &device_id).await
+}
+
+#[tauri::command]
+pub async fn remote_kb_trashed_collections(
+    state: State<'_, RemoteKnowledgeService>,
+    server_id: String,
+) -> Result<Vec<Collection>, String> {
+    state.trashed_collections(&server_id).await
+}
+
+#[tauri::command]
+pub async fn remote_kb_trashed_documents(
+    state: State<'_, RemoteKnowledgeService>,
+    server_id: String,
+) -> Result<Vec<TrashedDocument>, String> {
+    state.trashed_documents(&server_id).await
 }
 
 #[tauri::command]
