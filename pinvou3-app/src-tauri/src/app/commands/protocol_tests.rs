@@ -186,6 +186,7 @@ command_protocol!(
         "resolve_conversation_attachment",
         "open_conversation_attachment",
         "reveal_conversation_attachment",
+        "detect_system_tools",
         "save_paste_image",
         "paste_clipboard_image",
     ]

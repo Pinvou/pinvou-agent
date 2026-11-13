@@ -1907,6 +1907,7 @@ pub fn run() {
             commands::files::resolve_conversation_attachment,
             commands::files::open_conversation_attachment,
             commands::files::reveal_conversation_attachment,
+            commands::files::detect_system_tools,
             commands::files::save_paste_image,
             commands::files::paste_clipboard_image,
             commands::interaction::compact_now,
