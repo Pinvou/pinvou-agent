@@ -2208,6 +2208,174 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
 }
 
 #[test]
+fn guided_retry_completes_the_committed_crash_state() {
+    // r47 MAJOR-1 (review): the committed-crash completion arm pairs the
+    // sidecar record's PreRestore id with the pending's `preRestoreId` —
+    // NOT the pending's target Turn-snapshot id (disjoint id spaces; the
+    // original comparison was constant-false and wedged headless recovery).
+    // Plant exactly the "truncate persisted, pending clear failed" state:
+    // transcript already at the kept boundary, the sidecar record's
+    // truncated_revision equal to the live revision, its pre_restore id
+    // bound to the pending's pre_restore_id, and a live pending marker.
+    // The retry must complete (rewoundTurns 0) and clear the marker;
+    // with the disjoint-id regression the retry falls to the bounds gate
+    // and errors cannot_rewind instead.
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("checkpoints");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_code_session_fixture(Some(&project));
+    seed_two_turn_transcript(&id);
+
+    let store = SessionStore::boot().unwrap();
+    let agents = SessionAgentStore::load_or_empty();
+    store.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+        agents.code_project_workspace(session_id)
+    }));
+    let roots = store.session_roots(&id).unwrap();
+    let turn1 = checkpoints::create_checkpoint(
+        &roots.ledger,
+        &roots.execution,
+        Some(1),
+        checkpoints::CheckpointKind::Turn,
+        "turn one",
+    )
+    .expect("create turn-1 checkpoint");
+    std::fs::write(
+        project.join("turn-one.txt"),
+        "first
+",
+    )
+    .unwrap();
+    let _turn2 = checkpoints::create_checkpoint(
+        &roots.ledger,
+        &roots.execution,
+        Some(2),
+        checkpoints::CheckpointKind::Turn,
+        "turn two",
+    )
+    .expect("create turn-2 checkpoint");
+    std::fs::write(
+        project.join("turn-two.txt"),
+        "second
+",
+    )
+    .unwrap();
+    drop(store);
+
+    // A real rewind persists the sidecar record (truncated_revision == the
+    // boundary revision, pre_restore id bound) and clears its own pending.
+    let value = run_json(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]);
+    assert_eq!(value["rewoundTurns"], 1);
+    let pre_restore = value["restoredCheckpoint"]["id"]
+        .as_str()
+        .expect("rewind reports its PreRestore rollback point")
+        .to_owned();
+    let pending_path = roots.ledger.join("pending_rewind.json");
+    assert!(
+        !pending_path.exists(),
+        "successful rewind clears its pending"
+    );
+
+    // Plant the committed-crash residue: the pending marker the clear step
+    // would have removed, naming the SAME boundary and the SAME PreRestore id
+    // the sidecar record binds.
+    std::fs::write(
+        &pending_path,
+        format!(
+            "{{\"checkpoint_id\":\"{}\",\"keep_turns\":1,\"pre_restore_id\":\"{}\",\"transcript_revision\":\"planted\"}}",
+            turn1.id, pre_restore
+        ),
+    )
+    .unwrap();
+
+    // The guided retry (same checkpoint, same boundary) must complete the
+    // interrupted rewind: zero new truncations, marker cleared.
+    let value = run_json(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]);
+    assert_eq!(
+        value["rewoundTurns"], 0,
+        "the committed-crash retry must complete, not replay: {value}"
+    );
+    assert!(
+        !pending_path.exists(),
+        "the completion arm clears the pending marker"
+    );
+}
+
+#[test]
+fn planted_pending_without_a_bound_record_is_refused_not_faked() {
+    // r47 MAJOR-2 CLI twin: a planted pending marker with no sidecar record
+    // BOUND to its pre_restore id must NOT complete. The verdict fails on the
+    // binding leg (and on the missing/mismatched record), fails closed to the
+    // replay path, and the at-boundary state is honestly refused by the
+    // bounds gate (cannot_rewind) - never a fabricated success.
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("checkpoints");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_code_session_fixture(Some(&project));
+    seed_two_turn_transcript(&id);
+
+    let store = SessionStore::boot().unwrap();
+    let agents = SessionAgentStore::load_or_empty();
+    store.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+        agents.code_project_workspace(session_id)
+    }));
+    let roots = store.session_roots(&id).unwrap();
+    let turn1 = checkpoints::create_checkpoint(
+        &roots.ledger,
+        &roots.execution,
+        Some(1),
+        checkpoints::CheckpointKind::Turn,
+        "turn one",
+    )
+    .expect("create turn-1 checkpoint");
+    std::fs::write(
+        project.join("turn-one.txt"),
+        "first
+",
+    )
+    .unwrap();
+    let _turn2 = checkpoints::create_checkpoint(
+        &roots.ledger,
+        &roots.execution,
+        Some(2),
+        checkpoints::CheckpointKind::Turn,
+        "turn two",
+    )
+    .expect("create turn-2 checkpoint");
+    std::fs::write(
+        project.join("turn-two.txt"),
+        "second
+",
+    )
+    .unwrap();
+    drop(store);
+
+    // A real rewind first: transcript at the boundary, sidecar record bound
+    // to the rewind's own PreRestore id, pending cleared.
+    let value = run_json(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]);
+    assert_eq!(value["rewoundTurns"], 1);
+    let pending_path = roots.ledger.join("pending_rewind.json");
+
+    // Plant a pending marker naming a PreRestore id NO record binds (the
+    // planted/unrecoverable shape). The retry must refuse honestly instead of
+    // reporting a fabricated completion.
+    std::fs::write(
+        &pending_path,
+        format!(
+            "{{\"checkpoint_id\":\"{}\",\"keep_turns\":1,\"pre_restore_id\":\"planted-pre-restore\",\"transcript_revision\":\"planted\"}}",
+            turn1.id
+        ),
+    )
+    .unwrap();
+
+    let error = run(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"])
+        .expect_err("a planted pending without a bound record must not fake success");
+    assert!(error.to_string().contains("cannot_rewind"), "{error}");
+}
+
+#[test]
 fn checkpoints_refuse_non_native_code_sessions() {
     let _env_guard = common::env_lock();
     let _home = sandbox_home("checkpoints-gate");
