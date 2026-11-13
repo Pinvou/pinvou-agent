@@ -500,6 +500,20 @@ for (const language of ['zh', 'en', 'ja']) {
       ['overlap-free', '重なり', '不重叠'],
     ],
     ['virtualNoteLinux', 'grantLinuxCaveat', ['raw Wayland', 'raw Wayland', 'raw Wayland']],
+    // R18: the Linux wind-down abruptness (group SIGKILL at Stop, unsaved
+    // work lost) reached the model-facing note in R15 but never the
+    // user-facing pair — both sibling platforms carry their Stop semantics
+    // here, so the Linux pair gets its own anchor.
+    [
+      'virtualNoteLinux',
+      'grantLinuxCaveat',
+      ['Pressing Stop ends', '「停止」を押すと', '按下“停止”会立即'],
+    ],
+    [
+      'virtualNoteLinux',
+      'grantLinuxCaveat',
+      ['unsaved work in them is lost', '未保存の作業は失われ', '未保存的工作会丢失'],
+    ],
     ['virtualNoteWindows', 'grantWindowsCaveat', ['broker', 'ブローカー', '系统中转']],
     ['virtualNoteWindows', 'grantWindowsCaveat', ['clipboard', 'クリップボード', '剪贴板']],
     [
