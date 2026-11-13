@@ -1836,19 +1836,22 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // user_turn_prompt_indices（Editable 分类）对齐：纯图片 turn 与压缩
       // 摘要头 turn（含会话内压缩的 stamped 载体）不占序号，引擎
       // <context_update> 运行时消息经 runtimeContextUpdatesBefore 并入
-      // （forkEntriesByTurnId / turnHasUserText）。turn 进行中（busy）整表
-      // 隐藏：Rust 端忙碌门拒绝 turn 内分叉；compaction 进行中 Rust 端也
-      // 显式拒绝（不占 turn 预约，turn-active 探针对它失明，fork 命令另行
-      // 探 is_compaction_in_flight——见 sessions.rs fork_session），整表隐藏
-      // 与之一致。scheduled 运行会话（Rust 侧拒绝）
-      // 与 web 车道（命令不在 access-policy，canInvoke 返回 false）不提供
-      // 入口——入口不应以「点击必报错」的形态存在。
+      // （forkEntriesByTurnId / turnHasUserText）。turn 进行中（busy）与
+      // compaction 进行中（ctxCompactInFlight——空闲会话的手动压缩整个
+      // 过程 busy 都是 false，不与 busy 门重叠）整表隐藏：Rust 端忙碌门
+      // 拒绝 turn 内分叉；compaction 进行中 Rust 端也显式拒绝（不占 turn
+      // 预约，turn-active 探针对它失明，fork 命令另行探
+      // is_compaction_in_flight——见 sessions.rs fork_session），整表隐藏
+      // 与之一致，入口不以「点击必报错」的形态存在。scheduled 运行会话
+      // （Rust 侧拒绝）与 web 车道（命令不在 access-policy，canInvoke 返回
+      // false）同样不提供入口。
       const forkSupported = !!(
         activeSessionId
         // 大小写不敏感对齐 Rust is_sched_session_id（eq_ignore_ascii_case）：
         // 大写变体 id 在大小写不敏感文件系统上就是定时会话本体，前端入口
         // 与后端拒绝必须同口径（fork_session 命令本身仍有服务端拒绝兜底）。
         && !activeSessionId.toLowerCase().startsWith('sched-')
+        && !ctxCompactInFlight
         && bridge.available
         && canInvoke('fork_session')
       );
@@ -1862,7 +1865,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         [forkSupported, conversationProjection.turns],
       );
       const handleForkTurn = useCallback(async (turnId, keepTurns) => {
-        if (!forkSupported || busy) return;
+        if (!forkSupported || busy || ctxCompactInFlight) return;
         const sourceSessionId = activeSessionId;
         if (forkBusySessionIds.has(sourceSessionId)) return;
         setForkBusySessionIds(prev => {
@@ -1876,12 +1879,19 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // 窗口内用户已切走/切到别的视图则不打断其导航——新分支经
           // session:list_changed 去抖进入侧栏，仍可从列表进入。切换失败不
           // 冒充 forkFailed（分支已落盘、侧栏可见），如实提示切换失败。
+          // switchToSession 的失败路径 resolve(false) 而非 reject（桥接层
+          // 内部消化后走 reportSessionSwitchFailure），布尔为假且用户仍在源
+          // 会话时补专用提示；catch 保留兜底桥接层抛错形态（r7 minor）。
           if (forked && forked.id && chatViewMountedRef.current && activeSessionIdRef.current === sourceSessionId) {
+            let switched = true;
             try {
-              await bridge.sessions.switchToSession(forked.id);
+              switched = await bridge.sessions.switchToSession(forked.id);
             } catch (switchError) {
               const switchDetail = String((switchError && switchError.message) || switchError || t.uiConversation.unknownError);
               flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkSwitchFailed}: ${switchDetail}` });
+            }
+            if (!switched && chatViewMountedRef.current && activeSessionIdRef.current === sourceSessionId) {
+              flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkSwitchFailed}: ${t.uiConversation.unknownError}` });
             }
           }
         } catch (err) {
@@ -1900,7 +1910,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             return next;
           });
         }
-      }, [forkSupported, forkBusySessionIds, activeSessionId, busy, flashQueuedNotice, t]);
+      }, [forkSupported, forkBusySessionIds, activeSessionId, busy, ctxCompactInFlight, flashQueuedNotice, t]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -4049,7 +4059,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
                     onRetry={isMultiAgentReadOnly ? undefined : retryLastTurn}
-                    forkEntries={busy ? undefined : forkEntries}
+                    forkEntries={(busy || ctxCompactInFlight) ? undefined : forkEntries}
                     onForkTurn={!forkSupported || isMultiAgentReadOnly ? undefined : handleForkTurn}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}

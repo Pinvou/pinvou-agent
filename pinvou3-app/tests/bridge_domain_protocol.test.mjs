@@ -268,7 +268,9 @@ const expectedProtocolHashes = {
   // baseline; implemented in bridge-messages next to the other counter
   // primitives). Same event surface — no new invoke or listen entries; the
   // edit lives inside the existing listen(...) body.
-  chat: 'f877a9cfaeb4288eb1de8ec78beb6002d870ff7b0f4993acb1e032d4a85b546a',  // Recomputed for the shared-helper dedup (see batch note above).  dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
+  chat: 'f877a9cfaeb4288eb1de8ec78beb6002d870ff7b0f4993acb1e032d4a85b546a',
+  // Recomputed for the shared-helper dedup (see batch note above).
+  dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
   // session id (the YOLO gate passes the adjudicated sid), so the
   // exit_plan_to_yolo invoke payload text changes from

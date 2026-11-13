@@ -37,6 +37,8 @@ const state = {
   thinking: { active: false },
   busy: false,
   compactingSessions: {},
+  compactionStarts: {},
+  compactionSeq: 0,
 };
 const buffers = {
   'session-1': { runtimeContextUpdatesPending: 0, remoteAdmissionKeys: [], messages: [], localTurnOwned: false },
