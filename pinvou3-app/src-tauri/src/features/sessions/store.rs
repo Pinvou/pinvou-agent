@@ -1187,6 +1187,19 @@ impl SessionStore {
     /// as a web dead-end. The unused-result binding is the `must_use`
     /// contract only: `set_mode` is `Ok` by construction and logs persist
     /// failures itself (boot-log discipline keeps session ids off stderr).
+    ///
+    /// Known residual (zhuowp round-4 P2): the aux lane's reader capability
+    /// (`mcp_session-reader_read_session`, the parent-history fetch) is
+    /// classified NON-readonly by the consumed engine's MCP adapter — the
+    /// child's `is_mcp_read_helper` allowlist does not know the fork's
+    /// session-reader tools — so the pinned Plan posture (the only posture
+    /// every face serves) rejects its calls before execution/approval. The
+    /// classification lives in the consumed child; host rulesets are
+    /// deny-only and cannot carve an exception into that capability gate,
+    /// and the pin itself cannot change without re-breaking one of the two
+    /// constraints above (the web face refuses Auto; weakening Plan is not
+    /// an option). The durable fix is the child-side classification change,
+    /// tracked for the next CodeWhale consumption batch.
     fn pin_aux_mode_from_parent(&self, aux_id: &str, parent_id: &str) {
         let aux_mode = match self.mode_state(parent_id).mode {
             SerializableMode::Auto => SerializableMode::Plan,
