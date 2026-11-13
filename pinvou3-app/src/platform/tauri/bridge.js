@@ -2011,6 +2011,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const appendVoiceText = voiceFeature.appendVoiceText;
   const knowledgeModelFeature = installBridgeFeature("knowledge-model", { state, notify, invoke, listen });
   const downloadKbModel = knowledgeModelFeature.downloadKbModel;
+  const cancelKbModel = knowledgeModelFeature.cancelKbModel;
 
   const projectsFeature = installBridgeFeature("projects", { state, notify, invoke, listen });
   const loadProjects = projectsFeature.loadProjects;
@@ -2223,6 +2224,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     knowledge: {
       loadKnowledgeEmbedderAfterFirstFrame,
       downloadKbModel,
+      cancelKbModel,
       mountCollection,
       setCollectionEnabled,
       removeCollection,

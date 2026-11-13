@@ -6660,6 +6660,9 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     unmountCollection,
     listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
     kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
+    // 取消进行中的模型下载(桌面同一命令);web 宿主的 access-policy 未放行
+    // kb_model_cancel 时 invoke 被拒,catch 静默(同 checkDependencies 约定)。
+    cancelKbModel: function () { return invoke("kb_model_cancel").catch(function () {}); },
     loadMemoryOverview,
     saveMemoryProfilePatch,
     updateMemoryItem,
