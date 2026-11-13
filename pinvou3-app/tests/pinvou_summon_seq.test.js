@@ -91,9 +91,23 @@ function runLoader(sandboxState, reviews) {
   return sandbox.__loadReviews('s1');
 }
 
-test('seq counter seeds from persisted sidecar seqs on hydrate (r5 M1)', async () => {
+function runRaise(sandboxState, reviews) {
+  const match = sharedBaseSource.match(
+    /function raisePinvouSummonHighwater\(reviews\) \{[\s\S]*?\n  \}\n/,
+  );
+  assert.ok(match, 'raisePinvouSummonHighwater 函数体未找到——抽取正则与源码漂移');
+  const sandbox = { state: sandboxState };
+  vm.runInNewContext(
+    `${match[0]}\nthis.__raise = raisePinvouSummonHighwater;`,
+    sandbox,
+    { filename: 'pinvou-summon-seq-raise.js' },
+  );
+  sandbox.__raise(reviews);
+}
+
+test('seq counter seeds from persisted sidecar seqs at the acceptance commit (r5 M1)', async () => {
   const state = { pinvouSummonSeq: 0 };
-  await runLoader(state, [
+  runRaise(state, [
     { pos: 1, seq: 2, review: {} },
     { pos: 2, seq: 7, review: {} },
     { pos: 3, review: {} }, // legacy entry without seq
@@ -107,7 +121,7 @@ test('seq counter seeds from persisted sidecar seqs on hydrate (r5 M1)', async (
 
 test('seq seeding ignores non-numeric persisted seq values', async () => {
   const state = { pinvouSummonSeq: 0 };
-  await runLoader(state, [{ pos: 1, seq: '9', review: {} }, { pos: 2, seq: true, review: {} }]);
+  runRaise(state, [{ pos: 1, seq: '9', review: {} }, { pos: 2, seq: true, review: {} }]);
   assert.strictEqual(
     state.pinvouSummonSeq,
     0,
@@ -117,8 +131,83 @@ test('seq seeding ignores non-numeric persisted seq values', async () => {
 
 test('seq seeding never decrements the counter', async () => {
   const state = { pinvouSummonSeq: 5 };
-  await runLoader(state, [{ pos: 1, seq: 2, review: {} }]);
+  runRaise(state, [{ pos: 1, seq: 2, review: {} }]);
   assert.strictEqual(state.pinvouSummonSeq, 5, 'global max is monotonic across session switches');
+});
+
+test('loader itself no longer raises the counter — commits happen only at acceptance (zhuowp round-2 P2-2)', async () => {
+  const state = { pinvouSummonSeq: 0 };
+  await runLoader(state, [{ pos: 1, seq: 99, review: {} }]);
+  assert.strictEqual(
+    state.pinvouSummonSeq,
+    0,
+    'a rejected navigation replays this loader after the raise used to happen; raising here poisons every in-flight summon seq gate',
+  );
+});
+
+test('rejected-navigation loader cannot poison an in-flight summon (zhuowp round-2 P2-2)', async () => {
+  const log = [];
+  const { invoke, pending } = makeDeferredInvoke(log);
+  const state = {
+    activeSessionId: 's1',
+    pinvouSummoning: false,
+    pinvouSummonSeq: 0,
+    pinvouModal: null,
+    pinvouReviews: [],
+    messages: [{}, {}, {}],
+  };
+  const sandbox = {
+    invoke,
+    state,
+    notify: () => {},
+    console,
+    bt: (key) => key,
+    addSystemItem: () => {},
+  };
+  vm.runInNewContext(
+    `${extractLoaderBlock(sharedBaseSource)}\n${extractSaveChainBlock(sharedBaseSource)}\n${extractSummonBlock(sharedBaseSource)}\n` +
+      'this.__loadReviews = loadPinvouReviewsForSession;\nthis.__summon = summonPinvou;',
+    sandbox,
+    { filename: 'pinvou-rejected-nav-interleaving.js' },
+  );
+
+  // B's sidecar load starts (the would-be navigation; its token is still
+  // unchecked at this point).
+  const loaderDone = sandbox.__loadReviews('s2');
+  // The user summons on the still-active A while B's load is in flight.
+  const summonDone = sandbox.__summon(null, null);
+  assert.strictEqual(state.pinvouSummonSeq, 1, 'the summon takes seq 1');
+  await drain();
+  // B's load resolves with a HIGHER persisted seq. The old loader raised the
+  // global here — before the navigation was rejected — and A's settle then
+  // found `seq !== state.pinvouSummonSeq`: the modal stayed loading and the
+  // guard never released. With the raise moved to the acceptance point, the
+  // rejected load must leave the gate untouched.
+  pending.find((p) => p.call.command === 'get_session_pinvou_reviews').resolve([
+    { pos: 1, seq: 99, review: {} },
+  ]);
+  await loaderDone;
+  assert.strictEqual(
+    state.pinvouSummonSeq,
+    1,
+    'the rejected load must not raise the global counter',
+  );
+  // A's settle lands: the gate still matches, the modal unlocks.
+  pending.find((p) => p.call.command === 'summon_pinvou').resolve({ verdict: 'pass', issues: [] });
+  await drain();
+  await summonDone;
+  assert.strictEqual(
+    state.pinvouModal && state.pinvouModal.loading === false &&
+      state.pinvouModal.review && state.pinvouModal.review.verdict,
+    'pass',
+    'the active summon must still settle its modal',
+  );
+  assert.strictEqual(state.pinvouSummoning, false, 'the guard must release');
+  assert.strictEqual(
+    state.pinvouReviews.length,
+    1,
+    'the settle is still ledgered with its own seq',
+  );
 });
 
 test('review save chain serializes: later records queue behind pending saves (r5 m6)', async () => {
