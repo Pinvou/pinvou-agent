@@ -1970,7 +1970,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const setRemoteCollectionEnabled = personasFeature.setRemoteCollectionEnabled;
   const removeRemoteCollection = personasFeature.removeRemoteCollection;
   const syncMountedCollection = personasFeature.syncMountedCollection;
-  const updaterFeature = installBridgeFeature("updater", { state, notify, invoke });
+  const updaterFeature = installBridgeFeature("updater", { state, notify, invoke, listen });
   const loadAppVersion = updaterFeature.loadAppVersion;
   const checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   const checkForUpdate = updaterFeature.checkForUpdate;
