@@ -26,6 +26,7 @@ const DISPLAY_DOWNLOAD_BYTES: u64 =
 pub const MODEL_VERSION: &str = "bge-m3";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+static CANCEL: AtomicBool = AtomicBool::new(false);
 static MODEL_LOAD: ModelLoadCoordinator = ModelLoadCoordinator::new();
 static MODEL_LOAD_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// 最近一次首帧/热加载跳过确因「无使用场景」门控：模型已装但被故意延迟加载，
@@ -199,6 +200,11 @@ pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelSt
     current_status(&service)
 }
 
+/// 取消进行中的下载（下次网络数据块或文件校验边界生效）。
+pub fn kb_model_cancel() {
+    CANCEL.store(true, Ordering::Relaxed);
+}
+
 /// React 首帧提交后调用：在 blocking 线程池读取并构建 embedding 模型，完成后原子换入
 /// KnowledgeService。模型未安装/加载失败时保持纯全文降级，不影响主界面。
 pub async fn kb_model_load_after_first_frame(
@@ -301,6 +307,7 @@ pub async fn kb_model_download(
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("模型正在下载中".into());
     }
+    CANCEL.store(false, Ordering::Relaxed);
     let guard = DownloadGuard;
 
     let parent = dir
@@ -384,7 +391,7 @@ pub async fn kb_model_download(
                     }),
                 );
             },
-            || false, // no in-process cancel entry: cross-process cancel stays a consumer-side design (CLI/GUI command)
+            || CANCEL.load(Ordering::Relaxed),
         )
         .await?;
         if !model_directory_is_complete(&tmp) {
