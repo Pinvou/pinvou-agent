@@ -13,7 +13,7 @@ guard pins the target contract, and the parent's pinned tree still runs
 the pre-T11 sanitizer):
 
 - the whitelist is the MFJS specification's supported set, exactly — its
-  字段定义 sections enumerate description, default, anyOf, properties,
+  字段定义 (field-definition) sections enumerate description, default, anyOf, properties,
   additionalProperties, items, type, enum, required, plus $defs/$ref under
   restricted support ("$defs 必须定义在 schema 的根级别 (root level)；$ref
   仅支持引用本文档内部的 subschema") — and its closing clause is the
@@ -155,6 +155,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
+# The pre-T11 engine face the interim window is blessed against; see
+# test_pinned_codewhale_gitlink_is_pre_t11.
+_PINNED_CODEWHALE_GITLINK = "11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
@@ -671,14 +674,17 @@ class SchemaContractWalkerTest(unittest.TestCase):
                  "floats": {"type": "number", "enum": [0.5, 1.5]},
              }}))
 
-    def test_non_finite_enum_literals_fail_closed(self):
+    def test_non_finite_wire_literals_fail_closed(self):
         # Wire reality, not an MFJS rule: serde_json cannot parse a
         # tools/list payload carrying NaN/Infinity, so the request build
         # fails before the validator runs and the tool is gone on every
         # route. The kind-based enum strip classifies a non-finite float
         # as an unsupported kind, which used to STRIP it — green over a
-        # schema no engine can ship. The check runs on the raw schema,
-        # before any strip, so removing it flips both fixtures green.
+        # schema no engine can ship. The scan covers every literal
+        # position, not just enum: default is documented as Any and ships
+        # verbatim, so a NaN default must red here too. The check runs on
+        # the raw schema, before any strip, so removing it flips these
+        # fixtures green.
         message = _contract_message(
             {"type": "object",
              "properties": {"n": {"type": "number", "enum": [1.5, float("nan")]}}})
@@ -689,10 +695,30 @@ class SchemaContractWalkerTest(unittest.TestCase):
              "properties": {"n": {"type": "integer", "enum": [1, float("inf")]}}})
         self.assertIsNotNone(message)
         self.assertIn("non-finite", message)
-        # Finite floats keep their normal strip/matcher path untouched.
+        # The same wire reality in a default — at the top level and at any
+        # branch depth; the payload parse fails before schema validation
+        # ever runs.
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"n": {"type": "number", "default": float("nan")}}})
+        self.assertIsNotNone(message)
+        self.assertIn("non-finite", message)
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"slides": {
+                 "type": "array",
+                 "items": {"type": "object",
+                           "properties": {"k": {"type": "number",
+                                                "default": float("inf")}}}}}})
+        self.assertIsNotNone(message)
+        self.assertIn("non-finite", message)
+        # Finite values keep their normal strip/matcher path untouched.
         self.assertIsNone(_contract_message(
             {"type": "object",
              "properties": {"n": {"type": "number", "enum": [1.5, 2.5]}}}))
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"n": {"type": "number", "default": 1.5}}}))
 
     def test_advisory_keywords_are_stripped_not_shipped(self):
         # The advisory set is exactly the nine keywords the engine removes
@@ -1121,23 +1147,44 @@ class SchemaContractWalkerTest(unittest.TestCase):
                             "s": {"type": "string"}},
              "additionalProperties": False}))
 
+    def test_pinned_codewhale_gitlink_is_pre_t11(self):
+        # Tripwire layer 1 — CI-reproducible. The interim window only holds
+        # against the pinned pre-T11 engine, but the CI checkout uses
+        # submodules: false, so a source-reading assertion would silently
+        # skip exactly where the window must stay loud. The parent tree's
+        # CodeWhale gitlink is readable without any submodule checkout, so
+        # pin it: any advance of the pin (a deps-follow or the T11
+        # close-out re-pin) turns this red until the mirror constants and
+        # the interim notes are consciously reconciled with the new pinned
+        # face.
+        # When the re-pin lands, THIS TEST GOES RED BY DESIGN — re-bless
+        # the pinned face here (and the source assertions in
+        # test_pinned_engine_source_face_is_pre_t11 on a populated tree),
+        # flip the interim notes in the guard header, the contract doc,
+        # and the pptx schema comment, and only then treat the target
+        # contract as the shipped one.
+        try:
+            pinned = subprocess.run(
+                ["git", "-C", str(ROOT), "rev-parse", "HEAD:CodeWhale"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        except (subprocess.CalledProcessError, OSError) as exc:
+            self.fail(f"cannot read the CodeWhale gitlink (the tripwire "
+                      f"needs the parent tree): {exc}")
+        self.assertEqual(
+            pinned, _PINNED_CODEWHALE_GITLINK,
+            "the CodeWhale pin advanced — the close-out re-pin may have "
+            "landed: reconcile the mirror constants with the new pinned "
+            "face, flip the interim notes, and re-bless this gitlink pin")
+
     @unittest.skipIf(
         not (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs").exists(),
         "pinned CodeWhale tree not populated (cannot read schema_sanitize.rs)")
-    def test_pinned_engine_face_is_pre_t11(self):
-        # Tripwire for the guard's interim window. The guard pins the T11
-        # TARGET contract (advisory strip, keep-then-fail-closed enums,
-        # budgets 500/3000/30/1000/75000) while the parent's gitlink still
-        # pins the pre-T11 sanitizer (anyOf cap 10, no advisory strip,
-        # budgets 10/5/100/500/7500) — so between now and the close-out
-        # re-pin, a schema this guard green-lights can still be dropped by
-        # the engine that actually ships. This tripwire keeps that window
-        # loud instead of silent: it fails the moment the pinned face
-        # changes, which is exactly when the mirror must be reconciled.
-        # When the re-pin lands, THIS TEST GOES RED BY DESIGN — update the
-        # asserted face here, flip the interim notes in the guard header,
-        # the contract doc, and the pptx schema comment, and only then
-        # treat the target contract as the shipped one.
+    def test_pinned_engine_source_face_is_pre_t11(self):
+        # Tripwire layer 2 — the deeper source-content face, readable only
+        # on a populated submodule tree. Local runs get it; CI (submodules:
+        # false) skips this layer and relies on the gitlink pin above,
+        # which fires on the same event: any advance of the pin.
         source = (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs"
                   ).read_text(encoding="utf-8")
         self.assertIn(
@@ -1173,7 +1220,9 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsInstance(branches, list)
         self.assertEqual(len(branches), 10,
                          "one branch per layout; the count is the layout set, "
-                         "not a budget boundary (the aligned anyOf budget is 500)")
+                         "not a target-budget boundary (500) — but the pinned "
+                         "pre-T11 engine caps anyOf at 10, so this sits exactly "
+                         "at the shipped limit")
         layouts = []
         for index, branch in enumerate(branches):
             self.assertEqual(branch.get("type"), "object",
