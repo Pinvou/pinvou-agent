@@ -503,7 +503,11 @@ command_protocol!(
         "save_search_settings_and_restart"
     ]
 );
-command_protocol!(timeline_protocol, "timeline.rs", ["get_session_timeline"]);
+command_protocol!(
+    timeline_protocol,
+    "timeline.rs",
+    ["get_session_timeline", "get_session_stats"]
+);
 command_protocol!(
     startup_protocol,
     "startup.rs",

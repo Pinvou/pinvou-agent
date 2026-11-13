@@ -1777,6 +1777,7 @@ pub fn run() {
             commands::sessions::get_or_create_aux_session,
             commands::sessions::reset_aux_session,
             commands::timeline::get_session_timeline,
+            commands::timeline::get_session_stats,
             commands::scheduled::list_scheduled_tasks,
             commands::scheduled::read_scheduled_task,
             commands::scheduled::list_scheduled_task_runs,
