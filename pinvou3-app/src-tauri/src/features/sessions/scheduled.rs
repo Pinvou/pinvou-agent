@@ -70,10 +70,21 @@ impl ScheduledRunProfile {
 /// How an engine-owned scheduled session update changes the durable token total.
 ///
 /// `SessionUpdated` does not carry usage, so callers must preserve the last durable
-/// total.
+/// total. An engine snapshot reports usage accumulated since that engine was
+/// spawned; combining it with the spawn-time base produces an absolute lifetime
+/// total without double-counting later turns from the same engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduledTokenAccounting {
     PreservePersisted,
+    /// `base_total_tokens` is the durable absolute total captured once when the
+    /// engine spawned, and `engine_total_tokens` is usage accumulated since that
+    /// spawn (never a per-update delta). The combined total replaces the stored
+    /// value; a stale base can lower it, so the base must be reloaded from the
+    /// persisted total on every re-spawn.
+    EngineCumulative {
+        base_total_tokens: u64,
+        engine_total_tokens: u64,
+    },
 }
 
 /// Authoritative engine state to persist for one scheduled-run session.

@@ -2067,25 +2067,105 @@ fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts(
     );
 
     let reloaded = reopen_store(&store).expect("restart before later turn");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load persisted total after restart")
+            .metadata
+            .total_tokens,
+        100,
+        "the durable total must survive the restart before cumulative writes"
+    );
     reloaded
         .persist_scheduled_engine_state(
             &id,
             scheduled_engine_state(
                 vec![text_message("assistant", "later turn")],
                 ScheduledRunMode::Yolo,
-                ScheduledTokenAccounting::PreservePersisted,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: 100,
+                    engine_total_tokens: 25,
+                },
             ),
         )
         .expect("persist later engine snapshot");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load first cumulative total")
+            .metadata
+            .total_tokens,
+        125,
+        "first engine snapshot lands the spawn base plus cumulative usage"
+    );
+    reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "same engine next turn")],
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: 100,
+                    engine_total_tokens: 40,
+                },
+            ),
+        )
+        .expect("persist cumulative same-engine snapshot");
 
     assert_eq!(
         reloaded
             .load(&id)
-            .expect("load preserved total")
+            .expect("load accumulated total")
             .metadata
             .total_tokens,
-        100,
-        "engine-state persistence must keep the durable token total"
+        140,
+        "same-engine cumulative usage must not be added twice"
+    );
+
+    reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "stale base lowers total")],
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: 100,
+                    engine_total_tokens: 5,
+                },
+            ),
+        )
+        .expect("persist stale-base snapshot");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load lowered total")
+            .metadata
+            .total_tokens,
+        105,
+        "combined total must replace, not max() against, the persisted value"
+    );
+
+    reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "saturating lifetime total")],
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: u64::MAX - 10,
+                    engine_total_tokens: 100,
+                },
+            ),
+        )
+        .expect("persist saturating snapshot");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load saturating total")
+            .metadata
+            .total_tokens,
+        u64::MAX,
+        "the lifetime encoding must saturate at u64::MAX rather than wrap"
     );
 }
 
