@@ -427,7 +427,9 @@ unsafe fn cf_number_f64(number: *const c_void) -> Option<f64> {
 /// worker path refuses instead of panicking.
 /// SAFETY: the returned CFRetained takes the +1 the C contract transfers.
 unsafe fn try_new_application(pid: libc::pid_t) -> Option<CFRetained<AXUIElement>> {
-    extern "C-unwind" {
+    // Rust 2024 requires extern blocks to be unsafe (zhuowp round-4 P1:
+    // the plain block broke the macOS build at this source).
+    unsafe extern "C-unwind" {
         fn AXUIElementCreateApplication(pid: libc::pid_t) -> Option<NonNull<AXUIElement>>;
     }
     // SAFETY: AXUIElementCreateApplication returns a +1 top-level
