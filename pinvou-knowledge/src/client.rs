@@ -399,6 +399,16 @@ impl KnowledgeClient {
         .await
     }
 
+    pub async fn trashed_collections(&self) -> Result<Vec<Collection>, String> {
+        self.get("/api/v2/owner/trash/collections?limit=200&offset=0")
+            .await
+    }
+
+    pub async fn trashed_documents(&self) -> Result<Vec<TrashedDocument>, String> {
+        self.get("/api/v2/owner/trash/documents?limit=200&offset=0")
+            .await
+    }
+
     pub async fn permanently_delete_collection(&self, id: i64) -> Result<(), String> {
         self.send_empty(
             Method::DELETE,
@@ -439,6 +449,19 @@ impl KnowledgeClient {
         self.post("/api/v1/collections", request).await
     }
 
+    pub async fn update_collection(
+        &self,
+        id: i64,
+        request: &CreateCollectionRequest,
+    ) -> Result<Collection, String> {
+        self.send_json(
+            Method::PUT,
+            &format!("/api/v1/collections/{id}"),
+            Some(request),
+        )
+        .await
+    }
+
     pub async fn delete_collection(&self, id: i64) -> Result<(), String> {
         self.send_empty(Method::DELETE, &format!("/api/v1/collections/{id}"))
             .await
@@ -447,6 +470,18 @@ impl KnowledgeClient {
     pub async fn restore_collection(&self, id: i64) -> Result<(), String> {
         self.send_empty(Method::POST, &format!("/api/v1/collections/{id}/restore"))
             .await
+    }
+
+    pub async fn documents(
+        &self,
+        collection_id: i64,
+        include_deleted: bool,
+    ) -> Result<Vec<Document>, String> {
+        self.get(&format!(
+            "/api/v1/collections/{collection_id}/documents?includeDeleted={}",
+            if include_deleted { "true" } else { "false" }
+        ))
+        .await
     }
 
     pub async fn documents_page(
@@ -485,7 +520,7 @@ impl KnowledgeClient {
         self.upload_bytes(collection_id, filename, bytes).await
     }
 
-    async fn upload_bytes(
+    pub async fn upload_bytes(
         &self,
         collection_id: i64,
         filename: &str,
