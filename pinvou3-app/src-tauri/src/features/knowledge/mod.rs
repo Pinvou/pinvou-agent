@@ -29,6 +29,8 @@ pub use model_download::{configured_model_dir, configured_model_dir_from};
 mod query;
 mod scanner;
 mod store;
+// 实时增量索引(notify)。当前两侧均未接线;库+测试先行落位,接线由启动扫描方负责。
+mod watcher;
 
 pub(crate) use exclude::Excluder;
 pub use import_jobs::{FailedImportFilePage, ImportJobState as IndexState};
