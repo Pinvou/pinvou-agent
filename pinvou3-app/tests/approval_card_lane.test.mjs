@@ -1058,8 +1058,8 @@ try {
       '草稿态 auto/yolo 切换写 lane 全局默认（setDraftMode），不吞没');
     assert.match(handler, /chatYoloGateAllows\(null, \{ kind: 'modeChip', via: 'draftMode' \}\)/,
       '未绑定草稿点 Yolo 过一次性确认门（动作显式入参）');
-    assert.match(chatView, /await resolveBindingForGate\(gateSid\);[\s\S]{0,400}?if \(typeof bridge\.interaction\.getCodePermissionPrefs === 'function'\) \{[\s\S]{0,400}?needsYoloConfirmation\(prefs\)/,
-      'round-7 P2：门判定不再按目录绑定收窄——未绑定会话同样咨询 prefs（entry-scoped）');
+    assert.match(chatView, /await resolveBindingForGate\(gateSid\);[\s\S]{0,800}?if \(typeof bridge\.interaction\.getCodePermissionPrefs === 'function'\) \{[\s\S]{0,400}?needsYoloConfirmation\(prefs\)/,
+      'round-7 P2：门判定不再按目录绑定收窄——未绑定会话同样咨询 prefs（entry-scoped；round-4 P2 后间隙含生命周期代际复查）');
   }
 
   // round-2 M4：codex Yolo 确认门在 entry 捕获发起会话，确认回程切会话也

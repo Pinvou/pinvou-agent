@@ -37,18 +37,23 @@ assert.doesNotMatch(
   'render-const comparison is a dead guard (always true in the closure)',
 );
 
-// 2. handleModeChipSwitch re-checks the latest ref value after the binding query await.
+// 2. handleModeChipSwitch re-checks the latest ref value after the binding query await —
+//    AND the lifecycle generation: the session-switch effect bumps it on EVERY
+//    session change, so an A→B→A round trip re-matches the sid while the click's
+//    lifecycle is already discarded (zhuowp round-4 P2 — native parity: the native
+//    lane captures the entry generation before its await).
 assert.match(
   src,
-  /await resolveBindingForGate\(gateSid\);[\s\S]{0,200}?if \(gateSid !== activeSessionIdRef\.current\) return false;/,
-  'gate must re-check the active session after the binding query await (round-7 P2: the query result no longer feeds the adjudication, but the await and its staleness re-check stay)',
+  /const genAtGate = pendingChatYoloDialogGenRef\.current;\s*await resolveBindingForGate\(gateSid\);[\s\S]{0,600}?if \(gateSid !== activeSessionIdRef\.current \|\| pendingChatYoloDialogGenRef\.current !== genAtGate\) return false;/,
+  'gate must capture the lifecycle generation before the first await and re-check it together with the active session (round-7 P2: the query result no longer feeds the adjudication, but the await and its staleness re-check stay)',
 );
 
-// 3. Re-check again after the prefs query await (the second await).
-const rechecks = src.match(/if \(gateSid !== activeSessionIdRef\.current\) return;/g) || [];
+// 3. Re-check again after the prefs query await (the second await), with the
+//    same generation condition.
+const rechecks = src.match(/if \(gateSid !== activeSessionIdRef\.current \|\| pendingChatYoloDialogGenRef\.current !== genAtGate\) return false;/g) || [];
 assert.ok(
   rechecks.length >= 2,
-  `both awaits (binding query + prefs read) must be followed by the ref re-check, found ${rechecks.length}`,
+  `both awaits (binding query + prefs read) must be followed by the ref+generation re-check, found ${rechecks.length}`,
 );
 
 // 4. The confirm card owns its dialog identity: the post-await generation

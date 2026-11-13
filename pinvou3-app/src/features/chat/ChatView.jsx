@@ -2936,15 +2936,23 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // longer keys on it. Prefs still decide (needsYoloConfirmation is
         // false once yolo_confirmed is recorded), so this only widens who
         // gets asked, never bypasses anyone.
+        // Capture the lifecycle generation BEFORE the first await (zhuowp
+        // round-4 P2, native parity): the session-switch effect bumps it on
+        // EVERY session change, so an A→B→A round trip leaves the captured
+        // generation stale even though gateSid matches again — the sid-only
+        // check would let the invalidated Auto→YOLO action dispatch.
+        const genAtGate = pendingChatYoloDialogGenRef.current;
         await resolveBindingForGate(gateSid);
         // If the user switched away during the query round-trip, the
         // adjudication belongs to the session captured at click time — the
-        // action must be abandoned.
-        if (gateSid !== activeSessionIdRef.current) return false;
+        // action must be abandoned. The generation must be unchanged too:
+        // A→B→A re-matches the sid while the switch effect has already
+        // discarded the click's lifecycle.
+        if (gateSid !== activeSessionIdRef.current || pendingChatYoloDialogGenRef.current !== genAtGate) return false;
         if (typeof bridge.interaction.getCodePermissionPrefs === 'function') {
           const prefs = await bridge.interaction.getCodePermissionPrefs();
           // Re-check after the second await as well.
-          if (gateSid !== activeSessionIdRef.current) return false;
+          if (gateSid !== activeSessionIdRef.current || pendingChatYoloDialogGenRef.current !== genAtGate) return false;
           if (needsYoloConfirmation(prefs)) {
             // A newly opened dialog owns the shared refs: bump the generation
             // so any confirm still awaiting its save round-trip discards.
