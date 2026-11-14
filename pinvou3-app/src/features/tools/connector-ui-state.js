@@ -3,6 +3,10 @@
 // message in the current UI language; the raw backend diagnostic never
 // reaches the card (matching the Official repo's PR #442 behavior).
 
+// Code parsing lives in the shared helper (also consumed by app/main.jsx);
+// this module keeps re-exporting `errorCode` as part of its public surface.
+import { errorCode } from '../../shared/user-facing-error.js';
+
 // Round-37 F3 (review #455): the install channels' consent-failure marker,
 // mirroring `scope::CONSENT_SYNC_FAILURE_MARKER` on the Rust side (both pinned
 // by consent_marker_frontend.test.mjs + the Rust emitter pins). Since the
@@ -32,27 +36,11 @@ export const CONNECT_CONSENT_SYNC_FAILURE_MARKER =
 export const CONNECT_GRANT_COMMIT_FAILURE_MARKER =
   "finalizing the connector's connect-enabled consent failed";
 
-// Stable machine-readable error codes for user-facing messages.
-// Backends attach a snake_case `code` (or prefix the message with `code: ...`);
-// the UI maps the code to a localized string and never shows raw backend text
-// that may be in a different language than the current UI.
-const ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
-
-function errorCode(value) {
-  if (value && typeof value === 'object' && typeof value.code === 'string') {
-    const code = value.code.trim();
-    if (ERROR_CODE_PATTERN.test(code)) return code;
-  }
-
-  const message = typeof value === 'string'
-    ? value
-    : (value && typeof value.message === 'string' ? value.message : '');
-  const separator = message.indexOf(':');
-  if (separator <= 0) return '';
-  const code = message.slice(0, separator).trim();
-  return ERROR_CODE_PATTERN.test(code) ? code : '';
-}
-
+// Stable machine-readable error codes for user-facing messages. Backends
+// attach a snake_case `code` (or prefix the message with `code: ...`); the
+// UI maps the code to a localized string and never shows raw backend text
+// that may be in a different language than the current UI. The parsing
+// itself is `errorCode` from the shared helper, imported above.
 // Fallback code per flow step when the backend did not attach a code. The map
 // covers the flow card's whole step vocabulary: `runtime` / `connect` cannot
 // fail today (nothing runs while only those steps are active), but the total

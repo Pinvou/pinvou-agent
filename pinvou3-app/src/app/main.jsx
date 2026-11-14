@@ -48,6 +48,7 @@ import { classifyRebindError, mergeRebindCarryoverIds } from '../features/projec
 import { runSessionBatch } from '../shared/session-management.js';
 import { filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../shared/session-list-pipeline.js';
 import { can, isWeb } from '../shared/platform.js';
+import { localizedErrorMessage } from '../shared/user-facing-error.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
 import { acquireNativeSurfaceTransitionHide } from '../features/browser/native-surface-coordinator.js';
 import {
@@ -2202,7 +2203,10 @@ const App = () => {
       // shared project-operations failure copy (review #484 round-10 m5).
       const reportPickerApplyFailure = (error) => {
         console.warn('workspace target failed', error);
-        setSettingsToast(t.uiProjects.opFailed);
+        // Backend errors may carry a snake_case `code` (object or `code: ...`
+        // prefix); prefer its localized copy when the dict has one and keep
+        // the generic failure copy otherwise (shared/user-facing-error.js).
+        setSettingsToast(localizedErrorMessage(error, t.uiProjects, t.uiProjects.opFailed));
       };
       // Round-34 minor 15: re-entry guard — during the chat lane's
       // createNewSession await a second click re-entered applyWorkspaceTarget
