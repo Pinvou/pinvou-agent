@@ -248,7 +248,7 @@
         // `truncated`, set past the 5000-entry cap) had no consumer — an
         // oversized directory rendered as a plain, unexplained 5000-row list.
         if (listing && listing.truncated) {
-          body.append(element("div", "pinvoy-host-picker-empty", labels.listingTruncated));
+          body.append(element("div", "pinvou-host-picker-empty", labels.listingTruncated));
         }
       }
 

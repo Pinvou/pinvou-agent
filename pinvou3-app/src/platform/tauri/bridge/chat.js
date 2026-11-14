@@ -1237,11 +1237,13 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
   // remote control and other hosts may use it too.
   async function steer(sid, content) {
     safeConsoleInfo("[pinvou3][chat-ui] steer start", { sid, len: (content || "").length });
-    // The invoke has no transport timeout: a stuck engine (alive, not
-    // draining) would leave steer_chat unsettled forever and the chip
-    // (steered:true, steerId:null) would block the queue head and flushQueued.
-    // The timeout goes to the catch-side failure recovery (remove chip,
-    // restore composer).
+    // The backend bounds this invoke itself (STEER_CHAT_TIMEOUT, 20s in
+    // app/commands/chat.rs): a wedged engine fails the invoke with the
+    // specific nothing-enqueued diagnosis instead of leaving it unsettled
+    // forever. The frontend timeout below stays as defense in depth for
+    // the case the backend bound cannot see (engine accepted the steer,
+    // then wedged before the chip resolves) and goes to the catch-side
+    // failure recovery (remove chip, restore composer).
     const invokePromise = invoke("steer_chat", { sessionId: sid, content: String(content || "") });
     let timeoutId = null;
     let timedOut = false;
