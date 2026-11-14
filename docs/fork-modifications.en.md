@@ -74,7 +74,7 @@
 
 - Public maintenance and parent gitlink: `1d736ce8dd64ab5ab67214bb7730bcfb25c48d96` (2026-11-12). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`, #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, limits-audit #154 as `1d736ce8d` (squash `841fe98f` + review fixwave). This round advances the maintenance branch and moves the parent gitlink with it.
 - Measured history: 100 commits above upstream v0.9.12 `dcd4c200f`, 85 above r1 `1fafee7e2`; 98 carry DCO sign-offs. The unsigned squash commits remain #107 `f27672935` and #116 `e9a7f48da1`; the previous single-exception claim no longer applies. Published maintenance history is preserved.
-- Immutable `pinjou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
+- Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
 - Measured drift: 573 files, +122828/-50155, net +72673; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 
 ### 2026-10-23 batch maintenance integration (#115/#116/#117)
