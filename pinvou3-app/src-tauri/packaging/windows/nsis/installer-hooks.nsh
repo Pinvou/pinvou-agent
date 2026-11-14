@@ -69,7 +69,14 @@ pinvou_vc_redist_install:
   IfErrors pinvou_vc_redist_exec_failed
 
   IntCmp $5 0 pinvou_vc_redist_ready 0 0
-  IntCmp $5 3010 pinvou_vc_redist_reboot 0 0
+  IntCmp $5 3010 pinjou_vc_redist_reboot 0 0
+  ; 1638 = ERROR_PRODUCT_VERSION ("a newer version is already installed"):
+  ; a newer VC++ runtime already satisfies the requirement, so continue
+  ; without touching it. This outcome is reachable when the registry
+  ; version values above are stale or missing while a newer runtime is
+  ; actually present - aborting here would leave the machine un-installable
+  ; despite an adequate runtime.
+  IntCmp $5 1638 pinvou_vc_redist_ready 0 0
   IntCmp $5 1632 pinvou_vc_redist_temp_failed 0 0
   IntCmp $5 -2147023264 pinvou_vc_redist_temp_failed 0 0
   IntCmp $5 1641 pinvou_vc_redist_reboot pinvou_vc_redist_exit_failed pinvou_vc_redist_exit_failed
