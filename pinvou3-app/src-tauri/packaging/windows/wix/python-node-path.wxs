@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- candle compiles each .wxs as a separate preprocessing unit, so this
+     fragment cannot see main.wxs's Win64 define and re-derives it from
+     sys.BUILDARCH (the bundler passes -arch per compile). -->
+<?if $(sys.BUILDARCH)="x86"?>
+<?define Win64 = "no" ?>
+<?elseif $(sys.BUILDARCH)="x64"?>
+<?define Win64 = "yes" ?>
+<?elseif $(sys.BUILDARCH)="arm64"?>
+<?define Win64 = "yes" ?>
+<?else?>
+<?error Unsupported value of sys.BUILDARCH=$(sys.BUILDARCH)?>
+<?endif?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="PythonNodeRuntimeEnvironment" Guid="9e743eff-fde1-4479-af1e-9599dbbee0d8" Win64="$(var.Win64)">
+        <RegistryValue Root="HKLM"
+                       Key="Software\pinvou\pinvou3"
+                       Name="PythonNodeRuntimeEnvironment"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+        <Environment Id="PinvouPythonExecutable"
+                     Name="PINVOU3_PYTHON"
+                     Value="[INSTALLDIR]runtime\python\pythonw.exe"
+                     Action="set"
+                     Part="all"
+                     System="yes"
+                     Permanent="no" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

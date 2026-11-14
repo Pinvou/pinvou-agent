@@ -76,8 +76,9 @@ Jenkins 的 `CheckoutSubmodule` 阶段只负责准备 submodule，不再单独�
 npm --prefix pinvou3-app run runtime:windows:cache-key
 ```
 
-建议缓存 `.git/modules/private-runtimes/windows/lfs/objects` 与 `pinvou3-app/src-tauri/target/windows-runtime`；前者避免重复下载
-LFS 对象，后者复用已验证、已展开的安装资源。完整源校验通过后会在 `target/windows-runtime/.verified-lock` 记录源校验元数据缓存：
+建议缓存 `pinvou3-app/src-tauri/target/windows-runtime`；`init-submodule.ps1` 以 `-c lfs.storage=` 把 Git LFS 对象放入其中的
+`lfs-storage/` 子目录（避免重复下载，且与 staging 缓存同目录、可整体缓存；`.git/modules/.../lfs/objects` 中的旧对象不再被
+读取，迁移前的缓存首次构建会重新下载一次），其余内容复用已验证、已展开的安装资源。完整源校验通过后会在 `target/windows-runtime/.verified-lock` 记录源校验元数据缓存：
 Stage 模式命中时只复核源文件大小，Validate 模式仍逐文件重新核对 SHA-256；复用 staging 前还会按 `.verified-stage.json` 对全部
 会进入构建链路的展开文件重新核对路径、大小和 SHA-256，缓存内容发生缺失或修改时自动回退到原子 staging，重建前会对源文件重新
 执行完整校验。同一 `target/windows-runtime` 目录上的并发初始化与 staging 调用通过 `.resolver.lock` 串行化；等待方最多

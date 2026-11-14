@@ -3,6 +3,15 @@
 !define PINVOU_VC_REDIST_MIN_BUILD 36247
 !define PINVOU_VC_REDIST_MIN_REVISION 0
 
+; ${__FILEDIR__} inside !macro bodies keeps the insertion-site value (the
+; bundler writes installer.nsi under target/release/bundle/nsis/<arch>), so
+; anchor this hooks directory once at file level, where ${__FILEDIR__} is
+; still this file's directory. Both the committed base hooks
+; (packaging/windows/nsis) and the staged generated copy
+; (target/release/nsis-stage) sit exactly three directories below src-tauri,
+; so ${PINVOU_HOOKS_DIR}\..\..\.. always resolves to src-tauri.
+!define PINVOU_HOOKS_DIR "${__FILEDIR__}"
+
 !macro NSIS_HOOK_PREINSTALL
   DetailPrint "Checking Microsoft Visual C++ Redistributable 2015-2022 (x64)..."
 
@@ -40,8 +49,8 @@ pinvou_vc_redist_install:
   DetailPrint "Installing Microsoft Visual C++ Redistributable 2015-2022 (x64)..."
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
-  File "/oname=$PLUGINSDIR\VC_redist.x64.exe" "${__FILEDIR__}\..\..\..\windows-runtime\nsis\vc_redist\VC_redist.x64.exe"
-  File "/oname=$PLUGINSDIR\pinvou-vcredist-temp-preflight.ps1" "${__FILEDIR__}\..\..\..\..\packaging\windows\nsis\vcredist-temp-preflight.ps1"
+  File "/oname=$PLUGINSDIR\VC_redist.x64.exe" "${PINVOU_HOOKS_DIR}\..\..\..\target\windows-runtime\nsis\vc_redist\VC_redist.x64.exe"
+  File "/oname=$PLUGINSDIR\pinvou-vcredist-temp-preflight.ps1" "${PINVOU_HOOKS_DIR}\..\..\..\packaging\windows\nsis\vcredist-temp-preflight.ps1"
   nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-vcredist-temp-preflight.ps1"'
   Pop $6
   Pop $7
@@ -90,4 +99,40 @@ pinvou_vc_redist_reboot:
 pinvou_vc_redist_ready:
   SetRegView lastused
   DetailPrint "Microsoft Visual C++ Redistributable 2015-2022 (x64) is ready."
+!macroend
+
+; Configure the machine-wide bundled-runtime environment after install and
+; remove it on uninstall, mirroring wix/python-node-path.wxs for the MSI
+; target. FailHard matches the installers' data contracts: install aborts
+; (WiX Environment writes roll back), uninstall warns and continues.
+!macro PinvouRunRuntimeEnv Mode FailHard
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File "/oname=$PLUGINSDIR\pinvou-runtime-env.ps1" "${PINVOU_HOOKS_DIR}\..\..\..\packaging\windows\nsis\runtime-env.ps1"
+  nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-runtime-env.ps1" -Mode ${Mode} -InstallDir "$INSTDIR"'
+  Pop $6
+  Pop $7
+  ${If} $6 != 0
+    DetailPrint "Bundled runtime environment update failed: $7"
+    MessageBox MB_ICONSTOP|MB_OK "无法更新内置运行时环境（PINVOU3_PYTHON）：$7。请确认安装脚本未被安全软件阻止。$\r$\nFailed to update the bundled runtime environment (PINVOU3_PYTHON): $7. Verify that security software is not blocking installer scripts." /SD IDOK
+    !if "${FailHard}" == "true"
+      Abort
+    !endif
+  ${EndIf}
+  DetailPrint "$7"
+  SetOutPath "$INSTDIR"
+!macroend
+
+!macro NSIS_HOOK_POSTINSTALL
+  !if "${INSTALLMODE}" == "perMachine"
+    DetailPrint "Configuring the bundled runtime environment (PINVOU3_PYTHON)..."
+    !insertmacro PinvouRunRuntimeEnv Install true
+  !endif
+!macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  !if "${INSTALLMODE}" == "perMachine"
+    DetailPrint "Removing the bundled runtime environment (PINVOU3_PYTHON)..."
+    !insertmacro PinvouRunRuntimeEnv Uninstall false
+  !endif
 !macroend

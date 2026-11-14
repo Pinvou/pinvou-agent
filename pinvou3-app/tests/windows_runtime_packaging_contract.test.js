@@ -439,19 +439,31 @@ assert.equal(
 );
 assert.match(installerHook, /!macro NSIS_HOOK_PREINSTALL/);
 assert.match(installerHook, /VC_redist\.x64\.exe/);
-assert.match(installerHook, /\.\.\\\.\.\\\.\.\\windows-runtime\\nsis\\vc_redist/);
-assert.doesNotMatch(installerHook, /\.\.\\\.\.\\\.\.\\target\\windows-runtime/);
+assert.match(
+  installerHook,
+  /!define PINVOU_HOOKS_DIR "\$\{__FILEDIR__\}"/,
+  "hook macro bodies must anchor the hooks directory at file level: ${__FILEDIR__} inside !macro keeps the insertion-site value",
+);
+assert.match(
+  installerHook,
+  /\$\{PINVOU_HOOKS_DIR\}\\\.\.\\\.\.\\\.\.\\target\\windows-runtime\\nsis\\vc_redist/,
+  "vc_redist is staged to src-tauri\\target\\windows-runtime\\nsis by windows-installer.js",
+);
+assert.doesNotMatch(
+  installerHook,
+  /File "[^"]*\$\{__FILEDIR__\}/,
+  "File sources must go through ${PINVOU_HOOKS_DIR}, not the macro insertion-site ${__FILEDIR__}",
+);
 assert.match(installerHook, /\/install \/quiet \/norestart/);
 assert.match(installerHook, /pinvou-vcredist-temp-preflight\.ps1/);
 assert.match(
   installerHook,
-  /\$\{__FILEDIR__\}\\.\.\\.\.\\.\.\\.\.\\packaging\\windows\\nsis\\vcredist-temp-preflight\.ps1/,
-  "preflight script File source must resolve from the installer.nsi output directory",
+  /\$\{PINVOU_HOOKS_DIR\}\\\.\.\\\.\.\\\.\.\\packaging\\windows\\nsis\\vcredist-temp-preflight\.ps1/,
+  "hook-packed scripts must resolve against src-tauri (both hook dirs sit three levels below it)",
 );
 assert.doesNotMatch(
   installerHook,
-  /\$\{__FILEDIR__\}\\.\.\\.\.\\.\.\\packaging\\windows\\nsis\\vcredist-temp-preflight\.ps1/,
-  "preflight script File source must not resolve past src-tauri",
+  /\$\{PINVOU_HOOKS_DIR\}\\\.\.\\\.\.\\\.\.\\\.\.\\packaging/,
 );
 assert.ok(
   installerHook.indexOf("pinvou-vcredist-temp-preflight.ps1") <
@@ -799,7 +811,7 @@ assert.match(windowsBuildJob, /npm run runtime:windows:init/);
 const windowsInitStep = windowsBuildJob.indexOf("npm run runtime:windows:init");
 const windowsStageStep = windowsBuildJob.indexOf("npm run runtime:windows:stage");
 const windowsInstallerTestStep = windowsBuildJob.indexOf(
-  "node tests/windows_runtime_installer_integration.test.js --require-staged-runtime",
+  "npm run test:windows-runtime-installer",
 );
 assert.ok(
   windowsStageStep > windowsInitStep,
@@ -808,6 +820,12 @@ assert.ok(
 assert.ok(
   windowsInstallerTestStep > windowsStageStep,
   "the installer integration test must run directly, after the runtime is staged",
+);
+// The npm alias must invoke node directly with the flag: node --test would
+// drop --require-staged-runtime and the test would silently skip.
+assert.match(
+  packageJson.scripts["test:windows-runtime-installer"],
+  /node tests\/windows_runtime_installer_integration\.test\.js --require-staged-runtime/u,
 );
 assert.doesNotMatch(
   windowsBuildJob,

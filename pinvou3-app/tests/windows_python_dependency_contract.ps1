@@ -210,12 +210,17 @@ Assert-True -Condition $freshRejected -Message "fresh staging must reject a fail
 $savedStageId = $stageId
 $savedStagingParent = $stagingParent
 $savedStagingRoot = $stagingRoot
+$savedStageManifestPath = $stageManifestPath
 $savedGeneratedConfigPath = $generatedConfigPath
 $savedRuntimeDescriptorPath = $runtimeDescriptorPath
 try {
   $stageId = "python-contract-stage"
   $stagingParent = Join-Path $fixtureRoot "windows-runtime"
   $stagingRoot = Join-Path $stagingParent $stageId
+  # $stageManifestPath was derived from the real $stagingRoot at dot-source
+  # time; re-point it into the fixture so the reuse check stays hermetic and
+  # always exercises the inventory branch.
+  $stageManifestPath = Join-Path $stagingRoot ".stage-manifest.json"
   $generatedConfigPath = Join-Path $stagingParent "tauri.generated.conf.json"
   $runtimeDescriptorPath = Join-Path $stagingParent "runtime-descriptor.json"
   New-Item -ItemType Directory -Path (Join-Path $stagingRoot "expanded\python") -Force | Out-Null
@@ -233,6 +238,7 @@ try {
   $stageId = $savedStageId
   $stagingParent = $savedStagingParent
   $stagingRoot = $savedStagingRoot
+  $stageManifestPath = $savedStageManifestPath
   $generatedConfigPath = $savedGeneratedConfigPath
   $runtimeDescriptorPath = $savedRuntimeDescriptorPath
 }

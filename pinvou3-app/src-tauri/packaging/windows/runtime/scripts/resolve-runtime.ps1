@@ -27,6 +27,8 @@ $stagingParent = Join-Path $tauriRoot "target\windows-runtime"
 # all stage ids) and the workspace-wide resolver serialization lock.
 $sourceVerificationMarkerPath = Join-Path $stagingParent ".verified-lock"
 $resolverLockPath = Join-Path $stagingParent ".resolver.lock"
+$verificationSchemaVersion = 5
+$stageManifestSchemaVersion = 2
 
 if ([string]::IsNullOrWhiteSpace($LockFile)) {
   $LockFile = $defaultLockFile
@@ -59,6 +61,7 @@ if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
 $RuntimeRoot = [System.IO.Path]::GetFullPath($RuntimeRoot)
 $stageId = ([string]$lock.source.commit).Substring(0, 12) + "-" + ([string]$lock.manifest.sha256).Substring(0, 12)
 $stagingRoot = Join-Path $stagingParent $stageId
+$stageManifestPath = Join-Path $stagingRoot ".stage-manifest.json"
 
 function Write-Utf8WithoutBom {
   param([string]$Path, [string]$Content)
@@ -125,25 +128,40 @@ function Get-RelativeStagePath {
   return $pathFull.Substring($rootFull.Length).Replace('\', '/')
 }
 
-function Get-VerificationMarkerContent {
+function Get-VerificationMarkerState {
+  param([string]$StageManifestSha256 = "")
+
   $state = [ordered]@{
-    schemaVersion = 2
+    schemaVersion = $verificationSchemaVersion
     sourceCommit = ([string]$lock.source.commit).ToLowerInvariant()
     manifestSha256 = ([string]$lock.manifest.sha256).ToLowerInvariant()
     lockFileSha256 = Get-Sha256 -Path $LockFile
     target = [string]$lock.target
   }
+  if (-not [string]::IsNullOrWhiteSpace($StageManifestSha256)) {
+    $state["stageManifestSha256"] = $StageManifestSha256.ToLowerInvariant()
+  }
+  return $state
+}
+
+function Get-VerificationMarkerContent {
+  param([string]$StageManifestSha256 = "")
+
+  $state = Get-VerificationMarkerState -StageManifestSha256 $StageManifestSha256
   return (($state | ConvertTo-Json -Depth 4) + "`n")
 }
 
 function Test-VerificationMarker {
-  param([string]$Path)
+  param(
+    [string]$Path,
+    [string]$StageManifestSha256 = ""
+  )
 
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     return $false
   }
   $actual = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-  return $actual -eq (Get-VerificationMarkerContent)
+  return $actual -eq (Get-VerificationMarkerContent -StageManifestSha256 $StageManifestSha256)
 }
 
 function Get-GitOutput {
@@ -354,6 +372,181 @@ function Get-CachedVerifiedManifest {
   return $manifest
 }
 
+function Get-StagedRelativePaths {
+  param([string]$Root)
+
+  if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+    return @()
+  }
+  $rootPrefix = [System.IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+  $metadataPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  [void]$metadataPaths.Add(".verified-lock")
+  [void]$metadataPaths.Add(".stage-manifest.json")
+  return @(
+    Get-ChildItem -LiteralPath $Root -Recurse -File -Force |
+      ForEach-Object {
+        $fullPath = [System.IO.Path]::GetFullPath($_.FullName)
+        $relativePath = $fullPath.Substring($rootPrefix.Length).Replace('\', '/')
+        if (-not $metadataPaths.Contains($relativePath)) {
+          $relativePath
+        }
+      } |
+      Sort-Object
+  )
+}
+
+function Get-StagedRelativeFiles {
+  param([string]$Root)
+
+  return @(
+    Get-StagedRelativePaths -Root $Root | ForEach-Object {
+      $relativePath = [string]$_
+      $fullPath = Join-Path $Root $relativePath.Replace('/', '\')
+      $item = Get-Item -LiteralPath $fullPath
+      [pscustomobject]@{
+        path = $relativePath
+        bytes = [long]$item.Length
+        sha256 = Get-Sha256 -Path $fullPath
+      }
+    }
+  )
+}
+
+function Test-StagedFilesAgainstTrustedManifest {
+  param(
+    [string]$Root,
+    $TrustedEntries
+  )
+
+  try {
+    $entries = @($TrustedEntries)
+    if ($entries.Count -eq 0) {
+      return $false
+    }
+
+    $expectedByPath = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $entries) {
+      $relativePath = ([string]$entry.path).Replace('\', '/')
+      $sha256 = ([string]$entry.sha256).ToLowerInvariant()
+      if (
+        [string]::IsNullOrWhiteSpace($relativePath) -or
+        $relativePath.StartsWith('/') -or
+        $relativePath -match '^[A-Za-z]:' -or
+        $relativePath -match '(^|/)\.\.(/|$)' -or
+        $relativePath -in @(".verified-lock", ".stage-manifest.json") -or
+        $sha256 -notmatch '^[0-9a-f]{64}$' -or
+        [long]$entry.bytes -lt 0 -or
+        $expectedByPath.ContainsKey($relativePath)
+      ) {
+        return $false
+      }
+
+      $fullPath = Join-Path $Root $relativePath.Replace('/', '\')
+      Assert-ChildPath -Root $Root -Path $fullPath
+      if (
+        -not (Test-Path -LiteralPath $fullPath -PathType Leaf) -or
+        [long](Get-Item -LiteralPath $fullPath).Length -ne [long]$entry.bytes -or
+        (Get-Sha256 -Path $fullPath) -ne $sha256
+      ) {
+        return $false
+      }
+      $expectedByPath.Add($relativePath, $entry)
+    }
+
+    $actualPaths = @(Get-StagedRelativePaths -Root $Root)
+    if ($actualPaths.Count -ne $expectedByPath.Count) {
+      return $false
+    }
+    foreach ($actualPath in $actualPaths) {
+      if (-not $expectedByPath.ContainsKey($actualPath)) {
+        return $false
+      }
+    }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Get-StageManifestContent {
+  param([string]$Root)
+
+  $identity = Get-VerificationMarkerState
+  $manifest = [ordered]@{
+    schemaVersion = $stageManifestSchemaVersion
+    sourceCommit = $identity.sourceCommit
+    manifestSha256 = $identity.manifestSha256
+    lockFileSha256 = $identity.lockFileSha256
+    target = $identity.target
+    files = @(Get-StagedRelativeFiles -Root $Root)
+  }
+  return (($manifest | ConvertTo-Json -Depth 6) + "`n")
+}
+
+function Write-StageManifest {
+  param([string]$Root)
+
+  $path = Join-Path $Root ".stage-manifest.json"
+  Write-Utf8WithoutBom -Path $path -Content (Get-StageManifestContent -Root $Root)
+  return $path
+}
+
+function Test-StageManifest {
+  param(
+    [string]$ManifestPath,
+    $TrustedEntries
+  )
+
+  try {
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+      return $false
+    }
+    $cached = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $identity = Get-VerificationMarkerState
+    if (
+      [int]$cached.schemaVersion -ne $stageManifestSchemaVersion -or
+      [string]$cached.sourceCommit -ne [string]$identity.sourceCommit -or
+      [string]$cached.manifestSha256 -ne [string]$identity.manifestSha256 -or
+      [string]$cached.lockFileSha256 -ne [string]$identity.lockFileSha256 -or
+      [string]$cached.target -ne [string]$identity.target
+    ) {
+      return $false
+    }
+
+    $trustedByPath = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($TrustedEntries)) {
+      $relativePath = [string]$entry.path
+      if ([string]::IsNullOrWhiteSpace($relativePath) -or $trustedByPath.ContainsKey($relativePath)) {
+        return $false
+      }
+      $trustedByPath.Add($relativePath, $entry)
+    }
+
+    $cachedByPath = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($cached.files)) {
+      $relativePath = [string]$entry.path
+      if (
+        [string]::IsNullOrWhiteSpace($relativePath) -or
+        $cachedByPath.ContainsKey($relativePath) -or
+        -not $trustedByPath.ContainsKey($relativePath)
+      ) {
+        return $false
+      }
+      $trusted = $trustedByPath[$relativePath]
+      if (
+        [long]$entry.bytes -ne [long]$trusted.bytes -or
+        ([string]$entry.sha256).ToLowerInvariant() -ne ([string]$trusted.sha256).ToLowerInvariant()
+      ) {
+        return $false
+      }
+      $cachedByPath.Add($relativePath, $entry)
+    }
+    return $cachedByPath.Count -eq $trustedByPath.Count
+  } catch {
+    return $false
+  }
+}
+
 function Find-ComponentArchive {
   param([string]$PayloadRoot, [string]$Pattern, [string]$Label)
   $matches = @(Get-ChildItem -LiteralPath $PayloadRoot -File -Filter $Pattern)
@@ -439,7 +632,14 @@ function Test-ManagedArchiveExpansion {
 function Get-RuntimeDescriptorContent {
   param($Manifest, [string]$StageId)
   $relativeRoot = "target/windows-runtime/$StageId"
-  $vcRedistPath = Join-Path $stagingRoot "expanded\vc_redist\VC_redist.x64.exe"
+  # Payload-retained staging exposes the verified VC++ bootstrapper in place;
+  # inventory-cleaned layouts fall back to the verified expanded copy.
+  $vcRedistRelativePath = "payload/vc_redist/VC_redist.x64.exe"
+  $vcRedistPath = Join-Path $stagingRoot $vcRedistRelativePath.Replace('/', '\')
+  if (-not (Test-Path -LiteralPath $vcRedistPath -PathType Leaf)) {
+    $vcRedistRelativePath = "expanded/vc_redist/VC_redist.x64.exe"
+    $vcRedistPath = Join-Path $stagingRoot $vcRedistRelativePath.Replace('/', '\')
+  }
   if (-not (Test-Path -LiteralPath $vcRedistPath -PathType Leaf)) {
     throw "Staged VC++ runtime is missing while generating the runtime descriptor: $vcRedistPath"
   }
@@ -452,7 +652,7 @@ function Get-RuntimeDescriptorContent {
     npmExecPath = "$relativeRoot/expanded/node/node_modules/npm/bin/npm-cli.js"
     onnxRuntimeDylib = "$relativeRoot/expanded/onnxruntime/onnxruntime.dll"
     vcRedist = [ordered]@{
-      source = "$relativeRoot/expanded/vc_redist/VC_redist.x64.exe"
+      source = "$relativeRoot/$vcRedistRelativePath"
       bytes = [long](Get-Item -LiteralPath $vcRedistPath).Length
       sha256 = Get-Sha256 -Path $vcRedistPath
     }
@@ -786,12 +986,34 @@ function Test-VerifiedStageReusable {
   param($Manifest, [scriptblock]$PythonDependencyProbe)
 
   $stageMarkerPath = Join-Path $stagingRoot ".verified-lock"
-  if (-not (Test-VerificationMarker -Path $stageMarkerPath)) {
-    return $false
-  }
+  if (Test-Path -LiteralPath $stageManifestPath -PathType Leaf) {
+    # Stage-manifest layout trusts the exact staged tree. The stage manifest
+    # and the marker are both rewritable, so the lock manifest's declared
+    # files are the only trust anchor: any tampering, missing/extra staged
+    # file, or rewritten manifest/marker pair invalidates reuse.
+    if ($null -eq $Manifest.stagedFiles) {
+      return $false
+    }
+    $stageManifestSha256 = Get-Sha256 -Path $stageManifestPath
+    if (-not (Test-VerificationMarker -Path $stageMarkerPath -StageManifestSha256 $stageManifestSha256)) {
+      return $false
+    }
+    if (-not (Test-StagedFilesAgainstTrustedManifest -Root $stagingRoot -TrustedEntries $Manifest.stagedFiles)) {
+      return $false
+    }
+    if (-not (Test-StageManifest -ManifestPath $stageManifestPath -TrustedEntries $Manifest.stagedFiles)) {
+      return $false
+    }
+  } else {
+    # Inventory layout (payload-cleaned staging) trusts the frozen
+    # .verified-stage.json snapshot instead.
+    if (-not (Test-VerificationMarker -Path $stageMarkerPath)) {
+      return $false
+    }
 
-  if (-not (Test-StageInventory -StageRoot $stagingRoot)) {
-    return $false
+    if (-not (Test-StageInventory -StageRoot $stagingRoot)) {
+      return $false
+    }
   }
 
   $pythonRoot = Join-Path $stagingRoot "expanded\python"
@@ -824,14 +1046,22 @@ function Test-VerifiedStageReusable {
 }
 
 function Stage-Submodule {
-  param($Manifest)
+  param(
+    $Manifest,
+    [switch]$Rebuild
+  )
   $markerPath = Join-Path $stagingRoot ".verified-lock"
   $expectedMarker = Get-VerificationMarkerContent
   Assert-ChildPath -Root (Join-Path $tauriRoot "target") -Path $stagingRoot
 
   $markerValid = Test-VerificationMarker -Path $markerPath
-  $stageContentValid = $markerValid -and (Test-StageInventory -StageRoot $stagingRoot)
-  if ($Force -or -not $stageContentValid) {
+  $needsRestage = $Force -or $Rebuild -or (-not $markerValid)
+  if (-not $needsRestage) {
+    # A forced rebuild never consults the existing tree, so skip the
+    # full-tree inventory hash pass that only the reuse path consumes.
+    $needsRestage = -not (Test-StageInventory -StageRoot $stagingRoot)
+  }
+  if ($needsRestage) {
     New-Item -ItemType Directory -Path $stagingParent -Force | Out-Null
     $temporaryRoot = Join-Path $stagingParent (".tmp-" + [System.Guid]::NewGuid().ToString("N"))
     $stageContext = [pscustomobject]@{
@@ -1048,7 +1278,7 @@ function Invoke-RuntimeResolution {
     Write-Utf8Atomically -Path $sourceVerificationMarkerPath -Content (Get-VerificationMarkerContent)
   }
 
-  Stage-Submodule -Manifest $verifiedManifest
+  Stage-Submodule -Manifest $verifiedManifest -Rebuild
 }
 
 if ($ImportFunctionsOnly) {
