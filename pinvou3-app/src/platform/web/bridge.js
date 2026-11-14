@@ -2279,11 +2279,11 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
       return false;
     }
     if (requestToken !== sessionSwitchRequestToken) return false;
-    raisePinvouSummonHighwater(pinvouReviews); // 验收后才抬底:被拒导航不得毒化在途召唤的序号门(zhuowp 二审 P2-2)
     if (!saved || !saved.metadata || !saved.metadata.id) {
       reportSessionSwitchFailure(new Error(bt("sessionDataInvalid")), errorScope);
       return false;
     }
+    raisePinvouSummonHighwater(pinvouReviews); // 验收后才抬底:被拒导航不得抬账目底(JensenChen28 审 P2)
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));

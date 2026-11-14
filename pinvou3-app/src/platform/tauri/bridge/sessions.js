@@ -837,7 +837,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     let turnTimeline = [];
     try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     if (requestToken !== sessionSwitchRequestToken) return false;
-    raisePinvouSummonHighwater(pinvouReviews); // 验收后才抬底:被拒导航不得毒化在途召唤的序号门(zhuowp 二审 P2-2)
+    raisePinvouSummonHighwater(pinvouReviews); // 验收后才抬底:被拒导航不得抬账目底(JensenChen28 审 P2)
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));

@@ -247,14 +247,15 @@
     state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
     if (restoreSteeredWorkingSet) restoreSteeredWorkingSet(buf);
     state.pinvouModal = null; // 切 session 关掉检阅弹窗
-    // 同步解召唤守卫:守卫是全局单飞闸,旧 session 的在途 settle 凭召唤序号只入账
-    // 不写 UI(r3 审 m-minor:否则新会话里品/悟最长被静默吞 180s)。旧 settle 的
-    // finally 命中同序号时再赋 false 也幂等。
+    // 同步解召唤守卫:守卫是全局单飞闸,旧 session 的在途 settle 凭所有权令牌
+    // (pinvouSummonTicket,见 summonPinvou)只入账不写 UI(r3 审 m-minor:否则
+    // 新会话里品/悟最长被静默吞 180s)。旧 settle 的 finally 命中同令牌时再赋
+    // false 也幂等。
     // 注意:本函数不止切 session 时跑——runSyncOnSession 后台同步(定时任务/记忆
     // 运行等)也会借它临时换缓冲,守卫随之被放,等于"在途也允许再召唤"。后果只是
     // 已接受的两次并发付费调用(dismiss 同代价);序号门保证无泄漏、无错窗注入
     // (r4 审 m6 核过)。若要收紧成严格 session-switch 语义,在切走时 bump
-    // pinvouSummonSeq 即可让旧 settle 永不匹配。
+    // pinvouSummonTicket 即可让旧 settle 永不匹配。
     state.pinvouSummoning = false;
     state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
     state.turnPresentedArtifacts = [];
@@ -1123,7 +1124,6 @@
     });
   }
 
-
   // web+tauriScheduled 共享
   async function loadScheduledTasks() {
     const stamp = scheduledTaskRequestStamp("tasks", null);
@@ -1729,9 +1729,8 @@
 
   // web+tauriSessions 共享（FE14 残余批：原 tauri sessions.js / web bridge.js 逐字镜像）
   // 只读不抬底：抬底拆到 raisePinvouSummonHighwater，且只在装载被验收后调用。
-  // 先抬底后拒绝的交错会把在途召唤的序号门毒死（旧 loader 在 await 后立即抬
-  // 全局，导航令牌在 sessions/bridge.js 的验收点才拒绝——在途 settle 的
-  // `seq === state.pinvouSummonSeq` 从此不等，弹窗卡 loading、守卫不放）。
+  // 所有权已拆到 pinvouSummonTicket（summonPinvou），抬 seq 毒不死在途 settle
+  // 的门了；但被拒装载仍不得抬账目底——副作用只跟验收走（JensenChen28 审 P2）。
   async function loadPinvouReviewsForSession(sid) {
     try {
       return (await invoke("get_session_pinvou_reviews", { sessionId: sid })) || [];
@@ -1746,6 +1745,8 @@
   // seq 从 1 起、永远排在旧 entry 之下——Rust 端 max_by_key(seq) 把旧 pass 当
   // 最近一轮，`passed && pos>` 守门每次点击都返回 None → 每次都全量重审、核账
   // 永不回归。每条 hydrate 路径在验收点（导航令牌通过 / 后台缓冲提交）调用。
+  // 只抬 seq（账目序）；在途 settle 的所有权门在 pinvouSummonTicket 上，本函数
+  // 碰不到（JensenChen28 审 P2 解耦）。
   function raisePinvouSummonHighwater(reviews) {
     if (!Array.isArray(reviews)) return;
     for (const entry of reviews) {
@@ -3064,7 +3065,6 @@
     return rebuiltQueuedFromEnvelope(envelope, userText);
   }
 
-
   // web+tauriChat 共享
   function getComposerDraft() {
     return String(state.composerDraft || "");
@@ -3134,8 +3134,8 @@
     // pinvouSummoning 仍 held"的死区——重复点品/悟在守卫处(summonPinvou 开头)被吞,要等
     // 整个直连模型调用(本地 5-30s,云端思考模型最长 180s 超时)返回才解锁。注意关窗
     // 不取消后端请求:Rust 侧无 abort 通道,调用会跑完;返回后 recordPinvouReview
-    // 仍会把结果写入 sidecar。若关窗后又发起了新召唤,旧 settle 凭召唤序号
-    // (state.pinvouSummonSeq,见 summonPinvou)只入账:不写新弹窗、不解新守卫——
+    // 仍会把结果写入 sidecar。若关窗后又发起了新召唤,旧 settle 凭所有权令牌
+    // (state.pinvouSummonTicket,见 summonPinvou)只入账:不写新弹窗、不解新守卫——
     // 旧结果注入新弹窗/旧 finally 提前解新守卫两个串扰都被序号门挡住(r3 审 M9)。
     // 代价:dismiss→再召唤=两次并发直连调用(各自计费);这是用户显式行为,幂等入账。
     state.pinvouModal = null;
@@ -4776,11 +4776,18 @@
     if (state.pinvouSummoning) return;
     state.pinvouSummoning = true;
     const sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
-    // 本次召唤序号:settle 路径凭 `seq === state.pinvouSummonSeq` 才写弹窗/解守卫。
-    // dismiss 即解守卫(保留"关窗后立即可再召唤"),所以 dismiss→再召唤窗口里旧
-    // settle 会晚到:序号不等时旧结果只入账、不写新弹窗,旧 finally 也不解掉新
-    // 召唤的守卫(r3 审 M9:旧结果注入新弹窗/旧 finally 提前解守卫,两个串扰)。
-    const seq = (state.pinvouSummonSeq = (state.pinvouSummonSeq || 0) + 1);
+    // 两种序号解耦(JensenChen28 审 P2):seq 是账目序(入 sidecar 供核账辨新旧,后台装载
+    // 非活跃 session 的 sidecar 时会把它抬到全局 max);ticket 是所有权令牌,
+    // 只有召唤流程自增。settle 路径凭 `ticket === state.pinvouSummonTicket`
+    // 才写弹窗/解守卫。dismiss 即解守卫(保留"关窗后立即可再召唤"),所以
+    // dismiss→再召唤窗口里旧 settle 会晚到:ticket 不等时旧结果只入账、不写
+    // 新弹窗,旧 finally 也不解掉新召唤的守卫(r3 审 M9:旧结果注入新弹窗/旧
+    // finally 提前解守卫,两个串扰)。
+    state.pinvouSummonSeq = (state.pinvouSummonSeq || 0) + 1;
+    const seq = state.pinvouSummonSeq; // 账目序:recordPinvouReview 落 sidecar,抬底抬的也是它
+    state.pinvouSummonTicket = (state.pinvouSummonTicket || 0) + 1;
+    const ticket = state.pinvouSummonTicket; // 所有权:抬底/后台装载只动 seq,毒不死本门
+
     // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
     // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
     state.pinvouModal = { loading: true, coverage: mode === "coverage" };
@@ -4790,11 +4797,11 @@
       const review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
       if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
       recordPinvouReview(review, seq); // 存 sidecar(供核账读上轮账目,带召唤序号辨新旧);modal.review 同引用,裁决写它=写 sidecar
-      if (state.pinvouModal && state.pinvouSummonSeq === seq) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
+      if (state.pinvouModal && state.pinvouSummonTicket === ticket) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
     } catch (e) {
-      if (state.activeSessionId === sid && state.pinvouModal && state.pinvouSummonSeq === seq) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
+      if (state.activeSessionId === sid && state.pinvouModal && state.pinvouSummonTicket === ticket) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
     } finally {
-      if (state.pinvouSummonSeq === seq) state.pinvouSummoning = false; // 被顶掉的旧 settle 不动新召唤的守卫
+      if (state.pinvouSummonTicket === ticket) state.pinvouSummoning = false; // 被顶掉的旧 settle 不动新召唤的守卫
       notify();
     }
   }
@@ -5463,7 +5470,6 @@
     if (item.type === "plan_card") return false;
     return true;
   }
-
 
   // lane 转发优先：以下名字在部分 lane 会以 deps（lane 内转发函数）传入；
   // 有传入时保持合并前的解析路径（转发到原 cluster 实例），未传入时用上方共享实现。

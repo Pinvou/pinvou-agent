@@ -51,6 +51,34 @@ function extractRestoreBlock(source) {
   return match[0];
 }
 
+// 后台装载抬底的两个落点在 lane 里（共享 raise 本体仍在 helpers）：抽 tauri
+// sessions.js 的 ensureSessionBufferLoaded 真身（web bridge.js 逐字镜像同一
+// 抬底行），与共享 loader/raise/summon 块同 ctx 执行，复放真实后台交错。
+const sessionsSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'platform', 'tauri', 'bridge', 'sessions.js'),
+  'utf8',
+);
+const webBridgeSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'platform', 'web', 'bridge.js'),
+  'utf8',
+);
+
+function extractEnsureBlock(source) {
+  const match = source.match(
+    /async function ensureSessionBufferLoaded\(sid\) \{[\s\S]*?buf\.loadedFromDisk = true;\n  \}\n/,
+  );
+  assert.ok(match, 'ensureSessionBufferLoaded 函数体未找到——抽取正则与源码漂移');
+  return match[0];
+}
+
+function extractRaiseBlock(source) {
+  const match = source.match(
+    /function raisePinvouSummonHighwater\(reviews\) \{[\s\S]*?\n  \}\n/,
+  );
+  assert.ok(match, 'raisePinvouSummonHighwater 函数体未找到——抽取正则与源码漂移');
+  return match[0];
+}
+
 function makeDeferredInvoke(log) {
   const pending = [];
   const invoke = (command, payload) => {
@@ -208,6 +236,126 @@ test('rejected-navigation loader cannot poison an in-flight summon (zhuowp round
     1,
     'the settle is still ledgered with its own seq',
   );
+});
+
+// JensenChen28 审 P2：所有权与账目序解耦前的缺陷复放。全局 pinvouSummonSeq 有
+// 两个角色：(1) 账目抬底高位水（sidecar 持久 seq，重启清零后靠装载抬回，
+// r5 审 M1，保留）；(2) 在途召唤的所有权令牌（settle 凭它写弹窗/解守卫）。
+// 活动会话 A 召唤在途时，后台 ensureSessionBufferLoaded（sid !== active 的
+// 非活跃装载）抬 s2 sidecar 的高位水——s2 持久 seq 更大就把全局抬过 A 捕获的
+// seq，旧门 `seq === state.pinvouSummonSeq` 从此不等：A 的成功响应不再结算
+// 弹窗、也不解守卫，活动弹窗卡 loading 到关窗为止。解耦后门走
+// pinvouSummonTicket（只有召唤流程自增，抬底碰不到），同样的交错必须照常
+// 结算。把门改回 seq、删掉 ticket 自增、或让抬底顺手动 ticket，本测试红。
+test('background hydrate raising the ledger seq cannot strand an in-flight summon (JensenChen28 review P2)', async () => {
+  const log = [];
+  const { invoke, pending } = makeDeferredInvoke(log);
+  const state = {
+    activeSessionId: 's1',
+    pinvouSummoning: false,
+    pinvouSummonSeq: 0,
+    pinvouModal: null,
+    pinvouReviews: [],
+    messages: [{}, {}, {}],
+    sessions: [{ id: 's2', message_count: 4 }],
+  };
+  const buffers = {
+    s2: { messages: [], chatItems: [], loadedFromDisk: false, busy: false, remoteTurnActive: false },
+  };
+  const sandbox = {
+    invoke,
+    state,
+    notify: () => {},
+    console,
+    bt: (key) => key,
+    addSystemItem: () => {},
+    getBuffer: (sid) => buffers[sid],
+    hydrateWorkingSetFromSaved: () => {},
+    loadPersonaEventsForSession: async () => [],
+    syncPinvouSceneEventsForSession: async () => [],
+    syncSteeredMessagesForSession: async () => [],
+    runSyncOnSession: (sid, fn) => fn(),
+    resetPendingAssistant: () => {},
+    rerenderFromMessages: () => {},
+  };
+  vm.runInNewContext(
+    `${extractLoaderBlock(sharedBaseSource)}\n${extractRaiseBlock(sharedBaseSource)}\n${extractSaveChainBlock(sharedBaseSource)}\n${extractSummonBlock(sharedBaseSource)}\n${extractEnsureBlock(sessionsSource)}\n` +
+      'this.__summon = summonPinvou;\nthis.__ensure = ensureSessionBufferLoaded;',
+    sandbox,
+    { filename: 'pinvu-summon-ticket-interleaving.js' },
+  );
+
+  // A（活动会话 s1）召唤在途：捕获 seq 1 / ticket 1。
+  const summonDone = sandbox.__summon(null, null);
+  assert.strictEqual(state.pinvouSummonSeq, 1, 'the summon takes seq 1');
+  assert.strictEqual(state.pinvouSummoning, true, 'the summon arms the guard');
+  // 后台装载非活跃 s2（真身 ensureSessionBufferLoaded，含 sid !== active 门）。
+  const ensureDone = sandbox.__ensure('s2');
+  await drain();
+  pending.find((p) => p.call.command === 'load_session').resolve({
+    messages: [{}, {}, {}, {}],
+    metadata: { id: 's2', message_count: 4 },
+  });
+  await drain();
+  pending.find((p) => p.call.command === 'get_session_pinvou_reviews').resolve([
+    { pos: 1, seq: 99, review: {} },
+  ]);
+  await drain();
+  pending.find((p) => p.call.command === 'get_session_timeline').resolve([]);
+  await ensureDone;
+  // 缺陷前提成立：后台抬底确实把全局账目序抬过了在途召唤的 seq——旧实现此处
+  // 之后 A 永远结算不了。ticket 必须纹丝不动。
+  assert.strictEqual(
+    state.pinvouSummonSeq,
+    99,
+    'the background raise must happen (r5 M1 ledger intent kept) and must pass the in-flight seq',
+  );
+  assert.strictEqual(
+    state.pinvouSummonTicket,
+    1,
+    'the raise is ordering-only: it must never touch the ownership ticket',
+  );
+  // A 的响应此刻才回来：ticket 门仍匹配 → 弹窗照常解锁、守卫照常放行。
+  pending.find((p) => p.call.command === 'summon_pinvou').resolve({ verdict: 'pass', issues: [] });
+  await drain();
+  await summonDone;
+  assert.strictEqual(
+    state.pinvouModal && state.pinvouModal.loading === false &&
+      state.pinvouModal.review && state.pinvouModal.review.verdict,
+    'pass',
+    'the in-flight summon must still settle its modal after the background raise',
+  );
+  assert.strictEqual(state.pinvouSummoning, false, 'the guard must release');
+  assert.strictEqual(
+    state.pinvouReviews[0].seq,
+    1,
+    'the ledger entry rides its own issuance seq, not the highwater',
+  );
+  pending.find((p) => p.call.command === 'save_session_pinvou_reviews').resolve(null);
+  await drain();
+});
+
+// JensenChen28 审 P2 次要面（排序半边）：切换路径的抬底必须落在 saved.metadata
+// 校验之后——被拒/畸形装载不得抬账目底（web 桥曾把 raise 放在校验之前，回归
+// 过的真实形态）。行为级无法驱动两个 lane 的巨型 switchToSessionInternal（依
+// 赖面太大），按 bridge_lane_deps 的结构钉风格锁源码序：抬底调用点必须晚于
+// metadata 校验、早于提交点。
+test('switch-path highwater raise sits after the saved.metadata validation in both lanes', () => {
+  for (const [label, laneSource] of [['tauri sessions.js', sessionsSource], ['web bridge.js', webBridgeSource]]) {
+    const fnStart = laneSource.indexOf('async function switchToSessionInternal(');
+    assert.ok(fnStart >= 0, `${label}: switchToSessionInternal 未找到`);
+    const commitMark = laneSource.indexOf('才一次性提交 active/context', fnStart);
+    assert.ok(commitMark > fnStart, `${label}: 提交点注释未找到`);
+    const span = laneSource.slice(fnStart, commitMark);
+    const validateMark = span.indexOf('!saved.metadata || !saved.metadata.id');
+    const raiseMark = span.indexOf('raisePinvouSummonHighwater(pinvouReviews)');
+    assert.ok(validateMark >= 0, `${label}: saved.metadata 校验未找到`);
+    assert.ok(raiseMark >= 0, `${label}: 切换路径抬底未找到`);
+    assert.ok(
+      raiseMark > validateMark,
+      `${label}: 切换路径抬底必须落在 saved.metadata 校验之后（被拒装载不得抬账目底，JensenChen28 审 P2）`,
+    );
+  }
 });
 
 test('review save chain serializes: later records queue behind pending saves (r5 m6)', async () => {
