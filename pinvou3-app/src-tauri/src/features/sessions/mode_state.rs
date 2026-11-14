@@ -1674,6 +1674,46 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Aux-lane ask seeding (round-5 review minor): the aux entry's
+    /// ask-on-guardrail follows the PARENT's effective toggle instead of the
+    /// global default, so an armed parent's side panel asks like its parent
+    /// (the parent's own opt-out is the thing being mirrored) and a
+    /// silent-deny parent's panel stays silent — previously a global-OFF
+    /// default under an armed Yolo parent hard-denied silently in the aux
+    /// while the parent raised cards. An explicit aux override always wins
+    /// and is never stomped; a persist failure degrades to the seed
+    /// `set_mode` already minted (the global default) and self-heals on the
+    /// next confirmed-absent re-pin. Called from the aux mode pin
+    /// (`pin_aux_mode_from_parent`) right after `set_mode`, under the same
+    /// confirmed-absent gating, so an existing aux choice is never
+    /// re-resolved.
+    pub(crate) fn seed_aux_ask_from_parent(&self, aux_id: &str, parent_ask: bool) -> bool {
+        if self.ask_on_guardrail_overrides.read().get(aux_id).is_some() {
+            return false;
+        }
+        if self.ask_on_guardrail_seed(aux_id) == parent_ask {
+            return false;
+        }
+        let _io = self.session_mode_states_io.lock();
+        match Self::apply_ask_on_guardrail_mutation_locked(&[(aux_id, parent_ask)], &[]) {
+            Ok(()) => {
+                if let Some(entry) = self.mode_states.write().get_mut(aux_id) {
+                    entry.ask_on_guardrail = parent_ask;
+                }
+                self.ask_on_guardrail_overrides
+                    .write()
+                    .insert(aux_id.to_string(), parent_ask);
+                true
+            }
+            Err(error) => {
+                // Boot-log discipline keeps session ids off stderr; the
+                // degraded value is the global default `set_mode` minted.
+                eprintln!("[sessions] aux ask-on-guardrail seed persist failed: {error:#}");
+                false
+            }
+        }
+    }
+
     /// THE ask-on-guardrail seeding point for fresh-entry mints: an explicit
     /// per-session override (recorded by [`Self::set_ask_on_guardrail`] even
     /// before the session had a mode entry, and mirrored from the sidecar at

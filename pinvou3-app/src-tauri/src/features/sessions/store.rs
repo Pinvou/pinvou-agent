@@ -1201,11 +1201,22 @@ impl SessionStore {
     /// an option). The durable fix is the child-side classification change,
     /// tracked for the next CodeWhale consumption batch.
     fn pin_aux_mode_from_parent(&self, aux_id: &str, parent_id: &str) {
-        let aux_mode = match self.mode_state(parent_id).mode {
+        let parent_state = self.mode_state(parent_id);
+        let aux_mode = match parent_state.mode {
             SerializableMode::Auto => SerializableMode::Plan,
             supported => supported,
         };
         let _ = self.set_mode(aux_id, aux_mode);
+        // Round-5 review minor: the aux ask toggle follows the parent's
+        // effective armed state instead of the global default, so an armed
+        // parent's side panel asks like its parent (the parent's own opt-out
+        // is the thing being mirrored) and a silent-deny parent's panel
+        // stays silent — a global-OFF default under an armed Yolo parent
+        // used to hard-deny silently in the aux while the parent raised
+        // cards. An explicit aux override always wins and is never stomped;
+        // the call rides the same confirmed-absent gating as the mode pin
+        // above, so an existing aux choice is never re-resolved.
+        self.seed_aux_ask_from_parent(aux_id, parent_state.ask_on_guardrail);
     }
 
     /// Confirmed-absent probe for the reuse leg of the aux mode pin (review
@@ -1224,16 +1235,24 @@ impl SessionStore {
     /// the next panel open retries, so skipping self-heals. A durable
     /// entry — including a Yolo pin inherited from a since-switched parent
     /// — is an existing choice and is never re-resolved here.
+    /// The shared durable mode map's path. Accessor, not the literal: the
+    /// quarantine flag compares against `shared_mode_map_file_name()`, so a
+    /// rename must move both sites together (round-10 review). `pub(crate)`
+    /// so the command-layer side-effect tests can assert the durable mint
+    /// surface without hardcoding the file name (round-5 review: the
+    /// no-side-effect gate probe reads the durable map, not the aux-only
+    /// in-memory mirror).
+    pub(crate) fn shared_mode_map_file(&self) -> std::path::PathBuf {
+        crate::platform::paths::sessions_root()
+            .join(crate::features::sessions::sidecars::shared_mode_map_file_name())
+    }
+
     fn durable_aux_mode_record_confirmed_absent(&self, id: &str) -> bool {
         // Single-file read, but under the same mutex as the mutators so the
         // probe cannot straddle a mutation's RMW sequence
         // (`durable_mode_entry` holds it for the same reason).
         let _io = self.session_mode_states_io.lock();
-        // Accessor, not the literal: the quarantine flag compares against
-        // `shared_mode_map_file_name()`, so a rename must move both sites
-        // together (round-10 review).
-        let file = crate::platform::paths::sessions_root()
-            .join(crate::features::sessions::sidecars::shared_mode_map_file_name());
+        let file = self.shared_mode_map_file();
         match std::fs::read_to_string(&file) {
             Ok(content) => match serde_json::from_str::<
                 std::collections::HashMap<String, SerializableMode>,
