@@ -620,7 +620,24 @@ pub async fn decide_approval(
     };
     let Some((engine, incarnation)) = pool.handle_with_incarnation(&session_id).await else {
         // Engine absent: no incarnation to compare against; only the registry fence guards.
-        pending_approvals::restore_if_generation_is(&session_id, pending, registry_generation);
+        // A refused restore (round-5 review minor: a purge/terminal sweep can
+        // advance the generation across the handle_with_incarnation await) means
+        // the entry is gone — the same condition the determinate-refusal arm's
+        // broadcast covers. Without the resolved-shaped "unknown", other mounted
+        // faces keep an active-looking dead card whose next click can only fail
+        // with "approval not found". A successful restore keeps the card live
+        // (the engine may lazily respawn), so it stays retriable and stays
+        // silent — behavior unchanged.
+        if !pending_approvals::restore_if_generation_is(&session_id, pending, registry_generation) {
+            let payload =
+                pending_approvals::approval_resolved_payload(&session_id, &approval_id, "unknown");
+            let _ = app.emit("chat:approval_resolved", payload.clone());
+            crate::features::remote_control::forward_app_event(
+                &app,
+                "chat:approval_resolved",
+                payload,
+            );
+        }
         return Err("session_engine_not_running".to_string());
     };
     let result = if decision == "deny" {
@@ -745,20 +762,32 @@ pub async fn decide_approval(
         // The grant is recorded on the lossy grouping_key: covers later flag variants (v0.8.37 semantics).
         // It carries the registered card's origin workspace generation: an old success arm resumed after a rebind
         // advanced the generation is refused here in-lock on mismatch, never writing the old directory's decision into new-generation memory (review 5764675531).
-        pending_approvals::remember_grant(
+        // Round-5 review minor: a refused write (rebind advanced the generation
+        // between the card raise and the click) used to vanish silently while the
+        // broadcast below still settles every face as granted — log the refusal so
+        // the "asked again on the next same-family call" outcome is diagnosable.
+        if !pending_approvals::remember_grant(
             &session_id,
             &pending.approval_grouping_key,
             pending.request_workspace_generation,
-        );
+        ) {
+            eprintln!(
+                "[interaction] grant memory refused (generation advanced by a rebind): session {session_id} approval {approval_id}"
+            );
+        }
     }
     if outcome.is_ok() && decision == "deny" && session_live {
         // The denial is recorded on the exact approval_key: changed arguments require asking again (#1617 semantics).
-        // Generation validation matches remember_grant.
-        pending_approvals::remember_denial(
+        // Generation validation matches remember_grant; a refused write is logged for the same reason.
+        if !pending_approvals::remember_denial(
             &session_id,
             &pending.approval_key,
             pending.request_workspace_generation,
-        );
+        ) {
+            eprintln!(
+                "[interaction] denial memory refused (generation advanced by a rebind): session {session_id} approval {approval_id}"
+            );
+        }
     }
     // The convergence broadcast happens after the engine call succeeds (same order as the cache writes): on
     // failure nothing is broadcast — other surfaces' cards stay pending and the originator gets the error; the removed registration went back as-is, so retries can still settle.
