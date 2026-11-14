@@ -1786,7 +1786,10 @@ impl Pinvou3Bridge {
     /// Authorization header there exactly like the engine route does —
     /// otherwise those features would send an empty `Bearer ` against the
     /// "no credentials are sent" contract the toggle's copy promises.
-    pub(crate) fn effective_model_declares_no_auth(&self) -> bool {
+    /// `pub` (round-5 review): the CLI's blocking voice mirror consumes the
+    /// same predicate, so the empty-bearer shape cannot survive on one
+    /// surface and not the other.
+    pub fn effective_model_declares_no_auth(&self) -> bool {
         self.effective_model_owned()
             .as_ref()
             .map(Self::model_declares_no_auth)

@@ -2199,10 +2199,14 @@ fn call_postprocess_model(
     let model_name = model_name.to_owned();
 
     let (tx, rx) = std::sync::mpsc::channel();
+    // Resolved on the caller side like every other bridge read: the
+    // exchange thread owns plain data only.
+    let declares_no_auth = bridge.effective_model_declares_no_auth();
     std::thread::spawn(move || {
         let _ = tx.send(postprocess_http_exchange(
             base_url,
             api_key,
+            declares_no_auth,
             provider,
             preset,
             system,
@@ -2227,6 +2231,7 @@ fn call_postprocess_model(
 fn postprocess_http_exchange(
     base_url: String,
     api_key: String,
+    declares_no_auth: bool,
     provider: String,
     preset: pinvou3_lib::platform::prefs::ModelPreset,
     system: &'static str,
@@ -2334,7 +2339,16 @@ fn postprocess_http_exchange(
     ));
     // Same conditional gateway header as the Anthropic lane above.
     request = with_opencode_session(request);
-    let value = send_json(request.bearer_auth(api_key).json(&body))?;
+    // Keyless parity (round-5 review): a keyless-declared endpoint receives
+    // no Authorization header at all — an empty `Bearer ` would contradict
+    // the toggle's "no credentials are sent" contract. The GUI mirror
+    // (`app/commands/voice.rs`) applies the same rule via the same bridge
+    // predicate; undeclared empty-key records keep the historical
+    // empty-bearer shape.
+    if !declares_no_auth {
+        request = request.bearer_auth(api_key);
+    }
+    let value = send_json(request.json(&body))?;
     let message = value
         .get("choices")
         .and_then(|choices| choices.as_array())
@@ -3120,6 +3134,7 @@ content-length: {}\r\n\r\n{}",
         let (text, truncated) = postprocess_http_exchange(
             url,
             String::new(),
+            false,
             String::new(),
             pinvou3_lib::platform::prefs::ModelPreset::Anthropic,
             voice_postprocess_prompt("task"),
@@ -3283,6 +3298,7 @@ content-length: {}\r\n\r\n{}",
         let (text, truncated) = postprocess_http_exchange(
             url,
             String::new(),
+            false,
             "openai_compatible".to_owned(),
             pinvou3_lib::platform::prefs::ModelPreset::Minimax,
             voice_postprocess_prompt("task"),
@@ -3308,6 +3324,70 @@ content-length: {}\r\n\r\n{}",
             body["reasoning_split"],
             serde_json::json!(true),
             "Minimax must send the reasoning split marker: {body}"
+        );
+    }
+
+    /// Round-5 review: the CLI voice lane kept the empty-`Bearer ` header
+    /// the GUI mirror omits under a keyless declaration. The OpenAI wire
+    /// must attach NO Authorization header when the record declares the
+    /// endpoint keyless (an empty token still contradicts the toggle's
+    /// "no credentials are sent" contract), keep the bearer for an
+    /// undeclared keyed record, and keep the historical shape elsewhere.
+    /// Hermetic: the server is a `std::net::TcpListener` on loopback, no
+    /// external network.
+    #[test]
+    fn voice_exchange_bearer_follows_the_keyless_declaration() {
+        use std::time::Duration;
+
+        let body = "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}";
+        let header_of = |request: &str| -> Option<String> {
+            request
+                .split_once("\r\n\r\n")
+                .expect("headers then body")
+                .0
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("authorization")
+                        .then(|| value.trim().to_owned())
+                })
+        };
+        let exchange = |url: String, api_key: &str, declares_no_auth: bool| {
+            postprocess_http_exchange(
+                url,
+                api_key.to_owned(),
+                declares_no_auth,
+                "openai_compatible".to_owned(),
+                pinvou3_lib::platform::prefs::ModelPreset::Minimax,
+                voice_postprocess_prompt("task"),
+                "user".to_owned(),
+                "model".to_owned(),
+                voice_postprocess_max_tokens("task", false),
+                Duration::from_secs(10),
+            )
+            .expect("the mock exchange must succeed")
+        };
+
+        // Declared keyless: no Authorization header at all.
+        let (url, request_rx) = serve_once(body.to_owned());
+        let _ = exchange(url, "sk-residual", true);
+        let captured = request_rx.recv().expect("captured");
+        let request = String::from_utf8_lossy(&captured);
+        assert!(
+            header_of(&request).is_none(),
+            "a keyless-declared exchange must send no Authorization header: {request}"
+        );
+
+        // Undeclared with a key: the bearer keeps flowing.
+        let (url, request_rx) = serve_once(body.to_owned());
+        let _ = exchange(url, "sk-live", false);
+        let captured = request_rx.recv().expect("captured");
+        let request = String::from_utf8_lossy(&captured);
+        assert_eq!(
+            header_of(&request).as_deref(),
+            Some("Bearer sk-live"),
+            "an undeclared keyed record keeps the bearer: {request}"
         );
     }
 
