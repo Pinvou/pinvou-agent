@@ -53,7 +53,7 @@
   const STATE_SLICE_FIELDS = {
     platform: ["appVersion", "backendOnline", "platformCapabilities"],
     sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch", "draftWorkspacePath"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "compactionSeq", "compactionStarts", "compactingSessions", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
     voice: ["voiceInput", "voiceAsrSetup"],
     knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
     scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
@@ -307,7 +307,17 @@
       buf.scheduledInitialTurnPhase === "active" ||
       !!(buf.queued && buf.queued.length) ||
       !!(state.scheduledRunContext && state.scheduledRunContext.sessionId === id) ||
-      state.scheduledTaskCreationSessionId === id;
+      state.scheduledTaskCreationSessionId === id ||
+      // Buffers with a compaction in flight are exempt from capacity
+      // eviction: evicting would clear the in-flight marker and reopen the
+      // entry while the Rust side is still compacting and pool.compact_now
+      // does not coalesce enqueues, so another click would enqueue a second
+      // compaction. Timestamps heal at read time after 15 minutes (the same
+      // bound as ChatView's COMPACTING_FLAG_MAX_AGE_MS and Rust's
+      // MAX_COMPACTION_LATCH_AGE); an expired marker does not protect, and
+      // the buffer is evicted as usual with its marker cleared alongside.
+      !!(state.compactingSessions && state.compactingSessions[id] &&
+        Date.now() - state.compactingSessions[id] < 15 * 60 * 1000);
   }
 
   // web+tauriSessions 共享

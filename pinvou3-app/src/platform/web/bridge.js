@@ -231,6 +231,15 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     artifactChange: { seq: 0, path: "", event: "", sessionId: "", at: 0 },
     // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
     sessionBusy: {},
+    // Sessions with a compaction in flight, { session_id: set-at epoch ms }.
+    // chat:compaction start sets it and done/fail/cancel clears it; the main
+    // lane's compact entry disables off it (the same mechanism as the code
+    // lane's lane.compacting). Outside the working set (not among
+    // saveWorkingSetTo's explicit fields), so session swaps don't touch it;
+    // session deletion/eviction clears it together with turnUsageDirty.
+    compactingSessions: {},
+    compactionStarts: {},
+    compactionSeq: 0,
     // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
@@ -946,6 +955,8 @@ function isProtectedScheduledBuffer(id, buf) { return pinvouSharedweb().isProtec
       cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete state.compactingSessions[id];
+      delete state.compactionStarts[id];
       // personaPlaceholderTitles is lightweight session metadata (the marker
       // for placeholder titles that auto-rename may override); rehydration
       // never restores it, so capacity eviction must keep it and only real
@@ -989,6 +1000,8 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
       cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete state.compactingSessions[id];
+      delete state.compactionStarts[id];
       // personaPlaceholderTitles survives capacity eviction (see the
       // comment at the scheduled eviction site); only purgeSessionBuffer
       // (real deletion) cleans it.
@@ -1006,6 +1019,8 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
     // Real session deletion: any stashed draft is invalidated too and must not flow back into a rebuilt buffer with the same id.
     delete evictedSessionDrafts[id];
     delete turnUsageDirty[id];
+    delete state.compactingSessions[id];
+    delete state.compactionStarts[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
     // The scene-events localStorage key is cleaned together with session deletion, avoiding unbounded accumulation across historical sessions.
@@ -4511,11 +4526,60 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
+    // The compaction in-flight marker: start sets it, a terminal
+    // (done/fail/cancel) clears it, and the main lane's compact entry
+    // disables off it (the same mechanism as the code lane's
+    // lane.compacting). start stores a timestamp: the terminal event may
+    // never arrive (evicting the engine aborts its forwarder — see the
+    // reclaim_engine_entry comment in engine_pool.rs; a desktop restart on
+    // the web side loses it the same way), so the read side heals after 15
+    // minutes, the same fallback as Rust's MAX_COMPACTION_LATCH_AGE, and
+    // the entry is not disabled forever. The fallback reads the wall clock
+    // (Date.now), not a Rust-side monotonic Instant: a clock jump or resume
+    // from sleep re-enables early, and a compaction running past 15 minutes
+    // re-enables the entry before the engine finishes — the cost of a
+    // duplicate enqueue equals the Rust latch expiring (pool.compact_now
+    // does not coalesce enqueues), which is accepted; no extra
+    // monotonic-clock alignment machinery is introduced for it.
+    // The post_tokens carried by done is a post-compaction usage estimate
+    // (the forwarder gained it to refresh the usage bar; the Rust side
+    // computes it as a conservative estimated_input_tokens). The compaction
+    // turn already set turnUsageDirty, so subsequent usage accumulations
+    // are untrustworthy and the usage bar can only be refreshed by this
+    // post_tokens — it must not be swallowed by the dirty semantics.
+    const sid = e.payload && e.payload.session_id;
+    // The compactionStarts signal is persistent BY DESIGN: it survives the
+    // terminal and prune-only merges, so the UI can reconcile a manual
+    // compact marker whose start and terminal coalesced before any render
+    // (review 5874108926 follow-up) — cleared with the session.
+    // The compactionStarts signal carries the bridge's monotonic
+    // compaction sequence (NOT a wall-clock time — review 5876783763:
+    // timestamp ordering of persistent events breaks on
+    // same-millisecond collisions and clock rollbacks). It survives
+    // the terminal and prune-only merges, so the UI can reconcile a
+    // manual compact marker whose start and terminal coalesced before
+    // any render (review 5874108926 follow-up) — cleared with the
+    // session.
+    if (sid) {
+      if (phase === "start") {
+        state.compactingSessions[sid] = Date.now();
+        state.compactionSeq = (state.compactionSeq || 0) + 1;
+        state.compactionStarts[sid] = state.compactionSeq;
+      } else delete state.compactingSessions[sid];
+      notify();
+    }
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
+    if (phase === "done") {
+      const postTokens = Number(e.payload && e.payload.post_tokens);
+      if (Number.isFinite(postTokens) && postTokens > 0 && postTokens <= state.tokens.max) {
+        state.tokens = { input: postTokens, max: state.tokens.max };
+        notify();
+      }
+    }
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────

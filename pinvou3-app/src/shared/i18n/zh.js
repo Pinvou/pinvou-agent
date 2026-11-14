@@ -481,6 +481,7 @@ export const dictZh = {
         feedbackBodyRequired: '请填写反馈说明。', feedbackUnsupportedFile: '附件格式不支持。',
         feedbackTooManyFiles: '最多只能上传 5 个附件。', feedbackPickUnavailable: '当前环境无法打开文件选择器。',
         chatGreeting: '你好，今天想聊点什么？', artifacts: '产物与代码', placeholder: '询问 PINVOU 或输入指令', disclaimer: 'PINVOU 可能会生成不准确的信息，请仔细核实。', ctxUsage: '上下文',
+        compactNowTip: '压缩上下文，为会话腾出记忆空间', compactingNow: '正在压缩…',
         chatInputLimitReached: n => `已达到 ${n} 字符上限，无法继续输入。`,
         searchPlaceholder: '搜索对话', searchNoResults: '没有匹配的对话', searchDateAll: '全部',
         searchBatchManage: '批量管理', searchBatchDone: '完成', searchSelectAll: '全选', searchSelectedCount: n => `已选 ${n} 项`,

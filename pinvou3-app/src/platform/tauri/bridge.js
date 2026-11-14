@@ -197,6 +197,15 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
     // 本 turn 已 present_artifact 出过成品卡的产物 path —— chat:done 兜底补卡时跳过,不重复。
     turnPresentedArtifacts: [],
     busy: false,
+    // Sessions with a compaction in flight, { session_id: set-at epoch ms }.
+    // chat:compaction start sets it and done/fail/cancel clears it; the main
+    // lane's compact entry disables off it (the same mechanism as the code
+    // lane's lane.compacting). Outside the working set (not among
+    // saveWorkingSetTo's explicit fields), so session swaps don't touch it;
+    // session deletion/eviction clears it together with turnUsageDirty.
+    compactingSessions: {},
+    compactionStarts: {},
+    compactionSeq: 0,
     monitor: null,
     backendOnline: null, // null=checking, true, false
     platformCapabilities: {

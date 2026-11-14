@@ -1281,6 +1281,25 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
+    // The compaction in-flight marker (#834): start sets it, a terminal
+    // (done/fail/cancel) clears it, and the main lane's compact entry
+    // disables off it (the same mechanism as the code lane's
+    // lane.compacting). start stores a timestamp: the terminal event may
+    // never arrive (evicting the engine aborts its forwarder), so the read
+    // side heals after 15 minutes (MAX_COMPACTION_LATCH_AGE parity) and the
+    // entry is not disabled forever. The post_tokens carried by done is a
+    // post-compaction usage estimate consumed further below.
+    // r40 M1: `compactionSid` is the session_id captured BEFORE
+    // onSessionEvent (the active-session swap note above) - the same value
+    // main's latch reads from the payload, reused instead of re-deriving.
+    if (compactionSid) {
+      if (phase === "start") {
+        state.compactingSessions[compactionSid] = Date.now();
+        state.compactionSeq = (state.compactionSeq || 0) + 1;
+        state.compactionStarts[compactionSid] = state.compactionSeq;
+      } else delete state.compactingSessions[compactionSid];
+      notify();
+    }
     // r39 M1：真实收缩后（缓存已在换入前失效——见上）前台会话立即强制盘载
     // 重注水：时间线按收缩后 transcript 重建，序号与账本计数重新对齐，chips
     // 恢复渲染。done 通知条在重注水完成后补挂（盘载会整体重建时间线，先挂
@@ -1314,6 +1333,13 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     }
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
+    if (phase === "done") {
+      const postTokens = Number(e.payload && e.payload.post_tokens);
+      if (Number.isFinite(postTokens) && postTokens > 0 && postTokens <= state.tokens.max) {
+        state.tokens = { input: postTokens, max: state.tokens.max };
+        notify();
+      }
+    }
   }); });
 
   // Sub-agent tool gates happen inside the foundation and do not produce an

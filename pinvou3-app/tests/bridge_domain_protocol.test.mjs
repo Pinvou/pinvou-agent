@@ -250,6 +250,7 @@ const expectedProtocolHashes = {
   // command surface unchanged. Recomputed again in round 3: the present_artifact
   // comment now carries the web lane's exact `chat:tool_start` token so both
   // bridge lanes read byte-identically.
+
   // Recomputed once more for the r42 minor-9 boolean-contract gate on the
   // compaction front arm (reload success gate on the compaction notice).
   // Recomputed for the r46 MAJOR-3 resync-gating: the compaction resync arm now
@@ -260,6 +261,22 @@ const expectedProtocolHashes = {
   // takes { refuseWhenBusy } from the compaction arms and returns its verdict
   // (true invalidated / false refused) for the caller to gate the reload on.
   chat: 'de3344b02dac03467546d1ddeba49117d6f10d5a0384e34fda1ef8d9e9dc301f',
+
+  // Recomputed for the PR #834 review-fix wave: the chat:compaction listener
+  // now stores a timestamp (not a boolean) at start so the read side can
+  // expire a lost-terminal in-flight flag with the same 15-minute backstop
+  // as the Rust MAX_COMPACTION_LATCH_AGE latch, and the comment wording no
+  // longer calls post_tokens "accurate" (Rust emits a conservative estimate).
+  // Event names, invoke shapes and the payload contract unchanged; the web
+  // twin carries the identical body.
+  // Recomputed for review 5874108926 follow-up: the chat:compaction
+  // marker-maintenance block also records the persistent per-session
+  // compactionStarts signal (no invoke/listen surface change — the body
+  // text is part of the pinned call argument).
+  // Recomputed again for review 5876783763: the marker-maintenance block
+  // also advances the monotonic compactionSeq counter (no invoke/listen
+  // surface change).
+    chat: '6c9d458c773cce9befb95a0c66a08c5c6355290f7b799f405f6f91a2fd4262dd',
 
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',

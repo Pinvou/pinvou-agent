@@ -259,6 +259,24 @@ const MULTI_AGENT_ENABLED = can('multiAgent');
 // fall back to the default card.
 const COMPUTER_USE_ENABLED = can('computerUse');
 
+// The manual compact entry's in-flight fallback bound (15 minutes),
+// mirroring Rust's MAX_COMPACTION_LATCH_AGE (engine_pool.rs). See the
+// compact-entry comment block inside the ChatView component for the
+// mechanism and the wall-clock tradeoff. Module scope: it is a
+// render-invariant constant, and keeping it inside the component would
+// trip react-hooks/exhaustive-deps (the heal effect reads it while its
+// dependency array has no component-local values).
+const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
+
+// Pre-start manual-compaction admission markers, held OUTSIDE the component
+// (zhuowp round-3 P2): main.jsx renders ChatView only for the chat view, so
+// opening settings unmounts it — a useState map would discard the admission
+// while its queued Web RPC lives on, and the remounted view would re-enable
+// the button for a second, duplicate (billed, lossy) compaction. The module
+// store survives remounts; the useState mirror inside ChatView only drives
+// re-renders and re-seeds from the store at mount.
+const manualCompactAdmissionStore = { map: {} };
+
 // Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
 // Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
 // and must not also trigger submit — otherwise one Enter both commits and sends. Matches PetWindow.
@@ -1189,6 +1207,214 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [queuedEditCandidate, queued, activeSessionId, t, flashQueuedNotice]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
+      // The usage readout text is its own value: the button's visible
+      // content and its screen-reader name share it. The aria-label must
+      // not overwrite the usage outright — screen readers previously heard
+      // only the action name and lost the usage readout (the very reason
+      // the control exists; round-6 review M-5) — so the composed name is
+      // readout + action hint.
+      const ctxUsageText = ctxTokens && ctxTokens.max > 0
+        ? `${t.ctxUsage} ${ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / ${formatCompactCount(ctxTokens.max)} · ${Math.round(ctxPct * 100)}%`
+        : '';
+      // Manual compact entry: clicking the ctx usage row triggers
+      // compact_now. Progress/result surface as chat:compaction system
+      // items (shared with the code lane's event stream; the bridge already
+      // renders compactStart/Done/Cancel). The command itself only enqueues
+      // the Op and returns: a compaction requested mid-turn queues until the
+      // turn ends, so both busy (the current session's turn) and
+      // compactingSessions (the bridge's chat:compaction start→terminal
+      // in-flight marker, the same mechanism as the code lane's
+      // lane.compacting) must disable the entry — otherwise a click gives no
+      // feedback before the turn ends, and a click after the button resets
+      // would enqueue the compaction twice. The manual marker is kept from
+      // the click until the bridge's start marker lands (see the effect
+      // below; the session need not stay active), not cleared when invoke
+      // returns — between enqueue and start the button must not reset, or a
+      // double click would enqueue the compaction twice.
+      // Both compactingSessions and the manual markers carry timestamps and
+      // heal at read time after 15 minutes (the same fallback as Rust's
+      // MAX_COMPACTION_LATCH_AGE, engine_pool.rs): when a terminal event is
+      // lost (the engine is evicted and aborts its forwarder, or the desktop
+      // restarts on the web side) the in-flight marker expires and the entry
+      // is not disabled forever. The fallback reads the wall clock, not a
+      // monotonic one: a clock jump or resume from sleep re-enables early
+      // (a window differs from Rust's Instant semantics; re-enqueueing an
+      // over-long compaction costs the same as the Rust latch expiring, and
+      // that tradeoff is accepted). Markers are retained PER SESSION
+      // (review 5874108926 P2): ChatView does not remount on a session
+      // switch, so a single { sid, at } slot let a queue for B overwrite the
+      // queue for A before A's bridge start arrived — switching back to A
+      // then showed no marker and a second click could enqueue a second
+      // CompactContext for A (the pool does not coalesce these), costing an
+      // extra lossy summary. The map keys markers by sid and the release
+      // paths remove only the matching entry.
+      // Seeded from the module store (not fresh state): a remount — settings
+      // round-trip re-creates this component — must inherit the still-pending
+      // admission instead of re-enabling the button over a queued Web RPC
+      // (zhuowp round-3 P2). The write-through wrapper keeps the store and
+      // the render mirror identical on every update.
+      const [manualCompactBySid, setManualCompactBySidState] = useState(manualCompactAdmissionStore.map);
+      const setManualCompactBySid = (updater) => setManualCompactBySidState((current) => {
+        const next = typeof updater === 'function' ? updater(current) : updater;
+        manualCompactAdmissionStore.map = next;
+        return next;
+      });
+      const compactingMap = bs && bs.compactingSessions;
+      // The bridge's persistent per-session start signal (set at start,
+      // survives terminals and prune-only merges, cleared with the
+      // session): lets the sweep reconcile a manual marker whose start and
+      // terminal coalesced before any render while ANOTHER session was
+      // active (review 5874108926 follow-up) — the chatItems fallback
+      // cannot, being the active session's projection only. The signal's
+      // value is the bridge's monotonic compaction sequence number (NOT a
+      // wall-clock time — review 5876783763: timestamp ordering of
+      // persistent events breaks on same-millisecond collisions and clock
+      // rollbacks), so the sweep compares sequence numbers strictly.
+      const startsMap = bs && bs.compactionStarts;
+      const compactionSeq = (bs && bs.compactionSeq) || 0;
+      const compactingStartedAt = activeSessionId && compactingMap
+        ? compactingMap[activeSessionId] : 0;
+      const compactingActive = !!(compactingStartedAt && Date.now() - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS);
+      const activeManualCompact = activeSessionId ? manualCompactBySid[activeSessionId] : undefined;
+      const manualCompactActive = !!(activeManualCompact
+        && Date.now() - activeManualCompact.at < COMPACTING_FLAG_MAX_AGE_MS);
+      const ctxCompactInFlight = compactingActive || manualCompactActive;
+      useEffect(() => {
+        // Reconcile EVERY pending marker on each bridge-flag / items change,
+        // independent of the active session (review 5874108926 follow-up):
+        // a queue for A whose start lands while B is active must release
+        // A's entry — the start-item fallback cannot do that (chatItems is
+        // the active session's projection, and a prune-only terminal even
+        // removes A's start item), so only the global flag map reconciles
+        // background sessions. Without this sweep, returning to A inside
+        // the TTL window still shows "compacting" for an already-completed
+        // compaction.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- same shape as RightDock's stale-permit revocation: start takeover and TTL expiry must release the markers synchronously on the bridge change, or a finished compaction keeps its session's button disabled until the next unrelated render
+        setManualCompactBySid(current => {
+          const now = Date.now();
+          let next = current;
+          const drop = sid => {
+            if (next === current) next = { ...current };
+            delete next[sid];
+          };
+          for (const sid of Object.keys(current)) {
+            // TTL release for every session: an entry whose terminal event
+            // was lost expires here (the same bound the read-side freshness
+            // check applies), instead of lingering until the session is
+            // deleted or evicted.
+            if (now - current[sid].at >= COMPACTING_FLAG_MAX_AGE_MS) { drop(sid); continue; }
+            // A start that landed AFTER this click reconciles the marker:
+            // the start signal carries the bridge's compaction sequence
+            // number, and the click captured the sequence snapshot — a
+            // start strictly AFTER the click has a strictly greater
+            // sequence, regardless of wall-clock collisions or rollback
+            // (review 5876783763). The signal survives the terminal and
+            // prune-only merges, so it covers starts and terminals that
+            // coalesced before any render. Any fresh start (auto or
+            // manual) takes the marker over — a click landing mid-turn may
+            // overlap a turn-internal auto compaction, and correlating by
+            // compact id would change both byte-pinned listener bodies
+            // (round-6 review M-2, recorded tradeoff).
+            const startedSeq = startsMap ? startsMap[sid] : 0;
+            // No explicit jump: this arm closes the loop body, so drop IS
+            // skip here (an explicit continue would trip sonarjs
+            // no-redundant-jump after the pre-start reconcile moved to
+            // main via #833 and this arm became the loop tail).
+            if (startedSeq > current[sid].seqAt) { drop(sid); }
+          }
+          // The ACTIVE session keeps the start-item fallback: when start and
+          // the terminal arrive in the same React batch (an instantly failing
+          // compaction, e.g. the provider 401s at once), the bridge flag
+          // never appears in any render and the flag sweep above can never
+          // see it; but start system items are an append-only projection
+          // (itemIds are monotonically increasing; a prune-only merge removes
+          // the start item — that residue falls back to the TTL), so the
+          // post-batch snapshot still contains it — releasing on "a start
+          // item newer than the click snapshot" keeps an instant failure from
+          // pinning the button for a full TTL (round-6 review M-1).
+          const entry = activeSessionId ? current[activeSessionId] : undefined;
+          if (entry) {
+            let itemTookOver = false;
+            for (let i = chatItems.length - 1; i >= 0; i--) {
+              const item = chatItems[i];
+              if (!item || item.id <= entry.itemsAt) break; // ids are monotonic; stop past the click snapshot
+              if (item.type === 'system' && item.compactPhase === 'start') { itemTookOver = true; break; }
+            }
+            if (itemTookOver) drop(activeSessionId);
+          }
+          return next;
+        });
+      }, [compactingMap, startsMap, manualCompactBySid, chatItems, activeSessionId]);
+      // Proactive fallback heal: while the entry is disabled, schedule one
+      // tick at the expiry boundary so a completely idle app still
+      // re-enables the button at the 15-minute edge — otherwise, with a
+      // lost terminal event, the button would wait for the next unrelated
+      // notify to re-render, and a click on the disabled button produces no
+      // render at all, leaving the false "compacting" state stuck. An
+      // in-flight compaction is rare, the timer exists only while one is,
+      // and the idle state pays zero overhead.
+      const [, setCompactHealTick] = useState(0);
+      useEffect(() => {
+        if (!ctxCompactInFlight) return;
+        const now = Date.now();
+        // Only still-fresh boundaries are schedulable: an already-expired
+        // bridge timestamp winning the min would fire once immediately and
+        // leave the fresh marker's expiry unscheduled (zhuowp round-3 P3).
+        const boundaries = [];
+        if (compactingStartedAt && now - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS) {
+          boundaries.push(compactingStartedAt + COMPACTING_FLAG_MAX_AGE_MS);
+        }
+        if (activeManualCompact && now - activeManualCompact.at < COMPACTING_FLAG_MAX_AGE_MS) {
+          boundaries.push(activeManualCompact.at + COMPACTING_FLAG_MAX_AGE_MS);
+        }
+        if (!boundaries.length) return;
+        const healDelayMs = Math.min(...boundaries) - now;
+        if (healDelayMs <= 0) return;
+        const healTimer = setTimeout(() => setCompactHealTick(current => current + 1), healDelayMs);
+        return () => clearTimeout(healTimer);
+      }, [ctxCompactInFlight, compactingStartedAt, activeManualCompact]);
+      const handleManualCompact = useCallback(async () => {
+        const sid = activeSessionId;
+        if (!sid || manualCompactActive || compactingActive || busy) return;
+        // Snapshot the item-id upper bound and the compaction sequence at
+        // click time: the releases match "a start newer than the click"
+        // against them (itemIds are monotonic across the whole bridge;
+        // compactionSeq is the bridge's monotonic start counter — a start
+        // after the click has a strictly greater sequence, immune to
+        // same-millisecond collisions and clock rollback, review
+        // 5876783763).
+        const maxItemId = chatItems.reduce((max, item) => ((item && item.id > max) ? item.id : max), 0);
+        const seqAt = compactionSeq;
+        // The entry object IS this request's admission generation: the
+        // failure path clears by reference equality, so a newer request for
+        // the same session (which overwrites the slot with its own object)
+        // survives an older, late-arriving rejection (zhuowp round-3 P2).
+        const admission = { at: Date.now(), seqAt, itemsAt: maxItemId };
+        setManualCompactBySid(current => ({ ...current, [sid]: admission }));
+        try {
+          await invokeTauri('compact_now', { sessionId: sid });
+        } catch (err) {
+          const raw = String(err && err.message ? err.message : err || '');
+          // The engine starts lazily; a session that never sent a message
+          // after a restart has nothing to compact — same as the code lane,
+          // map that error to localized guidance instead of a raw error
+          // chain.
+          const detail = raw.includes('session_engine_not_running') ? t.uiCodex.nativeCompactInactive : raw;
+          flashQueuedNotice(sid, { text: `${t.uiCodex.compactFail}: ${detail}` });
+          // A failure clears ONLY this request's admission; the success path
+          // stays set until the bridge's start takes over (the effect).
+          // Reference equality pins the generation: sid-keyed clearing alone
+          // would let an old rejection erase a newer request's marker for
+          // the same session and re-enable a second click over it
+          // (zhuowp round-3 P2).
+          setManualCompactBySid(current => {
+            if (current[sid] !== admission) return current;
+            const next = { ...current };
+            delete next[sid];
+            return next;
+          });
+        }
+      }, [manualCompactActive, compactingActive, busy, activeSessionId, chatItems, compactionSeq, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
@@ -4527,7 +4753,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 ctxPct >= 0.9 ? 'text-[#C5221F] dark:text-[#F28B82]'
                 : ctxPct >= 0.75 ? 'text-[#B06000] dark:text-[#F9AB00]'
                 : 'text-[#9AA0A6] dark:text-[#5F6368]'}`}>
-                {t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+                <button
+                  type="button"
+                  data-testid="chat-ctx-compact"
+                  onClick={handleManualCompact}
+                  disabled={busy || ctxCompactInFlight}
+                  title={ctxCompactInFlight ? t.compactingNow : t.compactNowTip}
+                  aria-label={ctxCompactInFlight ? t.compactingNow : `${ctxUsageText}, ${t.compactNowTip}`}
+                  className="inline-flex items-center gap-1 hover:underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity">
+                  {ctxCompactInFlight ? t.compactingNow : ctxUsageText}
+                </button>
               </div>
             )}
             <div className="flex items-center justify-center mt-3">

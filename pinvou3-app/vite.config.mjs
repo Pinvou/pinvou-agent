@@ -568,7 +568,51 @@ function enforceLazyChunks() {
 // ceiling takes the next thousand step; the web ceiling stays 128_000
 // (223 B headroom above the measured web entry). This cap does not promise
 // headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 487_000;
+//
+// PR #834 owns the 487_000 → 488_000 desktop step on top of #833's shared
+// 486_000 → 487_000 raise (re-cut per policy on top of the rebased #833,
+// whose rebase onto main brought in the tray feature): the main-lane
+// manual-compaction entry hardens in the always-mounted chat surface —
+// busy/compacting click gate, session-keyed in-flight state with a
+// 15-minute lost-terminal self-heal (mirroring the Rust
+// MAX_COMPACTION_LATCH_AGE), and localized engine-error mapping. All of
+// that is ChatView render-path code; it cannot defer without breaking the
+// composer footer. The shared compactingSessions bridge slice with
+// eviction protection lives in the bridge/shared helpers, which ride the
+// classic startup bundles on both platforms — outside this entry gate.
+// Both endpoints measured on the local node 24 toolchain: 486,097 →
+// 487,290 B desktop (+1,193 B: +789 feature entry, +158 review-fix
+// hardening, +15 marker-takeover release fix, +231 gate self-heal tick)
+// and 127,777 → 127,777 B web (byte-identical in size: none of the web
+// entry chunk's code changed — ChatView rides the web-only lazy
+// chat-view group, and the bridge-side additions ride the classic
+// startup bundles). The desktop ceiling takes the next thousand step
+// (710 B headroom); the web ceiling stays 128_000 (223 B headroom above
+// the measured web entry). This cap does not promise headroom for
+// unrelated main changes.
+//
+// Round-5 review fix wave, measured on the same toolchain: +75 B
+// desktop (fresh-flag takeover predicate in the release effect +
+// accessible action name on the entry button) → 487,365 B desktop
+// (635 B headroom under the 488_000 ceiling, no re-cut needed); web
+// 127,777 B unchanged (still size-identical, 223 B headroom).
+//
+// Round-6 review fix wave, measured on the same toolchain: +229 B
+// desktop (start-system-item takeover fallback with a click-time item-id
+// snapshot, shared ctxUsageText value with the composed accessible name,
+// and the module-scope readout derivation) → 487,594 B desktop
+// (406 B headroom under the 488_000 ceiling, no re-cut needed); web
+// 127,777 B unchanged (still size-identical, 223 B headroom).
+//
+// Review 5874108926 fix waves, measured on the same toolchain: the
+// per-session marker map + the start-signal reconcile sweep (+215 B
+// desktop) → 487,810 B desktop (190 B headroom under the 488_000
+// ceiling, no re-cut needed); web unchanged (still size-identical).
+// Review 5876783763 wave: the reconcile arm orders by the monotonic
+// compaction sequence instead of two wall-clock/flag arms (−34 B
+// desktop) → 487,776 B desktop (224 B headroom under the 488_000
+// ceiling, no re-cut needed).
+export const MAIN_ENTRY_BUDGET_BYTES = 488_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {

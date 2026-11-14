@@ -42,16 +42,19 @@ test("Windows runtime installer adapter integration", { skip: skipReason }, () =
   const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-installer-adapter-"));
   try {
     const runtime = describeWindowsRuntime();
-    // The descriptor records the EXPANDED staging destination
-    // (resolve-runtime.ps1 Get-RuntimeDescriptorContent writes
-    // "<relativeRoot>/expanded/vc_redist/..." with forward slashes; the
-    // payload/ tree is only the transient copy source inside the resolver's
-    // temporary root and is deleted after staging). describeWindowsRuntime
-    // resolves that entry to an absolute host path, so the separators are
-    // backslashes on Windows and are normalized before matching.
+    // The descriptor records the staged VC++ payload. Stages produced by
+    // this repo are inventory-cleaned: the payload/ tree is only the
+    // transient copy source inside the resolver's temporary root and is
+    // deleted after staging, so Get-RuntimeDescriptorContent writes the
+    // expanded/ copy (".../expanded/vc_redist/...", forward slashes).
+    // Externally produced payload-retained stages keep payload/vc_redist/
+    // and the descriptor records that entry first. Either way,
+    // describeWindowsRuntime resolves the recorded entry to an absolute
+    // host path (backslashes on Windows, normalized before matching) and
+    // re-verifies its bytes and SHA-256 against the trusted manifest.
     assert.match(
       runtime.vcRedist.sourcePath.replaceAll("\\", "/"),
-      /target\/windows-runtime\/[^/]+\/expanded\/vc_redist\/VC_redist\.x64\.exe$/u,
+      /target\/windows-runtime\/[^/]+\/(?:payload|expanded)\/vc_redist\/VC_redist\.x64\.exe$/u,
       "the runtime descriptor must expose the verified staged VC++ payload",
     );
 
