@@ -1,24 +1,16 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 94 registered commits (93 maintenance + the #150 candidate), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 99 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Registered head: candidate Pinvou/CodeWhale#150 head dc73de769 (route
-# output budget exposure; revised in place three times during review —
-# 5c093b5d4 → d0322fd0e fixed rustfmt ordering and added the wrapper-vs-
-# transport parity test, d0322fd0e → c997d2ec0 changed one doc word, and
-# c997d2ec0 → dc73de769 cleared the parity test's ambient override envs and
-# added the CHANGELOG entries; a fourth upstream revision after dc73de769
-# deletes both CHANGELOG files and touches no API surface) leading
-# maintenance base 11cba403d. Foundation
-# PRs squash-merge (#123–#135), so when #150 lands the public head is a new
-# merge-time commit: re-pin EXPECTED_HEAD, the gitlink, and the registers to
-# that head as the final candidate-window step.
-EXPECTED_HEAD="dc73de769b75fbc2843a66dad3ce4b1aeae0d6d0"
-EXPECTED_COMMITS=94
+# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135,
+# CodeWhale#136/#142/#148/#150/#152 (incl. deps: rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29),
+# and CodeWhale#156 (rustc/clippy 1.100 stable lint adaptation) merged.
+EXPECTED_HEAD="8e8d52fdb4a418bf4310db4b5d03dce5345c54d5"
+EXPECTED_COMMITS=99
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -212,6 +204,15 @@ fingerprints=(
   "T2|指引对齐 catalog 一致性回归        |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_catalog_guidance_matches_execution"
   "T2|computer-use zoom 子栅格换算       |CodeWhale/plugins/computer-use/src/raster.mjs|export function zoomChildRaster(prev, region)"
 
+  # Review 5871983071 (2026-11-12): the #148 todo schema deviation is
+  # registered fork-distinct (docs/fork-modifications.md §3) but had no
+  # guard enforcement, and its tests are not forkguard_-named, so layer 2
+  # never selected them. The fingerprints pin two schema literals (the
+  # required shrink and the default statement); the pinned runner below
+  # covers the tests themselves.
+  "T2|todo item status leaves required  |CodeWhale/crates/tui/src/tools/todo.rs|\"required\": [\"content\"]"
+  "T2|todo default-pending stated in schema |CodeWhale/crates/tui/src/tools/todo.rs|\"description\": \"Task status. Defaults to pending when omitted.\""
+
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
   "T3|显式 Skills 根排除 ambient 来源    |CodeWhale/crates/tui/src/skills/tests.rs|forkguard_explicit_skills_dir_excludes_ambient_workspace_sources"
@@ -373,11 +374,10 @@ fingerprints=(
   "APP|Shell 任务按稳定来源对账         |pinvou3-app/src-tauri/src/features/assistant/shell_output.rs|fn forkguard_shell_monitor_assigns_identical_commands_by_stable_origin"
   "APP|GUI export reuses base session_export |pinvou3-app/src-tauri/src/features/sessions/store.rs|deepseek_tui::session_export::write_session_archive("
   "APP|GUI export store contract regression  |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn forkguard_session_archive_export_via_store_keeps_full_context"
-  # --fast runs Layer 0 (registered-head topology) plus the fingerprint layer
-  # (CI's sole entry point), but renaming a pinned test is exactly the shape
-  # the fingerprint layer cannot see: this source-level fingerprint pulls the
-  # existence of the "no tool-call cap pinned test" into the sub-second layer
-  # — a rename or deletion turns red
+  # --fast runs only the fingerprint layer (CI's sole entry point), but
+  # renaming a pinned test is exactly the shape it cannot see: this
+  # source-level fingerprint pulls the existence of the "no tool-call cap
+  # pinned test" into the sub-second layer — a rename or deletion turns red
   # immediately; whether it actually executes is still verified at compile
   # level by the layer-3 run_pinned_cap_test.
   "APP|engine config no-tool-call-cap pinned test |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_has_no_tool_call_cap"
@@ -444,6 +444,25 @@ echo
 bold "── 第 2 层：CodeWhale forkguard 回归 ──"
 ( cd "$CODEWHALE" && cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
 ( cd "$CODEWHALE" && cargo test -p codewhale-tui --lib --locked --features benchmark-eval-controls forkguard_benchmark_ -- --test-threads=1 ) || fail=1
+# The #148 todo schema tests are not forkguard_-named, so the filters
+# above never select them; `cargo test <filter>` also exits 0 on zero
+# matches. Pin both by name with run_pinned_cap_test's "1 passed"
+# discipline: a rename or deletion is a loud failure, not a silent no-op.
+run_pinned_todo_schema_tests() {
+  local test output
+  for test in \
+    todo_item_status_is_optional_with_a_pending_default \
+    work_update_treats_a_missing_status_as_pending; do
+    output=$( cd "$CODEWHALE" && cargo test -p codewhale-tui --lib --locked \
+      "$test" -- --test-threads=1 2>&1 ) || { printf '%s\n' "$output"; return 1; }
+    if ! grep -q '1 passed' <<<"$output"; then
+      printf '%s\n' "$output"
+      red "❌ pinned test $test did not run (renamed or deleted?)"
+      return 1
+    fi
+  done
+}
+run_pinned_todo_schema_tests || fail=1
 
 echo
 bold "── 第 3 层：pinvou3-app forkguard 回归 ──"
