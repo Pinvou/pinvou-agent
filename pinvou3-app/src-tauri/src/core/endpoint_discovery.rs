@@ -313,9 +313,10 @@ fn transport_class(err: &reqwest::Error) -> &'static str {
 }
 
 /// 发出一个已装配好的探测请求并按状态码 / 传输结果分类。成功路径要求
-/// 2xx 且 JSON 可解析;错误路径只携带分类码,绝不携带响应体 / 错误文本。
+/// 2xx 且 JSON 可解析(限长读取,见 [`LISTING_BODY_CAP_BYTES`]);错误路径
+/// 只携带分类码,绝不携带响应体 / 错误文本。
 async fn send_classified(request: reqwest::RequestBuilder, timeout: Duration) -> ProbeOutcome {
-    let resp = match request.timeout(timeout).send().await {
+    let mut resp = match request.timeout(timeout).send().await {
         Ok(resp) => resp,
         Err(err) => return ProbeOutcome::Transport(transport_class(&err)),
     };
@@ -326,11 +327,34 @@ async fn send_classified(request: reqwest::RequestBuilder, timeout: Duration) ->
         code if code >= 400 => return ProbeOutcome::HttpError(code),
         _ => {}
     }
-    match resp.json::<Value>().await {
+    match read_json_body_bounded(&mut resp).await {
         Ok(v) => ProbeOutcome::Body(v),
-        // 2xx 但非 JSON(Cloudflare HTML 盾页等):端点没有可解析的列表。
+        // 2xx 但非 JSON / 截断(Cloudflare HTML 盾页、超大恶意列表等):
+        // 端点没有可解析的列表。
         Err(_) => ProbeOutcome::Unsupported(status.as_u16()),
     }
+}
+
+/// 2xx 列表 body 的限长:2000 条量级的列表(含 OpenRouter 扩展字段)远小于
+/// 该值;恶意端点想用超大响应打爆内存会被截断,截断后的 JSON 解析失败按
+/// 「形状不认识」归类。读取与 `error_for_status_with_body` 同款限长 chunk
+/// 循环:到上限或流结束即停,响应其余部分随 drop 丢弃、绝不排干。
+const LISTING_BODY_CAP_BYTES: usize = 8 * 1024 * 1024;
+
+async fn read_json_body_bounded(resp: &mut reqwest::Response) -> Result<Value, ()> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < LISTING_BODY_CAP_BYTES {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let take = chunk.len().min(LISTING_BODY_CAP_BYTES - buf.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            Ok(None) => break,
+            // 中途断流:body 不可信,与解析失败同归(调用方按 Unsupported 收口)。
+            Err(_) => return Err(()),
+        }
+    }
+    serde_json::from_slice(&buf).map_err(|_| ())
 }
 
 /// 阶梯的最终形态:成功给出端点自报条目(可为空)或按分类失败。
@@ -475,7 +499,8 @@ fn parse_anthropic_page(v: &Value) -> Option<(Vec<RawModel>, bool, Option<String
 /// Anthropic 阶梯:`GET {规整 base}/models?limit=1000`,鉴权头走
 /// [`apply_anthropic_auth_headers`](`x-api-key` + `anthropic-version`,
 /// 与 Messages 直连同一口径);翻页 `has_more` + `after_id`,最多
-/// [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置 truncated。
+/// [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置 truncated。游标经
+/// reqwest `.query()` 编码后拼入——端点自报的 id 不做字符串拼接。
 async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
     let Some(client) = shared_probe_client_with_timeout(None) else {
         return Terminal::Error {
@@ -488,12 +513,11 @@ async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Durati
     let mut all = Vec::new();
     let mut after_id: Option<String> = None;
     for _page in 0..PAGINATION_PAGE_CAP {
-        let mut url = format!("{base}?limit=1000");
+        let mut request = client.get(&base).query(&[("limit", "1000")]);
         if let Some(id) = &after_id {
-            url.push_str("&after_id=");
-            url.push_str(id);
+            request = request.query(&[("after_id", id)]);
         }
-        let request = apply_anthropic_auth_headers(client.get(url), key);
+        let request = apply_anthropic_auth_headers(request, key);
         match send_classified(request, timeout).await {
             ProbeOutcome::Body(v) => match parse_anthropic_page(&v) {
                 Some((models, has_more, next_after)) => {
@@ -574,7 +598,8 @@ fn parse_gemini_page(v: &Value) -> Option<(Vec<RawModel>, Option<String>)> {
 
 /// Gemini 阶梯:`GET {root}/v1beta/models?pageSize=1000`,鉴权
 /// `x-goog-api-key`(空 key 不加头,keyless 照发);翻页 `nextPageToken`
-/// → `pageToken`,最多 [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置 truncated。
+/// → `pageToken`,最多 [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置
+/// truncated。游标经 reqwest `.query()` 编码后拼入。
 async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
     let Some(client) = shared_probe_client_with_timeout(None) else {
         return Terminal::Error {
@@ -582,26 +607,24 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
             transport: None,
         };
     };
-    let base = format!(
-        "{}/v1beta/models?pageSize=1000",
-        gemini_native_root(base_url)
-    );
+    let base = format!("{}/v1beta/models", gemini_native_root(base_url));
     let key = api_key.map(str::trim).filter(|key| !key.is_empty());
     let mut all = Vec::new();
-    let mut url = base.clone();
+    let mut page_token: Option<String> = None;
     for _page in 0..PAGINATION_PAGE_CAP {
-        let mut request = client.get(url.clone());
+        let mut request = client.get(&base).query(&[("pageSize", "1000")]);
         if let Some(key) = key {
             request = request.header("x-goog-api-key", key);
+        }
+        if let Some(token) = &page_token {
+            request = request.query(&[("pageToken", token)]);
         }
         match send_classified(request, timeout).await {
             ProbeOutcome::Body(v) => match parse_gemini_page(&v) {
                 Some((models, next_page_token)) => {
                     all.extend(models);
                     match next_page_token {
-                        Some(token) => {
-                            url = format!("{base}&pageToken={token}");
-                        }
+                        Some(token) => page_token = Some(token),
                         None => return Terminal::Listed(all, false),
                     }
                 }
@@ -728,6 +751,21 @@ mod tests {
         let mock = models_mock::spawn(&[("/models", 200, r#"{"data":[]}"#.into())]);
         let listing = probe(&mock.base_url, None, DiscoveryProtocol::OpenAiCompatible).await;
         assert_eq!(listing.status, ListingStatus::Listed);
+        assert!(listing.models.is_empty());
+        assert!(!listing.truncated);
+    }
+
+    #[tokio::test]
+    async fn oversized_listing_body_is_truncated_to_unsupported() {
+        // 自审补钉:2xx body 限长读取(LISTING_BODY_CAP_BYTES)——恶意超大
+        // 列表在截断处 JSON 解析失败,按「形状不认识」归 Unsupported(200),
+        // 绝不无界吃内存,也绝不把半截数据当 Listed。
+        let oversized = format!("{{\"data\":[{}", "1,".repeat(5 * 1024 * 1024));
+        assert!(oversized.len() > 8 * 1024 * 1024);
+        let mock = models_mock::spawn(&[("/models", 200, oversized)]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::OpenAiCompatible).await;
+        assert_eq!(listing.status, ListingStatus::Unsupported);
+        assert_eq!(listing.http_status, Some(200));
         assert!(listing.models.is_empty());
         assert!(!listing.truncated);
     }
