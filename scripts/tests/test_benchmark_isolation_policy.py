@@ -59,7 +59,9 @@ class BenchmarkIsolationPolicyTests(unittest.TestCase):
 
         self.assertIn(
             '#[cfg(feature = "benchmark-hooks")]\n'
-            "    let should_notify = notification_state.unwrap_or_else(|| {",
+            "    let should_notify = !crate::features::assistant::timing::"
+            "eval_observation_enabled(session_id)\n"
+            "        && notification_state.unwrap_or(true);",
             support,
         )
         self.assertIn("eval_observation_enabled(session_id)", support)

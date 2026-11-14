@@ -1027,8 +1027,16 @@ const App = () => {
         }
       }, [language]);
       const [superPerm, setSuperPerm] = useState(false);
-      const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
-      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
+      // Both desktop-notification switches start from the platform
+      // master-switch default (aligned with Rust NotificationPrefs::default).
+      const defaultDesktopNotificationSwitch = platformCapabilities.taskCompletionNotificationsDefault !== false;
+      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultDesktopNotificationSwitch);
+      // inputNeededNotif stores the persisted needs_input intent; the
+      // effective display derives as intent && taskCompletedNotif in
+      // SettingsView — the task-completion switch is the master switch (its
+      // payload carries enabled), so the derivation stays truthful across the
+      // master going off->on in both directions.
+      const [inputNeededNotif, setInputNeededNotif] = useState(defaultDesktopNotificationSwitch);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
@@ -1275,6 +1283,11 @@ const App = () => {
         }
         const notifications = settings.notifications || {};
         setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
+        // Backfill only the persisted intent; do not fold enabled into the
+        // input switch: the master switch's effectiveness is derived in the
+        // display layer, and folding enabled here would make a persisted
+        // needs_input unrecoverable after the master goes off->on.
+        setInputNeededNotif(notifications.needs_input !== false);
         uiPrefsInitRef.current = true;
       };
       useEffect(() => {
@@ -3400,19 +3413,36 @@ const App = () => {
         invokeTauri('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
       }
 
-      async function handleSetTaskCompletedNotif(enabled) {
-        const nextEnabled = !!enabled;
-        const previousEnabled = taskCompletedNotif;
-        setTaskCompletedNotif(nextEnabled);
-        if (bridge.available) {
-          const saved = await bridge.settings.saveSettings({
-            notifications: { enabled: nextEnabled, task_completed: nextEnabled },
-          });
-          if (saved === false) {
-            setTaskCompletedNotif(previousEnabled);
+      // Both notification switches share one save pipeline: optimistic set ->
+      // saveSettings, rollback on failure. The task-completion switch doubles
+      // as the desktop-notification master switch (payload carries enabled);
+      // the input switch carries only its own field, and the Rust side merges
+      // by field, so no other switch resets.
+      function makeNotifToggle(getCurrent, setCurrent, payloadFor) {
+        return async (enabled) => {
+          const nextEnabled = !!enabled;
+          const previousEnabled = getCurrent();
+          setCurrent(nextEnabled);
+          if (bridge.available) {
+            const saved = await bridge.settings.saveSettings({
+              notifications: payloadFor(nextEnabled),
+            });
+            if (saved === false) {
+              setCurrent(previousEnabled);
+            }
           }
-        }
+        };
       }
+      const handleSetTaskCompletedNotif = makeNotifToggle(
+        () => taskCompletedNotif,
+        setTaskCompletedNotif,
+        (nextEnabled) => ({ enabled: nextEnabled, task_completed: nextEnabled }),
+      );
+      const handleSetInputNeededNotif = makeNotifToggle(
+        () => inputNeededNotif,
+        setInputNeededNotif,
+        (nextEnabled) => ({ needs_input: nextEnabled }),
+      );
 
       // 侧栏任务列表「按日期折叠」开关:纯 UI 偏好,写 settings.sidebar.date_grouping
       function handleSetSidebarDateGrouping(enabled) {
@@ -4420,6 +4450,7 @@ const App = () => {
                   language={language} setLanguage={handleSetLanguage}
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                   taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
+                  inputNeededNotif={inputNeededNotif} setInputNeededNotif={handleSetInputNeededNotif}
                   searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                   enabledSearchProviders={enabledSearchProviders}
                   onAddSearchProvider={handleAddSearchProvider}
