@@ -5,7 +5,7 @@
 >
 > **2026-11 归档注记**：写档后的重构已使本文多项"当前态"描述失效，§1/§3 请勿按现状使用：
 > skill 发现已改为 per-session 组合目录 + materialization（`features/assistant/skill_materialization.rs`、
-> `platform/bridge.rs` 的 `explicit_skills_root_only`），「`~/.agents/skills` 残留口子」与
+> `features/assistant/platform/bridge.rs` 的 `explicit_skills_root_only`），「`~/.agents/skills` 残留口子」与
 > 「UI 读 bundle / 工具读 ~/.agents 的两套不对称」均不再成立；`list_skills_v2` 已由
 > marketplace 接口取代；`pinvou-review-plan/final` 已于 0.7 下线并由 `cleanup_retired_skills`
 > 启动清理。§2 卡牌池机制描述仍有效（agency-agents.json 现 268 个 agent）。
