@@ -1787,7 +1787,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           if (userConfig && Object.keys(userConfig).length > 0) {
             args.config = userConfig;
           }
-          await invokeTauri('install_marketplace_tool', args);
+          const validationReport = await invokeTauri('install_marketplace_tool', args);
           if (t?.oauthMcp) {
             if (!isCurrentOAuthRequest(backendId, oauthRequestId)) return;
             setToolAuthStates(prev => ({
@@ -1856,10 +1856,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             return;
           }
           await loadBackendState();
+          // The command's Ok value IS the remote validation's discovered tool
+          // inventory: report it on the success card so the validation outcome
+          // reaches the user (round-2 review P2 — the report previously had no
+          // production reader). Absent or empty (the tool declares no
+          // validation) keeps the title-only card.
+          const discoveredTools = Array.isArray(validationReport) ? validationReport : [];
           setAlert({
             visible: true,
             loading: false,
             title: hasConfig ? storeCopy.connectedQuoted(name) : storeCopy.installedQuoted(name),
+            subtitle: discoveredTools.length > 0 ? storeCopy.validatedToolsDiscovered(discoveredTools) : undefined,
             isInstall: true,
             isError: false,
             toolId: backendId,

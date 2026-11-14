@@ -223,7 +223,7 @@ pub async fn install_marketplace_tool(
     tool_id: String,
     config: Option<std::collections::HashMap<String, String>>,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let user_config = config.unwrap_or_default();
     let install_tool_id = tool_id.clone();
     // The sync write can block on the cross-process flock (#515): keep the
@@ -266,8 +266,13 @@ pub async fn install_marketplace_tool(
 /// consent-sync / validation ordering and its rollback semantics are
 /// regression-testable without a Tauri harness. Order is load-bearing: the
 /// consent sync runs BEFORE the network validation; the rollback uninstall's
-/// teardown removes the rows the sync wrote.
-pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Result<(), String> {
+/// teardown removes the rows the sync wrote. On success this returns the
+/// remote validation's discovered tool inventory (empty when the pack does
+/// not declare validation) so the command can hand the validation report to
+/// the UI instead of discarding it.
+pub(super) async fn install_marketplace_tool_post_install(
+    tool_id: String,
+) -> Result<Vec<String>, String> {
     // The consent sync must run IMMEDIATELY after the install commit, BEFORE
     // the network validation — for initialized scopes the stored list is the
     // consent store, and a crash during the network round-trip below would
@@ -285,48 +290,62 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
         let mgr = crate::features::marketplace::MarketplaceManager::new();
         mgr.requires_remote_connection_validation(&tool_id)
     };
-    if should_validate {
-        // Only consumes the validation outcome: on failure, roll back the installed tool and surface a user-readable error.
-        if let Err(err) = {
+    let discovered = if should_validate {
+        // The Ok value IS the discovered tool inventory: thread it through to
+        // the command's return so the install success report has a real
+        // producer (round-2 review P2 — the inventory was dropped here and
+        // only tests read it). On failure, roll back the installed tool and
+        // surface a user-readable error.
+        let validation = {
             let mgr = crate::features::marketplace::MarketplaceManager::new();
             mgr.validate_remote_connection(&tool_id).await
-        } {
-            let rollback_tool_id = tool_id.clone();
-            // Off the executor: the uninstall takes the cross-process
-            // marketplace transaction lock (#515). The consent rows this
-            // install's deny-first sync wrote are stripped by the uninstall's
-            // OWN in-lock teardown (`strip_uninstalled_scope_state`, gated on
-            // the record actually being removed); there is deliberately no
-            // post-return strip here — a strip after the uninstall returns
-            // would sit outside the transaction and import locks and could
-            // wipe a concurrent same-id install's fresh registration, while
-            // a FAILED uninstall must keep the rows
-            // fail-closed (installed + denied).
-            let rollback_result = tokio::task::spawn_blocking(move || {
-                crate::features::marketplace::MarketplaceManager::new().uninstall(&rollback_tool_id)
-            })
-            .await;
-            // Best-effort compensation: LOG a rollback failure instead of
-            // discarding it — the validation error remains the one returned
-            // (round-28 nit: the rollback result is not surfaced to the user;
-            // on a failed rollback the pack remains installed — fail-closed
-            // state, the log line is the only trace).
-            match &rollback_result {
-                Err(e) => {
-                    log::warn!(
-                        "[marketplace] rollback uninstall join failed after validation error: {e}"
-                    )
+        };
+        match validation {
+            Ok(discovered) => discovered,
+            Err(err) => {
+                let rollback_tool_id = tool_id.clone();
+                // Off the executor: the uninstall takes the cross-process
+                // marketplace transaction lock (#515). The consent rows this
+                // install's deny-first sync wrote are stripped by the uninstall's
+                // OWN in-lock teardown (`strip_uninstalled_scope_state`, gated on
+                // the record actually being removed); there is deliberately no
+                // post-return strip here — a strip after the uninstall returns
+                // would sit outside the transaction and import locks and could
+                // wipe a concurrent same-id install's fresh registration, while
+                // a FAILED uninstall must keep the rows
+                // fail-closed (installed + denied).
+                let rollback_result = tokio::task::spawn_blocking(move || {
+                    crate::features::marketplace::MarketplaceManager::new()
+                        .uninstall(&rollback_tool_id)
+                })
+                .await;
+                // Best-effort compensation: LOG a rollback failure instead of
+                // discarding it — the validation error remains the one returned
+                // (round-28 nit: the rollback result is not surfaced to the user;
+                // on a failed rollback the pack remains installed — fail-closed
+                // state, the log line is the only trace).
+                match &rollback_result {
+                    Err(e) => {
+                        log::warn!(
+                            "[marketplace] rollback uninstall join failed after validation error: {e}"
+                        )
+                    }
+                    Ok(Err(e)) => {
+                        log::warn!(
+                            "[marketplace] rollback uninstall failed after validation error: {e}"
+                        )
+                    }
+                    Ok(Ok(_)) => {}
                 }
-                Ok(Err(e)) => {
-                    log::warn!(
-                        "[marketplace] rollback uninstall failed after validation error: {e}"
-                    )
-                }
-                Ok(Ok(_)) => {}
+                return Err(err);
             }
-            return Err(err);
         }
-    }
+    } else {
+        // No validation declared: the empty inventory is the honest report
+        // shape (the same Ok value `validate_remote_connection` returns on
+        // this path).
+        Vec::new()
+    };
 
     tokio::task::spawn_blocking(move || {
         let mgr = crate::features::marketplace::MarketplaceManager::new();
@@ -372,7 +391,7 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
-    Ok(())
+    Ok(discovered)
 }
 
 pub(super) fn marketplace_oauth_error_result(

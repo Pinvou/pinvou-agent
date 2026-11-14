@@ -919,6 +919,7 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
   },
   connectedTool:name=>`${name} connected`, disconnectedTool:name=>`${name} disconnected`,
   connectedQuoted:name=>`${name} connected`, installedQuoted:name=>`${name} installed`, uninstalledQuoted:name=>`${name} uninstalled`,
+  validatedToolsDiscovered:tools=>`Validated — tools discovered: ${tools.join(', ')}`,
   connectedBanner:name=>`${name} connected · tool switches are enabled by default; manage them in the composer tools list`,
   connectedBannerIma:'Tencent ima connected · tool switches are off by default; enable it in the composer tools list',
   uploadedSkill:'User-uploaded skill',

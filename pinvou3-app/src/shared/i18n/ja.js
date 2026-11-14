@@ -921,6 +921,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
   },
   connectedTool:name=>`${name} に接続しました`, disconnectedTool:name=>`${name} から切断しました`,
   connectedQuoted:name=>`「${name}」に接続しました`, installedQuoted:name=>`「${name}」をインストールしました`, uninstalledQuoted:name=>`「${name}」をアンインストールしました`,
+  validatedToolsDiscovered:tools=>`検証済み — 検出されたツール: ${tools.join('、')}`,
   connectedBanner:name=>`${name} に接続済み · ツールスイッチはデフォルトでオンです。入力欄のツールリストで管理できます`,
   connectedBannerIma:'Tencent ima に接続済み · ツールスイッチはデフォルトでオフです。入力欄のツールリストでオンにできます',
   uploadedSkill:'ユーザーがアップロードしたスキル',

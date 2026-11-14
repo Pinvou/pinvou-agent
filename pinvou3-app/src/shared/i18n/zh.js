@@ -955,6 +955,7 @@ desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这
   },
   connectedTool:name=>`已连接${name}`, disconnectedTool:name=>`已断开${name}`,
   connectedQuoted:name=>`已连接「${name}」`, installedQuoted:name=>`已安装「${name}」`, uninstalledQuoted:name=>`已卸载「${name}」`,
+  validatedToolsDiscovered:tools=>`已验证，发现工具：${tools.join('、')}`,
   connectedBanner:name=>`已连接${name} · 工具开关默认开启，可在输入框工具列表中管理`,
   connectedBannerIma:'已连接腾讯 ima · 工具开关默认关闭，可在输入框工具列表中开启',
   uploadedSkill:'用户上传的技能',
