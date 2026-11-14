@@ -65,7 +65,7 @@ const webBridgeSource = fs.readFileSync(
 
 function extractEnsureBlock(source) {
   const match = source.match(
-    /async function ensureSessionBufferLoaded\(sid\) \{[\s\S]*?buf\.loadedFromDisk = true;\n  \}\n/,
+    /async function ensureSessionBufferLoaded\(sid\) \{[\s\S]*?buf\.loadedFromDisk = true;\n {2}\}\n/,
   );
   assert.ok(match, 'ensureSessionBufferLoaded 函数体未找到——抽取正则与源码漂移');
   return match[0];
@@ -73,7 +73,7 @@ function extractEnsureBlock(source) {
 
 function extractRaiseBlock(source) {
   const match = source.match(
-    /function raisePinvouSummonHighwater\(reviews\) \{[\s\S]*?\n  \}\n/,
+    /function raisePinvouSummonHighwater\(reviews\) \{[\s\S]*?\n {2}\}\n/,
   );
   assert.ok(match, 'raisePinvouSummonHighwater 函数体未找到——抽取正则与源码漂移');
   return match[0];
@@ -121,7 +121,7 @@ function runLoader(sandboxState, reviews) {
 
 function runRaise(sandboxState, reviews) {
   const match = sharedBaseSource.match(
-    /function raisePinvouSummonHighwater\(reviews\) \{[\s\S]*?\n  \}\n/,
+    /function raisePinvouSummonHighwater\(reviews\) \{[\s\S]*?\n {2}\}\n/,
   );
   assert.ok(match, 'raisePinvouSummonHighwater 函数体未找到——抽取正则与源码漂移');
   const sandbox = { state: sandboxState };
