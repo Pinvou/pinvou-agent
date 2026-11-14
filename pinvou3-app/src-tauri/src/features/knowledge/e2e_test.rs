@@ -263,8 +263,9 @@ fn full_l0_l1_e2e() {
     // ───── L1：关键词检索(命中原词) ─────
     let kw = svc
         .l1()
-        .retrieve_for_chat_multi(&[cid], "交强险", 5)
-        .expect("kw search");
+        .retrieve_for_chat_multi_outcome(&[cid], "交强险", 5)
+        .expect("kw search")
+        .hits;
     assert!(!kw.is_empty(), "应检索到含'交强险'的块");
     assert!(
         kw.iter().any(|h| h.hit.text.contains("交强险")),
@@ -275,8 +276,9 @@ fn full_l0_l1_e2e() {
     // ───── L1：语义检索(同义不同词，考验向量) ─────
     let sem = svc
         .l1()
-        .retrieve_for_chat_multi(&[cid], "车险价格怎么比较", 5)
-        .expect("semantic search");
+        .retrieve_for_chat_multi_outcome(&[cid], "车险价格怎么比较", 5)
+        .expect("semantic search")
+        .hits;
     assert!(!sem.is_empty(), "语义查询应有召回(向量路径)");
     assert!(
         sem.iter().any(|h| h.hit.text.contains("报价")

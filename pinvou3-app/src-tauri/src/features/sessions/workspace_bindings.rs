@@ -321,18 +321,7 @@ impl SessionStore {
     /// recurs on every session event, so cache or piggyback the binding
     /// cache before scaling the list).
     pub fn session_workspace_roots(&self, id: &str) -> Vec<PathBuf> {
-        if validate_session_id(id).is_err()
-            || !self
-                .manager
-                .sessions_dir()
-                .join(format!("{id}.json"))
-                .is_file()
-        {
-            return Vec::new();
-        }
-        read_workspace_sidecar(&self.session_workspace_sidecar_path(id))
-            .map(|sidecar| sidecar.workspace_roots)
-            .unwrap_or_default()
+        self.session_workspace_keychain(id).0
     }
 
     /// Round-40 M6: BOTH keychain fields from ONE sidecar read — the
@@ -358,18 +347,7 @@ impl SessionStore {
     /// Round-40 (zhuowp P2): the recorded explicit-ancestor provenance
     /// (empty = none); same read shape as [`Self::session_workspace_roots`].
     pub fn session_explicit_ancestor_roots(&self, id: &str) -> Vec<PathBuf> {
-        if validate_session_id(id).is_err()
-            || !self
-                .manager
-                .sessions_dir()
-                .join(format!("{id}.json"))
-                .is_file()
-        {
-            return Vec::new();
-        }
-        read_workspace_sidecar(&self.session_workspace_sidecar_path(id))
-            .map(|sidecar| sidecar.explicit_ancestor_roots)
-            .unwrap_or_default()
+        self.session_workspace_keychain(id).1
     }
 
     /// Keychain replacement for "align to project" (§9.7): rewrites the
@@ -381,33 +359,7 @@ impl SessionStore {
         id: &str,
         workspace_roots: Vec<PathBuf>,
     ) -> Result<bool> {
-        validate_session_id(id)?;
-        let file = self.session_workspace_sidecar_path(id);
-        let Some(existing) = read_workspace_sidecar(&file) else {
-            return Ok(false);
-        };
-        // Structural normalization (review #484 round-10 m5 / round-11 m5):
-        // the persisted order must equal the base-effective order
-        // (cwd-first, deduped) by construction, not because the sole caller
-        // happens to pre-normalize.
-        let workspace_roots = cwd_first_workspace_roots(&existing.path, workspace_roots);
-        let updated = SessionWorkspaceSidecar {
-            version: SESSION_WORKSPACE_SIDECAR_VERSION,
-            path: existing.path,
-            workspace_roots,
-            // Every non-align keychain rewrite resets the provenance
-            // (round-40 zhuowp P2): align is the only producer.
-            explicit_ancestor_roots: Vec::new(),
-            bound_at: existing.bound_at,
-        };
-        let payload =
-            serde_json::to_vec_pretty(&updated).context("serialize session workspace binding")?;
-        // Round-20 SF3: every sibling writer of this sidecar uses the
-        // private variant (0600) — this plain atomic_write demoted a 0600
-        // sidecar to umask-default 0644 on every align/roots update.
-        crate::platform::filesystem::atomic_write_private(&file, &payload)
-            .with_context(|| format!("persist session workspace roots to {}", file.display()))?;
-        Ok(true)
+        self.set_session_workspace_roots_with_explicit_ancestors(id, workspace_roots, Vec::new())
     }
 
     /// Round-40 (zhuowp P2): the align lane's writer — records the

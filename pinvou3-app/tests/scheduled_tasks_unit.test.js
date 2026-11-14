@@ -10,6 +10,9 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+// Node 24 resolves require() of synchronous ESM: share the one deferred
+// helper with the .mjs behavioral tests instead of an inline copy.
+const { deferred } = require('./helpers/deferred.mjs');
 
 const indexHtml = [
   'app/main.jsx',
@@ -658,16 +661,6 @@ assert.ok(
     !/SCHEDULED_TASK_WRITABLE_FIELDS\s*=\s*\[[^\]]*["']kind["']/.test(tauriBridge),
   'the memory-organize template should pass task kind on create only; edit flows must never resend it'
 );
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise(function (res, rej) {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 function tick() {
   return new Promise(function (resolve) { setImmediate(resolve); });

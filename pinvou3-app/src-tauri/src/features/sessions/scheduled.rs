@@ -67,15 +67,6 @@ impl ScheduledRunProfile {
     }
 }
 
-/// How an engine-owned scheduled session update changes the durable token total.
-///
-/// `SessionUpdated` does not carry usage, so callers must preserve the last durable
-/// total.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScheduledTokenAccounting {
-    PreservePersisted,
-}
-
 /// Authoritative engine state to persist for one scheduled-run session.
 ///
 /// This mirrors the durable fields available from `Event::SessionUpdated` plus a
@@ -87,7 +78,6 @@ pub struct ScheduledEngineState {
     pub system_prompt: Option<SystemPrompt>,
     pub model: String,
     pub mode: ScheduledRunMode,
-    pub token_accounting: ScheduledTokenAccounting,
 }
 
 /// Authoritative engine snapshot for an ordinary chat session. The event

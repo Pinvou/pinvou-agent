@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # CodeWhale v0.9.12 clean re-fork guard: 96 registered commits (93 maintenance commits plus two review commits and their integration merge).
+# Public maintenance has since advanced to 8e8d52fdb (99 commits, #136/#142/#148/#150/#152/#156);
+# the pinned T6 rate-limit candidate predates that advance pending CodeWhale#141.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -201,6 +203,18 @@ fingerprints=(
   "T2|shell 指引与执行同一 dispatcher    |CodeWhale/crates/tui/src/tools/shell/guidance.rs|pub(super) fn runtime_command_guidance()"
   "T2|指引对齐 catalog 一致性回归        |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_catalog_guidance_matches_execution"
   "T2|computer-use zoom 子栅格换算       |CodeWhale/plugins/computer-use/src/raster.mjs|export function zoomChildRaster(prev, region)"
+
+  # Review 5871983071 (2026-11-12): the #148 todo schema deviation is
+  # registered fork-distinct (docs/fork-modifications.md §3) but had no
+  # guard enforcement, and its tests are not forkguard_-named, so layer 2
+  # never selected them. The fingerprints pin two schema literals (the
+  # required shrink and the default statement); the pinned runner below
+  # covers the tests themselves.
+  # Deferred on this branch: the pinned T6 candidate predates #148, so the
+  # pinned literals do not exist at its gitlink yet. Restore both entries
+  # when the gitlink re-pins to a post-#141 merged head.
+  # "T2|todo item status leaves required  |CodeWhale/crates/tui/src/tools/todo.rs|\"required\": [\"content\"]"
+  # "T2|todo default-pending stated in schema |CodeWhale/crates/tui/src/tools/todo.rs|\"description\": \"Task status. Defaults to pending when omitted.\""
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
@@ -439,6 +453,28 @@ echo
 bold "── 第 2 层：CodeWhale forkguard 回归 ──"
 ( cd "$CODEWHALE" && cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1 ) || fail=1
 ( cd "$CODEWHALE" && cargo test -p codewhale-tui --lib --locked --features benchmark-eval-controls forkguard_benchmark_ -- --test-threads=1 ) || fail=1
+# The #148 todo schema tests are not forkguard_-named, so the filters
+# above never select them; `cargo test <filter>` also exits 0 on zero
+# matches. Pin both by name with run_pinned_cap_test's "1 passed"
+# discipline: a rename or deletion is a loud failure, not a silent no-op.
+run_pinned_todo_schema_tests() {
+  local test output
+  for test in \
+    todo_item_status_is_optional_with_a_pending_default \
+    work_update_treats_a_missing_status_as_pending; do
+    output=$( cd "$CODEWHALE" && cargo test -p codewhale-tui --lib --locked \
+      "$test" -- --test-threads=1 2>&1 ) || { printf '%s\n' "$output"; return 1; }
+    if ! grep -q '1 passed' <<<"$output"; then
+      printf '%s\n' "$output"
+      red "❌ pinned test $test did not run (renamed or deleted?)"
+      return 1
+    fi
+  done
+}
+# Deferred on this branch: the pinned T6 candidate predates #148, so these
+# tests do not exist at its gitlink yet. Restore together with the deferred
+# fingerprints when the gitlink re-pins to a post-#141 merged head.
+# run_pinned_todo_schema_tests || fail=1
 
 echo
 bold "── 第 3 层：pinvou3-app forkguard 回归 ──"

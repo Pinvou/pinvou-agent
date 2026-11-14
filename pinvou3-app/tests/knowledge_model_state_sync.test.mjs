@@ -18,6 +18,10 @@ const knowledgeCommands = readFileSync(
   path.join(appRoot, 'src-tauri/src/app/commands/knowledge.rs'),
   'utf8',
 );
+const sharedKnowledgeHostFeature = readFileSync(
+  path.join(appRoot, 'src-tauri/src/features/shared_knowledge_host/mod.rs'),
+  'utf8',
+);
 const remoteCommands = readFileSync(
   path.join(appRoot, 'src-tauri/src/app/commands/remote_knowledge.rs'),
   'utf8',
@@ -71,7 +75,16 @@ test('status queries and completed host downloads synchronize the desktop model'
   );
   assert.match(
     knowledgeCommands,
-    /pub async fn kb_model_download\([\s\S]*https:\/\/127\.0\.0\.1:3210[\s\S]*remote\.download_model/u,
+    /pub async fn kb_model_download\([\s\S]*item\.endpoint == LOCAL_ENDPOINT[\s\S]*remote\.download_model/u,
+  );
+  // The kb_model_download host refresh filter, the owner register/rebind,
+  // and the host state report share the same LOCAL_ENDPOINT constant (the
+  // dead-code sweep folded three 127.0.0.1:3210 literals into it); the
+  // endpoint value is anchored at its declaration in
+  // features/shared_knowledge_host/mod.rs.
+  assert.match(
+    sharedKnowledgeHostFeature,
+    /pub\(crate\) const LOCAL_ENDPOINT: &str = "https:\/\/127\.0\.0\.1:3210"/u,
   );
   assert.match(
     remoteCommands,

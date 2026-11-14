@@ -129,11 +129,14 @@ pub struct MonitorDiagnostic {
     pub code: String,
     /// Status code when the failure is an HTTP error.
     pub http_status: Option<u16>,
-    /// Transport class when the failure is a transport error. Same vocabulary
-    /// as `core::model_endpoint::model_probe_transport_code` (`timeout` /
-    /// `dns_failed` / `connection_refused` / `network_error`), but decided
-    /// from reqwest's structured flags: a real reqwest error's `Display`
-    /// omits the source chain, so that helper's string arms are dead for it.
+    /// Transport class when the failure is a transport error. Same ladder and
+    /// vocabulary as `core::model_endpoint::model_probe_transport_code` —
+    /// both delegate to `transport_code_for` (`timeout` / `tls_error` /
+    /// `dns_failed` / `connection_refused` / `network_error`) — but this
+    /// surface decides from reqwest's structured flags: a real reqwest
+    /// error's `Display` omits the source chain, so the ladder's keyword
+    /// arms stay dead here and only the flag-driven arms fire on real
+    /// errors.
     pub transport: Option<&'static str>,
     /// The `scheme://host:port` subset of the target — the credential-safe
     /// part of the URL: userinfo is stripped by reqwest at request build, and
@@ -245,6 +248,37 @@ async fn snapshot_for_model_config(
     };
     let metrics_applicable = target_kind == "local";
 
+    // The early-exit snapshots below carry no probe result, but the context
+    // window is configuration, not a runtime fact: the declared window (or
+    // the inference fallback — the same unified precedence the happy path
+    // applies with probed=None) must keep filling the monitor card and the
+    // progress-bar denominator while the engine is unreachable. Only these
+    // early returns dropped the declaration (reported: local vLLM down →
+    // "Context Length" stuck at "—" although the model form declares the
+    // window).
+    // Scope: the two offline arms are `target_kind == "local"`-gated, so
+    // keyless remote targets fall through to the happy path and already
+    // kept the declaration; the auth_failed arm has no target_kind gate —
+    // any probed target (a remote one with a rejected key included) took
+    // it too, which is why the window is computed before the probe and
+    // applied at all three returns.
+    let (early_exit_window, early_exit_window_inferred) = probeless_display_window(
+        configured_context,
+        target_kind,
+        preset,
+        configured_model.as_deref(),
+    );
+    let early_exit_notices: Vec<MonitorDiagnostic> = if early_exit_window_inferred {
+        vec![MonitorDiagnostic {
+            code: "context_window_inferred".to_string(),
+            http_status: None,
+            transport: None,
+            endpoint: None,
+        }]
+    } else {
+        Vec::new()
+    };
+
     // 1) /models 健康
     let models_url = models_probe_url(upstream);
     let mut request = client.get(models_url).timeout(Duration::from_secs(3));
@@ -278,6 +312,8 @@ async fn snapshot_for_model_config(
                 target_kind: target_kind.to_string(),
                 metrics_applicable,
                 health_status: HealthStatus::AuthFailed,
+                max_model_len: early_exit_window,
+                notices: early_exit_notices.clone(),
                 ..VllmSnapshot::default()
             });
         }
@@ -296,6 +332,8 @@ async fn snapshot_for_model_config(
                         transport: None,
                         endpoint: endpoint_root(Some(r.url())),
                     }),
+                    max_model_len: early_exit_window,
+                    notices: early_exit_notices.clone(),
                     ..VllmSnapshot::default()
                 });
             }
@@ -323,6 +361,8 @@ async fn snapshot_for_model_config(
                         transport: Some(transport_class(&err)),
                         endpoint: endpoint_root(err.url()),
                     }),
+                    max_model_len: early_exit_window,
+                    notices: early_exit_notices.clone(),
                     ..VllmSnapshot::default()
                 });
             }
@@ -523,23 +563,23 @@ fn endpoint_root(url: Option<&reqwest::Url>) -> Option<String> {
     })
 }
 
-/// Transport class of a failed request, from reqwest's structured flags
-/// rather than its `Display` text (a real reqwest error's Display omits the
-/// source chain, so `model_probe_transport_code`'s string arms are dead for
-/// it). Vocabulary kept in step with that helper.
+/// Transport class of a failed request — the same ladder as
+/// `model_probe_transport_code` by construction (both delegate to the
+/// shared `transport_code_for`, so the vocabularies cannot drift). This
+/// surface feeds the ladder reqwest's structured flags wherever one
+/// exists: a real reqwest error's Display omits the source chain, so the
+/// keyword arms stay dead for it (except words embedded in the request
+/// URL, which core's surface already tolerated) and only
+/// `timeout`/`dns_failed`/`connection_refused` fire on real errors —
+/// `tls_error` exists for vocabulary parity with the settings/CLI
+/// contract, not because real handshake failures are expected to hit it.
 fn transport_class(err: &reqwest::Error) -> &'static str {
-    if err.is_timeout() {
-        "timeout"
-    } else if err.is_dns() {
-        // Must precede `is_connect()`: hyper-util files resolver failures
-        // under its Connect kind too, so the DNS check only classifies if it
-        // runs first.
-        "dns_failed"
-    } else if err.is_connect() {
-        "connection_refused"
-    } else {
-        "network_error"
-    }
+    crate::core::model_endpoint::transport_code_for(
+        err.is_timeout(),
+        err.is_dns(),
+        err.is_connect(),
+        &err.to_string(),
+    )
 }
 
 fn parse_models_response(
@@ -741,6 +781,27 @@ fn display_context_window(
         (Some(_), _) => None,
     };
     crate::core::model_context::resolve_context_window(configured, probed, inferred)
+}
+
+/// The probe-less display window for the early-exit snapshots (offline /
+/// auth_failed): the happy path's unified precedence with `probed = None`,
+/// because no listing was parsed. The inference input is the configured name
+/// only — the early exits never have a served name (the listing is exactly
+/// what failed), so this matches the happy path's configured arm. The second
+/// return value flags "the inferred fallback was actually adopted", feeding
+/// the same `context_window_inferred` notice the happy path pushes.
+fn probeless_display_window(
+    configured: Option<u32>,
+    target_kind: &str,
+    preset: ModelPreset,
+    configured_model: Option<&str>,
+) -> (Option<u32>, bool) {
+    display_context_window(
+        configured,
+        target_kind,
+        None,
+        infer_context_window(preset, configured_model),
+    )
 }
 
 /// Downgrade to `Mismatch` when the configured model name differs from the
@@ -1013,6 +1074,186 @@ mod tests {
         // 配置异常:空 / 非 URL
         assert_eq!(vllm_target_kind(""), "invalid");
         assert_eq!(vllm_target_kind("not-a-url"), "invalid");
+    }
+
+    /// Cross-pin: the monitor snapshot's `transport_class` and core's
+    /// `model_probe_transport_code` must stay ONE classifier. Both delegate
+    /// to the shared `transport_code_for`, so the table below pins each
+    /// code's trigger exactly as the ladder arms read it (the keyword texts
+    /// mirror core's arms; arm order matters — a text matching two arms
+    /// must land in the earlier one), and the only reqwest::Error
+    /// constructible offline (a builder error from an unparseable URL,
+    /// surfaced by build() before any network I/O) asserts both real
+    /// front-ends return the same code for the same error. Per-class
+    /// real-error samples for dns/tls/refused cannot be constructed:
+    /// reqwest::Error has no public constructor, and its Display omits the
+    /// source chain, so a live dial would classify via the structured flags
+    /// here but fall through to `network_error` in core — the shared
+    /// ladder, not per-error equality, is the convergence.
+    #[test]
+    fn transport_class_and_model_probe_transport_code_share_one_ladder() {
+        use crate::core::model_endpoint::transport_code_for;
+
+        // (is_timeout, is_dns, is_connect, display text) → code.
+        let cases = [
+            (
+                true,
+                false,
+                false,
+                "error sending request for url (http://x/)",
+                "timeout",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error trying to connect: invalid peer certificate: UnknownIssuer",
+                "tls_error",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error trying to connect: tls handshake eof",
+                "tls_error",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error trying to connect: ssl protocol error",
+                "tls_error",
+            ),
+            (
+                false,
+                true,
+                false,
+                "error sending request for url (http://x/)",
+                "dns_failed",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): failed to lookup address information: Name or service not known",
+                "dns_failed",
+            ),
+            (
+                false,
+                false,
+                true,
+                "error sending request for url (http://x/)",
+                "connection_refused",
+            ),
+            // Review 5875009923 P3: the structured flags answer before the
+            // keyword arms — a refused request whose URL embeds "tls" must
+            // stay connection_refused, not inherit the tls keyword from the
+            // URL text.
+            (
+                false,
+                false,
+                true,
+                "error sending request for url (http://127.0.0.1/tls): tcp connect error: Connection refused (os error 111)",
+                "connection_refused",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): tcp connect error: Connection refused (os error 111)",
+                "connection_refused",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): actively refused",
+                "connection_refused",
+            ),
+            // Each keyword alternative pinned in isolation (round-1 review
+            // M1): deleting any single alternative must turn a row red.
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://dns-backed-host/)",
+                "dns_failed",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): tcp connect error: os error 10061",
+                "connection_refused",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): Name or service not known",
+                "dns_failed",
+            ),
+            // Arm ORDER pinned: a text matching two arms lands in the
+            // earlier one.
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (https://ssl.example.com/): failed to lookup address information",
+                "tls_error",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://dns-backed-host/): connection refused",
+                "dns_failed",
+            ),
+            // Review 5875813001 P1/P2: the structured flags answer before
+            // the keyword arms (DNS over connect, per core's contract), so
+            // a URL embedding a TLS word no longer biases a real
+            // connect/dns-class error into tls_error.
+            (
+                false,
+                false,
+                true,
+                "error sending request for url (https://ssl.example.com/)",
+                "connection_refused",
+            ),
+            (
+                false,
+                true,
+                false,
+                "error sending request for url (https://ssl.example.com/)",
+                "dns_failed",
+            ),
+            // Timeout outranks everything, keyword text included.
+            (
+                true,
+                false,
+                true,
+                "error sending request for url (https://ssl.example.com/): certificate unknown",
+                "timeout",
+            ),
+            (false, false, false, "builder error", "network_error"),
+        ];
+        for (is_timeout, is_dns, is_connect, text, expected) in cases {
+            assert_eq!(
+                transport_code_for(is_timeout, is_dns, is_connect, text),
+                expected,
+                "ladder drifted for {text:?}"
+            );
+        }
+
+        let err = reqwest::Client::new()
+            .get("not a url")
+            .build()
+            .expect_err("an unparseable URL must fail before any network I/O");
+        assert_eq!(
+            transport_class(&err),
+            crate::core::model_endpoint::model_probe_transport_code(&err).0
+        );
+        assert_eq!(transport_class(&err), "network_error");
     }
 
     #[test]
@@ -1423,6 +1664,24 @@ mod tests {
         assert_eq!(http_diag.code, "models_http_error");
         assert_eq!(http_diag.http_status, Some(500));
         assert!(http_diag.transport.is_none());
+        // This exit keeps the context window too: undeclared here, the
+        // preset fallback fills it and carries the honesty notice
+        // (LocalVllm's 262,144 for names the resolution chain does not
+        // know) — the same unified precedence as the other two early
+        // exits.
+        assert_eq!(
+            http_err.max_model_len,
+            Some(262_144),
+            "the fallback window must survive the models_http_error early-exit"
+        );
+        assert!(
+            http_err
+                .notices
+                .iter()
+                .any(|d| d.code == "context_window_inferred"),
+            "an inferred window must carry the honesty notice: {:?}",
+            http_err.notices
+        );
 
         // 401 with a key → auth_failed; the verdict is the answer, so no
         // refinement diagnostic rides along.
@@ -1486,6 +1745,154 @@ mod tests {
         assert!(
             mismatch.diagnostic.is_none(),
             "mismatch is self-describing and carries no refinement"
+        );
+    }
+
+    /// Early-exit snapshots keep the context window: the window is
+    /// configuration, not a runtime fact, so an unreachable local engine
+    /// (connection refused — the monitor's normal idle state) must still
+    /// display the user-declared window instead of blanking the context card
+    /// (reported: "Context Length" stuck at "—" whenever the local vLLM was
+    /// down).
+    /// The auth_failed verdict must not drop it either, and neither may a
+    /// plain local HTTP error from the engine (503 while it restarts).
+    /// Without a declaration
+    /// the inference/preset fallback fills the window and carries the
+    /// `context_window_inferred` notice, same as the happy path.
+    #[tokio::test]
+    async fn snapshot_early_exits_keep_the_context_window() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        // Transport-refused local target with the user-declared window: the
+        // declaration survives the offline early-exit verbatim (and is not
+        // flagged as inferred — a declaration is configuration).
+        let refused = snapshot_for_model_config(
+            "http://127.0.0.1:1",
+            Some("qwen36_35b_256k".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            Some(262_144),
+        )
+        .await
+        .expect("a local target yields a snapshot even when unreachable");
+        assert_eq!(refused.health_status, HealthStatus::Offline);
+        assert_eq!(
+            refused.max_model_len,
+            Some(262_144),
+            "the declared window must survive the offline early-exit"
+        );
+        assert!(
+            refused
+                .notices
+                .iter()
+                .all(|d| d.code != "context_window_inferred"),
+            "a declared window is not inferred: {:?}",
+            refused.notices
+        );
+
+        // auth_failed (401 with a key): the same declaration survives.
+        let mock = models_mock::spawn(&[("/models", 401, "{}".into())]);
+        let auth = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            Some("secret"),
+            Some(262_144),
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(auth.health_status, HealthStatus::AuthFailed);
+        assert_eq!(
+            auth.max_model_len,
+            Some(262_144),
+            "the declared window must survive the auth_failed early-exit"
+        );
+
+        // auth_failed without a declaration: the preset fallback fills the
+        // window at that exit too and the honesty notice rides along — the
+        // same construction as the offline legs. (The declared 401 case
+        // above carries an empty notices vec because a declaration is not
+        // flagged inferred, so only this leg pins the auth_failed
+        // `notices` field.)
+        let mock = models_mock::spawn(&[("/models", 401, "{}".into())]);
+        let auth_inferred = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            Some("secret"),
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(auth_inferred.health_status, HealthStatus::AuthFailed);
+        assert_eq!(
+            auth_inferred.max_model_len,
+            Some(262_144),
+            "the fallback window must survive the auth_failed early-exit"
+        );
+        assert!(
+            auth_inferred
+                .notices
+                .iter()
+                .any(|d| d.code == "context_window_inferred"),
+            "an inferred window must carry the honesty notice at the auth_failed exit: {:?}",
+            auth_inferred.notices
+        );
+
+        // models_http_error (a local target served a non-401/403 HTTP
+        // status, e.g. 503 while the engine restarts): the same declaration
+        // survives the third early-exit verbatim, still not flagged
+        // inferred.
+        let mock = models_mock::spawn(&[("/models", 503, "unavailable".into())]);
+        let http_err = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            Some(262_144),
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(http_err.health_status, HealthStatus::Offline);
+        assert_eq!(
+            http_err.max_model_len,
+            Some(262_144),
+            "the declared window must survive the models_http_error early-exit"
+        );
+        assert!(
+            http_err
+                .notices
+                .iter()
+                .all(|d| d.code != "context_window_inferred"),
+            "a declared window is not inferred: {:?}",
+            http_err.notices
+        );
+
+        // Without a declaration the preset fallback fills the window and the
+        // honesty notice rides along (LocalVllm's fallback is 262,144 for
+        // names the resolution chain does not know), exactly like the happy
+        // path's inferred-window notice.
+        let offline = snapshot_for_model_config(
+            "http://127.0.0.1:1",
+            Some("totally-unknown-name".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot even when unreachable");
+        assert_eq!(offline.health_status, HealthStatus::Offline);
+        assert_eq!(offline.max_model_len, Some(262_144));
+        assert!(
+            offline
+                .notices
+                .iter()
+                .any(|d| d.code == "context_window_inferred"),
+            "an inferred window must carry the honesty notice: {:?}",
+            offline.notices
         );
     }
 

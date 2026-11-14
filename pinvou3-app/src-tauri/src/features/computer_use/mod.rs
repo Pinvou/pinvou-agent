@@ -29,8 +29,8 @@
 //!   idle reaper reclaims an idle engine, the tool's `Drop` revokes the grant, so a
 //!   grant can lapse without any user action — the next input attempt then reads
 //!   `GrantRequired` and the user must grant again;
-//! - the frontend listens to `computer_use:grant_required` and
-//!   `computer_use:confirm_required`.
+//! - the frontend listens to `computer_use:grant_required`,
+//!   `computer_use:confirm_required` and `computer_use:state_changed`.
 
 mod audit;
 mod backend;

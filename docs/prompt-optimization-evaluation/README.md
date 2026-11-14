@@ -105,21 +105,24 @@ cryptographic Git signatures are distinct.
 
 ## Scheduled-origin follow-up
 
-Status: separate behavior fix pending; this is the actionable follow-up for the
-R5 exclusion, not a claim that PR799 repairs it. At the approved R6 checkpoint,
-`build_engine_config_for_session_roots` in
+Status: fixed (round-1 sweep review wave, 2026-11-12). This was the actionable
+follow-up for the R5 exclusion, not a claim that PR799 repaired it. At the
+approved R6 checkpoint, `build_engine_config_for_session_roots` in
 [`bridge.rs`](../../pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs)
-pushes `runtime:scheduled-request-origin` for non-aux sessions, then replaces
-`cfg.instructions` with `session_instructions(session_id)`, discarding that entry.
-The entry carries session provenance for idempotent automation operations; it
-does not grant permission.
+pushed `runtime:scheduled-request-origin` for non-aux sessions, then replaced
+`cfg.instructions` with `session_instructions(session_id)`, discarding that
+entry. The entry carries session provenance for idempotent automation
+operations; it does not grant permission.
 
-A follow-up should assemble the session instruction stack before adding the
-origin entry exactly once. Verify ordinary, scheduled, Code and Plan sessions,
-the empty-project-rule case, and repeated config construction. Aux sessions must
-retain their minimal instruction/tool surface without this entry. Check the
-actual session id and preserve the distinction between provenance and authority.
-Keep those behavior changes and their regression tests in a separate PR.
+The fix assembles the session instruction stack before appending the origin
+entry exactly once (trailing inline entry, content carrying the actual session
+id, provenance-not-authority wording preserved). Regression pins:
+`origin_note_appends_after_the_session_instruction_stack` (ordinary + scheduled
+session ids, stack-first ordering, exactly-once, id content) and
+`aux_sessions_do_not_carry_the_origin_note` (aux keeps its minimal surface) in
+the same file. Code and Plan share the session config path, so they are covered
+by construction; the empty-project-rule case exercises the same stack assembly
+with no rule files present.
 
 ## Evidence storage boundary
 

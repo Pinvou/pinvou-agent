@@ -798,22 +798,45 @@ pub fn model_probe_http_code(status: reqwest::StatusCode) -> &'static str {
     }
 }
 
-/// Transport-error → (classification code, redacted underlying detail).
-/// The two-pass scrub (URL-userinfo strip, then secret-shape pass — the
-/// same composition as the CLI's `support::redact_error_text`) is
-/// load-bearing: reqwest's Display embeds the full requested URL, and
-/// `redact_secret`'s generic heuristic needs a digit, so a
-/// `http://user:pass@host` base_url must not depend on reqwest's own
-/// Display redaction staying complete. One scrub here covers both
-/// surfaces permanently (was: identical ladders in settings.rs and the
-/// CLI's models.rs).
-pub fn model_probe_transport_code(err: &reqwest::Error) -> (&'static str, String) {
-    let raw = crate::platform::credential_store::redact_secret(
-        &crate::platform::redact_url_credentials_in_text(&err.to_string()),
-    );
-    let lower = raw.to_lowercase();
-    let code = if err.is_timeout() {
+/// Shared transport-error classification ladder — the one source of the
+/// code vocabulary (`timeout` / `tls_error` / `dns_failed` /
+/// `connection_refused` / `network_error`) behind settings.rs's connection
+/// test, the CLI's models.rs, and the monitor snapshot's `transport`
+/// (i18n `connectionMessages`). Callers differ only in what they can feed
+/// it: settings/CLI pass `is_timeout` plus the redacted Display text (a
+/// real reqwest error's Display omits the source chain, so the keyword
+/// arms stay dead there beyond URL-embedded words); the monitor's snapshot
+/// probe additionally feeds its structured `is_dns`/`is_connect` flags,
+/// which classify real errors whose keywords can never reach a Display
+/// text. One ladder keeps every surface's code set identical by
+/// construction (was: two hand-maintained ladders drifting — the monitor's
+/// had lost `tls_error`). The dns arm must precede the connect arm:
+/// hyper-util files resolver failures under its Connect kind, so `is_dns`
+/// only classifies if it runs first.
+pub fn transport_code_for(
+    is_timeout: bool,
+    is_dns: bool,
+    is_connect: bool,
+    display_text: &str,
+) -> &'static str {
+    // Structured reqwest flags answer BEFORE the keyword arms (review
+    // 5875009923 P3): `err.to_string()`'s Display embeds the full requested
+    // URL, so a refused request to a URL like `http://127.0.0.1/tls` would
+    // hit the "tls" keyword arm and be misclassified as `tls_error` even
+    // though the structured flags say otherwise. DNS precedence is kept
+    // over the generic connect flag per this helper's own contract —
+    // hyper-util files resolver failures under its Connect kind, so
+    // `is_dns` only classifies if it runs first (review 5875813001 P2).
+    // The keyword arms stay as the fallback for text-only callers
+    // (settings/CLI surfaces pass no structured flags), whose texts carry
+    // no request URL to bias them.
+    let lower = display_text.to_lowercase();
+    if is_timeout {
         "timeout"
+    } else if is_dns {
+        "dns_failed"
+    } else if is_connect {
+        "connection_refused"
     } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
         "tls_error"
     } else if lower.contains("dns")
@@ -828,7 +851,25 @@ pub fn model_probe_transport_code(err: &reqwest::Error) -> (&'static str, String
         "connection_refused"
     } else {
         "network_error"
-    };
+    }
+}
+
+/// Transport-error → (classification code, redacted underlying detail).
+/// The two-pass scrub (URL-userinfo strip, then secret-shape pass — the
+/// same composition as the CLI's `support::redact_error_text`) is
+/// load-bearing: reqwest's Display embeds the full requested URL, and
+/// `redact_secret`'s generic heuristic needs a digit, so a
+/// `http://user:pass@host` base_url must not depend on reqwest's own
+/// Display redaction staying complete. One scrub here covers both
+/// surfaces permanently (was: identical ladders in settings.rs and the
+/// CLI's models.rs). Classification itself delegates to the shared
+/// `transport_code_for` ladder; this surface sees only `is_timeout` plus
+/// the redacted Display text.
+pub fn model_probe_transport_code(err: &reqwest::Error) -> (&'static str, String) {
+    let raw = crate::platform::credential_store::redact_secret(
+        &crate::platform::redact_url_credentials_in_text(&err.to_string()),
+    );
+    let code = transport_code_for(err.is_timeout(), false, false, &raw);
     (code, raw)
 }
 

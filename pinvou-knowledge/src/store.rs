@@ -11,7 +11,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use crate::embedding::{blob_to_vec, vec_to_blob};
 use crate::model::{
     AccessScope, Collection, DeviceGrant, Document, JoinRequestRecord, JoinRequestStatus,
-    SearchHit, ShareRecord, SourceChunk, TrashedDocument,
+    SearchHit, ShareRecord, SourceChunk,
 };
 
 const SCHEMA_VERSION: i64 = 3;
@@ -326,26 +326,6 @@ impl Store {
         })
     }
 
-    pub fn list_trashed_collections_page(
-        &self,
-        limit: usize,
-        offset: usize,
-    ) -> rusqlite::Result<Vec<Collection>> {
-        let limit = i64::try_from(limit.clamp(1, 500)).unwrap_or(500);
-        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
-        self.with_read_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT c.id,c.name,c.description,c.status,c.created_at,c.updated_at,c.deleted_at,\
-                 (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id),\
-                 (SELECT COUNT(*) FROM chunks k WHERE k.collection_id=c.id) \
-                 FROM collections c WHERE c.deleted_at IS NOT NULL \
-                 ORDER BY c.deleted_at DESC,c.id DESC LIMIT ?1 OFFSET ?2",
-            )?;
-            let rows = statement.query_map(params![limit, offset], map_collection)?;
-            rows.collect()
-        })
-    }
-
     pub fn create_collection(
         &self,
         name: &str,
@@ -566,31 +546,6 @@ impl Store {
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(&sql)?;
             let rows = statement.query_map(params![collection_id, limit, offset], map_document)?;
-            rows.collect()
-        })
-    }
-
-    pub fn list_trashed_documents_page(
-        &self,
-        limit: usize,
-        offset: usize,
-    ) -> rusqlite::Result<Vec<TrashedDocument>> {
-        let limit = i64::try_from(limit.clamp(1, 500)).unwrap_or(500);
-        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
-        self.with_read_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT d.id,d.collection_id,d.name,d.ext,d.size,d.sha256,d.status,d.n_chunks,\
-                 d.deleted_at,d.error,c.name \
-                 FROM documents d JOIN collections c ON c.id=d.collection_id \
-                 WHERE d.deleted_at IS NOT NULL AND c.deleted_at IS NULL \
-                 ORDER BY d.deleted_at DESC,d.id DESC LIMIT ?1 OFFSET ?2",
-            )?;
-            let rows = statement.query_map(params![limit, offset], |row| {
-                Ok(TrashedDocument {
-                    document: map_document(row)?,
-                    collection_name: row.get(10)?,
-                })
-            })?;
             rows.collect()
         })
     }
@@ -2627,14 +2582,17 @@ mod tests {
             .unwrap();
         store.trash_collection(trashed_collection.id).unwrap();
 
-        let documents = store.list_trashed_documents_page(200, 0).unwrap();
-        assert_eq!(documents.len(), 1);
-        assert_eq!(documents[0].document.id, trashed_document.id);
-        assert_eq!(documents[0].collection_name, "在用资料");
-        let collections = store.list_trashed_collections_page(200, 0).unwrap();
-        assert_eq!(collections.len(), 1);
-        assert_eq!(collections[0].id, trashed_collection.id);
-        assert_eq!(collections[0].doc_count, 2);
+        // The recycle-bin listing is owned by the v1 includeDeleted query;
+        // this only verifies the deleted entry is still retained before the
+        // permanent delete — the cleanup behavior is covered by the
+        // permanent-delete assertions below.
+        assert!(store.document(trashed_document.id, true).unwrap().is_some());
+        assert!(
+            store
+                .collection(trashed_collection.id, true)
+                .unwrap()
+                .is_some()
+        );
 
         assert!(
             store

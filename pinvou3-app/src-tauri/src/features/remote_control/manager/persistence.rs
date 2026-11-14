@@ -242,15 +242,6 @@ pub struct RelaySettings {
     pub public_base_url: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct RelaySettingsInfo {
-    pub relay_url: String,
-    pub public_base_url: String,
-    pub custom: bool,
-    pub default_relay_url: String,
-    pub default_public_base_url: String,
-}
-
 pub(super) fn relay_settings_path() -> PathBuf {
     paths::pinvou3_home().join("web-relay.json")
 }
@@ -605,24 +596,6 @@ pub(super) fn queue_pending_revocation_at(
 /// manager `finish_pending_revocation`。空集移除文件(与 `_to` 一致)。
 pub(super) fn persist_pending_revocations(ledger: &PendingRevocationLedger) -> Result<(), String> {
     persist_pending_revocations_to(&pending_revocations_path(), ledger)
-}
-
-pub(super) fn acknowledge_pending_revocation_at(
-    path: &Path,
-    pending: &PendingRevocation,
-) -> Result<(), String> {
-    let mut ledger = match load_pending_revocations_classified(path) {
-        RevocationLedgerLoad::Ledger(ledger) => ledger,
-        RevocationLedgerLoad::Corrupt(error) => {
-            // 与 queue 同理:吊销回放的确认不能被坏账本卡死;从空账本继续
-            // 意味着确认结果(删除条目)覆盖坏文件。
-            eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
-            PendingRevocationLedger::default()
-        }
-        RevocationLedgerLoad::Unavailable(error) => return Err(error),
-    };
-    ledger.entries.retain(|entry| entry != pending);
-    persist_pending_revocations_to(path, &ledger)
 }
 
 pub(super) fn eligible_pending_revocations(

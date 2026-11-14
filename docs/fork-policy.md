@@ -8,6 +8,7 @@
 > remains a separate merge gate; the parent review gitlink is not maintenance.
 > See [the T6 register](fork-modifications.md#t6-review-candidate-bounded-model-rate-limit-recovery-2026-11-05).
 
+> 公开维护头其后已推进至 `8e8d52fdb`（2026-11-14，含 #136/#142/#148/#150/#152/#156）。本 PR 的 T6 候选先于该推进；待 CodeWhale#141 合入公开维护分支后，按既定门禁重钉合并头。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
@@ -19,8 +20,9 @@ Published maintenance snapshot (2026-11-05; ancestor of the T6 candidate):
 
 - Public maintenance: `11cba403dc6bd6ca5c4dca55042785b03449ac8e`, including #123/#124/#129/#131/#133/#134/#135. The current candidate gitlink is recorded above.
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 93 个提交，r1 `1fafee7e2` 之上 78 个；91 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 公开维护头其后已推进：`8e8d52fdb4a418bf4310db4b5d03dce5345c54d5`（2026-11-14）已包含 #136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`；上游 v0.9.12 之上 99 个提交，r1 之上 84 个，97 个带 DCO sign-off。本 PR 的 T6 候选先于该推进（候选基于 `11cba403d`）；待 CodeWhale#141 合入公开维护分支后，按既定门禁重钉合并头。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：540 files, +119210/-49666，净增 69544；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：551 files, +121123/-49817，净增 71306；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。

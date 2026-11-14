@@ -150,7 +150,6 @@ pub use self::mode_state::{
 /// `crate::features::sessions::X` paths stay stable.
 pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
-    ScheduledTokenAccounting,
 };
 // Only the benchmark-gated headless runner (agentic_task) mints headless ids
 // and warns about retention eviction, so both re-exports follow its gate.

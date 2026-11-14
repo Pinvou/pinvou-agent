@@ -1,19 +1,13 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { createPetActivationState, loadActivePet } from '../src/features/pet/pet-active.js';
+import { deferred } from './helpers/deferred.mjs';
 
 const pets = Object.freeze({
   lingling: Object.freeze({ id: 'lingling', name: '灵灵' }),
   langlang: Object.freeze({ id: 'langlang', name: '浪浪' }),
   'ace-taffy': Object.freeze({ id: 'ace-taffy', name: 'Ace Taffy' }),
 });
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((accept, decline) => { resolve = accept; reject = decline; });
-  return { promise, reject, resolve };
-}
 
 function harness({ activePet = null, loadAtlas, decodeImage = async () => {} } = {}) {
   const state = createPetActivationState(activePet);

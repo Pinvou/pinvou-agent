@@ -152,7 +152,7 @@ pinvou benchmark score gaia --run-id <run-id>
 报告字段包括 `evaluated`、`correct`、`complete`、`official_dataset_compatible`、`split`、`level`。
 
 - complete 报告的 `split` 为 `validation`、`level` 为 `1`。
-- CLI 的完整状态为 `complete_pinned_rust_port`；它表示结构完整，不表示已经证明与官方 Python scorer 等价。
+- 报告以 `complete` 布尔字段标注结构完整（`official_dataset_compatible` 单独标注官方数据集兼容）；它表示结构完整，不表示已经证明与官方 Python scorer 等价。
 - partial 报告明确标注为结构不完整、不可比。
 - 评分器只读取持久化的私有预测；公开预测句柄无法解码候选答案。
 

@@ -10,11 +10,11 @@ use enigo::{Direction, Enigo, Keyboard};
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
 /// count by `WHEEL_DELTA` (120) internally, so an unclamped count overflows
-/// i32 (debug panic / release wrap-around). Matches the tool layer's
-/// `MAX_SCROLL_AMOUNT` parse cap, which is the effective limit — this one
-/// only bounds the backend math. Windows used to clamp here; macOS did not
+/// i32 (debug panic / release wrap-around). Aliases the tool layer's
+/// `MAX_SCROLL_AMOUNT` parse cap (single value source) — this one only
+/// bounds the backend math. Windows used to clamp here; macOS did not
 /// clamp at all — both go through this now.
-pub(crate) const MAX_SCROLL_CLICKS: u32 = 100;
+pub(crate) const MAX_SCROLL_CLICKS: u32 = crate::features::computer_use::tool::MAX_SCROLL_AMOUNT;
 
 /// Display bound for a single-line element/node name: one shared cap for the
 /// tool layer's consent labels, the `ui_tree` writers, and the Linux display

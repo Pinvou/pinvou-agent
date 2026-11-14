@@ -784,7 +784,6 @@ pub(crate) fn spawn_event_forwarder(
                             system_prompt,
                             model,
                             mode: profile.execution_mode(),
-                            token_accounting: ScheduledTokenAccounting::PreservePersisted,
                         };
                         let store_for_save = store.clone();
                         let session_for_save = session_id.clone();
@@ -1145,6 +1144,9 @@ pub(crate) fn spawn_event_forwarder(
                     submission_id: _,
                     compaction_id: _,
                     base_url: _,
+                    // CodeWhale#142 adds the terminal error's producer
+                    // source; the forwarder surfaces only usage/status/error.
+                    error_source: _,
                 } => {
                     #[cfg(not(feature = "benchmark-hooks"))]
                     let _ = &tool_catalog;
