@@ -714,21 +714,11 @@ policy remains a maintainer decision; no new retention threshold is inferred.
 See [R7 verification](prompt-optimization-evaluation/review-r7-verification.json)
 and [R7 sources](prompt-optimization-evaluation/source-manifest-review-r7.json).
 
-## CodeWhale baseline follow to 6f7a3a748 (2026-11-12)
+## CodeWhale baseline follow to 6f7a3a748（2026-11-12 快照，已被第 0 节取代）
 
-The submodule gitlink follows pinvou3-clean to 6f7a3a748 (CodeWhale#136's
-residual model-facing copy repair, #142's terminal-error source field,
-#148's todo-item status default, #150's engine route-output-budget
-exposure to hosts, plus #152's security dependency bumps: rusqlite 0.41.1
-/ libsqlite3-sys 0.39.1 bundled SQLite 3.54.1 for RUSTSEC-2026-0459,
-rmcp 3.9.0 for RUSTSEC-2026-0462, rio-vt 0.5.29 for RUSTSEC-2026-0430;
-#152 also raises the declared submodule MSRV to rust-version 1.89, below
-the parent's 1.90 floor).
-fork-guard re-registers the review head (6f7a3a748) and the
-commits-above-v0.9.12 census (98); the maintenance base (11cba403d), the
-official v0.9.12 root (dcd4c200) and the immutable r1 closure are
-unchanged ancestors, and the public-head transition contract stays
-gitlink == branch head with the r3 tag pinned at its closure (61cb769be).
+> 历史记录：本节保留 #850 评审期间的中间状态；当前头与 census 以第 0 节为准。
+
+该次跟进曾把子模块 gitlink 移至 6f7a3a748（CodeWhale#136 的残余模型面文案修复、#142 的终态错误来源字段、#148 的 todo 条目 status 默认值、#150 的引擎路线输出预算对宿主暴露，以及 #152 的安全依赖升级：rusqlite 0.41.1 / libsqlite3-sys 0.39.1 捆绑 SQLite 3.54.1 关 RUSTSEC-2026-0459、rmcp 3.9.0 关 RUSTSEC-2026-0462、rio-vt 0.5.29 关 RUSTSEC-2026-0430；#152 同时把子模块声明 MSRV 抬至 rust-version 1.89，低于父仓 1.90 下限）。当时的 fork-guard 登记评审头为 6f7a3a748、census（上游 v0.9.12 `dcd4c200f` 之上的提交数）为 98；维护基（11cba403d）、官方 v0.9.12 根（dcd4c200）与不可变 r1 闭合保持为未变的祖先；公开头迁移契约不变：gitlink == 分支头，r3 tag 钉在其闭合点（61cb769be）。
 
 ## CodeWhale baseline follow to 687358f7e (2026-11-15)
 
