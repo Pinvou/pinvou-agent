@@ -68,6 +68,11 @@ pub struct GpuSnapshot {
 pub struct CpuSnapshot {
     pub name: String,
     pub total_usage_pct: Option<f64>,
+    /// 进程级 CPU 占用（platform/{linux,macos,windows}_cpu.rs 的
+    /// process_usage_pct；首轮采样无前值时为 None）。
+    pub process_usage_pct: Option<f64>,
+    /// 逻辑核数（进程占用按核归一的分母；探测失败为 0）。
+    pub logical_processors: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
