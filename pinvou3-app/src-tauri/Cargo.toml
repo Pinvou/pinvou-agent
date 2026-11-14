@@ -342,7 +342,9 @@ uiautomation = "0.25"
 windows = { version = "0.62", features = ["Win32_UI_Accessibility"] }
 
 # Process liveness probe using kill(pid, 0) semantics; see process_alive in
-# platform/os/posix.rs. Browser watch uses it to guard stale port-file deletion.
+# platform/os/posix.rs. Browser watch uses it to guard stale port-file
+# deletion. The macOS computer_use backend also reads `libc::pid_t` for the
+# self-targeted AX guard's pid comparisons.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

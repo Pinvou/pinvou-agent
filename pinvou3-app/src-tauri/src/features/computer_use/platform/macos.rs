@@ -49,6 +49,23 @@
 //! the thread), so the struct relies on auto Send alone (Enigo already has an
 //! internal unsafe impl Send); no hand-written unsafe impl is needed.
 //!
+//! Self-targeting boundary: AX queries are safe on this background thread
+//! only for *foreign* targets — HIServices marshals those to the target
+//! application's main thread via XPC. A query that resolves to this very
+//! process is dispatched in-process on the calling thread instead, and
+//! reading our own WKWebView-backed window's accessibility bridge then runs
+//! WebKit main-thread-only code, which deliberately aborts the whole process
+//! (crashDueToApplicationCallingMainThreadOnlyWebKitAPIFromBackgroundThread;
+//! crash pinvou3-tauri-2026-11-12-101011: computer use killed the app when
+//! Pinvou itself was the focused application). ui_tree/focused_element
+//! refuse self-owned focused applications and element_at_point refuses
+//! self-owned points and pins the hit-test to the snapshot-selected foreign
+//! application (self_shadow_at_point before the hit-test;
+//! ensure_not_self_owned re-checks the element pid before any attribute
+//! read — also applied to tokens derived from a target app's replies, whose
+//! pid field is reply-controlled and never validated against the peer);
+//! coordinate-only input (mouse/keyboard) is unaffected.
+//!
 //! Autorelease-pool invariant: the backend worker thread has no Obj-C
 //! runloop and no autorelease pool. Every ObjC/CF call on the input/capture
 //! paths below (and in [`super::screen_capture_kit`]) must therefore return
@@ -83,9 +100,12 @@ use enigo::{Direction, Enigo, Keyboard, Mouse, Settings};
 use objc2::rc::Retained;
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::{
-    CFRetained, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
+    CFNumberType, CFRetained, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
 };
-use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
+use objc2_core_graphics::{
+    CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo,
+    CGWindowListOption, kCGWindowBounds, kCGWindowOwnerPID,
+};
 use objc2_foundation::{NSPoint, NSSize, NSString};
 
 use super::super::backend::ComputerUseBackend;
@@ -176,6 +196,20 @@ unsafe extern "C" {
         key_callbacks: *const c_void,
         value_callbacks: *const c_void,
     ) -> *const c_void;
+    /// const void * CFDictionaryGetValue(CFDictionaryRef, const void *key).
+    /// Declared manually per the module CF-layer note: the generated binding
+    /// takes a typed `&CFDictionary` receiver, which the borrowed raw
+    /// pointers from the window-list traversal cannot produce without the
+    /// bare reference casts this module avoids.
+    fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+    /// Boolean CFNumberGetValue(CFNumberRef, CFNumberType, void *); the
+    /// Boolean return follows the u8 convention (see CFBooleanGetValue).
+    /// `CFNumberType` is the crate's `#[repr(transparent)]` wrapper over
+    /// CFIndex, matching the C enum's underlying width; declared manually
+    /// for the same reason as CFDictionaryGetValue (the generated
+    /// `CFNumber::value` takes a typed `&CFNumber` receiver).
+    fn CFNumberGetValue(number: *const c_void, number_type: CFNumberType, value: *mut c_void)
+    -> u8;
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -229,6 +263,351 @@ fn accessibility_error() -> ComputerUseError {
 /// failed (fail-closed).
 fn focused_chain_error(attribute: &str, err: AXError) -> ComputerUseError {
     ComputerUseError::failed(format!("reading {attribute} failed: AXError({})", err.0))
+}
+
+/// Capability string for self-targeted Accessibility reads. Nothing
+/// classifies by it yet; keeping it a named constant pins the spelling so
+/// downstream matching can rely on it if added.
+const SELF_TARGETED_ACCESSIBILITY: &str = "self_targeted_accessibility";
+
+/// Explicit error for self-targeted Accessibility reads. Coordinate-only
+/// input (mouse/keyboard via CGEvent) still works inside Pinvou's own
+/// windows; only the AX element reads are refused.
+fn self_owned_ax_error(action: &str) -> ComputerUseError {
+    // Activating the target does not move a query point out of this
+    // process's own windows, so element_at_point must change coordinates
+    // instead of only re-activating.
+    let retry = if action == "element_at_point" {
+        "then retry with coordinates over the target application's own windows"
+    } else {
+        "then retry"
+    };
+    ComputerUseError::unsupported(
+        SELF_TARGETED_ACCESSIBILITY,
+        format!(
+            "{action} cannot target Pinvou itself: reading this app's own \
+             Accessibility elements from the computer-use worker thread makes \
+             macOS WebKit abort the whole process (its accessibility bridge is \
+             main-thread-only). Activate the target application first (for \
+             example by clicking one of its windows or via open -a), {retry}."
+        ),
+    )
+}
+
+/// Explicit error for AX elements whose ownership cannot be proven foreign
+/// (the token-local pid read failed). Same refusal and capability as a
+/// positive self-pid match, but an honest diagnosis: the crash-boundary
+/// message above would misstate what happened here.
+fn unproven_owner_ax_error(action: &str) -> ComputerUseError {
+    ComputerUseError::unsupported(
+        SELF_TARGETED_ACCESSIBILITY,
+        format!(
+            "{action} refused: this Accessibility element's owner could not \
+             be determined (the pid read on the element token failed), so it \
+             is treated as possibly self-owned (fail-closed). Retry the \
+             action; if the pid read keeps failing, this element cannot be \
+             used as a computer-use target — pick a fresh one (for example \
+             by re-activating the application or re-focusing the element)."
+        ),
+    )
+}
+
+/// Explicit error for a snapshot-selected foreign application whose
+/// accessibility element could not be created (the application may have
+/// exited between the window enumeration and the hit-test). Same refusal
+/// and capability as the other fail-closed causes: without a pinnable
+/// foreign receiver the query can no longer be proven to stay out of this
+/// process, so the coordinates are not touched.
+fn unpinnable_target_ax_error(action: &str) -> ComputerUseError {
+    ComputerUseError::unsupported(
+        SELF_TARGETED_ACCESSIBILITY,
+        format!(
+            "{action} refused: the application selected by the window \
+             snapshot could not be turned into an Accessibility target (it \
+             may have exited), so ownership of whatever is at the \
+             coordinates now cannot be proven foreign (fail-closed). Retry \
+             the action; the window list is re-read on every call."
+        ),
+    )
+}
+
+/// Refuses AX reads on elements owned by this process before any attribute
+/// is read: HIServices dispatches Accessibility queries targeting the
+/// *calling* process in-process on the calling thread (foreign targets are
+/// marshalled to their application's main thread via XPC and are safe), and
+/// any attribute read on our own WKWebView-backed window then runs WebKit
+/// main-thread-only code on this worker — WebKit deliberately aborts the
+/// whole process there (see the module docs, crash
+/// pinvou3-tauri-2026-11-12-101011). Unknown ownership also fails closed: an
+/// element that cannot be proven foreign is not touched. `element_pid` and
+/// `self_pid` are separate parameters so tests can pin both sides without
+/// real AX elements.
+fn ensure_not_self_owned(
+    element_pid: Option<libc::pid_t>,
+    self_pid: libc::pid_t,
+    action: &str,
+) -> Result<(), ComputerUseError> {
+    match element_pid {
+        Some(pid) if pid != self_pid => Ok(()),
+        Some(_) => Err(self_owned_ax_error(action)),
+        // Cannot prove the element is foreign: refuse, with the pid-read
+        // failure diagnosed separately from a positive self-pid match.
+        None => Err(unproven_owner_ax_error(action)),
+    }
+}
+
+/// The pid owning `element`, read from the local element token:
+/// AXUIElementGetPid answers from the token itself (the pid is recorded at
+/// creation time), it never messages the owning application and does not
+/// touch the web view's accessibility bridge — safe on any thread. `None`
+/// on error (fail-closed callers refuse to traverse).
+fn element_pid(element: &AXUIElement) -> Option<libc::pid_t> {
+    let mut pid: libc::pid_t = 0;
+    // SAFETY: the out pointer is a valid stack local for the duration of the
+    // call; the call is a pure token-property read with no thread affinity.
+    let err = unsafe { element.pid(NonNull::from(&mut pid)) };
+    (err == AXError::Success).then_some(pid)
+}
+
+/// This process's pid in the `pid_t` space `AXUIElementGetPid` answers in
+/// (`std::process::id()` is u32; pids fit i32 on Darwin).
+fn self_pid() -> libc::pid_t {
+    std::process::id() as libc::pid_t
+}
+
+/// CFDictionaryGetValue by raw key pointer (`None` when the key is absent).
+/// Declared manually per the module CF-layer note: the generated binding
+/// takes a typed `&CFDictionary` receiver, which the borrowed raw pointers
+/// from the window-list traversal cannot produce without the bare reference
+/// casts this module avoids.
+unsafe fn dict_value(dict: *const c_void, key: *const c_void) -> Option<*const c_void> {
+    // SAFETY: dict is a valid CFDictionaryRef from the window list and key
+    // is either a bridged CFString or a CoreGraphics CFString constant; both
+    // stay valid for the duration of the call.
+    let value = unsafe { CFDictionaryGetValue(dict, key) };
+    (!value.is_null()).then_some(value)
+}
+
+/// Reads a CFNumber as i32 (`None` when the value is missing/not a number or
+/// the conversion fails).
+unsafe fn cf_number_i32(number: *const c_void) -> Option<i32> {
+    let mut out: i32 = 0;
+    // SAFETY: number is a valid CFNumberRef from a window-list dictionary;
+    // out is a valid stack local. CFNumberGetValue converts across number
+    // types when lossless (CGWindow.h documents kCGWindowOwnerPID as a
+    // 32-bit signed integer; a wider stored value would still convert
+    // losslessly for every pid).
+    let ok = unsafe {
+        CFNumberGetValue(
+            number,
+            CFNumberType::SInt32Type,
+            NonNull::from(&mut out).cast::<c_void>().as_ptr(),
+        )
+    };
+    (ok != 0).then_some(out)
+}
+
+/// Reads a CFNumber as f64 (`None` when the value is missing/not a number or
+/// the conversion fails).
+unsafe fn cf_number_f64(number: *const c_void) -> Option<f64> {
+    let mut out: f64 = 0.0;
+    // SAFETY: same as cf_number_i32.
+    let ok = unsafe {
+        CFNumberGetValue(
+            number,
+            CFNumberType::Float64Type,
+            NonNull::from(&mut out).cast::<c_void>().as_ptr(),
+        )
+    };
+    (ok != 0).then_some(out)
+}
+
+/// Creates the top-level accessibility object for `pid`, or None when the
+/// system hands back NULL. The generated wrapper would panic on NULL; the
+/// worker path refuses instead of panicking.
+/// SAFETY: the returned CFRetained takes the +1 the C contract transfers.
+unsafe fn try_new_application(pid: libc::pid_t) -> Option<CFRetained<AXUIElement>> {
+    // Rust 2024 requires extern blocks to be unsafe (zhuowp round-4 P1:
+    // the plain block broke the macOS build at this source).
+    unsafe extern "C-unwind" {
+        fn AXUIElementCreateApplication(pid: libc::pid_t) -> Option<NonNull<AXUIElement>>;
+    }
+    // SAFETY: AXUIElementCreateApplication returns a +1 top-level
+    // accessibility object for the pid, or NULL.
+    let ret = unsafe { AXUIElementCreateApplication(pid) };
+    ret.map(|ptr| unsafe { CFRetained::from_raw(ptr) })
+}
+
+/// One on-screen window's usable geometry from CGWindowList (global point
+/// space, top-left origin — the same space as the CGEvent coordinates of
+/// element hit-tests). Split from the enumeration so the containment rule
+/// is unit-testable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WindowBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Half-open containment (the right/bottom edges belong to the neighbouring
+/// window — close enough to hit-test z-order expectations for a
+/// self-exclusion check).
+fn point_in_window_bounds(px: f64, py: f64, bounds: &WindowBounds) -> bool {
+    px >= bounds.x
+        && px < bounds.x + bounds.width
+        && py >= bounds.y
+        && py < bounds.y + bounds.height
+}
+
+/// Parses a kCGWindowBounds dictionary ({X, Y, Width, Height} CFNumbers).
+unsafe fn window_bounds(dict: *const c_void) -> Option<WindowBounds> {
+    let read = |name: &str| -> Option<f64> {
+        let key = NSString::from_str(name);
+        // SAFETY: dict is a valid CFDictionaryRef from the window list; the
+        // NSString bridges to CFString for the key.
+        let value = unsafe { dict_value(dict, Retained::as_ptr(&key).cast()) }?;
+        // SAFETY: value is the CFNumber stored under the documented bounds
+        // key of this window dictionary.
+        unsafe { cf_number_f64(value) }
+    };
+    Some(WindowBounds {
+        x: read("X")?,
+        y: read("Y")?,
+        width: read("Width")?,
+        height: read("Height")?,
+    })
+}
+
+/// One classified entry of the front-to-back window list: the owner pid
+/// (None when the pid could not be read — the entry is then not provably
+/// foreign) and the window bounds.
+#[derive(Clone)]
+struct WindowOwner {
+    pid: Option<i32>,
+    bounds: WindowBounds,
+}
+
+/// Which pre-hit-test disposition applies at the point, per the topmost
+/// containing window. `entries` follows the CGWindowList z-order contract
+/// (front to back for OptionOnScreenOnly), so the FIRST entry whose bounds
+/// contain the point is the window that actually owns the point: a foreign
+/// window in front of a partially visible Pinvou window wins the overlap,
+/// and the observation must proceed — pinned to the owning application —
+/// instead of being refused over the occluded rectangle underneath. A
+/// containing window whose pid is unreadable cannot be proven foreign and
+/// is refused under the same rule as [`ensure_not_self_owned`] — with the
+/// honest unproven-owner cause, not the crash-boundary message. A point
+/// outside every listed window falls back to the system-wide element
+/// (desktop gaps etc.).
+#[derive(Debug, PartialEq, Eq)]
+enum SelfShadow {
+    /// The topmost containing window is ours: the hit-test would dispatch
+    /// into our own web bridge and abort.
+    SelfOwned,
+    /// The topmost containing window's ownership cannot be proven foreign:
+    /// the same fail-closed rule as ensure_not_self_owned, with the honest
+    /// unproven-owner cause.
+    Unproven,
+    /// A foreign window owns the point; `pid` is the owning application the
+    /// snapshot selected. The hit-test is pinned to that application's
+    /// accessibility element: AXUIElementCopyElementAtPosition restricts an
+    /// application receiver to that application, so a foreign window
+    /// closing, moving or reordering mid-call cannot divert the query into
+    /// our own process.
+    Foreign { pid: libc::pid_t },
+    /// No listed window contains the point (desktop gap etc.) or the
+    /// enumeration itself failed: the system-wide element answers, under
+    /// the documented degradation.
+    SystemWide,
+}
+
+fn self_window_shadows_point(
+    entries: &[WindowOwner],
+    x: f64,
+    y: f64,
+    self_pid: libc::pid_t,
+) -> SelfShadow {
+    for entry in entries {
+        if !point_in_window_bounds(x, y, &entry.bounds) {
+            continue;
+        }
+        return match entry.pid {
+            Some(pid) if pid == self_pid => SelfShadow::SelfOwned,
+            Some(pid) => SelfShadow::Foreign { pid },
+            None => SelfShadow::Unproven,
+        };
+    }
+    SelfShadow::SystemWide
+}
+
+/// Which pre-hit-test disposition applies at the global screen point. This
+/// preempts the hit-test: when the topmost window at the point is our own
+/// WKWebView-backed window, an unpinned hit-test would dispatch into
+/// WebKit's accessibility bridge in-process and abort the process before
+/// any element pid could be checked (see the module docs). A foreign
+/// window in front of ours owns the point instead, and the hit-test is
+/// then pinned to that application (see [`SelfShadow::Foreign`]).
+/// CGWindowListCopyWindowInfo documents no thread affinity (off-main calls
+/// are common practice) and needs no TCC grant (only the owner pid and
+/// bounds are read; window titles are not). On enumeration failure the
+/// check degrades to the system-wide fallback and the hit-test proceeds:
+/// CGWindow.h scopes the NULL return to no GUI session or a disabled
+/// window server — a state in which the hit-test itself fails as well, so
+/// fail-closed would refuse the same set of calls in practice. Note the
+/// post-hit-test pid guard cannot
+/// back this check up for our own web-view windows: a self-owned hit that
+/// reaches the web bridge aborts inside the hit-test, before any pid guard
+/// runs — the guard only catches non-aborting self hits (native AppKit AX
+/// paths, or windows missed by this enumeration).
+fn self_shadow_at_point(x: i32, y: i32) -> SelfShadow {
+    let self_pid = self_pid();
+    // The generated wrapper is safe and transfers the Copy rule's +1 into
+    // the CFRetained below; window id 0 makes the list relative to all
+    // on-screen windows.
+    let Some(list) = CGWindowListCopyWindowInfo(
+        CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements,
+        0,
+    ) else {
+        return SelfShadow::SystemWide;
+    };
+    let list_ptr = CFRetained::as_ptr(&list).cast::<c_void>().as_ptr();
+    // SAFETY: list_ptr is the +1 CFArray returned above; the indices are in
+    // range by construction. Entries are CFDictionary objects per the
+    // CGWindowList contract; null entries are skipped.
+    let count = unsafe { CFArrayGetCount(list_ptr) };
+    let mut entries: Vec<WindowOwner> = Vec::new();
+    for index in 0..count {
+        // SAFETY: index is in range (bounded by the count read above).
+        let window = unsafe { CFArrayGetValueAtIndex(list_ptr, index) };
+        if window.is_null() {
+            continue;
+        }
+        // An unreadable pid is recorded as None instead of dropping the
+        // entry: it stays in the z-order race and fails closed with the
+        // unproven-owner cause if it contains the point (see the
+        // SelfShadow docs on self_window_shadows_point).
+        // SAFETY: window is a valid CFDictionaryRef from the window list;
+        // the keys are the documented kCGWindow* constants.
+        let pid_value =
+            unsafe { dict_value(window, NonNull::from(kCGWindowOwnerPID).as_ptr().cast()) };
+        // SAFETY: pid_value is the CFNumber stored under kCGWindowOwnerPID.
+        let pid = pid_value.and_then(|value| unsafe { cf_number_i32(value) });
+        // SAFETY: window is the same valid CFDictionaryRef as above; the key
+        // is the documented kCGWindowBounds constant.
+        let Some(bounds_value) =
+            (unsafe { dict_value(window, NonNull::from(kCGWindowBounds).as_ptr().cast()) })
+        else {
+            continue;
+        };
+        // SAFETY: bounds_value is the CFDictionary stored under
+        // kCGWindowBounds.
+        let Some(bounds) = (unsafe { window_bounds(bounds_value) }) else {
+            continue;
+        };
+        entries.push(WindowOwner { pid, bounds });
+    }
+    self_window_shadows_point(&entries, x as f64, y as f64, self_pid)
 }
 
 /// Triggers the system dialogs for both TCC grants (Screen Recording +
@@ -1054,7 +1433,18 @@ fn write_tree_node(
     names: &AxNames,
     writer: &mut TreeWriter,
     out: &mut String,
-) {
+) -> Result<(), ComputerUseError> {
+    // Re-check every node before ANY of its attribute reads: child tokens
+    // are deserialized from the target app's replies, and the pid in such a
+    // token is reply-controlled (axElementUnserialize feeds the wire fields
+    // straight into the token; HIServices never validates it against the
+    // serving peer) — so a hostile target could stamp a child with this
+    // process's pid and turn the next read into an in-process dispatch into
+    // our own web view's main-thread-only bridge (see the module docs). The
+    // pid read is token-local, so this is nearly free. Also covers the root
+    // (focused_window_root may return the app's focused-window token from
+    // the app's reply).
+    ensure_not_self_owned(element_pid(element), self_pid(), "ui_tree")?;
     // Aggregate deadline: abort as soon as it is reached (past_deadline
     // already set truncated); the subtree written so far remains valid.
     // Honest overshoot bound: the deadline is only checked at node entry,
@@ -1065,10 +1455,10 @@ fn write_tree_node(
     // mid-node by the consecutive-CannotComplete poison below before it can
     // burn a full message timeout on every remaining attribute.
     if writer.past_deadline() {
-        return;
+        return Ok(());
     }
     let Some(index) = writer.take_node() else {
-        return;
+        return Ok(());
     };
     // Nodes at the depth limit are not drilled into; the four
     // position/size/enabled/focused reads are skipped.
@@ -1079,10 +1469,10 @@ fn write_tree_node(
     // attribute on an unresponsive app.
     if writer.errors.poisoned {
         writer.truncated = true;
-        return;
+        return Ok(());
     }
     if depth >= max_depth {
-        return;
+        return Ok(());
     }
     match ax_array(element, &names.children) {
         Ok(Some((children, count))) => {
@@ -1093,8 +1483,9 @@ fn write_tree_node(
                 // The element may be destroyed mid-traversal or its attribute
                 // reads may fail: truncated carries the abort signal
                 // uniformly (budget exhausted / deadline / consecutive
-                // CannotComplete).
-                write_tree_node(&child, depth + 1, max_depth, names, writer, out);
+                // CannotComplete); a self-owned child aborts with an error
+                // instead (the re-check at node entry above).
+                write_tree_node(&child, depth + 1, max_depth, names, writer, out)?;
                 if writer.truncated {
                     break;
                 }
@@ -1112,21 +1503,33 @@ fn write_tree_node(
             }
         }
     }
+    Ok(())
+}
+
+/// The focused application element (AXFocusedApplication on the system-wide
+/// element). `None` when there is no focused application or the read fails —
+/// the tree is unavailable in both cases. This probe is safe for a
+/// self-focused system: the attribute answers at the application level
+/// without dispatching into the web view's accessibility bridge.
+fn focused_application(system: &AXUIElement, names: &AxNames) -> Option<CFRetained<AXUIElement>> {
+    match ax_ui_element(system, &names.focused_application) {
+        Ok(Some(app)) => Some(app),
+        // No focused application or failed read: the tree is unavailable.
+        _ => None,
+    }
 }
 
 /// The tree root: the focused application's focused window; when the app has
-/// no focused window (hidden/menu-bar-only) or the read fails, degrade to the
-/// application root (including the menu bar etc., bounded by the depth/node
-/// budgets).
-fn focused_window_root(system: &AXUIElement, names: &AxNames) -> Option<CFRetained<AXUIElement>> {
-    let app = match ax_ui_element(system, &names.focused_application) {
-        Ok(Some(app)) => app,
-        // No focused application: the tree is unavailable.
-        _ => return None,
-    };
+/// no focused window (hidden/menu-bar-only) or the read fails, degrade to
+/// the application root (including the menu bar etc., bounded by the
+/// depth/node budgets). The caller must have proven `app` not self-owned
+/// (ensure_not_self_owned): these reads are AX IPC for foreign apps, but
+/// would run in-process (and abort on WebKit's main-thread-only assert) for
+/// self.
+fn focused_window_root(app: CFRetained<AXUIElement>, names: &AxNames) -> CFRetained<AXUIElement> {
     match ax_ui_element(&app, &names.focused_window) {
-        Ok(Some(window)) => Some(window),
-        _ => Some(app),
+        Ok(Some(window)) => window,
+        _ => app,
     }
 }
 
@@ -1766,11 +2169,20 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         // dragging down the worker thread. Failures are ignored (falls back
         // to the default timeout).
         let _ = unsafe { system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
-        let Some(root) = focused_window_root(&system, &names) else {
+        // The focused-application probe is safe for a self-focused system:
+        // the attribute answers at the application level without dispatching
+        // into the web view's accessibility bridge.
+        let Some(app) = focused_application(&system, &names) else {
             return Err(ComputerUseError::unavailable(
                 "no focused application is available for ui_tree",
             ));
         };
+        // Refuse before ANY attribute of the app element is read: when the
+        // focused application is this process, the reads below would
+        // dispatch into WebKit's main-thread-only accessibility bridge on
+        // this worker thread and abort the whole process.
+        ensure_not_self_owned(element_pid(&app), self_pid(), "ui_tree")?;
+        let root = focused_window_root(app, &names);
         let mut out = String::new();
         let mut writer = TreeWriter {
             next_index: 0,
@@ -1782,7 +2194,7 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             deadline: Instant::now() + AX_TREE_TIME_LIMIT,
             errors: AttrErrors::new(),
         };
-        write_tree_node(&root, 0, max_depth, &names, &mut writer, &mut out);
+        write_tree_node(&root, 0, max_depth, &names, &mut writer, &mut out)?;
         if writer.truncated {
             // Label the abort reason faithfully: the target hung (consecutive
             // CannotComplete) / timeout / node budget exhausted.
@@ -1811,10 +2223,39 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             return Err(accessibility_error());
         }
         let names = AxNames::new();
-        // SAFETY: same as ui_tree.
-        let system = unsafe { AXUIElement::new_system_wide() };
-        // SAFETY: same as ui_tree.
-        let _ = unsafe { system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
+        // Preempt the hit-test: when the topmost window at the point is one
+        // of this app's own windows, an unpinned hit-test would dispatch
+        // into WebKit's accessibility bridge in-process (before an element
+        // pid could be checked) and abort the whole process. A foreign
+        // window in front owns the point instead; the hit-test is then
+        // pinned to that application's accessibility element, which
+        // AXUIElementCopyElementAtPosition restricts to that application —
+        // a foreign window closing, moving or reordering mid-call cannot
+        // divert the query into our own process. An unproven foreground
+        // owner is refused with its honest cause; with no listed window at
+        // the point (or a failed enumeration) the system-wide element
+        // answers under the documented degradation.
+        let target: CFRetained<AXUIElement> = match self_shadow_at_point(x, y) {
+            SelfShadow::SelfOwned => return Err(self_owned_ax_error("element_at_point")),
+            SelfShadow::Unproven => return Err(unproven_owner_ax_error("element_at_point")),
+            SelfShadow::Foreign { pid } => {
+                let Some(app) = (unsafe { try_new_application(pid) }) else {
+                    return Err(unpinnable_target_ax_error("element_at_point"));
+                };
+                // SAFETY: setter is a plain message on the element; same as
+                // the system-wide wiring in ui_tree.
+                let _ = unsafe { app.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
+                app
+            }
+            SelfShadow::SystemWide => {
+                // SAFETY: same as ui_tree.
+                let system = unsafe { AXUIElement::new_system_wide() };
+                // SAFETY: setter is a plain message on the element; same as
+                // the system-wide wiring in ui_tree.
+                let _ = unsafe { system.set_messaging_timeout(AX_MESSAGING_TIMEOUT_SECS) };
+                system
+            }
+        };
         let mut raw: *const AXUIElement = std::ptr::null();
         let Some(out) = NonNull::new(&mut raw) else {
             return Err(ComputerUseError::failed(
@@ -1824,9 +2265,10 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         // SAFETY: out points at a valid out pointer on this function's stack;
         // x/y are CGEvent global point coordinates, matching the top-left
         // screen point coordinates AXUIElementCopyElementAtPosition expects
-        // (that API hit-tests by window z-order internally); use the output
-        // only when Success is returned and it is non-null.
-        let err = unsafe { system.copy_element_at_position(x as f32, y as f32, out) };
+        // (that API hit-tests by window z-order internally, restricted to
+        // the receiver's application unless the receiver is system-wide);
+        // use the output only when Success is returned and it is non-null.
+        let err = unsafe { target.copy_element_at_position(x as f32, y as f32, out) };
         match err {
             AXError::Success => {}
             // No AX object at that point (desktop gaps etc.).
@@ -1845,6 +2287,13 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         let element = CfObject(ptr).into_ui_element().ok_or_else(|| {
             ComputerUseError::failed("element hit-test returned an unexpected CF type")
         })?;
+        // Second line of defense: catches hit-tests that returned a
+        // self-owned element without aborting (native AppKit AX paths, or a
+        // self window this enumeration missed). A hit that reaches the web
+        // view's bridge aborts inside the hit-test itself, before this runs.
+        // The pid read is token-local (no AX IPC) and must precede every
+        // attribute read on the element.
+        ensure_not_self_owned(element_pid(&element), self_pid(), "element_at_point")?;
         let mut errors = AttrErrors::new();
         let info = read_node_info(&element, &names, &mut errors, true);
         // When role/subrole/description of the hit element are all
@@ -1875,16 +2324,27 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             Ok(None) => return Ok(None),
             Err(err) => return Err(focused_chain_error("AXFocusedApplication", err)),
         };
+        // Refuse before ANY attribute of the app element is read (see
+        // ui_tree: a self-owned focused application would abort the process
+        // on WebKit's main-thread-only accessibility assert). The probe read
+        // above is application-level and does not touch the web view.
+        ensure_not_self_owned(element_pid(&app), self_pid(), "focused_element")?;
         let window = match ax_ui_element(&app, &names.focused_window) {
             Ok(Some(window)) => window,
             Ok(None) => return Ok(None),
             Err(err) => return Err(focused_chain_error("AXFocusedWindow", err)),
         };
+        // The window and element tokens below are deserialized from the
+        // previous level's replies, and such a token's pid is
+        // reply-controlled (never validated against the serving peer — see
+        // the module docs): re-check each before the next attribute read.
+        ensure_not_self_owned(element_pid(&window), self_pid(), "focused_element")?;
         let element = match ax_ui_element(&window, &names.focused_ui_element) {
             Ok(Some(element)) => element,
             Ok(None) => return Ok(None),
             Err(err) => return Err(focused_chain_error("AXFocusedUIElement", err)),
         };
+        ensure_not_self_owned(element_pid(&element), self_pid(), "focused_element")?;
         let mut errors = AttrErrors::new();
         let info = read_node_info(&element, &names, &mut errors, true);
         // The same unreadable determination as element_at_point: all-empty
@@ -1901,6 +2361,214 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn self_owned_guard_accepts_foreign_and_rejects_self_or_unknown() {
+        let self_pid: libc::pid_t = 4242;
+        // A foreign pid is allowed (AX reads marshal to the target's main
+        // thread via XPC).
+        assert!(ensure_not_self_owned(Some(1), self_pid, "ui_tree").is_ok());
+        assert!(ensure_not_self_owned(Some(self_pid + 7), self_pid, "ui_tree").is_ok());
+        // The self pid must be refused: reading any attribute of our own
+        // WKWebView-backed window from this worker thread makes WebKit
+        // deliberately abort the whole process (crash
+        // pinvou3-tauri-2026-11-12-101011, thread computer-use-backend).
+        let error = ensure_not_self_owned(Some(self_pid), self_pid, "ui_tree")
+            .expect_err("self-owned targets are refused");
+        assert!(
+            matches!(
+                &error,
+                ComputerUseError::Unsupported { capability, .. }
+                    if *capability == SELF_TARGETED_ACCESSIBILITY
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert!(error.to_string().contains("cannot target Pinvou itself"));
+        // Unknown ownership fails closed: an element that cannot be proven
+        // foreign is not touched — with its own honest diagnosis, not the
+        // self-target crash message (the pid read failed; self-ownership
+        // was not proven).
+        let unknown = ensure_not_self_owned(None, self_pid, "element_at_point")
+            .expect_err("unknown ownership is refused");
+        assert!(
+            matches!(
+                &unknown,
+                ComputerUseError::Unsupported { capability, .. }
+                    if *capability == SELF_TARGETED_ACCESSIBILITY
+            ),
+            "unexpected error: {unknown:?}"
+        );
+        let unknown_text = unknown.to_string();
+        assert!(unknown_text.contains("could not be determined"));
+        assert!(!unknown_text.contains("cannot target Pinvou itself"));
+        // element_at_point remediation names the coordinate fix: activating
+        // the target does not move the query point out of our own windows.
+        let point_text = self_owned_ax_error("element_at_point").to_string();
+        assert!(point_text.contains("coordinates over the target application's own windows"));
+        assert!(
+            !self_owned_ax_error("ui_tree")
+                .to_string()
+                .contains("coordinates over")
+        );
+    }
+
+    #[test]
+    fn window_bounds_containment_is_half_open() {
+        let bounds = WindowBounds {
+            x: 100.0,
+            y: -50.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        // Top-left corner inside; negative global coordinates (secondary
+        // display placed up/left) work the same.
+        assert!(point_in_window_bounds(100.0, -50.0, &bounds));
+        assert!(point_in_window_bounds(899.0, 549.0, &bounds));
+        assert!(point_in_window_bounds(500.0, 0.0, &bounds));
+        // Right and bottom edges are outside (half-open).
+        assert!(!point_in_window_bounds(900.0, 0.0, &bounds));
+        assert!(!point_in_window_bounds(500.0, 550.0, &bounds));
+        // Outside on each axis.
+        assert!(!point_in_window_bounds(99.9, 0.0, &bounds));
+        assert!(!point_in_window_bounds(500.0, -50.1, &bounds));
+        // Degenerate (zero-size) windows contain nothing.
+        let empty = WindowBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+        assert!(!point_in_window_bounds(0.0, 0.0, &empty));
+    }
+
+    #[test]
+    fn self_window_preemption_follows_window_z_order() {
+        let self_pid: libc::pid_t = 4242;
+        // A partially visible Pinvou window in the background, a foreign
+        // window in front of it: the overlap point belongs to the foreign
+        // window (CGWindowList is front-to-back), so the observation must
+        // proceed to the z-order-aware hit-test. The pre-z-order guard
+        // refused exactly this composition because it skipped foreign
+        // windows solely by pid and matched the occluded Pinvou rectangle.
+        let background_self = WindowOwner {
+            pid: Some(self_pid),
+            bounds: WindowBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+        };
+        let foreground_foreign = WindowOwner {
+            pid: Some(7),
+            bounds: WindowBounds {
+                x: 100.0,
+                y: 100.0,
+                width: 400.0,
+                height: 300.0,
+            },
+        };
+        assert_eq!(
+            self_window_shadows_point(
+                &[foreground_foreign.clone(), background_self.clone()],
+                200.0,
+                200.0,
+                self_pid
+            ),
+            SelfShadow::Foreign { pid: 7 },
+            "a foreign window in front owns the overlap point; the \
+             hit-test must pin to its application"
+        );
+        // Same geometry with our window in front: the topmost window at the
+        // point is ours and the preemption must stay (a self hit reaching
+        // the web bridge aborts inside the hit-test before any pid guard).
+        assert_eq!(
+            self_window_shadows_point(
+                &[background_self.clone(), foreground_foreign.clone()],
+                200.0,
+                200.0,
+                self_pid
+            ),
+            SelfShadow::SelfOwned
+        );
+        // A point over the background window's visible (unoccluded) area
+        // preempts in both orders: no foreign window covers it.
+        assert_eq!(
+            self_window_shadows_point(
+                &[foreground_foreign.clone(), background_self.clone()],
+                50.0,
+                50.0,
+                self_pid
+            ),
+            SelfShadow::SelfOwned
+        );
+        assert_eq!(
+            self_window_shadows_point(
+                &[background_self.clone(), foreground_foreign.clone()],
+                50.0,
+                50.0,
+                self_pid
+            ),
+            SelfShadow::SelfOwned
+        );
+        // A point outside every listed window falls back to the
+        // system-wide element in both orders.
+        assert_eq!(
+            self_window_shadows_point(
+                &[foreground_foreign.clone(), background_self.clone()],
+                900.0,
+                900.0,
+                self_pid
+            ),
+            SelfShadow::SystemWide
+        );
+        assert_eq!(
+            self_window_shadows_point(
+                &[background_self.clone(), foreground_foreign.clone()],
+                900.0,
+                900.0,
+                self_pid
+            ),
+            SelfShadow::SystemWide
+        );
+        // A foreground window whose pid cannot be read is not provably
+        // foreign: it shadows the point under the same fail-closed rule as
+        // ensure_not_self_owned, with the honest unproven-owner cause, even
+        // when a foreign window sits behind it.
+        let unproven_foreground = WindowOwner {
+            pid: None,
+            bounds: WindowBounds {
+                x: 100.0,
+                y: 100.0,
+                width: 400.0,
+                height: 300.0,
+            },
+        };
+        assert_eq!(
+            self_window_shadows_point(
+                &[unproven_foreground, foreground_foreign],
+                200.0,
+                200.0,
+                self_pid
+            ),
+            SelfShadow::Unproven
+        );
+        // A different self pid behaves as foreign, and the pin carries ITS
+        // pid — the hit-test must target that application, not a fallback.
+        let other = WindowOwner {
+            pid: Some(self_pid + 1),
+            bounds: WindowBounds {
+                x: 100.0,
+                y: 100.0,
+                width: 400.0,
+                height: 300.0,
+            },
+        };
+        assert_eq!(
+            self_window_shadows_point(&[other], 200.0, 200.0, self_pid),
+            SelfShadow::Foreign { pid: self_pid + 1 }
+        );
+    }
 
     #[test]
     fn key_mapping_covers_named_keys_and_functions() {
