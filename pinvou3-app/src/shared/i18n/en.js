@@ -1077,7 +1077,6 @@ dictEn.uiSessionWorkspace = {
 
 dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
 
-dictEn.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
 
 dictEn.uiSettingsDetail.memoryDeleteFailed = 'Failed to delete memory. Please try again.';
 

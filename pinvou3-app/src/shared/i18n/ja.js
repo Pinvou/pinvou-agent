@@ -1081,7 +1081,6 @@ dictJa.uiSessionWorkspace = {
 
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
 
-dictJa.uiSettingsDetail.memorySaveFailed = 'メモリプロフィールの保存に失敗しました。再試行してください。';
 
 dictJa.uiSettingsDetail.memoryDeleteFailed = 'メモリの削除に失敗しました。再試行してください。';
 
