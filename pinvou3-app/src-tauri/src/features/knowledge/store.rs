@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rusqlite::{Connection, params, params_from_iter, types::Value};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 
 /// schema 版本。v3 起包含用户创建的 L1 数据，后续版本必须提供原地迁移。
@@ -515,6 +515,39 @@ impl Store {
             let mut stmt = tx.prepare_cached("DELETE FROM files WHERE path = ?1")?;
             for p in paths {
                 stmt.execute(params![p])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// watcher 删除：目录记录连带子树一并删，文件记录退化为精确删除。单事务，FTS 由触发器同步。
+    ///
+    /// 为什么需要子树删除：目录被 rename/move-out 时，inotify 只会在（仍被监听的）父目录上
+    /// 冒出该目录自身的事件，其下的文件不会有任何事件；精确删除会在索引里留下整树「幽灵」，
+    /// 一直撑到下次重扫。先按主键查 `is_dir`，目录才走前缀删除——前缀比较无法用索引，
+    /// 文件（绝大多数事件）保持索引精确删除的代价。
+    ///
+    /// 前缀匹配用 `path + 主分隔符` 的 substr 精确比较：路径可含 `%`/`_`/`[`，不能走
+    /// LIKE/GLOB；SQLite 的 `length`/`substr` 按 Unicode 字符计数，与 Rust `chars().count()`
+    /// 一致，CJK 路径安全。
+    pub fn delete_tree(&self, paths: &[String]) -> rusqlite::Result<()> {
+        let mut guard = self.conn.lock();
+        let tx = guard.transaction()?;
+        {
+            let mut q = tx.prepare_cached("SELECT is_dir FROM files WHERE path = ?1")?;
+            let mut del_exact = tx.prepare_cached("DELETE FROM files WHERE path = ?1")?;
+            let mut del_sub = tx.prepare_cached(
+                "DELETE FROM files WHERE length(path) >= ?1 AND substr(path, 1, ?1) = ?2",
+            )?;
+            for p in paths {
+                let is_dir: Option<bool> = q.query_row(params![p], |r| r.get(0)).optional()?;
+                del_exact.execute(params![p])?;
+                if is_dir == Some(true) {
+                    // 行内容只会是 `p` 自身或 `p + 分隔符 + 后代`；以「p + 分隔符」为前缀，
+                    // 名字只共享前缀字符的兄弟（如 `prefix-sibling.md`）不会被误删。
+                    let pat = format!("{}{}", p, std::path::MAIN_SEPARATOR);
+                    del_sub.execute(params![pat.chars().count() as i64, pat])?;
+                }
             }
         }
         tx.commit()
@@ -1412,5 +1445,78 @@ mod tests {
                  never wrap to unbounded"
             );
         }
+    }
+
+    /// delete_tree 对文件记录必须退化为精确删除——只删自身，不碰任何共享前缀的路径。
+    #[test]
+    fn delete_tree_on_a_file_is_exact() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_many(&[
+            rec("/a/b/notes.md", "notes.md", Some("md"), 10, 1),
+            // 只共享前缀字符的兄弟路径不能被误删。
+            rec("/a/b/notes.md.bak", "notes.md.bak", Some("bak"), 10, 1),
+            rec("/a/b/notes.md2", "notes.md2", None, 10, 1),
+        ])
+        .unwrap();
+
+        s.delete_tree(&["/a/b/notes.md".into()]).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(!left.contains_key("/a/b/notes.md"));
+        assert!(left.contains_key("/a/b/notes.md.bak"));
+        assert!(left.contains_key("/a/b/notes.md2"));
+    }
+
+    /// 目录记录连带子树：dir rename/move-out 只会冒出父路径事件，子树必须被
+    /// 前缀删除兜住；前缀比较按「路径+分隔符」精确对齐，只共享前缀字符的
+    /// 兄弟与父目录不受影响，CJK 路径按字符计数同样正确。
+    #[test]
+    fn delete_tree_on_a_dir_removes_the_subtree_only() {
+        let s = Store::open_in_memory().unwrap();
+        let mut dir = rec("/home/u/项目", "项目", None, 0, 1);
+        dir.is_dir = true;
+        let mut dir_en = rec("/home/u/proj", "proj", None, 0, 1);
+        dir_en.is_dir = true;
+        s.upsert_many(&[
+            dir,
+            dir_en,
+            rec("/home/u/项目/报告.pdf", "报告.pdf", Some("pdf"), 8, 2),
+            rec("/home/u/项目/sub/a.md", "a.md", Some("md"), 3, 3),
+            rec("/home/u/proj/src/notes.md", "notes.md", Some("md"), 4, 4),
+            // 与被删目录只共享前缀字符（`项目` vs `项目备份`）。
+            rec("/home/u/项目备份.md", "项目备份.md", Some("md"), 5, 5),
+            rec("/home/u/proj-notes.md", "proj-notes.md", Some("md"), 6, 6),
+        ])
+        .unwrap();
+
+        s.delete_tree(&[
+            "/home/u/项目".to_string(),
+            "/home/u/proj".to_string(),
+            // 同批混入一条文件路径：必须保持精确删除。
+            "/home/u/proj-notes.md".to_string(),
+        ])
+        .unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(!left.contains_key("/home/u/项目"));
+        assert!(!left.contains_key("/home/u/项目/报告.pdf"));
+        assert!(!left.contains_key("/home/u/项目/sub/a.md"));
+        assert!(!left.contains_key("/home/u/proj"));
+        assert!(!left.contains_key("/home/u/proj/src/notes.md"));
+        assert!(!left.contains_key("/home/u/proj-notes.md"));
+        assert!(
+            left.contains_key("/home/u/项目备份.md"),
+            "deleting 项目 must not touch the 项目备份.md sibling"
+        );
+    }
+
+    /// 库里没有的路径（从未索引/已被先行删除）必须安静通过，不能报错——
+    /// watcher 的删除分支对任何 NotFound 事件都会发起删除。
+    #[test]
+    fn delete_tree_tolerates_unknown_paths() {
+        let s = Store::open_in_memory().unwrap();
+        s.delete_tree(&["/never/indexed.md".into(), "/also/missing".into()])
+            .unwrap();
+        assert!(s.load_index().unwrap().is_empty());
     }
 }

@@ -121,36 +121,65 @@ fn to_record(e: &DirEntry) -> Option<FileRecord> {
     if !ft.is_file() && !ft.is_dir() {
         return None; // symlink/socket/fifo 等不入库
     }
-    let path = e.path().to_str()?.to_string();
-    let name = e.file_name().to_str()?.to_string();
-    let is_dir = ft.is_dir();
-    let md = e.metadata().ok();
-    let size = if is_dir {
-        0
-    } else {
-        md.as_ref().map(|m| m.len()).unwrap_or(0)
-    };
-    let mtime = md
-        .as_ref()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    // metadata 失败（条目被并发删除）时仍入一条 size/mtime=0 的占位记录，保持既有行为。
+    record_from_parts(
+        e.path(),
+        e.file_name().to_str()?,
+        ft.is_dir(),
+        e.metadata().ok().as_ref(),
+    )
+}
+
+/// FileRecord 字段装配：扫描器（`to_record`，DirEntry）与 watcher（`record_from_parts`，
+/// 事件路径 stat）共用一份策略——目录 size=0/ext=None、mtime 秒级、历元前取 0，
+/// 两条路的记录字段不会漂移。路径/文件名非 UTF-8 返回 None（与库内只存 UTF-8 的
+/// 既有约束一致）。`md` 传 None 时 size/mtime 取 0。
+pub(super) fn record_from_parts(
+    path: &Path,
+    name: &str,
+    is_dir: bool,
+    md: Option<&std::fs::Metadata>,
+) -> Option<FileRecord> {
     Some(FileRecord {
-        path,
-        name,
-        ext: if is_dir { None } else { ext_of(e.path()) },
-        size,
-        mtime,
+        path: path.to_str()?.to_string(),
+        name: name.to_string(),
+        ext: if is_dir { None } else { ext_of(path) },
+        size: if is_dir {
+            0
+        } else {
+            md.map(|m| m.len()).unwrap_or(0)
+        },
+        mtime: md
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
         is_dir,
     })
 }
 
 /// 小写、无点扩展名。
-fn ext_of(p: &Path) -> Option<String> {
+pub(super) fn ext_of(p: &Path) -> Option<String> {
     p.extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_lowercase())
+}
+
+/// 从单个路径 stat 出一条记录（watcher 增量用的单路径入口）。用 `symlink_metadata`
+/// 不跟随软链，与扫描器 `follow_links(false)` 一致；symlink/socket 等返回 None 跳过。
+#[allow(dead_code)] // watcher 库先行：接线前仅测试引用（watcher 走 record_from_parts stat 先行）
+pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    let ft = md.file_type();
+    if !ft.is_file() && !ft.is_dir() {
+        return None;
+    }
+    record_from_parts(
+        path,
+        path.file_name().and_then(|s| s.to_str())?,
+        ft.is_dir(),
+        Some(&md),
+    )
 }
 
 #[cfg(test)]
@@ -158,6 +187,66 @@ mod tests {
     use super::*;
     use crate::features::knowledge::store::SearchQuery;
     use std::fs;
+
+    /// record_from_path 的字段装配：文件（name/ext/size/mtime）、目录（size=0、
+    /// ext=None）、symlink 拒收——watcher 增量与扫描器两条路共用的入库形状。
+    #[test]
+    fn record_from_path_builds_records_like_the_scanner() {
+        let base = std::env::temp_dir().join(format!("pinvou3_kb_rfp_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("报告.pdf"), b"hello pdf").unwrap();
+
+        let file = record_from_path(&base.join("报告.pdf")).unwrap();
+        assert_eq!(file.name, "报告.pdf");
+        assert_eq!(file.ext.as_deref(), Some("pdf"));
+        assert_eq!(file.size, 9);
+        assert!(!file.is_dir);
+        assert!(file.mtime > 0, "mtime 装配自 stat，不应退化为 0");
+
+        let dir = record_from_path(&base).unwrap();
+        assert!(dir.is_dir);
+        assert_eq!(dir.ext, None, "目录不入扩展名");
+        assert_eq!(dir.size, 0);
+
+        // 带点目录名同样不入扩展名（fixture 必须带点，否则 ext_of 本来就返回
+        // None，is_dir 分支咬不住）。
+        fs::create_dir_all(base.join("backup.old")).unwrap();
+        let dotted_dir = record_from_path(&base.join("backup.old")).unwrap();
+        assert!(dotted_dir.is_dir);
+        assert_eq!(dotted_dir.ext, None, "带点目录名的 ext 仍须为 None");
+
+        // symlink 本体不入库（symlink_metadata 不跟随），与扫描器一致。
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("报告.pdf"), base.join("link.pdf")).unwrap();
+            assert!(
+                record_from_path(&base.join("link.pdf")).is_none(),
+                "symlink 本体不入库"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 非 UTF-8 路径：与扫描器同语义（to_str() 失败即跳过），不得 panic。
+    #[test]
+    #[cfg(unix)]
+    fn record_from_path_skips_non_utf8_paths() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let base =
+            std::env::temp_dir().join(format!("pinvou3_kb_rfp_nonutf8_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let p = base.join(OsStr::from_bytes(b"\xff\xfe.bad"));
+        fs::write(&p, b"x").unwrap();
+
+        assert!(record_from_path(&p).is_none());
+
+        let _ = fs::remove_dir_all(&base);
+    }
 
     /// 不可读子树的 walk 错误必须被计数（全盘扫描据此否决该根的陈旧删除
     /// 授权，见 mod.rs `root_authorizes_deletion`）：根本体可走、子树
