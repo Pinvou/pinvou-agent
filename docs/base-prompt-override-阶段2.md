@@ -4,6 +4,12 @@
 > CodeWhale submodule 对这些 prompt 的 fork drift → 0（hook 除外，hook 是上游 PR 候选）。
 > 方案="务实大头"：只迁 `base.md` + `LOCALE_PREAMBLE_ZH_HANS` + `AUTHORITY_RECAP` 三处；
 > mode/approval/compact 小文案留 fork（边际收益低于改造成本）。
+>
+> **2026-11 归档注记**：阶段 2 完成约两周后（2026-06-15），宪法层被并入 `instructions-*.md`
+> 分层：`compose_static_layers` 不再装配 `base.md`、`AUTHORITY_RECAP` 清空，prompt 治理
+> 迁移到底座 `StaticPromptComposer` 合同。本文记录的 249 行 `base.md`、三个 override
+> 常量与 #28–#42 指纹清单是历史状态（残留说明见 `resources/common/bundle/base.md`
+> 文首注释），当前 prompt 链路以代码为准。
 
 ## 执行进度 — 阶段2 已完成（2026-05-29）
 

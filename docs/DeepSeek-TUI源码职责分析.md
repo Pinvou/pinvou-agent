@@ -1,5 +1,13 @@
 # DeepSeek-TUI 源码职责分析
 
+> **注（2026-11 回填）**：本文为底座更名前的历史快照（基线 v0.8.60）。底座上游 v0.8.45 起更名
+> `CodeWhale`（现仓库子模块 `CodeWhale/`，本文写作时为 v0.8.60，现已演进至 v0.9.x），文中
+> `DeepSeek-TUI/` 路径对应现 `CodeWhale/`；`pinvou3-app/src-tauri/src/` 的旧扁平布局
+> （`bridge/mod.rs`、`commands.rs`、`engine.rs`、`engine_pool.rs` 等）已重构为
+> `app/commands/` + `features/` + `platform/` 分层；workspace 成员清单、`Op::SpawnSubAgent`、
+> `pinvou3_blocklist` 机制等描述已随后续版本失效。现行工具面与治理以
+> [`tool-governance.md`](./tool-governance.md) 为准。
+
 ## 阅读导向
 
 本文回答三个问题：
@@ -49,7 +57,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 ### 当前直接接入的 DeepSeek-TUI 能力
 
 - `DeepSeek-TUI/crates/tui/src/core/engine.rs`：定义 `EngineConfig`、`EngineHandle`、`spawn_engine`，pinvou3-app 通过它创建每个 session 独立 Engine。
-- `DeepSeek-TUI/crates/tui/src/core/ops.rs`：定义 `Op::SendMessage`、`Op::SyncSession`、`Op::SpawnSubAgent`、`Op::CompactContext`、`Op::Shutdown` 等操作。
+- `DeepSeek-TUI/crates/tui/src/core/ops.rs`：定义 `Op::SendMessage`、`Op::SyncSession`、`Op::SpawnSubAgent`、`Op::CompactContext`、`Op::Shutdown` 等操作。（`SpawnSubAgent` 已在后续版本移除，工作流子系统一并退役。）
 - `DeepSeek-TUI/crates/tui/src/core/events.rs`：定义 `Event::MessageDelta`、`ToolCallStarted`、`ToolCallComplete`、`TurnComplete`、`AgentComplete`、`CompactionStarted` 等事件。
 - `DeepSeek-TUI/crates/tui/src/session_manager.rs`：定义 `SessionManager`、`SavedSession`、`SessionMetadata`，pinvou3 包装后定向到 `~/.pinvou3/sessions/`。
 - `DeepSeek-TUI/crates/tui/src/skills/mod.rs`：定义 `SkillRegistry`，pinvou3 用它发现 bundle skills。
@@ -57,7 +65,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - `DeepSeek-TUI/crates/tui/src/compaction.rs`：定义 `CompactionConfig` 和压缩逻辑，pinvou3 只调整本地模型和阈值。
 - `DeepSeek-TUI/crates/hooks/src/lib.rs`：定义 `HookEvent`、`HookDispatcher` 等 hook 机制，pinvou3 在 bridge 中生成 hook 配置。
 - `DeepSeek-TUI/crates/mcp/src/lib.rs`：定义 `McpManager` 与 MCP 工具/资源结构，底座经工具体系统一接入。
-- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。
+- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（该机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
 
 ## pinvou3 接入边界
 

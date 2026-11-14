@@ -14,6 +14,8 @@
 
 本文只记录当前仓库中已经存在的代码能力，不把规划文档中的设想直接视为已交付功能。功能状态定义如下：
 
+> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`）、OTA-01..04 的 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。其余条目经抽查与现行代码一致，正式验收前以当前代码为准。
+
 - **可用**：当前 Windows 主界面存在入口，且前后端调用链已经接通。
 - **条件可用**：调用链已经接通，但需要模型、账号、网络、外部软件、硬件或用户授权。
 - **隐藏**：后端、桥接或页面代码已存在，但当前正式主入口关闭，普通用户默认不可见。
@@ -189,6 +191,8 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 
 ### 3.8 工作流、技能与工具市场
 
+> ⚠️ 快照条目：WF-01..WF-09 描述的工作流子系统已在当前主干整体移除（`sansheng-liubu` 已列入 `features/retirement.rs` 的退役清单），以下 WF 行仅作历史留档，请勿据此验收。
+
 | 编号 | 功能 | 状态 | 用户可见行为 |
 |---|---|---|---|
 | WF-01 | 工作流模板发现 | 可用 | 从 bundle 中读取启用的工作流及 UI 元数据，前端无需为每个模板硬编码页面 |
@@ -218,8 +222,8 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | CONN-01 | 飞书连接 | 条件可用 | 检测 CLI、开始授权、取消、退出、启用官方技能和查询状态 |
 | CONN-02 | 企业微信连接 | 条件可用 | 检测 CLI、开始授权、取消、退出、启用官方技能和查询状态 |
 | CONN-03 | 钉钉连接 | 条件可用 | 检测 CLI、开始授权、取消、退出、启用官方技能和查询状态 |
-| CONN-04 | 员工门户连接 | 条件可用 | 开始连接、取消、退出和纯状态查询 |
-| CONN-05 | 企业知识库连接 | 条件可用 | 开始连接、取消、退出和纯状态查询 |
+| CONN-04 | 员工门户连接 | 0.6.x 快照 | 开始连接、取消、退出和纯状态查询（主干未落地，现有连接器仅 feishu/wecom/dingtalk/ima/tmeet） |
+| CONN-05 | 企业知识库连接 | 0.6.x 快照 | 开始连接、取消、退出和纯状态查询（主干未落地） |
 | CONN-06 | 连接器状态稳定性 | 可用 | 状态查询本身不回收 Engine；只有真实可见性变化才刷新工具目录 |
 | REMOTE-01 | 手机扫码连接 | 条件可用 | 启动本地远程控制服务并生成/刷新二维码 |
 | REMOTE-02 | 移动端消息同步 | 条件可用 | 手机端发送用户消息，桌面端向远端发布聊天和状态事件 |
@@ -275,10 +279,10 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | SET-04 | 归档会话管理 | 可用 | 在设置中恢复或永久删除收纳会话 |
 | SET-05 | 运行依赖自检 | 可用 | 检查 PDF、Pandoc、OCR、压缩、邮件、语音等依赖并给出修复入口 |
 | SET-06 | 用户反馈 | 条件可用 | 提交问题或建议，可附最多 5 个图片/视频附件，校验类型并支持失败重试 |
-| OTA-01 | 启动静默检查更新 | 条件可用 | 不阻塞启动；发现新版本后设置页和设置图标显示红点 |
-| OTA-02 | Windows OTA 下载 | 条件可用 | 下载时展示进度，支持取消，校验包和文件哈希 |
-| OTA-03 | Windows OTA 安装 | 条件可用 | 准备双层 OTA 包并启动安装程序；升级结果在下次启动上报 |
-| OTA-04 | 版本保护 | 可用 | 只提示更高版本，拒绝不完整、损坏或越界的更新包 |
+| OTA-01 | 启动静默检查更新 | 0.6.x 快照 | 不阻塞启动；发现新版本后设置页和设置图标显示红点（Windows 更新链路未在当前主干落地） |
+| OTA-02 | Windows OTA 下载 | 0.6.x 快照 | 下载时展示进度，支持取消，校验包和文件哈希（主干未落地） |
+| OTA-03 | Windows OTA 安装 | 0.6.x 快照 | 准备双层 OTA 包并启动安装程序；升级结果在下次启动上报（主干未落地） |
+| OTA-04 | 版本保护 | 0.6.x 快照 | 只提示更高版本，拒绝不完整、损坏或越界的更新包（随 Windows OTA 一并在主干缺失） |
 
 ## 4. 测试范围与方法
 
@@ -568,22 +572,21 @@ npm run build:ui
 
 ### 6.2 Rust 与 DeepSeek-TUI
 
-在仓库根目录执行：
+在仓库根目录执行（子模块目录已按当前主干由 `DeepSeek-TUI/` 更名 `CodeWhale/`）：
 
 ```powershell
 cargo +stable check --manifest-path pinvou3-app/src-tauri/Cargo.toml
 cargo +stable test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib
-cargo +stable test --manifest-path DeepSeek-TUI/crates/tui/Cargo.toml forkguard_ --lib -- --test-threads=1
-cargo +stable test --manifest-path DeepSeek-TUI/crates/tui/Cargo.toml automation_manager::tests --lib -- --test-threads=1
+cargo +stable test --manifest-path CodeWhale/crates/tui/Cargo.toml forkguard_ --lib -- --test-threads=1
+cargo +stable test --manifest-path CodeWhale/crates/tui/Cargo.toml automation_manager::tests --lib -- --test-threads=1
 $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
 & $gitBash ./scripts/fork-guard.sh --fast
 ```
 
-Windows 发版机还应执行：
+Windows 发版机还应执行（NSIS 资源 staging 内置于 `build:nsis`，无独立 prebuild 脚本）：
 
 ```powershell
 cd pinvou3-app
-npm run prebuild:nsis
 npm run build:nsis
 ```
 

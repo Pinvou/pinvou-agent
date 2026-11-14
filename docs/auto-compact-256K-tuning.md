@@ -5,6 +5,12 @@
 > 上游 v0.8.65 吸收进 `route_budget`/`RouteLimits`，新方案改走探测 `max_model_len` →
 > `active_route_limits.context_tokens` 官方口子，零 fork。本文保留作**推导史料**
 > （尤其倒置 bug 的发现过程、Codex review 历程、大工具输出 bound 结论仍有效）。
+>
+> **2026-11 回填注记**：本文已重新回填进文档树留档（`docs/context-compaction-设计.md`
+> 文首"已从当前文档树移除"的说明已同步修正）。另注：下方「实际生效以本节为准」一节
+> 记录的写死阈值（`token_threshold=190K`、`auto_floor_tokens=60K` 等）也已过时——现行
+> 阈值由 `derive_compaction_threshold` 按模型窗口动态推导
+> （`features/assistant/platform/bridge.rs`），推导脉络仍以本文为史。
 
 日期：2026-05-19
 背景：用户问"我现在 context 是 256K，auto compact 应该如何触发，不需要手动触发"。

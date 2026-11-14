@@ -1,10 +1,10 @@
 # Codex ACP 整体架构决策
 
-> 文档状态：架构已确认，MVP 已在 `feat/codex-acp` 实现，待体验复核
+> 文档状态：架构决策记录；MVP 已实现并随后续版本继续演进（现状以 [`codex-acp.md`](./codex-acp.md) / [`multi-agent-acp.md`](./multi-agent-acp.md) 为准）
 > 评审范围：架构与产品边界，不代表已实现
-> 记录日期：2026-07-23
+> 记录日期：2026-07-23（2026-11 归档注记：分支 `feat/codex-acp` 与基线提交 `2b84908b` 不在本仓库）
 > 对应分支：`feat/codex-acp`
-> 当前原型基线：`2b84908b`（实现已继续演进，最终提交号待收口）
+> 当前原型基线：`2b84908b`
 > AionUI 参考基线：`1b215f2f`，AionCore `v0.1.50` / `10cdd579`
 
 ## 1. 一句话决策
@@ -25,7 +25,7 @@ pinvou 采用“**Codex 作为 Agent 内核，pinvou 作为 ACP Host 和产品�
 
 ### 2.1 视觉和交互的分工
 
-前文截图是 **pinvou 当前调用 Codex ACP 的效果**，它反映的是当前实现问题，不是 Codex 原生 UI。
+原评审材料中的截图（回填时未随本文保留）反映的是 **pinvou 当时调用 Codex ACP 的实现问题**，不是 Codex 原生 UI。
 
 因此：
 
@@ -317,6 +317,11 @@ MVP 验收时需要用 pinvou 固定的 `codex-acp` / Codex CLI 版本验证 Cod
 - `turn_cancelled`
 - `error`
 - `unknown`
+
+> 注（2026-11 归档）：以上为首期合同草案。现行 `acp:event` 实际载荷为
+> `user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call` /
+> `tool_update` / `plan` / `available_commands` / `usage`，以及 turn / permission /
+> elicitation 事件（`features/codex_acp/events.rs`），命名与本文草案不同。
 
 合同规则：
 
