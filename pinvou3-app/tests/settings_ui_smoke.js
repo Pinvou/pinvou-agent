@@ -254,6 +254,48 @@ for (const settingsI18nSource of settingsI18nSources) {
     /testId: 'model-form-base-url-port'/,
     'the form must expose an explicit port field for the API base URL',
   );
+  // The port row shares the base-URL render gate (`showBaseUrlField`); the
+  // generic render-site regex above already matches TWO rows, so a plausible
+  // regression (the port gate narrowing to `isLocalPreset`) stays green
+  // there. Pin the port row with its own label-anchored gate.
+  assert.match(
+    settingsViewSource,
+    /showBaseUrlField && renderInlineField\(\{\s*label: settingsCopy\.localPortLabel/,
+    'the port row must render for every non-coding-plan preset via the same base-URL gate (a cloud preset silently losing the port row regresses the headline feature)',
+  );
+  // The custom-model key row follows the same noAuthActive caliber; without
+  // this pin, dropping `&& !noAuthActive` resurrects the "key row visible
+  // while the declaration drops the typed key" deadlock for custom entries
+  // (the non-custom row is pinned above).
+  assert.match(
+    settingsViewSource,
+    /const showCustomCloudKeyField = !isLocalPreset && customModel && !noAuthActive;/,
+    'the custom-model key row must hide while the keyless declaration is active (the save drops a typed key under the declaration)',
+  );
+  // Both preset-switch paths must reset the keyless declaration; a stale ON
+  // toggle from preset A would otherwise save preset B keyless with a
+  // credential delete. Count-pinned: either site regressing must fail here.
+  const keylessResetSites = settingsViewSource.match(
+    /setNoAuth\(false\);\s*setBaseUrlPortError\(null\);/g,
+  ) || [];
+  assert.strictEqual(
+    keylessResetSites.length,
+    2,
+    'both entry-switch paths (catalog apply + manual local add) must reset the keyless declaration and the port error (a stale ON toggle must not leak into the next entry)',
+  );
+  // The save-side gates must follow the same noAuthActive caliber as the
+  // derivation pin above: raw `noAuth` here would drop a typed key while the
+  // form shows it accepted (currently unreachable, latent divergence).
+  assert.match(
+    settingsViewSource,
+    /isLocalPreset \|\| noAuthActive \|\| hasSavedKey \|\| !!apiKey\.trim\(\)/,
+    'the can-save gate must follow the same noAuthActive caliber as the save payload',
+  );
+  assert.match(
+    settingsViewSource,
+    /: \(!noAuthActive && apiKey\.trim\(\) \? apiKey\.trim\(\) : ''\)/,
+    'the saved key payload must follow the same noAuthActive caliber as the derivation (a typed key must never be silently discarded under a stale toggle)',
+  );
 }
 // Memory delete / feedback close confirm-dialog wiring (no native
 // window.confirm, testid pins) is asserted by tests/settings_window_confirm.test.mjs,

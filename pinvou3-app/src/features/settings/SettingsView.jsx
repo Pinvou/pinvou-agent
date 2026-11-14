@@ -697,7 +697,7 @@ function hasStoredCredential(record) {
       const saveName = showDisplayNameField || isLocalPreset ? (name.trim() || settingsCopy.localModelName(model.trim())) : (model.trim() || selectedProvider);
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = hasStoredCredential(initial);
-      const hasUsableApiKey = isLocalPreset || noAuth || hasSavedKey || !!apiKey.trim();
+      const hasUsableApiKey = isLocalPreset || noAuthActive || hasSavedKey || !!apiKey.trim();
       const canSave = !!(saveName && model.trim() && baseUrl.trim() && hasUsableApiKey);
       async function toggleApiKeyVisibility() {
         const nextVisible = !showKey;
@@ -734,7 +734,10 @@ function hasStoredCredential(record) {
           : cloudCredentialAction();
         const nextApiKey = isLocalPreset
           ? (localKeyEnabled && apiKey.trim() ? apiKey.trim() : '')
-          : (!isLocalPreset && !noAuth && apiKey.trim() ? apiKey.trim() : '');
+          // noAuthActive（round-5 review）:与 noAuthActive 派生同一口径,
+          // 不用裸 noAuth——「开关开着但 URL 指向托管端点」时输入的 key
+          // 不能既显示又被静默丢弃。
+          : (!noAuthActive && apiKey.trim() ? apiKey.trim() : '');
         setSavingModel(true);
         setSaveError('');
         try {
