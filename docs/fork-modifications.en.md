@@ -1,5 +1,49 @@
 # CodeWhale Fork Modification Register
 
+## Pending review: safe engine resource retirement (T4)
+
+The community uploaded-plugin uninstall fix pairs a local application overlay
+with generic CodeWhale lifetime corrections on registered baseline `11cba403d`:
+
+- Join the existing MCP boot worker before closing transports, without draining
+  UI progress into a stopped consumer. A late handshake cannot outlive shutdown.
+- Completion futures own only their receipt, without retaining the handle,
+  operation sender or event queue.
+- A private capacity-one lifecycle channel requests idle retirement on the
+  canonical actor. A ready/commit handshake prevents a cancelled proposal from
+  causing a later shutdown. All actor wait branches serve it. Retirement checks
+  existing goal, advisor ownership, child and shell state plus queued delivery;
+  it adds no advisor state, wire `Op`, protocol field or remote/model command.
+  Hosts must fence new submissions; busy engines preserve their accepted work.
+  A synchronous host predicate runs after actor readiness and before commit,
+  so dequeued events still undergoing host persistence or terminal delivery
+  prevent retirement without closing the cached actor.
+
+The application owns uninstall policy, lock ordering and transaction lifetime.
+An app-side event snapshot cannot establish the actor's atomic idle boundary;
+the narrow lifetime interface avoids cancelling an unobserved autonomous turn.
+This reusable correction belongs upstream. Existing wire parity stays unchanged.
+
+Behavior tests include `forkguard_shutdown_waits_for_pending_mcp_boot_without_emitting_events`,
+`forkguard_completion_wait_does_not_retain_engine_handle`, the owning
+`idle_shutdown` tests (including
+`forkguard_idle_shutdown_checks_host_completion_after_actor_ready`), and
+`forkguard_idle_shutdown_preserves_an_autonomous_turn_before_host_observation`.
+The latter uses a controlled injected model, preserves the completed result and
+snapshot, then retires normally. See [the application contract](upload-plugin-uninstall.md).
+
+The parent review candidate pins CodeWhale commit `0022e737445a962a399e4470ad8cb683a07ac899`
+from [CodeWhale#149](https://github.com/Pinvou/CodeWhale/pull/149). Its tree is byte-identical to the
+v3-reviewed core tree `63a400c6c8dcb47769f1bef4c0b189c129297aa6`.
+The application runtime source is unchanged from that review; this delivery
+step records the committed dependency and updates review-head metadata only.
+
+Public maintenance remains `11cba403d`. The parent PR stays draft until the
+dependency lands; then align its gitlink/register to the actual public merged
+commit and run the applicable final-SHA gates. The public-head verifier and
+immutable tags are unchanged. Local receipts do not establish clean committed
+product-build, merge or release eligibility.
+
 ## Merged into the maintenance branch: compaction checkpoint role compatibility
 
 - T7: insert the typed Agent topology checkpoint after the latest real user input and before its assistant/tool chain, including when a compaction summary trails that chain. For Chat Completions, place a structurally recognized current-format summary ahead of its retained round on the wire and merge that summary plus the topology checkpoint into the same user wire message. Quoting the summary marker inside an ordinary user prompt does not trigger reordering. The fix covers only the trailing `tool -> user` that compaction itself creates; the reported provider text was `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"` (SSE lane). Saved history and tool-call/result IDs stay untouched, and the session-pinned system prefix is unchanged.

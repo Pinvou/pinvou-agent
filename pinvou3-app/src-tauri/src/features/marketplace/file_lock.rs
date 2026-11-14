@@ -61,6 +61,10 @@
 //! another marketplace lock — so there is no ordering edge among
 //! `bundles.lock` / `recycle-bin.lock` / `mcp.lock` themselves. Everything
 //! else nests INTO them, never out:
+//! Uploaded uninstall additionally preacquires its complete leaf set in sorted
+//! lock-path order before runtime maintenance. Its same-thread nested store and
+//! rollback calls reuse that set; undeclared nested writes refuse. No other
+//! writer gains arbitrary nested acquisition or a new waiting policy.
 //!
 //! - `MARKETPLACE_TRANSACTION_LOCK` → file locks: install legs enter the
 //!   mcp/bundles locks inside the transaction lock; uninstall/restore legs
@@ -93,7 +97,8 @@
 //! transaction side, including the pre-existing unordered
 //! TRANSACTION↔import_lock pairing this module does not change.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, TryLockError};
 
@@ -114,6 +119,62 @@ pub(crate) fn lock_path_for(data_path: &Path) -> PathBuf {
 /// duplicates.
 static PROCESS_MUTEXES: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+thread_local! {
+    // Only installed after the entire ordered set has really been acquired.
+    // Ownership stays on this blocking stack, including transaction rollback.
+    static PRELOCKED_WRITES: RefCell<Option<BTreeSet<PathBuf>>> = const { RefCell::new(None) };
+}
+
+/// Acquire the complete state-file write set before entering runtime maintenance.
+/// Nested store/recycle/rollback calls reuse these same-thread locks. A write
+/// outside the declared set refuses immediately instead of introducing another
+/// unbounded lock wait while engines are fenced. Other callers keep their
+/// existing blocking-write contract. The closure must not move to another thread.
+pub(super) fn with_prelocked_file_writes<F, R>(
+    mut data_paths: Vec<PathBuf>,
+    f: F,
+) -> Result<R, String>
+where
+    F: FnOnce() -> Result<R, String>,
+{
+    data_paths.sort_by_key(|path| lock_path_for(path));
+    data_paths.dedup_by(|a, b| lock_path_for(a) == lock_path_for(b));
+    let keys: BTreeSet<_> = data_paths.iter().map(|path| lock_path_for(path)).collect();
+    let nested =
+        PRELOCKED_WRITES.with(|slot| slot.borrow().as_ref().map(|held| keys.is_subset(held)));
+    match nested {
+        Some(true) => return f(),
+        Some(false) => return Err("undeclared nested marketplace write lock".into()),
+        None => {}
+    }
+    struct RestoreScope;
+    impl Drop for RestoreScope {
+        fn drop(&mut self) {
+            PRELOCKED_WRITES.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+    fn acquire<F, R>(
+        paths: &[PathBuf],
+        keys: &BTreeSet<PathBuf>,
+        f: &mut Option<F>,
+    ) -> Result<R, String>
+    where
+        F: FnOnce() -> Result<R, String>,
+    {
+        if let Some((path, rest)) = paths.split_first() {
+            with_file_lock(path, || acquire(rest, keys, f))
+        } else {
+            PRELOCKED_WRITES.with(|slot| *slot.borrow_mut() = Some(keys.clone()));
+            let _scope = RestoreScope;
+            let run = f
+                .take()
+                .ok_or_else(|| "marketplace write-set body already consumed".to_string())?;
+            run()
+        }
+    }
+    acquire(&data_paths, &keys, &mut Some(f))
+}
 
 /// The in-process mutex serializing `lock_path`'s acquisitions in this
 /// process. Crate-visible for the cross-process regression tests' handshake
@@ -169,6 +230,17 @@ where
     F: FnOnce() -> Result<R, String>,
 {
     let lock_path = lock_path_for(data_path);
+    match PRELOCKED_WRITES.with(|slot| slot.borrow().as_ref().map(|held| held.contains(&lock_path)))
+    {
+        Some(true) => return f(),
+        Some(false) => {
+            return Err(format!(
+                "undeclared marketplace write lock: {}",
+                lock_path.display()
+            ));
+        }
+        None => {}
+    }
     let process_mutex = process_mutex_for(&lock_path);
     let _process_guard = process_mutex
         .lock()
@@ -271,6 +343,13 @@ where
     F: FnOnce(bool) -> R,
 {
     let lock_path = lock_path_for(data_path);
+    if PRELOCKED_WRITES.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|held| held.contains(&lock_path))
+    }) {
+        return f(true);
+    }
     // Try the in-process mutex first, so a degraded read below is only ever
     // beaten by a *peer* process's OS lock (never by a local writer's).
     let process_mutex = process_mutex_for(&lock_path);
@@ -372,6 +451,64 @@ pub(crate) fn wait_until_process_mutex_parked(lock_path: &Path, what: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_uninstall_write_set_keeps_rollback_serialized_and_rejects_new_locks() {
+        let home = tempfile::tempdir().unwrap();
+        let first = home.path().join("bundles.json");
+        let second = home.path().join("recycle-bin.json");
+        let undeclared = home.path().join("other.json");
+        let result: Result<(), String> =
+            with_prelocked_file_writes(vec![second.clone(), first.clone(), first.clone()], || {
+                with_file_lock(&first, || {
+                    std::fs::write(&first, b"temporary").unwrap();
+                    Ok(())
+                })?;
+                assert!(try_file_lock_for_read_report_locked(&first, |locked| {
+                    locked
+                }));
+                let other_thread = first.clone();
+                assert!(
+                    !std::thread::spawn(move || {
+                        try_file_lock_for_read_report_locked(&other_thread, |locked| locked)
+                    })
+                    .join()
+                    .unwrap(),
+                    "write ownership must not leak to another thread"
+                );
+                assert!(with_file_lock(&undeclared, || Ok(())).is_err());
+                assert!(
+                    !lock_path_for(&undeclared).exists(),
+                    "must refuse before waiting/opening a new lock"
+                );
+                with_prelocked_file_writes(vec![first.clone()], || {
+                    // The same retained locks cover the compensation too.
+                    with_file_lock(&first, || {
+                        std::fs::write(&first, b"restored").unwrap();
+                        Ok(())
+                    })
+                })?;
+                Err("simulated transaction failure".into())
+            });
+        assert_eq!(result.unwrap_err(), "simulated transaction failure");
+        assert_eq!(std::fs::read(&first).unwrap(), b"restored");
+        with_file_lock(&first, || Ok(())).unwrap();
+        with_file_lock(&undeclared, || Ok(())).unwrap();
+    }
+
+    #[test]
+    fn upload_uninstall_write_set_unwinds_without_leaving_ownership_marks() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("state.json");
+        let panic = std::panic::catch_unwind(|| {
+            let _: Result<(), String> = with_prelocked_file_writes(vec![path.clone()], || {
+                panic!("simulate transaction panic");
+            });
+        });
+        assert!(panic.is_err());
+        with_file_lock(&path, || Ok(())).unwrap();
+        with_file_lock(&home.path().join("next.json"), || Ok(())).unwrap();
+    }
 
     /// `bundles.json` → `bundles.lock`, `recycle-bin.json` →
     /// `recycle-bin.lock`, `mcp.json` → `mcp.lock` — the #517 shape

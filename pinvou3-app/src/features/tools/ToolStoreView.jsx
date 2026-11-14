@@ -8,6 +8,7 @@ import { resolveOAuthInstallOutcome } from './oauth-marketplace-logic.js';
 import { notifyComposerToolsChanged } from './tool-events.js';
 import { localizeTool, mergeConfigFields, TsActionBtn, BuiltinPluginCard, tsCategories, tsSkillIconByName, tsSkillsData, tsToolsData, tsToolWelcomeData, TOOL_TYPE_GROUPS, getToolTypeGroup, TOOL_BUSINESS_GROUPS, getToolBusinessGroup } from './tool-common.jsx';
 import { isBuiltinPlugin } from './builtin-plugin-logic.js';
+import { uninstallErrorCopy } from './uninstall-logic.js';
 import { MAX_SKILL_ZIP_BYTES, pickSkillDrop, fileToBase64 } from './skill-import-logic.js';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
 import { can } from '../../shared/platform.js';
@@ -1906,7 +1907,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('skill action failed:', e);
-          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(String(e)), isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: storeCopy.operationFailedWith(isInstalled ? uninstallErrorCopy(e, storeCopy) : String(e)), isInstall: false, isError: true });
         } finally {
           setBusyId((current) => releaseBusy(current, backendId));
         }
@@ -2252,7 +2253,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // Surface the refusal detail (companion-teardown abort, recycle
           // preflight, scope-lock refusal) — the sibling install path does;
           // a bare title hides actionable guidance.
-          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: uninstallErrorCopy(e, storeCopy), isInstall: false, isError: true });
         } finally {
           setBusyId((current) => releaseBusy(current, backendId));
         }

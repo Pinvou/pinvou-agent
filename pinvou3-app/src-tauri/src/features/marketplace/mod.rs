@@ -1597,6 +1597,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// outcome — see `strip_uninstalled_scope_state` (the post-commit strip,
     /// still under MARKETPLACE_TRANSACTION_LOCK) for the full doctrine.
     pub fn uninstall(&self, tool_id: &str) -> Result<bool, String> {
+        self.uninstall_with_upload_preflight(tool_id, || Ok(()))
+    }
+
+    /// Check the host's Upload-only runtime precondition under the installation
+    /// locks, before changing persistent state or moving the current package.
+    pub(crate) fn uninstall_with_upload_preflight<G>(
+        &self,
+        tool_id: &str,
+        upload_preflight: impl FnOnce() -> Result<G, String>,
+    ) -> Result<bool, String> {
         // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
         // §3.1 server-side defense in depth): even if the frontend never
         // offers the action, a direct command/IPC call must be rejected here.
@@ -1654,7 +1664,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .map_err(|error| format!("open the landing lease for {lease_id}: {error}"))?;
         let _landing_lease_guard = file_lock::lock_write_with_transient_retry!(&mut landing_lease)
             .map_err(|error| format!("lock the landing lease for {lease_id}: {error}"))?;
-        self.uninstall_leased(tool_id)
+        self.uninstall_leased_with_upload_preflight(tool_id, upload_preflight)
     }
 
     /// The uninstall body without the cross-process landing lease. Callers
@@ -1662,6 +1672,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// sweep) call this directly — the lease is an flock, so re-acquiring it
     /// on a fresh fd from the same process would self-block.
     pub(crate) fn uninstall_leased(&self, tool_id: &str) -> Result<bool, String> {
+        self.uninstall_leased_with_upload_preflight(tool_id, || Ok(()))
+    }
+
+    fn uninstall_leased_with_upload_preflight<G>(
+        &self,
+        tool_id: &str,
+        upload_preflight: impl FnOnce() -> Result<G, String>,
+    ) -> Result<bool, String> {
         // 并发守护（M2）由事务锁承担：卸载全程持 MARKETPLACE_TRANSACTION_LOCK，
         // 同 id 并发卸载时后到者等先到者卸完再重读登记，看到的是「已回收」终态，
         // 回收失败回滚不会把先删的记录复活成幽灵 installed；顺带串行化跨 id 的
@@ -1700,140 +1718,164 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // （mcp.json/installed.json/bundles.json/包目录/secrets）未改动。
         let pkg_dir = paths::bundles_root().join(tool_id);
         let will_recycle = upload_record.is_some() && pkg_dir.exists();
-        if will_recycle {
-            recycle_bin::RecycleBin::new()
+        let mutate = || -> Result<_, String> {
+            // Every state-file and rollback lock is already owned on this
+            // blocking stack before runtime maintenance begins.
+            let _runtime_guard = if will_recycle {
+                Some(upload_preflight()?)
+            } else {
+                None
+            };
+            if will_recycle {
+                recycle_bin::RecycleBin::new()
                 .preflight_recycle(tool_id)
                 .map_err(|e| {
                     format!(
                         "回收站不可用，已中止卸载 {tool_id}（市场安装态未改动；若该工具配置了远程 OAuth，其登录状态可能已在卸载流程中先行清除）: {e}"
                     )
                 })?;
-        }
-
-        // secret 目标快照必须在回收搬目录之前取（Upload 整包回收后 load_manifest
-        // 读不到声明）；实际删除在事务 commit 之后（cleanup_uninstalled_tool_state）
-        // —— 回收/事务失败回滚时 keyring 凭据原样保留，回滚才算完整（keyring
-        // 删除不可逆，M2）。
-        let secret_targets = self
-            .load_manifest(tool_id)
-            .map(|manifest| secrets::manifest_secret_targets(&manifest))
-            .unwrap_or_default();
-        // Round-28 MAJOR 1 (review #455): snapshot companion owners HERE —
-        // pre-transaction, while this tool's conditional claim is still alive.
-        // Post-commit resolution would fall through to the physical fallback
-        // and could re-own a companion name onto a live foreign pack.
-        let companion_owners = self.snapshot_companion_owners(tool_id);
-
-        // mcp.json / installed.json / bundles.json 镜像 / 包目录回收在同一事务窗口：
-        // 回收失败即整体回到卸载前状态（目录由 recycle_package 自回滚，登记以本次
-        // 所删为限回写，installed.json / mcp.json 由事务快照恢复），不残留
-        // 「显示已安装、实际未供给」的半卸载态。
-        // 不变量：写入器拒绝（坏 mcp.json）必须是闭包内第一个操作——见
-        // remove_registration_locked。
-        let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
-        let mut removed_install_record = false;
-        let result = (|| {
-            self.remove_registration_locked(tool_id)?;
-
-            // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
-            // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
-            // removed_by_us = 记录是否由本次调用删除：回收失败回滚仅以本次所删为限
-            // 回写，不复活他人已删的记录。
-            // Snapshot the mirror record before the remove: the transaction
-            // rollback does not cover bundles.json, so a mid-transaction abort
-            // (the CLI-connector withdrawal leg below) restores the ORIGINAL
-            // record itself, like the recycle-failure leg. Unfiltered: a
-            // tombstone (installed=false) that store.remove takes is still the
-            // exact pre-uninstall state an aborted uninstall must leave
-            // behind.
-            let pre_remove_record = store.get(tool_id).ok().flatten();
-            let removed_by_us = match store.remove(tool_id) {
-                Ok(removed) => removed,
-                Err(e) => {
-                    log::warn!(
-                        "[marketplace] bundles.json 镜像删除失败（uninstall {tool_id}）: {e}"
-                    );
-                    false
-                }
-            };
-            removed_install_record = removed_by_us;
-
-            // 包目录处置（§4 修订：卸载 = 删登记 + 目录按来源处置）。companion 技能由
-            // 命令层联动处理（Upload 组合包跳过物理删除、随整包回收，见
-            // commands::marketplace::uninstall_marketplace_tool_sync）。
-            // - Upload 来源：整包搬入回收站（含 mcp/ 与 skills/，用户唯一副本不删），
-            //   搬离 bundles_root 后商店列表不再出现；恢复/彻底删除由回收站命令负责。
-            // - 可重释放的内嵌预置（内嵌目录有 spec 且登记非 Upload）：删目录
-            //   （六轮评审 R1，数据丢失）。
-            // - 其余一律保留 `bundles/<id>/`（用户唯一副本）：手写自定义 MCP
-            //   （migrate_custom_mcp_layout 从旧布局强迁、无 plugin.json、登记为
-            //   Preset）、无记录、bundles.json 读失败。
-            // - Builtin CLI connector: withdraw the whole pack dir (English
-            //   per CONTRIBUTING): every file under
-            //   `bundles/<id>/` is companion-skill materialization from
-            //   embedded assets, nothing user-unique, and the DenyAll
-            //   consent gate's materialized-dirs known-clause keys on these
-            //   very files. Keeping them after the in-lock cleanup stripped
-            //   the consent rows and the sync ledger would let the gate
-            //   vouch for a consent state that no longer exists — a re-show
-            //   would skip registration for as long as the dirs stay. The
-            //   next gated show re-extracts and registers fresh.
-            let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
-            if let Some(record) = upload_record {
-                if pkg_dir.exists() {
-                    let kind = recycle_bin::package_kind(&pkg_dir);
-                    if let Err(e) = recycle_bin::recycle_upload_package(
-                        &recycle_bin::RecycleBin::new(),
-                        tool_id,
-                        &record,
-                        kind,
-                    ) {
-                        // preflight 已过仍失败 = 极端 IO 异常（rename/清单写；目录已
-                        // 由 recycle_package 回滚原位）。登记仅以本次所删为限回写；
-                        // installed.json / mcp.json 由下方事务 rollback 恢复；
-                        // secrets 此时尚未删除 —— 全态回到卸载前，卸载 fail loud。
-                        write_back_pre_remove_record(
-                            &store,
-                            tool_id,
-                            removed_by_us,
-                            pre_remove_record,
-                        );
-                        return Err(format!("移入回收站失败（{tool_id}）: {e}"));
-                    }
-                }
-            } else if can_redeliver && !source_may_be_upload {
-                if pkg_dir.exists() {
-                    let _ = std::fs::remove_dir_all(pkg_dir.join("mcp"));
-                    let _ = std::fs::remove_dir(pkg_dir.join("skills")); // 仅空目录能删掉
-                    let _ = std::fs::remove_dir(&pkg_dir);
-                }
-            } else if !source_may_be_upload && !bundle::cli_bundle_skill_dirs(tool_id).is_empty() {
-                // Builtin CLI connector: withdraw the
-                // materialized companion skills together with the record.
-                // Why withdraw: see the builtin-CLI bullet in the
-                // disposition list above — the gate's materialized-dirs
-                // clause keys on these files.
-                if pkg_dir.exists() {
-                    if let Err(withdraw_error) =
-                        withdraw_materialized_connector_dirs(tool_id, &pkg_dir)
-                    {
-                        // The transaction rollback covers mcp.json /
-                        // installed.json but the mirror record and the pack
-                        // dir live outside its snapshot — restore the record
-                        // like the recycle-failure leg above.
-                        write_back_pre_remove_record(
-                            &store,
-                            tool_id,
-                            removed_by_us,
-                            pre_remove_record,
-                        );
-                        return Err(withdraw_error);
-                    }
-                }
             }
-            Ok(())
-        })();
-        transaction.settle(result)?;
+
+            // secret 目标快照必须在回收搬目录之前取（Upload 整包回收后 load_manifest
+            // 读不到声明）；实际删除在事务 commit 之后（cleanup_uninstalled_tool_state）
+            // —— 回收/事务失败回滚时 keyring 凭据原样保留，回滚才算完整（keyring
+            // 删除不可逆，M2）。
+            let secret_targets = self
+                .load_manifest(tool_id)
+                .map(|manifest| secrets::manifest_secret_targets(&manifest))
+                .unwrap_or_default();
+            // Round-28 MAJOR 1 (review #455): snapshot companion owners HERE —
+            // pre-transaction, while this tool's conditional claim is still alive.
+            // Post-commit resolution would fall through to the physical fallback
+            // and could re-own a companion name onto a live foreign pack.
+            let companion_owners = self.snapshot_companion_owners(tool_id);
+
+            // mcp.json / installed.json / bundles.json 镜像 / 包目录回收在同一事务窗口：
+            // 回收失败即整体回到卸载前状态（目录由 recycle_package 自回滚，登记以本次
+            // 所删为限回写，installed.json / mcp.json 由事务快照恢复），不残留
+            // 「显示已安装、实际未供给」的半卸载态。
+            // 不变量：写入器拒绝（坏 mcp.json）必须是闭包内第一个操作——见
+            // remove_registration_locked。
+            let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+            let mut removed_install_record = false;
+            let result = (|| {
+                self.remove_registration_locked(tool_id)?;
+
+                // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
+                // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
+                // removed_by_us = 记录是否由本次调用删除：回收失败回滚仅以本次所删为限
+                // 回写，不复活他人已删的记录。
+                // Snapshot the mirror record before the remove: the transaction
+                // rollback does not cover bundles.json, so a mid-transaction abort
+                // (the CLI-connector withdrawal leg below) restores the ORIGINAL
+                // record itself, like the recycle-failure leg. Unfiltered: a
+                // tombstone (installed=false) that store.remove takes is still the
+                // exact pre-uninstall state an aborted uninstall must leave
+                // behind.
+                let pre_remove_record = store.get(tool_id).ok().flatten();
+                let removed_by_us = match store.remove(tool_id) {
+                    Ok(removed) => removed,
+                    Err(e) => {
+                        log::warn!(
+                            "[marketplace] bundles.json 镜像删除失败（uninstall {tool_id}）: {e}"
+                        );
+                        false
+                    }
+                };
+                removed_install_record = removed_by_us;
+
+                // 包目录处置（§4 修订：卸载 = 删登记 + 目录按来源处置）。companion 技能由
+                // 命令层联动处理（Upload 组合包跳过物理删除、随整包回收，见
+                // commands::marketplace::uninstall_marketplace_tool_sync）。
+                // - Upload 来源：整包搬入回收站（含 mcp/ 与 skills/，用户唯一副本不删），
+                //   搬离 bundles_root 后商店列表不再出现；恢复/彻底删除由回收站命令负责。
+                // - 可重释放的内嵌预置（内嵌目录有 spec 且登记非 Upload）：删目录
+                //   （六轮评审 R1，数据丢失）。
+                // - 其余一律保留 `bundles/<id>/`（用户唯一副本）：手写自定义 MCP
+                //   （migrate_custom_mcp_layout 从旧布局强迁、无 plugin.json、登记为
+                //   Preset）、无记录、bundles.json 读失败。
+                // - Builtin CLI connector: withdraw the whole pack dir (English
+                //   per CONTRIBUTING): every file under
+                //   `bundles/<id>/` is companion-skill materialization from
+                //   embedded assets, nothing user-unique, and the DenyAll
+                //   consent gate's materialized-dirs known-clause keys on these
+                //   very files. Keeping them after the in-lock cleanup stripped
+                //   the consent rows and the sync ledger would let the gate
+                //   vouch for a consent state that no longer exists — a re-show
+                //   would skip registration for as long as the dirs stay. The
+                //   next gated show re-extracts and registers fresh.
+                let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
+                if let Some(record) = upload_record {
+                    if pkg_dir.exists() {
+                        let kind = recycle_bin::package_kind(&pkg_dir);
+                        if let Err(e) = recycle_bin::recycle_upload_package(
+                            &recycle_bin::RecycleBin::new(),
+                            tool_id,
+                            &record,
+                            kind,
+                        ) {
+                            // preflight 已过仍失败 = 极端 IO 异常（rename/清单写；目录已
+                            // 由 recycle_package 回滚原位）。登记仅以本次所删为限回写；
+                            // installed.json / mcp.json 由下方事务 rollback 恢复；
+                            // secrets 此时尚未删除 —— 全态回到卸载前，卸载 fail loud。
+                            write_back_pre_remove_record(
+                                &store,
+                                tool_id,
+                                removed_by_us,
+                                pre_remove_record,
+                            );
+                            return Err(format!("移入回收站失败（{tool_id}）: {e}"));
+                        }
+                    }
+                } else if can_redeliver && !source_may_be_upload {
+                    if pkg_dir.exists() {
+                        let _ = std::fs::remove_dir_all(pkg_dir.join("mcp"));
+                        let _ = std::fs::remove_dir(pkg_dir.join("skills")); // 仅空目录能删掉
+                        let _ = std::fs::remove_dir(&pkg_dir);
+                    }
+                } else if !source_may_be_upload
+                    && !bundle::cli_bundle_skill_dirs(tool_id).is_empty()
+                {
+                    // Builtin CLI connector: withdraw the
+                    // materialized companion skills together with the record.
+                    // Why withdraw: see the builtin-CLI bullet in the
+                    // disposition list above — the gate's materialized-dirs
+                    // clause keys on these files.
+                    if pkg_dir.exists() {
+                        if let Err(withdraw_error) =
+                            withdraw_materialized_connector_dirs(tool_id, &pkg_dir)
+                        {
+                            // The transaction rollback covers mcp.json /
+                            // installed.json but the mirror record and the pack
+                            // dir live outside its snapshot — restore the record
+                            // like the recycle-failure leg above.
+                            write_back_pre_remove_record(
+                                &store,
+                                tool_id,
+                                removed_by_us,
+                                pre_remove_record,
+                            );
+                            return Err(withdraw_error);
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            transaction.settle(result)?;
+            Ok((removed_install_record, secret_targets, companion_owners))
+        };
+        let (removed_install_record, secret_targets, companion_owners) = if will_recycle {
+            file_lock::with_prelocked_file_writes(
+                vec![
+                    paths::mcp_config_path(),
+                    store.file_path(),
+                    recycle_bin::RecycleBin::new().file_path(),
+                ],
+                mutate,
+            )?
+        } else {
+            mutate()?
+        };
 
         // Only clean credentials, scope state, and companion skills after the persistent
         // registration transaction commits. A failed transaction therefore leaves the old tool
@@ -9799,6 +9841,23 @@ pub(crate) mod tests {
                 "up-tool",
                 store::BundleSource::Upload("pkg.zip".to_string()),
             );
+
+            let mcp_before = read_mcp_json();
+            let error = mgr
+                .uninstall_with_upload_preflight("up-tool", || {
+                    Err::<(), String>("runtime_not_released".into())
+                })
+                .unwrap_err();
+            assert_eq!(error, "runtime_not_released");
+            assert_eq!(read_mcp_json(), mcp_before);
+            assert!(mgr.installed_ids().contains(&"up-tool".to_string()));
+            assert!(store::BundleStore::new().get("up-tool").unwrap().is_some());
+            assert!(
+                crate::platform::paths::bundles_root()
+                    .join("up-tool/mcp/manifest.json")
+                    .is_file()
+            );
+            assert!(recycle_bin::RecycleBin::new().list().unwrap().is_empty());
 
             mgr.uninstall("up-tool").unwrap();
 
