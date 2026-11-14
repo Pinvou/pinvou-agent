@@ -882,8 +882,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           // 整表重置失败:清掉在途「加载更多」的 loading(其响应会因代际失配被
           // 丢弃、不会自己清),否则旧分页的按钮永远转圈;并把 hasMore 一并收起
           // ——旧分页属于被取代的上一轮,续页点击必被代际校验拒发,死按钮只会
-          // 误导(r4 review)。
-          setDocsPaging((p) => ({ ...p, loading: false, hasMore: false }));
+          // 误导(r4 review)。失败本身也要按代际校验:陈旧重置的失败落在新重置
+          // 落地之后时,无守卫的收起会把新状态的 footer 拆掉,第 0 页之后的行
+          // 变成不可达,直到下一次重置才自愈(r6 review)。
+          if (generation === docsGenerationRef.current) {
+            setDocsPaging((p) => ({ ...p, loading: false, hasMore: false }));
+          }
         }
       };
       const loadMoreDocs = async () => {
@@ -920,8 +924,11 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           kbCache.allDocs = capCachedAllDocs(d);
         } catch {
           // 整表重置失败:清掉在途「加载更多」的 loading,理由同 loadDocs;
-          // hasMore 一并收起(死按钮,理由同 loadDocs 的 catch 注)。
-          setAllDocsPaging((p) => ({ ...p, loading: false, hasMore: false }));
+          // hasMore 一并收起(死按钮,理由同 loadDocs 的 catch 注)。失败同受
+          // 代际校验,理由同 loadDocs 的 r6 注。
+          if (generation === allDocsGenerationRef.current) {
+            setAllDocsPaging((p) => ({ ...p, loading: false, hasMore: false }));
+          }
         }
         try { const ei = await invokeTauri('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
         try { const m = await invokeTauri('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
