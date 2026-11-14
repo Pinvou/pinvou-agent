@@ -4,10 +4,13 @@
 >
 > 落地情况（2026-11 归档注记）：Bridge 打包、事件合同、权限模式与工作区模型的思路已落地；
 > §5–§8、§11 的托管 Codex 下载、`CodexRuntime*` 状态机与 `codex-runtime://status` 事件**未被采纳**，
-> 现行实现为 `CodexAcpStatus` 布尔状态契约 + `acp:install-progress` 事件；§6.1 的 Node 22.x / codex-acp
+> 现行实现为 `CodexAcpStatus` 布尔状态契约 + `acp:install-progress` 事件（§10 的 `CodexRuntimeGate`
+> 全量门控 UI 同样未被采纳，现行仅保留轻量运行时提示）；§6.1 的 Node 22.x / codex-acp
 > 1.1.5 基线已过时（现行 Bridge 钉扎 Node 24.22.1、适配器 2.2.2）；§11 的 `prepare_codex_acp` /
 > `login_codex_acp` 未落库（现行命令为 `install_acp_agent` / `login_acp_agent` /
-> `submit_acp_agent_login_code` / `open_acp_agent_login_url`）。
+> `submit_acp_agent_login_code` / `open_acp_agent_login_url`）；§13 的供应链管线
+> （staging / manifest / 签名）未被采纳，现行 Bridge 运行时由 `prepare-codex-bridge-runtime.sh`
+> 下载并校验。
 >
 > 运行时现状以 [`codex-acp.md`](./codex-acp.md) 与 [`multi-agent-acp.md`](./multi-agent-acp.md) 为准。
 >

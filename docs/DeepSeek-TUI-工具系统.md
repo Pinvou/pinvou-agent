@@ -4,7 +4,8 @@
 > 范围：DeepSeek-TUI v0.8.37 主线，pinvou3 视角
 > 目的：摸清工具注册、调度、执行链路；列出全部工具与使用场景
 >
-> **注（2026-11 回填）**：本文为 v0.8.37 机制史料。底座已更名 `CodeWhale`，且工具面在 v0.9.x
+> **注（2026-11 回填）**：本文为 v0.8.37 机制史料。底座已更名 `CodeWhale`（文中 `DeepSeek-TUI/`
+> 路径对应现 `CodeWhale/`），且工具面在 v0.9.x
 > 完成治理重构（`PINVOU3_ALLOWED_TOOLS` 白名单 + canonical 工具名，部分 builder 方法已更名/移除，
 > Plan 模式现注册只读文件/shell 之外的完整只读面）；现行工具面与迁移记录见
 > [`tool-governance.md`](./tool-governance.md)，本文请勿按现状使用。

@@ -11,7 +11,8 @@
 > 记录的写死阈值（`token_threshold=190K`、`auto_floor_tokens=60K` 等）也已过时——现行
 > 阈值由 `derive_compaction_threshold` 按模型窗口动态推导
 > （`features/assistant/platform/bridge.rs`），推导脉络仍以本文为史。另注：下文提到的回归测试
-> `compaction_threshold_stays_below_emergency_budget` 已随底座清理移除——现行 `bridge.rs` 认为其
+> `compaction_threshold_stays_below_emergency_budget`（app 侧 `bridge/mod.rs` 测试）已随本仓库
+> PR #91「压缩阈值按探测窗口推导」重构移除——现行 `bridge.rs` 认为其
 > 「threshold + 20K margin ≤ budget」不变式混用了两把口径不一致的度量尺（跨尺伪不变式），
 > 同一防倒置场景现由 `forkguard_compaction_threshold_below_emergency_all_windows` 测试锁定。
 

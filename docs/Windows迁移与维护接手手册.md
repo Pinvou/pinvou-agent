@@ -155,7 +155,7 @@ pinvou3 不直接使用 `~/.deepseek/` 作为主数据目录，而是隔离到 `
 | `~/.pinvou3/sessions/<id>.json` | session 元数据和 messages |
 | `~/.pinvou3/sessions/<id>/workspace/` | 每个 session 独立工作目录 |
 | `~/.pinvou3/sessions/<id>/artifacts/` | AI 产物默认落地目录 |
-| `~/.pinvou3/workflows/<run_id>/project/` | 工作流 run 的项目目录 |
+| `~/.pinvou3/workflows/<run_id>/project/` | 工作流 run 的项目目录（快照条目：工作流子系统已在主干整体移除，此目录不再产生） |
 | `~/.pinvou3/updates/` | Linux `.deb` 更新包暂存目录 |
 
 Windows 风险：代码多处默认读 `HOME`，Windows 原生通常是 `USERPROFILE`。Rust 标准库和 Tauri 有跨平台目录 API，迁移时建议集中改 `paths.rs`，不要在各模块散落平台判断。
@@ -363,7 +363,7 @@ Windows 迁移必须重做或拆分：
 | Bash 脚本启动 | `run-dev.sh`、`scripts/*.sh` | P1 |
 | Poppler/Tesseract/LibreOffice/7z 路径 | `file_ingest.rs` | P1 |
 | Python 命令名 `python3` | `file_ingest.rs`、workflow scripts | P1 |
-| 工作流绝对路径注入 | `harness.rs`、workflow scripts | P1 |
+| 工作流绝对路径注入 | `harness.rs`、workflow scripts | P1（快照条目：`harness.rs` 与工作流子系统已在主干移除，此风险随之消失） |
 | 打开文件/目录命令 | `commands.rs` | P1 |
 | vLLM 默认本机地址 | `bridge/mod.rs`、settings | P1 |
 | Windows 路径反斜杠与模型提示 | prompt / workflow | P2 |
@@ -382,7 +382,7 @@ Windows 迁移必须重做或拆分：
 | 改聊天 UI | `index.html` + `tauri-bridge.js` | 绕过 bridge 直接调用后端 |
 | 改 session 存储 | `bridge/sessions.rs` | 直接读写底座全局目录 |
 | 改附件解析 | `file_ingest.rs` | 让 LLM 自己决定所有附件读取 |
-| 改工作流 | `workflows/` + `harness.rs` + bundle 快照 | 让主聊天 assistant 手工串所有角色 |
+| 改工作流 | `workflows/` + `harness.rs` + bundle 快照 | 让主聊天 assistant 手工串所有角色（快照条目：工作流子系统已在主干整体移除，此维护入口已失效） |
 | 同步底座上游 | `DeepSeek-TUI` + fork guard + prompt diff | 整文件 `--theirs` 粗暴覆盖 |
 | 修通用底座 bug | DeepSeek-TUI fork，考虑上游 PR | 在 pinvou3-app 绕一层补丁 |
 
@@ -419,7 +419,7 @@ Windows 原生后建议增加这些测试：
 - 打包测试：安装、卸载、升级、重启、数据目录保留。
 - vLLM 测试：本机地址、远程地址、代理、超时、模型名 `_256k`。
 - 多 session 测试：后台 session 流式输出、切换、取消、持久化。
-- 工作流测试：启动、kick、SubAgent、gate、失败重试、恢复 run。
+- 工作流测试：启动、kick、SubAgent、gate、失败重试、恢复 run。（快照条目：工作流子系统已在主干整体移除，此条仅作 0.6.x 留档，现行验证跳过。）
 
 ## 15. 已下线或易误读的历史方案
 
