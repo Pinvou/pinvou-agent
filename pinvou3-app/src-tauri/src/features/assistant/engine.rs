@@ -609,18 +609,40 @@ fn context_update_message_text(message: &Message) -> bool {
     if message.role != deepseek_tui::models::Role::User {
         return false;
     }
-    let mut text = String::new();
-    for block in &message.content {
-        if let deepseek_tui::models::ContentBlock::Text {
-            text: block_text, ..
-        } = block
-        {
-            text.push_str(block_text);
-        }
+    // 预筛（r7 perf minor，r9 收紧为双边缘必要条件）：规范化后的全文必以
+    // 前缀首字符 '<' 开头、以收尾 '>' 结束（`trim` 只剥空白），两个必要
+    // 条件沿各块的边缘字符即可判定——绝大多数用户消息在此零分配拒绝，
+    // 免掉每个 persist 对整份转写的全文拷贝（r9 finding：原实现无条件
+    // join 所有 Text 块后才 contains 预筛，10 MB 粘贴 × 每 turn 数十次
+    // persist 的 memcpy 白付）。只有两侧都通过的消息才拼接全文做精确
+    // 匹配，拼接语义（含跨块分裂的标记）保持不变。
+    let text_blocks: Vec<&str> = message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            deepseek_tui::models::ContentBlock::Text {
+                text: block_text, ..
+            } => Some(block_text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let first_non_ws = text_blocks
+        .iter()
+        .find_map(|text| text.chars().find(|ch| !ch.is_whitespace()));
+    if first_non_ws != Some('<') {
+        return false;
     }
-    // 预筛（r7 perf minor）：绝大多数用户消息不含该标记——先扫描拒绝，
-    // 免掉每个 persist 对整份转写的第二份全量拷贝（`replace` 无条件分配，
-    // `trim` 只借不分配）。contains 落空即不可能匹配前缀，语义不变。
+    let last_non_ws = text_blocks
+        .iter()
+        .rev()
+        .find_map(|text| text.chars().rev().find(|ch| !ch.is_whitespace()));
+    if last_non_ws != Some('>') {
+        return false;
+    }
+    let mut text = String::new();
+    for block_text in &text_blocks {
+        text.push_str(block_text);
+    }
     if !text.contains("<context_update>") {
         return false;
     }
@@ -4916,6 +4938,51 @@ mod context_update_count_tests {
                 cache_control: None,
             }],
         }));
+    }
+
+    fn user_message_with_blocks(blocks: Vec<String>) -> Message {
+        Message {
+            role: deepseek_tui::models::Role::User,
+            content: blocks
+                .into_iter()
+                .map(|text| ContentBlock::Text {
+                    text,
+                    cache_control: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// 边缘预筛（r9 perf）不得产生假阴性：标记跨块分裂（拼接语义）与
+    /// 空白填充消息仍必须精确匹配——预筛过严（over-reject）即红。截断
+    /// 片段（首字符 '<' 而尾字符非 '>'）仍被预筛正确拒绝。
+    #[test]
+    fn edge_prefilter_keeps_split_marker_and_padded_messages_matching() {
+        // 标记跨块分裂：拼接后才构成完整前缀/后缀（保持原 join 语义）。
+        let split = user_message_with_blocks(vec![
+            "<context_upd".to_string(),
+            format!(
+                "ate>\nSession context changed since it was pinned; the pinned \
+                 system prompt is unchanged. Delta (+ added, - removed):\n- split\n</context_"
+            ),
+            "update>".to_string(),
+        ]);
+        assert!(
+            context_update_message_text(&split),
+            "a marker split across text blocks must still match after the join"
+        );
+        // 纯空白块夹在中间不破坏匹配（trim 只剥空白）。
+        let padded = user_message_with_blocks(vec![
+            "  \n".to_string(),
+            format!("{}- p\n", CONTEXT_UPDATE_MESSAGE_PREFIX),
+            "</context_update>\n\n  ".to_string(),
+        ]);
+        assert!(context_update_message_text(&padded));
+        // 首字符 '<' 而尾字符非 '>'：预筛拒绝（截断片段不计数）。
+        assert!(!context_update_message_text(&user_message(&format!(
+            "{}- truncated",
+            CONTEXT_UPDATE_MESSAGE_PREFIX
+        ))));
     }
 
     #[test]
