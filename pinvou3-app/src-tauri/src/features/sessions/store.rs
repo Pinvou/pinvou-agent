@@ -49,7 +49,7 @@ static PRE_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
-pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
+pub(crate) const MAX_SESSIONS_PER_KIND: usize = 500;
 
 /// The aux conversation's internal default title (Chinese constant): aux
 /// sessions never enter the regular session list, so this title is only used
@@ -76,7 +76,7 @@ pub(crate) const HEADLESS_SESSION_PREFIX: &str = "agentic_";
 /// only notice went to a stderr the desktop user never reads. Sized like the
 /// chat budget — a headless batch is exactly the workload that benefits from
 /// keeping recent runs inspectable.
-pub(crate) const MAX_HEADLESS_SESSIONS: usize = 50;
+pub(crate) const MAX_HEADLESS_SESSIONS: usize = 500;
 
 /// Placeholder title for a fresh chat session. One of the trilingual
 /// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
@@ -1576,4 +1576,20 @@ pub(super) fn is_invalid_data_error(error: &anyhow::Error) -> bool {
             .downcast_ref::<std::io::Error>()
             .is_some_and(|e| e.kind() == ErrorKind::InvalidData)
     })
+}
+
+#[cfg(test)]
+mod retention_cap_pins {
+    use super::*;
+
+    /// The retention sweep seeds and asserts are cap-relative (they read the
+    /// constants), so the headline 50→500 raise shipped without anything
+    /// holding the VALUE: a silent 500→5 drift would keep the whole suite
+    /// green while evicting sessions at 1% of the audited budget (r6
+    /// review). Pin the shipped values literally, like the rewind 10s pin.
+    #[test]
+    fn audited_session_retention_caps_match_the_register() {
+        assert_eq!(MAX_SESSIONS_PER_KIND, 500);
+        assert_eq!(MAX_HEADLESS_SESSIONS, 500);
+    }
 }

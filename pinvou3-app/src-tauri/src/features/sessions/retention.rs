@@ -462,7 +462,7 @@ impl SessionStore {
             // competing for the GUI chat budget.
             //
             // Sharing it made every default-keep headless run permanently
-            // consume one of the user's 50 chat slots and evict their oldest
+            // consume one of the user's session-retention slots and evict their oldest
             // conversation — transcript, workspace, artifacts and checkpoints
             // — with the only notice going to the headless process's stderr,
             // which the desktop user never sees. Fifty runs erased the whole

@@ -212,7 +212,7 @@ export const dictEn = {
   
  
         kbSearchPlaceholder: 'Try: pdf from last week, videos over 10mb', 
- kbNoResults: 'No matching files', kbScanningHint: 'Indexing… scanned',
+ kbNoResults: 'No matching files', kbScanningHint: 'Indexing… scanned', kbFilesShowingFirst: n => `Showing first ${n} files`, kbLoadMore: 'Load more',
         kbEmptyHint: 'No index yet. Scan this PC to instantly search all files and find duplicates.',
  
   
@@ -242,8 +242,11 @@ export const dictEn = {
         kbStReady: 'Ready', kbStIndexing: 'Parsing', kbStPending: 'Pending',
         kbImportInterrupted: 'Unfinished import found', kbImportInterruptedHint: 'Progress from the previous run was saved. Continue from the unfinished file or chunk.', kbResumeImport: 'Continue import', kbCancelImport: 'Cancel task',
         kbImportProgress: 'File progress', kbCurrentFile: 'Current file:', kbChunkProgress: 'Chunk progress', kbFailedFiles: 'Failed files', kbRetryFile: 'Retry', kbImportErrors: 'failed', kbImportDoneWithErrors: 'Import finished with errors',
+        kbImportDoneSkipped: 'Import finished — files were skipped by index rules', kbSkippedByExcluder: (n) => `${n} file(s) skipped by index rules (unsupported types; folders matched by exclusion rules are not descended into)`,
         kbResumeImportFailed: 'Failed to continue import', kbCancelImportFailed: 'Failed to cancel import', kbRetryImportFailed: 'Failed to retry file',
         kbLoadMoreFailedFiles: 'Load more failed files', kbLoadingFailedFiles: 'Loading…', kbLoadFailedFilesFailed: 'Failed to load failed files',
+        kbDocsShowingFirst: n => `Showing first ${n} documents`,
+        kbLoadMoreDocs: 'Load more documents',
         kbDeleteColl: 'Delete collection', kbRemove: 'Remove', kbCollEmpty: 'No documents yet. Click "Add files".', kbNoCollFiles: 'No files in any knowledge base yet', kbAllColls: 'All', kbDelCollConfirm: 'Delete collection "{n}"?', kbDelCollWarn: 'Only removes the index for its {c} documents. Your original files on disk are NOT deleted.', kbDelete: 'Delete', kbRemoveDocConfirm: 'Remove "{n}" from the knowledge base?', kbRemoveDocWarn: 'Only deletes its index here. Your original file on disk is not affected.', kbRemoveFailed: 'Could not remove document', 
           kbCollNamePh: 'Collection name', kbCollCatPh: 'Category (optional)', kbCancel: 'Cancel', kbCreate: 'Create',
         kbEmbedOn: 'Semantic search on', kbEmbedOff: 'Semantic search off · full-text only', kbEmbedUnsupported: 'Local embedding models are not supported on this platform',
@@ -432,7 +435,7 @@ export const dictEn = {
           quoteDuplicate:'This selection is already quoted and will not be added again',
         },
         uiHomeMode: { work:'Work', code:'Code', providerSettings:'Provider settings' },
-        uiAttachments: { parsing:'Parsing', failed:'Failed', remove:name=>`Remove attachment ${name}`, dropRelease:'Drop to attach', dropWebTitle:'Add anything', dropWebHint:'Drop any file here to add it to the conversation', fileTooLarge:'The file exceeds the 20 MB attachment limit and cannot be added', archiveTooManyEntries:'The archive contains more than 50 entries and cannot be added', archiveExpandedTooLarge:'The archive expands beyond 100 MB and cannot be added', archiveUnsafeEntry:'The archive contains unsafe links or paths and cannot be added' },
+        uiAttachments: { parsing:'Parsing', failed:'Failed', remove:name=>`Remove attachment ${name}`, dropRelease:'Drop to attach', dropWebTitle:'Add anything', dropWebHint:'Drop any file here to add it to the conversation', fileTooLarge:'The file exceeds the 20 MB attachment limit and cannot be added', archiveTooManyEntries:'The archive contains more than 200 entries and cannot be added', archiveExpandedTooLarge:'The archive expands beyond 100 MB and cannot be added', archiveUnsafeEntry:'The archive contains unsafe links or paths and cannot be added' },
         uiCodex: codexEn,
         uiAcpProviders: acpProvidersEn,
         uiProjects: { convertToProject:'Convert to project', projectNamePlaceholder:'Project name', renameProject:'Rename project', deleteProject:'Delete project', deleteConfirmLabel:'Delete this project?', deleteProjectHint:'Conversations are kept and return to ungrouped', moveToProject:'Move to project…', moveToUngrouped:'Move to ungrouped', alreadyUngrouped:'Already ungrouped', folderUnavailable:'Folder unavailable', rebindFolder:'Rebind', moveConfirmTitle:'Move conversation into this project?', moveConfirmBody:(project, folder)=>`The conversation moves into "${project}". Its folder ${folder} stays outside the project; only this conversation is filed.`, moveConfirm:'Move', searchPlaceholder:'Search projects', noProjects:'No projects yet', currentProject:'Current project', movedNotice:'Conversation moved', movedNoticeWithFolder:folder=>`Conversation moved; folder ${folder} joined the project (this conversation's access is unchanged)`, noMatchProject:'No matching projects', opFailed:'Project operation failed' , manageFolders:'Manage folders', newSessionHere:'New conversation', rebindTitle:'Rebind project folder', rebindConfirm:'Move and rebind', rebindSessionsHint:()=>'Every session under this folder will switch to the new directory', rebindSuccess:n=>`Rebound ${n} session(s)`, rebindUpToDate:'No sessions needed rebinding', rebindOldExistsWarn:'The original folder still exists; the two locations will point to different directories. Continue anyway?', rebindPartial:(ok, failed)=>`Rebound ${ok} sessions; ${failed} failed - retry the rest`, rebindBusyAfter:n=>`${n} sessions started a new turn during the rebind; if they misbehave, retry once when idle`  , rebindCarryoverPending:n=>`${n} session(s) were moved but their runtime could not be switched yet; retry once when idle`, rebindRetryRemaining:'Retry remaining', rebindFailedSessions:'Failed sessions', rebindInProgress:'Another folder rebind is already in progress' , rebindBusyHint:'Those sessions are still running a turn. Wait for them to go idle, then retry', rebindToRoot:'That destination is the filesystem root. Pick an ordinary folder instead', rebindToNested:'The two folders cannot sit inside one another', rebindToUnusable:'That destination folder cannot be used. Pick another one', rebindRootsConflict:'That folder would nest with the project’s own folders. Pick one outside the project’s existing folders' , rebindRootsPersist:'Could not save the rebind to disk. Check free space and permissions, then retry' , rebindRuntimeStarting:'An agent process is starting up; session state could not be checked yet. Retry in a moment' , rebindLegacyTableUnsynced:'Nothing was moved: the session records could not be synced. Make the folder writable and retry' , rebindLegacyTableCorrupt:'Nothing was moved: the legacy session table is corrupt. Repair or remove it, then retry', rebindRootsExpand:'Show all unavailable folders', rebindRootsCollapse:'Show only the first unavailable folder', },
@@ -813,6 +816,7 @@ cancel: 'Cancel', chooseThisFolder: 'Choose this folder', choose: 'Choose',
 currentFolder: path => `Current folder: ${path}`, selectedCount: n => `${n} selected`,
 thisComputer: 'This PC', home: 'Home', emptyFolder: 'Nothing to select in this folder',
 loadFailed: err => `Failed to read: ${err}`, workspaceNotAuthorized: 'Allow remote access to local folders on the desktop first', alreadyOpen: 'A file picker is already open',
+listingTruncated: 'This directory is very large — only the first entries are shown',
   },
   webClientErrors: {
 stateNotReady: 'Remote control state is not ready; desktop events cannot be processed yet',
@@ -1048,7 +1052,6 @@ dictEn.uiSessionWorkspace = {
 
 dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Please try again.';
 
-dictEn.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
 
 dictEn.uiSettingsDetail.memoryDeleteFailed = 'Failed to delete memory. Please try again.';
 

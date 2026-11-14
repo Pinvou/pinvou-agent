@@ -43,26 +43,58 @@ static REWIND_BACKUP_LOCK: Mutex<()> = Mutex::new(());
 /// the same whole-map sidecar: two interleaved load→mutate→persist runs
 /// each commit their own snapshot and silently drop the peer's record —
 /// and that record is the sole retention of the truncated turns
-/// (「备份是被截对话唯一的留存，不能裸截」). The blocking flock on the
-/// sibling `.json.lock` file serializes the RMW across processes and is
+/// (「备份是被截对话唯一的留存，不能裸截」). The flock on the sibling
+/// `.json.lock` file serializes the RMW across processes and is
 /// kernel-released when a holder dies — the same discipline as the
 /// settings transaction lock. Acquired only while `REWIND_BACKUP_LOCK` is
 /// already held, so it stays a leaf lock; the whole-map RMW is a
-/// millisecond-scale disk round trip, so an uncontended blocking wait is
+/// millisecond-scale disk round trip, so an uncontended acquire is
 /// imperceptible.
+///
+/// The wait is BOUNDED ([`REWIND_BACKUP_LOCK_WAIT`], the same wedged-peer
+/// hazard the purge path already degrades around with
+/// [`try_lock_rewound_turns_file`]): truncate/restore cannot take that
+/// skip twin — their sidecar write is mandatory (a truncate without its
+/// backup must not run; a restore must re-read under the lock it commits
+/// against) — so instead of the old indefinite block, a peer wedged while
+/// holding the flock (e.g. a SIGSTOP'd CLI writer) now surfaces an
+/// explicit timeout error after the bound, and the caller's transcript
+/// stays untouched.
+const REWIND_BACKUP_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn lock_rewound_turns_file() -> Result<std::fs::File> {
     let path = rewound_turns_path().with_extension("json.lock");
     let file =
         open_lock_file().with_context(|| format!("打开回退备份锁失败: {}", path.display()))?;
-    file.lock()
-        .with_context(|| format!("锁定回退备份失败: {}", path.display()))?;
-    Ok(file)
+    // Bounded acquire (same shape as prefs::try_lock_settings_file_bounded):
+    // normal contention resolves within the 25 ms poll cadence; the deadline
+    // only fires for a wedged peer, where an explicit error beats hanging
+    // every rewind/undo caller forever.
+    let deadline = std::time::Instant::now() + REWIND_BACKUP_LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    bail!(
+                        "等待回退备份锁超时（{} 秒）：另一写方长期持有（可能已挂起），已中止本次操作: {}",
+                        REWIND_BACKUP_LOCK_WAIT.as_secs(),
+                        path.display()
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(error).with_context(|| format!("锁定回退备份失败: {}", path.display()));
+            }
+        }
+    }
 }
 
 /// Path-compute → create_dir_all → open scaffold shared by the two lock
-/// twins above and below (they differ only in blocking vs `try_lock`): the
-/// create_dir_all + open half now comes from the shared platform helper
-/// [`crate::platform::filesystem::open_lock_file_with_dirs`]. The blocking
+/// twins above and below (they differ only in bounded-wait vs `try_lock`):
+/// the create_dir_all + open half now comes from the shared platform helper
+/// [`crate::platform::filesystem::open_lock_file_with_dirs`]. The waiting
 /// twin wraps any failure — including the `create_dir_all` step — in its
 /// `打开回退备份锁失败` context; the try twin degrades to `None`.
 fn open_lock_file() -> std::io::Result<std::fs::File> {
@@ -89,8 +121,9 @@ fn try_lock_rewound_turns_file() -> Option<std::fs::File> {
 /// sidecar 文件名（与 `_session_models.json` 等并列在 sessions 根下）。
 const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 /// 每个会话保留的回退备份条数上限（与 checkpoint LRU 上限一致），超出裁掉最老，
-/// 防止反复回退把 sidecar 写到无限大。
-const MAX_REWIND_BACKUPS_PER_SESSION: usize = 20;
+/// 防止反复回退把 sidecar 写到无限大。`pub(super)` 供 tests.rs 的封顶行为测试
+/// 直接引用（与 retention 上限的常量驱动测试同一模式），不是对外接口。
+pub(super) const MAX_REWIND_BACKUPS_PER_SESSION: usize = 100;
 
 /// 底座 compaction 摘要标记。底座现行标记是 `COMPACTION_SUMMARY_MARKER`
 /// （首句 "Another language model started to solve this problem"，随摘要检查点
@@ -505,6 +538,23 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 10s wait is the r3 disclosed bound (bounded acquire of the
+    /// cross-process flock); the poll-loop behavior is exercised elsewhere,
+    /// but nothing pinned the VALUE — pin the literal so a silent
+    /// loosening/tightening turns red (r4 review).
+    #[test]
+    fn rewind_backup_lock_wait_stays_at_10s() {
+        assert_eq!(REWIND_BACKUP_LOCK_WAIT, std::time::Duration::from_secs(10));
+    }
+
+    /// The backup cap's seed/asserts are cap-relative (they read the
+    /// constant), so nothing held the VALUE after the 20→100 raise — pin the
+    /// shipped literal (r6 review, same rationale as the lock pin above).
+    #[test]
+    fn rewind_backup_cap_stays_at_100() {
+        assert_eq!(MAX_REWIND_BACKUPS_PER_SESSION, 100);
+    }
 
     /// Round-41 review M2: the cross-process rewind lock is a real exclusive
     /// flock at the documented sibling path. `flock(2)` conflicts between two

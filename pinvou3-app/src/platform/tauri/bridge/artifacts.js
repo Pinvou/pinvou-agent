@@ -138,6 +138,12 @@ function conversationAttachmentArgs(reference) { return pinvouSharedtauriArtifac
       .catch(function (e) { addSystemItem(bt("openFailed") + e); return false; });
   }
 
+  // Frontend-side paste pre-check rejections (the shared reader's size gate
+  // refuses an oversized paste before any byte is read) surface on the same
+  // inline system-item lane the backend addPasteImage path uses for its own
+  // rejections. Declared bridge API (tests/bridge_domain_contract.mjs
+  // attachments list) — features never call addSystemItem directly.
+  function notifyPasteRejected(text) { addSystemItem(text); }
   async function addPasteImage(filename, bytes, formatError) {
     try {
       const path = await invoke("save_paste_image", { filename, bytes });
@@ -224,6 +230,7 @@ async function pickAndAttach() { return pinvouSharedtauriArtifacts().pickAndAtta
       addAttachmentByPath,
       addPasteImage,
       addPasteImageFromClipboard,
+      notifyPasteRejected,
       removeAttachment,
       pickAndAttach,
       uploadDeviceFiles,

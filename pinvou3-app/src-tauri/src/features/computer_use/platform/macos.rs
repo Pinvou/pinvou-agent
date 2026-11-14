@@ -112,10 +112,12 @@ const AX_MESSAGING_TIMEOUT_SECS: f32 = 2.0;
 /// Overall traversal time limit for `ui_tree`. A single AX call is bounded by
 /// [`AX_MESSAGING_TIMEOUT_SECS`], but the worst-case total for a whole tree
 /// (default 400 nodes × up to 7 attribute reads per node) has no upper bound
-/// (it can pin the worker thread for about 1.5 hours); when the limit hits,
+/// (it can pin the worker thread for a very long time); when the limit hits,
 /// traversal aborts and sets truncated — the partially generated tree remains
-/// valid.
-const AX_TREE_TIME_LIMIT: Duration = Duration::from_secs(10);
+/// valid. 20s matches the Linux lane's `A11Y_TREE_DEADLINE`: legitimately
+/// heavy trees (browsers/Electron at a few ms per read) were being cut at 10s
+/// well below the node budget.
+const AX_TREE_TIME_LIMIT: Duration = Duration::from_secs(20);
 /// Abort threshold for consecutive `AXError::CannotComplete` (the target
 /// process is unresponsive/hung). This error should not occur consecutively
 /// in a healthy tree; consecutive occurrences mean the target is hung, and
@@ -1785,17 +1787,32 @@ impl ComputerUseBackend for MacosComputerUseBackend {
         write_tree_node(&root, 0, max_depth, &names, &mut writer, &mut out);
         if writer.truncated {
             // Label the abort reason faithfully: the target hung (consecutive
-            // CannotComplete) / timeout / node budget exhausted.
-            let reason = if writer.errors.poisoned {
-                "the focused application stopped responding"
+            // CannotComplete) / timeout / node budget exhausted. The hint must
+            // match the reason: raising max_nodes only helps when the node
+            // budget tripped; a deadline-tripped tree needs a SMALLER walk
+            // (fewer nodes/levels) to finish inside the time budget; and a
+            // hung app needs to recover first — it fails via CannotComplete
+            // at any walk size, so "smaller walk" would misattribute the
+            // failure (r5 review).
+            let (reason, hint) = if writer.errors.poisoned {
+                (
+                    "the focused application stopped responding",
+                    "retry after the application recovers (e.g. re-focus it or wait), not with a smaller walk — an unresponsive app fails regardless of max_depth/max_nodes",
+                )
             } else if Instant::now() >= writer.deadline {
-                "the traversal time budget was exceeded"
+                (
+                    "the traversal time budget was exceeded",
+                    "retry with a smaller max_depth/max_nodes so the walk completes within the time budget",
+                )
             } else {
-                "the node budget was exhausted"
+                (
+                    "the node budget was exhausted",
+                    "pass a larger max_nodes to see more",
+                )
             };
             let _ = writeln!(
                 out,
-                "... (truncated after {} nodes: {reason}; pass a larger max_nodes to see more)",
+                "... (truncated after {} nodes: {reason}; {hint})",
                 writer.next_index
             );
         }

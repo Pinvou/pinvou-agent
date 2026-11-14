@@ -1152,7 +1152,10 @@ pub async fn run_image_capability_probe(
     // 用 image base64 source;OpenAI 兼容端点走 chat/completions + image_url。
     let is_anthropic = crate::core::model_endpoint::is_anthropic_api_url(&parsed_url);
     let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        // 60s(原 30s):探测目标是常开 thinking 的模型(image_capability_test_payload
+        // 给这类模型 4096 token 推理预算)，慢端点/本地端点上一次 4096-token 补全
+        // 可能超过 30s，30s 会把"能识图"误判成"无法验证"。
+        .timeout(std::time::Duration::from_secs(60))
         .build()
     {
         Ok(client) => client,

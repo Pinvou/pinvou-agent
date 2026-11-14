@@ -44,12 +44,25 @@ pub const RECENT_WORK_ACTIVE_MAX_STORED: usize = 8;
 pub const RECENT_WORK_ARCHIVED_MAX_STORED: usize = 24;
 pub const CURRENT_FOCUS_DEFAULT_TTL_DAYS: i64 = 21;
 pub const RECENT_ACTIVITY_DEFAULT_TTL_DAYS: i64 = 14;
+/// Upper bound accepted for a user-supplied `ttl_days` on timed memories
+/// (`current_focus` / `recent_activity`). The clamp keeps the input in a
+/// sane range instead of trusting it blindly; 3650 (~10 years) leaves
+/// long-horizon goals expressible while still bounding a planted or
+/// garbage value (round-51 limits audit: 90 days silently clamped
+/// legitimate long ttl input with no disclosure).
+pub const TIMED_MEMORY_MAX_TTL_DAYS: i64 = 3650;
 pub const CURRENT_FOCUS_MAX_INJECTED: usize = 3;
 pub const RECENT_ACTIVITY_MAX_INJECTED: usize = 5;
 pub const CURRENT_FOCUS_ACTIVE_MAX_STORED: usize = 8;
 pub const RECENT_ACTIVITY_ACTIVE_MAX_STORED: usize = 20;
 pub const TIMED_MEMORY_ARCHIVED_MAX_STORED: usize = 40;
-pub const PENDING_MEMORY_ACTIVE_MAX_STORED: usize = 20;
+/// Unconfirmed (`pending_confirm`) candidate rows kept in the pending store.
+/// These are suggestions the user has NOT decided on; write-time compaction
+/// previously dropped the overflow silently at 20 (round-51 limits audit:
+/// rows are ~200 bytes, so 200 bounds the store trivially). Overflow past the
+/// cap is still dropped silently, oldest first — the raise makes that drop a
+/// rare tail event, it does not add an eviction notice.
+pub const PENDING_MEMORY_ACTIVE_MAX_STORED: usize = 200;
 pub const PENDING_MEMORY_RESOLVED_MAX_STORED: usize = 80;
 pub const NEVER_MEMORY_MAX_STORED: usize = 200;
 pub const MEMORY_REVIEW_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -409,9 +422,12 @@ pub(super) fn normalize_profile_label(value: &str, topic: &str) -> String {
 /// honesty: the GUI save path does NOT gate wipe-shaped labels today —
 /// SettingsView only trims and `update_memory_profile` applies the patch
 /// unguarded, so a whitespace/over-long GUI label is silently normalized
-/// (possibly to `""`). The guard itself also short-circuits on a
-/// trim-empty value, so a whitespace CLI value bypasses it too — that
-/// lane is closed CLI-side by parse refusal; this logic stays as-is.
+/// (possibly to `""`). UPDATE, limits-audit batch: that gap is now closed —
+/// `update_memory_profile` calls this predicate before any write and refuses
+/// with the same message as the CLI lane, so a GUI label can no longer wipe
+/// the stored value silently. The trim-empty short-circuit below still means
+/// a whitespace CLI value bypasses the predicate — that lane is closed
+/// CLI-side by parse refusal; this logic stays as-is.
 pub fn profile_label_would_be_wiped(value: &str, topic: &str) -> bool {
     !value.trim().is_empty() && normalize_profile_label(value, topic).is_empty()
 }

@@ -25,7 +25,12 @@ use crate::platform::prefs::UserPrefs;
 
 const DELETE_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
 const SCHEDULED_RETENTION_INTERVAL: Duration = Duration::from_secs(15);
-const MAX_TERMINAL_RUNS_PER_AUTOMATION: usize = 50;
+// Terminal-run retention per automation. The retention sweep deletes the run
+// record AND its whole conversation session (prune_scheduled_history →
+// pool.delete_scheduled_run), so this cap is the automation's history horizon:
+// an hourly task previously lost everything after ~2 days. Keep generous —
+// losing recall of past runs is the costlier failure, not disk.
+const MAX_TERMINAL_RUNS_PER_AUTOMATION: usize = 500;
 const SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_MODEL_BINDING_SCHEMA_VERSION: u32 = 1;
 const SCHEDULED_TASK_KIND_SCHEMA_VERSION: u32 = 1;
@@ -2252,6 +2257,15 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+
+    /// The terminal-run prune seeds/asserts are cap-relative (they read the
+    /// constant), so the 50→500 raise shipped without anything holding the
+    /// VALUE — pin the shipped literal (r6 review, same rationale as the
+    /// retention pins).
+    #[test]
+    fn scheduled_terminal_run_history_cap_stays_at_500() {
+        assert_eq!(MAX_TERMINAL_RUNS_PER_AUTOMATION, 500);
+    }
 
     #[test]
     fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {

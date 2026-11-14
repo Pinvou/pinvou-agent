@@ -116,7 +116,7 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
-    /// F1..=F12.
+    /// F1..=F20.
     Function(u8),
     /// Single-character key (letters, digits, punctuation).
     Char(char),
@@ -191,7 +191,12 @@ fn parse_key_token(token: &str) -> Option<Key> {
             if let Some(digits) = lower.strip_prefix('f') {
                 if !digits.is_empty() {
                     if let Ok(n) = digits.parse::<u8>() {
-                        if (1..=12).contains(&n) {
+                        // Parser accepts f1..f20: the X11 lane maps F13-F20,
+                        // so the old 1..=12 parse cap made that documented
+                        // support unreachable. Per-platform map_key stays the
+                        // fail-closed gate (macOS/Windows/portal error above
+                        // F12; Linux errors beyond F20).
+                        if (1..=20).contains(&n) {
                             return Some(Key::Function(n));
                         }
                     }
@@ -240,7 +245,7 @@ pub fn parse_key_chord(text: &str) -> Result<Vec<Key>, String> {
         }
         let key = parse_key_token(token).ok_or_else(|| {
             "key chord contains an unknown key name \
-             (tokens must be modifiers, key names, or f1..f12)"
+             (tokens must be modifiers, key names, or f1..f20)"
                 .to_string()
         })?;
         keys.push(key);
@@ -590,7 +595,11 @@ mod tests {
         assert!(parse_key_chord("ctrl+").is_err());
         assert!(parse_key_chord("+s").is_err());
         assert!(parse_key_chord("ctrl+nosuchkey").is_err());
-        assert!(parse_key_chord("f13").is_err());
+        // The parser accepts f1..f20 (X11 maps F13-F20); per-platform map_key
+        // is the fail-closed gate above that. Pin the parser boundary here.
+        assert!(parse_key_chord("f13").is_ok());
+        assert!(parse_key_chord("f20").is_ok());
+        assert!(parse_key_chord("f21").is_err());
         assert!(parse_key_chord("f0").is_err());
         // Modifiers alone do not constitute a key press.
         assert!(parse_key_chord("ctrl+shift").is_err());

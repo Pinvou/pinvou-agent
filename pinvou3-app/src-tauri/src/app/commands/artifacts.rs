@@ -17,6 +17,10 @@ pub(crate) struct ArtifactInfo {
     pub modified: i64,
 }
 
+// read_artifact_text 的硬上限与 review 召唤喂料共享：常量提升到
+// features::files（commands 依赖 features 合法，反向被 architecture guard 禁止）。
+use crate::features::files::MAX_ARTIFACT_TEXT_BYTES;
+
 /// 读 artifact 文件的纯文本（md/json/txt 等）。文件不存在或不是文本 → 报错。
 /// 路径须为绝对路径且不触及凭据/系统敏感黑名单（validate_user_path，防逃逸）。
 #[tauri::command]
@@ -26,10 +30,38 @@ pub async fn read_artifact_text(path: String) -> Result<String, String> {
 
 pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     let p = validate_user_path(path)?;
+    // Metadata 预检先于整读：读一个超限文件进内存是纯浪费（镜像图片通道的
+    // 同型检查；metadata 读取失败按 0 处理，落到读路径的常规 IO 错误）。
+    if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > MAX_ARTIFACT_TEXT_BYTES {
+        return Err(format!(
+            "文本产物过大(>{} MiB)，请用外部打开: {}",
+            MAX_ARTIFACT_TEXT_BYTES / (1024 * 1024),
+            p.display()
+        ));
+    }
     let _lifecycle = artifact_lifecycle_lock().lock();
     recover_interrupted_artifact_write(&p)
         .map_err(|e| format!("recover_artifact_text({}): {e}", p.display()))?;
-    std::fs::read_to_string(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
+    // 读本身也有界（Take 限长 = 上限 + 1）：metadata 预检与读取之间存在
+    // TOCTOU 窗口（生命周期锁恢复或并发写可能让文件在预检后长大），读侧
+    // 超限按同样的「过大」错误报出，绝不整读超限文件进内存。
+    let file =
+        std::fs::File::open(&p).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))?;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        file.take(MAX_ARTIFACT_TEXT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("read_artifact_text({}): {e}", p.display()))?;
+    }
+    if bytes.len() as u64 > MAX_ARTIFACT_TEXT_BYTES {
+        return Err(format!(
+            "文本产物过大(>{} MiB)，请用外部打开: {}",
+            MAX_ARTIFACT_TEXT_BYTES / (1024 * 1024),
+            p.display()
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| format!("read_artifact_text({}): {e}", p.display()))
 }
 
 pub(super) const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
@@ -360,13 +392,24 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     }
     // Check the size before reading the whole file: reading an oversized
     // file into memory is pure waste, so reject up front with the same
-    // error shape as the post-read check below (which still guards the
-    // edge case of the file growing between the two checks).
-    if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > 25_000_000 {
+    // error shape as the post-read check below. The read itself is
+    // Take-bounded (cap + 1) like `read_artifact_text_impl` and the visual
+    // preview lane, so a file grown between the precheck and the read can
+    // no longer balloon memory either (r5 review).
+    const MAX_ARTIFACT_IMAGE_BYTES: u64 = 25_000_000;
+    if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > MAX_ARTIFACT_IMAGE_BYTES {
         return Err("图片过大(>25MB),请用外部打开".into());
     }
-    let bytes = std::fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
-    if bytes.len() > 25_000_000 {
+    let bytes = {
+        use std::io::Read;
+        let file = std::fs::File::open(&p).map_err(|e| format!("读取失败: {e}"))?;
+        let mut buf = Vec::new();
+        file.take(MAX_ARTIFACT_IMAGE_BYTES + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("读取失败: {e}"))?;
+        buf
+    };
+    if bytes.len() as u64 > MAX_ARTIFACT_IMAGE_BYTES {
         return Err("图片过大(>25MB),请用外部打开".into());
     }
     let ext = p

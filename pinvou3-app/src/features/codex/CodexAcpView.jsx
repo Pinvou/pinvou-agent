@@ -2541,8 +2541,17 @@ export function CodexAcpView({
           }
         }
       }, (readError) => {
-        // The former inline FileReader had no onerror handler: read failures stay silent, diagnostic log only.
-        console.error('Codex paste image read failed:', readError);
+        // Oversized pastes are rejected by the shared reader's size pre-check with the
+        // device_upload_too_large code before any byte is read — surface the shared
+        // localized limit copy instead of dropping them. Plain read failures keep the
+        // former behavior: diagnostic log only.
+        const limitError = formatAttachmentLimitError(readError, t.uiAttachments);
+        if (limitError) {
+          console.error('Codex paste image rejected:', readError);
+          setError(limitError);
+        } else {
+          console.error('Codex paste image read failed:', readError);
+        }
       });
     });
   }

@@ -267,15 +267,6 @@ fn parses_every_plugins_subcommand() {
         ],
         vec!["pinvou", "plugins", "tools", "auth", "qcc"],
         vec!["pinvou", "plugins", "tools", "oauth-login", "qcc"],
-        vec![
-            "pinvou",
-            "plugins",
-            "tools",
-            "oauth-login",
-            "qcc",
-            "--timeout",
-            "30",
-        ],
         vec!["pinvou", "plugins", "tools", "oauth-cancel", "qcc"],
         vec!["pinvou", "plugins", "skills", "list"],
         vec!["pinvou", "plugins", "skills", "list", "--installed-only"],
@@ -398,6 +389,9 @@ fn plugins_usage_errors_exit_two() {
         "--secret",
         "api_key=9LEADING_DIGIT",
     ]);
+    // `oauth-login` accepts no options at all: the flag is not accepted
+    // (for any value) instead of being validated and discarded, because the
+    // command itself always refuses headless.
     assert!(
         usage_error(&[
             "pinvou",
@@ -406,21 +400,9 @@ fn plugins_usage_errors_exit_two() {
             "oauth-login",
             "q",
             "--timeout",
-            "0"
+            "30"
         ])
-        .contains("positive integer")
-    );
-    assert!(
-        usage_error(&[
-            "pinvou",
-            "plugins",
-            "tools",
-            "oauth-login",
-            "q",
-            "--timeout",
-            "abc"
-        ])
-        .contains("positive integer")
+        .contains("accepts no options")
     );
     assert!(
         usage_error(&["pinvou", "plugins", "tools", "auth", "q", "--full"])
@@ -1211,16 +1193,7 @@ fn oauth_login_guards_and_cancel_behaviour() {
     // foundation crate the CLI does not link — deterministic, documented
     // exit-1 instead of a half-working reimplementation.
     run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
-    let message = expect_failed(&[
-        "pinvou",
-        "plugins",
-        "tools",
-        "oauth-login",
-        "qcc",
-        "--timeout",
-        "5",
-    ])
-    .to_string();
+    let message = expect_failed(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]).to_string();
     assert!(
         message.contains("oauth_login_unavailable_in_cli"),
         "message: {message}"

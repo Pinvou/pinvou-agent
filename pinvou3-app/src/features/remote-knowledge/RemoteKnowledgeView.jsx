@@ -1395,7 +1395,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
       serverId,
       collectionIds: [collectionId],
       query: query.trim(),
-      limit: 8,
+      limit: 24,
     }));
     if (next
       && requestId === searchRequestRef.current

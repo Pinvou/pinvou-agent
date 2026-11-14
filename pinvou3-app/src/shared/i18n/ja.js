@@ -211,7 +211,7 @@ const jaBase = {
           
          
         kbSearchPlaceholder: '例：先週のpdf、10mb以上の動画', 
-         kbNoResults: '一致するファイルがありません', kbScanningHint: 'インデックス作成中…スキャン済み',
+         kbNoResults: '一致するファイルがありません', kbScanningHint: 'インデックス作成中…スキャン済み', kbFilesShowingFirst: n => `先頭の ${n} 件のみ表示`, kbLoadMore: 'さらに読み込む',
         kbEmptyHint: 'まだインデックスがありません。このPCをスキャンすると全ファイルを高速検索し重複を検出できます。',
          
           
@@ -253,8 +253,11 @@ const jaBase = {
         kbStReady: '準備完了', kbStIndexing: '解析中', kbStPending: '保留',
         kbImportInterrupted: '未完了のインポートがあります', kbImportInterruptedHint: '前回までの進捗は保存されています。未完了のファイルまたはブロックから再開できます。', kbResumeImport: 'インポートを再開', kbCancelImport: 'タスクをキャンセル',
         kbImportProgress: 'ファイル進捗', kbCurrentFile: '現在のファイル：', kbChunkProgress: 'ブロック進捗', kbFailedFiles: '失敗したファイル', kbRetryFile: '再試行', kbImportErrors: '失敗', kbImportDoneWithErrors: '一部のファイルでインポート失敗',
+        kbImportDoneSkipped: 'インポート完了——一部のファイルがインデックス規則で除外されました', kbSkippedByExcluder: (n) => `${n} 件のファイルがインデックス規則で除外されました（未対応の形式、除外フォルダーは探索しません）`,
         kbResumeImportFailed: 'インポートの再開に失敗しました', kbCancelImportFailed: 'インポートのキャンセルに失敗しました', kbRetryImportFailed: 'ファイルの再試行に失敗しました',
         kbLoadMoreFailedFiles: '失敗したファイルをさらに読み込む', kbLoadingFailedFiles: '読み込み中…', kbLoadFailedFilesFailed: '失敗したファイルの読み込みに失敗しました',
+        kbDocsShowingFirst: n => `先頭の ${n} 件のみ表示`,
+        kbLoadMoreDocs: '文書をさらに読み込む',
         kbDeleteColl: 'コレクション削除', kbRemove: '削除', kbCollEmpty: '文書がありません。「ファイル追加」で追加。', kbNoCollFiles: 'ナレッジにファイルがありません', kbAllColls: 'すべて', kbDelCollConfirm: 'コレクション「{n}」を削除しますか？', kbDelCollWarn: 'このコレクションの索引（{c} 件の文書）のみ削除します。ディスク上の元ファイルは削除されません。', kbDelete: '削除', kbRemoveDocConfirm: 'ナレッジから「{n}」を削除しますか？', kbRemoveDocWarn: 'ナレッジ内の索引のみ削除します。ディスク上の元ファイルは影響を受けません。', kbRemoveFailed: '文書を削除できませんでした', 
                   kbCollNamePh: 'コレクション名', kbCollCatPh: 'カテゴリ（任意）', kbCancel: 'キャンセル', kbCreate: '作成',
         sysStatus: 'システム状態',  gpu: 'GPU', gpuUnavail: '状態を取得できません', 
@@ -431,7 +434,7 @@ const jaBase = {
           quoteDuplicate:'この内容はすでに引用リストにあります。重複して追加されません',
         },
         uiHomeMode: { work:'作業', code:'コード', providerSettings:'プロバイダー設定' },
-        uiAttachments: { parsing:'解析中', failed:'失敗', remove:name=>`添付ファイル ${name} を削除`, dropRelease:'ドロップして添付', dropWebTitle:'あらゆる内容を追加', dropWebHint:'ファイルをここにドロップして会話に追加できます', fileTooLarge:'ファイルが添付上限の 20 MB を超えているため追加できません', archiveTooManyEntries:'圧縮ファイルに 50 件を超える項目が含まれているため追加できません', archiveExpandedTooLarge:'展開後のサイズが 100 MB を超えるため追加できません', archiveUnsafeEntry:'圧縮ファイルに安全でないリンクまたはパスが含まれているため追加できません' },
+        uiAttachments: { parsing:'解析中', failed:'失敗', remove:name=>`添付ファイル ${name} を削除`, dropRelease:'ドロップして添付', dropWebTitle:'あらゆる内容を追加', dropWebHint:'ファイルをここにドロップして会話に追加できます', fileTooLarge:'ファイルが添付上限の 20 MB を超えているため追加できません', archiveTooManyEntries:'圧縮ファイルに 200 件を超える項目が含まれているため追加できません', archiveExpandedTooLarge:'展開後のサイズが 100 MB を超えるため追加できません', archiveUnsafeEntry:'圧縮ファイルに安全でないリンクまたはパスが含まれているため追加できません' },
         uiCodex: codexJa,
         uiAcpProviders: acpProvidersJa,
         uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveToUngrouped:'未分類へ移動', alreadyUngrouped:'未分類です', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', moveConfirmTitle:'このプロジェクトへ会話を移動しますか？', moveConfirmBody:(project, folder)=>`会話は「${project}」に移動します。フォルダー ${folder} はプロジェクトに追加されず、会話のみが整理されます。`, moveConfirm:'移動', searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', movedNoticeWithFolder:folder=>`会話を移動し、フォルダー ${folder} をプロジェクトに追加しました（この会話のアクセス範囲は変わりません）`, noMatchProject:'一致するプロジェクトがありません', opFailed:'プロジェクト操作に失敗しました' , manageFolders:'フォルダーを管理', newSessionHere:'新しい会話', rebindTitle:'プロジェクトフォルダーを再バインド', rebindConfirm:'移動して再バインド', rebindSessionsHint:()=>'このフォルダー配下のすべての会話が新しいディレクトリに切り替わります', rebindSuccess:n=>`${n} 件の会話を再バインドしました`, rebindUpToDate:'再バインドが必要な会話はありませんでした', rebindOldExistsWarn:'元のフォルダーがまだ存在します。切り替えると 2 か所が別々のディレクトリを指します。続行しますか？', rebindPartial:(ok, failed)=>`${ok} 件を再バインドし、${failed} 件が失敗しました。残りは再試行できます`, rebindBusyAfter:n=>`${n} 件の会話が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください`  , rebindCarryoverPending:n=>`${n} 件の会話は移行されましたが、ランタイムをまだ切り替えられていません。アイドル後に再試行してください`, rebindRetryRemaining:'残りを再試行', rebindFailedSessions:'失敗した会話', rebindInProgress:'別のフォルダー再バインドが実行中です' , rebindBusyHint:'これらのセッションはターン実行中です。アイドルになってから再試行してください', rebindToRoot:'ファイルシステムのルートは指定できません。通常のフォルダーを選択してください', rebindToNested:'新しいフォルダーと元のフォルダーは相互に入れ子にできません', rebindToUnusable:'選択したフォルダーは使用できません。別のフォルダーを選択してください', rebindRootsConflict:'そのフォルダーはプロジェクト自身のフォルダーと入れ子になります。既存フォルダーの外側を選択してください' , rebindRootsPersist:'再バインド結果をディスクに保存できませんでした。空き容量と権限を確認して再試行してください' , rebindRuntimeStarting:'エージェントのプロセスが起動中のため、セッションの状態を確認できませんでした。しばらくしてから再試行してください' , rebindLegacyTableUnsynced:'何も移動されていません：セッション記録の同期に失敗しました。フォルダーを書き込み可能にしてから再試行してください' , rebindLegacyTableCorrupt:'何も移動されていません：従来のセッションテーブルが壊れています。修復または削除してから再試行してください', rebindRootsExpand:'すべての失効フォルダーを表示', rebindRootsCollapse:'最初の失効フォルダーのみ表示' },
@@ -815,6 +818,7 @@ cancel: 'キャンセル', chooseThisFolder: 'このフォルダーを選択', c
 currentFolder: path => `現在のフォルダー：${path}`, selectedCount: n => `${n} 件選択中`,
 thisComputer: 'この PC', home: 'ホーム', emptyFolder: 'このフォルダーに選択できる項目はありません',
 loadFailed: err => `読み込みに失敗しました：${err}`, workspaceNotAuthorized: '先にデスクトップでローカルフォルダーへの遠隔アクセスを許可してください', alreadyOpen: 'ファイル選択ダイアログはすでに開いています',
+listingTruncated: 'フォルダーが大きすぎるため、一部の項目のみ表示しています',
   },
   webClientErrors: {
 stateNotReady: '遠隔操作の状態が未準備のため、デスクトップのイベントを処理できません',
@@ -1052,7 +1056,6 @@ dictJa.uiSessionWorkspace = {
 
 dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み込みに失敗しました。再試行してください。';
 
-dictJa.uiSettingsDetail.memorySaveFailed = 'メモリプロフィールの保存に失敗しました。再試行してください。';
 
 dictJa.uiSettingsDetail.memoryDeleteFailed = 'メモリの削除に失敗しました。再試行してください。';
 

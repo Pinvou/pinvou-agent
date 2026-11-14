@@ -4369,6 +4369,25 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+    def test_release_working_directories_resolve_to_real_paths(self):
+        # Round-37 shipped a `pinvoy3-app/...` filter entry (dead), and the
+        # r6 fixwave shipped `working-directory: pinvoy3-app` in all five
+        # release build jobs at once — GitHub fails a step whose
+        # working-directory does not exist and none of those steps is
+        # continue-on-error, so every release leg died at 安装前端依赖
+        # before producing artifacts. Top-level segments of the build-time
+        # paths (…/target/release/bundle/…) cannot be checked deeper than
+        # the checkout, so the pin asserts the first path segment of every
+        # working-directory exists in the repository — exactly the
+        # granularity this typo class has bitten at, twice.
+        for raw in re.findall(r"working-directory:[ \t]*([^\n#]+)", self.release_workflow):
+            path = raw.strip().strip("\"'")
+            first = path.split("/")[0]
+            self.assertTrue(
+                bool(first) and (ROOT / first).exists(),
+                f"release working-directory names a path that does not exist: {path!r}",
+            )
+
     def test_release_linux_build_jobs_prepare_disk_and_prune_apt(self):
         # Release build jobs (single-disk hosted runner; with the old 16G
         # /mnt swapfile in place x64 builds had only ~13-14G free) must clean
@@ -4735,6 +4754,42 @@ exit 0
         calls = self._configure_calls()
         self.assertEqual(len(calls), 1, calls)
         self.assertIn("dpkg admin state repaired (configure attempt 1)", proc.stdout)
+
+
+class NpmCiBoundsPolicyTests(unittest.TestCase):
+    """Every npm ci lane in CI and the journey script carries a per-leg timeout bound.
+
+    The r4 wave bounded the journey and frontend-test lanes and the r6 wave
+    closed the last two stragglers (relay-test, release-contract-test); a
+    lane regressing to a bare `npm ci` re-opens the exact wedged-registry
+    hang this policy exists for ("fails the leg, not the job window").
+    """
+
+    BOUNDED_FILES = (
+        ROOT / ".github/workflows/pr-check.yml",
+        ROOT / ".github/workflows/release-packages.yml",
+        ROOT / "scripts/run-user-journey-tests.sh",
+    )
+
+    def test_every_npm_ci_lane_is_timeout_bounded(self):
+        # `run:` blocks carry the bound inline on the invocation line; the
+        # journey script carries it via run_with_timeout on the same line.
+        # Comment lines are skipped so prose mentioning npm ci cannot
+        # satisfy (or trip) the pin. The --prefix form is matched by the
+        # same regex — an earlier draft keyed on the literal substring
+        # "npm ci", which `npm --prefix X ci` does not contain, and the
+        # mutation probe against a stripped prefix lane stayed green.
+        for path in self.BOUNDED_FILES:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if re.search(r"\bnpm( --prefix \S+)? ci\b", stripped):
+                    self.assertIn(
+                        "timeout",
+                        stripped,
+                        f"{path.name}: npm ci lane without a timeout bound: {stripped!r}",
+                    )
 
 
 if __name__ == "__main__":

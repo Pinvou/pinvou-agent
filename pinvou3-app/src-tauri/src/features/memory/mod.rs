@@ -55,8 +55,9 @@ pub use self::io::{
     list_preferences_with_cleanup, load_current_focus, load_never_memory, load_pending_memory,
     load_profile, load_recent_activity, load_recent_work, load_work_context,
     load_work_context_with_cleanup, memory_enabled, never_pending_memory,
-    record_turn_tool_complete, record_turn_tool_start, record_turn_user, take_turn_capture,
-    update_preference, update_profile, update_timed_memory, update_work_context,
+    record_turn_tool_complete, record_turn_tool_start, record_turn_user,
+    stored_wipe_shaped_identity_labels, take_turn_capture, update_preference, update_profile,
+    update_timed_memory, update_work_context,
 };
 
 // ---- cross-process organize busy marker (io) ----

@@ -76,6 +76,17 @@ pub struct ImportJobState {
     /// wedged-thread signal.
     #[serde(default)]
     pub updated_at: Option<i64>,
+    /// Files the explicit-import walk enumerated and the exclusion rules
+    /// rejected directly (round-51 limits audit disclosure). The allowlist
+    /// (`Excluder::default`) prunes silently by design, which left an import
+    /// over a non-whitelisted root (e.g. a source tree) staging zero files
+    /// with only the survivor count visible — this count makes the pruning
+    /// visible in the job state/result. A lower bound by construction: a
+    /// pruned DIRECTORY cuts its whole subtree before enumeration, so files
+    /// under it are neither walked nor counted. `0` on jobs walked before
+    /// the column existed (pre-v5 stores).
+    #[serde(default)]
+    pub skipped_by_excluder: u64,
     pub failed_files: Vec<FailedImportFile>,
 }
 
@@ -185,6 +196,24 @@ impl ImportJobStore {
             }
         }
         tx.commit()
+    }
+
+    /// Persist the explicit-import walk's excluded-file count (round-51
+    /// limits audit disclosure): the allowlist prunes silently by design,
+    /// and this count is what makes a fully-pruned root legible in the job
+    /// state/result instead of only the survivor count. The v5 column exists
+    /// on every store after `Store::open`'s migration, so a failure here is
+    /// a real store fault and the caller routes it through the same
+    /// infrastructure-error path as `prepare_items`.
+    pub fn set_skipped_by_excluder(&self, job_id: &str, skipped: u64) -> rusqlite::Result<()> {
+        // SQLite has no unsigned 64-bit type; clamp instead of wrapping a
+        // huge count negative.
+        let skipped = i64::try_from(skipped).unwrap_or(i64::MAX);
+        self.conn.lock().execute(
+            "UPDATE knowledge_import_jobs SET skipped_by_excluder=?2 WHERE id=?1",
+            params![job_id, skipped],
+        )?;
+        Ok(())
     }
 
     pub fn item_count(&self, job_id: &str) -> rusqlite::Result<i64> {
@@ -589,6 +618,11 @@ impl ImportJobStore {
         let (current_path, current_chunks_done, current_chunks_total) = current
             .map(|(path, done, total)| (Some(path), done as u64, total as u64))
             .unwrap_or((None, 0, 0));
+        let skipped_by_excluder: i64 = c.query_row(
+            "SELECT COALESCE(skipped_by_excluder,0) FROM knowledge_import_jobs WHERE id=?1",
+            params![id],
+            |r| r.get(0),
+        )?;
         Ok(Some(ImportJobState {
             job_id: Some(id),
             running: matches!(phase.as_str(), "preparing" | "running"),
@@ -602,6 +636,7 @@ impl ImportJobStore {
             current_chunks_done,
             current_chunks_total,
             updated_at,
+            skipped_by_excluder: skipped_by_excluder.max(0) as u64,
             failed_files,
         }))
     }
@@ -1061,5 +1096,28 @@ mod tests {
         assert!(kept.contains(&plain_spelled) && kept.contains(&verbatim_file));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Round-51 limits audit disclosure pin: the walk's excluded-file count
+    /// persists on the job row and surfaces in `read_state`'s `ImportJobState`,
+    /// so a root the allowlist prunes to nothing no longer reports only the
+    /// survivor count. A job that never reached the walk reads `0`.
+    #[test]
+    fn skipped_by_excluder_persists_and_surfaces_in_the_job_state() {
+        let (jobs, _l1, collection_id) = setup();
+        let roots = vec![PathBuf::from("/tmp")];
+        let job_id = jobs.create(collection_id, &roots).unwrap();
+
+        // Before any walk ran, the disclosure reads 0 — not an error.
+        assert_eq!(jobs.state(&job_id).unwrap().skipped_by_excluder, 0);
+
+        jobs.set_skipped_by_excluder(&job_id, 4321).unwrap();
+        assert_eq!(jobs.state(&job_id).unwrap().skipped_by_excluder, 4321);
+
+        // Terminal transitions must not drop the disclosure column.
+        jobs.cancel(&job_id).unwrap();
+        let cancelled = jobs.state(&job_id).unwrap();
+        assert!(cancelled.cancelled);
+        assert_eq!(cancelled.skipped_by_excluder, 4321);
     }
 }

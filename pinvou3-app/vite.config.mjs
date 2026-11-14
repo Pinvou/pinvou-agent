@@ -556,7 +556,17 @@ function enforceLazyChunks() {
 // ceiling already sits the next thousand step above the unchanged web
 // entry and stays 128_000. This cap does not promise headroom for
 // unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 486_000;
+//
+// 486_000 → 489_000 desktop only (limits-audit batch, measured per policy):
+// honest-limit UX joins the entry — rewind dialog renders every reverted
+// file row, knowledge file/document lists gain load-more pagination and
+// showing-first notices, pasted-image reads gain the device-upload size
+// pre-check with surfaced limit errors (codex/chat lanes), and the design
+// inspector seeds from full element text. Measured 485,800 → 488,766 B
+// desktop; web entry unchanged at 127,596 B (web ceiling stays 128_000).
+// The desktop ceiling takes the next thousand step, leaving 234 B headroom
+// at the local node measurement.
+export const MAIN_ENTRY_BUDGET_BYTES = 489_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {

@@ -23,18 +23,23 @@ pub fn reveal_target(target: &Path) -> Result<(), String> {
     if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
         if let Ok(url) = tauri::Url::from_directory_path(&target) {
             let items = format!("array:string:{url}");
-            if Command::new("dbus-send")
-                .args([
-                    "--session",
-                    "--dest=org.freedesktop.FileManager1",
-                    "--type=method_call",
-                    "/org/freedesktop/FileManager1",
-                    "org.freedesktop.FileManager1.ShowItems",
-                    &items,
-                    "string:",
-                ])
-                .output()
-                .is_ok_and(|output| output.status.success())
+            let mut dbus_cmd = Command::new("dbus-send");
+            dbus_cmd.args([
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                &items,
+                "string:",
+            ]);
+            // 与下方 command_exists 的 10s 探测同一纪律：卡死的 dbus-daemon
+            // 不得无限阻塞命令线程；超时/失败都回退到 xdg-open 打开父目录。
+            if crate::platform::process::output_with_timeout(
+                dbus_cmd,
+                std::time::Duration::from_secs(5),
+            )
+            .is_ok_and(|output| output.status.success())
             {
                 return Ok(());
             }

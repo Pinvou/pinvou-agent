@@ -15,13 +15,15 @@
 //!   the divergence note in `features::voice::contract`), with the same
 //!   expected byte size, and the same `PINVOU3_ASR_CMD` / `PINVOU3_DEEPSPEECH2_CMD` /
 //!   `PADDLESPEECH_BIN` external-CLI fallback chain with the same `asr
-//!   --model --lang --input` protocol, 60 s default timeout and exit-code-6
+//!   --model --lang --input` protocol, 300 s default timeout and exit-code-6
 //!   "no speech" convention.
-//! - the NATIVE engine lane's wait budget is GUI parity by default: 300 s,
-//!   mirroring the app's `features::voice::voice_asr::transcribe` ("long
-//!   recordings can take minutes", voice_asr.rs), while the external-CLI
-//!   protocol lane keeps the 60 s default of the app's `run_local_asr_cli`;
-//!   both lanes honor the same `PINVOU3_ASR_TIMEOUT_SECS` /
+//! - both engine lanes' wait budgets default to 300 s ("long recordings can
+//!   take minutes", voice_asr.rs): the native lane mirrors the app's
+//!   `features::voice::voice_asr::transcribe` GUI parity, and the external-CLI
+//!   protocol lane — which the app's `run_local_asr_cli` still scopes at
+//!   60 s — is deliberately raised to the same 300 s here so a legitimate
+//!   long-recording transcription cannot die as a spurious `asr_timeout`
+//!   on either lane; both honor the same `PINVOU3_ASR_TIMEOUT_SECS` /
 //!   `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS` override (round-50 review: the
 //!   native lane previously borrowed the external lane's 60 s default
 //!   without disclosure).
@@ -98,8 +100,9 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::voice::contract::{
     asr_dir, asr_download_max_bytes, current_model_spec, engine_binary_name,
     kimi_supports_disabled_thinking, sanitize_voice_postprocess_output,
-    truncate_voice_postprocess_input, voice_postprocess_max_tokens, voice_postprocess_prompt,
-    voice_postprocess_retry_prompt, voice_postprocess_timeout, voice_postprocess_user_content,
+    truncate_voice_postprocess_input, voice_postprocess_input_clipped,
+    voice_postprocess_max_tokens, voice_postprocess_prompt, voice_postprocess_retry_prompt,
+    voice_postprocess_timeout, voice_postprocess_user_content,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1604,12 +1607,16 @@ fn asr_timeout_env_override_secs() -> Option<u64> {
         .filter(|secs| *secs > 0)
 }
 
-/// External-CLI protocol lane's wait budget: the module header scopes this
-/// lane as a mirror of the app's `run_local_asr_cli`, whose
-/// `local_asr_timeout` (`app/commands/voice.rs`) defaults to 60 s under the
-/// same env override.
+/// External-CLI protocol lane's wait budget. The module header scopes this
+/// lane as a mirror of the app's `run_local_asr_cli` (60 s under the same
+/// env override), but a wedged 60 s cut turns a legitimate long-recording
+/// transcription into a spurious `asr_timeout` — the same failure the
+/// native lane's round-50 raise fixed — so this lane aligns with the native
+/// engine budget instead. The env override still wins.
+const EXTERNAL_CLI_TIMEOUT_SECS: u64 = NATIVE_ENGINE_TIMEOUT_SECS;
+
 fn asr_timeout_secs() -> u64 {
-    asr_timeout_env_override_secs().unwrap_or(60)
+    asr_timeout_env_override_secs().unwrap_or(EXTERNAL_CLI_TIMEOUT_SECS)
 }
 
 /// Native engine lane's wait budget, GUI parity: the app's native lane
@@ -2002,9 +2009,15 @@ fn postprocess(
         CliError::usage("voice postprocess requires exactly one of --text or --text-file")
     })?;
     // Same input hygiene as the ASR text: regular files only, 64 KiB cap,
-    // then the app's 4000-character model-input truncation
-    // (`truncate_voice_postprocess_input` is applied to the draft there too).
+    // then the app's `VOICE_POSTPROCESS_MAX_INPUT_CHARS` model-input
+    // truncation (`truncate_voice_postprocess_input` is applied to the draft
+    // there too).
     let draft_input = read_source(draft, draft_file, "draft")?;
+    // Clip detection on the UNtruncated draft, taken before `draft_text`
+    // consumes the raw string below.
+    let draft_clipped = draft_input
+        .as_deref()
+        .is_some_and(|draft| voice_postprocess_input_clipped(draft.trim()));
     let draft_text = draft_input
         .map(|draft| truncate_voice_postprocess_input(draft.trim()))
         .filter(|draft| !draft.is_empty());
@@ -2019,25 +2032,34 @@ fn postprocess(
         ));
     }
     let raw_text = truncate_voice_postprocess_input(raw_input.trim());
+    // GUI parity (`app/commands/voice.rs`): detect clipping on the UNtruncated
+    // strings and OR it into the reported `truncated` flag — a rewrite
+    // computed from a clipped prefix must never print `Truncated: false`. The
+    // draft is the rewrite target only in edit mode; outside edit mode it is
+    // reference context, so its clipping must not flag the result.
+    let input_clipped = voice_postprocess_input_clipped(raw_input.trim())
+        || (matches!(mode, PostprocessMode::Edit) && draft_clipped);
     if raw_text.is_empty() {
         // Mirror of the GUI early return: pure-noise input short-circuits to
-        // an empty result without touching the model.
+        // an empty result without touching the model. `truncated` still
+        // carries input clipping (edit mode can clip a non-empty draft).
         let value = serde_json::json!({
             "text": "",
             "mode": mode.as_str(),
             "source": "empty",
-            "truncated": false,
+            "truncated": input_clipped,
             "omitted_stages": POSTPROCESS_OMITTED_STAGES,
         });
         // The empty short-circuit discloses the omitted GUI stages exactly
         // like the model path does: same JSON field, same line set (the
-        // `Truncated: false` line keeps the human schema branch-independent,
+        // `Truncated:` line keeps the human schema branch-independent,
         // mirroring the model path below), same trailing Note line.
         return Ok(success(render(
             output,
             format!(
-                "Mode: {}\nSource: empty\nTruncated: false\nText:\n{}",
+                "Mode: {}\nSource: empty\nTruncated: {}\nText:\n{}",
                 mode.as_str(),
+                input_clipped,
                 POSTPROCESS_NOTE
             ),
             &value,
@@ -2138,17 +2160,20 @@ fn postprocess(
         async move { work.await.map_err(std::convert::Into::into) }
     })
     .map_err(|error| CliError::failed(format!("voice postprocess failed: {error:#}")))?;
+    // Input clipping ORs into the reported flag (see above): the model output
+    // itself may be complete, but it was computed from a clipped prefix.
+    let truncated = host_result.truncated || input_clipped;
     let value = serde_json::json!({
         "text": host_result.text,
         "mode": mode_str,
         "source": "llm",
-        "truncated": host_result.truncated,
+        "truncated": truncated,
         "omitted_stages": POSTPROCESS_OMITTED_STAGES,
     });
     let human = format!(
         "Mode: {}\nSource: llm\nTruncated: {}\nText: {}\n{}",
         mode_str,
-        host_result.truncated,
+        truncated,
         // The text is model output parsing an untrusted document: the same
         // ESC/bidi block sanitizer as the transcribe lane applies (JSON mode
         // keeps the verbatim bytes via serde).
@@ -2960,8 +2985,8 @@ content-length: {}\r\n\r\n{}",
     /// (`voice_asr.rs`, "long recordings can take minutes") — borrowing
     /// the external-CLI lane's 60 s default cut legitimate long-recording
     /// transcriptions into spurious `asr_engine_error` timeouts, undisclosed.
-    /// The external-CLI lane keeps its own 60 s default, and the env override
-    /// (`PINVOU3_ASR_TIMEOUT_SECS`, falling back to
+    /// The external-CLI lane aligns with the same 300 s default, and the env
+    /// override (`PINVOU3_ASR_TIMEOUT_SECS`, falling back to
     /// `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS`) wins over either lane's default,
     /// with invalid values falling through.
     #[test]
@@ -2980,8 +3005,8 @@ content-length: {}\r\n\r\n{}",
             );
             assert_eq!(
                 asr_timeout_secs(),
-                60,
-                "the external-CLI lane keeps its scoped 60 s default"
+                300,
+                "the external-CLI lane aligns with the native 300 s default"
             );
         }
         {
@@ -3018,7 +3043,7 @@ content-length: {}\r\n\r\n{}",
                 300,
                 "an invalid override must fall through to the lane default"
             );
-            assert_eq!(asr_timeout_secs(), 60);
+            assert_eq!(asr_timeout_secs(), 300);
         }
     }
 

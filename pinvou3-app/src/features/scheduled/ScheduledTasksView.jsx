@@ -499,7 +499,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
       useEffect(() => {
         if (!bridge || !bridge.scheduled.refreshScheduledTaskData) return;
-        const refresh = () => bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
+        const refresh = () => bridge.scheduled.refreshScheduledTaskData(100).catch(() => {});
         refresh();
         const timer = setInterval(() => {
           refresh();
@@ -745,7 +745,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         setCreateScheduleRepeatIntent(null);
         if (!(await flushBeforeAction())) return;
         if (bridge && bridge.scheduled.selectScheduledTask) bridge.scheduled.selectScheduledTask(id);
-        if (id && bridge && bridge.scheduled.refreshScheduledTaskData) bridge.scheduled.refreshScheduledTaskData(20).catch(() => {});
+        if (id && bridge && bridge.scheduled.refreshScheduledTaskData) bridge.scheduled.refreshScheduledTaskData(100).catch(() => {});
       }
 
       async function startTemplate(template) {

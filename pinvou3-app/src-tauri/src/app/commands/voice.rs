@@ -1,8 +1,9 @@
 use super::prelude::*;
 use crate::features::voice::contract::{
     normalize_voice_postprocess_mode, sanitize_voice_postprocess_output,
-    truncate_voice_postprocess_input, voice_postprocess_max_tokens, voice_postprocess_prompt,
-    voice_postprocess_retry_prompt, voice_postprocess_timeout, voice_postprocess_user_content,
+    truncate_voice_postprocess_input, voice_postprocess_input_clipped,
+    voice_postprocess_max_tokens, voice_postprocess_prompt, voice_postprocess_retry_prompt,
+    voice_postprocess_timeout, voice_postprocess_user_content,
 };
 use anyhow::{Context, Result as AnyResult, anyhow};
 use base64::Engine as _;
@@ -45,8 +46,12 @@ pub struct VoicePostprocessResponse {
     pub text: String,
     pub mode: String,
     pub source: String,
-    /// The model output was truncated by max_tokens (finish_reason=length);
-    /// the frontend falls back on this and skips write-back. The serde default
+    /// The model output was truncated by max_tokens (finish_reason=length),
+    /// OR the request input exceeded VOICE_POSTPROCESS_MAX_INPUT_CHARS and was
+    /// clipped before the model saw it — in both cases the result cannot
+    /// faithfully cover the full text; the frontend falls back on this and
+    /// skips write-back (in edit mode a clipped rewrite would otherwise
+    /// destroy the draft tail beyond the cap on confirm). The serde default
     /// keeps older caller constructions compatible.
     #[serde(default)]
     pub truncated: bool,
@@ -821,10 +826,39 @@ pub async fn postprocess_voice_text(
         return Err("voice postprocess busy".to_string());
     }
     let _slot = VoicePostprocessSlot;
-    // Truncate before the model: neither the ASR text nor the input-box draft
-    // should reach the LLM unbounded.
-    let raw_text = truncate_voice_postprocess_input(request.text.trim());
     let mode = normalize_voice_postprocess_mode(&request.mode);
+    // Truncate before the model: neither the ASR text nor the input-box draft
+    // should reach the LLM unbounded. The clip is honest (limits-audit
+    // EA6a-3): detect clipping on the UNtruncated strings first and carry it
+    // into the response's `truncated` flag, so the frontend's
+    // postprocess_truncated fallback (bridge/voice.js) refuses the write-back
+    // instead of silently rewriting from a truncated prefix. Only the edit
+    // lane writes the draft back — outside edit mode the draft is reference
+    // context, so its clipping must not veto a dictation/task result that
+    // lost nothing.
+    let input_clipped = voice_postprocess_input_clipped(request.text.trim())
+        || request
+            .raw_text
+            .as_deref()
+            .map(|text| voice_postprocess_input_clipped(text.trim()))
+            .unwrap_or(false)
+        || (mode == "edit"
+            && request
+                .draft_text
+                .as_deref()
+                .map(|text| voice_postprocess_input_clipped(text.trim()))
+                .unwrap_or(false));
+    if input_clipped {
+        log::warn!(
+            target: "pinvou.voice",
+            "[voice_postprocess] input_clipped mode={} raw_len={} draft_len={} cap={}",
+            mode,
+            request.text.trim().chars().count(),
+            request.draft_text.as_deref().map(|text| text.trim().chars().count()).unwrap_or(0),
+            crate::features::voice::contract::VOICE_POSTPROCESS_MAX_INPUT_CHARS,
+        );
+    }
+    let raw_text = truncate_voice_postprocess_input(request.text.trim());
     let asr_raw_text = request
         .raw_text
         .as_deref()
@@ -848,7 +882,7 @@ pub async fn postprocess_voice_text(
             text: String::new(),
             mode: mode.to_string(),
             source: "empty".to_string(),
-            truncated: false,
+            truncated: input_clipped,
         });
     }
     let bridge = match voice_postprocess_bridge(request.session_id.as_deref(), &pool, &store).await
@@ -1010,6 +1044,9 @@ pub async fn postprocess_voice_text(
         (text, truncated)
     };
     let changed = voice_postprocess_changed(mode, &text, draft_text.as_deref());
+    // Input clipping ORs into the response flag (see above): a rewrite
+    // computed from a clipped prefix must never pass the frontend gate.
+    let truncated = truncated || input_clipped;
     log::info!(
         target: "pinvou.voice",
         "[voice_postprocess] completed mode={} raw_len={} draft_len={} output_len={} changed={} truncated={} elapsed_ms={}",
@@ -1286,5 +1323,32 @@ mod voice_postprocess_tests {
             ),
             crate::core::reasoning_dialect::ReasoningDialect::QwenEnableThinking
         );
+    }
+
+    /// Reproduced data-destruction regression (limits-audit r3 review M4):
+    /// the clip boundary and the detection must share the exact same edge, or
+    /// a rewrite computed from a clipped prefix prints `truncated: false` and
+    /// the frontend lets it destroy the draft tail. 16000 chars = clean
+    /// prefix; 16001 = clipped. CJK text pins char-count (not byte) semantics.
+    #[test]
+    fn voice_postprocess_clip_boundary_is_exact() {
+        use crate::features::voice::contract::VOICE_POSTPROCESS_MAX_INPUT_CHARS;
+        let at_cap = "字".repeat(VOICE_POSTPROCESS_MAX_INPUT_CHARS);
+        let over_cap = format!("{at_cap}一");
+        assert!(
+            !voice_postprocess_input_clipped(&at_cap),
+            "exactly-at-cap input must count as clean"
+        );
+        assert!(voice_postprocess_input_clipped(&over_cap));
+        // The truncation keeps exactly the cap in chars and pairs with the
+        // detection: what survives truncation is never "clipped", what is
+        // dropped always is.
+        let truncated = truncate_voice_postprocess_input(&over_cap);
+        assert_eq!(truncated.chars().count(), VOICE_POSTPROCESS_MAX_INPUT_CHARS);
+        assert_eq!(truncated, at_cap);
+        assert!(!voice_postprocess_input_clipped(&truncated));
+        // The disclosed VALUE is pinned too (the docs and the register row say
+        // 16000): a silent revert to the pre-audit 4000 must turn this red.
+        assert_eq!(VOICE_POSTPROCESS_MAX_INPUT_CHARS, 16000);
     }
 }

@@ -213,7 +213,7 @@ export const dictZh = {
   
  
         kbSearchPlaceholder: '试试：上周的 pdf、大于10mb的视频', 
- kbNoResults: '没有匹配的文件', kbScanningHint: '正在建立索引，已扫描',
+ kbNoResults: '没有匹配的文件', kbScanningHint: '正在建立索引，已扫描', kbFilesShowingFirst: n => `仅显示前 ${n} 个文件`, kbLoadMore: '加载更多',
         kbEmptyHint: '还没建立索引。扫描本机后即可秒搜全盘文件、找出重复。',
  
   
@@ -243,8 +243,11 @@ export const dictZh = {
         kbStReady: '已就绪', kbStIndexing: '解析中', kbStPending: '待索引',
         kbImportInterrupted: '发现未完成的导入任务', kbImportInterruptedHint: '应用上次退出前的进度已保存，可从未完成的文件或分块继续。', kbResumeImport: '继续导入', kbCancelImport: '取消任务',
         kbImportProgress: '文件进度', kbCurrentFile: '当前文件：', kbChunkProgress: '分块进度', kbFailedFiles: '失败文件', kbRetryFile: '重试', kbImportErrors: '失败', kbImportDoneWithErrors: '导入完成，部分文件失败',
+        kbImportDoneSkipped: '导入完成——部分文件被索引规则跳过', kbSkippedByExcluder: (n) => `${n} 个文件被索引规则跳过（不支持的类型；命中排除规则的文件夹不展开）`,
         kbResumeImportFailed: '继续导入失败', kbCancelImportFailed: '取消导入失败', kbRetryImportFailed: '重试文件失败',
         kbLoadMoreFailedFiles: '加载更多失败文件', kbLoadingFailedFiles: '加载中…', kbLoadFailedFilesFailed: '加载失败文件失败',
+        kbDocsShowingFirst: n => `仅显示前 ${n} 个文档`,
+        kbLoadMoreDocs: '加载更多文档',
         kbDeleteColl: '删除知识集', kbRemove: '移除', kbCollEmpty: '还没有文档，点「添加文件」加入。', kbNoCollFiles: '知识库里还没有文件', kbAllColls: '全部', kbDelCollConfirm: '确定删除知识集「{n}」？', kbDelCollWarn: '仅移除该知识集的索引（{c} 个文档的解析数据）；你磁盘上的原文件不会被删除。', kbDelete: '删除', kbRemoveDocConfirm: '从知识库移除「{n}」？', kbRemoveDocWarn: '仅删除该文件在知识库中的索引；磁盘上的原文件不受影响。', kbRemoveFailed: '移除失败', 
           kbCollNamePh: '知识集名称', kbCollCatPh: '分类（可选）', kbCancel: '取消', kbCreate: '创建',
         kbEmbedOn: '语义检索已启用', kbEmbedOff: '语义检索未配置 · 全文模式', kbEmbedUnsupported: '当前平台暂不支持本地向量嵌入模型',
@@ -434,7 +437,7 @@ export const dictZh = {
           quoteDuplicate:'这段内容已在引用列表中，不会重复添加',
         },
         uiHomeMode: { work:'工作', code:'代码', providerSettings:'Provider 配置' },
-        uiAttachments: { parsing:'解析中', failed:'失败', remove:name=>`移除附件 ${name}`, dropRelease:'松开即可添加', dropWebTitle:'添加任意内容', dropWebHint:'将任意文件拖放到此处，以将其添加到对话中', fileTooLarge:'文件超过 20 MB 附件上限，无法添加', archiveTooManyEntries:'压缩包包含超过 50 个条目，无法添加', archiveExpandedTooLarge:'压缩包解压后超过 100 MB，无法添加', archiveUnsafeEntry:'压缩包包含不安全的链接或路径，无法添加' },
+        uiAttachments: { parsing:'解析中', failed:'失败', remove:name=>`移除附件 ${name}`, dropRelease:'松开即可添加', dropWebTitle:'添加任意内容', dropWebHint:'将任意文件拖放到此处，以将其添加到对话中', fileTooLarge:'文件超过 20 MB 附件上限，无法添加', archiveTooManyEntries:'压缩包包含超过 200 个条目，无法添加', archiveExpandedTooLarge:'压缩包解压后超过 100 MB，无法添加', archiveUnsafeEntry:'压缩包包含不安全的链接或路径，无法添加' },
         uiCodex: codexZh,
         uiAcpProviders: acpProvidersZh,
         uiProjects: { convertToProject:'转为项目', projectNamePlaceholder:'项目名称', renameProject:'重命名项目', deleteProject:'删除项目', deleteConfirmLabel:'确认删除项目？', deleteProjectHint:'对话不会被删除，将回到未分组', moveToProject:'移动到项目…', moveToUngrouped:'移到未分组', alreadyUngrouped:'已在未分组', folderUnavailable:'文件夹不可用', rebindFolder:'重新绑定', moveConfirmTitle:'移动对话到此项目？', moveConfirmBody:(project, folder)=>`对话将移入「${project}」。其所在文件夹 ${folder} 不会加入项目，仅该对话归档。`, moveConfirm:'移动', searchPlaceholder:'搜索项目', noProjects:'暂无项目', currentProject:'当前项目', movedNotice:'已移动对话', movedNoticeWithFolder:folder=>`已移动对话；文件夹 ${folder} 已加入项目（本对话的可访问范围不变）`, noMatchProject:'没有匹配的项目', opFailed:'项目操作失败' , manageFolders:'管理文件夹', newSessionHere:'新建会话', rebindTitle:'重新绑定项目文件夹', rebindConfirm:'移动并重绑定', rebindSessionsHint:()=>'该文件夹下的所有会话都会改用新目录', rebindSuccess:n=>`已重新绑定 ${n} 个会话`, rebindUpToDate:'没有需要重绑定的会话', rebindOldExistsWarn:'原文件夹仍存在，切换后两处将指向不同目录，确认继续？', rebindPartial:(ok, failed)=>`已重新绑定 ${ok} 个会话，${failed} 个失败，可对剩余会话重试`, rebindBusyAfter:n=>`${n} 个会话在重绑定期间开始了新回合，如目录表现异常请让其空闲后重试一次`  , rebindCarryoverPending:n=>`${n} 个会话已迁移但其运行时尚未完成切换，请空闲后重试一次`, rebindRetryRemaining:'重试剩余会话', rebindFailedSessions:'失败会话', rebindInProgress:'另一个目录重绑定正在进行中' , rebindBusyHint:'这些会话仍在回合中，等待其空闲后重试', rebindToRoot:'目标不能是文件系统根目录，请改选普通文件夹', rebindToNested:'新目录与旧目录不能相互嵌套', rebindToUnusable:'目标文件夹不可用，请重新选择', rebindRootsConflict:'新目录会使项目自身的文件夹互相嵌套，请选择项目现有文件夹之外的目录' , rebindRootsPersist:'无法把重绑定结果写入磁盘，请检查磁盘空间与权限后重试' , rebindRuntimeStarting:'有智能体进程正在启动，暂时无法检查会话状态，请稍后重试' , rebindLegacyTableUnsynced:'未移动任何内容：会话记录同步失败。请将该目录设为可写后重试' , rebindLegacyTableCorrupt:'未移动任何内容：旧版会话记录表已损坏。请修复或删除该文件后重试', rebindRootsExpand:'展开全部失效文件夹', rebindRootsCollapse:'只保留第一个失效文件夹' },
@@ -842,6 +845,7 @@ cancel: '取消', chooseThisFolder: '选择此文件夹', choose: '选择',
 currentFolder: path => `当前文件夹：${path}`, selectedCount: n => `已选择 ${n} 项`,
 thisComputer: '此电脑', home: '用户目录', emptyFolder: '此目录中没有可选内容',
 loadFailed: err => `读取失败：${err}`, workspaceNotAuthorized: '请先在桌面端允许远程访问本机目录', alreadyOpen: '已有文件选择器正在打开',
+listingTruncated: '目录过大，仅显示部分条目',
   },
   // platform/web/bootstrap.js 的 invoke 拒绝错误文案,由 React 入口挂到
   // window.PinvouWebClientStrings(纯脚本无法 import ES module,bootstrap 内置中文兜底)。
@@ -1092,7 +1096,6 @@ dictZh.uiSessionWorkspace = {
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
 dictZh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
 
-dictZh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
 
 dictZh.uiSettingsDetail.memoryDeleteFailed = '记忆删除失败，请重试';
 

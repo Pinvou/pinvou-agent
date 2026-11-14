@@ -621,8 +621,10 @@ impl KnowledgeService {
                     let heartbeat = || {
                         let _ = imports.touch(&job_id);
                     };
-                    let files = expand_import_roots(&roots, &cancel, &heartbeat);
-                    imports.prepare_items(&job_id, &files)
+                    let (files, skipped_by_excluder) =
+                        expand_import_roots(&roots, &cancel, &heartbeat);
+                    imports.prepare_items(&job_id, &files)?;
+                    imports.set_skipped_by_excluder(&job_id, skipped_by_excluder)
                 });
                 if prepare_result.is_err() {
                     imports.interrupt(&job_id);
@@ -906,13 +908,18 @@ impl KnowledgeService {
 /// reload_embedder_if_import_needed`（导入线程持有服务句柄，补载必须经
 /// install_embedder 启动空闲巡检，自由函数直写 l1 槽会绕过巡检启动）。
 /// 剪枝遍历复用 `scanner::walk_pruned_with`（与全盘扫描同一排除语义）。
+/// 返回（幸存文件，被 Excluder 直接拒绝的文件数）：白名单按设计静默剪枝，
+/// 但显式导入把非白名单根（如源码树）剪空时，此前只有幸存数可见——拒绝
+/// 计数随任务状态一并披露（round-51 limits audit）。目录整株剪枝时其下
+/// 文件不可枚举，计数为下界；显式选中的单文件根绕过 Excluder（原行为）。
 fn expand_import_roots(
     roots: &[PathBuf],
     cancel: &AtomicBool,
     heartbeat: &dyn Fn(),
-) -> Vec<PathBuf> {
+) -> (Vec<PathBuf>, u64) {
     let ex = Excluder::default();
     let mut files = Vec::new();
+    let mut skipped_by_excluder: u64 = 0;
     // Round-37 review MAJOR: tick the job row while the walk runs. Nothing
     // else observable moves during the walk (items are only staged
     // afterwards), so a healthy walk used to be indistinguishable from a
@@ -937,7 +944,16 @@ fn expand_import_roots(
         }
         // 导入侧沿用「错误即跳过」：导入的目的是收录可读文件，单个不可读
         // 子树不否定其余条目（与全盘扫描的删除授权不同，那边必须否决）。
-        for entry in scanner::walk_pruned_with(root, &ex, || heartbeat()).flatten() {
+        for entry in scanner::walk_pruned_with(
+            root,
+            &ex,
+            || heartbeat(),
+            || {
+                skipped_by_excluder += 1;
+            },
+        )
+        .flatten()
+        {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -946,7 +962,10 @@ fn expand_import_roots(
             }
         }
     }
-    import_jobs::unique_existing_files(files)
+    (
+        import_jobs::unique_existing_files(files),
+        skipped_by_excluder,
+    )
 }
 
 /// Round-42 review: `resume_index`/`retry_index_item` launch an importer
@@ -1383,14 +1402,17 @@ pub fn kb_collection_add_sources(
 }
 
 /// 列出知识集文档（collectionId<=0 列出全部知识集，给「知识库内文件」表）。
+/// `offset` 为可选分页起点（缺省 0，旧前端不传即保持原行为）；GUI 以
+/// limit=200+offset 翻页，避免大库整表一次性渲染。
 pub async fn kb_documents(
     state: State<'_, KnowledgeService>,
     collection_id: i64,
     limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<Vec<Document>, String> {
     let l1 = state.l1().clone();
     spawn_db(move || {
-        l1.list_documents(collection_id, limit.unwrap_or(0))
+        l1.list_documents(collection_id, limit.unwrap_or(0), offset.unwrap_or(0))
             .map_err(|e| e.to_string())
     })
     .await
@@ -2286,6 +2308,61 @@ mod tests {
             !collapsed.running,
             "the frozen zombie must be collapsed before the new job is created"
         );
+    }
+
+    /// Round-51 limits audit disclosure pin: the explicit-import walk counts
+    /// the files the exclusion rules reject directly, so a fully-pruned root
+    /// (a source tree under the documents/media allowlist) no longer stages
+    /// zero files with only the survivor count visible. A pruned DIRECTORY
+    /// cuts its subtree before enumeration, so the count is a lower bound —
+    /// this fixture uses flat files to keep it exact.
+    #[test]
+    fn expand_import_roots_counts_files_the_excluder_rejects() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-kb-excluder-count-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).expect("walk root");
+        std::fs::write(root.join("kept.md"), b"# kept").unwrap();
+        std::fs::write(root.join("kept.png"), b"png").unwrap();
+        std::fs::write(root.join("skipped.rs"), b"fn main() {}").unwrap();
+        std::fs::write(root.join("Makefile"), b"all:").unwrap();
+        std::fs::write(root.join(".env"), b"SECRET=1").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let noop = || {};
+        let (files, skipped) = expand_import_roots(&[root.clone()], &cancel, &noop);
+        assert_eq!(files.len(), 2, "only allowlisted files survive the walk");
+        assert_eq!(skipped, 3, "every directly rejected file is counted");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// r5 review: a root whose own basename an exclusion rule matches
+    /// enumerates NOTHING — before the depth-0 count, that shape staged zero
+    /// files AND reported zero skips, indistinguishable from a genuinely
+    /// empty folder on every surface (the skippedByExcluder disclosure and
+    /// the GUI import card both stay silent). The root itself now counts as
+    /// the one rejected entry.
+    #[test]
+    fn expand_import_roots_counts_a_name_excluded_root() {
+        let base = std::env::temp_dir().join(format!(
+            "pinvou3-kb-excluded-root-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let root = base.join("node_modules");
+        std::fs::create_dir_all(&root).expect("excluded walk root");
+        // A file inside proves the subtree was never walked: if the root
+        // were (wrongly) descended, this file would show up in `files`.
+        std::fs::write(root.join("index.js"), b"module.exports = 1;").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let noop = || {};
+        let (files, skipped) = expand_import_roots(&[root.clone()], &cancel, &noop);
+        assert_eq!(files.len(), 0, "a name-excluded root is not descended into");
+        assert_eq!(skipped, 1, "the excluded root itself is the counted entry");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Round-44 review: the collapse parks the zombie's collection badge at

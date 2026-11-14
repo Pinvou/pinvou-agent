@@ -230,7 +230,10 @@ jobs:
 
       - name: 安装前端依赖
         working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       # build.js 自动注入 config/platforms/linux overlay,并自动准备 codex bridge。
       # 只打 deb(config overlay 的 targets 也只列了 deb)。
@@ -386,7 +389,10 @@ jobs:
 
       - name: 安装前端依赖
         working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       # 连接器 CLI 不在构建期下载或打入安装包；用户首次连接时，应用按
       # connectors.lock.json 在线下载、校验并安装到用户目录。
@@ -547,7 +553,7 @@ jobs:
           set -euo pipefail
           sudo mkdir -p /etc/apt/keyrings
           curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
-            --retry 3 --retry-delay 2 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 120 https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo gpg --dearmor --yes -o /etc/apt/keyrings/pinvou-llvm.gpg
           echo "deb [signed-by=/etc/apt/keyrings/pinvou-llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" \
             | sudo tee /etc/apt/sources.list.d/pinvou-llvm-18.list > /dev/null
@@ -584,7 +590,10 @@ jobs:
 
       - name: 安装前端依赖
         working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       # 全流程编排(scripts/ci-build-linux-loongarch64.sh,每步失败即停):
       # knowledge server 交叉 cargo build → SenseVoice 引擎交叉 cmake →
@@ -735,7 +744,10 @@ jobs:
 
       - name: 安装前端依赖
         working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       - name: 初始化 Windows 独立运行时
         working-directory: pinvou3-app
@@ -866,7 +878,10 @@ jobs:
 
       - name: 安装前端依赖
         working-directory: pinvou3-app
-        run: npm ci --prefer-offline --no-audit
+        # Wedged-registry bound, same class as the pr-check frontend lane:
+        # 900s fails the leg long before any of these release jobs' 90-360
+        # minute caps can fire.
+        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
 
       - name: 构建 dmg
         working-directory: pinvou3-app

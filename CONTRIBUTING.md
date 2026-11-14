@@ -55,7 +55,7 @@ Use:
 <type>(<scope>)!: <English description>
 ```
 
-`scope` and `!` are optional. Allowed types are `feat`, `fix`, `refactor`, `perf`, `docs`, `style`, `test`, `build`, `ci`, `chore`, and `revert`. Write concise English descriptions of at most 50 characters without ending punctuation. CI validates the format, not the language.
+`scope` and `!` are optional. Allowed types are `feat`, `fix`, `refactor`, `perf`, `docs`, `style`, `test`, `build`, `ci`, `chore`, and `revert`. Write concise English descriptions of at most 72 characters without ending punctuation. CI validates the format, not the language.
 
 Use English for branches, issues, pull requests, commits, code comments, developer documentation, and diagnostics. Existing history and localized resources are exempt; UI copy follows [AGENTS.md](AGENTS.md).
 

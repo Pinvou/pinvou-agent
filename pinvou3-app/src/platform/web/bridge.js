@@ -411,7 +411,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       sessionModelStale: id => `The model selected for this conversation is no longer available (missing saved model: ${id}). Please pick a model again in this conversation.`,
       attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 20 MB attachment limit`,
-      archiveTooManyEntries: "the archive contains more than 50 entries and cannot be attached",
+      archiveTooManyEntries: "the archive contains more than 200 entries and cannot be attached",
       archiveExpandedTooLarge: "the archive expands beyond 100 MB and cannot be attached",
       archiveUnsafeEntry: "the archive contains unsafe links or paths and cannot be attached",
       deviceUploadEmpty: name => `⚠️ ${name} is empty and cannot be attached`,
@@ -545,7 +545,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       sessionModelStale: id => `この会話で選択したモデルの設定は無効になりました（見つからない設定: ${id}）。会話でモデルを選び直してください。`,
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 20 MB を超えています`,
-      archiveTooManyEntries: "アーカイブに 50 個を超える項目が含まれているため添付できません",
+      archiveTooManyEntries: "アーカイブに 200 個を超える項目が含まれているため添付できません",
       archiveExpandedTooLarge: "アーカイブの展開後サイズが 100 MB を超えるため添付できません",
       archiveUnsafeEntry: "アーカイブに安全でないリンクまたはパスが含まれているため添付できません",
       deviceUploadEmpty: name => `⚠️ ${name} は空のため添付できません`,
@@ -679,7 +679,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       sessionModelStale: id => `当前会话选择的模型配置已失效（缺失配置：${id}），请在对话中重新选择模型。`,
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 20 MB 上限`,
-      archiveTooManyEntries: "压缩包包含超过 50 个条目，无法添加",
+      archiveTooManyEntries: "压缩包包含超过 200 个条目，无法添加",
       archiveExpandedTooLarge: "压缩包解压后超过 100 MB，无法添加",
       archiveUnsafeEntry: "压缩包包含不安全的链接或路径，无法添加",
       deviceUploadEmpty: name => `⚠️ ${name} 是空文件，无法添加`,
@@ -5582,6 +5582,11 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
       addSystemItem(limitError ? limitError.message : bt("pasteImageFailed") + e);
     }
   }
+  // Frontend-side paste pre-check rejections surface on the same inline
+  // system-item lane addPasteImage uses for its own rejections. The web paste
+  // handler is desktop-only today; the method still exists on the declared
+  // surface so shared feature code can call it unconditionally.
+  function notifyPasteRejected(text) { addSystemItem(text); }
   function releaseAttachmentOnDesktop(attachment) {
     // Accepts a composer attachment ({ result, uploadId }) or a bare
     // WebAttachmentSummary ({ handle }) carried by a queued message.
@@ -6643,6 +6648,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     // 附件
     addAttachmentByPath,
     addPasteImage,
+    notifyPasteRejected,
     removeAttachment,
     pickAndAttach,
     uploadDeviceFiles,

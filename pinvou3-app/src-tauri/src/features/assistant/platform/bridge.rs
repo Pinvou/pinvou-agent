@@ -2027,10 +2027,12 @@ impl Pinvou3Bridge {
 
     /// env > prefs.advanced > 24576 (24K).
     /// 24K is no longer the route output declaration for local models (see
-    /// `route_limits_for_model`). Only two consumers remain: min-clamping a
-    /// user's explicit `SavedModel.max_output_tokens` (the operator can
-    /// raise the cap via this env / prefs) and the compaction threshold
-    /// derivation fallback.
+    /// `route_limits_for_model`). Its only remaining consumer is the
+    /// compaction-threshold derivation fallback for routes that declare no
+    /// output fact; an explicit `SavedModel.max_output_tokens` is honored
+    /// as-is (limits-audit 2026-11: no longer min-clamped by this budget —
+    /// an explicit user setting must not be silently dominated by a
+    /// different knob's default).
     fn max_output_tokens(&self) -> u32 {
         if let Ok(v) = std::env::var("PINVOU3_MAX_OUTPUT_TOKENS") {
             if let Ok(n) = v.parse() {
@@ -2103,16 +2105,17 @@ impl Pinvou3Bridge {
         // max_output_tokens() (24K) — same standing as catalogued cloud
         // models; users can tighten it explicitly via
         // SavedModel.max_output_tokens (configured_output wins).
-        // Direction warning: an explicit configuration is still clamped by
-        // the process-level 24K budget (existing base semantics), so on a
-        // >=250K window explicitly entering 65536 is effectively smaller
-        // than entering nothing and receiving the tier's 65536 — to raise
-        // the cap use
-        // PINVOU3_MAX_OUTPUT_TOKENS / prefs.advanced.max_output_tokens.
+        // An explicit SavedModel.max_output_tokens is likewise NOT min-clamped
+        // by the process-level 24K default (limits-audit 2026-11: the old
+        // clamp made an explicit 65536 on a >=250K window lose to the 24K
+        // process default — an explicit user setting silently dominated by a
+        // different knob's default). The process budget remains only the
+        // fallback for routes that declare nothing (compaction-threshold
+        // derivation); the real external bounds still apply as mins below
+        // (the endpoint's self-reported probe and the window−1024 headroom).
         let is_operator_owned_endpoint =
             saved.is_some_and(|saved| saved.is_operator_owned_endpoint());
         let output_tokens = configured_output
-            .map(|tokens| tokens.min(self.max_output_tokens()))
             .or_else(|| {
                 is_operator_owned_endpoint
                     .then_some(())
@@ -7392,13 +7395,26 @@ mod tests {
             .expect("deepseek/deepseek-flash must resolve route limits");
         assert_eq!(tencent_limits.context_tokens, Some(1_048_576));
         assert_eq!(tencent_limits.output_tokens, Some(384_000));
-        // B. The user's explicit max_output_tokens keeps winning — and keeps
-        // the process-level 24K min-clamp semantics of explicit configs.
+        // B. The user's explicit max_output_tokens keeps winning — both below
+        // and above the process-level 24K default (limits-audit 2026-11: the
+        // old min-clamp against max_output_tokens() made an explicit 65536
+        // lose to the 24K process default; the process budget is now only the
+        // fallback for routes that declare nothing, while the probe and
+        // window−1024 mins still apply).
         cloud.prefs.advanced.saved_models[0].max_output_tokens = Some(8_192);
         let explicit = cloud
             .route_limits_for_model("deepseek-flash")
             .expect("deepseek-flash must resolve route limits");
         assert_eq!(explicit.output_tokens, Some(8_192));
+        cloud.prefs.advanced.saved_models[0].max_output_tokens = Some(65_536);
+        let explicit_high = cloud
+            .route_limits_for_model("deepseek-flash")
+            .expect("deepseek-flash must resolve route limits");
+        assert_eq!(
+            explicit_high.output_tokens,
+            Some(65_536),
+            "an explicit per-model setting above the 24K process default must be honored, not clamped"
+        );
         // C. Operator-owned endpoints declare by the window tier when the
         // tier fires: a custom endpoint serving deepseek-flash with a
         // declared 1M window takes the >=500K tier (131072), not 384000.

@@ -16,7 +16,10 @@ use super::ingest;
 use super::ingest_deps::{archive_tool_command, system_tools};
 use crate::features::files::platform::archive_entry::is_link_or_reparse_point;
 
-const MAX_ARCHIVE_ENTRIES: usize = 50;
+/// 条目数上限：拒绝的是「条目过多」的压缩炸弹形态；合法的多文件源码包
+/// （几十个成员）不应被整包拒绝。解压后总字节仍由 MAX_ARCHIVE_EXPANDED_BYTES
+/// 独立把关，二者互补。
+const MAX_ARCHIVE_ENTRIES: usize = 200;
 const MAX_ARCHIVE_EXPANDED_BYTES: u64 = 100 * 1024 * 1024;
 
 /// 压缩包（.zip/.rar/.7z）：先用 7z 列出内容做炸弹预检（条目数 + 解压后总大小，
@@ -189,7 +192,7 @@ fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
 /// 把 `7z l` 的平台层错误映射成面向用户的拒绝原因。列表输出本身越过
 /// 4 MiB 捕获上限 ≈ 条目数多到无法枚举（每条目 ~400-500 字节）：按「条
 /// 目过多」报因，而不是把平台层溢出文案（含内嵌输出）透传给用户。条目
-/// 数上限本来就是 50，这里只是让拒绝原因可读。超时文案同样内嵌捕获输出
+/// 数上限本来就是 200，这里只是让拒绝原因可读。超时文案同样内嵌捕获输出
 /// （超时前已列出的部分列表），故同样只回固定文案、不透传 raw——两条
 /// 锚点路径都不让内嵌输出进拒绝原因。
 ///

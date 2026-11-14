@@ -14,6 +14,21 @@ run_required() {
   (cd "$ROOT" && "$@")
 }
 
+# Per-leg install bound for the lanes below. GNU coreutils `timeout` is absent
+# on stock macOS, where a bare `timeout` would exit 127 and abort the whole
+# script under `set -euo pipefail`, so hosts without it run unbounded with a
+# loud warning instead. --kill-after escalates to SIGKILL for children that
+# ignore SIGTERM (the repo-wide timeout convention).
+run_with_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=15 "$secs" "$@"
+  else
+    echo "warning: GNU timeout not found; running unbounded: $*" >&2
+    "$@"
+  fi
+}
+
 # The optional runners are multi-minute browser suites, so their output stays on
 # the terminal and is tee'd to a scratch file for the marker check below, rather
 # than captured into a variable that would show nothing until the runner exits.
@@ -62,14 +77,16 @@ run_required node pinvou3-app/tests/markdown_syntax_highlight.test.mjs
 run_required node pinvou3-app/tests/windows_runtime_packaging_contract.test.js
 run_required python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 if ! python3 -c 'import pptx, docx' >/dev/null 2>&1; then
-  run_required python3 -m pip install --quiet python-pptx python-docx
+  run_required run_with_timeout 1800 python3 -m pip install --quiet python-pptx python-docx
 fi
 run_required python3 scripts/mcp-server-contract-smoke.py
 if [ ! -x "$ROOT/pinvou3-app/node_modules/.bin/vite" ]; then
-  run_required npm --prefix pinvou3-app ci --prefer-offline --no-audit
+  # Bounded like the pip lane above (r4 review): a wedged npm registry must
+  # fail the leg, not eat the session.
+  run_required run_with_timeout 1800 npm --prefix pinvou3-app ci --prefer-offline --no-audit
 fi
 if [ ! -d "$ROOT/remote-control-relay/node_modules/ws" ]; then
-  run_required npm --prefix remote-control-relay ci --prefer-offline --no-audit
+  run_required run_with_timeout 1800 npm --prefix remote-control-relay ci --prefer-offline --no-audit
 fi
 run_required npm --prefix pinvou3-app run build:ui
 run_required npm --prefix remote-control-relay test

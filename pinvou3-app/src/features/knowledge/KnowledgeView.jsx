@@ -42,13 +42,19 @@ import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
  */
 
 const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false, outputsSkipped: [] };
-// The full document table (kb_documents limit:0) is unbounded, so the
-// module-level cache keeps only a bounded slice: a remount instantly shows
-// the first rows and loadColls() re-fetches the complete data after mount,
-// so the whole table no longer stays resident for the window's lifetime
-// after the view unmounts.
+// The document table (kb_documents) is paged at KB_DOCS_PAGE_SIZE with
+// offset continuation, so the module-level cache keeps only a bounded
+// slice of what has been loaded: a remount instantly shows the first
+// rows and loadColls() re-fetches page 0 after mount, so the table does
+// not stay resident for the window's lifetime after the view unmounts.
 const KB_ALL_DOCS_CACHE_CAP = 2000;
 const capCachedAllDocs = (docs) => (docs.length > KB_ALL_DOCS_CACHE_CAP ? docs.slice(0, KB_ALL_DOCS_CACHE_CAP) : docs);
+// 知识库文档表分页页大小:kb_documents 支持 offset 翻页(后端排序键带 id 决胜,
+// 相邻页全序稳定),替代原先 limit:0 的一次性拉取+整表渲染——扫描可覆盖 10 万+
+// 文件,整表无虚拟化渲染会把视图卡死。「加载更多」逐页追加,数据始终可达。
+const KB_DOCS_PAGE_SIZE = 200;
+// 文件管理 kb_search 单页行数(首页+续页同值),超出走 (mtime, id) keyset 游标续页。
+const KB_SEARCH_PAGE_SIZE = 200;
 
 const MODEL_PROGRESS_RADIUS = 31;
 const MODEL_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * MODEL_PROGRESS_RADIUS;
@@ -714,13 +720,75 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       }, [outputsOnly, scan ? scan.running : false, cat, query]);
 
-      const runSearch = async (catKey, text) => {
+      // 文件表分页:首页 limit=200,超出部分走后端已有的 (mtime, id) keyset
+      // 游标(store.rs search 的 ORDER BY f.mtime DESC, f.id DESC 全序契约)
+      // 以 mtimeBefore+idBefore 续页。「加载更多」逐页追加,扫表不再静默截断在前
+      // 200 行;截断期间展示「仅显示前 N 个文件」提示。扫描中轮询会整表重查,
+      // 加载更多仅在非扫描态出现。
+      const searchCursorOf = (page) => (page.length
+        ? { mtime: page[page.length - 1].mtime, id: page[page.length - 1].id }
+        : null);
+      const [searchPaging, setSearchPaging] = useState({ gen: 0, cursor: null, hasMore: false, loading: false, query: null });
+      const searchGenerationRef = useRef(0);
+      // 续页追加去重:offset/keyset 分页在表并发变动时(扫描新增、导入插入)可能
+      // 送回已展示过的行;按行的稳定键去重,重复 key 不再进渲染列表。已见集合每
+      // 次追加线性扫一遍 prev,页大小固定,成本可忽略。
+      const dedupeAppendBy = (prev, page, keyOf) => {
+        if (!page.length) return prev;
+        const seen = new Set(prev.map(keyOf));
+        const fresh = page.filter((row) => !seen.has(keyOf(row)));
+        return [...prev, ...fresh];
+      };
+      const buildSearchQuery = (catKey, text, cursor) => {
         const c = CATS.find((x) => x.key === catKey) || CATS[0];
-        const q = { text: text || null, limit: 200 };
+        const q = { text: text || null, limit: KB_SEARCH_PAGE_SIZE };
         if (c.exts) q.exts = c.exts;
-        try { setResults(await invokeTauri('kb_search', { query: q }) || []); }
-        catch { setResults([]); }
-        setSearched(true);
+        if (cursor) { q.mtimeBefore = cursor.mtime; q.idBefore = cursor.id; }
+        return q;
+      };
+      const runSearch = async (catKey, text) => {
+        // 代际守卫:扫描轮询每 1.5s 整表重查,进行中的「加载更多」若在重查之后
+        // 才落地,会把旧筛选的续页追加到新首页之后(旧 path 作 key 还会撞 React
+        // 重复键)。runSearch 先自增代际,续页落地前校验,被取代即整体丢弃。
+        const generation = ++searchGenerationRef.current;
+        try {
+          const req = buildSearchQuery(catKey, text);
+          const page = await invokeTauri('kb_search', { query: req }) || [];
+          if (generation !== searchGenerationRef.current) return;
+          setResults(page);
+          // 游标连同产生它的首屏请求(text/exts/limit)一起钉进分页状态:「加载
+          // 更多」用钉住的请求拼游标续查,不读输入框里的实时文本——否则改了
+          // 搜索词再点续页,会用新词配旧游标、把另一轮筛选的续页接进旧结果
+          // (r4 review;与 gen 锚定同一血缘)。
+          setSearchPaging({ gen: generation, cursor: searchCursorOf(page), hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false, query: req });
+        }
+        catch {
+          if (generation !== searchGenerationRef.current) return;
+          setResults([]);
+          setSearchPaging({ gen: generation, cursor: null, hasMore: false, loading: false, query: null });
+        }
+        if (generation === searchGenerationRef.current) setSearched(true);
+      };
+      const loadMoreSearch = async () => {
+        if (!searchPaging.cursor || !searchPaging.query || searchPaging.loading) return;
+        // 续页合法性锚定在产生这页游标的那次重置(searchPaging.gen),不是点击时刻
+        // 的最新代际:重置在途时旧 footer 仍可见,点击会拿旧 cursor 配新筛选发一条
+        // 注定作废的请求——旧代际在落地时必被代际校验丢弃,这里在点击时就直接拒发。
+        if (searchPaging.gen !== searchGenerationRef.current) return;
+        const generation = searchPaging.gen;
+        setSearchPaging((p) => ({ ...p, loading: true }));
+        try {
+          // 用产生游标的那次搜索钉住的请求(text/exts)拼游标,不读实时输入框
+          // 文本(理由见 runSearch 的钉注)。
+          const page = await invokeTauri('kb_search', { query: { ...searchPaging.query, mtimeBefore: searchPaging.cursor.mtime, idBefore: searchPaging.cursor.id } }) || [];
+          if (generation !== searchGenerationRef.current) return;
+          setResults((prev) => dedupeAppendBy(prev, page, (row) => row.path));
+          // 续页成功后必须把钉住的请求(query)带进新状态:守卫要求 searchPaging.query
+          // 存在,漏写会让第二次「加载更多」起全部静默拒绝(r5 review)。
+          setSearchPaging({ gen: generation, cursor: searchCursorOf(page) || searchPaging.cursor, hasMore: page.length >= KB_SEARCH_PAGE_SIZE, loading: false, query: searchPaging.query });
+        } catch {
+          if (generation === searchGenerationRef.current) setSearchPaging((p) => ({ ...p, loading: false }));
+        }
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps -- dependency list manually reviewed: this effect only needs the listed deps; completing it would cause duplicate requests or polling loops
       useEffect(() => { if (sub === 'files') runSearch(cat, query); }, [cat, sub]);
@@ -757,6 +825,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       useEffect(() => { activeCollRef.current = activeColl; }, [activeColl]);
       const [docs, setDocs] = useState([]);
       const [allDocs, setAllDocs] = useState(kbCache.allDocs);
+      // kb_documents 分页状态(offset 续页):hasMore 以「整页返回」推断,
+      // hasMore=false 表示后面没有更多页。刷新路径(loadDocs/loadColls)重置回第 0 页。
+      const [docsPaging, setDocsPaging] = useState({ gen: 0, offset: 0, hasMore: false, loading: false });
+      const [allDocsPaging, setAllDocsPaging] = useState({ gen: 0, offset: 0, hasMore: false, loading: false });
       const [idx, setIdx] = useState(null);
       const [importError, setImportError] = useState('');
       const [failedFilesLoading, setFailedFilesLoading] = useState(false);
@@ -790,7 +862,49 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const [kbModel, setKbModel] = useState(kbCache.model); // embedding 模型部署状态(null=未知)
       const [kbCat, setKbCat] = useState('all'); // 知识库分类筛选 tab
 
-      const loadDocs = async (cid) => { try { setDocs(await invokeTauri('kb_documents', { collectionId: cid, limit: 0 }) || []); } catch { /* silently degrade */ } };
+      // 集内文档表代际守卫:切集/失败重载会重置整表(openColl→loadDocs),进行中的
+      // 「加载更多」若在重置后才落地,会把旧集的续页追加到新集的首页之后,还会用
+      // 旧集的 offset 覆盖 docsPaging(下一次续页就翻错集了)。整表重载先自增代际,
+      // 续页落地前校验,被取代即整体丢弃(与 failedPaginationRef 同一模式)。
+      // 续页的代际取自产生这页 offset 的那次重置(docsPaging.gen),不是点击时刻的
+      // 最新代际:重置在途时旧 footer 仍可见,点击会拿旧 offset 配新集发一条注定
+      // 作废的请求——旧代际在落地时必被校验丢弃,这里在点击时就直接拒发。
+      const docsGenerationRef = useRef(0);
+      const allDocsGenerationRef = useRef(0);
+      const loadDocs = async (cid) => {
+        const generation = ++docsGenerationRef.current;
+        try {
+          const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
+          if (generation !== docsGenerationRef.current) return;
+          setDocs(page);
+          setDocsPaging({ gen: generation, offset: page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+        } catch {
+          // 整表重置失败:清掉在途「加载更多」的 loading(其响应会因代际失配被
+          // 丢弃、不会自己清),否则旧分页的按钮永远转圈;并把 hasMore 一并收起
+          // ——旧分页属于被取代的上一轮,续页点击必被代际校验拒发,死按钮只会
+          // 误导(r4 review)。失败本身也要按代际校验:陈旧重置的失败落在新重置
+          // 落地之后时,无守卫的收起会把新状态的 footer 拆掉,第 0 页之后的行
+          // 变成不可达,直到下一次重置才自愈(r6 review)。
+          if (generation === docsGenerationRef.current) {
+            setDocsPaging((p) => ({ ...p, loading: false, hasMore: false }));
+          }
+        }
+      };
+      const loadMoreDocs = async () => {
+        const cid = activeColl && activeColl.id;
+        if (!cid || docsPaging.loading) return;
+        if (docsPaging.gen !== docsGenerationRef.current) return;
+        const generation = docsPaging.gen;
+        setDocsPaging((p) => ({ ...p, loading: true }));
+        try {
+          const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: docsPaging.offset }) || [];
+          if (generation !== docsGenerationRef.current) return;
+          setDocs((prev) => dedupeAppendBy(prev, page, (row) => row.id));
+          setDocsPaging({ gen: generation, offset: docsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+        } catch {
+          if (generation === docsGenerationRef.current) setDocsPaging((p) => ({ ...p, loading: false }));
+        }
+      };
       const loadColls = useCallback(async () => {
         try {
           const c = await invokeTauri('kb_collection_list') || [];
@@ -798,11 +912,51 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           setActiveColl((current) => (current ? c.find((item) => item.id === current.id) || null : null));
           kbCache.colls = c;
         } catch { /* silently degrade */ }
-        try { const d = await invokeTauri('kb_documents', { collectionId: 0, limit: 0 }) || []; setAllDocs(d); kbCache.allDocs = capCachedAllDocs(d); } catch { /* silently degrade */ }
+        try {
+          // 与 loadDocs 同序:先自增代际再发请求(此前是落地后才自增,重置在途
+          // 时新旧代际相等,921 行的拒发形同虚设——r4 review)。重置在途时的
+          // 「加载更多」点击随即被拒,不会拿旧 offset 配新表发注定作废的请求。
+          const generation = ++allDocsGenerationRef.current;
+          const d = await invokeTauri('kb_documents', { collectionId: 0, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
+          if (generation !== allDocsGenerationRef.current) return;
+          setAllDocs(d);
+          setAllDocsPaging({ gen: generation, offset: d.length, hasMore: d.length >= KB_DOCS_PAGE_SIZE, loading: false });
+          kbCache.allDocs = capCachedAllDocs(d);
+        } catch {
+          // 整表重置失败:清掉在途「加载更多」的 loading,理由同 loadDocs;
+          // hasMore 一并收起(死按钮,理由同 loadDocs 的 catch 注)。失败同受
+          // 代际校验,理由同 loadDocs 的 r6 注。
+          if (generation === allDocsGenerationRef.current) {
+            setAllDocsPaging((p) => ({ ...p, loading: false, hasMore: false }));
+          }
+        }
         try { const ei = await invokeTauri('kb_embed_info'); setEmbedInfo(ei); kbCache.embedInfo = ei; } catch { /* silently degrade */ }
         try { const m = await invokeTauri('kb_model_status'); setKbModel(m); kbCache.model = m; } catch { /* silently degrade */ }
         try { replaceIndexState(await invokeTauri('kb_index_status')); } catch { /* silently degrade */ }
       }, [replaceIndexState]);
+      // 跨库总表「加载更多」:追加下一页并同步镜像进 kbCache(与 removeDocument
+      // 的缓存写法一致),翻页后缓存始终对应当前已加载的行。loadColls 的整表重置
+      // 先自增代际,重置后才落地的续页整体丢弃。
+      const loadMoreAllDocs = async () => {
+        if (allDocsPaging.loading) return;
+        // 续页代际取自产生这页 offset 的那次重置(allDocsPaging.gen),理由同
+        // loadMoreDocs:重置在途时的点击直接拒发。
+        if (allDocsPaging.gen !== allDocsGenerationRef.current) return;
+        const generation = allDocsPaging.gen;
+        setAllDocsPaging((p) => ({ ...p, loading: true }));
+        try {
+          const page = await invokeTauri('kb_documents', { collectionId: 0, limit: KB_DOCS_PAGE_SIZE, offset: allDocsPaging.offset }) || [];
+          if (generation !== allDocsGenerationRef.current) return;
+          setAllDocs((prev) => {
+            const next = dedupeAppendBy(prev, page, (row) => row.id);
+            kbCache.allDocs = capCachedAllDocs(next);
+            return next;
+          });
+          setAllDocsPaging({ gen: generation, offset: allDocsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+        } catch {
+          if (generation === allDocsGenerationRef.current) setAllDocsPaging((p) => ({ ...p, loading: false }));
+        }
+      };
       // 本地文件与本地知识库两个分区依赖本机知识集数据；远程分区自行加载服务器数据。
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
       useEffect(() => {
@@ -1173,6 +1327,22 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                 </div>
                               </div>
                             );})}
+                            {(() => {
+                              // 截断披露+续页:仅当上一页返回满页(可能还有更多)时出现;
+                              // 扫描中轮询整表重查,续页暂停展示。全部加载完后页脚消失。
+                              if (scanning || !searchPaging.hasMore || results.length === 0) return null;
+                              return (
+                                <div className="mt-3 flex items-center justify-center gap-3 py-1">
+                                  <span className={`text-[12px] ${muted}`}>{t.kbFilesShowingFirst(results.length)}</span>
+                                  <button type="button" data-testid="kb-search-load-more" disabled={searchPaging.loading}
+                                    onClick={loadMoreSearch}
+                                    className={`flex items-center gap-1.5 rounded-full px-4 py-1.5 text-[12px] font-medium transition-colors text-[#0B57D0] hover:bg-[#0B57D0]/[0.06] disabled:cursor-default disabled:opacity-60 dark:text-[#A8C7FA] dark:hover:bg-white/[0.06]`}>
+                                    {searchPaging.loading ? <RefreshCw size={13} className="animate-spin" /> : <ChevronDown size={13} className="opacity-70" />}
+                                    {t.kbLoadMore}
+                                  </button>
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>
@@ -1472,18 +1642,29 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     {importError}
                   </div>
                 )}
-                {idx && (idx.running || idx.resumable || idx.failed > 0) && (
+                {idx && (idx.running || idx.resumable || idx.failed > 0 || idx.skippedByExcluder > 0) && (
                   <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04]`}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className={`text-[14px] font-bold ${ink}`}>
-                          {idx.resumable ? t.kbImportInterrupted : (idx.running ? t.kbIndexing : t.kbImportDoneWithErrors)}
+                          {idx.resumable
+                            ? t.kbImportInterrupted
+                            : (idx.running
+                              ? t.kbIndexing
+                              : (idx.failed > 0 ? t.kbImportDoneWithErrors : t.kbImportDoneSkipped))}
                         </div>
                         {idx.resumable && <div className={`mt-1 text-[12px] ${muted}`}>{t.kbImportInterruptedHint}</div>}
                         <div className={`mt-2 text-[12px] ${muted}`}>
                           {t.kbImportProgress} {idx.done || 0}/{idx.total || 0}
                           {idx.failed > 0 ? ` · ${t.kbImportErrors} ${idx.failed}` : ''}
                         </div>
+                        {/* r5 review: the GUI payload always carried skippedByExcluder but
+                            nothing rendered it — an import whose files all got pruned by the
+                            index rules (or a name-excluded root) staged zero files and the
+                            panel showed nothing at all. */}
+                        {idx.skippedByExcluder > 0 && (
+                          <div className={`mt-1 text-[12px] ${muted}`}>{t.kbSkippedByExcluder(idx.skippedByExcluder)}</div>
+                        )}
                         {idx.currentPath && (
                           <div className={`mt-1 max-w-[760px] truncate text-[12px] ${muted}`} title={idx.currentPath}>
                             {t.kbCurrentFile} {idx.currentPath}
@@ -1564,6 +1745,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                         return (
                         // biome-ignore lint/a11y/useKeyWithClickEvents: collection-card click is a shortcut; keyboard path handled by the in-card action buttons
                         // biome-ignore lint/a11y/noStaticElementInteractions: collection-card click hot zone; not a standalone interactive control
+                        // eslint-disable-next-line react-hooks/refs -- openColl→loadDocs touch the pagination generation refs only inside this event-callback-invoked async fn, never during render
                         <div key={c.id} onClick={() => openColl(c)} className={`p-4 rounded-2xl cursor-pointer transition-all ${panel} ${panelHover}`}
                           style={activeColl && activeColl.id === c.id ? { borderColor: collColor(c), boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 2px ${collColor(c)}55` } : panelShadow}>{/* isDark dynamic-value: 保留 (boxShadow 含运行时 collColor) */}
                           <div className="flex items-start gap-3">
@@ -1643,6 +1825,22 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                             </div>
                           </div>
                         );})}
+                        {(() => {
+                          const paging = activeColl ? docsPaging : allDocsPaging;
+                          if (!paging.hasMore) return null;
+                          const shown = activeColl ? docs : allDocs;
+                          return (
+                            <div className="flex items-center justify-center gap-3 border-t border-gray-400/10">
+                              <span className={`text-[12px] ${muted}`}>{t.kbDocsShowingFirst(shown.length)}</span>
+                              <button type="button" data-testid="kb-docs-load-more" disabled={paging.loading}
+                                onClick={activeColl ? loadMoreDocs : loadMoreAllDocs}
+                                className={`flex items-center gap-1.5 px-4 py-2.5 text-[12px] font-medium transition-colors text-[#0B57D0] hover:bg-[#0B57D0]/[0.06] disabled:cursor-default disabled:opacity-60 dark:text-[#A8C7FA] dark:hover:bg-white/[0.06]`}>
+                                {paging.loading ? <RefreshCw size={13} className="animate-spin" /> : <ChevronDown size={13} className="opacity-70" />}
+                                {t.kbLoadMoreDocs}
+                              </button>
+                            </div>
+                          );
+                        })()}
                       </div>
                       );
                     })()}

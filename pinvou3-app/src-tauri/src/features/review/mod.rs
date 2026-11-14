@@ -85,17 +85,28 @@ const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
   "coverage": [{"dimension":"维度名","coverage":"weak|missing","severity":"high|medium|low","text":"缺/薄弱在哪","suggestion":"建议补什么"}]
 }"#;
 
-/// 本地审查实测 5–19s，旧版 5s 必挂；放宽到 30s（设计 §3 的 5–30s 预期）。
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 本地审查实测 5–19s，旧版 5s 必挂；30s 在慢网关/长上下文（96k 字符全喂）下仍会
+/// 掐断健康审查，放宽到 120s 总预算（单次独立审查，召唤发起方可取消）。
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂 2 万字级长会话
-/// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§6）。
-const FULL_FEED_CHAR_LIMIT: usize = 24_000;
+/// （≈1.2 万 token）不崩；96000 字（≈5.6 万 token）仍在 256k 上下文预算内，
+/// 96000 字以内直接全喂，超过才投影降级（§6）。
+const FULL_FEED_CHAR_LIMIT: usize = 96_000;
 
 /// 产物上限（字符）。产物真相在 workspace 文件，整篇读、整篇喂——本地 256k 扛得住
 /// （实测 2 万字全喂稳）。常规产物（文档/邮件/代码）都在此内整篇喂；超此才截断+标注，
 /// 真超大产物的「不漏」解是 P1 map-reduce 分块全审。
-const ARTIFACT_CHAR_LIMIT: usize = 30_000;
+const ARTIFACT_CHAR_LIMIT: usize = 100_000;
+
+/// 单次审查输出预算（max_tokens）。旧值 1600 会被思考型模型的长 JSON 截断，
+/// 截断的 JSON 解析失败 → 整场审查报错；4000 容纳 5 条 issues + 建议的完整输出。
+/// OpenAI chat/completions 与 Anthropic Messages 两条车道共用同一预算。
+const REVIEW_MAX_TOKENS: u32 = 4000;
+
+/// 降级投影保留的 web_search 事实条数。超出部分不静默丢弃，在投影尾部
+/// 显式标注省略条数（见 project）。
+const FACT_PROJECTION_KEEP: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinvouPersona {
@@ -337,9 +348,38 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     if !in_ws {
         return None;
     }
-    let content = std::fs::read_to_string(&abs).ok()?;
+    // 读侧同样限长（Take = 上限 + 1，镜像 read_artifact_text 的读界）：
+    // 召唤审核读的是 workspace 内任意被指名的文件，多 GiB 文件整读进内存
+    // 是纯内存尖峰（r4 review）。超硬读界的产物不杀死整个召唤，按「部分
+    // 展示 + 明示」同一口径截断并在标注里写明。
+    let hard_cap = crate::features::files::MAX_ARTIFACT_TEXT_BYTES;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        let Ok(file) = std::fs::File::open(&abs) else {
+            return None;
+        };
+        if file.take(hard_cap + 1).read_to_end(&mut bytes).is_err() {
+            return None;
+        }
+    }
+    let read_capped = bytes.len() as u64 > hard_cap;
+    // 未触线保持严格 UTF-8（与原 read_to_string 同语义，坏字节 → 跳过该
+    // 产物）；仅当字节截断可能切在字符中间时才容忍尾部损字。
+    let content = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) if read_capped => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        Err(_) => return None,
+    };
     let n = content.chars().count();
-    let bounded = if n > ARTIFACT_CHAR_LIMIT {
+    let bounded = if read_capped {
+        let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
+        format!(
+            "{head}\n\n…（产物超过 {} MiB 硬读界，仅读前 {} MiB；如需全审，让 Boss 拆分产物。P1 改 map-reduce 分块全审）",
+            hard_cap / (1024 * 1024),
+            hard_cap / (1024 * 1024),
+        )
+    } else if n > ARTIFACT_CHAR_LIMIT {
         let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
         format!(
             "{head}\n\n…（产物共 {n} 字，这里是前 {ARTIFACT_CHAR_LIMIT} 字；后半未展示，如需审让 Boss 指定。P1 改 map-reduce 分块全审）"
@@ -537,19 +577,33 @@ async fn model_review(
     // Anthropic 官方端点是 Messages 协议（x-api-key 鉴权，system 独立字段，
     // 无 response_format），走原生直连；其余 preset 仍走 OpenAI chat/completions。
     if preset == ModelPreset::Anthropic {
-        let content = crate::core::model_endpoint::post_anthropic_messages(
+        let completion = crate::core::model_endpoint::post_anthropic_messages(
             &client,
             &base_url,
             &bridge.api_key(),
             &model_name,
             &prompt,
             user_content,
-            1600,
+            REVIEW_MAX_TOKENS,
             bridge.opencode_conversation_key("model-review"),
         )
-        .await?
-        .text;
-        return parse_model_review(&content).context("parse Pinvou review");
+        .await?;
+        let parse_result = parse_model_review(&completion.text);
+        if parse_result.is_err() && completion.stop_reason.as_deref() == Some("max_tokens") {
+            // Name the real cause instead of an opaque parse failure: a
+            // truncated completion's JSON cannot survive the brace
+            // extraction, and on this protocol `max_tokens` INCLUDES
+            // thinking tokens, so a default-thinking model can spend the
+            // budget before emitting any JSON (r5 review).
+            anyhow::bail!(
+                "model review output hit the {}-token budget \
+                 (stop_reason=max_tokens; max_tokens includes thinking tokens \
+                 on this protocol) before emitting valid JSON — raise the \
+                 budget or shrink the feed",
+                REVIEW_MAX_TOKENS
+            );
+        }
+        return parse_result.context("parse Pinvou review");
     }
     let mut body = review_request_body(&model_name, &prompt, user_content);
     apply_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
@@ -566,15 +620,32 @@ async fn model_review(
         crate::core::model_endpoint::error_for_status_with_body(resp, "chat/completions status")
             .await?;
     let value: Value = resp.json().await.context("parse chat/completions json")?;
-    let content = value
+    let choice = value
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|c| c.first())
-        .and_then(|c| c.get("message"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let content = choice
+        .get("message")
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    parse_model_review(content).context("parse Pinvou review")
+    let parse_result = parse_model_review(content);
+    if parse_result.is_err()
+        && choice.get("finish_reason").and_then(Value::as_str) == Some("length")
+    {
+        // Same named-cause contract as the Anthropic lane: an opaque parse
+        // error would send operators hunting for a prompt problem when the
+        // output budget is the real cause (r5 review).
+        anyhow::bail!(
+            "model review output hit the {}-token budget \
+             (finish_reason=length) before emitting valid JSON — raise the \
+             budget or shrink the feed",
+            REVIEW_MAX_TOKENS
+        );
+    }
+    parse_result.context("parse Pinvou review")
 }
 
 /// One-shot Chat Completions body for model review. Field set mirrors the
@@ -591,7 +662,7 @@ fn review_request_body(model: &str, prompt: &str, user_content: &str) -> Value {
             { "role": "system", "content": prompt },
             { "role": "user", "content": user_content }
         ],
-        "max_tokens": 1600,
+        "max_tokens": REVIEW_MAX_TOKENS,
         "stream": false,
         // 根治偶发非法 JSON(qwen36 长输出漏逗号/字符串内未转义引号,实测 line N col M 解析炸):
         // vLLM guided decoding token 级保证输出合法 JSON 语法,不靠事后 find('{')..rfind('}') 补救。
@@ -837,7 +908,7 @@ fn project(messages: &[Message]) -> String {
                             }
                         }
                     }
-                    "web_search" => facts.push(truncate_chars(content, 200)),
+                    "web_search" => facts.push(truncate_chars(content, 500)),
                     _ => {}
                 },
                 _ => {}
@@ -856,8 +927,14 @@ fn project(messages: &[Message]) -> String {
     }
     if !facts.is_empty() {
         out.push_str("\n\n【相关事实(搜索摘录)】\n");
-        for f in facts.iter().take(4) {
+        for f in facts.iter().take(FACT_PROJECTION_KEEP) {
             out.push_str(&format!("- {f}\n"));
+        }
+        // 超出保留数的事实不静默丢弃：显式标注省略条数，审查模型能察觉
+        // 还有事实没进来，需要时可让 Boss 重开全喂或缩小检索。
+        let omitted = facts.len().saturating_sub(FACT_PROJECTION_KEEP);
+        if omitted > 0 {
+            out.push_str(&format!("-（另有 {omitted} 条搜索事实未纳入投影）\n"));
         }
     }
     out
@@ -972,7 +1049,12 @@ mod tests {
              live 2026-09-30: only 1 is allowed for this model"
         );
         assert_eq!(body["model"], "k3");
-        assert_eq!(body["max_tokens"], 1600);
+        // Wire pin against the LITERAL (like the rewind 10s lock pin), not the
+        // constant: the builder below uses the same constant, so comparing
+        // constant to constant can never fail — a silent 4000→1600 budget
+        // revert (the truncation this value was raised to stop) stayed green
+        // under the old shape (r6 review, mutation-verified).
+        assert_eq!(body["max_tokens"], 4000);
         assert_eq!(body["stream"], false);
         assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["messages"][0]["role"], "system");
@@ -1302,6 +1384,43 @@ mod tests {
         ];
         let projected = project(&messages);
         assert!(projected.contains("当前报价：100 元"), "{projected}");
+    }
+
+    #[test]
+    fn project_keeps_fact_cap_and_annotates_omitted_facts() {
+        // 超出 FACT_PROJECTION_KEEP 的事实不静默丢弃：保留前 N 条，尾部标注省略数。
+        let mut messages = vec![user_text("核对当前报价")];
+        for i in 0..FACT_PROJECTION_KEEP + 3 {
+            let id = format!("w{i}");
+            messages.push(assistant_tool(&id, "web_search", json!({"query": "报价"})));
+            messages.push(tool_result(&id, &format!("事实{i}：100 元")));
+        }
+        let p = project(&messages);
+        assert!(p.contains("事实0：100 元"), "第一条事实要留: {p}");
+        assert!(
+            p.contains(&format!("事实{}：100 元", FACT_PROJECTION_KEEP - 1)),
+            "保留数内的最后一条事实要留: {p}"
+        );
+        assert!(
+            !p.contains(&format!("事实{}：100 元", FACT_PROJECTION_KEEP)),
+            "保留数外的事实不逐条进投影: {p}"
+        );
+        assert!(
+            p.contains("另有 3 条搜索事实未纳入投影"),
+            "省略条数要显式标注: {p}"
+        );
+    }
+
+    #[test]
+    fn project_facts_without_overflow_has_no_omission_note() {
+        let messages = vec![
+            user_text("核对当前报价"),
+            assistant_tool("w1", "web_search", json!({"query": "报价"})),
+            tool_result("w1", "事实1：100 元"),
+        ];
+        let p = project(&messages);
+        assert!(p.contains("事实1：100 元"), "{p}");
+        assert!(!p.contains("未纳入投影"), "没省略就不要标注: {p}");
     }
 
     #[test]

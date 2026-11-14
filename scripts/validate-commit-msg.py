@@ -40,6 +40,9 @@ PROHIBITED_DESCRIPTIONS = {
     "测试",
 }
 FORBIDDEN_ENDING_PUNCTUATION = set("。.，,；;、！!？?：:")
+# Description-group limit (the full subject can reach ~88 with the type/scope
+# prefix; CONTRIBUTING.md and docs/commit-message-convention.md state 72).
+MAX_DESCRIPTION_CHARS = 72
 DOC_PATH = "docs/commit-message-convention.md"
 # #235 introduced this gate on main. Older Windows branch history remains
 # grandfathered so generated merge commits and pre-gate commits do not fail main.
@@ -90,9 +93,9 @@ def validate_text(raw: str, label: str) -> list[str]:
     if semantic_desc != semantic_desc.strip():
         errors.append(f"{label}: description must not start or end with whitespace")
 
-    if len(semantic_desc) > 50:
+    if len(semantic_desc) > MAX_DESCRIPTION_CHARS:
         errors.append(
-            f"{label}: description must be 50 characters or fewer, got {len(semantic_desc)}"
+            f"{label}: description must be {MAX_DESCRIPTION_CHARS} characters or fewer, got {len(semantic_desc)}"
         )
 
     if not any(char.isalpha() for char in semantic_desc):

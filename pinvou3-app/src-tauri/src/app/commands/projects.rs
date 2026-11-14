@@ -17,6 +17,17 @@ use crate::features::codex_acp::{
     AcpPool, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
 };
 
+/// Wall-clock deadline for the post-rebind baseline recapture drain
+/// (limits-audit EA6a-5, closing the gap documented on the eviction-tail
+/// budget below). Baselines are documented best-effort/self-healing: a
+/// stale/absent baseline is re-detected by `baseline_is_current` on the next
+/// consumer and recaptured there. When the deadline expires the drain is
+/// abandoned — in-flight recaptures detach to finish on the blocking pool
+/// (their results are unobserved) — and the abandonment is logged with the
+/// count so the run never claims work it did not do. The rebind pipeline
+/// itself is untouched; only the gate-hold time is bounded.
+const REBIND_BASELINE_DRAIN_DEADLINE: Duration = Duration::from_secs(60);
+
 /// Wall-clock budget for the whole idle-gated runtime reclaim tail of a rebind
 /// (review #463 round-10 T13). The tail walks every rebound, failed and to-lane
 /// retry candidate; each pool call is individually bounded, but a contended pool
@@ -28,15 +39,13 @@ use crate::features::codex_acp::{
 /// (review #463 round-13) — a figure that covers ONLY this eviction tail
 /// (round-24 review M4; the realistic tail ceiling is ~20s with the ≤5s
 /// shell-finalize join, perf minor 10). The PRE-TAIL phases hold the same
-/// process-wide gate with no deadline: the metadata loop has no per-candidate
-/// bound and the baseline drain's final join loop is only
-/// concurrency-bounded, so a large run (hundreds of sessions, multi-MB
-/// transcripts, big destination baselines) can hold the gate — disabled
-/// dialog, no interim feedback — for minutes while concurrent attempts are
-/// refused. Remedy on record: a wall-clock deadline on the drain (baselines
-/// are best-effort/self-healing) or interim progress events. Ten seconds is
-/// far above the normal tail cost (idle sessions are reclaimed without
-/// waiting) and far below a user-visible hang.
+/// process-wide gate with no deadline: the metadata loop still has no
+/// per-candidate bound, and while the baseline drain is now bounded by
+/// REBIND_BASELINE_DRAIN_DEADLINE (60s, abandon-and-continue — see that
+/// constant), a large run (hundreds of sessions, multi-MB transcripts, big
+/// destination baselines) can still hold the gate for minutes through the
+/// metadata loop. Ten seconds is far above the normal tail cost (idle
+/// sessions are reclaimed without waiting) and far below a user-visible hang.
 const REBIND_EVICT_TAIL_BUDGET: Duration = Duration::from_secs(10);
 
 /// Root replacement with member expulsion — the GUI update lane's §9.9
@@ -98,7 +107,7 @@ pub fn replace_project_roots_and_expel(
     // runs one read_dir over the code-session directory plus per-orphan
     // sidecar reads and per-match owner stats (the #463 M6 orphan coverage,
     // by design) — but at mutation-path scale (an edit/delete with at most
-    // a handful of removed/project roots and the 50-session cap) the cost
+    // a handful of removed/project roots and the session-retention cap) the cost
     // is ~1ms per root, not the full per-root sessions-directory re-walk
     // the plain lane had; batching it would add a multi-root API for no
     // observable gain (round-24 M2 comment-honesty fix).
@@ -2202,10 +2211,21 @@ pub async fn rebind_workspace_root(
     // awaiting one per rebound session stalled the dialog for tens of
     // seconds to minutes on large destinations. Best-effort and
     // order-independent — a failure is logged (root cause only, same CodeQL
-    // rule) and never blocks the report.
+    // rule) and never blocks the report. A 60s wall deadline (limits-audit
+    // EA6a-5) bounds the whole drain because baselines are documented
+    // best-effort/self-healing: past the deadline the drain is abandoned,
+    // unrecaptured baselines are logged honestly with their count (they are
+    // re-detected and recaptured by the next consumer via baseline_is_current),
+    // and the rebind continues — the pipeline shape is unchanged.
     if !deferred_baselines.is_empty() {
+        let deferred_total = deferred_baselines.len();
+        let drain_deadline = tokio::time::Instant::now() + REBIND_BASELINE_DRAIN_DEADLINE;
+        let mut observed_baselines = 0usize;
         let mut in_flight = tokio::task::JoinSet::new();
         for (baseline_session_id, baseline_root) in deferred_baselines {
+            if tokio::time::Instant::now() >= drain_deadline {
+                break;
+            }
             in_flight.spawn_blocking(move || {
                 // Staleness gate (round-11 review M1; inside the blocking
                 // closure per round-12 P2-2 — the gate reads and fully
@@ -2241,13 +2261,47 @@ pub async fn rebind_workspace_root(
                 )
             });
             if in_flight.len() >= REBIND_BASELINE_RECAPTURE_CONCURRENCY {
-                if let Some(result) = in_flight.join_next().await {
-                    log_baseline_result(result);
+                let remaining =
+                    drain_deadline.saturating_duration_since(tokio::time::Instant::now());
+                match tokio::time::timeout(remaining, in_flight.join_next()).await {
+                    Ok(Some(result)) => {
+                        observed_baselines += 1;
+                        log_baseline_result(result);
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
                 }
             }
         }
-        while let Some(result) = in_flight.join_next().await {
-            log_baseline_result(result);
+        // Final joins, still under the same deadline: completed results keep
+        // being observed; on expiry the loop breaks and the JoinSet drop
+        // detaches the in-flight recaptures (a spawn_blocking closure cannot
+        // be preempted, so they finish unobserved on the blocking pool).
+        while !in_flight.is_empty() {
+            let remaining = drain_deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, in_flight.join_next()).await {
+                Ok(Some(result)) => {
+                    observed_baselines += 1;
+                    log_baseline_result(result);
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        let abandoned_baselines = deferred_total - observed_baselines;
+        if abandoned_baselines > 0 {
+            // Honest reporting (EA6a-5): the abandoned recaptures are NOT
+            // claimed as done. Baselines are self-healing — a stale/absent
+            // one is re-detected by baseline_is_current on the next consumer
+            // — so the rebind report itself is unchanged; only the log
+            // carries the shortfall.
+            eprintln!(
+                "[projects] rebind baseline drain abandoned past its {}s deadline: {abandoned_baselines} of {deferred_total} baseline recapture(s) left unobserved (best-effort; self-heals on next use)",
+                REBIND_BASELINE_DRAIN_DEADLINE.as_secs()
+            );
         }
     }
 

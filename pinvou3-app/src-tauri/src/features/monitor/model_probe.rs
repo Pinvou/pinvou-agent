@@ -13,11 +13,12 @@ use crate::core::model_endpoint::{is_anthropic_endpoint, models_probe_url, strip
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
-/// Upper bound on a buffered `/metrics` body. The poll runs at ~1 Hz and
-/// reqwest buffers the whole response in `text()`, so a misbehaving local
-/// endpoint must not balloon memory; a real vLLM export is tens to a few
-/// hundred KiB. Applies to the declared `Content-Length` only — chunked
-/// responses are bounded by the 3 s request timeout instead.
+/// Upper bound on a buffered `/metrics` body. The poll runs at ~1 Hz, so a
+/// misbehaving local endpoint must not balloon memory; a real vLLM export is
+/// tens to a few hundred KiB. Enforced twice: on the declared
+/// `Content-Length` before reading, and by streaming chunked bodies through
+/// [`read_bounded_metrics_body`] (no `Content-Length` to pre-check there —
+/// `text()` would have read them unbounded until the 3 s request timeout).
 const MAX_METRICS_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
 /// 当前模型运行态 + 本地 vLLM 指标。字段名暂保留 vllm 兼容前端。
@@ -389,7 +390,9 @@ async fn snapshot_for_model_config(
     let metrics_text = match metrics_resp {
         Some(r) if r.status().is_success() => match r.content_length() {
             Some(n) if n > MAX_METRICS_BODY_BYTES => None,
-            _ => r.text().await.ok(),
+            // Chunked responses carry no Content-Length: stream the body
+            // under the same bound instead of the unbounded `text()`.
+            _ => read_bounded_metrics_body(r).await,
         },
         _ => None,
     };
@@ -540,6 +543,41 @@ fn transport_class(err: &reqwest::Error) -> &'static str {
     } else {
         "network_error"
     }
+}
+
+/// Stream a `/metrics` body under [`MAX_METRICS_BODY_BYTES`]: chunked
+/// responses have no `Content-Length`, so the pre-check cannot bound them
+/// and an unbounded `text()` would read whatever the endpoint sends until
+/// the 3 s request timeout. Accumulate through `bytes_stream` and degrade to
+/// `None` (metrics unavailable) as soon as the accumulated body crosses the
+/// cap — the same streamed shape as the ima connector's JSON read, and the
+/// same outcome as an over-cap `Content-Length`. Decoding is lossy (as the
+/// old `text()` path was): a stray invalid byte must degrade one metric line,
+/// not the whole probe.
+async fn read_bounded_metrics_body(response: reqwest::Response) -> Option<String> {
+    read_bounded_chunks(response.bytes_stream()).await
+}
+
+/// The accumulation half of [`read_bounded_metrics_body`], generic over the
+/// chunk stream so tests can drive the cap and error paths without
+/// constructing an HTTP response (r5 review: this enforcement point shipped
+/// untested — a regression to an unbounded read would have stayed green).
+async fn read_bounded_chunks<T, E, S>(stream: S) -> Option<String>
+where
+    S: futures_util::Stream<Item = Result<T, E>>,
+    T: std::ops::Deref<Target = [u8]>,
+{
+    use futures_util::StreamExt;
+    let mut body: Vec<u8> = Vec::new();
+    futures_util::pin_mut!(stream);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.ok()?;
+        if body.len().saturating_add(chunk.len()) as u64 > MAX_METRICS_BODY_BYTES {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(String::from_utf8_lossy(&body).into_owned())
 }
 
 fn parse_models_response(
@@ -990,6 +1028,37 @@ mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
     use crate::platform::prefs::ModelPreset;
+
+    #[tokio::test]
+    async fn bounded_metrics_read_rejects_an_over_cap_stream() {
+        // r5 review: the streaming cap shipped with no test — a regression to
+        // an unbounded read would have stayed green. Half-cap chunks: two
+        // pass, the third crosses the line and the read degrades to None
+        // (metrics unavailable), the same outcome as an over-cap
+        // Content-Length.
+        let half = (MAX_METRICS_BODY_BYTES / 2) as usize;
+        let over: Vec<Result<Vec<u8>, ()>> = vec![
+            Ok(vec![b'a'; half]),
+            Ok(vec![b'b'; half]),
+            Ok(vec![b'c'; 8]),
+        ];
+        assert_eq!(
+            read_bounded_chunks(futures_util::stream::iter(over)).await,
+            None
+        );
+        // At-cap stays Some with the full body.
+        let at_cap: Vec<Result<Vec<u8>, ()>> = vec![Ok(vec![b'a'; half]), Ok(vec![b'b'; half])];
+        let body = read_bounded_chunks(futures_util::stream::iter(at_cap))
+            .await
+            .expect("at-cap body must decode");
+        assert_eq!(body.len() as u64, MAX_METRICS_BODY_BYTES);
+        // A mid-stream error degrades to None like an over-cap body.
+        let broken: Vec<Result<Vec<u8>, ()>> = vec![Ok(b"hello".to_vec()), Err(())];
+        assert_eq!(
+            read_bounded_chunks(futures_util::stream::iter(broken)).await,
+            None
+        );
+    }
 
     #[test]
     fn vllm_target_kind_classifies_by_host() {

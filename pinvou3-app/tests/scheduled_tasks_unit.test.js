@@ -170,7 +170,7 @@ assert.ok(
   'scheduled selection must live above the remounted ScheduledTasksView'
 );
 assert.ok(
-  /const refresh = \(\) => bridge\.scheduled\.refreshScheduledTaskData\(20\)[\s\S]{0,260}setInterval\([\s\S]{0,120}refresh\(\)[\s\S]{0,120}3000/.test(indexHtml),
+  /const refresh = \(\) => bridge\.scheduled\.refreshScheduledTaskData\(100\)[\s\S]{0,260}setInterval\([\s\S]{0,120}refresh\(\)[\s\S]{0,120}3000/.test(indexHtml),
   'the three-second fallback must refresh tasks, selected detail, and runs through one bridge transaction'
 );
 assert.ok(
@@ -268,7 +268,7 @@ assert.ok(
 );
 assert.ok(
   /scheduled_task:run_updated[\s\S]{0,180}scheduleScheduledRunRefresh\(\)/.test(tauriBridge) &&
-    /function scheduleScheduledRunRefresh\([\s\S]{0,900}refreshScheduledTaskData\(20\)[\s\S]{0,320}loadScheduledTaskRecentRuns\(\)/.test(tauriBridge) &&
+    /function scheduleScheduledRunRefresh\([\s\S]{0,900}refreshScheduledTaskData\(100\)[\s\S]{0,320}loadScheduledTaskRecentRuns\(\)/.test(tauriBridge) &&
     /async function init\(\)[\s\S]{0,1200}loadScheduledTasks\(\)\.catch/.test(tauriBridge),
   'run updates should debounce a global task and run refresh regardless of the current page'
 );
@@ -7374,7 +7374,7 @@ async function scheduledUnreadPollingRaceBehavior() {
   harness.handlers.list_scheduled_tasks = function () { return staleTasks.promise; };
   harness.handlers.read_scheduled_task = function () { return staleDetail.promise; };
   harness.handlers.list_scheduled_task_runs = function () { return staleRuns.promise; };
-  const staleRefresh = bridge.scheduled.refreshScheduledTaskData(20);
+  const staleRefresh = bridge.scheduled.refreshScheduledTaskData(100);
   await tick();
 
   assert.strictEqual(await bridge.scheduled.openScheduledRunChat(run, task), true);
@@ -7569,8 +7569,8 @@ async function scheduledRefreshDoesNotOverlap() {
   harness.handlers.list_scheduled_task_runs = function () { counts.runs += 1; return pendingRuns.promise; };
   harness.bridge.scheduled.selectScheduledTask("automation-b");
 
-  const first = harness.bridge.scheduled.refreshScheduledTaskData(20);
-  const overlapping = harness.bridge.scheduled.refreshScheduledTaskData(20);
+  const first = harness.bridge.scheduled.refreshScheduledTaskData(100);
+  const overlapping = harness.bridge.scheduled.refreshScheduledTaskData(100);
   await tick();
   assert.deepStrictEqual(counts, { tasks: 1, detail: 1, runs: 1 }, "overlapping polls must share one refresh");
   pendingTasks.resolve([{ id: "automation-b", name: "B" }]);
@@ -7581,7 +7581,7 @@ async function scheduledRefreshDoesNotOverlap() {
   harness.handlers.list_scheduled_tasks = function () { counts.tasks += 1; return [{ id: "automation-b", name: "B2" }]; };
   harness.handlers.read_scheduled_task = function () { counts.detail += 1; return { id: "automation-b", name: "B2" }; };
   harness.handlers.list_scheduled_task_runs = function () { counts.runs += 1; return [{ id: "run-b2", automationId: "automation-b" }]; };
-  await harness.bridge.scheduled.refreshScheduledTaskData(20);
+  await harness.bridge.scheduled.refreshScheduledTaskData(100);
   assert.deepStrictEqual(counts, { tasks: 2, detail: 2, runs: 2 }, "the next poll should run after the prior one settles");
 }
 

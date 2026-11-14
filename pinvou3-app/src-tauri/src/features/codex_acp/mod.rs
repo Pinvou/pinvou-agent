@@ -452,6 +452,34 @@ fn rebind_evictable(
 /// converges once the spawn settles.
 const REBIND_ACP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Upper bound on one `session/load` request inside the cold spawn. The
+/// pool-wide `sessions` lock is held across the whole spawn (see
+/// `get_or_spawn`), so an unbounded load — a peer that accepts `initialize`
+/// then wedges before answering `session/load` — would block every ACP
+/// session entrypoint indefinitely. 120s covers legitimate large-history
+/// restores (initialize itself gets 30s); on expiry the error is surfaced
+/// explicitly instead of falling through to the fresh-session path, because
+/// the wedged peer would only burn the fresh path's own bound
+/// ([`ACP_SESSION_NEW_TIMEOUT`]) before failing anyway — the siblings ride
+/// the same connection and hold the same pool lock.
+const ACP_SESSION_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Upper bound on one `session/new` request inside the cold spawn. Every
+/// caller (fresh session, load-error fallback) runs while the pool-wide
+/// `sessions` lock is held, so the same wedged-peer hazard the load timeout
+/// closes applies here — an unbounded `session/new` blocked every ACP
+/// session entrypoint indefinitely. 120s parity with the load bound:
+/// legitimate creation is fast; only a wedged peer needs this long to fail.
+const ACP_SESSION_NEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Upper bound on one `session/set_config_option` / `session/set_mode`
+/// request. `restore_config_values` runs up to three rounds of these inside
+/// the spawn's pool-lock window, and the live `set_config_option`/`set_mode`
+/// paths hang on the same wedged peer. 30s matches the `initialize` bound:
+/// these are small requests, and expiry fails the individual restore as a
+/// skipped value (the spawn continues) or the live call as an error.
+const ACP_CONFIG_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Retry hints of at least this many milliseconds are phrased in seconds
 /// instead of raw ms, so long backoffs read as actionable waits.
 const RETRY_HINT_SECONDS_MIN_MS: u128 = 2_000;
@@ -5342,6 +5370,21 @@ impl AcpPool {
                     .entry(session_id.to_string())
                     .or_default()
                     .record_crash_at(Instant::now());
+                // The failed generation may have registered pending cards
+                // before dying (the `session/load` timeout in particular fires
+                // after `initialize`), so settle them here like the
+                // exited-before-publish arm instead of letting them linger
+                // until the next spawn. This is the bridgeless BACKSTOP: the
+                // load-timeout abort settles its own generation's cards
+                // through its event bridge inside `spawn_session` (there the
+                // doomed bridge is still alive and emits
+                // permission_resolved/elicitation_resolved + journal
+                // entries); this arm covers the failure paths that have no
+                // bridge to emit through, so the settlement is only the
+                // cancelled response in the shared maps, same as the
+                // NoRuntime and Missing arms' None calls (the Dead arm
+                // passes the removed runtime's bridge instead).
+                self.cancel_runtime_pending_cards(session_id, None).await;
                 diagnostics::write(
                     &operation_id,
                     "session:spawn_failed",
@@ -5768,42 +5811,89 @@ impl AcpPool {
         };
         // Record whether spawn resumed or created the session so restart recovery
         // can report whether history survived. Missing or failed load creates fresh.
-        let (acp_session_id, mut mode_state, mut config_options, resumed_session) =
-            if initialized.agent_capabilities.load_session {
-                if let Some(saved_id) = saved.acp_session_id.clone() {
-                    replay_suppressed.store(true, Ordering::Release);
-                    let loaded = connection
+        let (acp_session_id, mut mode_state, mut config_options, resumed_session) = if initialized
+            .agent_capabilities
+            .load_session
+        {
+            if let Some(saved_id) = saved.acp_session_id.clone() {
+                replay_suppressed.store(true, Ordering::Release);
+                let loaded = match tokio::time::timeout(
+                    ACP_SESSION_LOAD_TIMEOUT,
+                    connection
                         .send_request(LoadSessionRequest::new(saved_id.clone(), workspace.clone()))
-                        .block_task()
-                        .await;
-                    replay_suppressed.store(false, Ordering::Release);
-                    match loaded {
-                        Ok(response) => (
-                            saved_id,
-                            response.modes,
-                            response.config_options.unwrap_or_default(),
-                            true,
-                        ),
-                        Err(error) => {
-                            eprintln!(
-                                "[pinvou3-app] {} ACP 恢复会话失败，改建新会话: {error}",
-                                backend.display_name()
-                            );
-                            let (id, modes, options) =
-                                new_acp_session(&connection, &workspace, backend).await?;
-                            (id, modes, options, false)
-                        }
+                        .block_task(),
+                )
+                .await
+                {
+                    Ok(loaded) => loaded,
+                    Err(_) => {
+                        let error = anyhow::anyhow!(
+                            "{} ACP session/load 超时（{} 秒无响应）",
+                            backend.display_name(),
+                            ACP_SESSION_LOAD_TIMEOUT.as_secs()
+                        );
+                        eprintln!(
+                            "[pinvou3-app] {} ACP 恢复会话超时，中止会话重建: {error}",
+                            backend.display_name()
+                        );
+                        diagnostics::write(
+                            operation_id,
+                            "session:load_timeout",
+                            format!(
+                                "session_id={pinvou_session_id} saved_acp_session_id={saved_id} timeout_secs={} error={error:#}",
+                                ACP_SESSION_LOAD_TIMEOUT.as_secs()
+                            ),
+                        );
+                        replay_suppressed.store(false, Ordering::Release);
+                        // The doomed generation's request handlers were live
+                        // from `initialize`, so cards registered during the
+                        // load window must settle THROUGH this generation's
+                        // event bridge: the get_or_spawn Err arm can only
+                        // settle bridgelessly (no event reaches the
+                        // frontend, no journal entry) once the runtime here
+                        // is dropped (r5 review; same class the module's
+                        // own review #463 fixed for the rebind paths).
+                        self.cancel_runtime_pending_cards(pinvou_session_id, Some(&event_bridge))
+                            .await;
+                        // Same durability invariant as the Dead arm above:
+                        // settlement must be flushed before this bridge can
+                        // be superseded — permission_resolved and
+                        // elicitation_resolved are not in the synchronous
+                        // flush set, so without this the cancel entries sat
+                        // in the buffered writer and the next spawn's
+                        // journal seeding was not ordered against them
+                        // (r6 review).
+                        event_bridge.flush_journal();
+                        return Err(error);
                     }
-                } else {
-                    let (id, modes, options) =
-                        new_acp_session(&connection, &workspace, backend).await?;
-                    (id, modes, options, false)
+                };
+                replay_suppressed.store(false, Ordering::Release);
+                match loaded {
+                    Ok(response) => (
+                        saved_id,
+                        response.modes,
+                        response.config_options.unwrap_or_default(),
+                        true,
+                    ),
+                    Err(error) => {
+                        eprintln!(
+                            "[pinvou3-app] {} ACP 恢复会话失败，改建新会话: {error}",
+                            backend.display_name()
+                        );
+                        let (id, modes, options) =
+                            new_acp_session(&connection, &workspace, backend).await?;
+                        (id, modes, options, false)
+                    }
                 }
             } else {
                 let (id, modes, options) =
                     new_acp_session(&connection, &workspace, backend).await?;
                 (id, modes, options, false)
-            };
+            }
+        } else {
+            let (id, modes, options) = new_acp_session(&connection, &workspace, backend).await?;
+            (id, modes, options, false)
+        };
         restore_config_values(
             &connection,
             &acp_session_id,
@@ -6016,11 +6106,25 @@ async fn new_acp_session(
     workspace: &Path,
     backend: AgentBackend,
 ) -> Result<(String, Option<SessionModeState>, Vec<SessionConfigOption>)> {
-    let response = connection
-        .send_request(NewSessionRequest::new(workspace))
-        .block_task()
-        .await
-        .with_context(|| format!("{} ACP session/new 失败", backend.display_name()))?;
+    // Bounded like session/load (see ACP_SESSION_NEW_TIMEOUT): every caller
+    // runs inside the cold spawn while the pool-wide `sessions` lock is held,
+    // so an unbounded request on a wedged peer would block every ACP session
+    // entrypoint indefinitely.
+    let response = tokio::time::timeout(
+        ACP_SESSION_NEW_TIMEOUT,
+        connection
+            .send_request(NewSessionRequest::new(workspace))
+            .block_task(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "{} ACP session/new 超时（{} 秒无响应）",
+            backend.display_name(),
+            ACP_SESSION_NEW_TIMEOUT.as_secs()
+        )
+    })?
+    .with_context(|| format!("{} ACP session/new 失败", backend.display_name()))?;
     Ok((
         response.session_id.to_string(),
         response.modes,
@@ -6063,15 +6167,27 @@ async fn apply_config_option(
     if !config_option_supports(options, config_id, value_id) {
         bail!("ACP 配置项或取值不存在: {config_id}={value_id}");
     }
-    let response = connection
-        .send_request(SetSessionConfigOptionRequest::new(
-            acp_session_id.to_string(),
-            config_id.to_string(),
-            value_id,
-        ))
-        .block_task()
-        .await
-        .context("ACP session/set_config_option 失败")?;
+    // Bounded (see ACP_CONFIG_REQUEST_TIMEOUT): restore_config_values runs
+    // these inside the spawn's pool-lock window, and the live path hangs on
+    // the same wedged peer.
+    let response = tokio::time::timeout(
+        ACP_CONFIG_REQUEST_TIMEOUT,
+        connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                acp_session_id.to_string(),
+                config_id.to_string(),
+                value_id,
+            ))
+            .block_task(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "ACP session/set_config_option 超时（{} 秒无响应）",
+            ACP_CONFIG_REQUEST_TIMEOUT.as_secs()
+        )
+    })?
+    .context("ACP session/set_config_option 失败")?;
     // ACP 规定响应包含完整的最新配置集。配置项之间可能联动，必须以 Agent
     // 返回值整体替换，不能只在本地手工修改当前字段。
     *options = response.config_options;
@@ -6094,14 +6210,26 @@ async fn set_session_mode(
     if !mode_available() {
         bail!("ACP Agent 未上报会话模式: {mode_id}");
     }
-    connection
-        .send_request(SetSessionModeRequest::new(
-            acp_session_id.to_string(),
-            mode_id.to_string(),
-        ))
-        .block_task()
-        .await
-        .context("ACP session/set_mode 失败")?;
+    // Bounded (see ACP_CONFIG_REQUEST_TIMEOUT): the spawn path reaches this
+    // through apply_saved_mode inside the pool-lock window, and the live
+    // path hangs on the same wedged peer.
+    tokio::time::timeout(
+        ACP_CONFIG_REQUEST_TIMEOUT,
+        connection
+            .send_request(SetSessionModeRequest::new(
+                acp_session_id.to_string(),
+                mode_id.to_string(),
+            ))
+            .block_task(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "ACP session/set_mode 超时（{} 秒无响应）",
+            ACP_CONFIG_REQUEST_TIMEOUT.as_secs()
+        )
+    })?
+    .context("ACP session/set_mode 失败")?;
     write_current_mode(mode_id.to_string());
     Ok(())
 }
@@ -6457,6 +6585,14 @@ mod tests {
                 && spawn.contains("if !lifecycle_for_elicitation.is_running()"),
             "the card handlers must deny frames from a dead generation \
              instead of inserting cards no runtime will settle"
+        );
+        assert!(
+            handlers.contains("cancel_runtime_pending_cards(")
+                && handlers.contains("Some(&event_bridge)"),
+            "the load-timeout abort must settle the doomed generation's \
+             cards THROUGH its own event bridge — a bridgeless backstop \
+             emits no permission_resolved/elicitation_resolved and leaves \
+             the card visible until the next info refresh (r5 review)"
         );
         let missing = production_body(src, "async fn get_or_spawn");
         assert!(

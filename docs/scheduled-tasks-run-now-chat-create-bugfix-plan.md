@@ -1689,7 +1689,7 @@ cargo test -p pinvou3-tauri engine_pool --no-run
 侧边栏列出**所有任务的所有现存运行对话**：`loadScheduledTaskRecentRuns()` 一次调用 `list_scheduled_runs`，后端只执行一次 reconcile 和一次 Session 元数据扫描；前端过滤无 sessionId 和已归档的记录并按时间倒序。
 
 - 不再有“最多 8 条 / 最多 12 个任务 / 每任务最多 3 条”的截断。
-- 不新增二级索引或汇总存储：条数上限由后端既有 retention（`MAX_TERMINAL_RUNS_PER_AUTOMATION = 50`，按 automation 生效）兜底。
+- 不新增二级索引或汇总存储：条数上限由后端既有 retention（`MAX_TERMINAL_RUNS_PER_AUTOMATION = 500`，按 automation 生效）兜底。
 - `ScheduledRunDto` 直接携带 `sessionTitle` / `pinned` / `pinnedAt` / `archived`，因为 `list_sessions` 刻意把 `sched-*` 隔离在普通历史之外，前端拿不到这些会话的元数据。
 
 #### 4. 立即运行 → 侧边栏

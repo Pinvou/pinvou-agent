@@ -593,10 +593,12 @@ function encodeWav(samples, sampleRate) { return pinvouSharedtauriVoice().encode
           }, timeoutMs || voicePostprocessTimeoutMs(normalizedMode, correctedText));
         }),
       ]);
-      // Truncated output (finish_reason=length) must not be written back silently (it may cut
-      // to 60-70% and slip past the 55% shrink red line); fall back to the rule text.
+      // A truncated result must not be written back silently: truncated now means
+      // either finish_reason=length (the rewrite may cut to 60-70% and slip past the
+      // 55% shrink red line) or the input exceeded VOICE_POSTPROCESS_MAX_INPUT_CHARS
+      // and was clipped before the model saw it. Fall back to the rule text.
       if (res && res.truncated) {
-        throw voiceFlowError("postprocess_truncated", "postprocess", "voice postprocess output truncated (finish_reason=length)");
+        throw voiceFlowError("postprocess_truncated", "postprocess", "voice postprocess result truncated (finish_reason=length, or input clipped before postprocess)");
       }
       const text = stripVoicePostprocessFences(res && res.text !== undefined ? res.text : "");
       return {

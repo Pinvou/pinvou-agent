@@ -944,6 +944,30 @@ fn profile_set(
             )));
         }
     }
+    // r5 review: a STORED wipe-shaped label (hand-edited profile.json, or
+    // data written before these guards) is emptied by `normalize` on the
+    // write-back even when this patch only touches another field. A patch
+    // that sets the label itself was already judged above by the same rule,
+    // so only the untouched-field shape needs the stored check. Read errors
+    // fall through to update_profile's own error path.
+    if let Ok(stored) = feature::stored_wipe_shaped_identity_labels() {
+        for topic in stored {
+            let patch_sets_label = match topic {
+                "call_name" => call_name.is_some(),
+                "assistant_alias" => assistant_alias.is_some(),
+                _ => true,
+            };
+            if !patch_sets_label {
+                return Err(CliError::failed(format!(
+                    "memory_profile_label_rejected: the stored {} label does not survive \
+                     the profile normalization and would be silently emptied by this \
+                     update; nothing was written — supply a shorter label, fix the \
+                     stored value by hand, or clear the field from the desktop app",
+                    topic
+                )));
+            }
+        }
+    }
     let patch = feature::ProfilePatch {
         call_name,
         assistant_alias,

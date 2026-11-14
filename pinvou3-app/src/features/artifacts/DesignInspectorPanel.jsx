@@ -613,18 +613,25 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
               type="button"
               onClick={() => setChangesExpanded((value) => !value)}
               data-testid="design-changes-toggle"
+              aria-expanded={changesExpanded}
+              aria-controls="design-changes-log-body"
               className="flex w-full items-center justify-between text-left font-semibold"
             >
               <span>{L.diChangesLog(changes.length)}</span>
               <span>{changesExpanded ? L.diCollapse : L.diExpand}</span>
             </button>
             {changesExpanded && (
-              <div className="mt-1 max-h-48 overflow-y-auto space-y-2">
-                {Object.values(groupedChanges).slice(-8).map((group) => (
+              // 全量渲染:容器 max-h-48 滚动,slice(-8)/slice(-6) 会让更早的
+              // 变更组/条目永远不可达(头部计数还在、内容却滚不到)。
+              <div id="design-changes-log-body" className="mt-1 max-h-48 overflow-y-auto space-y-2">
+                {Object.values(groupedChanges).map((group) => (
                   <div key={group.key} className="rounded-[8px] p-2 bg-white dark:bg-white/[0.04]">
                     <div className="mb-1 truncate font-semibold">{group.label} · {group.items.length}</div>
-                    {group.items.slice(-6).map((change) => (
-                      <div key={change.id} className="truncate">
+                    {group.items.map((change) => (
+                      // Full-length values ride in title: CSS truncate alone
+                      // leaves a long text edit reachable-but-unreadable now
+                      // the slices are gone.
+                      <div key={change.id} className="truncate" title={`${change.oldValue || ''} -> ${change.newValue || ''}`}>
                         {change.type === 'text' ? L.diChangeTypeText : change.property}: {change.oldValue || L.diEmpty} -&gt; {change.newValue || L.diEmpty}
                       </div>
                     ))}

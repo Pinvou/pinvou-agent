@@ -1025,8 +1025,14 @@ pub fn run() {
             // Attach the logging backend in ALL builds, not just debug: without
             // it every log:: line — connector and updater failure causes among
             // them — is a no-op in release and the raw cause of a failure is
-            // lost. LogDir is the OS-standard per-app log directory and the
-            // plugin's default rotation keeps the file bounded (KeepOne, 40KB).
+            // lost. LogDir is the OS-standard per-app log directory. The size
+            // cap is explicit (limits-audit EA6a-6): the plugin's default is
+            // only 40KB per file (tauri-plugin-log DEFAULT_MAX_FILE_SIZE),
+            // which loses diagnostic history within minutes of an issue; 2MB
+            // keeps the disk bounded while retaining hours of history. The
+            // rotation strategy stays KeepOne (the plugin default, now pinned
+            // explicitly against default drift): one file, recreated when it
+            // exceeds the cap — no accumulation.
             // The Stdout target is debug-only: packaged Windows runs without a
             // console (`windows_subsystem = "windows"`), where stdout writes
             // fail and fern's error fallback then panics the logging thread
@@ -1046,6 +1052,8 @@ pub fn run() {
             if let Err(e) = app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                    .max_file_size(2_000_000)
                     .targets(log_targets)
                     .build(),
             ) {
