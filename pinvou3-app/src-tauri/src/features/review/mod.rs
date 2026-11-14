@@ -1049,7 +1049,12 @@ mod tests {
              live 2026-09-30: only 1 is allowed for this model"
         );
         assert_eq!(body["model"], "k3");
-        assert_eq!(body["max_tokens"], REVIEW_MAX_TOKENS);
+        // Wire pin against the LITERAL (like the rewind 10s lock pin), not the
+        // constant: the builder below uses the same constant, so comparing
+        // constant to constant can never fail — a silent 4000→1600 budget
+        // revert (the truncation this value was raised to stop) stayed green
+        // under the old shape (r6 review, mutation-verified).
+        assert_eq!(body["max_tokens"], 4000);
         assert_eq!(body["stream"], false);
         assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["messages"][0]["role"], "system");
