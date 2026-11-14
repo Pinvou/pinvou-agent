@@ -320,7 +320,7 @@ MVP 验收时需要用 pinvou 固定的 `codex-acp` / Codex CLI 版本验证 Cod
 
 > 注（2026-11 归档）：以上为首期合同草案。现行 `acp:event` 实际载荷为
 > `user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call` /
-> `tool_update` / `plan` / `available_commands` / `usage`，以及 turn / permission /
+> `tool_call_update` / `plan` / `available_commands` / `usage`，以及 turn / permission /
 > elicitation 事件（`features/codex_acp/events.rs`），命名与本文草案不同。
 
 合同规则：
