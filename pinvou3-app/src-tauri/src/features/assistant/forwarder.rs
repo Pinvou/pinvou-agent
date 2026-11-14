@@ -10,6 +10,36 @@ use super::*;
 use crate::features::assistant::engine_pool::{EnginePool, stamp_steer_generation};
 use deepseek_tui::session_manager::SavedSession;
 
+type RecoveryReceipt = deepseek_tui::core::events::RecoveryReceipt;
+type ChildRecoveryObservations = std::collections::HashMap<String, RecoveryReceipt>;
+
+fn finish_child_recovery(
+    observations: &mut ChildRecoveryObservations,
+    agent_id: &str,
+    status: deepseek_tui::tools::subagent::AgentWorkerStatus,
+) -> Option<RecoveryReceipt> {
+    use deepseek_tui::tools::subagent::AgentWorkerStatus as Status;
+    if !status.is_terminal() {
+        return None;
+    }
+    let mut receipt = observations.remove(agent_id)?;
+    receipt.state = match status {
+        Status::Completed => "recovered",
+        Status::Cancelled => "cancelled",
+        _ => "stopped",
+    }
+    .into();
+    receipt.next_retry_at_ms = None;
+    Some(receipt)
+}
+
+fn publish_model_recovery(app: &tauri::AppHandle, session_id: &str, receipt: &RecoveryReceipt) {
+    crate::features::assistant::timing::record_model_recovery(session_id, receipt);
+    let payload = json!({ "session_id": session_id, "error": "Rate limit exceeded: model recovery state changed", "model_recovery": receipt });
+    let _ = app.emit("chat:transient_error", payload.clone());
+    crate::features::remote_control::forward_app_event(app, "chat:transient_error", payload);
+}
+
 /// Own persistence and notification on the blocking worker, rather than on
 /// the cancellable forwarder awaiting it. Reclaim can retire queued saves;
 /// once admitted, a save always publishes its exact durable revision before
@@ -352,6 +382,7 @@ pub(crate) fn spawn_event_forwarder(
             .try_state::<EnginePool>()
             .map(|pool| pool.inner().clone());
         let mut current_turn_id: Option<String> = None;
+        let mut child_recovery_observations = ChildRecoveryObservations::new();
         let mut startup_first_output_recorded = false;
         // Dedupe memory for MCP boot receipts: the engine re-reports on every
         // real turn, so only failure-set changes are persisted (see
@@ -940,6 +971,20 @@ pub(crate) fn spawn_event_forwarder(
                     activity,
                     ..
                 } if owner_session_id == session_id => {
+                    if let Some(receipt) = finish_child_recovery(
+                        &mut child_recovery_observations,
+                        &id,
+                        activity.worker_status,
+                    ) {
+                        publish_model_recovery(&app, &session_id, &receipt);
+                        crate::features::assistant::timing::record_agent_recovery_terminal(
+                            &session_id,
+                            &id,
+                            deepseek_tui::tools::subagent::agent_worker_status_name(
+                                activity.worker_status,
+                            ),
+                        );
+                    }
                     let payload = json!({
                         "session_id": session_id,
                         "agent_id": id,
@@ -971,6 +1016,27 @@ pub(crate) fn spawn_event_forwarder(
                     // 审计是应用账本：绑了项目目录的原生代码会话写会话私有目录，
                     // 不污染用户项目；其余会话账本根与执行根相同，行为不变。
                     let ws = bridge.audit_workspace(&session_id, &execution_workspace);
+                    let terminal_status = match &message {
+                        MM::Completed { .. } => Some(AgentWorkerStatus::Completed),
+                        MM::Failed { .. } => Some(AgentWorkerStatus::Failed),
+                        MM::Interrupted { .. } => Some(AgentWorkerStatus::Interrupted),
+                        MM::Cancelled { .. } => Some(AgentWorkerStatus::Cancelled),
+                        _ => None,
+                    };
+                    if let Some(status) = terminal_status {
+                        if let Some(receipt) = finish_child_recovery(
+                            &mut child_recovery_observations,
+                            message.agent_id(),
+                            status,
+                        ) {
+                            publish_model_recovery(&app, &session_id, &receipt);
+                            crate::features::assistant::timing::record_agent_recovery_terminal(
+                                &session_id,
+                                message.agent_id(),
+                                deepseek_tui::tools::subagent::agent_worker_status_name(status),
+                            );
+                        }
+                    }
                     match message {
                         MM::Started { agent_id, .. } => {
                             if let Some(turn_id) = current_turn_id.as_deref() {
@@ -1812,6 +1878,26 @@ pub(crate) fn spawn_event_forwarder(
                         session_id
                     );
                 }
+                Event::ModelRecovery { receipt } => {
+                    if receipt
+                        .turn_id
+                        .as_deref()
+                        .is_some_and(|turn_id| current_turn_id.as_deref() != Some(turn_id))
+                    {
+                        continue;
+                    }
+                    if let Some(agent_id) = &receipt.agent_id {
+                        if receipt.state == "waiting" {
+                            child_recovery_observations.insert(agent_id.clone(), receipt.clone());
+                        } else if child_recovery_observations
+                            .get(agent_id)
+                            .is_some_and(|pending| pending.operation_id == receipt.operation_id)
+                        {
+                            child_recovery_observations.remove(agent_id);
+                        }
+                    }
+                    publish_model_recovery(&app, &session_id, &receipt);
+                }
                 Event::Status { message } => {
                     log::debug!(
                         "[pinvou3][chat] engine status sid={}: {}",
@@ -1920,6 +2006,38 @@ fn should_spawn_memory_review(enabled: bool, session_id: &str, capture_present: 
 #[cfg(test)]
 mod tests {
     use super::{memory_review_in_scope, should_spawn_memory_review};
+
+    #[test]
+    fn model_recovery_child_terminal_closes_only_that_live_observation() {
+        use deepseek_tui::tools::subagent::AgentWorkerStatus as Status;
+        let mut observations = super::ChildRecoveryObservations::new();
+        let receipt = super::RecoveryReceipt {
+            agent_id: Some("child-a".into()),
+            operation_id: Some("operation-a".into()),
+            turn_id: None,
+            attempt: 2,
+            max_attempts: 20,
+            next_retry_at_ms: Some(1900000000000),
+            state: "waiting".into(),
+        };
+        observations.insert("child-a".into(), receipt.clone());
+        let mut second = receipt;
+        second.agent_id = Some("child-b".into());
+        observations.insert("child-b".into(), second);
+        assert!(
+            super::finish_child_recovery(&mut observations, "child-a", Status::Running).is_none()
+        );
+        let terminal =
+            super::finish_child_recovery(&mut observations, "child-a", Status::Cancelled).unwrap();
+        assert_eq!(terminal.state, "cancelled");
+        assert_eq!(terminal.operation_id.as_deref(), Some("operation-a"));
+        assert_eq!(terminal.attempt, 2);
+        assert!(terminal.next_retry_at_ms.is_none());
+        assert!(observations.contains_key("child-b"));
+        assert!(
+            super::finish_child_recovery(&mut observations, "child-a", Status::Completed).is_none()
+        );
+    }
 
     /// Round-15 MAJOR-4: aux sessions are out of scope for the global memory
     /// review; every other session class keeps the existing behavior.

@@ -1,5 +1,19 @@
 # CodeWhale Fork Modification Register
 
+## T6 review integration: bounded model rate-limit recovery (2026-11-05)
+
+The parent review gitlink is `19132162830b38aba7d900ef806427171d9203ef` (tree
+`12a8be1ad97b7724618760ee3393c637633fb929`), integrating public maintenance `11cba403dc6bd6ca5c4dca55042785b03449ac8e`
+with the rate-limit candidate and its transport review fixes. Child tool calls
+retain recovery observation and settle existing write reservations after execution;
+dropped calls retain cancellation cleanup. The candidate has 96 commits above
+upstream v0.9.12, 548 changed files and +123354/-50026 drift (net +73328).
+The published maintenance inventory below describes its ancestor, not this review
+gitlink. Protected maintenance and immutable tags are unchanged; the public-head
+gate remains required. See the [full candidate register](fork-modifications.md#t6-review-candidate-bounded-model-rate-limit-recovery-2026-11-05)
+and [recovery policy](model-rate-limit-recovery.md). Historical validation receipts
+are not promoted to evidence for this integration tree.
+
 ## Merged into the maintenance branch: compaction checkpoint role compatibility
 
 - T7: insert the typed Agent topology checkpoint after the latest real user input and before its assistant/tool chain, including when a compaction summary trails that chain. For Chat Completions, place a structurally recognized current-format summary ahead of its retained round on the wire and merge that summary plus the topology checkpoint into the same user wire message. Quoting the summary marker inside an ordinary user prompt does not trigger reordering. The fix covers only the trailing `tool -> user` that compaction itself creates; the reported provider text was `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"` (SSE lane). Saved history and tool-call/result IDs stay untouched, and the session-pinned system prefix is unchanged.
@@ -63,7 +77,7 @@
 
 - Every ordinary shell execution overlays hook/task environment values, including an empty map. `CommandSpec::with_env` previously replaced the constructor's entire map and removed `PYTHONIOENCODING=utf-8`, so Python reverted to its Windows locale encoding while PowerShell and the tool's output readers expected UTF-8. Merge overlays instead, and resolve explicit Windows variable overrides case-insensitively. Keep the sanitizer, explicit overrides, and Python's file/default-text encoding policy unchanged.
 - The common shell builder covers foreground, background/PTY, interactive, and encoded PowerShell retry execution. Pre-existing direct `CommandSpec::program` consumers, including the read-only direct-argv command lane and `codew sandbox run`, do not seed that shell default and are outside this fix's claim.
-- Integrated: current gitlink is public maintenance `8e8d52fdb`, containing #115–#122, #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152 plus #156. Earlier candidate test receipts below retain their original execution boundaries.
+- Integrated: this topic has flowed into the public maintenance branch, whose head is now `8e8d52fdb` (containing #115–#122, #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152 plus #156); this branch's gitlink remains the T6 candidate `191321628` (based on maintenance baseline `11cba403d`, see Current state), to be re-pinned after CodeWhale#141 merges per the established gate. Earlier candidate test receipts below retain their original execution boundaries.
 - Parent ancestry-gate regressions isolate inherited `GIT_*` variables in both fixture Git calls and gate subprocesses. Under selectors aimed at a disposable foreign repository, the three real topology conditions still produce their expected results while the foreign repository, worktree and index stay byte-identical. The topology/fingerprint boundary is asserted explicitly so inserted layers cannot be silently skipped.
 - The default Windows child-environment regression holds the process environment lock and sets a GBK sentinel before probing empty/unrelated overlays. It cannot inherit a process/registry UTF-8 workaround and falsely pass. The probe uses the detected shell syntax, exercises encoded commands only for PowerShell, and enforces a 30-second timeout with child cleanup. Reintroducing the old replacing `with_env` while the outer process had `PYTHONIOENCODING=utf-8` made this strengthened regression fail (0 passed, 1 failed); the final source was restored byte-for-byte before passing verification.
 - Native end-to-end regressions run the actual lowercase `bash` tool and background ShellManager with a GBK parent environment, Python stdout/stderr, and 64 KiB of preceding output. They require Windows Python on PATH and a PowerShell dispatcher; run from PowerShell or cmd with `SHELL` unset. Opt in with `cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`; set `CODEWHALE_TEST_PYTHON` to select an interpreter.
@@ -72,8 +86,9 @@
 
 ## Current state (2026-11-14)
 
-- Public maintenance and parent gitlink: `8e8d52fdb4a418bf4310db4b5d03dce5345c54d5` (2026-11-14). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`. This round maintenance followed with one signed rustc/clippy 1.100 stable lint-adaptation commit (see the top row of the commit-sequence table) and the parent gitlink followed.
-- Measured history: 99 commits above upstream v0.9.12 `dcd4c200f`, 84 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits remain #107 `f27672935` and #116 `e9a7f48da1` (this round's commit is signed). The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Published maintenance snapshot (ancestor of the review gitlink): `11cba403dc6bd6ca5c4dca55042785b03449ac8e` (2026-11-05). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`. This follow-up changes parent references only; it does not advance maintenance.
+- Measured history: 93 commits above upstream v0.9.12 `dcd4c200f`, 78 above r1 `1fafee7e2`; 91 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Public maintenance has since advanced: `8e8d52fdb4a418bf4310db4b5d03dce5345c54d5` (2026-11-14) contains #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`; 99 commits above upstream v0.9.12, 84 above r1, 97 carrying DCO sign-offs. This PR's T6 candidate predates that advance (candidate is based on `11cba403d`); after CodeWhale#141 merges to the public maintenance branch, re-pin the merged head per the established gate.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
 - Measured drift: 551 files, +121123/-49817, net +71306; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 

@@ -488,15 +488,15 @@
   }
 
   // web+tauriMain 共享
-  // options.deferBackgroundNotify: stream deltas schedule their own coalesced
-  // publication, so the per-event background notify is skipped for them.
+  // Stream deltas can defer publication. Child recovery receipts can update
+  // the session's presentation without claiming a foreground turn.
   function onSessionEvent(e, fn, options) {
     const sid = (e && e.payload && e.payload.session_id) || state.activeSessionId;
     if (sid) {
       const eventBuffer = getBuffer(sid);
       const eventName = String((e && e.event) || "");
       const isTurnEvent = /chat:(user_message|turn_started|delta|reasoning_start|reasoning_delta|reasoning_done|tool_start|tool_end|user_input_required|transient_error)$/.test(eventName);
-      if (eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
+      if (!options?.presentationOnly && eventBuffer && !eventBuffer.localTurnOwned && (eventBuffer.busy || isTurnEvent)) {
         markRemoteTurn(sid, eventBuffer, false, "event:" + eventName);
       }
     }
@@ -5142,7 +5142,8 @@
       const item = firstToolItemById.get(toolId);
       return item ? applyToolItemResult(item, output, success) : null;
     }
-    lane.itemIdSeq.value = 0;
+    // Local edits can keep live rows and restore earlier rows on rejection.
+    if (!opts?.keepItemIdSequence) lane.itemIdSeq.value = 0;
     // Replay rebuilds toolMeta only for historical tool_uses that still have a
     // matching tool_result to backfill (write/patch's large args otherwise
     // duplicate the whole transcript inside the 32-entry all-session LRU).
@@ -5384,6 +5385,7 @@
   function liveChatItemKeptForHydration(item) {
     if (!item || item.type === "user") return false;
     if (item.type === "assistant") return item.interruptedDisplayOnly === true;
+    if (globalThis.PinvouModelRecovery?.isActiveChildRecoveryNotice?.(item)) return true;
     if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
     // 后台 Shell 在 chat:done 后仍继续运行；持久化 transcript 只有工具结果文本，
     // 没有 taskId/background/liveOutput，权威重载时必须保留实时卡片并按 toolId 合并。

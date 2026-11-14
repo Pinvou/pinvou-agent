@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -18,12 +18,14 @@ mkdirSync(sharedDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 const modulePath = path.join(moduleDir, 'acp-state.js');
 copyFileSync(source, modulePath);
-for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
+for (const file of ['conversation-model.js', 'deepseek-conversation.js', 'model-recovery.js']) {
   copyFileSync(
     path.join(root, 'src', 'features', 'conversation', file),
     path.join(conversationDir, file),
   );
 }
+copyFileSync(path.join(root, 'src', 'shared', 'i18n.js'), path.join(sharedDir, 'i18n.js'));
+cpSync(path.join(root, 'src', 'shared', 'i18n'), path.join(sharedDir, 'i18n'), { recursive: true });
 copyFileSync(
   path.join(root, 'src', 'shared', 'shell-tools.mjs'),
   path.join(sharedDir, 'shell-tools.mjs'),

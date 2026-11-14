@@ -3316,6 +3316,16 @@ impl Pinvou3Bridge {
     /// `DEEPSEEK_*` settings in run-dev.sh).
     pub fn build_dt_config(&self) -> DtConfig {
         let mut cfg = DtConfig::default();
+        cfg.rate_limit_recovery_dir =
+            Some(crate::platform::paths::pinvou3_home().join("rate-limit-recovery"));
+        cfg.retry = Some(deepseek_tui::config::RetryConfig {
+            rate_limit: self.prefs.model_rate_limit_retry.clone(),
+            enabled: None,
+            max_retries: None,
+            initial_delay: None,
+            max_delay: None,
+            exponential_base: None,
+        });
         // The engine landing (the RESPONSES_ROUTE_PROVIDER named-custom route
         // on a GPT×Responses hit) may diverge from the vendor-semantics
         // provider(); see `engine_route_provider`.
