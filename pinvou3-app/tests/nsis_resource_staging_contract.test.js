@@ -39,6 +39,13 @@ const baseInstallerHooks = read(
   "nsis",
   "installer-hooks.nsh",
 );
+const userProfileScript = read(
+  "src-tauri",
+  "packaging",
+  "windows",
+  "nsis",
+  "pinvou-user-profile.ps1",
+);
 const runtimeEnvScript = read(
   "src-tauri",
   "packaging",
@@ -101,6 +108,15 @@ assert.match(
   stageScript,
   /\[Math\]::Ceiling\(\$StagedResourceBytes \/ 1KB\)/u,
   "staged size must stay in KiB to match the bundler's estimated_size units",
+);
+// Round-2 space safety: trailing separators are stripped from the staging
+// source and destination before the native robocopy call (PowerShell 5.1
+// parses a trailing backslash before a closing quote as a literal quote,
+// corrupting the argument for checkout paths containing spaces).
+assert.match(
+  stageScript,
+  /TrimEnd\('\\',\s*'\/'\)/u,
+  "staging source and destination paths must strip trailing separators before robocopy (both call sites)",
 );
 assert.match(stageScript, /Measure-Object -Property Length -Sum/u);
 assert.match(stageScript, /File \/a \/r/u);
@@ -287,9 +303,71 @@ assert.match(
   "main.wxs must carry the same provenance contract as the NSIS template",
 );
 assert.match(
+  mainWxs,
+  /Base: tauri-cli-v2\.12\.4/u,
+  "main.wxs must carry the same provenance contract as the NSIS template",
+);
+// The provenance version must track the bundler actually pinned by
+// package.json: a CLI bump without re-basing the template passes every
+// other pin (no CI lane runs makensis), so bind the header to the
+// dependency.
+const cliPin = packageJson.devDependencies["@tauri-apps/cli"];
+const cliVersion = String(cliPin).replace(/^[~^><= ]*/, "");
+assert.ok(
+  cliVersion && installerTemplate.includes("Base: tauri-cli-v" + cliVersion),
+  "the template provenance header must track the pinned @tauri-apps/cli (" +
+    cliPin +
+    "); re-base the template when the CLI moves",
+);
+// The NSIS delete-app-data checkbox must still remove ~/.pinvou3 (MSI
+// RemovePinvouUserData parity), but through the interactive session
+// owner's profile: the uninstaller runs elevated, and under
+// over-the-shoulder elevation $PROFILE (like SetShellVarContext current)
+// resolves against the elevation token's account, which would wipe the
+// admin's data instead of the prompting user's. Resolution fails safe —
+// any non-zero resolver exit keeps the data and says so.
+assert.match(
   installerTemplate,
-  /RmDir \/r "\$PROFILE\\\.pinvou3"/u,
-  "the NSIS delete-app-data checkbox must also remove ~/.pinvou3 (MSI RemovePinvouUserData parity)",
+  /RmDir \/r "\$9\\\.pinvou3"/u,
+  "the checkbox must remove ~/.pinvou3 via the resolved interactive-user profile, not $PROFILE",
+);
+assert.doesNotMatch(
+  installerTemplate,
+  /RmDir \/r "\$PROFILE/u,
+  "the uninstaller must not target $PROFILE: it follows the elevation token under over-the-shoulder elevation",
+);
+assert.match(
+  installerTemplate,
+  /pinvou-user-profile\.ps1/u,
+  "the interactive-user profile resolver must ship with the uninstaller",
+);
+assert.match(
+  installerTemplate,
+  /Could not identify the interactive user's profile/,
+  "profile-resolution failure must keep ~/.pinvou3 and tell the user (fail safe, never guess-and-wipe)",
+);
+assert.match(
+  userProfileScript,
+  /Win32_Process/u,
+  "the resolver must derive the owner from the interactive session's shell process",
+);
+assert.match(
+  userProfileScript,
+  /exit 2/u,
+  "the resolver must fail closed (non-zero exit, no path printed) when the owner is ambiguous",
+);
+assert.doesNotMatch(
+  userProfileScript,
+  /RmDir|Remove-Item/u,
+  "the resolver must never delete anything itself",
+);
+// Template delta pin: the dump_system_prompt dev-tool exclusion has no
+// runtime test today (nothing enumerates that binary yet), so pin its
+// presence in both binary loops (install and uninstall) — dropping either
+// would reinstall the dev tool into every machine.
+assert.ok(
+  (installerTemplate.match(/dump_system_prompt/g) || []).length >= 2,
+  "dump_system_prompt.exe must be excluded in both binary loops (install and uninstall)",
 );
 
 const installSectionOffset = installerTemplate.indexOf("Section Install");
