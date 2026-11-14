@@ -3015,8 +3015,20 @@ impl EnginePool {
             // ordinary sends carry no ask carrier to repair it. Holding the
             // entries lock across the insert and the fresh re-read
             // guarantees every later handle_for queues its ops AFTER this
-            // reconciled ChangeMode: the spawned engine can never stay on
-            // the pre-spawn snapshot.
+            // reconciled pair: the spawned engine can never stay on the
+            // pre-spawn snapshot.
+            //
+            // BOTH halves of the arm are reconciled (round-5 P2): the arm
+            // queued ChangeMode AND SetPermissionRuleset from the pre-spawn
+            // snapshot, so a concurrent mode change that only the catch-up
+            // sees must re-derive the ruleset too — reconciling the posture
+            // alone would leave a Yolo-derived Floor face under an Auto/Plan
+            // posture until the next explicit toggle or broadcast. The ruleset
+            // goes through the engine-lane form for the same reason as the
+            // arm (an unattended spawn must keep the spawn config's Full
+            // face); refresh_session_permission_ruleset_locked is not usable
+            // here — its handle_for would deadlock on the entries lock this
+            // block holds.
             let mut entries = self.entries.lock().await;
             entries.insert(
                 session_id.to_string(),
@@ -3036,6 +3048,13 @@ impl EnginePool {
             if let Err(error) = engine.handle.try_send(op) {
                 log::warn!(
                     "[engine_pool] spawn posture catch-up {session_id} change-mode send failed: {error:#}"
+                );
+            }
+            if let Err(error) = engine.handle.try_send(Op::SetPermissionRuleset {
+                ruleset: self.session_scope_ruleset_for_engine(session_id, &engine),
+            }) {
+                log::warn!(
+                    "[engine_pool] spawn posture catch-up {session_id} ruleset send failed: {error:#}"
                 );
             }
         }
@@ -10601,6 +10620,99 @@ mod scheduled_model_tests {
         assert!(
             one_body.contains("session_scope_ruleset_for_engine(session_id, &engine)"),
             "the one-session refresh must compose for the live engine's lane"
+        );
+        // Round-5 P2: the spawn catch-up is the fourth live-engine ruleset
+        // send — reconciling the posture half alone would leave the
+        // pre-spawn snapshot's mode-derived face (a Yolo Floor under an
+        // Auto/Plan posture) until the next explicit toggle or broadcast.
+        // Its placement inside the publication lock hold is pinned
+        // separately by spawn_catch_up_reconciles_both_halves_inside_the_lock_hold.
+        let catch_up = production_body(src, "async fn get_or_spawn_with_policy(");
+        assert!(
+            catch_up.contains("Op::SetPermissionRuleset {"),
+            "the spawn catch-up must send a reconciled ruleset, not only the posture"
+        );
+        assert!(
+            catch_up.contains("session_scope_ruleset_for_engine(session_id, &engine)"),
+            "the catch-up ruleset must compose through the engine-lane form"
+        );
+    }
+
+    /// Tri-mode ordering pin (round-5 P2): BOTH halves of the spawn arming —
+    /// the ChangeMode and the engine-lane SetPermissionRuleset — must be
+    /// re-derived INSIDE the publication lock hold. Mutation probe (this
+    /// wave): moving the fresh re-read + sends after the lock block compiled
+    /// green and every pin in the file stayed green, so the ordering
+    /// invariant ("a later handle_for always queues its ops after the
+    /// reconciled pair") was unobserved. This pin closes that gap: the
+    /// catch-up must sit within the bare `{ let mut entries = …; … }` block
+    /// that holds the insert. Naive brace counting is safe over the block:
+    /// every brace in it (format-string `{session_id}`/`{error:#}`) is
+    /// balanced, and `production_body` has already stripped comments.
+    #[test]
+    fn spawn_catch_up_reconciles_both_halves_inside_the_lock_hold() {
+        let src = include_str!("engine_pool.rs");
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let body = production_body(src, "async fn get_or_spawn_with_policy(");
+        // Anchor on the catch-up fresh re-read (unique in the spawn body —
+        // the arm's own read lives in a separate fn): the publication lock
+        // acquisition is the one immediately preceding it, and that block
+        // opens with a bare 8-space `{` line (the spawn path's other lock
+        // scopes open on `let … = {` lines, so the bare brace pins THIS
+        // block).
+        let fresh_at = body
+            .find("let fresh_state = self.store.mode_state(session_id);")
+            .expect("the catch-up fresh re-read must exist in the spawn path");
+        let lock_at = body[..fresh_at]
+            .rfind("let mut entries = self.entries.lock().await;")
+            .expect("the publication lock acquisition must precede the fresh re-read");
+        let opener = body[..lock_at]
+            .rfind("\n        {")
+            .expect("the lock block's bare opening brace must precede the lock line")
+            + 1;
+        let bytes = body.as_bytes();
+        let mut depth: usize = 0;
+        let mut closer = None;
+        for (offset, b) in bytes[opener..].iter().enumerate() {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        closer = Some(opener + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let closer = closer.expect("the lock block must close");
+        let hold = &body[opener..=closer];
+        assert!(
+            hold.contains("let mut entries = self.entries.lock().await;"),
+            "the extracted block must be the publication lock hold"
+        );
+        assert!(
+            hold.contains("entries.insert("),
+            "the publication insert must stay inside the lock hold"
+        );
+        assert!(
+            hold.contains("let fresh_state = self.store.mode_state(session_id);"),
+            "the catch-up must re-read the persisted posture inside the lock hold"
+        );
+        assert!(
+            hold.contains("safety_change_mode_op(&fresh_state"),
+            "the reconciled ChangeMode must be queued inside the lock hold"
+        );
+        assert!(
+            hold.contains("Op::SetPermissionRuleset {"),
+            "the reconciled ruleset must be queued inside the lock hold (round-5 P2)"
+        );
+        assert!(
+            hold.contains("session_scope_ruleset_for_engine(session_id, &engine)"),
+            "the catch-up ruleset must compose through the engine-lane form"
         );
     }
 
