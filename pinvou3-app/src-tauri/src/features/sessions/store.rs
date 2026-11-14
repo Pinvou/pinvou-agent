@@ -497,7 +497,9 @@ impl SessionStore {
         // 账本只记 2× on-disk → 「导出成功、导入必拒」。与底座
         // `session_json`（crate 私有）同为 `to_string_pretty(&SavedSession)`
         // 确定性序列化，长度逐字节一致；stat 保留为响度检查（stat 故障即
-        // 异常态，如实失败）。标题等无界字符串的字节随序列化长度自动入账。
+        // 异常态，如实失败）。标题等无界字符串随记录本体的序列化长度
+        // 入账；manifest.json 里的第二份元数据副本另行显式记账（见下方
+        // ensure_artifacts_exportable 调用处的 manifest_metadata_bytes）。
         let record_path = self.manager.sessions_dir().join(format!("{id}.json"));
         std::fs::metadata(&record_path)
             .with_context(|| format!("stat session record {}", record_path.display()))?;
@@ -511,7 +513,22 @@ impl SessionStore {
         } else {
             None
         };
-        super::import::ensure_artifacts_exportable(artifacts_dir.as_deref(), record_bytes)?;
+        // manifest.json 内嵌整份 SessionMetadata（底座 ArchiveManifest 的
+        // session 字段克隆）：标题等无界字符串在**这份副本**里的字节不随
+        // record_bytes 入账（container ≤ record 只覆盖 journal 投影）——
+        // 上方「标题随序列化长度自动入账」只对记录本体成立。按同一
+        // to_string_pretty 确定性序列化显式记账，>64 KiB 标题的近上限归档
+        // 不再「导出成功、导入必拒」（r9 minor）。
+        let manifest_metadata_bytes = serde_json::to_string_pretty(&session.metadata)
+            .map(|serialized| serialized.len() as u64)
+            .map_err(|error| {
+                anyhow::anyhow!("serialize session metadata for the export ledger: {error}")
+            })?;
+        super::import::ensure_artifacts_exportable(
+            artifacts_dir.as_deref(),
+            record_bytes,
+            manifest_metadata_bytes,
+        )?;
         // write_session_archive takes the session-store ROOT since the
         // engine-side confinement rework: it derives, validates and confines
         // the artifacts dir itself (invalid ids and links under the store are

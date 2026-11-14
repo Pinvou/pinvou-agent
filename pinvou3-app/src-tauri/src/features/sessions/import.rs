@@ -116,6 +116,7 @@ pub struct SessionImportSummary {
     pub artifacts_failed: Vec<SessionImportFailure>,
 }
 
+#[derive(Debug)]
 enum ImportOutcome {
     /// 记录落盘；`Err` 携带 artifacts 落盘失败的原因（记录导入成功但
     /// artifacts 缺失的部分导入，见 `SessionImportSummary::artifacts_failed`）。
@@ -238,9 +239,12 @@ impl SessionStore {
             entry
                 .take(MAX_MEMBER_BYTES + 1)
                 .read_to_end(&mut bytes)
-                .with_context(|| format!("read member {member_name}"))?;
+                .with_context(|| format!("read member {}", display_member_name(&member_name)))?;
             if bytes.len() as u64 > MAX_MEMBER_BYTES {
-                bail!("member {member_name} exceeds the {MAX_MEMBER_BYTES}-byte import cap");
+                bail!(
+                    "member {} exceeds the {MAX_MEMBER_BYTES}-byte import cap",
+                    display_member_name(&member_name)
+                );
             }
             match member_name.as_str() {
                 "session.json" => {
@@ -297,7 +301,8 @@ impl SessionStore {
                         && first_component != "artifacts"
                     {
                         bail!(
-                            "archive member {member_name} spells the artifacts directory with a different case or folded spelling; refusing to import"
+                            "archive member {} spells the artifacts directory with a different case or folded spelling; refusing to import",
+                            display_member_name(&member_name)
                         );
                     }
                     if let Some(relative) = other.strip_prefix("artifacts/") {
@@ -305,7 +310,10 @@ impl SessionStore {
                         // 落盘期只会降级成「记录导入成功但 artifacts 静默
                         // 缺失」的 fail-open（review finding）。
                         validated_artifact_target(Path::new(""), relative).with_context(|| {
-                            format!("archive member {member_name} is not importable")
+                            format!(
+                                "archive member {} is not importable",
+                                display_member_name(&member_name)
+                            )
                         })?;
                         // 成员冲突 fail-closed（与 session.json 重复成员同一
                         // 口径）：重名成员经原子覆盖静默 last-wins；大小写/
@@ -318,7 +326,8 @@ impl SessionStore {
                         let candidate_folded = member_folded_spelling(relative);
                         if !seen_artifact_folded.insert(candidate_folded) {
                             bail!(
-                                "archive contains duplicate or case-variant artifact members (conflicts with {member_name}); refusing to import"
+                                "archive contains duplicate or case-variant artifact members (conflicts with {}); refusing to import",
+                                display_member_name(&member_name)
                             );
                         }
                         artifacts.push((relative.to_string(), bytes));
@@ -401,12 +410,11 @@ fn import_one_session_inner(
     // 保留源值作血缘/展示。
     session.metadata.updated_at = Utc::now();
 
-    // skip 探测 → artifacts 落盘 → 记录 persist 在同一把 scheduled_mutation
-    // 下串行：只给 persist 持锁的话，删除/驱逐（它们持同一把锁）可以插进
-    // 探测与落盘之间——reclaim 清扫刚 `remove_dir_all` 掉的目录会让已写入
-    // 的成员无声消失且不上报。锁不可重入（parking_lot），persist 直接走
+    // 探测窗（窗 1）：三态存在性探测持有 scheduled_mutation，与删除/驱逐
+    // （它们持同一把锁）互斥。（r9 重构：字节落盘移出锁窗——见
+    // `commit_staged_import` 处的窗口论证；探测仍持锁，与并发导入的
+    // persist 互斥。）锁不可重入（parking_lot），persist 直接走
     // `persist_then_reconcile` 而非 `save`。
-    let mutation = store.scheduled_mutation.lock();
     let record_path = store.sessions_dir().join(format!("{id}.json"));
     // 三态存在性探测（store.rs 的 doctrine：普通 `exists()` 会把 EACCES/EIO
     // 折叠成「不存在」，随后的原子落盘会静默覆盖一条活会话的记录——与
@@ -482,7 +490,94 @@ fn import_one_session_inner(
             }
         }
     }
-    if let Err(error) = store.persist_then_reconcile(&session, "session import") {
+    commit_staged_import(
+        store,
+        &session,
+        &artifacts,
+        artifacts_result,
+        created_session_dir,
+    )
+}
+
+/// 提交窗（窗 2，r9 重构）：重探 → 成员在场复核 → 记录 persist，整段持有
+/// scheduled_mutation。字节落盘（每成员 write+fsync+rename，上限 2 GiB /
+/// 1 万成员）已移到无锁窗——原单窗实现持锁横跨全部成员写入，大归档导入
+/// 期间其他会话的每条消息 persist（同一把锁）全被冻结（r9 perf minor）。
+/// 锁窗收窄后仍成立的不变式与收口：
+/// - 探测→persist 的原子性由「窗 1 探测 + 窗 2 重探」拼接：暂存期间另一
+///   并发导入可能已把同一 id 落盘，重探三态同口径，`Ok`/故障分别返回
+///   skip/失败（输家的暂存文件与赢家内容逐字节一致，同名原子覆盖收敛，
+///   不回滚——目录归赢家所有）。
+/// - 「记录永不先于其成员落盘」由窗 2 的在场复核维持：无锁窗内成员被
+///   外部删除（持锁删除者无法到达无记录会话，手动删除可以）时如实失败
+///   并按 persist 失败口径回滚，而非把指针写进空洞记录。
+/// - 删除/驱逐持同一把锁且都以记录存在为前提；探测窗已证实无记录，
+///   无锁暂存窗内它们到不了本会话目录——原单窗锁防的「reclaim 清扫
+///   remove_dir_all 刚写入的成员」场景需要记录先行存在，与探测结论矛盾。
+/// 回滚语义与原实现逐字一致：仅当本次导入创建的会话目录且 artifacts
+/// 完整写入时才整目录删除。
+fn commit_staged_import(
+    store: &SessionStore,
+    session: &SavedSession,
+    artifacts: &[(String, Vec<u8>)],
+    artifacts_result: Result<()>,
+    created_session_dir: bool,
+) -> ImportOutcome {
+    let id = session.metadata.id.clone();
+    let fail = |reason: String| SessionImportFailure {
+        session_id: id.clone(),
+        reason,
+    };
+    let record_path = store.sessions_dir().join(format!("{id}.json"));
+    let session_dir = store.sessions_dir().join(&id);
+    let mutation = store.scheduled_mutation.lock();
+    match std::fs::metadata(&record_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            if artifacts_result.is_ok() && created_session_dir {
+                let _ = std::fs::remove_dir_all(&session_dir);
+            }
+            return ImportOutcome::Failed(fail(format!(
+                "re-probe existing record before persist {}: {error}",
+                record_path.display()
+            )));
+        }
+        Ok(_) => return ImportOutcome::SkippedExisting(id),
+    }
+    // 在场复核（仅完整暂存成功的路径）：暂存与提交窗之间成员可能被外部
+    // 移除；用与 import_artifacts 同一 validated 拼法逐成员探测，缺失/故障
+    // 即按 persist 失败口径回滚，绝不把指针写进空洞记录。
+    if artifacts_result.is_ok() && !artifacts.is_empty() {
+        let verify = || -> Result<()> {
+            let dir = match deepseek_tui::session_export::session_artifacts_dir(
+                &store.sessions_dir(),
+                &id,
+            ) {
+                Ok(Some(dir)) => dir,
+                Ok(None) => anyhow::bail!("staged artifacts dir vanished before persist"),
+                Err(error) => {
+                    anyhow::bail!("staged artifacts dir cannot be verified: {error:#}")
+                }
+            };
+            for (relative, _) in artifacts {
+                let target = validated_artifact_target(&dir, relative)?;
+                std::fs::metadata(&target).with_context(|| {
+                    format!(
+                        "staged artifact {} vanished before persist",
+                        target.display()
+                    )
+                })?;
+            }
+            Ok(())
+        };
+        if let Err(error) = verify() {
+            if created_session_dir {
+                let _ = std::fs::remove_dir_all(&session_dir);
+            }
+            return ImportOutcome::Failed(fail(format!("verify staged artifacts: {error:#}")));
+        }
+    }
+    if let Err(error) = store.persist_then_reconcile(&*session, "session import") {
         if artifacts_result.is_ok() && created_session_dir {
             let _ = std::fs::remove_dir_all(&session_dir);
         }
@@ -550,19 +645,32 @@ fn import_artifacts(store: &SessionStore, id: &str, artifacts: &[(String, Vec<u8
             // junction/reparse 目录（CodeWhale exporter 对根的注释原文）——
             // create_dir_all 会跟随它把父级解析到 store 之外。落盘前把父级
             // 经 canonicalize 重读，要求仍落在 canonical artifacts 目录之内，
-            // 否则拒绝（fail-closed，与逐级链接拒绝同一失败面）。
-            if let Ok(parent_resolved) = parent.canonicalize() {
-                let dir_resolved = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                anyhow::ensure!(
-                    parent_resolved.starts_with(&dir_resolved),
-                    "{} resolves outside the session artifacts dir; refusing to import artifacts through it",
-                    parent.display()
-                );
-            }
+            // 否则拒绝（fail-closed，与逐级链接拒绝同一失败面）。canonicalize
+            // 本身的故障同样拒绝（r9 minor：`if let Ok` 折叠成跳过是
+            // fail-open——竞态删除/异常 reparse 错误下包围校验会无声失效）。
+            ensure_parent_resolves_inside_artifacts_dir(parent, &dir)?;
         }
         crate::platform::filesystem::atomic_write_private(&target, bytes)
             .with_context(|| format!("write artifact {}", target.display()))?;
     }
+    Ok(())
+}
+
+/// Reparse-point 收口的单一入口（[`import_artifacts`] 每级父目录调用）：
+/// 父目录经 canonicalize 重读后必须仍落在 canonical artifacts 目录之内。
+/// canonicalize 故障即拒绝——刚 `create_dir_all` 成功的目录无法解析是
+/// 异常态（竞态删除、异常 reparse 错误），跳过校验继续落盘正是
+/// fail-open（r9 minor）；与逐级 symlink 拒绝同一失败面。
+fn ensure_parent_resolves_inside_artifacts_dir(parent: &Path, dir: &Path) -> Result<()> {
+    let parent_resolved = parent
+        .canonicalize()
+        .with_context(|| format!("resolve {}", parent.display()))?;
+    let dir_resolved = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    anyhow::ensure!(
+        parent_resolved.starts_with(&dir_resolved),
+        "{} resolves outside the session artifacts dir; refusing to import artifacts through it",
+        parent.display()
+    );
     Ok(())
 }
 
@@ -600,6 +708,21 @@ const GENERATED_MEMBER_BYTES_BASE: u64 = 64 * 1024;
 /// 与 APFS 的 Unicode 简单折叠，纯 ASCII 折叠会把 `IŞIK.md`/`ışık.md` 这类
 /// 变体对放进大小写不敏感卷上静默合并（r7 minor）。跨机方向的过拒（ext4
 /// 上可共存的变体对被指名拒绝）与 `:`/尾点拒绝同一 fail-closed 口径。
+/// 成员名的展示转义（r9 minor）：pax 长名可携带 `\n`/控制字符，逐字内插
+/// 进 bail 消息会把任意换行注入 toast/日志（多行伪装、日志拼接）。仅做
+/// 控制字符转义（`\u{XXXX}`），文件名本体原样保留供用户定位成员。
+fn display_member_name(name: &str) -> String {
+    let mut escaped = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_control() {
+            escaped.push_str(&format!("\\u{{{:04X}}}", ch as u32));
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+
 fn member_folded_spelling(relative: &str) -> String {
     crate::platform::os::volume_fold_spelling(relative)
 }
@@ -610,6 +733,25 @@ fn member_folded_spelling(relative: &str) -> String {
 pub(crate) fn ensure_artifacts_exportable(
     artifacts_dir: Option<&Path>,
     record_bytes: u64,
+    manifest_metadata_bytes: u64,
+) -> Result<()> {
+    ensure_artifacts_exportable_with(
+        artifacts_dir,
+        record_bytes,
+        manifest_metadata_bytes,
+        MAX_TOTAL_BYTES,
+        MAX_MEMBER_COUNT,
+    )
+}
+
+/// 参数化上限的预扫描本体（r9：元数据副本入账的可测性——生产上限
+/// 2 GiB 无法在测试内顶到，与导入侧「参数化生产函数」同一课）。
+fn ensure_artifacts_exportable_with(
+    artifacts_dir: Option<&Path>,
+    record_bytes: u64,
+    manifest_metadata_bytes: u64,
+    max_total_bytes: u64,
+    max_member_count: usize,
 ) -> Result<()> {
     fn walk(
         dir: &Path,
@@ -619,6 +761,7 @@ pub(crate) fn ensure_artifacts_exportable(
         member_count: &mut usize,
         manifest_bytes: &mut u64,
         seen_folded: &mut std::collections::HashSet<String>,
+        max_total_bytes: u64,
     ) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             problems.push(format!(
@@ -662,6 +805,7 @@ pub(crate) fn ensure_artifacts_exportable(
                     member_count,
                     manifest_bytes,
                     seen_folded,
+                    max_total_bytes,
                 );
             } else if file_type.is_file() {
                 *member_count += 1;
@@ -682,9 +826,9 @@ pub(crate) fn ensure_artifacts_exportable(
                     continue;
                 }
                 *total_bytes = total_bytes.saturating_add(meta.len());
-                if *total_bytes > MAX_TOTAL_BYTES {
+                if *total_bytes > max_total_bytes {
                     problems.push(format!(
-                        "artifacts/{child_relative}: artifacts exceed the {MAX_TOTAL_BYTES}-byte total import cap (remove or thin this session's artifacts and retry the export)"
+                        "artifacts/{child_relative}: artifacts exceed the {max_total_bytes}-byte total import cap (remove or thin this session's artifacts and retry the export)"
                     ));
                     continue;
                 }
@@ -746,7 +890,13 @@ pub(crate) fn ensure_artifacts_exportable(
     total_bytes = total_bytes
         .saturating_add(record_bytes)
         .saturating_add(record_bytes)
-        .saturating_add(GENERATED_MEMBER_BYTES_BASE);
+        .saturating_add(GENERATED_MEMBER_BYTES_BASE)
+        // manifest.json 内嵌整份 SessionMetadata（底座 ArchiveManifest 的
+        // session 字段克隆）：标题等无界字符串在**这份副本**里的字节不随
+        // record_bytes 入账（container ≤ record 只覆盖 journal 投影），
+        // 必须按序列化长度显式记账，否则超长标题的近上限归档仍会
+        // 「导出成功、导入必拒」（r9 minor）。
+        .saturating_add(manifest_metadata_bytes);
     let mut seen_folded = std::collections::HashSet::new();
     if let Some(artifacts_dir) = artifacts_dir {
         walk(
@@ -757,21 +907,22 @@ pub(crate) fn ensure_artifacts_exportable(
             &mut member_count,
             &mut manifest_bytes,
             &mut seen_folded,
+            max_total_bytes,
         );
     }
     // manifest 索引余量在 walk 后并入总账本再对总量上限复核：按实际成员
     // 全名累计，长名/海量成员不再被平铺余量低估（r7 minor）。仅总量维度
     // 需要这次收尾复核——单成员维度 manifest 不参与。
     total_bytes = total_bytes.saturating_add(manifest_bytes);
-    if total_bytes > MAX_TOTAL_BYTES && problems.is_empty() {
+    if total_bytes > max_total_bytes && problems.is_empty() {
         problems.push(format!(
-            "artifacts/: archive ledger (artifacts + record + the archive's own members) exceeds the {MAX_TOTAL_BYTES}-byte total import cap (remove or thin this session's artifacts and retry the export)"
+            "artifacts/: archive ledger (artifacts + record + the archive's own members) exceeds the {max_total_bytes}-byte total import cap (remove or thin this session's artifacts and retry the export)"
         ));
     }
-    if member_count.saturating_add(GENERATED_MEMBER_COUNT) > MAX_MEMBER_COUNT {
+    if member_count.saturating_add(GENERATED_MEMBER_COUNT) > max_member_count {
         problems.push(format!(
             "artifacts/: more than {} files exceed the member-count import cap once the archive's own members are counted (thin this session's artifacts and retry the export)",
-            MAX_MEMBER_COUNT - GENERATED_MEMBER_COUNT
+            max_member_count - GENERATED_MEMBER_COUNT
         ));
     }
     if problems.is_empty() {
@@ -838,8 +989,9 @@ fn session_schema_version_ceiling() -> u32 {
 mod tests {
     use super::super::{SessionImportFailure, SessionImportSummary};
     use super::{
-        MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES, SessionStore,
-        ensure_artifacts_exportable, validated_artifact_target,
+        ImportOutcome, MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES, SessionStore,
+        commit_staged_import, ensure_artifacts_exportable, ensure_artifacts_exportable_with,
+        ensure_parent_resolves_inside_artifacts_dir, import_artifacts, validated_artifact_target,
     };
     use deepseek_tui::models::{ContentBlock, Message, Role};
 
@@ -2007,7 +2159,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir empty artifacts dir");
         // 单成员腿：记录本体超 512 MiB 上限（数值即可，无需落大文件）。
-        let error = ensure_artifacts_exportable(Some(&dir), MAX_MEMBER_BYTES + 1)
+        let error = ensure_artifacts_exportable(Some(&dir), MAX_MEMBER_BYTES + 1, 0)
             .expect_err("oversized record must fail the pre-scan");
         assert!(
             format!("{error:#}").contains("session record exceeds"),
@@ -2015,7 +2167,7 @@ mod tests {
         );
         // 总量腿：记录顶到总量上限 + 任一 artifact 文件即超 2 GiB 总账。
         std::fs::write(dir.join("small.txt"), b"x").expect("seed tiny artifact");
-        let error = ensure_artifacts_exportable(Some(&dir), MAX_TOTAL_BYTES)
+        let error = ensure_artifacts_exportable(Some(&dir), MAX_TOTAL_BYTES, 0)
             .expect_err("record at total cap leaves no room for artifacts");
         assert!(
             format!("{error:#}").contains("total import cap"),
@@ -2023,7 +2175,7 @@ mod tests {
         );
         // 干净目录 + 适中记录照常放行（预扫描未误伤正常会话）。
         std::fs::remove_file(dir.join("small.txt")).expect("cleanup");
-        ensure_artifacts_exportable(Some(&dir), 1024).expect("clean pre-scan passes");
+        ensure_artifacts_exportable(Some(&dir), 1024, 0).expect("clean pre-scan passes");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2031,14 +2183,25 @@ mod tests {
     /// 后的内存会话 `to_string_pretty` 成 session.json，而 on-disk 记录可能
     /// 是无 journal 的裸导入产物（归档 ≈ 3× on-disk 而账本只记 2× → 导出
     /// 成功、导入必拒）。源码钉：`ensure_artifacts_exportable` 的 record_bytes
-    /// 实参必须来自内存会话的序列化长度，不得回退为 on-disk stat。
+    /// 实参必须来自内存会话的序列化长度，不得回退为 on-disk stat。定位用
+    /// 调用名 + 参数区（r9：实参换行由 rustfmt 决定，整行 needle 会随
+    /// 重排失配——教训与 fork-guard 指纹层一致）。
     #[test]
     fn export_ledger_books_the_archived_serialization_length() {
         let source = include_str!("store.rs");
         let at = source
-            .find("ensure_artifacts_exportable(artifacts_dir.as_deref(),")
+            .find("super::import::ensure_artifacts_exportable(")
             .unwrap_or_else(|| panic!("the export pre-scan call must exist"));
-        let window = &source[at.saturating_sub(900)..at];
+        let args_window = &source[at..at.saturating_add(400)];
+        assert!(
+            args_window.contains("artifacts_dir.as_deref()")
+                && args_window.contains("record_bytes")
+                && args_window.contains("manifest_metadata_bytes"),
+            "the pre-scan call must book record bytes and the manifest metadata copy: {args_window:?}"
+        );
+        // r9：调用与 record 序列化之间插入了 manifest 元数据记账块
+        // （manifest_metadata_bytes），窗口放宽到 1400 字符以覆盖。
+        let window = &source[at.saturating_sub(1400)..at];
         assert!(
             window.contains("serde_json::to_string_pretty(&session)"),
             "the export ledger must book the archived serialization length, not the on-disk stat"
@@ -2139,5 +2302,149 @@ mod tests {
             "{error:#}"
         );
         let _ = std::fs::remove_file(&archive);
+    }
+
+    /// Reparse-point 收口 helper 的直接单测（r9 minor）：canonicalize 故障
+    /// 必须拒绝（fail-closed），不得折叠成跳过校验——原 `if let Ok` 实现
+    /// 在父级无法解析时静默放行，包围校验失效。
+    #[test]
+    fn parent_containment_check_fails_closed_on_resolve_faults() {
+        let base = std::env::temp_dir().join(format!(
+            "pinvou3-import-contain-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let artifacts = base.join("sessions").join("sid1").join("artifacts");
+        let inside = artifacts.join("sub");
+        std::fs::create_dir_all(&inside).expect("mkdir inside");
+        // 目录内父级放行。
+        ensure_parent_resolves_inside_artifacts_dir(&inside, &artifacts)
+            .expect("parent inside the artifacts dir must pass");
+        // store 外父级拒绝。
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        let error = ensure_parent_resolves_inside_artifacts_dir(&outside, &artifacts)
+            .expect_err("parent outside the artifacts dir must be refused");
+        assert!(
+            format!("{error:#}").contains("resolves outside"),
+            "{error:#}"
+        );
+        // canonicalize 故障（父级不存在——create_dir_all 与校验之间的竞态
+        // 删除形态）拒绝而非跳过。
+        let vanished = artifacts.join("race-deleted");
+        let error = ensure_parent_resolves_inside_artifacts_dir(&vanished, &artifacts)
+            .expect_err("unresolvable parent must be refused, not skipped");
+        assert!(format!("{error:#}").contains("resolve"), "{error:#}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 导出账本为 manifest.json 内嵌的整份元数据副本显式记账（r9 minor）：
+    /// 标题无上界，>64 KiB 标题的副本字节不被 base 余量覆盖——近上限归档
+    /// 仍会「导出成功、导入必拒」。参数化上限：不含元数据记账的旧账本
+    /// 放行的字节组合，含记账的新账本必须拒绝。
+    #[test]
+    fn export_ledger_books_the_manifest_metadata_copy() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-import-meta-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir empty artifacts dir");
+        let (record, metadata, cap) = (460_000u64, 100_000u64, 1_000_000u64);
+        // 旧账本口径（record×2 + base = 984_000 < 1_000_000）：放行。
+        ensure_artifacts_exportable_with(Some(&dir), record, 0, cap, MAX_MEMBER_COUNT)
+            .expect("ledger without the metadata term passes this combination");
+        // 含元数据记账（+100_000 = 1_084_000）：必须拒绝。
+        let error =
+            ensure_artifacts_exportable_with(Some(&dir), record, metadata, cap, MAX_MEMBER_COUNT)
+                .expect_err("metadata copy bytes must be booked against the ledger");
+        assert!(
+            format!("{error:#}").contains("total import cap"),
+            "{error:#}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 提交窗重探（r9 锁窗重构）：暂存期间另一导入已落盘同一 id（赢家）
+    /// 时，提交必须返回 skip-existing 且不得改写赢家记录。
+    #[test]
+    fn commit_staged_import_skips_when_record_appeared_after_staging() {
+        let (store, _lock, _env) = isolated_store();
+        let winner_archive = write_json_record(&store, "commitrace1");
+        store.import_archive(&winner_archive).expect("winner lands");
+        // 输家：同一 id、不同标题（改写标记）。
+        let created = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create scratch");
+        let mut session = store.load(&created.metadata.id).expect("load scratch");
+        session.metadata.id = "commitrace1".into();
+        session.metadata.title = "loser-staged".into();
+        let outcome = commit_staged_import(&store, &session, &[], Ok(()), false);
+        assert!(
+            matches!(&outcome, ImportOutcome::SkippedExisting(id) if id == "commitrace1"),
+            "{outcome:?}"
+        );
+        let winner = store.load("commitrace1").expect("winner intact");
+        assert_ne!(
+            winner.metadata.title, "loser-staged",
+            "commit must not overwrite the record that won the race"
+        );
+    }
+
+    /// 提交窗在场复核（r9 锁窗重构）：暂存与提交窗之间成员被外部移除时，
+    /// 提交必须失败并按 persist 失败口径回滚，不得把指针写进空洞记录。
+    #[test]
+    fn commit_staged_import_fails_and_rolls_back_when_staged_member_vanishes() {
+        let (store, _lock, _env) = isolated_store();
+        let created = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create scratch");
+        let mut session = store.load(&created.metadata.id).expect("load scratch");
+        session.metadata.id = "commitvani1".into();
+        // 暂存两个成员后移除其一（模拟无锁窗内的外部删除）。
+        let artifacts = vec![
+            ("kept.txt".to_string(), b"stay".to_vec()),
+            ("vanished.txt".to_string(), b"gone".to_vec()),
+        ];
+        import_artifacts(&store, "commitvani1", &artifacts).expect("stage members");
+        let session_dir = store.sessions_dir().join("commitvani1");
+        std::fs::remove_file(session_dir.join("artifacts").join("vanished.txt"))
+            .expect("remove member");
+        let outcome = commit_staged_import(&store, &session, &artifacts, Ok(()), true);
+        match &outcome {
+            ImportOutcome::Failed(failure) => {
+                assert!(failure.reason.contains("vanished"), "{:#}", failure.reason);
+            }
+            other => panic!("commit must fail on a vanished member, got {other:?}"),
+        }
+        assert!(
+            !store.sessions_dir().join("commitvani1.json").exists(),
+            "record must not persist when a staged member vanished"
+        );
+        assert!(
+            !session_dir.exists(),
+            "session dir created this run must be rolled back"
+        );
+    }
+
+    /// 成员名控制字符转义（r9 minor）：pax 长名可携带 `\n`，逐字内插会把
+    /// 任意换行注入 toast/日志；bail 消息里的成员名必须是转义形。
+    #[test]
+    fn import_error_messages_escape_control_chars_in_member_names() {
+        let name = "artifacts/dup\nx.txt";
+        let archive = build_archive(&[(name, b"first".as_slice()), (name, b"second".as_slice())]);
+        let (store, _lock, _env) = isolated_store();
+        let error = store
+            .import_archive(&archive)
+            .expect_err("duplicate members must fail the archive");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("conflicts with artifacts/dup\\u{000A}x.txt"),
+            "member name must be escaped in the message: {text:?}"
+        );
+        assert!(
+            !text.contains('\n'),
+            "control chars must not inject raw newlines into messages: {text:?}"
+        );
     }
 }
