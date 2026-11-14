@@ -34,7 +34,8 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     // 同型检查；metadata 读取失败按 0 处理，落到读路径的常规 IO 错误）。
     if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > MAX_ARTIFACT_TEXT_BYTES {
         return Err(format!(
-            "文本产物过大(>50 MiB)，请用外部打开: {}",
+            "文本产物过大(>{} MiB)，请用外部打开: {}",
+            MAX_ARTIFACT_TEXT_BYTES / (1024 * 1024),
             p.display()
         ));
     }
@@ -55,7 +56,8 @@ pub(crate) fn read_artifact_text_impl(path: &str) -> Result<String, String> {
     }
     if bytes.len() as u64 > MAX_ARTIFACT_TEXT_BYTES {
         return Err(format!(
-            "文本产物过大(>50 MiB)，请用外部打开: {}",
+            "文本产物过大(>{} MiB)，请用外部打开: {}",
+            MAX_ARTIFACT_TEXT_BYTES / (1024 * 1024),
             p.display()
         ));
     }
