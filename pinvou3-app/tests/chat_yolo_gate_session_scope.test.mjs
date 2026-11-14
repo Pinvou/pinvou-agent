@@ -239,8 +239,8 @@ assert.match(
 // dispatches its own action.
 assert.match(
   src,
-  /onCancel=\{\(\) => \{\n(?:[^\n]*\n){0,12}?\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;\s*\n\s*setPendingChatYoloSwitch\(false\);\s*\n\s*\}\}/,
-  'canceling the YOLO confirm must dispose the pending action (not just close the dialog)',
+  /onCancel=\{\(\) => \{\n(?:[^\n]*\n){0,20}?\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;\s*\n\s*setChatYoloConfirmError\(''\);\s*\n\s*setPendingChatYoloSwitch\(false\);\s*\n\s*\}\}/,
+  'canceling the YOLO confirm must dispose the pending action AND the stale confirm error (round-5 review; not just close the dialog)',
 );
 assert.doesNotMatch(
   src,
@@ -342,7 +342,7 @@ assert.match(
 );
 assert.match(
   src,
-  /onCancel=\{\(\) => \{[\s\S]{0,900}?pendingChatYoloDialogGenRef\.current \+= 1;[\s\S]{0,200}?pendingChatYoloSwitchSidRef\.current = null;[\s\S]{0,200}?pendingChatYoloActionRef\.current = null;/,
+  /onCancel=\{\(\) => \{[\s\S]{0,1400}?pendingChatYoloDialogGenRef\.current \+= 1;[\s\S]{0,300}?pendingChatYoloSwitchSidRef\.current = null;[\s\S]{0,200}?pendingChatYoloActionRef\.current = null;/,
   'cancel must bump the generation and dispose the captured action',
 );
 assert.match(

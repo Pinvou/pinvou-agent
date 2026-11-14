@@ -479,8 +479,12 @@ const expectedProtocolHashes = {
   // branch inside try + queue recheck, M2 owner claim in
   // acceptPlan/editLastTurn, M3 flag-before-notify) plus the P3 comment
   // translation inside the invoke/listen spans. No new command or event
-  // surface.
-  webWireSurface: '4f39881cae6e7ee9e794e234e43fcfb99c7d136a1394274699a04ceb0f7cad9c',};
+  // surface. Recomputed for round-5 review: in-body changes only (the
+  // chat:approval_required listener drops a session-less payload before
+  // the dedup key, the Auto-block copy states the Yolo caveat, the
+  // setSessionMode body keeps its explicit-ask contract). No new command
+  // or event surface.
+  webWireSurface: '0027b4a7bcc5056917f43f41158d2d98d30454d0bf27bcf795f0239e28b48bd8',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {

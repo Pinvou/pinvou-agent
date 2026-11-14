@@ -243,10 +243,10 @@ try {
     // 快照回放」,断言空转——round-18 评审 minor 指出后删除死代码;活事件
     // 臂(chat:approval_required)不查代栅栏,不能拿来冒充快照回程。
     // 对照组：无终态介入的重放照常插卡（栅栏只废终态后的整批快照）。
+    // round-5 review 清理：原对照组先头的 controlFence 自比断言两侧读同一
+    // 未被触碰的属性，恒真不可失败——删去；真实对照由下两行（重放插卡 +
+    // active 断言）承担。
     const control = createNativeLane();
-    const controlFence = control.approvalReplayTerminalSeq || 0;
-    assert.equal((control.approvalReplayTerminalSeq || 0) === controlFence, true,
-      '无终态介入时代数不变，快照仍有效');
     applyNativeChatEvent(control, 'chat:approval_required', replayEntry);
     const controlCard = control.items.find(item => item.type === 'approval');
     assert.equal(controlCard.cardState, 'active', '无终态介入的重放仍正常插卡');

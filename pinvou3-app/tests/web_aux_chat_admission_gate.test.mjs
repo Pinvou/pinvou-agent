@@ -137,9 +137,14 @@ test('web: aux 面板发送在 Auto 姿态被拒且不开轮（第四受理面�
   assert.equal(auxBlockedNotices(rt, auxId).length, 1, '拒绝必须落一条用户面通告（aux 自己的 buffer）');
 });
 
-test('web: aux 面板发送在可执行姿态照常派发（对照）', async () => {
+test('web: aux 面板发送在可执行姿态照常派发（对照；round-5 review 合并原重复的默认创建全链正例）', async () => {
   const rt = bootWebBridge();
   const auxId = await primeAux(rt);
+  // 默认创建链（review JensenChen28 5801173510）：aux 从不激活、面板无 mode
+  // 控件，后端在创建时即钉安全档（Rust 侧 aux_session_mode_is_pinned_at_creation
+  // 钉住的契约）；Plan 桩镜像该创建时投影。原「默认创建全链」测试与本测试逐
+  // 字节重复（同一 primeAux / 同一桩 / 同一断言，vm 桩本就不区分姿态来源），
+  // round-5 review 后合并为一个对照面；准入边界未放宽由上方负例钉死。
   rt.setHandler('get_mode_state', () => Promise.resolve({ mode: 'plan', post_accept_mode: 'plan', multi_agent: false }));
   const send = rt.defer('web_access_chat');
   const p = rt.flat.auxChatSend(auxId, '帮我看看这个');
@@ -151,32 +156,6 @@ test('web: aux 面板发送在可执行姿态照常派发（对照）', async ()
     '可执行姿态的 aux 发送照常派发（对照面即门通过）'
   );
   assert.equal(auxBlockedNotices(rt, auxId).length, 0, '放行不得落 Auto 拦截通告');
-});
-
-// 「默认创建 → 首次发送」全链（review JensenChen28 5801173510）：上面的手工
-// Plan 正例只是门通过时的对照面，不构成默认工作流的可达恢复路径——aux 会话
-// 从不激活、面板无任何 mode 控件，用户无法把它切出 Auto。修复后由后端在
-// 创建时钉姿态（Rust 侧 aux_session_mode_is_pinned_at_creation 钉住的契约）：
-// 默认父会话（Auto 兜底解析）的 aux 创建即落 Plan 条目，get_mode_state 不再
-// 为它解析未绑定 plain 的 Auto 兜底。本回归沿真实 ensure（primeAux，无任何
-// 手工赋 mode）走首次发送，断言既定准入门放行——前端未改，门面与拒绝面不变；
-// vm 桩只镜像上述后端投影（Plan = 父兜底 Auto 被安全档替换后的创建时姿态）。
-test('web: 默认创建辅助会话 → 首次发送全链可通过门（后端创建时钉安全档）', async () => {
-  const rt = bootWebBridge();
-  const auxId = await primeAux(rt);
-  rt.setHandler('get_mode_state', () => Promise.resolve({ mode: 'plan', post_accept_mode: 'plan', multi_agent: false }));
-  const send = rt.defer('web_access_chat');
-  const p = rt.flat.auxChatSend(auxId, '帮我看看这个');
-  send.resolve({ ok: true });
-  await p;
-  assert.equal(
-    rt.calls.invoke.filter(name => name === 'web_access_chat').length,
-    1,
-    '默认创建的辅助会话首次发送必须通过既定准入门（web_access_chat 照常派发）'
-  );
-  assert.equal(auxBlockedNotices(rt, auxId).length, 0, '放行不得落 Auto 拦截通告');
-  // 前置面不变：同一默认创建链上的 Auto 姿态仍被门拒绝（准入边界未放宽），
-  // 由上方首个负例钉死；此处仅钉放行面拿到了真实可达的姿态来源。
 });
 
 // Round-18（评审 JensenChen28 5816589125 P2 直发预留的第四面）：共享助手的

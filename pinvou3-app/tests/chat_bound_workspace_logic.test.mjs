@@ -39,7 +39,8 @@ test('round-7 P2：Yolo 确认门 entry-scoped，绑定只管 chip 不再收窄�
     'utf8',
   );
   assert.ok(!/chatYoloGateApplies/.test(source), '绑定收窄的辅助函数不得回潮');
-  assert.match(source, /entry-scoped/, '门判定的 entry-scoped 语义须就地注明');
+  // round-5 review 清理：原 /entry-scoped/ 措辞断言只钉注释存在与否，
+  // 改措辞即红、回退判定逻辑不红（行为钉在 approval_card_lane）——删去。
 });
 
 // ── Pure logic: binding indicator visibility ──────────────────────────────────

@@ -3378,7 +3378,12 @@ fn set_mode_default_command_propagates_persist_failure() {
     let join = interaction
         .find("join_blocking(\"set_mode_default\"")
         .expect("the set_mode_default command must join its settings transaction");
-    let body = &interaction[join..];
+    // Round-5 review：窗口裁到本命令体结束（下一个命令项）——无界尾扫会让
+    // 后续其他命令里出现第二个 set_mode_default 写点也满足本断言（假绿）。
+    let body_raw = &interaction[join..];
+    let body = &body_raw[..body_raw
+        .find("\n#[tauri::command]")
+        .unwrap_or(body_raw.len())];
     assert!(
         body.contains("store.set_mode_default(lane, mode)?;"),
         "set_mode_default must propagate the persist failure with `?` (no Ok(stale defaults) answer)"
@@ -3491,6 +3496,12 @@ fn mode_target_gate_rejects_bogus_ids_without_side_effects() {
     crate::platform::test_support::with_temp_home("mode-target-gate", || {
         let store = SessionStore::boot().expect("boot");
         let sidecar = crate::platform::paths::sessions_root().join("_ask_on_guardrail.json");
+        // Round-5 review：无副作用面改读持久铸点——mode 写命令铸造落
+        // `_session_mode_states.json`（共享表），ask 覆写落
+        // `_ask_on_guardrail.json`。原断言读的 `mode_states` 内存镜是 aux
+        // 专用表，模式命令不写它，断言不可失败。
+        let mode_map = store.shared_mode_map_file();
+        let mode_map_before = std::fs::read_to_string(&mode_map).ok();
 
         // 非法 id 形状（路径逃逸字符）。
         let error = ensure_mode_target_session("set_session_mode", "../escape", &store)
@@ -3503,9 +3514,10 @@ fn mode_target_gate_rejects_bogus_ids_without_side_effects() {
         assert!(error.contains("会话不存在"), "{error}");
 
         // 两次失败都不得留下持久化痕迹。
-        assert!(
-            store.mode_states.read().is_empty(),
-            "a rejected id must not mint a mode-state entry"
+        let mode_map_after = std::fs::read_to_string(&mode_map).ok();
+        assert_eq!(
+            mode_map_before, mode_map_after,
+            "a rejected id must not write the shared mode map"
         );
         assert!(
             !sidecar.exists(),
@@ -3626,10 +3638,18 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
     );
 
     // 发布序列内部顺序：引擎姿态热同步（无引擎则跳过）→ 解析新状态 → 广播。
-    let publish = source
+    let publish_raw = source
         .split("async fn publish_session_mode_change(")
         .nth(1)
         .expect("publish_session_mode_change body");
+    // Round-5 review：窗口裁到发布函数结束（下一个 fn 项）——旧的无界尾扫
+    // 会把文件后续任意函数里的 eprintln 误判为 log-and-succeed 回潮（假红）。
+    let publish_end = ["\nasync fn ", "\nfn ", "\npub async fn ", "\npub fn "]
+        .iter()
+        .filter_map(|marker| publish_raw.find(marker))
+        .min()
+        .unwrap_or(publish_raw.len());
+    let publish = &publish_raw[..publish_end];
     let sync_at = publish
         .find("sync_engine_safety_posture(")
         .expect("the posture sync must come first");
