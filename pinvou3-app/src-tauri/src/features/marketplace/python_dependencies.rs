@@ -761,8 +761,9 @@ fn download_wheel_from(
         .is_some_and(|length| length > MAX_WHEEL_BYTES)
     {
         return Err(format!(
-            "Python dependency {} exceeds the 2 GiB safety limit",
-            wheel.name
+            "Python dependency {} exceeds the {} GiB safety limit",
+            wheel.name,
+            MAX_WHEEL_BYTES / (1024 * 1024 * 1024)
         ));
     }
 
@@ -799,8 +800,9 @@ where
     drop(file);
     if copied > MAX_WHEEL_BYTES {
         return Err(format!(
-            "Python dependency {} exceeds the 2 GiB safety limit",
-            wheel.name
+            "Python dependency {} exceeds the {} GiB safety limit",
+            wheel.name,
+            MAX_WHEEL_BYTES / (1024 * 1024 * 1024)
         ));
     }
     let actual = sha256_file(&partial).map_err(|e| format!("failed to read the wheel: {e}"))?;
@@ -857,9 +859,10 @@ fn extract_wheel(
             .checked_add(entry.size())
             .ok_or_else(|| "Python wheel extraction size overflow".to_string())?;
         if *extracted_bytes > MAX_ENVIRONMENT_BYTES {
-            return Err(
-                "MCP Python dependencies exceed the 4 GiB extraction safety limit".to_string(),
-            );
+            return Err(format!(
+                "MCP Python dependencies exceed the {} GiB extraction safety limit",
+                MAX_ENVIRONMENT_BYTES / (1024 * 1024 * 1024)
+            ));
         }
         let output = site_packages.join(relative);
         if entry.is_dir() {
@@ -1091,6 +1094,16 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use zip::write::SimpleFileOptions;
+
+    /// The download/extract error strings derive their figures from these
+    /// constants (an earlier draft hardcoded "2 GiB"/"4 GiB", so a constant
+    /// change would have left both strings lying silently — r6 review). Pin
+    /// the shipped values so a loosening is loud on both fronts.
+    #[test]
+    fn python_size_caps_match_the_register() {
+        assert_eq!(MAX_WHEEL_BYTES, 2 * 1024 * 1024 * 1024);
+        assert_eq!(MAX_ENVIRONMENT_BYTES, 4 * 1024 * 1024 * 1024);
+    }
 
     struct FailingReader;
 
