@@ -230,7 +230,8 @@ session's share and does not mistakenly revoke other sessions' grants.
   back through the epoch-protected unified convergence point, invalidating in-flight stale reads. All three event
   kinds — approval, guardrail, mode — enter the remote_control event-forwarding allowlist
   (`RUST_FORWARDED_EVENTS`); Web-facing RPC commands remain governed by the existing multi-agent-execution
-  denylist — this PR registers three new mode/approval change commands in the denylist and registers new surfaces
+  denylist — this PR registers five new mode/approval change commands in the denylist
+  (`decide_approval`/`set_session_mode`/`set_ask_on_guardrail`/`set_plan_mode_next`/`web_access_codex_acp_prompt`) and registers new surfaces
   in `web_session_scope` and the access policy; the read-only **policy** is unchanged (the multi-agent execution
   face still rejects write operations).
 
@@ -434,8 +435,10 @@ the change state its own reason (`crates/tui/src/core/authority.rs`; mechanism r
 - **Registration**: fork-guard's `EXPECTED_HEAD`/`EXPECTED_COMMITS` and the fingerprint table
   (`scripts/fork-guard.sh`), plus the `docs/fork-modifications.md` T2 addendum, land with this PR's Stage-4
   commits; CodeWhale#131 has merged into the public maintenance branch as squash `e2a0e14fd`, and the gitlink and
-  `EXPECTED_HEAD` have been re-pinned to the maintenance head `11cba403d` (the candidate-period registration basis
-  is in the 2026-10-31 consumption-baseline section of `docs/fork-modifications.md`).
+  `EXPECTED_HEAD` follow main's re-pins (consumption-time `11cba403d`, then main's #152/#156 follow brought them to
+  `8e8d52fdb`, which this PR's rebase rides, and the follow-on consumption batch #157 (session-reader read-only
+  classification) advanced them to `687358f7e`; the historical basis is in the 2026-10-31 consumption-baseline and
+  the 2026-11-12 follow sections of `docs/fork-modifications.md`).
 
 ## 9. Known boundaries
 
