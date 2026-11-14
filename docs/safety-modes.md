@@ -443,17 +443,18 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   predicate 在 Tauri setup 后段才注册——从未切换过 mode 的多智能体 code 会话
   重启后可能显示 Auto（而非 Plan）。条目一旦物化不再随偏好/predicate 重播种，
   用户显式切换一次即矫正；修复需要引导顺序或解析迟绑定，属后续项。
-- **辅助会话的父历史抓取在 Plan 钉下不可用（消费端分类缺口）**：aux 的
-  `mcp_session-reader_read_session`（scoped 父历史读取）被消费引擎的 MCP
-  适配器归类为非只读（child 的 `is_mcp_read_helper` 白名单不认识 fork 的
-  session-reader 工具，见 pin `11cba403d` 的
-  `crates/tui/src/tools/registry.rs:1455`），于是钉死的 Plan 姿态在
-  执行/审批前就拒绝它——aux 面宣称的父历史抓取当前拉空。分类在消费端；
-  host 规则集是 deny-only、开不出 allow 豁免，钉本身不可移（web 拒
-  Auto、Yolo-on-web 更差）。持久修复是 child 侧分类变更（fork 的
-  session-reader 读工具入 read-helper 白名单，或适配器尊重 MCP
-  `readOnlyHint` 注记），随下一次 CodeWhale 消耗批次落地（store 侧
-  `pin_aux_mode_from_parent` 源注同记此残余）。
+- **辅助会话的父历史抓取曾因 Plan 钉不可用（消费端分类缺口，已随底座
+  消耗闭合）**：aux 的 `mcp_session-reader_read_session`（scoped 父历史
+  读取）曾被消费引擎的 MCP 适配器归类为非只读（child 的
+  `is_mcp_read_helper` 白名单不认识 fork 的 session-reader 工具），钉死
+  的 Plan 姿态在执行/审批前就拒绝它——aux 面宣称的父历史抓取曾确定性
+  拉空。分类在消费端；host 规则集是 deny-only、开不出 allow 豁免，钉
+  本身不可移（web 拒 Auto、Yolo-on-web 更差），持久修复只能落在 child
+  侧：fork 的第一方只读 session-reader 读面已进入 child 的 read-helper
+  白名单（CodeWhale PR #157，squash `687358f7e`，随 `pinvou3-clean`
+  消耗），钉死的 Plan 姿态恢复放行 scoped 读；精确名匹配下其余 MCP
+  工具分类不变，通用门禁未放宽（store 侧 `pin_aux_mode_from_parent`
+  源注同步改述）。
 - **Yolo Floor 的质量边界（「分族按语义」主张的三处已知偏差，方向均保守）**：
   Floor = never-sensible 底线族（3,555 条），Sensitive 面只在 Full 出现。
   三处如实标注：(a) sudo 命令词块是 Sensitive 面——未武装 Yolo 静默放行

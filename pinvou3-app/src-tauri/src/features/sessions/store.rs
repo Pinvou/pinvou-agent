@@ -1360,18 +1360,24 @@ impl SessionStore {
     /// contract only: `set_mode` is `Ok` by construction and logs persist
     /// failures itself (boot-log discipline keeps session ids off stderr).
     ///
-    /// Known residual (zhuowp round-4 P2): the aux lane's reader capability
-    /// (`mcp_session-reader_read_session`, the parent-history fetch) is
-    /// classified NON-readonly by the consumed engine's MCP adapter — the
-    /// child's `is_mcp_read_helper` allowlist does not know the fork's
+    /// Former residual (zhuowp round-4 P2, resolved by the gitlink this PR
+    /// consumes): the aux lane's reader capability
+    /// (`mcp_session-reader_read_session`, the parent-history fetch) used to
+    /// be classified NON-readonly by the consumed engine's MCP adapter — the
+    /// child's `is_mcp_read_helper` allowlist did not know the fork's
     /// session-reader tools — so the pinned Plan posture (the only posture
-    /// every face serves) rejects its calls before execution/approval. The
-    /// classification lives in the consumed child; host rulesets are
-    /// deny-only and cannot carve an exception into that capability gate,
-    /// and the pin itself cannot change without re-breaking one of the two
-    /// constraints above (the web face refuses Auto; weakening Plan is not
-    /// an option). The durable fix is the child-side classification change,
-    /// tracked for the next CodeWhale consumption batch.
+    /// every face serves) rejected its calls before execution/approval and
+    /// the advertised parent-history fetch was deterministically dead under
+    /// the pin. Host rulesets are deny-only and could not carve an exception
+    /// into that capability gate, and the pin itself cannot change without
+    /// re-breaking one of the two constraints above (the web face refuses
+    /// Auto; weakening Plan is not an option), so the durable fix was the
+    /// child-side classification change: the fork's first-party read-only
+    /// session-reader surface now sits in the child's read-helper allowlist
+    /// (CodeWhale PR #157, squash `687358f7e`, consumed via `pinvou3-clean`),
+    /// and the pinned Plan posture admits the scoped read again — exact-name
+    /// matching keeps every other MCP tool on the same classification as
+    /// before, so the general gate is not weakened.
     fn pin_aux_mode_from_parent(&self, aux_id: &str, parent_id: &str) {
         let parent_state = self.mode_state(parent_id);
         let aux_mode = match parent_state.mode {
