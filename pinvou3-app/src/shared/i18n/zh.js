@@ -1096,7 +1096,6 @@ dictZh.uiSessionWorkspace = {
 // personas-i18n.js 的 window.PERSONA_I18N 同款模式。唯一可译源在本文件。
 dictZh.uiSettingsDetail.memoryLoadFailed = '记忆资料加载失败，请重试';
 
-dictZh.uiSettingsDetail.memorySaveFailed = '记忆资料保存失败，请重试';
 
 dictZh.uiSettingsDetail.memoryDeleteFailed = '记忆删除失败，请重试';
 
