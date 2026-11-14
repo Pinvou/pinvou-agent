@@ -1068,16 +1068,21 @@ pub async fn rewind_to_turn(
             "会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾"
         ));
     }
-    // r47 MAJOR-2（评审）：提交态完成臂移到 prepare/apply 之前。原臂挂在截断
-    // 阶段，实际不可达——提交崩溃态下暂记 revision 为 R0、转录已在 R1，
-    // matching_pending_pre_restore 按不匹配返回 None，流程在到达该臂之前就以
-    // 「发送新消息」文案报错；唯一入口是伪造 pending_rewind.json，而那条路径
-    // 会跳过 store 的 at-boundary 确定拒绝、无 sidecar 凭据地报告
-    // rewound_turns: 0 假成功。现在臂要求与 CLI 完全相同的三态证明：同边界 +
-    // sidecar 记录绑定到暂记的 pre_restore_id（与桌面对账配对的同一字段）+
-    // 记录 truncated_revision 等于当前 revision。无证明 → 照常落回普通流程
-    // （写入侧 r36-M2 守卫如实拒绝）；有证明 → 非破坏性收尾：清暂记、作废
-    // 被弃分支、如实报告 0 新截断。
+    // r47 MAJOR-2 (review): the committed-crash completion arm moves BEFORE
+    // prepare/apply. The previous placement (at the truncation stage) was
+    // unreachable - in the committed crash state the pending's revision is R0
+    // while the transcript sits at R1, so matching_pending_pre_restore
+    // returns None on the mismatch and the flow errors with the
+    // "send a new message" copy before ever reaching the arm; the only way in
+    // was a fabricated pending_rewind.json, and that path skipped the store's
+    // deterministic at-boundary refusal and reported a rewound_turns: 0 fake
+    // success with no sidecar proof. The arm now requires the exact
+    // three-state proof the CLI uses: same boundary + a sidecar record bound
+    // to the pending's pre_restore_id (the field the desktop reconcile
+    // matches) + the record's truncated_revision equal to the live revision.
+    // No proof -> fall through to the ordinary flow (the write-side r36-M2
+    // guard refuses honestly); proof -> non-destructive finish: clear the
+    // marker, invalidate the abandoned branch, report zero new truncations.
     if let Some(pending) = live_pending
         .as_ref()
         .filter(|pending| pending.keep_turns == keep_turns)
@@ -1101,7 +1106,7 @@ pub async fn rewind_to_turn(
             .await
             {
                 eprintln!(
-                    "[checkpoints] 作废被截分支检查点任务异常（回退已生效，仅清理未做）: {error}"
+                    "[checkpoints] abandoned-branch checkpoint invalidation task panicked (rewind already applied, cleanup only): {error}"
                 );
             }
             log::info!(
@@ -1287,10 +1292,14 @@ pub async fn rewind_to_turn(
     // (clear + invalidate run below). The store's at-boundary gate would
     // deterministically refuse a re-truncation; short-circuit here and report
     // zero new truncations honestly.
-    // r47 MAJOR-2（评审）：提交态已在 prepare 之前由完成臂非破坏性收尾，
-    // 不再存在「同边界且转录已在边界」却要跳过截断的可达路径——此前的伪造
-    // outcome 臂（绕过 store 的 at-boundary 确定拒绝、无 sidecar 凭据报告
-    // rewound_turns: 0）已删除；协议矛盾态由写入侧 r36-M2 守卫如实拒绝。
+    // r47 MAJOR-2 (review): the committed state is finished non-destructively
+    // by the completion arm before prepare - there is no longer a reachable
+    // path where a same-boundary pending coexists with a transcript already at
+    // the boundary AND the truncation must be skipped. The fabricated-outcome
+    // arm (which bypassed the store's deterministic at-boundary refusal and
+    // reported rewound_turns: 0 with no sidecar proof) is deleted; the
+    // protocol-contradictory state is refused honestly by the write-side
+    // r36-M2 guard.
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
     })
@@ -1810,15 +1819,18 @@ mod tests {",
         );
     }
 
-    /// r28 M2(a) pin，r47 MAJOR-2 演进修订：rewind_to_turn 的**复用判定**
-    /// 不得让 sidecar 绑定记录否决 revision 匹配的复用（r25 MAJOR-3：绑定
-    /// 记录在 revision 匹配时只能是 persist 分裂窗，复用恰恰正确）。r47
-    /// MAJOR-2 后该函数体新增了恰好一处**受制裁的** sidecar 查询——提交态
-    /// 完成臂的证明（配对 pre_restore_id + truncated_revision，由
-    /// the_committed_crash_completion_arm_is_reachable_and_proven 位置钉管）。
-    /// 本钉据此从「全禁」收紧为「配额」：函数体对
-    /// latest_rewound_turns_record 的引用必须恰好一次——任何新增的、未经
-    /// 上述位置钉覆盖的查询（r26-M1 类复活否决）都会超出配额而变红。
+    /// r28 M2(a) pin, revised by r47 MAJOR-2: rewind_to_turn's REUSE decision
+    /// must not let a sidecar bound record veto a revision-matched reuse
+    /// (r25 MAJOR-3: when the revision matches, a bound record can only be the
+    /// persist-split window, so the reuse is exactly correct). After r47
+    /// MAJOR-2 the fn body gained exactly ONE sanctioned sidecar consult - the
+    /// committed-crash completion arm's proof (pairing pre_restore_id +
+    /// truncated_revision, pinned positionally by
+    /// the_committed_crash_completion_arm_is_reachable_and_proven). This pin
+    /// therefore tightens from "forbidden" to "quota": the fn body must
+    /// reference latest_rewound_turns_record EXACTLY ONCE - any additional,
+    /// unsanctioned consult (an r26-M1-class reviving veto) exceeds the quota
+    /// and goes red.
     #[test]
     fn rewind_reuse_does_not_consult_the_sidecar_record() {
         let src = include_str!("checkpoints.rs");
@@ -1835,8 +1847,7 @@ mod tests {",
         let consults = body.matches("latest_rewound_turns_record").count();
         assert_eq!(
             consults, 1,
-            "rewind_to_turn 对 sidecar 绑定记录的查询必须恰好一次（r28 M2(a) 复用
-             判定禁查 + r47 MAJOR-2 完成臂唯一制裁查询）：实际 {consults} 次"
+            "rewind_to_turn must consult the sidecar bound record EXACTLY ONCE              (r28 M2(a): the reuse decision must not consult it + r47 MAJOR-2:              the completion arm is the only sanctioned consult); found {consults}"
         );
     }
 

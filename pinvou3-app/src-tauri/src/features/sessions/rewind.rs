@@ -562,11 +562,14 @@ impl SessionStore {
         // 会话并再次 lock 备份互斥量，不会再撞上本函数持有的同线程锁。
         self.persist_then_reconcile(&session, "rewind undo restore")?;
         // 记录删除失败只留孤儿数据；反悔条件②（turn 数已不等于 kept_turns）会
-        // 自然挡住重复恢复，不算失败，如实记日志。r47 minor 1（评审）：清理腿
-        // 的跨进程 flock 获取失败也不得用 `?` 整体报错——此时对话已恢复并
-        // 持久化，报「恢复失败需人工处理」是失实分类；与截断孪生（上方
-        // lock_rewound_turns_file 的 Err 腿）同款：降级为如实记日志，孤儿
-        // 记录由条件②天然拒绝。
+        // naturally blocks repeat restores - a failure here is logged, not
+        // raised. r47 minor 1 (review): the cleanup leg's cross-process flock
+        // acquisition failure must not `?`-error the whole undo either - by
+        // this point the conversation IS restored and persisted, so reporting
+        // "restore failed, manual handling needed" is a false taxonomy. Same
+        // treatment as the truncate twin's Err leg (the
+        // lock_rewound_turns_file match above): degrade to an honest log; the
+        // orphan record is refused by the undo condition re-check.
         {
             let _backup_guard = REWIND_BACKUP_LOCK.lock();
             let _cross_process = match lock_rewound_turns_file() {

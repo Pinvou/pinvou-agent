@@ -2203,10 +2203,12 @@ impl PendingRewind {
     /// r41 M4：跨 crate 只读投影——拒绝文案必须插值暂记的真实目标与
     /// keepTurns（此前布尔包装丢失字段，CLI 文案插值了当前请求的目标、
     /// 指认错误险源）。pub(crate) 字段对 CLI crate 不可见，经此快照暴露。
-    /// r47 MAJOR-1（评审）：第三元 pre_restore_id——CLI 完成臂的判别必须
-    /// 配对 PreRestore/undo id（sidecar 记录的 preRestoreCheckpointId），
-    /// 而非目标 Turn 快照 id；两个 id 空间不相交，比较目标 id 恒假
-    /// （GUI 侧对账即按 pre_restore_id 配对，见 app/commands/checkpoints.rs）。
+    /// r47 MAJOR-1 (review): a third field, pre_restore_id - the CLI
+    /// completion arm's verdict must pair the PreRestore/undo id (the sidecar
+    /// record's preRestoreCheckpointId), NOT the target Turn-snapshot id; the
+    /// two id spaces are disjoint, so comparing the target id is
+    /// constant-false (the GUI-side reconcile pairs on pre_restore_id - see
+    /// app/commands/checkpoints.rs).
     pub fn public_target_fields(&self) -> (String, u32, String) {
         (
             self.checkpoint_id.clone(),
@@ -2554,18 +2556,24 @@ pub fn prepare_restore(
 /// 核验兜住误导面。
 const WRITE_FENCE_STALE_SECS: u64 = 1800;
 
-/// r42 M5：围栏文件寻址——按 canonical 键散列，落系统临时目录。执行根键
-/// （apply↔diff 互斥）与账本根键（r43 M1：create 的 add -A 与 apply 的
-/// 多子进程窗口互斥——prepare 的 PreRestore 腿同为影子 index 写者，CLI 的
-/// prepare 落进 GUI 的 apply 窗口即 r42-M5 同型错误成功）各取一个命名空间。
-/// 系统临时目录是两进程共享的机器本地稳定锚。r47 minor 10（评审）措辞修正：
-/// POSIX 的 /tmp（mode 1777）跨用户同样可见可写——围栏文件对同机其他用户
-/// 并非不可见； 固定键哈希也意味着同机进程可预先种植围栏文件（fence
-/// pre-planting）。两者都只影响围栏的 advisory 性质（错误形态是「多等一轮/
-/// 误降级跳过」，不产生错误互斥、不破坏数据），按既有披露口径接受；
-/// DefaultHasher 的跨进程稳定性由同版本 std 保证——GUI 与
-/// CLI 同仓同构建；未来 std 变更导致两侧寻址漂移时，围栏退化为「互不可见」
-/// （与修复前等价），不会产生错误互斥。
+/// r42 M5: fence-file addressing - hash the canonical key and land the file
+/// in the system temp dir. The execution-root key (apply↔diff mutual
+/// exclusion) and the ledger-root key (r43 M1: create's add -A must be
+/// mutually exclusive with apply's multi-subprocess window - prepare's
+/// PreRestore leg writes the shadow index too, and a CLI prepare landing
+/// inside a GUI apply window is the same r42-M5 false-success shape) each get
+/// their own namespace. The system temp dir is the machine-local stable anchor
+/// shared by the two processes. r47 minor 10 (review) wording fix: POSIX /tmp
+/// (mode 1777) is cross-user visible AND writable - the fence files are NOT
+/// hidden from other users on the same machine; the fixed-key hash also means
+/// a same-machine process can pre-plant a fence file (fence pre-planting).
+/// Both only affect the fence's advisory nature (the failure shapes are "wait
+/// one more round" and "degrade-and-skip" - never a false mutual exclusion,
+/// never data loss), accepted per the standing disclosure. DefaultHasher's
+/// cross-process stability is guaranteed by the same-version std - GUI and CLI
+/// build from the same repo; if a future std change drifts the two sides'
+/// addressing, the fence degrades to "mutually invisible" (equivalent to
+/// pre-fix) and never produces a false mutual exclusion.
 fn write_fence_path(key: &Path, scope: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
