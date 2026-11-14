@@ -130,8 +130,14 @@ impl Excluder {
         false
     }
 
-    /// 全路径排除：watcher 拿到的是任意路径（recursive 监听不会自动剪枝），
-    /// 需检查**每一级**组件名 + 末级扩展名是否命中排除集。
+    /// 组件级排除：路径的**每一级** basename（含末级）命中 names/secrets 即排除。
+    /// watcher 用——递归监听不会自动剪枝，事件里仍会冒出 node_modules/.ssh 等深处的路径，
+    /// 扫描器走 walkdir `filter_entry` 逐层剪枝，无此需要。
+    ///
+    /// 扩展名策略不在此判：它需要 `is_dir` 上下文（目录不受黑/白名单约束，否则
+    /// `backup.old` 这类带点目录会被误排），由调用方 stat 后交 [`Excluder::is_skipped`]
+    /// 与扫描器同一策略源判定；删除事件的路径已不可 stat，只做组件级判定。
+    #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
     pub fn is_excluded_path(&self, path: &Path) -> bool {
         for comp in path.components() {
             if let Component::Normal(os) = comp {
@@ -140,14 +146,6 @@ impl Excluder {
                         return true;
                     }
                 }
-            }
-        }
-        // 有扩展名：黑名单 ext 或 不在常用白名单 → 排除。无扩展名(目录/无后缀文件)不在此判，
-        // 避免 watcher 误排目录(此处无 is_dir 上下文)；少量无后缀文件漏网可接受。
-        if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-            let e = ext.to_lowercase();
-            if self.exts.contains(e.as_str()) || !self.allow.contains(e.as_str()) {
-                return true;
             }
         }
         false
@@ -182,12 +180,37 @@ mod tests {
     #[test]
     fn excluded_path_checks_all_components() {
         let ex = Excluder::default();
+        // 深处的祖先组件命中即整条路径排除
         assert!(ex.is_excluded_path(Path::new("/home/u/proj/node_modules/a/b/index.js")));
         assert!(ex.is_excluded_path(Path::new("/home/u/.ssh/config")));
         assert!(ex.is_excluded_path(Path::new("/home/u/proj/.env")));
-        assert!(ex.is_excluded_path(Path::new("/home/u/vm/disk.qcow2")));
+        // 末级组件本身命中（删除事件的路径已不可 stat，只能靠组件级判定）
+        assert!(ex.is_excluded_path(Path::new("/home/u/proj/node_modules")));
+        assert!(ex.is_excluded_path(Path::new("/home/u/.ssh")));
+        // 无组件命中 → 组件级放行（扩展名策略由 is_skipped 按 is_dir 上下文判定）
+        assert!(!ex.is_excluded_path(Path::new("/home/u/vm/disk.qcow2")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/Documents/保险报价单.pdf")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/Downloads/report.docx")));
+        assert!(!ex.is_excluded_path(Path::new("/home/u/proj")));
+    }
+
+    /// 扩展名策略与扫描器同源（is_skipped）：带点目录名不受扩展名约束（watcher
+    /// 曾按末级扩展名误排 `backup.old` 这类目录、连其删除事件一起吞掉）；无扩展名
+    /// 敏感文件按白名单外排除（watcher 曾放行 `.bash_history` 等直至重扫才清掉）。
+    #[test]
+    fn extension_policy_stays_in_is_skipped_with_kind_context() {
+        let ex = Excluder::default();
+        // 带点目录名：目录不受扩展名策略约束（与扫描器一致）
+        assert!(!ex.is_skipped("backup.old", true, None));
+        assert!(!ex.is_skipped("会议.2024.07", true, None));
+        // 同名作为文件则按扩展名/白名单判
+        assert!(ex.is_skipped("backup.old", false, Some("old")));
+        // 黑名单扩展名：文件排除
+        assert!(ex.is_skipped("disk.qcow2", false, Some("qcow2")));
+        // 无扩展名敏感文件（白名单外）排除
+        assert!(ex.is_skipped(".bash_history", false, None));
+        assert!(ex.is_skipped(".git-credentials", false, None));
+        assert!(ex.is_skipped(".viminfo", false, None));
     }
 
     #[test]
@@ -204,8 +227,9 @@ mod tests {
         assert!(!ex.is_skipped("年报.xlsx", false, Some("xlsx")));
         assert!(!ex.is_skipped("照片.jpg", false, Some("jpg")));
         assert!(!ex.is_skipped("压缩包.zip", false, Some("zip")));
-        // watcher 路径级：源码排除、目录放行、常用保留
-        assert!(ex.is_excluded_path(Path::new("/home/u/proj/main.c")));
+        // watcher 事件级：组件级放行后，类型判定与扫描器走同一个 is_skipped
+        assert!(!ex.is_excluded_path(Path::new("/home/u/proj/main.c")));
+        assert!(ex.is_skipped("main.c", false, Some("c")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/proj/src")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/Documents/报告.pdf")));
     }
