@@ -65,7 +65,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - `DeepSeek-TUI/crates/tui/src/compaction.rs`：定义 `CompactionConfig` 和压缩逻辑，pinvou3 只调整本地模型和阈值。
 - `DeepSeek-TUI/crates/hooks/src/lib.rs`：定义 `HookEvent`、`HookDispatcher` 等 hook 机制，pinvou3 在 bridge 中生成 hook 配置。
 - `DeepSeek-TUI/crates/mcp/src/lib.rs`：定义 `McpManager` 与 MCP 工具/资源结构，底座经工具体系统一接入。
-- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（该机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
+- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
 
 ## pinvou3 接入边界
 

@@ -274,7 +274,7 @@ Windows 风险：
 | project_context / skills 路径收窄 | GUI 助手不应乱读其他 AI 工具上下文 |
 | static prompt composer | pinvou3 用它密封系统 prompt，防上游新增块泄漏 |
 | 256K context 适配 | 本地 Qwen3.6 256K 的 compaction、output budget、模型名后缀依赖这些改动 |
-| 工作流 SubAgent 扩展 | role_id、allowed_tools、max_steps、structured output 等工作流能力依赖它 |
+| 工作流 SubAgent 扩展 | role_id、allowed_tools、max_steps、structured output 等工作流能力依赖它（⚠️ 快照条目：工作流子系统已从主干移除，见 §8/§12/§13） |
 
 同步上游后不要只看能不能编译，至少做：
 
@@ -311,8 +311,8 @@ vllm serve /path/to/model \
 | `DEEPSEEK_PROVIDER` | 不全局注入，由当前模型预设决定 |
 | `DEEPSEEK_REASONING_EFFORT` | `off` |
 | 输出上限 | 本地 vLLM route 显式为 `24576`；云端由底座请求上限、厂商及 route 能力共同决定 |
-| compaction token threshold | 约 `190000` |
-| emergency input budget | 约 `230400` |
+| compaction token threshold | 约 `190000`（⚠️ 快照条目：现由 `derive_compaction_threshold` 动态推导，见 [`auto-compact-256K-tuning.md`](./auto-compact-256K-tuning.md)） |
+| emergency input budget | 约 `230400`（⚠️ 快照条目：同上，以现行代码为准） |
 
 Windows 迁移建议：
 

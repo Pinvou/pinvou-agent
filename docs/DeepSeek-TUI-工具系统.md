@@ -9,6 +9,10 @@
 > 完成治理重构（`PINVOU3_ALLOWED_TOOLS` 白名单 + canonical 工具名，部分 builder 方法已更名/移除，
 > Plan 模式现注册只读文件/shell 之外的完整只读面）；现行工具面与迁移记录见
 > [`tool-governance.md`](./tool-governance.md)，本文请勿按现状使用。
+> 2026-11-15 修正：按 v0.8.37 tag 实测校正 builder 清单与工具计数（`append_file` 并不存在于
+> v0.8.37，系 2026-06-29 fork 提交 `092e3c885` 引入；`code_execution` 在 v0.8.37 已是独立
+> catalog 工具；`with_shell_tools` 含 exec_shell_wait / exec_shell_interact；v0.8.37 无
+> `/tools` slash command）。
 
 ---
 
@@ -76,11 +80,11 @@ pub trait ToolSpec: Send + Sync {
 
 | Builder 方法 | 添加的工具 |
 |---|---|
-| `with_file_tools` | read_file, write_file, append_file, edit_file, list_dir |
-| `with_read_only_file_tools` | read_file, list_dir |
+| `with_file_tools` | read_file, write_file, edit_file, list_dir |
+| `with_read_only_file_tools` | read_file, list_dir（另注册 retrieve_tool_result） |
 | `with_search_tools` | grep_files, file_search |
 | `with_web_tools` | web_search, fetch_url, web_run |
-| `with_shell_tools` | exec_shell, exec_shell_cancel, note |
+| `with_shell_tools` | exec_shell, exec_shell_wait, exec_shell_interact, exec_shell_cancel（另注册 exec_wait / exec_interact 别名，共 6 个注册） |
 | `with_patch_tools` | apply_patch |
 | `with_git_tools` | git_status, git_diff |
 | `with_git_history_tools` | git_log, git_show, git_blame |
@@ -209,7 +213,6 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 |---|---|---|
 | read_file | with_file_tools | 读文件（支持 chunked / 内嵌 PDF 抽取） |
 | write_file | with_file_tools | 写文件（创建或覆盖） |
-| append_file | with_file_tools | 追加写文件（适合大产物分块生成） |
 | edit_file | with_file_tools | 字符串级 patch 编辑 |
 | list_dir | with_file_tools | 列目录 |
 | apply_patch | with_patch_tools | 类 git diff 风格的多文件 patch |
@@ -230,12 +233,15 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 | 工具 | 入口 | 用途 |
 |---|---|---|
 | exec_shell | with_shell_tools | 跑 shell 命令（同步或后台 task） |
+| exec_shell_wait / exec_shell_interact（别名 exec_wait / exec_interact） | with_shell_tools | 等待 / 交互式驱动后台 shell task |
 | exec_shell_cancel | with_shell_tools | 取消后台 shell task |
 | task_shell_start | with_runtime_task_tools | 起后台 shell job |
 | task_shell_wait | with_runtime_task_tools | 等后台 shell job 输出（增量） |
 | note | with_note_tool | 写 scratch 笔记到 notes 文件 |
 
-> code_execution 不是独立工具——上游通过 `exec_shell` 跑 `python -c` 实现。pinvou3 的 INSTRUCTIONS_MD 给它别名引导。
+> code_execution 是独立注册的 catalog 工具（`core/engine/tool_catalog.rs` 的
+> `CODE_EXECUTION_TOOL_NAME`，探测到 Python 解释器且非 Plan 模式才对外声明），并非通过
+> `exec_shell` 跑 `python -c` 代替。
 
 ### Web
 
@@ -316,12 +322,13 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ## 6. pinvou3 实际可见的工具
 
-`build_turn_tool_registry_builder` Yolo 路径展开后大约 **45 个工具**：
+`build_turn_tool_registry_builder` Yolo 路径展开后大约 **66 个工具**（含别名与 ×2 重复注册）：
 
 ```
-read_file write_file append_file edit_file list_dir
+read_file write_file edit_file list_dir
 grep_files file_search
-exec_shell exec_shell_cancel note
+exec_shell exec_shell_wait exec_shell_interact exec_shell_cancel
+exec_wait exec_interact note
 web_search fetch_url web_run
 apply_patch revert_turn fim_edit
 git_status git_diff git_log git_show git_blame
@@ -340,9 +347,9 @@ agent_open agent_eval agent_result agent_cancel agent_close agent_list
 resume_agent delegate_to_agent
 ```
 
-INSTRUCTIONS_MD 只显式提及核心工具（read_file / write_file / append_file / edit_file / exec_shell / grep_files / file_search / web_search + code_execution 别名）。剩余工具靠模型自行从 schema 探索。
+INSTRUCTIONS_MD（`prompts/base.md`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox）。剩余工具靠模型自行从 schema 探索。
 
-Plan 模式约 **15 个工具**：file 只读、search、git（含 history）、diagnostics、skill、validation、handle、task 只读、todo、plan、review、user_input、parallel、recall_archive。
+Plan 模式约 **33 个工具**（按 §3.2 组成展开：file 只读 3、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 2、todo 8、plan、review、user_input、parallel、recall_archive、retrieve_tool_result、shared 等）：file 只读、search、git（含 history）、diagnostics、skill、validation、handle、task 只读、todo、plan、review、user_input、parallel、recall_archive。
 
 ---
 
@@ -369,7 +376,9 @@ RUST_LOG=engine.tool_execution=debug ./pinvou3-app/run-dev.sh
 
 输出 `tool.exec.start` 和 `tool.exec.end`，含 tool 名、dispatch 路径、耗时、输出字节数、success 标志。
 
-查工具是否注册：在 DeepSeek-TUI 单独跑 `/tools` slash command 列当前 registry。
+查工具是否注册：设置 `RUST_LOG` 后在日志里查 registry 构建输出，或在 engine 调用点断点检查
+`ToolRegistry`。注意 v0.8.37 没有 `/tools` slash command（该命令是后来版本加入的 debug
+入口，且它展示的是最近一次 Prepared Tool Request 快照而非当前 registry）。
 
 ---
 

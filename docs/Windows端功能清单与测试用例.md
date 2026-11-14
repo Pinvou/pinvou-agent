@@ -657,7 +657,7 @@ npm run build:nsis
 | 聊天、模式、工具卡 | `features/chat/ChatView.jsx`、`tauri-bridge.js` | `commands.rs`、`engine.rs`、`engine_pool.rs` | `tests/ui_smoke.js`、`DeepSeek-TUI/crates/tui/src/core/engine/` |
 | Shell 实时输出与取消 | `tauri-bridge.js`、`features/chat/ChatView.jsx` | `engine.rs`、`commands.rs` | `DeepSeek-TUI/crates/tui/src/tools/shell.rs`、`tools/shell/tests.rs`、`core/engine/tests.rs` |
 | 附件与文件解析 | `tauri-bridge.js` | `file_ingest.rs`、`os/windows/windows_path.rs`、`windows_system.rs` | `file_ingest.rs` 内单元测试 |
-| 制品预览和编辑 | `features/artifacts/` | `commands.rs` | `tests/markdown_artifact_edit_smoke.js`、`tests/render_markdown_smoke.js` |
+| 制品预览和编辑 | `features/artifacts/` | `commands.rs` | `tests/markdown_artifact_edit_smoke.js` |
 | 模型与内置账号 | `features/settings/SettingsView.jsx`、`platform/tauri/bridge/settings.js` | `app/commands/monitor.rs`、`app/commands/settings.rs` | `tests/settings_ui_smoke.js`、对应 Rust 模块测试 |
 | 本地知识库 | `features/knowledge/KnowledgeView.jsx` | `knowledge/`、`file_ingest.rs` | `tests/kb_smoke.js`、`knowledge/` 内单元测试 |
 | 记忆和角色卡 | `SettingsView.jsx`、`features/personas/` | `commands.rs`、`memory.rs`、`personas.rs` | `tests/ui_smoke.js`、对应 Rust 模块测试 |
@@ -665,7 +665,7 @@ npm run build:nsis
 | 输入框工具与技能 | `features/settings/SettingsView.jsx`、`composer-tool-menu-logic.js` | `commands.rs`、`connector_visibility.rs` | `tests/composer_tool_menu_logic.test.js`、`tests/composer_tools_smoke.js` |
 | 工具市场与 OAuth | `features/tools/`、`features/settings/SettingsView.jsx` | `bridge/marketplace.rs`、`bridge/skill_marketplace.rs` | `tests/tool_store_smoke.js`、`tests/marketplace_oauth_logic.test.js`、`scripts/mcp-server-contract-smoke.py` |
 | 企业连接器 | `features/tools/ToolStoreView.jsx`、`tauri-bridge.js` | `feishu.rs`、`wecom.rs`、`dingtalk.rs` | 连接器模块测试、`tests/tool_store_smoke.js` |
-| 定时任务 | `features/scheduled/ScheduledTasksView.jsx`、`features/chat/ChatView.jsx`、`tauri-bridge.js` | `scheduled_tasks.rs`、`scheduled_executor.rs`、`bridge/sessions.rs` | `tests/scheduled_tasks_unit.js`、`tests/scheduled_tasks_smoke.js`、底座 `automation_manager` 测试 |
+| 定时任务 | `features/scheduled/ScheduledTasksView.jsx`、`features/chat/ChatView.jsx`、`tauri-bridge.js` | `scheduled_tasks.rs`、`scheduled_executor.rs`、`bridge/sessions.rs` | `tests/scheduled_tasks_unit.test.js`、`tests/scheduled_tasks_smoke.js`、底座 `automation_manager` 测试 |
 | 桌伴公仔 | `features/pet/`、`pet-main.jsx`、`pet-menu-main.js`、`main.jsx` | `pet_window.rs`、`selected_pet.rs` | `tests/pet_*.test.mjs`、`tests/pet_selector_ui_smoke.js`、对应 Rust 测试 |
 | 远程控制 | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `remote_control/` | `remote-control-relay/test/web-ui.smoke.cjs` |
 | 监控 | `features/monitor/MonitorView.jsx`、`tauri-bridge.js` | `commands.rs`、`os/windows/windows_cpu.rs`、`windows_memory.rs` | `tests/ui_smoke.js` 及监控模块测试 |
