@@ -1979,6 +1979,7 @@ pub fn run() {
             commands::knowledge::kb_remove_document,
             commands::knowledge::kb_embed_info,
             commands::knowledge::kb_model_status,
+            commands::knowledge::kb_model_cancel,
             commands::knowledge::kb_model_load_after_first_frame,
             commands::knowledge::kb_model_download,
             commands::knowledge::session_mount_collection,

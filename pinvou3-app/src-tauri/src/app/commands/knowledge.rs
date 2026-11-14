@@ -426,6 +426,7 @@ pub async fn kb_model_status(
     let _ = app.emit("kb_model:status", &status);
     Ok(status)
 }
+sync_command_passthrough!(model_domain, kb_model_cancel());
 async_command_passthrough!(
     model_domain,
     kb_model_load_after_first_frame(
