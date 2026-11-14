@@ -229,7 +229,7 @@ jobs:
           # steps below carry the same policy via a pointer comment.
 
       - name: 安装前端依赖
-        working-directory: pinvoy3-app
+        working-directory: pinvou3-app
         # Wedged-registry bound, same class as the pr-check frontend lane:
         # 900s fails the leg long before any of these release jobs' 90-360
         # minute caps can fire.
@@ -388,7 +388,7 @@ jobs:
           # test_release_cache_policy.
 
       - name: 安装前端依赖
-        working-directory: pinvoy3-app
+        working-directory: pinvou3-app
         # Wedged-registry bound, same class as the pr-check frontend lane:
         # 900s fails the leg long before any of these release jobs' 90-360
         # minute caps can fire.
@@ -589,7 +589,7 @@ jobs:
           # test_release_cache_policy.
 
       - name: 安装前端依赖
-        working-directory: pinvoy3-app
+        working-directory: pinvou3-app
         # Wedged-registry bound, same class as the pr-check frontend lane:
         # 900s fails the leg long before any of these release jobs' 90-360
         # minute caps can fire.
@@ -743,7 +743,7 @@ jobs:
           # test_release_cache_policy.
 
       - name: 安装前端依赖
-        working-directory: pinvoy3-app
+        working-directory: pinvou3-app
         # Wedged-registry bound, same class as the pr-check frontend lane:
         # 900s fails the leg long before any of these release jobs' 90-360
         # minute caps can fire.
@@ -877,7 +877,7 @@ jobs:
           # test_release_cache_policy.
 
       - name: 安装前端依赖
-        working-directory: pinvoy3-app
+        working-directory: pinvou3-app
         # Wedged-registry bound, same class as the pr-check frontend lane:
         # 900s fails the leg long before any of these release jobs' 90-360
         # minute caps can fire.
