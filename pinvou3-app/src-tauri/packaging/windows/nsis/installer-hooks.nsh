@@ -4,7 +4,7 @@
 !define PINVOU_VC_REDIST_MIN_REVISION 0
 
 ; ${__FILEDIR__} inside !macro bodies keeps the insertion-site value (the
-; bundler writes installer.nsi under target/release/bundle/nsis/<arch>), so
+; bundler renders installer.nsi under the cargo target dir's nsis/<arch>), so
 ; anchor this hooks directory once at file level, where ${__FILEDIR__} is
 ; still this file's directory. Both the committed base hooks
 ; (packaging/windows/nsis) and the staged generated copy
@@ -112,7 +112,12 @@ pinvou_vc_redist_ready:
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File "/oname=$PLUGINSDIR\pinvou-runtime-env.ps1" "${PINVOU_HOOKS_DIR}\..\..\..\packaging\windows\nsis\runtime-env.ps1"
-  nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-runtime-env.ps1" -Mode ${Mode} -InstallDir "$INSTDIR"'
+  ; Hand $INSTDIR to the script through the environment instead of the
+  ; command line: a quoted argument whose value ends in a backslash
+  ; (drive-root installs) swallows the closing quote during Windows
+  ; argument parsing, so PowerShell would bind a corrupted path.
+  System::Call 'Kernel32::SetEnvironmentVariableW(w "PINVOU_INSTALL_DIR", w "$INSTDIR") i.r8'
+  nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-runtime-env.ps1" -Mode ${Mode}'
   Pop $6
   Pop $7
   ${If} $6 != 0

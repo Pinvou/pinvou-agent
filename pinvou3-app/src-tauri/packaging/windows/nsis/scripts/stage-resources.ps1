@@ -133,9 +133,10 @@ function Copy-DirectoryContents {
   )
 
   New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-  & robocopy.exe $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+  $robocopyOutput = & robocopy.exe $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP
   if ($LASTEXITCODE -gt 7) {
-    throw "Failed to stage resource directory (robocopy exit code $LASTEXITCODE): $Source"
+    $robocopyTail = (@($robocopyOutput) | Select-Object -Last 5 | ForEach-Object { "$_" }) -join " | "
+    throw "Failed to stage resource directory (robocopy exit code $LASTEXITCODE): $Source. Output tail: $robocopyTail"
   }
 }
 

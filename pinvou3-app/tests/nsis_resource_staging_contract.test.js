@@ -47,6 +47,13 @@ const runtimeEnvScript = read(
   "runtime-env.ps1",
 );
 const mainWxs = read("src-tauri", "packaging", "windows", "wix", "main.wxs");
+const pythonNodePathWxs = read(
+  "src-tauri",
+  "packaging",
+  "windows",
+  "wix",
+  "python-node-path.wxs",
+);
 const windowsPlatformConfig = JSON.parse(
   read("src-tauri", "config", "platforms", "windows", "tauri.conf.json"),
 );
@@ -152,6 +159,30 @@ assert.deepEqual(
   ["en-US", "zh-CN", "ja-JP"],
   "MSI languages must cover English, Simplified Chinese and Japanese (repo i18n policy)",
 );
+// The MSI Environment fragment only takes effect when the bundler renders
+// and links it: the template must stay wired, the fragment path must stay
+// listed, and the fragment's component must stay referenced — WiX silently
+// installs an unreferenced component, and no CI lane compiles the MSI.
+assert.equal(
+  windowsPlatformConfig.bundle.windows.wix.template,
+  "packaging/windows/wix/main.wxs",
+  "tauri.conf.json must wire the custom WiX template",
+);
+assert.deepEqual(
+  windowsPlatformConfig.bundle.windows.wix.fragmentPaths,
+  ["packaging/windows/wix/python-node-path.wxs"],
+  "the PINVOU3_PYTHON Environment fragment must stay wired into the WiX build",
+);
+assert.match(
+  pythonNodePathWxs,
+  /<Component Id="PythonNodeRuntimeEnvironment"/u,
+  "componentRefs entries must reference a component the fragment actually defines",
+);
+assert.deepEqual(
+  windowsPlatformConfig.bundle.windows.wix.componentRefs,
+  ["PythonNodeRuntimeEnvironment"],
+  "the fragment component must stay referenced in the External feature, or it is silently skipped",
+);
 
 // Installer hooks pack helper scripts next to the installer via the
 // file-level ${PINVOU_HOOKS_DIR} anchor (${__FILEDIR__} inside !macro keeps
@@ -201,6 +232,30 @@ assert.doesNotMatch(
   runtimeEnvMacroBody,
   /^\s+SetOutPath "\$INSTDIR"\s*$/mu,
   "the runtime-env macro must not recreate $INSTDIR after the uninstall removed it (the vc_redist macro may: it only runs on the install leg)",
+);
+// $INSTDIR reaches runtime-env.ps1 through the environment (the installer
+// sets PINVOU_INSTALL_DIR): a quoted command-line argument whose value ends
+// in a backslash (drive-root installs) swallows the closing quote during
+// Windows argument parsing.
+assert.match(
+  runtimeEnvMacroBody,
+  /SetEnvironmentVariableW\(w "PINVOU_INSTALL_DIR", w "\$INSTDIR"\)/u,
+  "the macro must hand $INSTDIR to PowerShell via the environment",
+);
+assert.doesNotMatch(
+  runtimeEnvMacroBody,
+  /-InstallDir/u,
+  "the macro must not pass $INSTDIR as a quoted command-line argument (trailing-backslash quoting)",
+);
+assert.match(
+  runtimeEnvScript,
+  /\[string\]\$InstallDir = \$env:PINVOU_INSTALL_DIR/u,
+  "runtime-env.ps1 must default InstallDir from the installer-provided environment variable",
+);
+assert.match(
+  runtimeEnvScript,
+  /InstallDir was not provided/u,
+  "runtime-env.ps1 must fail closed when neither the environment nor -InstallDir supplies the install directory",
 );
 assert.match(
   runtimeEnvScript,

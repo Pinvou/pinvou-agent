@@ -47,7 +47,7 @@ SHA-256。`Test-VerifiedStageReusable` 复用 staging 前会以 lock 的 `staged
 staging 中。
 
 `.stage-manifest.json`（schema 2）的读取端（`Test-StageManifest`、`Test-StagedFilesAgainstTrustedManifest`）在本仓库；
-写入端 `Write-StageManifest` 仅存在于测试中——payload 完整保留（`payload/vc_redist/` 等不清理）的 stage 由外部流水线
+写入端 `Write-StageManifest` 在本仓库仅被测试调用（生产流水线不产出 `.stage-manifest.json`）——payload 完整保留（`payload/vc_redist/` 等不清理）的 stage 由外部流水线
 产出，其 descriptor 会优先记录 payload 路径（`runtime:windows:stage` 对该布局同样先信任锚复核再复用）。
 
 验证后的运行时写入：

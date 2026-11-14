@@ -3,11 +3,18 @@ param(
     [ValidateSet("Install", "Uninstall")]
     [string]$Mode,
 
-    [Parameter(Mandatory = $true)]
-    [string]$InstallDir
+    # The installer passes $INSTDIR via the environment (PINVOU_INSTALL_DIR):
+    # a quoted command-line argument whose value ends in a backslash
+    # (drive-root installs) swallows the closing quote during Windows
+    # argument parsing. -InstallDir stays available for manual runs.
+    [string]$InstallDir = $env:PINVOU_INSTALL_DIR
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($InstallDir)) {
+    throw "InstallDir was not provided (the installer sets PINVOU_INSTALL_DIR; manual runs pass -InstallDir)."
+}
 
 $runtimeDir = Join-Path $InstallDir "runtime"
 $pythonDir = Join-Path $runtimeDir "python"
