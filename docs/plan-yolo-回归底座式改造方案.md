@@ -1,6 +1,6 @@
 # Plan/Yolo 回归底座式 改造方案
 
-> 状态：待评审（2026-06-25）
+> 状态：已完成并收尾（阶段 1/2/3/4 全 done，2026-06-25；§0 的底座文件/行号为 v0.8.x 旧态，仅作历史引用）。2026-11 回填留档：改造结果在当前代码中可验证——`PlanPhase` 已删除、composer `ComposerModeChip` 已上线、`plan_stuck` 兜底保留。
 > 目标：砍掉 app 自建的 `PlanPhase` 四态生命周期，回归底座原生的 Plan/Yolo 二态 + 底座 plan 交接闭环；模式切换入口做成 composer（信息输入栏）chip；plan 决策保留卡片形态。
 
 ## 0. 背景与判断
@@ -147,7 +147,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 4. ✅ **阶段顺序**：先接 chip 验证端到端，再减法。
 
 ### 遗留物处理提醒
-- `pinvou3-ablation`（`ablation-clean` 分支）worktree + `pinvou3-mode-select` worktree 里未提交的 `l1_dialog_harness.rs`（`plan_ablation`/`plan_write_urge` 消融用例，用 `PlanPhase::Planning`）= 旧消融脚手架。阶段4 删消融时一并清理（这些测试随 PlanPhase 删除会编译失败，要同步处理）。
+- `pinvou3-ablation`（`ablation-clean` 分支）worktree + `pinvou3-mode-select` worktree 里未提交的 `l1_dialog_harness.rs`（`plan_ablation`/`plan_write_urge` 消融用例，用 `PlanPhase::Planning`）= 旧消融脚手架。阶段4 删消融时一并清理（这些测试随 PlanPhase 删除会编译失败，要同步处理）。（注：这些为本机私有 worktree，不随本仓库发布；所述清理已完成。）
 
 ## 7. 阶段3 终决：放弃 M3（2026-06-25）
 

@@ -3,6 +3,8 @@
 > 面向：刚接触本项目、需要把项目迁移到 Windows 并长期迭代维护的 Windows 应用开发工程师。
 >
 > 生成日期：2026-06-15。本文基于当前仓库源码、`README.md`、`process.md`、`docs/fork-modifications.md`、`docs/auto-compact-256K-tuning.md`、`docs/DeepSeek-TUI-工具系统.md` 与相关 Tauri/Rust/前端代码梳理。
+>
+> **注（2026-11 回填）**：本文为 2026-06-15 迁移期快照，未按当前主干逐条复核，接手时注意以下布局均已变化：底座子模块已由 `DeepSeek-TUI/` 更名 `CodeWhale/`（无 `branch` 字段，另新增 `private-runtimes/windows` 私有运行时子模块）；前端由 `tauri-bridge.js` 单文件迁移为 `src/features/*` + `src/platform/` 分层；Rust 由根级 `commands.rs`/`engine.rs`/`bridge/` 迁移为 `app/commands/` + `features/` + `platform/`；§8 的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`）已在主干整体移除；§11「Windows 打包必须重做」的结论已过时——NSIS 打包已在主干落地。现行权威入口：`AGENTS.md`、`docs/fork-modifications.md`、`docs/windows-private-runtime-submodule.md`、`docs/windows-rust-ci.md`。
 
 ## 1. 一句话定位
 
@@ -34,6 +36,8 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 	url = https://github.com/Pinvou/CodeWhale.git
 	branch = pinvou3-clean
 ```
+
+> 当前主干实际为：`[submodule "CodeWhale"]`（`path = CodeWhale`，无 `branch` 字段）+ `[submodule "private-runtimes/windows"]`（Windows 私有运行时，`update = none`）。
 
 首次克隆或当前目录为空时先执行：
 
@@ -207,6 +211,8 @@ Windows 风险集中在这里：
 
 ## 8. 工作流链路
 
+> ⚠️ 快照章节：本节描述的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`、`build.rs::sync_workflow_bundle`、`Op::SpawnSubAgent` 链路）已在当前主干整体移除（`sansheng-liubu` 已列入 `features/retirement.rs` 退役清单），仅作历史留档，请勿据此接手。
+
 工作流当前处于“功能重新设计中，GUI 开发中占位”的大背景，但代码里已有卡片流/三省六部工作流框架。
 
 链路：
@@ -252,10 +258,10 @@ Windows 风险：
 
 `docs/fork-modifications.md` 是 fork 单一真相源。当前关键点：
 
-- submodule 分支应是 `pinvou3-clean`。
+- submodule 分支应是 `pinvou3-clean`。（快照口径；当前主干 gitlink 不固定分支。）
 - fork drift 有明确统计和 fork guard 守护。
-- pinvou3 通过 Cargo path dependency 使用底座 crate：`deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui", package = "codewhale-tui" }`。
-- 上游 v0.8.57 后 rebrand 为 `codewhale-tui`，本地 alias 保持 `deepseek-tui`。
+- pinvou3 通过 Cargo path dependency 使用底座 crate：`deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui", package = "codewhale-tui" }`（当前主干 path 为 `../../CodeWhale/crates/tui`）。
+- 上游 v0.8.45 起 rebrand 为 `codewhale-tui`，本地 alias 保持 `deepseek-tui`（当前 path 为 `../../CodeWhale/crates/tui`）。
 
 必须保护的 fork 主题：
 
@@ -325,6 +331,8 @@ Windows 迁移建议：
   "targets": ["deb"]
 }
 ```
+
+> 快照口径：当前主干已落地 Windows 打包——`config/platforms/windows/tauri.conf.json` 已含 `"targets": ["msi","nsis"]`（perMachine、LZMA、VC++ 检测与安装钩子齐备）；基座 `tauri.conf.json` 不再写 `targets`，按平台目录拆分。本节「必须重做」清单仅对 0.6.x 状态成立，现行契约见 `docs/windows-private-runtime-submodule.md`。
 
 Linux 安装说明在 `pinvou3-app/INSTALL.md`，依赖 `.deb`、`apt`、`pkexec`。应用内升级也围绕 `.deb` 下载、sha256 校验、`pkexec apt` 安装。
 
@@ -419,14 +427,14 @@ Windows 原生后建议增加这些测试：
 
 - 品悟 v2 review 已推翻并从源码移除，当前新方案另行设计。
 - 多 subagent 大研究 fan-out 已废弃，只保留单 + 串行。
-- Plan/YOLO 正在向 Yolo-only 收敛，前端 Plan 入口已隐藏但逻辑保留。
-- 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩。
+- Plan/YOLO 收敛已完成：`PlanPhase` 状态机已删除，composer 提供 Plan/Yolo 手切 chip（默认 Yolo），`plan_stuck` 兜底卡保留；不要再按旧 PlanPhase / plan-fallback 逻辑开发。
+- 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩（现为按路由的 `route_inline_char_budget`，结论不变）。
 
 ## 16. 推荐阅读顺序
 
 1. `AGENTS.md`：项目规则和底座边界。
 2. `README.md`：产品定位与能力概览。
-3. `process.md`：当前状态、阶段、已知问题、待办。
+3. `process.md`：内部仓库的过程时间线（未随本仓库发布，跳过）。
 4. `docs/fork-modifications.md`：DeepSeek-TUI fork 单一真相源。
 5. `docs/auto-compact-256K-tuning.md`：本地 Qwen3.6 256K 上下文适配。
 6. `docs/DeepSeek-TUI-工具系统.md`：底座工具注册与执行链路。

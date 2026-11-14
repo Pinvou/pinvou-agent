@@ -71,7 +71,7 @@
 - DEB 可以安装；
 - 应用可以启动；
 - WebKit 主界面可以正常显示；
-- Debian 12 Bookworm 构建产物最高要求 `GLIBC_2.34`，可在 glibc 2.38 的麒麟 V11 上运行；
+- Debian 12 Bookworm 构建产物最高要求 `GLIBC_2.34`，可在 glibc 2.38 的麒麟 V11 上运行；（注：[`麒麟OS-V11适配踩坑记录.md`](./麒麟OS-V11适配踩坑记录.md) 将 2.34 产物归因于 Ubuntu 22.04 容器构建，并把 Debian 12 列为「可能编出引用更高 glibc 符号」的警示项；两处记录有出入，兼容基线以踩坑记录的 Ubuntu 22.04 地板与 `scripts/check-linux-glibc-floor.sh` 为准。）
 - VirtIO 虚拟显卡可正常运行，QXL 图形栈会导致 WebKit EGL 初始化失败；
 - 麒麟 V11 安装 DEB 前需要进入维护模式，但应用运行不应长期依赖维护模式；
 - 当前仍未完成模型、文件、知识库、工具、工作流、升级等完整产品回归。
@@ -118,7 +118,7 @@ Tauri 虽未在手册中单独点名，但与 Electron 同属 Web 技术桌面�
 
 Tauri Linux 应用依赖宿主系统 glibc。当前开发机直接构建的 AMD64 二进制曾要求 `GLIBC_2.39`，无法在 glibc 2.38 的麒麟 V11 上启动，更无法覆盖 glibc 2.31 的部分 V10 环境。
 
-已有验证证明，在 Debian 12 Bookworm 构建后可把最高 glibc 要求降到 `GLIBC_2.34`。正式构建链需要：
+已有验证证明，在 Debian 12 Bookworm 构建后可把最高 glibc 要求降到 `GLIBC_2.34`。（注：归因与 [`麒麟OS-V11适配踩坑记录.md`](./麒麟OS-V11适配踩坑记录.md) 存在出入——彼处为 Ubuntu 22.04 容器构建并明确警示 Debian 12 镜像风险；正式构建镜像按踩坑记录执行，地板以 `scripts/check-linux-glibc-floor.sh`（amd64/arm64 2.35）为准。）正式构建链需要：
 
 - 固定兼容构建镜像；
 - 禁止复用宿主机 `target/`；
@@ -199,7 +199,9 @@ sense-voice-main-x86_64-unknown-linux-gnu
 sense-voice-main-aarch64-unknown-linux-gnu
 ```
 
-第一阶段只建议承诺 AMD64 或 ARM64。LoongArch、MIPS64、SW64 等架构应分别立项验证，不能仅因为 Rust 主程序可编译就视为整包可用。
+（注：现行打包布局为按机器目录映射——`target/linux-asr-runtime/<machine>/sense-voice-main` → 包内 `runtime/asr/sense-voice-main`，见 `config/platforms/linux/{x86_64,aarch64}/tauri.conf.json` 与 `scripts/tauri/build.js`。）
+
+第一阶段只建议承诺 AMD64 或 ARM64。LoongArch、MIPS64、SW64 等架构应分别立项验证，不能仅因为 Rust 主程序可编译就视为整包可用。（注：LoongArch64 交叉构建与发布链路已于 2026-10 落地主线——`scripts/ci-build-linux-loongarch64.sh` 与 release 专用 job；「整包可用」仍需按本节原则做真机回归。）
 
 ### 5.5 依赖安装与 V11 不可变系统
 
@@ -268,6 +270,8 @@ sense-voice-main-aarch64-unknown-linux-gnu
 ### 5.8 OTA 与多架构发布
 
 当前 Linux OTA 使用单个 `latest.json`，清单只包含一个包 URL。发布第二个架构时，后上传的清单会覆盖前一个架构，导致另一架构客户端可能下载错误安装包。
+
+> 注（2026-11 归档）：现行主干 `latest.json` 已支持按平台 `packages` 映射（`macos-universal` / `linux-arm64` 等，含 per-platform `url/sha256/size/version` 与顶层字段回退，见 `features/updater/mod.rs`），本节描述的"单包 URL 互相覆盖"问题在协议层已解决；本节其余建议按现行协议评估即可。
 
 应改为以下任一协议：
 
@@ -384,7 +388,7 @@ latest-amd64.json
 预计：
 
 - AMD64/ARM64 第二架构：额外 2～4 周；
-- LoongArch 等新架构：每架构单独评估，完整矩阵预计 3～6 个月以上。
+- LoongArch 等新架构：每架构单独评估，完整矩阵预计 3～6 个月以上。（注：LoongArch64 的交叉构建、CI 与 release 发布链路已于 2026-10 落地主线并出过首个发布件，本阶段余量为真机回归与生态项。）
 
 阶段出口：每个承诺架构都有独立产物、硬件回归和发布渠道。
 
@@ -539,4 +543,4 @@ L2 原生生态交付还应满足：
 - [Tauri Linux 前置依赖](https://v2.tauri.app/zh-cn/start/prerequisites/)
 - [麒麟“麒心伙伴”及原生适配认证说明](https://www.kylinos.cn/eco/vipPartner/partnerGuide/index.html)
 - [仓库：麒麟 OS V11 适配踩坑记录](./麒麟OS-V11适配踩坑记录.md)
-- [仓库：应用内升级设计](./应用内升级-设计.md)
+- 内部文档《应用内升级设计》（未随本仓库发布）

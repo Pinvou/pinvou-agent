@@ -1,10 +1,15 @@
 # Codex ACP 运行环境与首次使用设计
 
-> 文档状态：待评审
+> 文档状态：已归档（2026-07-23 设计记录；分支 `feat/codex-acp` 不在本仓库）
 >
-> 记录日期：2026-07-23
+> 落地情况（2026-11 归档注记）：Bridge 打包、事件合同、权限模式与工作区模型的思路已落地；
+> §5–§8、§11 的托管 Codex 下载、`CodexRuntime*` 状态机与 `codex-runtime://status` 事件**未被采纳**，
+> 现行实现为 `CodexAcpStatus` 布尔状态契约 + `acp:install-progress` 事件；§6.1 的 Node 22.x / codex-acp
+> 1.1.5 基线已过时（现行 Bridge 钉扎 Node 24.22.1、适配器 2.2.2）；§11 的 `prepare_codex_acp` /
+> `login_codex_acp` 未落库（现行命令为 `install_acp_agent` / `login_acp_agent` /
+> `submit_acp_agent_login_code` / `open_acp_agent_login_url`）。
 >
-> 对应分支：`feat/codex-acp`
+> 运行时现状以 [`codex-acp.md`](./codex-acp.md) 与 [`multi-agent-acp.md`](./multi-agent-acp.md) 为准。
 >
 > 上位决策：[`Codex-ACP-整体架构决策.md`](./Codex-ACP-整体架构决策.md)
 
@@ -240,6 +245,11 @@ runtime release: codex-runtime-0.x.y
 codex:           0.x.y
 platform:        linux-x64 / linux-arm64
 ```
+
+> 注（归档时现状）：现行 Bridge 实际钉扎 Node 24.22.1、codex-acp 适配器 2.2.2
+> （`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`、`features/codex_acp/mod.rs`）；
+> 运行目录名 `codex-acp-1.1.5` 不代表适配器版本，见 `docs/codex-acp.md`。托管 Codex Runtime
+> 下载未采纳，Codex 由用户自行安装（脚本/brew/npm，应用内引导）。
 
 Bridge 不能只固定顶层 `codex-acp` 而允许每次构建重新解析不同的传递依赖，必须使用
 锁文件。构建 Bridge 时不携带 `@openai/codex-*` 平台二进制，并验证设置
@@ -566,6 +576,8 @@ codex-runtime://status
 
 现有 `prepare_codex_acp`、`login_codex_acp` 可在迁移期作为兼容入口调用新的
 `CodexRuntimeManager`，前端切换完成后再删除旧命令。
+（归档注记：这两个命令最终未落库；现行命令为 `install_acp_agent` / `login_acp_agent` /
+`submit_acp_agent_login_code` / `open_acp_agent_login_url`，见 `app/commands/codex.rs`。）
 
 ## 12. 与现有功能的隔离
 
