@@ -678,8 +678,8 @@ fn tool_source_contract(source: &store::BundleSource) -> &'static str {
 
 // 对外 pub 面保持不变:类型从 types 子模块 re-export。
 pub use types::{
-    ConfigField, MarketplaceToolInfo, MarketplaceToolValidation, RemoteOAuthConfig, RemoteServer,
-    SecretEnv, SecretHeader, ToolManifest,
+    ConfigField, MarketplaceToolInfo, RemoteOAuthConfig, RemoteServer, SecretEnv, SecretHeader,
+    ToolManifest,
 };
 
 // PR #302 拆分后,这些函数已搬到 scope.rs;为保持 mod.rs 兼容面,在此 re-export。
@@ -9578,13 +9578,20 @@ pub(crate) mod tests {
             config.insert("PATSNAP_API_KEY".to_string(), "valid-token".to_string());
 
             mgr.install("patsnap-mock", &config).unwrap();
-            // Ok(()) means validated: the handshake succeeded, tools were non-empty, and every tool the manifest
+            // Ok means validated: the handshake succeeded, tools were non-empty, and every tool the manifest
             // expects (patsnap_search / patsnap_fetch) was discovered — missing any one yields Err.
-            // The old return value carried the tool details; now the real tools/list call is observed
-            // via the methods the mock received.
-            mgr.validate_remote_connection("patsnap-mock")
+            // The Ok value IS the discovered tool inventory, and the mock serves exactly those two names.
+            let mut discovered = mgr
+                .validate_remote_connection("patsnap-mock")
                 .await
                 .unwrap();
+            discovered.sort();
+            assert_eq!(
+                discovered,
+                ["patsnap_fetch", "patsnap_search"]
+                    .map(str::to_string)
+                    .to_vec()
+            );
 
             assert!(mgr.installed_ids().contains(&"patsnap-mock".to_string()));
             let mcp = read_mcp_json();
@@ -9611,6 +9618,30 @@ pub(crate) mod tests {
             let seen = mock.seen_methods.lock().unwrap().clone();
             assert!(seen.contains(&"initialize".to_string()));
             assert!(seen.contains(&"tools/list".to_string()));
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_without_manifest_requirement_returns_empty_inventory() {
+        // 不声明校验的工具（validate_on_install=false）直接空清单成功：不建池、
+        // 不握手——装后管线只看成败，这条钉住"空清单是合法的 Ok 形状"。
+        with_temp_home_async(|| async {
+            write_tool_manifest_fixture(
+                "patsnap-mock",
+                "Patsnap",
+                r#""mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
+                    "validate_on_install":false,
+                    "servers":[]"#,
+            );
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let discovered = mgr
+                .validate_remote_connection("patsnap-mock")
+                .await
+                .unwrap();
+
+            assert!(discovered.is_empty());
         })
         .await;
     }
