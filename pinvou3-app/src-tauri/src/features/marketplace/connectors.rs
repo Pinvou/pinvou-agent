@@ -74,6 +74,16 @@ fn pip_index_rounds() -> [(&'static str, &'static [&'static str]); 2] {
 /// unbounded.
 const PIP_INSTALL_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
+/// Wall-clock budget for the importlib satisfied-probe that runs before the
+/// install ladder. The probe executes on every install/repair whose
+/// dependencies are not pre-satisfied, so an unbounded probe would hang the
+/// lane exactly like the bounded install attempts above exist to prevent —
+/// a wedged python3 startup (hung home mount, planted startup hook) never
+/// reaches pip at all. Same value class as the Python runtime probe
+/// (`python_dependencies::PYTHON_PROBE_TIMEOUT`); an expired or failed probe
+/// reads as "not satisfied" and falls through to the bounded ladder.
+const PIP_SATISFIED_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Failure diagnostics keep the last ~20 lines of the stream: the root cause
 /// often lives above the final line (resolver conflict tables print their
 /// header long before the summary line), and keeping only the last line used
@@ -214,13 +224,21 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 
         // ① 预检:依赖已可用就直接 Ok,不跑 pip。用 importlib.metadata 按 PyPI 包名查
         //    (python-pptx 等),全部命中即满足。修「明明已装(系统包/此前装过)却仍判失败」。
-        let satisfied = std::process::Command::new(python_cmd)
+        //    预检与下面的安装尝试同受墙钟约束:它在每条未满足依赖的
+        //    install/repair 路径上先于安装梯子执行,卡死的 python3 启动若
+        //    不设界,挂起方式与安装梯子要防的一模一样。超时/失败按「未满足」
+        //    处理,落入有界安装梯子。
+        let mut probe = std::process::Command::new(python_cmd);
+        probe
             .arg("-c")
             .arg("import importlib.metadata as m, sys; [m.version(p) for p in sys.argv[1:]]")
-            .args(deps)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+            .args(deps);
+        let satisfied = crate::platform::process::output_with_timeout_and_kill_tree(
+            probe,
+            PIP_SATISFIED_PROBE_TIMEOUT,
+        )
+        .map(|o| o.status.success())
+        .unwrap_or(false);
         if satisfied {
             return Ok(());
         }
@@ -264,7 +282,9 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // corporate index keeps priority); only after the whole round fails do
         // we rerun once via Tsinghua TUNA (rounds defined in pip_index_rounds).
         // Each attempt is wall-clock bounded (PIP_INSTALL_ATTEMPT_TIMEOUT,
-        // kill-tree on expiry); the ladder is unchanged, so the worst case is
+        // kill-tree on expiry); the satisfied-probe ahead of the ladder
+        // carries its own bound (PIP_SATISFIED_PROBE_TIMEOUT), so the whole
+        // lane is bounded. The ladder is unchanged, so the worst case is
         // 3 flag-attempts × 2 index rounds × that budget — bounded, where a
         // wedged attempt used to block the lane indefinitely. Each round's own
         // last error goes into the final error: keeping only the last round
@@ -1678,6 +1698,19 @@ fn align_remote_entry_fields(
 #[cfg(test)]
 mod pip_rounds_tests {
     use super::*;
+
+    /// The satisfied-probe bound must hold at its shipped value: it executes
+    /// before the install ladder on every install/repair with unsatisfied
+    /// deps, so a silent loosening back to an unbounded (or effectively
+    /// unbounded) probe re-opens the hang this bound closes — the probe is
+    /// the one site the bounded-ladder comment cannot cover.
+    #[test]
+    fn pip_satisfied_probe_stays_at_30s() {
+        assert_eq!(
+            PIP_SATISFIED_PROBE_TIMEOUT,
+            std::time::Duration::from_secs(30)
+        );
+    }
 
     /// The default-index round must run first as a whole round (respecting the
     /// user's pip.conf/corporate index; TUNA is only the last fallback): this
