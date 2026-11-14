@@ -18,6 +18,16 @@ use super::{
 };
 use crate::platform::paths;
 
+/// Round-15 review: a recognizable prefix for queue-full errors — stop and
+/// refresh are recovery paths, and this prefix downgrades that error class to
+/// "log and continue" instead of wedging disable/rotate; conflicts with the
+/// same key but a different secret stay fail-closed (design boundary recorded
+/// in round-14). A string prefix rather than an enum: the module's error
+/// surface is plain String, consistent with existing style; callers
+/// discriminate with `starts_with`.
+pub(super) const PENDING_REVOCATION_QUEUE_FULL_PREFIX: &str =
+    "pending Web revocation queue is full";
+
 pub(super) fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
     WebAccessInfo {
         endpoint_id: endpoint.config.endpoint_id.clone(),
@@ -37,8 +47,8 @@ pub(super) fn fresh_config(allow_host_workspace: bool) -> WebAccessConfig {
     }
 }
 
-/// ws(s) 地址统一校验：长度上限、`ws://` 或 `wss://` 前缀、不含空白；
-/// 失败文案由调用方保留原样。
+/// Uniform ws(s) URL validation: length cap, `ws://` or `wss://` prefix, no
+/// whitespace; the caller keeps the failure message verbatim.
 fn validate_ws_url(url: &str, invalid_message: &str) -> Result<(), String> {
     if url.len() > 2_048
         || !(url.starts_with("ws://") || url.starts_with("wss://"))
@@ -49,7 +59,8 @@ fn validate_ws_url(url: &str, invalid_message: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// http(s) 页面基址统一校验，与 `validate_ws_url` 同一基线。
+/// Uniform http(s) page-base validation, sharing `validate_ws_url`'s
+/// baseline.
 fn validate_http_base_url(url: &str, invalid_message: &str) -> Result<(), String> {
     if url.len() > 2_048
         || !(url.starts_with("http://") || url.starts_with("https://"))
@@ -170,24 +181,32 @@ pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, S
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
-    // 读取即修复,且先于任何内容读取:损坏 + 放宽权限的组合也不能把一个
-    // 世界可读的凭据文件留在盘上(备份恢复或外部工具可能把它改成组/全员
-    // 可读)。Round-6 复审:修复必须挂在**第一个**句柄上、先于
-    // `read_to_string`——非 UTF-8 的损坏内容会让读取腿先行报错返回,挂在
-    // 读取之后的修复永远不会执行,放宽权限的损坏文件就一直裸留在盘上。
-    // 与写入路径的 0600 基线保持一致;修复失败按读取错误上抛,同时免去
-    // 第二次 open 的 TOCTOU(两次打开之间路径可被换掉)。Windows/fallback
-    // 平台该调用是显式 no-op。
+    // Repair on read, before any content read: the combination of corruption
+    // plus relaxed permissions must never leave a world-readable credential
+    // file on disk (a backup restore or external tool may have made it
+    // group/world readable). Round-6 review: the repair must attach to the
+    // **first** handle, before `read_to_string` — non-UTF-8 corrupt content
+    // makes the read leg return early with an error, so a repair attached
+    // after the read would never run and the loose corrupt file would stay
+    // exposed on disk indefinitely. Consistent with the write path's 0600
+    // baseline; a failed repair surfaces as a read error and also avoids the
+    // second open's TOCTOU (the path can be swapped between the two opens).
+    // On Windows/fallback this call is an explicit no-op.
     platform::enforce_private_permissions(&file, path).map_err(|error| {
-        // Round-8 复审 minor:修复自身失败(fchmod 需要 owner 权限,
-        // 备份恢复可能留下他者属主的世界可读密文件)时,不能把它一直
-        // 留在众所周知的路径上。Round-9 复审:普通 rename 会保留放宽的
-        // mode 位,隔离副本在新名字下依旧世界可读——改走 0600 副本 +
-        // unlink 原件(隔离副本是本进程创建的,fchmod 在其上必然成功;
-        // 对原件的权限来自父目录写位,不依赖文件属主)。目录占位(EISDIR
-        // fixture)等非普通文件退回 rename 语义;隔离彻底失败(目录只读/
-        // Windows 文件锁)则保持原错误——那与目录不可写同级,后续写入
-        // 同样会失败。
+        // Round-8 review minor: when the repair itself fails (fchmod needs
+        // owner permissions; a backup restore can leave a world-readable
+        // secret owned by someone else), the file must not stay at the
+        // well-known path forever. Round-9 review: a plain rename preserves
+        // the relaxed mode bits, so the quarantined copy remains
+        // world-readable under its new name — use a 0600 copy + unlink of
+        // the original instead (the quarantined copy is created by this
+        // process, so fchmod on it must succeed; permission over the
+        // original comes from the parent directory's write bit, not file
+        // ownership). Non-regular files such as a directory placeholder
+        // (EISDIR fixture) fall back to rename semantics; if quarantine
+        // fails entirely (read-only directory / Windows file lock), keep the
+        // original error — that is on par with an unwritable directory, and
+        // subsequent writes would fail the same way.
         match crate::platform::filesystem::quarantine_secret_file(path) {
             Ok(quarantined) => eprintln!(
                 "[web-access] could not restrict permissions on {} ({error}); \
@@ -231,10 +250,10 @@ pub(super) fn remove_config() -> Result<(), String> {
     remove_private_file(&config_path())
 }
 
-// ── 用户自定义 Relay 地址 ─────────────────────────────────────────────
-// 没有应用内设置入口：web-relay.json 由用户手工维护，格式为「WebSocket
-// 地址 + 页面基址」一对；生效优先级：运行时 env 覆盖 > PINVOU_REMOTE_* env
-// > 本设置 > 内置默认。
+// ── User-customized Relay addresses ───────────────────────────────────
+// No in-app settings entry: web-relay.json is maintained by hand, holding a
+// "WebSocket address + page base" pair; precedence: runtime env override >
+// PINVOU_REMOTE_* env > these settings > built-in defaults.
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelaySettings {
@@ -255,8 +274,10 @@ pub(super) fn relay_settings_path() -> PathBuf {
     paths::pinvou3_home().join("web-relay.json")
 }
 
-/// 读取失败（不存在/损坏/非法）一律回落默认 relay：设置文件不是凭据，宁可
-/// 降级也不把「启用 Web 访问」整个卡死；文件损坏时由用户手工修复或删除。
+/// Any read failure (missing/corrupt/invalid) falls back to the default
+/// relay: the settings file is not a credential, and degrading beats
+/// wedging "enable Web access" entirely; a corrupt file is repaired or
+/// deleted by hand.
 pub(super) fn load_relay_settings() -> Option<RelaySettings> {
     let file = File::open(relay_settings_path()).ok()?;
     let mut text = String::new();
@@ -323,10 +344,14 @@ pub(super) fn validate_pending_revocation_ledger(
     Ok(())
 }
 
-/// replay 启动路径专用:Corrupt 的原件已在读取时隔离,按空账本继续——与
-/// queue/acknowledge 的「恢复路径不被坏文件卡死」口径一致,enable/resume/
-/// rotate 不再为一个已经清理掉的文件一次性失败(原文 parse 错误直接抛给
-/// 用户,重试虽能自愈但首因已不存在)。Unavailable 仍是瞬时 IO,照旧上抛。
+/// Dedicated to the replay startup path: a Corrupt original has already been
+/// quarantined at read time and we continue with an empty ledger — the same
+/// "recovery paths are not wedged by a bad file" convention as
+/// queue/acknowledge, so enable/resume/rotate no longer hard-fail once over
+/// a file that has already been cleaned up (the original threw the parse
+/// error straight at the user; a retry would self-heal, but the root cause
+/// no longer exists). Unavailable is still transient IO and keeps
+/// propagating.
 pub(super) fn load_pending_revocations_for_replay() -> Result<PendingRevocationLedger, String> {
     match load_pending_revocations_classified(&pending_revocations_path()) {
         RevocationLedgerLoad::Ledger(ledger) => Ok(ledger),
@@ -338,8 +363,9 @@ pub(super) fn load_pending_revocations_for_replay() -> Result<PendingRevocationL
     }
 }
 
-/// 严格读取(Corrupt/Unavailable 都报错):生产路径全部走分类版或
-/// replay 包装;本函数只服务测试对真实磁盘文件的直接断言。
+/// Strict read (both Corrupt and Unavailable error): production paths all go
+/// through the classified version or the replay wrapper; this function only
+/// serves tests asserting directly against real on-disk files.
 #[cfg(test)]
 pub(super) fn load_pending_revocations_from(
     path: &Path,
@@ -352,26 +378,79 @@ pub(super) fn load_pending_revocations_from(
     }
 }
 
-/// Pending-revocation 账本读取的三分类:Corrupt 表示无法解析或超限的内容
-/// (没有任何条目可救;原件已在读取时隔离留证),重试无意义;可解析但未过
-/// 整体校验的账本在读取时已逐条抢救为 Ledger,不走这里。Unavailable 是瞬时
-/// IO,重试有意义。queue/acknowledge 路径靠它决定「挪开坏账本继续」还是
-/// 「上抛等重试」——停用/轮换是恢复路径,不能被一个坏文件永久卡死。
+/// Three-way classification of pending-revocation ledger reads: Corrupt
+/// means unparseable or oversize content (nothing salvageable; the original
+/// was quarantined at read time as evidence) and retries are pointless; a
+/// parseable ledger that fails whole-file validation is salvaged entry by
+/// entry into a Ledger at read time and does not come through here.
+/// Unavailable is transient IO where retrying helps. The queue/acknowledge
+/// paths use it to decide "move the bad ledger aside and continue" vs
+/// "propagate and wait for a retry" — disable/rotate are recovery paths and
+/// must not be wedged permanently by one bad file.
 enum RevocationLedgerLoad {
     Ledger(PendingRevocationLedger),
     Corrupt(String),
     Unavailable(String),
 }
 
-/// 逐条抢救可解析但未过整体校验的账本:version 漂移、条目超限、单条损坏、
-/// 重复键都只否定各自的条目,不否定其余仍然合法的待吊销记录——整体丢弃会
-/// 让旧 endpoint 在 relay 侧保持可加入。每条沿用与正常加载相同的
-/// `validate_pending_revocation` 严格度,重复键保留首个,超出容量即止。
+/// Names an endpoint id inside a `[web-access]` log line without opening a
+/// log-forging surface: capacity paths name entries whose endpoint_id values
+/// are not per-entry validated yet, so a planted/corrupt ledger could
+/// otherwise carry control characters and ANSI sequences straight into the
+/// desktop log. Clip each id to the same charset the validation uses,
+/// marking lossily clipped entries corrupt. Shared by the salvage
+/// truncation and the backlog cap retire path.
+pub(super) fn clip_pending_endpoint_id_for_log(endpoint_id: &str) -> String {
+    let clipped: String = endpoint_id
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || *character == '-' || *character == '_'
+        })
+        .collect();
+    if clipped == endpoint_id {
+        clipped
+    } else {
+        format!("{clipped}~corrupt")
+    }
+}
+
+/// Salvages, entry by entry, a parseable ledger that failed whole-file
+/// validation: a version drift, an oversize entry, a corrupt entry, or a
+/// duplicate key invalidates only its own entry, not the remaining valid
+/// pending revocations — dropping everything would keep the old endpoint
+/// joinable at the relay. Each entry goes through the same
+/// `validate_pending_revocation` strictness as a normal load; the first of a
+/// duplicate key wins; capacity caps the salvage.
 fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevocationLedger {
     let mut salvaged = PendingRevocationLedger::default();
     let mut keys = HashSet::new();
-    for pending in &ledger.entries {
+    for (index, pending) in ledger.entries.iter().enumerate() {
         if salvaged.entries.len() >= super::MAX_PENDING_REVOCATIONS {
+            // Round-15 review NIT: a capacity truncation must report the
+            // count explicitly — silently dropped entries mean the
+            // corresponding endpoints stay joinable at the relay until
+            // manual cleanup.
+            // Round-16 review: beyond the count, name each one (which
+            // credentials are still relay-side joinable is the input to
+            // manual cleanup); the truncated set is at most the total pending
+            // count and this path is already the exceptional branch, so the
+            // per-entry log volume is acceptable.
+            // Round-20 review (S10-2): the truncation runs before per-entry
+            // validation, so the named ids go through the shared log-forging
+            // clip helper (round-29 review: extracted so the backlog cap
+            // retire path names ids with the same strictness).
+            let dropped: Vec<String> = ledger
+                .entries
+                .iter()
+                .skip(index)
+                .map(|pending| clip_pending_endpoint_id_for_log(&pending.endpoint_id))
+                .collect();
+            eprintln!(
+                "[web-access] salvage dropped {} pending revocations past the capacity of {} (endpoints stay joinable at the relay until revoked manually): {}",
+                ledger.entries.len() - index,
+                super::MAX_PENDING_REVOCATIONS,
+                dropped.join(", ")
+            );
             break;
         }
         if validate_pending_revocation(pending).is_err() {
@@ -385,9 +464,11 @@ fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevoc
     salvaged
 }
 
-/// 隔离损坏账本原件留证。返回隔离是否成功——调用方据此决定空抢救集是否
-/// 可以按空账本语义移除路径(Round-12 复审:隔离彻底失败时原件是仅存的
-/// 证据,不得随后被删除)。
+/// Quarantines the corrupt ledger original, preserving the evidence. Returns
+/// whether quarantine succeeded — callers use that to decide whether an empty
+/// salvage set may remove the path under empty-ledger semantics (Round-12
+/// review: when quarantine fails outright the original is the only remaining
+/// evidence and must not be deleted afterwards).
 fn quarantine_pending_ledger(path: &Path, data: &[u8]) -> bool {
     match crate::platform::filesystem::quarantine_corrupt_file(path) {
         Ok(quarantined) => {
@@ -398,10 +479,13 @@ fn quarantine_pending_ledger(path: &Path, data: &[u8]) -> bool {
             true
         }
         Err(rename_error) => {
-            // rename 失败(Windows AV/备份锁等)不能默许证据被后续的
-            // fresh-start 写入原地覆盖/删除。先整文件复制(oversize 场景
-            // 内存中的 `data` 只有截断前缀,完整证据在盘上);复制也失败
-            // 再退回内存字节;两者皆败才降级为仅日志。
+            // A failed rename (Windows AV/backup locks etc.) must not
+            // silently allow the evidence to be overwritten/deleted in place
+            // by a later fresh-start write. First copy the whole file (in the
+            // oversize case the in-memory `data` holds only the truncated
+            // prefix — the complete evidence is on disk); if the copy fails
+            // too, fall back to the in-memory bytes; only if both fail
+            // degrade to logging alone.
             match crate::platform::filesystem::quarantine_corrupt_file_copy(path) {
                 Ok(quarantined) => eprintln!(
                     "[web-access] rename failed ({rename_error}); copied corrupt pending-revocation ledger to {}",
@@ -439,19 +523,24 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
             return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
         }
     };
-    // 读取即修复,且先于任何内容读取(Round-7 复审补齐,与 load_config_from
-    // 同形):该文件持有 desktop_secret,损坏 + 放宽权限的组合也不能把世界
-    // 可读的密文件留在盘上。修复挂在**第一个**句柄上——读取腿的真实 I/O
-    // 错误(EISDIR/EACCES 等)会先行返回,挂在读取之后的修复永远不会执行,
-    // 放宽权限的损坏文件就一直裸留在盘上;同时免去第二次 open 的 TOCTOU
-    // (两次打开之间路径可被换掉,修复的可能不是读到的那个 inode)。
-    // (Windows/fallback 平台该调用是显式 no-op。)
+    // Repair on read, before any content read (added in Round-7 review, same
+    // shape as load_config_from): this file holds the desktop_secret, and the
+    // corruption + relaxed-permission combination must not leave a
+    // world-readable secret on disk. The repair attaches to the **first**
+    // handle — a real I/O error on the read leg (EISDIR/EACCES etc.) returns
+    // early, so a repair attached after the read would never run and the
+    // loose corrupt file would stay exposed on disk indefinitely; it also
+    // avoids the second open's TOCTOU (the path can be swapped between the
+    // two opens, so the repaired file may not be the one that was read).
+    // (On Windows/fallback this call is an explicit no-op.)
     if let Err(error) = platform::enforce_private_permissions(&file, path) {
-        // Round-8 复审 minor:修复自身失败时同样把放宽权限的密文件隔离
-        // 挪离众所周知的路径(与 load_config_from 同因同策)。Round-9
-        // 复审:改走 0600 副本 + unlink 原件,隔离副本不再继承放宽的
-        // mode 位(见 load_config_from 内的同名注释);非普通文件退回
-        // rename;隔离失败则保持 Unavailable 原错误。
+        // Round-8 review minor: a failed repair likewise quarantines the
+        // loose-permission secret away from the well-known path (same cause,
+        // same strategy as load_config_from). Round-9 review: switched to a
+        // 0600 copy + unlink of the original, so the quarantined copy no
+        // longer inherits the relaxed mode bits (see the same-named comment
+        // inside load_config_from); non-regular files fall back to rename;
+        // if quarantine fails, keep the original Unavailable error.
         match crate::platform::filesystem::quarantine_secret_file(path) {
             Ok(quarantined) => eprintln!(
                 "[web-access] could not restrict permissions on {} ({error}); \
@@ -469,8 +558,9 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
         }
         return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
     }
-    // 与 config 读取相同的 take() 有界读取:先按上限截断再检查,损坏/超大
-    // 文件不能触发无界分配。
+    // The same take()-bounded read as the config loader: truncate at the cap
+    // first, then check — a corrupt/oversize file must not trigger an
+    // unbounded allocation.
     let mut data = Vec::new();
     if let Err(error) = file
         .take((super::MAX_PENDING_REVOCATIONS_FILE_BYTES + 1) as u64)
@@ -489,16 +579,20 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
     let ledger = match serde_json::from_slice::<PendingRevocationLedger>(&data) {
         Ok(ledger) => ledger,
         Err(error) => {
-            // 完全不可解析:没有任何条目可救,隔离原件留证后按损坏处理
-            //(queue/acknowledge 会从空账本继续并用合法内容重写)。
+            // Entirely unparseable: nothing is salvageable, so quarantine the
+            // original as evidence and treat it as corrupt (queue/acknowledge
+            // continue from an empty ledger and rewrite it with valid
+            // content).
             quarantine_pending_ledger(path, &data);
             return RevocationLedgerLoad::Corrupt(format!("parse {}: {error}", path.display()));
         }
     };
     if let Err(error) = validate_pending_revocation_ledger(&ledger) {
-        // 可解析但未过整体校验(version 漂移/超限/单条损坏/重复键):逐条
-        // 抢救仍合法的条目并隔离原件,而不是整体丢弃——被丢弃的待吊销条目
-        // 会让旧 endpoint 在 relay 侧保持可加入。
+        // Parseable but failing whole-file validation (version drift/oversize/
+        // corrupt entry/duplicate key): salvage the still-valid entries one by
+        // one and quarantine the original instead of dropping everything —
+        // discarded pending revocations would keep the old endpoint joinable
+        // at the relay.
         let salvaged = salvage_pending_revocations(&ledger);
         eprintln!(
             "[web-access] pending-revocation ledger invalid ({error}); salvaged {} of {} entries",
@@ -506,16 +600,23 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
             ledger.entries.len()
         );
         let quarantined = quarantine_pending_ledger(path, &data);
-        // 抢救出的条目必须立刻落盘:进程崩溃在 worker ack 之前会丢掉这批
-        // 待吊销记录(隔离副本只留证据,不会被自动重放),旧 endpoint 将在
-        // relay 侧保持可加入——正是本分支要避免的结局。空抢救集按空账本
-        // 语义移除已隔离的路径,避免下一次 load 重复走隔离;但隔离彻底失败
-        // 时原件是仅存的证据,不得按空账本语义删除(Round-12 复审:保留
-        // 原件并大声记录,下一轮 load 重走隔离)。落盘失败则
-        // 降级为内存态:本进程内由回放的权威账本
-        // (`pending_revocation_backlog`)接住,确认针对它整体落盘即可重建
-        // 盘上账本;进程在此之前重启则这批条目已不可恢复(与崩溃窗口同
-        // 级残余,Round-11 复审 minor 补记)。
+        // The salvaged entries must be persisted immediately: a crash before
+        // the worker ack would lose this batch of pending revocations (the
+        // quarantined copy is evidence only, never replayed automatically)
+        // and the old endpoint would stay joinable at the relay — exactly the
+        // outcome this branch exists to avoid. An empty salvage set removes
+        // the already-quarantined path under empty-ledger semantics so the
+        // next load does not quarantine again; but when quarantine failed
+        // outright, the original is the only remaining evidence and must not
+        // be deleted under empty-ledger semantics (Round-12 review: keep the
+        // original, log loudly, and let the next load retry the quarantine).
+        // If persisting fails, degrade to in-memory state: within this
+        // process the replay's authoritative ledger
+        // (`pending_revocation_backlog`) catches it, and acknowledging
+        // against it persists wholesale, rebuilding the on-disk ledger; if
+        // the process restarts before that, these entries are unrecoverable
+        // (a residual on par with the crash window, recorded in Round-11
+        // review minor).
         if salvaged.entries.is_empty() && !quarantined {
             eprintln!(
                 "[web-access] quarantine of the invalid pending-revocation ledger {} failed and \
@@ -558,10 +659,12 @@ pub(super) fn queue_pending_revocation_at(
     let mut ledger = match load_pending_revocations_classified(path) {
         RevocationLedgerLoad::Ledger(ledger) => ledger,
         RevocationLedgerLoad::Corrupt(error) => {
-            // 停用/轮换是恢复路径:Corrupt 只剩完全不可解析/超限两类(可解
-            // 析但未过验证的账本已在读取时逐条抢救并隔离原件),记录后从空
-            // 账本继续;随后的持久化会用合法内容重写,旧 endpoint 的吊销
-            // 不会被永久卡死。
+            // Disable/rotate are recovery paths: by this point Corrupt is only
+            // the wholly unparseable/oversize classes (a parseable but invalid
+            // ledger was already salvaged entry by entry at read time with the
+            // original quarantined), so log it and continue from an empty
+            // ledger; the subsequent persist rewrites it with valid content
+            // and the old endpoint's revocation is not wedged forever.
             eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
             PendingRevocationLedger::default()
         }
@@ -573,14 +676,17 @@ pub(super) fn queue_pending_revocation_at(
         .iter()
         .find(|entry| pending_revocation_key(entry) == key)
     {
-        // Round-14 复审 minor(记录既有设计边界):同键不同密钥的冲突
-        // 会让 queue_pending_revocation 返回 Err,而 refresh/stop_current
-        // 以 `?` 传播——即「rotate 崩在 queue 与 persist 之间」的残状
-        // (config=(E,S0)、账本=(E,S1))在 relay 不可达期间会楔住
-        // stop/rotate,直到 relay 恢复、工人确认 S1 为止。这是刻意的
-        // fail-closed(round-9:丢弃条目可能留下永不吊销的凭据);修复
-        // 需要账本同键多密钥语义(格式/确认逻辑连锁变更)或产品层取
-        // 舍,按残余记录,不在本轮范围内。
+        // Round-14 review minor (recording an existing design boundary): a
+        // same-key/different-secret conflict makes queue_pending_revocation
+        // return Err, and refresh/stop_current propagate it via `?` — so the
+        // residual state of "rotate crashed between queue and persist"
+        // (config=(E,S0), ledger=(E,S1)) wedges stop/rotate while the relay
+        // is unreachable, until the relay recovers and the worker acks S1.
+        // This is deliberate fail-closed (round-9: dropping the entry could
+        // leave credentials that are never revoked); fixing it needs
+        // multi-secret-per-key ledger semantics (cascading format/ack-logic
+        // changes) or a product-level tradeoff, recorded as a residual and
+        // out of scope for this wave.
         return if existing == &pending {
             Ok(())
         } else {
@@ -592,7 +698,7 @@ pub(super) fn queue_pending_revocation_at(
     }
     if ledger.entries.len() >= super::MAX_PENDING_REVOCATIONS {
         return Err(format!(
-            "pending Web revocation queue is full ({})",
+            "{PENDING_REVOCATION_QUEUE_FULL_PREFIX} ({})",
             super::MAX_PENDING_REVOCATIONS
         ));
     }
@@ -600,9 +706,12 @@ pub(super) fn queue_pending_revocation_at(
     persist_pending_revocations_to(path, &ledger)
 }
 
-/// Round-11 复审 minor:回放确认的落盘原语——把调用方持有的权威账本
-/// (进程内 backlog)整体写盘,取代「重读磁盘→删一条→重写」;语义见
-/// manager `finish_pending_revocation`。空集移除文件(与 `_to` 一致)。
+/// Round-11 review minor: the persistence primitive for replay
+/// acknowledgments — writes the caller-held authoritative ledger (the
+/// in-process backlog) wholesale, replacing "re-read from disk → remove one
+/// entry → rewrite"; semantics live in the manager's
+/// `finish_pending_revocation`. An empty set removes the file (same as the
+/// `_to` variant).
 pub(super) fn persist_pending_revocations(ledger: &PendingRevocationLedger) -> Result<(), String> {
     persist_pending_revocations_to(&pending_revocations_path(), ledger)
 }
@@ -614,8 +723,10 @@ pub(super) fn acknowledge_pending_revocation_at(
     let mut ledger = match load_pending_revocations_classified(path) {
         RevocationLedgerLoad::Ledger(ledger) => ledger,
         RevocationLedgerLoad::Corrupt(error) => {
-            // 与 queue 同理:吊销回放的确认不能被坏账本卡死;从空账本继续
-            // 意味着确认结果(删除条目)覆盖坏文件。
+            // Same reasoning as queue: the revocation replay's acknowledgment
+            // must not be wedged by a bad ledger; continuing from an empty
+            // ledger means the ack result (entry removal) overwrites the bad
+            // file.
             eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
             PendingRevocationLedger::default()
         }
@@ -654,8 +765,9 @@ pub(super) fn load_or_initialize_rpc_ledger_at(
     path: &Path,
     endpoint_id: &str,
 ) -> Result<RpcLedger, String> {
-    // take() 有界读取:512 条墓碑的账本远小于 1 MiB,超大文件必然损坏,
-    // 不能在解析前无界读入内存。
+    // take()-bounded read: a ledger of 512 tombstones is far below 1 MiB, so
+    // an oversize file is necessarily corrupt and must not be read into
+    // memory unbounded before parsing.
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -665,11 +777,13 @@ pub(super) fn load_or_initialize_rpc_ledger_at(
         }
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
-    // Round-12 复审 P3:首次句柄上的 0600 修复,与 config / revocations
-    // 两个载入器同形——该文件按 0600 写入,备份恢复可能留下放宽权限的
-    // 副本,读取即修复且先于任何内容读取。内容敏感度低于 desktop_secret
-    // (endpoint_id + 请求指纹),修复失败按读取错误 fail-closed 上抛
-    // (与本载入器其余 IO 错误一致);Windows/fallback 平台为显式 no-op。
+    // Round-12 review P3: 0600 repair on the first handle, same shape as the
+    // config/revocations loaders — this file is written 0600 and a backup
+    // restore can leave a relaxed-permission copy, so repair on read and
+    // before any content read. Content sensitivity is lower than
+    // desktop_secret (endpoint_id + request fingerprints); a failed repair
+    // fails closed as a read error (consistent with this loader's other IO
+    // errors); on Windows/fallback it is an explicit no-op.
     platform::enforce_private_permissions(&file, path)
         .map_err(|error| format!("restrict {}: {error}", path.display()))?;
     let mut text = String::new();
@@ -776,9 +890,11 @@ pub(super) fn remove_private_file(path: &Path) -> Result<(), String> {
     }
 }
 
-/// 环境变量覆盖的统一入口：trim 后为空或不通过校验一律返回 None（回落存储
-/// 值/内置默认），不报错——env 只是覆盖手段，宁可降级也不能因非法覆盖把
-/// Web 访问卡死。纯函数便于无环境变量的测试。
+/// Single entry point for env-var overrides: empty after trim or failing
+/// validation always returns None (falling back to the stored value/built-in
+/// default) without erroring — env is only an override mechanism, and an
+/// invalid override must degrade rather than wedge Web access. A pure
+/// function, convenient for tests without env vars.
 fn normalized_env_url(
     raw: Option<String>,
     env_name: &str,
@@ -790,8 +906,10 @@ fn normalized_env_url(
         return None;
     }
     if let Err(error) = validate(trimmed) {
-        // 运维显式设置的覆盖被丢弃时必须留痕:静默回落会让操作者以为在连
-        // 自己的 relay,实际已在存储值/内置默认上工作。
+        // An operator's explicit override being discarded must leave a trace:
+        // a silent fallback would make the operator believe they are talking
+        // to their own relay while actually working on the stored value /
+        // built-in default.
         eprintln!("[web-access] ignoring invalid {env_name} override, falling back: {error}");
         return None;
     }
@@ -813,8 +931,10 @@ pub(super) fn remote_public_base_url() -> String {
 }
 
 pub(super) fn remote_relay_ws_url() -> String {
-    // 与另外两个 env 覆盖同规则(trim 后为空/非法一律回落,不报错):非法
-    // 覆盖降级到存储值/内置默认,而不是把 enable 卡死在 validate_config。
+    // Same rule as the other two env overrides (empty after trim/invalid
+    // always falls back, no error): an invalid override degrades to the
+    // stored value/built-in default instead of wedging enable inside
+    // validate_config.
     if let Some(url) = normalized_env_url(
         std::env::var("PINVOU_REMOTE_RELAY_WS_URL").ok(),
         "PINVOU_REMOTE_RELAY_WS_URL",
@@ -831,7 +951,8 @@ pub(super) fn remote_relay_ws_url() -> String {
 /// Development/manual-test override for the active connection only. Unlike
 /// `PINVOU_REMOTE_RELAY_WS_URL`, this value is never written to the persistent
 /// Web access config, so testing a local relay cannot strand the normal link.
-/// 非法（含空白、非 ws(s)、超长、trim 后为空）的覆盖被忽略并回落存储值。
+/// An invalid override (whitespace, non-ws(s), over-long, empty after trim)
+/// is ignored and falls back to the stored value.
 pub(super) fn apply_runtime_relay_override(mut config: WebAccessConfig) -> WebAccessConfig {
     if let Some(relay_url) = normalized_env_url(
         std::env::var("PINVOU_REMOTE_RUNTIME_RELAY_WS_URL").ok(),
@@ -881,9 +1002,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn salvage_truncation_log_clips_dropped_endpoint_ids_to_the_validated_charset() {
+        // Round-20 review (S10-2) source pin: the capacity truncation runs
+        // before per-entry validation, so named entries' endpoint_id values
+        // are unvalidated — naming them directly would carry planted control
+        // characters/ANSI sequences into the desktop log (log forging). The
+        // shared clip helper (round-29 review: extracted so the backlog cap
+        // retire path names ids with the same strictness) must keep the
+        // charset clipping and the `~corrupt` marking; reverting it to raw
+        // naming turns red.
+        let source = include_str!("persistence.rs");
+        let helper_start = source
+            .find("fn clip_pending_endpoint_id_for_log(")
+            .expect("the shared log-clip helper must exist");
+        let rest = &source[helper_start..];
+        let terminator = rest
+            .find("\npub(super) fn ")
+            .into_iter()
+            .chain(rest.find("\nfn ").into_iter())
+            .min()
+            .expect("the clip helper body must be terminated by the next fn");
+        let helper_body = crate::platform::test_support::comment_filtered(&rest[..terminator]);
+        assert!(
+            helper_body.contains("filter(|character| {"),
+            "dropped endpoint ids must be clipped to the validated charset before they are named in the log"
+        );
+        assert!(
+            helper_body.contains("~corrupt"),
+            "lossy-clipped ids must be marked corrupt instead of passing \
+             through unvalidated"
+        );
+        // The truncation log line must name ids through the helper, not raw
+        // clones: binding the salvage window to the helper call keeps "what
+        // gets logged is the clipped output" true across the extraction
+        // (the round-27 m2 concern, restated for the shared-helper shape).
+        let start = source
+            .find("salvage dropped {} pending revocations")
+            .expect("the truncation log line must exist");
+        // The window's lower bound must land on a char boundary (this file
+        // carries multibyte CJK comment text; a bare minus 900 would slice
+        // into a multibyte char — a slice panic rather than an assertion
+        // failure, the round-17 lesson).
+        let mut window_start = start.saturating_sub(900);
+        while window_start > 0 && !source.is_char_boundary(window_start) {
+            window_start -= 1;
+        }
+        let window = crate::platform::test_support::comment_filtered(&source[window_start..start]);
+        assert!(
+            window.contains("clip_pending_endpoint_id_for_log("),
+            "the salvage truncation must name dropped ids through the shared \
+             clip helper; naming raw clones revives the log-forging surface"
+        );
+        // Round-27 review m2: the window previously stopped at the format-
+        // string needle — "the clipping code exists" was pinned, but "what
+        // gets logged is exactly the clipped output" was not: a mutation
+        // swapping the eprintln! argument from `dropped.join(", ")` back to
+        // naming the unclipped `ledger.entries` compiles and stays green
+        // (the log-forging surface revives). The window extends past the log
+        // line, pinning that the argument is the clipped vector itself.
+        let mut window_end = (start + 800).min(source.len());
+        while window_end < source.len() && !source.is_char_boundary(window_end) {
+            window_end -= 1;
+        }
+        let logged = crate::platform::test_support::comment_filtered(&source[start..window_end]);
+        assert!(
+            logged.contains("dropped.join(\", \")"),
+            "the log must name the clipped dropped vector, not the raw \
+             unvalidated ledger entries"
+        );
+    }
+
+    #[test]
     fn env_url_overrides_are_trimmed_and_fail_safe() {
-        // 覆盖只在通过与设置文件相同校验时生效;非法/空值一律回落(None),
-        // 不上抛——env 覆盖宁可降级,不能卡死 Web 访问。
+        // Overrides take effect only when they pass the same validation as
+        // the settings file; invalid/empty values always fall back (None)
+        // without propagating — env overrides degrade gracefully rather than
+        // wedging Web access.
         let http = |url: &str| validate_http_base_url(url, "invalid");
         assert_eq!(
             normalized_env_url(
@@ -946,10 +1140,12 @@ mod tests {
         );
     }
 
-    /// Round-6 复审:三个 env 覆盖读取点必须全部经由 `normalized_env_url`
-    /// (trim + 校验 + 非法回落),直接回退到裸 `std::env::var` 会让非法
-    /// 覆盖静默生效。helper 级测试(上方)看不见接线,按本模块惯例用
-    /// source-contract 钉住三个调用点的函数体。
+    /// Round-6 review: all three env-override read points must route through
+    /// `normalized_env_url` (trim + validation + invalid fallback); falling
+    /// back to a bare `std::env::var` would let invalid overrides take effect
+    /// silently. Helper-level tests (above) cannot see the wiring, so per
+    /// this module's convention the three call sites' bodies are pinned with
+    /// source contracts.
     #[test]
     fn env_override_readers_route_through_the_normalized_helper() {
         let source = include_str!("persistence.rs");
@@ -983,13 +1179,16 @@ mod tests {
         }
     }
 
-    /// Round-9 复审 minor:两个 loader 的修复失败腿必须走
-    /// `quarantine_secret_file`(0600 副本 + unlink 原件)而不是普通
-    /// `quarantine_corrupt_file`——rename 保留放宽的 mode 位,他者属主
-    /// 的世界可读密文件在隔离名下依旧裸奔。该分支的触发需要他者属主
-    /// (CI 无法驱动,与 round-8 的 review-pinned 残例同类),按本模块
-    /// 惯例用 source-contract 钉住两个调用点;helper 自身的 0600/unlink
-    /// 语义由 filesystem 模块的 executing 测试覆盖。
+    /// Round-9 review minor: both loaders' repair-failure legs must go
+    /// through `quarantine_secret_file` (0600 copy + unlink of the original)
+    /// rather than the plain `quarantine_corrupt_file` — rename preserves the
+    /// relaxed mode bits, leaving a world-readable secret owned by someone
+    /// else just as exposed under its quarantined name. Triggering this
+    /// branch requires foreign ownership (CI cannot drive it; same class as
+    /// round-8's review-pinned residual), so per this module's convention the
+    /// two call sites are pinned with source contracts; the helper's own
+    /// 0600/unlink semantics are covered by executing tests in the
+    /// filesystem module.
     #[test]
     fn repair_failure_legs_quarantine_secret_files() {
         let source = include_str!("persistence.rs");

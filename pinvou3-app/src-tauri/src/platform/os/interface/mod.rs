@@ -14,16 +14,17 @@ pub use path::{
     validate_upload_location,
 };
 // The folding primitives are consumed by the os adapters through this module
-// path (`super::interface::volume_fold_*`). macOS/Windows adapters consume
-// eq/prefix/suffix (no allowance needed there — a stopped consumer must
-// resurface as an unused-import tripwire); on the byte-exact platforms none of
-// the aliases is referenced, hence the cfg'd allowance. `volume_fold_spelling`
-// is never consumed through this re-export on any platform (its own module's
-// eq/prefix reach it directly; its İ-expansion behavior is pinned by a test in
-// `path.rs`), so it stays out of the list (round-5 review: the unconditional
-// blanket allow removed the mac/win tripwire). The E0425 class is about a
-// MISSING re-export, which stays impossible: the consumed aliases are
-// unconditional in the list.
+// path (`super::interface::volume_fold_*`); each alias's allowance is active
+// exactly on the platforms where it is unreferenced, so a stopped consumer
+// resurfaces as an unused-import tripwire (round-5 review: a blanket allow
+// removed that tripwire). macOS (posix.rs) and Windows (windows_path.rs)
+// consume eq/prefix/suffix; `volume_fold_spelling` is consumed only by the
+// Windows identity key (round-15 wave) — its İ-expansion behavior is pinned
+// by a test in `path.rs`. The E0425 class is about a MISSING re-export,
+// which stays impossible: every consumed alias is unconditional in these
+// lists, and a consumer on a new platform only widens its allowance.
+#[cfg_attr(not(target_os = "windows"), allow(unused_imports))]
+pub(crate) use path::volume_fold_spelling;
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "windows")),
     allow(unused_imports)

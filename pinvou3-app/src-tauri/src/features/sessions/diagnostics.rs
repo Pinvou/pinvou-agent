@@ -66,7 +66,9 @@ pub(crate) fn log_path() -> PathBuf {
 
 pub(crate) fn record_backend(event: &str, details: Value) {
     let Some(details) = normalize_backend_details(event, &details) else {
-        // 事件名是编译期常量、须命中白名单才落盘，此处带名打印便于定位拼写漂移。
+        // Event names are compile-time constants and must hit the allowlist
+        // to be persisted; printing the name here makes spelling drift easy
+        // to locate.
         eprintln!("[authority-sync] rejected unknown or malformed backend diagnostic: {event}");
         return;
     };
@@ -466,6 +468,14 @@ fn normalize_backend_details(event: &str, value: &Value) -> Option<Value> {
             "message_count",
         ],
         "web_session_download_cancelled" => &["session_id", "download_id", "total_bytes", "ready"],
+        // Round-27 review M2: the begin capacity gate emits a single
+        // `trigger` field when it evicts an orphan; the event name was not
+        // in this allowlist before, so record_backend silently dropped it
+        // with one stderr rejection line each — the "emit a diagnostic per
+        // eviction" claim did not hold. The allowlist arm and the trigger
+        // normalization branch below must land in the same commit
+        // (acceptance pin in the tests).
+        "web_session_download_evicted" => &["trigger"],
         "web_session_chunk_served" => &[
             "session_id",
             "download_id",
@@ -556,6 +566,7 @@ fn normalize_backend_details(event: &str, value: &Value) -> Option<Value> {
                 &["revision_compute_failed", "session_load_failed"],
             )
             .map(Value::String),
+            "trigger" => allowed_enum(Some(value), &["begin_capacity_gate"]).map(Value::String),
             _ => None,
         };
         if let Some(normalized) = normalized {
@@ -603,6 +614,38 @@ mod tests {
             assert!(normalized.get(key).is_none(), "{key} must be dropped");
         }
         assert!(normalize_backend_details("future_backend_event", &json!({})).is_none());
+    }
+
+    /// Round-27 review M2 acceptance pin: the eviction diagnostic event
+    /// must be accepted by the backend allowlist — the event name only
+    /// takes effect via this file's allowlist, and record_backend's call
+    /// site (the mod.rs capacity gate) is a cross-file contract with this
+    /// file; source pins inside mod.rs structurally cannot see this table.
+    /// On a missing entry, record drops each record silently and this pin
+    /// goes red.
+    #[test]
+    fn backend_allowlist_accepts_the_eviction_diagnostic() {
+        let normalized = normalize_backend_details(
+            "web_session_download_evicted",
+            &json!({ "trigger": "begin_capacity_gate" }),
+        )
+        .expect("the eviction diagnostic must be allowlisted, not silently dropped");
+        assert_eq!(normalized["trigger"], "begin_capacity_gate");
+        // A failed field normalization drops the field rather than
+        // rejecting the whole record (same convention as allowed_enum
+        // fields like terminal_status): an unknown trigger falls out to
+        // empty details, so the eviction diagnostic degrades to a payload-
+        // less entry — still observable, but trigger spelling drift must
+        // become visible here.
+        let drifted = normalize_backend_details(
+            "web_session_download_evicted",
+            &json!({ "trigger": "unknown_trigger" }),
+        )
+        .expect("the event must stay allowlisted");
+        assert!(
+            drifted.get("trigger").is_none(),
+            "an unknown trigger must be dropped, not passed through"
+        );
     }
 
     #[test]

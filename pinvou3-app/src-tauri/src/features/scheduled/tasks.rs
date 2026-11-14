@@ -80,8 +80,10 @@ mod stores;
 use stores::*;
 pub(crate) use stores::{ScheduledTaskKindLookup, ScheduledTaskKindStore};
 
-/// 删除一次定时运行对话的那一步。抽成 trait 只为可注入：EnginePool 需要活的
-/// WebView AppHandle，无法在单元测试里构造，而删除级联的正确性必须被测到。
+/// The step that deletes one scheduled-run conversation. Extracted into a trait
+/// purely for injectability: EnginePool needs a live WebView AppHandle and cannot
+/// be constructed in unit tests, yet the deletion cascade's correctness must be
+/// tested.
 #[async_trait::async_trait]
 pub(crate) trait ScheduledConversationDeleter: Send + Sync {
     async fn delete_scheduled_conversation(
@@ -162,10 +164,11 @@ pub struct ScheduledTaskDto {
     pub pinned_at: Option<String>,
 }
 
-/// 删除回执与任务详情历史上各有一个包装/别名类型；serde(flatten) 使其与
-/// [`ScheduledTaskDto`] 线上完全同形（删除回执本来就是平铺的任务字段）。
-/// app/commands 的 passthrough 宏仍按名字引用这两个别名，保留为纯类型别名，
-/// 不再有独立包装结构体。
+/// The deletion receipt and the task detail each historically had a wrapper/alias
+/// type; serde(flatten) makes them wire-identical to [`ScheduledTaskDto`] (the
+/// deletion receipt was always the flattened task fields anyway). The app/commands
+/// passthrough macros still reference both aliases by name, so they remain as pure
+/// type aliases — no separate wrapper structs anymore.
 pub type DeletedScheduledTaskDto = ScheduledTaskDto;
 
 pub type ScheduledTaskDetailDto = ScheduledTaskDto;
@@ -406,8 +409,9 @@ impl ScheduledTaskState {
             retention_handle: Arc::new(SyncMutex::new(Some(retention_handle))),
             creation_watch: Arc::new(SyncMutex::new(None)),
         };
-        // 会话创建定时任务的 spool 排水（features/scheduled/creation_requests）：
-        // 随运行时启动一次，生命周期跟随 state（Drop 取消）。
+        // Spool draining for conversation-created scheduled tasks
+        // (features/scheduled/creation_requests): started once with the runtime,
+        // with a lifetime tied to the state (cancelled on Drop).
         state.start_creation_watcher(app.clone());
         Ok(state)
     }
@@ -471,9 +475,11 @@ impl ScheduledTaskState {
         // Publish scheduling only after workspace/binding/kind are committed.
         // A crash before that boundary leaves an inert paused record.
         request.status = Some(AutomationStatus::Paused);
-        let created = manager
-            .create_automation(request)
-            .map_err(|err| format!("Failed to create scheduled task: {err}"))?;
+        let created = manager.create_automation(request).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to create scheduled task: {err}"
+            ))
+        })?;
         let created_id = created.id.clone();
         let created = match ensure_automation_workspace(&manager, created) {
             Ok(created) => created,
@@ -483,9 +489,9 @@ impl ScheduledTaskState {
                         "[scheduled] create workspace rollback failed; record remains paused: {rollback:#}"
                     );
                 }
-                return Err(format!(
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
                     "Failed to create scheduled task workspace: {error:#}"
-                ));
+                )));
             }
         };
         if let Err(error) =
@@ -494,9 +500,9 @@ impl ScheduledTaskState {
         {
             if requires_model_binding {
                 let _ = manager.delete_automation(&created.id);
-                return Err(format!(
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
                     "Failed to save scheduled task model binding: {error:#}"
-                ));
+                )));
             }
             log::warn!(
                 "Created scheduled task {}, but failed to save its model binding: {error:#}",
@@ -526,7 +532,9 @@ impl ScheduledTaskState {
                     );
                 }
                 let _ = std::fs::remove_dir_all(scheduled_task_internal_workspace(&created.id));
-                return Err(format!("Failed to save scheduled task kind: {error:#}"));
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to save scheduled task kind: {error:#}"
+                )));
             }
         }
         let created = if requested_paused {
@@ -538,7 +546,9 @@ impl ScheduledTaskState {
                     if let Err(rollback) = manager.delete_automation(&created.id) {
                         log::warn!("[scheduled] create activation rollback failed: {rollback:#}");
                     }
-                    return Err(format!("Failed to activate scheduled task: {error:#}"));
+                    return Err(crate::platform::paths::redact_storage_prefix(&format!(
+                        "Failed to activate scheduled task: {error:#}"
+                    )));
                 }
             }
         };
@@ -565,7 +575,9 @@ impl ScheduledTaskState {
             if is_not_found_error(&err) {
                 format!("scheduled task not found: {id}")
             } else {
-                format!("Failed to update scheduled task '{id}': {err:#}")
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to update scheduled task '{id}': {err:#}"
+                ))
             }
         })?;
         if input.model_id.is_some() && input.model.is_none() && previous.model.is_none() {
@@ -574,7 +586,7 @@ impl ScheduledTaskState {
         let current_kind = self
             .task_kinds
             .checked_kind_lookup_for(&id)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| crate::platform::paths::redact_storage_prefix(&error.to_string()))?;
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
@@ -630,7 +642,11 @@ impl ScheduledTaskState {
         };
         let updated = manager
             .update_automation(&id, build_update_request(input)?)
-            .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
+            .map_err(|err| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to update scheduled task '{id}': {err}"
+                ))
+            })?;
         let updated = match ensure_automation_workspace(&manager, updated) {
             Ok(updated) => updated,
             Err(error) => {
@@ -639,9 +655,9 @@ impl ScheduledTaskState {
                         "Failed to restore scheduled task {id} after a workspace-save failure: {rollback:#}"
                     );
                 }
-                return Err(format!(
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
                     "Failed to update scheduled task workspace '{id}': {error:#}"
-                ));
+                )));
             }
         };
         if let Some(target) = retarget {
@@ -655,7 +671,9 @@ impl ScheduledTaskState {
                         "Failed to restore scheduled task {id} after a target-save failure: {rollback:#}"
                     );
                 }
-                return Err(format!("Failed to save scheduled task target: {error:#}"));
+                return Err(crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to save scheduled task target: {error:#}"
+                )));
             }
         }
         if requested_model_update.is_some() || requested_model_id.is_some() {
@@ -673,9 +691,9 @@ impl ScheduledTaskState {
                     // remains applied and retriable as a whole (round-13
                     // minor 9: the generic binding error does not enumerate
                     // these already-persisted fields).
-                    return Err(format!(
+                    return Err(crate::platform::paths::redact_storage_prefix(&format!(
                         "Failed to save scheduled task model binding: {error:#}"
-                    ));
+                    )));
                 }
                 log::warn!(
                     "Updated scheduled task {id}, but failed to save its model binding: {error:#}"
@@ -692,15 +710,21 @@ impl ScheduledTaskState {
             &self.ui_metadata,
             None,
         )
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs for '{id}': {err}"
+            ))
+        })
     }
 
     async fn pause_task(&self, id: String) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        let updated = manager
-            .pause_automation(&id)
-            .map_err(|err| format!("Failed to pause scheduled task '{id}': {err}"))?;
+        let updated = manager.pause_automation(&id).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to pause scheduled task '{id}': {err}"
+            ))
+        })?;
         map_scheduled_task_from_manager(
             &manager,
             updated,
@@ -711,17 +735,26 @@ impl ScheduledTaskState {
             &self.ui_metadata,
             None,
         )
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs for '{id}': {err}"
+            ))
+        })
     }
 
     async fn resume_task(&self, id: String) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        let updated = manager
-            .resume_automation(&id)
-            .map_err(|err| format!("Failed to resume scheduled task '{id}': {err}"))?;
-        let updated = ensure_automation_workspace(&manager, updated)
-            .map_err(|err| format!("Failed to resume scheduled task workspace '{id}': {err:#}"))?;
+        let updated = manager.resume_automation(&id).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to resume scheduled task '{id}': {err}"
+            ))
+        })?;
+        let updated = ensure_automation_workspace(&manager, updated).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to resume scheduled task workspace '{id}': {err:#}"
+            ))
+        })?;
         map_scheduled_task_from_manager(
             &manager,
             updated,
@@ -732,7 +765,11 @@ impl ScheduledTaskState {
             &self.ui_metadata,
             None,
         )
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs for '{id}': {err}"
+            ))
+        })
     }
 
     async fn set_task_pinned(&self, id: String, pinned: bool) -> Result<ScheduledTaskDto, String> {
@@ -741,9 +778,11 @@ impl ScheduledTaskState {
         let current = manager
             .get_automation(&id)
             .map_err(|_| "定时任务不存在或已被删除".to_string())?;
-        self.ui_metadata
-            .set_pinned(&id, pinned)
-            .map_err(|err| format!("Failed to update scheduled task pin state '{id}': {err:#}"))?;
+        self.ui_metadata.set_pinned(&id, pinned).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to update scheduled task pin state '{id}': {err:#}"
+            ))
+        })?;
         map_scheduled_task_from_manager(
             &manager,
             current,
@@ -754,7 +793,11 @@ impl ScheduledTaskState {
             &self.ui_metadata,
             None,
         )
-        .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs for '{id}': {err}"
+            ))
+        })
     }
 
     async fn delete_task(&self, id: String) -> Result<DeletedScheduledTaskDto, String> {
@@ -762,9 +805,11 @@ impl ScheduledTaskState {
         // cancellation-style outer timeout could release the gate midway through
         // the archive-then-delete sequence, allowing update/run-now into partial state.
         let _operation = self.lock_operation(&id).await;
-        self.delete_task_inner(&id)
-            .await
-            .map_err(|error| format!("Failed to delete scheduled task '{id}': {error:#}"))
+        self.delete_task_inner(&id).await.map_err(|error| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to delete scheduled task '{id}': {error:#}"
+            ))
+        })
     }
 
     async fn run_task_now(&self, id: String) -> Result<ScheduledRunDto, String> {
@@ -775,18 +820,29 @@ impl ScheduledTaskState {
             .ok_or_else(|| "Scheduled task runtime is unavailable".to_string())?;
         {
             let manager = self.automations.lock().await;
-            let current = manager
-                .get_automation(&id)
-                .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
+            let current = manager.get_automation(&id).map_err(|err| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to run scheduled task '{id}': {err}"
+                ))
+            })?;
             ensure_automation_workspace(&manager, current).map_err(|err| {
-                format!("Failed to prepare scheduled task workspace '{id}': {err:#}")
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to prepare scheduled task workspace '{id}': {err:#}"
+                ))
             })?;
         }
         let run = run_now_shared(&self.automations, &id, task_manager)
             .await
-            .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
-        let session_titles = scheduled_session_titles(&self.sessions)
-            .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+            .map_err(|err| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to run scheduled task '{id}': {err}"
+                ))
+            })?;
+        let session_titles = scheduled_session_titles(&self.sessions).map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to list scheduled conversations: {err:#}"
+            ))
+        })?;
         Ok(map_scheduled_run(
             run,
             &self.sessions,
@@ -805,13 +861,15 @@ impl ScheduledTaskState {
                 let manager = self.automations.lock().await;
                 match manager.get_automation(&automation_id) {
                     Ok(_) => manager.list_runs(&automation_id, None).map_err(|err| {
-                        format!("Failed to list scheduled task runs for '{automation_id}': {err}")
+                        crate::platform::paths::redact_storage_prefix(&format!(
+                            "Failed to list scheduled task runs for '{automation_id}': {err}"
+                        ))
                     })?,
                     Err(active_error) => self.history_archive.runs_for(&automation_id).ok_or_else(
                         || {
-                            format!(
+                            crate::platform::paths::redact_storage_prefix(&format!(
                                 "Failed to read scheduled task '{automation_id}': {active_error}"
-                            )
+                            ))
                         },
                     )?,
                 }
@@ -820,11 +878,15 @@ impl ScheduledTaskState {
             format!("Scheduled run '{run_id}' does not belong to task '{automation_id}'")
         })?;
         ensure_scheduled_run_can_be_marked_viewed(run, &self.sessions)
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| crate::platform::paths::redact_storage_prefix(&err.to_string()))?;
         compact_viewed_runs(&self.read_state, &automation_id, &runs);
         self.read_state
             .mark_viewed(&automation_id, &run_id)
-            .map_err(|err| format!("Failed to mark scheduled run '{run_id}' as viewed: {err}"))?;
+            .map_err(|err| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "Failed to mark scheduled run '{run_id}' as viewed: {err}"
+                ))
+            })?;
         Ok(ScheduledRunViewedDto {
             automation_id,
             run_id,
@@ -832,8 +894,9 @@ impl ScheduledTaskState {
         })
     }
 
-    /// 删除一条定时运行记录（commands::delete_session 对 ScheduledRun 分发到这里）。
-    /// 联动删除该次 Session、Run 与底座 Task；定时任务定义、共享工作间和其他运行保留。
+    /// Deletes one scheduled run record (commands::delete_session dispatches
+    /// ScheduledRun here). Also removes that run's Session, Run, and base Task; the
+    /// scheduled task definition, the shared workspace, and other runs are kept.
     pub(crate) async fn delete_run_for_session(&self, session_id: &str) -> Result<(), String> {
         let pool = self
             .pool
@@ -842,9 +905,11 @@ impl ScheduledTaskState {
         self.delete_run_for_session_with(session_id, pool).await
     }
 
-    /// 删除级联的本体，会话删除步骤由调用方注入。EnginePool 需要活的 WebView
-    /// AppHandle 才能构造，注入后级联本身（删哪条 run、什么该留下）才能被测试覆盖；
-    /// 真实实现里那一步的 turn 门 + evict 语义由 engine_pool 自己的测试保证。
+    /// The deletion cascade itself, with the conversation-deletion step injected by
+    /// the caller. EnginePool needs a live WebView AppHandle to construct; with the
+    /// step injected, the cascade itself (which run is deleted, what is kept) becomes
+    /// testable. The real implementation's turn gate + evict semantics for that step
+    /// are guaranteed by engine_pool's own tests.
     async fn delete_run_for_session_with(
         &self,
         session_id: &str,
@@ -860,9 +925,12 @@ impl ScheduledTaskState {
             .await
             .map_err(|err| format!("Failed to reconcile scheduled runs: {err:#}"))?;
 
-        // 崩溃可能留下 profile 已存在但 run 尚未 ThreadLinked 的会话，此时仍要能删会话——
-        // 底座对「没有 run」已用 Ok(空) 表达，所以读失败必须上抛：把读失败当成没有 run 会
-        // 删掉 Session 却留下 Run/Task，而 owned_session_id 从此返回 None,残留将不可见。
+        // A crash can leave a session whose profile exists but whose run is not yet
+        // ThreadLinked; the session must still be deletable then — the base already
+        // expresses "no run" as Ok(empty), so a read failure must propagate: treating
+        // a read failure as "no run" would delete the Session but leave Run/Task
+        // behind, and owned_session_id would return None from then on, making the
+        // residue invisible.
         let archived_run = self.history_archive.find_run(&automation_id, session_id);
         let active_run = {
             let manager = self.automations.lock().await;
@@ -1177,9 +1245,10 @@ fn current_automation_model(fallback: &str) -> String {
     prefs_model().unwrap_or_else(|| fallback.to_string())
 }
 
-/// 会话归属判定的可注入核心：`session_exists` 决定 thread_id 是否仍指向一个
-/// 存活会话——实时路径查 SessionStore，快照路径查已取出的会话标题表，
-/// 除此之外两条路径的语义完全一致。
+/// Injectable core of session-ownership detection: `session_exists` decides whether
+/// thread_id still points at a live session — the live path queries the SessionStore,
+/// the snapshot path queries the already-extracted session-title table; beyond that,
+/// the two paths are semantically identical.
 fn owned_session_id_with(
     record: &AutomationRunRecord,
     sessions: &SessionStore,
@@ -1461,8 +1530,9 @@ fn scheduled_run_is_unread(
     })
 }
 
-/// 与 [`has_unread_scheduled_runs_from_snapshot`] 的唯一差异是会话存在性的
-/// 数据源（实时查 SessionStore vs 注入闭包查快照），核心判定共享。
+/// Differs from [`has_unread_scheduled_runs_from_snapshot`] only in the data source
+/// for session existence (live SessionStore query vs injected closure against the
+/// snapshot); the core judgment is shared.
 fn has_unread_scheduled_runs_with(
     records: &[AutomationRunRecord],
     sessions: &SessionStore,
@@ -1652,7 +1722,13 @@ fn map_scheduled_run_with_task(
         created_at: record.created_at.to_rfc3339(),
         ended_at: record.ended_at.map(|value| value.to_rfc3339()),
         thread_id: record.thread_id,
-        error: record.error,
+        // Round-27 review m3: old run records persisted before the fold discipline
+        // landed still carry raw `<home>/...` text in their error field and would
+        // leave verbatim through the success-path DTO — fold with the same primitive
+        // on read (idempotent; already-folded text passes through unchanged).
+        error: record
+            .error
+            .map(|error| crate::platform::paths::redact_storage_prefix(&error)),
         unread,
         session_title,
         pinned,
@@ -1698,7 +1774,8 @@ fn build_create_request(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(default_model);
     canonical_scheduled_mode(input.mode)?;
-    // 工作间由 automation_id 自动分配；客户端不能提供或覆盖路径。
+    // The workspace is assigned automatically from automation_id; clients cannot
+    // supply or override the path.
     let status = paused_to_status(input.paused.unwrap_or(false));
     Ok(CreateAutomationRequest {
         name: input.name,
@@ -1712,11 +1789,12 @@ fn build_create_request(
         model_provider: None,
         model_provider_id: None,
         mode: Some(SCHEDULED_EXECUTION_MODE.to_string()),
-        // 权限不属于定时任务的用户设置；保留输入字段仅用于旧调用兼容。
-        // 与普通聊天 Yolo 一致：Shell 跟随全局开关，信任和自动批准开启。
+        // Permissions are not a scheduled-task user setting; the input fields are kept
+        // only for legacy-call compatibility. Consistent with ordinary chat Yolo:
+        // shell follows the global toggle, trust and auto-approve are on.
         allow_shell: Some(allow_shell),
         trust_mode: Some(true),
-        // 不可绕过的审批（rlm_eval/hook ask）仍由 force_prompt 拦截。
+        // Non-bypassable approvals (rlm_eval/hook ask) are still intercepted by force_prompt.
         auto_approve: Some(true),
         delivery_mode: None,
         status: Some(status),
@@ -1741,7 +1819,7 @@ fn build_update_request(
         name: input.name,
         prompt: input.prompt,
         rrule: input.rrule,
-        // 目录概念已移除,cwds 不再接受更新(见 build_create_request)。
+        // The directory concept was removed; cwds no longer accept updates (see build_create_request).
         cwds: None,
         model: input.model,
         // Exact Pinvou model selection is updated atomically in the companion
@@ -1749,20 +1827,22 @@ fn build_update_request(
         model_provider: None,
         model_provider_id: None,
         mode: Some(SCHEDULED_EXECUTION_MODE.to_string()),
-        // 权限不再接受任务级更新。
+        // Permissions no longer accept task-level updates.
         allow_shell: None,
         trust_mode: None,
-        // 恒定 YOLO,更新请求不允许改动(见 build_create_request)。
+        // Constantly YOLO; update requests may not change it (see build_create_request).
         auto_approve: None,
         delivery_mode: None,
         status,
     })
 }
 
-/// 定时任务恒以 YOLO 运行（见 `SCHEDULED_EXECUTION_MODE`，创建/更新请求里的
-/// `mode` 一律被下游覆盖为该值），本函数只做输入校验：空/缺省或显式 `"yolo"`
-/// 放行，其余拒绝。历史上的 `agent`/`plan` 接受臂没有意义——下游无差别覆盖
-/// 成 yolo，用户输入被静默丢弃，不如显式报错。
+/// Scheduled tasks always run as YOLO (see `SCHEDULED_EXECUTION_MODE`; any `mode` in
+/// create/update requests is unconditionally overridden downstream to that value), so
+/// this function only validates input: empty/missing or explicit `"yolo"` passes,
+/// everything else is rejected. The historical `agent`/`plan` acceptance arms were
+/// meaningless — the downstream override to yolo silently discarded the user's input;
+/// an explicit error is better.
 fn canonical_scheduled_mode(mode: Option<String>) -> Result<(), String> {
     match mode.as_deref().map(str::trim) {
         None | Some("") | Some(SCHEDULED_EXECUTION_MODE) => Ok(()),
@@ -1980,19 +2060,37 @@ fn humanize_rrule(rrule: &str) -> String {
         Err(_) => rrule.to_string(),
     }
 }
+/// Round-25 review MAJOR-1: this command shares the web allowlist with
+/// `read_scheduled_task` and `list_scheduled_runs` (the bridge invokes it directly
+/// via bridge-shared-helpers), and the inner automation chain carries `<home>/...`
+/// absolute paths (automation_manager's read/parse/display context and
+/// ensure_*_workspace's workspace context) that surface verbatim through
+/// `{err:#}`. round-24 folded only the runs-listing member; all exits of the three
+/// commands in the same lane (the non-CRUD read/write lane) now fold before leaving.
+/// Round-27 review audited the CRUD/mutation lane that round-25 disclosed as a
+/// "follow-up audit item" and confirmed it as a live leak (eight members such as
+/// create/update/resume/run-now surfacing absolute paths through the same carriers);
+/// this commit folds all exits of those eight members the same way, with the fold
+/// counts pinned by `scheduled_crud_commands_arms_fold_storage_prefixes`.
 pub async fn list_scheduled_tasks(
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledTaskDto>, String> {
-    state
-        .reconcile_runs()
-        .await
-        .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
+    state.reconcile_runs().await.map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to reconcile scheduled task runs: {err}"
+        ))
+    })?;
     let manager = state.automations.lock().await;
-    ensure_all_automation_workspaces(&manager)
-        .map_err(|err| format!("Failed to prepare scheduled task workspaces: {err:#}"))?;
-    let records = manager
-        .list_automations()
-        .map_err(|err| format!("Failed to list scheduled tasks: {err}"))?;
+    ensure_all_automation_workspaces(&manager).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to prepare scheduled task workspaces: {err:#}"
+        ))
+    })?;
+    let records = manager.list_automations().map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled tasks: {err}"
+        ))
+    })?;
     let current_ids = records
         .iter()
         .map(|record| record.id.clone())
@@ -2023,8 +2121,11 @@ pub async fn list_scheduled_tasks(
     if let Err(error) = state.ui_metadata.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled task UI metadata: {error:#}");
     }
-    let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let session_titles = scheduled_session_titles(&state.sessions).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled conversations: {err:#}"
+        ))
+    })?;
     records
         .into_iter()
         .map(|record| {
@@ -2040,20 +2141,33 @@ pub async fn list_scheduled_tasks(
             )
         })
         .collect::<Result<Vec<_>>>()
-        .map_err(|err| format!("Failed to read scheduled task runs: {err}"))
+        .map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to read scheduled task runs: {err}"
+            ))
+        })
 }
+/// Round-25 review MAJOR-1 (same-lane folding; see `list_scheduled_tasks` docs for the discipline).
 pub async fn read_scheduled_task(
     id: String,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<ScheduledTaskDetailDto, String> {
     let manager = state.automations.lock().await;
-    let record = manager
-        .get_automation(&id)
-        .map_err(|err| format!("Failed to read scheduled task '{id}': {err}"))?;
-    let record = ensure_automation_workspace(&manager, record)
-        .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
-    let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let record = manager.get_automation(&id).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to read scheduled task '{id}': {err}"
+        ))
+    })?;
+    let record = ensure_automation_workspace(&manager, record).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to prepare scheduled task workspace '{id}': {err:#}"
+        ))
+    })?;
+    let session_titles = scheduled_session_titles(&state.sessions).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled conversations: {err:#}"
+        ))
+    })?;
     map_scheduled_task_from_manager(
         &manager,
         record,
@@ -2064,31 +2178,55 @@ pub async fn read_scheduled_task(
         &state.ui_metadata,
         Some(&session_titles),
     )
-    .map_err(|err| format!("Failed to read scheduled task runs for '{id}': {err}"))
+    .map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to read scheduled task runs for '{id}': {err}"
+        ))
+    })
 }
+/// Round-24 review MAJOR-2: this command is on the web allowlist (the bridge
+/// invokes it directly via bridge-shared-helpers), and the inner chain carries
+/// `<home>/...` absolute paths — the automation chain's
+/// `Failed to read {dir.display()}` context and read_run_file's read/parse path
+/// context surfaced verbatim through `{err:#}` and reached the phone side bare via
+/// bridge/relay (same defect as round-22 MAJOR-3's five session commands). All exits
+/// now fold before leaving; non-path details (kind/id/counts) are kept. The source
+/// pin lives in this file's test module:
+/// list_scheduled_task_runs_arms_fold_storage_prefixes.
 pub async fn list_scheduled_task_runs(
     id: String,
     limit: Option<usize>,
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledRunDto>, String> {
-    state
-        .reconcile_runs()
-        .await
-        .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
+    state.reconcile_runs().await.map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to reconcile scheduled task runs: {err}"
+        ))
+    })?;
     let manager = state.automations.lock().await;
-    let record = manager
-        .get_automation(&id)
-        .map_err(|err| format!("Failed to read scheduled task '{id}': {err}"))?;
-    let record = ensure_automation_workspace(&manager, record)
-        .map_err(|err| format!("Failed to prepare scheduled task workspace '{id}': {err:#}"))?;
-    let records = manager
-        .list_runs(&id, limit)
-        .map_err(|err| format!("Failed to list scheduled task runs for '{id}': {err}"))?;
+    let record = manager.get_automation(&id).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to read scheduled task '{id}': {err}"
+        ))
+    })?;
+    let record = ensure_automation_workspace(&manager, record).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to prepare scheduled task workspace '{id}': {err:#}"
+        ))
+    })?;
+    let records = manager.list_runs(&id, limit).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled task runs for '{id}': {err}"
+        ))
+    })?;
     if limit.is_none() {
         compact_viewed_runs(&state.read_state, &id, &records);
     }
-    let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let session_titles = scheduled_session_titles(&state.sessions).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled conversations: {err:#}"
+        ))
+    })?;
     let task_name = record.name;
     let task_model = record.model;
     drop(manager);
@@ -2112,26 +2250,30 @@ pub async fn list_scheduled_task_runs(
 /// Return every retained scheduled run with a single reconciliation and a single
 /// metadata scan. The frontend uses this for the global Scheduled Runs sidebar;
 /// task-detail reads keep using `list_scheduled_task_runs`.
+/// Round-25 review MAJOR-1 (same-lane folding; see `list_scheduled_tasks` docs for the discipline).
 pub async fn list_scheduled_runs(
     state: tauri::State<'_, ScheduledTaskState>,
 ) -> Result<Vec<ScheduledRunDto>, String> {
-    state
-        .reconcile_runs()
-        .await
-        .map_err(|err| format!("Failed to reconcile scheduled task runs: {err}"))?;
+    state.reconcile_runs().await.map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to reconcile scheduled task runs: {err}"
+        ))
+    })?;
     let mut records = Vec::new();
     let mut active_run_keys = HashSet::new();
     {
         let manager = state.automations.lock().await;
-        let automations = manager
-            .list_automations()
-            .map_err(|err| format!("Failed to list scheduled tasks: {err}"))?;
+        let automations = manager.list_automations().map_err(|err| {
+            crate::platform::paths::redact_storage_prefix(&format!(
+                "Failed to list scheduled tasks: {err}"
+            ))
+        })?;
         for automation in automations {
             let runs = manager.list_runs(&automation.id, None).map_err(|err| {
-                format!(
+                crate::platform::paths::redact_storage_prefix(&format!(
                     "Failed to list scheduled task runs for '{}': {err}",
                     automation.id
-                )
+                ))
             })?;
             active_run_keys.extend(
                 runs.iter()
@@ -2171,8 +2313,11 @@ pub async fn list_scheduled_runs(
         compact_viewed_runs(&state.read_state, &automation_id, &runs);
     }
     records.sort_by_key(|(run, _, _)| std::cmp::Reverse(run.scheduled_for));
-    let session_titles = scheduled_session_titles(&state.sessions)
-        .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
+    let session_titles = scheduled_session_titles(&state.sessions).map_err(|err| {
+        crate::platform::paths::redact_storage_prefix(&format!(
+            "Failed to list scheduled conversations: {err:#}"
+        ))
+    })?;
     let mut output = Vec::with_capacity(records.len());
     for (record, task_name, task_model) in records {
         let summary =
@@ -2253,6 +2398,165 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// Round-24 review MAJOR-2 source pin: every error exit of the
+    /// web-allowlisted list_scheduled_task_runs must fold the storage root before
+    /// leaving. The window is the command body (terminator table same as the sibling
+    /// pin); fold counts are pinned — a single-arm rollback used to stay green under
+    /// contains-style pins (same class as the round-22 mutation A), so pure comment
+    /// lines are filtered before counting (the round-23 compensating-mutation
+    /// caliber: "single-arm rollback + a comment mention of the needle inside the
+    /// window" used to stay green; trailing // mentions and block-comment mentions
+    /// can still shield it — a disclosed residual). New error arms must adopt the
+    /// fold and update the count in the same change (enumeration residual: a new
+    /// unfolded arm is invisible to this pin).
+    #[test]
+    fn list_scheduled_task_runs_arms_fold_storage_prefixes() {
+        let source = include_str!("tasks.rs");
+        let start = source
+            .find("pub async fn list_scheduled_task_runs(")
+            .expect("list_scheduled_task_runs must exist");
+        let body = &source[start..];
+        let end = [
+            // This file carries no real command attributes (commands are registered at
+            // the app/commands layer); the architecture guard counts attribute text in
+            // files outside app with a baseline of 0 — so the terminator is split via
+            // concat!, keeping the source text from matching the guard's attribute
+            // scan while preserving the terminator's full semantics.
+            concat!("\n#[tauri::", "command]"),
+            "\n#[cfg(test)]",
+            "\npub async fn ",
+            "\npub fn ",
+            "\nfn ",
+        ]
+        .iter()
+        .filter_map(|delimiter| body.find(delimiter))
+        .min()
+        .expect("list_scheduled_task_runs body must be terminated");
+        let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+        let folds = counted
+            .matches("crate::platform::paths::redact_storage_prefix(&format!(")
+            .count();
+        assert_eq!(
+            folds, 5,
+            "every error exit of web-allowlisted list_scheduled_task_runs \
+             must fold the storage root before egress; a single-arm revert \
+             previously stayed green under a contains-style marker (the \
+             round-22 mutation-A class)"
+        );
+    }
+
+    /// Round-25 review MAJOR-1 source pin: the three read/write commands in the same
+    /// lane (list_scheduled_tasks / read_scheduled_task / list_scheduled_runs) still
+    /// surfaced the automation chain's absolute-path context via bare `{err:#}`.
+    /// Window/terminator/comment filtering is the same set as the runs-listing pin
+    /// above; per-command fold counts are pinned (5/4/4) so a single-arm rollback
+    /// turns red. New error arms must adopt the fold and update the count; CRUD/
+    /// mutation lane members fold the same way since round-27, counted by the
+    /// dedicated pin below.
+    #[test]
+    fn scheduled_read_list_commands_arms_fold_storage_prefixes() {
+        let source = include_str!("tasks.rs");
+        for (name, expected) in [
+            ("list_scheduled_tasks", 5),
+            ("read_scheduled_task", 4),
+            ("list_scheduled_runs", 4),
+        ] {
+            let finder = format!("pub async fn {name}(");
+            let start = source
+                .find(&finder)
+                .unwrap_or_else(|| panic!("{name} must exist"));
+            let body = &source[start..];
+            let end = [
+                concat!("\n#[tauri::", "command]"),
+                "\n#[cfg(test)]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\nfn ",
+            ]
+            .iter()
+            .filter_map(|delimiter| body.find(delimiter))
+            .min()
+            .unwrap_or_else(|| panic!("{name} body must be terminated"));
+            let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+            let folds = counted
+                .matches("crate::platform::paths::redact_storage_prefix(&format!(")
+                .count();
+            assert_eq!(
+                folds, expected,
+                "every error exit of web-allowlisted {name} must fold the \
+                 storage root before egress; the read/list lane previously \
+                 leaked automation-chain absolute paths while only the \
+                 runs-listing member was folded (round-25 MAJOR-1)"
+            );
+        }
+    }
+
+    /// Round-27 review M1 source pin: the eight CRUD/mutation-lane members
+    /// (create/update/delete/pause/resume/pin/run-now/mark-viewed) that round-25
+    /// disclosed as a "follow-up audit item" were audited and confirmed as a live
+    /// leak — same carriers as the read/write lane (ensure_*_workspace's
+    /// workspace.display(), automation_manager's save/delete/read path.display(),
+    /// the kind sidecar's path.display()), all on the web allowlist with error
+    /// strings reaching the phone verbatim via complete_rpc. This commit folds every
+    /// exit; this pin fixes each command's fold count per command window (the needle
+    /// is the fold primitive's fully qualified prefix, compatible with both the
+    /// `&format!` and `&error.to_string()` assemblies), with window/terminator/
+    /// comment filtering under the same discipline as the read/write-lane pin above.
+    /// New error arms must adopt the fold and update the count; a single-arm rollback
+    /// turns red.
+    #[test]
+    fn scheduled_crud_commands_arms_fold_storage_prefixes() {
+        let source = include_str!("tasks.rs");
+        for (name, expected) in [
+            ("create_task", 5),
+            ("update_task", 7),
+            ("pause_task", 2),
+            ("resume_task", 3),
+            ("set_task_pinned", 2),
+            ("delete_task", 1),
+            ("run_task_now", 4),
+            ("mark_run_viewed", 4),
+        ] {
+            let finder = format!("    async fn {name}(");
+            let start = source
+                .find(&finder)
+                .unwrap_or_else(|| panic!("{name} must exist"));
+            let body = &source[start..];
+            let end = [
+                concat!("\n#[tauri::", "command]"),
+                "\n#[cfg(test)]",
+                "\n    async fn ",
+                "\n    fn ",
+                // Round-28 review MINOR-7: visibility-qualified forms of the next
+                // method were previously missing from the terminator table —
+                // mark_run_viewed's window spilled into pub(crate)
+                // delete_run_for_session (harmless today, but a fold added inside the
+                // spilled segment would count false-red, and move-one-add-another
+                // shuffles would count false-green). All three pub forms added.
+                "\n    pub(crate) async fn ",
+                "\n    pub(crate) fn ",
+                "\n    pub fn ",
+                "\n}\n",
+            ]
+            .iter()
+            .filter_map(|delimiter| body.find(delimiter))
+            .min()
+            .unwrap_or_else(|| panic!("{name} body must be terminated"));
+            let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+            let folds = counted
+                .matches("crate::platform::paths::redact_storage_prefix(&")
+                .count();
+            assert_eq!(
+                folds, expected,
+                "every error exit of web-allowlisted {name} must fold the \
+                 storage root before egress; the CRUD/mutation lane leaked \
+                 automation-chain absolute paths under a pending-verification \
+                 disclosure that its own cited carriers already disproved \
+                 (round-27 M1)"
+            );
+        }
+    }
+
     #[test]
     fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {
         let limits = scheduled_execution_limits();
@@ -2305,8 +2609,10 @@ mod tests {
     }
 
     fn temp_home() -> std::path::PathBuf {
-        // 叠加进程内原子计数器,避免纯纳秒命名在高并发下碰撞
-        // (本 helper 被 18 个测试共用同一前缀,部分不持 ENV_LOCK,并发时同名目录会互相删文件)。
+        // Mix in the in-process atomic counter to keep pure-nanosecond names from
+        // colliding under high concurrency (18 tests share this helper's prefix and
+        // some do not hold ENV_LOCK, so concurrent same-named directories would delete
+        // each other's files).
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-scheduled-tasks-test-{}-{}",
             std::process::id(),
@@ -2391,9 +2697,10 @@ mod tests {
         });
     }
 
-    // ── VersionedJsonStore<T> 通用核心(合并三 store) ──────────────────
-    // 这组测试覆盖合并前的行为契约:open 空 / 当前版本直读 / 旧版本迁移 /
-    // 损坏 JSON quarantine / 原子 persist;并区分 Rename 与 LogInPlace 两种策略。
+    // ── VersionedJsonStore<T> shared core (three stores merged) ──────────────────
+    // This group covers the pre-merge behavioral contracts: opening empty / reading
+    // the current version directly / migrating an old version / quarantining corrupt
+    // JSON / atomic persist; and distinguishes the Rename and LogInPlace strategies.
     #[test]
     fn versioned_json_store_open_empty_uses_default_registry() {
         let dir = temp_home();
@@ -2434,7 +2741,7 @@ mod tests {
     fn versioned_json_store_open_old_version_migrates_and_repersists() {
         let dir = temp_home();
         let path = dir.join("old-ui-metadata.json");
-        // 旧版本(0 < 当前 1)且保留 tasks,触发 migrate。
+        // Old version (0 < current 1) with tasks kept; triggers migrate.
         let legacy = serde_json::json!({
             "schema_version": 0,
             "tasks": {
@@ -2457,7 +2764,7 @@ mod tests {
         assert!(guard.tasks.contains_key("automation-1"));
         drop(guard);
 
-        // 迁移后已重新落盘为当前版本。
+        // After migration the file has been re-persisted at the current version.
         let repersisted: ScheduledTaskUiMetadataRegistry =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read repersisted"))
                 .expect("parse repersisted");
@@ -2478,7 +2785,7 @@ mod tests {
         let store = VersionedJsonStore::<ScheduledTaskUiMetadataRegistry>::open(path.clone())
             .expect("corrupt payload must not block startup");
         assert!(store.registry.read().tasks.is_empty());
-        // LogInPlace 策略:不搬走原文件。
+        // LogInPlace strategy: the original file is not moved away.
         assert!(
             path.exists(),
             "log-in-place store must leave the offending file untouched"
@@ -2590,11 +2897,13 @@ mod tests {
 
     #[test]
     fn kind_lookup_honors_a_record_written_by_another_process_after_open() {
-        // 该 sidecar 由 CLI(`pinvou scheduled create --kind memory-organize`)
-        // 与本进程共同拥有,而 registry 只在 open() 读一次;基础设施的扫描却每
-        // tick 重新从磁盘读取任务定义。因此 app 启动后由 CLI 写入的 kind 必须
-        // 仍被看见——否则该任务会被当作普通 chat 任务,以无人值守的全权限 Yolo
-        // 会话执行它的 kind 专用提示词,正是不安全的那个方向。
+        // This sidecar is co-owned by the CLI (`pinvou scheduled create --kind
+        // memory-organize`) and this process, while the registry is read only once in
+        // open(); the infrastructure scan re-reads task definitions from disk every
+        // tick. A kind written by the CLI after app startup must therefore still be
+        // seen — otherwise the task would be treated as an ordinary chat task and run
+        // its kind-specific prompt in an unattended full-permission Yolo session,
+        // which is exactly the unsafe direction.
         let dir = temp_home();
         let path = dir.join("foreign-writer-task-kinds.json");
         let store = ScheduledTaskKindStore::open(path.clone()).expect("open kind store");
@@ -2788,16 +3097,19 @@ mod tests {
         );
     }
 
-    // ── 删除一次定时运行的级联 ────────────────────────────────────────
+    // ── Cascade for deleting one scheduled run ────────────────────────────────────────
     //
-    // 造真实 fixture:automation + 两次 run_now，每次经 executor 建出真实的
-    // sched-* 会话并 ThreadCreated 链上，底座为每次 run 生成真实 Task。
-    // 然后删掉第一条运行的会话，验证「删这一次」和「别的都留着」。
+    // Build a real fixture: automation + two run_now invocations, each creating a real
+    // sched-* session through the executor and linking it via ThreadCreated, with the
+    // base generating a real Task per run. Then delete the first run's conversation and
+    // verify "this one is gone" and "everything else stays".
 
-    /// 直接实现底座 TaskExecutor：建一个真实的定时会话并报告 ThreadCreated。
-    /// 不碰 engine，从而不需要 EnginePool。`hold` 置位时会话建好后挂住不返回，
-    /// 用来造出**真的**停在 Running 的运行——手改磁盘上的状态会被
-    /// delete 路径里的 reconcile_runs 按 Task 状态回写掉，测不出拒删。
+    /// Direct implementation of the base TaskExecutor: creates a real scheduled
+    /// session and reports ThreadCreated. Never touches the engine, so no EnginePool
+    /// is needed. With `hold` set, it hangs after creating the session instead of
+    /// returning, producing a run that is **genuinely** stuck in Running — hand-editing
+    /// the on-disk state would be written back by reconcile_runs (per the Task status)
+    /// in the delete path and could not test the refusal.
     struct SessionCreatingExecutor {
         sessions: SessionStore,
         hold: Option<Arc<tokio::sync::Notify>>,
@@ -2852,8 +3164,9 @@ mod tests {
         }
     }
 
-    /// 注入给 delete_run_for_session_with 的会话删除步骤。生产实现是
-    /// EnginePool（turn 门 + evict + 同一个 store 调用），这里只保留 store 调用。
+    /// The conversation-deletion step injected into delete_run_for_session_with. The
+    /// production implementation is EnginePool (turn gate + evict + the same store
+    /// call); only the store call is kept here.
     struct StoreConversationDeleter(SessionStore);
 
     #[async_trait::async_trait]
@@ -2893,12 +3206,13 @@ mod tests {
         }
     }
 
-    /// 等到目标 run 既挂上了会话、状态又到位。`want_terminal=false` 用于挂住的
-    /// executor：那时 run 会停在 Running。
+    /// Waits until the target run has both a linked session and its status in place.
+    /// `want_terminal=false` is for the holding executor: the run then stays in
+    /// Running.
     ///
-    /// 每轮必须先 reconcile：Run 记录的 thread_id / 状态不会自己变，只有
-    /// reconcile_run_statuses 会把它们从底座 Task 同步过来（生产路径上由
-    /// ScheduledTaskState::reconcile_runs 触发）。
+    /// Every round must reconcile first: a Run record's thread_id / status do not
+    /// change by themselves — reconcile_run_statuses syncs them from the base Task
+    /// (triggered by ScheduledTaskState::reconcile_runs on the production path).
     async fn wait_for_linked_run(
         automations: &SharedAutomationManager,
         task_manager: &SharedTaskManager,
@@ -3146,8 +3460,9 @@ mod tests {
         });
     }
 
-    /// 删一次运行 = 删掉该次 Session + Run + 底座 Task；任务定义、共享工作间
-    /// 和其它运行必须原样保留。这是本次改动里唯一的破坏性路径。
+    /// Deleting one run = removing that run's Session + Run + base Task; the task
+    /// definition, the shared workspace, and the other runs must be preserved intact.
+    /// This is the only destructive path in this change.
     #[tokio::test]
     async fn deleting_one_run_removes_its_session_run_and_task_only() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
@@ -3176,7 +3491,7 @@ mod tests {
             .await
             .expect("delete the doomed run");
 
-        // 被删那次:Session / Run / Task 三者都消失。
+        // The deleted run: Session / Run / Task all disappear.
         assert!(
             !fixture
                 .state
@@ -3199,7 +3514,7 @@ mod tests {
             "被删运行的底座 Task 必须消失"
         );
 
-        // 任务定义 / 共享工作间 / 另一次运行:全部保留。
+        // Task definition / shared workspace / the other run: all preserved.
         {
             let manager = fixture.state.automations.lock().await;
             manager
@@ -3234,7 +3549,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// 正在排队/运行的记录不允许删除——拒绝发生在任何破坏性动作之前。
+    /// Queued/running records must not be deletable — the refusal happens before any
+    /// destructive action.
     #[tokio::test]
     async fn deleting_task_preserves_completed_run_history_and_sessions() {
         let _guard = crate::platform::paths::tests::ENV_LOCK
@@ -3518,7 +3834,7 @@ mod tests {
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
-        // executor 挂住 → 这条 run 真的停在 Running，reconcile 也不会把它改成终态。
+        // The executor holds → this run is genuinely stuck in Running, and reconcile will not move it to a terminal state.
         let hold = Arc::new(tokio::sync::Notify::new());
         let fixture = cascade_fixture(Some(hold.clone())).await;
         let run = run_once(&fixture).await;
@@ -3670,7 +3986,7 @@ mod tests {
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         let state = state_without_task_manager();
 
-        // 无 cwds 的任务是一等公民并直接激活；工作间由 automation_id 自动分配。
+        // A task without cwds is a first-class citizen and activates directly; the workspace is assigned automatically from automation_id.
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "开箱即用".to_string(),
@@ -4093,8 +4409,10 @@ mod tests {
         assert_eq!(updated.prompt, "检查夜间任务");
         assert_eq!(updated.rrule, "FREQ=HOURLY;INTERVAL=4");
         assert_eq!(updated.status, "paused");
-        // 权限/目录/模式不再出现在 DTO 里；契约锚定在持久化的 automation 记录上：
-        // 目录更新被忽略、模式恒为 yolo、Shell 跟随全局 Yolo 设置、信任与自动批准恒开。
+        // Permissions/directories/mode no longer appear in the DTO; the contract is
+        // anchored on the persisted automation record: directory updates are ignored,
+        // the mode is always yolo, shell follows the global Yolo setting, and trust
+        // plus auto-approve are always on.
         let persisted = state
             .automations
             .lock()
@@ -5014,7 +5332,7 @@ mod tests {
         assert_eq!(request.auto_approve, Some(true));
         assert_eq!(request.model_provider, None);
         assert_eq!(request.model_provider_id, None);
-        // 目录概念已移除:无 cwds 也直接激活,不再强制暂停。
+        // The directory concept was removed: a task without cwds also activates directly, no longer forced to pause.
         assert_eq!(request.status, Some(AutomationStatus::Active));
         assert!(request.cwds.is_empty());
     }

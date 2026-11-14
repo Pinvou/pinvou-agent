@@ -44,6 +44,11 @@ use pinvou3_lib::features::sessions::SessionStore;
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
+/// Stable refusal code for the sensitive-component gate (round-16 review
+/// NIT: a single named definition point; contract pins assert this exact
+/// spelling, so gate deletion or code drift turns red).
+const ARTIFACT_CROSSES_SENSITIVE_COMPONENT: &str = "artifact_crosses_sensitive_component";
+
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_PATH_COMPONENT_PREFIXES;
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_SUFFIXES as SENSITIVE_PATH_COMPONENT_SUFFIXES;
 /// The credential-component blocklist, IMPORTED from
@@ -128,7 +133,10 @@ fn crosses_sensitive_component_suffix(canonical: &Path) -> Option<&'static str> 
 /// the prefix list here silently missed the macOS `/private/{etc,var,tmp}`
 /// alias expansion that `check_sensitive_components` gained — canonicalized
 /// spellings on macOS resolve `/etc/...` to `/private/etc/...`, which matches
-/// no list entry, so the GUI refused paths this mirror shipped.
+/// no list entry, so the GUI refused paths this mirror shipped. (Round-17
+/// review correction: the disclosed session-artifact asymmetry lives on the
+/// `resolve_session_artifact` gate below, not on this fn — this one does
+/// apply the system-prefix leg; see the comment at that gate.)
 pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
     check_sensitive_canonical(canonical, cfg!(target_os = "macos"))
 }
@@ -162,8 +170,9 @@ fn check_sensitive_canonical(canonical: &Path, alias_symlinks: bool) -> Result<(
             canonical.display()
         ));
     }
-    // Round-11 复审 minor:目录作用域尾序列(gh/Maven/sops/Chrome 的通用
-    // 命名凭据文件)与 GUI 同源——上游单一谓词,不手抄清单。
+    // Round-11 review minor: the directory-scoped suffix family (generically
+    // named credential files of gh/Maven/sops/Chrome) shares one source with
+    // the GUI — a single upstream predicate, no hand-copied list.
     if pinvou3_lib::platform::path_policy::blocked_path_tail_hit(canonical).is_some() {
         return Err(format!(
             "{} crosses a directory-scoped credential file",
@@ -397,6 +406,21 @@ fn resolve_session_artifact(
     // model context, which is the read direction. The round-11 audit adds the
     // directory-scoped tails (gh/Maven/sops/Chrome credential files can sit
     // inside a session workspace just the same).
+    //
+    // Disclosed asymmetry (Round-15 review F3; Round-17 review corrected the
+    // comment's home — this disclosure belongs to this session-artifact lane,
+    // not to check_sensitive_path, which is the full mirror with the
+    // system-prefix leg): this lane deliberately keeps the
+    // credential-component legs WITHOUT the system-prefix leg (containment
+    // is proven inside resolve_session_artifact itself — the sessions-root
+    // strip and session/area validation further down this function refuse
+    // any target outside session storage before the file is read or
+    // written — so this gate needs only the component legs; the checks
+    // immediately below run BEFORE that containment). The upstream
+    // list widening that added `/var/root/` therefore widens the documented
+    // root-install divergence (GUI refuses every artifact under a root home
+    // via `check_sensitive_components`, this CLI lane still serves them)
+    // rather than closing it — see the module doc for the standing contract.
     let directory_scoped_tail =
         pinvou3_lib::platform::path_policy::blocked_path_tail_hit(&canonical)
             .map(|tail| tail.join("/"));
@@ -406,8 +430,13 @@ fn resolve_session_artifact(
         .or_else(|| crosses_sensitive_component_suffix(&canonical).map(str::to_string))
         .or(directory_scoped_tail);
     if let Some(blocked) = blocked {
+        // Round-16 review (NIT): the refusal code used to be an inline
+        // format! literal; promoting it to a constant gives the single named
+        // definition point the same spelling shared by sessions_contract's
+        // read/write direction pins (the pins still assert the literal to
+        // detect drift).
         return Err(CliError::failed(format!(
-            "artifact_crosses_sensitive_component: {} crosses `{blocked}`; credential paths are \
+            "{ARTIFACT_CROSSES_SENSITIVE_COMPONENT}: {} crosses `{blocked}`; credential paths are \
              never read or written through this command",
             canonical.display()
         )));
@@ -682,9 +711,33 @@ fn write(
 
 #[cfg(test)]
 mod tests {
+    /// Round-15 review F1: the production-wired alias flag
+    /// (`cfg!(target_os = "macos")`) itself has no pin — all existing alias
+    /// pins drive the explicit-parameter helper, so if the flag regresses to
+    /// `false`, macOS's `/private/etc/*` lane reopens while every test stays
+    /// green (the round-6 M2 hole). The macOS-gated behavior pin drives the
+    /// real flag through the real production entry point; on other platforms
+    /// that entry point's behavior is covered by the explicit-parameter
+    /// pins.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn system_prefix_hits_run_through_the_production_alias_flag() {
+        // The first two assertions discriminate the flag mutation (with
+        // flag→false the alias expansion disappears and `/private/…` matches
+        // no raw list entry, so the path passes); the third is the control:
+        // the raw spelling `/etc/shadow` hits even without alias expansion,
+        // pinning that the raw half of the "raw OR alias" pair is not
+        // accidentally removed.
+        assert!(super::check_sensitive_path(Path::new("/private/etc/shadow")).is_err());
+        assert!(super::check_sensitive_path(Path::new("/private/var/root/x")).is_err());
+        assert!(super::check_sensitive_path(Path::new("/etc/shadow")).is_err());
+    }
+
     use super::*;
-    // Round-6 复审:生产半边已上收为上游组合谓词,系统前缀清单只剩测试
-    // 在用——随用随导入,避免非测试构建的 unused_imports 硬门报错。
+    // Round-6 review: the production half has been lifted into the upstream
+    // composed predicate, so the system-prefix list is now test-only —
+    // import it where used to avoid failing the non-test build's
+    // unused_imports hard gate.
     use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
     use pinvou3_lib::platform::path_policy::canonical_system_prefix_hit;
 
@@ -834,9 +887,11 @@ mod tests {
             );
             assert!(check_sensitive_path(&path).is_err(), "{component}");
         }
-        // Round-8 复审 MAJOR:.git 内部(远端 URL 常内嵌 oauth2:TOKEN@
-        // 形态凭据)按嵌套路径同样拒绝;.gitignore/.github 等仅共享前缀
-        // 的不同组件不受影响(GUI 镜像同源同语义)。
+        // Round-8 review MAJOR: inside .git (where remote URLs often embed
+        // oauth2:TOKEN@-style credentials) is refused via nested paths too;
+        // different components that merely share the prefix, like
+        // .gitignore/.github, are unaffected (the GUI mirror is same-source,
+        // same-semantics).
         let nested = Path::new("/home/u/repo/.git/config");
         assert_eq!(crosses_sensitive_component(nested), Some(".git"));
         assert!(check_sensitive_path(nested).is_err(), ".git/config");
@@ -859,11 +914,14 @@ mod tests {
             .copied()
             .filter(|prefix| !prefix.ends_with('*'))
         {
-            // 组件序列语义(与上游 path_starts_with_folded 同一谓语):前缀
-            // 自身与其嵌套路径必须被拒;仅共享前缀字节的同名文件不是系统区
-            // 文件(`/etc/shadowprobe`、`/var/log/authprobe` 是普通可读
-            // 文件)。末分量带 `*` 的开放家族条目(轮转日志)单独驱动,
-            // `{prefix}probe` 的放行断言不适用。
+            // Component-sequence semantics (the same predicate as the
+            // upstream path_starts_with_folded): the prefix itself and its
+            // nested paths must be refused; a same-named file that merely
+            // shares prefix bytes is not a system-area file (`/etc/shadowprobe`
+            // and `/var/log/authprobe` are ordinary readable files). Open
+            // family entries whose last component ends in `*` (rotated logs)
+            // are driven separately; the `{prefix}probe` pass assertion does
+            // not apply to them.
             let base = Path::new(prefix);
             assert!(
                 check_sensitive_path(base).is_err(),
@@ -880,11 +938,13 @@ mod tests {
                 );
             }
         }
-        // Round-9 复审 MAJOR(GUI 镜像同源同语义):组件化改写曾把字节前
-        // 缀时代的真实家族成员静默放行——`shadow-` 哈希备份、`auth.log`
-        // 本体及其轮转名必须经 CLI 消费方拒绝;Round-10 复审 MAJOR 补上
-        // 备份家族(`.bak`/`.old`/`.pacnew`/`~`),与 GUI 共用同一清单。
-        // 无辜同名保持放行。
+        // Round-9 review MAJOR (GUI mirror same-source, same-semantics): the
+        // component-sequence rewrite silently passed real family members from
+        // the byte-prefix era — `shadow-` hash backups, the `auth.log` file
+        // itself and its rotated names must be refused through the CLI
+        // consumer; Round-10 review MAJOR added the backup family
+        // (`.bak`/`.old`/`.pacnew`/`~`), sharing the GUI's list. Innocent
+        // same-named files stay readable.
         for variant in [
             "/etc/shadow-",
             "/etc/gshadow-",
@@ -921,21 +981,26 @@ mod tests {
                 "{benign} must stay readable"
             );
         }
-        // 大小写变体语义与 GUI 镜像一致(path_policy 的平台折叠):折叠平台
-        // 上 /Etc/Sudoers 必须命中;字节精确平台上是不同路径,放行
-        // (round-5 复审:case-variant 钉此前只存在于 GUI 镜像)。
+        // Case-variant semantics match the GUI mirror (path_policy's platform
+        // folding): on folding platforms /Etc/Sudoers must hit; on byte-exact
+        // platforms it is a different path and passes (round-5 review: the
+        // case-variant pin previously existed only in the GUI mirror).
         let folded = cfg!(target_os = "macos") || cfg!(target_os = "windows");
         assert_eq!(
             check_sensitive_path(Path::new("/Etc/Sudoers")).is_err(),
             folded,
             "case variants follow the platform's volume folding (GUI mirror parity)"
         );
-        // Round-6 复审 M2:镜像必须吃上游组合谓词的 /private 别名展开——
-        // macOS 的调用方全部先 canonicalize,/etc/... 落到镜像时已是
-        // /private/etc/... 拼写,手抄前缀循环在这类拼写上整体漏过。别名
-        // 参数是显式入参,所有平台都能直接驱动:开启时 /private/etc/shadow
-        // 命中,/private/etc 的普通邻居与 /private/etcfoo 不受牵连;关闭时
-        // (Linux 语义)/private/etc 是普通目录,字节精确不命中。
+        // Round-6 review M2: the mirror must consume the upstream composed
+        // predicate's /private alias expansion — every macOS caller
+        // canonicalizes first, so by the time /etc/... reaches the mirror it
+        // is already spelled /private/etc/..., which a hand-copied prefix
+        // loop misses wholesale. The alias parameter is an explicit input and
+        // can be driven directly on every platform: when enabled,
+        // /private/etc/shadow hits while ordinary neighbors of /private/etc
+        // and /private/etcfoo are unaffected; when disabled (Linux
+        // semantics), /private/etc is an ordinary directory and the
+        // byte-exact spelling does not hit.
         assert!(
             canonical_system_prefix_hit(Path::new("/private/etc/shadow"), true),
             "the macOS aliased spelling must hit through the composed predicate"
@@ -952,9 +1017,10 @@ mod tests {
             !canonical_system_prefix_hit(Path::new("/private/usr/local/tool"), true),
             "unrelated /private subtrees stay unaliased"
         );
-        // Round-10 复审 minor:别名展开覆盖 var 腿——macOS 上轮转日志的
-        // canonical 拼写是 /private/var/log/...,只钉 etc 腿时收窄别名
-        // 清单不会红。
+        // Round-10 review minor: the alias expansion covers the var leg too —
+        // on macOS the canonical spelling of rotated logs is
+        // /private/var/log/..., so narrowing the alias list to the etc leg
+        // would not turn this red.
         assert!(
             canonical_system_prefix_hit(Path::new("/private/var/log/auth.log.1"), true),
             "the aliased /var spelling of the rotated auth log must hit"

@@ -813,6 +813,7 @@ cancel: 'Cancel', chooseThisFolder: 'Choose this folder', choose: 'Choose',
 currentFolder: path => `Current folder: ${path}`, selectedCount: n => `${n} selected`,
 thisComputer: 'This PC', home: 'Home', emptyFolder: 'Nothing to select in this folder',
 loadFailed: err => `Failed to read: ${err}`, workspaceNotAuthorized: 'Allow remote access to local folders on the desktop first', alreadyOpen: 'A file picker is already open',
+listingFailed: 'Listing desktop files failed. Please try again.',
   },
   webClientErrors: {
 stateNotReady: 'Remote control state is not ready; desktop events cannot be processed yet',

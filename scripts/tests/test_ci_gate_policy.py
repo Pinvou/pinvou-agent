@@ -614,12 +614,16 @@ GATE_JOB_LEVEL_IFS = {
     ),
 }
 
-# Round-52 review: 套件以 name+`if` assertIn 或 split 首个匹配钉住这些步骤,
-# 同名的诱饵副本会满足 pin 而真步骤的路由被关掉(经变异验证的 bypass 类)。
-# 每个被钉的步骤名必须在其 job 块内恰好出现一次。
-# windows-rust-test 不在表内:它的步骤名唯一性已由
-# test_windows_rust_test_parallel_phases_preserve_routing_and_coverage 的
-# round-45 duplicate-step 断言覆盖。
+# Round-52 review: the suite pins these steps via name+`if` assertIn or the
+# first split match, so a same-named decoy copy can satisfy the pin while the
+# real step's routing is switched off (mutation-verified bypass class). Each
+# pinned step name must appear exactly once inside its job block.
+# Round-29 review correction of the stale round-28 note: windows-rust-test IS
+# in the table now (see the Round-28 review MINOR-6b entry below); its step-name
+# uniqueness is ALSO covered job-wide by the round-45 duplicate-step assertion
+# in test_windows_rust_test_parallel_phases_preserve_routing_and_coverage —
+# the entry's own tooth is deletion detection (exactly-once: 0 ≠ 1), on top
+# of that job-wide duplicate check.
 PINNED_GATE_STEP_NAMES = {
     "fast-gate": (
         "Checkout (含 submodule,fork 为 public 直接拉)",
@@ -663,6 +667,18 @@ PINNED_GATE_STEP_NAMES = {
         "Prune release artifacts before the cache save (push only)",
         "Verify script (plist/usage-key/bundle targets checks, push only)",
         "Probe and export the macOS lld link flags",
+    ),
+    # Round-28 review MINOR-6b (translated, round-29): the two gated-test steps were not in
+    # this table before — the uniqueness guard (exactly-once anti-decoy) did not cover
+    # them, so an echo-laundered empty-shell step could bypass every same-named assertIn
+    # pin. Both jobs joined the table. (The windows-rust-test entry additionally
+    # duplicates the round-45 job-wide duplicate-step assertion's uniqueness direction;
+    # its own tooth is deletion detection.)
+    "windows-rust-test": (
+        "pinvou-cli Windows-gated unit tests",
+    ),
+    "macos-cli-check": (
+        "pinvou-cli macOS-gated unit tests",
     ),
 }
 
@@ -1819,6 +1835,22 @@ class CiGatePolicyTests(unittest.TestCase):
         # runtime zero-match guard is the tripwire that fails the leg; this
         # pin holds the line itself.
         self.assert_run_filtered_filter(windows_rust_steps, "pinvou-cli", "windows_batch_tests")
+        # Round-27 review (m10): the Windows leg gains the executed-count
+        # guard the macOS leg grew in round-24 -- an #[ignore]d pin prints
+        # "ok. 0 passed; N ignored" and used to pass silently here. The
+        # macOS step's "same filtered-run pattern" comment is now true
+        # again; pin the guard bodies so a deletion reverts the asymmetry.
+        self.assertIn(
+            "^test result: ok\\. [1-9][0-9]* passed",
+            windows_rust_steps,
+            "the Windows executed-count guard keeps an #[ignore]d pin from "
+            "passing the step silently (the round-23 review hole, closed "
+            "symmetrically in round-27)",
+        )
+        self.assertIn(
+            "an ignored-only run must not pass the guard",
+            windows_rust_steps,
+        )
         self.assert_run_filtered_filter(
             windows_rust_steps,
             "adapter-gaia",
@@ -1960,6 +1992,38 @@ class CiGatePolicyTests(unittest.TestCase):
             "rustup show active-toolchain",
             macos_cli_steps,
             "the macOS leg must run the toolchain pinned by rust-toolchain.toml",
+        )
+        # Round-24 review (m6): the macOS-gated alias-flag pin step compiles
+        # and executes on no other leg, so deleting the whole step fails no
+        # test and silently reverts the leg to compile-only - the exact
+        # orphan class the benchmark-core filter pins above close for the
+        # Windows leg. Pin the step, its filter, and the three guard bodies
+        # (zero-match, ok-result, executed-count) so a deletion or guard
+        # swap fails this policy suite.
+        self.assertIn(
+            "- name: pinvou-cli macOS-gated unit tests",
+            macos_cli_steps,
+        )
+        # Round-28 review MINOR-6a (translated, round-29): the filter used a bare assertIn —
+        # the suite's own assert_run_filtered_filter helper (Round-50, exact end-of-line
+        # token pin) exists precisely for the coordinated test-name+filter rename keeping
+        # the old text green as a line substring; all seven Windows filters already go
+        # through the helper, this one joins the same caliber.
+        self.assert_run_filtered_filter(
+            macos_cli_steps,
+            "pinvou-cli",
+            "system_prefix_hits_run_through_the_production_alias_flag",
+        )
+        self.assertIn("grep -qE 'running [1-9][0-9]* tests?'", macos_cli_steps)
+        self.assertIn('grep -q "^test result: ok"', macos_cli_steps)
+        self.assertIn(
+            "a renamed test must not become a silent pass", macos_cli_steps
+        )
+        self.assertIn(
+            "^test result: ok\\. [1-9][0-9]* passed",
+            macos_cli_steps,
+            "the executed-count guard keeps an #[ignore]d pin from passing "
+            "the step silently (the round-23 review hole)",
         )
 
         required_gate = self._required_gate()

@@ -1,23 +1,25 @@
-//! `~/.pinvou3/` 目录布局解析。
+//! `~/.pinvou3/` directory layout resolution.
 //!
-//! pinvou3-app 不读 `~/.deepseek/`（隔离），所有 deepseek-tui 默认会写到
-//! 全局/cwd 的字段都映射到这个独立目录树。布局参见 plan「目录布局」一节。
+//! pinvou3-app never reads `~/.deepseek/` (isolation); every deepseek-tui
+//! default that writes to global/cwd fields is mapped into this separate
+//! directory tree. See the plan's "directory layout" section for the layout.
 //!
-//! `PINVOU3_HOME` 环境变量可整体重定位（主要用于测试）。
+//! The `PINVOU3_HOME` environment variable relocates the whole tree (mainly for tests).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 static RUNTIME_RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// 用户家目录 `$HOME`，是 pinvou3-app 的 engine workspace 根。
-/// AI 通过相对路径访问 → 落在家目录下；通过绝对路径访问 → trust_mode 放行
-/// 但敏感子目录由 path filter / instructions 引导拦截。
+/// The user home directory `$HOME`, the root of pinvou3-app's engine workspace.
+/// AI access via relative paths lands under the home; access via absolute paths is
+/// let through by trust_mode, while sensitive subdirectories are fenced off by the
+/// path filter / instructions.
 pub fn user_home_dir() -> PathBuf {
     crate::platform::os::user_home_dir()
 }
 
-/// `~/.pinvou3/` 根目录。
+/// The `~/.pinvou3/` root directory.
 pub fn pinvou3_home() -> PathBuf {
     if let Ok(custom) = std::env::var("PINVOU3_HOME") {
         return crate::platform::os::platform_compat_path(&custom);
@@ -25,20 +27,24 @@ pub fn pinvou3_home() -> PathBuf {
     user_home_dir().join(".pinvou3")
 }
 
-/// 折叠任意文本(通常是 io::Error 的 Display,内嵌 `create /home/u/.pinvou3/…`
-/// 一类绝对路径)中的存储根前缀为 `~/.pinvou3`,供随成功载荷出站的错误文本
-/// 使用:绝对路径不得跨 relay。非前缀文本原样返回。
+/// Folds the storage-root prefix inside arbitrary text (usually an io::Error
+/// Display embedding an absolute path such as `create /home/u/.pinvou3/…`)
+/// into `~/.pinvou3`, for error text leaving with success payloads: absolute
+/// paths must not cross the relay. Non-prefix text is returned as-is.
 ///
-/// Round-12 复审:发生折叠时把剩余文本里的路径分隔符统一为 `/`,使出站
-/// 形态跨平台一致(Windows 的 `join`/`Display` 产生 `\`,此前折叠结果是
-/// `~/.pinvou3\user\...`,而消费端断言/pin 的是正斜杠形态)。该函数的
-/// 产出是面向手机载荷与日志的展示文本,不回喂文件系统 API,分隔符
-/// 归一化不影响任何路径解析;未发生折叠的文本保持原样返回(与既有
-/// display_redacted 的恒等钉一致)。
+/// Round-12 review: when a fold happens, path separators in the remaining text
+/// are normalized to `/` so the outbound form is cross-platform consistent
+/// (Windows `join`/`Display` produce `\`, and the folded result used to be
+/// `~/.pinvou3\user\...` while consumers assert/pin the forward-slash form).
+/// This function's output is display text for phone payloads and logs and is
+/// never fed back into filesystem APIs, so separator normalization affects no
+/// path resolution; text that was not folded is returned unchanged (matching
+/// the existing display_redacted identity pin).
 pub fn redact_storage_prefix(text: &str) -> String {
-    // Round-14 复审 NIT:env 覆盖安装可能带着尾部分隔符(PINVOU3_HOME=
-    // "/tmp/x/"),按字面 replace 会把分隔符一并吃掉,折叠出
-    // "~/.pinvou3settings.json" 这种粘连形态;先剥尾部分隔符再折叠。
+    // Round-14 review NIT: an env-override install may carry a trailing
+    // separator (PINVOU3_HOME="/tmp/x/"); a literal replace would swallow the
+    // separator too and fold out glued forms like "~/.pinvou3settings.json";
+    // strip trailing separators before folding.
     let mut prefix = pinvou3_home().display().to_string();
     while prefix.ends_with('/') || prefix.ends_with('\\') {
         prefix.pop();
@@ -46,7 +52,60 @@ pub fn redact_storage_prefix(text: &str) -> String {
     if prefix.is_empty() {
         return text.to_string();
     }
-    let folded = text.replace(&prefix, "~/.pinvou3");
+    // Round-28 review MINOR-4: when the needle is a substring of the
+    // replacement text (PINVOU3_HOME set to degenerate relative values such as
+    // `~`/`3`/`pinv`), the folded output still contains the needle — re-entrant
+    // re-folding grows without bound, each read-back heals larger than the last,
+    // and the idempotence contract breaks. A real absolute home always contains
+    // a second separator or a drive-letter colon and can never be a substring of
+    // `~/.pinvou3`, so this shape can only be a degenerate deployment; block it
+    // conservatively by returning the text unchanged (it already reads as the
+    // `~/.pinvou3` relative form, no fold needed).
+    if "~/.pinvou3".contains(prefix.as_str()) {
+        return text.to_string();
+    }
+    // Round-15 review F4: Windows drive-letter/user-segment casing is unstable
+    // (`c:\users\…` in error text vs home `C:\Users\…` previously did not fold
+    // at all, letting absolute paths cross the relay). Matching is now ASCII
+    // case-insensitive; on Linux, case-sensitive filesystems' spelling variants
+    // merely get display-level over-folding (safe direction), affecting no path
+    // resolution. (Round-18 review residual note: the replacement is
+    // ASCII-limited in both directions — when PINVOU3_HOME itself contains
+    // non-ASCII letters, byte-level spelling variants of it in error text still
+    // do not fold; an extremely rare install shape, handled as a disclosed
+    // residual. Round-19 review adds two same-class residuals: the needle is
+    // pinvou3_home()'s native Display spelling, so (a) forward-slash absolute
+    // paths (`C:/Users/…`, external tool stderr / file URLs, etc.) and (b) the
+    // verbatim-UNC normalized spelling of a UNC home (`\\?\UNC\server\share\…`,
+    // produced only by canonicalize-like constructions) do not contain the
+    // needle verbatim and do not fold; both also leaked under the pre-PR
+    // byte-exact replace — not a regression. Verified that no current error
+    // constructor produces either spelling; introducing a canonicalize-like
+    // construction later must extend the needle in the same change.
+    // Round-21 review adds a third same-class residual: when PINVOU3_HOME is a
+    // relative value (the tests' `p8`, a bare directory name from a malformed
+    // deployment), the needle is that relative string, and any identical
+    // substring in separator-free text gets over-folded (display-safe wide
+    // direction, same family as the Linux case over-folding above); an empty
+    // needle is already blocked above, so no truncation risk.
+    // (Round-28 review addendum: the degenerate shape where the needle itself is
+    // a substring of the replacement — `~`, `3`, `pinv`, etc., folded output
+    // still contains the needle, idempotence breaks — is now blocked by the
+    // identity guard below and no longer part of this residual; non-substring
+    // relative needles like `p8` remain disclosed under this residual.)
+    // Noted here rather than at call sites: redact_storage_prefix folds only
+    // the `~/.pinvou3` storage root, not the user `$HOME` itself — the
+    // `list_host_files` default `$HOME` enumeration error arm moved to
+    // command-layer stable-code folding in round-21 (M3); relying on this
+    // primitive to catch `$HOME` usage does not hold, the stable code is
+    // required. Round-22 review adds a fourth same-class residual: the needle
+    // is read from the current PINVOU3_HOME at call time — old warnings
+    // persisted under a previous home (still inside the 20-entry history window
+    // after a home migration / data-directory restore) no longer contain the
+    // current needle, and read-back folding cannot save them; the trigger
+    // surface is narrow (requires a home change plus old-entry survival) and
+    // what leaks is a stale old path, handled as a disclosed residual.)
+    let folded = replace_ascii_case_insensitive(text, &prefix, "~/.pinvou3");
     if folded == text {
         folded
     } else {
@@ -54,12 +113,45 @@ pub fn redact_storage_prefix(text: &str) -> String {
     }
 }
 
+/// ASCII case-insensitive literal replacement (not a case-folded variant of
+/// `replace`, avoiding a regex dependency). Advances character by character,
+/// copying UTF-8 multi-byte characters whole.
+fn replace_ascii_case_insensitive(text: &str, from: &str, to: &str) -> String {
+    let bytes = text.as_bytes();
+    let needle = from.as_bytes();
+    if needle.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + needle.len() <= bytes.len()
+            && bytes[i..i + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            out.push_str(to);
+            i += needle.len();
+        } else {
+            match text[i..].chars().next() {
+                Some(ch) => {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+                // Unreachable: the loop condition guarantees `text[i..]` is
+                // non-empty, so `chars().next()` is always `Some` (the
+                // loop advances by whole characters only).
+                None => break,
+            }
+        }
+    }
+    out
+}
+
 pub fn settings_path() -> PathBuf {
     pinvou3_home().join("settings.json")
 }
 
-/// `~/.pinvou3/logs/memory-review.log` —— 对话记忆复盘诊断日志。
-/// 只记录阶段、分类和计数，不记录对话原文或记忆正文。
+/// `~/.pinvou3/logs/memory-review.log` — conversation memory review diagnostic log.
+/// Records only phases, categories, and counts; never conversation text or memory bodies.
 pub fn memory_review_log() -> PathBuf {
     pinvou3_home().join("logs").join("memory-review.log")
 }
@@ -70,16 +162,17 @@ pub fn bundle_root() -> PathBuf {
 pub fn bundle_skills_dir() -> PathBuf {
     bundle_root().join("skills")
 }
-/// `~/.pinvou3/bundles/` —— 按包聚合的包目录根（marketplace-unification §4：
-/// 一个包 = 一个目录 = 一个属主）。市场技能落 `bundles/<pkg-id>/skills/<name>/`；
-/// 内置释放技能（visual-design 等，非市场包）仍住 `bundle/skills/`。
+/// `~/.pinvou3/bundles/` — package-directory root aggregated per package
+/// (marketplace-unification §4: one package = one directory = one owner).
+/// Marketplace skills land in `bundles/<pkg-id>/skills/<name>/`; built-in bundled
+/// skills (visual-design etc., non-marketplace packages) stay in `bundle/skills/`.
 pub fn bundles_root() -> PathBuf {
     pinvou3_home().join("bundles")
 }
 pub fn bundle_mcp_json() -> PathBuf {
     bundle_root().join("mcp.json")
 }
-/// `~/.pinvou3/bundle/mcp-servers/` —— pinvou3 内置 MCP server 脚本目录。
+/// `~/.pinvou3/bundle/mcp-servers/` — pinvou3's built-in MCP server script directory.
 pub fn bundle_mcp_servers_dir() -> PathBuf {
     bundle_root().join("mcp-servers")
 }
@@ -87,8 +180,9 @@ pub fn bundle_mcp_servers_dir() -> PathBuf {
 fn managed_connectors_dir() -> PathBuf {
     pinvou3_home().join("connectors")
 }
-/// 旧版（无版本）CLI 布局：`connectors/<platform>/bin/`。Phase 2 第四刀起新装
-/// 落 `assets/cli/<name>/<version>/`，本入口保留给存量迁移与 spawn 回退解析。
+/// Legacy (version-less) CLI layout: `connectors/<platform>/bin/`. From the Phase 2
+/// fourth cut, new installs land in `assets/cli/<name>/<version>/`; this entry point
+/// remains for existing-data migration and spawn fallback resolution.
 pub fn managed_connector_bin_dir() -> Option<PathBuf> {
     managed_connector_bin_dir_for(std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -97,25 +191,27 @@ fn managed_connector_bin_dir_for(os: &str, arch: &str) -> Option<PathBuf> {
         .map(|platform| managed_connectors_dir().join(platform).join("bin"))
 }
 
-/// `~/.pinvou3/assets/` —— 版本化外部资产库（marketplace-unification §4：
-/// 包只引用不拥有，生命周期由 lock 表驱动）。
+/// `~/.pinvou3/assets/` — versioned external asset store (marketplace-unification
+/// §4: packages reference but do not own; the lifecycle is driven by the lock table).
 fn assets_root() -> PathBuf {
     pinvou3_home().join("assets")
 }
 
-/// `~/.pinvou3/assets/cli/<name>/<version>/` —— CLI 二进制按 lock 表钉住的版本落位，
-/// 升级 = 新版本目录就位，不再原地覆盖。
+/// `~/.pinvou3/assets/cli/<name>/<version>/` — CLI binaries land at the version pinned
+/// by the lock table; upgrading means the new version directory is in place, never an
+/// in-place overwrite.
 pub fn assets_cli_dir(name: &str, version: &str) -> PathBuf {
     assets_root().join("cli").join(name).join(version)
 }
 
-/// `~/.pinvou3/assets/.staging/` —— 下载/解包暂存（收编退役的 `cache/connectors/`）。
+/// `~/.pinvou3/assets/.staging/` — download/unpack staging (absorbing the retired `cache/connectors/`).
 pub fn assets_staging_dir() -> PathBuf {
     assets_root().join(".staging")
 }
 
-/// 支持按需下载安装连接器 CLI 的平台目录名。目录名同时用于选择编译期锁文件，
-/// 以及运行时落盘到 `~/.pinvou3/connectors/<platform>/bin/`。
+/// Platform directory names supporting on-demand connector CLI download/install.
+/// The name selects the compile-time lock file as well as the runtime on-disk
+/// location `~/.pinvou3/connectors/<platform>/bin/`.
 pub fn connector_platform_dir(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {
         ("linux", "aarch64") => Some("linux-arm64"),
@@ -127,8 +223,8 @@ pub fn connector_platform_dir(os: &str, arch: &str) -> Option<&'static str> {
     }
 }
 
-/// Tauri 的真实 resource_dir。由 setup 在任何前端命令可执行前写入一次；
-/// Linux/macOS 的连接器 npm 命令用它定位随包 Node 与 npm CLI。
+/// Tauri's real resource_dir. Written once by setup before any frontend command runs;
+/// Linux/macOS connector npm commands use it to locate the bundled Node and npm CLI.
 pub fn set_runtime_resource_dir(path: PathBuf) {
     let _ = RUNTIME_RESOURCE_DIR.set(path);
 }
@@ -177,7 +273,7 @@ fn bundled_connector_runtime_paths_for(
     let npm = root.join("lib/node_modules/npm/bin/npm-cli.js");
     Some((node, npm))
 }
-/// present_artifact MCP server 脚本绝对路径(mcp.json 的 args 指向它)。
+/// Absolute path of the present_artifact MCP server script (mcp.json args point at it).
 pub fn bundle_present_artifact_server() -> PathBuf {
     bundle_mcp_servers_dir().join("present_artifact_server.py")
 }
@@ -186,7 +282,7 @@ pub fn bundle_present_artifact_server() -> PathBuf {
 pub fn bundle_mcp_python_runner() -> PathBuf {
     bundle_mcp_servers_dir().join("python_dependency_runner.py")
 }
-/// bundle 版本号文件（`~/.pinvou3/bundle/VERSION`）绝对路径。
+/// Absolute path of the bundle version file (`~/.pinvou3/bundle/VERSION`).
 pub fn bundle_version_file() -> PathBuf {
     bundle_root().join("VERSION")
 }
@@ -308,13 +404,15 @@ pub fn bundled_chrome_devtools_mcp_bin() -> Option<PathBuf> {
     bin.is_file().then_some(bin)
 }
 
-/// 拉起 python MCP server(present_artifact / pptx 等)用的解释器命令。
+/// Interpreter command used to launch python MCP servers (present_artifact / pptx etc.).
 ///
-/// - **Windows**:优先用安装器写入的 `PINVOU3_PYTHON`,其次用随安装包内置的
-///   `python/pythonw.exe`(无控制台窗口,不依赖用户机器上的 python),再回退真实系统
-///   Python。Microsoft Store `WindowsApps\python.exe` 占位符会被跳过。
-/// - **其他平台**(Linux/macOS):用系统 `python3`(Linux 几乎自带;GUI 子进程不弹窗;
-///   依赖由 marketplace 的自动 pip 安装)。
+/// - **Windows**: prefer the `PINVOU3_PYTHON` written by the installer, then the
+///   bundled `python/pythonw.exe` (no console window, no dependence on the user
+///   machine's Python), finally falling back to the real system Python. The Microsoft
+///   Store `WindowsApps\python.exe` placeholder is skipped.
+/// - **Other platforms** (Linux/macOS): use system `python3` (near-universal on Linux;
+///   GUI subprocesses do not pop windows; dependencies are installed by the
+///   marketplace's automatic pip installs).
 pub fn python_command() -> String {
     crate::platform::os::python_command()
 }
@@ -346,14 +444,16 @@ pub fn user_instructions() -> PathBuf {
 pub fn user_skills_dir() -> PathBuf {
     user_root().join("skills")
 }
-/// `~/.pinvou3/user/personas/` —— 用户自创专家卡牌（卡牌池）。每张卡一个
-/// `<id>.json`（PersonaCard 序列化）。跟 bundle 内嵌的内置卡分离，**永不被覆写**。
+/// `~/.pinvou3/user/personas/` — user-created expert persona cards (the card pool).
+/// One `<id>.json` per card (PersonaCard serialization). Kept separate from the
+/// built-in cards embedded in the bundle; **never overwritten**.
 pub fn user_personas_dir() -> PathBuf {
     user_root().join("personas")
 }
 
-/// 兼容字段：阶段 B 旧 sandbox workspace（已不作为 engine workspace 使用，
-/// 但保留作为 "AI 私人沙盒" 兜底——某些场景如 monitor 测试还在用）。
+/// Compatibility field: the Phase B legacy sandbox workspace (no longer used as the
+/// engine workspace, but kept as an "AI private sandbox" fallback — some scenarios
+/// such as monitor tests still use it).
 pub fn workspace_dir() -> PathBuf {
     pinvou3_home().join("workspace")
 }
@@ -406,7 +506,7 @@ pub fn mcp_config_path() -> PathBuf {
     bundle_mcp_json()
 }
 
-/// `~/.pinvou3/sessions/` —— 所有对话历史落盘的根目录。
+/// `~/.pinvou3/sessions/` — root directory where all conversation history is persisted.
 pub fn sessions_root() -> PathBuf {
     pinvou3_home().join("sessions")
 }
@@ -416,9 +516,10 @@ fn scheduled_runs_root() -> PathBuf {
     pinvou3_home().join("scheduled-runs")
 }
 
-/// `~/.pinvou3/scheduled/` —— 定时任务工作间根目录。
-/// 每个 automation 在 `<automation_id>/workspace/` 下拥有独立工作间；
-/// 该任务的多次运行对话共享它，不同 automation 之间互不共享。
+/// `~/.pinvou3/scheduled/` — root directory of scheduled-task workspaces.
+/// Each automation owns a separate workspace under `<automation_id>/workspace/`;
+/// the automation's multiple run conversations share it, and different automations
+/// never share one.
 pub fn scheduled_tasks_root() -> PathBuf {
     pinvou3_home().join("scheduled")
 }
@@ -432,13 +533,14 @@ pub fn scheduled_run_profiles_path() -> PathBuf {
     scheduled_runs_root().join("session-profiles.json")
 }
 
-/// `~/.pinvou3/projects/` —— 项目层(会话逻辑归档分组)落盘根目录。
+/// `~/.pinvou3/projects/` — on-disk root of the project layer (logical session-archive grouping).
 fn projects_root() -> PathBuf {
     pinvou3_home().join("projects")
 }
 
-/// 项目层唯一持久化文件:项目定义 + 会话归属映射同文件落盘,
-/// 一次原子写覆盖两个视图,避免半提交状态。
+/// The project layer's only persisted file: project definitions and the session
+/// membership mapping live in one file, covered by a single atomic write for both
+/// views to avoid a half-committed state.
 pub fn projects_store_path() -> PathBuf {
     projects_root().join("projects.json")
 }
@@ -483,76 +585,86 @@ pub fn feedback_receipts_dir() -> PathBuf {
     feedback_root().join("receipts")
 }
 
-/// `~/.pinvou3/sessions/<session_id>/artifacts/` —— AI 默认产物落地目录。
-/// `$PINVOU3_SESSION_ARTIFACTS` 环境变量注入这个值给 engine + LLM。
+/// `~/.pinvou3/sessions/<session_id>/artifacts/` — the AI's default artifact drop directory.
+/// The `$PINVOU3_SESSION_ARTIFACTS` environment variable injects this value into engine + LLM.
 pub fn session_artifacts_dir(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("artifacts")
 }
 
-/// `~/.pinvou3/sessions/<session_id>/workspace/` —— 每个 session 独立的工作目录。
-/// engine workspace 跟随当前 active session 切换，避免多 session 共享文件冲突。
-/// 切换 session 时 bridge 调 `Op::SyncSession { workspace }` 重置。
+/// `~/.pinvou3/sessions/<session_id>/workspace/` — each session's own working directory.
+/// The engine workspace follows the current active session to avoid multi-session
+/// shared-file conflicts; on session switch the bridge calls
+/// `Op::SyncSession { workspace }` to reset.
 pub fn session_workspace_dir(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("workspace")
 }
 
-/// `~/.pinvou3/sessions/<session_id>/skills/` —— 该会话按 scope 物化的技能组合目录
-/// （skill 双 scope 治理：见 `features/assistant/skill_materialization.rs`）。
-/// 会话私有目录随会话删除一起清理，无需单独清理逻辑。
+/// `~/.pinvou3/sessions/<session_id>/skills/` — the skill set materialized for this
+/// session by scope (dual-scope skill governance: see
+/// `features/assistant/skill_materialization.rs`). The session-private directory is
+/// cleaned up together with the session; no separate cleanup logic needed.
 pub fn session_skills_dir(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("skills")
 }
 
-/// `~/.pinvou3/sessions/<session_id>/persona_events.json` —— 该 session 的卡牌
-/// 加持/卸下事件时间线(sidecar)。**刻意独立于 messages**:messages 在 engine
-/// 冷启动时会被 sync_session 注水回 LLM,而卡牌事件是纯前端展示,绝不能进 LLM 上下文。
-/// 前端按 `pos`(事件发生时的 messages 数)在 rerenderFromMessages 里插回原位。
+/// `~/.pinvou3/sessions/<session_id>/persona_events.json` — this session's persona-card
+/// equip/unequip event timeline (sidecar). **Deliberately separate from messages**: on
+/// cold start the engine replays messages back into the LLM, while card events are pure
+/// frontend display and must never enter the LLM context. The frontend re-inserts them
+/// by `pos` (the messages count when the event happened) in rerenderFromMessages.
 pub fn session_persona_events(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("persona_events.json")
 }
 
-/// `~/.pinvou3/sessions/<session_id>/pinvou_reviews.json` —— 该 session 的 Pinvou
-/// 召唤检阅时间线（每条 {pos, review}）。同 persona_events 一样**刻意独立于 messages**:
-/// 审查卡是纯前端展示、绝不能进 LLM 上下文（那会污染主 AI），前端按 `pos` 在
-/// rerenderFromMessages 里插回。Boss 要主 AI 看审阅,走「转交」按钮发成 Boss 消息。
+/// `~/.pinvou3/sessions/<session_id>/pinvou_reviews.json` — this session's Pinvou
+/// invocation review timeline (one {pos, review} per entry). Like persona_events,
+/// **deliberately separate from messages**: review cards are pure frontend display and
+/// must never enter the LLM context (it would pollute the main AI); the frontend
+/// re-inserts them by `pos` in rerenderFromMessages. For the Boss to let the main AI
+/// see a review, use the "hand off" button to send it as a Boss message.
 pub fn session_pinvou_reviews(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("pinvou_reviews.json")
 }
 
-/// `~/.pinvou3/sessions/<session_id>/pinvou_scene_events.json` —— 用户消息的
-/// 专业场景展示标签（每条 `{pos, scene}`）。与 persona/review sidecar 一样独立于
-/// messages，避免把纯 UI 元数据注入 LLM 上下文，同时允许桌面端与 WebUI 共享恢复。
+/// `~/.pinvou3/sessions/<session_id>/pinvou_scene_events.json` — expert-scene display
+/// labels for user messages (one `{pos, scene}` per entry). Separate from messages like
+/// the persona/review sidecars, keeping pure UI metadata out of the LLM context while
+/// letting desktop and WebUI share recovery.
 pub fn session_pinvou_scene_events(session_id: &str) -> PathBuf {
     sessions_root()
         .join(session_id)
         .join("pinvou_scene_events.json")
 }
 
-/// `~/.pinvou3/sessions/<session_id>/steered_messages.json` —— 会话内 mid-turn
-/// steer 消息的位置标记（每条 `{pos, text}`）。steer 落盘与普通 admission 对齐、
-/// 不含 `<turn_meta>` 块，重载投影无法再从信封反推"非 turn admission"，因此把
-/// 该展示层事实显式持久化。与 scene sidecar 一样独立于 messages：纯 UI 元数据
-/// 不进 LLM 上下文；`text` 用于压实/编辑漂移后的保守校验，失配即不标记。
+/// `~/.pinvou3/sessions/<session_id>/steered_messages.json` — position markers for
+/// mid-turn steer messages in the session (one `{pos, text}` per entry). Steer
+/// persistence aligns with ordinary admission and contains no `<turn_meta>` block, so
+/// the reload projection can no longer infer "non-turn admission" from the envelope;
+/// this display-layer fact is therefore persisted explicitly. Separate from messages
+/// like the scene sidecar: pure UI metadata stays out of the LLM context; `text` is
+/// used for conservative validation after compaction/edit drift — on mismatch, no marker.
 pub fn session_steered_messages(session_id: &str) -> PathBuf {
     sessions_root()
         .join(session_id)
         .join("steered_messages.json")
 }
 
-/// `~/.pinvou3/sessions/<session_id>/timing_events.jsonl` —— 每轮对话端到端耗时
-/// 事件(sidecar)。刻意独立于 messages/session schema, 避免影响上下文和产物逻辑。
+/// `~/.pinvou3/sessions/<session_id>/timing_events.jsonl` — end-to-end per-turn timing
+/// events (sidecar). Deliberately separate from messages/session schema so context and
+/// artifact logic stay unaffected.
 pub fn session_timing_events(session_id: &str) -> PathBuf {
     sessions_root().join(session_id).join("timing_events.jsonl")
 }
 
-/// `~/.pinvou3/sessions/default/artifacts/` —— PPT / 公文等 MCP stdio server
-/// 的公共产物落点。stdio server 不能可靠感知当前 GUI session，具体归属由
-/// 带 `session_id` 的工具事件归档到具体会话。
+/// `~/.pinvou3/sessions/default/artifacts/` — shared artifact drop point for MCP stdio
+/// servers (PPT / official documents etc.). stdio servers cannot reliably know the
+/// current GUI session; tool events carrying a `session_id` archive artifacts into the
+/// specific session.
 pub fn default_session_artifacts_dir() -> PathBuf {
     session_artifacts_dir("default")
 }
 
-/// 首次启动确保所有目录存在。bundle/skills 等子目录在解包时还会再 ensure 一次。
+/// Ensures all directories exist on first startup. Subdirectories such as bundle/skills are ensured again at unpack time.
 pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(bundle_skills_dir())?;
     std::fs::create_dir_all(user_skills_dir())?;
@@ -560,10 +672,12 @@ pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(workspace_dir())?;
     std::fs::create_dir_all(scheduled_tasks_root())?;
     std::fs::create_dir_all(default_session_artifacts_dir())?;
-    // Round-9 复审 minor:存储根本身由上面的 create_dir_all 隐式创建,
-    // mode 位交给 umask(常见 0755)——里面的 0600 密文件对同机其他账户
-    // 只隔了一层目录。对已存在的根做一次尽力收紧到 0700;失败容忍(只
-    // 读挂载等不得阻断启动,收紧失败只影响加固深度,不改变功能)。
+    // Round-9 review minor: the storage root itself is created implicitly by the
+    // create_dir_all calls above, with mode bits left to umask (commonly 0755) —
+    // the 0600 secret files inside are separated from other accounts on the same
+    // machine by only one directory level. Best-effort tighten an existing root to
+    // 0700; failures are tolerated (read-only mounts etc. must not block startup;
+    // a failed tightening only reduces hardening depth, it changes no behavior).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -656,16 +770,21 @@ pub(crate) mod tests {
         assert_eq!(std::env::var_os("GIT_OBJECT_DIRECTORY"), host_objects);
     }
 
-    /// 生成**进程内**唯一的单调递增后缀,供测试临时目录/会话 ID 命名用。
+    /// Produces a monotonically increasing suffix unique **within the process**,
+    /// for naming test temp directories / session IDs.
     ///
-    /// 纯纳秒时间戳在高并发下会碰撞(热缓存 + 线程调度抖动让两次调用落同纳秒),
-    /// 导致临时目录/会话 ID 重复 → 测试互相覆盖文件。叠加这个原子计数器后,
-    /// 同一**进程内**每次调用都唯一,消除并行测试的命名碰撞。
+    /// Pure nanosecond timestamps collide under high concurrency (hot caches plus
+    /// thread-scheduling jitter can land two calls on the same nanosecond), producing
+    /// duplicate temp directories / session IDs → tests overwrite each other's files.
+    /// Adding this atomic counter makes every call unique **within the process**,
+    /// eliminating naming collisions between parallel tests.
     ///
-    /// 注意:计数器是进程级的——两个并发的 `cargo test` **进程**(如本地双终端)各自从 0
-    /// 起计数,若临时目录名只含本后缀(不含 pid)仍会跨进程碰撞。因此临时目录命名应同时
-    /// 叠加 `std::process::id()`(见 `scheduled/tasks.rs::temp_home` 的做法);仅靠本后缀
-    /// 只保证单进程内唯一。
+    /// Note: the counter is process-level — two concurrent `cargo test` **processes**
+    /// (e.g. two local terminals) each count from 0, and a temp-directory name built
+    /// only from this suffix (without a pid) still collides across processes. Temp
+    /// directory naming should therefore also mix in `std::process::id()` (see
+    /// `scheduled/tasks.rs::temp_home`); this suffix alone guarantees uniqueness only
+    /// within one process.
     pub(crate) fn unique_suffix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -685,17 +804,19 @@ pub(crate) mod tests {
         assert_eq!(rc, 0, "fixture: mkfifo must succeed");
     }
 
-    /// Round-9 复审 minor:存储根在 umask 放宽(0755,备份恢复/旧安装形
-    /// 态)下也必须被 ensure_dirs 收紧到 0700——里面的 0600 密文件不能只
-    /// 靠一层世界可读目录隔挡。收紧失败容忍,但成功路径在这里钉死。
+    /// Round-9 review minor: even under a permissive umask (0755, backup-restore /
+    /// legacy-install shapes) the storage root must be tightened to 0700 by
+    /// ensure_dirs — the 0600 secret files inside cannot rely on a single
+    /// world-readable directory layer for isolation. Tightening failures are
+    /// tolerated, but the success path is pinned here.
     #[test]
     #[cfg(unix)]
     fn ensure_dirs_tightens_the_storage_root_to_0700() {
         use std::os::unix::fs::PermissionsExt as _;
         crate::platform::test_support::with_temp_home("paths-root-mode", || {
             let home = pinvou3_home();
-            // 预置放宽形态:显式 0755 模拟旧安装/备份恢复(umask 因环境而
-            // 异,不能依赖)。
+            // Pre-seed the permissive shape: explicit 0755 simulates a legacy install /
+            // backup restore (umask varies by environment, cannot rely on it).
             std::fs::create_dir_all(&home).unwrap();
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
             ensure_dirs().unwrap();
@@ -795,7 +916,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// `user_home_dir` 应该读 $HOME（pinvou3 engine workspace 之根）。
+    /// `user_home_dir` should read $HOME (the root of the pinvou3 engine workspace).
     #[test]
     fn user_home_dir_reads_home_env() {
         assert!(!user_home_dir().as_os_str().is_empty());
@@ -817,7 +938,7 @@ pub(crate) mod tests {
             managed_connector_bin_dir_for("linux", "x86_64"),
             expected("linux-x64")
         );
-        // 连接器无 loongarch64 上游制品：平台目录保持 None（显式降级）。
+        // Connectors have no loongarch64 upstream artifacts: the platform directory stays None (explicit downgrade).
         assert_eq!(managed_connector_bin_dir_for("linux", "loongarch64"), None);
         assert_eq!(
             managed_connector_bin_dir_for("macos", "aarch64"),
@@ -852,7 +973,7 @@ pub(crate) mod tests {
                 npm.clone()
             ))
         );
-        // loongarch64 的 deb 会带同一份统一 Node runtime（bin/node）。
+        // The loongarch64 deb ships the same unified Node runtime (bin/node).
         assert_eq!(
             bundled_connector_runtime_paths_for(&resource, "linux", "loongarch64"),
             Some((
@@ -880,7 +1001,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// session artifacts 路径必须落在 ~/.pinvou3/sessions/<id>/artifacts/ 下。
+    /// Session artifact paths must land under ~/.pinvou3/sessions/<id>/artifacts/.
     #[test]
     fn session_artifacts_layout() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -904,20 +1025,24 @@ pub(crate) mod tests {
         }
     }
 
-    // Round-7 复审:共享脱敏原语 `redact_storage_prefix` 此前只有调用方
-    // (memory / remote_control)的内容级钉,原语本身的语义边界没有直接用例。
-    // 以下五钉按字节语义钉住:根内绝对路径折叠、同名前缀的兄弟目录不得被
-    // 改写成「根内」形态、已折叠文本不二次折叠、同一文本多处出现全折叠、
-    // 空前缀护栏不 panic。前缀经 PINVOU3_HOME 注入(本函数每次调用现读,
-    // 无缓存);env 一律走 with_temp_home / locked_env 脚手架,断言失败时
-    // env 由 Drop 恢复,不会泄漏给进程内后续测试(Round-9 复审 minor:
-    // 直线恢复在 panic 路径会跳过)。
+    // Round-7 review: the shared redaction primitive `redact_storage_prefix`
+    // previously had only content-level pins from its callers (memory /
+    // remote_control), with no direct test of the primitive's own semantic
+    // boundaries. The five pins below pin the byte semantics: folding of absolute
+    // paths under the root, sibling directories sharing the name prefix must not be
+    // rewritten into "inside-root" form, already-folded text is not re-folded, every
+    // occurrence in one text folds, and the empty-prefix guard does not panic. The
+    // prefix is injected via PINVOU3_HOME (read fresh on every call, no caching);
+    // env always goes through the with_temp_home / locked_env scaffolding, and on
+    // assertion failure env is restored by Drop so it cannot leak into later tests
+    // in the process (Round-9 review minor: straight-line restoration would be
+    // skipped on panic paths).
 
     #[test]
     fn redact_storage_prefix_folds_expanded_absolute_storage_root_prefix() {
         crate::platform::test_support::with_temp_home("paths-redact-root", || {
             let root = pinvou3_home();
-            // 根内完整展开的绝对路径必须折叠为 ~/.pinvou3 前缀。
+            // A fully expanded absolute path under the root must fold to the ~/.pinvou3 prefix.
             let expanded = root.join("user/memory/snapshot.md").display().to_string();
             assert_eq!(
                 redact_storage_prefix(&expanded),
@@ -927,10 +1052,11 @@ pub(crate) mod tests {
         });
     }
 
-    /// Round-12 复审:折叠后剩余文本的分隔符统一为 `/`——Windows 侧
-    /// `join`/`Display` 产生 `\`,出站形态必须是跨平台一致的正斜杠形式。
-    /// 输入在 POSIX 上同样含反斜杠(展示文本不回喂文件系统 API),该断言
-    /// 在任何平台都执行。
+    /// Round-12 review: separators in the folded remainder are normalized to `/` —
+    /// Windows `join`/`Display` produce `\`, and the outbound form must be the
+    /// cross-platform-consistent forward-slash form. The input contains backslashes
+    /// on POSIX too (display text is never fed back into filesystem APIs), so the
+    /// assertion runs on every platform.
     #[test]
     fn redact_storage_prefix_normalizes_separators_in_the_folded_remainder() {
         crate::platform::test_support::with_temp_home("paths-redact-separators", || {
@@ -944,16 +1070,18 @@ pub(crate) mod tests {
         });
     }
 
-    /// Round-14 复审 M1:`ad0971d2e` 并行波插入 separators 钉时吞掉了本钉
-    /// 的 `#[test]` 行,钉体静默失联(`dead_code=allow` 下零警告)。恢复
-    /// 属性:本文件块注释宣称的五钉必须全部真实执行。
+    /// Round-14 review M1: the `ad0971d2e` parallel wave swallowed this pin's
+    /// `#[test]` line while inserting the separators pin, silently detaching the pin
+    /// body (zero warnings under `dead_code=allow`). Restored property: all five pins
+    /// claimed by this file's block comment must really execute.
     #[test]
     fn redact_storage_prefix_keeps_sibling_out_of_storage_root_form() {
         crate::platform::test_support::with_temp_home("paths-redact-sibling", || {
-            // 兄弟目录与存储根共享字符串前缀(临时根的同名 `.evil` 后缀
-            // 邻居,纯字符串用例不落盘):折叠绝不能把兄弟改写成「根内」
-            // 形态(~/.pinvou3/…),否则它会伪装成存储根内路径被模型/
-            // 中继消费。
+            // The sibling directory shares the storage root's string prefix (a
+            // same-named `.evil`-suffixed neighbor of the temp root; a pure string
+            // case, nothing on disk): folding must never rewrite the sibling into
+            // the "inside-root" form (~/.pinvou3/…), or it could masquerade as a
+            // path inside the storage root and be consumed by the model / relay.
             let root = pinvou3_home();
             let sibling = root.parent().unwrap_or(&root).join(format!(
                 "{}.evil",
@@ -969,14 +1097,15 @@ pub(crate) mod tests {
         });
     }
 
-    /// Round-14 复审 NIT:尾部分隔符形态的 PINVOU3_HOME(env 覆盖安装)
-    /// 不得把分隔符一并吃掉折叠出粘连形态;根本体提及同样折叠。
+    /// Round-14 review NIT: a trailing-separator PINVOU3_HOME (env-override install)
+    /// must not swallow the separator into a glued fold; a bare mention of the root
+    /// itself must fold too.
     #[test]
     fn redact_storage_prefix_strips_trailing_separator_from_the_home() {
         crate::platform::test_support::with_temp_home("paths-redact-trailing-sep", || {
             let root = pinvou3_home();
-            // panic-safe 脚手架内改写 env:with_temp_home 的 Drop 恢复其
-            // 进入时保存的原值,不向进程内后续测试泄漏。
+            // env rewrite inside panic-safe scaffolding: with_temp_home's Drop
+            // restores the value saved on entry, so nothing leaks into later tests.
             // SAFETY: single-threaded test body; with_temp_home's Drop
             // restores the saved value even on assertion failure.
             unsafe {
@@ -1004,10 +1133,54 @@ pub(crate) mod tests {
         });
     }
 
+    /// Round-15 review F4: drive-letter/user-segment case drift in Windows error text
+    /// previously did not fold at all, letting absolute paths cross the relay; matching
+    /// is now ASCII case-insensitive. Semantics preserved: non-prefix text does not
+    /// fold; a prefix followed by a non-separator still folds per the existing
+    /// convention (over-folding is the display-layer-safe direction, see the sibling pin).
+    #[test]
+    fn redact_storage_prefix_matches_case_insensitively() {
+        // Round-23 review probe confirmation: the home directory was previously
+        // derived from temp_dir(), so the case-sensitivity teeth inherited TMPDIR's
+        // spelling — Linux CI's /tmp is all lowercase, making lower byte-identical to
+        // the needle, and a mutation falling back to byte-exact replace kept every
+        // redact pin including this one green (the Windows regression leg's filter
+        // excludes this module, so that dimension was never really exercised on any
+        // CI leg; the same mutation turns this pin red as soon as TMPDIR contains
+        // uppercase — mechanism confirmed). The home is now a fixed mixed-case
+        // spelling, set directly under ENV_LOCK; pinvou3_home treats the env value as
+        // a pure string with nothing on disk, so the teeth no longer depend on the
+        // platform temp directory's spelling.
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let root = std::env::temp_dir().join("PathsRedactCaseHome");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let root = pinvou3_home();
+        let lower = format!(
+            "{}\\user\\memory\\x.json",
+            root.display().to_string().to_ascii_lowercase()
+        );
+        assert!(
+            redact_storage_prefix(&lower).starts_with("~/.pinvou3"),
+            "a case-variant absolute path must fold"
+        );
+        let mixed = format!("{}\\User\\MEMORY\\x.json", root.display());
+        assert!(
+            redact_storage_prefix(&mixed).starts_with("~/.pinvou3"),
+            "the home-root needle matches byte-exactly in this vector; the \
+             ASCII case-fold teeth live in the lowercase vector above"
+        );
+        assert_eq!(
+            redact_storage_prefix("no path here"),
+            "no path here",
+            "non-prefix text stays untouched"
+        );
+    }
     #[test]
     fn redact_storage_prefix_passes_already_folded_text_through() {
         crate::platform::test_support::with_temp_home("paths-redact-folded", || {
-            // 已是 ~/.pinvou3 折叠形态的文本必须原样通过,不得二次折叠或改写。
+            // Text already in the ~/.pinvou3 folded form must pass through unchanged, without re-folding or rewriting.
             let folded = "~/.pinvou3/user/memory/snapshot.md";
             assert_eq!(
                 redact_storage_prefix(folded),
@@ -1020,8 +1193,9 @@ pub(crate) mod tests {
     #[test]
     fn redact_storage_prefix_folds_every_occurrence_in_one_text() {
         crate::platform::test_support::with_temp_home("paths-redact-multi", || {
-            // io::Error 的 Display 可能内嵌多个绝对路径(如 rename 的 from/to),
-            // 每一处都要折叠,只折第一处会泄漏第二个绝对路径。
+            // An io::Error Display may embed several absolute paths (e.g. rename's
+            // from/to); every occurrence must fold — folding only the first would leak
+            // the second absolute path.
             let root = pinvou3_home();
             let text = format!(
                 "{} -> {}",
@@ -1036,12 +1210,15 @@ pub(crate) mod tests {
         });
     }
 
-    /// 空存储根护栏:PINVOU3_HOME 为空串时 `pinvou3_home().display()` 为空,
-    /// `redact_storage_prefix` 必须走 `prefix.is_empty()` 早退原样返回——
-    /// 若对空 prefix 做 `replace` 会把空串替换进每个字符间隙,毁掉整段文本。
-    /// 前缀由本函数内部现算、无测试可见的 prefix 参数,故经公开 API(空
-    /// PINVOU3_HOME)钉住该护栏;with_temp_home 只覆盖非空值,这里用
-    /// locked_env 手工设空串(env 仍由 Drop 恢复)。
+    /// Empty storage-root guard: when PINVOU3_HOME is the empty string,
+    /// `pinvou3_home().display()` is empty and `redact_storage_prefix` must take the
+    /// `prefix.is_empty()` early return, handing the text back unchanged — a
+    /// `replace` over an empty prefix would splice the empty string into every
+    /// inter-character gap and destroy the whole text. The prefix is computed inside
+    /// the function with no test-visible prefix parameter, so the guard is pinned
+    /// through the public API (empty PINVOU3_HOME); with_temp_home only sets
+    /// non-empty values, so this test uses locked_env to set the empty string by hand
+    /// (env is still restored by Drop).
     #[test]
     fn redact_storage_prefix_empty_prefix_guard_returns_input_unchanged() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
@@ -1052,6 +1229,32 @@ pub(crate) mod tests {
             redact_storage_prefix(text),
             text,
             "an empty storage prefix must leave the text untouched"
+        );
+    }
+
+    /// Round-28 review MINOR-4: when the needle is a substring of the replacement
+    /// text (PINVOU3_HOME set to degenerate relative values like `~`), the folded
+    /// output still contains the needle — re-entrant re-folding grows without bound,
+    /// each read-back heals larger than the last. The guard must return identically:
+    /// the single-pass output unchanged and re-folding a no-op. Guard-deletion
+    /// mutation: both assertions of both folds go red (`~` survives inside the
+    /// replacement text `~/.pinvou3`, growing a segment per fold).
+    #[test]
+    fn redact_storage_prefix_substring_of_replacement_guard_is_idempotent() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: ENV_LOCK held via locked_env; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", "~") };
+        let text = "read /etc/shadow failed under ~/.pinvou3/scheduled/x";
+        let once = redact_storage_prefix(text);
+        assert_eq!(
+            once, text,
+            "a degenerate home that is a substring of the replacement \
+             must not fold at all (the text already reads as the folded form)"
+        );
+        let twice = redact_storage_prefix(&once);
+        assert_eq!(
+            twice, once,
+            "re-folding the guard's output must be a no-op (idempotency)"
         );
     }
 }

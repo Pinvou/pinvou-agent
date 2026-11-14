@@ -1257,22 +1257,27 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     std::fs::create_dir_all(workspace_dir.join(".ssh")).unwrap();
     std::fs::write(workspace_dir.join(".ssh").join("id_rsa"), "PRIVATE KEY").unwrap();
     std::fs::write(workspace_dir.join(".env"), "TOKEN=secret\n").unwrap();
-    // Round-10 复审 MAJOR:`.env.local` 是组件前缀(`.env.`)家族成员,
-    // 前缀腿只在 `resolve_session_artifact` 的 `.or_else` 接线上,上游
-    // 单元钉钉不到这个消费点——经真实 parse_args+execute 分发驱动(进程
-    // 内,非 CARGO_BIN_EXE 生成;round-11 复审更正措辞),删掉前缀腿即红。
+    // Round-10 review MAJOR: `.env.local` is a family member of the
+    // component prefix (`.env.`); the prefix leg is wired only in
+    // `resolve_session_artifact`'s `.or_else`, and the upstream unit pins
+    // cannot reach this consumer — driving the real parse_args+execute
+    // dispatch (in-process, not the CARGO_BIN_EXE binary; wording corrected
+    // in round-11 review) turns red if the prefix leg is removed.
     std::fs::write(workspace_dir.join(".env.local"), "TOKEN=local\n").unwrap();
     // An ordinary deliverable whose name merely contains a blacklisted string
     // must keep working: the policy is about path components, not substrings.
     std::fs::write(workspace_dir.join("environment.md"), "# notes\n").unwrap();
-    // Round-11 复审 minor:目录作用域尾序列(通用命名凭据文件)在 CLI
-    // 镜像同源生效;读向钉住 `.m2/settings.xml`,写向钉住 `.env.local`。
+    // Round-11 review minor: the directory-scoped suffix family (generically
+    // named credential files) takes effect in the CLI mirror from the same
+    // source; the read direction pins `.m2/settings.xml`, the write
+    // direction pins `.env.local`.
     std::fs::create_dir_all(workspace_dir.join(".m2")).unwrap();
     std::fs::write(workspace_dir.join(".m2").join("settings.xml"), "<server/>").unwrap();
-    // Round-14 复审 M2:`*.env` 后缀腿同样只在 `resolve_session_artifact`
-    // 的 `.or_else` 接线上(上游镜像单元钉驱动的是 check_sensitive_path,
-    // 钉不到这个消费点)——与 round-10 前缀腿的 `.env.local` 同口径,经
-    // 真实分发驱动,删掉后缀腿即红。
+    // Round-14 review M2: the `*.env` suffix leg is likewise wired only in
+    // `resolve_session_artifact`'s `.or_else` (the upstream mirror unit pin
+    // drives check_sensitive_path and cannot reach this consumer) — same
+    // convention as the round-10 prefix leg's `.env.local`: driven through
+    // the real dispatch, and red if the suffix leg is removed.
     std::fs::create_dir_all(workspace_dir.join("deploy")).unwrap();
     std::fs::write(
         workspace_dir.join("deploy").join("production.env"),
@@ -1291,28 +1296,47 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
         assert!(
             error
                 .to_string()
-                .starts_with("artifact_crosses_sensitive_component"),
+                .starts_with("artifact_crosses_sensitive_component: "),
             "{relative}: {error}"
         );
     }
     // Writes take the same refusal, and before the markdown-suffix check: the
-    // file is untouched.
-    expect_failed(&["pinvou", "artifacts", "write", &id, ".env", "--stdin"]);
+    // files are untouched. Round-11 review minor: the write direction goes
+    // through the same prefix/suffix-family legs (the write refusals for
+    // .env.local and .m2/settings.xml happen upstream of
+    // resolve_session_artifact; the files are untouched). Round-15 review
+    // F2: the assertion used to be a bare expect_failed — after the
+    // sensitive gate is deleted, the markdown suffix check still refuses
+    // these non-.md targets, so the pin stayed fully green (decorative; the
+    // real order is gate first, markdown check second). Asserting the
+    // refusal code makes gate deletion turn red; `expect_failed` returns a
+    // CliError whose message carries a stable code. Round-17 review
+    // (residual close-out): `.env` itself has no suffix, so with the gate
+    // deleted the markdown check refuses it with a different stable code —
+    // a bare expect_failed pin stays fully green under gate deletion; once
+    // the same loop asserts the refusal code, deleting the gate for any of
+    // the three write directions turns red.
+    for target in [".env", ".env.local", ".m2/settings.xml"] {
+        let error = expect_failed(&["pinvou", "artifacts", "write", &id, target, "--stdin"]);
+        // Round-16 review (NIT): the same starts_with prefix assertion as the
+        // read-direction pin — the code is the stable prefix of the message,
+        // a prefix assertion is slightly stronger than contains and keeps
+        // both sides consistent. Round-25 review check: the `: ` separator
+        // in the assertion pins the full code token, so drift that merely
+        // extends the code (e.g. a `_v2` suffix) no longer passes the
+        // prefix assertion.
+        assert!(
+            error
+                .to_string()
+                .starts_with("artifact_crosses_sensitive_component: "),
+            "write to {target} must be refused by the sensitive gate, not the markdown \
+             suffix check; got: {error}"
+        );
+    }
     assert_eq!(
         std::fs::read_to_string(workspace_dir.join(".env")).unwrap(),
         "TOKEN=secret\n"
     );
-    // Round-11 复审 minor:写向同样经前缀/尾序列腿(.env.local 与
-    // .m2/settings.xml 的写拒绝在 resolve_session_artifact 上游,文件不动)。
-    expect_failed(&["pinvou", "artifacts", "write", &id, ".env.local", "--stdin"]);
-    expect_failed(&[
-        "pinvou",
-        "artifacts",
-        "write",
-        &id,
-        ".m2/settings.xml",
-        "--stdin",
-    ]);
     assert_eq!(
         std::fs::read_to_string(workspace_dir.join(".m2").join("settings.xml")).unwrap(),
         "<server/>"

@@ -86,10 +86,12 @@ fn runtime_snapshot_best_effort(
     match sid.map(|sid| crate::features::memory::runtime_snapshot(&sid)) {
         Some(Ok(snapshot)) => (Some(snapshot), None),
         Some(Err(error)) => {
-            // Round-8 复审:警告/详情文本随成功载荷出站（命令均在 Web 访问
-            // 策略内），统一过共享的 redact_storage_prefix 折叠存储根前缀
-            // （platform/paths.rs 文档口径；io.rs display_redacted 同一实现）。
-            // 本文件其余三处错误文本同批加固。
+            // Round-8 review: warning/detail text leaves with success payloads (the
+            // commands are all within the web access policy), so it uniformly goes
+            // through the shared redact_storage_prefix to fold the storage-root
+            // prefix (platform/paths.rs documented caliber; io.rs display_redacted is
+            // the same implementation). The other three error texts in this file were
+            // hardened in the same batch.
             let detail = crate::platform::paths::redact_storage_prefix(&format!(
                 "render runtime memory: {error}"
             ));
@@ -533,13 +535,19 @@ pub async fn organize_memory(
     // degrade to the pool's shared bridge with global prefs loaded directly,
     // the same `get_image_input_capability` fallback.
     let bridge = match resolve_session_id(None, &store) {
-        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
-            // The `fresh_bridge_for` error chain can carry endpoint/credential
-            // probing details; pass it through `redact_secret` before returning
-            // to the frontend (shared `sanitize_command_error` policy).
+        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|e| {
+            // Endpoint/credential probing details + storage root must both be
+            // scrubbed before this web-visible arm returns (Round-15 review
+            // minor: the organize command folds with the same caliber as the other
+            // memory commands).
+            // Round-20 review (S10-1): fold first — the old sanitize→fold order let
+            // redact_secret's whitespace tokens consume the tail of the folded needle
+            // on whitespace-containing homes, leaving drive-letter+username fragments
+            // to egress in cleartext; fold first, then run the uniform secret scan,
+            // and no home fragment leaks in any shape.
             sanitize_command_error(
                 &format!("organize memory: resolve bridge for {sid}"),
-                format!("{error:#}"),
+                crate::platform::paths::redact_storage_prefix(&format!("{e:#}")),
             )
         })?,
         None => {
@@ -553,7 +561,14 @@ pub async fn organize_memory(
     // the scheduled-task entry point passes a token).
     let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
         .await
-        .map_err(|error| sanitize_command_error("organize memory", format!("{error:#}")))?;
+        .map_err(|e| {
+            sanitize_command_error(
+                "organize memory",
+                // Round-20 review (S10-1): same as above, fold first (fixes the
+                // whitespace-home fragment leak).
+                crate::platform::paths::redact_storage_prefix(&format!("{e:#}")),
+            )
+        })?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store);
     // If the best-effort pre-render already failed, do not let the snapshot
     // refresh retry (avoiding a duplicate same-code warning and a second
@@ -775,11 +790,14 @@ pub async fn delete_timed_memory(
     finish_memory_write(&app, session_id, &store, changed, event, Vec::new())
 }
 
-/// `edit_last_turn` 的乐观并发护栏：`expected` 与当前已落盘 transcript 的
-/// revision 不一致时拒绝编辑（不动 transcript、不消费 turn）。稳定错误码与
-/// store 的 `compare_and_swap_messages`（`session_revision_conflict`）同族；
-/// load/compute 失败折叠为 `session_revision_unavailable`，原始错误链（可能
-/// 内嵌宿主路径）只进桌面日志——该护栏是 Web 编辑重发跨 Relay 的唯一入口。
+/// Optimistic concurrency guard for `edit_last_turn`: rejects the edit when
+/// `expected` does not match the currently persisted transcript revision (the
+/// transcript is untouched and the turn is not consumed). The stable error codes
+/// are in the same family as the store's `compare_and_swap_messages`
+/// (`session_revision_conflict`); load/compute failures collapse to
+/// `session_revision_unavailable`, with the original error chain (possibly
+/// embedding host paths) going only to desktop logs — this guard is the only
+/// entrance for web edit-resends crossing the Relay.
 fn ensure_transcript_revision_current(
     store: &SessionStore,
     sid: &str,
@@ -803,14 +821,18 @@ fn ensure_transcript_revision_current(
     Ok(())
 }
 
-/// 编辑/重发最后一轮 user 消息。
-/// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
-/// 前端在调这个命令之前必须自己更新 state.messages（删最后一对，加新 user）。
-/// `expected_transcript_revision` 是可选的乐观并发护栏：Web 编辑重发传入其
-/// 所持快照的 revision，桌面端不传（None = 现行为不变）。护栏在 turn gate
-/// 内执行——占住 gate 后其他 turn 无法再提交，check-then-act 之间当前
-/// revision 不可能被推进——不匹配即拒绝，防止手机端基于过期视图砍掉桌面端
-/// 刚提交的更新一轮。
+/// Edits/resends the last user message of a turn.
+/// The engine truncates the most recent user+assistant pair at the end of the
+/// session and resends with new_message.
+/// The frontend must update state.messages itself before calling this command
+/// (drop the last pair, add the new user message).
+/// `expected_transcript_revision` is an optional optimistic concurrency guard: web
+/// edit-resends pass the revision of the snapshot they hold, desktop passes none
+/// (None = current behavior unchanged). The guard runs inside the turn gate —
+/// once the gate is held, no other turn can be committed, so the current revision
+/// cannot advance between check and act — a mismatch is rejected, preventing the
+/// phone from truncating, based on a stale view, the newer round the desktop just
+/// committed.
 #[tauri::command]
 pub async fn edit_last_turn(
     new_message: String,
@@ -823,47 +845,208 @@ pub async fn edit_last_turn(
         return Err("empty new_message".into());
     }
     let sid = require_active_sid(session_id, &store)?;
-    let reservation = pool
-        .reserve_turn(&sid)
-        .map_err(|e| format!("reserve edit_last_turn: {e:#}"))?;
+    let reservation = pool.reserve_turn(&sid).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("reserve edit_last_turn: {e:#}"))
+    })?;
     if let Some(expected) = expected_transcript_revision.as_deref() {
-        // 护栏拒绝时 reservation 在此 Drop：未提交预约自动失效，gate 立即
-        // 重开，transcript 保持原样。
+        // If the guard rejects, the reservation Drops here: the uncommitted
+        // reservation expires automatically, the gate reopens immediately, and the
+        // transcript stays untouched.
         ensure_transcript_revision_current(&store, &sid, expected)?;
     }
-    // 编辑重发只发编辑后的原文：`EditLastTurn` 不携带 route，由引擎按当前
-    // 配置重推导 provider 路由（含专家 fleet 配置随配置重读）；底座重推导时
-    // 会重申宿主已申报的路由限额，不因重推导退回目录猜测。蜂群契约在 spawn
-    // 级 instructions，无需（也不应）在此重新拼接任何提醒内容。
+    // The edit-resend sends only the edited original text: `EditLastTurn` carries no
+    // route, and the engine re-derives the provider routing from the current config
+    // (including expert fleet config re-read with the config); on re-derivation the
+    // base re-asserts the route quotas the host declared, and does not fall back to
+    // directory guessing. The swarm contract lives in spawn-level instructions, so
+    // no reminder content needs to be (or should be) re-assembled here.
     let display_message = user_display_message(new_message.clone());
 
-    // 定时会话不走 ensure_chat_session:编辑重发与继续追问同路,EnginePool 内部
-    // 按 scheduled_profile 做 turn gate;会话管理类命令(删除/改名/归档)仍然拒绝。
+    // Scheduled sessions skip ensure_chat_session: like a steer, EnginePool
+    // gates the turn on scheduled_profile; session commands refuse.
     crate::features::assistant::timing::start_turn(&sid);
     if let Err(error) = pool
         .edit_last_turn_reserved(&sid, new_message, display_message, reservation)
         .await
     {
-        crate::features::assistant::timing::finish_turn(
-            &sid,
-            "send_error",
-            Some(&format!("{error:#}")),
-        );
-        // Round-12 复审:与文件内其余 web 可见 Err 同纪——过共享折叠,存储
-        // 根前缀不得随错误文本出站(该臂是 `if let Err` + `return Err` 形,
-        // 不在 `web_visible_memory_errors_fold_the_storage_prefix` 的
-        // `.map_err` 扫描内,折叠是实义而非计数)。
-        return Err(crate::platform::paths::redact_storage_prefix(&format!(
-            "edit_last_turn: {error:#}"
-        )));
+        // Round-27 review M3 (rewriting the round-12 note): the same raw error
+        // previously egressed through two paths — finish_turn's send_error text was
+        // written into the assistant_done timeline event and read back verbatim via
+        // the web-reachable get_session_timeline, while only the return Err side
+        // folded. Folding only on the Err side gave false confidence (the new pin
+        // pins the single-fold coverage verbatim). Fold once; both egresses share the
+        // same folded text. (Round-29 review correction: this arm has no raw-chain
+        // `[edit_last_turn]` log leg — both egresses consume `folded` only, so the
+        // desktop's own diagnostics lose the raw detail here too; that is the
+        // strictly-safer direction and the round-27 wording above no longer
+        // claims otherwise.)
+        let folded = crate::platform::paths::redact_storage_prefix(&format!("{error:#}"));
+        crate::features::assistant::timing::finish_turn(&sid, "send_error", Some(&folded));
+        return Err(format!("edit_last_turn: {folded}"));
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    /// Round-24 review (m5) source pin: edit_last_turn's awaited error arm is the
+    /// only web-visible fold in this file with no regression signal — the census
+    /// only scans `.map_err(|` spellings, and this arm is an `if let Err` +
+    /// `return Err` shape outside the census window table (the round-12 comment
+    /// disclosed "intentional rather than counted", but disclosure is not pinning:
+    /// deleting the fold previously kept every suite green). The window is the
+    /// command body; the fold must sit after the `.edit_last_turn_reserved(` call
+    /// (arm position — the round-21 arm-boundary lesson); pure comment lines are
+    /// filtered first (round-23 caliber).
+    #[test]
+    fn edit_last_turn_awaited_error_folds_the_storage_prefix() {
+        let source = include_str!("memory.rs");
+        let start = source
+            .find("pub async fn edit_last_turn(")
+            .expect("edit_last_turn must exist");
+        let body = &source[start..];
+        let end = [
+            "\n#[tauri::command]",
+            "\n#[cfg(test)]",
+            "\npub async fn ",
+            "\npub fn ",
+            "\nfn ",
+        ]
+        .iter()
+        .filter_map(|delimiter| body.find(delimiter))
+        .min()
+        .expect("edit_last_turn body must be terminated");
+        let counted = crate::platform::test_support::comment_filtered(&body[..end]);
+        let call_at = counted
+            .find(".edit_last_turn_reserved(")
+            .expect("the awaited edit_last_turn_reserved call must stay");
+        let tail = &counted[call_at..];
+        let fold_at = tail
+            .find("crate::platform::paths::redact_storage_prefix(&format!(")
+            .expect(
+                "the awaited-error arm must fold the storage root \
+             before egress: deleting the fold previously kept every suite \
+             green because the census scans .map_err arms only",
+            );
+        // Round-27 review M3: the fold must precede the fan-out and both egresses
+        // must share the same folded binding — a mutation returning the timeline side
+        // (finish_turn) to raw `{error:#}`, or fanning out before the fold, turns
+        // either order assertion red.
+        let finish_turn_at = tail
+            .find("finish_turn(")
+            .expect("the send_error timeline egress must stay");
+        let folded_use_at = tail
+            .find("Some(&folded)")
+            .expect("the timeline egress must consume the shared folded text");
+        let err_use_at = tail
+            .find("edit_last_turn: {folded}")
+            .expect("the returned Err must consume the shared folded text");
+        assert!(
+            fold_at < finish_turn_at
+                && finish_turn_at < folded_use_at
+                && folded_use_at < err_use_at,
+            "the fold must run before the timeline/Err fan-out, and both \
+             egresses must consume the shared folded binding; folding only \
+             the Err copy (round-24 shape) or a raw timeline egress turns \
+             this red"
+        );
+        assert_eq!(
+            counted
+                .matches("crate::platform::paths::redact_storage_prefix(&format!(")
+                .count(),
+            2,
+            "two folds in this command: the shared awaited-error binding \
+             and the reserve arm (folded as of round-27); a new web-visible \
+             arm must join a pin (enumerated-pin residual)"
+        );
+    }
     use super::*;
     use deepseek_tui::models::{ContentBlock, Message};
+
+    #[test]
+    fn whitespace_home_folds_before_the_secret_scan_so_no_fragment_leaks() {
+        // Round-20 review (S10-1) behavioral pin: on whitespace-containing homes the
+        // old sanitize→fold order let redact_secret's whitespace tokens consume the
+        // tail of the folded needle (the `...John [REDACTED]` shape), leaving
+        // drive-letter/username fragments egressing in cleartext. The new order
+        // (production arm) folds first and scans second: short tokens survive as the
+        // folded form and long tokens are masked wholesale as [REDACTED] — no home
+        // fragment survives in either direction. The control leg reproduces the leak
+        // shape by hand under the old order (pinning the regression's true shape);
+        // removing fold-first (reverting to the old order) turns red. Residual note
+        // (round-21 review): fold-first shortens a whitespace-free long token that
+        // starts with the home (now beginning ~/.pinvou3) — such a token exactly
+        // ≥24 long (digits+letters included) may drop below the family threshold
+        // after shortening and escape the scan; directionally this trades the old
+        // order's guaranteed fragment leak for a narrower masked residual; scanning
+        // of non-prefix text is unaffected.
+        let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
+        let home = base.join("John Doe").join(".pinvou3");
+        std::fs::create_dir_all(&home).unwrap();
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        // Paths always take pinvou3_home()'s reading (normalization differences such
+        // as macOS /tmp symlinks), keeping the fold needle and the detail same-source.
+        let home_now = crate::platform::paths::pinvou3_home();
+        let detail = format!(
+            "os error 3: {}/sessions2/x.json: No such file or directory",
+            home_now.display()
+        );
+        // Production new order: fold first (sanitize_command_error's inner layer only scans secrets).
+        let new_order = sanitize_command_error(
+            "organize memory",
+            crate::platform::paths::redact_storage_prefix(&detail),
+        );
+        assert!(
+            !new_order.contains("John Doe")
+                && !new_order.contains(home_now.display().to_string().as_str()),
+            "the fold-first order must not leak any home fragment, got: {new_order}"
+        );
+        // Control leg: the old order (sanitize first) does produce the fragment leak —
+        // this test pins that the shape no longer appears in the production arm. The
+        // leak shape requires the whitespace-leading segment to be shorter than the
+        // inner secret scan's ≥24-length family; on platforms whose temp dir is
+        // itself overlong the shape cannot be constructed (macOS /var/folders…), so
+        // the control leg skips; there the whitespace-leading segment itself joins
+        // the ≥24 family, and the two orders produce byte-different output (two
+        // [REDACTED] under the old order, one folded under the new) but neither
+        // leaves fragments — the production-invariant leg (!contains fragments) has
+        // no signal for order regressions on that platform, and the order tooth
+        // relies on Linux CI's short /tmp (round-23 review caliber note; round-27
+        // review m11 correction: the original "both orders produce identical output"
+        // is false at the byte level).
+        let pre_space = format!("{}/John", base.display());
+        if pre_space.len() < 24 {
+            let old_order = crate::platform::paths::redact_storage_prefix(&sanitize_command_error(
+                "organize memory",
+                &detail,
+            ));
+            assert!(
+                old_order.contains("John"),
+                "control: the reversed order must reproduce the fragment leak shape this pin forbids, got: {old_order}"
+            );
+        }
+
+        // The regular direction without a whitespace home is unaffected: the folded form leaves intact.
+        let plain_home = base.join("plainhome").join(".pinvou3");
+        std::fs::create_dir_all(&plain_home).unwrap();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &plain_home) };
+        let plain_now = crate::platform::paths::pinvou3_home();
+        let plain_detail = format!("os error 3: {}/mem/x.json: boom", plain_now.display());
+        let folded = sanitize_command_error(
+            "organize memory",
+            crate::platform::paths::redact_storage_prefix(&plain_detail),
+        );
+        assert!(
+            folded.contains("organize memory: os error 3: ~/.pinvou3/mem/x.json"),
+            "the plain-home fold must survive the secret scan intact, got: {folded}"
+        );
+    }
 
     fn revision_message(role: &str, text: &str) -> Message {
         Message {
@@ -875,16 +1058,18 @@ mod tests {
         }
     }
 
-    /// FIX（remote-control audit）: web `edit_last_turn` 的乐观并发护栏。
-    /// 过期 revision 必须被拒绝且 transcript 保持原样；当前 revision 放行；
-    /// 不存在的会话折叠为稳定码。命令本体在护栏拒绝时 Drop 未提交预约
-    /// （gate 重开、transcript 不动），此处直接钉护栏的判定与不改写语义。
+    /// FIX (remote-control audit): the optimistic concurrency guard of web
+    /// `edit_last_turn`. A stale revision must be refused with the transcript intact;
+    /// the current revision passes; a missing session collapses to a stable code. The
+    /// command body Drops the uncommitted reservation when the guard refuses (gate
+    /// reopens, transcript untouched); this test pins the guard's judgment and
+    /// no-mutation semantics directly.
     #[test]
     fn edit_last_turn_revision_guard_blocks_stale_views_without_mutating() {
-        // Round-6 复审:PINVOU3_HOME 的保存/恢复改走 Drop 兜底的
-        // with_temp_home——直线式恢复在断言失败(panic 展开)时被跳过,
-        // 环境与临时目录会泄漏给本进程内所有后续测试(该 helper 的文档
-        // 明确警告这一点)。
+        // Round-6 review: PINVOU3_HOME save/restore moved to the Drop-backed
+        // with_temp_home — straight-line restoration is skipped when an assertion
+        // fails (panic unwind), leaking the env and temp dir to every later test in
+        // this process (the helper's docs explicitly warn about this).
         crate::platform::test_support::with_temp_home("pinvou3-edit-revision-guard-test", || {
             let root = crate::platform::paths::pinvou3_home();
             let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
@@ -896,7 +1081,7 @@ mod tests {
                 .expect("create session");
             let sid = session.metadata.id;
 
-            // 手机端视图：只有第一轮 user 消息。
+            // Phone-side view: only the first round's user message.
             store
                 .update_messages(&sid, vec![revision_message("user", "first")])
                 .expect("seed stale transcript");
@@ -905,7 +1090,7 @@ mod tests {
             )
             .expect("stale revision");
 
-            // 桌面端随后提交了两轮（手机视图未感知）。
+            // The desktop then committed two more rounds (unseen by the phone view).
             store
                 .update_messages(
                     &sid,
@@ -922,7 +1107,7 @@ mod tests {
             .expect("current revision");
             assert_ne!(stale_revision, current_revision);
 
-            // 过期视图必须被拒绝，且 transcript 不得被改动。
+            // The stale view must be refused, and the transcript must not be mutated.
             assert_eq!(
                 ensure_transcript_revision_current(&store, &sid, &stale_revision)
                     .expect_err("stale revision must be refused"),
@@ -940,10 +1125,10 @@ mod tests {
                 current_revision
             );
 
-            // 持有当前 revision 的编辑放行（真正的改写仍由引擎在 gate 内执行）。
+            // An edit holding the current revision passes (the actual rewrite is still executed by the engine inside the gate).
             assert!(ensure_transcript_revision_current(&store, &sid, &current_revision).is_ok());
 
-            // 不存在的会话折叠为稳定码，宿主路径只进桌面日志。
+            // A missing session collapses to the stable code; host paths go only to desktop logs.
             assert_eq!(
                 ensure_transcript_revision_current(&store, "missing-session", &current_revision)
                     .expect_err("missing session must be refused"),
@@ -954,11 +1139,13 @@ mod tests {
 
     #[test]
     fn memory_warning_details_fold_the_storage_prefix() {
-        // Round-9 复审 minor:命令级四处警告/详情文本必须过
-        // `redact_storage_prefix`。`load_memory_source` 有直接的 io::Result
-        // 注入缝,内容级钉住(error 的 Display 内嵌存储根绝对路径时,出站
-        // detail 折叠为 ~/.pinvou3 前缀);其余三处同型 format! 接线无天然
-        // 注入缝,按 source-contract 钉住函数体(删除任一处接线即红)。
+        // Round-9 review minor: the command-level warning/detail texts at four sites
+        // must pass through `redact_storage_prefix`. `load_memory_source` has a direct
+        // io::Result injection seam and is pinned at the content level (when the
+        // error's Display embeds a storage-root absolute path, the outbound detail
+        // folds to the ~/.pinvou3 prefix); the other three same-shaped format!
+        // wirings have no natural injection seam and are pinned as source contracts
+        // over the function bodies (deleting any wiring turns red).
         crate::platform::test_support::with_temp_home("memory-redact-detail", || {
             let mut warnings = Vec::new();
             let mut sources = BTreeMap::new();
@@ -991,13 +1178,14 @@ mod tests {
                 .find(fn_name)
                 .unwrap_or_else(|| panic!("{fn_name} must exist"));
             let body = &source[start..];
-            // Round-14 复审 minor:窗口必须在最近的下一项处收口——此前
-            // `find("\npub async fn ").or_else(find("\nfn "))` 让远处的
-            // async 项吞掉中间的全部函数体,runtime_snapshot_best_effort /
-            // refresh_memory_snapshot_document 两个窗口各自吞进
-            // load_memory_source 的接线,删除这两处生产接线四条断言仍然
-            // 全绿(「删除任一处接线即红」只对半数成员成立)。取各标记
-            // 最早命中,窗口恰为该函数自身。
+            // Round-14 review minor: the window must close at the nearest next item —
+            // previously `find("\npub async fn ").or_else(find("\nfn "))` let a distant
+            // async item swallow all intervening function bodies: the
+            // runtime_snapshot_best_effort / refresh_memory_snapshot_document windows
+            // each swallowed load_memory_source's wiring, and deleting both production
+            // wirings kept all four assertions green ("deleting any wiring turns red"
+            // held for only half the members). Take the earliest marker hit so the
+            // window is exactly the function itself.
             let end = ["\npub async fn ", "\npub fn ", "\nfn ", "\n#[test]"]
                 .iter()
                 .filter_map(|marker| body.find(marker))
@@ -1081,17 +1269,92 @@ mod tests {
         assert_eq!(cleanup["source"], "preferences");
     }
 
-    /// Round-11 复审 minor(形状无关钉):memory 命令全部 web 可达,其
-    /// `Err<String>` 会原样过 relay——错误拼接必须经共享的
-    /// `redact_storage_prefix` 折叠存储根前缀(与 Round-9 修复的警告
-    /// detail 同策略;当前 std os error 的 Display 不内嵌路径,但任何一个
-    /// 未来内嵌路径的错误构造函数都会让这里成为泄露点)。唯一例外是
-    /// `reserve edit_last_turn`:原始链按既定策略只进桌面日志,Web 侧由
-    /// 稳定码折叠。逐 `map_err(|e|` 臂取窗口断言,不依赖 rustfmt 的换行
-    /// 形态(单行形态计数曾被折叠换行静默绕过——突变复跑实证)。
+    /// Round-11 review minor (shape-agnostic pin): memory commands are all
+    /// web-reachable and their `Err<String>` crosses the relay verbatim — error
+    /// assembly must fold the storage-root prefix via the shared
+    /// `redact_storage_prefix` (same policy as the Round-9-fixed warning details;
+    /// today's std os error Display embeds no paths, but any future
+    /// path-embedding error constructor would make this a leak point). Since
+    /// round-27 the `reserve edit_last_turn` exception arm folds too (its error
+    /// chain carries storage paths via store.load, and the command is
+    /// web-reachable; the raw chain goes only to desktop logs per the established
+    /// policy). Per-`map_err(|e|` arm windows are asserted, without depending on
+    /// rustfmt's line shapes (the single-line shape count was once silently evaded
+    /// by folding the line — confirmed by mutation re-runs).
+    #[test]
+    fn organize_command_arms_fold_before_the_secret_scan() {
+        // Round-20 review (S10-1) source pin: on whitespace homes the old
+        // sanitize→fold order leaks home fragments (see the whitespace_home
+        // behavioral pin); the production arms must fold first — both arm windows
+        // must contain the "fold applied to the raw detail" shape
+        // (`redact_storage_prefix(&format!(`) and must no longer contain the old
+        // order marker (`redact_storage_prefix(&sanitize_command_error`). Reverting
+        // to the old order turns this pin red.
+        let source = include_str!("memory.rs");
+        for (needle, label) in [
+            (
+                "organize memory: resolve bridge for {sid}",
+                "the bridge-resolution arm",
+            ),
+            (
+                "organize_memory_with_llm(&bridge, None)",
+                "the organize arm",
+            ),
+        ] {
+            let at = source
+                .find(needle)
+                .unwrap_or_else(|| panic!("{label} must exist"));
+            // The window's lower bound window_lo extends 400 bytes before the needle
+            // and lands on a char boundary: the old-order mutation's marker
+            // (redact_storage_prefix(&sanitize_command_error(…)) sits before the
+            // needle, and a window without leading context would miss it (confirmed
+            // by the F6 mutation). Round-21 review: the upper bound window_hi extends
+            // the same way and lands on a char boundary — slicing into a multi-byte
+            // char would panic (a compile crash rather than a red assertion), the
+            // same constraint as the siblings; this also decouples the closure
+            // parameter spelling inside the required literals (per the M6b caliber
+            // `|e|` is not part of the pinned contract, so renaming to `|error|`
+            // must not false-red). Round-22 review (m4): the upper bound tightens
+            // from +900 to +500 — both arms' own folds sit within +310 after the
+            // needle, while +900 already swept the neighboring arm's fold (about
+            // +832 from the bridge needle) into the window, so deleting this arm's
+            // own fold would be compensated by the neighbor and go unreported; +500
+            // keeps margin for the arm's own fold and excludes the neighbor.
+            let mut window_lo = at.saturating_sub(400);
+            while window_lo > 0 && !source.is_char_boundary(window_lo) {
+                window_lo -= 1;
+            }
+            let mut window_hi = (at + 500).min(source.len());
+            while window_hi > window_lo && !source.is_char_boundary(window_hi) {
+                window_hi -= 1;
+            }
+            let arm = &source[window_lo..window_hi];
+            // Round-23 review: the window filters pure comment lines before
+            // asserting — the compensating mutation "delete the fold, mention the
+            // needle in a comment inside the window" was mutation-proven on the
+            // sibling pin (round-16 M6a); this pin did not filter previously, so an
+            // existing comment block inside the window could absorb the literal and
+            // stay green. (Same caliber note as the web_visible pin: line-start
+            // judgment — trailing `//` comments and block-comment mentions can still
+            // shield it; fully closing this requires a string-aware lexical scan,
+            // handled as a disclosed residual.)
+            let arm = crate::platform::test_support::comment_filtered(arm);
+            assert!(
+                arm.contains("redact_storage_prefix(&format!("),
+                "{label} must apply the fold to the raw error detail \
+                 (fold-before-scan order)"
+            );
+            assert!(
+                !arm.contains("redact_storage_prefix(&sanitize_command_error"),
+                "{label} must not revert to the sanitize-first order that \
+                 leaks home fragments on whitespace homes"
+            );
+        }
+    }
+
     #[test]
     fn web_visible_memory_errors_fold_the_storage_prefix() {
-        // 只扫生产半边:include_str 含测试模块自身,断言字面量会污染计数。
+        // Scan only the production half: include_str includes the test module itself, and assertion literals would pollute the count.
         let source = include_str!("memory.rs");
         let production = source
             .split("#[cfg(test)]")
@@ -1099,36 +1362,74 @@ mod tests {
             .expect("memory.rs must keep its tests behind #[cfg(test)]");
         let mut arms = 0;
         let mut raw_arms = 0;
-        for (pos, _) in production.match_indices(".map_err(|e|") {
-            arms += 1;
-            let window_end = (pos + 400).min(production.len());
-            let window = &production[pos..window_end];
-            if !(window.contains("redact_storage_prefix")
-                || window.contains("reserve edit_last_turn"))
-            {
-                raw_arms += 1;
+        // Round-15 review minor: the scan covers both `.map_err(|e|` and
+        // `.map_err(|error|` spellings — the organize command's two arms used the
+        // latter, which this pin could not see, so the assertion message overstated
+        // coverage. Round-16 review (M6b): switched to scanning `.map_err(|`
+        // uniformly — enumerating spellings is whack-a-mole (the `|err|` spelling
+        // mutation was proven to bypass), and closure parameter names are not part of
+        // the pinned contract. Round-17 review (M4 remainder): window judgment now
+        // looks only at non-comment lines — the mutation "delete the fold, mention
+        // `redact_storage_prefix` (or `[edit_last_turn]`) in a comment within the
+        // 400-byte window and push raw text" stayed green under the original
+        // implementation; with comment lines filtered first, literal mentions can no
+        // longer shield a bare arm (same filtering caliber as organize.rs's three
+        // pins). (Round-18 review caliber note: the filter is line-start judgment —
+        // literal mentions in trailing `//` comments or `/* */` block comments can
+        // still shield a bare arm; fully closing this requires a string-aware lexical
+        // scan, beyond source-pin scope, handled as a disclosed residual.)
+        let scan = crate::platform::test_support::comment_filtered(production);
+        let spelling = ".map_err(|";
+        {
+            let mut pos = 0;
+            while let Some(found) = scan[pos..].find(spelling) {
+                arms += 1;
+                let start = pos + found;
+                let mut window_end = (start + 400).min(scan.len());
+                // The 400-byte window must not land mid multi-byte character: if
+                // start+400 crashes into a CJK line the slice panics (a compile crash
+                // rather than a red assertion, with a misleading failure language);
+                // fall back to the nearest char boundary.
+                while window_end < scan.len() && !scan.is_char_boundary(window_end) {
+                    window_end -= 1;
+                }
+                let window = &scan[start..window_end];
+                // Round-27 review m7: the `reserve edit_last_turn` exception arm now
+                // folds and the exception marker was removed with it — the marker was
+                // previously self-satisfied by the arm's own message text, leaving it
+                // blind to revert mutations (fold deleted while the message text
+                // remained in the window).
+                if !(window.contains("redact_storage_prefix")
+                    || window.contains("[edit_last_turn]"))
+                {
+                    raw_arms += 1;
+                }
+                pos = start + spelling.len();
             }
         }
         assert!(
             arms >= 11,
-            "expected the ten folded error arms plus the edit_last_turn chain, found {arms}"
+            "expected the folded error arms plus the edit_last_turn chain, found {arms}"
         );
         assert_eq!(
             raw_arms, 0,
             "every web-visible memory error arm must fold the storage prefix via \
-             redact_storage_prefix; the single allowed exception is the deliberately-raw \
-             edit_last_turn reservation chain"
+             redact_storage_prefix; the allowed exceptions are the deliberately-raw \
+             edit_last_turn reservation chain and its revision-guard log arms"
         );
     }
 
-    /// Round-7 复审:overview 的 `snapshot_path` 展示字段随 Web 访问策略出站
-    /// （get_memory_overview 在允许清单内），回退成裸 `path.display()` 会把
-    /// 存储根绝对路径带过 relay。该字段的脱敏点（write_memory_snapshot_document
-    /// 成功臂）此前没有内容级钉。`State<'_, SessionStore>` 无法在测试中安全
-    /// 构造（tauri 2.12 的 State 字段私有、仓库未启用 tauri "test" 特性、无
-    /// mock_app 先例——checkpoints.rs 测试同款结论），故以单引用字段 newtype
-    /// 的等宽 transmute 装入 State，驱动真实命令体：空 store + 无入参 →
-    /// runtime=None → 写快照 → snapshot_path 必须是 `~/.pinvou3` 折叠形态。
+    /// Round-7 review: the overview's `snapshot_path` display field egresses under
+    /// the web access policy (get_memory_overview is allowlisted), so reverting to a
+    /// bare `path.display()` would carry the storage-root absolute path across the
+    /// relay. That field's redaction site (write_memory_snapshot_document's success
+    /// arm) previously had no content-level pin. `State<'_, SessionStore>` cannot be
+    /// safely constructed in tests (tauri 2.12's State fields are private, the repo
+    /// does not enable tauri's "test" feature, and there is no mock_app precedent —
+    /// same conclusion as the checkpoints.rs tests), so a same-width transmute of a
+    /// single-reference-field newtype is placed into State to drive the real command
+    /// body: empty store + no args → runtime=None → snapshot written → snapshot_path
+    /// must be the `~/.pinvou3` folded form.
     #[test]
     fn overview_snapshot_path_folds_host_paths_before_the_relay() {
         crate::platform::test_support::with_temp_home(
@@ -1139,10 +1440,11 @@ mod tests {
                     root.join("scheduled"),
                 )
                 .expect("session store");
-                // SAFETY: State<'r, T> 是单引用字段的 newtype，transmute 两侧
-                // 大小由编译器静态校验一致；引用生命周期随 'r 存续到本闭包
-                // 结束，State 仅在被测命令内经 Deref 只读使用，不引入新的
-                // 别名或对齐约束。
+                // SAFETY: State<'r, T> is a newtype over a single reference field;
+                // the compiler statically verifies both transmute sides have the same
+                // size. The reference's lifetime lives as 'r until this closure ends,
+                // and State is used read-only via Deref only inside the command under
+                // test, introducing no new aliasing or alignment constraints.
                 let state: State<'_, SessionStore> = unsafe {
                     std::mem::transmute::<&SessionStore, State<'_, SessionStore>>(&store)
                 };
@@ -1166,10 +1468,11 @@ mod tests {
         );
     }
 
-    /// Round-11 复审 minor(整载荷扫描钉):逐字段钉只能钉住已知的路径
-    /// 字段,新增一个带绝对路径的字段不会被任何现有钉看到。序列化整个
-    /// `MemoryOverviewState`(即实际过 relay 的字节)断言绝对存储根
-    /// 不出现——一个未来未脱敏的路径字段在此变红。
+    /// Round-11 review minor (whole-payload scan pin): per-field pins only cover
+    /// known path fields; a newly added field carrying absolute paths would be seen
+    /// by no existing pin. Serializing the whole `MemoryOverviewState` (the bytes
+    /// that actually cross the relay) asserts the absolute storage root does not
+    /// appear — a future unredacted path field turns red here.
     #[test]
     fn serialized_memory_overview_carries_no_absolute_storage_root() {
         crate::platform::test_support::with_temp_home(
@@ -1180,17 +1483,19 @@ mod tests {
                     root.join("scheduled"),
                 )
                 .expect("session store");
-                // 建一个活跃会话:overview 的 runtime 快照按活跃会话构建,
-                // 没有会话时 runtime 为 None,runtime_path 不进载荷,扫描对
-                // 该字段假绿(首次突变复跑实证)。
+                // Create an active session: the overview's runtime snapshot is built
+                // from the active session; with no session, runtime is None and
+                // runtime_path never enters the payload, making the scan false-green
+                // for that field (confirmed by the first mutation re-run).
                 let created = store
                     .create_new("/model".into(), None, root.join("workspace"))
                     .expect("active session");
                 store.set_active(Some(created.metadata.id.clone()));
-                // SAFETY: State<'r, T> 是单引用字段的 newtype，transmute 两侧
-                // 大小由编译器静态校验一致；引用生命周期随 'r 存续到本闭包
-                // 结束，State 仅在被测命令内经 Deref 只读使用，不引入新的
-                // 别名或对齐约束。
+                // SAFETY: State<'r, T> is a newtype over a single reference field;
+                // the compiler statically verifies both transmute sides have the same
+                // size. The reference's lifetime lives as 'r until this closure ends,
+                // and State is used read-only via Deref only inside the command under
+                // test, introducing no new aliasing or alignment constraints.
                 let state: State<'_, SessionStore> = unsafe {
                     std::mem::transmute::<&SessionStore, State<'_, SessionStore>>(&store)
                 };
@@ -1203,14 +1508,16 @@ mod tests {
                     "the serialized overview payload must not carry the absolute storage root: \
                      {serialized}"
                 );
-                // 扫描非空判据:载荷必须真实包含红色化的存储前缀形态,
-                // 否则上面的断言对「载荷为空」假绿。
+                // Non-empty criterion for the scan: the payload must genuinely contain
+                // the redacted storage-prefix form, otherwise the assertion above is
+                // false-green for "payload is empty".
                 assert!(
                     serialized.contains("~/.pinvou3"),
                     "the overview payload should reference redacted storage paths: {serialized}"
                 );
-                // runtime_path 的非空判据(它随活跃会话进入载荷):红色化后
-                // 是 ~/.pinvou3/user/memory/runtime/<sid>.md 形态。
+                // Non-empty criterion for runtime_path (it rides the payload with the
+                // active session): after redaction it is the
+                // ~/.pinvou3/user/memory/runtime/<sid>.md form.
                 assert!(
                     serialized.contains("~/.pinvou3/user/memory/runtime/"),
                     "the runtime prompt path must ride the payload redacted: {serialized}"

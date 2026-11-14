@@ -15,8 +15,8 @@ use super::Inner;
 use super::{
     CachedWebAttachment, MAX_WEB_ATTACHMENT_UPLOAD_TOTAL_BYTES, MAX_WEB_ATTACHMENT_UPLOADS,
     MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES, MAX_WEB_SESSION_DOWNLOADS,
-    WEB_ATTACHMENT_UPLOAD_DIR_PREFIX, WEB_SESSION_TRANSFER_TTL, WebAttachmentUpload,
-    WebSessionDownload, WebSessionDownloadChunk,
+    WEB_ATTACHMENT_UPLOAD_DIR_PREFIX, WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW,
+    WEB_SESSION_TRANSFER_TTL, WebAttachmentUpload, WebSessionDownload, WebSessionDownloadChunk,
 };
 use crate::platform::paths;
 
@@ -224,14 +224,16 @@ pub(super) fn discard_web_attachment_upload(inner: &mut Inner, upload_id: &str) 
         .retain(|id| id != upload_id);
 }
 
-/// 浏览器本机上传的桌面暂存根目录。目录布局 `uploads/webup_<token>/<file>`
-/// 与旧版远控上传一致。
+/// Desktop staging root for browser-native uploads. The directory layout
+/// `uploads/webup_<token>/<file>` matches the legacy remote-control upload
+/// layout.
 pub(crate) fn web_attachment_uploads_base() -> PathBuf {
     paths::pinvou3_home().join("uploads")
 }
 
-/// 清理上一次进程遗留的上传暂存目录（崩溃或强杀时正常清理不会执行）。
-/// 只清 `webup_` 前缀，避免波及 uploads 下的其他历史内容。
+/// Removes upload staging dirs left behind by a previous process (normal
+/// cleanup does not run on a crash or force kill). Only the `webup_` prefix
+/// is swept, so other historical content under uploads is untouched.
 pub(crate) fn sweep_stale_web_attachment_uploads() {
     let Ok(entries) = std::fs::read_dir(web_attachment_uploads_base()) else {
         return;
@@ -382,6 +384,46 @@ pub(super) fn take_web_session_download(
     Ok(inner.web_session_downloads.remove(download_id))
 }
 
+/// Round-15 review: when both download slots are held by "ready but never
+/// picked up" orphans (the relay lost the commit response, the phone never
+/// got the download_id, so it can neither pick up nor cancel), a retry
+/// would hard-fail until the 10-minute TTL Reaper self-heals. When begin
+/// fails the capacity gate (slots + bytes in two dimensions since round-25),
+/// it first evicts the oldest ready entry so the retried export can open a
+/// new download; a non-ready entry means the engine is still writing and
+/// cannot be the victim, so the existing capacity error is kept.
+/// web_session_download_order thereby becomes the carrier of the eviction
+/// order (previously write-only dead weight).
+/// Round-16 review (M2): the victim criteria add a freshness window —
+/// "ready" alone cannot distinguish a "response-lost orphan" from a
+/// "download the phone already holds an id for and is chunk-reading"
+/// (chunk reads refresh last_touched), so only ready entries untouched for
+/// longer than `WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW` may be
+/// victims; in-flight reads are never evicted. True-orphan cleanup is
+/// delayed by at most one window, still far earlier than the TTL; the doc's
+/// original claim "the phone never received its id, so the bytes are
+/// certainly unclaimed" was too strong — this window is the actual
+/// boundary.
+pub(super) fn evict_oldest_ready_session_download(inner: &mut Inner) -> bool {
+    let now = Instant::now();
+    let victim = inner
+        .web_session_download_order
+        .iter()
+        .find(|id| {
+            inner.web_session_downloads.get(*id).is_some_and(|d| {
+                d.ready
+                    && now.saturating_duration_since(d.last_touched)
+                        > WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW
+            })
+        })
+        .cloned();
+    let Some(victim) = victim else {
+        return false;
+    };
+    inner.web_session_download_order.retain(|id| id != &victim);
+    inner.web_session_downloads.remove(&victim).is_some()
+}
+
 pub(super) fn read_web_session_download_chunk(
     inner: &mut Inner,
     download_id: &str,
@@ -448,9 +490,16 @@ mod tests {
 
     /// A `last_touched` older than the TTL, without panicking on hosts whose
     /// monotonic clock started less than the TTL ago (fresh boot).
+    /// Round-20 review (S05): the second fallback `now - WEB_SESSION_TRANSFER_TTL`
+    /// would still panic on hosts up for less than the TTL — following the
+    /// same convention as this file's new checked fallback, the final level
+    /// degrades to the current instant: the entry is treated as "not
+    /// expired", so an assertion fails cleanly (red) instead of crashing the
+    /// test process.
     fn expired_last_touched(now: Instant) -> Instant {
         now.checked_sub(WEB_SESSION_TRANSFER_TTL + Duration::from_secs(1))
-            .unwrap_or_else(|| now - WEB_SESSION_TRANSFER_TTL)
+            .or_else(|| now.checked_sub(WEB_SESSION_TRANSFER_TTL))
+            .unwrap_or_else(Instant::now)
     }
     #[cfg(any(
         windows,

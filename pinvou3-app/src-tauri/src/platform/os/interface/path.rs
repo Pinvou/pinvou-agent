@@ -56,16 +56,21 @@ pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
     key.starts_with(base) && key[base.len()..].starts_with('/')
 }
 
-/// 折叠平台（macOS 默认 APFS 卷 / Windows NTFS）共用的卷拼写折叠。词法凭据
-/// 判定必须与卷的真实折叠语义一致：Unicode 简单大小写折叠中，折叠为 ASCII
-/// 的非 ASCII 码点是 U+017F（ſ→s）与 U+212A（K→k）；NTFS 的 `$UpCase` 表
-/// 按 Unicode 大写映射解析，额外把 U+0131（ı）折叠为 `I`——大小写不敏感卷
-/// 按各自折叠表把 `id_rſa`、`ıd_rsa` 解析到 `id_rsa`，纯 ASCII 折叠会漏过。
-/// std 没有 case-fold API，显式替换这三个码点后做 Unicode 小写即可覆盖
-/// 「黑名单常量均为纯 ASCII」场景的全部折叠拼写，不引入新依赖。非 ASCII
-/// 拼写是罕见输入：函数体本身只在慢路径分配，热路径见下面两个谓语。
-/// 注意 ı 的折叠对 macOS 是过量折叠（APFS 简单折叠表不折叠 ı，该码点来自
-/// NTFS `$UpCase`）——黑名单只增匹配，方向 fail-closed，可接受。
+/// Volume spelling fold shared by folding platforms (macOS default APFS
+/// volumes / Windows NTFS). Lexical credential judgments must match the
+/// volume's real folding semantics: in Unicode simple case folding, the
+/// non-ASCII code points that fold to ASCII are U+017F (ſ→s) and U+212A
+/// (K→k); NTFS resolves via the `$UpCase` table of Unicode uppercase
+/// mappings and additionally folds U+0131 (ı) to `I` — case-insensitive
+/// volumes resolve `id_rſa` and `ıd_rsa` to `id_rsa` per their own fold
+/// tables, which a pure-ASCII fold would miss. std has no case-fold API, so
+/// explicitly replacing these three code points and lowercasing covers every
+/// folded spelling of the "blocklist constants are pure ASCII" scenario
+/// without new dependencies. Non-ASCII spellings are rare inputs: the body
+/// allocates only on the slow path; see the two predicates below for the hot
+/// path. Note that folding ı is an over-fold on macOS (the APFS simple fold
+/// table does not fold ı; that code point comes from NTFS `$UpCase`) — the
+/// blocklist only gains matches, the direction is fail-closed, acceptable.
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_spelling(text: &str) -> String {
     text.replace('\u{017F}', "s")
@@ -74,8 +79,10 @@ pub(crate) fn volume_fold_spelling(text: &str) -> String {
         .to_lowercase()
 }
 
-/// `path_component_eq` 的折叠实现：双方皆 ASCII 时零分配快速路径（词法
-/// 判定跑在 workspace 列表/搜索/变更热道上），否则整串折叠后比较。
+/// Fold implementation behind `path_component_eq`: zero-allocation fast
+/// path when both sides are ASCII (the lexical judgment runs on the
+/// workspace list/search/change hot paths), otherwise folds both strings
+/// and compares.
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_eq(component: &OsStr, expected: &str) -> bool {
     let text = component.to_string_lossy();
@@ -85,8 +92,9 @@ pub(crate) fn volume_fold_eq(component: &OsStr, expected: &str) -> bool {
     volume_fold_spelling(&text) == volume_fold_spelling(expected)
 }
 
-/// `path_component_prefix` 的折叠实现，快速路径同上（前缀长度切片上做
-/// ASCII 无关比较，不构造新串）。
+/// Fold implementation behind `path_component_prefix`, fast path as above
+/// (ASCII-insensitive compare on a prefix-length slice, no new string
+/// built).
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_prefix(component: &OsStr, prefix: &str) -> bool {
     let text = component.to_string_lossy();
@@ -98,9 +106,11 @@ pub(crate) fn volume_fold_prefix(component: &OsStr, prefix: &str) -> bool {
     volume_fold_spelling(&text).starts_with(&volume_fold_spelling(prefix))
 }
 
-/// `path_component_suffix` 的折叠实现，快速路径同上（后缀长度切片上做
-/// ASCII 无关比较，不构造新串）。两侧均为 ASCII 时任意字节下标都是字符
-/// 边界，切片不会 panic；`get` 的 Option 兜底防御非 ASCII 混入。
+/// Fold implementation behind `path_component_suffix`, fast path as above
+/// (ASCII-insensitive compare on a suffix-length slice, no new string
+/// built). With both sides ASCII every byte index is a char boundary and
+/// the slice cannot panic; the `get` Option guards defensively against
+/// non-ASCII slipping in.
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_suffix(component: &OsStr, suffix: &str) -> bool {
     let text = component.to_string_lossy();
@@ -113,16 +123,29 @@ pub(crate) fn volume_fold_suffix(component: &OsStr, suffix: &str) -> bool {
     volume_fold_spelling(&text).ends_with(&volume_fold_spelling(suffix))
 }
 
-/// 组件序列版 `starts_with`：系统区前缀黑名单（`/etc/ssh` 等）按组件对
-/// 组件经 [`path_component_eq`] 比较，走平台折叠语义——大小写不敏感卷会把
-/// `/Etc/Sudoers` 解析到真文件，字节 `starts_with` 会让大写变体绕过系统区。
-/// 组件边界同时比字节版更精确：`/etc/shadowed` 不再命中 `/etc/shadow`。
-/// 前缀用尽即命中（嵌套语义）；被比较路径先耗尽分量则未命中；绝对前缀与
-/// 相对路径在首个分量（RootDir 对普通名）上必然失配，天然 fail-closed。
-/// 末分量带 `*` 的条目（黑名单清单自律，用于轮转日志等无法逐一枚举的
-/// 开放家族）在该分量位改用 [`path_component_prefix`] 做组件前缀匹配;
-/// 精确实体条目保持精确——`shadow` 若整体按前缀匹配,`shadowed` 这类
-/// 无辜同名文件会重新被拦（Round-9 复审 MAJOR）。
+/// Component-sequence `starts_with`: the system-area prefix blocklist
+/// (`/etc/ssh` etc.) is compared component by component through
+/// [`path_component_eq`], following the platform fold semantics — a
+/// case-insensitive volume resolves `/Etc/Sudoers` to the real file, where a
+/// byte `starts_with` would let the uppercase variant bypass the system
+/// area. Component boundaries are also more precise than the byte version:
+/// `/etc/shadowed` no longer hits `/etc/shadow`. Exhausting the prefix is a
+/// hit (nesting semantics); exhausting the compared path first is a miss;
+/// an absolute prefix against a relative path necessarily mismatches on the
+/// first component (RootDir vs an ordinary name), naturally fail-closed.
+/// Entries whose last component carries `*` (list discipline for open
+/// families like rotated logs that cannot be enumerated one by one) switch
+/// to component-prefix matching via [`path_component_prefix`] at that
+/// component position; exact entity entries stay exact — if `shadow` were
+/// matched as a prefix wholesale, innocent same-named files like `shadowed`
+/// would be blocked again (Round-9 review MAJOR). Note: this implementation
+/// handles `*` per component position, so a `*` in a middle component also
+/// matches by prefix (over-blocking direction, fail-closed); the list
+/// discipline (only the last component may use `*`) is constrained by the
+/// load-side discipline pin (`wildcard_entries_keep_list_discipline`), not
+/// this function's runtime responsibility (Round-15 review: the doc
+/// previously promised last-component-only, inconsistent with the
+/// implementation).
 pub fn path_starts_with_folded(path: &Path, prefix: &str) -> bool {
     let mut path_components = path.components();
     let mut prefix_components = Path::new(prefix).components();
@@ -290,13 +313,17 @@ mod tests {
 
     #[test]
     fn blocked_list_entries_fold_onto_themselves_for_every_entry() {
-        // Round-12 复审:黑名单全量条目的折叠语义钉。大小写不敏感卷(APFS/
-        // NTFS)会把大写拼写解析到与原拼写相同的磁盘文件,适配器选择的折叠
-        // 比较(posix/windows 的 path_component_eq/prefix/suffix)必须把每
-        // 个条目的大写变体判为命中。适配器自身的选择分支由 macOS/Windows
-        // 的 CI 腿执行;此处跨平台钉住折叠原语对全部清单条目的语义——
-        // 折叠路径上漏判任何一个条目(或折叠原语被退化为字节比较)在
-        // 任何平台上都直接变红。纯字符串逻辑,无文件系统访问。
+        // Round-12 review: the fold-semantics pin over the blocklist's full
+        // entry set. Case-insensitive volumes (APFS/NTFS) resolve uppercase
+        // spellings to the same on-disk file as the original spelling, so
+        // the adapter-chosen folded compares (posix/windows
+        // path_component_eq/prefix/suffix) must judge every entry's
+        // uppercase variant a hit. The adapters' own selection branches run
+        // on the macOS/Windows CI legs; this pins the fold primitive's
+        // semantics across platforms for every list entry — missing any
+        // entry on the folded path (or degrading the fold primitive to a
+        // byte compare) turns red on every platform. Pure string logic, no
+        // filesystem access.
         let entries: Vec<&str> = crate::platform::path_policy::BLOCKED_COMPONENTS
             .iter()
             .chain(crate::platform::path_policy::BLOCKED_COMPONENT_PREFIXES.iter())
@@ -348,13 +375,17 @@ mod tests {
 
     #[test]
     fn volume_fold_matches_unicode_case_folding_onto_ascii() {
-        // 平台无关的纯函数,全平台同语义:Unicode 简单大小写折叠里仅
-        // ſ(U+017F)与 KELVIN SIGN(U+212A)折叠为 ASCII,NTFS 的 $UpCase
-        // 大写表则额外把 ı(U+0131)折叠为 `I`;大小写不敏感卷(APFS/NTFS)
-        // 按各自折叠表把 `id_rſa`、`ıd_rsa` 解析到 `id_rsa`,折叠平台的
-        // 词法判定必须识别这些拼写,否则凭据黑名单被非 ASCII 拼写绕过。
-        // `std::str::to_lowercase` 不做这些折叠(ſ/ı 已是小写),所以显式
-        // 替换是承载语义的,不得「简化」掉。
+        // Platform-independent pure function, identical semantics on every
+        // platform: in Unicode simple case folding only ſ (U+017F) and
+        // KELVIN SIGN (U+212A) fold to ASCII, while NTFS's $UpCase
+        // uppercase table additionally folds ı (U+0131) to `I`;
+        // case-insensitive volumes (APFS/NTFS) resolve `id_rſa` and
+        // `ıd_rsa` to `id_rsa` per their own fold tables, so the folding
+        // platforms' lexical judgment must recognize these spellings or the
+        // credential blocklist is bypassed by non-ASCII spellings.
+        // `std::str::to_lowercase` performs none of these folds (ſ/ı are
+        // already lowercase), so the explicit replacement carries the
+        // semantics and must not be "simplified" away.
         assert!(volume_fold_eq(OsStr::new("id_r\u{017F}a"), "id_rsa"));
         assert!(volume_fold_eq(OsStr::new("id_R\u{017F}A"), "id_rsa"));
         assert!(volume_fold_eq(OsStr::new(".\u{017F}sh"), ".ssh"));
@@ -375,11 +406,13 @@ mod tests {
 
     #[test]
     fn volume_fold_spelling_expansion_is_pinned_directly() {
-        // Round-7 复审:折叠表最微妙的一行是 ı(U+0131)的显式展开——
-        // `to_lowercase` 对它返回原字符,而 `.replace` 把它展开成 `i`;
-        // İ(U+0130)则必须保持**不**折叠:它的 to_lowercase 展开成
-        // `i` + U+0307 组合符,永远不会等于/前缀命中 ASCII 名(fail-closed
-        // 的过折叠方向)。此前该行为只被 eq/prefix 间接经过,无直接断言。
+        // Round-7 review: the subtlest line of the fold table is the explicit
+        // expansion of ı (U+0131) — `to_lowercase` returns it unchanged while
+        // `.replace` expands it to `i`; İ (U+0130) must stay **un**folded:
+        // its to_lowercase expands to `i` + U+0307 combining mark, which can
+        // never equal or prefix-hit an ASCII name (fail-closed over-fold
+        // direction). Previously this behavior was only exercised indirectly
+        // through eq/prefix, with no direct assertion.
         assert_eq!(volume_fold_spelling("id_r\u{017F}a"), "id_rsa");
         assert_eq!(volume_fold_spelling("\u{0131}d_rsa"), "id_rsa");
         assert_eq!(
@@ -398,9 +431,11 @@ mod tests {
 
     #[test]
     fn path_starts_with_folded_follows_component_folding_and_boundaries() {
-        // 前缀按分量比较走 path_component_eq 的平台语义:折叠平台识别
-        // `/Etc/Sudoers`,字节精确平台(Linux)不识别;组件边界让
-        // `/etc/shadowed` 不命中 `/etc/shadow`(字节 starts_with 会误报)。
+        // The prefix compares component-wise through path_component_eq's
+        // platform semantics: folding platforms recognize `/Etc/Sudoers`,
+        // byte-exact platforms (Linux) do not; component boundaries keep
+        // `/etc/shadowed` from hitting `/etc/shadow` (a byte starts_with
+        // would false-positive).
         let folded = cfg!(target_os = "macos") || std::path::MAIN_SEPARATOR == '\\';
         assert_eq!(
             path_starts_with_folded(Path::new("/Etc/Sudoers"), "/etc/sudoers"),

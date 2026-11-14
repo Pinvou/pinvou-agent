@@ -95,9 +95,10 @@ impl EngineScheduledRuntime {
     }
 }
 
-/// Shell 开关的唯一读取点：与普通 Yolo 会话同口径（`Pinvou3Bridge::allow_shell_for_prefs`）。
-/// 任务创建（tasks.rs 的 build_create_request）与运行时（下面的 trait impl）共用，
-/// 避免两份同样的偏好读取各自漂移。
+/// The single read point for the shell toggle: same caliber as ordinary Yolo
+/// sessions (`Pinvou3Bridge::allow_shell_for_prefs`). Shared by task creation
+/// (tasks.rs build_create_request) and the runtime (the trait impl below) so two
+/// identical preference reads cannot drift apart.
 pub(crate) fn current_yolo_allow_shell() -> bool {
     Pinvou3Bridge::allow_shell_for_prefs(&UserPrefs::load())
 }
@@ -366,8 +367,24 @@ impl ScheduledChatExecutor {
             Some(Err(error)) => TaskExecutionResult {
                 status: TaskStatus::Failed,
                 result_text: None,
-                // Same redaction discipline as the memory-organize arm: app
-                // error chains can carry store paths and gate details.
+                // Secret-only redaction here, matching what this chain can
+                // actually carry today: ensure_deliverable_target collapses
+                // store-load failures into static text and the per-session
+                // sidecar reads surface only error kinds, so no proven
+                // absolute-path carrier exists on this chain. (Round-20 review
+                // correction: the earlier "sidecar error contexts use bare file
+                // names" claim was inaccurate — the session-agent index store's
+                // SessionAgentStore::load_from embeds path.display() in its
+                // contexts; no leak today only because the collapse above folds
+                // it into static text, and if that collapse were removed this arm
+                // would have to adopt redact_storage_prefix like the organize
+                // arm.) Round-19 review: this comment previously claimed the same
+                // discipline as this file's organize arm — inaccurate; since
+                // round-18 the organize arm additionally folds the storage root
+                // (its chain's bounded-read io Display genuinely carries absolute
+                // paths); if this arm ever introduces a path-carrying error
+                // constructor, it must adopt redact_storage_prefix in the same
+                // change (see the organize arm's comment).
                 error: Some(format!(
                     "scheduled message delivery: {}",
                     crate::platform::credential_store::redact_secret(&format!("{error:#}"))
@@ -417,11 +434,21 @@ impl ScheduledChatExecutor {
                 // Same redaction as the chat command layer's organize_memory: the
                 // bridge-resolution and LLM error chains can carry endpoint or
                 // credential-probing details, and run records are persisted and
-                // rendered verbatim in the task-detail UI.
-                error: Some(format!(
+                // rendered verbatim in the task-detail UI. Round-18 review: the
+                // chain also carries the bounded-read primitive's io Display
+                // (absolute storage paths from path.display(), in the contexts of
+                // refresh_recent_work_expiry / snapshot load) — the run record
+                // leaves via list_scheduled_task_runs (web allowlisted), so the
+                // storage root is folded with the same caliber as the command
+                // layer. Round-21 review: same-order fix as the command layer's
+                // S10-1 — fold first, then scan — because the old secret-first
+                // order let the ≥24-length token family consume the folded
+                // needle on whitespace-containing homes (exactly the vulnerable
+                // order pinned by the round-20 source pin arm<fold<secret).
+                error: Some(crate::platform::credential_store::redact_secret(&format!(
                     "memory organize: {}",
-                    crate::platform::credential_store::redact_secret(&format!("{error:#}"))
-                )),
+                    crate::platform::paths::redact_storage_prefix(&format!("{error:#}"))
+                ))),
                 terminal_reason: TaskTerminalReason::Failed,
             },
         }
@@ -460,12 +487,22 @@ impl TaskExecutor for ScheduledChatExecutor {
                     .await;
             }
             ScheduledTaskKindLookup::Unsupported(raw) => {
+                // Round-21 review: the kind field is app-owned-but-not-trusted
+                // sidecar state (declared twice above); its raw Debug-expanded
+                // bytes previously reached the web-visible run record without
+                // folding/scanning — this file's uniform error-construction
+                // discipline (fold first, then scan) applies here too; short
+                // kinds remain readable verbatim after both no-op layers (the
+                // ≥24-character alphanumeric family is still masked by
+                // is_secret_like — that is the scan's established semantics, not
+                // a regression of this arm).
+                let detail = format!(
+                    "unsupported scheduled task kind {raw:?}; update the app or recreate the task"
+                );
                 return TaskExecutionResult {
                     status: TaskStatus::Failed,
                     result_text: None,
-                    error: Some(format!(
-                        "unsupported scheduled task kind {raw:?}; update the app or recreate the task"
-                    )),
+                    error: Some(fold_then_redact(&detail)),
                     terminal_reason: TaskTerminalReason::Failed,
                 };
             }
@@ -553,7 +590,14 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
         return TaskExecutionResult {
             status: TaskStatus::Canceled,
             result_text: None,
-            error: completion.error,
+            // Round-20 review MAJOR-2: the engine error chain carried by the cancel
+            // path also lands in the run record (leaving via
+            // list_scheduled_task_runs), folded with the same caliber as failed(.
+            // Round-21 review: the caliber is unified to fold-first-then-scan
+            // (failed( corrected in the same batch) — secret-first would let the
+            // ≥24-length family consume the folded needle on whitespace-containing
+            // homes (the S10-1-proven shape from the memory command arm).
+            error: completion.error.map(|error| fold_then_redact(&error)),
             terminal_reason: TaskTerminalReason::Canceled,
         };
     }
@@ -568,22 +612,50 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
         TurnOutcomeStatus::Failed => TaskExecutionResult {
             status: TaskStatus::Failed,
             result_text: None,
-            error: Some(
-                completion
+            error: Some(fold_then_redact(
+                &completion
                     .error
                     .unwrap_or_else(|| "Scheduled conversation failed".to_string()),
-            ),
+            )),
             terminal_reason: TaskTerminalReason::Failed,
         },
         TurnOutcomeStatus::Interrupted => unreachable!("handled above"),
     }
 }
 
+/// Uniform discipline for run-record error egress (ordering fixed by the
+/// round-21 review MAJOR-2, consolidated into this single helper by the round-22
+/// review m1/m2): fold the storage root first, then run the secret scan over the
+/// folded text — the old order (secret first) let the whitespace tokens of the
+/// ≥24-length family consume the folded needle on whitespace-containing homes
+/// (the `...John [REDACTED]` shape), leaving drive-letter/username fragments in
+/// cleartext on the web-visible run record. The order is hard-coded in this
+/// helper; re-inlining the old order at an arm is blocked by the census pin; the
+/// whitespace-home behavioral tooth lives in
+/// failed_folds_before_the_secret_scan_on_whitespace_homes. Already-folded text is
+/// idempotent under re-folding. The organize arm (format! prefix assembly) and the
+/// secret-only delivery arm do not go through this helper (each has its own source
+/// pin); the census pins the whole file's spelling counts.
+fn fold_then_redact(raw: &str) -> String {
+    crate::platform::credential_store::redact_secret(
+        &crate::platform::paths::redact_storage_prefix(raw),
+    )
+}
+
 fn failed(error: impl std::fmt::Display) -> TaskExecutionResult {
     TaskExecutionResult {
         status: TaskStatus::Failed,
         result_text: None,
-        error: Some(error.to_string()),
+        // Round-20 review MAJOR-2: create_scheduled_run's outermost anyhow
+        // context carries `<home>/.../scheduled-runs/...` absolute paths
+        // (sessions/retention.rs), and the run_turn error chain is the same
+        // kind; the run record leaves via list_scheduled_task_runs (web
+        // allowlisted), same caliber as the organize arm above. Round-21 review
+        // fixed the order to fold-then-scan; Round-22 review (m1/m2) consolidated
+        // the discipline into fold_then_redact — arm-level order drift is now
+        // structurally impossible; the whitespace-home behavioral tooth and this
+        // arm's helper wiring each have their own pins.
+        error: Some(fold_then_redact(&error.to_string())),
         terminal_reason: TaskTerminalReason::Failed,
     }
 }
@@ -1326,10 +1398,13 @@ mod tests {
     }
 
     /// Review round-15 N10: the delivery-failure reason passes through
-    /// `redact_secret` before it reaches the run record (app error chains
-    /// carry store paths and gate detail) — deleting the call kept every
-    /// behavioral test green, so the call site is pinned textually, the
-    /// same way as the live body above.
+    /// `redact_secret` before it reaches the run record (credential /
+    /// endpoint-probing detail; Round-20 review correction: the old aside "app
+    /// error chains carry store paths" contradicts this arm's own comment's field
+    /// findings — the chain has no proven absolute-path carrier today, so folding
+    /// the storage root is not part of this arm's discipline) — deleting the call kept
+    /// every behavioral test green, so the call site is pinned textually,
+    /// the same way as the live body above.
     /// Review round-15 N10, rewritten in round-17 M5: the delivery-failure
     /// reason passes through `redact_secret` before it reaches the run
     /// record. The textual pin needs TWO bounds to be mutation-sensitive:
@@ -1363,6 +1438,60 @@ mod tests {
         assert!(
             failure_arm < redact,
             "the redaction sits inside the delivery-failure arm"
+        );
+    }
+
+    /// Round-18 review: memory_organize's failure reason previously passed only
+    /// through `redact_secret` (its comment also claimed the same treatment as the
+    /// command layer — the command layer has additionally folded the storage root
+    /// since round-15, making that claim inaccurate). The organize error chain
+    /// carries the bounded-read primitive's io Display (absolute storage paths from
+    /// path.display()), and the run record leaves via `list_scheduled_task_runs`
+    /// (web allowlisted). This pin and
+    /// `memory_organize_failure_folds_the_storage_root_in_the_record`
+    /// (the behavioral pin added by the Round-19 review; a failing organize can be
+    /// constructed within this same file) provide double coverage: the source pin
+    /// anchors the production half and the arm's redact order, so deleting either
+    /// redaction layer turns red; the behavioral pin drives the real execution path
+    /// and asserts the record content. Round-21 review: the order assertion flipped
+    /// to fold-first (secret outer, fold inner) — the arm<fold<secret order pinned
+    /// by the round-20 version is exactly the S10-1-proven vulnerable order, so this
+    /// pin had been protecting the wrong direction; the whitespace-home behavioral
+    /// pin
+    /// (`memory_organize_failure_folds_before_the_secret_scan_on_whitespace_homes`)
+    /// adds a behavioral-level red for the order.
+    #[test]
+    fn memory_organize_failure_reason_folds_the_storage_prefix() {
+        let source = include_str!("executor.rs");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("the production half present");
+        let body = production
+            .split("async fn execute_memory_organize")
+            .nth(1)
+            .expect("the memory-organize run body present")
+            .split("\n    async fn ")
+            .next()
+            .expect("the memory-organize arm must be bounded by the next item");
+        let arm = body
+            .find("Err(error) => TaskExecutionResult")
+            .expect("the failure arm present");
+        let secret = body
+            .find("redact_secret(&format!(")
+            .expect("the failure reason must still pass through redact_secret");
+        let fold = body
+            .find("crate::platform::paths::redact_storage_prefix(&format!(\"{error:#}\"))")
+            .expect(
+                "the failure reason must fold the storage root via redact_storage_prefix; \
+                 io error Displays carry the absolute path",
+            );
+        assert!(
+            arm < secret && secret < fold,
+            "the fold must run BEFORE the secret scan (outer redact_secret over \
+             inner redact_storage_prefix): scan-then-fold lets the >=24-char \
+             secret family destroy the fold needle on whitespace-containing \
+             homes and leak a drive+username fragment (the S10-1 shape)"
         );
     }
 
@@ -1690,6 +1819,392 @@ mod tests {
         );
         manager.shutdown();
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_organize_failure_folds_the_storage_root_in_the_record() -> Result<()> {
+        // Round-19 review M2: behavioral pin. The round-18 source-pin comment
+        // claimed a failing organize could not be behaviorally constructed without an
+        // AppHandle — untrue: the previous test's set_organize_error is exactly that
+        // construction. This test injects a failure carrying storage paths and
+        // asserts that the run record (the web-visible surface leaving via
+        // list_scheduled_task_runs) holds the folded ~/.pinvou3 form rather than the
+        // raw path. The fixture uses a short home: the inner redact_secret's
+        // ≥24-length family would mask a long path into [REDACTED] before the fold
+        // layer could observe it; short paths (like real short installs / short
+        // usernames) are exactly the shape only the fold layer can catch. ENV_LOCK
+        // ensures worker threads read the same PINVOU3_HOME this test constructs
+        // (paths tests rewrite that variable in parallel within the process).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", "p8") };
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        runtime.set_organize_error(Some(format!(
+            "snapshot load failed: {}",
+            crate::platform::paths::pinvou3_home().join("p").display()
+        )));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Failed);
+        let error = finished
+            .error
+            .as_deref()
+            .expect("failed run carries the error");
+        assert!(
+            error.contains("memory organize: snapshot load failed: ~/.pinvou3/p"),
+            "the run record must carry the folded storage root, got: {error}"
+        );
+        assert!(
+            !error.contains("p8/p"),
+            "the run record must not carry the raw home prefix, got: {error}"
+        );
+        assert!(
+            !error.contains("[REDACTED]"),
+            "the path token must survive the inner secret redaction for the \
+             fold to be the layer under test, got: {error}"
+        );
+        manager.shutdown();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn memory_organize_failure_folds_before_the_secret_scan_on_whitespace_homes() -> Result<()>
+    {
+        // Round-21 review (S10-1 completion) behavioral pin: on whitespace-containing
+        // homes, the old secret-first order let the whitespace tokens of the
+        // ≥24-length family consume the folded needle (the `...John [REDACTED]`
+        // shape), leaving drive-letter/username fragments in cleartext on the run
+        // record. The production arm (same order as the command layer since round-21)
+        // folds first and scans second: folded short tokens survive as the
+        // ~/.pinvou3 form and long tokens are masked wholesale as [REDACTED] — no
+        // home fragment survives in either direction. The control leg reproduces the
+        // leak shape by hand under the old order (constructible when the
+        // whitespace-leading segment is shorter than the ≥24 family; platforms whose
+        // temp dir is itself overlong (macOS /var/folders…) skip the control leg,
+        // and there the whitespace-leading segment itself joins the ≥24 family, so
+        // the two orders produce byte-different output (two [REDACTED] under the old
+        // order, one folded under the new) but neither leaves fragments — the
+        // production-invariant leg (!contains fragments) has no signal for order
+        // regressions on that platform, and the order tooth relies on Linux CI's
+        // short /tmp (round-27 review m11 corrected "both orders produce identical
+        // output"; round-23 review caliber note).
+        // Reverting the order to secret-first turns red. ENV_LOCK ensures worker
+        // threads read the same PINVOU3_HOME this test constructs.
+        let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
+        let home = base.join("John Doe").join(".pinvou3");
+        std::fs::create_dir_all(&home).unwrap();
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        // Paths always take pinvou3_home()'s reading (normalization differences such
+        // as macOS /tmp symlinks), keeping the fold needle and the injected failure
+        // detail same-source. The tail is padded to ≥24 chars with digits+letters so
+        // the ≥24 family surely hits under the old order (the leak shape is
+        // independent of temp-dir length).
+        let home_now = crate::platform::paths::pinvou3_home();
+        let detail = format!(
+            "snapshot load failed: {}/sessions2/x.json12345678901234567890123456789",
+            home_now.display()
+        );
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        runtime.set_organize_error(Some(detail));
+        let executor = Arc::new(
+            ScheduledChatExecutor::new(runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
+        );
+        let (_root, manager) = manager_with_executor(executor).await?;
+
+        let queued = manager.add_task(request("organize memory")).await?;
+        let finished =
+            wait_for_terminal_state(&manager, &queued.id, std::time::Duration::from_secs(5))
+                .await?;
+
+        assert_eq!(finished.status, TaskStatus::Failed);
+        let error = finished
+            .error
+            .as_deref()
+            .expect("failed run carries the error");
+        assert!(
+            !error.contains("John") && !error.contains("Doe"),
+            "fold-first must not leak any home fragment onto the web-visible \
+             run record, got: {error}"
+        );
+        assert!(
+            error.contains("memory organize: "),
+            "the failure arm must still format the organize context, got: {error}"
+        );
+
+        // Control leg: the old order (secret first) does produce the fragment leak —
+        // this test pins that the shape no longer appears in the production arm. The
+        // shape is reproducible when the whitespace-leading segment
+        // (temp/jd<pid>/John) is shorter than the ≥24 family; skipped on platforms
+        // whose temp dir is itself overlong (macOS /var/folders…), matching the
+        // established caliber of the same-named pin in memory.rs.
+        let pre_space = format!("{}/John", base.display());
+        if pre_space.len() < 24 {
+            let leaked = crate::platform::paths::redact_storage_prefix(
+                &crate::platform::credential_store::redact_secret(&format!(
+                    "memory organize: snapshot load failed: {}/sessions2/x.json12345678901234567890123456789",
+                    home_now.display()
+                )),
+            );
+            assert!(
+                leaked.contains("John"),
+                "control: the reversed order must reproduce the fragment-leak \
+                 shape this pin forbids, got: {leaked}"
+            );
+        }
+
+        // Short-tail leg: the folded form leaves intact (the fold layer replaced the home before the scan).
+        let plain_detail = format!(
+            "snapshot load failed: {}/mem/x.json: boom",
+            home_now.display()
+        );
+        let plain_runtime = Arc::new(ScriptedRuntime::new([]));
+        plain_runtime.set_organize_error(Some(plain_detail));
+        let plain_executor = Arc::new(
+            ScheduledChatExecutor::new(plain_runtime.clone())
+                .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
+        );
+        let (_plain_root, plain_manager) = manager_with_executor(plain_executor).await?;
+        let plain_queued = plain_manager.add_task(request("organize memory")).await?;
+        let plain_finished = wait_for_terminal_state(
+            &plain_manager,
+            &plain_queued.id,
+            std::time::Duration::from_secs(5),
+        )
+        .await?;
+        let plain_error = plain_finished
+            .error
+            .as_deref()
+            .expect("failed run carries the error");
+        assert!(
+            plain_error.contains("memory organize: snapshot load failed: ~/.pinvou3/mem/x.json"),
+            "the short folded tail must survive the secret scan intact, got: {plain_error}"
+        );
+        plain_manager.shutdown();
+        manager.shutdown();
+        Ok(())
+    }
+
+    /// Round-22 review (m1/m2) census pin: all four run-record error arms fold via
+    /// fold_then_redact (except the secret-only delivery arm and the organize arm
+    /// with its own format! prefix). The whole production half's counts of the two
+    /// primitive spellings are pinned: if a new error arm inlines the old order or
+    /// bypasses the helper, the census count turns red and the author must adopt the
+    /// helper explicitly (census blind spots: respelling — e.g. a `use` import of a
+    /// short name — is not counted; organizational changes are backed by the
+    /// compiler and the behavioral pins).
+    #[test]
+    fn run_record_fold_census_routes_through_the_helper() {
+        let source = include_str!("executor.rs");
+        let production = source
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("executor.rs must keep its tests behind #[cfg(test)]");
+        // Round-27 review m4: pure comment lines are filtered first — comment
+        // mentions in the production half (worded to dodge the counted spellings)
+        // could previously pad/mask the counts, aligning with tasks.rs's pin
+        // filtering caliber.
+        let production = crate::platform::test_support::comment_filtered(production);
+        assert_eq!(
+            production
+                .matches("crate::platform::credential_store::redact_secret(")
+                .count(),
+            3,
+            "exactly the helper, the organize arm and the secret-only delivery \
+             arm may scan; new error arms must route through fold_then_redact"
+        );
+        assert_eq!(
+            production
+                .matches("crate::platform::paths::redact_storage_prefix(")
+                .count(),
+            2,
+            "exactly the helper and the organize arm may fold; new error arms \
+             must route through fold_then_redact"
+        );
+        // Round-25 review MINOR: on top of the primitive-spelling census, add a
+        // helper-call-site census — the unsupported-kind arm's fold_then_redact call
+        // was invisible to both primitive-spelling censuses (deleting that call and
+        // reverting to the bare detail kept the whole suite green, violating this
+        // file's self-pinned standard that error construction always goes through
+        // the helper). The production half's total reference count is pinned (4 error
+        // arms + the helper definition itself): deleting a call or adding a bypassing
+        // arm turns red.
+        assert_eq!(
+            production.matches("fold_then_redact(").count(),
+            5,
+            "exactly the four error arms (organize, canceled completion, \
+             failed completion, unsupported-kind) plus the helper definition \
+             may reference fold_then_redact; deleting a call site changes \
+             this census. Disclosed blindness: a NEW raw arm emitting \
+             neither primitive nor the helper stays invisible here — the \
+             per-arm behavioral pins are the second line of defense"
+        );
+    }
+
+    /// Round-22 review (m1) behavioral pin: the failed() exit's whitespace-home
+    /// order tooth — previously only the organize arm had one (under this arm's unit
+    /// pin's short home the two orders were byte-identical, giving no signal for
+    /// order regressions; mutation 323 confirmed this with all green). Drives
+    /// failed() directly: the production helper (fold first, then scan) leaves no
+    /// home fragment in either direction; the control leg reproduces the leak shape
+    /// by hand under the old order, skipping the control leg on platforms with an
+    /// overlong temp dir (same caliber as the organize pin). Reverting to the old
+    /// order or bypassing the helper by inlining turns red.
+    #[test]
+    fn failed_folds_before_the_secret_scan_on_whitespace_homes() {
+        let base = std::env::temp_dir().join(format!("jd{}", std::process::id()));
+        let home = base.join("John Doe").join(".pinvou3");
+        std::fs::create_dir_all(&home).unwrap();
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let home_now = crate::platform::paths::pinvou3_home();
+        let detail = format!(
+            "create_scheduled_run: {}/scheduled-runs/r.json12345678901234567890123456789",
+            home_now.display()
+        );
+        let error = failed(&detail).error.expect("failed() carries the error");
+        assert!(
+            !error.contains("John") && !error.contains("Doe"),
+            "fold-first must not leak any home fragment onto the web-visible \
+             run record, got: {error}"
+        );
+
+        // Control leg: the old order (secret first) does produce the fragment leak
+        // (constructible when the whitespace-leading segment is shorter than the
+        // ≥24 family; not constructible on platforms with an overlong temp dir, skip).
+        let pre_space = format!("{}/John", base.display());
+        if pre_space.len() < 24 {
+            let leaked = crate::platform::paths::redact_storage_prefix(
+                &crate::platform::credential_store::redact_secret(&detail),
+            );
+            assert!(
+                leaked.contains("John"),
+                "control: the reversed order must reproduce the fragment-leak \
+                 shape this pin forbids, got: {leaked}"
+            );
+        }
+
+        // Short-tail leg: the folded form leaves intact (the fold layer replaced it before the scan).
+        let plain = failed(format!(
+            "create_scheduled_run: {}/mem/x.json: boom",
+            home_now.display()
+        ))
+        .error
+        .expect("failed() carries the error");
+        assert!(
+            plain.contains("~/.pinvou3/mem/x.json"),
+            "the short folded tail must survive the secret scan intact, got: {plain}"
+        );
+    }
+
+    #[test]
+    fn failed_reason_folds_the_storage_root_like_the_organize_arm() {
+        // Round-20 review MAJOR-2 behavioral pin (unit half): failed( is the shared
+        // exit of the create_session(:505) and run_turn(:545) error arms —
+        // create_scheduled_run's outermost anyhow context carries absolute storage
+        // paths, and this exit previously had no folding at all. Deleting the fold
+        // inside failed( turns this assertion red.
+        // (Round-21 review correction: the round-20 comment's claim that "swapping
+        // the inner/outer order turns this assertion red" did not hold — under a
+        // short home both layers' tokens are shorter than the ≥24 family, so the
+        // swap is a byte-level no-op. Round-22 review (m1): the order tooth is
+        // provided by the fold_then_redact helper census pin and this file's
+        // failed_folds_before_the_secret_scan_on_whitespace_homes behavioral pin;
+        // this pin only covers the fold layer's existence.)
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", "p8") };
+        // Path tokens stay shorter than the inner redact_secret's ≥24-length family so
+        // the fold layer is independently observable (same discipline as the organize
+        // behavioral pin above).
+        let result = failed(format!(
+            "create scheduled task workspace {}",
+            crate::platform::paths::pinvou3_home()
+                .join("sr/w")
+                .display()
+        ));
+        let error = result.error.expect("failed() must carry the error");
+        assert!(
+            error.contains("create scheduled task workspace ~/.pinvou3/sr/w"),
+            "the failed() exit must fold the storage root before the secret scan, got: {error}"
+        );
+        assert!(
+            !error.contains("p8/sr"),
+            "the failed() exit must not retain the raw home prefix, got: {error}"
+        );
+    }
+
+    #[test]
+    fn completion_error_arms_fold_the_storage_root() {
+        // Round-20 review MAJOR-2 behavioral pin (unit half): map_completion's Failed
+        // and Canceled arms carry engine error chains that likewise land in the run
+        // record — deleting the fold in either arm turns this test red.
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", "p8") };
+        let raw = format!(
+            "turn failed at {}",
+            crate::platform::paths::pinvou3_home()
+                .join("sr/w")
+                .display()
+        );
+        let failed_result = map_completion(completion(
+            "turn_1".to_string(),
+            TurnOutcomeStatus::Failed,
+            Some(raw.clone()),
+            false,
+        ));
+        let failed_error = failed_result
+            .error
+            .expect("failed completion carries the error");
+        assert!(
+            failed_error.contains("turn failed at ~/.pinvou3/sr/w"),
+            "the completion Failed arm must fold the storage root, got: {failed_error}"
+        );
+        assert!(
+            !failed_error.contains("p8/sr"),
+            "the completion Failed arm must not retain the raw home prefix, got: {failed_error}"
+        );
+        let canceled_result = map_completion(completion(
+            "turn_2".to_string(),
+            TurnOutcomeStatus::Completed,
+            Some(raw),
+            true,
+        ));
+        assert_eq!(canceled_result.status, TaskStatus::Canceled);
+        let canceled_error = canceled_result
+            .error
+            .expect("canceled completion carries the error");
+        assert!(
+            canceled_error.contains("~/.pinvou3/sr/w"),
+            "the completion Canceled arm must fold the storage root, got: {canceled_error}"
+        );
+        assert!(
+            !canceled_error.contains("p8/sr"),
+            "the completion Canceled arm must not retain the raw home prefix, got: {canceled_error}"
+        );
     }
 
     #[tokio::test]

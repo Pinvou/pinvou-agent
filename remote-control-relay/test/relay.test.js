@@ -246,8 +246,16 @@ function waitForRawClose(sock, timeoutMs = 3000) {
   });
 }
 
-async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl) {
-  const ws = await openSocket(url);
+async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl, wsOptions = {}) {
+  // wsOptions lets individual tests configure the desktop socket's maxPayload:
+  // the three frame_too_large gate tests (two over-bound + one near-bound
+  // positive control) use it to set the desktop inbound limit to the real
+  // desktop bound, giving the "desktop undisturbed" assertion teeth — if a
+  // rejected frame were still forwarded, the desktop-side 1009 close would go
+  // red (with the default 100 MiB maxPayload the assertion is structurally
+  // unobservable, Round-19 review; the near-bound leg was added in the
+  // round-20 review and counted in the Round-21 review).
+  const ws = await openSocket(url, wsOptions);
   const registered = nextMessage(ws, "desktop_endpoint_registered");
   ws.send(JSON.stringify({
     v: 2,
@@ -528,10 +536,12 @@ test("serves the built WebUI SPA at the public base path", async () => {
   assert.equal(outside.status, 404);
 });
 
-// stat→read 之间的换出(部署替换 web/dist):readFile 失败必须以 503 应答,
-// 不得成为 async handler 的 unhandled rejection 杀死整个 relay(与 Host 头
-// 守卫同一中毒输入纪律)。用不可读的 index.html 确定性触发 read 失败
-// (root 与 Windows 忽略该权限位,场景不成立时跳过)。
+// Swap-out between stat and read (a deploy replacing web/dist): a readFile
+// failure must be answered with 503, not become an unhandled rejection in the
+// async handler that kills the whole relay (the same poisoned-input discipline
+// as the Host header guard). The read failure is triggered deterministically
+// with an unreadable index.html (root and Windows ignore that permission bit;
+// skipped when the scenario cannot hold).
 const unreadableFileScenario =
   process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() !== 0;
 test("answers 503 when the web dist file fails between stat and read", { skip: !unreadableFileScenario }, async () => {
@@ -2172,7 +2182,373 @@ test("a state above the clamped capacity loads and refuses only new revocations"
   }
 });
 
-test("survives a desktop frame the relay cannot serialize and keeps the web client joined", async () => {
+test("rejects a web frame whose envelope would exceed the desktop bound with frame_too_large", async () => {
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_envelope_${Date.now()}`;
+  const accessToken = "access-token-envelope-000000000000001";
+  const desktopSecret = "desktop-secret-envelope-00000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    // Larger than the desktop bound yet smaller than the ingress cap: this
+    // used to pass ingress and then exceed the desktop tungstenite bound after
+    // forwarding, forcing the desktop to drop (self-healing but a visible
+    // flash); it is now rejected before forwarding with an explicit
+    // frame_too_large based on the real encoded length.
+    const pad = "x".repeat(4_150_000);
+    web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", request_id: "req-big", command: "chat", args: { pad } }));
+
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "frame_too_large");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must not be disturbed by the oversized web frame");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // The same web session must still forward normally afterwards (the error
+    // is frame-level, it does not cut the link) — a positive assertion:
+    // client_ready must truly reach the desktop, rather than relying only on a
+    // negative "no error" assertion.
+    const readyReceived = nextMessage(desktop.ws, "client_ready");
+    web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-b", after_seq: 0 }));
+    const ready = await readyReceived;
+    assert.equal(ready.stream_epoch, "epoch-b");
+    await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("rejects a web frame whose encoded forward expands past the desktop bound", async () => {
+  // Round-17 review correction: JSON re-serialization inflates numeric
+  // literals — the 4-byte `1e20` re-encodes as a 21-digit exact decimal
+  // (+17 bytes per element). Build a frame whose raw bytes sit far below the
+  // ingress cap (the old raw-plus-headroom approximation gate passes it
+  // directly) but whose forwarded encoding expands past the desktop bound;
+  // the gate measures the real encoded length, so it must reject with
+  // frame_too_large while the desktop stays connected.
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_expand_${Date.now()}`;
+  const accessToken = "access-token-expand-0000000000000001";
+  const desktopSecret = "desktop-secret-expand-000000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const base = { v: 2, type: "rpc_request", request_id: "req-expand", command: "chat", args: { nums: [] } };
+    const overhead = Buffer.byteLength(JSON.stringify(base));
+    // Per element, raw `1e20,` = 5 bytes → re-encoded after parsing,
+    // `100000000000000000000,` = 22 bytes: derive the element count backwards
+    // from the encoded side so the encoding crosses the desktop bound while
+    // the raw bytes (≈ 23% of the encoding) stay far below the ingress cap.
+    // The literals must be spliced into the wire frame as text
+    // (JSON.stringify would emit the 21-digit decimal directly, so the
+    // expansion could not happen).
+    const elementCount = Math.ceil((4 * 1024 * 1024 - 64 * 1024 + 4096 - overhead) / 22);
+    const elementText = Array.from({ length: elementCount }, () => "1e20").join(",");
+    const frame = JSON.stringify(base).replace('"nums":[]', `"nums":[${elementText}]`);
+    assert.equal(frame.includes("1e20"), true,
+      "the raw frame must carry exponential literals (the expansion vector)");
+    assert.equal(Buffer.byteLength(frame) < 4 * 1024 * 1024, true,
+      "the raw frame must pass the ingress payload cap");
+    const expanded = Buffer.byteLength(JSON.stringify(JSON.parse(frame)));
+    assert.equal(expanded > 4 * 1024 * 1024 - 64 * 1024, true,
+      "the re-serialized encoding must exceed the desktop bound");
+
+    web.ws.send(frame);
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "frame_too_large",
+      "the gate must measure the forwarded encoding, not the raw bytes");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must not be disturbed by the expanding web frame");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // Round-18 review: "desktop undisturbed" previously sampled only
+    // readyState — add a real forwarding assertion on the same terms as the
+    // envelope test: after the rejection, a legitimate frame from the same web
+    // session must still reach the desktop in full (the error is frame-level,
+    // it does not cut the link).
+    const readyReceived = nextMessage(desktop.ws, "client_ready");
+    web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-expansion", after_seq: 0 }));
+    const ready = await readyReceived;
+    assert.equal(ready.stream_epoch, "epoch-expansion");
+    await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("forwards a near-bound legal web frame to the desktop (positive control against bound drift)", async () => {
+  // Round-20 review (S09): the two gate tests only pinned the
+  // under-blocking direction (letting an oversized frame through = red); a
+  // downward drift of the bound constant (mistakenly changed to 1 MiB ⇒ every
+  // legal web→desktop frame between 1 MiB and the bound rejected as
+  // frame_too_large) previously kept the whole suite green — there was no
+  // "near the bound yet still legal" positive control. Send an rpc_request
+  // whose raw bytes and forwarded encoding both fall between the ingress cap
+  // and the desktop bound, and assert the desktop receives it in full.
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_nearbound_${Date.now()}`;
+  const accessToken = "access-token-nearbound-000000000000001";
+  const desktopSecret = "desktop-secret-nearbound-00000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const base = { v: 2, type: "rpc_request", request_id: "req-nearbound", command: "chat", args: { pad: "" } };
+    const overhead = Buffer.byteLength(JSON.stringify(base));
+    // Target: forwarded encoding ≈ desktop bound − 16 KiB (headroom for the
+    // forwarding envelope contending with heartbeats); the raw bytes (ASCII
+    // pad, no re-encoding expansion) sit far below the ingress cap and far
+    // above any plausibly misconfigured drifted-down bound.
+    const target = 4 * 1024 * 1024 - 64 * 1024 - 16 * 1024;
+    const pad = "x".repeat(target - overhead);
+    const frame = JSON.stringify({ ...base, args: { pad } });
+    const encoded = Buffer.byteLength(JSON.stringify(JSON.parse(frame)));
+    assert.equal(encoded < 4 * 1024 * 1024 - 64 * 1024, true,
+      "the forwarded encoding must stay under the desktop bound");
+    assert.equal(Buffer.byteLength(frame) > 1024 * 1024, true,
+      "the frame must sit far above any plausible drifted-down bound");
+
+    const received = nextMessage(desktop.ws, "rpc_request");
+    web.ws.send(frame);
+    const rpc = await received;
+    assert.equal(rpc.request_id, "req-nearbound",
+      "a near-bound legal frame must reach the desktop intact");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must stay open across the near-bound forward");
+    await expectNoMessage(web.ws, "error");
+    await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("pins the server bound to within 1 KiB of the desktop bound on both sides", async () => {
+  // Round-27 review m9: quantify the blind window of the existing gate tests —
+  // a downward drift within −16 KiB (the near-bound control leg sits at
+  // bound−16KiB) stayed green, and an upward drift was only observed at +4 KiB
+  // (the expand test). The ±1 KiB pair squeezes the blind window to 1 KiB: a
+  // downward drift ≥1 KiB ⇒ the legal bound−1KiB frame is rejected as
+  // frame_too_large (negative leg red);
+  // an upward drift ≥1 KiB ⇒ the oversized bound+1KiB frame is let through and
+  // the desktop tungstenite force-drops it at its own 4 MiB−64KiB maxPayload
+  // (positive leg red).
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_1kib_${Date.now()}`;
+  const accessToken = "access-token-1kib-00000000000000001";
+  const desktopSecret = "desktop-secret-1kib-0000000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const bound = 4 * 1024 * 1024 - 64 * 1024;
+    const make = (request_id, size) => {
+      const base = { v: 2, type: "rpc_request", request_id, command: "chat", args: { pad: "" } };
+      const overhead = Buffer.byteLength(JSON.stringify(base));
+      // Raw and forwarded encoding are identical (ASCII pad, no re-encoding
+      // expansion), and the construction error was measured and corrected to
+      // within ±8 bytes — the ±1 KiB assertions are insensitive to that
+      // residual.
+      return JSON.stringify({ ...base, args: { pad: "x".repeat(size - overhead) } });
+    };
+
+    // Negative leg: bound−1 KiB must pass (a bound drifted down ≥1 KiB would
+    // wrongly refuse it).
+    const legal = make("req-1kib-under", bound - 1024);
+    const received = nextMessage(desktop.ws, "rpc_request");
+    web.ws.send(legal);
+    const rpc = await received;
+    assert.equal(rpc.request_id, "req-1kib-under",
+      "a bound-1KiB frame must reach the desktop; a >=1KiB downward bound drift refuses it");
+    await expectNoMessage(web.ws, "error");
+
+    // Positive leg: bound+1 KiB must be rejected as frame_too_large (a drift
+    // up ≥1 KiB would let it through).
+    const oversized = make("req-1kib-over", bound + 1024);
+    web.ws.send(oversized);
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "frame_too_large",
+      "a bound+1KiB frame must be refused; a >=1KiB upward bound drift forwards it and the desktop kills the socket");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must not be disturbed by the refused frame");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME_BYTES", async () => {
+  // Round-25 review MAJOR-4: the relay_client.rs comment claims the byte
+  // equality is "verified in both directions by the relay gate tests", but the
+  // gate tests only inline their own literal copies and never read the Rust
+  // source — server-side drift is backstopped by the gate tests above, while
+  // desktop-side drift went unobserved (the equality is the operative
+  // contract). This pin asserts the Rust constant directly: if the desktop
+  // MAX_INBOUND_TEXT_BYTES drifts away from 4 MiB − 64 KiB the suite goes red,
+  // and the comment's "verified in both directions" becomes true.
+  const rust = await readFile(
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "..",
+      "pinvou3-app",
+      "src-tauri",
+      "src",
+      "features",
+      "remote_control",
+      "relay_client.rs",
+    ),
+    "utf8",
+  );
+  // Round-27 review m8: filter pure comment lines before matching — a bare
+  // match is blind to the "constant changed, some comment still quotes the old
+  // line" drift (the same posture as the Rust-side comment_filtered);
+  // line-start anchoring (^…$ multiline) also makes a prefix reordering (e.g.
+  // pub const) mismatch, freezing spelling as strongly as the value.
+  const rustCode = rust
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trimStart();
+      return !(trimmed.startsWith('//') || trimmed.startsWith('///'));
+    })
+    .join('\n');
+  assert.match(
+    rustCode,
+    /^const MAX_INBOUND_TEXT_BYTES: usize = \(4 \* 1024 \* 1024\) - \(64 \* 1024\);$/m,
+    "the desktop MAX_INBOUND_TEXT_BYTES must stay byte-equal to server.js \
+     DESKTOP_MAX_FRAME_BYTES (4 MiB - 64 KiB): the relay pre-check rejects \
+     at this bound and tungstenite kills the connection one byte past it, \
+     so desktop-side drift silently resurrects the round-15 reconnect flap",
+  );
+});
+
+test("answers desktop_offline before measuring an oversized frame", async () => {
+  // Round-19 review: PROTOCOL.md promises "when the desktop disconnects, first
+  // answer desktop_offline; the frame is neither measured nor forwarded" — no
+  // test pinned this, and a refactor moving the measurement gate ahead of the
+  // offline check kept the suite green (M5 mutation evidence). This test:
+  // after the desktop terminate, the web sends an oversized frame and must
+  // receive desktop_offline, not frame_too_large.
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_offlinegate_${Date.now()}`;
+  const accessToken = "access-token-offlinegate-00000000000001";
+  const desktopSecret = "desktop-secret-offlinegate-00000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const offline = nextMessage(web.ws, "desktop_connection_state");
+    desktop.ws.terminate();
+    assert.equal((await offline).status, "offline",
+      "the relay must observe the desktop loss before the oversized frame arrives");
+
+    const pad = "x".repeat(4_150_000);
+    web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", request_id: "req-offline-big", command: "chat", args: { pad } }));
+    const answered = await nextMessage(web.ws, "error");
+    assert.equal(answered.code, "desktop_offline",
+      "a disconnected desktop must be answered desktop_offline before any measurement");
+    assert.equal(web.ws.readyState, web.ws.OPEN,
+      "the offline answer must be informational; the web socket stays open");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("forwards a legal desktop event inside the old role-blind false-positive window", async () => {
+  // Round-16 review (M3): the desktop inbound bound only constrains
+  // web→desktop. desktop→web events landing in the window "desktop bound −
+  // envelope headroom < frame size ≤ the desktop's own outbound cap" were
+  // previously misjudged as frame_too_large and silently dropped (the browser
+  // has no bound; the forward would have succeeded); after the role narrowing
+  // they must reach the web client as usual.
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_role_scope_${Date.now()}`;
+  const accessToken = "access-token-role-scope-00000000000001";
+  const desktopSecret = "desktop-secret-role-scope-000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    // A legal desktop event (≤ the desktop's own outbound cap of 4,128,768),
+    // but once the forwarding envelope headroom is added it lands in the old
+    // misjudgment window (> 4,128,768 − 512).
+    const target = 4_128_543;
+    const base = JSON.stringify({
+      v: 2,
+      type: "event",
+      event: "chat:delta",
+      stream_epoch: "epoch-big",
+      seq: 1,
+      payload: "",
+    });
+    const padLength = target - Buffer.byteLength(base);
+    const frame = base.replace('"payload":""', `"payload":"${"x".repeat(padLength)}"`);
+    assert.equal(Buffer.byteLength(frame), target);
+    const eventPromise = nextMessage(web.ws, "event");
+    desktop.ws.send(frame);
+
+    const event = await eventPromise;
+    assert.equal(event.payload.length, padLength,
+      "the desktop event must reach the web client intact: the desktop bound \
+       only governs web→desktop forwards, not this direction");
+    await expectNoMessage(desktop.ws, "error");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("survives a desktop frame the relay cannot serialize and lets a fresh web client rejoin with the rejoin flag", async () => {
   const isolated = await spawnRelay();
   const endpointId = `endpoint_deep_event_${Date.now()}`;
   const accessToken = "access-token-deep-event-00000000000001";
@@ -2183,19 +2559,39 @@ test("survives a desktop frame the relay cannot serialize and keeps the web clie
     const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
     await connected;
 
+    const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
     const deepPayload = `${"[".repeat(20000)}0${"]".repeat(20000)}`;
     desktop.ws.send(`{"v":2,"type":"event","payload":${deepPayload}}`);
 
-    if (await deepFrameRejectedAtIngress(desktop, web, isolated)) return;
-
-    await waitForClose(web.ws);
-    assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
-    await expectNoMessage(desktop.ws, "error");
+    // After #781 this frame class is rejected at ingress (bad_json, all
+    // sockets stay open); older trees would forward the frame and it kills the
+    // web socket. The two world lines reconverge here before the explicit
+    // disconnect/rejoin — round-16 review M4: the earlier early-return made
+    // the rejoin tail unreachable and the web_rejoining=true promised by the
+    // test name was never driven; the tail must sit where it is reachable
+    // before the early return.
+    const ingressError = await nextMessageOrTimeout(desktop.ws, "error");
+    if (ingressError) {
+      assert.equal(ingressError.code, "bad_json");
+      assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+      assert.equal(web.ws.readyState, web.ws.OPEN);
+      await expectStillOpen(web.ws);
+    } else {
+      // Tree without the ingress bound: the frame was forwarded and the bad
+      // frame killed the web socket.
+      await waitForClose(web.ws);
+    }
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
 
-    // A fresh web client joins and the desktop forwards normally again.
+    closeSocket(web.ws);
+    await disconnected;
+    const rejoinNotice = nextMessage(desktop.ws, "web_client_connected");
     const rejoined = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    const rejoin = await rejoinNotice;
+    assert.equal(rejoin.web_rejoining, true,
+      "a fresh web client after a real disconnect must be flagged as a rejoin, \
+       not a takeover — this is what the test name promises");
     assert.equal(rejoined.joined.desktop_connected, true);
     const event = nextMessage(rejoined.ws, "event");
     desktop.ws.send(JSON.stringify({

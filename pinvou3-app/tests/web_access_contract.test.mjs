@@ -62,10 +62,33 @@ const hostFilePicker = readSource(
   'utf8',
 );
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
-const commands = fs.readdirSync(commandsRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(commandsRoot, name), 'utf8'))
+// Round-20 review (S14): the aggregation previously covered only top-level
+// files, so `dependencies/` subdirectories escaped the scan. Switched to
+// recursive collection (sorted by full path; ordering stays deterministic).
+// Round-21 review: readdirSync's default sort triggers
+// unicorn/require-array-sort-compare (CI frontend-test has been red since the
+// round-20 wave) — use an explicit comparator instead of relying on the
+// implicit behavior of elements happening to be strings. Round-22 review:
+// switched to readdirSync's withFileTypes (Dirent.isDirectory has lstat
+// semantics) — statSync follows directory symlinks, so a linked directory
+// under any of the three scan roots would recurse across trees (false red) or
+// even loop; same shape as the bridge_domain_protocol suite's sourceFiles.
+function walkRustSources(rootDir) {
+  const files = [];
+  const visit = dir => {
+    for (const entry of fs
+      .readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (entry.name.endsWith('.rs')) files.push(full);
+    }
+  };
+  visit(rootDir);
+  return files;
+}
+const commands = walkRustSources(commandsRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const remoteControlCommands = readSource(path.join(commandsRoot, 'remote_control.rs'), 'utf8');
 const remoteControlManagerRoot = path.join(
@@ -76,10 +99,13 @@ const remoteControlManagerRoot = path.join(
   'remote_control',
   'manager',
 );
-const remoteControlManager = fs.readdirSync(remoteControlManagerRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(remoteControlManagerRoot, name), 'utf8'))
+// Round-21 review: the two aggregations also go through walkRustSources
+// recursion — manager/ and platform/ are flat directories today, and a
+// non-recursive enumeration would silently miss subdirectories appearing in
+// the future (same class as the commands S14). While flat, the DFS order
+// matches the old name sort, so existing assertions are unaffected.
+const remoteControlManager = walkRustSources(remoteControlManagerRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const remoteControlPlatformRoot = path.join(
   root,
@@ -89,10 +115,8 @@ const remoteControlPlatformRoot = path.join(
   'remote_control',
   'platform',
 );
-const remoteControlPlatform = fs.readdirSync(remoteControlPlatformRoot)
-  .filter(name => name.endsWith('.rs'))
-  .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
-  .map(name => readSource(path.join(remoteControlPlatformRoot, name), 'utf8'))
+const remoteControlPlatform = walkRustSources(remoteControlPlatformRoot)
+  .map(fullPath => readSource(fullPath, 'utf8'))
   .join('\n');
 const settingsView = readSource(path.join(root, 'src', 'features', 'settings', 'SettingsView.jsx'), 'utf8');
 const artifactsPanel = readSource(path.join(root, 'src', 'features', 'artifacts', 'ArtifactsPanel.jsx'), 'utf8');
@@ -117,7 +141,7 @@ const codeViewerContent = readSource(
 );
 const acpPlatformClient = readSource(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
 const acpErrors = readSource(path.join(root, 'src', 'features', 'codex', 'acpErrors.js'), 'utf8');
-const i18n = ['zh', 'en', 'ja'].map((l) => readSource(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // 拆分后三语在 i18n/ 目录
+const i18n = ['zh', 'en', 'ja'].map((l) => readSource(path.join(root, 'src', 'shared', 'i18n', `${l}.js`), 'utf8')).join('\n'); // after the split the three languages live in the i18n/ directory
 const appMain = readSource(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
 const policy = JSON.parse(readSource(path.join(root, 'src', 'platform', 'web', 'access-policy.json'), 'utf8'));
 const allowed = new Set(policy.allowed_commands);
@@ -131,23 +155,29 @@ function rustCommandBlock(source, command) {
   return source.slice(start, next === -1 ? source.length : next);
 }
 
-// Round-11 复审 M4:web_access_* 管理命令的桌面专用反钉收敛为单一清单。
-// 命名空间约定:web_access_* 一律管理面(端点生命周期、配对状态、RPC 代
-// 理、bridge 就绪),除 web_access_list_host_files 外全部不进 Web 策略。
+// Round-11 review M4: the desktop-only anti-pins for web_access_* management
+// commands converge into a single list.
+// Namespace convention: web_access_* is management-plane only (endpoint
+// lifecycle, pairing state, RPC proxying, bridge readiness); except for
+// web_access_list_host_files, none of them may enter the Web policy.
 const desktopOnlyWebAccessCommands = [
   'web_access_enable',
   'web_access_disable',
   'web_access_status',
   'web_access_rotate',
   'web_access_revoke_host_workspace',
-  // Round-10 复审 minor:主 WebView 事件通道同样管理专用——进 Web 策略的
-  // 话手机可经 RPC→bridge invoke 触发 publish_frontend_event(只过
-  // policy.events 允许名单,可伪造允许事件);缺席即全部防线。
+  // Round-10 review minor: the main WebView event channel is management-only
+  // too — if it entered the Web policy, the phone could trigger
+  // publish_frontend_event via RPC→bridge invoke (passing only the
+  // policy.events allowlist, so allowed events could be forged); absence is
+  // the entire defense.
   'web_access_publish_event',
-  // Round-11 复审 M4:RPC 代理与 bridge 就绪命令——各自 doc comment 声明
-  // desktop-only,但此前不在任何反钉/门钉清单,把它们加进 access-policy
-  // 或删掉其 require_main_webview 门都静默全绿(rpc_begin/rpc_respond 的
-  // 策略侧防线即全部防线:relay 路径的执行窗口本就是 main)。
+  // Round-11 review M4: the RPC proxy and bridge readiness commands — their
+  // doc comments declare desktop-only, but they were on no anti-pin/gate-pin
+  // list, so adding them to access-policy or deleting their
+  // require_main_webview gate would have stayed silently green (the policy
+  // side of rpc_begin/rpc_respond is the whole defense: the relay path's
+  // execution window is main anyway).
   'web_access_bridge_ready',
   'web_access_rpc_begin',
   'web_access_rpc_respond',
@@ -190,21 +220,29 @@ for (const command of [
   'open_acp_agent_login_url',
   'submit_acp_agent_login_code',
   'web_access_enable',
-  // Round-9 复审:web_access_* 的管理命令同样桌面专用——手机侧的可达性
-  // 只经由主 WebView 代理 RPC(此时 require_main_webview 门按设计放行),
-  // 真正的门是策略白名单的缺席;只反钉 enable 会让「把其余命令加进
-  // access-policy.json」静默通过全部测试。(web_access_list_host_files
-  // 有意留在 Web 策略内——手机文件选择器的 RPC 由主 WebView 派发,不在
-  // 本反钉清单;require_main_webview 门在命令层单独拦 aux webview。)
-  // Round-11 复审 M4:web_access_* 管理命令收敛为单一清单,下方结构性
-  // 互斥钉按它判「其余命令」——清单与 Web 策略的并集必须覆盖
-  // remote_control.rs 里定义的每一个 web_access_* 命令,新增命令不加进
-  // 任一侧即红(结构性漏网:rpc 代理三兄弟、bridge_ready 由此兜住)。
+  // Round-9 review: web_access_* management commands are desktop-only too —
+  // phone-side reachability goes only through the main WebView's proxied RPC
+  // (where the require_main_webview gate passes by design), so the real gate
+  // is absence from the policy allowlist; anti-pinning only enable would let
+  // "add the remaining commands to access-policy.json" silently pass every
+  // test. (web_access_list_host_files deliberately stays in the Web policy —
+  // the phone file picker's RPC is dispatched by the main WebView and is not
+  // on this anti-pin list; the require_main_webview gate blocks the aux
+  // webview separately at the command layer.)
+  // Round-11 review M4: the web_access_* management commands converge into one
+  // list, and the structural mutual-exclusion pin below judges "the remaining
+  // commands" against it — the union of the list and the Web policy must
+  // cover every web_access_* command defined in remote_control.rs, and a new
+  // command added to neither side goes red (the structural escapees — the rpc
+  // proxy trio and bridge_ready — are caught this way).
   ...desktopOnlyWebAccessCommands,
-  // 上传包展示名/说明编辑写 bundles.json 并可能回写 SKILL.md：写操作桌面专用。
+  // Editing an uploaded bundle's display name/description writes bundles.json
+  // and may rewrite SKILL.md: a write operation, desktop-only.
   'update_bundle_display_meta',
-  // 回收站恢复/彻底删除与两种包导出都是桌面端写操作（原生保存对话框 + 文件系统
-  // 变更）：Web 端回收站只读，仅放行 list_recycled_plugins，写命令留在桌面端。
+  // Recycle-bin restore/purge and both bundle exports are desktop write
+  // operations (native save dialog + filesystem changes): the Web-side recycle
+  // bin is read-only, only list_recycled_plugins is allowed, and the write
+  // commands stay on the desktop.
   'restore_recycled_plugin',
   'purge_recycled_plugin',
   'export_recycled_plugin',
@@ -224,14 +262,24 @@ for (const command of [
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
 
-// Round-11 复审 M4:结构性互斥钉——remote_control.rs 里定义的每一个
-// web_access_* 命令必须要么在 Web 策略里(受 positive wrapper 钉约束),
-// 要么在上面的桌面专用反钉清单里。手工反钉清单的结构性漏网
+// Round-11 review M4: structural mutual-exclusion pin — every web_access_*
+// command defined in remote_control.rs must be either in the Web policy
+// (subject to the positive wrapper pins) or in the desktop-only anti-pin list
+// above. The structural escapees of the hand-maintained anti-pin list
 // (web_access_bridge_ready / web_access_rpc_begin / web_access_rpc_respond
-// 曾三个全漏)由本钉永久兜住:任何新 web_access_* 命令不加进任一侧即红。
+// once all three slipped through) are permanently backstopped by this pin:
+// any new web_access_* command added to neither side goes red.
 {
   const defined = new Set();
-  for (const match of remoteControlCommands.matchAll(/pub(?:\([\w:]+\))? (?:async )?fn (web_access_\w+)\(/g)) {
+  // Round-19 review M1: the regex must be anchored at line start. The earlier
+  // unanchored version also counted the 8 signature-shaped strings in the
+  // `#[cfg(test)]` folded-error pin data table ("pub async fn
+  // web_access_chat(" and friends) as definitions — after a real command was
+  // deleted or renamed, the Set was still propped up by those phantom hits and
+  // the reverse-existence pin was blind for the other 8/42 policy commands
+  // (probe evidence). Production signatures all sit at column 0 while table
+  // data is indented, so line-start anchoring separates them precisely.
+  for (const match of remoteControlCommands.matchAll(/^pub(?:\([\w:]+\))? (?:async )?fn (web_access_\w+)\(/gm)) {
     defined.add(match[1]);
   }
   assert.ok(defined.size >= 50,
@@ -246,27 +294,145 @@ for (const command of [
     assert.ok(defined.has(command),
       `${command} is anti-pinned but no longer defined in remote_control.rs`);
   }
+  // Round-15 review M1: reverse-existence pin — every web_access_* allowed by
+  // the Web policy must still be defined in remote_control.rs. Deleting only
+  // the Rust command while the policy kept the name left the forward pins all
+  // green while the phone invoked a nonexistent command at runtime (until then
+  // only the Rust→policy direction existed).
+  for (const command of allowed) {
+    if (command.startsWith('web_access_')) {
+      assert.ok(defined.has(command),
+        `${command} is allowed by the web policy but no longer defined in remote_control.rs`);
+    }
+  }
 }
 
-// Round-11 复审 M4:事件半边的反钉——web_access:* 事件全部管理专用
-// (status 携带配对 URL/QR,rpc_request 携带代理命令与参数,
-// event_subscribe 是订阅控制)。结构化扫描 Rust 管理器与 JS 桥里的
-// web_access:* 字面量:任何一个都不允许出现在 Web 策略事件名单里,
-// 新增同名事件即被扫进(此前事件半边没有任何反向钉)。
-for (const source of [remoteControlManager, desktopRemoteControlBridge]) {
-  for (const match of source.matchAll(/"web_access:([a-z_]+)"/g)) {
+// Round-11 review M4: the anti-pin for the event half — every web_access:*
+// event is management-only (status carries the pairing URL/QR, rpc_request
+// carries the proxied command and args, event_subscribe is subscription
+// control). Structurally scan the web_access:* literals in the Rust manager
+// and the JS bridge: none of them may appear in the Web policy event list,
+// and a new same-named event is swept straight into the anti-pin (the event
+// half previously had no reverse pin at all).
+// Round-15 review M5: include the command layer in the scan. Round-18 review
+// correction of the terms: the command layer has zero hits today — this
+// source now contributes zero assertions, as forward-looking backstop: if the
+// command layer ever adds a same-named event literal (forwarding/status
+// channel), the scan immediately catches it into the anti-pin instead of
+// letting it slip through.
+// Round-19 review: widen the scan surface from the single remote_control.rs
+// to the whole app/commands aggregation (aggregated at the top of this file;
+// reused); relax the regex to any quote style (single quotes/template
+// literals) and allow digits in segment names ([a-z0-9_]+), closing three
+// bypass spellings proven by probe; strip comment lines first so a doc
+// mention cannot create phantom assertions (the phantom direction is already
+// fail-closed; stripping only avoids a false red if the policy ever changes).
+// Round-20 review: make the aggregation recursive (dependencies/
+// subdirectories escaped the scan before) and bring the
+// features/remote_control/platform aggregation into the scan too (it
+// previously served only other pins); both new surfaces have zero
+// web_access:* hits today — purely forward-looking backstop.
+// Strip only pure comment lines (starting with // or /*): code lines with
+// trailing comments must be kept, otherwise a `web_access:x` literal hidden in
+// the code before a trailing comment would be deleted with the whole line,
+// making the scan fail-open (the same class the Round-17 correction fixed).
+// Block-comment continuation lines (`* …`) are kept — text there can only
+// create fail-closed phantom assertions, never let a real violation through.
+// Round-29 review MINOR-5: a line OPENING with a block comment is pure only
+// when that comment closes on the same line with nothing but whitespace
+// after it — `/* note */ emit("web_access:x");` used to be stripped whole
+// (the opener regex matched), deleting a real literal from the scan; the
+// fail-open class this function exists to close. An unclosed opener line is
+// still pure (the whole line is comment); a closed opener followed by code
+// is now kept, so its literals stay fail-closed-scanned.
+// Round-30 review P2 (JensenChen28): the scan STOPS at the first close —
+// after a leading block comment closes, delimiters in the remainder are
+// executable/string text, not comment syntax (JS block comments do not nest
+// either). Parsing them let `/* note */ const s = "/*"; emit("web_access:x");`
+// re-open a phantom comment (depth stuck > 0 → whole line stripped) and a
+// trailing `/* tail */` move closedAt past the code (slice empty → stripped):
+// both fail-open, letting a forbidden literal evade the contract scan.
+// Freezing the close point keeps the whole remainder — conservative in the
+// only changed direction: a chained `/* a */ /* b */` line is now kept too,
+// which can only add fail-closed phantom assertions, never drop one.
+function stripPureCommentLines(source) {
+  return source.split('\n')
+    .filter(line => {
+      if (/^\s*\/\//.test(line)) return false;
+      if (!/^\s*\/\*/.test(line)) return true;
+      let inBlockComment = false;
+      let closedAt = -1;
+      for (let index = 0; index + 1 < line.length; index += 1) {
+        const two = line.slice(index, index + 2);
+        if (!inBlockComment && two === '/*') {
+          inBlockComment = true;
+          index += 1;
+          continue;
+        }
+        if (inBlockComment && two === '*/') {
+          // First close ends the comment AND the scan (round-30): freeze the
+          // remainder as code, do not parse further delimiters.
+          closedAt = index + 2;
+          break;
+        }
+      }
+      // Unclosed block opener (closedAt never set): the whole line is comment.
+      if (closedAt === -1) return false;
+      // Closed on this line: keep only when code follows the comment (the
+      // probe-executed round-29 direction — an inverted predicate here
+      // strips exactly the code-bearing lines the fix exists to keep).
+      return line.slice(closedAt).trim() !== '';
+    })
+    .join('\n');
+}
+// Round-30 review P2 regressions (trailing-code forms after a closed leading
+// block comment): each kept string must survive the strip VERBATIM — a
+// regression that re-parses delimiters (nested-depth counter or continued
+// scanning) deletes the line and silently green-lights its forbidden literal.
+assert.equal(
+  stripPureCommentLines('/* note */ const s = "/*"; emit("web_access:bad");'),
+  '/* note */ const s = "/*"; emit("web_access:bad");',
+  'delimiters inside trailing code are not comment syntax: the code-bearing line must survive the strip whole',
+);
+assert.equal(
+  stripPureCommentLines('/* note */ emit("web_access:bad"); /* tail */'),
+  '/* note */ emit("web_access:bad"); /* tail */',
+  'a trailing block comment must not move the close point past executable code: the line must survive the strip whole',
+);
+// Guard the direction the round-30 fix changed AWAY from the old depth
+// counter: JS block comments do not nest, so the first `*/` closes even
+// after an inner `/*` — code after it must stay in the scan.
+assert.equal(
+  stripPureCommentLines('/* /* nested */ emit("web_access:bad");'),
+  '/* /* nested */ emit("web_access:bad");',
+  'JS block comments do not nest: the first close ends the scan and the trailing code must survive',
+);
+// Unchanged contract: pure comment lines and unclosed openers stay stripped,
+// so doc mentions cannot create phantom scan hits.
+assert.equal(stripPureCommentLines('/* note */'), '', 'a closed pure-comment line is still stripped');
+assert.equal(stripPureCommentLines('/* note'), '', 'an unclosed opener line is still stripped');
+assert.equal(stripPureCommentLines('// note'), '', 'a // line is still stripped');
+assert.equal(
+  stripPureCommentLines('const s = 1; /* tail */'),
+  'const s = 1; /* tail */',
+  'a code-opening line with a trailing comment is kept (round-17 class)',
+);
+for (const source of [remoteControlManager, desktopRemoteControlBridge, commands, remoteControlPlatform].map(stripPureCommentLines)) {
+  for (const match of source.matchAll(/["'`]web_access:([a-z0-9_]+)["'`]/g)) {
     const eventName = `web_access:${match[1]}`;
     assert.equal(allowedEvents.has(eventName), false,
       `${eventName} is a management channel and must never enter the web event policy`);
   }
 }
 
-// Round-11 复审 minor:JS↔Rust 错误码表的跨语言契约。bridge.js 的
-// `WEB_TURN_ERROR_KEYS` 键是 Rust 侧折叠出的稳定 wire code;Rust 端的
-// stable_web_error_codes_are_locked 等钉锁住生产侧,这里是消费侧的
-// 反向钉:每个 JS 键必须仍出现在某个 Rust 命令源码里——重命名一个
-// Rust 码而漏改 JS 时,该键映射不到任何文案、静默落进红acted 兜底,
-// 本钉即红。
+// Round-11 review minor: the cross-language contract of the JS↔Rust error
+// code table. The `WEB_TURN_ERROR_KEYS` keys in bridge.js are stable wire
+// codes folded out on the Rust side; Rust-side pins such as
+// stable_web_error_codes_are_locked hold the producer side, and this is the
+// consumer-side reverse pin: every JS key must still appear in some Rust
+// command source — renaming a Rust code while missing the JS side leaves the
+// key mapped to no copy and silently falling into the redacted fallback,
+// which turns this pin red.
 {
   const tableStart = webBridge.indexOf('const WEB_TURN_ERROR_KEYS = {');
   assert.notEqual(tableStart, -1, 'WEB_TURN_ERROR_KEYS must exist in web/bridge.js');
@@ -275,8 +441,8 @@ for (const source of [remoteControlManager, desktopRemoteControlBridge]) {
   const jsKeys = [...table.matchAll(/^\s{4}([a-z_0-9]+): "/gm)].map(match => match[1]);
   assert.ok(jsKeys.length >= 14,
     `expected the full turn-error code table, found ${jsKeys.length} keys`);
-  // 生产代码分布在 app/commands/*(折叠点)与 features/remote_control/manager/*
-  // (rpc 准入拒绝),两侧都扫。
+  // Producer code lives in app/commands/* (the folding points) and
+  // features/remote_control/manager/* (rpc admission rejections); scan both.
   const rustProducers = commands + remoteControlManager;
   for (const code of jsKeys) {
     assert.ok(rustProducers.includes(code),
@@ -284,8 +450,10 @@ for (const source of [remoteControlManager, desktopRemoteControlBridge]) {
   }
 }
 
-// 知识库批量导入的进度查看与继续/取消/重试/失败文件分页是一组协同命令：Web 端知识库
-// 已开放（kb_collection_add_sources 等），任一导入控制命令遗漏会让对应按钮静默失败。
+// Knowledge-base bulk import's progress viewing and resume/cancel/retry/
+// failed-file paging are a coordinated command group: the Web-side knowledge
+// base is already open (kb_collection_add_sources etc.), so missing any import
+// control command would make the corresponding button fail silently.
 for (const command of [
   'kb_index_status',
   'kb_index_cancel',
@@ -323,8 +491,8 @@ assert.match(
 );
 
 // Memory organize is a global action (no session scope, same surface as
-// get_memory_overview): the settings "AI 整理记忆" (AI organize memory) button and
-// the "上次整理" (last organized) history read must work on WebUI too; missing
+// get_memory_overview): the settings "AI organize memory" button and the
+// "last organized" history read must work on WebUI too; missing
 // either one makes the button fail silently with command_not_allowed.
 for (const command of ['organize_memory', 'get_memory_organize_history']) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (memory organize)`);
@@ -402,9 +570,11 @@ for (const command of [
   'web_access_list_sessions',
   'web_access_list_archived_sessions',
   'web_access_create_session',
-  // Round-11 复审 M4:create_session 与 create_session_and_chat 同批——
-  // 它返回带 transcript revision 的会话元数据,静默移出策略会打断 Web
-  // 建会话与乐观并发令牌,且此前没有任何钉看到。
+  // Round-11 review M4: create_session belongs in the same batch as
+  // create_session_and_chat — it returns session metadata carrying the
+  // transcript revision, so silently removing it from the policy would break
+  // Web session creation and the optimistic concurrency token, and no pin
+  // would have noticed.
   'web_access_create_session_and_chat',
   'web_access_ingest_file',
   'web_access_upload_attachment_chunk',
@@ -484,12 +654,42 @@ assert.doesNotMatch(codexWorkspacePanel, /invoke\('get_codex_workspace_(?:change
   'the shared workspace UI must not bypass the Web-safe command adapter');
 assert.doesNotMatch(codexView, /invoke\('cancel_codex_acp'/,
   'the shared ACP UI must not bypass the Web-safe cancellation adapter');
+// Round-15 review HIGH (mutation evidence): `?.[0] || ''` turns extraction
+// drift (a rename, conversion to an arrow function, reformatting that removes
+// the column-0 `\n}`) into a trivially-true doesNotMatch against the empty
+// string — the workspacePath leak defense silently goes dark while the whole
+// suite stays green. Assert the extraction is non-empty before running the
+// anti-pin.
+const createAcpSessionSource =
+  acpPlatformClient.match(/export function createAcpSession\b[\s\S]*?\n\}/)?.[0];
+assert.ok(
+  createAcpSessionSource,
+  'createAcpSession must be extractable for the workspacePath anti-pin; if this \
+   assertion fires the function was renamed or restructured and the pin below \
+   must be re-anchored',
+);
+// Round-29 review MINOR-6: the `\n}` cut truncates at the FIRST column-0
+// closing brace — `assert.ok` covers non-existence but not truncation, so a
+// restructure that introduces an early column-0 brace would silently scan
+// only the function's head and let a leak below the cut escape. Pin a floor
+// length under the real function (755 chars at extraction time): a truncated
+// extraction lands far below it and turns red, while ordinary growth keeps
+// passing. Re-measure this floor if the function is legitimately rewritten.
+assert.ok(
+  createAcpSessionSource.length >= 600,
+  `the createAcpSession extraction is ${createAcpSessionSource.length} chars — \
+   suspiciously below the known function size (755+), meaning the column-0 \
+   brace cut truncated the scan window and the anti-pin below no longer \
+   covers the whole function`,
+);
 assert.doesNotMatch(
-  acpPlatformClient.match(/export function createAcpSession[\s\S]*?\n\}/)?.[0] || '',
+  createAcpSessionSource,
   /web_access_create_codex_acp_session[\s\S]*?workspacePath/,
   'Web code-session creation must submit only the opaque workspace handle',
 );
-// Web 列表必须走投影命令（主机绝对路径降级为目录名），不得直接调用桌面原命令。
+// The Web list must go through the projection command (host absolute paths
+// downgraded to directory names) and must not call the desktop's original
+// command directly.
 assert.match(acpPlatformClient, /web_access_list_codex_acp_sessions/,
   'the Web session list must go through the path-redacting wrapper');
 assert.doesNotMatch(codexView, /list_codex_acp_sessions/,
@@ -507,7 +707,8 @@ assert.match(codeViewerContent, /\{!hideDesktopActions && onReveal && \(/);
 assert.match(codeViewerContent, /\{!hideDesktopActions && onOpen && \(/,
   'the shared code preview must omit desktop system actions when callbacks are unavailable');
 
-// 浏览器本机上传:双入口按能力协商门控,分块有界,取消/失败路径完备。
+// Browser-side device upload: the dual entry is gated by capability
+// negotiation, chunks are bounded, and the cancel/failure paths are complete.
 assert.match(
   bootstrap,
   /deviceFileUpload:\s*\[[\s\S]*?"web_access_upload_attachment_chunk"[\s\S]*?"web_access_abort_attachment_upload"[\s\S]*?"web_access_discard_attachment"[\s\S]*?\]/,
@@ -532,8 +733,9 @@ assert.match(webBridge, /web_access_discard_attachment/,
   'removed or late-cancelled attachments must release their opaque desktop handle');
 assert.match(remoteControlCommands, /stage_uploaded_attachments\(attachments, session_id, &?store\)/,
   'uploaded attachments must be staged into the Session workspace before the engine sees their paths');
-// Agent 安装命令行/输出可能含内部镜像源或主机路径，Web status 投影必须清除；
-// 安装终局的 error 字段同为错误链，一并仅桌面端展示。
+// Agent install command lines/output may contain internal mirror sources or
+// host paths; the Web status projection must strip them. The install-outcome
+// error field is part of the same error chain and is likewise desktop-only.
 assert.match(remoteControlCommands,
   /project_acp_status_for_web[\s\S]*?status\.install_command = None[\s\S]*?status\.install_latest_line = None[\s\S]*?status\.install_finished = None/,
   'the Web agent-status projection must strip install command/output lines and the install outcome');
@@ -697,6 +899,8 @@ assert.doesNotMatch(hostFilePicker, /currentWorkspaceHandle/,
   'browsing never carries a workspace handle, so no stale-handle fallback path may remain');
 assert.match(hostFilePicker, /localizedPickerError/,
   'both the listing and confirm-mint failures must map stable authorization codes to localized copy');
+assert.match(hostFilePicker, /web_session_list_host_files_failed[\s\S]{0,200}labels\.listingFailed/,
+  'the round-21 stable browse/mint failure code must map to localized picker copy, not render as a bare code');
 assert.match(hostFilePicker,
   /(?:var|const|let) confirmedGeneration = loadGeneration;[\s\S]{0,900}if \(disposed \|\| confirmedGeneration !== loadGeneration\) return;/,
   'a late confirm-mint failure must not touch the UI after the picker closed or a newer listing rendered');
@@ -720,6 +924,18 @@ for (const label of [
 ]) {
   assert.equal(i18n.includes(label), true, `missing localized host workspace error: ${label}`);
 }
+// Round-23 review MINOR: listingFailed previously existed only in the picker's
+// built-in Chinese fallback table — the en/ja dictionaries lacked the key, so
+// every language rendered the Chinese fallback. Pin the key's presence in all
+// three languages on the same terms as workspaceNotAuthorized; deleting the
+// dictionary key goes red.
+for (const label of [
+  'Listing desktop files failed. Please try again.',
+  'デスクトップのファイル一覧の読み込みに失敗しました。もう一度お試しください。',
+  '读取桌面端文件列表失败，请重试。',
+]) {
+  assert.equal(i18n.includes(label), true, `missing localized host file listing failure: ${label}`);
+}
 assert.match(appMain, /PinvouHostFilePickerStrings\s*=\s*misc\.hostFilePicker/,
   'the active locale must reach the Web host picker error branch');
 assert.match(remoteControlCommands,
@@ -727,7 +943,8 @@ assert.match(remoteControlCommands,
   'failed Web ACP Session creation must restore its same-endpoint one-shot workspace reservation');
 assert.match(hostFilePicker, /initialPathPending[\s\S]*?path === initialPath[\s\S]*?load\(null\)/,
   'a stale recent workspace must fall back to the normal host-file root instead of trapping the picker');
-// HTML5 拖放由当前可见输入框认领，再复用对应平台的上传通道。
+// HTML5 drop is claimed by the currently visible composer input, which then
+// reuses the corresponding platform's upload channel.
 assert.match(chatView, /enabled=\{bridge\.available && \(!isWeb \|\| can\('deviceFileUpload'\)\)\}/,
   'browser drop must gate on the negotiated device upload capability');
 assert.match(chatView, /onFiles=\{files => bridge\.attachments\.uploadDeviceFiles\(files\)\}/,
@@ -852,6 +1069,21 @@ function literalListeners(source) {
   return new Set([...source.matchAll(/\blisten\(\s*["']([^"']+)["']/g)].map(match => match[1]));
 }
 const webListenerNames = literalListeners(webBridge);
+// Round-25 review MINOR: a non-empty extraction was never asserted — if the
+// listen( wrapper drifted off the literal regex, webListenerNames silently
+// became an empty set and the desktop-coverage cross-check below degenerated
+// into a vacuous loop (the same hole as the createAcpSession anti-pin).
+// Round-27 review m13: a floor of >=3 only buys "non-empty" — measured with
+// 26 listeners, dropping 23 still kept the suite green, consistent with this
+// file's round-15 M2 precedent of converging to an exact count (a floor
+// tolerates deleting most of the guards while staying green). Switched to an
+// exact census; adding/removing a listener must update this count.
+assert.equal(webListenerNames.size, 26,
+  'webBridge listener extraction must resolve the full literal-listener \
+   census (26 at round-27); an empty set means the listen( wrapper \
+   drifted off the regex and the desktop-coverage cross-check below is \
+   vacuous, a smaller set means listeners were removed and the census \
+   must be updated in the same commit');
 const desktopListenerNames = literalListeners(desktopBridgeSources.join('\n'));
 for (const eventName of webListenerNames) {
   assert.equal(desktopListenerNames.has(eventName), true,
@@ -870,10 +1102,13 @@ assert.match(webBridge, /web_session_turn_in_progress:\s*"turnAlreadyInProgress"
   'the web bridge itself must map the turn-in-progress code to product copy');
 assert.match(webBridge, /addSystemItem\(concurrentTurn[\s\S]{0,120}bt\("turnAlreadyInProgress"\)/,
   'the web-side turn admission conflict must show product copy');
-// Round-10 复审 minor:accept_plan/edit_last_turn 不折叠,错误链携带调用方
-// 可选的 session id——裸 `session_turn_in_progress` 子串匹配会把同名会话的
-// 硬失败折成可重试 busy(对账卡死)。两个 catch 必须锚定各自的 reservation
-// 段(生产者 map_err 独家引入,session id 字符集无法伪造空格/冒号)。
+// Round-10 review minor: accept_plan/edit_last_turn do not fold; their error
+// chains carry the caller's optional session id — a bare
+// `session_turn_in_progress` substring match would fold a hard failure of a
+// same-named session into a retryable busy (deadlocking reconciliation). The
+// two catches must anchor on their own reservation segments (introduced
+// exclusively by the producer's map_err; the session id character set cannot
+// forge the space/colon).
 assert.match(webBridge,
   /includes\("reserve accept_plan turn: session_turn_in_progress"\)/,
   'the accept_plan catch must anchor on its reservation segment');
@@ -883,10 +1118,13 @@ assert.match(webBridge,
 assert.doesNotMatch(webBridge,
   /includes\("session_turn_in_progress"\)/,
   'no web-bridge busy match may stay on the bare, session-id-forgeable marker');
-// Round-9 复审:下载车道的折叠此前零测试钉——回退码表查找或删除任一表
-// 项都全绿。钉住:下载 catch 走 displayTurnError(未识别文本进与 turn 车
-// 道相同的脱敏兜底,不再拼接原始码/admission 原文);admission 层可达的
-// 两个码在码表内;新表项三语齐备。
+// Round-9 review: the download lane's fold previously had zero test pins —
+// removing the fallback code-table lookup or any table entry kept the suite
+// green. Pin: the download catch goes through displayTurnError (unrecognized
+// text enters the same redacted fallback as the turn lane, no longer
+// concatenating the raw code/admission text); the two codes reachable from
+// the admission layer are in the code table; new entries carry all three
+// languages.
 assert.match(
   webBridge,
   /addSystemItem\(bt\("downloadFailed"\) \+ displayTurnError\(e\)\)/,
@@ -906,10 +1144,13 @@ for (const source of [webBridge]) {
   assert.equal(count, 3,
     'the webSessionUnavailable copy must exist in all three inline languages');
 }
-// Round-12 复审 P2:WEB_TURN_ERROR_KEYS 的映射键此前只有上面
-// webSessionUnavailable 一根单键计数钉,其余键(en/ja 新增句)任一语言块
-// 缺表项时 bt() 静默回退 zh——en/ja 用户看到中文兜底且无任何测试变红。
-// 从桥源码解析码表键清单,逐键钉 BT_TABLE 三个语言块内必有 `key:` 定义。
+// Round-12 review P2: of the WEB_TURN_ERROR_KEYS mapping keys, previously only
+// webSessionUnavailable above had a single-key count pin; for the other keys
+// (the sentences added for en/ja), a missing entry in any language block made
+// bt() silently fall back to zh — en/ja users saw the Chinese fallback with no
+// test going red. Parse the code-table key list from the bridge source and pin,
+// key by key, that the BT_TABLE's three language blocks each contain a
+// `key:` definition.
 {
   const turnErrorTableStart = webBridge.indexOf('const WEB_TURN_ERROR_KEYS = {');
   assert.notEqual(turnErrorTableStart, -1,
@@ -1076,17 +1317,23 @@ const composerShared = readSource(path.join(root, 'src', 'features', 'settings',
 assert.match(composerShared, /const canSwitchModels = can\('sessionModelSwitch'\);/);
 assert.match(composerShared, /const canMutateToolStore = can\('toolStoreMutations'\);/);
 assert.match(composerShared, /const toolSwitchDisabled = !canMutateToolStore;/);
-// 只增不减 + 未提交可撤销：会话中阻隔「关闭」，但本会话内刚打开（pending）、
-// 尚未随新一轮对话进入上下文的允许改回；新一轮被后端受理后才锁死。
+// Add-only plus revocable-before-commit: while a session is active, switching
+// a tool "off" is blocked, but a tool opened within the current session
+// (pending) that has not yet entered context with a new round may be switched
+// back; it locks only after the backend accepts the new round.
 assert.match(composerShared, /if \(toolSwitchDisabled \|\| \(hasActiveSession && enabled && !pending\.ids\.has\(id\)\)\) return;/);
 assert.match(composerShared, /if \(toolSwitchDisabled \|\| \(hasActiveSession && projectSkillsEnabled && !pending\.projectSkills\)\) return;/);
 assert.match(composerShared, /if \(enabled\) pending\.ids\.delete\(id\); else pending\.ids\.add\(id\);/);
 assert.match(composerShared, /window\.addEventListener\('pinvou:chat-round-committed', onCommitted\)/);
 assert.match(composerShared, /pending\.ids\.clear\(\);\s*\n\s*pending\.projectSkills = false;/);
-// 转正（清空 pending）必须在模块级监听里做，不能只在组件 effect 里：受理事件
-// 可能在菜单组件已卸载时到达（排队消息在用户切页后 flush、后台定向发送），
-// 组件级监听会漏清，重挂载后 pending 悬空、已进上下文的工具仍显示可关。
-// 模块级监听注册点还必须先于组件定义，保证清空发生在组件 bump 重渲染之前。
+// The commit (clearing pending) must happen in a module-level listener, not
+// only inside a component effect: the acceptance event can arrive after the
+// menu component has unmounted (queued messages flushing after the user
+// switches pages, background directed sends), and a component-level listener
+// would miss the clear, leaving pending dangling after remount with tools
+// already in context still showing as switchable.
+// The module-level listener registration must also precede the component
+// definition so the clear happens before the component's bump re-render.
 const moduleListenerIdx = composerShared.indexOf(
   "window.addEventListener('pinvou:chat-round-committed', (event)",
 );
@@ -1094,11 +1341,14 @@ assert.ok(
   moduleListenerIdx >= 0 && moduleListenerIdx < composerShared.indexOf('const ComposerToolMenu'),
   'round-committed pending-clear listener must be registered at module level (before ComposerToolMenu), not only inside the component',
 );
-// 提交信号由发送链路在后端受理新一轮后派发：常规发送（desktop/web doSendFor）、
-// Web 首轮提交、接受计划（desktop/web acceptPlan）、编辑重跑（desktop/web
-// editLastTurn）、原生代码车道发送与接受方案，缺任一处 pending 都不会转正。
-// FFE4-1：原始 dispatch 只存在于 shared/tool-store-events.js；platform 桥接层
-// 的 7 处发送/接受/重跑路径必须经 window.PinvouToolStoreEvents 调用。
+// The commit signal is dispatched by the send chain after the backend accepts
+// the new round: ordinary sends (desktop/web doSendFor), the Web first-turn
+// commit, accepting a plan (desktop/web acceptPlan), edit-and-rerun
+// (desktop/web editLastTurn), and the native code lane's send and accept-plan
+// — missing any of these sites leaves pending uncommitted.
+// FFE4-1: the raw dispatch exists only in shared/tool-store-events.js; the
+// platform bridge layer's 7 send/accept/rerun paths must call through
+// window.PinvouToolStoreEvents.
 const toolStoreEventsShared = readSource(path.join(root, 'src', 'shared', 'tool-store-events.js'), 'utf8');
 assert.match(toolStoreEventsShared, /pinvou:chat-round-committed/);
 assert.match(toolStoreEventsShared, /pinvou:tools-changed/);
@@ -1125,11 +1375,26 @@ assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
-assert.ok((toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length >= 4,
-  'all tool install, uninstall, and import handlers must fail closed in WebUI');
-// 回收站 Web 只读降级：list_recycled_plugins 为只读命令（access-policy 放行），
-// 恢复/导出/彻底删除的动作按钮整块挂 canMutateToolStore 门控，处理函数自身
-// fail-closed（含 purge——其确认弹窗入口虽由门控按钮触发，处理函数仍须自守）。
+// Round-15 review M2: a floor of >=4 would tolerate deleting 4 of the 8 guards
+// while staying green; converge to an exact count and update the pin when a
+// guard is added (the same convention as this file's other exact-count pins).
+// Round-21 review (disclosed blind spots): this census counts only the two
+// "pure" guard shapes (`!canMutateToolStore` and `|| busyRef.current`);
+// compound-predicate guards (`|| !somethingElse`, 5 present today) and
+// brace-form guards (`{ return; }`) are not counted; and the count is
+// file-wide, so a deletion at one site cancels an addition at another. New
+// guards landing in those shapes need their own pins; this count cannot be
+// relied on as a backstop for them.
+assert.equal(
+  (toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length,
+  8,
+  'all tool install, uninstall, and import handlers must fail closed in WebUI; \
+   if a guard was deliberately removed or added, update this count consciously');
+// Recycle-bin Web read-only downgrade: list_recycled_plugins is a read-only
+// command (allowed by the access policy); the restore/export/purge action
+// buttons are gated wholesale behind canMutateToolStore, and the handlers
+// themselves fail closed (including purge — its confirmation dialog entry is
+// triggered by a gated button, but the handler must still guard itself).
 assert.match(toolStoreView,
   /\{canMutateToolStore && \(\s*<div className="flex items-center gap-2 shrink-0">[\s\S]{0,900}recycled-restore-[\s\S]{0,900}recycled-export-[\s\S]{0,900}recycled-purge-/,
   'recycle bin restore/export/purge buttons must be gated behind canMutateToolStore');
@@ -1197,10 +1462,12 @@ assert.match(settingsView, /\{remoteCopy\.revokeWorkspace\}/,
   'the revoke control must carry explicit trilingual copy');
 assert.doesNotMatch(settingsView, /handleRevokeHostWorkspace[\s\S]{0,200}allowHostWorkspace: true/,
   'revoking folder consent must never re-grant it');
-// Round-12 复审 P3:uiRemote 的 close / workspaceAllowed / revokeWorkspace
-// 三键此前没有三语在位钉。close: 在各语言文件里与 uiToolStore、子智能体
-// 抽屉、uiCodexWorkspace 等分区重名(每文件 7 处),裸 contains 会误配——
-// 按 uiRemote 分区的开闭括号切片后逐键钉在位,删任一语言的任一键即红。
+// Round-12 review P3: the uiRemote close / workspaceAllowed / revokeWorkspace
+// keys previously had no trilingual in-place pins. `close:` shares its name
+// with other sections in each language file (uiToolStore, the subagent drawer,
+// uiCodexWorkspace, etc. — 7 occurrences per file), so a bare contains would
+// mis-match — slice each uiRemote section by its braces and pin each key's
+// presence; deleting any key in any language goes red.
 const i18nByLanguage = {
   en: readSource(path.join(root, 'src', 'shared', 'i18n', 'en.js'), 'utf8'),
   ja: readSource(path.join(root, 'src', 'shared', 'i18n', 'ja.js'), 'utf8'),
@@ -1237,15 +1504,19 @@ assert.equal((i18n.match(/update_desktop:/g) || []).length, 3,
   'the update-desktop recovery copy must exist in all three languages');
 assert.match(desktopRemoteControlBridge, /invoke\("web_access_revoke_host_workspace"\)/,
   'the desktop bridge must call the desktop-only revoke command');
-// Round-6 复审 M6:round-5 的「乐观合并清码」账必须逐分支成立——错误
-// 写入与码清理成对。remote-control.js 全部十个清码点在此逐点设 pin:
-// refresh 失败、乐观开始、start 成功/失败、stop 成功/失败、rotate
-// 成功/失败、revoke 合并/失败。其中两组字节完全相同的孪生形状——
-// refresh/revoke 失败共用的 { last_error: String(error), ... } 单行,
-// 以及 stop/rotate 失败共用的 status: "error"... 单行——无法按文本
-// 指向单侧,改用全局 count 断言守住两侧,删任一侧即红;其余各点按该
-// merge 对象的唯一形状逐点匹配。revoke 合并另须按 url 有无推导
-// active,不得把非活跃状态标成在线,改回强制 active: true 即红。
+// Round-6 review M6: round-5's "optimistic merge clears the code" ledger must
+// hold branch by branch — error writes and code clearing come in pairs. All
+// ten code-clearing points in remote-control.js are pinned point by point
+// here: refresh failure, the optimistic start, start success/failure, stop
+// success/failure, rotate success/failure, revoke merge/failure. Two of them
+// are byte-identical twin shapes — the { last_error: String(error), ... }
+// single line shared by the refresh/revoke failures, and the status: "error"...
+// single line shared by the stop/rotate failures — which cannot be aimed at
+// one side by text, so a global count assertion guards both sides and deleting
+// either goes red; the remaining points match the unique shape of each merge
+// object. The revoke merge must additionally derive active from whether the
+// url exists — marking an inactive state as online must not happen, and
+// reverting to a forced active: true goes red.
 assert.match(desktopRemoteControlBridge, /\{ starting: true, last_error: null, last_error_code: null \}/,
   'the optimistic start merge must clear the stale recovery code');
 assert.match(desktopRemoteControlBridge,
@@ -1283,8 +1554,9 @@ assert.match(
   /web_access_rotate\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'rotation rewrites link credentials and must stay main-WebView only',
 );
-// Round-8 复审:disable / relay_settings / list_host_files 的主 WebView gate
-// 此前没有 source-shape pin,删除任一 gate 行仍然全绿;补齐与上方四条同款。
+// Round-8 review: the main-WebView gates of disable / relay_settings /
+// list_host_files previously had no source-shape pin, so deleting any gate
+// line stayed green; fill in the same shape as the four pins above.
 assert.match(remoteControlCommands, /web_access_disable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'only the main desktop WebView may stop a persistent remote endpoint');
 assert.match(
@@ -1292,20 +1564,24 @@ assert.match(
   /web_access_list_host_files\([\s\S]{0,400}require_main_webview\(&window\)\?/,
   'host filesystem browsing must stay main-WebView only',
 );
-// Round-11 复审 M4:publish_event 拿到了 Round-10 的策略反钉,但其主
-// WebView gate 行是管理命令里唯一没有 Round-8 同款 source-shape 钉的
-// ——门是桌面 aux WebView 侧的唯一防线(策略反钉护的是另一侧调用者)。
+// Round-11 review M4: publish_event received the Round-10 policy anti-pin,
+// but its main-WebView gate line is the only management command without a
+// Round-8-style source-shape pin — the gate is the only line of defense on
+// the desktop aux WebView side (the policy anti-pin guards the other side's
+// callers).
 assert.match(
   remoteControlCommands,
   /web_access_publish_event\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'the management event-publish channel must stay main-WebView only',
 );
-// Round-12 复审 P3:RPC 代理三兄弟(bridge_ready / rpc_begin / rpc_respond)
-// 的主 WebView gate 行此前没有 Round-8 同款 source-shape 钉——策略反钉护的
-// 是手机侧调用者,辅助桌面 WebView 的唯一防线就是这行 gate;删行仍全绿。
-// 补齐同款:rpc_respond 参数表长(签名到 gate 实距 ~311),间距上限放宽到
-// 400(与 list_host_files 同款),仍远小于删除后到下一命令 gate 的距离
-// (~837),删行即红。
+// Round-12 review P3: the RPC proxy trio (bridge_ready / rpc_begin /
+// rpc_respond) previously had no Round-8-style source-shape pin on their
+// main-WebView gate lines — the policy anti-pin guards the phone-side callers,
+// and that gate line is the aux desktop WebView's only defense; deleting the
+// line stayed green. Fill in the same shape: rpc_respond has a long parameter
+// list (actual signature-to-gate distance ~311), so the gap cap is relaxed to
+// 400 (same as list_host_files), still far smaller than the post-deletion
+// distance to the next command's gate (~837), making the deletion red.
 assert.match(
   remoteControlCommands,
   /web_access_bridge_ready\([\s\S]{0,240}require_main_webview\(&window\)\?/,

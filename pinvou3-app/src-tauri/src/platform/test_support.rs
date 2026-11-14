@@ -1,22 +1,30 @@
-//! 跨特性共享的测试 helper（全部条目 `#[cfg(test)]`，不进发布产物）。
+//! Test helpers shared across features (every item is `#[cfg(test)]` and
+//! never ships in release artifacts).
 //!
-//! 进程级 env（PINVOU3_HOME / DEEPSEEK_* 等）是 cargo test 并行执行下的隔离
-//! 硬约束：所有改写 env 的测试必须先持有 `platform::paths::tests::ENV_LOCK`
-//! （crate 唯一 env 锁——本模块不另立锁源，只复用它），并在退出（含 panic
-//! 路径）时恢复原值。本模块把「PINVOU3_HOME 指向干净临时目录跑闭包」与
-//! 「快照/恢复一组 env」两个高频脚手架收敛为单一实现，供 assistant /
-//! connectors / marketplace 等模块的测试复用，避免逐文件复制出细微漂移。
+//! Process-level env (PINVOU3_HOME / DEEPSEEK_* etc.) is the hard isolation
+//! constraint under parallel `cargo test`: every test that mutates env must
+//! first hold `platform::paths::tests::ENV_LOCK` (the crate's single env
+//! lock — this module does not add another lock source, it only reuses that
+//! one) and restore the original values on exit (including the panic path).
+//! This module consolidates the two high-frequency scaffolds — "run a
+//! closure with PINVOU3_HOME pointed at a clean temp dir" and
+//! "snapshot/restore a set of env vars" — into a single implementation for
+//! reuse by tests in assistant / connectors / marketplace and other modules,
+//! avoiding subtle drift from per-file copies.
 //!
-//! 模块声明位于 `platform/mod.rs`（`#[cfg(test)] pub(crate) mod test_support;`），
-//! 不进发布产物。
+//! The module is declared in `platform/mod.rs`
+//! (`#[cfg(test)] pub(crate) mod test_support;`) and never ships in release
+//! artifacts.
 
 #[cfg(test)]
 use std::ffi::OsString;
 
-/// 把 PINVOU3_HOME 指到干净临时目录跑闭包，跑完恢复并清理。目录名前缀由
-/// 调用方给出（按特性/用例区分，避免同 pid 下不同测试互删），并叠加进程 id
-/// 与 `unique_suffix()` 保证并行轮次间不碰撞。借
-/// `platform::paths::tests::ENV_LOCK` 与其它 mutate PINVOU3_HOME 的测试串行。
+/// Runs the closure with PINVOU3_HOME pointed at a clean temp dir, then
+/// restores and removes the dir. The caller supplies the dir-name prefix
+/// (per feature/case, so different tests under the same pid do not delete
+/// each other's dirs), plus the process id and `unique_suffix()` to avoid
+/// collisions across parallel rounds. Serializes against other tests that
+/// mutate PINVOU3_HOME via `platform::paths::tests::ENV_LOCK`.
 #[cfg(test)]
 pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     let _g = crate::platform::paths::tests::ENV_LOCK
@@ -85,11 +93,15 @@ pub(crate) fn locked_env(
     (lock, EnvRestore::capture(vars))
 }
 
-/// 连接器旧布局 bin 目录的测试入口：返回 `managed_connector_bin_dir()`；为
-/// `None` 时硬断言当前目标平台确实不受 lock 表覆盖。消费方测试（存量迁移、
-/// PATH 次序等）据此软跳过——受支持平台上的 wrapper 回归在这里失败，而不是
-/// 被各消费方测试的 `else { return }` 静默吞掉（否则 PATH 注入、存量迁移/
-/// 残留清理、spawn 回退解析的回归会全部变哑）。
+/// Test entry point for the legacy connector-layout bin dir: returns
+/// `managed_connector_bin_dir()`; if that is `None`, hard-asserts that the
+/// current target platform is genuinely not covered by the lock table.
+/// Consumer tests (legacy-layout migration, PATH ordering, etc.) soft-skip
+/// based on this — a wrapper regression on a supported platform fails here
+/// instead of being silently swallowed by each consumer's
+/// `else { return }` (otherwise regressions in PATH injection, legacy
+/// migration/residue cleanup, and spawn fallback resolution would all go
+/// mute).
 #[cfg(test)]
 pub(crate) fn managed_connector_bin_dir_or_assert_unsupported() -> Option<std::path::PathBuf> {
     let dir = crate::platform::paths::managed_connector_bin_dir();
@@ -108,14 +120,17 @@ pub(crate) fn managed_connector_bin_dir_or_assert_unsupported() -> Option<std::p
     dir
 }
 
-/// RAII 快照/恢复一组环境变量：`capture` 记录现值，`Drop`（含 panic 路径）
-/// 逐一恢复。调用方测试必须先持有 `platform::paths::tests::ENV_LOCK` 再
-/// capture，保证 env 写全程在锁内串行。
+/// RAII snapshot/restore for a set of env vars: `capture` records the
+/// current values and `Drop` (including the panic path) restores each one.
+/// Caller tests must hold `platform::paths::tests::ENV_LOCK` before
+/// capturing, so env writes stay serialized under the lock for their
+/// entire lifetime.
 #[cfg(test)]
 pub(crate) struct EnvRestore {
     saved: Vec<(&'static str, Option<OsString>)>,
-    /// env 恢复完成后执行的一次性收尾动作（如 multiagent 回归测试恢复
-    /// PINVOU3_HOME 后刷新 personas 缓存）；普通用例为 `None`。
+    /// One-shot tail action run after env restore completes (e.g. the
+    /// multiagent regression test refreshes the personas cache after
+    /// restoring PINVOU3_HOME); `None` for ordinary use.
     post_restore: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -131,8 +146,9 @@ impl EnvRestore {
         }
     }
 
-    /// 同 [`EnvRestore::capture`]，并在 env 全部恢复完成后执行一次
-    /// `post_restore`（先恢复 env、后收尾，保证收尾读到的是恢复后的环境）。
+    /// Same as [`EnvRestore::capture`], and runs `post_restore` once after
+    /// all env vars are restored (restore first, tail action second, so the
+    /// tail observes the already-restored environment).
     pub(crate) fn capture_with_post_restore(
         names: &[&'static str],
         post_restore: impl FnOnce() + Send + 'static,
@@ -388,9 +404,10 @@ pub(crate) fn write_test_zip(prefix: &str, entries: &[(&str, Vec<u8>)]) -> std::
 /// architecture guard keeps platform selectors in adapter layers), so the
 /// selector lives here and callers skip the mode assertions when this
 /// returns `false` (Windows/fallback have no 0600 semantics to repair).
-/// (Round-6 复审:曾经的读侧伴生 `private_file_mode` 与既有
-/// [`permission_bits`] 语义相同,两个名字只会漂移,已删除——读侧一律用
-/// [`permission_bits`],写侧用本函数。)
+/// (Round-6 review: a former read-side counterpart `private_file_mode`
+/// duplicated the existing [`permission_bits`] semantics; two names would
+/// only drift, so it was removed — the read side always uses
+/// [`permission_bits`], the write side uses this function.)
 #[cfg(test)]
 pub(crate) fn force_private_file_mode(path: &std::path::Path, mode: u32) -> bool {
     #[cfg(unix)]
@@ -402,5 +419,164 @@ pub(crate) fn force_private_file_mode(path: &std::path::Path, mode: u32) -> bool
     {
         let _ = (path, mode);
         false
+    }
+}
+
+/// Shared source-pin primitive ("drop pure comment lines first", round-27
+/// review m14): every file's pins used to inline the same filter closure
+/// (mod.rs/persistence.rs/memory.rs/sessions.rs/memory tests/tasks.rs/
+/// executor.rs/relay_client.rs/remote_control.rs) and the calibers could
+/// only drift by eye. Whole-line `//`/`///` comments are dropped, then
+/// closed `/* … */` spans are removed (review JensenChen28 4510500034 /
+/// 4521238202): the line pass runs first, so a `//`-commented-out `/*`
+/// marker cannot make the block pass eat live code, and the block pass
+/// removes closed spans (tracking nesting depth, review JensenChen28
+/// 4525154638), so a compiling mutation that block-comments an assignment
+/// cannot keep the needle's substring alive while the executable behavior
+/// is gone (an unterminated `/*` is kept verbatim).
+/// Residual exposure, unchanged and handled per pin's disclosed residuals:
+/// a needle mentioned in a trailing `//` comment on an executable line,
+/// or inside a string literal, still satisfies a `contains` pin.
+#[cfg(test)]
+pub(crate) fn comment_filtered(source: &str) -> String {
+    let without_line_comments = source
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    strip_closed_block_comments(&without_line_comments)
+}
+
+/// Newline-preserving removal of closed `/* … */` spans, tracking nesting
+/// depth: Rust block comments nest, so a span's balancing close is the
+/// `*/` that returns the depth to zero, not the first `*/` seen (review
+/// JensenChen28 4525154638). Runs after the whole-line-comment pass; an
+/// unterminated `/*` is kept verbatim (scan past the marker) rather than
+/// eating the rest of the source.
+#[cfg(test)]
+fn strip_closed_block_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(open) = rest.find("/*") {
+        let after_open = &rest[open + 2..];
+        let mut depth = 1usize;
+        let mut scan = 0usize;
+        let mut close_end = None;
+        while depth > 0 {
+            let next_open = after_open[scan..].find("/*").map(|rel| scan + rel);
+            let next_close = after_open[scan..].find("*/").map(|rel| scan + rel);
+            match (next_open, next_close) {
+                (Some(open_at), Some(close_at)) if open_at < close_at => {
+                    depth += 1;
+                    scan = open_at + 2;
+                }
+                (_, Some(close_at)) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close_end = Some(close_at + 2);
+                    } else {
+                        scan = close_at + 2;
+                    }
+                }
+                (Some(open_at), None) => {
+                    depth += 1;
+                    scan = open_at + 2;
+                }
+                (None, None) => break,
+            }
+        }
+        match close_end {
+            Some(end) => {
+                out.push_str(&rest[..open]);
+                let inner = &after_open[..end - 2];
+                for _ in 0..inner.matches('\n').count() {
+                    out.push('\n');
+                }
+                rest = &after_open[end..];
+            }
+            None => {
+                // Unterminated block: keep it verbatim, scan past the marker.
+                out.push_str(&rest[..open + 2]);
+                rest = after_open;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod comment_filtered_tests {
+    use super::comment_filtered;
+
+    #[test]
+    fn block_commented_text_no_longer_satisfies_a_pin_needle() {
+        // Review JensenChen28 4510500034/4521238202: the line pass alone
+        // left a block-commented assignment's substring alive, so a
+        // compiling mutation (wrap the executable line in `/* … */`) kept
+        // every adopted pin green while the behavior was gone. The block
+        // pass must remove the needle with the span.
+        let mutated = "fn revoke() {\n    /*\n    endpoint.config.allow_host_workspace = true;\n    self.emit_status();\n    */\n}";
+        let filtered = comment_filtered(mutated);
+        assert!(
+            !filtered.contains("endpoint.config.allow_host_workspace = true;"),
+            "block-commented executable text must not satisfy a pin needle"
+        );
+        assert!(
+            !filtered.contains("self.emit_status();"),
+            "every needle inside the block-commented span must be removed"
+        );
+    }
+
+    #[test]
+    fn line_commented_block_markers_do_not_eat_live_code() {
+        // Ordering discipline (mirrors forwarder.rs's forwarder_body): the
+        // whole-line pass runs first, so a `//`-commented-out `/*` marker
+        // cannot make the block pass eat the live lines after it.
+        let live = "fn keep() {\n    // /*\n    let keep_me = true;\n    // */\n    let also_live = keep_me;\n}";
+        let filtered = comment_filtered(live);
+        assert!(
+            filtered.contains("let keep_me = true;"),
+            "a line-commented block marker must not eat live code"
+        );
+        assert!(
+            filtered.contains("let also_live = keep_me;"),
+            "code after line-commented markers must survive"
+        );
+    }
+
+    #[test]
+    fn nested_block_comments_strip_through_the_balancing_close() {
+        // Review JensenChen28 4525154638: Rust block comments nest, so the
+        // first `*/` does not close the outer span. A compiling mutation
+        // that wraps the pin target in an outer comment holding an inner
+        // `/* … */` used to leave the needle's substring alive past the
+        // inner close, so the pin still passed with the behavior commented
+        // out. The block pass must track depth and stop at the balancing
+        // close.
+        let mutated = "fn revoke() {\n    /* outer\n    /* inner */\n    endpoint.config.allow_host_workspace = true;\n    */\n}";
+        let filtered = comment_filtered(mutated);
+        assert!(
+            !filtered.contains("endpoint.config.allow_host_workspace = true;"),
+            "a needle behind a nested block-comment span must be removed"
+        );
+        assert!(
+            !filtered.contains("*/"),
+            "the balancing close must be consumed with the span"
+        );
+    }
+
+    #[test]
+    fn disclosed_residual_trailing_comment_mention_survives() {
+        // Unchanged residual: whole-line filtering does not strip trailing
+        // `//` comments, so a needle repeated in one still matches. Each
+        // pin discloses this exposure itself.
+        assert!(
+            comment_filtered("let x = 1; // let x = 1;").contains("let x = 1;"),
+            "trailing-comment mentions remain a disclosed residual"
+        );
     }
 }
