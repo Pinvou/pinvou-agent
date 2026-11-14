@@ -189,7 +189,7 @@ notify = "8"
 # 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重
 # rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
 # 对 .deb 离线分发友好（与 file_ingest 二进制依赖降 recommends 的思路一致）。
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.0", features = ["bundled"] }
 # 全盘遍历：容错(权限不足跳过)、防 symlink 环。L0 扫描器用。
 walkdir = "2"
 
@@ -339,7 +339,26 @@ uiautomation = "0.25"
 # which uiautomation's plain `TreeScope` enum cannot express: the flag is set
 # on the underlying `IUIAutomationCacheRequest`, and that interface has to be
 # the type from this exact `windows` version.
-windows = { version = "0.62", features = ["Win32_UI_Accessibility"] }
+# The Win32_* features beyond Accessibility serve the computer-use virtual
+# display (features/computer_use/platform/windows_virtual): hidden-desktop
+# creation (StationsAndDesktops; the API is Security-gated upstream, so
+# Win32_Security is declared here explicitly instead of riding another
+# crate's feature unification), the hidden-desktop composite capture
+# (Graphics_Gdi), the kill-on-close job object wrapping launched apps
+# (JobObjects + Threading + Security), the message-level input posts
+# (UI_Input_KeyboardAndMouse + UI_WindowsAndMessaging), and the cloaked-
+# window filter for the composite (Graphics_Dwm).
+windows = { version = "0.62", features = [
+    "Win32_UI_Accessibility",
+    "Win32_System_StationsAndDesktops",
+    "Win32_Security",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_System_JobObjects",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+] }
 
 # Process liveness probe using kill(pid, 0) semantics; see process_alive in
 # platform/os/posix.rs. Browser watch uses it to guard stale port-file deletion.
@@ -391,6 +410,17 @@ zbus = { version = "5.5", default-features = false, features = ["async-io"] }
 # dedicated WebKit context with automation enabled. Keep this exact version
 # aligned with Tauri's resolved runtime so the unstable runtime API cannot drift.
 tauri-runtime-wry = "=2.12.3"
+# Computer Use virtual display (features/computer_use/platform/linux_virtual):
+# pure-Rust X11 connection for Xvfb readiness polling and full-screen GetImage
+# capture. default-features = false keeps the pure-Rust RustConnection path —
+# libxcb is NOT needed and the dl-libxcb/allow-unsafe-code features must stay
+# off (a hidden Xvfb with no libxcb dependency is the point of this backend).
+# Already in the lock (global-hotkey pulls it), so this adds no new crate.
+# NOTE: x11rb 0.13 has no connect_to_display_with_auth helper; the explicit
+# cookie path is parse_display → DefaultStream::connect →
+# RustConnection::connect_to_stream_with_auth_info (see the linux_virtual
+# module docs for the verified recipe).
+x11rb = { version = "0.13", default-features = false }
 
 # =============================================================================
 # Lint gates — hard-gate design: deny only lints with a measured zero

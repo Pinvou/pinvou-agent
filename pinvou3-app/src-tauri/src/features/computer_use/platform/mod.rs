@@ -22,6 +22,9 @@ mod macos;
 /// `macos`; older systems fall back to xcap's CGWindowList path).
 #[cfg(target_os = "macos")]
 mod screen_capture_kit;
+/// Virtual display shared glue (probe / one-time target decision / per-OS
+/// dispatch). Compiles on every target; the per-OS stacks are cfg'd inside.
+mod virtual_display;
 /// Linux-only: Wayland same-session screen capture (the PipeWire receiver of the portal
 /// ScreenCast stream, used by `wayland_portal` after the session starts).
 #[cfg(target_os = "linux")]
@@ -33,6 +36,11 @@ mod wayland_portal;
 #[cfg(target_os = "windows")]
 mod windows;
 
+pub(crate) use self::virtual_display::{
+    TargetDecision, VirtualAvailabilitySnapshot, probe as probe_virtual_display, resolve_snapshot,
+    resolve_target, sweep_orphans,
+};
+
 #[cfg(target_os = "linux")]
 use self::linux as imp;
 #[cfg(target_os = "macos")]
@@ -40,22 +48,90 @@ use self::macos as imp;
 #[cfg(target_os = "windows")]
 use self::windows as imp;
 
+use std::sync::OnceLock;
+
+use tauri::AppHandle;
+
 use super::backend::ComputerUseBackend;
 use super::types::ComputerUseError;
 
-/// Create the backend for the current OS. **Must be called on computer_use's dedicated
-/// worker thread** (guaranteed by BackendHandle): xcap/enigo/a11y objects have thread affinity.
+/// The app handle for [`dispatch_to_main_thread`], stored once at setup.
+/// macOS virtual-display creation (and any future main-run-loop-bound work)
+/// needs to hop onto the main thread; the platform layer has no other handle
+/// path (the tool's `TauriEventSink` gets one per session, but backend
+/// creation runs later on the worker thread).
+static MAIN_THREAD_APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+
+/// Store the app handle for [`dispatch_to_main_thread`]. Called once from
+/// lib.rs setup; a second call is a no-op (the first handle wins — there is
+/// exactly one main thread per process).
+pub(crate) fn set_main_thread_app_handle(app: AppHandle) {
+    let _ = MAIN_THREAD_APP_HANDLE.set(app);
+}
+
+/// Hand a task to the application's main thread. Returns `false` when the
+/// app handle is not (yet) stored or the enqueue failed — callers treat that
+/// as "main-thread dispatch unavailable" and run their explicit fallback
+/// (the macOS virtual display runs its whole bounded creation sequence on
+/// the worker thread instead). Linux/Windows call sites ignore it.
+/// The task runs asynchronously: this returns after the ENQUEUE, not after
+/// the task ran; wait-for-completion needs the caller's own channel.
+pub(crate) fn dispatch_to_main_thread(task: Box<dyn FnOnce() + Send>) -> bool {
+    let Some(app) = MAIN_THREAD_APP_HANDLE.get() else {
+        return false;
+    };
+    app.run_on_main_thread(move || task()).is_ok()
+}
+
+/// Create the backend for the current OS, applying the ONE-TIME virtual-vs-
+/// physical fallback decision (§9: taken here, at creation, recorded in the
+/// returned backend's `Capabilities.target`, and never re-evaluated
+/// mid-session): a virtual preference with a green probe builds the virtual
+/// backend, everything else stays physical. **Must be called on computer_use's
+/// dedicated worker thread** (guaranteed by BackendHandle): xcap/enigo/a11y
+/// objects have thread affinity. The decision rides the return value because
+/// the availability-snapshot recorder needs it: a failed PHYSICAL build must
+/// not be recorded as "the last virtual session failed to start".
+/// [`create_backend_with_decision`] resolves the decision BEFORE the build,
+/// so even a failed virtual creation reports `TargetDecision::Virtual` (and
+/// a failed physical build reports Physical). Both cfg sides expose the SAME
+/// name and signature so the unconditional call site compiles everywhere —
+/// on an unsupported OS the decision degrades to Physical per the snapshot
+/// rule (an unavailable probe keeps the physical arm) and the build answers
+/// the explicit Unsupported error.
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> {
-    imp::create_backend()
+pub(crate) fn create_backend_with_decision(
+    prefer_virtual: bool,
+) -> (
+    Result<Box<dyn ComputerUseBackend>, ComputerUseError>,
+    TargetDecision,
+) {
+    let availability = virtual_display::probe();
+    let decision = virtual_display::resolve_target(prefer_virtual, &availability);
+    let created = match decision {
+        TargetDecision::Virtual => virtual_display::create_virtual_backend(),
+        TargetDecision::Physical => imp::create_backend(),
+    };
+    (created, decision)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUseError> {
-    Err(ComputerUseError::unsupported(
-        "computer_use",
-        "no computer use backend exists for this operating system",
-    ))
+pub(crate) fn create_backend_with_decision(
+    prefer_virtual: bool,
+) -> (
+    Result<Box<dyn ComputerUseBackend>, ComputerUseError>,
+    TargetDecision,
+) {
+    // No physical or virtual backend exists for this OS; the preference
+    // never matters here.
+    let _ = prefer_virtual;
+    (
+        Err(ComputerUseError::unsupported(
+            "computer_use",
+            "no computer use backend exists for this operating system",
+        )),
+        TargetDecision::Physical,
+    )
 }
 
 /// Whether the current OS has a computer_use backend implementation (the platform
@@ -66,6 +142,27 @@ pub(crate) fn backend_supported() -> bool {
         target_os = "macos",
         target_os = "linux"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No-handle fallback pin: without a stored app handle (test binaries
+    /// never run lib.rs setup, and nothing else stores one), the main-thread
+    /// dispatch answers `false` — callers must take their explicit fallback
+    /// path (the macOS virtual display runs its whole bounded creation
+    /// sequence on the worker thread) instead of silently dropping a task
+    /// on the floor.
+    #[test]
+    fn dispatch_without_an_app_handle_returns_false() {
+        assert!(
+            !dispatch_to_main_thread(Box::new(|| {
+                panic!("the task must not run without a stored app handle");
+            })),
+            "dispatch must report the missing handle instead of dropping the task"
+        );
+    }
 }
 
 /// Trigger platform permission onboarding: on macOS pop both the Screen Recording and

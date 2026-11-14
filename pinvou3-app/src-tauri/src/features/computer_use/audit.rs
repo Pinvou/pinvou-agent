@@ -122,6 +122,15 @@ pub struct AuditRecord {
     pub action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// Which display the action targeted: "virtual" (isolated virtual
+    /// display) or "physical" (the user's desktop). Set on every production
+    /// record — including parse rejections and gate rejections, where the
+    /// answer is the session's registered target or, before that exists,
+    /// the resolved preference (None only on the doc test's bare record).
+    /// Named `display_target` because the plain `target` JSON key is
+    /// already the action-target summary above (frozen JSONL contract).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_target: Option<String>,
     /// The consent tier/result actually applied, e.g. "observe" / "input:session-grant" /
     /// "input:session-grant+t3-confirmed" / "rejected:grant-required".
     pub consent: String,
@@ -148,6 +157,7 @@ impl AuditRecord {
             session_id: session_id.into(),
             action: action.into(),
             target: None,
+            display_target: None,
             consent: consent.into(),
             result: None,
             error: None,
@@ -162,6 +172,14 @@ impl AuditRecord {
     /// field (only lengths are recorded, see the module docs).
     pub fn with_target(&mut self, target: &str) -> &mut Self {
         self.target = Some(truncate_utf8(target, AUDIT_TARGET_MAX_BYTES).to_string());
+        self
+    }
+
+    /// Record which display the action targeted ("virtual" | "physical").
+    /// Set from the backend's resolved `Capabilities.target` (or the resolved
+    /// preference fallback), never from model input.
+    pub fn with_display_target(&mut self, target: impl Into<String>) -> &mut Self {
+        self.display_target = Some(target.into());
         self
     }
 
@@ -250,6 +268,7 @@ mod tests {
         let (dir, log) = temp_log();
         let mut record = AuditRecord::new("s1", "left_click", "input:session-grant");
         record.with_target("left click x1 at Some((5, 6))");
+        record.with_display_target("virtual");
         let record = record.finish("ok", None, 42);
         log.append(&record).unwrap_or(());
 
@@ -261,10 +280,39 @@ mod tests {
         assert_eq!(parsed["session_id"], "s1");
         assert_eq!(parsed["action"], "left_click");
         assert_eq!(parsed["target"], "left click x1 at Some((5, 6))");
+        // The display target is a separate frozen key — it must never
+        // collide with (or overwrite) the action-target summary above.
+        assert_eq!(parsed["display_target"], "virtual");
         assert_eq!(parsed["consent"], "input:session-grant");
         assert_eq!(parsed["result"], "ok");
         assert_eq!(parsed["duration_ms"], 42);
         assert!(parsed["timestamp"].is_string());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A bare record that never passed through `with_display_target` omits
+    /// the field entirely (serde skip), so the JSONL stays honest about what
+    /// was actually known when. (Production records DO carry the target from
+    /// the first field onward — including parse and gate rejections — see
+    /// the field doc; this pin only freezes the bare-record serde shape.)
+    #[test]
+    fn display_target_is_omitted_until_recorded() {
+        let (dir, log) = temp_log();
+        let record = AuditRecord::new("s1", "screenshot", "observe").finish("rejected", None, 0);
+        log.append(&record).unwrap_or(());
+        let raw = fs::read_to_string(log.path()).unwrap_or_default();
+        // R18: assert the append and the read actually happened — on an
+        // infra failure both unwrap_ors fall through to an empty `raw` and
+        // the skip assertion below would pass vacuously.
+        assert_eq!(
+            raw.lines().count(),
+            1,
+            "the fixture must append and read exactly one record: {raw}"
+        );
+        assert!(
+            !raw.contains("display_target"),
+            "unset display_target must be skipped, not serialized null: {raw}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

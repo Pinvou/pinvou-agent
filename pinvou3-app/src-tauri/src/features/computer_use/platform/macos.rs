@@ -90,16 +90,16 @@ use objc2_foundation::{NSPoint, NSSize, NSString};
 
 use super::super::backend::ComputerUseBackend;
 use super::super::types::{
-    Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
-    UiTreeOptions,
+    Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
+    ScrollDirection, UiTreeOptions,
 };
 use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
     DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS,
     MACOS_UNICODE_STRING_UTF16_UNITS, MAX_NAME_CHARS, MAX_TREE_DEPTH, MAX_TREE_NODES,
-    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints,
-    map_scroll, map_xcap_err, normalize_typed_newlines, pick_monitor, release_reverse,
-    sanitize_name, screening_hit, split_type_runs, utf16_chunks,
+    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, combine_hold_errors,
+    drag_waypoints, map_scroll, map_xcap_err, normalize_typed_newlines, ordered_chord_keys,
+    pick_monitor, release_reverse, sanitize_name, screening_hit, split_type_runs, utf16_chunks,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
@@ -198,11 +198,15 @@ fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
     ComputerUseError::failed(format!("{context}: {err}"))
 }
 
-fn screen_recording_granted() -> bool {
+// TCC preflights + error strings are `pub(super)` so the virtual-display
+// backend (features/computer_use/platform/virtual_display/macos_virtual.rs)
+// reuses the exact same grant checks and user-facing guidance instead of a
+// drifting copy (extraction is visibility-only, no behavior change).
+pub(super) fn screen_recording_granted() -> bool {
     CGPreflightScreenCaptureAccess()
 }
 
-fn accessibility_granted() -> bool {
+pub(super) fn accessibility_granted() -> bool {
     // SAFETY: no arguments, purely queries this process's TCC grant state,
     // shows no dialog, callable on any thread.
     unsafe { AXIsProcessTrusted() }
@@ -217,11 +221,11 @@ pub fn permission_status() -> Option<(bool, bool)> {
     Some((screen_recording_granted(), accessibility_granted()))
 }
 
-fn screen_recording_error() -> ComputerUseError {
+pub(super) fn screen_recording_error() -> ComputerUseError {
     ComputerUseError::unavailable(SCREEN_RECORDING_DENIED)
 }
 
-fn accessibility_error() -> ComputerUseError {
+pub(super) fn accessibility_error() -> ComputerUseError {
     ComputerUseError::unavailable(ACCESSIBILITY_DENIED)
 }
 
@@ -481,16 +485,6 @@ fn move_event_type(held: &[MouseButton]) -> (u32, u32) {
     } else {
         (CG_EVENT_MOUSE_MOVED, CG_MOUSE_BUTTON_LEFT)
     }
-}
-
-/// Press modifiers before character/named keys (stable order otherwise):
-/// enigo's macOS backend attaches its accumulated modifier flags only to the
-/// keys pressed after the modifier (review finding: `s+ctrl` used to inject a
-/// bare `s` followed by a lone ctrl press).
-fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
-    let mut ordered = keys.to_vec();
-    ordered.sort_by_key(|key| !matches!(key, Key::Control | Key::Alt | Key::Shift | Key::Meta));
-    ordered
 }
 
 /// Password field detection: the authoritative signal is subrole
@@ -1331,17 +1325,22 @@ impl MacosComputerUseBackend {
         // Chunk the hold so a stop/timeout cancel flag is polled within
         // HOLD_CANCEL_POLL_MS instead of waiting out the whole hold (up to
         // 30 s). The keys are always released, whether the hold ran out or
-        // was cancelled.
+        // was cancelled — and a FAILED release is surfaced, never the
+        // all-clear (the shared combine_hold_errors merge — the same helper
+        // the virtual stacks and the other physical paths use, R18).
         let mut remaining = hold;
         while remaining > Duration::ZERO {
             if cancel
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
-                let _ = release_reverse(&pressed, enigo);
-                return Err(ComputerUseError::unavailable(
-                    "hold was cancelled (caller timeout or stop); the keys have been released",
-                ));
+                return combine_hold_errors(
+                    Err(ComputerUseError::unavailable(
+                        "hold was cancelled (caller timeout or stop)",
+                    )),
+                    release_reverse(&pressed, enigo)
+                        .map_err(|err| map_input_err("key release", err)),
+                );
             }
             let step = remaining.min(Duration::from_millis(HOLD_CANCEL_POLL_MS));
             sleep(step);
@@ -1400,6 +1399,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             screenshot: true,
             input: true,
             ui_tree: true,
+            target: DisplayTarget::Physical,
+            target_note: String::new(),
             notes: "macos: all input coordinates are CGEvent global points (screenshot px / \
                     backing scale factor); mouse events are posted as native CGEvents and \
                     keyboard/wheel go through enigo; Screen Recording + Accessibility TCC \

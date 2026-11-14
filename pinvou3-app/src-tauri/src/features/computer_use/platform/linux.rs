@@ -64,11 +64,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use super::super::backend::ComputerUseBackend;
 use super::super::guard::raw_element_binding;
 use super::super::types::{
-    Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
-    UiTreeOptions,
+    Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
+    ScrollDirection, UiTreeOptions,
 };
 use super::helpers::{
-    MAX_NAME_CHARS, MAX_SCROLL_CLICKS, combine_drag_errors, drag_waypoints,
+    MAX_NAME_CHARS, MAX_SCROLL_CLICKS, combine_drag_errors, combine_hold_errors, drag_waypoints,
     normalize_typed_newlines, sanitize_name, screening_hit,
 };
 use super::wayland_portal::{self, PortalInput};
@@ -1516,6 +1516,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                      AT-SPI bounds best-effort on Wayland",
                     self.session.desktop_label()
                 ),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         } else {
             let input_note = if self.input.is_some() {
@@ -1573,6 +1575,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     self.session.desktop_label(),
                     if ui_tree { "" } else { " unavailable" },
                 ),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         }
     }
@@ -2233,20 +2237,18 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     // stop" case the retry exists for, and a single failed
                     // notify may strand the key on the compositor (mutter
                     // never synthesizes the missing release when the session
-                    // closes).
+                    // closes). The merge is the shared combine_hold_errors
+                    // helper (R18 — one wording for every stack).
                     let release = release_keysyms_with_retry(
                         |keysym, pressed| portal.keysym_event(keysym, pressed),
                         &mapped,
                     );
-                    return Err(match release {
-                        Ok(()) => ComputerUseError::unavailable(
-                            "hold was cancelled (caller timeout or stop); the keys have been released",
-                        ),
-                        Err(release_error) => ComputerUseError::unavailable(format!(
-                            "hold was cancelled (caller timeout or stop); the compensating \
-                             release failed ({release_error}); the keys may still be held down"
+                    return combine_hold_errors(
+                        Err(ComputerUseError::unavailable(
+                            "hold was cancelled (caller timeout or stop)",
                         )),
-                    });
+                        release,
+                    );
                 }
                 let step = remaining.min(HOLD_CANCEL_POLL_MS);
                 sleep(Duration::from_millis(step));
@@ -2273,16 +2275,14 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
             {
                 // Surface a failed release instead of claiming success: an
                 // XTEST release error usually means the connection is dead,
-                // and the caller must know the keys may be stranded down.
-                return Err(match Self::release_chord(enigo, &mapped) {
-                    Ok(()) => ComputerUseError::unavailable(
-                        "hold was cancelled (caller timeout or stop); the keys have been released",
-                    ),
-                    Err(release_error) => ComputerUseError::unavailable(format!(
-                        "hold was cancelled (caller timeout or stop); the compensating \
-                         release failed ({release_error}); the keys may still be held down"
+                // and the caller must know the keys may be stranded down
+                // (the shared combine_hold_errors merge, R18).
+                return combine_hold_errors(
+                    Err(ComputerUseError::unavailable(
+                        "hold was cancelled (caller timeout or stop)",
                     )),
-                });
+                    Self::release_chord(enigo, &mapped),
+                );
             }
             let step = remaining.min(HOLD_CANCEL_POLL_MS);
             sleep(Duration::from_millis(step));

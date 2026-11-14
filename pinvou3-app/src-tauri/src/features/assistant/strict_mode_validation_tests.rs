@@ -107,6 +107,7 @@ fn strict_mode_rejects_failed_turn_without_error_event() {
             usage: Usage::default(),
             status: TurnOutcomeStatus::Failed,
             error: Some("engine task panicked".to_string()),
+            error_source: None,
             tool_catalog: None,
             turn_id: None,
             submission_id: None,

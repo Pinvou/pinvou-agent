@@ -388,11 +388,190 @@ for (const language of ['zh', 'en', 'ja']) {
     return out;
   };
   const zhTypes = new Map(typedLeafKeys(dict.zh.uiComputerUse));
-  assert.ok(zhTypes.size >= 37, `uiComputerUse leaf count looks wrong: ${zhTypes.size}`);
+  // Count guard (R8: this section previously had only a `>= 37` lower
+  // bound, so deleting a key from all three dictionaries at once — or from
+  // zh alone, breaking parity — passed the whole suite). Any key change
+  // must update this count in the same commit; the section currently holds
+  // 68 leaves including the three platform consent caveats (mac/linux/
+  // windows), the unknown-platform honesty line (R16 adds its settings-note
+  // twin, `virtualNoteUnknownPlatform`), and the R12 pair (the
+  // live-physical fact reworded + the new gated future-isolation promise).
+  assert.equal(zhTypes.size, 68, `uiComputerUse must hold exactly the 68 pinned leaves (found ${zhTypes.size})`);
   for (const language of ['en', 'ja']) {
     const types = new Map(typedLeafKeys(dict[language].uiComputerUse));
+    assert.equal(
+      types.size,
+      zhTypes.size,
+      `${language}.uiComputerUse must hold exactly as many leaves as zh`,
+    );
     for (const [key, type] of zhTypes) {
+      assert.ok(types.has(key), `${language}.uiComputerUse.${key} must exist (parity with zh)`);
       assert.equal(types.get(key), type, `${language}.uiComputerUse.${key} must be a ${type} like zh`);
+    }
+  }
+  // The platform consent caveats are the honest-isolation surface: each
+  // must exist in every language or the grant dialog silently renders no
+  // caveat for that platform. The unknown-platform honesty line also gets
+  // a content anchor (R14): presence-only typing let a single-language
+  // drop to empty/placeholder text pass the whole suite.
+  for (const key of ['grantMacCaveat', 'grantLinuxCaveat', 'grantWindowsCaveat', 'grantUnknownPlatformCaveat', 'virtualNoteUnknownPlatform']) {
+    for (const language of ['zh', 'en', 'ja']) {
+      assert.equal(
+        typeof dict[language].uiComputerUse[key],
+        'string',
+        `${language}.uiComputerUse.${key} must be a string`,
+      );
+    }
+  }
+  const unknownPlatformAnchors = ['isolation', '分離', '隔离'];
+  for (const [index, language] of ['en', 'ja', 'zh'].entries()) {
+    const line = dict[language].uiComputerUse.grantUnknownPlatformCaveat;
+    assert.ok(
+      line.length > 20 && line.includes(unknownPlatformAnchors[index]),
+      `${language}.grantUnknownPlatformCaveat must carry the real honesty line \
+       (anchor "${unknownPlatformAnchors[index]}", got ${JSON.stringify(line)})`,
+    );
+  }
+  // R16: the settings-note twin of the honesty line — the settings row
+  // renders it when the platform capability is absent, so the absolute
+  // "never shows on your screen" hint never stands on the page unqualified.
+  const settingsUnknownAnchors = ['could not be verified', '検証できなかった', '无法验证'];
+  for (const [index, language] of ['en', 'ja', 'zh'].entries()) {
+    const line = dict[language].uiComputerUse.virtualNoteUnknownPlatform;
+    assert.ok(
+      line.length > 20 && line.includes(settingsUnknownAnchors[index]),
+      `${language}.uiComputerUse.virtualNoteUnknownPlatform must carry the \
+       honesty line (anchor "${settingsUnknownAnchors[index]}", got ${JSON.stringify(line)})`,
+    );
+  }
+  // The per-OS disclosure is maintained TWICE per platform (settings note +
+  // grant caveat) and must not drift apart: both copies of a platform's
+  // residual share anchor phrases in every language (R9: nothing compared
+  // the two copies before).
+  const disclosureAnchors = [
+    ['virtualNoteMacos', 'grantMacCaveat', ['best-effort', 'できる限り', '尽力']],
+    // R12 (M2): the R11 en settings note silently dropped the
+    // session-scope rearrangement disclosure the ja/zh notes carry — the
+    // single generic anchor above could not see it. Anchor the
+    // rearrangement + overlap-free-verification sentences specifically.
+    ['virtualNoteMacos', 'grantMacCaveat', ['top-left corner', '画面の左上へ', '屏幕左上角']],
+    // R14: the remaining consent-critical sentences get their own anchors —
+    // a single-language drop of any of them passed the suite before (the
+    // exact-leaf count cannot see content, only keys).
+    ['virtualNoteMacos', 'grantMacCaveat', ['keep running', 'し続け', '继续运行']],
+    ['virtualNoteMacos', 'grantMacCaveat', ['mirror set', 'ミラーセット', '镜像集合']],
+    // R15: the macOS clipboard channel is consent-critical (the R9 Windows
+    // precedent) and the pre-consent construction ordering is the honest
+    // framing for the placement sentence — both disclosures exist in both
+    // keys of the mac pair in every language, anchored so a single-language
+    // drop fails the suite.
+    ['virtualNoteMacos', 'grantMacCaveat', ['clipboard', 'クリップボード', '剪贴板']],
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['even if you deny', 'この要求を拒否した場合でも', '即使你拒绝'],
+    ],
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['without the Accessibility permission', 'アクセシビリティ権限がない', '未授予辅助功能权限'],
+    ],
+    // R16: the macOS Stop-does-not-close + wedged-press truths reach the
+    // user-facing pair too (they used to live only in the model-facing
+    // target note) — anchored so a single-language drop fails the suite.
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['Pressing Stop does not close', '停止を押しても', '按下“停止”不会关闭'],
+    ],
+    // R17: the wedged-press clause is a SEPARATE sentence in the same
+    // pair — the Stop anchor above still matched with the clause dropped
+    // (in one language or all), so the clause gets its own row. Same for
+    // the overlap-free-verification sentence the R12 comment claimed was
+    // anchored: only the top-left-corner anchor existed.
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['mid-gesture', '押されたまま', '保持按下'],
+    ],
+    [
+      'virtualNoteMacos',
+      'grantMacCaveat',
+      ['overlap-free', '重なり', '不重叠'],
+    ],
+    ['virtualNoteLinux', 'grantLinuxCaveat', ['raw Wayland', 'raw Wayland', 'raw Wayland']],
+    // R18: the Linux wind-down abruptness (group SIGKILL at Stop, unsaved
+    // work lost) reached the model-facing note in R15 but never the
+    // user-facing pair — both sibling platforms carry their Stop semantics
+    // here, so the Linux pair gets its own anchor.
+    [
+      'virtualNoteLinux',
+      'grantLinuxCaveat',
+      ['Pressing Stop ends', '「停止」を押すと', '按下“停止”会立即'],
+    ],
+    [
+      'virtualNoteLinux',
+      'grantLinuxCaveat',
+      ['unsaved work in them is lost', '未保存の作業は失われ', '未保存的工作会丢失'],
+    ],
+    ['virtualNoteWindows', 'grantWindowsCaveat', ['broker', 'ブローカー', '系统中转']],
+    ['virtualNoteWindows', 'grantWindowsCaveat', ['clipboard', 'クリップボード', '剪贴板']],
+    [
+      'virtualNoteWindows',
+      'grantWindowsCaveat',
+      ['session is fully closed', 'セッションを完全に閉じた', '会话完全关闭'],
+    ],
+    ['virtualNoteWindows', 'grantWindowsCaveat', ['Alt+Tab', 'Alt+Tab', 'Alt+Tab']],
+  ];
+  for (const [noteKey, caveatKey, anchors] of disclosureAnchors) {
+    for (const [index, language] of ['en', 'ja', 'zh'].entries()) {
+      const anchor = anchors[index];
+      const note = dict[language].uiComputerUse[noteKey];
+      const caveat = dict[language].uiComputerUse[caveatKey];
+      assert.ok(
+        note.includes(anchor),
+        `${language}.${noteKey} must keep the platform residual anchor "${anchor}"`,
+      );
+      assert.ok(
+        caveat.includes(anchor),
+        `${language}.${caveatKey} must keep the platform residual anchor "${anchor}"`,
+      );
+    }
+  }
+  // The virtual grant description's device-reach sentence (audio/camera) is
+  // a single key (no note/caveat pair) — anchor it per language too (R14).
+  const deviceReachAnchors = ['audio and camera', 'オーディオ/カメラ', '音频/摄像头'];
+  for (const [index, language] of ['en', 'ja', 'zh'].entries()) {
+    assert.ok(
+      dict[language].uiComputerUse.grantDescVirtual.includes(deviceReachAnchors[index]),
+      `${language}.grantDescVirtual must keep the audio/camera device-reach \
+       anchor "${deviceReachAnchors[index]}"`,
+    );
+  }
+  // R15: the remaining consent-critical sentences without a note/caveat
+  // pair get their own single-key anchors — a single-language drop of any
+  // of them passed the suite before (the exact-leaf count cannot see
+  // content, only keys). The base isolation claim, the screening-inactivity
+  // clause on the virtual grant, and the physical arm's best-effort
+  // screening clause are all honesty-load-bearing.
+  const singleKeyAnchors = [
+    ['grantDescVirtual', 'never shows on your screen', 'あなたの画面には表示されない', '画面不会出现在你的屏幕上'],
+    ['grantDescVirtual', 'its apps cannot be screened', '内部のアプリは検査できないため', '其中的应用无法被筛查'],
+    ['grantDesc', 'screening is best-effort', '確認はベストエフォートであり', '确认是尽力而为的'],
+    // R17: the Screen Recording sharing sentence lives only in the macOS
+    // settings note (no caveat twin), so it rides the single-key scheme.
+    ['virtualNoteMacos', 'Screen Recording', '画面収録', '屏幕录制'],
+  ];
+  for (const [key, enAnchor, jaAnchor, zhAnchor] of singleKeyAnchors) {
+    for (const [language, anchor] of [
+      ['en', enAnchor],
+      ['ja', jaAnchor],
+      ['zh', zhAnchor],
+    ]) {
+      assert.ok(
+        dict[language].uiComputerUse[key].includes(anchor),
+        `${language}.uiComputerUse.${key} must keep the consent anchor "${anchor}"`,
+      );
     }
   }
   assert.match(source('features/chat/ChatView.jsx'), /t\.uiComputerUse/);
