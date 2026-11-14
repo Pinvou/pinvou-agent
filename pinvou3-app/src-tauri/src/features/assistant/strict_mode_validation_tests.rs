@@ -111,7 +111,6 @@ fn strict_mode_rejects_failed_turn_without_error_event() {
             turn_id: None,
             submission_id: None,
             compaction_id: None,
-            error_source: None,
             base_url: None,
             error_source: None,
         },
