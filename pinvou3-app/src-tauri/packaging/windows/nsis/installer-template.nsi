@@ -956,8 +956,28 @@ Section Uninstall
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
     ; Pinvou stores its runtime data under ~/.pinvou3 (sessions, settings,
     ; knowledge); remove it here too so the checkbox matches the MSI
-    ; RemovePinvouUserData opt-in contract.
-    RmDir /r "$PROFILE\.pinvou3"
+    ; RemovePinvouUserData opt-in contract. The uninstaller runs elevated,
+    ; and under over-the-shoulder elevation (a standard user supplies
+    ; different admin credentials) $PROFILE — like SetShellVarContext
+    ; current — resolves against the elevation token's account, so deleting
+    ; $PROFILE\.pinvou3 could wipe the admin's data instead of the prompting
+    ; user's (the MSI custom action runs Impersonate="yes" and stays
+    ; correct). Resolve the interactive session owner's profile through the
+    ; shell instead, and fail safe: when the owner cannot be determined
+    ; unambiguously, keep the data and tell the user how to remove it
+    ; manually instead of guessing a profile to wipe.
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File "/oname=$PLUGINSDIR\pinvou-user-profile.ps1" "${PINVOU_HOOKS_DIR}\..\..\..\packaging\windows\nsis\pinvou-user-profile.ps1"
+    nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-user-profile.ps1"'
+    Pop $8
+    Pop $9
+    ${If} $8 = 0
+      RmDir /r "$9\.pinvou3"
+    ${Else}
+      DetailPrint "Could not identify the interactive user's profile; ~/.pinvou3 was kept."
+      MessageBox MB_ICONEXCLAMATION|MB_OK "无法确认当前交互用户的用户目录，已保留 ~/.pinvou3 数据；如需删除请手动移除 %USERPROFILE%\.pinvou3。$\r$\nCould not identify the interactive user's profile, so ~/.pinvou3 has been kept. To delete it, remove %USERPROFILE%\.pinvou3 manually.$\r$\n現在の対話ユーザーのプロファイルを特定できなかったため、~/.pinvou3 は残しています。削除する場合は %USERPROFILE%\.pinvou3 を手動で削除してください。" /SD IDOK
+    ${EndIf}
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
