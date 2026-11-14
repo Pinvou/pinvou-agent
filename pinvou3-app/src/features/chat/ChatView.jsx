@@ -4547,10 +4547,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 // holds at click time). Same invalidation convention as the
                 // session-switch effect above.
                 // The generation bump also discards any confirm still
-                // awaiting its save round-trip (round-8 R8-1).
+                // awaiting its save round-trip (round-8 R8-1). The stale
+                // error from a failed confirm is cleared too (round-5
+                // review minor): without it, cancelling after a failure and
+                // re-opening the same session's card repaints the previous
+                // attempt's error before any new confirm.
                 pendingChatYoloDialogGenRef.current += 1;
                 pendingChatYoloSwitchSidRef.current = null;
                 pendingChatYoloActionRef.current = null;
+                setChatYoloConfirmError('');
                 setPendingChatYoloSwitch(false);
               }}
             />
