@@ -1256,3 +1256,28 @@ Object.assign(dictEn.uiChat, {
 // restored: baseline catalog descriptions (referenced by the model catalog data)
 Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'Default model for the local service', '高能力模型': 'High-capability model', '快速响应': 'Fast responses', '代码场景': 'Coding tasks', '高性价比': 'Cost-effective', '通用能力': 'General-purpose', '兼容保留': 'Compatibility option', '轻量模型': 'Lightweight model'
 });
+
+// Endpoint model auto-discovery (spec §2.6/§2.9): fetch button + candidate
+// panel, max output field, and the one-shot filled-from-endpoint notice;
+// ACP-line keys ride the uiAcpProviders cluster.
+Object.assign(dictEn.uiSettingsDetail, {
+  fetchModelList:'Fetch model list', fetchingModelList:'Fetching model list…',
+  modelListTitle:'Models at this endpoint', modelListFilterPlaceholder:'Filter model IDs…',
+  addModelRow:'Add', addAllModels:'Add all',
+  addAllConfirm:n=>`Add ${n} model${n === 1 ? '' : 's'}? Entries already saved with the same model ID and endpoint URL are skipped automatically. Continue?`,
+  addAllTruncated:n=>`Long list — only the first ${n} models will be added.`,
+  addedCount:n=>`Added ${n} model${n === 1 ? '' : 's'}`,
+  noModelsFound:'The endpoint returned no models',
+  authRequiredHint:'The endpoint requires valid credentials (401/403). Enter an API Key and retry',
+  unsupportedHint:'This endpoint does not expose a model list',
+  modelMaxOutput:'Max output', modelMaxOutputPlaceholder:'e.g. 32768',
+  modelMaxOutputHint:'Leave empty to declare automatically from the context tier; values beyond the process budget are clamped down.',
+  factSourceEndpoint:'endpoint', factSourceCatalog:'catalog',
+  filledFromEndpoint:'Filled from the endpoint probe',
+  modelAlreadySaved:'Saved',
+  fetchUnavailable:'This build cannot fetch model lists yet',
+});
+Object.assign(dictEn.uiAcpProviders, {
+  fetchModels:'Fetch models', fetchingModels:'Fetching models…', acpNoModelsFound:'The endpoint returned no models',
+  fetchUnavailable:'This build cannot fetch model lists yet',
+});

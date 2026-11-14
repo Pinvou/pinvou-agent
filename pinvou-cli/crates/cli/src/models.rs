@@ -14,8 +14,8 @@
 //! `pinvou3_lib::platform::credential_store` for API keys. No Tauri host is
 //! booted.
 //!
-//! Two of the three network paths mirror a real GUI counterpart, and the
-//! third has none — the distinction matters because it decides what the
+//! Three of the four network paths mirror a real GUI counterpart, and the
+//! fourth has none — the distinction matters because it decides what the
 //! command is allowed to claim:
 //!
 //! - `models test` mirrors `probe_model_connection`
@@ -23,6 +23,12 @@
 //! - `models probe-local` mirrors `probe_local_server_kind`
 //!   (app/commands/settings.rs) over `core::model_endpoint`, a real set of
 //!   signature probes.
+//! - `models discover` mirrors the GUI's endpoint model discovery
+//!   (`probe_endpoint_models`, the frozen ladder over
+//!   `core::endpoint_discovery`): the same per-protocol probing, listing and
+//!   error classification, reimplemented on the blocking client. The GUI also
+//!   back-fills missing lengths from its model-length catalog; the CLI has
+//!   no catalog access, so every fact source stays `endpoint`.
 //! - `settings search test` has NO GUI counterpart: the desktop app ships no
 //!   search-provider test at all. It is a CLI-only command, so its contract
 //!   is anchored on two in-repo facts instead of on a mirrored function —
@@ -34,9 +40,10 @@
 //!
 //! Those app functions live in the app-private `app` / `core` modules and are
 //! not exported through `pinvou3_lib`, so the exact semantics are
-//! reimplemented here on a blocking reqwest client (no async runtime). They
-//! are the only paths that touch the network and are covered by `#[ignore]`
-//! tests only.
+//! reimplemented here on a blocking reqwest client (no async runtime). The
+//! real endpoints behind these paths are exercised only by `#[ignore]`
+//! tests; everything offline (parsing, classification, formatting, and the
+//! loopback HTTP mocks) is covered by default tests.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -80,6 +87,13 @@ pub enum ModelsCommand {
         url: Option<String>,
         api_key_env: Option<String>,
         model_id: Option<String>,
+    },
+    Discover {
+        base_url: String,
+        api_key_env: Option<String>,
+        preset: Option<ModelPreset>,
+        wire: Option<DiscoveryProtocol>,
+        json: bool,
     },
     SettingsGet {
         key: Option<SettingsKey>,
@@ -397,6 +411,77 @@ fn parse_search_provider(raw: &str) -> Result<SearchProvider, CliError> {
     }
 }
 
+/// The wire protocol a `models discover` run speaks. Named after the GUI
+/// command's `DiscoveryProtocol` (`core::endpoint_discovery`); the app-private
+/// module is not exported through `pinvou3_lib`, so the CLI carries its own
+/// equivalent — the variants and their preset/wire mapping are the shared
+/// contract, pinned by tests on both sides.
+/// The wire protocol a `models discover` run speaks. Named after the GUI
+/// command's `DiscoveryProtocol` (`core::endpoint_discovery`); the app-private
+/// module is not exported through `pinjou3_lib`, so the CLI carries its own
+/// equivalent — the variants and their preset/wire mapping are the shared
+/// contract, pinned by tests on both sides.
+/// `pub` for the same reason as `SettingsKey`: the payload type of a `pub`
+/// command variant must not be more private than the variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscoveryProtocol {
+    /// OpenAI-compatible `GET {base}/models` (the default; also the ladder
+    /// every loopback/private endpoint walks).
+    OpenAiCompatible,
+    /// Anthropic `/v1/models` with `x-api-key` + `anthropic-version`.
+    Anthropic,
+    /// Gemini native `GET {root}/v1beta/models` with `x-goog-api-key`.
+    Gemini,
+}
+
+/// The frozen preset → protocol mapping (spec §2.1/§2.2): only the two
+/// native-protocol presets divert; every OpenAI-family preset — including
+/// `local_vllm` and the vendor endpoints (`glm` `/paas/v4`, Ark `/api/v3`,
+/// gemini's OpenAI-compatible surface) — walks the OpenAI-compatible ladder
+/// through `models_probe_url`, which never invents a `/v1` segment.
+fn protocol_for_preset(preset: ModelPreset) -> DiscoveryProtocol {
+    match preset {
+        ModelPreset::Anthropic => DiscoveryProtocol::Anthropic,
+        ModelPreset::Gemini => DiscoveryProtocol::Gemini,
+        // OpenaiResponses exists only in the GUI's full preset set, not in
+        // the CLI's `--preset` table; the catch-all keeps the mapping total
+        // over the shared enum either way.
+        _ => DiscoveryProtocol::OpenAiCompatible,
+    }
+}
+
+/// The frozen wire → protocol mapping (the ACP provider wires).
+fn protocol_for_wire(wire: &str) -> Option<DiscoveryProtocol> {
+    match wire.trim().to_ascii_lowercase().as_str() {
+        "anthropic" => Some(DiscoveryProtocol::Anthropic),
+        "openai" | "kimi" => Some(DiscoveryProtocol::OpenAiCompatible),
+        _ => None,
+    }
+}
+
+/// The `--wire` spellings `models discover` accepts, with their mapping.
+fn parse_discover_wire(raw: &str) -> Result<DiscoveryProtocol, CliError> {
+    protocol_for_wire(raw).ok_or_else(|| {
+        CliError::usage(format!(
+            "invalid wire {raw:?}; valid wires: anthropic, openai, kimi"
+        ))
+    })
+}
+
+/// Which protocol one `models discover` run speaks: the preset wins when both
+/// flags are given (the GUI command's own precedence — a preset names a full
+/// provider configuration, a wire only its protocol family), and neither
+/// means the OpenAI-compatible default.
+fn resolve_discovery_protocol(
+    preset: Option<ModelPreset>,
+    wire: Option<DiscoveryProtocol>,
+) -> DiscoveryProtocol {
+    preset
+        .map(protocol_for_preset)
+        .or(wire)
+        .unwrap_or(DiscoveryProtocol::OpenAiCompatible)
+}
+
 /// Typed value for one settings key; rejects type/value mismatches with a
 /// usage error naming the accepted values.
 fn parse_settings_value(key: SettingsKey, raw: &str) -> Result<SettingsValue, CliError> {
@@ -582,7 +667,8 @@ impl Options {
     }
 }
 
-const MODELS_USAGE: &str = "usage: pinvou models <list|add|edit|remove|use|show|test|probe-local>";
+const MODELS_USAGE: &str =
+    "usage: pinvou models <list|add|edit|remove|use|show|test|probe-local|discover>";
 /// `settings get` without a key is documented as always-JSON right in the
 /// usage text. `--output` is a global flag, so it is accepted on every
 /// subcommand and a reader could reasonably expect `--output human` to change
@@ -591,6 +677,17 @@ const MODELS_USAGE: &str = "usage: pinvou models <list|add|edit|remove|use|show|
 /// it. Saying so here turns a flag that looks ignored into a stated contract.
 const SETTINGS_USAGE: &str = "usage: pinvou settings <get|set|search>; search subcommands: \
 list|set|test; note: `settings get` without a key always prints JSON regardless of --output";
+
+/// The `models discover` flag surface and exit-code contract, appended to
+/// every discover usage error. The exit codes stay inside the CLI's
+/// documented 0/1/2 contract (`support::emit_report`): the three failure
+/// statuses share exit 1 and are distinguished by the `status` field the
+/// command always prints — a fourth exit code would break every script that
+/// branches on the family-wide 0/1/2 table for a distinction the JSON row
+/// already carries.
+const DISCOVER_USAGE: &str = "usage: pinvou models discover --base-url <url> [--api-key-env V] \
+[--preset <name>] [--wire <anthropic|openai|kimi>] [--json]\nexit codes: 0 listed (an empty \
+list is still listed), 1 auth_required | unsupported | error (see the status field), 2 usage";
 
 pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
     let family = values[0].as_str();
@@ -666,6 +763,48 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
                 url,
                 api_key_env,
                 model_id,
+            })
+        }
+        ("models", "discover") => {
+            let options = parse_options(
+                "models",
+                "discover",
+                rest,
+                &["base-url", "api-key-env", "preset", "wire"],
+                &["json"],
+            )?;
+            // Option-only subcommand: a stray positional here is usually a
+            // pasted secret meant for a prompt, so the refusal reports the
+            // COUNT only (the same rule `settings search set` applies) and
+            // never echoes the tokens.
+            options.reject_stray_positionals()?;
+            // The one required flag gets the full usage block, like the
+            // benchmark family's unknown-command error: everything else the
+            // command accepts (and the exit-code table) is one line away.
+            let base_url = match options.value("base-url") {
+                Some(raw) => parse_text_value("base-url", raw, "empty")?,
+                None => {
+                    return Err(CliError::usage(format!(
+                        "pinvou models discover requires --base-url <url>\n{DISCOVER_USAGE}"
+                    )));
+                }
+            };
+            let preset = opt_flag(&options, "preset", parse_preset)?;
+            let wire = opt_flag(&options, "wire", parse_discover_wire)?;
+            Ok(ModelsCommand::Discover {
+                base_url,
+                // Same credential entry as probe-local: the flag names an
+                // environment VARIABLE, and `gate_env_var` refuses a pasted
+                // literal secret at parse time (usage, exit 2, the value
+                // never echoed) — a literal on argv rides the shell history
+                // and the process list. The variable is read only when the
+                // command runs; the keyless (empty-key) case is spelled by
+                // omitting the flag, so `Some` here is always a non-empty
+                // NAME (`parse_options` refuses an empty or `--` value).
+                api_key_env: gate_env_var(options.value("api-key-env"))?,
+                preset,
+                wire,
+                json: options.has("json"),
             })
         }
         ("settings", "get") => {
@@ -1007,6 +1146,20 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
             url.as_deref(),
             api_key_env.as_deref(),
             model_id.as_deref(),
+            output,
+        ),
+        ModelsCommand::Discover {
+            base_url,
+            api_key_env,
+            preset,
+            wire,
+            json,
+        } => discover(
+            &base_url,
+            api_key_env.as_deref(),
+            preset,
+            wire,
+            json,
             output,
         ),
         ModelsCommand::SettingsGet { key } => settings_get(&store, key, output),
@@ -2798,6 +2951,1140 @@ fn probe_local<S: CredentialStore>(
         &serde_json::json!({ "url": target, "kind": kind }),
     );
     Ok(success(text))
+}
+
+// ---------------------------------------------------------------------------
+// Endpoint model discovery (models discover). Mirrors the GUI's
+// core::endpoint_discovery ladder; not covered by live tests.
+// ---------------------------------------------------------------------------
+
+/// The three facts a listing row can carry about WHERE a length came from.
+/// The GUI also back-fills from its model-length catalog; the CLI never does
+/// (the catalog lives in the app-private `core` module and is not reachable
+/// from this crate), so every value serialized here is `endpoint`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelFactSource {
+    Endpoint,
+    /// Kept for vocabulary parity with the GUI's `ModelFactSource` (its
+    /// catalog back-fill serializes this string); the CLI never fabricates a
+    /// catalog fact, so nothing constructs it today.
+    #[allow(dead_code)]
+    Catalog,
+}
+
+impl ModelFactSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Endpoint => "endpoint",
+            Self::Catalog => "catalog",
+        }
+    }
+}
+
+/// The stable status vocabulary of the GUI's `EndpointModelsListing`
+/// (snake_case on the wire), consumed by scripts through `--json`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListingStatus {
+    Listed,
+    AuthRequired,
+    Unsupported,
+    Error,
+}
+
+impl ListingStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Listed => "listed",
+            Self::AuthRequired => "auth_required",
+            Self::Unsupported => "unsupported",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// One discovered model. Field names are the GUI's `DiscoveredModel` DTO so
+/// the `--json` rows parse identically on both surfaces; `context_from` /
+/// `output_from` are present exactly when the corresponding length is (the
+/// CLI never fabricates a `Catalog` source).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiscoveredModel {
+    id: String,
+    context_window_tokens: Option<u32>,
+    context_from: Option<ModelFactSource>,
+    max_output_tokens: Option<u32>,
+    output_from: Option<ModelFactSource>,
+    /// Only meaningful for the local Ollama / LM Studio lanes (`/api/ps`
+    /// membership, `/api/v0/models` `state`); remote listings leave it
+    /// `None` like the GUI does for unknown-state endpoints.
+    loaded: Option<bool>,
+    /// anthropic `display_name` / gemini `displayName`; the OpenAI shapes
+    /// have no display title.
+    title: Option<String>,
+}
+
+impl DiscoveredModel {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "context_window_tokens": self.context_window_tokens,
+            "context_from": self.context_from.map(ModelFactSource::as_str),
+            "max_output_tokens": self.max_output_tokens,
+            "output_from": self.output_from.map(ModelFactSource::as_str),
+            "loaded": self.loaded,
+            "title": self.title,
+        })
+    }
+}
+
+/// The CLI's `EndpointModelsListing` twin: same field names, same snake_case
+/// status/source vocabulary, same `Option`-as-null JSON shape a plain serde
+/// derive would produce on the GUI side. Serialized by hand because this
+/// crate depends on `serde_json` only (no serde derive), the same way every
+/// other JSON payload in this module is built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EndpointModelsListing {
+    status: ListingStatus,
+    http_status: Option<u16>,
+    /// Transport class of a failed request ("timeout" | "dns" | "connect" |
+    /// "network", the GUI discovery lane's own vocabulary, classified in its
+    /// is_timeout → is_dns → is_connect order); `None` unless the failure
+    /// happened below HTTP.
+    transport: Option<&'static str>,
+    /// The local server kind when the loopback/private short-circuit fired
+    /// (the same strings `models probe-local` reports). The two probe-local
+    /// honesty sentinels are NOT server kinds, so they stay `None` here.
+    server_kind: Option<&'static str>,
+    models: Vec<DiscoveredModel>,
+    truncated: bool,
+}
+
+impl EndpointModelsListing {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "status": self.status.as_str(),
+            "http_status": self.http_status,
+            "transport": self.transport,
+            "server_kind": self.server_kind,
+            "models": self.models.iter().map(DiscoveredModel::to_json).collect::<Vec<_>>(),
+            "truncated": self.truncated,
+        })
+    }
+}
+
+fn listed_listing(models: Vec<DiscoveredModel>, truncated: bool) -> EndpointModelsListing {
+    EndpointModelsListing {
+        // A listed answer carries no http_status: the GUI's listing assembly
+        // clears it (the status code is redundant once the body parsed), and
+        // the two surfaces must serialize identically.
+        status: ListingStatus::Listed,
+        http_status: None,
+        transport: None,
+        server_kind: None,
+        models,
+        truncated,
+    }
+}
+
+fn auth_listing(http_status: u16) -> EndpointModelsListing {
+    EndpointModelsListing {
+        status: ListingStatus::AuthRequired,
+        http_status: Some(http_status),
+        transport: None,
+        server_kind: None,
+        models: Vec::new(),
+        truncated: false,
+    }
+}
+
+fn unsupported_listing(http_status: Option<u16>) -> EndpointModelsListing {
+    EndpointModelsListing {
+        status: ListingStatus::Unsupported,
+        http_status,
+        transport: None,
+        server_kind: None,
+        models: Vec::new(),
+        truncated: false,
+    }
+}
+
+fn error_listing(
+    http_status: Option<u16>,
+    transport: Option<&'static str>,
+) -> EndpointModelsListing {
+    EndpointModelsListing {
+        status: ListingStatus::Error,
+        http_status,
+        transport,
+        server_kind: None,
+        models: Vec::new(),
+        truncated: false,
+    }
+}
+
+/// Positive-u32 gate for self-reported endpoint values: outside the u32
+/// range, zero, negative and non-numeric values all read as "undeclared"
+/// (`as u32` truncation would turn a corrupted 2^32 into a real-looking 0).
+/// Same rule as the GUI probes' `parse_positive_u32`.
+fn discovery_positive_u32(value: &serde_json::Value) -> Option<u32> {
+    u32::try_from(value.as_u64()?)
+        .ok()
+        .filter(|limit| *limit > 0)
+}
+
+/// Whether the discovery ladder may take the local short-circuit for this
+/// base_url. Mirrors the GUI's `base_url_uses_local_or_private` exactly:
+/// loopback (localhost / 127.0.0.0/8 / ::1), RFC1918 private ranges
+/// (10/8, 172.16/12, 192.168/16), and the Docker Desktop host aliases.
+/// A public base_url saved with a local-looking prefix must not receive
+/// native probes here either — the parse is on the URL's HOST, not on any
+/// textual prefix.
+fn is_local_or_private_base_url(raw: &str) -> bool {
+    reqwest::Url::parse(raw)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .is_some_and(|host| {
+            let host = host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches('.');
+            if host.eq_ignore_ascii_case("localhost") {
+                return true;
+            }
+            if host.eq_ignore_ascii_case("host.docker.internal")
+                || host.eq_ignore_ascii_case("host.lima.internal")
+                || host.eq_ignore_ascii_case("host.orbstack.internal")
+                || host.ends_with(".docker.internal")
+            {
+                return true;
+            }
+            let Ok(address) = host.parse::<std::net::IpAddr>() else {
+                return false;
+            };
+            if address.is_loopback() {
+                return true;
+            }
+            match address {
+                std::net::IpAddr::V4(v4) => v4.is_private(),
+                std::net::IpAddr::V6(_) => false,
+            }
+        })
+}
+
+/// Transport class of a failed discovery request, from reqwest's structured
+/// flags rather than its `Display` text — the display embeds the full URL
+/// (userinfo included) and this lane's error rows must carry NEITHER the raw
+/// text NOR the URL NOR the key, so the classification never reads the text
+/// at all. Vocabulary is the discovery lane's own short table
+/// ("timeout" | "dns" | "connect" | "network", shared with the GUI's
+/// `core::endpoint_discovery` transport_class — NOT the monitor facade's
+/// longer `dns_failed`/`connection_refused` codes, which feed different
+/// consumers). Order mirrors the GUI ladder: `is_dns` MUST precede
+/// `is_connect` — hyper-util files resolver failures under its Connect kind
+/// too.
+fn discovery_transport_class(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_dns() {
+        "dns"
+    } else if error.is_connect() {
+        "connect"
+    } else {
+        "network"
+    }
+}
+
+/// The anthropic-version value the GUI pins for its native-protocol probes
+/// (`apply_anthropic_auth_headers`); the same literal `models test` sends.
+const DISCOVER_ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// What one discovery HTTP round produced. The failure variants carry only
+/// structured facts (a status number or a transport class) — never the
+/// reqwest error text, so no redaction pass can regress into leaking a URL
+/// or a key through this lane.
+enum DiscoveryAnswer {
+    /// 2xx with a parsed JSON body and its status code.
+    Json(serde_json::Value, u16),
+    /// 2xx whose body is not JSON or is over the probe body cap (a captive
+    /// portal, a Cloudflare interstitial): the endpoint exists but did not
+    /// speak the protocol.
+    Unusable(u16),
+    /// Any non-2xx final status (redirects are followed by the client).
+    Status(u16),
+    /// Request-level failure, classified WITHOUT the error text.
+    Transport(&'static str),
+}
+
+/// Sends one discovery request and reduces it to a [`DiscoveryAnswer`]. The
+/// body read goes through the same 4 MiB cap every other network read in
+/// this module uses.
+fn discovery_send(request: reqwest::blocking::RequestBuilder) -> DiscoveryAnswer {
+    let response = match request.send() {
+        Ok(response) => response,
+        Err(error) => return DiscoveryAnswer::Transport(discovery_transport_class(&error)),
+    };
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        return DiscoveryAnswer::Status(status);
+    }
+    match read_body_capped(response) {
+        BodyRead::Bytes(bytes) => serde_json::from_slice(&bytes)
+            .map(|value| DiscoveryAnswer::Json(value, status))
+            .unwrap_or(DiscoveryAnswer::Unusable(status)),
+        BodyRead::Unreadable | BodyRead::TooLarge => DiscoveryAnswer::Unusable(status),
+    }
+}
+
+/// The status-only half of the classification ladder: `Some` for every
+/// non-2xx status the ladder decides on (401/403 → auth, 404/405 →
+/// unsupported, everything else → error with the status kept), `None` for
+/// 2xx (the caller proceeds to parse the body).
+fn discovery_status_listing(status: u16) -> Option<EndpointModelsListing> {
+    match status {
+        401 | 403 => Some(auth_listing(status)),
+        404 | 405 => Some(unsupported_listing(Some(status))),
+        200..=299 => None,
+        _ => Some(error_listing(Some(status), None)),
+    }
+}
+
+/// Context spellings the OpenAI-compatible ladder normalizes over. When an
+/// entry reports several, the TIGHTEST wins — the same only-tighten doctrine
+/// the output limit applies: preferring one shape by name could adopt a cap
+/// larger than another cap the same entry reported, and an over-reported
+/// window lets upstream silently truncate (the conservative direction is
+/// always down).
+const DISCOVER_CONTEXT_FIELDS: &[&str] = &[
+    "max_model_len",
+    "context_length",
+    "context_window",
+    "max_context_length",
+];
+
+/// Per-entry output limit, mirroring the GUI probes'
+/// `parse_entry_output_limit`: direct `max_output_tokens` /
+/// `max_completion_tokens` plus the OpenRouter gateway's
+/// `top_provider.max_completion_tokens` (unlimited is null → undeclared),
+/// tightest wins.
+fn discovery_output_limit(item: &serde_json::Value) -> Option<u32> {
+    let direct = ["max_output_tokens", "max_completion_tokens"]
+        .into_iter()
+        .filter_map(|field| item.get(field).and_then(discovery_positive_u32));
+    let top_provider = item
+        .get("top_provider")
+        .and_then(|provider| provider.get("max_completion_tokens"))
+        .and_then(discovery_positive_u32);
+    direct.chain(top_provider).min()
+}
+
+/// One OpenAI-compatible `/models` entry → a [`DiscoveredModel`]. `loaded` /
+/// `title` stay `None` (these shapes carry neither fact).
+fn discovery_openai_entry(item: &serde_json::Value) -> Option<DiscoveredModel> {
+    let id = item.get("id").and_then(|value| value.as_str())?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let context = DISCOVER_CONTEXT_FIELDS
+        .iter()
+        .filter_map(|field| item.get(*field).and_then(discovery_positive_u32))
+        .min();
+    let output = discovery_output_limit(item);
+    Some(DiscoveredModel {
+        id: id.to_owned(),
+        context_window_tokens: context,
+        context_from: context.map(|_| ModelFactSource::Endpoint),
+        max_output_tokens: output,
+        output_from: output.map(|_| ModelFactSource::Endpoint),
+        loaded: None,
+        title: None,
+    })
+}
+
+/// Accepts `{data:[...]}` (OpenAI) AND the bare-array shape (Together): the
+/// envelope key is preferred, but an array at the top level is a model list
+/// all the same. `None` = neither shape (an object without `data`, a scalar,
+/// ...) → the endpoint did not speak the protocol.
+fn discovery_openai_entries(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    value
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| value.as_array())
+}
+
+/// Parses + caps an OpenAI-compatible body: `None` when the shape is not a
+/// model list, otherwise the parsed entries truncated to
+/// [`DISCOVER_ENTRY_CAP`] and whether the cap cut anything off (an empty
+/// array is a legal listed answer). Factored out of the network lane so the
+/// cap is testable without a server.
+fn discovery_openai_models(value: &serde_json::Value) -> Option<(Vec<DiscoveredModel>, bool)> {
+    const DISCOVER_ENTRY_CAP: usize = 2000;
+    let entries = discovery_openai_entries(value)?;
+    let mut models: Vec<DiscoveredModel> =
+        entries.iter().filter_map(discovery_openai_entry).collect();
+    let truncated = models.len() > DISCOVER_ENTRY_CAP;
+    models.truncate(DISCOVER_ENTRY_CAP);
+    Some((models, truncated))
+}
+
+/// Builds the request for one OpenAI-compatible listing round: bearer when a
+/// key was given (blank/absent stays anonymous — keyless endpoints such as
+/// OpenRouter or a local server must stay reachable), plus the OpenCode
+/// gateway affinity header the GUI's own model probe attaches (the Go
+/// gateway rejects hand-rolled auxiliary clients without it; same gate and
+/// same derivation key as `probe_openai_models`).
+fn discovery_openai_request(
+    client: &'static reqwest::blocking::Client,
+    url: &str,
+    key: Option<&str>,
+    base_url: &str,
+) -> reqwest::blocking::RequestBuilder {
+    let mut request = apply_bearer(client.get(url), key);
+    if pinvou3_lib::model_probe::is_opencode_gateway_base_url(base_url) {
+        request = request.header(
+            "x-opencode-session",
+            pinvou3_lib::model_probe::opencode_session_id_for("models-probe"),
+        );
+    }
+    request
+}
+
+/// The OpenAI-compatible ladder: a single `GET {base}/models`
+/// (`models_probe_url` — no `/v1` is invented; glm `/paas/v4`, Ark `/api/v3`
+/// and gemini's OpenAI-compatible surface keep working because their real
+/// version segment is preserved), `{data}` or bare array accepted, entry cap
+/// 2000.
+fn discovery_openai_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
+    let Some(client) = connection_client() else {
+        return error_listing(None, None);
+    };
+    let request = discovery_openai_request(
+        client,
+        &pinvou3_lib::model_probe::models_probe_url(base_url.trim()),
+        key,
+        base_url,
+    );
+    match discovery_send(request) {
+        DiscoveryAnswer::Transport(class) => error_listing(None, Some(class)),
+        DiscoveryAnswer::Status(status) => {
+            discovery_status_listing(status).unwrap_or_else(|| error_listing(Some(status), None))
+        }
+        DiscoveryAnswer::Unusable(status) => unsupported_listing(Some(status)),
+        DiscoveryAnswer::Json(value, status) => match discovery_openai_models(&value) {
+            Some((models, truncated)) => listed_listing(models, truncated),
+            None => unsupported_listing(Some(status)),
+        },
+    }
+}
+
+/// One anthropic `/models` page → its entries, the `has_more` flag and the
+/// `after_id` cursor (the page's last entry id). Shape mismatch (`data` not
+/// an array) is `None` → unsupported.
+fn discovery_anthropic_page(
+    value: &serde_json::Value,
+) -> Option<(Vec<DiscoveredModel>, bool, Option<String>)> {
+    let data = value.get("data").and_then(serde_json::Value::as_array)?;
+    let models = data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|value| value.as_str())?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let context = item
+                .get("max_input_tokens")
+                .and_then(discovery_positive_u32);
+            let output = item.get("max_tokens").and_then(discovery_positive_u32);
+            // Same string handling as the GUI page parser: the display name
+            // is taken verbatim (no trim / empty filter) so both surfaces
+            // serialize identical rows for the same endpoint.
+            let title = item
+                .get("display_name")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+            Some(DiscoveredModel {
+                id: id.to_owned(),
+                context_window_tokens: context,
+                context_from: context.map(|_| ModelFactSource::Endpoint),
+                max_output_tokens: output,
+                output_from: output.map(|_| ModelFactSource::Endpoint),
+                loaded: None,
+                title,
+            })
+        })
+        .collect::<Vec<_>>();
+    let has_more = value.get("has_more").and_then(|value| value.as_bool());
+    let after_id = data
+        .last()
+        .and_then(|item| item.get("id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_owned);
+    Some((models, has_more.unwrap_or(false), after_id))
+}
+
+/// The anthropic ladder: `GET {规整 base}/v1/models?limit=1000` with
+/// `x-api-key` + `anthropic-version` (no header at all when no key was
+/// given — the same bare-send rule the GUI probe applies), paginating with
+/// `has_more` + `after_id` up to THREE pages; still-more after the cap is
+/// the `truncated` flag, never a silent loss.
+fn discovery_anthropic_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
+    const DISCOVER_ANTHROPIC_PAGE_CAP: usize = 3;
+    let Some(client) = connection_client() else {
+        return error_listing(None, None);
+    };
+    // The messages-endpoint normalization rule (`anthropic_messages_url`):
+    // a configured root already ending in `/v1` appends directly, anything
+    // else gets `/v1` — the official preset upstream
+    // (`https://api.anthropic.com`) has its list at `/v1/models`.
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let base = if trimmed.ends_with("/v1") {
+        trimmed.to_owned()
+    } else {
+        format!("{trimmed}/v1")
+    };
+    let mut models = Vec::new();
+    let mut after_id: Option<String> = None;
+    for page in 1..=DISCOVER_ANTHROPIC_PAGE_CAP {
+        let mut request = client
+            .get(format!("{base}/models"))
+            .query(&[("limit", "1000")]);
+        if let Some(after) = after_id.as_deref() {
+            request = request.query(&[("after_id", after)]);
+        }
+        if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+            request = request
+                .header("x-api-key", key)
+                .header("anthropic-version", DISCOVER_ANTHROPIC_VERSION);
+        }
+        match discovery_send(request) {
+            DiscoveryAnswer::Transport(class) => return error_listing(None, Some(class)),
+            DiscoveryAnswer::Status(status) => {
+                return discovery_status_listing(status)
+                    .unwrap_or_else(|| error_listing(Some(status), None));
+            }
+            DiscoveryAnswer::Unusable(status) => return unsupported_listing(Some(status)),
+            DiscoveryAnswer::Json(value, status) => {
+                let Some((page_models, has_more, after)) = discovery_anthropic_page(&value) else {
+                    return unsupported_listing(Some(status));
+                };
+                models.extend(page_models);
+                if !has_more {
+                    return listed_listing(models, false);
+                }
+                // has_more without a usable cursor (the page's last entry has
+                // no id): the paging cannot continue, so the run ends
+                // TRUNCATED rather than silently losing the rest.
+                match after {
+                    Some(next_after) if page < DISCOVER_ANTHROPIC_PAGE_CAP => {
+                        after_id = Some(next_after);
+                    }
+                    _ => return listed_listing(models, true),
+                }
+            }
+        }
+    }
+    listed_listing(models, true)
+}
+
+/// One gemini `/v1beta/models` page → its generateContent-capable entries and
+/// the `nextPageToken` cursor. Only entries whose
+/// `supportedGenerationMethods` include `generateContent` are listings-worthy
+/// (embedding / aio entries cannot serve a chat model slot; the method match
+/// is ASCII case-insensitive, the GUI parser's tolerance); `models/` is a
+/// resource prefix, not part of the id.
+fn discovery_gemini_page(
+    value: &serde_json::Value,
+) -> Option<(Vec<DiscoveredModel>, Option<String>)> {
+    let entries = value.get("models").and_then(serde_json::Value::as_array)?;
+    let models = entries
+        .iter()
+        .filter_map(|item| {
+            let generates = item
+                .get("supportedGenerationMethods")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|methods| {
+                    methods.iter().any(|method| {
+                        method
+                            .as_str()
+                            .is_some_and(|name| name.eq_ignore_ascii_case("generateContent"))
+                    })
+                });
+            if !generates {
+                return None;
+            }
+            let name = item.get("name").and_then(|value| value.as_str())?.trim();
+            let id = name.strip_prefix("models/").unwrap_or(name);
+            if id.is_empty() {
+                return None;
+            }
+            let context = item.get("inputTokenLimit").and_then(discovery_positive_u32);
+            let output = item
+                .get("outputTokenLimit")
+                .and_then(discovery_positive_u32);
+            // Verbatim like the GUI page parser (no trim / empty filter).
+            let title = item
+                .get("displayName")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+            Some(DiscoveredModel {
+                id: id.to_owned(),
+                context_window_tokens: context,
+                context_from: context.map(|_| ModelFactSource::Endpoint),
+                max_output_tokens: output,
+                output_from: output.map(|_| ModelFactSource::Endpoint),
+                loaded: None,
+                title,
+            })
+        })
+        .collect::<Vec<_>>();
+    let next_page_token = value
+        .get("nextPageToken")
+        .and_then(|value| value.as_str())
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned);
+    Some((models, next_page_token))
+}
+
+/// The gemini ladder: a configured OpenAI-compatibility surface (`/openai`
+/// suffix) is stripped to the native root, then
+/// `GET {root}/v1beta/models?pageSize=1000` with `x-goog-api-key`
+/// (absent when no key was given), paginating with `nextPageToken` up to
+/// THREE pages.
+fn discovery_gemini_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
+    const DISCOVER_GEMINI_PAGE_CAP: usize = 3;
+    let Some(client) = connection_client() else {
+        return error_listing(None, None);
+    };
+    // The native root: a configured OpenAI-compatibility surface (`/openai`
+    // suffix) is stripped, then the version segment `/v1beta` (users often
+    // paste the OpenAI-compatible address `/v1beta/openai` wholesale) — the
+    // GUI's `gemini_native_root` rule, in its same two-step order.
+    let mut root = base_url.trim().trim_end_matches('/').to_owned();
+    for suffix in ["/openai", "/v1beta"] {
+        if let Some(stripped) = root.strip_suffix(suffix) {
+            root = stripped.to_owned();
+        }
+    }
+    let mut models = Vec::new();
+    let mut page_token: Option<String> = None;
+    for _page in 1..=DISCOVER_GEMINI_PAGE_CAP {
+        let mut request = client
+            .get(format!("{root}/v1beta/models"))
+            .query(&[("pageSize", "1000")]);
+        if let Some(token) = page_token.as_deref() {
+            request = request.query(&[("pageToken", token)]);
+        }
+        if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+            request = request.header("x-goog-api-key", key);
+        }
+        match discovery_send(request) {
+            DiscoveryAnswer::Transport(class) => return error_listing(None, Some(class)),
+            DiscoveryAnswer::Status(status) => {
+                return discovery_status_listing(status)
+                    .unwrap_or_else(|| error_listing(Some(status), None));
+            }
+            DiscoveryAnswer::Unusable(status) => return unsupported_listing(Some(status)),
+            DiscoveryAnswer::Json(value, status) => {
+                let Some((page_models, next)) = discovery_gemini_page(&value) else {
+                    return unsupported_listing(Some(status));
+                };
+                models.extend(page_models);
+                match next {
+                    Some(token) => page_token = Some(token),
+                    None => return listed_listing(models, false),
+                }
+            }
+        }
+    }
+    // The page cap ran out while a next token kept arriving: truncated.
+    listed_listing(models, true)
+}
+
+/// Ollama `/api/ps` → the loaded-name set (failure or odd shape reads as
+/// empty: prefer marking everything unloaded over a fabricated `true`).
+fn discovery_ollama_ps_names(value: &serde_json::Value) -> std::collections::HashSet<String> {
+    value
+        .get("models")
+        .and_then(serde_json::Value::as_array)
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|item| {
+                    item.get("name")
+                        .or_else(|| item.get("model"))
+                        .and_then(|value| value.as_str())
+                        .map(|name| name.trim().to_owned())
+                })
+                .filter(|name| !name.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Ollama `/api/ps` → loaded model → effective (`num_ctx`-applied) context.
+/// Both `name` and `model` register (explicit digest pulls differ between
+/// the two); non-positive / out-of-range values stay undeclared.
+fn discovery_ollama_ps_contexts(
+    value: &serde_json::Value,
+) -> std::collections::HashMap<String, u32> {
+    let mut contexts = std::collections::HashMap::new();
+    if let Some(models) = value.get("models").and_then(serde_json::Value::as_array) {
+        for item in models {
+            let Some(context) = item.get("context_length").and_then(discovery_positive_u32) else {
+                continue;
+            };
+            for key in ["name", "model"] {
+                if let Some(name) = item
+                    .get(key)
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                {
+                    contexts.insert(name.to_owned(), context);
+                }
+            }
+        }
+    }
+    contexts
+}
+
+/// Ollama `/api/tags` → the downloaded-model names (ordered, deduped).
+/// `None` = no `models` array (shape mismatch → unsupported), so an empty
+/// downloaded list stays distinguishable from a non-Ollama answer.
+fn discovery_ollama_tag_names(value: &serde_json::Value) -> Option<Vec<String>> {
+    let mut names: Vec<String> = Vec::new();
+    for item in value.get("models").and_then(serde_json::Value::as_array)? {
+        let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    Some(names)
+}
+
+/// Ollama `/api/show` → the Modelfile's `num_ctx` declaration only. The
+/// `model_info.<arch>.context_length` GGUF TRAINING window is deliberately
+/// NOT adopted (the GUI probes refuse it for the same reason): without an
+/// explicit `num_ctx` Ollama runs the server default, which is
+/// unknowable for an unloaded model — adopting the training cap would
+/// over-report the window and let upstream silently truncate. The first
+/// `num_ctx` line decides; a malformed value reads as undeclared (later
+/// lines cannot overrule it).
+fn discovery_ollama_show_context(value: &serde_json::Value) -> Option<u32> {
+    let parameters = value.get("parameters").and_then(|value| value.as_str())?;
+    for line in parameters.lines() {
+        let mut parts = line.split_whitespace();
+        if parts.next() == Some("num_ctx") {
+            return parts
+                .next()
+                .and_then(|count| count.parse::<u64>().ok())
+                .and_then(|count| u32::try_from(count).ok())
+                .filter(|count| *count > 0);
+        }
+    }
+    None
+}
+
+/// One `/api/show` follow-up for a model whose context did not come from
+/// `/api/ps` (read-only metadata query; never a inference request). Any
+/// failure degrades to "undeclared" — the listing must not fail because one
+/// model's metadata query did.
+fn discovery_ollama_query_show(
+    client: &'static reqwest::blocking::Client,
+    host: &str,
+    key: Option<&str>,
+    name: &str,
+) -> Option<u32> {
+    let request = apply_bearer(client.post(format!("{host}/api/show")), key)
+        .json(&serde_json::json!({ "model": name }));
+    match discovery_send(request) {
+        DiscoveryAnswer::Json(value, _) => discovery_ollama_show_context(&value),
+        _ => None,
+    }
+}
+
+/// The ollama branch of the short-circuit: `/api/ps` (loaded state and
+/// effective contexts) + `/api/tags` (the downloaded list) + per-model
+/// `/api/show` `num_ctx` lookups for entries WITHOUT a context fact
+/// (unloaded ones — loaded entries already carry the `/api/ps` truth). The
+/// lookups are bounded at [`DISCOVER_OLLAMA_SHOW_CAP`], taken from the FRONT
+/// of the missing list; more missing entries than the cap set `truncated`
+/// (every downloaded model is still listed — the flag says the context facts
+/// are partial, not that rows were dropped).
+///
+/// `None` = the tags round trip failed, answered a decided status, or was
+/// not Ollama-shaped (including empty): the caller re-runs the
+/// OpenAI-compatible ladder so the classification stays one single source of
+/// truth (the GUI's `ollama_discovered` → `ladder_openai` fallback).
+fn discovery_ollama_models(
+    base_url: &str,
+    key: Option<&str>,
+) -> Option<(Vec<DiscoveredModel>, bool)> {
+    const DISCOVER_OLLAMA_SHOW_CAP: usize = 50;
+    let client = connection_client()?;
+    let host = strip_v1_suffix(base_url);
+    // Loaded set and effective contexts: any failure reads as empty (all
+    // unloaded, no window facts) without losing the downloaded list.
+    let (loaded_names, ps_contexts) =
+        match discovery_send(apply_bearer(client.get(format!("{host}/api/ps")), key)) {
+            DiscoveryAnswer::Json(value, _) => (
+                discovery_ollama_ps_names(&value),
+                discovery_ollama_ps_contexts(&value),
+            ),
+            _ => Default::default(),
+        };
+    let value = match discovery_send(apply_bearer(client.get(format!("{host}/api/tags")), key)) {
+        DiscoveryAnswer::Json(value, _) => value,
+        // Any non-listing outcome re-enters the OpenAI-compatible ladder,
+        // whose classification produces the same error row the GUI prints.
+        _ => return None,
+    };
+    let names = discovery_ollama_tag_names(&value).filter(|names| !names.is_empty())?;
+    let mut models: Vec<DiscoveredModel> = names
+        .into_iter()
+        .map(|name| {
+            let loaded = loaded_names.contains(&name);
+            let context = ps_contexts.get(&name).copied();
+            DiscoveredModel {
+                context_window_tokens: context,
+                context_from: context.map(|_| ModelFactSource::Endpoint),
+                id: name,
+                max_output_tokens: None,
+                output_from: None,
+                loaded: Some(loaded),
+                title: None,
+            }
+        })
+        .collect();
+    let missing: Vec<usize> = (0..models.len())
+        .filter(|&index| models[index].context_window_tokens.is_none())
+        .collect();
+    let truncated = missing.len() > DISCOVER_OLLAMA_SHOW_CAP;
+    for &index in missing.iter().take(DISCOVER_OLLAMA_SHOW_CAP) {
+        let name = models[index].id.clone();
+        if let Some(context) = discovery_ollama_query_show(client, &host, key, &name) {
+            models[index].context_window_tokens = Some(context);
+            models[index].context_from = Some(ModelFactSource::Endpoint);
+        }
+    }
+    Some((models, truncated))
+}
+
+/// LM Studio's native REST listing → entries with `state`-derived loaded
+/// facts. The only served-window fact read here is `loaded_context_length`
+/// on a LOADED entry; `max_context_length` is the model's capability ("the
+/// maximum the model supports"), the same fact class refused for Ollama's
+/// GGUF training cap — adopting it would over-report whenever the load
+/// override sits below the cap. `None` = shape not recognized (the caller
+/// falls back to the OpenAI-compatible shape).
+fn discovery_lmstudio_v0_models(value: &serde_json::Value) -> Option<Vec<DiscoveredModel>> {
+    let data = value.get("data").and_then(serde_json::Value::as_array)?;
+    let models = data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|value| value.as_str())?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let loaded = item
+                .get("state")
+                .and_then(|value| value.as_str())
+                .map(|state| state == "loaded");
+            let context = if loaded == Some(true) {
+                item.get("loaded_context_length")
+                    .and_then(discovery_positive_u32)
+            } else {
+                None
+            };
+            Some(DiscoveredModel {
+                id: id.to_owned(),
+                context_window_tokens: context,
+                context_from: context.map(|_| ModelFactSource::Endpoint),
+                max_output_tokens: None,
+                output_from: None,
+                loaded,
+                title: None,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!models.is_empty()).then_some(models)
+}
+
+/// The lmstudio ladder (short-circuit branch): native `/api/v0/models`
+/// first (loaded states, keyless — the GUI's `probe_lmstudio_models` carries
+/// no credential by construction, and an authenticated endpoint's 401
+/// classifies honestly as `auth_required` rather than degrading into a
+/// guessed shape), falling back to `/v1/models` (loaded unknown) when the
+/// native round trip does not produce a usable listing.
+fn discovery_lmstudio_listing(base_url: &str) -> EndpointModelsListing {
+    let Some(client) = connection_client() else {
+        return error_listing(None, None);
+    };
+    let host = strip_v1_suffix(base_url);
+    match discovery_send(client.get(format!("{host}/api/v0/models"))) {
+        DiscoveryAnswer::Transport(class) => error_listing(None, Some(class)),
+        DiscoveryAnswer::Status(status) => {
+            // A 404/405 on the native endpoint is the legacy-server shape
+            // the fallback exists for; every other decided status stands.
+            if status == 404 || status == 405 {
+                discovery_lmstudio_v1_fallback(client, &host)
+            } else {
+                discovery_status_listing(status)
+                    .unwrap_or_else(|| error_listing(Some(status), None))
+            }
+        }
+        DiscoveryAnswer::Unusable(_) => discovery_lmstudio_v1_fallback(client, &host),
+        DiscoveryAnswer::Json(value, _) => match discovery_lmstudio_v0_models(&value) {
+            Some(models) => listed_listing(models, false),
+            None => discovery_lmstudio_v1_fallback(client, &host),
+        },
+    }
+}
+
+/// The `/v1/models` fallback of the lmstudio ladder, in the OpenAI-compatible
+/// shape (context from the entry's own length fields, `loaded` unknown).
+fn discovery_lmstudio_v1_fallback(
+    client: &'static reqwest::blocking::Client,
+    host: &str,
+) -> EndpointModelsListing {
+    match discovery_send(client.get(format!("{host}/v1/models"))) {
+        DiscoveryAnswer::Transport(class) => error_listing(None, Some(class)),
+        DiscoveryAnswer::Status(status) => {
+            discovery_status_listing(status).unwrap_or_else(|| error_listing(Some(status), None))
+        }
+        DiscoveryAnswer::Unusable(status) => unsupported_listing(Some(status)),
+        DiscoveryAnswer::Json(value, status) => match discovery_openai_models(&value) {
+            Some((models, truncated)) => listed_listing(models, truncated),
+            None => unsupported_listing(Some(status)),
+        },
+    }
+}
+
+/// The full discovery ladder for one endpoint, mirroring the GUI's
+/// `probe_endpoint_models`: the loopback/private short-circuit (native
+/// ollama / lmstudio lanes, otherwise the OpenAI-compatible ladder) serves
+/// the OpenAI-compatible protocol; an explicitly requested anthropic or
+/// gemini protocol speaks its native ladder regardless of locality — a local
+/// LiteLLM-style proxy exposing the anthropic wire must not be re-routed
+/// onto an OpenAI-shaped answer just because it listens on 127.0.0.1.
+///
+/// Every error row carries only structured facts: a status number or a
+/// transport class. The reqwest error text (URL and userinfo included) and
+/// the api key never reach a `String` on this path at all.
+fn run_endpoint_discovery(
+    base_url: &str,
+    api_key: Option<&str>,
+    protocol: DiscoveryProtocol,
+) -> EndpointModelsListing {
+    let key = api_key.map(str::trim).filter(|key| !key.is_empty());
+    match protocol {
+        DiscoveryProtocol::Anthropic => discovery_anthropic_listing(base_url, key),
+        DiscoveryProtocol::Gemini => discovery_gemini_listing(base_url, key),
+        DiscoveryProtocol::OpenAiCompatible => {
+            if !is_local_or_private_base_url(base_url) {
+                return discovery_openai_listing(base_url, key);
+            }
+            // The local short-circuit belongs to the OpenAI-compatible
+            // protocol only (the explicit native protocols above keep their
+            // own ladders even on loopback). Every outcome of this branch —
+            // including a fallback and the sentinels — carries the detected
+            // server kind; the two probe-local honesty sentinels are
+            // absence-of-a-classification, and the GUI's kind table answers
+            // exactly that case with `generic`, so the strings stay in one
+            // vocabulary across surfaces.
+            let kind = select_local_server_kind_from_hits(&probe_candidates(base_url.trim(), key));
+            let server_kind = match kind {
+                LOCAL_KIND_UNKNOWN_AUTHENTICATED | LOCAL_KIND_PROBE_FAILED => "generic",
+                detected => detected,
+            };
+            let mut listing = match kind {
+                "ollama" => match discovery_ollama_models(base_url, key) {
+                    Some((models, truncated)) => listed_listing(models, truncated),
+                    None => discovery_openai_listing(base_url, key),
+                },
+                "lmstudio" => discovery_lmstudio_listing(base_url),
+                _ => discovery_openai_listing(base_url, key),
+            };
+            listing.server_kind = Some(server_kind);
+            listing
+        }
+    }
+}
+
+/// `models discover --base-url <url> [--api-key-env V] [--preset <name>]
+/// [--wire <anthropic|openai|kimi>] [--json]`: list the models an endpoint
+/// reports, with the lengths the entries self-report. The GUI counterpart
+/// (`probe_endpoint_models`) additionally back-fills missing lengths from
+/// its model-length catalog; the CLI has no catalog, so `SOURCE` is always
+/// `endpoint` and absent lengths simply print as `-`.
+///
+/// `--api-key-env` names an environment VARIABLE holding the credential,
+/// the same discipline as probe-local — the keyless case is the flag's
+/// omission, and the variable is read only here, at execution time.
+///
+/// A malformed `--base-url` is a usage error (argv is the caller's mistake,
+/// the same classification `probe-local --url` applies). The protocol comes
+/// from `--preset` (wins over `--wire`), else `--wire`, else the
+/// OpenAI-compatible default. Exit codes: listed 0 (an empty list is still
+/// a successful answer), the three failure statuses 1 with the status in
+/// the output row, usage 2.
+fn discover(
+    base_url: &str,
+    api_key_env: Option<&str>,
+    preset: Option<ModelPreset>,
+    wire: Option<DiscoveryProtocol>,
+    json: bool,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    if reqwest::Url::parse(base_url.trim()).is_err() {
+        return Err(CliError::usage(format!(
+            "pinvou models discover: --base-url is not a valid url\n{DISCOVER_USAGE}"
+        )));
+    }
+    // Usage validation stays ahead of credential resolution (the ordering
+    // `probe_local` documents): a script keying on the exit-code contract
+    // must see the usage error (2) even when the named variable is also
+    // missing (which would be exit 1).
+    let api_key = match api_key_env {
+        Some(var) => Some(resolve_discover_api_key(var)?),
+        None => None,
+    };
+    let protocol = resolve_discovery_protocol(preset, wire);
+    let listing = run_endpoint_discovery(base_url, api_key.as_deref(), protocol);
+    let output = if json { OutputMode::Json } else { output };
+    Ok(render_discovery_outcome(&listing, output))
+}
+
+/// The name→value step of discover's `--api-key-env`, the same contract
+/// `probe_local` Phase 2 enforces (its comment justifies each branch): a
+/// set-but-non-UTF-8 variable is distinct from an unset one, and a
+/// set-but-empty variable fails the command — `run_endpoint_discovery`
+/// filters an empty key into an anonymous round, an authenticated endpoint
+/// would answer 401, and the caller would get `auth_required` with no hint
+/// that the credential they named never reached the request. The failures
+/// are host failures (exit 1), never usage: the flag was spelled
+/// correctly, the ENVIRONMENT is wrong. Only the variable NAME may appear
+/// in a message — the value never does.
+fn resolve_discover_api_key(var: &str) -> Result<String, CliError> {
+    let value = std::env::var(var).map_err(|error| match error {
+        std::env::VarError::NotUnicode(_) => CliError::failed(format!(
+            "discover: api key environment variable {var} is set but not valid UTF-8"
+        )),
+        _ => CliError::failed(format!(
+            "discover: api key environment variable {var} is not set"
+        )),
+    })?;
+    if value.trim().is_empty() {
+        return Err(CliError::failed(format!(
+            "discover: api key environment variable {var} is set but empty"
+        )));
+    }
+    Ok(value)
+}
+
+/// One human table cell for an untrusted endpoint-provided value: control
+/// characters collapsed (the same hygiene every other human row applies)
+/// and the column separator neutralized so a hostile model id cannot forge
+/// extra columns. JSON keeps the verbatim value.
+fn discovery_table_cell(value: &str) -> String {
+    collapse_control_characters(value).replace('|', "/")
+}
+
+/// K/M formatting for the CONTEXT / OUTPUT table cells (decimal, like the
+/// modern token-window convention: 128K = 128000): values under 1000 print
+/// as-is, larger values one decimal with the trailing `.0` trimmed
+/// (`8192` → `8.2K`, `128000` → `128K`, `1000000` → `1M`). A rounding carry
+/// at a unit boundary steps up (`999950` → `1M`).
+fn format_tokens_km(value: u32) -> String {
+    let (divisor, suffix) = if value >= 1_000_000_000 {
+        (1_000_000_000.0_f64, "G")
+    } else if value >= 1_000_000 {
+        (1_000_000.0_f64, "M")
+    } else if value >= 1_000 {
+        (1_000.0_f64, "K")
+    } else {
+        return value.to_string();
+    };
+    let rounded = (value as f64 / divisor * 10.0).round() / 10.0;
+    if rounded >= 1000.0 {
+        return match suffix {
+            "K" => "1M".to_owned(),
+            "M" => "1G".to_owned(),
+            _ => format!("{rounded:.0}{suffix}"),
+        };
+    }
+    let text = format!("{rounded:.1}");
+    let text = text.strip_suffix(".0").map(str::to_owned).unwrap_or(text);
+    format!("{text}{suffix}")
+}
+
+fn format_tokens_cell(value: Option<u32>) -> String {
+    value.map_or_else(|| "-".to_owned(), format_tokens_km)
+}
+
+/// The human rendering of a listing: the table for a listed endpoint, the
+/// status row + hint for every failure (the same shape the probe outcomes
+/// print — the JSON row is the parseable source of truth either way).
+fn render_discovery_human(listing: &EndpointModelsListing) -> String {
+    if listing.status != ListingStatus::Listed {
+        let mut lines = vec![format!("status: {}", listing.status.as_str())];
+        if let Some(http_status) = listing.http_status {
+            lines.push(format!("http_status: {http_status}"));
+        }
+        if let Some(transport) = listing.transport {
+            lines.push(format!("transport: {transport}"));
+        }
+        if let Some(server_kind) = listing.server_kind {
+            lines.push(format!("server_kind: {server_kind}"));
+        }
+        lines.push(match listing.status {
+            ListingStatus::AuthRequired => {
+                "hint: the endpoint rejected the request as unauthenticated; rerun with \
+                 --api-key-env V"
+                    .to_owned()
+            }
+            ListingStatus::Unsupported => {
+                "hint: the endpoint did not answer with a recognized model-list protocol".to_owned()
+            }
+            _ => "hint: the endpoint could not be reached or failed; see transport or \
+                  http_status above"
+                .to_owned(),
+        });
+        return lines.join("\n");
+    }
+    let mut lines = vec!["ID | CONTEXT | OUTPUT | SOURCE".to_owned()];
+    if listing.models.is_empty() {
+        lines.push("the endpoint returned no models".to_owned());
+    }
+    for model in &listing.models {
+        lines.push(format!(
+            "{} | {} | {} | {}",
+            discovery_table_cell(&model.id),
+            format_tokens_cell(model.context_window_tokens),
+            format_tokens_cell(model.max_output_tokens),
+            ModelFactSource::Endpoint.as_str(),
+        ));
+    }
+    if listing.truncated {
+        lines.push("note: the listing is truncated (entry cap reached)".to_owned());
+    }
+    lines.join("\n")
+}
+
+/// One rendered `models discover` outcome: listed exits 0, every failure
+/// status still prints its structured row but exits 1 — the exact style the
+/// probe outcomes render in.
+fn render_discovery_outcome(listing: &EndpointModelsListing, output: OutputMode) -> CliOutcome {
+    let stdout = render(output, render_discovery_human(listing), &listing.to_json());
+    CliOutcome {
+        exit_code: if listing.status == ListingStatus::Listed {
+            ExitCode::Success
+        } else {
+            ExitCode::Failed
+        },
+        stdout,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4727,6 +6014,1373 @@ mod tests {
                 "{url} is not loopback"
             );
         }
+    }
+
+    // -------------------------------------------------------------------
+    // `models discover` — protocol mapping, parsing, formatting, the
+    // classification ladder and the per-protocol shapes. The HTTP lanes run
+    // against a std-only loopback mock modeled on `spawn_probe_mock`, with
+    // the additions the discovery lanes need: full header capture (the
+    // anthropic / gemini auth headers), query recording (the pagination
+    // cursors), per-path SEQUENCED responses (the two-page ladders) and a
+    // content-length body drain (the Ollama /api/show POSTs).
+    // -------------------------------------------------------------------
+
+    /// A `models discover` wire protocol resolves the same way on both
+    /// surfaces: the preset table maps only anthropic / gemini to their
+    /// native ladders, every wire spelling except `anthropic` stays on the
+    /// OpenAI-compatible ladder, and a preset outranks a wire when both are
+    /// given (the GUI command's own precedence).
+    #[test]
+    fn discover_protocol_mapping_is_pinned() {
+        assert_eq!(
+            protocol_for_preset(ModelPreset::Anthropic),
+            DiscoveryProtocol::Anthropic
+        );
+        assert_eq!(
+            protocol_for_preset(ModelPreset::Gemini),
+            DiscoveryProtocol::Gemini
+        );
+        for preset in [
+            ModelPreset::LocalVllm,
+            ModelPreset::Deepseek,
+            ModelPreset::Kimi,
+            ModelPreset::OpenaiCompatible,
+            ModelPreset::Qwen,
+            ModelPreset::Doubao,
+            ModelPreset::Minimax,
+            ModelPreset::Glm,
+            ModelPreset::Mimo,
+            ModelPreset::Openai,
+            ModelPreset::Xai,
+        ] {
+            assert_eq!(
+                protocol_for_preset(preset),
+                DiscoveryProtocol::OpenAiCompatible,
+                "{preset:?} walks the OpenAI-compatible ladder"
+            );
+        }
+        assert_eq!(
+            protocol_for_wire("anthropic"),
+            Some(DiscoveryProtocol::Anthropic)
+        );
+        assert_eq!(
+            protocol_for_wire("openai"),
+            Some(DiscoveryProtocol::OpenAiCompatible)
+        );
+        assert_eq!(
+            protocol_for_wire("kimi"),
+            Some(DiscoveryProtocol::OpenAiCompatible)
+        );
+        assert_eq!(
+            protocol_for_wire("responses"),
+            None,
+            "only the three ACP wires are spellable from the CLI"
+        );
+        assert_eq!(protocol_for_wire(" claude "), None);
+        assert_eq!(
+            resolve_discovery_protocol(
+                Some(ModelPreset::Anthropic),
+                Some(DiscoveryProtocol::OpenAiCompatible)
+            ),
+            DiscoveryProtocol::Anthropic,
+            "the preset wins when both flags are given"
+        );
+        assert_eq!(
+            resolve_discovery_protocol(None, Some(DiscoveryProtocol::Anthropic)),
+            DiscoveryProtocol::Anthropic
+        );
+        assert_eq!(
+            resolve_discovery_protocol(Some(ModelPreset::LocalVllm), None),
+            DiscoveryProtocol::OpenAiCompatible
+        );
+        assert_eq!(
+            resolve_discovery_protocol(None, None),
+            DiscoveryProtocol::OpenAiCompatible,
+            "neither flag means the OpenAI-compatible default"
+        );
+    }
+
+    #[test]
+    fn discover_parse_accepts_the_documented_flag_surface() {
+        let arguments = [
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            " http://127.0.0.1:11434 ".to_owned(),
+            "--api-key-env".to_owned(),
+            "PINVOU_TEST_DISCOVER_PARSE_KEY".to_owned(),
+            "--preset".to_owned(),
+            "anthropic".to_owned(),
+            "--json".to_owned(),
+        ];
+        let ModelsCommand::Discover {
+            base_url,
+            api_key_env,
+            preset,
+            wire,
+            json,
+        } = parse(&arguments).expect("the documented flag surface parses")
+        else {
+            panic!("parse must produce a Discover command");
+        };
+        assert_eq!(base_url, "http://127.0.0.1:11434", "the value is trimmed");
+        // The flag carries an environment VARIABLE NAME, stored verbatim;
+        // the variable is read only when the command runs.
+        assert_eq!(
+            api_key_env.as_deref(),
+            Some("PINVOU_TEST_DISCOVER_PARSE_KEY")
+        );
+        assert_eq!(preset, Some(ModelPreset::Anthropic));
+        assert_eq!(wire, None);
+        assert!(json);
+    }
+
+    #[test]
+    fn discover_parse_maps_the_wire_flag() {
+        let arguments = [
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            "http://127.0.0.1:8080".to_owned(),
+            "--wire".to_owned(),
+            "Kimi".to_owned(),
+        ];
+        let ModelsCommand::Discover { wire, .. } =
+            parse(&arguments).expect("wire parsing is case-insensitive")
+        else {
+            panic!("parse must produce a Discover command");
+        };
+        assert_eq!(wire, Some(DiscoveryProtocol::OpenAiCompatible));
+    }
+
+    #[test]
+    fn discover_parse_rejects_bad_usage() {
+        // Missing --base-url: the usage block (flags + exit-code table)
+        // rides along on the error, like the benchmark family's catch-all.
+        let missing = parse(&["models".to_owned(), "discover".to_owned()])
+            .expect_err("discover without --base-url is a usage error");
+        assert_eq!(missing.exit_code(), ExitCode::Usage);
+        assert!(
+            missing.to_string().contains("--base-url")
+                && missing.to_string().contains("exit codes: 0 listed"),
+            "the error must carry the flag surface and the exit-code table: {missing}"
+        );
+        let unknown_wire = parse(&[
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            "http://127.0.0.1:11434".to_owned(),
+            "--wire".to_owned(),
+            "grpc".to_owned(),
+        ])
+        .expect_err("an unknown wire is a usage error naming the valid values");
+        assert!(unknown_wire.to_string().contains("anthropic, openai, kimi"));
+        let unknown_preset = parse(&[
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            "http://127.0.0.1:11434".to_owned(),
+            "--preset".to_owned(),
+            "mistral".to_owned(),
+        ])
+        .expect_err("an unknown preset reuses the shared preset table error");
+        assert!(unknown_preset.to_string().contains("valid presets"));
+        let stray = parse(&[
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            "http://127.0.0.1:11434".to_owned(),
+            "sk-pasted-by-accident".to_owned(),
+        ])
+        .expect_err("a stray positional is refused without echoing it");
+        assert!(
+            !stray.to_string().contains("sk-pasted-by-accident"),
+            "the refusal reports the count only, never the token: {stray}"
+        );
+        let flag_as_value = parse(&[
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            "http://127.0.0.1:11434".to_owned(),
+            "--api-key-env".to_owned(),
+            "--preset".to_owned(),
+            "openai".to_owned(),
+        ])
+        .expect_err("a value flag cannot consume another flag");
+        assert_eq!(flag_as_value.exit_code(), ExitCode::Usage);
+    }
+
+    /// The secret-discipline pin: the literal-key flag this subcommand
+    /// shipped with for one round (`--api-key <key>`) must stay refused. A
+    /// pasted secret on argv rides the shell history and the process list —
+    /// exactly what the family-wide `--api-key-env` entry exists to prevent
+    /// — so the literal flag is now an unknown option (usage, exit 2), and
+    /// the refusal must not echo the pasted value.
+    #[test]
+    fn discover_parse_refuses_the_literal_api_key_flag() {
+        let error = parse(&[
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            "http://127.0.0.1:11434".to_owned(),
+            "--api-key".to_owned(),
+            "sk-pasted-literal".to_owned(),
+        ])
+        .expect_err("the literal --api-key flag is no longer part of the surface");
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown option --api-key"),
+            "the refusal names the unknown flag: {message}"
+        );
+        assert!(
+            !message.contains("sk-pasted-literal"),
+            "the pasted value is never echoed: {message}"
+        );
+    }
+
+    /// The malformed-URL gate is argv-origin (usage, exit 2), the same
+    /// classification `probe-local --url` applies; the error carries the
+    /// discover usage block so the fix is one line away.
+    #[test]
+    fn discover_refuses_a_malformed_base_url_as_usage() {
+        let error = discover(
+            "not a url at all",
+            None,
+            None,
+            None,
+            false,
+            OutputMode::Human,
+        )
+        .expect_err("a malformed base_url is a usage error");
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        assert!(error.to_string().contains("is not a valid url"));
+        assert!(error.to_string().contains("exit codes: 0 listed"));
+    }
+
+    #[test]
+    fn discover_tokens_format_as_decimal_k_and_m() {
+        assert_eq!(format_tokens_km(0), "0");
+        assert_eq!(format_tokens_km(999), "999");
+        assert_eq!(format_tokens_km(1000), "1K");
+        assert_eq!(format_tokens_km(1001), "1K");
+        assert_eq!(format_tokens_km(8192), "8.2K");
+        assert_eq!(format_tokens_km(128000), "128K");
+        assert_eq!(format_tokens_km(131072), "131.1K");
+        assert_eq!(format_tokens_km(999950), "1M", "a rounding carry steps up");
+        assert_eq!(format_tokens_km(1000000), "1M");
+        assert_eq!(format_tokens_km(1048576), "1M");
+        assert_eq!(format_tokens_km(1234567), "1.2M");
+        assert_eq!(format_tokens_km(999999999), "1G");
+        assert_eq!(format_tokens_km(1000000000), "1G");
+        assert_eq!(format_tokens_km(4000000000), "4G");
+        assert_eq!(
+            format_tokens_cell(None),
+            "-",
+            "an absent length prints as a dash"
+        );
+    }
+
+    /// The classification ladder is the error contract scripts read: 401/403
+    /// (Groq uses 403) → auth_required, 404/405 → unsupported, every other
+    /// ≥400 → error with the status kept, 2xx → the caller keeps parsing.
+    #[test]
+    fn discover_status_classification_is_pinned() {
+        use ListingStatus::*;
+        for status in [401u16, 403] {
+            let listing = discovery_status_listing(status).expect("401/403 decide");
+            assert_eq!(listing.status, AuthRequired);
+            assert_eq!(listing.http_status, Some(status));
+            assert!(listing.models.is_empty());
+        }
+        for status in [404u16, 405] {
+            let listing = discovery_status_listing(status).expect("404/405 decide");
+            assert_eq!(listing.status, Unsupported);
+            assert_eq!(listing.http_status, Some(status));
+        }
+        for status in [400u16, 402, 408, 429, 500, 503] {
+            let listing = discovery_status_listing(status).expect("other statuses decide");
+            assert_eq!(listing.status, Error);
+            assert_eq!(listing.http_status, Some(status));
+        }
+        assert_eq!(discovery_status_listing(200), None, "2xx keeps parsing");
+    }
+
+    /// Entry parsing normalizes the four context spellings (tightest wins —
+    /// the same only-tighten doctrine as the output side) and the three
+    /// output shapes including OpenRouter's `top_provider`; non-positive,
+    /// out-of-range and non-numeric values read as undeclared, and an entry
+    /// without an id is not a model.
+    #[test]
+    fn discover_openai_entry_parses_lengths_tightest_first() {
+        let entry = serde_json::json!({
+            "id": " m1 ",
+            "max_model_len": 4096,
+            "context_length": 8192,
+            "context_window": 9999999999u64,
+            "max_context_length": 16384,
+            "max_output_tokens": 4096,
+            "max_completion_tokens": 8192,
+            "top_provider": { "max_completion_tokens": 2048 },
+        });
+        let model = discovery_openai_entry(&entry).expect("a well-formed entry parses");
+        assert_eq!(model.id, "m1", "the id is trimmed");
+        assert_eq!(
+            model.context_window_tokens,
+            Some(4096),
+            "the tightest context spelling wins; out-of-range reads undeclared"
+        );
+        assert_eq!(model.context_from, Some(ModelFactSource::Endpoint));
+        assert_eq!(
+            model.max_output_tokens,
+            Some(2048),
+            "the tightest output shape (OpenRouter top_provider) wins"
+        );
+        assert_eq!(model.output_from, Some(ModelFactSource::Endpoint));
+        assert_eq!(model.loaded, None);
+        assert_eq!(model.title, None);
+        // Zero / negative / non-numeric values never fabricate a length.
+        let lying = serde_json::json!({
+            "id": "m2",
+            "max_model_len": 0,
+            "context_length": -8192,
+            "context_window": "huge",
+            "max_output_tokens": 1.5,
+        });
+        let model = discovery_openai_entry(&lying).expect("an id-only entry parses");
+        assert_eq!(model.context_window_tokens, None);
+        assert_eq!(model.max_output_tokens, None);
+        assert_eq!(model.context_from, None, "no length, no source");
+        // A bare array entry with an empty id is not a model.
+        assert_eq!(
+            discovery_openai_entry(&serde_json::json!({"id": "   "})),
+            None
+        );
+    }
+
+    /// Spec §2.10-11 mirror: the 2000-entry cap truncates and flags; exactly
+    /// 2000 entries stay unflagged; the bare-array (Together) shape and the
+    /// `{data}` shape parse identically; an unrecognized shape is None
+    /// (→ unsupported), an EMPTY array is a legal listed answer.
+    #[test]
+    fn discover_openai_body_cap_and_shapes_are_pinned() {
+        let bare = serde_json::json!([{ "id": "a" }, { "id": "b" }]);
+        let (models, truncated) = discovery_openai_models(&bare).expect("a bare array parses");
+        assert_eq!(models.len(), 2);
+        assert!(!truncated);
+        let envelope = serde_json::json!({ "data": [{ "id": "a" }, { "id": "b" }] });
+        let (models, _) = discovery_openai_models(&envelope).expect("the data envelope parses");
+        assert_eq!(models.len(), 2);
+        let empty = serde_json::json!({ "data": [] });
+        let (models, truncated) = discovery_openai_models(&empty).expect("empty parses");
+        assert!(
+            models.is_empty() && !truncated,
+            "an empty list is a legal listed answer"
+        );
+        for shape in [serde_json::json!({"models": []}), serde_json::json!(42)] {
+            assert_eq!(
+                discovery_openai_models(&shape),
+                None,
+                "a shape that is neither the envelope nor a bare array is unrecognized"
+            );
+        }
+        let cap = serde_json::json!({
+            "data": (0..2001).map(|index| serde_json::json!({"id": format!("m{index}")})).collect::<Vec<_>>()
+        });
+        let (models, truncated) = discovery_openai_models(&cap).expect("the capped body parses");
+        assert_eq!(models.len(), 2000);
+        assert!(truncated, "2001 entries must flag the truncation");
+        let exact = serde_json::json!({
+            "data": (0..2000).map(|index| serde_json::json!({"id": format!("m{index}")})).collect::<Vec<_>>()
+        });
+        let (models, truncated) = discovery_openai_models(&exact).expect("the exact body parses");
+        assert_eq!(models.len(), 2000);
+        assert!(!truncated, "exactly 2000 entries do not flag");
+    }
+
+    #[test]
+    fn discover_anthropic_page_parses_facts_and_cursor() {
+        let page = serde_json::json!({
+            "data": [
+                {
+                    "id": "claude-a",
+                    "display_name": "Claude A",
+                    "max_input_tokens": 200000,
+                    "max_tokens": 8192,
+                },
+                { "id": "claude-b", "max_input_tokens": 0 },
+            ],
+            "has_more": true,
+        });
+        let (models, has_more, after_id) =
+            discovery_anthropic_page(&page).expect("a well-formed page parses");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "claude-a");
+        assert_eq!(models[0].context_window_tokens, Some(200000));
+        assert_eq!(models[0].max_output_tokens, Some(8192));
+        assert_eq!(models[0].title.as_deref(), Some("Claude A"));
+        assert_eq!(
+            models[1].context_window_tokens, None,
+            "a non-positive length reads undeclared"
+        );
+        assert!(has_more);
+        assert_eq!(
+            after_id.as_deref(),
+            Some("claude-b"),
+            "the cursor is the page's last id"
+        );
+        let missing_cursor = serde_json::json!({ "data": [], "has_more": true });
+        let (_, has_more, after_id) =
+            discovery_anthropic_page(&missing_cursor).expect("an empty page parses");
+        assert!(has_more && after_id.is_none(), "no entries means no cursor");
+        assert_eq!(discovery_anthropic_page(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn discover_gemini_page_filters_generation_methods() {
+        let page = serde_json::json!({
+            "models": [
+                {
+                    "name": "models/gemini-x",
+                    "supportedGenerationMethods": ["generateContent", "bidi"],
+                    "inputTokenLimit": 1000000,
+                    "outputTokenLimit": 8192,
+                    "displayName": "Gemini X",
+                },
+                {
+                    "name": "models/embed-thing",
+                    "supportedGenerationMethods": ["embedContent"],
+                },
+                { "name": "models/no-methods" },
+                {
+                    "name": "models/case-variant",
+                    "supportedGenerationMethods": ["GenerateContent"],
+                },
+            ],
+            "nextPageToken": "tok-1",
+        });
+        let (models, next) = discovery_gemini_page(&page).expect("a well-formed page parses");
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["gemini-x", "case-variant"],
+            "only generateContent-capable entries stay (case-insensitive), with the models/ prefix stripped"
+        );
+        assert_eq!(models[0].context_window_tokens, Some(1000000));
+        assert_eq!(models[0].max_output_tokens, Some(8192));
+        assert_eq!(models[0].title.as_deref(), Some("Gemini X"));
+        assert_eq!(next.as_deref(), Some("tok-1"));
+        let last = serde_json::json!({ "models": [] });
+        let (models, next) = discovery_gemini_page(&last).expect("an empty page parses");
+        assert!(models.is_empty() && next.is_none());
+        assert_eq!(discovery_gemini_page(&serde_json::json!({})), None);
+    }
+
+    /// LM Studio's capability cap (`max_context_length`) is the same fact
+    /// class refused for Ollama's GGUF training window: only a LOADED
+    /// entry's `loaded_context_length` is the served window.
+    #[test]
+    fn discover_lmstudio_v0_reads_loaded_context_only() {
+        let value = serde_json::json!({
+            "data": [
+                {
+                    "id": "loaded-model",
+                    "state": "loaded",
+                    "loaded_context_length": 12918,
+                    "max_context_length": 131072,
+                },
+                {
+                    "id": "cold-model",
+                    "state": "not-loaded",
+                    "max_context_length": 4096,
+                },
+                { "id": "legacy", "state": "weird-state" },
+            ]
+        });
+        let models = discovery_lmstudio_v0_models(&value).expect("a well-formed v0 body parses");
+        assert_eq!(models.len(), 3);
+        assert_eq!(
+            models[0].context_window_tokens,
+            Some(12918),
+            "the served window of a loaded entry"
+        );
+        assert_eq!(models[0].loaded, Some(true));
+        assert_eq!(
+            models[1].context_window_tokens, None,
+            "the capability cap of a cold entry must NOT be adopted"
+        );
+        assert_eq!(models[1].loaded, Some(false));
+        assert_eq!(
+            models[2].loaded,
+            Some(false),
+            "any recognized-but-not-loaded state reads not-loaded, mirroring the GUI parser"
+        );
+        assert_eq!(
+            discovery_lmstudio_v0_models(&serde_json::json!({"data": []})),
+            None
+        );
+        assert_eq!(discovery_lmstudio_v0_models(&serde_json::json!({})), None);
+    }
+
+    /// Ollama facts: `/api/ps` carries the loaded set and effective contexts
+    /// under both name spellings; `/api/show` contributes ONLY the Modelfile
+    /// `num_ctx` — the GGUF training window (`model_info.<arch>.
+    /// context_length`) is deliberately not adopted (the GUI probes refuse
+    /// it for the same over-reporting reason).
+    #[test]
+    fn discover_ollama_fact_parsers_are_pinned() {
+        let ps = serde_json::json!({
+            "models": [
+                { "name": "llama3:latest", "context_length": 8192 },
+                { "model": "qwen2:7b", "context_length": 0 },
+            ]
+        });
+        let names = discovery_ollama_ps_names(&ps);
+        assert!(names.contains("llama3:latest") && names.contains("qwen2:7b"));
+        let contexts = discovery_ollama_ps_contexts(&ps);
+        assert_eq!(contexts.get("llama3:latest"), Some(&8192));
+        assert_eq!(
+            contexts.get("qwen2:7b"),
+            None,
+            "a non-positive context reads undeclared"
+        );
+        assert!(discovery_ollama_ps_names(&serde_json::json!({})).is_empty());
+        let tags = serde_json::json!({
+            "models": [ { "name": "b" }, { "name": "a" }, { "name": "b" }, { "name": "  " } ]
+        });
+        assert_eq!(
+            discovery_ollama_tag_names(&tags).as_deref(),
+            Some(&["b".to_owned(), "a".to_owned()][..]),
+            "ordered, deduped, blank names dropped"
+        );
+        assert_eq!(discovery_ollama_tag_names(&serde_json::json!({})), None);
+        let show = serde_json::json!({
+            "parameters": "temperature 0.7\nnum_ctx 4096\nstop <|eot|>",
+            "model_info": { "llama.context_length": 131072 },
+        });
+        assert_eq!(
+            discovery_ollama_show_context(&show),
+            Some(4096),
+            "the declared num_ctx wins; the GGUF training cap is refused"
+        );
+        let undeclared = serde_json::json!({
+            "parameters": "temperature 0.7",
+            "model_info": { "llama.context_length": 131072 },
+        });
+        assert_eq!(
+            discovery_ollama_show_context(&undeclared),
+            None,
+            "no num_ctx declaration means no window fact"
+        );
+        let malformed = serde_json::json!({ "parameters": "num_ctx zero\nnum_ctx 8192" });
+        assert_eq!(
+            discovery_ollama_show_context(&malformed),
+            None,
+            "a malformed declaration cannot be overruled by a later line"
+        );
+    }
+
+    // --- discovery HTTP lanes (loopback mock) ---
+
+    /// One captured request's facts for assertions.
+    #[derive(Default)]
+    struct DiscoverMockLog {
+        hits: std::sync::Mutex<std::collections::HashMap<String, usize>>,
+        headers: std::sync::Mutex<std::collections::HashMap<String, Vec<(String, String)>>>,
+        queries: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
+    }
+
+    impl DiscoverMockLog {
+        fn hits_for(&self, path: &str) -> usize {
+            self.hits
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .copied()
+                .unwrap_or(0)
+        }
+
+        fn header_values(&self, path: &str, name: &str) -> Vec<String> {
+            self.headers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .map(|pairs| {
+                    pairs
+                        .iter()
+                        .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+                        .map(|(_, value)| value.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+
+        fn queries_for(&self, path: &str) -> Vec<String> {
+            self.queries
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+
+    /// The discovery lanes' std-only loopback mock. `routes` maps a request
+    /// PATH (query stripped for matching) to a SEQUENCE of `(status, body)`
+    /// answers, consumed in order — a two-page ladder feeds the same path
+    /// twice. Unrouted paths answer `404 {}`. All request headers and query
+    /// strings are recorded for assertions.
+    fn spawn_discover_mock(
+        routes: &[(&str, Vec<(u16, &str)>)],
+    ) -> (String, std::sync::Arc<DiscoverMockLog>) {
+        use std::io::Read as _;
+        use std::sync::Arc;
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind discover mock listener");
+        let addr = listener.local_addr().expect("discover mock listener addr");
+        let mut queues: std::collections::HashMap<
+            String,
+            std::collections::VecDeque<(u16, String)>,
+        > = std::collections::HashMap::new();
+        for (path, answers) in routes {
+            queues.insert(
+                (*path).to_owned(),
+                answers.iter().map(|(s, b)| (*s, (*b).to_owned())).collect(),
+            );
+        }
+        let log = Arc::new(DiscoverMockLog::default());
+        let log_thread = log.clone();
+        std::thread::spawn(move || {
+            // Generous bound: the local short-circuit fans out the candidate
+            // probes before the ladder itself runs, and the ollama show-cap
+            // test issues ~60 requests on purpose.
+            for stream in listener.incoming().take(200) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf).into_owned();
+                let mut lines = request.split("\r\n");
+                let target = lines
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_owned();
+                let (path, query) = match target.split_once('?') {
+                    Some((path, query)) => (path.to_owned(), Some(query.to_owned())),
+                    None => (target.clone(), None),
+                };
+                // Drain the declared body (the Ollama /api/show POSTs):
+                // answering before the client wrote its body would make the
+                // client's write fail mid-flight and poison the request.
+                let header_end = request
+                    .find("\r\n\r\n")
+                    .map(|index| index + 4)
+                    .unwrap_or(buf.len());
+                let content_length = request.split("\r\n").skip(1).find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+                });
+                if let Some((_, value)) = content_length
+                    && let Ok(length) = value.trim().parse::<usize>()
+                {
+                    let mut have = buf.len().saturating_sub(header_end);
+                    while have < length {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                buf.extend_from_slice(&chunk[..n]);
+                                have += n;
+                            }
+                        }
+                    }
+                }
+                {
+                    let mut hits = log_thread.hits.lock().unwrap_or_else(|p| p.into_inner());
+                    *hits.entry(path.clone()).or_insert(0) += 1;
+                }
+                {
+                    let mut headers = log_thread.headers.lock().unwrap_or_else(|p| p.into_inner());
+                    headers.entry(path.clone()).or_default().extend(
+                        request
+                            .split("\r\n")
+                            .skip(1)
+                            .take_while(|line| !line.is_empty())
+                            .filter_map(|line| line.split_once(':'))
+                            .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned())),
+                    );
+                }
+                if let Some(query) = query {
+                    let mut queries = log_thread.queries.lock().unwrap_or_else(|p| p.into_inner());
+                    queries.entry(path.clone()).or_default().push(query);
+                }
+                let (status, body) = queues
+                    .get_mut(&path)
+                    .and_then(|queue| queue.pop_front())
+                    .unwrap_or((404, "{}".to_owned()));
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+            }
+        });
+        (format!("http://{addr}"), log)
+    }
+
+    /// Every mock-driven ladder test walks the local short-circuit (a
+    /// loopback address cannot help being local), so the candidates' seven
+    /// signature probes must MISS cleanly: a convenience builder producing
+    /// the all-miss route set plus the interesting paths.
+    fn discover_routes(
+        extra: &[(&'static str, Vec<(u16, &'static str)>)],
+    ) -> Vec<(&'static str, Vec<(u16, &'static str)>)> {
+        let mut routes: Vec<(&'static str, Vec<(u16, &'static str)>)> = [
+            "/api/tags",
+            "/api/v0/models",
+            "/api/extra/version",
+            "/props",
+            "/get_server_info",
+            "/v1/models",
+            "/models",
+        ]
+        .map(|path| (path, vec![(404u16, "{}")]))
+        .into_iter()
+        .collect();
+        for (path, answers) in extra {
+            if let Some(route) = routes.iter_mut().find(|(candidate, _)| candidate == path) {
+                route.1 = answers.clone();
+            } else {
+                routes.push((path, answers.clone()));
+            }
+        }
+        routes
+    }
+
+    /// The OpenAI-compatible ladder over a `{data}` envelope: the candidate
+    /// round consumes one body (the `/v1/models` 404 fallback), the listing
+    /// ladder the second; lengths land endpoint-sourced and the short-circuit
+    /// reports the all-miss kind as `generic`. The credential enters through
+    /// `--api-key-env` — the mock lanes set the variable and call the real
+    /// `discover()` lane, so the env-var entry is exercised end to end and
+    /// no test hands a literal key into the ladder below it.
+    #[test]
+    fn discover_openai_envelope_lists_endpoint_sourced_facts() {
+        let body = r#"{"data":[
+            {"id":"glm-4.7","max_model_len":131072,"max_completion_tokens":8192},
+            {"id":"no-facts"}
+        ]}"#;
+        let (base, log) = spawn_discover_mock(&discover_routes(&[(
+            "/models",
+            vec![(200u16, body), (200, body)],
+        )]));
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _key = TempEnv::set("PINVOU_TEST_DISCOVER_ROUTE_KEY", " route-key ");
+        let outcome = discover(
+            &base,
+            Some("PINVOU_TEST_DISCOVER_ROUTE_KEY"),
+            None,
+            Some(DiscoveryProtocol::OpenAiCompatible),
+            true,
+            OutputMode::Human,
+        )
+        .expect("a completed discovery is a result, not a command failure");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        let listing: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("single-line json");
+        assert_eq!(listing["status"], "listed");
+        assert_eq!(
+            listing["server_kind"], "generic",
+            "an all-miss short-circuit round is generic"
+        );
+        assert_eq!(listing["truncated"], false);
+        assert_eq!(
+            listing["http_status"],
+            serde_json::Value::Null,
+            "a listed answer carries no http_status, exactly like the GUI's assembly"
+        );
+        assert_eq!(listing["models"].as_array().expect("models array").len(), 2);
+        assert_eq!(listing["models"][0]["id"], "glm-4.7");
+        assert_eq!(listing["models"][0]["context_window_tokens"], 131072);
+        assert_eq!(listing["models"][0]["max_output_tokens"], 8192);
+        assert_eq!(listing["models"][0]["context_from"], "endpoint");
+        assert_eq!(
+            listing["models"][1]["context_window_tokens"],
+            serde_json::Value::Null,
+            "no fabricated lengths"
+        );
+        // The ladder request must carry the same-origin bearer credential.
+        // The path was requested twice (candidate fallback + ladder); every
+        // request must carry the same-origin trimmed bearer — the padding on
+        // the environment value is trimmed by the ladder, not read verbatim.
+        let bearers = log.header_values("/models", "authorization");
+        assert!(
+            bearers.len() == 2 && bearers.iter().all(|value| value == "Bearer route-key"),
+            "the trimmed key goes out as the bearer on every request: {bearers:?}"
+        );
+    }
+
+    /// The Together bare-array shape: identical listing through the same
+    /// ladder, no envelope required.
+    #[test]
+    fn discover_openai_accepts_the_bare_array_shape() {
+        let body = r#"[{"id":"together-model","context_length":32768,"max_output_tokens":4096}]"#;
+        let (base, _log) = spawn_discover_mock(&discover_routes(&[(
+            "/models",
+            vec![(200u16, body), (200, body)],
+        )]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 1);
+        assert_eq!(listing.models[0].context_window_tokens, Some(32768));
+    }
+
+    /// The error ladder, end to end through the mock: 401 → auth_required
+    /// (and no retry on other paths), 404 → unsupported, 500 → error, and a
+    /// 200 HTML interstitial → unsupported with the status kept.
+    #[test]
+    fn discover_openai_error_ladder_is_pinned() {
+        for (status, expected, name) in [
+            (401u16, ListingStatus::AuthRequired, "auth"),
+            (403, ListingStatus::AuthRequired, "auth-403"),
+            (404, ListingStatus::Unsupported, "unsupported-404"),
+            (405, ListingStatus::Unsupported, "unsupported-405"),
+            (500, ListingStatus::Error, "error-500"),
+        ] {
+            let body = "{}";
+            let (base, _log) = spawn_discover_mock(&discover_routes(&[(
+                "/models",
+                vec![(status, body), (status, body)],
+            )]));
+            let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+            assert_eq!(listing.status, expected, "{name}");
+            assert_eq!(listing.http_status, Some(status), "{name}");
+            assert!(
+                listing.models.is_empty(),
+                "{name}: failures carry no half data"
+            );
+        }
+        let (base, _log) = spawn_discover_mock(&discover_routes(&[(
+            "/models",
+            vec![
+                (200u16, "<html>please log in to the wifi</html>"),
+                (200, "<html>"),
+            ],
+        )]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Unsupported);
+        assert_eq!(
+            listing.http_status,
+            Some(200),
+            "a 2xx non-JSON body keeps its status in the unsupported row"
+        );
+    }
+
+    /// Anthropic: `x-api-key` + `anthropic-version` (never a bearer), the
+    /// two-page `has_more` + `after_id` pagination, and `max_input_tokens` /
+    /// `max_tokens` / `display_name` per entry. The protocol ladder runs
+    /// even against loopback — the local short-circuit belongs to the
+    /// OpenAI-compatible protocol only. The credential enters through
+    /// `--api-key-env` (env var set, real `discover()` lane, JSON payload
+    /// re-read), like every mock lane that presents a key.
+    #[test]
+    fn discover_anthropic_paginates_with_native_auth_headers() {
+        let page1 = r#"{"data":[{"id":"claude-a","display_name":"Claude A","max_input_tokens":200000,"max_tokens":8192}],"has_more":true}"#;
+        let page2 = r#"{"data":[{"id":"claude-b","max_input_tokens":1000000}],"has_more":false}"#;
+        let (base, log) =
+            spawn_discover_mock(&[("/v1/models", vec![(200u16, page1), (200, page2)])]);
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _key = TempEnv::set("PINVOU_TEST_DISCOVER_ANTHROPIC_KEY", "probe-key");
+        let outcome = discover(
+            &base,
+            Some("PINVOU_TEST_DISCOVER_ANTHROPIC_KEY"),
+            None,
+            Some(DiscoveryProtocol::Anthropic),
+            true,
+            OutputMode::Human,
+        )
+        .expect("a completed discovery is a result, not a command failure");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        let listing: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("single-line json");
+        assert_eq!(listing["status"], "listed");
+        assert_eq!(listing["models"].as_array().expect("models array").len(), 2);
+        assert_eq!(listing["models"][0]["context_window_tokens"], 200000);
+        assert_eq!(listing["models"][0]["max_output_tokens"], 8192);
+        assert_eq!(listing["models"][0]["title"], "Claude A");
+        assert_eq!(listing["models"][1]["context_window_tokens"], 1000000);
+        assert_eq!(listing["truncated"], false);
+        assert_eq!(
+            listing["server_kind"],
+            serde_json::Value::Null,
+            "no short-circuit on the native protocol"
+        );
+        assert_eq!(log.hits_for("/v1/models"), 2, "two pages, one path");
+        let api_keys = log.header_values("/v1/models", "x-api-key");
+        assert!(
+            api_keys.len() == 2 && api_keys.iter().all(|value| value == "probe-key"),
+            "every page presents x-api-key: {api_keys:?}"
+        );
+        let versions = log.header_values("/v1/models", "anthropic-version");
+        assert!(
+            versions.len() == 2 && versions.iter().all(|value| value == "2023-06-01"),
+            "every page pins anthropic-version: {versions:?}"
+        );
+        assert!(
+            log.header_values("/v1/models", "authorization").is_empty(),
+            "the anthropic ladder never sends a bearer"
+        );
+        let queries = log.queries_for("/v1/models");
+        assert_eq!(queries.len(), 2);
+        assert_eq!(queries[0], "limit=1000");
+        assert_eq!(
+            queries[1], "limit=1000&after_id=claude-a",
+            "the second page resumes from the first page's last id"
+        );
+    }
+
+    /// A still-has_more run after the three-page cap ends TRUNCATED — the
+    /// remainder is disclosed, never silently lost.
+    #[test]
+    fn discover_anthropic_page_cap_truncates() {
+        let page = r#"{"data":[{"id":"m"}],"has_more":true}"#;
+        let (base, log) =
+            spawn_discover_mock(&[("/v1/models", vec![(200u16, page), (200, page), (200, page)])]);
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::Anthropic);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 3, "one entry per fetched page");
+        assert!(listing.truncated);
+        assert_eq!(log.hits_for("/v1/models"), 3, "the cap is three pages");
+    }
+
+    /// A configured root already ending in `/v1` appends `/models`
+    /// directly (the `anthropic_messages_url` normalization rule) — no
+    /// doubled version segment.
+    #[test]
+    fn discover_anthropic_v1_shaped_base_appends_directly() {
+        let (base, log) = spawn_discover_mock(&[(
+            "/v1/models",
+            vec![(200u16, r#"{"data":[],"has_more":false}"#)],
+        )]);
+        let base = format!("{base}/v1");
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::Anthropic);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(log.hits_for("/v1/models"), 1);
+        assert_eq!(log.hits_for("/v1/v1/models"), 0, "no doubled /v1");
+    }
+
+    /// Gemini: `/openai` (and `/v1beta`) suffixes stripped to the native
+    /// root, `x-goog-api-key` auth, generateContent-only filtering and the
+    /// `nextPageToken` pagination. The credential enters through
+    /// `--api-key-env` (env var set, real `discover()` lane), like every
+    /// mock lane that presents a key.
+    #[test]
+    fn discover_gemini_strips_suffixes_filters_and_paginates() {
+        let page1 = r#"{"models":[
+            {"name":"models/gemini-x","supportedGenerationMethods":["generateContent"],"inputTokenLimit":1000000,"outputTokenLimit":8192,"displayName":"Gemini X"},
+            {"name":"models/embed-thing","supportedGenerationMethods":["embedContent"]}
+        ],"nextPageToken":"tok-1"}"#;
+        let page2 = r#"{"models":[{"name":"models/gemini-y","supportedGenerationMethods":["generateContent"]}]}"#;
+        let (base, log) =
+            spawn_discover_mock(&[("/v1beta/models", vec![(200u16, page1), (200, page2)])]);
+        let base = format!("{base}/openai");
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _key = TempEnv::set("PINVOU_TEST_DISCOVER_GEMINI_KEY", "goog-key");
+        let outcome = discover(
+            &base,
+            Some("PINVOU_TEST_DISCOVER_GEMINI_KEY"),
+            None,
+            Some(DiscoveryProtocol::Gemini),
+            true,
+            OutputMode::Human,
+        )
+        .expect("a completed discovery is a result, not a command failure");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        let listing: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("single-line json");
+        assert_eq!(listing["status"], "listed");
+        let ids: Vec<&str> = listing["models"]
+            .as_array()
+            .expect("models array")
+            .iter()
+            .map(|model| model["id"].as_str().expect("every row carries an id"))
+            .collect();
+        assert_eq!(
+            ids,
+            ["gemini-x", "gemini-y"],
+            "the embed entry is filtered out"
+        );
+        assert_eq!(listing["models"][0]["context_window_tokens"], 1000000);
+        assert_eq!(listing["models"][0]["title"], "Gemini X");
+        assert_eq!(listing["truncated"], false);
+        assert_eq!(log.hits_for("/v1beta/models"), 2);
+        let keys = log.header_values("/v1beta/models", "x-goog-api-key");
+        assert!(
+            keys.len() == 2 && keys.iter().all(|value| value == "goog-key"),
+            "every page presents x-goog-api-key: {keys:?}"
+        );
+        let queries = log.queries_for("/v1beta/models");
+        assert_eq!(queries[0], "pageSize=1000");
+        assert_eq!(queries[1], "pageSize=1000&pageToken=tok-1");
+    }
+
+    /// The ollama chain end to end: `/api/tags` for the downloaded list,
+    /// `/api/ps` for the loaded set + effective context, `/api/show` only
+    /// for the entry the ps table could not answer — and the GGUF training
+    /// window never adopted.
+    #[test]
+    fn discover_ollama_walks_ps_tags_show_chain() {
+        let tags = r#"{"models":[{"name":"llama3:latest"},{"name":"qwen2:7b"}]}"#;
+        let ps = r#"{"models":[{"name":"llama3:latest","context_length":8192}]}"#;
+        // No num_ctx declaration: only the GGUF training cap is present, and
+        // that is deliberately not adopted.
+        let show =
+            r#"{"parameters":"temperature 0.7","model_info":{"qwen2.context_length":32768}}"#;
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            ("/api/tags", vec![(200u16, tags), (200, tags)]),
+            ("/api/ps", vec![(200u16, ps)]),
+            ("/api/show", vec![(200u16, show)]),
+        ]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.server_kind, Some("ollama"));
+        assert!(!listing.truncated);
+        assert_eq!(listing.models.len(), 2);
+        assert_eq!(listing.models[0].id, "llama3:latest");
+        assert_eq!(
+            listing.models[0].context_window_tokens,
+            Some(8192),
+            "the /api/ps effective value"
+        );
+        assert_eq!(listing.models[0].loaded, Some(true));
+        assert_eq!(
+            listing.models[1].context_window_tokens, None,
+            "the /api/show GGUF training cap must NOT fill the window"
+        );
+        assert_eq!(listing.models[1].loaded, Some(false));
+        assert_eq!(
+            log.hits_for("/api/tags"),
+            2,
+            "the candidate probe plus the listing fetch"
+        );
+        assert_eq!(log.hits_for("/api/ps"), 1);
+        assert_eq!(
+            log.hits_for("/api/show"),
+            1,
+            "only the entry without a ps fact is queried"
+        );
+    }
+
+    /// The show-lookup budget: at most the first 50 context-MISSING entries
+    /// get a `/api/show` round trip; more missing entries than the cap flag
+    /// `truncated` (every model still listed).
+    #[test]
+    fn discover_ollama_show_lookups_cap_at_fifty() {
+        // 52 tags, the ps table answers one: 51 missing > 50 → truncated,
+        // 50 show queries issued.
+        let tags_json = serde_json::json!({
+            "models": (0..52).map(|index| serde_json::json!({ "name": format!("m{index:02}") })).collect::<Vec<_>>()
+        })
+        .to_string();
+        // The route table is &'static; the one dynamically built body here
+        // leaks its bytes for the test's lifetime (a 52-entry roster).
+        let tags: &'static str = Box::leak(tags_json.into_boxed_str());
+        let ps = r#"{"models":[{"name":"m00","context_length":4096}]}"#;
+        let show = r#"{"parameters":"num_ctx 2048"}"#;
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            ("/api/tags", vec![(200u16, tags), (200, tags)]),
+            ("/api/ps", vec![(200u16, ps)]),
+            ("/api/show", vec![(200u16, show); 50]),
+        ]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 52, "every downloaded model is listed");
+        assert!(
+            listing.truncated,
+            "51 missing facts over the 50 cap flag truncation"
+        );
+        assert_eq!(log.hits_for("/api/show"), 50, "the budget is 50 lookups");
+        assert_eq!(
+            listing.models[1].context_window_tokens,
+            Some(2048),
+            "the looked-up num_ctx lands endpoint-sourced"
+        );
+        assert_eq!(
+            listing.models[51].context_window_tokens, None,
+            "entries past the budget stay undeclared"
+        );
+    }
+
+    /// LM Studio: the v0 listing is served twice (candidate + ladder) and
+    /// carries loaded states; a v0 answer that stops yielding a usable
+    /// listing between the candidate round and the ladder fetch (the race
+    /// the fallback exists for) falls back to `/v1/models` in the
+    /// OpenAI-compatible shape.
+    #[test]
+    fn discover_lmstudio_uses_v0_and_falls_back_to_v1() {
+        let v0 = r#"{"data":[
+            {"id":"loaded","state":"loaded","loaded_context_length":12918,"max_context_length":131072},
+            {"id":"cold","state":"not-loaded","max_context_length":4096}
+        ]}"#;
+        let (base, log) = spawn_discover_mock(&discover_routes(&[(
+            "/api/v0/models",
+            vec![(200u16, v0), (200, v0)],
+        )]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.server_kind, Some("lmstudio"));
+        assert_eq!(listing.models.len(), 2);
+        assert_eq!(
+            listing.models[0].context_window_tokens,
+            Some(12918),
+            "the served window; the capability cap stays refused"
+        );
+        assert_eq!(listing.models[1].loaded, Some(false));
+        assert_eq!(log.hits_for("/api/v0/models"), 2);
+        // The candidate signature probe fetched /v1/models once (all-miss
+        // 404); the ladder never fell back.
+        assert_eq!(log.hits_for("/v1/models"), 1);
+
+        // The candidate round sees a usable v0 listing (kind = lmstudio),
+        // but the ladder's own v0 fetch comes back EMPTY: the fallback
+        // serves the listing from `/v1/models` (loaded unknown). The queue
+        // order is deterministic because the candidate round completes
+        // before the ladder starts.
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            (
+                "/api/v0/models",
+                vec![
+                    (
+                        200u16,
+                        r#"{"data":[{"id":"warmup","state":"loaded","loaded_context_length":8}]}"#,
+                    ),
+                    (200, r#"{"data":[]}"#),
+                ],
+            ),
+            (
+                "/v1/models",
+                vec![(200u16, r#"{"data":[{"id":"x","max_model_len":4096}]}"#); 2],
+            ),
+        ]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.server_kind, Some("lmstudio"));
+        assert_eq!(listing.models.len(), 1);
+        assert_eq!(listing.models[0].id, "x");
+        assert_eq!(listing.models[0].context_window_tokens, Some(4096));
+        assert_eq!(
+            listing.models[0].loaded, None,
+            "the fallback shape has no state fact"
+        );
+        assert_eq!(
+            log.hits_for("/api/v0/models"),
+            2,
+            "candidate round plus the ladder fetch"
+        );
+        assert_eq!(
+            log.hits_for("/v1/models"),
+            2,
+            "the candidate probe plus the ladder's fallback"
+        );
+    }
+
+    /// The redaction doctrine: transport failures classify from reqwest's
+    /// structured flags, so the error row carries NEITHER the raw error text
+    /// (URL and userinfo included) NOR the api key. The key now enters
+    /// through `--api-key-env`, so the whole lane runs end to end: env var
+    /// set, real `discover()` call, both output modes. Port 1 is refused
+    /// locally, so the test stays hermetic.
+    #[test]
+    fn discover_transport_failure_leaks_neither_url_nor_key() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _key = TempEnv::set("PINVOU_TEST_DISCOVER_LEAK_KEY", "super-secret-key");
+        for (json, output) in [(false, OutputMode::Human), (true, OutputMode::Json)] {
+            let outcome = discover(
+                "http://user:pass@127.0.0.1:1",
+                Some("PINVOU_TEST_DISCOVER_LEAK_KEY"),
+                None,
+                Some(DiscoveryProtocol::OpenAiCompatible),
+                json,
+                output,
+            )
+            .expect("a completed discovery is a result, not a command failure");
+            assert_eq!(outcome.exit_code, ExitCode::Failed);
+            if json {
+                let value: serde_json::Value =
+                    serde_json::from_str(&outcome.stdout).expect("single-line json");
+                assert_eq!(value["status"], "error");
+                assert_eq!(value["transport"], "connect");
+                assert_eq!(value["http_status"], serde_json::Value::Null);
+            }
+            for secret in ["user:pass", "127.0.0.1:1", "super-secret-key"] {
+                assert!(
+                    !outcome.stdout.contains(secret),
+                    "{output:?} output must not carry {secret}: {}",
+                    outcome.stdout
+                );
+            }
+        }
+    }
+
+    /// The env→value step inherits probe-local's contract: a named-but-unset
+    /// or set-but-empty variable fails the command as a host failure
+    /// (exit 1, after the usage gates), the message names the VARIABLE and
+    /// never echoes any value.
+    #[test]
+    fn discover_key_env_var_failures_name_the_variable_not_the_value() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(
+            std::env::var("PINVOU_TEST_DISCOVER_UNSET_KEY").is_err(),
+            "precondition: this test's missing-variable name must start unset"
+        );
+        let missing = discover(
+            "http://127.0.0.1:1",
+            Some("PINVOU_TEST_DISCOVER_UNSET_KEY"),
+            None,
+            Some(DiscoveryProtocol::Anthropic),
+            true,
+            OutputMode::Human,
+        )
+        .expect_err("a named-but-unset key variable fails the command");
+        assert_eq!(missing.exit_code(), ExitCode::Failed);
+        let message = missing.to_string();
+        assert!(
+            message.contains("PINVOU_TEST_DISCOVER_UNSET_KEY") && message.contains("is not set"),
+            "the error names the variable: {message}"
+        );
+        let _empty = TempEnv::set("PINVOU_TEST_DISCOVER_EMPTY_KEY", "   ");
+        let empty = discover(
+            "http://127.0.0.1:1",
+            Some("PINVOU_TEST_DISCOVER_EMPTY_KEY"),
+            None,
+            Some(DiscoveryProtocol::Anthropic),
+            true,
+            OutputMode::Human,
+        )
+        .expect_err("a set-but-empty key variable fails the command");
+        assert_eq!(empty.exit_code(), ExitCode::Failed);
+        let message = empty.to_string();
+        assert!(
+            message.contains("PINVOU_TEST_DISCOVER_EMPTY_KEY")
+                && message.contains("is set but empty"),
+            "the error names the variable: {message}"
+        );
+    }
+
+    /// The rendering contract: the table for a listed run (exit 0), the
+    /// status row + hint for failures (exit 1), and the `--json` payload
+    /// byte-identical in field names, snake_case vocabulary and null shape
+    /// to the GUI's `EndpointModelsListing` serialization.
+    #[test]
+    fn discover_rendering_and_exit_codes_are_pinned() {
+        let listed = EndpointModelsListing {
+            status: ListingStatus::Listed,
+            http_status: None,
+            transport: None,
+            server_kind: Some("ollama"),
+            models: vec![
+                DiscoveredModel {
+                    id: "big-model".to_owned(),
+                    context_window_tokens: Some(131072),
+                    context_from: Some(ModelFactSource::Endpoint),
+                    max_output_tokens: Some(8192),
+                    output_from: Some(ModelFactSource::Endpoint),
+                    loaded: Some(true),
+                    title: None,
+                },
+                DiscoveredModel {
+                    id: "cold|model".to_owned(),
+                    context_window_tokens: None,
+                    context_from: None,
+                    max_output_tokens: None,
+                    output_from: None,
+                    loaded: Some(false),
+                    title: None,
+                },
+            ],
+            truncated: true,
+        };
+        let outcome = render_discovery_outcome(&listed, OutputMode::Human);
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        let human = outcome.stdout;
+        assert!(human.starts_with("ID | CONTEXT | OUTPUT | SOURCE"));
+        assert!(human.contains("big-model | 131.1K | 8.2K | endpoint"));
+        // A hostile id cannot forge extra table columns in human output.
+        assert!(human.contains("cold/model | - | - | endpoint"));
+        assert!(human.contains("note: the listing is truncated"));
+        let outcome = render_discovery_outcome(&listed, OutputMode::Json);
+        let value: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("single-line json");
+        assert_eq!(value["status"], "listed");
+        assert_eq!(value["server_kind"], "ollama");
+        assert_eq!(value["http_status"], serde_json::Value::Null);
+        assert_eq!(value["models"][0]["context_from"], "endpoint");
+        assert_eq!(value["models"][0]["loaded"], true);
+        assert_eq!(
+            value["models"][1]["context_window_tokens"],
+            serde_json::Value::Null
+        );
+        assert_eq!(value["truncated"], true);
+
+        // An empty listed run says so, and stays exit 0.
+        let empty = EndpointModelsListing {
+            models: Vec::new(),
+            truncated: false,
+            server_kind: None,
+            ..listed
+        };
+        let outcome = render_discovery_outcome(&empty, OutputMode::Human);
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        assert!(outcome.stdout.contains("the endpoint returned no models"));
+
+        // Failures keep the structured row but exit 1.
+        let auth = auth_listing(401);
+        let outcome = render_discovery_outcome(&auth, OutputMode::Human);
+        assert_eq!(outcome.exit_code, ExitCode::Failed);
+        assert!(outcome.stdout.contains("status: auth_required"));
+        assert!(outcome.stdout.contains("http_status: 401"));
+        assert!(outcome.stdout.contains("--api-key-env V"));
+        let transport_error = error_listing(None, Some("timeout"));
+        let outcome = render_discovery_outcome(&transport_error, OutputMode::Human);
+        assert_eq!(outcome.exit_code, ExitCode::Failed);
+        assert!(outcome.stdout.contains("status: error"));
+        assert!(outcome.stdout.contains("transport: timeout"));
+        // The failure row's JSON shape matches the GUI's serialization.
+        let value: serde_json::Value =
+            serde_json::from_str(&render_discovery_outcome(&auth, OutputMode::Json).stdout)
+                .expect("single-line json");
+        assert_eq!(value["status"], "auth_required");
+        assert_eq!(value["models"], serde_json::json!([]));
+        assert_eq!(value["truncated"], false);
+    }
+
+    /// The `--json` flag overrides the global human mode for one invocation.
+    #[test]
+    fn discover_json_flag_forces_the_json_payload() {
+        let outcome = discover(
+            "http://user:pass@127.0.0.1:1",
+            None,
+            None,
+            None,
+            true,
+            OutputMode::Human,
+        )
+        .expect("a completed discovery is a result, not a command failure");
+        let value: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("the --json payload parses");
+        assert_eq!(value["status"], "error");
     }
 
     // -------------------------------------------------------------------

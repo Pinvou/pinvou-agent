@@ -1154,3 +1154,27 @@ Object.assign(dictZh.uiChat, {
   bgTasks: '后台任务',
   bgTasksRunning: n => `${n} 个后台任务运行中`,
 });
+
+// 端点模型自动发现(规格 §2.6/§2.9):「获取模型列表」按钮与候选面板、
+// maxOutput 字段、测试连接自动填入的一次性提示;ACP 线复用键进 uiAcpProviders。
+Object.assign(dictZh.uiSettingsDetail, {
+  fetchModelList:'获取模型列表', fetchingModelList:'正在获取模型列表…',
+  modelListTitle:'端点模型列表', modelListFilterPlaceholder:'筛选模型 ID…',
+  addModelRow:'添加', addAllModels:'全部添加',
+  addAllConfirm:n=>`将添加 ${n} 个模型；与已保存模型重复（相同模型 ID 和服务地址）的会自动跳过。继续？`,
+  addAllTruncated:n=>`模型较多，仅添加前 ${n} 个。`,
+  addedCount:n=>`已添加 ${n} 个模型`,
+  noModelsFound:'端点未返回模型',
+  authRequiredHint:'端点要求有效凭据（401/403），请填写 API Key 后重试',
+  unsupportedHint:'该端点不支持模型列表查询',
+  modelMaxOutput:'最大输出', modelMaxOutputPlaceholder:'如 32768',
+  modelMaxOutputHint:'留空则按上下文窗口档位自动声明；超出进程预算时取更小值。',
+  factSourceEndpoint:'端点', factSourceCatalog:'目录',
+  filledFromEndpoint:'已从端点探测填入',
+  modelAlreadySaved:'已保存',
+  fetchUnavailable:'当前版本暂不支持获取模型列表',
+});
+Object.assign(dictZh.uiAcpProviders, {
+  fetchModels:'获取模型列表', fetchingModels:'正在获取模型列表…', acpNoModelsFound:'端点未返回模型',
+  fetchUnavailable:'当前版本暂不支持获取模型列表',
+});

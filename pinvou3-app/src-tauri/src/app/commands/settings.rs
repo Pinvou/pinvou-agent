@@ -622,6 +622,18 @@ pub struct ModelConnectionTestResult {
     pub message: String,
     pub detail: Option<String>,
     pub http_status: Option<u16>,
+    /// 端点在 /models 列表里为命中条目自报的上下文/输出长度(§2.4):仅在
+    /// 配置模型自己的条目命中时填充,来源恒为 `endpoint`(本路径不做目录
+    /// 补全)。未命中/解析失败时四字段全部缺席(skip_serializing_if 保持
+    /// 既有 wire 形状)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_from: Option<crate::core::endpoint_discovery::ModelFactSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_from: Option<crate::core::endpoint_discovery::ModelFactSource>,
 }
 
 fn model_connection_result(
@@ -637,7 +649,37 @@ fn model_connection_result(
         message: message.to_string(),
         detail,
         http_status,
+        context_window_tokens: None,
+        context_from: None,
+        max_output_tokens: None,
+        output_from: None,
     }
+}
+
+/// 命中条目的端点自报长度对:context/output 成对携带来源(本路径恒
+/// `Endpoint`),故只需携带值。
+struct MatchedModelFacts {
+    context_window_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
+}
+
+/// 把命中事实接到既有结果上(其他字段一律不动——错误分类与既有行为
+/// 完全不变,成功时只是多带了长度事实)。
+fn attach_connection_model_facts(
+    mut result: ModelConnectionTestResult,
+    facts: Option<MatchedModelFacts>,
+) -> ModelConnectionTestResult {
+    if let Some(facts) = facts {
+        result.context_window_tokens = facts.context_window_tokens;
+        result.context_from = facts
+            .context_window_tokens
+            .map(|_| crate::core::endpoint_discovery::ModelFactSource::Endpoint);
+        result.max_output_tokens = facts.max_output_tokens;
+        result.output_from = facts
+            .max_output_tokens
+            .map(|_| crate::core::endpoint_discovery::ModelFactSource::Endpoint);
+    }
+    result
 }
 
 fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionTestResult {
@@ -699,6 +741,51 @@ pub async fn test_model_connection(
     Ok(probe_model_connection(&base_url, &api_key, model_id.as_deref()).await)
 }
 
+/// 端点模型自动发现(冻结契约 §2.3):用户点击型薄壳——只做协议解析与
+/// key 归一,探测阶梯/错误分类/目录补全全在
+/// [`crate::core::endpoint_discovery::probe_endpoint_models`]。JS 侧参数是
+/// camelCase(`{baseUrl, apiKey, preset, wire}`),Tauri v2 自动映射到这里的
+/// snake_case 形参,不要改名。
+#[tauri::command]
+pub(crate) async fn probe_endpoint_models(
+    base_url: String,
+    api_key: Option<String>,
+    preset: Option<String>,
+    wire: Option<String>,
+) -> Result<crate::core::endpoint_discovery::EndpointModelsListing, String> {
+    if base_url.trim().is_empty() {
+        return Err("empty_base_url".to_string());
+    }
+    // preset 优先(serde snake_case 反序列化即解析器),失败报稳定小写串;
+    // preset 缺省时 wire 兜底,都缺省(或 wire 空)→ OpenAI 兼容。
+    let protocol = match preset.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(preset) => {
+            let parsed: crate::platform::prefs::ModelPreset =
+                serde_json::from_value(serde_json::Value::String(preset.to_string()))
+                    .map_err(|_| "unknown_preset".to_string())?;
+            crate::core::endpoint_discovery::protocol_for_preset(parsed)
+        }
+        None => wire
+            .as_deref()
+            .map(crate::core::endpoint_discovery::protocol_for_wire)
+            .unwrap_or(crate::core::endpoint_discovery::DiscoveryProtocol::OpenAiCompatible),
+    };
+    // None/空白 key 统一落 None:core 会照常 keyless 发请求(keyless 端点
+    // 合法;远端 401/403 由 core 归类 AuthRequired)。本命令不读 keyring——
+    // 表单 key 是唯一 key 来源,保存凭据属「已保存模型」的生命周期。
+    let key = api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string);
+    Ok(crate::core::endpoint_discovery::probe_endpoint_models(
+        base_url.trim(),
+        key.as_deref(),
+        protocol,
+    )
+    .await)
+}
+
 /// 连接探测核心:GET models probe URL 验证服务可达与凭据可用。
 /// 复用方:设置页「测试连接」按钮。
 pub async fn probe_model_connection(
@@ -736,6 +823,9 @@ pub async fn probe_model_connection(
     };
     // Anthropic 官方端点用 x-api-key + anthropic-version,不接受 Bearer。
     let is_anthropic = crate::core::model_endpoint::is_anthropic_api_url(&parsed_url);
+    // 成功 body 的列表形态用同一份已解析 URL 判定(anthropic 官方主机 /
+    // gemini 原生路径),不再二次解析。
+    let listing_shape = models_listing_shape(&parsed_url);
     let mut req = client.get(parsed_url);
     let key = match resolve_probe_key(api_key, model_id) {
         Ok(Some(key)) => key,
@@ -760,9 +850,153 @@ pub async fn probe_model_connection(
     let req =
         crate::core::model_endpoint::with_opencode_session_header(req, base_url, "connection-test");
     match req.send().await {
-        Ok(resp) => model_connection_http_result(resp.status()),
+        Ok(resp) => {
+            // 既有行为(状态阶梯、错误分类)原样保留;成功时额外做一次限长
+            // body 读取,把命中条目的自报长度接进结果(§2.4)。
+            let result = model_connection_http_result(resp.status());
+            if !result.ok {
+                return result;
+            }
+            let configured = configured_model_name(model_id);
+            let facts = match read_models_body_bounded(resp).await {
+                Some(body) => connection_model_facts(&body, listing_shape, configured.as_deref()),
+                None => None,
+            };
+            attach_connection_model_facts(result, facts)
+        }
         Err(e) => model_connection_error_result(&e),
     }
+}
+
+/// 配置模型的 wire 名(事实匹配目标):只按显式 `model_id` 解析已保存模型
+/// 的 `model` 字段。凭据阶梯的激活模型回退**不得**延伸到这里——
+/// `model_id = None` 是新建表单,借用激活模型的名字会把别人的窗口填进
+/// 表单(monitor `parse_models_response`「窗口绝不跨条目借用」同一纪律)。
+fn configured_model_name(model_id: Option<&str>) -> Option<String> {
+    let id = model_id?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    UserPrefs::load()
+        .model_by_id(id)
+        .map(|model| model.model.clone())
+}
+
+/// 成功响应的列表形态判定(§2.4):与请求装配同一信号——anthropic 官方
+/// 主机走原生 `data` 数组;探测 URL 落在 gemini 原生 `/v1beta/models` 时走
+/// `models` 数组;其余按 OpenAI 兼容形态。请求鉴权分支用的
+/// `is_anthropic_api_url` 与这里是同一个判定函数,不引入第二套形态信号。
+fn models_listing_shape(url: &reqwest::Url) -> ModelsListingShape {
+    if crate::core::model_endpoint::is_anthropic_api_url(url) {
+        ModelsListingShape::Anthropic
+    } else if url.path().ends_with("/v1beta/models") {
+        ModelsListingShape::Gemini
+    } else {
+        ModelsListingShape::OpenAi
+    }
+}
+
+enum ModelsListingShape {
+    OpenAi,
+    Anthropic,
+    Gemini,
+}
+
+/// 成功 body 的限长读取(与 `error_for_status_with_body` 的限长 chunk 循环
+/// 同款):到上限或流结束即停,响应其余部分随 drop 丢弃、绝不排干。模型
+/// 列表(2000 条量级)上限 4 MiB 足够;被截断的 body JSON 解析失败 →
+/// 无事实,探测结果不受影响。
+const CONNECTION_MODELS_BODY_CAP_BYTES: usize = 4 * 1024 * 1024;
+
+async fn read_models_body_bounded(mut resp: reqwest::Response) -> Option<String> {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < CONNECTION_MODELS_BODY_CAP_BYTES {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let take = chunk
+                    .len()
+                    .min(CONNECTION_MODELS_BODY_CAP_BYTES - buf.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    if buf.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// 连接测试的事实解析(§2.4,纯函数):按形态取条目列表,再按 monitor
+/// `parse_models_response` 的匹配语义找配置模型自己的条目——精确 id →
+/// ASCII 大小写不敏感 → ollama `:latest` 规范形;未命中不填。OpenAI 形态
+/// 直接复用 [`crate::core::model_endpoint::parse_models_response_list`]
+/// (窗口 + 三形态输出上限的既有口径),anthropic / gemini 原生形态用同一
+/// `parse_positive_u32` 非正值拒收口径解析各自字段名。
+fn connection_model_facts(
+    body: &str,
+    shape: ModelsListingShape,
+    configured: Option<&str>,
+) -> Option<MatchedModelFacts> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let configured = configured.map(str::trim).filter(|name| !name.is_empty())?;
+    let entries: Vec<(String, Option<u32>, Option<u32>)> = match shape {
+        ModelsListingShape::OpenAi => {
+            crate::core::model_endpoint::parse_models_response_list(value)?
+                .into_iter()
+                .map(|entry| (entry.id, entry.max_model_len, entry.max_output_tokens))
+                .collect()
+        }
+        ModelsListingShape::Anthropic => value
+            .get("data")?
+            .as_array()?
+            .iter()
+            .filter_map(|item| {
+                let id = item.get("id").and_then(serde_json::Value::as_str)?.trim();
+                (!id.is_empty()).then(|| {
+                    (
+                        id.to_string(),
+                        item.get("max_input_tokens")
+                            .and_then(crate::core::model_endpoint::parse_positive_u32),
+                        item.get("max_tokens")
+                            .and_then(crate::core::model_endpoint::parse_positive_u32),
+                    )
+                })
+            })
+            .collect(),
+        ModelsListingShape::Gemini => value
+            .get("models")?
+            .as_array()?
+            .iter()
+            .filter_map(|item| {
+                let name = item.get("name").and_then(serde_json::Value::as_str)?.trim();
+                let id = name.strip_prefix("models/").unwrap_or(name);
+                (!id.is_empty()).then(|| {
+                    (
+                        id.to_string(),
+                        item.get("inputTokenLimit")
+                            .and_then(crate::core::model_endpoint::parse_positive_u32),
+                        item.get("outputTokenLimit")
+                            .and_then(crate::core::model_endpoint::parse_positive_u32),
+                    )
+                })
+            })
+            .collect(),
+    };
+    let canonical = crate::core::model_endpoint::ollama_canonical_name(configured);
+    let matched = entries
+        .iter()
+        .find(|(id, _, _)| id == configured)
+        .or_else(|| {
+            entries
+                .iter()
+                .find(|(id, _, _)| id.eq_ignore_ascii_case(configured))
+        })
+        .or_else(|| entries.iter().find(|(id, _, _)| id == &canonical))?;
+    Some(MatchedModelFacts {
+        context_window_tokens: matched.1,
+        max_output_tokens: matched.2,
+    })
 }
 
 /// 测试图片输入能力的结果(设计 §7.3)。`status` 稳定三值,前端据此分态展示:
@@ -2192,5 +2426,304 @@ mod tests {
             accepted.is_ok(),
             "web-authorized settings fields must keep deserializing"
         );
+    }
+
+    // ---- §2.4: test_model_connection 的成功 body 事实解析 ----
+
+    /// 规格 §2.10(settings.rs 项):命中条目返回 facts(context + output,
+    /// 来源 endpoint);ASCII 大小写不敏感与 ollama `:latest` 规范形两折
+    /// 匹配与 monitor `parse_models_response` 语义对齐。
+    #[test]
+    fn connection_facts_match_openai_entry_folds() {
+        let body = r#"{"data":[
+            {"id":"Qwen3-32B","max_model_len":40960,"max_completion_tokens":8192},
+            {"id":"ollama-served"}
+        ]}"#;
+        // 精确 id 命中。
+        let facts = connection_model_facts(body, ModelsListingShape::OpenAi, Some("qwen3-32b"));
+        let facts = facts.expect("case-insensitive fold must hit the entry");
+        assert_eq!(facts.context_window_tokens, Some(40_960));
+        assert_eq!(facts.max_output_tokens, Some(8_192));
+        // ollama 裸名 → `name:latest` 规范形命中(条目无长度字段 → 双 None)。
+        let facts = connection_model_facts(body, ModelsListingShape::OpenAi, Some("ollama-served"))
+            .expect("ollama canonical fold must hit the entry");
+        assert_eq!(facts.context_window_tokens, None);
+        assert_eq!(facts.max_output_tokens, None);
+    }
+
+    /// 未命中/空名/坏 body → 四字段不填(None):窗口绝不跨条目借用。
+    #[test]
+    fn connection_facts_stay_absent_on_miss_or_unusable_input() {
+        let body = r#"{"data":[{"id":"qwen3-32b","max_model_len":40960}]}"#;
+        // 配置名不在列表里:不得借用首条目的窗口。
+        assert!(connection_model_facts(body, ModelsListingShape::OpenAi, Some("gone")).is_none());
+        // 空/纯空白配置名:直接不匹配。
+        assert!(connection_model_facts(body, ModelsListingShape::OpenAi, Some("   ")).is_none());
+        // 非 JSON body(Cloudflare HTML 盾页)与缺 data 键的形状:均无事实。
+        assert!(
+            connection_model_facts(
+                "<html>no</html>",
+                ModelsListingShape::OpenAi,
+                Some("qwen3-32b")
+            )
+            .is_none()
+        );
+        assert!(
+            connection_model_facts("[]", ModelsListingShape::OpenAi, Some("qwen3-32b")).is_none()
+        );
+        // configured_model_name:未知 id 与 None 都不解析出名字。
+        assert_eq!(configured_model_name(None), None);
+    }
+
+    /// anthropic / gemini 原生形态命中:max_input_tokens/max_tokens 与
+    /// inputTokenLimit/outputTokenLimit(含 models/ 前缀剥离)。
+    #[test]
+    fn connection_facts_parse_anthropic_and_gemini_native_shapes() {
+        let anthropic = r#"{"data":[
+            {"id":"claude-x","display_name":"Claude X",
+             "max_input_tokens":200000,"max_tokens":8192}
+        ]}"#;
+        let facts =
+            connection_model_facts(anthropic, ModelsListingShape::Anthropic, Some("claude-x"))
+                .expect("anthropic shape must hit");
+        assert_eq!(facts.context_window_tokens, Some(200_000));
+        assert_eq!(facts.max_output_tokens, Some(8_192));
+
+        let gemini = r#"{"models":[
+            {"name":"models/gemini-pro","displayName":"Gemini Pro",
+             "inputTokenLimit":1000000,"outputTokenLimit":8192}
+        ]}"#;
+        let facts = connection_model_facts(gemini, ModelsListingShape::Gemini, Some("gemini-pro"))
+            .expect("gemini shape must hit");
+        assert_eq!(facts.context_window_tokens, Some(1_000_000));
+        assert_eq!(facts.max_output_tokens, Some(8_192));
+    }
+
+    /// 端到端(mock):保存模型的 wire 名命中 mock /models 列表 → 结果携带
+    /// 四字段(来源 endpoint);未命中 → 四字段缺席且序列化串不带这些键
+    /// (skip_serializing_if 保持既有 wire 形状)。
+    #[tokio::test]
+    async fn model_connection_fills_endpoint_facts_from_mock_listing() {
+        use crate::core::model_endpoint::models_mock;
+
+        let mock = models_mock::spawn(&[(
+            "/models",
+            200,
+            r#"{"data":[
+                {"id":"qwen3-32b","max_model_len":40960,"max_output_tokens":8192},
+                {"id":"unrelated"}
+            ]}"#
+            .into(),
+        )]);
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-conn-facts-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: holding the crate-level ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        UserPrefs::update_transaction(|prefs| {
+            prefs.migrate_models();
+            prefs.upsert_model(SavedModel {
+                id: "m-list".to_string(),
+                name: "listed".to_string(),
+                alias: None,
+                preset: Default::default(),
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "qwen3-32b".to_string(),
+                base_url: mock.base_url.clone(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: Default::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: Default::default(),
+                has_secret: false,
+                credential_action: None,
+            });
+            prefs.upsert_model(SavedModel {
+                id: "m-miss".to_string(),
+                name: "missing".to_string(),
+                alias: None,
+                preset: Default::default(),
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "not-in-listing".to_string(),
+                base_url: mock.base_url.clone(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: Default::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: Default::default(),
+                has_secret: false,
+                credential_action: None,
+            });
+            Ok(())
+        })
+        .expect("seed models should save");
+
+        let hit = probe_model_connection(&mock.base_url, "", Some("m-list")).await;
+        assert!(hit.ok, "hit case must stay a successful connection");
+        assert_eq!(hit.context_window_tokens, Some(40_960));
+        assert_eq!(
+            hit.context_from,
+            Some(crate::core::endpoint_discovery::ModelFactSource::Endpoint)
+        );
+        assert_eq!(hit.max_output_tokens, Some(8_192));
+        assert_eq!(
+            hit.output_from,
+            Some(crate::core::endpoint_discovery::ModelFactSource::Endpoint)
+        );
+        let hit_json = serde_json::to_string(&hit).expect("result serializes");
+        assert!(hit_json.contains("context_window_tokens"));
+
+        // wire 名不在列表 → 四字段全部缺席;序列化串不带这些键。
+        let miss = probe_model_connection(&mock.base_url, "", Some("m-miss")).await;
+        assert!(miss.ok);
+        assert_eq!(miss.context_window_tokens, None);
+        assert_eq!(miss.context_from, None);
+        assert_eq!(miss.max_output_tokens, None);
+        assert_eq!(miss.output_from, None);
+        let miss_json = serde_json::to_string(&miss).expect("result serializes");
+        assert!(
+            !miss_json.contains("context_window_tokens"),
+            "skip_serializing_if must keep the miss wire shape unchanged: {miss_json}"
+        );
+
+        // model_id None(新建表单)→ 无名字 → 无事实(不借激活模型)。
+        let unnamed = probe_model_connection(&mock.base_url, "", None).await;
+        assert!(unnamed.ok);
+        assert_eq!(unnamed.context_window_tokens, None);
+        assert_eq!(unnamed.context_from, None);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            // SAFETY: holding ENV_LOCK; restore-side removal serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    // ---- §2.3: probe_endpoint_models 命令薄壳 ----
+
+    /// 空 base_url 与未知 preset 的稳定错误串(直接调命令函数断言)。
+    #[test]
+    fn probe_endpoint_models_command_rejects_empty_url_and_unknown_preset() {
+        let empty = tauri::async_runtime::block_on(probe_endpoint_models(
+            "   ".to_string(),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(empty.unwrap_err(), "empty_base_url");
+        let unknown = tauri::async_runtime::block_on(probe_endpoint_models(
+            "https://example.invalid/v1".to_string(),
+            None,
+            Some("no_such_preset".to_string()),
+            None,
+        ));
+        assert_eq!(unknown.unwrap_err(), "unknown_preset");
+    }
+
+    /// preset/wire/缺省的协议解析(preset 优先;wire 兜底;都缺省 → OpenAI
+    /// 兼容),以及空白 key 的 keyless 传递。mock 环回地址走 OpenAI 兼容
+    /// 阶梯的本地短路(kind 判别 generic),anthropic 协议直打 /v1/models。
+    #[tokio::test]
+    async fn probe_endpoint_models_command_resolves_preset_wire_and_defaults() {
+        use crate::core::endpoint_discovery::ListingStatus;
+        use crate::core::model_endpoint::models_mock;
+
+        // preset=anthropic:打 anthropic 原生 /v1/models;wire 只给 openai
+        // 时会打 /models(mock 无该路由 → 404 → Unsupported),故本断言同时
+        // 钉死 preset 优先于 wire。
+        let mock = models_mock::spawn(&[(
+            "/v1/models",
+            200,
+            r#"{"data":[
+                {"id":"claude-a","display_name":"Claude A",
+                 "max_input_tokens":200000,"max_tokens":8192}
+            ]}"#
+            .into(),
+        )]);
+        let listing = probe_endpoint_models(
+            mock.base_url.clone(),
+            Some("sk-ant-cmd".to_string()),
+            Some("anthropic".to_string()),
+            Some("openai".to_string()),
+        )
+        .await
+        .expect("anthropic preset must resolve");
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(listing.models.len(), 1);
+        assert_eq!(listing.models[0].id, "claude-a");
+        assert_eq!(listing.models[0].context_window_tokens, Some(200_000));
+        assert_eq!(listing.models[0].max_output_tokens, Some(8_192));
+        assert_eq!(
+            mock.header_for("/v1/models", "x-api-key").as_deref(),
+            Some("sk-ant-cmd")
+        );
+
+        // 仅 wire="anthropic":同样走原生列表(preset 缺省时 wire 兜底)。
+        let mock = models_mock::spawn(&[(
+            "/v1/models",
+            200,
+            r#"{"data":[{"id":"claude-b","max_input_tokens":100000}]}"#.into(),
+        )]);
+        let listing = probe_endpoint_models(
+            mock.base_url.clone(),
+            None,
+            None,
+            Some("anthropic".to_string()),
+        )
+        .await
+        .expect("anthropic wire must resolve");
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 1);
+
+        // 都缺省 → OpenAI 兼容 /models;空白 key 归一为 keyless(不带
+        // Authorization 头),带正式 key 时走 Bearer。
+        let mock = models_mock::spawn(&[(
+            "/models",
+            200,
+            r#"{"data":[{"id":"qwen3-32b","max_model_len":40960}]}"#.into(),
+        )]);
+        let listing = probe_endpoint_models(mock.base_url.clone(), None, None, None)
+            .await
+            .expect("default protocol must resolve");
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 1);
+        assert_eq!(listing.models[0].id, "qwen3-32b");
+        assert_eq!(mock.header_for("/models", "authorization"), None);
+
+        let mock = models_mock::spawn(&[("/models", 200, r#"{"data":[{"id":"kimi-k3"}]}"#.into())]);
+        let listing =
+            probe_endpoint_models(mock.base_url.clone(), Some("  ".to_string()), None, None)
+                .await
+                .expect("blank key must normalize to keyless");
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(mock.header_for("/models", "authorization"), None);
+
+        // preset 显式 openai 系("openai_compatible")与 wire="openai" 都落
+        // 同一兼容阶梯(serde snake_case 解析口径)。
+        let mock = models_mock::spawn(&[("/models", 200, r#"{"data":[{"id":"glm-5.3"}]}"#.into())]);
+        for preset in ["openai_compatible", "local_vllm"] {
+            let listing =
+                probe_endpoint_models(mock.base_url.clone(), None, Some(preset.to_string()), None)
+                    .await
+                    .expect("openai-family preset must resolve");
+            assert_eq!(listing.status, ListingStatus::Listed, "preset {preset}");
+            assert_eq!(listing.models.len(), 1);
+        }
     }
 }

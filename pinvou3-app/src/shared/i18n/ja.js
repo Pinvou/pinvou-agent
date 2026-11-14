@@ -1263,3 +1263,28 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '本地服务默认�
 // restored: inline catalog descriptions from jaBase (referenced by the model catalog)
 Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '高性能モデル', '快速响应': '高速応答', '代码场景': 'コーディング向け', '高性价比': 'コストパフォーマンス重視', '通用能力': '汎用', '兼容保留': '互換性オプション', '轻量模型': '軽量モデル'
 });
+
+// エンドポイントモデル自動検出(仕様 §2.6/§2.9):「モデル一覧を取得」ボタンと
+// 候補パネル、最大出力フィールド、テスト接続時の自動入力通知。ACP 側のキーは
+// uiAcpProviders クラスタに追加。
+Object.assign(dictJa.uiSettingsDetail, {
+  fetchModelList:'モデル一覧を取得', fetchingModelList:'モデル一覧を取得中…',
+  modelListTitle:'エンドポイントのモデル一覧', modelListFilterPlaceholder:'モデル ID を絞り込み…',
+  addModelRow:'追加', addAllModels:'すべて追加',
+  addAllConfirm:n=>`${n} 件のモデルを追加します。同じモデル ID とアドレスで保存済みのものは自動的にスキップされます。続行しますか？`,
+  addAllTruncated:n=>`件数が多いため、先頭の ${n} 件のみ追加します。`,
+  addedCount:n=>`${n} 件のモデルを追加しました`,
+  noModelsFound:'エンドポイントはモデルを返しませんでした',
+  authRequiredHint:'エンドポイントは有効な認証情報を要求しています（401/403）。API Key を入力して再試行してください',
+  unsupportedHint:'このエンドポイントはモデル一覧に対応していません',
+  modelMaxOutput:'最大出力', modelMaxOutputPlaceholder:'例: 32768',
+  modelMaxOutputHint:'空欄ならコンテキストの段位に応じて自動で宣言されます。プロセスの予算を超える場合は小さい値が採用されます。',
+  factSourceEndpoint:'エンドポイント', factSourceCatalog:'カタログ',
+  filledFromEndpoint:'エンドポイントの検出結果から入力しました',
+  modelAlreadySaved:'保存済み',
+  fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
+});
+Object.assign(dictJa.uiAcpProviders, {
+  fetchModels:'モデル一覧を取得', fetchingModels:'モデル一覧を取得中…', acpNoModelsFound:'エンドポイントはモデルを返しませんでした',
+  fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
+});

@@ -53,8 +53,11 @@ pub struct OpenAiModelsProbe {
 /// u64 JSON number → positive u32. Self-reported values outside the u32
 /// range are always treated as undeclared: `as u32` would truncate 2^32 to
 /// 0 and 2^32+5 to 5, letting downstream code mistake a corrupted value for
-/// a real limit; non-positive values are equally invalid.
-fn parse_positive_u32(v: &serde_json::Value) -> Option<u32> {
+/// a real limit; non-positive values are equally invalid. Widened to
+/// `pub(crate)` for `core::endpoint_discovery`, which parses further
+/// self-reported shapes (anthropic / gemini / 归一化的兼容字段名) but must
+/// keep the same "非正值/越界值 = 未声明" 口径.
+pub(crate) fn parse_positive_u32(v: &serde_json::Value) -> Option<u32> {
     u32::try_from(v.as_u64()?).ok().filter(|n| *n > 0)
 }
 
@@ -88,8 +91,10 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
 /// shape by priority could adopt a cap larger than another cap the same
 /// entry reported, breaking the only-tighten contract. Local engines
 /// usually omit the field → None, and callers must not fabricate a
-/// limit from it.
-fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
+/// limit from it. Widened to `pub(crate)` for `core::endpoint_discovery`:
+/// the discovery listing reuses the same three shapes and the same
+/// tightest-wins rule instead of growing a second output-cap parser.
+pub(crate) fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
     let direct = ["max_output_tokens", "max_completion_tokens"]
         .into_iter()
         .filter_map(|key| item.get(key).and_then(parse_positive_u32));
@@ -300,8 +305,13 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
 /// `--api-key` return 401 on `/v1/models`, so probing without credentials
 /// misclassifies the endpoint as Generic). `None`/blank sends no auth header
 /// (Ollama/LM Studio are auth-free by default and unaffected; services
-/// without auth ignore the Bearer header).
-fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::RequestBuilder {
+/// without auth ignore the Bearer header). `pub(crate)` so the discovery
+/// ladder (`core::endpoint_discovery`) reuses the same blank-key-skips
+/// semantics instead of re-rolling header assembly.
+pub(crate) fn apply_bearer(
+    req: reqwest::RequestBuilder,
+    bearer: Option<&str>,
+) -> reqwest::RequestBuilder {
     match bearer.map(str::trim).filter(|key| !key.is_empty()) {
         Some(key) => req.bearer_auth(key),
         None => req,
@@ -1814,6 +1824,7 @@ pub(crate) mod models_mock {
         pub base_url: String,
         hits: Arc<Mutex<HashMap<String, usize>>>,
         auth: Arc<Mutex<HashMap<String, String>>>,
+        headers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>>,
     }
 
     impl ModelsMock {
@@ -1835,25 +1846,64 @@ pub(crate) mod models_mock {
                 .get(path)
                 .cloned()
         }
+
+        /// 最后一个命中该路径的请求所携带的任意请求头(名字按小写比较;
+        /// None = 未出现)。anthropic 的 `x-api-key` + `anthropic-version` 与
+        /// gemini 的 `x-goog-api-key` 不走 Authorization,发现阶梯的头断言
+        /// 需要这里的通用记录。
+        pub(crate) fn header_for(&self, path: &str, name: &str) -> Option<String> {
+            self.headers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)?
+                .iter()
+                .rev()
+                .find(|(header_name, _)| header_name == name)
+                .map(|(_, value)| value.clone())
+        }
     }
 
     pub(crate) fn spawn(routes: &[(&str, u16, String)]) -> ModelsMock {
+        serve(
+            routes
+                .iter()
+                .map(|(path, status, body)| ((*path).to_string(), (*status, vec![body.clone()])))
+                .collect(),
+        )
+    }
+
+    /// 顺序响应体变体:同一路径的第 n 次命中返回第 n 个响应体(队列取空后
+    /// 重复最后一个),供翻页阶梯测试构造"第一页 has_more、第二页收尾"的
+    /// 真实两页序列(静态路由做不到——同一响应体会让客户端读到永远
+    /// has_more)。
+    pub(crate) fn spawn_seq(routes: &[(&str, u16, Vec<String>)]) -> ModelsMock {
+        serve(
+            routes
+                .iter()
+                .map(|(path, status, bodies)| ((*path).to_string(), (*status, bodies.clone())))
+                .collect(),
+        )
+    }
+
+    fn serve(routes: HashMap<String, (u16, Vec<String>)>) -> ModelsMock {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
         let addr = listener.local_addr().expect("mock listener addr");
-        let routes: Vec<(String, u16, String)> = routes
-            .iter()
-            .map(|(path, status, body)| ((*path).to_string(), *status, body.clone()))
-            .collect();
+        let mut routes = routes;
         let hits: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         let hits_thread = hits.clone();
         let auth: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let auth_thread = auth.clone();
+        let headers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let headers_thread = headers.clone();
         std::thread::spawn(move || {
-            // Serve at most 32 connections: the core tests each send 1-2
+            // Serve at most 160 connections: the core tests each send 1-2
             // requests and the finalize wiring tests also go through the kind
             // probe (7 parallel candidates), so leave headroom; this also
-            // bounds thread leaks.
-            for stream in listener.incoming().take(32) {
+            // bounds thread leaks. The discovery lane additionally exercises
+            // the Ollama per-model /api/show ladder (up to 50 sequential
+            // POSTs per listing), which is why the cap is not the old 32.
+            for stream in listener.incoming().take(160) {
                 let Ok(mut stream) = stream else { continue };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 1024];
@@ -1883,28 +1933,38 @@ pub(crate) mod models_mock {
                     .unwrap_or_else(|p| p.into_inner())
                     .entry(path.clone())
                     .or_insert(0) += 1;
-                let authorization = request
-                    .lines()
-                    .skip(1)
-                    .take_while(|line| !line.is_empty())
-                    .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
-                    .map(|line| {
-                        line.split_once(':')
-                            .unwrap_or((":", ""))
-                            .1
-                            .trim()
-                            .to_string()
-                    });
-                if let Some(value) = authorization {
+                let mut recorded: Vec<(String, String)> = Vec::new();
+                for line in request.lines().skip(1) {
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        recorded.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+                    }
+                }
+                if let Some((_, value)) = recorded.iter().find(|(name, _)| name == "authorization")
+                {
                     auth_thread
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .insert(path.clone(), value);
+                        .insert(path.clone(), value.clone());
                 }
-                let matched = routes.iter().find(|(route, _, _)| path == *route);
-                let (status, body) = matched
-                    .map(|(_, status, body)| (*status, body.clone()))
-                    .unwrap_or((404, "{}".to_string()));
+                headers_thread
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(path.clone(), recorded);
+                let (status, body) = match routes.get_mut(&path) {
+                    // 顺序队列:弹出下一个响应体;只剩最后一个时重复它。
+                    Some((status, bodies)) if !bodies.is_empty() => {
+                        let body = if bodies.len() > 1 {
+                            bodies.remove(0)
+                        } else {
+                            bodies[0].clone()
+                        };
+                        (*status, body)
+                    }
+                    _ => (404, "{}".to_string()),
+                };
                 let reason = match status {
                     200 => "OK",
                     401 => "Unauthorized",
@@ -1922,6 +1982,7 @@ pub(crate) mod models_mock {
             base_url: format!("http://{addr}"),
             hits,
             auth,
+            headers,
         }
     }
 }

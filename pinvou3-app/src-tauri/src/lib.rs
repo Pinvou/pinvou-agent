@@ -1745,6 +1745,7 @@ pub fn run() {
             commands::codex::open_code_reader,
             commands::codex::take_code_reader_pending,
             commands::settings::test_model_connection,
+            commands::settings::probe_endpoint_models,
             commands::settings::test_image_input_capability,
             commands::voice::transcribe_voice_audio,
             commands::voice::postprocess_voice_text,

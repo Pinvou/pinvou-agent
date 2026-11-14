@@ -200,7 +200,10 @@ const EXPECTED_SURFACE = {
   // window.PinvouBridgeMessages classic global and their parameters, so no
   // cluster literal gains a dep; userMessageDisplayText calls them as
   // base-local declarations.
-  sharedFnCount: 315,
+  // probeEndpointModels (endpoint model discovery) is a self-contained
+  // invoke forwarder: it consumes only the existing shared invoke dep and
+  // rides the existing web/tauriSettings literals, so only the count moves.
+  sharedFnCount: 316,
 };
 
 assert.equal(

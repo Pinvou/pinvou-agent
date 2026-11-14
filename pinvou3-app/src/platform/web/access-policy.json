@@ -81,6 +81,7 @@
     "never_pending_memory",
     "organize_memory",
     "pause_scheduled_task",
+    "probe_endpoint_models",
     "read_persona_body",
     "read_scheduled_task",
     "record_authority_sync_diagnostics",

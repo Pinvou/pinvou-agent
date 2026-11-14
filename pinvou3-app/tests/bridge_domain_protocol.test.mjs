@@ -426,7 +426,10 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // (set/get super permission) and the artifact reconcile/deliverable-index
 // pair (list_workspace_files, save_session_artifacts, list_deliverable_index)
 // joined the shared base.
-const expectedSharedBaseHash = '958fd067f00e3292857d33a5e80f4d615f2b3e792a6ce431672d3e50196ff219';
+// Recomputed for the endpoint model auto-discovery wave: the
+// probeEndpointModels shared facade (probe_endpoint_models invoke,
+// camelCase baseUrl/apiKey/preset/wire payload) joined the shared base.
+const expectedSharedBaseHash = '38e9b45a9339d048f159eda4f49526092c547d9d1f611f0a11ee79f81348d697';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
