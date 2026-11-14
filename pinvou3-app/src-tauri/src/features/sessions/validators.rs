@@ -66,10 +66,10 @@ pub fn is_aux_session_id(id: &str) -> bool {
 }
 
 /// Single-sourced negation for the "global side-effect channel" gates
-/// (memory review, task-completion notification): aux turns must never
-/// trigger them (round-15 MAJOR-4, round-26 minor M3). One helper keeps the
-/// exclusion rule from drifting apart across its call sites (round-32
-/// review minor 10).
+/// (memory review, task-completion notification, input-needed notification):
+/// aux turns must never trigger them (round-15 MAJOR-4, round-26 minor M3).
+/// One helper keeps the exclusion rule from drifting apart across its call
+/// sites (round-32 review minor 10).
 pub(crate) fn aux_side_effect_exclusion(id: &str) -> bool {
     !is_aux_session_id(id)
 }

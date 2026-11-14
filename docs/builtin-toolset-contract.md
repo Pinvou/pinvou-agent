@@ -123,23 +123,194 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   description.
 - **Model-visible schema contract** (enforced for every bundled server by the CI
   fast-gate's `mcp-server-contract-smoke.py` schema guard, self-tested in
-  `scripts/tests/test_mcp_schema_contract.py`): a tool schema must stay inside the
-  shape set the constrained-decoding route's validator (MFJS) actually accepts —
-  every `type: array` carries concretely typed `items` (an itemless array completes
-  to `[]` under constrained decoding; the k3 slides incident), every schema node is
-  a non-empty object with a concrete string `type` (or an `anyOf` union), the root
-  is a typed object without composition, no keyword outside MFJS's allowed set
-  (`oneOf`, `allOf`, `patternProperties`, `prefixItems`, `contains`,
-  `unevaluated*`, …) survives, a surviving keyword must be admissible for its
-  node's type (`default` only on scalars — never on `array`/`object`; `enum` only
-  on `string`/`number`/`integer`), `required` names unique declared properties,
-  bounds match their type and a keyword explicitly present with a null value is
-  present-and-invalid, never absent (`minLength`/`maxLength` string,
-  `minItems`/`maxItems` array, `minimum`/`maximum` numeric), and the resource
-  budgets hold (`anyOf` ≤ 10 branches, ≤ 100 total properties, property depth ≤ 5,
-  ≤ 500 total enum values, ≤ 120000 encoded bytes, and an enum above 250 entries
-  is further capped at 7500 combined literal bytes) — the validator silently
-  drops the whole tool for any of these.
+  `scripts/tests/test_mcp_schema_contract.py`): the wire follows the published
+  Moonshot documents strictly — the documents are the sole shipping basis, and a
+  live probe may only ever tighten the contract, never widen it. **Landing
+  status (2026-11-12)**: the guard pins the T11 engine pipeline
+  (`schema_sanitize.rs`), which lands on the Moonshot wire via CodeWhale #143
+  with the provider faces in #144/#145/#146/#147; until the close-out re-pin
+  lands that batch on this repository's gitlink, the parent's pinned tree
+  still runs the pre-T11 sanitizer, so this section describes the target
+  contract the pinned tree converges to, not the pinned tree's current
+  behavior. The MFJS
+  specification (https://raw.githubusercontent.com/MoonshotAI/walle/main/docs/mfjs-spec.zh.md,
+  fetched 2026-11-05) enumerates its supported keywords exactly: `description`,
+  `default`, `anyOf`, `properties`, `additionalProperties`, `items`, `type`,
+  `enum`, `required`, plus `$defs`/`$ref` under restricted support ("`$defs`
+  必须定义在 schema 的根级别 (root level)；`$ref` 仅支持引用**本文档内部**的
+  subschema"). Its closing clause governs every keyword it does not list:
+  "若官方规范中的某些概念、关键字或特性在本文档中未被提及，则表示当前 MFJS
+  尚未提供官方支持……我们不保证它们能在最终的结构化输出中产生稳定、符合预期
+  的结果". The Tool Use guide (https://platform.kimi.ai/docs/api/tool-use.md,
+  fetched 2026-11-05) adds the shape rules: "The root of `parameters` must be
+  an `object`", and `strict` defaults to true ("**`true` (default, omitting is
+  equivalent to `true`)**"), so the schema is enforced on the wire, not
+  advisory. Base rules: every `type: array` carries concretely typed `items`,
+  every schema node is a non-empty object with a concrete string `type` or an
+  `anyOf` union, `required` names unique declared properties, and a keyword
+  explicitly present with a null value is present-and-invalid, never absent.
+  Document-precise note on `default` (2026-11-05): the specification types it
+  as Any — "**类型**: Any……这儿不做类型检查，需要调用者自行保证其值类型内
+  容和所在位置期望的内容相匹配" (any position, any value, no type check) — and
+  the doc-precise engine matches the document exactly (T11:
+  `kimi_parameters_ships_default_on_any_node_without_type_check` ships a
+  `default` verbatim on every node and never checks its value), so the schema
+  guard admits `default` everywhere too. `enum` keeps its per-type placement
+  (`string`/`number`/`integer` only) and its literals must match the node's
+  type. On top of
+  the documents:
+  - **Advisory keywords are stripped, not shipped** (2026-11-05): `title`,
+    `$comment`, `$id` and the bound keywords (`minLength`/`maxLength`,
+    `minimum`/`maximum`, `minItems`/`maxItems`) sit outside the documented
+    field set ("暂不支持 `title`、`$comment` 等描述性元数据，也不支持
+    `format` 格式注解字段"), and the engine
+    (CodeWhale `strip_mfjs_advisory_keywords`) removes them from the Moonshot
+    wire before validation instead of dropping the tool — removal is
+    semantics-lossless (annotations) or loses only soft constraints (bounds).
+    Bundled servers may keep them; other providers still receive the full
+    schema, and malformed advisory values are stripped too, never rejected.
+    Enums follow the same split: a homogeneous `float`/`int`/`str` enum
+    survives ("在这儿枚举值我们只支持基础类型中的 float, int 和 str，其它基础类型
+    以及 object 和 array 暂不支持，并且不支持混合类型 (List 中的每个枚举值的
+    类型必须相同，如不可以 str + int)"); any other enum is stripped — except
+    an EMPTY (or non-array) `enum`, which the strip deliberately leaves in
+    place (the kind-homogeneity check is vacuously true on an empty list)
+    so the validator can fail the tool closed: stripping it would silently
+    widen an unsatisfiable constraint into "anything goes"
+    (`kimi_parameters_empty_enum_fails_closed_in_the_validator`).
+  - **The fail-closed set**: keywords with no removal equivalent keep the
+    baseline whole-tool drop — `pattern`, `format`, `$schema`, `prefixItems`,
+    `exclusiveMinimum`/`exclusiveMaximum`, and every other unlisted keyword
+    ("暂不支持使用 `prefixItems` 或 `unevaluatedItems` 等方式模拟实现元组
+    （Tuple）", "暂不支持如 `exclusiveMinimum`，`exclusiveMaximum`，
+    `minContains`, `maxContains` 等复杂校验定义", "暂不支持 Meta-Schemas，
+    也不支持任何基于 HTTP 的外部网络资源引用"), with `format` named by the
+    same metadata clause quoted above.
+    The validator silently drops the whole tool for any of these. Two
+    families are red in the guard as **deliberate strictness**, not
+    engine-behavior claims, because the engine rewrites them before
+    validation and a pre-sanitization guard cannot see the rewrite: (a) the
+    union keywords — a single-branch nested `allOf`/`oneOf` collapses into
+    its parent (`collapse_single_element_unions`), a nested `oneOf`
+    converts to `anyOf` (`normalize_kimi_compatibility`), and only a
+    multi-branch nested `allOf` genuinely fails closed
+    (`UnsupportedNestedAllOf`); (b) a string/number `const` — the engine
+    translates it through the const→enum landing (type inference included)
+    and ships it, while a bool/null or object/array `const` fails closed
+    (`UnsupportedConstLiteral`; the scalar set is string/number only —
+    `kimi_parameters_fails_closed_on_bool_and_null_const`); the guard reds
+    every `const`. #683's
+    `evaluate_script` was lost to the empty-`items` class (`items:{}` →
+    `MissingType`), which the engine repairs since CodeWhale #101
+    (`remove_empty_mfjs_items_schemas`, already in the pinned tree; the T11
+    face keeps it) — the guard keeps flagging that
+    repair class, never replicating it.
+  - **Root unions stay banned on Moonshot**: the Tool Use root rule is
+    unambiguous and the specification lists `anyOf` as an applicator without
+    authorizing it at a parameters root; on the conflicting documents the
+    strict face wins, so a root `oneOf`/`anyOf`/`allOf` is flattened
+    engine-side (branch properties merge; branch required groups are
+    dropped to a prompt note — the pre-2026-11-04 behavior) and
+    the schema guard stays red on one. Keep `parameters` a plain typed
+    object. Two provider exceptions, each with its own documented basis:
+    xAI admits sound all-object root unions (`sanitize_for_xai_parameters`,
+    CodeWhale #144 — pass-through restricted to pairwise-discriminable
+    unions, flattening only as fallback); and Anthropic `input_schema` is
+    documented without a root-composition ban — "A JSON Schema object
+    defining the expected parameters for the tool"
+    (https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use,
+    fetched 2026-11-05) — so CodeWhale #146 narrowed the previously
+    unconditional strip to the root-composition keywords Anthropic itself
+    has rejected with recorded 400s (`oneOf`/`allOf`/`anyOf` at the top
+    level; recorded response observations from 2025-07, stated in no
+    public document — under the posture below they are recorded context
+    that may only ever tighten the wire, and they scope this strip only)
+    on the first-party Anthropic lane, while the
+    Anthropic-compatible lanes whose own documents claim full support
+    (DeepSeek/MiniMax/Model Studio) receive `input_schema` verbatim; every
+    unrecorded keyword ships verbatim everywhere
+    (`anthropic_lane_narrows_the_recorded_root_composition_keywords`,
+    `anthropic_lane_keeps_unrecorded_keywords_verbatim`).
+  - **Resource budgets are aligned to the walle conf.go source defaults**
+    (source comparison, not a document clause; 2026-11-05): `anyOf` ≤ 500
+    branches, ≤ 3000 total properties, property depth ≤ 30, ≤ 1000 total
+    enum values, ≤ 120000 encoded bytes, and an enum above 250 entries is
+    further capped at 75000 combined literal bytes (the encoded-bytes
+    budget stays engine-local, and the enum-length entry threshold keeps
+    the engine's 250 where walle's own default is 2500 — the stricter
+    direction: more enums fall under the literal-byte cap here than
+    upstream would check; the six named budgets match walle's defaults
+    exactly). On top of
+    those the engine carries a local whole-document recursion guard,
+    structural depth ≤ 64 (`mfjs_schema_can_terminate`) — an engine
+    implementation guard, not a walle budget, but it drops a tool the same
+    way, so the guard pins it. These were
+    previously the engine's own stricter mirror policy (10/100/5/500/7500);
+    aligning them to the walle source defaults (the struct defaults in
+    `DefaultValidatorConfig()`: `MaxAnyOfItems=500`,
+    `MaxTotalPropertiesKeysNum=3000`, `MaxSchemaDepth=30`, verified against
+    MoonshotAI/walle upstream main 2026-11-05) removes the divergence —
+    loosening a budget further means changing the CodeWhale constants and
+    the mirror script in lockstep, not waiting for Moonshot.
+  - **Probe records are observations, never authority**: the 2026-11-04 live
+    probes (a root union and the unlisted keywords accepted with 200 on the
+    coding endpoint) and the k3 `slides:[]` history (27-in-a-row; the
+    2026-11-04 retest no longer reproduces it on a fresh single turn, but
+    long-context/multi-turn field loss persists — 5 of 7 calls in a real
+    user session) are recorded context. They justify tightening — the
+    route-tier keyword admission built on them lived one day and was removed
+    on exactly this insufficiency — and never widen the wire.
+- **anyOf unions and the per-layout mitigation** (2026-11-04): `anyOf` is a
+  formal MFJS applicator (the specification's Applicator section), so a
+  nested union is document-backed. The pptx `make_pptx` schema is the
+  shipped precedent: `slides.items` is an `anyOf` union of exactly one
+  `type:object` branch per layout whose `required` lists exactly the fields
+  that layout's renderer cannot draw a body without — the standing
+  mitigation for constrained decoding's minimal-completion tendency on deep
+  optional-field payloads (the previous flat schema whose only required
+  field was `layout` made Kimi K3 emit layout+title-only pages with every
+  content field dropped). The branch shape lives entirely inside the
+  documented keyword set; the 2026-11-04 probe that validated it (the only
+  fully compliant 10-page deck, at +6% bytes, against an
+  all-fields-required control falsified at +76% tokens with `strict:false`
+  having no effect) is an observation recorded alongside, not the shipping
+  basis. The resource budgets stop bounding the union only once the T11
+  batch lands: they are aligned to the walle conf.go source defaults
+  (2026-11-05 — 500 branches / 3000 properties / depth 30), so after the
+  close-out re-pin the union's ceiling is the layout count and an 11th
+  layout is an ordinary branch addition. Until that re-pin, the pinned
+  engine still runs the pre-T11 sanitizer whose anyOf cap is 10 — the
+  union sits exactly at that cap, so a new layout added before the re-pin
+  puts make_pptx over it and the pinned engine omits that one tool from
+  the request (per-tool degradation, warn-logged) instead of failing the
+  build: the remaining tools still ship, an emptied tool set omits the
+  `tools` key, and the build fails outright only when an explicit
+  `tool_choice` forces the omitted tool (verified against the pinned
+  child's `sanitize_moonshot_chat_tools` and its chat request builder,
+  2026-11-14; the guard's unit tests pin the pre-T11 face precisely so
+  this window stays loud). The nested union itself is legal on the pinned
+  engine today: it
+  keeps nested multi-branch anyOf verbatim (flattening is a
+  root-composition-only pass) and its validator accepts the union, so the
+  shape does not wait on the re-pin. The schema guard mirrors the T11
+  engine pipeline; its rules converge with that pipeline when the
+  close-out re-pin lands it on this repository's gitlink, not
+  independently.
+- **Request-shape strips carry their own documentation** (2026-11-05
+  posture): the engine's fixed-sampling strip on the Kimi Code membership
+  endpoints (`api.kimi.com`/`api.kimi.ai`, path `coding/v1` — both hosts
+  are the documented product, "Kimi Code API address — China
+  `https://api.kimi.com/coding/v1`, Overseas
+  `https://api.kimi.ai/coding/v1`") rests on the Kimi guide's own
+  instruction to omit generic sampling ("`temperature=1.0`, `top_p=0.95`,
+  `n=1`, `presence_penalty=0`, and `frequency_penalty=0` are fixed; omit
+  them from requests", "Important limits",
+  https://platform.kimi.ai/docs/guide/kimi-k3-quickstart, re-verified
+  2026-11-12; the `base_url` sentence above is published on
+  https://www.kimi.com/code/docs/en/third-party-tools/codex.html, which
+  carries no sampling-parameter content). The 2026-11-04 400 observation
+  ("invalid temperature: only 1 is allowed for this model") is the recorded
+  observation, not the basis.
 - **Pagination parameters** (existing precedent, mandatory alignment): a bounded
   count parameter (`turn_limit` in `read_session`; `limit` where a listing has
   no other count semantics) + `cursor` (opaque string, server stateless) →

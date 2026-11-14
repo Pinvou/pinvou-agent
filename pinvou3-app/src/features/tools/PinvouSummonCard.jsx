@@ -143,9 +143,11 @@ const PinvouRows = ({ review, t, role }) => {
   );
 };
 
-// Review loading state: local models take 5-30s and online models are usually
-// faster. Show an iOS activity spinner, an elapsed timer and reassuring copy so
-// the wait does not feel stuck.
+// Review loading state: local models take 5-30s and online reasoning models
+// (thinking not disableable, e.g. Kimi k3) can take several minutes — the
+// one-shot request caps at 180s (pvLoadingHint says the same). Show an
+// iOS activity spinner, an elapsed timer and reassuring copy so the wait does
+// not feel stuck.
 const PinvouLoading = ({ isWu, isDark, t, isLocal }) => {
   const [secs, setSecs] = useState(0);
   useEffect(() => {
@@ -234,18 +236,22 @@ export function PinvouSummonModal({ item, theme, t, isLocal }) {
          style={{ background: theme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
          onClick={() => { if (!item.loading) bridge.interaction.dismissPinvouReview(); }}>
       {/* Backdrop clicks cannot close the modal while loading: the summon call
-          (direct to the model, 5-30s) is still running and its guard is held, so
-          an accidental close would look like "flashes and ignores the next
-          click for a while". Locking keeps the spinner visible until a result or
-          error arrives. */}
+          (direct to the model; up to 3min on cloud reasoning models) is still
+          running and its guard is held, so an accidental close would look like
+          "flashes and ignores the next click for a while". Locking keeps the
+          spinner visible until a result or error arrives. */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the top-right close button (a real button below) */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
       <div className="relative w-full max-w-[720px] overflow-hidden bg-white dark:bg-[#1C1C1E] rounded-[20px] shadow-[0_20px_60px_rgba(0,0,0,0.28)] ts-modal-in"
            onClick={(event) => event.stopPropagation()}
            style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
         {/* The close button is always present (including while loading): during
-            loading it cancels the wait and closes; the guard discards the
-            in-flight result. */}
+            loading it hides the modal and releases the summon guard. It does
+            not cancel the backend request — the direct-to-model call runs to
+            its timeout and its result is still recorded to the review ledger
+            even though the modal is gone (a re-summon in between only ever
+            sees its own settle: the stale settle is sequence-gated to
+            ledger-only, bridge-shared-helpers summonPinvou). */}
         <button type="button" onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} aria-label={t.pvSkip}
           className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
           <X size={16} />

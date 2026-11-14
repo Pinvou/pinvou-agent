@@ -1241,6 +1241,17 @@ pub async fn test_image_input_capability(
     Ok(run_image_capability_probe(&model, &base_url, &api_key, model_id.as_deref()).await)
 }
 
+/// Field-level patch for the notification switches: a partial update must not
+/// reset unlisted switches to their defaults (a whole-struct replace would let
+/// an "only change needs_input" write reset enabled/task_completed).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationPrefsPatch {
+    pub enabled: Option<bool>,
+    pub task_completed: Option<bool>,
+    pub needs_input: Option<bool>,
+}
+
 /// General settings field patch. Search, pet, the model list and the active model are managed by dedicated
 /// commands and stay out of this protocol, so a caller holding an old full snapshot cannot overwrite values
 /// another operation just wrote.
@@ -1251,7 +1262,7 @@ pub struct GeneralSettingsPatch {
     pub color_scheme: Option<ColorScheme>,
     pub language: Option<Language>,
     pub memory_enabled: Option<bool>,
-    pub notifications: Option<NotificationPrefs>,
+    pub notifications: Option<NotificationPrefsPatch>,
     pub sidebar: Option<SidebarPrefs>,
     pub chat: Option<ChatPrefs>,
     pub advanced: Option<AdvancedPrefs>,
@@ -1300,7 +1311,17 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
         current.memory_enabled = memory_enabled;
     }
     if let Some(notifications) = patch.notifications {
-        current.notifications = notifications;
+        // Field-level merge: a partial patch (e.g. only `needs_input`) must
+        // not reset the untouched switches to their defaults.
+        if let Some(enabled) = notifications.enabled {
+            current.notifications.enabled = enabled;
+        }
+        if let Some(task_completed) = notifications.task_completed {
+            current.notifications.task_completed = task_completed;
+        }
+        if let Some(needs_input) = notifications.needs_input {
+            current.notifications.needs_input = needs_input;
+        }
     }
     if let Some(sidebar) = patch.sidebar {
         current.sidebar = sidebar;
@@ -2047,6 +2068,79 @@ mod tests {
         assert!(current.pet.enabled);
         assert_eq!(current.advanced.saved_models, saved_models);
         assert_eq!(current.advanced.active_model_id, active_model_id);
+    }
+
+    #[test]
+    fn notification_patch_updates_only_carried_switches() {
+        // Seed every switch to the OPPOSITE of its platform default: a
+        // mutation that rebuilds the table from `NotificationPrefs::default()`
+        // and overwrites only the carried fields must then differ from the
+        // seed on every platform, not just where the platform default
+        // happens to disagree with the seed (fresh review 2026-11-12).
+        let defaults = crate::platform::prefs::NotificationPrefs::default();
+        let mut current = UserPrefs::default();
+        current.notifications.enabled = !defaults.enabled;
+        current.notifications.task_completed = !defaults.task_completed;
+        current.notifications.needs_input = !defaults.needs_input;
+
+        apply_general_settings_patch(
+            &mut current,
+            GeneralSettingsPatch {
+                notifications: Some(NotificationPrefsPatch {
+                    needs_input: Some(defaults.needs_input),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(current.notifications.needs_input, defaults.needs_input);
+        assert_eq!(
+            current.notifications.enabled, !defaults.enabled,
+            "an uncarried switch must survive as seeded, not reset to the platform default",
+        );
+        assert_eq!(
+            current.notifications.task_completed, !defaults.task_completed,
+            "an uncarried switch must survive as seeded, not reset to the platform default",
+        );
+    }
+
+    #[test]
+    fn notification_patch_preserves_needs_input_across_master_patch() {
+        // The inverse patch (the {enabled, task_completed} shape sent by the
+        // master switch) likewise merges only carried fields: the persisted
+        // needs_input intent must not reset with the master patch, or
+        // switching the master off->on silently loses the persisted
+        // input-notice intent. Same opposite-of-default seeding as the
+        // needs_input-only test above, so a Default-rebuild mutation fails
+        // on every platform.
+        let defaults = crate::platform::prefs::NotificationPrefs::default();
+        let mut current = UserPrefs::default();
+        current.notifications.enabled = !defaults.enabled;
+        current.notifications.task_completed = !defaults.task_completed;
+        current.notifications.needs_input = !defaults.needs_input;
+
+        apply_general_settings_patch(
+            &mut current,
+            GeneralSettingsPatch {
+                notifications: Some(NotificationPrefsPatch {
+                    enabled: Some(defaults.enabled),
+                    task_completed: Some(defaults.task_completed),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(current.notifications.enabled, defaults.enabled);
+        assert_eq!(
+            current.notifications.task_completed,
+            defaults.task_completed
+        );
+        assert_eq!(
+            current.notifications.needs_input, !defaults.needs_input,
+            "an uncarried needs_input must survive as seeded, not reset to the platform default",
+        );
     }
 
     #[test]

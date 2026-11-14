@@ -199,13 +199,10 @@ const EXPECTED_SURFACE = {
   // isInternalUserMessage + isKnownInternalMetadataBlock read only the
   // window.PinvouBridgeMessages classic global and their parameters, so no
   // cluster literal gains a dep; userMessageDisplayText calls them as
-  // base-local declarations.
-  // +1 (316): isCompactionCarrierBlocks — internal predicate of
-  // rerenderFromMessagesCore (work-mode rewind filter; references no deps,
-  // not exported from any cluster literal).
-  // +1 (317): isImageMarkerTextBlock — 仅被 rerenderFromMessagesCore 的
-  // user 分支调用（基座内局部名，不进 deps 集合），纯谓词、无副作用。
-  sharedFnCount: 317,
+  // base-local declarations. raisePinvouSummonHighwater (zhuowp round-2 P2-2:
+  // the review-sidecar highwater commit) reads only `state`, which every
+  // consuming cluster literal already provides — no literal gains a dep.
+  sharedFnCount: 316,
 };
 
 assert.equal(

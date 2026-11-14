@@ -442,7 +442,12 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // (set/get super permission) and the artifact reconcile/deliverable-index
 // pair (list_workspace_files, save_session_artifacts, list_deliverable_index)
 // joined the shared base.
-const expectedSharedBaseHash = '958fd067f00e3292857d33a5e80f4d615f2b3e792a6ce431672d3e50196ff219';
+// Recomputed for the pinvu review save chain (r7 audit): the
+// save_session_pinvou_reviews invoke now captures the owning session id at
+// record time (sid) instead of reading state.activeSessionId at fire time, so
+// the queued write cannot drift into a session the user switched to while the
+// chain was pending (r5 m6 fix); the invoke/listen command set is unchanged.
+const expectedSharedBaseHash = '26c590a7fff0b912eeacb4bf60028211be302fc965da4a484342369f2806b28f';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

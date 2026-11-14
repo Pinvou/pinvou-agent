@@ -1027,8 +1027,16 @@ const App = () => {
         }
       }, [language]);
       const [superPerm, setSuperPerm] = useState(false);
-      const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
-      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
+      // Both desktop-notification switches start from the platform
+      // master-switch default (aligned with Rust NotificationPrefs::default).
+      const defaultDesktopNotificationSwitch = platformCapabilities.taskCompletionNotificationsDefault !== false;
+      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultDesktopNotificationSwitch);
+      // inputNeededNotif stores the persisted needs_input intent; the
+      // effective display derives as intent && taskCompletedNotif in
+      // SettingsView — the task-completion switch is the master switch (its
+      // payload carries enabled), so the derivation stays truthful across the
+      // master going off->on in both directions.
+      const [inputNeededNotif, setInputNeededNotif] = useState(defaultDesktopNotificationSwitch);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
@@ -1275,6 +1283,11 @@ const App = () => {
         }
         const notifications = settings.notifications || {};
         setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
+        // Backfill only the persisted intent; do not fold enabled into the
+        // input switch: the master switch's effectiveness is derived in the
+        // display layer, and folding enabled here would make a persisted
+        // needs_input unrecoverable after the master goes off->on.
+        setInputNeededNotif(notifications.needs_input !== false);
         uiPrefsInitRef.current = true;
       };
       useEffect(() => {
@@ -1384,9 +1397,12 @@ const App = () => {
         return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
       }, [t]);
 
-      // Title/subtitle derivation for scheduled run entries: sidebar entries (scheduledRunItems) and chat entry
+      // Title/date-slot derivation for scheduled run entries: sidebar entries (scheduledRunItems) and chat entry
       // decoration (decorateScheduledRunChat) share one rule to avoid drift between the two copies.
       // Without a chat, derive from the run DTO's sessionTitle; with a chat, use the chat title.
+      // Rows are single-line: the status · time string rides the right date
+      // slot instead of a second line (run sessions don't go through the
+      // regular date field — see scheduledRunItems below).
       const scheduledRunDisplayFields = useCallback((run, chat) => {
         const rawTitle = chat ? chat.title : (run.sessionTitle || '');
         const title = (!rawTitle || isDefaultChatTitle(rawTitle))
@@ -1394,7 +1410,7 @@ const App = () => {
           : rawTitle;
         return {
           title,
-          subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
+          date: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
         };
       }, [t, language, scheduledRunLabel]);
 
@@ -1454,12 +1470,10 @@ const App = () => {
         title: (!session.title || isDefaultChatTitle(session.title))
           ? t.newChat
           : session.title,
-        subtitle: session.workspace_kind === 'project'
-          ? workspaceDisplayName(session.workspace_path)
-          : t.uiCodex.temporarySession,
         date: formatSessionDate(session.updated_at || session.created_at, language),
         updatedAt: session.updated_at || session.created_at || '',
         workspacePath: session.workspace_path || '',
+        // 行是单行:文件夹归属由「项目」视图的分组组头表达,不再逐项标注。
         workspaceKind: session.workspace_kind || '',
         // §6 keychain snapshot for the "view workspace" menu entry (same
         // cwd-first shape as the chat lane's workspaceRoots).
@@ -1500,7 +1514,8 @@ const App = () => {
         .filter(run => run && run.sessionId)
         .map(run => {
           // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
-          // 状态由后端 run DTO 直接携带。
+          // 状态由后端 run DTO 直接携带;右侧 date 槽由 displayFields 提供
+          // 「状态 · 时间」,不再置空。
           return {
             id: run.sessionId,
             ...scheduledRunDisplayFields(run),
@@ -1508,7 +1523,6 @@ const App = () => {
             pinned: !!run.pinned,
             pinnedAt: run.pinnedAt || '',
             working: run.status === 'running' || run.status === 'queued',
-            date: '',
             leadingIcon: scheduledRunIcon(run, activeTheme),
             testId: 'scheduled-run-sidebar-item',
             menuTestId: 'scheduled-run-sidebar-menu',
@@ -3400,19 +3414,36 @@ const App = () => {
         invokeTauri('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
       }
 
-      async function handleSetTaskCompletedNotif(enabled) {
-        const nextEnabled = !!enabled;
-        const previousEnabled = taskCompletedNotif;
-        setTaskCompletedNotif(nextEnabled);
-        if (bridge.available) {
-          const saved = await bridge.settings.saveSettings({
-            notifications: { enabled: nextEnabled, task_completed: nextEnabled },
-          });
-          if (saved === false) {
-            setTaskCompletedNotif(previousEnabled);
+      // Both notification switches share one save pipeline: optimistic set ->
+      // saveSettings, rollback on failure. The task-completion switch doubles
+      // as the desktop-notification master switch (payload carries enabled);
+      // the input switch carries only its own field, and the Rust side merges
+      // by field, so no other switch resets.
+      function makeNotifToggle(getCurrent, setCurrent, payloadFor) {
+        return async (enabled) => {
+          const nextEnabled = !!enabled;
+          const previousEnabled = getCurrent();
+          setCurrent(nextEnabled);
+          if (bridge.available) {
+            const saved = await bridge.settings.saveSettings({
+              notifications: payloadFor(nextEnabled),
+            });
+            if (saved === false) {
+              setCurrent(previousEnabled);
+            }
           }
-        }
+        };
       }
+      const handleSetTaskCompletedNotif = makeNotifToggle(
+        () => taskCompletedNotif,
+        setTaskCompletedNotif,
+        (nextEnabled) => ({ enabled: nextEnabled, task_completed: nextEnabled }),
+      );
+      const handleSetInputNeededNotif = makeNotifToggle(
+        () => inputNeededNotif,
+        setInputNeededNotif,
+        (nextEnabled) => ({ needs_input: nextEnabled }),
+      );
 
       // 侧栏任务列表「按日期折叠」开关:纯 UI 偏好,写 settings.sidebar.date_grouping
       function handleSetSidebarDateGrouping(enabled) {
@@ -4125,7 +4156,7 @@ const App = () => {
                 遮住下滑的列表项,避免首项与上方 nav 贴死("重合")。 */}
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
-                <div data-testid="sidebar-recents" className="pt-5 pb-2 max-sm:pt-2">
+                <div data-testid="sidebar-recents" className="pt-3 pb-2 max-sm:pt-2">
                   <div ref={taskFilterRef} className="relative mb-2">
                     {/* 第一行:「任务列表」标题 + 查看全部/筛选按钮;
                         第二行:全部/项目 胶囊 + 一键折叠(分组)按钮。
@@ -4254,7 +4285,7 @@ const App = () => {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-1">
+                  <div className="space-y-0.5">
                     {sidebarCodeListActive ? (
                       (sidebarFolderPinned.length > 0 || sidebarFolderGroups.length > 0) ? (
                         <>
@@ -4294,7 +4325,7 @@ const App = () => {
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 /></Suspense>
                                 {isOpen && (
-                                  <div className="mt-1 space-y-0.5">
+                                  <div className="space-y-0.5">
                                     {group.rows.map(renderSidebarTaskItem)}
                                   </div>
                                 )}
@@ -4325,7 +4356,7 @@ const App = () => {
                             <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
                           </button>
                           {isOpen && (
-                            <div className="mt-1 space-y-0.5">
+                            <div className="space-y-0.5">
                               {group.rows.map(renderSidebarTaskItem)}
                             </div>
                           )}
@@ -4420,6 +4451,7 @@ const App = () => {
                   language={language} setLanguage={handleSetLanguage}
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                   taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
+                  inputNeededNotif={inputNeededNotif} setInputNeededNotif={handleSetInputNeededNotif}
                   searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                   enabledSearchProviders={enabledSearchProviders}
                   onAddSearchProvider={handleAddSearchProvider}

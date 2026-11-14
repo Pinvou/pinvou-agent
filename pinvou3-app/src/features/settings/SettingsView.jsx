@@ -1989,7 +1989,7 @@ function hasStoredCredential(record) {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, inputNeededNotif, setInputNeededNotif, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
@@ -2519,6 +2519,19 @@ function hasStoredCredential(record) {
           <IOSSection title={t.uiSettings.notifications}>
             <IOSRow label={t.uiSettings.taskNotice} desc={t.uiSettings.taskNoticeDesc}>
               <IOSSwitch checked={taskCompletedNotif} onChange={setTaskCompletedNotif} />
+            </IOSRow>
+            {/* The task-completion switch is the master switch (its payload
+                carries enabled). The input row's effective display derives as
+                intent && master and is disabled while the master is off —
+                otherwise the switch would show on yet never fire; the Rust
+                delivery gate requires the same effective rule
+                (enabled && task_completed && needs_input). */}
+            <IOSRow label={t.uiSettings.inputNotice} desc={t.uiSettings.inputNoticeDesc}>
+              <IOSSwitch
+                checked={inputNeededNotif && taskCompletedNotif}
+                disabled={!taskCompletedNotif}
+                onChange={setInputNeededNotif}
+              />
             </IOSRow>
           </IOSSection>
           )}
