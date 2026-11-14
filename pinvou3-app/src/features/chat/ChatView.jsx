@@ -1300,7 +1300,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // compact id would change both byte-pinned listener bodies
             // (round-6 review M-2, recorded tradeoff).
             const startedSeq = startsMap ? startsMap[sid] : 0;
-            if (startedSeq > current[sid].seqAt) { drop(sid); continue; }
+            // No explicit jump: this arm closes the loop body, so drop IS
+            // skip here (an explicit continue would trip sonarjs
+            // no-redundant-jump after the pre-start reconcile moved to
+            // main via #833 and this arm became the loop tail).
+            if (startedSeq > current[sid].seqAt) { drop(sid); }
           }
           // The ACTIVE session keeps the start-item fallback: when start and
           // the terminal arrive in the same React batch (an instantly failing
