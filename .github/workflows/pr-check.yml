@@ -834,7 +834,12 @@ jobs:
           # other PRs — pure quota weight). Same policy as release-contract-test.
 
       - name: 安装 relay 依赖
-        run: npm --prefix remote-control-relay ci --prefer-offline --no-audit
+        run: |
+          # Per-leg bound sized UNDER this job's 10-minute cap so a wedged
+          # registry fails the leg, not the job window — same hang class the
+          # r4 wave bounded for the journey/frontend-test lanes, missed here
+          # (r6 review).
+          timeout --kill-after=15 300 npm --prefix remote-control-relay ci --prefer-offline --no-audit
 
       - name: Relay 回归
         run: npm --prefix remote-control-relay test
@@ -863,7 +868,12 @@ jobs:
           # the point, the cold install is the accepted cost.
 
       - name: 安装前端依赖
-        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+        run: |
+          # Per-leg bound sized UNDER this job's 15-minute cap so a wedged
+          # registry fails the leg, not the job window — same hang class the
+          # r4 wave bounded for the journey/frontend-test lanes, missed here
+          # (r6 review).
+          timeout --kill-after=15 600 npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       # 版本一致性校验(--check)由 version-consistency job 无路径门全事件覆盖,
       # 此处不重复;仅跑 Tauri overlay、各平台打包与知识宿主契约。
@@ -3036,7 +3046,11 @@ jobs:
         run: node pinvou3-app/tests/browser_wrapper_lazy.test.mjs
 
       - name: 安装构建依赖
-        run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
+        run: |
+          # Per-leg bound sized UNDER this job's 15-minute cap so a wedged
+          # registry fails the leg, not the job window — the r6 sweep's third
+          # straggler, found by the npm-ci bounds pin below.
+          timeout --kill-after=15 600 npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
       # One npm invocation per step: a multi-command pwsh run block only
       # reports the last command's exit code, so a harness that dies before
