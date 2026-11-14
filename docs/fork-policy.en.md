@@ -1,16 +1,16 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-11-12. Public maintenance 6f7a3a748 contains #114/#125, #123/#124/#129/#131/#133/#134/#135 plus #136/#142/#148/#150/#152; parent gitlink follows the public maintenance head.
+> Updated: 2026-11-14. Public maintenance 8e8d52fdb contains #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152 plus #156; parent gitlink follows the public maintenance head.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 Integrated upstream backport and historical provenance: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756). The public maintenance gate and section 6 authorization requirement continue to apply.
 
 ## 0. Current maintenance baseline and validation boundary
 
-- Public maintenance and parent gitlink: `6f7a3a748f408568468ace45aa5cdbb34f882d73` (2026-11-12). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`. The previous round changed parent references only; this round maintenance advanced by five signed merge commits and the parent gitlink followed.
-- Measured history: 98 commits above upstream v0.9.12 `dcd4c200f`, 83 above r1 `1fafee7e2`; 96 carry DCO sign-offs. The unsigned commits remain #107 `f27672935` and #116 `e9a7f48da1` (all five merge commits of this round are signed). The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Public maintenance and parent gitlink: `8e8d52fdb4a418bf4310db4b5d03dce5345c54d5` (2026-11-14). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`. This round maintenance followed with one signed rustc/clippy 1.100 stable lint-adaptation commit and the parent gitlink followed.
+- Measured history: 99 commits above upstream v0.9.12 `dcd4c200f`, 84 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits remain #107 `f27672935` and #116 `e9a7f48da1` (this round's commit is signed). The previous single-exception claim no longer applies. Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
-- Measured drift: 548 files, +121115/-49797, net +71318; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
+- Measured drift: 551 files, +121123/-49817, net +71306; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
