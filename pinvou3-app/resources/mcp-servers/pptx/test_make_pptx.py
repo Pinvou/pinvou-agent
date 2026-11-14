@@ -284,7 +284,10 @@ def test_slides_schema_items_pin():
     # the T11 target budget. The currently pinned pre-T11 engine still
     # caps anyOf at 10, so these 10 branches sit exactly AT the shipped
     # limit — adding a layout before the close-out re-pin hits the
-    # 10-branch cap (the whole Moonshot request build fails).
+    # 10-branch cap, and the pinned engine's sanitizer then omits the
+    # make_pptx tool from that request with a warning (the build keeps the
+    # remaining tools and fails outright only when an explicit tool_choice
+    # forces the omitted tool).
     assert len(branches) == len(server.LAYOUTS), \
         "one branch per layout (%d), got %d" % (len(server.LAYOUTS), len(branches))
     # Per-branch required = exactly the fields the renderer reads and draws

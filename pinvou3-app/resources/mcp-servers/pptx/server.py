@@ -719,8 +719,11 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
 # lands on the parent gitlink through the close-out re-pin PR; the currently
 # pinned engine is still the pre-T11 face whose anyOf branch cap is in fact
 # 10 — this schema's 10 branches sit exactly at that cap, so adding a layout
-# before the re-pin hits the 10-branch cap first (the whole Moonshot request
-# build fails); only after the re-pin is it "just add a branch". The union
+# before the re-pin hits the 10-branch cap first (the pinned engine's
+# sanitizer then omits the make_pptx tool from that request with a warning
+# while the remaining tools still ship, and the build fails outright only
+# when an explicit tool_choice forces the omitted tool); only after the
+# re-pin is it "just add a branch". The union
 # itself is already legal on the current engine: nested multi-branch anyOf
 # is kept and accepted as-is (flattening happens only at the root
 # combination level), with no need to wait for the re-pin.

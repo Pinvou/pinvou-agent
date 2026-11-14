@@ -281,9 +281,15 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   layout is an ordinary branch addition. Until that re-pin, the pinned
   engine still runs the pre-T11 sanitizer whose anyOf cap is 10 — the
   union sits exactly at that cap, so a new layout added before the re-pin
-  fails the request build wholesale rather than passing quietly (the
-  guard's unit tests pin the pre-T11 face precisely so this window stays
-  loud). The nested union itself is legal on the pinned engine today: it
+  puts make_pptx over it and the pinned engine omits that one tool from
+  the request (per-tool degradation, warn-logged) instead of failing the
+  build: the remaining tools still ship, an emptied tool set omits the
+  `tools` key, and the build fails outright only when an explicit
+  `tool_choice` forces the omitted tool (verified against the pinned
+  child's `sanitize_moonshot_chat_tools` and its chat request builder,
+  2026-11-14; the guard's unit tests pin the pre-T11 face precisely so
+  this window stays loud). The nested union itself is legal on the pinned
+  engine today: it
   keeps nested multi-branch anyOf verbatim (flattening is a
   root-composition-only pass) and its validator accepts the union, so the
   shape does not wait on the re-pin. The schema guard mirrors the T11
