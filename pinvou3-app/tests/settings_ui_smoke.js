@@ -18,6 +18,10 @@ const settingsViewSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'features', 'settings', 'SettingsView.jsx'),
   'utf8',
 );
+const localServerTiersSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'local-server-tiers.jsx'),
+  'utf8',
+);
 const settingsI18nSources = ['zh', 'en', 'ja'].map((lang) => fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'i18n', `${lang}.js`),
   'utf8',
@@ -127,6 +131,170 @@ for (const settingsI18nSource of settingsI18nSources) {
     settingsI18nSource,
     /localPortInvalid:/,
     'local model port validation message must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /noAuthToggleLabel:/,
+    'the keyless-endpoint toggle label must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /noAuthHint:/,
+    'the keyless-endpoint hint must be provided in every UI language',
+  );
+}
+// 「此端点无需鉴权」(auth_mode="none") 表单行为守卫：开关必须经
+// data-testid="model-form-no-auth-toggle" 驱动，且保存载荷必须携带
+// auth_mode（null=默认鉴权规则 / "none"=免鉴权声明，直通底座
+// auth_mode_disables_api_key）。缺任一即开关失效或声明丢失。凭据删除
+// 动作与全部三条探测路径（连接测试 / 图片能力测试 / 自动思考档位探测）
+// 必须与 auth_mode 载荷同口径排除托管档/免鉴权态，
+// URL 行的渲染点必须与赋值同在（防止中途加条件把字段藏掉）。
+{
+  const noAuthToggleSites = settingsViewSource.match(
+    /data-testid="model-form-no-auth-toggle"/g,
+  ) || [];
+  assert.strictEqual(
+    noAuthToggleSites.length,
+    1,
+    'the keyless-endpoint toggle must be rendered exactly once via its testid',
+  );
+  assert.match(
+    settingsViewSource,
+    /auth_mode: !isLocalPreset && !isCodingPlan && noAuth \? 'none' : null/,
+    'model form save payload must persist the keyless declaration via auth_mode (never for managed coding plans)',
+  );
+  assert.match(
+    settingsViewSource,
+    /initial\.provider_kind !== PROVIDER_KIND_CODING_PLAN && initial\.auth_mode === 'none'/,
+    'the keyless toggle state must stay off for managed coding-plan entries',
+  );
+  assert.match(
+    settingsViewSource,
+    /if \(!isCodingPlan && noAuth\) return hasSavedKey \? 'delete' : 'replace'/,
+    'the stored-credential delete action must stay scoped to non-managed keyless declarations (a stale toggle over a live coding-plan URL must not delete the credential)',
+  );
+  // The keyless test-key posture exists at exactly two sites (handleTest +
+  // handleImageCapabilityTest); a plain assert.match would stay green when
+  // only ONE site regresses, so pin the count.
+  const keylessTestKeySites = settingsViewSource.match(
+    /!isLocalPreset && !isCodingPlan && noAuth\s*\?\s*''\s*:/g,
+  ) || [];
+  assert.strictEqual(
+    keylessTestKeySites.length,
+    2,
+    'connection AND image-capability tests must both refuse to send a typed key while the keyless declaration is active (a single-site regression must fail here)',
+  );
+  assert.match(
+    settingsViewSource,
+    /testModelConnection\(baseUrl\.trim\(\), testKey, initial\.__new \? null : initial\.id, !isLocalPreset && !isCodingPlan && noAuth\)/,
+    'the connection test must forward the keyless posture so the backend skips the saved-credential fallback (a pre-save probe must not transmit the stored key to the newly typed URL)',
+  );
+  assert.match(
+    settingsViewSource,
+    /testImageInputCapability\(model\.trim\(\), baseUrl\.trim\(\), testKey, initial\.__new \? null : initial\.id, !isLocalPreset && !isCodingPlan && noAuth\)/,
+    'the image-capability test must forward the keyless posture so the backend skips the saved-credential fallback',
+  );
+  // The automatic tier probe is the third probe path in the same form: under
+  // the keyless posture it must drop the retained form key AND forward the
+  // posture flag (the backend then skips the saved-credential fallback).
+  // Both halves are pinned — dropping either reopens the credential-to-keyless-URL leak.
+  assert.match(
+    settingsViewSource,
+    /trimInputs: true,\s*noAuth,\s*\}\)/,
+    'the model form must forward its keyless posture into the reasoning-tier probe hook (the automatic tier probe is a third credential path)',
+  );
+  assert.match(
+    localServerTiersSource,
+    /const probeApiKey = noAuth \? '' : trimInputs \? apiKey\.trim\(\) : apiKey;/,
+    'the tier probe must drop the retained form key while the keyless posture is active',
+  );
+  assert.match(
+    localServerTiersSource,
+    /probeLocalServerKind\(probeBaseUrl, probeApiKey, modelId, noAuth\)/,
+    'the tier probe must forward the keyless posture flag so the backend skips the saved-credential fallback',
+  );
+  // The keyless UI derivation must follow the same managed scope as the save
+  // payload: with the toggle ON and the URL edited to a managed host the
+  // toggle row disappears, so the hint/key-row/reveal-error gates must fall
+  // back to the undeclared shape too — otherwise the form deadlocks (hint
+  // visible, toggle gone, key row hidden, typed key silently dropped).
+  assert.match(
+    settingsViewSource,
+    /const noAuthActive = !isLocalPreset && !isCodingPlan && noAuth;/,
+    'the keyless UI derivation must scope the declaration out of managed endpoints exactly like the save payload does',
+  );
+  assert.match(
+    settingsViewSource,
+    /!noAuthActive && renderApiKeyField\(\{ withBorder: false \}\)/,
+    'the API key row must reappear when the live URL is a managed endpoint under a stale keyless toggle',
+  );
+  assert.match(
+    settingsViewSource,
+    /noAuthActive && <div className="px-4 pb-3/,
+    'the keyless hint must disappear when the live URL is a managed endpoint (the payload already stores a null declaration there)',
+  );
+  assert.match(
+    settingsViewSource,
+    /showBaseUrlField = !isCodingPlan/,
+    'the API base URL field (custom endpoint/port) must be visible for every non-coding-plan preset',
+  );
+  assert.match(
+    settingsViewSource,
+    /showBaseUrlField && renderInlineField/,
+    'the base URL field gate must hold at the render site, not only at the assignment',
+  );
+  assert.match(
+    settingsViewSource,
+    /parsed\.pathname === '\/' \? serialized\.replace/,
+    'port rewrites must only strip the slash WHATWG serialization adds, never a user-typed path slash',
+  );
+  assert.match(
+    settingsViewSource,
+    /testId: 'model-form-base-url-port'/,
+    'the form must expose an explicit port field for the API base URL',
+  );
+  // The port row shares the base-URL render gate (`showBaseUrlField`); the
+  // generic render-site regex above already matches TWO rows, so a plausible
+  // regression (the port gate narrowing to `isLocalPreset`) stays green
+  // there. Pin the port row with its own label-anchored gate.
+  assert.match(
+    settingsViewSource,
+    /showBaseUrlField && renderInlineField\(\{\s*label: settingsCopy\.localPortLabel/,
+    'the port row must render for every non-coding-plan preset via the same base-URL gate (a cloud preset silently losing the port row regresses the headline feature)',
+  );
+  // The custom-model key row follows the same noAuthActive caliber; without
+  // this pin, dropping `&& !noAuthActive` resurrects the "key row visible
+  // while the declaration drops the typed key" deadlock for custom entries
+  // (the non-custom row is pinned above).
+  assert.match(
+    settingsViewSource,
+    /const showCustomCloudKeyField = !isLocalPreset && customModel && !noAuthActive;/,
+    'the custom-model key row must hide while the keyless declaration is active (the save drops a typed key under the declaration)',
+  );
+  // Both preset-switch paths must reset the keyless declaration; a stale ON
+  // toggle from preset A would otherwise save preset B keyless with a
+  // credential delete. Count-pinned: either site regressing must fail here.
+  const keylessResetSites = settingsViewSource.match(
+    /setNoAuth\(false\);\s*setBaseUrlPortError\(null\);/g,
+  ) || [];
+  assert.strictEqual(
+    keylessResetSites.length,
+    2,
+    'both entry-switch paths (catalog apply + manual local add) must reset the keyless declaration and the port error (a stale ON toggle must not leak into the next entry)',
+  );
+  // The save-side gates must follow the same noAuthActive caliber as the
+  // derivation pin above: raw `noAuth` here would drop a typed key while the
+  // form shows it accepted (currently unreachable, latent divergence).
+  assert.match(
+    settingsViewSource,
+    /isLocalPreset \|\| noAuthActive \|\| hasSavedKey \|\| !!apiKey\.trim\(\)/,
+    'the can-save gate must follow the same noAuthActive caliber as the save payload',
+  );
+  assert.match(
+    settingsViewSource,
+    /: \(!noAuthActive && apiKey\.trim\(\) \? apiKey\.trim\(\) : ''\)/,
+    'the saved key payload must follow the same noAuthActive caliber as the derivation (a typed key must never be silently discarded under a stale toggle)',
   );
 }
 // Memory delete / feedback close confirm-dialog wiring (no native

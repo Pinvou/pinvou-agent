@@ -389,6 +389,22 @@ impl<'de> Deserialize<'de> for ImageCapabilityOverride {
     }
 }
 
+/// `auth_mode` 手改容错:非字符串 JSON 值(数字/布尔/数组/对象/null)一律按
+/// 未声明(None)处理,而不是让整份 settings.json 解析失败——解析失败会退化到
+/// 默认快照,下一次 `update_transaction` 落盘时会把默认快照+本次改动写回磁盘,
+/// 抹掉全部已存模型/偏好。字符串值(含空串、大小写、空白)仍交给
+/// `normalize_provider_metadata` 归一;缺字段走 `#[serde(default)]`。
+fn deserialize_auth_mode_lenient<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::String(text)) => Some(text),
+        _ => None,
+    })
+}
+
 /// 一条用户保存的模型配置:GUI「模型列表」的一项,也是热切换的最小单位。
 /// `id` 稳定(前端生成),被 `active_model_id` / session `model_id` 引用。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -422,6 +438,19 @@ pub struct SavedModel {
     pub vendor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_mode: Option<String>,
+    /// 用户对端点鉴权的显式声明（设置页「此端点无需鉴权」开关）：`Some("none")`
+    /// = 该端点不需要任何上游鉴权（自建网关/免鉴权服务）。落盘前经
+    /// `normalize_provider_metadata` 归一：仅保留底座
+    /// `auth_mode_disables_api_key` 认可的 no-auth 同义词并统一为 `"none"`，
+    /// 其余值（含空串）清空。None = 默认按 provider/端点规则决定是否要 Key。
+    /// 非字符串 JSON 值按未声明处理（见 [`deserialize_auth_mode_lenient`]），
+    /// 不让整份文档解析失败。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_auth_mode_lenient"
+    )]
+    pub auth_mode: Option<String>,
     /// 图片输入能力覆盖(设计 §6.3):Pinvou 走能力解析链;Enabled/Disabled 强制。
     #[serde(default)]
     pub image_capability_override: ImageCapabilityOverride,
@@ -572,6 +601,15 @@ impl SavedModel {
             && self.provider_kind.as_deref() != Some("coding_plan")
     }
 
+    /// Whether this record explicitly declares the endpoint keyless
+    /// (`auth_mode = "none"` family, single source of truth
+    /// `codewhale_config::auth_mode_disables_api_key`). Probe surfaces
+    /// (app ladder, CLI `models test`) consult this so a residual stored
+    /// credential never rides a probe against a declared-keyless endpoint.
+    pub fn declares_keyless_auth(&self) -> bool {
+        codewhale_config::auth_mode_disables_api_key(self.auth_mode.as_deref())
+    }
+
     fn normalize_alias(&mut self) {
         if self.preset == ModelPreset::LocalVllm {
             self.alias = None;
@@ -696,6 +734,23 @@ impl SavedModel {
 
     fn normalize_provider_metadata(&mut self) {
         self.base_url = strip_chat_completions_suffix(&self.base_url);
+        // auth_mode 归一:仅保留底座 `auth_mode_disables_api_key` 认可的
+        // no-auth 同义词并统一为 "none";其余值(含空串/未知档位)清空,
+        // 防止手改 settings.json 写入底座不认识的档位后行为不可预期。
+        // 判定直接复用底座谓词(底座谓词内部做 trim/小写归一),同义词表
+        // 保持单一来源,不会与引擎侧判定漂移(见 bridge::model_declares_no_auth)。
+        self.auth_mode = self
+            .auth_mode
+            .take()
+            .filter(|value| codewhale_config::auth_mode_disables_api_key(Some(value.as_str())))
+            .map(|_| "none".to_string());
+        // 本地档与托管档同理:设置页对 local_vllm 不渲染免鉴权开关(本地端点的
+        // 无凭据豁免已按 provider/环回规则内置),手改的声明同样不可在 UI 关闭
+        // (会让 api_key() 短路掉 LOCAL_VLLM_API_KEY 占位,鉴权 vLLM 逐轮 401),
+        // load 时一并清空;表单保存路径本就写 null。
+        if self.preset == ModelPreset::LocalVllm {
+            self.auth_mode = None;
+        }
         // MiniMax 旧域名 api.minimax.chat 已废弃,官方国内端点为 api.minimaxi.com;
         // 存量配置在 load 时一次性改写,避免继续打已下线域名。
         if let Some(migrated) = migrated_minimax_base_url(&self.base_url) {
@@ -708,6 +763,10 @@ impl SavedModel {
             if self.endpoint_mode.as_deref() == Some("full_chat_completions") {
                 self.endpoint_mode = None;
             }
+            // 托管入口的鉴权由平台管理,不接收免鉴权声明:清空手改/残留的
+            // auth_mode,避免托管条目带着声明走进引擎后逐轮 401 且无法在
+            // UI 关闭(设置页对 coding_plan 不渲染免鉴权开关)。
+            self.auth_mode = None;
             return;
         }
         if self.provider_kind.as_deref() == Some(MODEL_PROVIDER_KIND_CODING_PLAN) {
@@ -1449,6 +1508,7 @@ impl UserPrefs {
         let api_key = self.advanced.custom_api_key.clone().unwrap_or_default();
         let id = "default".to_string();
         self.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: id.clone(),
             name: model.clone(),
             alias: None,
@@ -1664,6 +1724,16 @@ impl UserPrefs {
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
         for model in &mut self.advanced.saved_models {
+            // Keyless parity (round-5 review): a record that declares the
+            // endpoint keyless reads NO credential — the refresh must not
+            // stamp `EnvOverride` (the override variable is never consulted
+            // for a declared route: `bridge::api_key` short-circuits before
+            // the env read) nor probe the store for a residual reference.
+            // The record's own persisted state is exactly what the keyless
+            // display helper renders downstream, so leave it untouched.
+            if model.declares_keyless_auth() {
+                continue;
+            }
             if env_override {
                 model.credential_state = CredentialState::EnvOverride;
                 model.has_secret = model.credential_ref.is_some();
@@ -1861,6 +1931,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.clear();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             alias: Some("  Daily assistant  ".to_string()),
             ..legacy.clone()
         });
@@ -1870,6 +1941,7 @@ mod tests {
         );
 
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             alias: Some("   ".to_string()),
             ..legacy
         });
@@ -1879,6 +1951,7 @@ mod tests {
     #[test]
     fn local_model_alias_is_cleared_by_upsert_and_normalization() {
         let local = SavedModel {
+            auth_mode: None,
             id: "local-model".into(),
             name: "Local model".into(),
             alias: Some("Must not persist".into()),
@@ -1934,6 +2007,7 @@ mod tests {
         // non-Linux while passing the ubuntu-only `rust-test` gate.
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: "local-model".into(),
             name: "Local model".into(),
             alias: Some("Legacy local alias".into()),
@@ -2290,6 +2364,7 @@ mod tests {
     #[test]
     fn normalize_drops_stored_effort_for_kimi_k31_models() {
         let base = SavedModel {
+            auth_mode: None,
             id: "m1".into(),
             name: "m1".into(),
             alias: None,
@@ -2419,6 +2494,7 @@ mod tests {
     #[test]
     fn normalize_keeps_local_output_unset_and_operator_owned_detection() {
         let mut local = SavedModel {
+            auth_mode: None,
             id: "m1".into(),
             name: "m1".into(),
             alias: None,
@@ -2519,6 +2595,7 @@ mod tests {
     #[test]
     fn normalize_reasoning_effort_canonicalizes_aliases_and_rejects_unknown() {
         let base = SavedModel {
+            auth_mode: None,
             id: "m1".into(),
             name: "m1".into(),
             alias: None,
@@ -2700,6 +2777,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "glm-coding".into(),
             name: "GLM-5-Turbo".into(),
             alias: None,
@@ -2739,6 +2817,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "glm-api".into(),
             name: "GLM API".into(),
             alias: None,
@@ -2783,6 +2862,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "minimax-api".into(),
             name: "MiniMax".into(),
             alias: None,
@@ -2808,6 +2888,337 @@ mod tests {
         assert_eq!(model.base_url, "https://api.minimaxi.com/v1");
     }
 
+    /// auth_mode 归一：底座 `auth_mode_disables_api_key` 认可的 no-auth 同义词
+    /// 统一存 "none"（大小写/首尾空白容忍）；未知档位与空串清空（落回默认的
+    /// provider/端点鉴权规则），防止手改 settings.json 写入无效档位后行为不可
+    /// 预期；None 原样保留。
+    #[test]
+    fn auth_mode_normalizes_to_the_none_family_or_clears() {
+        let build = |auth_mode: Option<&str>| {
+            let mut prefs = UserPrefs::default();
+            let mut model = SavedModel {
+                auth_mode: None,
+                id: "auth-mode-model".into(),
+                name: "auth mode".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "gateway-model".into(),
+                base_url: "https://gateway.example.com/v1".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            model.auth_mode = auth_mode.map(str::to_string);
+            prefs.upsert_model(model);
+            prefs
+        };
+
+        for synonym in [
+            "none",
+            "NONE",
+            " no-auth ",
+            "OFF",
+            "Disabled",
+            "no_auth",
+            "anonymous",
+        ] {
+            let prefs = build(Some(synonym));
+            assert_eq!(
+                prefs
+                    .model_by_id("auth-mode-model")
+                    .expect("model")
+                    .auth_mode
+                    .as_deref(),
+                Some("none"),
+                "no-auth 同义词 {synonym:?} 必须归一为 \"none\""
+            );
+        }
+        for invalid in [Some("api_key"), Some("oauth"), Some(""), Some("   "), None] {
+            let prefs = build(invalid);
+            assert_eq!(
+                prefs
+                    .model_by_id("auth-mode-model")
+                    .expect("model")
+                    .auth_mode,
+                None,
+                "非免鉴权档位 {invalid:?} 必须清空（落回默认鉴权规则）"
+            );
+        }
+    }
+
+    /// 托管入口(coding_plan)的鉴权由平台管理,不接收免鉴权声明:按 URL 归类为
+    /// 托管端点的记录即使带着 auth_mode="none"(手改 settings.json)也在归一
+    /// 时清空,避免 UI 隐藏开关的托管条目带着声明走进引擎后逐轮 401。非托管
+    /// 端点的免鉴权声明不受影响。
+    #[test]
+    fn coding_plan_records_clear_keyless_declaration() {
+        let build = |base_url: &str, auth_mode: Option<&str>| {
+            let mut prefs = UserPrefs::default();
+            let mut model = SavedModel {
+                auth_mode: None,
+                id: "auth-mode-plan".into(),
+                name: "auth mode plan".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "plan-model".into(),
+                base_url: base_url.into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            model.auth_mode = auth_mode.map(str::to_string);
+            prefs.upsert_model(model);
+            prefs
+        };
+
+        let plan = build("https://coding.dashscope.aliyuncs.com/v1", Some("none"));
+        let plan_model = plan.model_by_id("auth-mode-plan").expect("model");
+        assert_eq!(
+            plan_model.provider_kind.as_deref(),
+            Some(MODEL_PROVIDER_KIND_CODING_PLAN),
+            "用例前置:该 URL 必须被归类为托管入口"
+        );
+        assert_eq!(plan_model.auth_mode, None, "托管入口不得携带免鉴权声明");
+
+        let custom = build("https://gateway.example.com/v1", Some("none"));
+        assert_eq!(
+            custom
+                .model_by_id("auth-mode-plan")
+                .expect("model")
+                .auth_mode
+                .as_deref(),
+            Some("none"),
+            "非托管端点的免鉴权声明必须保留"
+        );
+    }
+
+    /// 手改的免鉴权声明在 local_vllm 上同样不可在 UI 关闭(设置页不渲染该
+    /// 开关,本地无凭据豁免已按 provider/环回规则内置),load/upsert 归一时
+    /// 一并清空;云端自定义端点的声明不受影响。
+    #[test]
+    fn local_vllm_records_clear_keyless_declaration() {
+        let build = |preset: ModelPreset, auth_mode: Option<&str>| {
+            let mut prefs = UserPrefs::default();
+            let mut model = SavedModel {
+                auth_mode: None,
+                id: "auth-mode-local".into(),
+                name: "auth mode local".into(),
+                alias: None,
+                preset,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "local-model".into(),
+                base_url: "http://127.0.0.1:8000/v1".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            model.auth_mode = auth_mode.map(str::to_string);
+            prefs.upsert_model(model);
+            prefs
+        };
+
+        let local = build(ModelPreset::LocalVllm, Some("none"));
+        assert_eq!(
+            local
+                .model_by_id("auth-mode-local")
+                .expect("model")
+                .auth_mode,
+            None,
+            "本地档不得携带免鉴权声明(设置页无法关闭的声明会让鉴权 vLLM 逐轮 401)"
+        );
+
+        let cloud = build(ModelPreset::OpenaiCompatible, Some("none"));
+        assert_eq!(
+            cloud
+                .model_by_id("auth-mode-local")
+                .expect("model")
+                .auth_mode
+                .as_deref(),
+            Some("none"),
+            "云端自定义端点的免鉴权声明必须保留"
+        );
+    }
+
+    /// 手改 settings.json 的 auth_mode 必须在 load 时归一并持久化:同义词统一
+    /// 为 "none" 且落盘,未知档位清空。upsert 与 load 共享同一归一函数,但
+    /// load 路径的触发与「归一差异才持久化」的门槛是独立行为,单独钉住。
+    #[test]
+    fn load_normalizes_and_persists_auth_mode_declaration() {
+        with_temp_home("pinvou3-prefs-auth-mode-load", || {
+            let mut prefs = UserPrefs::default();
+            prefs.advanced.saved_models.clear();
+            let mut model = SavedModel {
+                auth_mode: None,
+                id: "keyless-load".into(),
+                name: "Keyless".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "gateway-model".into(),
+                base_url: "https://gateway.example.com/v1".into(),
+                provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            model.auth_mode = Some(" No-Auth ".into());
+            prefs.advanced.saved_models.push(model);
+            prefs.advanced.active_model_id = Some("keyless-load".into());
+            let path = super::super::paths::settings_path();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&prefs).expect("serialize hand-edited prefs"),
+            )
+            .expect("write hand-edited prefs");
+
+            let loaded = UserPrefs::load();
+            assert_eq!(
+                loaded
+                    .model_by_id("keyless-load")
+                    .expect("model")
+                    .auth_mode
+                    .as_deref(),
+                Some("none"),
+                "load 必须把同义词档位归一为 \"none\""
+            );
+            let persisted = std::fs::read_to_string(&path).expect("reread persisted prefs");
+            assert!(
+                persisted.contains("\"auth_mode\": \"none\""),
+                "归一结果必须落盘"
+            );
+            assert!(!persisted.contains("No-Auth"), "原始手改档位不得残留");
+        });
+    }
+
+    /// 手改 auth_mode 为非字符串 JSON 值(数字/布尔等)不得拖垮整份
+    /// settings.json:字段级 deserialize 容错把它按未声明处理,已存记录与
+    /// 偏好原样保留;随后的 update_transaction 也必须把真实文档(而非解析
+    /// 失败时的默认快照)写回磁盘——否则任何一次保存都会抹掉全部已存模型。
+    #[test]
+    fn wrong_typed_auth_mode_degrades_to_unset_without_document_loss() {
+        with_temp_home("pinvou3-prefs-auth-mode-wrong-type", || {
+            let mut prefs = UserPrefs::default();
+            prefs.advanced.saved_models.clear();
+            let model = SavedModel {
+                auth_mode: None,
+                id: "keyless-wrong-type".into(),
+                name: "Keyless".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_effort: None,
+                model: "gateway-model".into(),
+                base_url: "https://gateway.example.com/v1".into(),
+                provider_kind: Some(MODEL_PROVIDER_KIND_OFFICIAL_API.into()),
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            };
+            prefs.advanced.saved_models.push(model);
+            prefs.advanced.active_model_id = None;
+            let path = super::super::paths::settings_path();
+            // 结构体字面量写不出「auth_mode: 0」这个状态:序列化后向 JSON
+            // 注入非字符串值,模拟手改 settings.json。
+            let mut raw = serde_json::to_value(&prefs).expect("serialize prefs");
+            raw.get_mut("advanced")
+                .and_then(|advanced| advanced.get_mut("saved_models"))
+                .and_then(|models| models.as_array_mut())
+                .and_then(|models| models.first_mut())
+                .and_then(|model| model.as_object_mut())
+                .expect("saved_models array with a model object")
+                .insert("auth_mode".into(), serde_json::Value::from(0));
+            std::fs::write(
+                &path,
+                serde_json::to_string(&raw).expect("serialize raw prefs"),
+            )
+            .expect("write hand-edited prefs");
+
+            let loaded = UserPrefs::load();
+            assert_eq!(
+                loaded.advanced.saved_models.len(),
+                1,
+                "非字符串 auth_mode 不得让整份 settings.json 解析失败(否则退化到默认快照,已存模型消失)"
+            );
+            assert_eq!(
+                loaded
+                    .model_by_id("keyless-wrong-type")
+                    .expect("model survives the wrong-typed auth_mode")
+                    .auth_mode,
+                None,
+                "非字符串 auth_mode 必须按未声明处理"
+            );
+
+            // 后续保存必须基于真实文档落盘:若此处仍从默认快照写回,下面的
+            // 记录就会从磁盘上消失(整文档解析失败类的真实破坏面)。
+            let updated = UserPrefs::update_transaction(|prefs| {
+                prefs.advanced.active_model_id = Some("keyless-wrong-type".into());
+                Ok(())
+            })
+            .expect("update after lenient parse");
+            assert_eq!(
+                updated
+                    .model_by_id("keyless-wrong-type")
+                    .expect("model survives the transaction")
+                    .name,
+                "Keyless",
+                "事务落盘必须携带真实已存记录"
+            );
+            let persisted = std::fs::read_to_string(&path).expect("reread persisted prefs");
+            assert!(
+                persisted.contains("keyless-wrong-type"),
+                "后续保存不得把已存模型抹掉"
+            );
+            assert!(
+                persisted.contains("\"active_model_id\": \"keyless-wrong-type\""),
+                "事务改动必须落盘"
+            );
+        });
+    }
+
     #[test]
     fn load_persists_legacy_minimax_domain_migration() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -2823,6 +3234,7 @@ mod tests {
 
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: "minimax-api".into(),
             name: "MiniMax".into(),
             alias: None,
@@ -2879,6 +3291,7 @@ mod tests {
         with_temp_home("pinvou3-prefs-local-output-sentinel", || {
             let mut prefs = UserPrefs::default();
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "legacy-local".into(),
                 name: "Legacy Local".into(),
                 alias: None,
@@ -2902,6 +3315,7 @@ mod tests {
                 credential_action: None,
             });
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "custom-explicit".into(),
                 name: "Custom Explicit".into(),
                 alias: None,
@@ -2992,6 +3406,7 @@ mod tests {
             // saved-models drift detection.
             prefs.local_thinking_default_migrated = true;
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "k31-official".into(),
                 name: "K3.1 Official".into(),
                 alias: None,
@@ -3016,6 +3431,7 @@ mod tests {
                 credential_action: None,
             });
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "k31-relay".into(),
                 name: "K3.1 Relay".into(),
                 alias: None,
@@ -3039,6 +3455,7 @@ mod tests {
                 credential_action: None,
             });
             prefs.advanced.saved_models.push(SavedModel {
+                auth_mode: None,
                 id: "k31-suffixed".into(),
                 name: "K3.1 Suffixed Route".into(),
                 alias: None,
@@ -3144,6 +3561,7 @@ mod tests {
     fn legacy_local_alias_prefs() -> UserPrefs {
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(SavedModel {
+            auth_mode: None,
             id: "local-model".into(),
             name: "Local model".into(),
             alias: Some("Legacy local alias".into()),
@@ -3178,6 +3596,7 @@ mod tests {
         reasoning_effort: Option<&str>,
     ) -> SavedModel {
         SavedModel {
+            auth_mode: None,
             id: id.into(),
             name: id.into(),
             alias: None,
@@ -3459,6 +3878,7 @@ mod tests {
         let mut prefs = UserPrefs::default();
         prefs.migrate_models();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "m2".into(),
             name: "Kimi".into(),
             alias: None,
@@ -4315,6 +4735,7 @@ mod tests {
     fn refresh_classifies_a_fallback_miss_as_unavailable_not_missing() {
         let mut prefs = UserPrefs::default();
         prefs.upsert_model(SavedModel {
+            auth_mode: None,
             id: "m1".to_string(),
             name: "M1".to_string(),
             alias: None,
@@ -4376,6 +4797,111 @@ mod tests {
             CredentialState::Unavailable,
             "an unreachable-keyring miss on the search lane must read as Unavailable"
         );
+    }
+
+    /// Round-5 review: the env-override stamp used to land on EVERY record
+    /// with no declaration check, so with the override variable exported a
+    /// keyless-declared entry displayed `EnvOverride` for a route no code
+    /// path reads a credential for (and a residual reference displayed
+    /// `Configured`) — defeating the keyless-aware display helper that
+    /// `get_effective_model_config` feeds from this same state. A declared
+    /// record must keep its persisted record state and cost zero store
+    /// reads; undeclared records keep both old legs (reverse direction).
+    #[test]
+    fn refresh_leaves_declared_records_at_their_record_state() {
+        with_temp_home("pinvou3-prefs-refresh-keyless", || {
+            let _restore = crate::platform::test_support::EnvRestore::capture(&[
+                super::MODEL_API_KEY_ENV_OVERRIDE,
+            ]);
+            let store = crate::platform::credential_store::RecordingCredentialStore::new();
+            let reference =
+                crate::platform::credential_store::CredentialReference::for_model("default");
+
+            // Two records with identical residual state; only the migrated
+            // one declares keyless (the hand-edited settings.json dual state
+            // the review found). The clone keeps the full literal valid.
+            let mut prefs = UserPrefs::default();
+            prefs.migrate_models();
+            let mut undeclared = prefs.advanced.saved_models[0].clone();
+            undeclared.id = "undeclared-record".into();
+            undeclared.name = "Env".into();
+            undeclared.auth_mode = None;
+            prefs.upsert_model(undeclared);
+            for record in prefs.advanced.saved_models.iter_mut() {
+                record.credential_ref = Some(reference.clone());
+                record.credential_state = CredentialState::Configured;
+                record.has_secret = true;
+                if record.id != "undeclared-record" {
+                    record.auth_mode = Some("none".to_string());
+                }
+            }
+            let declared = prefs.advanced.saved_models[0].id.clone();
+
+            // Leg 1 — override exported: the declared record keeps its
+            // record state (Configured is truthful: a residual secret IS
+            // stored, it is just never read); the undeclared record flips
+            // to EnvOverride as before.
+            // SAFETY: with_temp_home holds ENV_LOCK; env writes are
+            // serialized in-process.
+            unsafe { std::env::set_var(super::MODEL_API_KEY_ENV_OVERRIDE, "x") };
+            let before = store.ops().len();
+            prefs.refresh_credential_states_with_store(&store);
+            let ops = &store.ops()[before..];
+            let declared_state = prefs
+                .model_by_id(&declared)
+                .expect("declared record present")
+                .credential_state;
+            let undeclared_state = prefs
+                .model_by_id("undeclared-record")
+                .expect("undeclared record present")
+                .credential_state;
+            // SAFETY: with_temp_home holds ENV_LOCK; env writes are
+            // serialized in-process.
+            unsafe { std::env::remove_var(super::MODEL_API_KEY_ENV_OVERRIDE) };
+            assert_eq!(
+                declared_state,
+                CredentialState::Configured,
+                "a declared record must keep its record state under an exported override"
+            );
+            assert_eq!(
+                undeclared_state,
+                CredentialState::EnvOverride,
+                "an undeclared record keeps the env-override classification"
+            );
+            assert!(
+                !ops.iter().any(|op| op.starts_with("get")),
+                "a declared record must cost no store read: {ops:?}"
+            );
+
+            // Leg 2 — no override: the declared record is still untouched
+            // (no store probe for the residual reference), while the
+            // undeclared record's reference resolves through the store.
+            let before = store.ops().len();
+            prefs.refresh_credential_states_with_store(&store);
+            let ops = &store.ops()[before..];
+            let declared_state = prefs
+                .model_by_id(&declared)
+                .expect("declared record present")
+                .credential_state;
+            let undeclared_state = prefs
+                .model_by_id("undeclared-record")
+                .expect("undeclared record present")
+                .credential_state;
+            assert_eq!(
+                declared_state,
+                CredentialState::Configured,
+                "a declared record keeps its record state with no override either"
+            );
+            assert_eq!(
+                undeclared_state,
+                CredentialState::Missing,
+                "an undeclared record resolves through the store (empty store: Missing)"
+            );
+            assert!(
+                ops.iter().filter(|op| op.starts_with("get")).count() == 1,
+                "only the undeclared record's reference is probed: {ops:?}"
+            );
+        });
     }
 
     #[test]

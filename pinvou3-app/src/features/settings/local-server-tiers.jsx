@@ -26,7 +26,11 @@ import {
 // - trimInputs: the form entry trims before probing (as the original did; the dependency array still holds the raw inputs,
 //   so whitespace-only changes still reschedule the probe); the session popover entry passes saved values and needs no trim.
 // In-file only: consumed by the tier hook users below; not part of the module surface.
-function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false }) {
+// noAuth is the model form's keyless posture ("no API key needed" toggle): while
+// active, neither the retained form key nor the record's saved credential may
+// ride the automatic tier probe — the probe hits the very URL the form is
+// declaring keyless, mirroring the two explicit test buttons.
+function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false, noAuth = false }) {
   const [probedKind, setProbedKind] = useState(null);
   const [probePending, setProbePending] = useState(false);
   const probeSupported = bridge.available && !!bridge.models && typeof bridge.models.probeLocalServerKind === 'function';
@@ -51,14 +55,17 @@ function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null
     setProbePending(true);
     setProbedKind(null);
     const probeBaseUrl = trimInputs ? baseUrl.trim() : baseUrl;
-    const probeApiKey = trimInputs ? apiKey.trim() : apiKey;
+    const probeApiKey = noAuth ? '' : trimInputs ? apiKey.trim() : apiKey;
     const runProbe = () => {
       if (probeSupported) {
         // Credentials: a freshly typed form key wins, otherwise the saved
         // model id lets Rust read the stored credential — probing an
         // authenticated vLLM (--api-key) without a key 401s into generic and
-        // falsely reports "thinking tiers are not supported".
-        bridge.models.probeLocalServerKind(probeBaseUrl, probeApiKey, modelId)
+        // falsely reports "thinking tiers are not supported". Under the
+        // keyless posture neither source may ride the probe: the typed key is
+        // dropped here and the posture flag makes the backend skip the
+        // saved-credential fallback (same caliber as the two test buttons).
+        bridge.models.probeLocalServerKind(probeBaseUrl, probeApiKey, modelId, noAuth)
           .then((kind) => { if (!cancelled) setProbedKind(kind); })
           // The probe call itself failing (command rejected/unsupported version) != probing generic:
           // reset to null to take localProbeTiersForKind's default four tiers, not a false "unsupported".
@@ -76,7 +83,7 @@ function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null
     }
     runProbe();
     return () => { cancelled = true; };
-  }, [enabled, baseUrl, apiKey, modelId, debounceMs, probeSupported, trimInputs]);
+  }, [enabled, baseUrl, apiKey, modelId, debounceMs, probeSupported, trimInputs, noAuth]);
   return { probedKind, probePending };
 }
 
@@ -93,12 +100,14 @@ function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null
 //                  table; the form passes its already-normalized live state. Normalization
 //                  stays with the caller — this hook only maps the value onto the resolved
 //                  tiers for display (reasoningEffortDisplayForTiers semantics).
-//   baseUrl/apiKey/modelId/debounceMs/trimInputs - passed through to
+//   baseUrl/apiKey/modelId/debounceMs/trimInputs/noAuth - passed through to
 //                  useLocalServerKindProbe (baseUrl also feeds the local/private check; the
-//                  URL parser ignores edge whitespace so callers need not trim).
+//                  URL parser ignores edge whitespace so callers need not trim; noAuth is
+//                  the form's keyless posture — only the form entry passes it, the composer
+//                  popover relies on the backend's saved-record declaration guard).
 // Returns { isLocalCompatible, probedKind, probePending, reasoningEffortTiers,
 //           noControlThinking, reasoningEffortDisplay }.
-export function useModelReasoningTierState({ model, storedEffort = null, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false }) {
+export function useModelReasoningTierState({ model, storedEffort = null, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false, noAuth = false }) {
   // local_vllm 预设的本地端点同样探测：本地"检测"流程历史存量把探测到的
   // Ollama/LM Studio/Tachyon 候选都存成该预设；探测出 tachyon（驭光）时档表
   // 必须切到 ['off','low','medium','max']（其 wire 无 high、最深档是 xhigh），
@@ -113,6 +122,7 @@ export function useModelReasoningTierState({ model, storedEffort = null, baseUrl
     modelId,
     debounceMs,
     trimInputs,
+    noAuth,
   });
   // local_vllm 预设只有探测出 tachyon 才跟随探测档表：Rust 侧 provider() 的
   // LocalVllm 臂只对 Tachyon 翻转方言，其余探测结果（含 Ollama/LM Studio 的

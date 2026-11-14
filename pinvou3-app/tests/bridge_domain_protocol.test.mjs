@@ -351,7 +351,11 @@ const expectedProtocolHashes = {
   // set_global_shortcut_config invoke (the dedicated command owns both the
   // plugin registration and the prefs persistence; update_settings stays
   // untouched).
-  settings: '981a53b39cce9c689425c458bdab7c73119e3e8e6c2298b9a5e3160d35380ef3',
+  // Recomputed for the keyless-aware tier probe: probe_local_server_kind's
+  // invoke payload gains `noAuth` (the form's keyless posture suppresses the
+  // retained form key and the saved-credential fallback for the automatic
+  // probe, same caliber as the two test commands).
+  settings: 'cded938320d66a29d605f1a3c2fb0f880f489409861bfc7c24d741f1c6e67fd1',
   // Recomputed for the dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer
@@ -426,7 +430,11 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // (set/get super permission) and the artifact reconcile/deliverable-index
 // pair (list_workspace_files, save_session_artifacts, list_deliverable_index)
 // joined the shared base.
-const expectedSharedBaseHash = '958fd067f00e3292857d33a5e80f4d615f2b3e792a6ce431672d3e50196ff219';
+// Recomputed for the keyless-probe-posture wave: the test_model_connection /
+// test_image_input_capability invokes gained the form's noAuth posture arg
+// (the backend probe ladder must skip the saved-credential fallback while the
+// keyless declaration is active).
+const expectedSharedBaseHash = '8f4d964785b23ff932dbcba3780930f6029ae59ac7b2b50eb4d3e665f80a160a';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

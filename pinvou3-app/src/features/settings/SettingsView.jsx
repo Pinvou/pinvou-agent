@@ -411,6 +411,12 @@ function hasStoredCredential(record) {
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
+      // 「此端点无需鉴权」(auth_mode="none")：云端模型的显式免鉴权声明。本地预设
+      // 有独立的 localKeyEnabled 开关，不受它控制；coding_plan 是托管入口，开关
+      // 不渲染，声明状态也不进入（手改 settings.json 的托管条目由后端归一清空）。
+      const [noAuth, setNoAuth] = useState(!initial.__new && initial.preset !== 'local_vllm' && initial.provider_kind !== PROVIDER_KIND_CODING_PLAN && initial.auth_mode === 'none');
+      // 端口输入框（base_url 行内）的行内校验错误；与 localPortError（检测框）独立。
+      const [baseUrlPortError, setBaseUrlPortError] = useState(null);
       const [localKeyEnabled, setLocalKeyEnabled] = useState(!initial.__new && initial.preset === 'local_vllm' && !!initial.has_secret);
       const [pickerOpen, setPickerOpen] = useState(!!initial.__new && initial.preset !== 'local_vllm');
       const [pickerTab, setPickerTab] = useState(initial.__scope === 'local' ? 'local' : 'cloud');
@@ -487,6 +493,7 @@ function hasStoredCredential(record) {
         modelId: initial.__new ? null : initial.id,
         debounceMs: 400,
         trimInputs: true,
+        noAuth,
       });
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -533,6 +540,11 @@ function hasStoredCredential(record) {
         setReasoningEffort(reasoningEffortForModelSwitch({ preset: p, model: nextModel, vendor: group.vendor || vendor, base_url: nextBaseUrl }));
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
+        // 显式换模型/入口：免鉴权声明按记录重置。声明保存在模型条目上，手动
+        // 编辑 URL 不会自动清除（指向新端点是否免鉴权由用户判断；如需收回，
+        // 直接关开关即可），仅在显式切换模型/入口时恢复默认的鉴权规则。
+        setNoAuth(false);
+        setBaseUrlPortError(null);
         setCustomModel(!!item.custom);
         setProviderModelPickerOpen(false);
         setPickerOpen(false);
@@ -554,14 +566,67 @@ function hasStoredCredential(record) {
       }
       function handleBaseUrlChange(value) {
         setBaseUrl(value);
+        // URL 已被直接编辑：旧端口校验错误针对的是改写前的地址，随编辑清除，
+        // 避免红色提示挂在已修正的 URL 上（端口框下次输入会重新校验）。
+        setBaseUrlPortError(null);
         renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
+      }
+      // 解析 http/https URL；其余 scheme（或无法解析）返回 null。端口框只在
+      // 可解析的 http(s) 地址上工作，避免 "127.0.0.1:8003"（无 scheme）被
+      // new URL 误判成 protocol="127.0.0.1:" 的怪异 URL。
+      function parseHttpUrl(value) {
+        try {
+          const parsed = new URL(value);
+          return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null;
+        } catch {
+          return null;
+        }
+      }
+      // base_url 的显式端口（无显式端口 = ''，即走 scheme 默认）。
+      // 端口框输入 → 原位改写 base_url 的端口（保留 scheme/host/path）。
+      // 校验口径与本地检测端口框一致：空串 = 移除显式端口（走 scheme 默认）；
+      // 非纯数字或超出 1-65535（含 0）只报错不改 URL，输入框值始终由 base_url
+      // 派生，因此非法输入会被弹回上一个合法值。
+      function handleBaseUrlPortChange(raw) {
+        const trimmed = raw.trim();
+        if (trimmed === '') {
+          const parsed = parseHttpUrl(baseUrl);
+          if (!parsed) return;
+          parsed.port = '';
+          setBaseUrlPortError(null);
+          handleBaseUrlChange(serializeParsedBaseUrl(parsed));
+          return;
+        }
+        const port = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+        if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+          setBaseUrlPortError(settingsCopy.localPortInvalid);
+          return;
+        }
+        const parsed = parseHttpUrl(baseUrl);
+        if (!parsed) return;
+        parsed.port = String(port);
+        setBaseUrlPortError(null);
+        handleBaseUrlChange(serializeParsedBaseUrl(parsed));
+      }
+      // URL API 的 toString 在空路径时补一个尾斜杠；只剥这个补出来的斜杠，
+      // 不顺手动用户自己写的路径尾斜杠（如 .../v1/ —— 与直接编辑 URL 行的
+      // 行为一致，手动输入不归一化）。
+      function serializeParsedBaseUrl(parsed) {
+        const serialized = parsed.toString();
+        return parsed.pathname === '/' ? serialized.replace(/\/$/, '') : serialized;
       }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
-        const testKey = keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        // 测试连接要与保存后的鉴权形态一致：免鉴权声明生效时不携带已输入
+        // 的 key（开关开着时 key 行隐藏，但已输入的 key 仍残留 state）。
+        const testKey = !isLocalPreset && !isCodingPlan && noAuth
+          ? ''
+          : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         try {
-          const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id);
+          // noAuth 随请求下发：后端据此跳过已保存凭据回退（残留 key 不得
+          // 在保存前发往新填的 URL，与保存后的鉴权形态完全一致）。
+          const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
         } catch (e) {
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
@@ -589,9 +654,13 @@ function hasStoredCredential(record) {
       async function handleImageCapabilityTest() {
         if (!bridge.available || !bridge.models.testImageInputCapability) return;
         setImageTesting(true); setImageTestResult(null);
-        const testKey = keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        // 与 handleTest 同口径：免鉴权声明生效时不携带残留的已输入 key。
+        const testKey = !isLocalPreset && !isCodingPlan && noAuth
+          ? ''
+          : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         try {
-          const result = await bridge.models.testImageInputCapability(model.trim(), baseUrl.trim(), testKey, initial.__new ? null : initial.id);
+          // 与 handleTest 同口径：noAuth 随请求下发，后端据此跳过已保存凭据回退。
+          const result = await bridge.models.testImageInputCapability(model.trim(), baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           setImageTestResult(normalizeImageCapabilityTestResult(result));
         } catch (e) {
           setImageTestResult({ status: 'error', verified: false, summary: String(e && e.message ? e.message : e), httpStatus: null });
@@ -599,15 +668,27 @@ function hasStoredCredential(record) {
         finally { setImageTesting(false); }
       }
       const isLocalPreset = preset === 'local_vllm';
+      // base_url 的解析结果：端口框的回显值与只读态都由它派生（URL 不可解析
+      // 时端口框只读置空）。
+      const parsedBaseUrl = parseHttpUrl(baseUrl);
       const showProviderModelField = !isLocalPreset && !!activeProvider && Array.isArray(activeProvider.items) && activeProvider.items.length > 0;
       const showModelIdField = isLocalPreset || customModel || showProviderModelField;
-      const showBaseUrlField = isLocalPreset
-        || (customModel && (preset === 'openai_compatible' || preset === 'openai_responses') && !isCodingPlan);
-      const showCustomCloudKeyField = !isLocalPreset && customModel;
+      // API 地址字段：本地预设始终可见（端口写在 URL 里）；云端预设全部可见
+      // （默认填官方端点，用户可改指向自建网关/带自定义端口的反代）。coding_plan
+      // 是托管入口，端点由平台管理，不开放编辑。
+      const showBaseUrlField = !isCodingPlan;
+      // 「免鉴权」的 UI 活性:noAuth 是表单状态,但托管入口上开关不渲染 ——
+      // 开着开关把 URL 改写成托管端点会让开关行消失,而载荷侧 auth_mode 与
+      // 凭据删除都已按 !isCodingPlan 同口径归一。UI 渲染(开关、Key 行、提示)
+      // 必须跟随同一口径回到未声明形态,否则出现「提示在、开关无、Key 行藏」
+      // 的死局,且开关开着时输入的 key 会被静默丢弃。
+      const noAuthActive = !isLocalPreset && !isCodingPlan && noAuth;
+      const showCustomCloudKeyField = !isLocalPreset && customModel && !noAuthActive;
       const showLocalKeyField = isLocalPreset && localKeyEnabled;
+      const showNoAuthToggle = !isLocalPreset && !isCodingPlan;
       const showDisplayNameField = isLocalPreset && !initial.__new;
       const showAliasField = !isLocalPreset;
-      const showConfigFields = showAliasField || showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField;
+      const showConfigFields = showAliasField || showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField || showNoAuthToggle;
       const selectedProvider = isLocalPreset ? presetProviderLabel(preset, t) : (activeProvider ? (activeProvider.configTitle || activeProvider.title) : presetProviderLabel(preset, t));
       const selectedModelLabel = model || settingsCopy.customModel;
       const modalTitle = initial.__new
@@ -616,7 +697,7 @@ function hasStoredCredential(record) {
       const saveName = showDisplayNameField || isLocalPreset ? (name.trim() || settingsCopy.localModelName(model.trim())) : (model.trim() || selectedProvider);
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = hasStoredCredential(initial);
-      const hasUsableApiKey = isLocalPreset || hasSavedKey || !!apiKey.trim();
+      const hasUsableApiKey = isLocalPreset || noAuthActive || hasSavedKey || !!apiKey.trim();
       const canSave = !!(saveName && model.trim() && baseUrl.trim() && hasUsableApiKey);
       async function toggleApiKeyVisibility() {
         const nextVisible = !showKey;
@@ -631,6 +712,16 @@ function hasStoredCredential(record) {
         }
         setShowKey(nextVisible);
       }
+      // 保存时的凭据编辑动作（云端/自定义路径）：免鉴权声明显式删除已存凭据
+      // （避免留下永远用不到的明文/钥匙串残留），本就没有凭据时 replace 落成
+      // missing 即可；其余沿用既有语义（新填/首次保存 → replace，否则保留）。
+      // 与 auth_mode 载荷同口径排除 coding_plan：托管归属随 base_url 实时
+      // 判定，开关开着时把 URL 改写成托管端点会隐藏开关行，但 noAuth 状态
+      // 残留——凭据删除不得被这个残留触发（声明不落盘却删了凭据）。
+      function cloudCredentialAction() {
+        if (!isCodingPlan && noAuth) return hasSavedKey ? 'delete' : 'replace';
+        return apiKey.trim() || initial.__new || !hasSavedKey ? 'replace' : 'keep_existing';
+      }
       // 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」
       // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
       async function doSave() {
@@ -640,10 +731,13 @@ function hasStoredCredential(record) {
         const outputTokens = Number(maxOutput);
         const nextKeyAction = isLocalPreset
           ? (localKeyEnabled && apiKey.trim() ? 'replace' : 'keep_existing')
-          : (apiKey.trim() || initial.__new || !hasSavedKey ? 'replace' : 'keep_existing');
+          : cloudCredentialAction();
         const nextApiKey = isLocalPreset
           ? (localKeyEnabled && apiKey.trim() ? apiKey.trim() : '')
-          : (!isLocalPreset && apiKey.trim() ? apiKey.trim() : '');
+          // noAuthActive（round-5 review）:与 noAuthActive 派生同一口径,
+          // 不用裸 noAuth——「开关开着但 URL 指向托管端点」时输入的 key
+          // 不能既显示又被静默丢弃。
+          : (!noAuthActive && apiKey.trim() ? apiKey.trim() : '');
         setSavingModel(true);
         setSaveError('');
         try {
@@ -659,6 +753,10 @@ function hasStoredCredential(record) {
             provider_kind: providerKind || null,
             vendor: vendor || null,
             endpoint_mode: endpointMode || null,
+            // 端点鉴权声明：勾选「此端点无需鉴权」存 "none"（后端归一、直通
+            // 底座 auth_mode）；默认档存 null（按 provider/端点规则决定）。
+            // coding_plan 是托管入口，不接收声明（开关对其不渲染）。
+            auth_mode: !isLocalPreset && !isCodingPlan && noAuth ? 'none' : null,
             // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
             image_capability_override: imageCapability || 'pinvou',
             vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
@@ -799,6 +897,9 @@ function hasStoredCredential(record) {
         setApiKey('');
         setKeyAction('keep_existing');
         setLocalKeyEnabled(false);
+        // 本地预设走自己的 localKeyEnabled 开关；清掉云端残留的免鉴权声明与端口错误。
+        setNoAuth(false);
+        setBaseUrlPortError(null);
         setCustomModel(true);
         setPickerOpen(false);
         // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
@@ -931,6 +1032,19 @@ function hasStoredCredential(record) {
             placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
             className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
           <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
+        </div>
+      );
+      // 「此端点无需鉴权」开关行（auth_mode="none"）：云端模型的显式免鉴权声明。
+      // 开启后隐藏 API Key 输入行，保存时置 auth_mode="none" 并删除已存凭据。
+      const renderNoAuthToggleRow = (withBorder = false) => (
+        <div className={withBorder ? `min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}` : 'min-h-[54px] flex items-center gap-3 px-4 py-2.5'}>
+          {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and toggle button are siblings; the toggle carries aria-pressed itself */}
+          <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.noAuthToggleLabel}</label>
+          <button type="button" onClick={() => setNoAuth(v => !v)} data-testid="model-form-no-auth-toggle"
+            className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${noAuth ? 'bg-[#007AFF]' : ('bg-[#D1D1D6] dark:bg-[#3A3A3C]')}`}
+            aria-pressed={noAuth}>
+            <span className={`block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${noAuth ? 'translate-x-5' : 'translate-x-0'}`} />
+          </button>
         </div>
       );
       const renderCloudProviderPicker = () => {
@@ -1315,9 +1429,10 @@ function hasStoredCredential(record) {
               {!isLocalPreset && !customModel && (
                 <section>
                   <div className={formGroup}>
-                    {renderApiKeyField({ withBorder: false })}
+                    {!noAuthActive && renderApiKeyField({ withBorder: false })}
+                    {showNoAuthToggle && renderNoAuthToggleRow(!noAuthActive)}
                   </div>
-                  {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                  {!noAuthActive && keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
               )}
               {showConfigFields && (
@@ -1339,7 +1454,32 @@ function hasStoredCredential(record) {
                     {showProviderModelField && renderProviderModelField()}
                     {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => handleModelIdChange(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
                     {showCustomCloudKeyField && renderApiKeyField({ withBorder: true })}
-                    {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => handleBaseUrlChange(e.target.value) })}
+                    {showNoAuthToggle && customModel && renderNoAuthToggleRow(true)}
+                    {showBaseUrlField && renderInlineField({
+                      label: t.customBaseUrl,
+                      value: baseUrl,
+                      onChange: e => handleBaseUrlChange(e.target.value),
+                    })}
+                    {/* 端口独立成行（不并入 URL 行）：URL 行的受控 input 与同行
+                        相邻 input 在个别内核下选择/点击行为互相干扰（三连击全选
+                        失效 → 编辑 URL 打错字，settings_ui_smoke 的 Tachyon
+                        档位钉即此），独立行让 URL 行保持与既有表单一致的 DOM
+                        契约。URL 不可解析（非 http/https）时只读，值由 baseUrl
+                        派生；清空 = 移除显式端口（走 scheme 默认）。显式写默认
+                        端口（https 443 / http 80）会被 WHATWG URL 规范化丢弃
+                        （等价 URL），端口框随之回显为空，属预期行为。 */}
+                    {showBaseUrlField && renderInlineField({
+                      label: settingsCopy.localPortLabel,
+                      value: parsedBaseUrl ? (parsedBaseUrl.port || '') : '',
+                      onChange: e => handleBaseUrlPortChange(e.target.value),
+                      placeholder: settingsCopy.localPortPlaceholder,
+                      testId: 'model-form-base-url-port',
+                      inputMode: 'numeric',
+                      spellCheck: false,
+                      readOnly: !parsedBaseUrl,
+                    })}
+                    {baseUrlPortError && <div className="px-4 pb-2 text-[12px] leading-4 text-[#FF3B30]">{baseUrlPortError}</div>}
+                    {noAuthActive && <div className="px-4 pb-3 text-[12px] leading-4 text-[#8A8A8E] dark:text-[#8E8E93]">{settingsCopy.noAuthHint}</div>}
                     {/* Context window (optional for cloud models): a newly released
                         model ID not yet in the catalog cannot be resolved by it, so
                         the runtime falls back to the conservative 128K window.

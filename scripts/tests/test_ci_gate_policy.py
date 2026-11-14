@@ -1603,6 +1603,17 @@ class CiGatePolicyTests(unittest.TestCase):
             "pet is exempted from rust_full like feedback/personas, so pet Rust "
             "changes must gate through the CLI suite too",
         )
+        # platform/prefs defines the SavedModel schema the CLI reads and
+        # writes (pinvou-cli path-depends on pinvou3-tauri and constructs
+        # SavedModel literals). Today the CLI legs fire transitively via
+        # rust_full for any src-tauri .rs change; the direct entry keeps the
+        # CLI suite gating schema changes even if rust_full ever gains a
+        # prefs exclusion like the leaf features above.
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/src/platform/prefs/**",
+            "prefs schema changes must gate through the CLI suite (the CLI "
+            "constructs SavedModel literals)",
+        )
         # Policy: the workflow file itself is deliberately excluded from
         # cli_rust — workflow edits must not link the full-app test suites
         # (this test enforces that). cli-test changes are instead validated

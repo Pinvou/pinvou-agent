@@ -3528,13 +3528,15 @@
   }
 
   // web+tauriSettings 共享
-  async function testModelConnection(baseUrl, apiKey, modelId) {
-    return invoke("test_model_connection", { baseUrl, apiKey, modelId: modelId || null });
+  // noAuth = 表单当前生效的免鉴权声明:探测与保存后的鉴权形态一致,后端
+  //据此跳过已保存凭据回退(免鉴权时残留 key 不得发往新 URL)。
+  async function testModelConnection(baseUrl, apiKey, modelId, noAuth) {
+    return invoke("test_model_connection", { baseUrl, apiKey, modelId: modelId || null, noAuth: !!noAuth });
   }
 
   // web+tauriSettings 共享
-  async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
-    return invoke("test_image_input_capability", { model, baseUrl, apiKey, modelId: modelId || null });
+  async function testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth) {
+    return invoke("test_image_input_capability", { model, baseUrl, apiKey, modelId: modelId || null, noAuth: !!noAuth });
   }
 
   // web+tauriInteraction 共享
