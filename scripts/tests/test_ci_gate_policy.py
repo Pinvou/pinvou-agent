@@ -4369,6 +4369,25 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+    def test_release_working_directories_resolve_to_real_paths(self):
+        # Round-37 shipped a `pinvoy3-app/...` filter entry (dead), and the
+        # r6 fixwave shipped `working-directory: pinvoy3-app` in all five
+        # release build jobs at once — GitHub fails a step whose
+        # working-directory does not exist and none of those steps is
+        # continue-on-error, so every release leg died at 安装前端依赖
+        # before producing artifacts. Top-level segments of the build-time
+        # paths (…/target/release/bundle/…) cannot be checked deeper than
+        # the checkout, so the pin asserts the first path segment of every
+        # working-directory exists in the repository — exactly the
+        # granularity this typo class has bitten at, twice.
+        for raw in re.findall(r"working-directory:[ \t]*([^\n#]+)", self.release_workflow):
+            path = raw.strip().strip("\"'")
+            first = path.split("/")[0]
+            self.assertTrue(
+                bool(first) and (ROOT / first).exists(),
+                f"release working-directory names a path that does not exist: {path!r}",
+            )
+
     def test_release_linux_build_jobs_prepare_disk_and_prune_apt(self):
         # Release build jobs (single-disk hosted runner; with the old 16G
         # /mnt swapfile in place x64 builds had only ~13-14G free) must clean
