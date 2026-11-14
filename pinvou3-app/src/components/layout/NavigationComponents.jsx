@@ -145,7 +145,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
       ) : null;
       if (editing) {
         return (
-          <div className="flex h-11 items-center px-1.5">
+          <div className="flex h-8 items-center px-1.5">
             {/* biome-ignore lint/a11y/noAutofocus: clicking "Rename" enters inline editing, so focus must land on the input immediately (payload behavior) */}
             <input autoFocus value={val}
               onChange={e => setVal(e.target.value)}
@@ -173,7 +173,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
-          className={`group flex h-11 items-center rounded-full text-[15px] transition-all
+          className={`group flex h-8 items-center rounded-full text-[15px] transition-all
             ${personaTarget ? ''
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'
                      : 'text-[#1F1F1F] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#282A2C]'}`}>{/* isDark dynamic-value: 保留 (personaTarget boxShadow 运行时拼色,与 background/color 同对象) */}
@@ -206,12 +206,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
           )}
           {/* 置顶标:常驻显示在标题前,倾斜小灰标,与「置顶优先」排序呼应 */}
           {chat.pinned && <PinIcon size={12} className="shrink-0 mr-1.5 rotate-45 text-[#8A8F94] dark:text-[#9AA0A6]" />}
-          <span className="min-w-0 flex-1 pr-2">
-            <span className="block truncate whitespace-nowrap leading-5">{chat.titleContent || chat.title}</span>
-            {chat.subtitle && (
-              <span className="block truncate text-[12px] leading-4 text-[#8A8F94] dark:text-[#9AA0A6]">{chat.subtitle}</span>
-            )}
-          </span>
+          <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-2">{chat.titleContent || chat.title}</span>
           {/* 等待选择时模型不在生成：橙点替代灰点，避免两个徽标叠加 */}
           {chat.working && !chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
           {chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-[#F9AB00] opacity-90 animate-pulse" title={t.riAwaitingInput}></span>}
