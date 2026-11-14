@@ -1583,7 +1583,17 @@ fn documents(
         .list_documents(collection_id, limit.unwrap_or(0), offset)
         .map_err(|error| feature_error("documents", error))?;
     let human = if documents.is_empty() {
-        format!("no documents in collection {collection_id}")
+        // With --offset an empty page no longer implies an empty collection;
+        // claiming "no documents in collection" for `--offset 500` on a
+        // 3-document collection is a false statement (r6 review). JSON
+        // already reports the empty array; the human line states the page.
+        if offset == 0 {
+            format!("no documents in collection {collection_id}")
+        } else {
+            format!(
+                "collection {collection_id} has no documents past offset {offset} (page empty, not collection)"
+            )
+        }
     } else {
         join_rows(&documents, |document| {
             // Store/filesystem-sourced cells: collapsed like every other
