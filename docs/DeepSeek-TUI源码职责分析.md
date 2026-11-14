@@ -1,6 +1,6 @@
 # DeepSeek-TUI 源码职责分析
 
-> **注（2026-11 回填）**：本文为底座更名前的历史快照（基线 v0.8.60）。底座上游 v0.8.45 起更名
+> **注（2026-11 回填）**：本文为本地目录仍名 `DeepSeek-TUI/` 时期的历史快照（基线 v0.8.60——晚于上游 v0.8.45 更名，本地 alias 当时未随上游改名，见 Windows 迁移手册 §9）。底座上游 v0.8.45 起更名
 > `CodeWhale`（现仓库子模块 `CodeWhale/`，本文写作时为 v0.8.60，现已演进至 v0.9.x），文中
 > `DeepSeek-TUI/` 路径对应现 `CodeWhale/`；`pinvou3-app/src-tauri/src/` 的旧扁平布局
 > （`bridge/mod.rs`、`commands.rs`、`engine.rs`、`engine_pool.rs` 等）已重构为
@@ -225,6 +225,8 @@ cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml
 | Hook 行为异常 | `bridge/mod.rs::build_hooks_config`、`DeepSeek-TUI/crates/hooks/src/lib.rs` | 检查 hook event 类型、sink、是否由 bridge 正确配置 |
 
 ## 验收清单
+
+> ⚠️ 快照条目：以下勾选项对照的是快照时点的交付要求与当时的代码布局，不代表对当前主干的验收结论。
 
 - [x] 中文主体：本文除技术名词、路径、类型和命令外均使用中文说明。
 - [x] 定位清楚：已说明 DeepSeek-TUI 是 agent 底座，pinvou3-app 是 Tauri UI、Rust wrapper、配置/状态适配层。

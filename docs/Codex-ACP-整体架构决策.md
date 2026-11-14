@@ -1,11 +1,12 @@
 # Codex ACP 整体架构决策
 
-> 文档状态：架构决策记录；MVP 已实现并随后续版本继续演进（现状以 [`codex-acp.md`](./codex-acp.md) / [`multi-agent-acp.md`](./multi-agent-acp.md) 为准）
-> 评审范围：架构与产品边界，不代表已实现
+> 文档状态：已归档的架构决策记录（2026-11 回填自内部仓库快照）；核心决策已落地并随后续版本继续演进（现状以 [`codex-acp.md`](./codex-acp.md) / [`multi-agent-acp.md`](./multi-agent-acp.md) 为准）
+> 评审范围：本文评审的是架构与产品边界，不逐项代表实现状态。除 §9 外，正文组件名（`PermissionBroker`、`AcpRuntimeManager`、`AcpSessionAggregate` 等）与 §6/§11 的目标架构为设计构想，未按原样实现——现行实现为 `pinvou3-app/src-tauri/src/features/codex_acp/`（Rust）与 `pinvou3-app/src/features/codex/`（前端），本文与现状的逐项出入不另设对照表，以两份现状文档为准
 > 记录日期：2026-07-23（2026-11 归档注记：分支 `feat/codex-acp` 与基线提交 `2b84908b` 不在本仓库）
+> 归档说明：本文为回填的历史决策记录，未纳入 [`docs/adr/`](./adr/) 编号系列；该系列编号供新决策顺延使用，历史回填不占号
 > 对应分支：`feat/codex-acp`
 > 当前原型基线：`2b84908b`
-> AionUI 参考基线：`1b215f2f`，AionCore `v0.1.50` / `10cdd579`
+> AionUI 参考基线：`1b215f2f`，AionCore `v0.1.50` / `10cdd579`（AionUI/AionCore 为公开开源项目 github.com/iOfficeAI，不在本仓库）
 
 ## 1. 一句话决策
 
