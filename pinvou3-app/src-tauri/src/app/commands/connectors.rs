@@ -295,8 +295,22 @@ pub async fn refresh_connector_auth_gates(
     // enabled. The aggregate verdict is still returned verbatim: this
     // projects persisted state, it does not soften the failure.
     let result = connector_cli_domain::refresh_connector_auth_gates().await;
-    refresh_tools_and_broadcast(&app, pool.inner()).await?;
-    Ok(result?)
+    // Round-5 review minor: a ruleset/tools refresh failure used to `?` over
+    // the already-computed gates verdict — the persisted-state projection the
+    // comment above promises verbatim was silently replaced by the refresh
+    // error. Both signals now survive: the gates verdict stays the command's
+    // answer, and the refresh failure is attached (or carried alone when the
+    // verdict itself succeeded).
+    match refresh_tools_and_broadcast(&app, pool.inner()).await {
+        Ok(()) => Ok(result?),
+        Err(refresh_error) => match result {
+            // The verdict is unusable here — the refresh failure surfaces instead.
+            Ok(_) => Err(refresh_error),
+            Err(gates_error) => Err(format!(
+                "{gates_error}；此外技能/规则集热刷也失败: {refresh_error}"
+            )),
+        },
+    }
 }
 
 async_command_passthrough!(feishu_domain, feishu_ensure_cli() -> Result<Value, String>);
