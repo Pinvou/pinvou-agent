@@ -538,8 +538,9 @@ fn voice_postprocess_changed(mode: &str, text: &str, draft_text: Option<&str>) -
 }
 
 /// voice 域的推理控制薄壳：dialect 判定与请求体写入统一委托
-/// `core::reasoning_dialect`（与 review/memory 同一实现；本域的 preset 分发
-/// 保留 memory 同款的 model-name 回退，见下方函数注释）。
+/// `core::reasoning_dialect`（与 memory 同一实现；review 自 2026-11-06 起改走
+/// 永不关闭的 features/review::apply_review_thinking_controls，不再经本模块。
+/// 本域的 preset 分发保留 memory 同款的 model-name 回退，见下方函数注释）。
 fn apply_voice_reasoning_controls(
     body: &mut Value,
     preset: crate::platform::prefs::ModelPreset,

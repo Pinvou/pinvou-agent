@@ -81,7 +81,7 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // `include: ["reasoning.encrypted_content"]`; replay matches the captured
 // provider tag). Foundation side: CodeWhale PR #79, squash-merged into
 // pinvou3-clean as `3035a022e` and carried by the pinned head `0bc868ff0`.
-const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
+pub(crate) const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 
 /// Canonical persisted `(model_provider, model_provider_id)` pair for the
 /// engine route `build_dt_config` resolved (its `cfg.provider`).
@@ -1454,7 +1454,7 @@ impl Pinvou3Bridge {
     /// `wire = "responses"`) on a GPT×Responses hit. Consumed solely by
     /// `build_dt_config`; the divergence from `provider()` is declared here
     /// and in the [`Self::uses_responses_wire`] docs.
-    fn engine_route_provider(&self) -> String {
+    pub(crate) fn engine_route_provider(&self) -> String {
         if self.uses_responses_wire() {
             RESPONSES_ROUTE_PROVIDER.to_string()
         } else {
@@ -2152,6 +2152,40 @@ impl Pinvou3Bridge {
             output_tokens: output_tokens.map(u64::from),
         };
         limits.has_known_limit().then_some(limits)
+    }
+
+    /// The `max_tokens` the main turn puts on the wire for this route — the
+    /// route-effective request cap computed by the foundation
+    /// (`route_effective_max_output_tokens`: explicit overrides, compatibility
+    /// ceilings, route limits, and the route window intersected, with the wire
+    /// model normalized exactly as the transport does). Single source for
+    /// host-issued one-shot calls (the Pinvou review summon): they must carry
+    /// the same budget as the main conversation instead of hard-coding a
+    /// constant and drifting from the engine — the same rule
+    /// `context_input_budget_for_route` was published for on the input side.
+    /// Uncatalogued-id behavior: the compatibility ceiling falls back to
+    /// `Uncatalogued(8192)` — a **ceiling**, not a floor: with a declared
+    /// window the request cap is `(window/4).clamp(1, 8192)`, so an unknown
+    /// gateway model on a small-window route can land below 8192 (still far
+    /// above the old hard-coded 1600 in the common case); the foundation
+    /// floors the final value at 1.
+    ///
+    /// Limits provenance nuance (r5 review m9): the `route_limits_for_model`
+    /// declaration passed here is literally what lands in
+    /// `EngineConfig.active_route_limits` (compaction/preflight budgets), but
+    /// the main turn's wire clamp reads the client-frozen resolver candidate
+    /// limits instead; the two coincide on catalogued routes (k3 verified) and
+    /// this declaration is the more truthful fact where they differ
+    /// (operator-owned endpoints).
+    pub(crate) fn main_wire_max_output_tokens(&self, model: &str) -> u32 {
+        let config = self.build_dt_config();
+        let provider = config.api_provider();
+        deepseek_tui::core::engine::route_effective_max_output_tokens(
+            provider,
+            &self.base_url(),
+            model,
+            self.route_limits_for_model(model),
+        )
     }
 
     /// Context window of the current active route (carried to the frontend by
@@ -6712,6 +6746,73 @@ mod tests {
         assert_eq!(
             t_c, 105_722,
             "the 256K/65536 profile's Compact threshold must stay stable at 105722"
+        );
+    }
+
+    /// The Pinvou review summon must put the SAME max_tokens on the wire as
+    /// the main turn for the same route: `main_wire_max_output_tokens` →
+    /// foundation `route_effective_max_output_tokens` (the identical chain the
+    /// engine's client walks). Pin the k3/Kimi Coding Plan value so the two
+    /// paths cannot silently drift apart: the base catalogue documents k3's
+    /// default generation ceiling (131072), and `output_ceiling_source`
+    /// (route_budget.rs) reads the static k3 row as
+    /// OutputCeilingSource::Documented before the membership roster
+    /// (`RouteDeclaredUnknown`, which bare "k3" is also on) is ever consulted
+    /// → requested cap min(API_MAX 65536) = 65536, and the host route declares
+    /// no output cap. The review's old hard-coded budget was 1600 — consumed
+    /// entirely by k3 reasoning tokens (content empty, finish_reason=length,
+    /// 2026-11-06). If the foundation budget chain changes this value, update
+    /// the pin together with the main-turn wire.
+    #[test]
+    fn main_wire_max_output_tokens_matches_engine_budget_for_k3() {
+        let (_lock, _env) = locked_env(&[
+            "CODEWHALE_MAX_OUTPUT_TOKENS",
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "DEEPSEEK_PROVIDER",
+            "PINVOU3_MAX_OUTPUT_TOKENS",
+        ]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("CODEWHALE_MAX_OUTPUT_TOKENS") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_MAX_OUTPUT_TOKENS") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("DEEPSEEK_PROVIDER") };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_MAX_OUTPUT_TOKENS") };
+
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "k3",
+            "https://api.kimi.com/coding/v1",
+            "k",
+        );
+        // 生产线材归一：coding-plan 端点被识别为 vendor kimi → provider()
+        // "moonshot"（prefs/model.rs identify_coding_plan_endpoint）→ 底座
+        // ApiProvider::Moonshot。fixture 必须走同一条 Moonshot 链，别钉在
+        // Openai 直通链上（两条链当前同值，但钉住生产线材才有防漂移意义）。
+        bridge.prefs.advanced.saved_models[0].provider_kind = Some("coding_plan".to_string());
+        bridge.prefs.advanced.saved_models[0].vendor = Some("kimi".to_string());
+        // 钉住链而不止钉值：vendor→moonshot 映射若断（回退 Openai/custom 直通链）
+        // 两条链当前同值、值钉仍绿——身份断言让映射漂移变红（r3 审 m-minor）。
+        assert_eq!(
+            bridge.provider(),
+            "moonshot",
+            "coding_plan×kimi 归一必须落 provider()==moonshot（引擎 Moonshot 身份链）"
+        );
+        // r6 审 NIT：预算包装实际消费的是 build_dt_config().api_provider()，
+        // 不是 provider() 字符串——把引擎侧解析结果一并钉住，parse 链漂移
+        // （如不可解析兜底改道）才可见。
+        assert_eq!(
+            bridge.build_dt_config().api_provider(),
+            ApiProvider::Moonshot,
+            "build_dt_config().api_provider() 必须落引擎 Moonshot 身份（预算包装的实际输入）"
+        );
+        assert_eq!(
+            bridge.main_wire_max_output_tokens(&bridge.model()),
+            65_536,
+            "k3 主对话线材预算=目录 documented 131072 min API_MAX 65536;审查必须发同一个值"
         );
     }
 

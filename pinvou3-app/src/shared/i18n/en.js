@@ -589,7 +589,7 @@ export const dictEn = {
         // Pinvou review card. 品/悟 glyphs are brand marks, kept; surrounding text follows language.
         pvLoadingPin: 'Pinvou 品 · Review', pvLoadingWu: 'Pinvou 悟 · Explore',
         pvLoadingPinSub: 'Checking point by point, hunting for issues', pvLoadingWuSub: 'Comparing completeness dimensions, finding gaps',
-        pvLoadingHint: isLocal => isLocal ? 'Local model is thinking, usually 5–30s, hang tight…' : 'The model is thinking, usually a few seconds…',
+        pvLoadingHint: isLocal => isLocal ? 'Local model is thinking, usually 5–30s, hang tight…' : 'The model is thinking; reasoning models can take a few minutes, hang tight…',
         pvFail: 'Failed: ', pvSkipped: 'Skipped', pvPerspective: ' view', pvAlsoInvolves: 'also covers',
         pvVerdictPass: '✓ Passed, ready to ship', pvFramework: 'Completeness framework', pvDims: ' dims', pvSuggest: 'Suggest ', pvNeedsVerify: 'Needs check',
         pvActAdopt: 'Adopt', pvActAsk: 'Have AI ask me', pvActVerify: 'Have AI verify', pvActConfirmed: "It's fine",

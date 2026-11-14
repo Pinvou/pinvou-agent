@@ -1217,7 +1217,7 @@ function inspectPinvou(focus) { return pinvouSharedtauriChat().inspectPinvou(foc
 
   // B2: 审查卡进 sidecar 时间线(pos=当前 messages 数),落盘。同 recordPersonaEvent
   // 范式,**不进 messages/LLM**;rerenderFromMessages 按 pos 插回,切会话/重载不丢。
-function recordPinvouReview(review) { return pinvouSharedtauriChat().recordPinvouReview(review); }
+function recordPinvouReview(review, seq) { return pinvouSharedtauriChat().recordPinvouReview(review, seq); }
 
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。

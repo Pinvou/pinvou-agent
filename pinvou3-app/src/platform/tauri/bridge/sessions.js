@@ -70,6 +70,7 @@ function pinvouSharedtauriSessions() {
     // readers so a durable-data defect cannot pose as "no data".
     function loadPersonaEventsForSession(sid) { return pinvouSharedtauriSessions().loadPersonaEventsForSession(sid); }
     function loadPinvouReviewsForSession(sid) { return pinvouSharedtauriSessions().loadPinvouReviewsForSession(sid); }
+    function raisePinvouSummonHighwater(reviews) { return pinvouSharedtauriSessions().raisePinvouSummonHighwater(reviews); }
     const MAX_SCHEDULED_SESSION_BUFFERS = 64;
     const MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     // All-session buffer cap: each sessionStates entry holds the full
@@ -279,6 +280,7 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSes
     hydrateWorkingSetFromSaved(buf, saved);
     buf.personaEvents = await loadPersonaEventsForSession(sid);
     buf.pinvouReviews = await loadPinvouReviewsForSession(sid);
+    raisePinvouSummonHighwater(buf.pinvouReviews); // 后台缓冲提交即验收抬底(r5 审 M1)
     buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     buf.steeredMessages = await syncSteeredMessagesForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch { buf.turnTimeline = []; }
@@ -835,6 +837,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     let turnTimeline = [];
     try { turnTimeline = await invoke("get_session_timeline", { sessionId: id }) || []; } catch { /* optional data; default to empty */ }
     if (requestToken !== sessionSwitchRequestToken) return false;
+    raisePinvouSummonHighwater(pinvouReviews); // 验收后才抬底:被拒导航不得抬账目底(JensenChen28 审 P2)
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));

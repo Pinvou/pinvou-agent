@@ -588,7 +588,7 @@ const jaBase = {
         // 品悟レビューカード。品/悟 の字はブランド表記として保持、周囲の文言は言語に追従。
         pvLoadingPin: 'Pinvou 品 · レビュー', pvLoadingWu: 'Pinvou 悟 · 発散補完',
         pvLoadingPinSub: '一つずつ照合し、問題を洗い出し中', pvLoadingWuSub: '完全性の観点を比較し、補強点を発散中',
-        pvLoadingHint: isLocal => isLocal ? 'ローカルモデルが推論中です。通常 5〜30 秒、お待ちください…' : 'モデルが推論中です。通常数秒〜十数秒、お待ちください…',
+        pvLoadingHint: isLocal => isLocal ? 'ローカルモデルが推論中です。通常 5〜30 秒、お待ちください…' : 'モデルが推論中です。思考型モデルは数分かかることもあります、お待ちください…',
         pvFail: '失敗：', pvSkipped: 'スキップ済み', pvPerspective: 'の視点', pvAlsoInvolves: '関連',
         pvVerdictPass: '✓ 合格・納品可能', pvFramework: '完全性フレームワーク', pvDims: '項目', pvSuggest: '提案 ', pvNeedsVerify: '要確認',
         pvActAdopt: '提案を採用', pvActAsk: 'AI に質問させる', pvActVerify: 'AI に確認させる', pvActConfirmed: '問題ないと確認',
