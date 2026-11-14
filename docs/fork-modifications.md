@@ -61,19 +61,19 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `11cba403d`，包含 #115–#122、#114/#125 与 #123/#124/#129/#131/#133/#134/#135；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为公开维护头 `8e8d52fdb`，包含 #115–#122、#114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152 与 #156；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-11-05）
+## 0. 当前状态（2026-11-14）
 
-- 当前公开维护头与父仓 gitlink：`11cba403dc6bd6ca5c4dca55042785b03449ac8e`（2026-11-05）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；本轮仅更新父仓引用，没有推进维护分支。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 93 个提交，r1 `1fafee7e2` 之上 78 个；91 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`8e8d52fdb4a418bf4310db4b5d03dce5345c54d5`（2026-11-14）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`。本轮维护分支以一个已签署的 rustc/clippy 1.100 stable lint 适配提交跟进（见 §3 表首行），父仓 gitlink 随之跟随。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 99 个提交，r1 `1fafee7e2` 之上 84 个；97 个带 DCO sign-off。未签名的提交仍为 #107 `f27672935` 与 #116 `e9a7f48da1`（本轮提交带签署），不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：540 files, +119210/-49666，净增 69544；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：551 files, +121123/-49817，净增 71306；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
@@ -122,6 +122,12 @@
 
 | Commit | 主题 | 说明 |
 |---|---|---|
+| `8e8d52fdb` | T2 | rustc/clippy 1.100 stable（2026-11-09）新 lint 适配五处，等价改写无行为变化：terminal 探针测试的 `map_err(|err| io::Error::other(err.to_string()))` 对 `Infallible`（ratatui 0.30 `with_options` 返回 `B::Error`、`TestBackend::Error` 为 uninhabited）调用 `to_string()` 被稳定 never 类型后的 `unreachable_code` 证明为死代码，改为 `map_err(io::Error::other)` 直传（转换 load-bearing 保留）；`fleet/manager.rs` needless_bool 化简为 `Ok(started)`；subagent coord ledger 与 `tui/auto_review.rs` needless_bool 收尾表达式化；`tui/transcript/tests.rs` ×2 needless_range_loop 改 `per_cell[..3].iter().enumerate()`。对照纯净 `6f7a3a748` 以 1.99.1 复跑同款命令确认五处恰为 1.100 新增；all-targets 严格面遗留 2 处 collapsible_if 与 `cargo doc -Dwarnings` 的 4 处 rustdoc 私有链接错误在 1.99.1 下同样存在（既有债务，未触碰，留待后续）。首次由父仓 Windows 回归腿（codewhale-tui lib test 编译）暴露 (#156) |
+| `6f7a3a748` | deps | 升级 rusqlite 0.41.1 / libsqlite3-sys 0.39.1（捆绑 SQLite 3.54.1，关 RUSTSEC-2026-0459）、rmcp 3.9.0（关 RUSTSEC-2026-0462）、rio-vt 0.5.29（关 RUSTSEC-2026-0430）；子模块 MSRV 声明抬至 rust-version 1.89（低于父仓 1.90 下限，父仓无需动作）(#152) |
+| `e972a9a05` | T1/T2 | 引擎 route 输出预算对宿主暴露：新增公共只读包装供宿主查询各路线输出预算；纯增量、父仓透明 (#150) |
+| `5f15cce57` | T2 | todo 工具条目 status 默认值移出 required schema，恢复端可省略 status；相对上游的显式 fork-distinct schema 偏差，随本行登记；fork-guard 以 schema 指纹×2（`"required": ["content"]` 与含 Defaults to pending 的描述行）加两条 #148 测试的按名 pinned 执行钉守护（二者不以 `forkguard_` 命名，改名/删除即响红）(评审 JensenChen28 5871983071) (#148) |
+| `78804c83e` | T2 | 保留终态错误的真实来源：内部 `TurnComplete` 增 `error_source: Option<TurnErrorSource>`（Model/Runtime 产方证据；不进线协议，parity 测试钉死 wire JSON 无该键）；父仓 forwarder 以 `error_source: _` 吸收 (#142) |
+| `37be2844f` | T3 | 残余模型面文案修复（2026-10-07 审计批次）：TUI 文案/工具描述/skills/fixtures 失实声明逐项更正；另携带三处行为变更——fim_edit 锚点歧义由静默取首选改为拒绝并报出现次数（新增 Prefix/SuffixAmbiguous 错误）、bundled skill 代际 12→13 强制刷新（legacy v4 正文按摘要退役）、commands 条目 schema 收紧 `additionalProperties: false`；父仓透明 (#136) |
 | `11cba403d` | deps | undici 7.30.1 与 msal-node 7.1.2 的 npm lock 内刷新，关闭 `pinvou3-clean` 当时全部 4 条 open Dependabot 高危告警；仅 lockfile，无 manifest 或源码改动（#135） |
 | `8a4719fd4` | T3 本地化 | 清扫 locale 包过时模式文案：补完 rail→workbar 改名的非英文一半（11 个语言包 88 个 rail 词键），补齐多月未随英文发布的 must-translate 键并新增缺失门禁；全部 value-only 替换，`en.json` 与基线逐字节一致（#134） |
 | `4e75c6a07` | T3 | fetch_url 工具描述移除失实的 "sandboxed" 声明：改写为注明 Bash 工具的沙箱策略可能拒绝出站网络，fetch_url 本身是进程内 HTTP 客户端；citation 与 login-wall 句保持不变（#133） |
@@ -706,3 +712,19 @@ and 11 T3 entries; R6's three APP entries were a per-round count. Evidence-reten
 policy remains a maintainer decision; no new retention threshold is inferred.
 See [R7 verification](prompt-optimization-evaluation/review-r7-verification.json)
 and [R7 sources](prompt-optimization-evaluation/source-manifest-review-r7.json).
+
+## CodeWhale baseline follow to 6f7a3a748 (2026-11-12)
+
+The submodule gitlink follows pinvou3-clean to 6f7a3a748 (CodeWhale#136's
+residual model-facing copy repair, #142's terminal-error source field,
+#148's todo-item status default, #150's engine route-output-budget
+exposure to hosts, plus #152's security dependency bumps: rusqlite 0.41.1
+/ libsqlite3-sys 0.39.1 bundled SQLite 3.54.1 for RUSTSEC-2026-0459,
+rmcp 3.9.0 for RUSTSEC-2026-0462, rio-vt 0.5.29 for RUSTSEC-2026-0430;
+#152 also raises the declared submodule MSRV to rust-version 1.89, below
+the parent's 1.90 floor).
+fork-guard re-registers the review head (6f7a3a748) and the
+commits-above-v0.9.12 census (98); the maintenance base (11cba403d), the
+official v0.9.12 root (dcd4c200) and the immutable r1 closure are
+unchanged ancestors, and the public-head transition contract stays
+gitlink == branch head with the r3 tag pinned at its closure (61cb769be).
