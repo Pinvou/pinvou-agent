@@ -5855,6 +5855,15 @@ impl AcpPool {
                         // own review #463 fixed for the rebind paths).
                         self.cancel_runtime_pending_cards(pinvou_session_id, Some(&event_bridge))
                             .await;
+                        // Same durability invariant as the Dead arm above:
+                        // settlement must be flushed before this bridge can
+                        // be superseded — permission_resolved and
+                        // elicitation_resolved are not in the synchronous
+                        // flush set, so without this the cancel entries sat
+                        // in the buffered writer and the next spawn's
+                        // journal seeding was not ordered against them
+                        // (r6 review).
+                        event_bridge.flush_journal();
                         return Err(error);
                     }
                 };
