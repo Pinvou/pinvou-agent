@@ -1069,7 +1069,9 @@ fn plain_prefs() -> UserPrefs {
 /// GUI's `*_tokens` names. Secret material stays out (`has_secret`/
 /// `credential_state` only), and the GUI-only presentation fields
 /// (`readonly`/`system`/`kind`, `image_capability_override`) stay
-/// GUI-side.
+/// GUI-side. `auth_mode` is a posture flag (round-5 review), not secret
+/// material: without it a declared record's credential-free probe
+/// behavior has no visible cause.
 fn model_entry_json(model: &SavedModel, active_id: Option<&str>) -> serde_json::Value {
     serde_json::json!({
         "id": model.id,
@@ -1081,6 +1083,7 @@ fn model_entry_json(model: &SavedModel, active_id: Option<&str>) -> serde_json::
         "provider_kind": model.provider_kind,
         "vendor": model.vendor,
         "endpoint_mode": model.endpoint_mode,
+        "auth_mode": model.auth_mode,
         "vision_model_id": model.vision_model_id,
         "context_window_tokens": model.context_window_tokens,
         "max_output_tokens": model.max_output_tokens,
@@ -1870,6 +1873,7 @@ fn show<S: CredentialStore>(
         ("provider_kind", model.provider_kind.as_deref()),
         ("vendor", model.vendor.as_deref()),
         ("endpoint_mode", model.endpoint_mode.as_deref()),
+        ("auth_mode", model.auth_mode.as_deref()),
         ("vision_model_id", model.vision_model_id.as_deref()),
     ] {
         if let Some(value) = value {
@@ -1975,7 +1979,7 @@ fn test_connection<S: CredentialStore>(
     // Keyless parity (GUI probe ladder): a record that itself declares the
     // endpoint keyless must probe credential-free even with a residual
     // stored credential (hand-edited settings.json can carry both) — the
-    // GUI's test must exercise the posture the engine will reproduce.
+    // CLI's test must exercise the posture the engine will reproduce.
     let key = if model.declares_keyless_auth() {
         String::new()
     } else {
@@ -2604,8 +2608,10 @@ fn select_local_server_kind_from_hits(hits: &ProbeCandidateHits) -> &'static str
 /// `models probe-local [--url URL [--model ID]] [--api-key-env VAR]`:
 /// identify the local inference server kind. Without `--url` the target is
 /// the active model's base_url and its stored credential, mirroring the GUI's
-/// credential resolution. Refuses non-loopback hosts with a usage error
-/// before any request is sent.
+/// credential resolution — except that a keyless-declared record (see
+/// `SavedModel::declares_keyless_auth`) probes credential-free on both the
+/// `--model` and active-model lanes, like `models test` and the GUI ladder.
+/// Refuses non-loopback hosts with a usage error before any request is sent.
 ///
 /// `--model ID` is the CLI's spelling of the GUI command's `model_id`
 /// parameter (`probe_local_server_kind(base_url, api_key, model_id)`): it
@@ -2716,13 +2722,25 @@ fn probe_local<S: CredentialStore>(
             // may well exist where this process cannot read it).
             let prefs = plain_prefs();
             let model = find_model(&prefs, id)?;
-            let key = resolve_honest_saved_key(store, &model)?.filter(|key| !key.trim().is_empty());
-            if key.is_none() {
-                return Err(CliError::failed(format!(
-                    "probe-local: model {id} has no stored api key to present"
-                )));
+            // Keyless parity (round-5 review): a record that declares the
+            // endpoint keyless probes credential-free — the declaration, not
+            // the keyring, decides the posture, exactly like `models test`
+            // and the GUI probe ladder (a residual stored credential from a
+            // hand-edited settings.json is never presented, and the clean
+            // declared state must proceed anonymously instead of tripping
+            // the missing-key error below).
+            if model.declares_keyless_auth() {
+                None
+            } else {
+                let key =
+                    resolve_honest_saved_key(store, &model)?.filter(|key| !key.trim().is_empty());
+                if key.is_none() {
+                    return Err(CliError::failed(format!(
+                        "probe-local: model {id} has no stored api key to present"
+                    )));
+                }
+                key
             }
-            key
         }
         None => None,
     };
@@ -2737,7 +2755,15 @@ fn probe_local<S: CredentialStore>(
         ),
         Some(model) => {
             let bearer = match explicit_key {
+                // A probe-time `--api-key-env` is the caller's explicit
+                // instruction to present one key, so it outranks even the
+                // declaration (the record posture governs stored
+                // credentials, not deliberate probe overrides).
                 Some(key) => Some(key),
+                // Keyless parity (round-5 review): the declaration
+                // short-circuits BEFORE the stored-credential read —
+                // mirroring `models test` above and the GUI probe ladder.
+                None if model.declares_keyless_auth() => None,
                 None => {
                     // Swallowing a keychain failure here would turn every
                     // signed request into a 401 and classify a working
@@ -5678,6 +5704,158 @@ mod tests {
         assert!(
             operations.iter().any(|op| op.starts_with("get:")),
             "an undeclared record keeps the stored-credential resolution: {operations:?}"
+        );
+    }
+
+    /// Round-5 review: `models probe-local` resolves the stored credential
+    /// with NO keyless consult on both its lanes — a declared record with a
+    /// residual credential (hand-edited settings.json) presented the secret
+    /// to the endpoint, and the `--model` lane hard-failed "no stored api
+    /// key" on a CLEAN declared record (the exact state a keyless user is
+    /// in). Both lanes must now short-circuit to an anonymous probe before
+    /// any store read, while undeclared records keep the honest-resolver
+    /// behavior (including the missing-key error).
+    #[test]
+    fn models_probe_local_honors_keyless_declaration() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _home = TempHome::new("probe-local-keyless-declaration");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-residual-stored");
+        let store = RecordingStore::new();
+
+        // Port 9 (discard) refuses fast: both lanes complete offline either
+        // way, so the verdict difference is attributable to the guard alone.
+        let id = add_model(
+            &store,
+            "Keyless",
+            "M",
+            "http://127.0.0.1:9/v1",
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
+        UserPrefs::update_transaction(|prefs| {
+            if let Some(record) = prefs
+                .advanced
+                .saved_models
+                .iter_mut()
+                .find(|model| model.id == id)
+            {
+                record.auth_mode = Some("none".to_string());
+            }
+            Ok(())
+        })
+        .expect("keyless declaration should save");
+
+        // `--model` lane: credential-free, and NO missing-key hard-fail —
+        // a declared record proceeds anonymously like the active lane.
+        let before = store.operations().len();
+        let outcome = probe_local(
+            &store,
+            Some("http://127.0.0.1:9/v1"),
+            None,
+            Some(&id),
+            OutputMode::Json,
+        )
+        .expect("a declared record probes anonymously, not a missing-key error");
+        let operations = &store.operations()[before..];
+        assert!(
+            !operations.iter().any(|op| op.starts_with("get:")),
+            "the --model lane must not read the stored credential under a declaration: {operations:?}"
+        );
+        assert!(
+            !outcome.stdout.contains("has no stored api key"),
+            "the declaration must bypass the missing-key error: {}",
+            outcome.stdout
+        );
+
+        // Active-model lane: credential-free resolution as well.
+        use_model(&id, OutputMode::Human).expect("use succeeds");
+        let before = store.operations().len();
+        probe_local(&store, None, None, None, OutputMode::Json)
+            .expect("the active lane probes anonymously under a declaration");
+        let operations = &store.operations()[before..];
+        assert!(
+            !operations.iter().any(|op| op.starts_with("get:")),
+            "the active lane must not read the stored credential under a declaration: {operations:?}"
+        );
+
+        // Reverse leg: clear the declaration and both lanes resolve (and
+        // use) the stored credential again — no over-suppression.
+        UserPrefs::update_transaction(|prefs| {
+            if let Some(record) = prefs
+                .advanced
+                .saved_models
+                .iter_mut()
+                .find(|model| model.id == id)
+            {
+                record.auth_mode = None;
+            }
+            Ok(())
+        })
+        .expect("declaration clear should save");
+        let before = store.operations().len();
+        probe_local(&store, None, None, None, OutputMode::Json).expect("a completed probe outcome");
+        let operations = &store.operations()[before..];
+        assert!(
+            operations.iter().any(|op| op.starts_with("get:")),
+            "an undeclared record keeps the stored-credential resolution: {operations:?}"
+        );
+    }
+
+    /// Round-5 review: `model_entry_json` claimed field parity with the
+    /// GUI's flattened `ModelListItem`, but omitted `auth_mode` — a
+    /// declared record's credential-free probe behavior had no visible
+    /// cause in `models list`/`show`. The posture flag (not secret
+    /// material) now rides the JSON rows and the `show` human block
+    /// (rendered only when set, like the round-40 metadata fields).
+    #[test]
+    fn models_list_and_show_expose_the_keyless_declaration() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _home = TempHome::new("models-json-auth-mode");
+        let store = RecordingStore::new();
+        let id = add_model(&store, "Keyless", "M", "http://127.0.0.1:9/v1", None);
+        UserPrefs::update_transaction(|prefs| {
+            if let Some(record) = prefs
+                .advanced
+                .saved_models
+                .iter_mut()
+                .find(|model| model.id == id)
+            {
+                record.auth_mode = Some("none".to_string());
+            }
+            Ok(())
+        })
+        .expect("keyless declaration should save");
+
+        let outcome = list(&store, OutputMode::Json).expect("list succeeds");
+        let value: serde_json::Value = serde_json::from_str(&outcome.stdout).expect("json");
+        let row = value["models"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|row| row["id"] == serde_json::json!(id))
+            .expect("the added row renders");
+        assert_eq!(
+            row["auth_mode"],
+            serde_json::json!("none"),
+            "the JSON row must carry the declaration (GUI DTO parity)"
+        );
+
+        let outcome = show(&store, &id, false, OutputMode::Json).expect("show succeeds");
+        let value: serde_json::Value = serde_json::from_str(&outcome.stdout).expect("json");
+        assert_eq!(value["auth_mode"], serde_json::json!("none"));
+
+        // Human block: rendered when set, absent for undeclared rows.
+        let outcome = show(&store, &id, false, OutputMode::Human).expect("show succeeds");
+        assert!(
+            outcome.stdout.contains("auth_mode: none"),
+            "the human block must surface the declaration: {}",
+            outcome.stdout
+        );
+        let other = add_model(&store, "Plain", "M", "http://127.0.0.1:9/v1", None);
+        let outcome = show(&store, &other, false, OutputMode::Human).expect("show succeeds");
+        assert!(
+            !outcome.stdout.contains("auth_mode"),
+            "an undeclared record renders no auth_mode line: {}",
+            outcome.stdout
         );
     }
 }
