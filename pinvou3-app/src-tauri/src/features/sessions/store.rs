@@ -1577,3 +1577,19 @@ pub(super) fn is_invalid_data_error(error: &anyhow::Error) -> bool {
             .is_some_and(|e| e.kind() == ErrorKind::InvalidData)
     })
 }
+
+#[cfg(test)]
+mod retention_cap_pins {
+    use super::*;
+
+    /// The retention sweep seeds and asserts are cap-relative (they read the
+    /// constants), so the headline 50→500 raise shipped without anything
+    /// holding the VALUE: a silent 500→5 drift would keep the whole suite
+    /// green while evicting sessions at 1% of the audited budget (r6
+    /// review). Pin the shipped values literally, like the rewind 10s pin.
+    #[test]
+    fn audited_session_retention_caps_match_the_register() {
+        assert_eq!(MAX_SESSIONS_PER_KIND, 500);
+        assert_eq!(MAX_HEADLESS_SESSIONS, 500);
+    }
+}

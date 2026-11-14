@@ -548,6 +548,14 @@ mod tests {
         assert_eq!(REWIND_BACKUP_LOCK_WAIT, std::time::Duration::from_secs(10));
     }
 
+    /// The backup cap's seed/asserts are cap-relative (they read the
+    /// constant), so nothing held the VALUE after the 20→100 raise — pin the
+    /// shipped literal (r6 review, same rationale as the lock pin above).
+    #[test]
+    fn rewind_backup_cap_stays_at_100() {
+        assert_eq!(MAX_REWIND_BACKUPS_PER_SESSION, 100);
+    }
+
     /// Round-41 review M2: the cross-process rewind lock is a real exclusive
     /// flock at the documented sibling path. `flock(2)` conflicts between two
     /// open file descriptions even within one process, so while the guard is

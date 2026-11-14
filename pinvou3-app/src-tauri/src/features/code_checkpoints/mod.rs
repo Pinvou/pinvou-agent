@@ -1661,6 +1661,15 @@ pub(crate) fn git_available() -> bool {
 mod tests {
     use super::*;
 
+    /// The checkpoint trim seeds/asserts are cap-relative (they read the
+    /// constant), so the 20→100 raise shipped without anything holding the
+    /// VALUE — pin the shipped literal (r6 review, same rationale as the
+    /// rewind 100 pin).
+    #[test]
+    fn checkpoint_lru_cap_stays_at_100() {
+        assert_eq!(MAX_CHECKPOINTS, 100);
+    }
+
     /// Round-12 复审 P2:快照路径的 add -A 之后必须紧跟 purge。工作树
     /// `.gitignore` 的否定规则(`!.env`)按 gitignore(5) 优先级压过
     /// info/exclude,会在每个快照把敏感文件重新收进影子 index——一次性

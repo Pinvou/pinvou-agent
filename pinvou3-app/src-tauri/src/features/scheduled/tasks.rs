@@ -2258,6 +2258,15 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// The terminal-run prune seeds/asserts are cap-relative (they read the
+    /// constant), so the 50→500 raise shipped without anything holding the
+    /// VALUE — pin the shipped literal (r6 review, same rationale as the
+    /// retention pins).
+    #[test]
+    fn scheduled_terminal_run_history_cap_stays_at_500() {
+        assert_eq!(MAX_TERMINAL_RUNS_PER_AUTOMATION, 500);
+    }
+
     #[test]
     fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {
         let limits = scheduled_execution_limits();
