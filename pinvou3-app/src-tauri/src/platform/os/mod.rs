@@ -52,3 +52,9 @@ pub use interface::{
     startup_platform_env, super_permission_is_enabled, super_permission_turn_reminder,
     system_default_open_supported, try_make_private_dir, user_home_dir, validate_upload_location,
 };
+// The raw volume fold (not one of the host-adaptive path_component_*
+// aliases): the archive import/export member ledger in features/sessions
+// folds unconditionally like the strictest target volume an archive may move
+// to (NTFS/APFS), so it consumes the primitive directly instead of the
+// host-adaptive surface.
+pub(crate) use interface::volume_fold_spelling;

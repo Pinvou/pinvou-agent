@@ -144,6 +144,66 @@
     return text.startsWith(prefix) && text.endsWith("\n</context_update>");
   }
 
+  // Sum of the context_update boundary counts already handed out to a
+  // session's rendered user bubbles (runtimeContextUpdatesBefore). The
+  // committed-transcript resync (chat:transcript_committed payload
+  // context_updates_total, computed Rust-side by count_context_updates)
+  // recomputes the trailing pending count as total − consumed: the live
+  // delivery never announces engine drift deltas (they produce no
+  // chat:user_message), so the cumulative total is the only trustworthy
+  // live source, and the resync absorbs every live-path divergence at once
+  // (drift deltas, duplicate admissions, failed sends, deferred drops,
+  // edit_last splices).
+  function runtimeContextUpdatesConsumedTotal(chatItems) {
+    let consumed = 0;
+    for (const item of chatItems || []) {
+      if (item && item.type === "user" && typeof item.runtimeContextUpdatesBefore === "number") {
+        consumed += item.runtimeContextUpdatesBefore;
+      }
+    }
+    return consumed;
+  }
+
+  function resyncRuntimeContextUpdatesPending(buffer, chatItems, total) {
+    if (!buffer) return;
+    const totalNormalized = Number(total) || 0;
+    // 记下最近一次权威总数：压缩基线重置用它在气泡 vintage 清零后立即
+    // 重播种待消费余量（见 heal 注释的时序推导）。
+    buffer.runtimeContextUpdatesLastTotal = totalNormalized;
+    buffer.runtimeContextUpdatesPending =
+      Math.max(0, totalNormalized - runtimeContextUpdatesConsumedTotal(chatItems));
+  }
+
+  // 压缩真重写（messages_before > messages_after）后的计数基线重置（r7 M2）：
+  // 旧漂移增量随转写改写被摘除，而客户端气泡仍携带压缩前的
+  // runtimeContextUpdatesBefore 老 vintage——权威重同步 pending = total −
+  // consumed 会被老消费量钳在 0，此后每个新增量都补不回来（fork/rewind
+  // 序号整体低计，恰是计数器要修的形态）。prune-only（before === after，
+  // 转写未被改写）不动基线：增量与气泡仍一一对应，重置反而抬高 pending。
+  // 重播种（r8）：底座在 CompactionCompleted **之前**先发 SessionUpdated
+  // （persist 已携带压缩后总数跑过一次重同步），所以此时 buffer 上的
+  // lastTotal 就是压缩后的真实存量——待消费直接重播种为 lastTotal（而非
+  // 清零）让序号即时收敛：清零会让「压缩完成 → 下一次 persist」的窗口里
+  // fork 序号按 0 个增量折算，点了分叉会少保留被点击轮次之前的存量增量。
+  // 旧后端从未发过总数（lastTotal 缺失）保持零基线不变。返回是否有改动
+  // （调用方决定是否 notify）。
+  function healRuntimeContextUpdatesVintageAfterCompaction(buffer, chatItems, before, after) {
+    if (!Number.isFinite(Number(before)) || !Number.isFinite(Number(after)) || Number(after) >= Number(before)) return false;
+    let healed = false;
+    if (buffer) {
+      const lastTotal = Number(buffer.runtimeContextUpdatesLastTotal);
+      const seeded = Number.isFinite(lastTotal) ? lastTotal : 0;
+      if (buffer.runtimeContextUpdatesPending !== seeded) healed = true;
+      buffer.runtimeContextUpdatesPending = seeded;
+    }
+    for (const item of chatItems || []) {
+      if (!item || item.type !== "user" || !item.runtimeContextUpdatesBefore) continue;
+      item.runtimeContextUpdatesBefore = 0;
+      healed = true;
+    }
+    return healed;
+  }
+
   function isInternalRuntimeUserMessage(value) {
     return isContextUpdateRuntimeMessage(value) ||
       containsOnlyInternalRuntimeMetadata(value) ||
@@ -177,6 +237,15 @@
 
   window.PinvouBridgeMessages = Object.freeze({
     isInternalRuntimeUserMessage,
+    // canonical <context_update> shape matcher: the fork/rewind ordinal
+    // counter (bridge-shared-helpers / chat-events) counts exactly these
+    // dropped runtime messages — see forkTurnEntries.js.
+    isContextUpdateRuntimeMessage,
+    // committed-transcript resync of the ordinal counter (tauri lane):
+    // pending = payload.context_updates_total − consumed-on-bubbles.
+    runtimeContextUpdatesConsumedTotal,
+    resyncRuntimeContextUpdatesPending,
+    healRuntimeContextUpdatesVintageAfterCompaction,
     isInternalUserMessage,
     isKnownInternalMetadataBlock,
     isInternalUserMessageProvenance,

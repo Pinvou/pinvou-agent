@@ -481,6 +481,54 @@ impl SessionStore {
     ) -> Result<deepseek_tui::session_export::SessionArchiveSummary> {
         validate_session_id(id)?;
         let session = self.load(id)?;
+        // 闭合导出→导入循环：导入侧对成员名 fail-closed（`:` 分量挡
+        // Windows 盘符/ADS，`\` 归一化防改名），exporter 本身不校验
+        // 文件名——凡导入必拒/必改名的文件在此处先行失败并指名，归档
+        // 永不产出「导出成功、导入必拒」的产物。目录不存在（Ok(None)）
+        // 即无可扫描，直接放行。记录本体字节计入同一张账本（导入侧
+        // 把 session.json 也计入总量并受单成员上限）。预扫描对
+        // `include_artifacts=false` 的精简导出同样生效（记录本体在两种
+        // 模式下都进档案，r7 minor 5）；记录 stat 失败如实失败（load 刚
+        // 成功，紧随其后的 stat 故障是异常态，折叠成 0 会低估账本）。
+        // 账本口径（r8 M3）：按**档案实际携带的字节**记账——exporter 把
+        // journal 长齐后的内存会话 `to_string_pretty` 成 session.json，而
+        // on-disk 记录可能是无 journal 的裸导入产物：归档时 session.json
+        // ≈ 消息+journal、container.json ≈ journal，实际 ≈ 3× on-disk 而
+        // 账本只记 2× on-disk → 「导出成功、导入必拒」。与底座
+        // `session_json`（crate 私有）同为 `to_string_pretty(&SavedSession)`
+        // 确定性序列化，长度逐字节一致；stat 保留为响度检查（stat 故障即
+        // 异常态，如实失败）。标题等无界字符串随记录本体的序列化长度
+        // 入账；manifest.json 里的第二份元数据副本另行显式记账（见下方
+        // ensure_artifacts_exportable 调用处的 manifest_metadata_bytes）。
+        let record_path = self.manager.sessions_dir().join(format!("{id}.json"));
+        std::fs::metadata(&record_path)
+            .with_context(|| format!("stat session record {}", record_path.display()))?;
+        let record_bytes = serde_json::to_string_pretty(&session)
+            .map(|serialized| serialized.len() as u64)
+            .map_err(|error| {
+                anyhow::anyhow!("serialize session record for the export ledger: {error}")
+            })?;
+        let artifacts_dir = if include_artifacts {
+            deepseek_tui::session_export::session_artifacts_dir(self.manager.sessions_dir(), id)?
+        } else {
+            None
+        };
+        // manifest.json 内嵌整份 SessionMetadata（底座 ArchiveManifest 的
+        // session 字段克隆）：标题等无界字符串在**这份副本**里的字节不随
+        // record_bytes 入账（container ≤ record 只覆盖 journal 投影）——
+        // 上方「标题随序列化长度自动入账」只对记录本体成立。按同一
+        // to_string_pretty 确定性序列化显式记账，>64 KiB 标题的近上限归档
+        // 不再「导出成功、导入必拒」（r9 minor）。
+        let manifest_metadata_bytes = serde_json::to_string_pretty(&session.metadata)
+            .map(|serialized| serialized.len() as u64)
+            .map_err(|error| {
+                anyhow::anyhow!("serialize session metadata for the export ledger: {error}")
+            })?;
+        super::import::ensure_artifacts_exportable(
+            artifacts_dir.as_deref(),
+            record_bytes,
+            manifest_metadata_bytes,
+        )?;
         // write_session_archive takes the session-store ROOT since the
         // engine-side confinement rework: it derives, validates and confines
         // the artifacts dir itself (invalid ids and links under the store are
@@ -511,6 +559,13 @@ impl SessionStore {
     pub(crate) fn save(&self, session: &SavedSession) -> Result<PathBuf> {
         let _mutation = self.scheduled_mutation.lock();
         self.persist_then_reconcile(session, "session save")
+    }
+
+    /// 会话存储根目录（`~/.pinvou3/sessions/`）。供 archive 导入这类
+    /// 兄弟模块按 id 探测记录/artifacts 目录使用；字段 `manager` 保持
+    /// store.rs 私有。
+    pub(crate) fn sessions_dir(&self) -> PathBuf {
+        self.manager.sessions_dir().to_path_buf()
     }
 
     /// Deleting races with the read-modify-write persist paths

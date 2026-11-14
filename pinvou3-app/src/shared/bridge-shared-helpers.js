@@ -5290,6 +5290,12 @@
         }
       }
     }
+    // 引擎 <context_update> 运行时消息的待消费边界计数（投影层不产生 turn
+    // 但后端 era 口径计边界）：重放中随每个用户气泡下发并清零，循环结束的
+    // 余数（尾随的 context_update，通常属于刚提交的 turn）经 lane 钩子回种
+    // 会话 buffer，composer 下一气泡据此下发——否则重启后的会话序号整体
+    // 少计（forkTurnEntries.js 注释）。
+    let runtimeContextUpdatesPending = 0;
     for (let mi = 0; mi < state.messages.length; mi++) {
       lane.emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
       const m = state.messages[mi];
@@ -5302,13 +5308,40 @@
         const utext = lane.userMessageDisplayText(blocks, true);
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
-          const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          // 引擎 <context_update> 运行时消息（pinned 上下文漂移）按底座 era
+          // 口径计 turn 边界而投影层不产生 turn：落下的每个都计入待消费
+          // 计数、随下一个用户气泡下发（runtimeContextUpdatesBefore），
+          // fork/rewind 入口表据此前移序号（forkTurnEntries.js 注释）。
+          const uitem2 = {
+            type: "user",
+            text: utext,
+            time: "",
+            messageIndex: mi,
+            runtimeContextUpdatesBefore: runtimeContextUpdatesPending,
+          };
+          runtimeContextUpdatesPending = 0;
           lane.markSteered(uitem2, mi, utext, blocks);
           const scene = pinvouSceneForMessagePos(mi);
           if (scene) uitem2.pinvouScene = scene;
           if (textMatchesBtKey(utext, "reviewFillHeader")) uitem2.pinvouTransfer = "悟";
           else if (textMatchesBtKey(utext, "reviewFixHeader") || textMatchesBtKey(utext, "reviewAdoptHeader") || textMatchesBtKey(utext, "reviewAskHeader")) uitem2.pinvouTransfer = "品";
           addChatItem(uitem2);
+        } else {
+          // Dropped runtime user message: only the canonical <context_update>
+          // shape advances the boundary counter (turn_meta envelopes /
+          // provenance have no engine writer as sole content and stay
+          // uncounted — same reading as the Rust era list). The raw text is
+          // rebuilt with the same join userMessageDisplayText uses so the
+          // canonical matcher sees the engine's exact format.
+          const rawText = blocks
+            .filter(function (block) { return block && block.type === "text"; })
+            .map(function (block) { return String(block.text || ""); })
+            .join("");
+          // 可选链：bridge-messages.js 未装载（脚本次序异常）时按非
+          // context_update 处理——计数是序号修复，不因缺依赖破坏重放。
+          if (window.PinvouBridgeMessages?.isContextUpdateRuntimeMessage(rawText)) {
+            runtimeContextUpdatesPending += 1;
+          }
         }
         // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
         for (let ci = 0; ci < blocks.length; ci++) {
@@ -5461,6 +5494,11 @@
         planMarkdown: composePlanMarkdown(snaps),
         cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
       });
+    }
+    // 尾随余数回种（tauri lane 实现；web lane 未实现钩子时保持原状——
+    // web 车道不提供 fork 入口，序号不下发无消费方）。
+    if (typeof lane.setRuntimeContextUpdatesPending === "function") {
+      lane.setRuntimeContextUpdatesPending(runtimeContextUpdatesPending);
     }
     lane.sweepUnsettledTools(resultById);
     lane.emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)

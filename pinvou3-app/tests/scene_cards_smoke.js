@@ -44,6 +44,10 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'pinvou-scene-cards-'));
 
 function injectSource() {
   return `(function(){
+    // 测试钩子只注入主文档：evaluateOnNewDocument 会进所有帧，预览帧在
+    // sandbox 收紧后是不透明源（r7 R2），localStorage 访问直接抛
+    // SecurityError 成为页面未捕获异常。
+    if (window.parent !== window) return;
     var HTML_PATH = '/tmp/pinvou3/sessions/s-design/artifacts/landing.html';
     var DRAFT_PATH = '/tmp/pinvou3/sessions/s-design/artifacts/poster-draft.html';
     var HTML_CONTENT = '<!doctype html><html><body><main id="app"><section class="hero"><h1 class="hero-title">Pinvou Design</h1><button class="primary">Start</button><a id="external-link" href="https://example.com/docs">Docs</a></section></main></body></html>';
@@ -659,14 +663,21 @@ async function clickExactButton(page, text) {
       directPreview.toggleLabel === '全屏显示产物预览' &&
       directPreview.toggleText === '',
     JSON.stringify(directPreview));
-  await page.evaluate(() => {
-    const frame = document.querySelector('[data-testid="artifact-html-preview-frame"]');
-    const link = frame && frame.contentDocument && frame.contentDocument.querySelector('#external-link');
-    if (link) link.click();
-  });
+  // 沙箱收紧（allow-scripts，无 allow-same-origin）后预览帧是跨源帧：
+  // 父页面读 contentDocument 会抛 SecurityError（r7 R2——旧探针正是 CI
+  // crash 源）。外链点击改经 puppeteer 的帧执行上下文驱动——CDP 上下文
+  // 按帧枚举、与页面源无关，跨源帧同样可达；寻址失败时落空并由下方 rec
+  // 如实报红，不再让整个 run 崩掉。
+  const previewFrameHandle = await page.$('[data-testid="artifact-html-preview-frame"]');
+  const previewFrame = previewFrameHandle ? await previewFrameHandle.contentFrame() : null;
+  if (previewFrame) {
+    // 帧上下文内的合成点击（与旧 contentDocument link.click() 同语义）：
+    // bootstrap 的捕获段 click 监听对合成点击同样拦截并中继给宿主。
+    await previewFrame.evaluate(() => { const link = document.querySelector('#external-link'); if (link) link.click(); }).catch(() => {});
+  }
   await sleep(100);
   const externalPreviewLinks = await page.evaluate(() => window.__PINVOU_TEST_EXTERNAL_URLS || []);
-  rec('artifact HTML external links are handed by the host to the system-browser command and the iframe does not navigate',
+  rec('artifact HTML external links are handed by the host to the system-browser command via the postMessage relay',
     externalPreviewLinks.length === 1
       && externalPreviewLinks[0] === 'https://example.com/docs',
     JSON.stringify(externalPreviewLinks));
@@ -1021,14 +1032,27 @@ async function clickExactButton(page, text) {
   await sleep(100);
   await page.click('[data-testid="artifact-html-zoom-fit"]');
   await sleep(250);
-  await page.evaluate(() => {
+  // 跨源帧（沙箱收紧后）无法从父页面构 WheelEvent 派发进帧文档（r7 R2）：
+  // ctrl+滚轮经 CDP 输入管线按帧几何派发——与真实用户输入同一管线，命中
+  // 帧内 bootstrapped 监听器后照常向父窗口转发。
+  const iframeWheelBox = await page.evaluate(() => {
     const frame = document.querySelector('[data-testid="artifact-html-preview-frame"]');
-    const win = frame && frame.contentWindow;
-    const doc = win && win.document;
-    if (doc && win) {
-      doc.dispatchEvent(new win.WheelEvent('wheel', { deltaY: -120, ctrlKey: true, bubbles: true, cancelable: true }));
-    }
+    if (!frame) return null;
+    const rect = frame.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
   });
+  if (iframeWheelBox && iframeWheelBox.width > 0 && iframeWheelBox.height > 0) {
+    const cdp = await page.createCDPSession();
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: Math.round(iframeWheelBox.x + iframeWheelBox.width / 2),
+      y: Math.round(iframeWheelBox.y + iframeWheelBox.height / 2),
+      deltaX: 0,
+      deltaY: -120,
+      modifiers: 2, // ctrl
+    });
+    await cdp.detach().catch(() => {});
+  }
   await sleep(250);
   const iframeCtrlWheelZoom = await page.evaluate(() => {
     const frame = document.querySelector('[data-testid="artifact-html-preview-frame"]');

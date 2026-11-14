@@ -590,12 +590,102 @@ pub(crate) fn emit_chat_terminal(
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
 }
 
+/// Canonical opening of an engine pinned-context drift delta (`<context_update>`
+/// user-role message). Must stay byte-identical to the base writer
+/// (`CodeWhale/crates/tui/src/prefix_cache.rs`, the `out = String::from(...)`
+/// inside the context_update composition) and to the frontend matcher
+/// (`pinvou3-app/src/shared/bridge-messages.js` `isContextUpdateRuntimeMessage`
+/// prefix array). All three spell the literal independently because the base
+/// composes it inline; `context_update_message_text` pins this copy with a
+/// unit test and the frontend matcher is pinned in the bridge harness tests.
+const CONTEXT_UPDATE_MESSAGE_PREFIX: &str = "<context_update>\nSession context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):\n";
+
+/// Mirror of the frontend matcher: a user-role message whose joined Text
+/// blocks (same join the replay rawText rebuild uses) carry the canonical
+/// `<context_update>` shape. The engine appends exactly one such message per
+/// pinned-context drift delta; every other runtime user-role message carries
+/// non-authoritative provenance and does not match.
+fn context_update_message_text(message: &Message) -> bool {
+    if message.role != deepseek_tui::models::Role::User {
+        return false;
+    }
+    // 预筛（r7 perf minor，r9 收紧为双边缘必要条件）：规范化后的全文必以
+    // 前缀首字符 '<' 开头、以收尾 '>' 结束（`trim` 只剥空白），两个必要
+    // 条件沿各块的边缘字符即可判定——绝大多数用户消息在此零分配拒绝，
+    // 免掉每个 persist 对整份转写的全文拷贝（r9 finding：原实现无条件
+    // join 所有 Text 块后才 contains 预筛，10 MB 粘贴 × 每 turn 数十次
+    // persist 的 memcpy 白付）。只有两侧都通过的消息才拼接全文做精确
+    // 匹配，拼接语义（含跨块分裂的标记）保持不变。
+    let text_blocks: Vec<&str> = message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            deepseek_tui::models::ContentBlock::Text {
+                text: block_text, ..
+            } => Some(block_text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let first_non_ws = text_blocks
+        .iter()
+        .find_map(|text| text.chars().find(|ch| !ch.is_whitespace()));
+    if first_non_ws != Some('<') {
+        return false;
+    }
+    let last_non_ws = text_blocks
+        .iter()
+        .rev()
+        .find_map(|text| text.chars().rev().find(|ch| !ch.is_whitespace()));
+    if last_non_ws != Some('>') {
+        return false;
+    }
+    let mut text = String::new();
+    for block_text in &text_blocks {
+        text.push_str(block_text);
+    }
+    if !text.contains("<context_update>") {
+        return false;
+    }
+    let normalized = text.trim().replace("\r\n", "\n");
+    normalized.starts_with(CONTEXT_UPDATE_MESSAGE_PREFIX)
+        && normalized.ends_with("\n</context_update>")
+}
+
+/// Count of era-boundary `<context_update>` drift deltas currently in the
+/// transcript. The frontend counts these on the replay path; the live
+/// admission-shaped channel does not announce them in practice (a drift
+/// delta produces no `chat:user_message`), so the committed-transcript
+/// event carries the authoritative cumulative total and the entry-table
+/// counter resyncs against it after every commit — the committed count is
+/// authoritative regardless of what the live channel did (r8 wording: the
+/// frontend keeps a defensive admission-shaped increment for the shape, so
+/// "never" overstated one side of the contract).
+pub(crate) fn count_context_updates(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| context_update_message_text(m))
+        .count()
+}
+
+fn transcript_committed_payload(
+    session_id: &str,
+    revision: &str,
+    context_updates_total: usize,
+) -> serde_json::Value {
+    json!({
+        "session_id": session_id,
+        "transcript_revision": revision,
+        "context_updates_total": context_updates_total,
+    })
+}
+
 pub(crate) fn emit_transcript_committed(
     app: &AppHandle,
     session_id: &str,
     revision: String,
     persistence_origin: &str,
     message_count: usize,
+    context_updates_total: usize,
 ) {
     crate::features::sessions::diagnostics::record_backend(
         "transcript_committed_emitting",
@@ -604,12 +694,10 @@ pub(crate) fn emit_transcript_committed(
             "transcript_revision": revision,
             "persistence_origin": if persistence_origin.is_empty() { "unknown" } else { persistence_origin },
             "message_count": message_count,
+            "context_updates_total": context_updates_total,
         }),
     );
-    let payload = json!({
-        "session_id": session_id,
-        "transcript_revision": revision,
-    });
+    let payload = transcript_committed_payload(session_id, &revision, context_updates_total);
     let _ = app.emit("chat:transcript_committed", payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:transcript_committed", payload);
 }
@@ -1585,6 +1673,7 @@ async fn finish_reclaimed_lifecycle_turn(
                         revision,
                         "reclaimed_fallback",
                         saved.messages.len(),
+                        count_context_updates(&saved.messages),
                     );
                 }
                 Err(revision_error) => {
@@ -4772,5 +4861,135 @@ mod agent_shed_pin_tests {
             body.contains(needle),
             "the broadcast must re-shield watcher-marked sessions (code-qualified needle)"
         );
+    }
+}
+
+#[cfg(test)]
+mod context_update_count_tests {
+    use super::{
+        CONTEXT_UPDATE_MESSAGE_PREFIX, context_update_message_text, count_context_updates,
+        transcript_committed_payload,
+    };
+    use deepseek_tui::models::{ContentBlock, Message};
+
+    fn user_message(text: &str) -> Message {
+        Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn canonical(delta: &str) -> String {
+        // Same composition shape as the base writer (prefix_cache.rs):
+        // header + delta lines + closing tag.
+        format!("{CONTEXT_UPDATE_MESSAGE_PREFIX}{delta}\n</context_update>")
+    }
+
+    #[test]
+    fn counts_only_canonical_user_context_updates() {
+        let messages = vec![
+            user_message("plain prompt"),
+            user_message(&canonical("- drifted\n")),
+            Message {
+                role: deepseek_tui::models::Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: canonical("- echoed\n"),
+                    cache_control: None,
+                }],
+            },
+            user_message(&canonical("+ added\n- removed\n")),
+            user_message("quoted mention: <context_update> is not canonical"),
+        ];
+        assert_eq!(count_context_updates(&messages), 2);
+    }
+
+    #[test]
+    fn matcher_requires_full_prefix_and_suffix() {
+        assert!(context_update_message_text(&user_message(&canonical(
+            "+ x\n"
+        ))));
+        // Missing the closing tag: a truncated/pasted fragment must not count.
+        assert!(!context_update_message_text(&user_message(&format!(
+            "{}+ x\n",
+            CONTEXT_UPDATE_MESSAGE_PREFIX
+        ))));
+        // Missing the header (bare tag mention) must not count.
+        assert!(!context_update_message_text(&user_message(
+            "x\n</context_update>"
+        )));
+        // CRLF normalization and surrounding whitespace mirror the frontend matcher.
+        let crlf = format!(
+            "{}- y\r\n\r\n</context_update>",
+            CONTEXT_UPDATE_MESSAGE_PREFIX
+        );
+        assert!(context_update_message_text(&user_message(&crlf)));
+        assert!(context_update_message_text(&user_message(&format!(
+            "  {}",
+            canonical("- z\n")
+        ))));
+        // Non-user roles never count.
+        assert!(!context_update_message_text(&Message {
+            role: deepseek_tui::models::Role::System,
+            content: vec![ContentBlock::Text {
+                text: canonical("- w\n"),
+                cache_control: None,
+            }],
+        }));
+    }
+
+    fn user_message_with_blocks(blocks: Vec<String>) -> Message {
+        Message {
+            role: deepseek_tui::models::Role::User,
+            content: blocks
+                .into_iter()
+                .map(|text| ContentBlock::Text {
+                    text,
+                    cache_control: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// 边缘预筛（r9 perf）不得产生假阴性：标记跨块分裂（拼接语义）与
+    /// 空白填充消息仍必须精确匹配——预筛过严（over-reject）即红。截断
+    /// 片段（首字符 '<' 而尾字符非 '>'）仍被预筛正确拒绝。
+    #[test]
+    fn edge_prefilter_keeps_split_marker_and_padded_messages_matching() {
+        // 标记跨块分裂：拼接后才构成完整前缀/后缀（保持原 join 语义）。
+        let split = user_message_with_blocks(vec![
+            "<context_upd".to_string(),
+            format!(
+                "ate>\nSession context changed since it was pinned; the pinned \
+                 system prompt is unchanged. Delta (+ added, - removed):\n- split\n</context_"
+            ),
+            "update>".to_string(),
+        ]);
+        assert!(
+            context_update_message_text(&split),
+            "a marker split across text blocks must still match after the join"
+        );
+        // 纯空白块夹在中间不破坏匹配（trim 只剥空白）。
+        let padded = user_message_with_blocks(vec![
+            "  \n".to_string(),
+            format!("{}- p\n", CONTEXT_UPDATE_MESSAGE_PREFIX),
+            "</context_update>\n\n  ".to_string(),
+        ]);
+        assert!(context_update_message_text(&padded));
+        // 首字符 '<' 而尾字符非 '>'：预筛拒绝（截断片段不计数）。
+        assert!(!context_update_message_text(&user_message(&format!(
+            "{}- truncated",
+            CONTEXT_UPDATE_MESSAGE_PREFIX
+        ))));
+    }
+
+    #[test]
+    fn committed_payload_carries_context_update_total() {
+        let payload = transcript_committed_payload("sess-1", "rev-9", 7);
+        assert_eq!(payload["session_id"], "sess-1");
+        assert_eq!(payload["transcript_revision"], "rev-9");
+        assert_eq!(payload["context_updates_total"], 7);
     }
 }

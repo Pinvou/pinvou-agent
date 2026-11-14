@@ -10,7 +10,7 @@ import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { boundDraftNoticeMode as boundDraftNoticeModeOf } from './bound-draft-mode.js';
 import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
-import { can, isWeb } from '../../shared/platform.js';
+import { can, canInvoke, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
@@ -50,6 +50,7 @@ import {
   conversationItemsForMode,
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
+import { forkEntriesByTurnId } from './forkTurnEntries.js';
 import {
   shouldForceScrollFollow,
   transitionConversationScrollState,
@@ -82,6 +83,7 @@ const SessionMentionMenu = mentionLazy(() =>
 const SessionMentionCards = mentionLazy(() =>
   import('./SessionMentionControls.jsx').then((m) => ({ default: m.SessionMentionCards })));
 import { PROJECT_SESSION_DRAG_TYPE, resolveSessionProjectId } from '../projects/projectGrouping.js';
+import { classifyRebindError } from '../projects/rebindErrors.js';
 import {
   buildSessionMentionBlock,
   splitSessionMentionBlock,
@@ -1058,6 +1060,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeSessionIdRef = useRef(activeSessionId);
       activeSessionIdRef.current = activeSessionId;
+      // ChatView 随视图切换（currentView !== 'chat'）卸载；分叉 invoke 在飞
+      // 期间用户切到设置/工具 store 时，activeSessionIdRef 冻结在卸载前的值，
+      // 仅凭它判断会「替用户在别的视图背后切会话」——卸载置否，自动切换
+      // 只在 ChatView 仍挂载时执行。
+      const chatViewMountedRef = useRef(true);
+      useEffect(() => {
+        chatViewMountedRef.current = true;
+        return () => { chatViewMountedRef.current = false; };
+      }, []);
       const computerUseCopy = t.uiComputerUse;
       const computerUseSlice = (bs && bs.computerUse) || null;
       // Fetch the authoritative computer-use state on session mount/switch: the banner and
@@ -1820,6 +1831,86 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+      // 「从此轮分叉」入口表：turn id → keepTurns（1-based，含当前轮）。
+      // 序号口径与 rewindEntriesByTurnId 一致，与 Rust fork_session 的底座
+      // user_turn_prompt_indices（Editable 分类）对齐：纯图片 turn 与压缩
+      // 摘要头 turn（含会话内压缩的 stamped 载体）不占序号，引擎
+      // <context_update> 运行时消息经 runtimeContextUpdatesBefore 并入
+      // （forkEntriesByTurnId / turnHasUserText）。turn 进行中（busy）与
+      // compaction 进行中（ctxCompactInFlight——空闲会话的手动压缩整个
+      // 过程 busy 都是 false，不与 busy 门重叠）整表隐藏：Rust 端忙碌门
+      // 拒绝 turn 内分叉；compaction 进行中 Rust 端也显式拒绝（不占 turn
+      // 预约，turn-active 探针对它失明，fork 命令另行探
+      // is_compaction_in_flight——见 sessions.rs fork_session），整表隐藏
+      // 与之一致，入口不以「点击必报错」的形态存在。scheduled 运行会话
+      // （Rust 侧拒绝）与 web 车道（命令不在 access-policy，canInvoke 返回
+      // false）同样不提供入口。
+      const forkSupported = !!(
+        activeSessionId
+        // 大小写不敏感对齐 Rust is_sched_session_id（eq_ignore_ascii_case）：
+        // 大写变体 id 在大小写不敏感文件系统上就是定时会话本体，前端入口
+        // 与后端拒绝必须同口径（fork_session 命令本身仍有服务端拒绝兜底）。
+        && !activeSessionId.toLowerCase().startsWith('sched-')
+        && !ctxCompactInFlight
+        && bridge.available
+        && canInvoke('fork_session')
+      );
+      // in-flight 门按会话 id 记（与取消按钮的 cancellingSessionIds 同款）：
+      // ChatView 不因切会话重挂载，单槽位会被并发分叉互相清掉——先分叉 A
+      // 再分叉 B，A 先落盘时把 B 的标记清空，B 上的再点会绕过前端门撞上
+      // Rust 预约拒绝（虚假失败 toast）。
+      const [forkBusySessionIds, setForkBusySessionIds] = useState(() => new Set());
+      const forkEntries = useMemo(
+        () => (forkSupported ? forkEntriesByTurnId(conversationProjection.turns) : null),
+        [forkSupported, conversationProjection.turns],
+      );
+      const handleForkTurn = useCallback(async (turnId, keepTurns) => {
+        if (!forkSupported || busy || ctxCompactInFlight) return;
+        const sourceSessionId = activeSessionId;
+        if (forkBusySessionIds.has(sourceSessionId)) return;
+        setForkBusySessionIds(prev => {
+          const next = new Set(prev);
+          next.add(sourceSessionId);
+          return next;
+        });
+        try {
+          const forked = await invokeTauri('fork_session', { sessionId: sourceSessionId, keepTurns });
+          // 仅当用户仍停留在源会话且 ChatView 仍挂载时自动切换；分叉落盘的
+          // 窗口内用户已切走/切到别的视图则不打断其导航——新分支经
+          // session:list_changed 去抖进入侧栏，仍可从列表进入。切换失败不
+          // 冒充 forkFailed（分支已落盘、侧栏可见），如实提示切换失败。
+          // switchToSession 的失败路径 resolve(false) 而非 reject（桥接层
+          // 内部消化后走 reportSessionSwitchFailure），布尔为假且用户仍在源
+          // 会话时补专用提示；catch 保留兜底桥接层抛错形态（r7 minor）。
+          if (forked && forked.id && chatViewMountedRef.current && activeSessionIdRef.current === sourceSessionId) {
+            let switched = true;
+            try {
+              switched = await bridge.sessions.switchToSession(forked.id);
+            } catch (switchError) {
+              const switchDetail = String((switchError && switchError.message) || switchError || t.uiConversation.unknownError);
+              flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkSwitchFailed}: ${switchDetail}` });
+            }
+            if (!switched && chatViewMountedRef.current && activeSessionIdRef.current === sourceSessionId) {
+              flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkSwitchFailed}: ${t.uiConversation.unknownError}` });
+            }
+          }
+        } catch (err) {
+          // rebind 互斥拒绝（REBIND_IN_PROGRESS 等稳定 marker）走既有分类
+          // 映射的 trilingual 文案，不把后端英文诊断尾巴原样亮给用户；其余
+          // 错误保留原始细节（unknownError 兜底）。
+          const classified = classifyRebindError(err, t);
+          const detail = classified && classified.kind === 'copy'
+            ? classified.message
+            : String((err && err.message) || err || t.uiConversation.unknownError);
+          flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
+        } finally {
+          setForkBusySessionIds(prev => {
+            const next = new Set(prev);
+            next.delete(sourceSessionId);
+            return next;
+          });
+        }
+      }, [forkSupported, forkBusySessionIds, activeSessionId, busy, ctxCompactInFlight, flashQueuedNotice, t]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -3968,6 +4059,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
                     onRetry={isMultiAgentReadOnly ? undefined : retryLastTurn}
+                    forkEntries={(busy || ctxCompactInFlight) ? undefined : forkEntries}
+                    onForkTurn={!forkSupported || isMultiAgentReadOnly ? undefined : handleForkTurn}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}
