@@ -3,8 +3,9 @@
 //! The base engine emits `Event::ApprovalRequired` for promptable tools while `ask_on_guardrail` is armed
 //! (or in the Auto stance). The forwarder no longer auto-approves unconditionally; dispatch goes through
 //! [`approval_surface_decision`] in a fixed order: session denial cache → Plan defensive hard-deny →
-//! session grant cache → tri-mode stance. Raised cards are registered in this module for the `get_pending_approvals`
-//! command, so the frontend can restore approval cards after a remount (same restore idea as `pending_user_input`).
+//! force_prompt card → session grant cache → tri-mode stance. Raised cards are registered in this module for the
+//! `get_pending_approvals` command, so the frontend can restore approval cards after a remount (same restore idea
+//! as `pending_user_input`).
 //!
 //! The grant/denial caches mirror the scoping semantics of the TUI `resolve_approval_request_disposition`
 //! (crates/tui/src/core/authority.rs): **denials are scoped to the exact approval_key**
@@ -619,9 +620,11 @@ pub enum ApprovalSurfaceDecision {
 }
 
 /// The branch order builds on the TUI `resolve_approval_request_disposition` (authority.rs), with the Plan
-/// defensive arm deliberately stricter: **session denial > Plan hard-deny > session grant > force_prompt card >
-/// stance decision**. Scheduled unattended runs are short-circuited by the caller and never reach this function;
-/// scheduled/multi-agent sessions other than unattended ones follow the same order as normal chats.
+/// defensive arm deliberately stricter: **session denial > Plan hard-deny > force_prompt card > session grant >
+/// stance decision** (round-5 review wording fix: a force_prompt hold beats the grant cache — the grant arm is
+/// `session_granted && !force_prompt`; the previous wording put the grant ahead of the force card, which reads
+/// as if the cache may serve a hold). Scheduled unattended runs are short-circuited by the caller and never
+/// reach this function; scheduled/multi-agent sessions other than unattended ones follow the same order as normal chats.
 ///
 /// - Denial cache hit: hard-deny regardless of stance (TUI legacy order: session denial first).
 /// - Plan: the base Plan flow should have blocked tool execution; an arriving approval event is anomalous, so
