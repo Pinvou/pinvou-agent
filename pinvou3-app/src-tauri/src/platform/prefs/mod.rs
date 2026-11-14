@@ -1724,6 +1724,16 @@ impl UserPrefs {
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
         for model in &mut self.advanced.saved_models {
+            // Keyless parity (round-5 review): a record that declares the
+            // endpoint keyless reads NO credential — the refresh must not
+            // stamp `EnvOverride` (the override variable is never consulted
+            // for a declared route: `bridge::api_key` short-circuits before
+            // the env read) nor probe the store for a residual reference.
+            // The record's own persisted state is exactly what the keyless
+            // display helper renders downstream, so leave it untouched.
+            if model.declares_keyless_auth() {
+                continue;
+            }
             if env_override {
                 model.credential_state = CredentialState::EnvOverride;
                 model.has_secret = model.credential_ref.is_some();
@@ -4787,6 +4797,111 @@ mod tests {
             CredentialState::Unavailable,
             "an unreachable-keyring miss on the search lane must read as Unavailable"
         );
+    }
+
+    /// Round-5 review: the env-override stamp used to land on EVERY record
+    /// with no declaration check, so with the override variable exported a
+    /// keyless-declared entry displayed `EnvOverride` for a route no code
+    /// path reads a credential for (and a residual reference displayed
+    /// `Configured`) — defeating the keyless-aware display helper that
+    /// `get_effective_model_config` feeds from this same state. A declared
+    /// record must keep its persisted record state and cost zero store
+    /// reads; undeclared records keep both old legs (reverse direction).
+    #[test]
+    fn refresh_leaves_declared_records_at_their_record_state() {
+        with_temp_home("pinvou3-prefs-refresh-keyless", || {
+            let _restore = crate::platform::test_support::EnvRestore::capture(&[
+                super::MODEL_API_KEY_ENV_OVERRIDE,
+            ]);
+            let store = crate::platform::credential_store::RecordingCredentialStore::new();
+            let reference =
+                crate::platform::credential_store::CredentialReference::for_model("default");
+
+            // Two records with identical residual state; only the migrated
+            // one declares keyless (the hand-edited settings.json dual state
+            // the review found). The clone keeps the full literal valid.
+            let mut prefs = UserPrefs::default();
+            prefs.migrate_models();
+            let mut undeclared = prefs.advanced.saved_models[0].clone();
+            undeclared.id = "undeclared-record".into();
+            undeclared.name = "Env".into();
+            undeclared.auth_mode = None;
+            prefs.upsert_model(undeclared);
+            for record in prefs.advanced.saved_models.iter_mut() {
+                record.credential_ref = Some(reference.clone());
+                record.credential_state = CredentialState::Configured;
+                record.has_secret = true;
+                if record.id != "undeclared-record" {
+                    record.auth_mode = Some("none".to_string());
+                }
+            }
+            let declared = prefs.advanced.saved_models[0].id.clone();
+
+            // Leg 1 — override exported: the declared record keeps its
+            // record state (Configured is truthful: a residual secret IS
+            // stored, it is just never read); the undeclared record flips
+            // to EnvOverride as before.
+            // SAFETY: with_temp_home holds ENV_LOCK; env writes are
+            // serialized in-process.
+            unsafe { std::env::set_var(super::MODEL_API_KEY_ENV_OVERRIDE, "x") };
+            let before = store.ops().len();
+            prefs.refresh_credential_states_with_store(&store);
+            let ops = &store.ops()[before..];
+            let declared_state = prefs
+                .model_by_id(&declared)
+                .expect("declared record present")
+                .credential_state;
+            let undeclared_state = prefs
+                .model_by_id("undeclared-record")
+                .expect("undeclared record present")
+                .credential_state;
+            // SAFETY: with_temp_home holds ENV_LOCK; env writes are
+            // serialized in-process.
+            unsafe { std::env::remove_var(super::MODEL_API_KEY_ENV_OVERRIDE) };
+            assert_eq!(
+                declared_state,
+                CredentialState::Configured,
+                "a declared record must keep its record state under an exported override"
+            );
+            assert_eq!(
+                undeclared_state,
+                CredentialState::EnvOverride,
+                "an undeclared record keeps the env-override classification"
+            );
+            assert!(
+                !ops.iter().any(|op| op.starts_with("get")),
+                "a declared record must cost no store read: {ops:?}"
+            );
+
+            // Leg 2 — no override: the declared record is still untouched
+            // (no store probe for the residual reference), while the
+            // undeclared record's reference resolves through the store.
+            let before = store.ops().len();
+            prefs.refresh_credential_states_with_store(&store);
+            let ops = &store.ops()[before..];
+            let declared_state = prefs
+                .model_by_id(&declared)
+                .expect("declared record present")
+                .credential_state;
+            let undeclared_state = prefs
+                .model_by_id("undeclared-record")
+                .expect("undeclared record present")
+                .credential_state;
+            assert_eq!(
+                declared_state,
+                CredentialState::Configured,
+                "a declared record keeps its record state with no override either"
+            );
+            assert_eq!(
+                undeclared_state,
+                CredentialState::Missing,
+                "an undeclared record resolves through the store (empty store: Missing)"
+            );
+            assert!(
+                ops.iter().filter(|op| op.starts_with("get")).count() == 1,
+                "only the undeclared record's reference is probed: {ops:?}"
+            );
+        });
     }
 
     #[test]

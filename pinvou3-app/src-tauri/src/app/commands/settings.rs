@@ -170,6 +170,13 @@ fn saved_model_for_probe<'a>(
 /// (mirrors `bridge::api_key`'s declaration-before-env/keyring ordering;
 /// the frontend already sends an empty key, this closes the saved-credential
 /// fallback it cannot see).
+///
+/// Boundary (round-5 review): the declaration short-circuit lives in the
+/// `no_auth` FLAG, which only form-flow callers send. A legacy caller that
+/// passes a typed key with `no_auth = false` on a declared record sends that
+/// typed credential — deliberate: the saved-credential leg (the only leg a
+/// record posture can govern) IS server-guarded below, and a caller asking
+/// to probe WITH a key is overriding the posture explicitly.
 fn resolve_probe_key(
     api_key: &str,
     model_id: Option<&str>,
@@ -457,6 +464,9 @@ pub async fn probe_local_server_kind(
 
 /// 用户在编辑模型弹窗里主动点击“显示”时，读取该模型已保存的 API Key。
 /// 环境变量覆盖的凭据不回显，避免给出一个前端并不拥有、保存也不会覆盖的值。
+/// 边界（round-5 review）：这里刻意不查 keyless 声明——「显示」回答的是
+/// 「这条记录的钥匙串里存了什么」，而正常 UI 流程下声明记录的密钥行已隐藏、
+/// 按钮不可达；残留凭据（手改 settings.json 的双状态）如实回显。
 #[tauri::command]
 pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> {
     let prefs = refresh_safe_prefs(UserPrefs::load());
