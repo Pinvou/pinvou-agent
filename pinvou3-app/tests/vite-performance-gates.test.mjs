@@ -24,11 +24,14 @@ function buildPlugins(mode) {
 
 test('startup gates remain active in desktop and web production builds', () => {
   // PR #787's 485_000 re-cut, PR #782's 486_000 desktop raise, the shared
-  // PR #833 + PR #834 487_000 desktop raise, and PR #834's review-fix-wave
-  // 488_000 desktop raise are measured per policy; the config comment
-  // preserves both platforms' measurements.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 488_000);
-  assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 128_000);
+  // PR #833 + PR #834 487_000 desktop raise, PR #834's review-fix-wave
+  // 488_000 desktop raise, PR #835's 129_000 web raise, PR #835's
+  // review-fix-wave 489_000 desktop raise, PR #835's second fix wave
+  // 490_000 desktop raise, and PR #835's rebase re-measure 492_000
+  // desktop raise are measured per policy; the config comment preserves
+  // both platforms' measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 492_000);
+  assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 129_000);
   for (const mode of ['production', 'web']) {
     const pluginNames = new Set(buildPlugins(mode).map(plugin => plugin.name));
     assert.ok(pluginNames.has('pinvou-enforce-lazy-chunks'), `${mode} must enforce lazy chunks`);

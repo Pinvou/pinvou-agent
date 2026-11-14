@@ -310,6 +310,15 @@ function pinvouSharedtauriChatEvents() {
       userBuffer.remoteAdmissionKeys.push(admissionKey);
       if (userBuffer.remoteAdmissionKeys.length > 32) userBuffer.remoteAdmissionKeys.shift();
     }
+    // 引擎 <context_update> 运行时消息（pinned 上下文漂移）：投影层不产生
+    // turn 但后端 era 口径计 turn 边界——计入 buffer 的待消费计数，下一个
+    // 用户气泡随气泡下发（fork/rewind 入口表序号前移，forkTurnEntries.js）。
+    // 必须在 admission 去重之后累加：同一事件的重复投递在上面就已返回，
+    // 不得二次计数（漂移残差由 chat:transcript_committed 的
+    // context_updates_total 权威重同步兜底，见下方监听器）。
+    if (hideInternalRuntimeMessage && window.PinvouBridgeMessages?.isContextUpdateRuntimeMessage(content)) {
+      userBuffer.runtimeContextUpdatesPending = (userBuffer.runtimeContextUpdatesPending || 0) + 1;
+    }
     let lastUserText = "";
     for (let messageIndex = userBuffer.messages.length - 1; messageIndex >= 0; messageIndex--) {
       const candidate = userBuffer.messages[messageIndex];
@@ -354,7 +363,13 @@ function pinvouSharedtauriChatEvents() {
           flushPendingStreamRender();
           resetPendingAssistant();
         }
-        addChatItem({ type: "user", text: content, time: timeStr() });
+        addChatItem({
+          type: "user",
+          text: content,
+          time: timeStr(),
+          runtimeContextUpdatesBefore: userBuffer.runtimeContextUpdatesPending || 0,
+        });
+        userBuffer.runtimeContextUpdatesPending = 0;
       }
       state.busy = true;
       if (!state.thinking.active) startThinking();
@@ -416,6 +431,20 @@ function pinvouSharedtauriChatEvents() {
     if (revision) {
       committedBuffer.sessionRevision = revision;
       committedBuffer.remoteCommittedRevision = revision;
+    }
+    // <context_update> 边界计数的权威重同步。live 通道从不播报引擎
+    // 漂移增量（它们不产生 chat:user_message），提交负载里的累计总数是
+    // 唯一可信的 live 来源：pending = 总数 − 已随气泡下发的消费量。一次
+    // 重算同时收敛所有 live 残差（漂移增量、重复投递、发送失败、deferred
+    // 丢弃、edit_last 拼接），重载回放路径的重放计数与此口径一致。
+    if (payload.context_updates_total != null) {
+      runSyncOnSession(sid, function () {
+        window.PinvouBridgeMessages?.resyncRuntimeContextUpdatesPending?.(
+          committedBuffer,
+          state.chatItems,
+          payload.context_updates_total,
+        );
+      });
     }
     recordAuthoritySyncDiagnostic("transcript_committed_event_received", Object.assign({
       event_revision: revision,
@@ -1226,6 +1255,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     }
   }); });
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）本就贴着 30 上限；r7 M2 的计数基线重置以单个条件位并入 done 腿（实现在 bridge-messages 的计数器原语旁），内聚高于拆分
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
@@ -1290,6 +1320,14 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
     if (phase === "done") {
+      // <context_update> 计数基线在真重写（after < before）后重置（r7 M2）：
+      // 压缩把旧漂移增量从磁盘转写里摘除，而客户端气泡仍携带压缩前的
+      // 老 vintage——不重置的话权威重同步会被老消费量钳在 0（序号整体
+      // 低计）。实现与 prune-only 语义见 bridge-messages 的
+      // healRuntimeContextUpdatesVintageAfterCompaction；返回是否有改动。
+      if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {
+        notify();
+      }
       const postTokens = Number(e.payload && e.payload.post_tokens);
       if (Number.isFinite(postTokens) && postTokens > 0 && postTokens <= state.tokens.max) {
         state.tokens = { input: postTokens, max: state.tokens.max };

@@ -415,7 +415,49 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   writes the target's session file directly: the MCP server validates and spools
   (`~/.pinvou3/messaging/spool/<spool-id>.json`), and an app-side Rust watcher performs
   the steer/dispatch through the engine pool, so the persistence actor's
-  last-writer-wins snapshots can never clobber an external edit. The delivered text
+  last-writer-wins snapshots can never clobber an external edit. A steered
+  delivery stays queued until the engine reports `SteerCommitted` for it — the
+  done marker and the spool-file removal land on commit (the marker is what a
+  keyed retry consults for dedup), while a dropped steer leaves the file
+  queued and re-delivers on the next poll — or later in the same pass, when
+  the drop lands ahead of the file's sorted position — bounded per process
+  (a watcher restart re-buys the cycle budget, the same per-process
+  doctrine as the retry budget disclosed below): after ten dropped cycles
+  the file is quarantined (`steer_drop_limit`; the gate sits ahead of the
+  armed-skip, so it can quarantine a file that still holds an in-flight
+  steer armed by a mid-delivery re-steer — the disposition is the same
+  whether or not the steered body already landed). A commit is not
+  guaranteed at the turn boundary: the engine settles parked steers only
+  at a drain/inject point or on an interrupt — during a live turn the
+  stream loop drains the steer channel after every stream event and the
+  turn resumes to commit accepted steers in the SAME turn (round-9), so
+  the cases that wait for the target's NEXT turn's first drain are a steer
+  that landed after the turn's last drain, and a steer parked before a
+  turn that exits FAILED (that exit settles nothing and injects
+  nothing). If no terminal
+  event ever arrives while the app keeps running (that deferral, a
+  forwarder aborted by an engine recycle, a lost Drop notification on a
+  full event channel at engine-drop time, or a forwarder task that
+  panicked on an earlier event), the wait is given up after 24h of awake
+  time (a Windows clock may count sleep) and the
+  message re-delivers; a crash loses the in-memory wait entirely, so the
+  queued file re-delivers on the first poll after restart — either way
+  possibly duplicating. The pending-file ceiling does NOT count in-flight
+  steered files against its cap (they are accepted deliveries, not
+  unattended backlog), so ordinary steering traffic cannot terminally
+  quarantine fresh arrivals (round-9: not an absolute — at fleet scale a
+  same-pass mass drop, hundreds of concurrently armed steers whose drops
+  all land inside one inter-pass gap, can push the de-armed leftovers past
+  the cap, and the tail quarantine then applies to that genuinely-queued
+  excess). Quarantine
+  audit lines carry the failure-receipt fields named after the foundation
+  agent_mail receipt (`code` / `retryable:false` / `failed_at`, plus a
+  human `reason` field; the `code` values are messaging-local classes, not
+  agent_mail enum members, so the lines are not deserializable as an
+  agent_mail receipt — the six classes emitted today are
+  `pending_file_ceiling_exceeded`, `steer_drop_limit`,
+  `panic_attempt_limit`, `removal_attempt_limit`, `poison_record`, and
+  `delivery_attempt_limit`). The delivered text
   carries a machine-readable sender header block (the session-mention block pattern
   mirrored on receive) that the timeline renders as a sender card and all three
   auto-title paths strip.
@@ -440,29 +482,103 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   confirmation under the current full-auto approval (the registered typed
   Ask rule is the latent pin awaiting the approval-mode split, not the
   `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
-  next boot; the done-marker window itself is the keyed-dedup horizon —
+  next boot; the marker write does not fsync, so a power-loss restart can
+  lose a written marker — that corner degrades to one duplicate, never
+  loss; the done-marker window itself is the keyed-dedup horizon —
   pruned after the 7-day retention, so a retried call older than that
   re-delivers; and for an UNKEYED send whose spool file persistently cannot
   be removed after delivery, the same body re-delivers on up to ten
   consecutive ~1 Hz polls before the removal-streak arm quarantines — the
   round-18 minor-3 precision: "at-least-once" covers a bounded
   ten-duplicate burst; the double-dispatch window attribution (round-21
-  minor 13): an UNKEYED resubmission re-delivers at any latency (a fresh
-  uuid spool name — the ≤30s steer window is irrelevant), while a KEYED
-  resubmission double-dispatches only inside that window and only with a
-  materially different body); a steer accepted against a mid-turn target can still be
-  dropped or lost by the foundation — when that turn is cancelled (the
-  `chat:steer_dropped` window is not yet correlated) or when the idle
-  engine is evicted/rebuilt before the steer lands, and — the third
-  trigger, round-19 MAJOR-1 — when the **app crashes/exits after the steer
-  was registered in memory but before the turn loop drains it into a
-  persisted user turn**: the keyed done-marker and spool removal are written
-  at steer registration, so that window loses the message silently and a
-  keyed retry is answered "delivered" from the marker (the only zero-trace
-  loss channel; gating the marker on `chat:steer_committed` is the recorded
-  follow-up); a macOS two-instance startup race (the single-instance
+  minor 13, re-scoped when finalization moved to the commit, round-4; the
+  mid-delivery-replacement sub-arm re-scoped again, round-7): an
+  UNKEYED resubmission re-delivers at any latency (a fresh uuid spool name
+  — the steer window is irrelevant), while a KEYED resubmission always
+  re-spools into the same pending file (the server has no visibility into
+  the armed registration — only a landed done marker suppresses the spool
+  write), and what happens then depends on the compare: a materially
+  different body releases the armed steer at the poll's stale-release gate
+  on the NEXT pass (the registration is revoked, the inherited attempt
+  budget cleared) and the newest body delivers that same pass — about one
+  poll tick; if the swap instead lands inside the delivering pass itself,
+  the post-delivery re-verify catches it before any registration exists
+  and re-queues the newest body with one attempt recorded — it delivers
+  after that identity's retry backoff (5 s fresh, up to a minute once
+  attempts accumulate), and only a swap landing while the identity is
+  already at the attempt limit clears the budget outright (the
+  exhaustion arm's replaced branch). Either way the old
+  body's terminal event ends nothing app-side (it is buffered as late and
+  ages out), so that double-dispatch window ends when the newest body's
+  own delivery lands — at whichever price the sub-arm above quotes (one
+  poll tick via the stale-release gate, one retry backoff via the
+  mid-delivery re-verify) — not at the
+  terminal event and not the 24h wait; a semantically-equal body re-spools
+  too but is held by the poll's stale-release gate without re-dispatching
+  (the dedup happens at hold time, not spool time) until the earlier
+  body's terminal event finalizes — that is the window bounded by the 24h
+  commit wait; and a keyed resubmission double-dispatches unconditionally
+  once a give-up expiry removed the registration marker-less (the prune
+  writes no marker, so there is no gate left to consult); once the
+  commit's done marker exists, the pre-spool probe answers a keyed retry
+  without spooling); a steer
+  accepted against a mid-turn target can still be
+  dropped by the foundation — when that turn is cancelled
+  (`chat:steer_dropped`) or when the engine is evicted/rebuilt before the
+  steer lands. Only the cancelled case reliably produces a correlated
+  event: an evict aborts the forwarder before the foundation drains its
+  steers, so steers still parked at drain time produce no forwarded event —
+  though the evict's cancel-side drop (the turn-interrupt settlement) can
+  race the abort and forward a `chat:steer_dropped`, in which case the file
+  merely re-delivers sooner than the 24h arm below (the round-19 MAJOR-1
+  marker-gating follow-up, landed): the done marker and spool removal land
+  on `chat:steer_committed`, a dropped steer stays queued and re-delivers
+  on the next poll (after ten dropped cycles the file is quarantined), a
+  terminal event that never arrives while the app keeps running (the
+  next-turn deferral, a forwarder aborted by a recycle, a lost Drop
+  notification, or a dead forwarder task) is given up after 24h of awake
+  time and
+  re-delivers, and a crash
+  loses the in-memory wait entirely — the queued file re-delivers on the
+  first poll after restart (this replaces the former zero-trace loss
+  channel where a keyed retry was answered "delivered" from a marker
+  written at steer-Ok); a commit whose done-marker write and spool
+  removal BOTH fail (a read-only spool root) keeps the registration
+  armed so the poll cannot loop redeliveries at full cadence — the wait
+  then expires at the 24h rate; every former loss trigger now degrades to
+  at-least-once redelivery (possibly duplicating) instead of silent loss,
+  save the ten-cycle `steer_drop_limit` quarantine above — and five lossy
+  channels that are not redeliveries: the finalizer writes the done marker
+  on the terminal event without consulting the forwarder's
+  transcript-persistence outcome, so a session persist that fails and
+  outlasts the session loses the turn's transcript while the landed
+  marker suppresses this body's keyed retries (the in-app forwarder
+  retries the full snapshot on the next event; a failure that outlasts
+  the session never lands it); a replacement landing inside the committed
+  arm's re-verify-to-removal residual is destroyed untried under the old
+  body's landed marker (µs-scale, disclosed in the arm's comment rather
+  than promised closed); and a crash between the marker write and the
+  re-verify leaves the marker answering the newest body "delivered" so
+  the skip arm removes it untried; likewise a failed unlink of the fresh
+  marker in the post-marker replacement arm leaves that skip arm to
+  remove the newest body untried at the next pass (the old body's commit
+  is real and logged; the replacement body is not re-delivered —
+  disclosed in the arm's comment); and even a successful unlink can lose
+  the race to a concurrent poll pass: a replacement landing inside the
+  finalizer's tail can be consumed untried by that pass's
+  already-delivered skip within the same interleaving (the arm's comment
+  prices this same-pass variant); a
+  macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
-  double-deliver, and the replaced-after-delivery arm can then erase the
+  double-deliver — since commit-time finalization that double-delivery
+  window spans the whole commit wait (the queued file carries no marker
+  until the winning instance's terminal event), not just one poll tick,
+  and the duplication is exactly one extra delivery while the second
+  instance's steers commit or hold (its registry then holds the file, so
+  it does not re-deliver continuously) — a second instance whose engine
+  DROPS the steer loops its own bounded drop-cycle series instead (ten
+  cycles, then its `steer_drop_limit` quarantine caps the burst) — and
+  the replaced-after-delivery arm can then erase the
   winning instance's done marker — plugin-level upstream, the marker
   interplay is disclosed here (round-19 minor 15); a send against an
   ACP/code target — keyed or not (the round-18 minor-17 correction: this
@@ -472,7 +588,8 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   ACP/code gate lives below the poll layer); a send whose spool file the
   watcher never reaches within its 256-pending-file ceiling (round-19 minor
   24: all pending files count, including ones in backoff — "due" was a
-  misnomer) is
+  misnomer; round-8: files with a steer in flight are exempt — they are
+  accepted deliveries, not backlog) is
   quarantined as the ceiling's sorted tail with no sender-visible feedback —
   including a legitimate backlog's overflow, not just hostile growth (the
   round-18 minor-17 addition); a mid-delivery keyed retry with a DIFFERENT body re-queues the

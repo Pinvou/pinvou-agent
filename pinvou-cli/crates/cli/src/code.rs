@@ -28,9 +28,11 @@
 //! - checkpoints → `features::code_checkpoints` public functions plus the
 //!   `SessionStore` rewind sidecar methods, mirroring the
 //!   `rewind_to_turn` / `undo_last_rewind` orchestration. User-turn counting
-//!   goes through `code_checkpoints::count_user_turns_in_json`, which runs
-//!   the engine's exact `is_user_turn_prompt` predicate over the transcript
-//!   JSON (the CLI cannot depend on the foundation crate directly, so the
+//!   goes through `code_checkpoints::count_user_turns_in_json`, which reads
+//!   the transcript JSON through the engine's own era form
+//!   (`user_turn_prompt_indices`; the single-message
+//!   `is_user_turn_prompt` predicate it historically matched is retired)
+//!   (the CLI cannot depend on the foundation crate directly, so the
 //!   shared entry point lives in the app crate — no local approximation to
 //!   drift).
 //!
@@ -5758,8 +5760,8 @@ fn valid_checkpoint_id(id: &str) -> bool {
 }
 
 /// Exact user-turn count over transcript JSON, via the app-side entry point
-/// that runs the engine's own predicate (`is_user_turn_prompt`). This
-/// replaces a JSON approximation that counted image-only turns the engine
+/// that runs the engine's own era-form counting (`user_turn_prompt_indices`).
+/// This replaces a JSON approximation that counted image-only turns the engine
 /// treats as non-prompt and could wedge `checkpoints rewind` in a
 /// code-restored state (the CLI pre-check passed, the store's authoritative
 /// recount refused, and nothing changed on retry). The values were just

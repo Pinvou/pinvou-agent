@@ -5,8 +5,9 @@
 // 原生车道时间线的 turn 边界，提供「回退到第 N 轮」入口的变体判定与 diff 摘要
 // 解析（确认弹窗预览）。
 //
-// 对齐规则：投影 turns 中带 userItem 的用户 turn 按出现顺序计序号，与 Rust
-// count_user_turns（is_user_turn_prompt 同口径）一一对应；preamble/系统项不占
+// 对齐规则：投影 turns 中带 userItem 的用户 turn 按出现顺序计序号（经
+// turnHasUserText 的同款口径跳过），与 Rust count_user_turns（底座 era 口径
+// user_turn_prompt_indices）一一对应；preamble/系统项不占
 // 序号。turn N+1 有 Turn 快照 → 该边界入口为「回退到第 N 轮」（代码+对话）；
 // 快照缺失（LRU 淘汰/当时快照失败）→ 「仅回退对话」变体（conversationOnly）。
 // 快照创建失败的 turn 只是入口变体不同，不会错位——回退前的 diff 预览展示的
@@ -15,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invokeTauri as invoke } from '../../platform/tauri/client.js';
 import { canInvoke } from '../../shared/platform.js';
+import { turnHasUserText } from '../conversation/deepseek-conversation.js';
 
 /**
  * checkpoint 列表 → Map<turnNumber, checkpoint>。
@@ -23,6 +25,13 @@ import { canInvoke } from '../../shared/platform.js';
  * 后端 resolve_rewind_plan 只认 turn 号对得上的 Turn 条目，顺序对齐出的入口
  * 承诺「代码+对话回退」必被后端拒绝——退回空 map，边界全部走「仅回退对话」
  * 变体（诚实且可用）。
+ *
+ * 已知残留（first-wins 检索）：含「用户粘贴的压缩摘要头」的 post-provenance
+ * 历史里，前端跳过粘贴头轮次而后端 era 计数包含它——点按粘贴头之后轮次的
+ * 边界会解析到粘贴头那轮的快照，回退比点击点早一轮（恢复内容内部一致，
+ * 但被静默丢弃的一轮可能含助手文件编辑）。fail-closed 臂（查不到快照 →
+ * conversationOnly、undo 计数不符 → 禁用）与根治方向（后端下发序号）见
+ * src-tauri app/commands/checkpoints.rs 的同题披露。
  */
 export function checkpointMapByTurn(checkpoints) {
   const map = new Map();
@@ -68,8 +77,13 @@ export function rewindEntriesByTurnId(turns, checkpoints) {
   const byTurn = checkpointMapByTurn(list);
   let ordinal = 0;
   for (const turn of turns || []) {
-    if (!turn || !turn.userItem || turn.id == null) continue;
-    ordinal += 1;
+    // 纯图片 turn 不占序号：Rust rewind_to_turn 用底座 era 口径
+    // （user_turn_prompt_indices，Editable 分类）计 turn，与 fork 同口径；
+    // 前端不跳过会把「第 N 轮」整体错位（turnHasUserText 详见投影模块）。
+    if (!turn || turn.id == null || !turnHasUserText(turn)) continue;
+    // 引擎 <context_update> 运行时消息并入（forkTurnEntries.js 同款）：后端
+    // era 口径计边界而投影层不产生 turn，bridge 层随用户气泡下发计数。
+    ordinal += 1 + ((turn.userItem && turn.userItem.runtimeContextUpdatesBefore) || 0);
     const checkpoint = byTurn.get(ordinal) || null;
     entries.set(turn.id, {
       keepTurns: ordinal - 1,

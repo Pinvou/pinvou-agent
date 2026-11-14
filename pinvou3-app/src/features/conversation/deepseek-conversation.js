@@ -296,6 +296,46 @@ function transferSteeredRunTerminals(turns) {
 }
 
 /**
+ * 是否构成一个可计序号的用户 turn。Rust 侧 fork/rewind 用底座
+ * `user_turn_prompt_indices`（Editable 分类）计 turn：纯图片（无文本块）的
+ * user message 不占序号。前端入口表（分叉/回退）必须用同一口径跳过这类
+ * turn，否则序号错位——轻则多报一轮的拒绝错误，重则把「从此轮分叉」静默
+ * 变成全量分支（把后续 turn 也带进新分支）。
+ *
+ * 压缩摘要头 turn 同样不占序号：以摘要头首句开头的 user 消息要么是会话内
+ * 压缩的 stamped 载体（底座两个 era 口径下都是 runtime-owned，永不计入），
+ * 要么是用户粘贴的摘要头（pre-provenance 历史的宽松口径读作已保存摘要，
+ * 也不计入）。投影层不识别这类消息（会原样成为 userItem），入口表在此
+ * 统一跳过，否则每个压缩过的会话 fork/回退序号整体 +1。标记字面量镜像自
+ * 底座 `CodeWhale/crates/tui/src/history_recognition.rs`
+ * COMPACTION_SUMMARY_MARKER / LEGACY_COMPACTION_SUMMARY_MARKER（未从底座
+ * 根导出）。已知残留：post-provenance 历史（会话内压缩过）里用户再粘贴
+ * 摘要头时，底座 era 口径会计入而前端跳过——该场景罕见，根治是把序号由
+ * 后端下发（见 forkTurnEntries.js 注释）。
+ *
+ * 反向形态（后端计入而投影层无 turn）由 bridge 层的
+ * runtimeContextUpdatesBefore 计数闭合：引擎 <context_update> 运行时消息
+ * （pinned 上下文漂移）按底座 Editable 分类计入 era 列表，投影层不产生
+ * turn——bridge 在投递/重放两路把计数随下一个用户气泡下发，入口表在此
+ * 之上并入序号（forkTurnEntries.js / checkpoints.js）。
+ *
+ * 对齐细节：镜像底座 Editable 分类——不 trim。纯空白文本在底座是真实
+ * Editable turn（无 trim），前端旧实现 trim 后跳过会让序号与后端错位
+ * （外部写入/导入的记录可能携带）；标记匹配同样在未 trim 文本上做
+ * startsWith，与底座 `has_compaction_summary_header` 一致。
+ */
+const COMPACTION_SUMMARY_MARKERS = [
+  'Another language model started to solve this problem',
+  'Conversation Summary (Auto-Generated)',
+];
+
+export function turnHasUserText(turn) {
+  const text = String((turn && turn.userItem && turn.userItem.text) || '');
+  if (!text) return false;
+  return COMPACTION_SUMMARY_MARKERS.every(marker => !text.startsWith(marker));
+}
+
+/**
  * DeepSeek-TUI 仍以原 chatItems / SavedSession 为事实源；这里只做只读投影，
  * 不改变底座消息、工具、记忆、产物或计划卡的存储格式。
  */
