@@ -497,6 +497,7 @@ command_protocol!(
         "get_session_model_id",
         "get_image_input_capability",
         "test_model_connection",
+        "probe_endpoint_models",
         "test_image_input_capability",
         "update_settings",
         "update_search_settings",
