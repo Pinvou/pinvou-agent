@@ -119,7 +119,11 @@ function injectSource() {
         case 'list_marketplace_skills': return Promise.resolve(skills());
         case 'install_marketplace_tool':
           if(BLOCKING_INSTALL_OAUTH_TOOLS.has(args.toolId)) return new Promise(resolve=>{state.finishOAuthInstall=()=>{state.installed[args.toolId]=true;state.finishOAuthInstall=null;resolve(null);};});
-          state.installed[args.toolId]=true; return Promise.resolve(null);
+          state.installed[args.toolId]=true;
+          // weather declares remote validation: the command's Ok value is the
+          // discovered tool inventory the success card reports (round-2 P2).
+          if(args.toolId==='weather') return Promise.resolve(['gaode_weather_query']);
+          return Promise.resolve(null);
         case 'uninstall_marketplace_tool': state.installed[args.toolId]=false; return Promise.resolve(null);
         case 'start_marketplace_tool_oauth_login': return new Promise(resolve=>{state.oauthRequests[args.requestId]={toolId:args.toolId,resolve};});
         case 'cancel_marketplace_tool_oauth_login': {
@@ -380,6 +384,8 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     const call=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='weather');
     return window.__TOOL_STORE_TEST__.installed.weather&&call?.args?.config?.AMAP_KEY==='amap-test-token';
   }));
+  rec('安装成功卡报告校验发现的工具清单',await page.evaluate(()=>
+    document.body.innerText.includes('已验证，发现工具')&&document.body.innerText.includes('gaode_weather_query')));
 
   // 安装成功后的「新建会话」是商城数据与聊天页之间唯一的业务交叉点。
   // 真实点击这条链路，确保新会话的工具欢迎卡能加载，并继续走原聊天发送入口。
