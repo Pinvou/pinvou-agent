@@ -7,8 +7,8 @@ Integrated upstream backport and historical provenance: [modification register](
 
 ## 0. Current maintenance baseline and validation boundary
 
-- Public maintenance and parent gitlink: `8e8d52fdb4a418bf4310db4b5d03dce5345c54d5` (2026-11-14). #156 merged as `8e8d52fdb`. This follow-up changes parent references only; it does not advance maintenance.
-- Measured history: 99 commits above upstream v0.9.12 `dcd4c200f`, 84 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Public maintenance and parent gitlink: `8e8d52fdb4a418bf4310db4b5d03dce5345c54d5` (2026-11-14). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`. This round maintenance followed with one signed rustc/clippy 1.100 stable lint-adaptation commit and the parent gitlink followed.
+- Measured history: 99 commits above upstream v0.9.12 `dcd4c200f`, 84 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits remain #107 `f27672935` and #116 `e9a7f48da1` (this round's commit is signed). The previous single-exception claim no longer applies. Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
 - Measured drift: 551 files, +121123/-49817, net +71306; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 

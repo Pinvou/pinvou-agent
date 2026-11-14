@@ -1083,6 +1083,9 @@ pub(crate) fn spawn_event_forwarder(
                     // error text today, so the source is not adopted yet.
                     error_source: _,
                     base_url: _,
+                    // CodeWhale#142 adds the terminal error's producer
+                    // source; the forwarder surfaces only usage/status/error.
+                    error_source: _,
                 } => {
                     #[cfg(not(feature = "benchmark-hooks"))]
                     let _ = &tool_catalog;
