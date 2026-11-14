@@ -238,12 +238,30 @@ const expectedProtocolHashes = {
   // chat:transcript_committed guard clause in the same body (chat-events.js).
   // Event names, invoke shapes and authoritative payload handling remain
   // unchanged; publication timing is intentional.
+  // Recomputed for the r41 minor-1 pre-swap invalidation: the chat:compaction
+  // handler now computes the shrink/ownership classification AND drops the
+  // cached buffer BEFORE onSessionEvent (inside runSyncOnSession's swap the
+  // invalidation's active leg would clear a background working set's array
+  // references — notices pushed into detached arrays). Same event set, no new
+  // invoke/listen entries — only the captured handler body changed.
   // Recomputed for the repo-wide stale-comment cleanup: wording-only comment
   // edits inside the captured chat-events.js listener spans (stale tool_start
   // line number, three deleted English captions) — chat.js spans and the
   // command surface unchanged. Recomputed again in round 3: the present_artifact
   // comment now carries the web lane's exact `chat:tool_start` token so both
   // bridge lanes read byte-identically.
+
+  // Recomputed once more for the r42 minor-9 boolean-contract gate on the
+  // compaction front arm (reload success gate on the compaction notice).
+  // Recomputed for the r46 MAJOR-3 resync-gating: the compaction resync arm now
+  // captures invalidateSessionBuffer's refusal verdict (busy/queued sessions
+  // refuse invalidation) and the foreground reload is skipped when refused —
+  // same event set, handler body only.
+  // Recomputed for the r46 MAJOR-3 option-parameter form: invalidateSessionBuffer
+  // takes { refuseWhenBusy } from the compaction arms and returns its verdict
+  // (true invalidated / false refused) for the caller to gate the reload on.
+  chat: 'de3344b02dac03467546d1ddeba49117d6f10d5a0384e34fda1ef8d9e9dc301f',
+
   // Recomputed for the PR #834 review-fix wave: the chat:compaction listener
   // now stores a timestamp (not a boolean) at start so the read side can
   // expire a lost-terminal in-flight flag with the same 15-minute backstop
@@ -258,7 +276,8 @@ const expectedProtocolHashes = {
   // Recomputed again for review 5876783763: the marker-maintenance block
   // also advances the monotonic compactionSeq counter (no invoke/listen
   // surface change).
-  chat: 'b4f6f16cacf88c6f4959af16e838cdfe47869b72f2f54e3b259f0057aae4056b',
+    chat: '6c9d458c773cce9befb95a0c66a08c5c6355290f7b799f405f6f91a2fd4262dd',
+
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -494,6 +513,20 @@ for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
   assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
+// r42 minor 10: the r8 incident class - a Proxy-stub surface cannot notice a
+// dropped factory-return entry. This suite executes the REAL bridge factory,
+// so asserting the callable pins the chat-side notice landing pad the same
+// way the sessions twins are pinned by session_nav_race.
+assert.equal(typeof api.chat.addSystemItem, 'function',
+  'chat factory must export callable addSystemItem (r8 incident class / r42 minor 10)');
+// r47 minor 3 (checkpoints review): the curated-map VALUES for the two
+// sessions functions are pinned callable the same way - the presence-only
+// key assert above cannot see the r8 shape where the factory exports the
+// function but the curated map points at `undefined`.
+assert.equal(typeof api.sessions.switchToSessionInternal, 'function',
+  'sessions factory must export callable switchToSessionInternal (r47 minor 3)');
+assert.equal(typeof api.sessions.invalidateSessionBuffer, 'function',
+  'sessions factory must export callable invalidateSessionBuffer (r47 minor 3)');
 assert.equal(api.getState, undefined, 'flat state facade must not return');
 
 function sourceFiles(directory) {

@@ -1086,10 +1086,10 @@ pub(crate) fn spawn_event_forwarder(
                     turn_id: _,
                     submission_id: _,
                     compaction_id: _,
-                    base_url: _,
                     // CodeWhale#142 adds the terminal error's producer
                     // source; the forwarder surfaces only usage/status/error.
                     error_source: _,
+                    base_url: _,
                 } => {
                     #[cfg(not(feature = "benchmark-hooks"))]
                     let _ = &tool_catalog;

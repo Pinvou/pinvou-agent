@@ -2408,6 +2408,7 @@ jobs:
             'features::voice_shortcut::platform::tests::' \
             'app::commands::dependencies::platform::windows::tests::' \
             'features::codex_acp::platform::windows::tests::' \
+            'features::code_checkpoints::platform::tests::' \
             'features::codex_acp::platform::windows::shutdown_tests::' \
             'features::codex_acp::shutdown::tests::' \
             'features::system_tray::' \

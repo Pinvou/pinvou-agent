@@ -149,6 +149,19 @@ pub struct TruncateToTurnOutcome {
     pub had_compaction: bool,
 }
 
+/// `restore_rewound_turns_detailed` 的返回：恢复的消息条数 + 回退保留轮数 +
+/// 恢复出的轮数（r42 M4：编排层据此登记「仅对话」哨兵，哨兵 turn =
+/// kept_turns + restored_turns = 恢复后的全量轮数）。
+#[derive(Debug, Clone)]
+pub struct RestoredRewindTurns {
+    /// 追加回 transcript 的消息条数。
+    pub messages: usize,
+    /// 回退时保留的轮数（= 恢复前 transcript 的轮数，已复核相等）。
+    pub kept_turns: u32,
+    /// 本次恢复出的用户轮数。
+    pub restored_turns: u32,
+}
+
 fn rewound_turns_path() -> PathBuf {
     crate::platform::paths::sessions_root().join(REWOUND_TURNS_FILE)
 }
@@ -198,9 +211,30 @@ fn load_rewound_turns_map_with(
         Err(parse_error) => {
             // 损坏的 sidecar 不得全局锁死 rewind/undo：改名隔离（保留现场供人工
             // 恢复）后按空 map 继续——代价是存量备份记录对该会话不再可见（undo
-            // 入口消失），胜过整个功能报错卡死。
+            // 入口消失），胜过整个功能报错卡死。隔离名用平台原语（纳秒后缀）——
+            // 秒级时间戳 + POSIX rename-over 在一秒内二次损坏时会覆盖首份证据
+            // 副本（quarantine_corrupt_file 为此加纳秒后缀）。
+            // r43 MAJOR-4：隔离必须发生在「取锁 + 锁下重读」判定之后——r42
+            // minor 7 把 eager rename 提到了 match 之前，三处破坏：CallerHoldsLock
+            // 腿 quarantine_and_continue 二次 rename ENOENT、落进 r41-minor-6
+            // fail-closed 恒硬错（拒绝理由还是假的「文件仍在场」）；TryLockAndRecheck
+            // 锁下重读 NotFound、并发重建恢复臂死亡；持锁对端在重读前刚重建的
+            // 新鲜 map 会被本次 eager rename 改名进 .corrupt-*（记录丢失到对端
+            // 下次 persist）。
             match mode {
-                RewindLoadMode::CallerHoldsLock => quarantine_and_continue(&path, parse_error),
+                RewindLoadMode::CallerHoldsLock => {
+                    // 调用方已持 mutation 锁：无并发写者，立即隔离（恰好一次 rename）。
+                    let quarantine = crate::platform::filesystem::quarantine_corrupt_file(&path)
+                        .map_err(|error| {
+                            anyhow::Error::new(error)
+                                .context(format!("隔离损坏的回退备份失败: {}", path.display()))
+                        })?;
+                    eprintln!(
+                        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
+                        quarantine.display()
+                    );
+                    Ok(HashMap::new())
+                }
                 RewindLoadMode::TryLockAndRecheck => {
                     match try_lock_rewound_turns_file() {
                         Some(_lock) => {
@@ -221,7 +255,36 @@ fn load_rewound_turns_map_with(
                                     );
                                     Ok(fresh_map)
                                 }
-                                Err(_still_corrupt) => quarantine_and_continue(&path, parse_error),
+                                Err(error)
+                                    if error.downcast_ref::<std::io::Error>().is_some_and(
+                                        |io_error| io_error.kind() == ErrorKind::NotFound,
+                                    ) =>
+                                {
+                                    // 锁下重读 NotFound：entry-read 与取锁之间文件
+                                    // 已被对端隔离/替换（我们此刻持锁，对端 persist
+                                    // 无法再动它）——按空继续，对端的下一次 persist
+                                    // 负责重建。不得再 rename（文件已不在场）。
+                                    eprintln!(
+                                        "[sessions] 回退备份在读取后被并发写方移除，按空继续（对端负责重建）"
+                                    );
+                                    Ok(HashMap::new())
+                                }
+                                Err(_still_corrupt) => {
+                                    // 仍在场且仍损坏：锁内隔离（恰好一次 rename）+ 按空继续。
+                                    let quarantine =
+                                        crate::platform::filesystem::quarantine_corrupt_file(&path)
+                                            .map_err(|error| {
+                                                anyhow::Error::new(error).context(format!(
+                                                    "隔离损坏的回退备份失败: {}",
+                                                    path.display()
+                                                ))
+                                            })?;
+                                    eprintln!(
+                                        "[sessions] 回退备份损坏（锁下复核仍损坏），隔离为 {} 后按空继续: {parse_error:#}",
+                                        quarantine.display()
+                                    );
+                                    Ok(HashMap::new())
+                                }
                             }
                         }
                         None => {
@@ -250,29 +313,6 @@ fn load_rewound_turns_map_with(
 /// answer an empty map. Both messages are part of the observable behavior
 /// and are pinned verbatim here; see the mode enum for who holds the
 /// cross-process flock during the rename.
-fn quarantine_and_continue(
-    path: &std::path::Path,
-    parse_error: serde_json::Error,
-) -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
-    // platform's nanosecond unique-name quarantine primitive
-    // (`stem.corrupt-<timestamp>.<nanos>`): a same-second second corruption
-    // would overwrite the first forensic copy (rename silently replaces the
-    // existing target) — same shape as code_checkpoints' corruption
-    // isolation.
-    match crate::platform::filesystem::quarantine_corrupt_file(path) {
-        Ok(quarantine) => {
-            eprintln!(
-                "[sessions] corrupt rewind backup quarantined as {}; continuing empty: {parse_error:#}",
-                quarantine.display()
-            );
-        }
-        Err(error) => {
-            eprintln!("[sessions] failed to quarantine the corrupt rewind backup: {error:#}");
-        }
-    }
-    Ok(HashMap::new())
-}
-
 fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> Result<()> {
     let path = rewound_turns_path();
     if map.values().all(|records| records.is_empty()) {
@@ -322,7 +362,9 @@ impl SessionStore {
             .messages
             .iter()
             .enumerate()
-            .filter(|(_, message)| deepseek_tui::is_user_turn_prompt(message))
+            .filter(|(_, message)| {
+                crate::features::code_checkpoints::turns::counts_as_user_turn(message)
+            })
             .map(|(index, _)| index)
             .collect();
         let total_turns = turn_prompt_indices.len() as u32;
@@ -341,8 +383,14 @@ impl SessionStore {
 
         // 先备份后落盘：备份失败时磁盘上的 transcript 尚未被修改。sidecar 的
         // read-modify-write 经 REWIND_BACKUP_LOCK 与 purge/restore 串行（评审 M8）。
+        // r45 MAJOR-2：识别标记在推入时刻于锁内钉死为写入值本身——绝不通过
+        // 重读 records.last() 反推。重读版本有两处跨进程破坏：推入与捕获之间
+        // 对端截断持久化时，标记会变成**对端**的 rewound_at，回滚误删对端的
+        // 唯一 undo 备份而自己的幻影幸存；且捕获块只持进程内锁、缺跨进程
+        // flock，违反模块头「REWIND_BACKUP_LOCK 持有期间必持文件锁」的纪律。
+        let rewound_marker = Utc::now().to_rfc3339();
         let record = RewoundTurnsRecord {
-            rewound_at: Utc::now().to_rfc3339(),
+            rewound_at: rewound_marker.clone(),
             original_revision,
             kept_turns: keep_turns,
             pre_restore_checkpoint_id,
@@ -368,7 +416,41 @@ impl SessionStore {
         // 显式放行路径：直接持久化截断结果，不走 update_messages，
         // 因此不触发 looks_like_truncating_overwrite；
         // 该守卫对其它调用方的保护保持不变。
-        self.persist_then_reconcile(&session, "turn rewind truncation")?;
+        if let Err(error) = self.persist_then_reconcile(&session, "turn rewind truncation") {
+            // r44 minor 10：sidecar 记录已落盘而 transcript 持久化失败——
+            // 不回吐则幻影记录经 records.last() 永久卡死 undo（「回退后已
+            // 产生新轮次」条件恒不满足）并污染下一次回退的陈旧快照作废。
+            // best-effort 回吐；只弹标记精确匹配的自己那条。r45 MAJOR-2：
+            // 回吐块补齐跨进程 flock（与推入同款锁纪律）——进程内锁盖不住
+            // CLI×GUI 的推入竞争，缺 flock 的 load→pop→persist 会对对端的
+            // 并发推入做 last-writer-wins。flock 失败按「放弃回吐」处理：
+            // 幻影记录留待下轮条件②拒绝，原始错误仍是主失败原因。
+            {
+                let _backup_guard = REWIND_BACKUP_LOCK.lock();
+                match lock_rewound_turns_file() {
+                    Ok(_cross_process) => {
+                        if let Ok(mut backups) = load_rewound_turns_map() {
+                            let pop = backups.get_mut(id).is_some_and(|records| {
+                                records
+                                    .last()
+                                    .is_some_and(|record| record.rewound_at == rewound_marker)
+                            });
+                            if pop
+                                && backups
+                                    .get_mut(id)
+                                    .is_some_and(|records| records.pop().is_some())
+                            {
+                                let _ = persist_rewound_turns_map(&backups);
+                            }
+                        }
+                    }
+                    Err(lock_error) => eprintln!(
+                        "[sessions] rewind backup rollback skipped (cross-process lock unavailable: {lock_error:#}); the phantom record will be refused by undo's condition re-check"
+                    ),
+                }
+            }
+            return Err(error);
+        }
         Ok(TruncateToTurnOutcome {
             rewound_turns: total_turns - keep_turns,
             had_compaction,
@@ -395,7 +477,8 @@ impl SessionStore {
     }
 
     /// 回退反悔：把最新备份记录的被截消息追加回 transcript 尾部并持久化，随后从
-    /// sidecar 删除该条记录，返回恢复的消息条数。
+    /// sidecar 删除该条记录。r42 M4 起返回详细结果（消息数 + 轮数拆分），供
+    /// 编排层登记「仅对话」哨兵。
     ///
     /// 与 `truncate_to_user_turn` 同级的显式专用路径：不经过 update_messages 的
     /// `looks_like_truncating_overwrite` 守卫入口，
@@ -408,19 +491,35 @@ impl SessionStore {
     /// 内重新校验；不满足则如实报错、不动磁盘。调用方（编排命令）应在动代码
     /// （restore checkpoint）之前先用 `resolve_rewind_undo_state` 完成同样的预检
     /// （含 revision 与绑定快照核实），把「代码已反悔、对话未反悔」的窗口压到最小。
-    pub fn restore_rewound_turns(&self, id: &str) -> Result<usize> {
+    /// r42 M4：undo 的详细返回——恢复的消息数之外，再带回「回退保留轮数」
+    /// 与「恢复出的轮数」，供编排层在恢复后登记「仅对话」哨兵（把账本计数
+    /// 立即对齐到恢复后全量口径，调和门不再隐藏全部入口）。
+    pub fn restore_rewound_turns_detailed(&self, id: &str) -> Result<RestoredRewindTurns> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {
             bail!("Cannot undo rewind for scheduled-run session '{id}'");
         }
         validate_session_id(id)?;
-        let _backup_guard = REWIND_BACKUP_LOCK.lock();
-        let _cross_process = lock_rewound_turns_file()?;
-        let mut backups = load_rewound_turns_map()?;
-        let record = backups
-            .get(id)
-            .and_then(|records| records.last().cloned())
-            .with_context(|| format!("会话 '{id}' 没有可反悔的回退记录"))?;
+        let record = {
+            // r46 MAJOR-4：备份锁与跨进程 flock 只包住 sidecar 的读改写——
+            // 此前两者以函数作用域持有、横跨 persist_then_reconcile，而其
+            // retention 清理在删除会话时会再次 lock 同一个非重入互斥量
+            // （同线程 = 永久死锁，undo 期间一次保留策略删除即触发）。
+            let _backup_guard = REWIND_BACKUP_LOCK.lock();
+            let _cross_process = lock_rewound_turns_file()?;
+            let backups = load_rewound_turns_map()?;
+            let record = backups
+                .get(id)
+                .and_then(|records| records.last().cloned())
+                .with_context(|| format!("会话 '{id}' 没有可反悔的回退记录"))?;
+            // （持久化在锁作用域之外执行——见下方 persist_then_reconcile。）
+            // r46 P1-2：不再把整图快照带出锁作用域——persist 释放锁的窗口里
+            // 对端可能改动 map，陈旧快照在删除阶段整图回写会抹掉对端改动。
+            Some(record)
+        };
+        let Some(record) = record else {
+            unreachable!("with_context above guarantees a record");
+        };
         let mut session = self
             .manager
             .load_session_snapshot(id)
@@ -428,7 +527,9 @@ impl SessionStore {
         let current_turns = session
             .messages
             .iter()
-            .filter(|message| deepseek_tui::is_user_turn_prompt(message))
+            .filter(|message| {
+                crate::features::code_checkpoints::turns::counts_as_user_turn(message)
+            })
             .count() as u32;
         if current_turns != record.kept_turns {
             bail!(
@@ -445,21 +546,74 @@ impl SessionStore {
                 bail!("回退后对话内容已被编辑，不可反悔");
             }
         }
+        let restored_turns = record
+            .removed_messages
+            .iter()
+            .filter(|message| {
+                crate::features::code_checkpoints::turns::counts_as_user_turn(message)
+            })
+            .count() as u32;
         let restored = record.removed_messages.len();
         session.messages.extend(record.removed_messages);
         session.metadata.message_count = session.messages.len();
         session.metadata.updated_at = Utc::now();
         // 先持久化 transcript 再删备份记录：本步失败时记录仍在，可重试。
+        // r46 MAJOR-4：此处的锁已释放——retention 清理若在 persist 期间删除
+        // 会话并再次 lock 备份互斥量，不会再撞上本函数持有的同线程锁。
         self.persist_then_reconcile(&session, "rewind undo restore")?;
         // 记录删除失败只留孤儿数据；反悔条件②（turn 数已不等于 kept_turns）会
-        // 自然挡住重复恢复，不算失败，如实记日志。
-        if let Some(records) = backups.get_mut(id) {
-            records.pop();
+        // naturally blocks repeat restores - a failure here is logged, not
+        // raised. r47 minor 1 (review): the cleanup leg's cross-process flock
+        // acquisition failure must not `?`-error the whole undo either - by
+        // this point the conversation IS restored and persisted, so reporting
+        // "restore failed, manual handling needed" is a false taxonomy. Same
+        // treatment as the truncate twin's Err leg (the
+        // lock_rewound_turns_file match above): degrade to an honest log; the
+        // orphan record is refused by the undo condition re-check.
+        {
+            let _backup_guard = REWIND_BACKUP_LOCK.lock();
+            let _cross_process = match lock_rewound_turns_file() {
+                Ok(file) => file,
+                Err(error) => {
+                    eprintln!(
+                        "[sessions] rewind backup cleanup skipped for {id} (cross-process lock unavailable: {error:#}); the conversation is restored and the orphan record will be refused by the undo condition re-check"
+                    );
+                    return Ok(RestoredRewindTurns {
+                        messages: restored,
+                        kept_turns: record.kept_turns,
+                        restored_turns,
+                    });
+                }
+            };
+            // r46 P1-2：重取锁后重载最新 map，只删除与本条指纹（rewound_at +
+            // truncated_revision）精确一致的记录。绝不按锁外快照 pop 尾部再整图
+            // 回写——persist 释放锁的窗口里对端（CLI/并发 undo）的推入会被
+            // last-writer-wins 抹掉，或弹掉对端新推的记录。指纹已不在场（对端
+            // 已消费本条）时保持 map 原样：重复恢复由上方条件复核天然拒绝。
+            let mut latest = load_rewound_turns_map()?;
+            if let Some(records) = latest.get_mut(id) {
+                if let Some(pos) = records.iter().rposition(|one| {
+                    one.rewound_at == record.rewound_at
+                        && one.truncated_revision == record.truncated_revision
+                }) {
+                    records.remove(pos);
+                }
+            }
+            if let Err(error) = persist_rewound_turns_map(&latest) {
+                eprintln!("[sessions] remove consumed rewind backup for {id} failed: {error:#}");
+            }
         }
-        if let Err(error) = persist_rewound_turns_map(&backups) {
-            eprintln!("[sessions] remove consumed rewind backup for {id} failed: {error:#}");
-        }
-        Ok(restored)
+        Ok(RestoredRewindTurns {
+            messages: restored,
+            kept_turns: record.kept_turns,
+            restored_turns,
+        })
+    }
+
+    /// [`Self::restore_rewound_turns_detailed`] 的消息数兼容包装（既有调用方
+    /// 与测试只关心恢复条数）。
+    pub fn restore_rewound_turns(&self, id: &str) -> Result<usize> {
+        Ok(self.restore_rewound_turns_detailed(id)?.messages)
     }
 
     /// Purge a session's rewind backups when delete/retention removes the
@@ -547,6 +701,116 @@ mod tests {
         }
         drop(guard);
         second.try_lock().expect("released guard lets the peer in");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：损坏 sidecar 的两条隔离腿都「恰好一次 rename」——
+    /// r42-minor-7 的 eager-rename + 二次 rename ENOENT 会让 CallerHoldsLock
+    /// 硬错（fail-closed 臂的拒绝理由「文件仍在场」还是假的）、TryLockAndRecheck
+    /// 落进同一硬错。
+    #[test]
+    fn caller_holds_lock_quarantines_exactly_once() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::CallerHoldsLock)
+            .expect("corrupt sidecar must quarantine-and-continue, not hard-error");
+        assert!(map.is_empty(), "quarantine continues on an empty map");
+        assert!(
+            !path.exists(),
+            "the corrupt file must be moved aside exactly once"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：TryLockAndRecheck 无对端竞争时同样「恰好一次
+    /// rename」+ 按空继续（锁下重读仍损坏 → 锁内隔离）。
+    #[test]
+    fn try_lock_and_recheck_quarantines_exactly_once_without_a_peer() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("corrupt sidecar must quarantine-and-continue, not hard-error");
+        assert!(map.is_empty());
+        assert!(
+            !path.exists(),
+            "the corrupt file must be moved aside exactly once"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：锁被写方持有时不动文件、按空继续（file 未被本次
+    /// 隔离触碰——eager-rename 版会把它改名进 .corrupt-*，记录丢失到对端
+    /// 下次 persist）。
+    #[test]
+    fn try_lock_and_recheck_leaves_the_file_alone_while_a_peer_holds_the_lock() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let peer_guard = lock_rewound_turns_file().expect("peer holds the lock");
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("lock-held degrade answers an empty map");
+        assert!(map.is_empty());
+        assert!(
+            path.exists(),
+            "the corrupt file must be left untouched while a peer holds the lock"
+        );
+        std::fs::write(&path, b"{ not json").unwrap();
+        drop(peer_guard);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：有效 sidecar 永不被隔离——修复前 eager-rename 竞态
+    /// 可能把并发写方刚重建的好文件改名进 .corrupt-*（本测试钉住「解析成功
+    /// 的文件必须原样在场」这一不变量）。
+    #[test]
+    fn a_valid_sidecar_is_never_quarantined() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Wire 形状是 camelCase（serde rename_all），与生产 persist 一致。
+        let valid = r#"{"rebuiltSession":[{"rewoundAt":"2026-11-03T00:00:00Z","originalRevision":"","keptTurns":1,"preRestoreCheckpointId":null,"truncatedRevision":"","removedMessages":[]}]}"#;
+
+        std::fs::write(&path, valid).unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("a valid sidecar must parse and continue");
+        assert!(
+            map.contains_key("rebuiltSession"),
+            "锁下重读必须按在场内容继续（不得隔离对端的好文件）"
+        );
+        assert!(path.exists(), "a valid sidecar must never be quarantined");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
