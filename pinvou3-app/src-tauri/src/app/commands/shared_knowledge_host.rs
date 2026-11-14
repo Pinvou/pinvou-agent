@@ -9,11 +9,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::features::knowledge;
 use crate::features::remote_knowledge::{RemoteConnection, RemoteKnowledgeService};
 use crate::features::sessions::SessionStore;
-use crate::features::shared_knowledge_host::{self, SharedKnowledgeHostStatus, packaged_resources};
+use crate::features::shared_knowledge_host::{
+    self, LOCAL_ENDPOINT, SharedKnowledgeHostStatus, packaged_resources,
+};
 
 const HOST_PROGRESS_EVENT: &str = "shared-knowledge-host-progress";
-/// Default loopback endpoint of the local host service (shared by register/rebind local owner).
-const LOCAL_HOST_ENDPOINT: &str = "127.0.0.1:3210";
 static HOST_LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Serialize)]
@@ -120,7 +120,7 @@ async fn reconnect_host_inner(
     let claim = shared_knowledge_host::recover_owner(packaged_resources(&resource_dir)).await?;
     emit_host_progress(app, "reconnect", "connect", 82, None);
     let connection = remote
-        .register_local_owner(LOCAL_HOST_ENDPOINT, &claim.token)
+        .register_local_owner(LOCAL_ENDPOINT, &claim.token)
         .await?;
     if connection.server_id != claim.server_id || connection.device_id != claim.device_id {
         return Err("本机所有者凭据与服务身份不一致".to_string());
@@ -263,7 +263,7 @@ pub async fn shared_kb_host_restore(
             &server_id,
         )?;
         let connection = remote
-            .register_local_owner(LOCAL_HOST_ENDPOINT, &claim.token)
+            .register_local_owner(LOCAL_ENDPOINT, &claim.token)
             .await?;
         consume_matching_owner_claim(&app, &claim).await?;
         return Ok(connection);
@@ -312,7 +312,7 @@ async fn install_or_upgrade_inner(
     emit_host_progress(app, operation, "connect", 82, None);
     let connection = if let Some(claim) = claim {
         let connection = remote
-            .register_local_owner(LOCAL_HOST_ENDPOINT, &claim.token)
+            .register_local_owner(LOCAL_ENDPOINT, &claim.token)
             .await?;
         if connection.server_id != claim.server_id || connection.device_id != claim.device_id {
             return Err("本机所有者凭据与服务身份不一致".to_string());
@@ -320,7 +320,7 @@ async fn install_or_upgrade_inner(
         consume_matching_owner_claim(app, &claim).await?;
         connection
     } else {
-        remote.rebind_local_owner(LOCAL_HOST_ENDPOINT).await?
+        remote.rebind_local_owner(LOCAL_ENDPOINT).await?
     };
     emit_host_progress(app, operation, "complete", 100, None);
     Ok(connection)

@@ -43,8 +43,7 @@ use crate::features::assistant::expert_roster::{
 use crate::features::assistant::platform::bridge::{Pinvou3Bridge, persisted_provider_route};
 use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{
-    ChatEngineState, ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting,
-    SessionStore, transcript_revision,
+    ChatEngineState, ScheduledEngineState, ScheduledRunProfile, SessionStore, transcript_revision,
 };
 use crate::features::sessions::{SerializableMode, SessionModeState};
 

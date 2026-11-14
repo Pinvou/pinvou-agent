@@ -900,21 +900,13 @@ impl L1Store {
     /// 配了 embedding 时的**相关性门控**：向量 top 余弦低于 [`RELEVANCE_MIN_COSINE`] 且
     /// FTS 也无命中 → 判定与知识集无关，返回空（调用方据此不注入）。纯 FTS 降级模式无
     /// 统一阈值，维持"有命中即返回"。
-    pub fn retrieve_for_chat_multi(
-        &self,
-        collection_ids: &[i64],
-        query: &str,
-        k: usize,
-    ) -> rusqlite::Result<Vec<ScopedChunkHit>> {
-        Ok(self
-            .retrieve_for_chat_multi_outcome(collection_ids, query, k)?
-            .hits)
-    }
-
-    /// [`Self::retrieve_for_chat_multi`] 带降级披露：嵌入器已挂载但本次查询向量
-    /// 计算失败时 `embed_query_failed` 为真（本次静默降级纯 FTS）。嵌入器未挂载
-    /// 的降级不算（那是"未安装/未加载"路径，由调用方在检索前统一披露），调用方
-    /// 须把真值转成模型可见的警告，否则模型会把关键词结果当全量作答。
+    /// Carries a degraded disclosure: when the embedder is mounted but this
+    /// query's vector computation fails, `embed_query_failed` is true (this
+    /// pass degrades silently to pure FTS). A degradation with no embedder
+    /// mounted does not count (that is the "not installed/not loaded" path,
+    /// disclosed uniformly by the caller before retrieval); the caller must
+    /// turn the flag into a model-visible warning, otherwise the model would
+    /// answer as if the keyword results were exhaustive.
     pub fn retrieve_for_chat_multi_outcome(
         &self,
         collection_ids: &[i64],
@@ -972,7 +964,7 @@ impl L1Store {
         let mut positions: HashMap<(String, i64, String), usize> = HashMap::new();
         for (_, _, _, collection_id, hit) in candidates {
             let source_key = (
-                dedupe_path_key(&hit.doc_path),
+                crate::platform::os::filesystem_path_identity_key(&hit.doc_path),
                 hit.ord,
                 hit.text.replace("\r\n", "\n").trim().to_string(),
             );
@@ -1010,8 +1002,8 @@ impl L1Store {
         // are bounded by the same number — clamping only inside `search_fts`
         // would leave the vector arm unbounded and skew the RRF merge.
         // (`k == 0` needs no fallback here: the only caller,
-        // `retrieve_for_chat_multi`, applies the `k == 0 -> 5` default before
-        // delegating, so `k` always arrives non-zero.)
+        // `retrieve_for_chat_multi_outcome`, applies the `k == 0 -> 5` default
+        // before delegating, so `k` always arrives non-zero.)
         let lim = k.min(super::store::SEARCH_LIMIT_CAP / 2);
         let fts = self.search_fts(collection_id, q, lim * 2)?;
         let ranked = if let Some(query_vector) = query_vector {
@@ -1079,14 +1071,11 @@ fn now_epoch_secs() -> u64 {
     chrono::Utc::now().timestamp().max(0) as u64
 }
 
-fn dedupe_path_key(path: &str) -> String {
-    crate::platform::os::filesystem_path_identity_key(path)
-}
-
 /// RRF 的排名→得分公式：`1.0/(K + rank + 1)`（rank 从 0 计），K=60 是
 /// 论文默认常数。混合检索合并（[`rrf_merge`]）与多库归并
-/// （[`L1Store::retrieve_for_chat_multi`]）共用同一公式与同一 K，避免两
-/// 处漂移。
+/// and the multi-collection merge
+/// ([`L1Store::retrieve_for_chat_multi_outcome`]) share one formula and one
+/// K, so the two cannot drift.
 const RRF_K: f64 = 60.0;
 
 fn rrf_score(rank: usize) -> f64 {
@@ -1100,7 +1089,11 @@ fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> 
     // 每一路按各自从 0 计的排名给分，两路合并。
     let mut add_stream = |hits: &[ChunkHit]| {
         for (rank, h) in hits.iter().enumerate() {
-            let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
+            let key = format!(
+                "{}#{}",
+                crate::platform::os::filesystem_path_identity_key(&h.doc_path),
+                h.ord
+            );
             *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
             keep.entry(key).or_insert_with(|| h.clone());
         }
@@ -1331,8 +1324,9 @@ mod tests {
         .unwrap();
 
         let hits = l1
-            .retrieve_for_chat_multi(&[second, first, conflicting, second], "shared", 5)
-            .unwrap();
+            .retrieve_for_chat_multi_outcome(&[second, first, conflicting, second], "shared", 5)
+            .unwrap()
+            .hits;
         assert_eq!(hits.len(), 2, "相同正文去重，但同路径冲突正文必须保留");
         assert_eq!(hits[0].collection_ids, vec![second, first]);
         assert_eq!(hits[0].hit.doc_path, "/tmp/shared.md");
@@ -1377,7 +1371,10 @@ mod tests {
         ];
         let (first_path, second_path) = candidates
             .into_iter()
-            .find(|(first, second)| dedupe_path_key(first) == dedupe_path_key(second))
+            .find(|(first, second)| {
+                crate::platform::os::filesystem_path_identity_key(first)
+                    == crate::platform::os::filesystem_path_identity_key(second)
+            })
             .expect("at least the identical-path fallback must share an identity");
         let merged = rrf_merge(vec![hit(1, first_path)], vec![hit(1, second_path)], 10);
 
@@ -1435,8 +1432,9 @@ mod tests {
             .unwrap();
         assert!(
             !clone
-                .retrieve_for_chat_multi(&[cid], "语义检索", 5)
+                .retrieve_for_chat_multi_outcome(&[cid], "语义检索", 5)
                 .unwrap()
+                .hits
                 .is_empty()
         );
     }
@@ -1461,8 +1459,12 @@ mod tests {
         assert_eq!(docs[0].parse_status, "parsed");
         assert!(docs[0].n_chunks >= 1);
 
-        // FTS（≥3 字符）—— 走对话检索通路(retrieve_for_chat_multi)
-        let hits = l1.retrieve_for_chat_multi(&[cid], "交强险", 10).unwrap();
+        // FTS (>= 3 chars) — goes through the chat retrieval path
+        // (retrieve_for_chat_multi_outcome)
+        let hits = l1
+            .retrieve_for_chat_multi_outcome(&[cid], "交强险", 10)
+            .unwrap()
+            .hits;
         assert!(!hits.is_empty(), "应检索到含'交强险'的块");
         assert!(hits[0].hit.text.contains("交强险"));
         assert_eq!(hits[0].hit.doc_name, "访谈纪要.md");
@@ -1626,8 +1628,9 @@ mod tests {
             ImportIngestOutcome::Completed
         ));
         assert!(
-            !l1.retrieve_for_chat_multi(&[collection_id], "旧内容", 5)
+            !l1.retrieve_for_chat_multi_outcome(&[collection_id], "旧内容", 5)
                 .unwrap()
+                .hits
                 .is_empty()
         );
 
@@ -1644,8 +1647,9 @@ mod tests {
             ImportIngestOutcome::Skipped
         ));
         assert!(
-            l1.retrieve_for_chat_multi(&[collection_id], "旧内容", 5)
+            l1.retrieve_for_chat_multi_outcome(&[collection_id], "旧内容", 5)
                 .unwrap()
+                .hits
                 .is_empty()
         );
         let document = l1.list_documents(collection_id, 0).unwrap().pop().unwrap();
@@ -1709,13 +1713,15 @@ mod tests {
         assert_eq!(after.parse_status, before.parse_status);
         assert_eq!(after.n_chunks, before.n_chunks);
         assert!(
-            !l1.retrieve_for_chat_multi(&[collection_id], "旧正式内容", 5)
+            !l1.retrieve_for_chat_multi_outcome(&[collection_id], "旧正式内容", 5)
                 .unwrap()
+                .hits
                 .is_empty()
         );
         assert!(
-            l1.retrieve_for_chat_multi(&[collection_id], "全新内容", 5)
+            l1.retrieve_for_chat_multi_outcome(&[collection_id], "全新内容", 5)
                 .unwrap()
+                .hits
                 .is_empty()
         );
         let _ = fs::remove_dir_all(dir);
@@ -1738,20 +1744,25 @@ mod tests {
         l1.replace_doc_chunks(doc, cid, &chunks, None).unwrap();
 
         // 命中 → 只返回命中块(邻域扩展已下线,不再聚合相邻块)。
-        let only = l1.retrieve_for_chat_multi(&[cid], "独有锚点词", 5).unwrap();
+        let only = l1
+            .retrieve_for_chat_multi_outcome(&[cid], "独有锚点词", 5)
+            .unwrap()
+            .hits;
         assert_eq!(only.len(), 1);
         assert!(only[0].hit.text.contains("第二段丙丙丙"));
         assert!(!only[0].hit.text.contains("第一段"), "只给命中块,不带邻居");
 
         // 门控:无关键词命中 → 空(不注入)。空 query → 空。
         assert!(
-            l1.retrieve_for_chat_multi(&[cid], "彻底无关的查询词组", 5)
+            l1.retrieve_for_chat_multi_outcome(&[cid], "彻底无关的查询词组", 5)
                 .unwrap()
+                .hits
                 .is_empty()
         );
         assert!(
-            l1.retrieve_for_chat_multi(&[cid], "   ", 5)
+            l1.retrieve_for_chat_multi_outcome(&[cid], "   ", 5)
                 .unwrap()
+                .hits
                 .is_empty()
         );
     }

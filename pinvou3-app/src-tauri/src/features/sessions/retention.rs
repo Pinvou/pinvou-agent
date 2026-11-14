@@ -1038,12 +1038,11 @@ impl SessionStore {
             .manager
             .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for engine persistence"))?;
-        let total_tokens = session.metadata.total_tokens;
+        // load→persist never touches total_tokens; that IS the preserve.
         let mode_label = state.mode.as_label();
 
         session.metadata.updated_at = Utc::now();
         session.metadata.message_count = state.messages.len();
-        session.metadata.total_tokens = total_tokens;
         session.metadata.model = state.model;
         session.metadata.workspace = profile.workspace;
         session.metadata.mode = Some(mode_label.to_string());

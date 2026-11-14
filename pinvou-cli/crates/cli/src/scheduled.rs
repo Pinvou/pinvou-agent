@@ -1379,7 +1379,8 @@ fn registry_tasks_view(
         .unwrap_or_else(|| EMPTY.get_or_init(serde_json::Map::new))
 }
 
-// ---- DTO mapping (mirrors ScheduledTaskDto / ScheduledRunDto, camelCase) ----
+// ---- DTO mapping (mirrors ScheduledTaskDto and the persisted run record,
+// camelCase presentation) ----
 
 fn str_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
     value.get(field).and_then(|value| value.as_str())

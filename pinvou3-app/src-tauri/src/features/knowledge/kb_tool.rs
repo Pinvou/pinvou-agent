@@ -2,7 +2,7 @@
 //!
 //! 取代注入式(每条消息自动注入片段):由 LLM 自己决定何时查/查什么。工具 per-session
 //! 构造(持 `session_id`),`execute` 时查该会话挂载的知识集,复用
-//! [`L1Store::retrieve_for_chat_multi`]。
+//! [`L1Store::retrieve_for_chat_multi_outcome`]。
 //! 经底座 `EngineConfig.extra_tools` 注入(spawn_for_session)。配套 Self-RAG 自检引导见
 //! `commands::build_kb_agentic_guide`。
 
@@ -873,7 +873,10 @@ mod tests {
             l1.ingest_import_item(&job_id, item.id, mounted, &fixture, &AtomicBool::new(false)),
             ImportIngestOutcome::Completed
         ));
-        let hits = l1.retrieve_for_chat_multi(&[mounted], "83.6", 5).unwrap();
+        let hits = l1
+            .retrieve_for_chat_multi_outcome(&[mounted], "83.6", 5)
+            .unwrap()
+            .hits;
         let hit = hits
             .first()
             .expect("kb_search should hit non-first XLSX sheet");

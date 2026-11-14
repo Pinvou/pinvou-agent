@@ -3411,10 +3411,10 @@ impl BrowserManager {
                 {
                     let mut inner = mgr.inner.lock().await;
                     if inner.session.is_some() {
-                        let port = inner
-                            .port
-                            .or_else(|| inner.session.as_ref().map(|s| s.port()))
-                            .unwrap_or(0);
+                        // port and session are set/cleared together, so a live
+                        // session always has a port.
+                        #[allow(clippy::expect_used)]
+                        let port = inner.port.expect("port is set whenever a session exists");
                         if probe_cdp(port, Duration::from_millis(800)).await {
                             fail_count = 0;
                             continue;

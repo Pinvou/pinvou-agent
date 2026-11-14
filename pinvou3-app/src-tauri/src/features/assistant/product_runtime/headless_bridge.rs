@@ -1294,7 +1294,6 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
         if *runtime_state == RuntimeSessionState::Closed {
             return cancel_result.map_err(|_| backend_error("cancel_failed"));
         }
-        let _workspace = self.take_private_session_state(session_id)?;
         self.close_runtime_locked(session_id, &mut runtime_state)
             .await
             .map_err(|_| backend_error("cancel_failed"))?;

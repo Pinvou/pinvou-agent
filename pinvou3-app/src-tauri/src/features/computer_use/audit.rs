@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::platform::hashing::sha256_hex;
 use crate::platform::paths;
 use crate::platform::strings::truncate_utf8;
 
@@ -51,10 +52,6 @@ pub const AUDIT_TARGET_MAX_BYTES: usize = 600;
 /// intact if a future error source starts embedding variable data (same
 /// bound as the target field).
 pub const AUDIT_ERROR_MAX_BYTES: usize = 600;
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    crate::platform::hashing::sha256_hex(bytes)
-}
 
 /// `<pinvou3 data dir>/computer-use/`.
 pub fn audit_dir() -> PathBuf {

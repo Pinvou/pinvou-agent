@@ -423,7 +423,7 @@ prompt 建议：
 
 - 打开时读取一次。
 - 用户编辑期间不主动监听所有外部变更。
-- 每次保存后更新 `lastSavedText` 和 `artifactInfo`。
+- 每次保存后更新 `lastSavedRef` 和 `artifactInfo`。
 - 切换/关闭前 flush。
 
 AI 编辑的特殊处理：
