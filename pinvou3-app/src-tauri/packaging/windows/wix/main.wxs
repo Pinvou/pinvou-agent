@@ -1,3 +1,10 @@
+<!-- Pinvou fork of the Tauri bundler MSI template. Base: tauri-cli-v2.12.4
+     (crates/tauri-bundler/src/bundle/windows/msi/main.wxs). Local deltas:
+     the dump_system_prompt dev-tool component exclusion and the opt-in
+     RemovePinvouUserData uninstall action. Re-base on the bundler version
+     pinned by package.json before adding new deltas; the bundler renders
+     this file as a handlebars template and its template data is part of
+     the contract. -->
 <?if $(sys.BUILDARCH)="x86"?>
     <?define Win64 = "no" ?>
     <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
@@ -36,6 +43,11 @@
         <Property Id="AUTOLAUNCHAPP" Secure="yes" />
         <!-- Property to forward cli args to the launched app to not lose those of the pre-update instance -->
         <Property Id="LAUNCHAPPARGS" Secure="yes" />
+        <!-- Secure="yes" is required: a per-machine uninstall launched from a
+             non-elevated shell runs the execute sequence elevated, and MSI
+             drops every public property not listed as secure, so the opt-in
+             below would silently stay unset. -->
+        <Property Id="PINVOU_REMOVE_USER_DATA" Secure="yes" />
 
         {{#if allow_downgrades}}
             <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
@@ -380,8 +392,9 @@
 
         <!-- User data (~USERPROFILE\.pinvou3) is preserved on uninstall by
              default. Deleting it requires an explicit opt-in, mirroring the
-             NSIS uninstaller's unchecked delete-app-data checkbox:
-             msiexec /i <msi> /uninstall PINVOU_REMOVE_USER_DATA=1 -->
+             NSIS uninstaller's unchecked delete-app-data checkbox (the NSIS
+             checkbox additionally removes the WebView2 cache directories):
+             msiexec /x <msi> PINVOU_REMOVE_USER_DATA=1 -->
         <CustomAction
             Id="RemovePinvouUserData"
             Return="ignore"

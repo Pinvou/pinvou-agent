@@ -539,12 +539,17 @@ jobs:
               - 'private-runtimes/windows'
               - 'pinvou3-app/scripts/codex-bridge-runtime/**'
               - 'pinvou3-app/scripts/tauri/build.js'
+              - 'pinvou3-app/scripts/tauri/build-local-nsis.ps1'
               - 'pinvou3-app/scripts/tauri/codex-bridge.js'
               - 'pinvou3-app/scripts/tauri/effective-config.js'
               - 'pinvou3-app/scripts/tauri/windows-runtime.js'
               - 'pinvou3-app/src-tauri/config/platforms/windows/runtime/**'
+              # The windows platform conf is a direct assertion target of the
+              # NSIS staging contract test (installer languages, nsis wiring).
+              - 'pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json'
               - 'pinvou3-app/src-tauri/packaging/windows/runtime/**'
               - 'pinvou3-app/src-tauri/packaging/windows/nsis/**'
+              - 'pinvou3-app/src-tauri/packaging/windows/wix/**'
               - 'pinvou3-app/src-tauri/src/features/codex_acp/**'
               - 'pinvou3-app/src-tauri/src/platform/capabilities.rs'
               - 'pinvou3-app/src-tauri/resources/common/bundle/mcp-servers/browser-*'

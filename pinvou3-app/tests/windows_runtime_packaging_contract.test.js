@@ -276,7 +276,13 @@ assert.doesNotMatch(runtimeScript, /Stage-NsisBootstrapper/u);
 assert.match(initScript, /git lfs pull/);
 assert.match(initScript, /--include=/);
 assert.match(initScript, /\[switch\]\$OnnxOnly/);
-assert.match(initScript, /GIT_LFS_SKIP_SMUDGE/);
+// Pin the set-call, not just the token: the restore line also mentions
+// GIT_LFS_SKIP_SMUDGE, so a plain token grep would survive its removal.
+assert.match(initScript, /\[Environment\]::SetEnvironmentVariable\("GIT_LFS_SKIP_SMUDGE", "1", "Process"\)/u);
+// Pin the relocated LFS storage: downloads must land in the resolver cache
+// (target\windows-runtime\lfs-storage), not the submodule git directory.
+assert.match(initScript, /lfs\.storage=\$lfsStorageRoot/u);
+assert.match(initScript, /Join-Path \$resolverCacheRoot "lfs-storage"/u);
 assert.match(initScript, /onnxruntime-win-x64-\*-runtime\.zip/);
 assert.match(initScript, /pinvou3-windows-runtime-\$cacheSchema-\$expectedCommit/);
 assert.match(

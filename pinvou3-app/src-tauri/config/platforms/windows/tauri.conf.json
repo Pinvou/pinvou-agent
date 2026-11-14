@@ -13,6 +13,11 @@
         ],
         "componentRefs": [
           "PythonNodeRuntimeEnvironment"
+        ],
+        "languages": [
+          "en-US",
+          "zh-CN",
+          "ja-JP"
         ]
       },
       "nsis": {

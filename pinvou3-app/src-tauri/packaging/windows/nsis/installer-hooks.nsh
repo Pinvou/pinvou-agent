@@ -103,8 +103,11 @@ pinvou_vc_redist_ready:
 
 ; Configure the machine-wide bundled-runtime environment after install and
 ; remove it on uninstall, mirroring wix/python-node-path.wxs for the MSI
-; target. FailHard matches the installers' data contracts: install aborts
-; (WiX Environment writes roll back), uninstall warns and continues.
+; target (same variable, value, and machine scope). Failure contracts differ
+; by leg: install aborts (MSI Environment writes roll back), uninstall warns
+; and continues (MSI would roll the whole uninstall back) so one stale
+; registry value can never strand a user or block removal; runtime-env.ps1
+; additionally only clears the value while it points at this install.
 !macro PinvouRunRuntimeEnv Mode FailHard
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
@@ -114,15 +117,19 @@ pinvou_vc_redist_ready:
   Pop $7
   ${If} $6 != 0
     DetailPrint "Bundled runtime environment update failed: $7"
-    MessageBox MB_ICONSTOP|MB_OK "无法更新内置运行时环境（PINVOU3_PYTHON）：$7。请确认安装脚本未被安全软件阻止。$\r$\nFailed to update the bundled runtime environment (PINVOU3_PYTHON): $7. Verify that security software is not blocking installer scripts." /SD IDOK
+    MessageBox MB_ICONSTOP|MB_OK "无法更新内置运行时环境（PINVOU3_PYTHON）：$7。请确认安装脚本未被安全软件阻止。$\r$\nFailed to update the bundled runtime environment (PINVOU3_PYTHON): $7. Verify that security software is not blocking installer scripts.$\r$\n組み込みランタイム環境（PINVOU3_PYTHON）を更新できませんでした：$7。セキュリティソフトによってインストールスクリプトがブロックされていないか確認してください。" /SD IDOK
     !if "${FailHard}" == "true"
       Abort
     !endif
   ${EndIf}
   DetailPrint "$7"
-  SetOutPath "$INSTDIR"
+  ; Deliberately no SetOutPath "$INSTDIR" here: on the uninstall leg the
+  ; template has already removed $INSTDIR, and SetOutPath would recreate it.
 !macroend
 
+; Both hooks are perMachine-only; config/platforms/windows/tauri.conf.json
+; pins installMode to perMachine. If "both" is ever enabled, a user-chosen
+; per-machine install (HKLM) would silently skip the env configuration.
 !macro NSIS_HOOK_POSTINSTALL
   !if "${INSTALLMODE}" == "perMachine"
     DetailPrint "Configuring the bundled runtime environment (PINVOU3_PYTHON)..."

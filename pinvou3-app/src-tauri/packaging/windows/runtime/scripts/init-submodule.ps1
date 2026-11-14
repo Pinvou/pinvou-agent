@@ -47,12 +47,15 @@ function Invoke-Git {
     [string]$GitCommand = "git"
   )
 
-  $gitExecutable = [string](
-    Get-Command -Name $GitCommand -CommandType Application -ErrorAction Stop |
-      Select-Object -First 1 -ExpandProperty Source
-  )
-  if ([string]::IsNullOrWhiteSpace($gitExecutable)) {
-    throw "Unable to resolve the Git executable: $GitCommand"
+  try {
+    $gitExecutable = [string](
+      Get-Command -Name $GitCommand -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1 -ExpandProperty Source
+    )
+  } catch {
+    # A missing/unresolvable executable must keep the contextual failure
+    # message instead of surfacing the raw Get-Command error.
+    throw "$FailureMessage Unable to resolve the Git executable '$GitCommand': $($_.Exception.Message)"
   }
   $previousErrorActionPreference = $ErrorActionPreference
   $exitCode = $null

@@ -27,6 +27,9 @@ $stagingParent = Join-Path $tauriRoot "target\windows-runtime"
 # all stage ids) and the workspace-wide resolver serialization lock.
 $sourceVerificationMarkerPath = Join-Path $stagingParent ".verified-lock"
 $resolverLockPath = Join-Path $stagingParent ".resolver.lock"
+# v5: binds the stage-manifest digest and stagedFiles trust anchor into the
+# verification marker (v2 predates both). The bump intentionally invalidates
+# every pre-existing marker so old caches fall back to full re-verification.
 $verificationSchemaVersion = 5
 $stageManifestSchemaVersion = 2
 

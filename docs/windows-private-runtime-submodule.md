@@ -63,12 +63,14 @@ npm --prefix pinvou3-app run runtime:windows:init
 `CodeWhale` 当前没有嵌套 submodule，因此不需要 `--recursive`。`runtime:windows:init` 会比较主仓库 gitlink 与本地 runtime
 commit；一致且工作树中不存在 LFS pointer 时，跳过 submodule update 和 `git lfs pull`。脚本输出的
 `PINVOU3_WINDOWS_RUNTIME_CACHE_KEY=pinvou3-windows-runtime-v5-<commit>-<lock-sha-prefix>` 可作为 Jenkins 缓存键，缓存
-runtime checkout、Git LFS objects 和 `pinvou3-app/src-tauri/target/windows-runtime`；lock 文件内容变化时缓存键随之
+runtime checkout 和 `pinvou3-app/src-tauri/target/windows-runtime`（Git LFS 对象已由 `-c lfs.storage=` 移入其中的
+`lfs-storage/` 子目录，无需单独缓存 `.git/modules/.../lfs/objects`）；lock 文件内容变化时缓存键随之
 变化，不会复用旧缓存，lock 文件缺失时脚本直接失败（不输出缓存键）。
 
 Jenkins 的 `CheckoutSubmodule` 阶段只负责准备 submodule，不再单独执行 `runtime:windows:validate`。后续直接运行
-`npm --prefix pinvou3-app run build:nsis`：统一的 `build.js` 入口只执行一次 runtime 校验和 staging，读取
+`npm --prefix pinvou3-app run build:nsis`：统一的 `build.js` 入口负责 runtime 校验和 staging，读取
 `runtime-descriptor.json`，再由 Windows installer adapter 为 NSIS 原子准备经过校验的 VC++ 引导程序。
+`build:nsis` 的 stage 与 bundle 两个 npm 阶段各自会进入一次 runtime 校验（第二次命中已验证缓存，代价很小）。
 
 恢复缓存前可直接从主仓库 gitlink 取得缓存键，不会访问 runtime 远端：
 

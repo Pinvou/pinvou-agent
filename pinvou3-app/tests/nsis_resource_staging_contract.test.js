@@ -84,6 +84,18 @@ assert.match(
 );
 assert.match(stageScript, /!macro PINVOU_INSTALL_STAGED_RESOURCES/u);
 assert.match(stageScript, /PINVOU_STAGED_RESOURCES_SIZE_KIB/u);
+// Pin the producer side of the staging linchpin: bundle:nsis consumes the
+// conf this script writes, so a producer rename must fail here, not at
+// makensis.
+assert.match(stageScript, /tauri\.nsis-stage\.conf\.json/u);
+// The size accounting feeds !define /math ESTIMATEDSIZE; a unit or sum
+// mutation must fail here rather than silently corrupt Apps & Features.
+assert.match(
+  stageScript,
+  /\[Math\]::Ceiling\(\$StagedResourceBytes \/ 1KB\)/u,
+  "staged size must stay in KiB to match the bundler's estimated_size units",
+);
+assert.match(stageScript, /Measure-Object -Property Length -Sum/u);
 assert.match(stageScript, /File \/a \/r/u);
 assert.match(stageScript, /!macro PINVOU_UNINSTALL_STAGED_RESOURCES/u);
 assert.match(stageScript, /function Get-StagedRelativeDirectories/u);
@@ -135,6 +147,11 @@ assert.ok(
   ),
   "installer languages must cover Simplified Chinese, English and Japanese",
 );
+assert.deepEqual(
+  windowsPlatformConfig.bundle.windows.wix.languages,
+  ["en-US", "zh-CN", "ja-JP"],
+  "MSI languages must cover English, Simplified Chinese and Japanese (repo i18n policy)",
+);
 
 // Installer hooks pack helper scripts next to the installer via the
 // file-level ${PINVOU_HOOKS_DIR} anchor (${__FILEDIR__} inside !macro keeps
@@ -169,17 +186,55 @@ assert.match(
   "install must abort when the machine runtime environment cannot be configured (WiX Environment parity)",
 );
 assert.match(
+  baseInstallerHooks,
+  /組み込みランタイム環境/u,
+  "installer failure copy must cover Japanese alongside Chinese and English",
+);
+const runtimeEnvMacroBody = baseInstallerHooks.slice(
+  baseInstallerHooks.indexOf("!macro PinvouRunRuntimeEnv"),
+  baseInstallerHooks.indexOf(
+    "!macroend",
+    baseInstallerHooks.indexOf("!macro PinvouRunRuntimeEnv"),
+  ),
+);
+assert.doesNotMatch(
+  runtimeEnvMacroBody,
+  /^\s+SetOutPath "\$INSTDIR"\s*$/mu,
+  "the runtime-env macro must not recreate $INSTDIR after the uninstall removed it (the vc_redist macro may: it only runs on the install leg)",
+);
+assert.match(
   runtimeEnvScript,
   /DoNotExpandEnvironmentNames/u,
   "machine PATH rewrite must preserve REG_EXPAND_SZ entries",
 );
 
 // MSI user-data deletion must stay behind an explicit opt-in property
-// (mirroring the NSIS uninstaller's unchecked delete-app-data checkbox).
+// (mirroring the NSIS uninstaller's unchecked delete-app-data checkbox,
+// which additionally removes the WebView2 cache directories).
 assert.match(
   mainWxs,
   /\(REMOVE = "ALL"\) AND NOT UPGRADINGPRODUCTCODE AND PINVOU_REMOVE_USER_DATA/u,
   "MSI must not delete ~\\.pinvou3 unless the uninstall explicitly opts in",
+);
+assert.match(
+  mainWxs,
+  /<Property Id="PINVOU_REMOVE_USER_DATA" Secure="yes" \/>/u,
+  "the opt-in property must be declared secure, or MSI drops it for non-elevated uninstall sessions",
+);
+assert.match(
+  mainWxs,
+  /msiexec \/x <msi> PINVOU_REMOVE_USER_DATA=1/u,
+  "the in-template documentation must use the working msiexec uninstall form",
+);
+assert.match(
+  mainWxs,
+  /Base: tauri-cli-v2\.12\.4/u,
+  "main.wxs must carry the same provenance contract as the NSIS template",
+);
+assert.match(
+  installerTemplate,
+  /RmDir \/r "\$PROFILE\\\.pinvou3"/u,
+  "the NSIS delete-app-data checkbox must also remove ~/.pinvou3 (MSI RemovePinvouUserData parity)",
 );
 
 const installSectionOffset = installerTemplate.indexOf("Section Install");
@@ -230,6 +285,16 @@ assert.match(
 assert.match(localNsisBuildScript, /Fresh local NSIS artifact/u);
 assert.match(localNsisBuildScript, /npm\.cmd run build:nsis:stage:local/u);
 assert.match(localNsisBuildScript, /npm\.cmd run bundle:nsis:local/u);
+// Positive needles are required: an indexOf ordering assertion alone is
+// vacuously true once its antecedent string is deleted (both sides -1).
+assert.match(
+  localNsisBuildScript,
+  /Refusing to clean an unexpected local NSIS output path/u,
+);
+assert.match(
+  localNsisBuildScript,
+  /Remove-Item -LiteralPath \$outputPath -Recurse -Force/u,
+);
 assert.ok(
   localNsisBuildScript.indexOf("Refusing to clean an unexpected local NSIS output path") <
     localNsisBuildScript.indexOf("Remove-Item -LiteralPath $outputPath -Recurse -Force"),
@@ -379,9 +444,17 @@ if (process.platform === "win32") {
     fs.rmSync(smokeRoot, { recursive: true, force: true });
   }
 }
-assert.match(packageJson.scripts["prebuild:nsis"], /clean-staging\.ps1/u);
-assert.doesNotMatch(
+// The clean step must never be named prebuild:nsis: npm would auto-run it as
+// a lifecycle pre-hook of build:nsis, doubling the clean pass.
+assert.match(packageJson.scripts["nsis:clean-staging"], /clean-staging\.ps1/u);
+assert.match(packageJson.scripts["build:nsis:stage"], /npm run nsis:clean-staging/u);
+assert.equal(
   packageJson.scripts["prebuild:nsis"],
+  undefined,
+  "the npm pre-hook name would double-run clean-staging on every build:nsis",
+);
+assert.doesNotMatch(
+  packageJson.scripts["nsis:clean-staging"],
   /ensure-rust-toolchain\.ps1/u,
   "build.js must establish the isolated RUSTUP_HOME before invoking the guard",
 );
@@ -391,9 +464,15 @@ assert.doesNotMatch(
 assert.match(packageJson.scripts["build:nsis:stage"], /--verbose/u);
 assert.match(packageJson.scripts["build:nsis:stage"], /--ci/u);
 assert.doesNotMatch(
-  packageJson.scripts["prebuild:nsis"],
+  packageJson.scripts["nsis:clean-staging"],
   /stage-runtime\.ps1|runtime:windows:stage/u,
-  "prebuild:nsis must leave runtime validation and staging to build.js",
+  "clean-staging must leave runtime validation and staging to build.js",
+);
+// Positive needles are required here too: an indexOf ordering assertion is
+// vacuously true once its antecedent string is deleted (both sides -1).
+assert.match(
+  packageJson.scripts["bundle:nsis"],
+  /stage-resources\.ps1 -ValidateOnly/u,
 );
 assert.ok(
   packageJson.scripts["bundle:nsis"].indexOf("stage-resources.ps1 -ValidateOnly") <

@@ -2,10 +2,14 @@
 ; (crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi). Local deltas:
 ; PINVOU_STAGED_RESOURCES_SIZE_KIB size accounting, PINVOU_INSTALL/UNINSTALL_
 ; STAGED_RESOURCES macro insertion points (staged pre-signed resources bypass
-; Tauri's resource enumeration, see scripts/stage-resources.ps1), and the
-; dump_system_prompt.exe dev-tool exclusion. Re-base on the bundler version
-; pinned by package.json before adding new deltas: the bundler rewrites
-; utils.nsh next to this template and its macros are part of the contract.
+; Tauri's resource enumeration, see scripts/stage-resources.ps1), the
+; dump_system_prompt.exe dev-tool exclusion (its file size still counts into
+; the bundler-computed estimated size, a known minor overstatement), and the
+; delete-app-data branch additionally removing the app's ~/.pinvou3 data
+; directory so it matches the MSI RemovePinvouUserData opt-in. Re-base on the
+; bundler version pinned by package.json before adding new deltas: the bundler
+; writes utils.nsh next to the rendered installer.nsi at build time and its
+; macros are part of the contract.
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -950,6 +954,10 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    ; Pinvou stores its runtime data under ~/.pinvou3 (sessions, settings,
+    ; knowledge); remove it here too so the checkbox matches the MSI
+    ; RemovePinvouUserData opt-in contract.
+    RmDir /r "$PROFILE\.pinvou3"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL

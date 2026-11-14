@@ -145,6 +145,41 @@ try {
     $env:PATH = $previousPath
   }
 
+  # Behavioral coverage for the LFS relocation contract: the submodule update
+  # must run with GIT_LFS_SKIP_SMUDGE=1 in effect (pointers only), so the
+  # explicit `git lfs pull -c lfs.storage=...` stays the single
+  # materialization step into the relocated cache, and the previous env value
+  # must be restored afterwards.
+  $script:lfsRecorderCalls = New-Object System.Collections.Generic.List[object]
+  function Invoke-Git {
+    param(
+      [string]$WorkingDirectory,
+      [string[]]$Arguments,
+      [string]$FailureMessage,
+      [string]$GitCommand = "git"
+    )
+    $script:lfsRecorderCalls.Add([pscustomobject]@{
+      WorkingDirectory = $WorkingDirectory
+      Arguments = [string[]]$Arguments
+      SkipSmudge = $env:GIT_LFS_SKIP_SMUDGE
+    })
+    return @()
+  }
+  $previousLfsSkipSmudge = $env:GIT_LFS_SKIP_SMUDGE
+  try {
+    $env:GIT_LFS_SKIP_SMUDGE = $null
+    Update-RuntimeSubmoduleWithoutLfsSmudge
+  } finally {
+    $env:GIT_LFS_SKIP_SMUDGE = $previousLfsSkipSmudge
+    # Restore the production Invoke-Git for the remainder of the test run.
+    . $runtimeInitPath -ImportFunctionsOnly
+  }
+  Assert-True -Condition ($script:lfsRecorderCalls.Count -eq 1) -Message "the submodule update must invoke Git exactly once"
+  $lfsRecorderCall = $script:lfsRecorderCalls[0]
+  Assert-True -Condition ($lfsRecorderCall.SkipSmudge -ceq "1") -Message "the submodule update must run under GIT_LFS_SKIP_SMUDGE=1 so pointers are materialized only by the explicit lfs pull"
+  Assert-True -Condition (@($lfsRecorderCall.Arguments) -ccontains "submodule" -and @($lfsRecorderCall.Arguments) -ccontains "update") -Message "the submodule update arguments must drive the gitlink checkout"
+  Assert-True -Condition ($null -eq $env:GIT_LFS_SKIP_SMUDGE) -Message "GIT_LFS_SKIP_SMUDGE must be restored after the submodule update"
+
   $stagingParent = Join-Path $testRoot "windows-runtime"
   $stagingRoot = Join-Path $stagingParent $stageId
   $stageManifestPath = Join-Path $stagingRoot ".stage-manifest.json"
@@ -177,6 +212,14 @@ try {
   Write-TestFile -Path $runtimeDependencyPath -Content "abc"
 
   Write-TauriOverlay -StageId $stageId
+
+  # The overlay is consumed by build.js and the NSIS staging script; pin its
+  # emitted shape instead of leaving the call side-effect-free.
+  Assert-True -Condition (Test-Path -LiteralPath $generatedConfigPath -PathType Leaf) -Message "Write-TauriOverlay must emit tauri.generated.conf.json"
+  $generatedOverlay = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($generatedConfigPath, [System.Text.Encoding]::UTF8))
+  $overlayProperties = @($generatedOverlay.bundle.resources.PSObject.Properties)
+  Assert-True -Condition ($overlayProperties.Count -gt 0) -Message "the generated runtime overlay must declare bundle.resources mappings"
+  Assert-True -Condition (@($overlayProperties | Where-Object { [string]::IsNullOrEmpty([string]$_.Value) }).Count -eq 0) -Message "runtime overlay mappings must carry non-empty destinations"
 
   $trustedStagedFiles = @(Get-StagedRelativeFiles -Root $stagingRoot)
   Write-StageCacheMetadata -Root $stagingRoot

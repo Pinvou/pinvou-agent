@@ -17,6 +17,7 @@ $asrDir = Join-Path $runtimeDir "asr"
 $pandocDir = Join-Path $runtimeDir "pandoc"
 $popplerDir = Join-Path $runtimeDir "poppler"
 $tesseractDir = Join-Path $runtimeDir "tesseract"
+$onnxRuntimeDir = Join-Path $runtimeDir "onnxruntime"
 $legacyPythonDir = Join-Path $InstallDir "python"
 $legacyNodeDir = Join-Path $InstallDir "node"
 $legacySevenZipDir = Join-Path $InstallDir "7zip"
@@ -33,6 +34,7 @@ $privateRuntimeDirs = @(
     $pandocDir,
     $popplerDir,
     $tesseractDir,
+    $onnxRuntimeDir,
     $legacyPythonDir,
     $legacyNodeDir,
     $legacySevenZipDir,
