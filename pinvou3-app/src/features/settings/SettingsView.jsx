@@ -43,6 +43,13 @@ import {
 import { VoiceShortcutIntroModal } from '../voice-composer/VoiceShortcutIntroModal.jsx';
 import { ReasoningTierPicker, useModelReasoningTierState } from './local-server-tiers.jsx';
 import { StatusChip } from './StatusChip.jsx';
+import EndpointModelPicker from './endpoint-model-picker.jsx';
+import {
+  ADD_ALL_BATCH_LIMIT,
+  normalizeDiscoveredRows,
+  savedModelKeys,
+  splitBatchAdd,
+} from './endpoint-model-picker-logic.js';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -426,6 +433,24 @@ function hasStoredCredential(record) {
       // Inline validation message for the custom port. Kept separate from
       // localDetectResult so a failed validation never hides previous candidates.
       const [localPortError, setLocalPortError] = useState(null);
+      // 端点模型自动发现(规格 §2.6):「获取模型列表」按钮显式点击才探测,面板仅
+      // 展示候选行——添加一律由用户在 picker 内逐行/批量显式触发,组件本身绝不
+      // 发请求、绝不自动写库(与本地检测面板同一安全不变量)。
+      const [endpointListing, setEndpointListing] = useState(null);
+      const [endpointPickerOpen, setEndpointPickerOpen] = useState(false);
+      const [fetchingModels, setFetchingModels] = useState(false);
+      // 探测请求失败(reject)时的行内提示,经 normalizeConnectionTestResult 映射
+      // 为三语 connectionMessages 文案,不透出原始 URL/key。
+      const [fetchModelsMessage, setFetchModelsMessage] = useState(null);
+      // 测试连接成功后按「仅空字段」规则自动填入的端点事实;一次性小字,手动
+      // 改字段或显式换模型即清除,绝不覆盖用户已填值。
+      const [filledFromEndpoint, setFilledFromEndpoint] = useState(false);
+      // 逐行/批量添加后的行内结果(addedCount / 保存失败文案)。
+      const [endpointAddResult, setEndpointAddResult] = useState('');
+      const [addingAllModels, setAddingAllModels] = useState(false);
+      // 「全部添加」挂起批次(应用内 SheetConfirmDialog 确认闸门的数据):先记
+      // (addable, truncated) 快照,确认后才批量落库;取消则原样丢弃。
+      const [addAllModelsConfirm, setAddAllModelsConfirm] = useState(/** @type {{ addable: Array, truncated: boolean } | null} */ (null));
       // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
       // 已下线的「保存时检测」(auto)档残留值按「自动处理」(pinvou)回显。
       // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
@@ -526,6 +551,8 @@ function hasStoredCredential(record) {
         // The output cap is no longer prefilled with 24K: left empty like
         // cloud/custom, declared uniformly by the runtime window tiers.
         setMaxOutput('');
+        // 显式换模型:上一次端点探测的自动填入提示已失效,一并清除。
+        setFilledFromEndpoint(false);
         // Reset the thinking effort to the new entry's default tier when the
         // catalog item changes (vllm→low (lowest thinking tier), others→high;
         // models without tiers get null = not explicitly set). Pass nextBaseUrl
@@ -556,6 +583,18 @@ function hasStoredCredential(record) {
         setBaseUrl(value);
         renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
       }
+      // 测试连接成功后,把端点探测到的 context/max_output 仅填入空字段
+      // (规格 §2.6:绝不覆盖非空值)。context_window_tokens/max_output_tokens
+      // 是可选新字段,老后端不返回时 Number() 落 NaN 自然跳过。
+      function applyProbedFacts(result) {
+        if (!result || typeof result !== 'object' || !result.ok) return;
+        const probedContext = Number(result.context_window_tokens);
+        const probedOutput = Number(result.max_output_tokens);
+        let filled = false;
+        if (!contextWindow && Number.isFinite(probedContext) && probedContext > 0) { setContextWindow(String(probedContext)); filled = true; }
+        if (!maxOutput && Number.isFinite(probedOutput) && probedOutput > 0) { setMaxOutput(String(probedOutput)); filled = true; }
+        if (filled) setFilledFromEndpoint(true);
+      }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
@@ -563,10 +602,94 @@ function hasStoredCredential(record) {
         try {
           const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id);
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
+          applyProbedFacts(result);
         } catch (e) {
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
         }
         finally { setTesting(false); }
+      }
+      // 获取模型列表(规格 §2.6):仅由按钮显式点击触发(无 effect/启动期调用,
+      // settings_ui_smoke 源码守卫钉住);凭据阶梯与 handleTest 一致——表单新填
+      // key 优先。列表只写入 state 打开 picker,不落库。
+      async function handleFetchModels() {
+        if (!bridge.available || typeof bridge.models.probeEndpointModels !== 'function' || fetchingModels) return;
+        const probedBaseUrl = baseUrl.trim();
+        if (!probedBaseUrl) return;
+        setFetchingModels(true);
+        setFetchModelsMessage(null);
+        try {
+          const listing = await bridge.models.probeEndpointModels({
+            baseUrl: probedBaseUrl,
+            apiKey: keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '',
+            preset,
+          });
+          setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
+          setEndpointPickerOpen(true);
+        } catch (e) {
+          setFetchModelsMessage(normalizeConnectionTestResult(e, isCodingPlan));
+        }
+        finally { setFetchingModels(false); }
+      }
+      // picker 逐行「添加」(聊天线):构建 draft(当前 preset/base_url/表单 key)
+      // → bridge.models.saveModel(桥内自带 loadModels 刷新),成功后行内提示;
+      // 失败保持弹窗与提示,不静默丢弃。
+      function buildEndpointModelPayload(row) {
+        return {
+          id: makeModelId(),
+          name: row.title || row.id,
+          preset,
+          context_window_tokens: row.contextWindowTokens,
+          max_output_tokens: row.maxOutputTokens,
+          model: row.id,
+          base_url: baseUrl.trim(),
+          api_key: apiKey.trim(),
+          // 与 doSave 同一凭据阶梯:表单新填 key 即 replace,否则保留已存凭据。
+          credential_action: apiKey.trim() || initial.__new || !hasSavedKey ? 'replace' : 'keep_existing',
+          provider_kind: providerKind || null,
+          vendor: vendor || null,
+          endpoint_mode: endpointMode || null,
+          image_capability_override: imageCapability || 'pinvou',
+          vision_model_id: null,
+          reasoning_effort: null,
+        };
+      }
+      async function handleEndpointModelPick(row) {
+        if (savingModel || addingAllModels) return;
+        try {
+          await onSave(buildEndpointModelPayload(row));
+          setEndpointAddResult(settingsCopy.addedCount(1));
+        } catch (e) {
+          setEndpointAddResult(settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)));
+        }
+      }
+      // 「全部添加」(聊天线):先与已保存模型按 (model id + base_url) 去重,把
+      // (addable, truncated) 快照进应用内确认弹窗(原生 confirm 在 Tauri
+      // WebView2 不渲染;>100 时提示截断到 100)。确认是硬闸门:入口只记录挂起
+      // 批次、绝不落库(settings_ui_smoke 源码守卫钉住)。
+      async function handleAddAllEndpointModels() {
+        if (addingAllModels || !endpointListing) return;
+        const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), endpointSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
+        if (addable.length === 0) return;
+        setAddAllModelsConfirm({ addable, truncated });
+      }
+      // 确认后的批量保存:逐行 saveModel(桥内自带 loadModels 刷新),全部成功
+      // 才关 picker 并提示数量;失败保持弹窗与提示,不静默丢弃。
+      async function confirmAddAllEndpointModels() {
+        if (!addAllModelsConfirm || addingAllModels) return;
+        const { addable } = addAllModelsConfirm;
+        setAddingAllModels(true);
+        let added = 0;
+        try {
+          for (const row of addable) {
+            await onSave(buildEndpointModelPayload(row));
+            added += 1;
+          }
+          setEndpointAddResult(settingsCopy.addedCount(added));
+          setEndpointPickerOpen(false);
+        } catch (e) {
+          setEndpointAddResult(settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)));
+        }
+        finally { setAddingAllModels(false); setAddAllModelsConfirm(null); }
       }
       // 测试图片能力(设计 §7.3):与测试连接同一模式——表单未保存也按当前表单值发测,
       // 凭据优先用新填的 key,否则由后端按 model_id 读已保存凭据。
@@ -816,6 +939,9 @@ function hasStoredCredential(record) {
       const catalogGroupClass = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formGroup = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formDivider = 'border-black/[0.10] dark:border-white/[0.10]';
+      // 「获取模型列表」与「测试连接」共用同一颗蓝色胶囊按钮(样式去重,主入口
+      // chunk 有启动预算红线)。
+      const actionPillClass = 'shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/[0.28]';
       // Custom-entry description for the provider model picker and the catalog
       // picker: both key off the same group fields (key/providerKind/preset).
       const customModelDescFor = (group, copy) => (group && group.key === 'tencent_token_plan'
@@ -846,6 +972,7 @@ function hasStoredCredential(record) {
           setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
           // Explicit model switches also reset the manual context window so it never leaks across models (same reset discipline as applyCatalogItem).
           setContextWindow('');
+          setFilledFromEndpoint(false);
           // 与 applyCatalogItem 一致:未手动改过档位时按新条目的视觉能力标注预填。
           if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
           setProviderModelPickerOpen(false);
@@ -1100,6 +1227,11 @@ function hasStoredCredential(record) {
       // 一律识图探测,supported 才允许选中(探测是唯一闸门;disabled 可能是
       // 历史探测误判残留,不应隐藏,如 kimi-for-coding)。
       const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
+      // 端点面板的「已保存」标记与批量去重键(规格 §2.6:model id + base_url)。
+      const endpointSavedKeys = savedModelKeys(models);
+      // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
+      // 探活禁用按钮并给 title 提示(与 testImageInputCapability 同款惯例)。
+      const probeEndpointModelsAvailable = !!(bridge.available && typeof bridge.models.probeEndpointModels === 'function');
       const visionOptions = [
         { key: '', label: settingsCopy.visionModelNone },
         ...visionCandidates.map(item => ({ key: item.id, label: selectorMainLabel(item, t) || item.model })),
@@ -1356,9 +1488,22 @@ function hasStoredCredential(record) {
                     {!isLocalPreset && renderInlineField({
                       label: t.modelContextWindow,
                       value: contextWindow,
-                      onChange: e => setContextWindow(e.target.value.replaceAll(/[^0-9]/g, '').slice(0, 9)), // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
+                      onChange: e => { setContextWindow(e.target.value.replaceAll(/[^0-9]/g, '').slice(0, 9)); setFilledFromEndpoint(false); }, // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first
                       placeholder: settingsCopy.modelContextWindowPlaceholder,
                       testId: 'model-form-context-window',
+                      inputMode: 'numeric',
+                      spellCheck: false,
+                    })}
+                    {/* Max output (optional for cloud models): resolved_output_limit
+                        prefers the user declaration; empty = declared uniformly by
+                        the runtime window tiers. Same u32 9-digit truncation as the
+                        context window (max_output_tokens persists as u32). */}
+                    {!isLocalPreset && renderInlineField({
+                      label: settingsCopy.modelMaxOutput,
+                      value: maxOutput,
+                      onChange: e => { setMaxOutput(e.target.value.replaceAll(/[^0-9]/g, '').slice(0, 9)); setFilledFromEndpoint(false); }, // eslint-disable-line sonarjs/concise-regex -- keep [^0-9] literal instead of \D; readability first, same as the context window row
+                      placeholder: settingsCopy.modelMaxOutputPlaceholder,
+                      testId: 'model-form-max-output',
                       inputMode: 'numeric',
                       spellCheck: false,
                     })}
@@ -1376,7 +1521,14 @@ function hasStoredCredential(record) {
                     {showLocalKeyField && renderApiKeyField({ withBorder: true })}
                   </div>
                   {!isLocalPreset && (
-                    <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelContextWindowHint}</div>
+                    <>
+                      <div className={`px-1 mt-1.5 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelContextWindowHint}</div>
+                      <div className={`px-1 mt-1 text-[12px] leading-4 ${isDark ? 'text-[#8E8E93]' : 'text-[#8A8A8E]'}`}>{settingsCopy.modelMaxOutputHint}</div>
+                      {/* 一次性小字:测试连接成功后按空字段规则自动填入的提示;手动改字段即清除。 */}
+                      {filledFromEndpoint && (
+                        <div data-testid="model-form-filled-from-endpoint" className={`px-1 mt-1 text-[12px] leading-4 ${isDark ? 'text-[#30D158]' : 'text-[#137333]'}`}>{settingsCopy.filledFromEndpoint}</div>
+                      )}
+                    </>
                   )}
                 </section>
               )}
@@ -1406,12 +1558,25 @@ function hasStoredCredential(record) {
                       <span className={`min-w-0 flex-1 text-[13px] leading-5 ${testResult ? (testResult.ok ? ('text-[#137333] dark:text-[#93D5A6]') : 'text-[#FF3B30]') : ('text-[#8A8A8E] dark:text-[#98989D]')}`}>
                         {testResult ? testResult.message : settingsCopy.testBeforeSave}
                       </span>
+                      {/* 获取模型列表:仅显式点击触发探测(规格 §2.6);bridge 方法未
+                          就绪(老桌面/白名单未放行)时探活禁用并以 title 提示。 */}
+                      <button type="button" data-testid="settings-model-fetch-lists" onClick={handleFetchModels}
+                        disabled={fetchingModels || !baseUrl.trim() || !probeEndpointModelsAvailable}
+                        title={probeEndpointModelsAvailable ? undefined : settingsCopy.fetchUnavailable}
+                        className={actionPillClass}>
+                        {fetchingModels ? settingsCopy.fetchingModelList : settingsCopy.fetchModelList}
+                      </button>
                       <button type="button" onClick={handleTest} disabled={testing || !baseUrl.trim()}
-                        className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/[0.28]`}>
+                        className={actionPillClass}>
                         {testing ? t.testingConn : t.testConnection}
                       </button>
                     </div>
                   </div>
+                  {(fetchModelsMessage || endpointAddResult) && (
+                    <div data-testid="model-form-fetch-lists-status" className={`px-1 mt-1.5 text-[12px] leading-4 ${fetchModelsMessage ? (fetchModelsMessage.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]') : 'text-[#137333] dark:text-[#93D5A6]'}`}>
+                      {fetchModelsMessage ? fetchModelsMessage.message : endpointAddResult}
+                    </div>
+                  )}
                 </section>
               )}
             </div>
@@ -1432,6 +1597,35 @@ function hasStoredCredential(record) {
             </div>
             </div>
           </div>
+          {/* 端点模型选择面板(规格 §2.6):纯 props 驱动,绝不自行发请求、
+              绝不自动添加;聊天线传 onAddAll(批量 confirm 在父层),ACP 线复用时不传。 */}
+          <EndpointModelPicker
+            open={endpointPickerOpen}
+            onClose={() => setEndpointPickerOpen(false)}
+            listing={endpointListing}
+            loading={fetchingModels}
+            onPick={handleEndpointModelPick}
+            onAddAll={handleAddAllEndpointModels}
+            baseUrl={baseUrl.trim()}
+            savedKeys={endpointSavedKeys}
+            t={t}
+          />
+          {/* 「全部添加」应用内确认弹窗(Tauri WebView2 不渲染原生 confirm;与
+              MemoryDeleteDialog 同一 SheetConfirmDialog 配方,z-[110] 压过
+              picker 的 z-[100]):标题=数量+与已保存模型去重说明,截断时 desc
+              追加提示;确认前不落库,取消不动任何状态。 */}
+          {addAllModelsConfirm && (
+            <SheetConfirmDialog
+              testid="add-all-models-confirm"
+              confirmTestId="add-all-models-confirm-ok"
+              title={settingsCopy.addAllConfirm(addAllModelsConfirm.addable.length)}
+              desc={addAllModelsConfirm.truncated ? settingsCopy.addAllTruncated(ADD_ALL_BATCH_LIMIT) : undefined}
+              confirmLabel={settingsCopy.addAllModels}
+              cancelLabel={settingsCopy.cancel}
+              onConfirm={confirmAddAllEndpointModels}
+              onCancel={() => setAddAllModelsConfirm(null)}
+            />
+          )}
         </div>
       );
     };

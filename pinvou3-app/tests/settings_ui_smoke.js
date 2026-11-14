@@ -91,6 +91,79 @@ assert.doesNotMatch(
   /setBaseUrl\(|setModel\(/,
   'local detection must not auto-fill the form; the user adds a candidate explicitly',
 );
+// ── 端点模型自动发现(规格 §2.6)源码守卫 ──────────────────────────────
+// 「获取模型列表」只允许显式点击触发:按钮 data-testid + onClick 直挂
+// handleFetchModels;禁止 effect/挂载期自动探测(与本地检测面板同一安全不变量)。
+assert.match(
+  settingsViewSource,
+  /data-testid="settings-model-fetch-lists"\s+onClick=\{handleFetchModels\}/,
+  'fetch model lists must be an explicit-click button wired to handleFetchModels',
+);
+assert.doesNotMatch(
+  settingsViewSource,
+  /useEffect\(\(\) => \{[\s\S]{0,240}probeEndpointModels/,
+  'model list probing must never run on mount/effect; explicit button click only',
+);
+assert.match(
+  settingsViewSource,
+  /typeof bridge\.models\.probeEndpointModels !== 'function' \|\| fetchingModels\) return;/,
+  'fetch handler must bail when the probe bridge method is unavailable (old desktop/web builds)',
+);
+// 测试连接自动填入:仅空字段、绝不覆盖非空值(规格决策 4)。取 applyProbedFacts
+// 片段钉条件,把「填空条件取反」的突变变红。
+const probedFactsStart = settingsViewSource.indexOf('function applyProbedFacts(');
+assert.notStrictEqual(probedFactsStart, -1, 'endpoint fact auto-fill helper must exist');
+const probedFactsSource = settingsViewSource.slice(probedFactsStart, probedFactsStart + 900);
+assert.match(
+  probedFactsSource,
+  /!contextWindow && Number\.isFinite\(probedContext\) && probedContext > 0/,
+  'context auto-fill must stay gated on an EMPTY context field (never overwrite)',
+);
+assert.match(
+  probedFactsSource,
+  /!maxOutput && Number\.isFinite\(probedOutput\) && probedOutput > 0/,
+  'max output auto-fill must stay gated on an EMPTY max output field (never overwrite)',
+);
+// 批量「全部添加」:应用内 SheetConfirmDialog 是硬闸门(规格决策 1;原生
+// window.confirm 在 Tauri WebView2 不渲染,见 tests/settings_window_confirm.test.mjs),
+// 必须先记录挂起批次、确认后才进入逐行保存循环;同时钉去重截断文案来源
+// (splitBatchAdd/addAllTruncated)。
+const addAllStart = settingsViewSource.indexOf('async function handleAddAllEndpointModels()');
+assert.notStrictEqual(addAllStart, -1, 'endpoint add-all handler must exist');
+const addAllEnd = settingsViewSource.indexOf('function normalizeImageCapabilityTestResult(', addAllStart);
+assert.notStrictEqual(addAllEnd, -1, 'endpoint add-all handler boundary must exist');
+const addAllSource = settingsViewSource.slice(addAllStart, addAllEnd);
+assert.match(addAllSource, /splitBatchAdd\(/, 'batch add must dedupe/cap through splitBatchAdd (model id + base_url)');
+assert.doesNotMatch(
+  addAllSource,
+  /window\.confirm\s*\(/,
+  'batch add must not call the native confirm (does not render in Tauri WebView2)',
+);
+const confirmHandlerIndex = addAllSource.indexOf('async function confirmAddAllEndpointModels()');
+assert.ok(confirmHandlerIndex !== -1, 'the confirmed batch-add handler must exist');
+const addAllEntry = addAllSource.slice(0, confirmHandlerIndex);
+assert.match(
+  addAllEntry,
+  /setAddAllModelsConfirm\(\{ addable, truncated \}\)/,
+  'the entry handler must only record the pending batch in the in-app confirm state',
+);
+assert.doesNotMatch(addAllEntry, /onSave\(/, 'no save may run before the in-app confirm');
+const addAllConfirmBody = addAllSource.slice(confirmHandlerIndex);
+assert.match(
+  addAllConfirmBody,
+  /for \(const row of addable\)/,
+  'the batch save loop must run only in the confirmed path (confirm first, saves after)',
+);
+// 确认弹窗本体:同一 SheetConfirmDialog 配方,testid 供 smoke 驱动;标题/描述
+// 仍表达规格语义(数量、去重、截断)。
+const addAllDialogIndex = settingsViewSource.indexOf('testid="add-all-models-confirm"');
+assert.ok(addAllDialogIndex !== -1, 'the add-all confirm dialog must exist');
+const addAllDialogSource = settingsViewSource.slice(Math.max(0, addAllDialogIndex - 400), addAllDialogIndex + 700);
+assert.match(addAllDialogSource, /<SheetConfirmDialog/, 'the add-all confirm must reuse the shared SheetConfirmDialog');
+assert.match(addAllDialogSource, /addAllConfirm\(/, 'the dialog title must carry the deduped count and dedup notice');
+assert.match(addAllDialogSource, /addAllTruncated\(/, 'oversized listings must surface the truncation notice in the confirm');
+assert.match(addAllDialogSource, /onConfirm=\{confirmAddAllEndpointModels\}/, 'the dialog OK button must route into the confirmed batch handler');
+assert.match(addAllDialogSource, /onCancel=\{\(\) => setAddAllModelsConfirm\(null\)\}/, 'cancel must discard the pending batch without saving');
 // 添加/编辑模型弹窗的滚动必须收敛在内层 data-testid="model-form-scroll" 容器
 // （min-h-0 + flex-1 + overflow-y-auto），弹窗本体（圆角 + max-h 元素）不再自带
 // overflow-y-auto：fixed + backdrop-filter 祖先链下，个别 WebKit 内核不会为
@@ -127,6 +200,95 @@ for (const settingsI18nSource of settingsI18nSources) {
     settingsI18nSource,
     /localPortInvalid:/,
     'local model port validation message must be provided in every UI language',
+  );
+}
+// ── ACP 线(ProviderFormModal,规格 §2.7)源码守卫 ────────────────────────────
+// 「获取模型列表」按钮仅 codex/kimi 且 base URL 非空时渲染,onClick 直挂
+// handleFetchEndpointModels;claude 的模型槽位编辑器走官方,范围外,整个文件
+// 不得出现第二个按钮分支(testid 恒出现一次)。
+const providerFormModalSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'ProviderFormModal.jsx'),
+  'utf8',
+);
+assert.strictEqual(
+  (providerFormModalSource.match(/acp-provider-fetch-models/g) || []).length,
+  1,
+  'the ACP fetch-models button must exist exactly once (claude gets no such branch)',
+);
+assert.match(
+  providerFormModalSource,
+  /\(agent === 'codex' \|\| agent === 'kimi'\) && String\(baseUrl \|\| ''\)\.trim\(\) !== '' && \(\s*<button/,
+  'the ACP fetch-models button must render only for codex/kimi agents with a non-empty base URL',
+);
+assert.match(
+  providerFormModalSource,
+  /data-testid="acp-provider-fetch-models"\s+onClick=\{handleFetchEndpointModels\}/,
+  'the ACP fetch-models button must be an explicit-click button wired to handleFetchEndpointModels',
+);
+// 按钮探活:bridge.models.probeEndpointModels 缺失(老桌面/web 白名单未放行)时
+// 禁用并以三语 title 提示,与聊天线 fetchUnavailable 同一探活语义。
+assert.match(
+  providerFormModalSource,
+  /typeof bridge\?\.models\?\.probeEndpointModels === 'function'/,
+  'the ACP line must feature-detect bridge.models.probeEndpointModels before enabling the button',
+);
+assert.match(
+  providerFormModalSource,
+  /disabled=\{fetchingModels \|\| !probeEndpointModelsAvailable\}\s+title=\{probeEndpointModelsAvailable \? undefined : copy\.fetchUnavailable\}/,
+  'the ACP fetch-models button must disable with a localized title when the probe bridge method is unavailable',
+);
+// 探测 payload 必须携带表单 wire 协议;禁止 effect/挂载期自动探测(与聊天线同一安全不变量)。
+assert.match(
+  providerFormModalSource,
+  /wire:\s*wireApi,/,
+  'the ACP probe must pass the form wire protocol to probeEndpointModels',
+);
+assert.doesNotMatch(
+  providerFormModalSource,
+  /useEffect\(\(\) => \{[\s\S]{0,240}probeEndpointModels/,
+  'ACP model list probing must never run on mount/effect; explicit button click only',
+);
+// onPick:模型 id 走输入框同一 changeModel 通道;contextWindow 仅空字段填入,
+// 绝不覆盖非空值(与聊天线 fill-only-when-empty 同一不变量,突变取反即红)。
+assert.match(
+  providerFormModalSource,
+  /changeModel\(row\.id\)/,
+  'the ACP pick must fill the model field through the same changeModel channel as the input',
+);
+assert.match(
+  providerFormModalSource,
+  /!String\(contextWindow \|\| ''\)\.trim\(\) && Number\.isFinite\(probedContext\) && probedContext > 0/,
+  'the ACP pick must fill contextWindow ONLY when the field is empty (never overwrite a non-empty value)',
+);
+// ACP 线复用共享 picker:不传 onAddAll(批量按钮是聊天线专属)、不传 savedKeys
+// (provider 无已保存模型去重语义,组件按「无已保存」处理:行恒可添加)。
+const acpPickerStart = providerFormModalSource.indexOf('<EndpointModelPicker');
+assert.notStrictEqual(acpPickerStart, -1, 'the ACP line must reuse the shared endpoint model picker');
+const acpPickerSource = providerFormModalSource.slice(
+  acpPickerStart,
+  providerFormModalSource.indexOf('/>', acpPickerStart),
+);
+assert.match(
+  acpPickerSource,
+  /onPick=\{handleEndpointModelPick\}/,
+  'the ACP picker must route row adds through handleEndpointModelPick',
+);
+assert.doesNotMatch(
+  acpPickerSource,
+  /onAddAll=/,
+  'the ACP line must not enable the picker batch add-all (chat line only)',
+);
+assert.doesNotMatch(
+  acpPickerSource,
+  /savedKeys=/,
+  'the ACP line must omit savedKeys so picker rows stay addable (providers have no saved-model dedup)',
+);
+// i18n:ACP 簇的探活禁用提示三语齐备(组件内不得硬编码文案)。
+for (const settingsI18nSource of settingsI18nSources) {
+  assert.match(
+    settingsI18nSource,
+    /\.uiAcpProviders,\s*\{[^}]*?fetchUnavailable:/,
+    'the ACP fetch-unavailable hint must be provided in every UI language',
   );
 }
 // Memory delete / feedback close confirm-dialog wiring (no native
@@ -227,6 +389,22 @@ function injectSource() {
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
     var updateCheckFailure = null;
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
+    // probe_endpoint_models 候选(规格 §2.6):含一条与 ⑥.5g 已保存的
+    // glm-5.3-flash @ https://example.com/v1 重复的行,用于钉「已保存」标记与
+    // 批量去重(此前的 cloud-deepseek 已被更早的删除流程移除,不能当重复锚点);
+    // 其余为带端点事实的全新候选。
+    var probeEndpointListing = {
+      status: 'listed',
+      http_status: 200,
+      transport: null,
+      server_kind: null,
+      truncated: false,
+      models: [
+        { id: 'glm-5.3-flash', context_window_tokens: 131072, context_from: 'catalog', max_output_tokens: null, output_from: null, loaded: null, title: null },
+        { id: 'glm-5-flash', context_window_tokens: 1048576, context_from: 'endpoint', max_output_tokens: 32768, output_from: 'endpoint', loaded: null, title: 'GLM-5 Flash' },
+        { id: 'kimi-k3', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
+      ],
+    };
     var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
     var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
     // save_model 失败注入:非 null 时 reject 该错误,模拟连接/写盘失败。
@@ -301,6 +479,7 @@ function injectSource() {
           return Promise.resolve(null);
         case 'set_active_model': activeModelId = args.id; return Promise.resolve(null);
         case 'test_model_connection': return Promise.resolve(Object.assign({}, modelTestResponse));
+        case 'probe_endpoint_models': return Promise.resolve(JSON.parse(JSON.stringify(probeEndpointListing)));
         case 'test_image_input_capability':
           return new Promise(function (resolve) {
             setTimeout(function () { resolve(Object.assign({}, imageTestResponse)); }, imageTestDelay);
@@ -414,6 +593,7 @@ function injectSource() {
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
       setUpdateCheckFailure: function (message) { updateCheckFailure = message || null; },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
+      setProbeEndpointListing: function (next) { probeEndpointListing = JSON.parse(JSON.stringify(next || { status: 'listed', models: [] })); },
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
       setSaveModelError: function (message) { saveModelError = message || null; },
@@ -1532,6 +1712,153 @@ async function modalWidth(page, headingText) {
     document.querySelector('[data-testid="model-form-context-window"]').value);
   rec('⑥.5j oversized numeric input is truncated to 9 digits (within the u32 persist bound)', overflowTruncated === '999999999', JSON.stringify({ overflowTruncated }));
   await clickExact(page, '取消');
+  await sleep(200);
+
+  // ⑥.5k 端点模型自动发现(规格 §2.6):显式点击「获取模型列表」→ probe 命令 →
+  // 候选面板(「已保存」行禁用)→ 逐行添加落库 → 应用内确认弹窗确认后批量添加(重复行跳过)。
+  // 表单 base URL 刻意与 ⑥.5g 已保存的 glm-5.3-flash @ https://example.com/v1
+  // 对齐,验证 (model id + base_url) 去重。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'https://example.com/v1');
+  });
+  await sleep(150);
+  // fill-only-when-empty(规格决策 4):测试连接返回端点事实时只填空字段。
+  // mock 的 test_model_connection 带上可选的 context/max_output 事实字段。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({
+    ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200,
+    context_window_tokens: 131072, max_output_tokens: 8192,
+  }));
+  await clickModalExact(page, '测试连接');
+  await sleep(500);
+  const probedFill = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      context: root.querySelector('[data-testid="model-form-context-window"]').value,
+      maxOutput: root.querySelector('[data-testid="model-form-max-output"]').value,
+      hintShown: !!root.querySelector('[data-testid="model-form-filled-from-endpoint"]'),
+    };
+  });
+  rec('⑥.5k1 test connection fills EMPTY context/max-output fields from endpoint facts and shows the one-shot hint',
+    probedFill.context === '131072' && probedFill.maxOutput === '8192' && probedFill.hintShown,
+    JSON.stringify(probedFill));
+  // 绝不覆盖非空值:手动填入后再次测试,返回不同事实,已填值必须原样保留。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    typeInto(root.querySelector('[data-testid="model-form-context-window"]'), '999');
+    typeInto(root.querySelector('[data-testid="model-form-max-output"]'), '777');
+  });
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({
+    ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200,
+    context_window_tokens: 262144, max_output_tokens: 16384,
+  }));
+  await clickModalExact(page, '测试连接');
+  await sleep(500);
+  const keptManual = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      context: root.querySelector('[data-testid="model-form-context-window"]').value,
+      maxOutput: root.querySelector('[data-testid="model-form-max-output"]').value,
+      hintShown: !!root.querySelector('[data-testid="model-form-filled-from-endpoint"]'),
+    };
+  });
+  rec('⑥.5k2 second test with different facts must NOT overwrite manually filled values (and the hint clears)',
+    keptManual.context === '999' && keptManual.maxOutput === '777' && !keptManual.hintShown,
+    JSON.stringify(keptManual));
+  // 获取模型列表:显式点击 → probe_endpoint_models(带表单 base_url + preset)。
+  await clickModalExact(page, '获取模型列表');
+  await sleep(600);
+  const endpointProbeCall = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'probe_endpoint_models');
+    return call && call.args;
+  });
+  rec('⑥.5k3 fetch button probes probe_endpoint_models with the form base URL and preset',
+    !!endpointProbeCall && endpointProbeCall.baseUrl === 'https://example.com/v1' && endpointProbeCall.preset === 'openai_compatible' && endpointProbeCall.apiKey === null,
+    JSON.stringify(endpointProbeCall));
+  const pickerRows = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    if (!dialog) return { open: false };
+    const rows = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')];
+    const glmRow = rows.find(node => (node.textContent || '').includes('glm-5-flash'));
+    return {
+      open: true,
+      count: rows.length,
+      savedTags: dialog.querySelectorAll('[data-testid="endpoint-model-saved-tag"]').length,
+      disabledAdds: rows.filter(row => row.querySelector('[data-testid="endpoint-model-row-add"]').disabled).length,
+      glmBadge: glmRow ? ((glmRow.textContent || '').includes('1M') && (glmRow.textContent || '').includes('33K')) : false,
+    };
+  });
+  rec('⑥.5k4 picker lists candidates with K/M badges and disables the already-saved row',
+    pickerRows.open && pickerRows.count === 3 && pickerRows.savedTags === 1 && pickerRows.disabledAdds === 1 && pickerRows.glmBadge,
+    JSON.stringify(pickerRows));
+  // 逐行添加:显式点击候选行的「添加」才写库。
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('glm-5-flash'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(700);
+  const pickedSave = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5k5 explicit row add saves the discovered draft with endpoint facts',
+    !!pickedSave && pickedSave.model === 'glm-5-flash' && pickedSave.base_url === 'https://example.com/v1'
+      && pickedSave.context_window_tokens === 1048576 && pickedSave.max_output_tokens === 32768
+      && pickedSave.preset === 'openai_compatible',
+    JSON.stringify(pickedSave));
+  // 「全部添加」:应用内确认对话框(原生 confirm 在 WebView2 不渲染)。点按钮
+  // 后先断言对话框出现且尚未落库(保存调用数不增),点确认按钮才逐行保存;
+  // 重复行(glm-5.3-flash 已在 ⑥.5g 保存、glm-5-flash 刚保存)跳过,只落 kimi-k3。
+  const savesBeforeAddAll = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length);
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
+  await sleep(300);
+  const addAllGate = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="add-all-models-confirm"]');
+    return {
+      shown: !!dialog,
+      title: dialog && dialog.querySelector('h3') ? dialog.querySelector('h3').textContent || '' : '',
+      savesBeforeConfirm: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length,
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="add-all-models-confirm-ok"]').click());
+  await sleep(900);
+  const batchState = await page.evaluate(() => {
+    const calls = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model');
+    const saved = new Set(calls.map(call => `${call.args.model.model}@${call.args.model.base_url}`));
+    return {
+      pickerClosed: !document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+      dialogClosed: !document.querySelector('[data-testid="add-all-models-confirm"]'),
+      hasKimi: saved.has('kimi-k3@https://example.com/v1'),
+      hasEndpointGlm: saved.has('glm-5-flash@https://example.com/v1'),
+      // glm-5.3-flash 只有 ⑥.5g/⑥.5i 的两次保存,批量添加不得再落一次。
+      dupSaveCalls: calls.filter(call => call.args.model.model === 'glm-5.3-flash' && call.args.model.base_url === 'https://example.com/v1').length,
+    };
+  });
+  rec('⑥.5k6 confirmed add-all saves only non-duplicate rows and closes the picker',
+    addAllGate.shown && addAllGate.savesBeforeConfirm === savesBeforeAddAll && addAllGate.title.includes('1')
+      && batchState.pickerClosed && batchState.dialogClosed && batchState.hasKimi && batchState.hasEndpointGlm && batchState.dupSaveCalls === 2,
+    JSON.stringify({ addAllGate, batchState }));
+  // 恢复默认 test_model_connection 响应,不污染后续流程。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({ ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 }));
+  await clickModalExact(page, '取消');
   await sleep(200);
 
   // A noControl model (always-thinking and not controllable, e.g. deepseek-r1)
