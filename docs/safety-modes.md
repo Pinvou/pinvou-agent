@@ -214,7 +214,9 @@ TUI 的作用域语义且**按会话隔离**（跨会话不得互相放行/连�
   epoch 保护的统一收敛点写回，在途旧读作废。审批/守卫/模式三类事件都进
   remote_control 的事件转发白名单（`RUST_FORWARDED_EVENTS`）；面向 Web 的
   RPC 命令仍受既有多智能体执行 denylist 管辖——本 PR 在 denylist 登记了
-  三个新的模式/审批变更命令、在 `web_session_scope` 与 access-policy 登记
+  五个新的模式/审批变更命令（`decide_approval`/`set_session_mode`/
+  `set_ask_on_guardrail`/`set_plan_mode_next`/`web_access_codex_acp_prompt`）、
+  在 `web_session_scope` 与 access-policy 登记
   了新表面，只读**策略**不变（多智能体执行面依旧拒绝写操作）。
 
 ## 5. 规则档（SafetyRuleProfile）
@@ -405,8 +407,10 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
 - **登记**：fork-guard 的 `EXPECTED_HEAD`/`EXPECTED_COMMITS` 与指纹表
   （`scripts/fork-guard.sh`）、`docs/fork-modifications.md` T2 增补随本 PR
   Stage-4 提交落地；CodeWhale#131 已以 squash `e2a0e14fd` 合入公开维护分支，
-  gitlink 与 `EXPECTED_HEAD` 已重钉到维护头 `11cba403d`（候选期登记口径见
-  `docs/fork-modifications.md` 的 2026-10-31 消费基线节）。
+  gitlink 与 `EXPECTED_HEAD` 随 main 重钉（消费时为 `11cba403d`，其后 main 经
+  #152/#156 跟进至 `8e8d52fdb`；本 PR 重基后随行该头，再经消费批 #157
+  （session-reader 只读分类）进至 `687358f7e`；历史口径见
+  `docs/fork-modifications.md` 的 2026-10-31 消费基线节与 2026-11-12 跟进节）。
 
 ## 9. 已知边界
 
