@@ -461,7 +461,7 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
         return candidate && candidate.type === "plan_stuck" && candidate.id === itemId;
       }) || null;
     });
-    if (stuck && stuck.submitting) return;
+    if (stuck && (stuck.submitting || stuck.resolved)) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
       // Direct invoke (the planStuckGoAuto pattern): the shared exitPlanToYolo
@@ -502,7 +502,7 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
         return candidate && candidate.type === "plan_stuck" && candidate.id === itemId;
       }) || null;
     });
-    if (stuck && stuck.submitting) return;
+    if (stuck && (stuck.submitting || stuck.resolved)) return;
     patchItemByIdFor(sid, itemId, { submitting: true }); notify();
     try {
       const st = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });

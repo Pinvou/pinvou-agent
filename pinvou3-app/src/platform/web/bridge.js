@@ -425,7 +425,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
       toolGuardrailDenied: "Guardrail denied", toolGuardrailDeniedSessionDenied: "this exact operation was denied in this session (a changed request asks again)", toolGuardrailDeniedPlan: "Plan mode is read-only; denied", toolGuardrailDeniedAskOff: "ask-on-guardrail is off; denied outright",
       webApprovalUnsupported: "⚠️ Approval needed — the web UI cannot decide it; the turn waits for a decision in the desktop app",
-      webAutoSendBlocked: "⚠️ Send blocked: this session is in Auto mode, which can raise approval cards the web UI cannot decide. Switch the session to Plan or Yolo with the mode chip, or continue in the desktop app.",
+      webAutoSendBlocked: "⚠️ Send blocked: this session is in Auto mode, which can raise approval cards the web UI cannot decide. Switch the session to Plan with the mode chip, or continue in the desktop app — Yolo can also raise guardrail cards the web UI cannot decide.",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       gpuUnavailable: "GPU info unavailable",
       superOn: "⚠️ Super permission enabled", superOff: "Super permission disabled",
@@ -4358,6 +4358,11 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     const p = e.payload || {};
     const approvalId = String(p.approval_id || "");
     if (!approvalId) return;
+    // Round-5 review nit: a payload without a session id would dedup into the
+    // shared "\u0000"+approvalId bucket — exactly the cross-session collision
+    // the key exists to prevent. The backend always sends session_id; drop a
+    // malformed payload instead of poisoning the bucket.
+    if (!p.session_id) return;
     // Dedup key = session id + approval id (review P2): different sessions legitimately reuse the same
     // approval id, and a global id-only Set would swallow the second session's waiting notice. Same shape
     // and bound as the desktop chat-events tombstone (512 entries, oldest evicted — the web does not
