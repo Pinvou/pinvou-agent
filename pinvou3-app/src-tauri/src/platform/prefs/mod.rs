@@ -898,11 +898,22 @@ impl Default for ChatPrefs {
 /// parse — a parse failure falls back to system-locale defaults for every
 /// unrelated preference, and the next settings save then durably rewrites
 /// them. Known variants parse normally; anything else reads as None.
+/// The degradation logs (round-5 review minor): a silent skip would make the
+/// reset default undiagnosable — the load-side discipline every other
+/// loader in this file follows.
 fn deserialize_lenient_mode<'de, D>(deserializer: D) -> Result<Option<SerializableMode>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    Ok(Option::<SerializableMode>::deserialize(deserializer).unwrap_or(None))
+    match Option::<SerializableMode>::deserialize(deserializer) {
+        Ok(mode) => Ok(mode),
+        Err(_) => {
+            eprintln!(
+                "[prefs] unknown lane-default mode value degraded to \"never chosen\" (newer binary or hand-edited settings.json)"
+            );
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
