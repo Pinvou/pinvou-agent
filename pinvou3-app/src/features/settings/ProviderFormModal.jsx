@@ -4,9 +4,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, X } from '../../components/icons.jsx';
 import { invokeTauri } from '../../platform/tauri/client.js';
+import { bridge } from '../../hooks/useBridge.js';
 import {
   ACP_MODEL_1M_VARIANTS, ACP_MODEL_PRESETS, ACP_PROVIDER_PRESETS, CLAUDE_MODEL_SLOT_IDS,
 } from './acp-provider-catalog.js';
+import EndpointModelPicker from './endpoint-model-picker.jsx';
 
 // Dropdown mechanism shared by ModelSuggestInput and PresetSelect: 150ms blur-delayed close,
 // Esc to close, onMouseDown to select. Keep the blur-timeout approach (not outside-pointer detection):
@@ -137,7 +139,7 @@ function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }
   );
 }
 
-export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
+export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t }) {
   const [name, setName] = useState(initial?.name || '');
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl || '');
   // Kimi Agent 默认走 Kimi 原生协议（Kimi Code 官方文档的专用类型）；
@@ -171,6 +173,11 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
   const [error, setError] = useState('');
   // 预设下拉：'' = 其它（自定义，不应用任何预设）。
   const [presetKey, setPresetKey] = useState('');
+  // 端点模型自动发现（规格 §2.7）：候选列表只进本地 state 打开共享 picker，
+  // 绝不自动发请求、绝不写库；「获取模型列表」仅按钮显式点击触发。
+  const [endpointListing, setEndpointListing] = useState(null);
+  const [endpointPickerOpen, setEndpointPickerOpen] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
 
   // 模型建议列表：选择预设后按该厂商官方在列名单筛选；「其它」显示全部官方在列模型。
   // Claude 额外提供该厂商的 1M 上下文变体（仅 CC 需要显式声明 [1m]；选中预设
@@ -260,6 +267,48 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
       return next;
     });
     setModel(value);
+  };
+
+  // 按钮探活（与 SettingsView 聊天线同一语义）：老版本桌面或 web 白名单未放行时
+  // bridge.models.probeEndpointModels 不存在，按钮禁用并以 title 提示。
+  const probeEndpointModelsAvailable = typeof bridge?.models?.probeEndpointModels === 'function';
+
+  // 获取模型列表（规格 §2.7）：按表单 base_url + 当前 wire 协议 + 表单 key 探测
+  // （key 为空传 null，keyless 端点照常探测）。ACP 线没有 ModelPreset，wire 之外
+  // 不传 preset。失败透传到表单错误条（命令层已脱敏，不携带 URL/key）。
+  const handleFetchEndpointModels = async () => {
+    if (!probeEndpointModelsAvailable || fetchingModels) return;
+    const probedBaseUrl = String(baseUrl || '').trim();
+    if (!probedBaseUrl) return;
+    setFetchingModels(true);
+    setError('');
+    try {
+      const listing = await bridge.models.probeEndpointModels({
+        baseUrl: probedBaseUrl,
+        apiKey: String(apiKey || '').trim() || null,
+        wire: wireApi,
+      });
+      setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
+      setEndpointPickerOpen(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
+  // 候选行「添加」（ACP 线 onPick）：模型 id 走输入框同一 changeModel 通道填入；
+  // contextWindow **仅在当前为空**时用条目的 context_window_tokens 填入，绝不
+  // 覆盖非空值（与聊天线同一不变量；anthropic wire 条目的长度字段核心层已归一）。
+  // 填入即完成本面板使命，关闭面板（ACP 线无批量添加）。
+  const handleEndpointModelPick = row => {
+    if (!row || !row.id) return;
+    changeModel(row.id);
+    const probedContext = Number(row.contextWindowTokens);
+    if (!String(contextWindow || '').trim() && Number.isFinite(probedContext) && probedContext > 0) {
+      setContextWindow(String(probedContext));
+    }
+    setEndpointPickerOpen(false);
   };
 
   const save = async () => {
@@ -455,14 +504,33 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
 
         <div className="block mb-4">
           <span className="text-[12px] font-medium opacity-70">{copy.model} · {copy.modelOptional}</span>
-          <ModelSuggestInput
-            testId="acp-provider-model"
-            inputClass={inputClass}
-            value={model}
-            onChange={changeModel}
-            placeholder={copy.modelPlaceholder}
-            suggestions={suggestedModels}
-          />
+          <div className="flex items-start gap-2">
+            <span className="min-w-0 flex-1">
+              <ModelSuggestInput
+                testId="acp-provider-model"
+                inputClass={inputClass}
+                value={model}
+                onChange={changeModel}
+                placeholder={copy.modelPlaceholder}
+                suggestions={suggestedModels}
+              />
+            </span>
+            {/* 端点模型自动发现（规格 §2.7）：仅 codex/kimi 且 base URL 非空时提供
+                「获取模型列表」；claude 的模型槽位走官方编辑器，不提供该按钮。
+                bridge 方法缺失时探活禁用并以 title 提示（见 probeEndpointModelsAvailable）。 */}
+            {(agent === 'codex' || agent === 'kimi') && String(baseUrl || '').trim() !== '' && (
+              <button
+                type="button"
+                data-testid="acp-provider-fetch-models"
+                onClick={handleFetchEndpointModels}
+                disabled={fetchingModels || !probeEndpointModelsAvailable}
+                title={probeEndpointModelsAvailable ? undefined : copy.fetchUnavailable}
+                className="shrink-0 mt-1.5 h-10 px-3 rounded-xl text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+              >
+                {fetchingModels ? copy.fetchingModels : copy.fetchModels}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Claude Code 细化模型槽位：默认跟随主模型，可单独修改；必填（留空
@@ -621,6 +689,19 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
             {saving ? copy.saving : copy.save}
           </button>
         </div>
+
+        {/* 端点模型候选面板（规格 §2.7）：纯 props 驱动复用聊天线组件；ACP 线
+            不传 onAddAll（无批量添加），不传 savedKeys（provider 无已保存模型
+            去重语义，组件按「无已保存」处理：行恒可添加、无「已保存」标记）。 */}
+        <EndpointModelPicker
+          open={endpointPickerOpen}
+          onClose={() => setEndpointPickerOpen(false)}
+          listing={endpointListing}
+          loading={fetchingModels}
+          onPick={handleEndpointModelPick}
+          baseUrl={baseUrl.trim()}
+          t={t}
+        />
       </div>
     </div>
   );

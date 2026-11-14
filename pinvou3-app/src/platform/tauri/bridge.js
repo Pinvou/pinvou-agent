@@ -1884,6 +1884,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const testModelConnection = settingsFeature.testModelConnection;
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
+  const probeEndpointModels = settingsFeature.probeEndpointModels;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
   // Dedicated global-shortcut command (update_settings is never used);
   // Rust exclusively owns persistence and registration.
@@ -2351,6 +2352,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       testModelConnection,
       getImageInputCapability,
       testImageInputCapability,
+      probeEndpointModels,
       probeLocalServerKind,
     },
     interaction: { toggleSuperPerm,
