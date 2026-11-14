@@ -443,3 +443,26 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
   predicate 在 Tauri setup 后段才注册——从未切换过 mode 的多智能体 code 会话
   重启后可能显示 Auto（而非 Plan）。条目一旦物化不再随偏好/predicate 重播种，
   用户显式切换一次即矫正；修复需要引导顺序或解析迟绑定，属后续项。
+- **辅助会话的父历史抓取在 Plan 钉下不可用（消费端分类缺口）**：aux 的
+  `mcp_session-reader_read_session`（scoped 父历史读取）被消费引擎的 MCP
+  适配器归类为非只读（child 的 `is_mcp_read_helper` 白名单不认识 fork 的
+  session-reader 工具，见 pin `11cba403d` 的
+  `crates/tui/src/tools/registry.rs:1455`），于是钉死的 Plan 姿态在
+  执行/审批前就拒绝它——aux 面宣称的父历史抓取当前拉空。分类在消费端；
+  host 规则集是 deny-only、开不出 allow 豁免，钉本身不可移（web 拒
+  Auto、Yolo-on-web 更差）。持久修复是 child 侧分类变更（fork 的
+  session-reader 读工具入 read-helper 白名单，或适配器尊重 MCP
+  `readOnlyHint` 注记），随下一次 CodeWhale 消耗批次落地（store 侧
+  `pin_aux_mode_from_parent` 源注同记此残余）。
+- **Yolo Floor 的质量边界（「分族按语义」主张的三处已知偏差，方向均保守）**：
+  Floor = never-sensible 底线族（3,555 条），Sensitive 面只在 Full 出现。
+  三处如实标注：(a) sudo 命令词块是 Sensitive 面——未武装 Yolo 静默放行
+  未枚举的 `sudo` 特权变更（Auto/Plan 对同操作 typed-Deny；枚举了危险载荷
+  的仍被 Floor 的 rm 族覆盖）；(b) 逐凭据直传面（`curl -T ~/.ssh/id_rsa …`）
+  在 Yolo 下缺席而非弹卡——只有批量外传根（整目录/整用户主目录）留在 Floor；
+  (c) Windows `win_native_rules` 家族（Floor 内 2,796 条）含逐凭据销毁
+  拼写（`del …\.ssh\id_rsa`），其 POSIX 语义孪生 `rm * ~/.ssh/id_rsa` 被
+  shed——同一行为 Windows 静默拒、POSIX 静默过（Windows 更严，无安全
+  损失，但 Yolo 的拒绝面按 OS 不对称）。三处都是刻意取舍且有钉；把 (a)
+  移入 Floor 或对 (b)/(c) 做语义拆族是产品决策，待拍板后随计数钉
+  （3,555/8,763）一起翻。
