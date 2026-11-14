@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::features::connectors::skill_gate;
 use crate::platform::process::{REAP_GRACE, Reap, reap_killed_child};
@@ -625,6 +625,20 @@ where
     })
     .await
     .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+/// Shared `*_cancel` scaffolding (the byte-identical blocks of the Feishu /
+/// WeCom / DingTalk / Tencent Meeting connectors fold in here): sets the
+/// cancel flag + tree-kills the current long-lived child process (closing
+/// the QR popup / the on-timeout invocation). Each connector's `*_cancel`
+/// Tauri command keeps its registration and name unchanged and forwards one
+/// line by its own [`ConnectorConn`] id into this function.
+pub(crate) async fn cancel_connect(app: AppHandle, id: &'static str) -> Result<Value, String> {
+    let pid = app.state::<ConnectorConn>().cancel(id);
+    if let Some(pid) = pid {
+        let _ = tokio::task::spawn_blocking(move || kill_pid_tree(pid)).await;
+    }
+    Ok(json!({ "ok": true }))
 }
 
 // ──────────────────────── 多连接器共享的连接编排状态 ────────────────────────

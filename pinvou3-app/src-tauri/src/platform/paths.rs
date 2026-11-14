@@ -264,7 +264,7 @@ pub fn browser_session_mcp_json(session_id: &str) -> PathBuf {
 /// parent task's session id. Sibling layout of the browser `mcp-sessions`
 /// directory, but directly under the Pinvou home — it never contains user
 /// servers, only app-written single-entry configs.
-pub fn aux_mcp_sessions_dir() -> PathBuf {
+fn aux_mcp_sessions_dir() -> PathBuf {
     pinvou3_home().join("mcp-sessions")
 }
 /// Conversation-scoped aux MCP config path. Mirrors

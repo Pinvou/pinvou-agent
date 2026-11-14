@@ -129,11 +129,14 @@ pub struct MonitorDiagnostic {
     pub code: String,
     /// Status code when the failure is an HTTP error.
     pub http_status: Option<u16>,
-    /// Transport class when the failure is a transport error. Same vocabulary
-    /// as `core::model_endpoint::model_probe_transport_code` (`timeout` /
-    /// `dns_failed` / `connection_refused` / `network_error`), but decided
-    /// from reqwest's structured flags: a real reqwest error's `Display`
-    /// omits the source chain, so that helper's string arms are dead for it.
+    /// Transport class when the failure is a transport error. Same ladder and
+    /// vocabulary as `core::model_endpoint::model_probe_transport_code` —
+    /// both delegate to `transport_code_for` (`timeout` / `tls_error` /
+    /// `dns_failed` / `connection_refused` / `network_error`) — but this
+    /// surface decides from reqwest's structured flags: a real reqwest
+    /// error's `Display` omits the source chain, so the ladder's keyword
+    /// arms stay dead here and only the flag-driven arms fire on real
+    /// errors.
     pub transport: Option<&'static str>,
     /// The `scheme://host:port` subset of the target — the credential-safe
     /// part of the URL: userinfo is stripped by reqwest at request build, and
@@ -560,23 +563,23 @@ fn endpoint_root(url: Option<&reqwest::Url>) -> Option<String> {
     })
 }
 
-/// Transport class of a failed request, from reqwest's structured flags
-/// rather than its `Display` text (a real reqwest error's Display omits the
-/// source chain, so `model_probe_transport_code`'s string arms are dead for
-/// it). Vocabulary kept in step with that helper.
+/// Transport class of a failed request — the same ladder as
+/// `model_probe_transport_code` by construction (both delegate to the
+/// shared `transport_code_for`, so the vocabularies cannot drift). This
+/// surface feeds the ladder reqwest's structured flags wherever one
+/// exists: a real reqwest error's Display omits the source chain, so the
+/// keyword arms stay dead for it (except words embedded in the request
+/// URL, which core's surface already tolerated) and only
+/// `timeout`/`dns_failed`/`connection_refused` fire on real errors —
+/// `tls_error` exists for vocabulary parity with the settings/CLI
+/// contract, not because real handshake failures are expected to hit it.
 fn transport_class(err: &reqwest::Error) -> &'static str {
-    if err.is_timeout() {
-        "timeout"
-    } else if err.is_dns() {
-        // Must precede `is_connect()`: hyper-util files resolver failures
-        // under its Connect kind too, so the DNS check only classifies if it
-        // runs first.
-        "dns_failed"
-    } else if err.is_connect() {
-        "connection_refused"
-    } else {
-        "network_error"
-    }
+    crate::core::model_endpoint::transport_code_for(
+        err.is_timeout(),
+        err.is_dns(),
+        err.is_connect(),
+        &err.to_string(),
+    )
 }
 
 fn parse_models_response(
@@ -1071,6 +1074,186 @@ mod tests {
         // 配置异常:空 / 非 URL
         assert_eq!(vllm_target_kind(""), "invalid");
         assert_eq!(vllm_target_kind("not-a-url"), "invalid");
+    }
+
+    /// Cross-pin: the monitor snapshot's `transport_class` and core's
+    /// `model_probe_transport_code` must stay ONE classifier. Both delegate
+    /// to the shared `transport_code_for`, so the table below pins each
+    /// code's trigger exactly as the ladder arms read it (the keyword texts
+    /// mirror core's arms; arm order matters — a text matching two arms
+    /// must land in the earlier one), and the only reqwest::Error
+    /// constructible offline (a builder error from an unparseable URL,
+    /// surfaced by build() before any network I/O) asserts both real
+    /// front-ends return the same code for the same error. Per-class
+    /// real-error samples for dns/tls/refused cannot be constructed:
+    /// reqwest::Error has no public constructor, and its Display omits the
+    /// source chain, so a live dial would classify via the structured flags
+    /// here but fall through to `network_error` in core — the shared
+    /// ladder, not per-error equality, is the convergence.
+    #[test]
+    fn transport_class_and_model_probe_transport_code_share_one_ladder() {
+        use crate::core::model_endpoint::transport_code_for;
+
+        // (is_timeout, is_dns, is_connect, display text) → code.
+        let cases = [
+            (
+                true,
+                false,
+                false,
+                "error sending request for url (http://x/)",
+                "timeout",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error trying to connect: invalid peer certificate: UnknownIssuer",
+                "tls_error",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error trying to connect: tls handshake eof",
+                "tls_error",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error trying to connect: ssl protocol error",
+                "tls_error",
+            ),
+            (
+                false,
+                true,
+                false,
+                "error sending request for url (http://x/)",
+                "dns_failed",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): failed to lookup address information: Name or service not known",
+                "dns_failed",
+            ),
+            (
+                false,
+                false,
+                true,
+                "error sending request for url (http://x/)",
+                "connection_refused",
+            ),
+            // Review 5875009923 P3: the structured flags answer before the
+            // keyword arms — a refused request whose URL embeds "tls" must
+            // stay connection_refused, not inherit the tls keyword from the
+            // URL text.
+            (
+                false,
+                false,
+                true,
+                "error sending request for url (http://127.0.0.1/tls): tcp connect error: Connection refused (os error 111)",
+                "connection_refused",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): tcp connect error: Connection refused (os error 111)",
+                "connection_refused",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): actively refused",
+                "connection_refused",
+            ),
+            // Each keyword alternative pinned in isolation (round-1 review
+            // M1): deleting any single alternative must turn a row red.
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://dns-backed-host/)",
+                "dns_failed",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): tcp connect error: os error 10061",
+                "connection_refused",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://x/): Name or service not known",
+                "dns_failed",
+            ),
+            // Arm ORDER pinned: a text matching two arms lands in the
+            // earlier one.
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (https://ssl.example.com/): failed to lookup address information",
+                "tls_error",
+            ),
+            (
+                false,
+                false,
+                false,
+                "error sending request for url (http://dns-backed-host/): connection refused",
+                "dns_failed",
+            ),
+            // Review 5875813001 P1/P2: the structured flags answer before
+            // the keyword arms (DNS over connect, per core's contract), so
+            // a URL embedding a TLS word no longer biases a real
+            // connect/dns-class error into tls_error.
+            (
+                false,
+                false,
+                true,
+                "error sending request for url (https://ssl.example.com/)",
+                "connection_refused",
+            ),
+            (
+                false,
+                true,
+                false,
+                "error sending request for url (https://ssl.example.com/)",
+                "dns_failed",
+            ),
+            // Timeout outranks everything, keyword text included.
+            (
+                true,
+                false,
+                true,
+                "error sending request for url (https://ssl.example.com/): certificate unknown",
+                "timeout",
+            ),
+            (false, false, false, "builder error", "network_error"),
+        ];
+        for (is_timeout, is_dns, is_connect, text, expected) in cases {
+            assert_eq!(
+                transport_code_for(is_timeout, is_dns, is_connect, text),
+                expected,
+                "ladder drifted for {text:?}"
+            );
+        }
+
+        let err = reqwest::Client::new()
+            .get("not a url")
+            .build()
+            .expect_err("an unparseable URL must fail before any network I/O");
+        assert_eq!(
+            transport_class(&err),
+            crate::core::model_endpoint::model_probe_transport_code(&err).0
+        );
+        assert_eq!(transport_class(&err), "network_error");
     }
 
     #[test]

@@ -9,7 +9,7 @@
 // 本模块随主入口 bundle 计入启动预算(505 kB 上限)。
 // doc 可注入:node 侧回归测试用它驱动假 DOM,验证绘制效果与 Retry 闭包。
 
-export function paintBootFailure({ retry, doc = document }) {
+function paintBootFailure({ retry, doc = document }) {
   const host = doc.querySelector('#root');
   if (!host) return;
   host.textContent = '';

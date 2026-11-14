@@ -199,12 +199,8 @@ fn load_rewound_turns_map_with(
             // 损坏的 sidecar 不得全局锁死 rewind/undo：改名隔离（保留现场供人工
             // 恢复）后按空 map 继续——代价是存量备份记录对该会话不再可见（undo
             // 入口消失），胜过整个功能报错卡死。
-            let quarantine =
-                path.with_extension(format!("corrupt-{}", Utc::now().format("%Y%m%d%H%M%S")));
             match mode {
-                RewindLoadMode::CallerHoldsLock => {
-                    quarantine_and_continue(&path, &quarantine, parse_error)
-                }
+                RewindLoadMode::CallerHoldsLock => quarantine_and_continue(&path, parse_error),
                 RewindLoadMode::TryLockAndRecheck => {
                     match try_lock_rewound_turns_file() {
                         Some(_lock) => {
@@ -225,9 +221,7 @@ fn load_rewound_turns_map_with(
                                     );
                                     Ok(fresh_map)
                                 }
-                                Err(_still_corrupt) => {
-                                    quarantine_and_continue(&path, &quarantine, parse_error)
-                                }
+                                Err(_still_corrupt) => quarantine_and_continue(&path, parse_error),
                             }
                         }
                         None => {
@@ -258,15 +252,23 @@ fn load_rewound_turns_map_with(
 /// cross-process flock during the rename.
 fn quarantine_and_continue(
     path: &std::path::Path,
-    quarantine: &std::path::Path,
     parse_error: serde_json::Error,
 ) -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
-    eprintln!(
-        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
-        quarantine.display()
-    );
-    if let Err(error) = std::fs::rename(path, quarantine) {
-        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+    // platform's nanosecond unique-name quarantine primitive
+    // (`stem.corrupt-<timestamp>.<nanos>`): a same-second second corruption
+    // would overwrite the first forensic copy (rename silently replaces the
+    // existing target) — same shape as code_checkpoints' corruption
+    // isolation.
+    match crate::platform::filesystem::quarantine_corrupt_file(path) {
+        Ok(quarantine) => {
+            eprintln!(
+                "[sessions] corrupt rewind backup quarantined as {}; continuing empty: {parse_error:#}",
+                quarantine.display()
+            );
+        }
+        Err(error) => {
+            eprintln!("[sessions] failed to quarantine the corrupt rewind backup: {error:#}");
+        }
     }
     Ok(HashMap::new())
 }

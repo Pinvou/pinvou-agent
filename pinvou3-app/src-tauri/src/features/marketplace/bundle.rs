@@ -531,8 +531,12 @@ impl BundleRegistry {
             });
         }
 
+        // list_skills is one full traversal: the 2)/3) skill-source loops
+        // share a single read and do not walk the fingerprints twice (same
+        // hoist rationale as unavailable_tool_names_for).
+        let skills = self.skill_manager.list_skills();
         // 2) 预置技能源（未被认领的独立成包）
-        for skill in self.skill_manager.list_skills() {
+        for skill in &skills {
             if skill.user_uploaded {
                 continue; // 上传技能单独处理
             }
@@ -567,7 +571,7 @@ impl BundleRegistry {
         }
 
         // 3) 上传技能源（独立纯技能包；后续步骤改走统一安装管线）
-        for skill in self.skill_manager.list_skills() {
+        for skill in &skills {
             if !skill.user_uploaded {
                 continue;
             }

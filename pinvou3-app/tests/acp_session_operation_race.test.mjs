@@ -5,16 +5,7 @@ import {
   removeAcpDraftItems,
   transferAcpDraftItems,
 } from '../src/features/codex/acp-session-operation.js';
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred } from './helpers/deferred.mjs';
 
 {
   const tracker = createAcpSessionOperationTracker('session-A');

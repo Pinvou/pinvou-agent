@@ -146,12 +146,6 @@ const PROVIDER_KIND_CUSTOM = 'custom';
 // Whenever a catalog row's spelling changes (including case), the old
 // spelling must be registered in that item's legacyAliases to keep classifying
 // existing configs; everything else stays exact-compare.
-const MODEL_CATALOG_SECTIONS = {
-  coding_plan: 'Coding Plan',
-  official_api: '官方 API',
-  aggregator: '聚合平台',
-  custom: '自定义兼容接口',
-};
 // preset key → i18n label key: direct lookup instead of materializing the
 // preset option list just to read one label.
 const PRESET_LABEL_KEY = {
@@ -213,7 +207,7 @@ const MODEL_CATALOG = {
       preset: 'local_vllm',
       items: [
         { model: 'qwen36_35b_256k', title: 'qwen36_35b_256k', desc: '本地服务默认模型' },
-        { model: '', title: '自定义本地模型', desc: '填写本地服务暴露的模型 ID', custom: true },
+        { model: '', title: '自定义本地模型', custom: true },
       ],
     },
   ],
@@ -250,7 +244,7 @@ const MODEL_CATALOG = {
         { model: 'glm-5.1', title: 'GLM-5.1', desc: '历史模型，请求自动切换至 GLM-5.3' },
         { model: 'glm-5-turbo', title: 'GLM-5-Turbo', desc: '历史模型，自动切换至 GLM-5.3-Flash' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '历史模型，自动切换至 GLM-5.3-Flash' },
-        { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+        { model: '', title: '自定义 GLM Coding Plan 模型', custom: true },
       ],
     },
     {
@@ -282,7 +276,7 @@ const MODEL_CATALOG = {
         { model: 'glm-5.2', legacyAliases: ['GLM-5.2'], imageCapable: false, title: 'GLM-5.2', desc: '历史模型，请求自动路由至 GLM-5.3' },
         { model: 'glm-5.1', title: 'GLM-5.1', desc: '历史模型，请求自动路由至 GLM-5.3' },
         { model: 'glm-4.7', title: 'GLM-4.7', desc: '历史模型，自动路由至 GLM-5.3-Flash' },
-        { model: '', title: '自定义 GLM Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+        { model: '', title: '自定义 GLM Coding Plan 模型', custom: true },
       ],
     },
     // The two Tencent Cloud subscription tiers are modeled separately per the
@@ -345,7 +339,7 @@ const MODEL_CATALOG = {
       endpointAliases: ['https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions'],
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: 'Coding Plan 自动模型' },
-        { model: '', title: '自定义腾讯云 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+        { model: '', title: '自定义腾讯云 Coding Plan 模型', custom: true },
       ],
     },
     {
@@ -413,7 +407,7 @@ const MODEL_CATALOG = {
         { model: 'hy4-preview', title: 'hy4-preview', desc: 'Hy4 预览' },
         { model: 'hy4', title: 'hy4', desc: 'Hy4 套餐模型' },
         { model: 'mimo-v2.6-flash', title: 'mimo-v2.6-flash', desc: 'MiMo 全模态轻量款' },
-        { model: '', title: '自定义腾讯云 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
+        { model: '', title: '自定义腾讯云 Token Plan 模型', custom: true },
       ],
     },
     {
@@ -493,7 +487,7 @@ const MODEL_CATALOG = {
         { model: 'k3-256k', imageCapable: true, title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
         { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: 'K2.8 Preview，最高 1M' },
         { model: 'kimi-for-coding-highspeed', imageCapable: true, title: 'kimi-for-coding-highspeed', desc: 'K2.7 Code 高速款，256K' },
-        { model: '', title: '自定义 Kimi Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+        { model: '', title: '自定义 Kimi Coding Plan 模型', custom: true },
       ],
     },
     {
@@ -533,7 +527,7 @@ const MODEL_CATALOG = {
       items: [
         { model: 'deepseek-flash', imageCapable: true, legacyAliases: ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'], title: 'deepseek-flash', desc: 'V4.1-Flash 主力，1M 上下文，支持图片输入' },
         { model: 'deepseek-v4-pro', imageCapable: false, title: 'deepseek-v4-pro', desc: '在售；官方确认 2026-09-14 后继续提供且计费不变' },
-        { model: '', title: '自定义 DeepSeek 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 DeepSeek 模型', custom: true },
       ],
     },
     {
@@ -573,7 +567,7 @@ const MODEL_CATALOG = {
         { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 2026 年 12 月底下线' },
         { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 2026 年 12 月底下线' },
         { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用；K2 系列拟 2026 年 12 月底下线' },
-        { model: '', title: '自定义 Kimi 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 Kimi 模型', custom: true },
       ],
     },
     {
@@ -601,7 +595,7 @@ const MODEL_CATALOG = {
         { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 2026 年 12 月底下线' },
         { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 2026 年 12 月底下线' },
         { model: 'kimi-k2.6', imageCapable: true, title: 'kimi-k2.6', desc: '稳定可用；K2 系列拟 2026 年 12 月底下线' },
-        { model: '', title: '自定义 Kimi 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 Kimi 模型', custom: true },
       ],
     },
     {
@@ -639,7 +633,7 @@ const MODEL_CATALOG = {
         { model: 'glm-5.1', title: 'glm-5.1', desc: '兼容保留' },
         { model: 'glm-5-turbo', title: 'glm-5-turbo', desc: '高性价比' },
         { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
-        { model: '', title: '自定义 GLM 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 GLM 模型', custom: true },
       ],
     },
     {
@@ -667,7 +661,7 @@ const MODEL_CATALOG = {
         { model: 'glm-5.2', imageCapable: false, title: 'glm-5.2', desc: '上代旗舰' },
         { model: 'glm-5.1', title: 'glm-5.1', desc: '兼容保留' },
         { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
-        { model: '', title: '自定义 GLM 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 GLM 模型', custom: true },
       ],
     },
     {
@@ -749,7 +743,7 @@ const MODEL_CATALOG = {
         { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速款，官方将于 2026-11-18 下线' },
         { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，2026-11-18 下线' },
         { model: 'MiniMax-M2.5-highspeed', imageCapable: false, title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，高速款 2026-11-18 下线' },
-        { model: '', title: '自定义 MiniMax 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 MiniMax 模型', custom: true },
       ],
     },
     {
@@ -775,7 +769,7 @@ const MODEL_CATALOG = {
         { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速款，官方将于 2026-11-18 下线' },
         { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，2026-11-18 下线' },
         { model: 'MiniMax-M2.5-highspeed', imageCapable: false, title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，高速款 2026-11-18 下线' },
-        { model: '', title: '自定义 MiniMax 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 MiniMax 模型', custom: true },
       ],
     },
     {
@@ -806,7 +800,7 @@ const MODEL_CATALOG = {
         { model: 'mimo-v2.6-pro', imageCapable: true, title: 'mimo-v2.6-pro', desc: '最新旗舰，1M 上下文' },
         { model: 'mimo-v2.6-flash', imageCapable: true, title: 'mimo-v2.6-flash', desc: '全模态，低成本' },
         { model: 'mimo-v2.6-pro-ultraspeed', imageCapable: true, title: 'mimo-v2.6-pro-ultraspeed', desc: '旗舰效果，极速输出' },
-        { model: '', title: '自定义 MiMo 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 MiMo 模型', custom: true },
       ],
     },
     {
@@ -842,7 +836,7 @@ const MODEL_CATALOG = {
         { model: 'qwen3.7-max', imageCapable: false, title: 'qwen3.7-max', desc: '上代旗舰推理（纯文本）' },
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', imageCapable: true, title: 'qwen3.7-flash', desc: '上代快速款' },
-        { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义通义模型', custom: true },
       ],
     },
     {
@@ -894,7 +888,7 @@ const MODEL_CATALOG = {
         { model: 'deepseek-v4.1-flash', title: 'deepseek-v4.1-flash', desc: '快速响应' },
         { model: 'deepseek-v4.1-flash-1017', title: 'deepseek-v4.1-flash-1017', desc: '快速响应（1017 快照）' },
         { model: 'deepseek-v4-flash-0731', title: 'deepseek-v4-flash-0731', desc: '快速响应' },
-        { model: '', title: '自定义 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
+        { model: '', title: '自定义 Token Plan 模型', custom: true },
       ],
     },
     {
@@ -924,7 +918,7 @@ const MODEL_CATALOG = {
         { model: 'qwen3.7-plus', imageCapable: true, title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.7-flash', imageCapable: true, title: 'qwen3.7-flash', desc: '上代快速款' },
         { model: 'qwen3.6-flash', imageCapable: true, title: 'qwen3.6-flash', desc: '轻量兼容款，支持图像输入' },
-        { model: '', title: '自定义通义模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义通义模型', custom: true },
       ],
     },
     {
@@ -970,7 +964,7 @@ const MODEL_CATALOG = {
         { model: 'kimi-k2.5', title: 'kimi-k2.5', desc: 'Kimi 编码模型（官方推荐档）' },
         { model: 'glm-5', title: 'glm-5', desc: '高能力模型' },
         { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '通用能力' },
-        { model: '', title: '自定义 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+        { model: '', title: '自定义 Coding Plan 模型', custom: true },
       ],
     },
     {
@@ -1012,7 +1006,7 @@ const MODEL_CATALOG = {
         { model: 'doubao-seed-2-0-code-preview-260215', imageCapable: true, title: 'doubao-seed-2-0-code-preview-260215', desc: '编程特化（预览），官方即将下线' },
         { model: 'doubao-seed-2-0-pro-260215', imageCapable: true, title: 'doubao-seed-2-0-pro-260215', desc: '稳定通用，官方即将下线' },
         { model: 'doubao-seed-2-0-lite-260428', imageCapable: true, title: 'doubao-seed-2-0-lite-260428', desc: '轻量模型' },
-        { model: '', title: '自定义豆包模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义豆包模型', custom: true },
       ],
     },
     {
@@ -1094,7 +1088,7 @@ const MODEL_CATALOG = {
         { model: 'deepseek-v4.1-flash-economy', title: 'deepseek-v4.1-flash-economy', desc: '经济款，生成略慢' },
         { model: 'deepseek-v4-flash', title: 'deepseek-v4-flash', desc: '快速响应' },
         { model: 'deepseek-v4-pro', title: 'deepseek-v4-pro', desc: '高能力模型' },
-        { model: '', title: '自定义火山方舟 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
+        { model: '', title: '自定义火山方舟 Coding Plan 模型', custom: true },
       ],
     },
     {
@@ -1157,7 +1151,7 @@ const MODEL_CATALOG = {
         { model: 'gpt-5.6-luna', imageCapable: true, title: 'gpt-5.6-luna', desc: '低成本高并发' },
         { model: 'gpt-5.5', imageCapable: true, title: 'gpt-5.5', desc: '上代旗舰' },
         { model: 'gpt-5.4-mini', imageCapable: true, title: 'gpt-5.4-mini', desc: '快速经济' },
-        { model: '', title: '自定义 OpenAI 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 OpenAI 模型', custom: true },
       ],
     },
     {
@@ -1241,7 +1235,7 @@ const MODEL_CATALOG = {
         { model: 'claude-sonnet-5', imageCapable: true, title: 'claude-sonnet-5', desc: '上代均衡款，兼容保留' },
         { model: 'claude-haiku-5-5', imageCapable: true, title: 'claude-haiku-5-5', desc: '最新小旗舰，100K 以下请求较 4.5 降价 90%' },
         { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '上代快档，200K 上下文，Azure 端 2026-11-15 下线' },
-        { model: '', title: '自定义 Claude 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 Claude 模型', custom: true },
       ],
     },
     {
@@ -1305,7 +1299,7 @@ const MODEL_CATALOG = {
         { model: 'gemini-3.5-flash', imageCapable: true, title: 'gemini-3.5-flash', desc: '已弃用，请求自动路由至 3.6-flash' },
         { model: 'gemini-3.5-flash-lite', imageCapable: true, title: 'gemini-3.5-flash-lite', desc: '快速经济' },
         { model: 'gemini-3.1-pro-preview', imageCapable: true, title: 'gemini-3.1-pro-preview', desc: '上代旗舰推理（预览）' },
-        { model: '', title: '自定义 Gemini 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 Gemini 模型', custom: true },
       ],
     },
     {
@@ -1365,7 +1359,7 @@ const MODEL_CATALOG = {
         // configs, and the custom row still permits manual ids.
         { model: 'grok-4.3', imageCapable: true, title: 'grok-4.3', desc: '快速可靠，强工具调用' },
         { model: 'grok-build-0.1', imageCapable: true, title: 'grok-build-0.1', desc: '代码 Agent，256K 上下文' },
-        { model: '', title: '自定义 Grok 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 Grok 模型', custom: true },
       ],
     },
     {
@@ -1430,7 +1424,7 @@ const MODEL_CATALOG = {
         { model: 'mistral-medium-latest', imageCapable: true, title: 'mistral-medium-latest', desc: '多模态中坚款，已弃用' },
         { model: 'mistral-large-latest', imageCapable: true, title: 'mistral-large-latest', desc: '旗舰推理，已弃用' },
         { model: 'mistral-small-latest', imageCapable: true, title: 'mistral-small-latest', desc: '轻量款，支持图像理解' },
-        { model: '', title: '自定义 Mistral 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 Mistral 模型', custom: true },
       ],
     },
     {
@@ -1472,7 +1466,7 @@ const MODEL_CATALOG = {
         { model: 'muse-spark-1.3', imageCapable: true, title: 'muse-spark-1.3', desc: '当前默认，1M 上下文多模态' },
         { model: 'muse-spark-1.2', imageCapable: true, title: 'muse-spark-1.2', desc: '上一代版本' },
         { model: 'muse-spark-1.1', imageCapable: true, title: 'muse-spark-1.1', desc: '上一代，仍在服务' },
-        { model: '', title: '自定义 Meta 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 Meta 模型', custom: true },
       ],
     },
     {
@@ -1556,7 +1550,7 @@ const MODEL_CATALOG = {
         { model: 'openai/gpt-6-luna', title: 'openai/gpt-6-luna', desc: '低成本高并发' },
         { model: 'tencent/hy4-preview', title: 'tencent/hy4-preview', desc: '腾讯 Hy4 预览' },
         { model: 'stepfun/step-5-preview', title: 'stepfun/step-5-preview', desc: 'StepFun 预览旗舰' },
-        { model: '', title: '自定义 OpenRouter 模型', desc: '手动填写模型 ID（org/model 格式）', custom: true },
+        { model: '', title: '自定义 OpenRouter 模型', custom: true },
       ],
     },
     {
@@ -1627,7 +1621,7 @@ const MODEL_CATALOG = {
         { model: 'Qwen/Qwen3.7-Max', title: 'Qwen/Qwen3.7-Max', desc: '通义旗舰托管版' },
         { model: 'Qwen/Qwen3.6-Plus', title: 'Qwen/Qwen3.6-Plus', desc: '通义 1M 托管版' },
         { model: 'openai/gpt-oss-120b', title: 'openai/gpt-oss-120b', desc: '开放权重推理模型' },
-        { model: '', title: '自定义 Together 模型', desc: '手动填写模型 ID（org/Model 格式）', custom: true },
+        { model: '', title: '自定义 Together 模型', custom: true },
       ],
     },
     {
@@ -1688,7 +1682,7 @@ const MODEL_CATALOG = {
         // priced row (¥3/¥18), kept here only as a legacyAlias so stored
         // configs classify to this row (2026-11-05 review precision fix).
         { model: 'Qwen/Qwen3.8-27B', legacyAliases: ['Qwen/Qwen3.6-27B'], title: 'Qwen/Qwen3.8-27B', desc: '通用能力' },
-        { model: '', title: '自定义硅基流动模型', desc: '手动填写模型 ID（org/Model 格式）', custom: true },
+        { model: '', title: '自定义硅基流动模型', custom: true },
       ],
     },
     {
@@ -1743,7 +1737,7 @@ const MODEL_CATALOG = {
         { model: 'zai-org/GLM-5.3-Flash', title: 'zai-org/GLM-5.3-Flash', desc: '多模态高性价比' },
         { model: 'Pro/zai-org/GLM-5.2', title: 'Pro/zai-org/GLM-5.2', desc: '上代旗舰' },
         { model: 'moonshotai/Kimi-K2.7-Code', title: 'moonshotai/Kimi-K2.7-Code', desc: '代码场景' },
-        { model: '', title: '自定义硅基流动模型', desc: '手动填写模型 ID（org/Model 格式）', custom: true },
+        { model: '', title: '自定义硅基流动模型', custom: true },
       ],
     },
     {
@@ -1777,7 +1771,7 @@ const MODEL_CATALOG = {
         { model: 'llama-3.1-8b-instant', title: 'llama-3.1-8b-instant', desc: '极速轻量档（企业套餐）' },
         { model: 'openai/gpt-oss-120b', title: 'openai/gpt-oss-120b', desc: '开放权重推理模型' },
         { model: 'openai/gpt-oss-20b', title: 'openai/gpt-oss-20b', desc: '开放权重轻量推理' },
-        { model: '', title: '自定义 Groq 模型', desc: '手动填写模型 ID', custom: true },
+        { model: '', title: '自定义 Groq 模型', custom: true },
       ],
     },
     {
@@ -1788,7 +1782,7 @@ const MODEL_CATALOG = {
       preset: 'openai_compatible',
       providerKind: PROVIDER_KIND_CUSTOM,
       items: [
-        { model: '', title: '自定义兼容模型', desc: '手动填写模型 ID 和服务地址', custom: true },
+        { model: '', title: '自定义兼容模型', custom: true },
       ],
     },
     {
@@ -1805,7 +1799,7 @@ const MODEL_CATALOG = {
       preset: 'openai_responses',
       providerKind: PROVIDER_KIND_CUSTOM,
       items: [
-        { model: '', title: '自定义 Responses 模型', desc: '手动填写模型 ID 和服务地址', custom: true },
+        { model: '', title: '自定义 Responses 模型', custom: true },
       ],
     },
   ],
@@ -2822,7 +2816,6 @@ export {
   PROVIDER_KIND_CODING_PLAN,
   PROVIDER_KIND_OFFICIAL_API,
   PROVIDER_KIND_CUSTOM,
-  MODEL_CATALOG_SECTIONS,
   MODEL_CATALOG,
   CLOUD_MODEL_PROVIDERS,
   BRAND_ICON_BY_PRESET,

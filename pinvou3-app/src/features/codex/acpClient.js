@@ -167,7 +167,7 @@ export function cancelAcpSession(sessionId) {
   return invokeRequiredWebCommand('web_access_cancel_codex_acp', { sessionId });
 }
 
-export function acpAttachmentHandle(result) {
+function acpAttachmentHandle(result) {
   return result && typeof result.handle === 'string' ? result.handle : '';
 }
 

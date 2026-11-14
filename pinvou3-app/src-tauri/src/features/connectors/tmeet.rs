@@ -412,11 +412,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
 }
 
 pub async fn tmeet_cancel(app: AppHandle) -> Result<Value, String> {
-    let pid = app.state::<ConnectorConn>().cancel(ID);
-    if let Some(pid) = pid {
-        let _ = tokio::task::spawn_blocking(move || cc::kill_pid_tree(pid)).await;
-    }
-    Ok(json!({ "ok": true }))
+    cc::cancel_connect(app, ID).await
 }
 
 /// 断开腾讯会议:`tmeet auth logout`。未安装时也视为已断开。

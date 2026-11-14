@@ -2773,12 +2773,6 @@ impl Pinvou3Bridge {
         cfg.workspace = roots.execution;
         cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
-        if !is_aux {
-            cfg.instructions.push(InstructionSource::Inline {
-                name: "runtime:scheduled-request-origin".to_string(),
-                content: format!("Current session id: {session_id}. For app-automations keyed retries use this exact id as from_session and reuse the same idempotency_key only for the same operation. The claim is audit provenance, not authorization. Plan mode does not support this MCP family, including reads."),
-            });
-        }
         // Aux sessions skip the main instruction stack entirely: the aux
         // branch below replaces it with the minimal persona, while
         // session_instructions walks the AGENTS.md ancestors and writes the
@@ -2788,7 +2782,19 @@ impl Pinvou3Bridge {
         cfg.instructions = if is_aux {
             Vec::new()
         } else {
-            self.session_instructions(session_id)
+            // Scheduled-request origin: appended AFTER the stack assembly
+            // (docs/prompt-optimization-evaluation/README.md
+            // "Scheduled-origin follow-up"; content per
+            // docs/提示词优化-普通模式与代码模式.md §4.1) so the entry is
+            // not discarded by the wholesale replacement; the claim is
+            // audit provenance, not authorization, and aux sessions keep
+            // their minimal surface without it.
+            let mut instructions = self.session_instructions(session_id);
+            instructions.push(InstructionSource::Inline {
+                name: "runtime:scheduled-request-origin".to_string(),
+                content: format!("Current session id: {session_id}. For app-automations keyed retries use this exact id as from_session and reuse the same idempotency_key only for the same operation. The claim is audit provenance, not authorization. Plan mode does not support this MCP family, including reads."),
+            });
+            instructions
         };
         // Keychain snapshot (§6): the roots locked at creation; empty = single root
         // (base normalize reduces to [workspace]; the base dedups cwd-first). Aux sessions carry
@@ -7701,6 +7707,125 @@ mod tests {
             "ordinary sessions keep subagents"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Regression pin (the prompt-optimization-evaluation README's
+    /// "Scheduled-origin follow-up"): the `runtime:scheduled-request-origin`
+    /// note used to be dropped wholesale six lines later when
+    /// `cfg.instructions` replaced the pushed engine config, never reaching
+    /// any engine. After the fix the entry must be appended AFTER the
+    /// session instruction stack is assembled: the stack head is still
+    /// `pinvou3:instructions` (the stack is not replaced), the origin note
+    /// is always the last entry and appears exactly once, carrying the
+    /// session id. Ordinary and scheduled sessions share this path.
+    #[test]
+    fn origin_note_appends_after_the_session_instruction_stack() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-origin-note-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env
+        // writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        let bridge = fixture_bridge();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-origin-note-root-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = |name: &str| SessionRoots {
+            execution: root.join(format!("{name}-exec")),
+            ledger: root.join(format!("{name}-ledger")),
+            bound: false,
+        };
+
+        for session_id in ["chat-origin1", "sched-origin2"] {
+            let cfg = bridge.build_engine_config_for_session_roots(session_id, roots(session_id));
+            assert!(
+                !cfg.instructions.is_empty(),
+                "non-aux sessions must keep a non-empty instruction stack"
+            );
+            match &cfg.instructions[0] {
+                InstructionSource::Inline { name, .. } => assert_eq!(
+                    name, "pinvou3:instructions",
+                    "the assembled session stack must precede the origin note, not be \
+                     replaced by it"
+                ),
+                InstructionSource::File(path) => {
+                    panic!("the composed session prompt must be inline, got file {path:?}")
+                }
+            }
+            let origin_entries = cfg
+                .instructions
+                .iter()
+                .filter(|source| {
+                    matches!(
+                        source,
+                        InstructionSource::Inline { name, .. }
+                            if name == "runtime:scheduled-request-origin"
+                    )
+                })
+                .count();
+            assert_eq!(
+                origin_entries, 1,
+                "the origin note must be appended exactly once"
+            );
+            match cfg.instructions.last() {
+                Some(InstructionSource::Inline { name, content }) => {
+                    assert_eq!(name, "runtime:scheduled-request-origin");
+                    assert!(
+                        content.contains(session_id),
+                        "the origin note must carry this session's id"
+                    );
+                    assert!(content.contains("from_session"));
+                    assert!(content.contains("idempotency_key"));
+                }
+                other => panic!("the origin note must be the trailing inline entry, got {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Exclusion pin: aux sessions keep the minimal instruction surface;
+    /// the origin note (audit provenance) must not enter.
+    #[test]
+    fn aux_sessions_do_not_carry_the_origin_note() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-origin-aux-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env
+        // writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+        let bridge = fixture_bridge();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-origin-aux-root-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = SessionRoots {
+            execution: root.join("aux-exec"),
+            ledger: root.join("aux-ledger"),
+            bound: false,
+        };
+        let aux_cfg = bridge.build_engine_config_for_session_roots("aux-origin", roots);
+        assert!(
+            aux_cfg.instructions.iter().all(|source| matches!(
+                source,
+                InstructionSource::Inline { name, .. }
+                    if name != "runtime:scheduled-request-origin"
+            )),
+            "aux sessions keep their minimal persona without the origin note"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

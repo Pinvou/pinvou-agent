@@ -290,13 +290,6 @@ pub struct Capture {
     pub input_aligned: bool,
 }
 
-impl Capture {
-    /// Device physical pixels → input coordinate scale (per-platform rule encoded here).
-    pub fn input_scale(&self) -> (f64, f64) {
-        (self.input_scale_x, self.input_scale_y)
-    }
-}
-
 /// The UI element hit by `element_at_point` (coordinates in input coordinate space).
 #[derive(Debug, Clone, Serialize)]
 pub struct ElementInfo {

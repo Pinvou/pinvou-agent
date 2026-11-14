@@ -98,16 +98,8 @@ pub fn router(service: Arc<KnowledgeService>) -> Router {
             patch(owner_update_device).delete(owner_delete_device),
         )
         .route(
-            "/api/v2/owner/trash/collections",
-            get(owner_trashed_collections),
-        )
-        .route(
             "/api/v2/owner/trash/collections/{id}",
             axum::routing::delete(owner_permanently_delete_collection),
-        )
-        .route(
-            "/api/v2/owner/trash/documents",
-            get(owner_trashed_documents),
         )
         .route(
             "/api/v2/owner/trash/documents/{id}",
@@ -384,32 +376,6 @@ fn map_device_mutation_error(error: DeviceMutationError) -> ApiError {
         DeviceMutationError::Revoked => ApiError::conflict("请先恢复该成员设备"),
         DeviceMutationError::Database(error) => ApiError::internal(error.to_string()),
     }
-}
-
-async fn owner_trashed_collections(
-    State(service): State<Arc<KnowledgeService>>,
-    headers: HeaderMap,
-    Query(query): Query<PageQuery>,
-) -> ApiResult<Json<Vec<Collection>>> {
-    require_owner_device(&service, &headers)?;
-    Ok(Json(
-        service
-            .trashed_collections_page(query.limit.unwrap_or(200), query.offset)
-            .map_err(ApiError::internal)?,
-    ))
-}
-
-async fn owner_trashed_documents(
-    State(service): State<Arc<KnowledgeService>>,
-    headers: HeaderMap,
-    Query(query): Query<PageQuery>,
-) -> ApiResult<Json<Vec<TrashedDocument>>> {
-    require_owner_device(&service, &headers)?;
-    Ok(Json(
-        service
-            .trashed_documents_page(query.limit.unwrap_or(200), query.offset)
-            .map_err(ApiError::internal)?,
-    ))
 }
 
 async fn owner_permanently_delete_collection(

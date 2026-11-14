@@ -4,16 +4,7 @@ import {
   isPendingAcpAttachment,
   runAcpAttachmentTask,
 } from '../src/features/codex/acp-attachment-lifecycle.js';
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred } from './helpers/deferred.mjs';
 
 assert.equal(isPendingAcpAttachment({ status: 'parsing' }), true);
 assert.equal(isPendingAcpAttachment({ status: 'uploading' }), true);

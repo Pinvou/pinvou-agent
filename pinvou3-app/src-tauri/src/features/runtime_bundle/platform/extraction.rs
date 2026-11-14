@@ -24,9 +24,9 @@ fn find_webkit_webdriver() -> Option<PathBuf> {
 
 #[derive(Debug, Clone)]
 pub struct Pinvou3Bundle {
-    pub root: PathBuf,
+    root: PathBuf,
     pub skills_dir: PathBuf,
-    pub mcp_json: PathBuf,
+    pub(super) mcp_json: PathBuf,
     pub deny_sensitive_sh: PathBuf,
     pub deny_sensitive_ps1: PathBuf,
     pub multiagent_depth_guard_sh: PathBuf,

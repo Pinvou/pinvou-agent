@@ -68,11 +68,9 @@ pub fn clean_id(value: &str) -> String {
 }
 
 pub(super) fn stable_id_with_prefix(prefix: &str, value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
+    // The shared FNV-1a-64 primitive from platform::paths::fnv1a64 (same
+    // constant discipline) — do not re-implement the loop locally.
+    let hash = crate::platform::paths::fnv1a64(value.as_bytes());
     format!("{}_{hash:016x}", clean_id(prefix))
 }
 

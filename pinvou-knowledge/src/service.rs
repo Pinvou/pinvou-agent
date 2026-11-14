@@ -761,26 +761,6 @@ impl KnowledgeService {
             .map_err(|error| error.to_string())
     }
 
-    pub fn trashed_collections_page(
-        &self,
-        limit: usize,
-        offset: usize,
-    ) -> Result<Vec<Collection>, String> {
-        self.store
-            .list_trashed_collections_page(limit, offset)
-            .map_err(|error| error.to_string())
-    }
-
-    pub fn trashed_documents_page(
-        &self,
-        limit: usize,
-        offset: usize,
-    ) -> Result<Vec<TrashedDocument>, String> {
-        self.store
-            .list_trashed_documents_page(limit, offset)
-            .map_err(|error| error.to_string())
-    }
-
     pub fn create_collection(
         &self,
         request: CreateCollectionRequest,

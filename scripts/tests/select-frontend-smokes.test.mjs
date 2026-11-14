@@ -60,6 +60,7 @@ test("feature-local changes select core and feature smokes", () => {
     [
       "npm:test:ui-smoke",
       "npm:test:settings-ui",
+      "npm:test:acp-providers-ui",
       "npm:test:composer-tools-smoke",
       "npm:test:composer-pending-enable-smoke",
       "node:tests/pet_selector_ui_smoke.js",

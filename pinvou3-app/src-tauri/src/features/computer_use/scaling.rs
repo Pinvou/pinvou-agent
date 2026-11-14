@@ -81,8 +81,7 @@ impl ScaleMap {
         shot_h: u32,
         capture: &Capture,
     ) -> Result<Self, ComputerUseError> {
-        let (input_scale_x, input_scale_y) = capture.input_scale();
-        for (axis, scale) in [("x", input_scale_x), ("y", input_scale_y)] {
+        for (axis, scale) in [("x", capture.input_scale_x), ("y", capture.input_scale_y)] {
             if !scale.is_finite() || scale <= 0.0 {
                 return Err(ComputerUseError::failed(format!(
                     "capture reports non-positive input_scale_{axis} ({scale}); \
@@ -97,8 +96,8 @@ impl ScaleMap {
             dev_h: capture.height.max(1),
             origin_x: capture.origin_x,
             origin_y: capture.origin_y,
-            input_scale_x,
-            input_scale_y,
+            input_scale_x: capture.input_scale_x,
+            input_scale_y: capture.input_scale_y,
             input_aligned: capture.input_aligned,
         })
     }

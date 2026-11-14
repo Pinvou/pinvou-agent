@@ -75,7 +75,7 @@ code 模式（真实项目目录绑定）与 plain 模式（沙箱会话目录�
 #### R-3：code 页接线 compact / 用量 / memory
 
 - **什么**（仅 native，底栏 kb 选择器后两元素）：
-  - **用量 chip 兼 compact 入口**：lane 已消费的 `chat:usage` 渲染"上下文 Nk"（`tokens.max` 恒 0 为已知限制，按只显已用降级，格式与 work `fmtCtxTok` 同款）；点击调 `compact_now`（参数与 work 侧封装同款），busy/compacting 置灰，压缩过程由既有 `chat:compaction` 系统项呈现。
+  - **用量 chip 兼 compact 入口**：lane 已消费的 `chat:usage` 渲染"上下文 Nk"（`tokens.max` 恒 0 为已知限制，按只显已用降级，格式与 work `formatCompactCount` 同款）；点击调 `compact_now`（参数与 work 侧封装同款），busy/compacting 置灰，压缩过程由既有 `chat:compaction` 系统项呈现。
   - **memory 徽标**：lane 新增 `chat:memory` 监听（事件本就对全部会话发射），底栏 Brain 徽标 + 条数，点击只读弹层列条目；无条目不占位。不照搬 work 完整记忆面板（取舍：轻量展示，code 页信息架构克制）。
 - i18n：`uiCodex` 新增 4 key，三语齐全；反馈文案复用既有 `compactStart/Done/Fail`。
 - 测试：lane 新增 memory 快照归一化/过滤/hydration 保留、`compacting` 置位复位断言。
@@ -190,4 +190,4 @@ code 会话执行根是用户真实项目目录，但此前权限语义有两个
 3. **每个对话保存自己的 mode**：plain 会话废除"恒内存不持久化"，per-session 落盘扩到所有会话；sidecar 文件更名 `_session_mode_states.json`（旧 `_code_mode_states.json` 启动时回退读一次）。
 4. **新会话默认 = 本 lane 全局默认**：code 由后端 `resolved_default_mode` 解析；work 由前端在会话物化（`ensureSession`）时应用（后端不再区分 plain 侧 lane）；缺省 code→Plan、work→Yolo 不变。
 
-配套改动：新命令 `get_mode_defaults`/`set_mode_default`（web access-policy 已登记）；草稿态 chip 切换不再物化会话（旧实现 `ensureSession` 会凭空造空会话）；ChatView 经 `bridge.interaction.setModeLane` 显式同步 lane（bridge 不读 localStorage）；CodexAcpView 草稿切换即写 code lane 默认，`applyNativeDraftControls` 末尾补 `refreshNativeControls` 收口（修「发消息后 chip 回旧值」）；plain 会话 mode 重启后恢复。
+配套改动：新命令 `get_mode_defaults`/`set_mode_default`（web access-policy 已登记）；草稿态 chip 切换不再物化会话（旧实现 `ensureSession` 会凭空造空会话）；ChatView 经 `bridge.interaction.setModeLane` 显式同步 lane（bridge 不读 localStorage）；CodexAcpView 草稿切换即写 code lane 默认，`applyNativeControlChange` 末尾补 `refreshNativeControls` 收口（修「发消息后 chip 回旧值」）；plain 会话 mode 重启后恢复。
