@@ -643,7 +643,7 @@ function enforceLazyChunks() {
 // same replayed r7 wiring, measuring 490,994 B desktop — 6 B of headroom
 // under the 491_000 ceiling, below toolchain-noise tolerance — so the
 // desktop ceiling takes the next thousand step. The web entry measured
-// 126,91x B and stays under 129_000. This cap does not promise headroom
+// 126,911 B and stays under 129_000. This cap does not promise headroom
 // for unrelated main changes.
 export const MAIN_ENTRY_BUDGET_BYTES = 492_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
