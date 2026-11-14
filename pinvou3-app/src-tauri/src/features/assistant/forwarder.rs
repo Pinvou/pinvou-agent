@@ -1078,14 +1078,10 @@ pub(crate) fn spawn_event_forwarder(
                     turn_id: _,
                     submission_id: _,
                     compaction_id: _,
-                    // CodeWhale #142: the engine now reports which side
-                    // produced a terminal error; the host surfaces only the
-                    // error text today, so the source is not adopted yet.
-                    error_source: _,
-                    base_url: _,
                     // CodeWhale#142 adds the terminal error's producer
                     // source; the forwarder surfaces only usage/status/error.
                     error_source: _,
+                    base_url: _,
                 } => {
                     #[cfg(not(feature = "benchmark-hooks"))]
                     let _ = &tool_catalog;
