@@ -222,10 +222,14 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rand = "0.10"
-# Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, oauth2 5,
-# hf-hub, ort-sys and rmcp 3 all still require 0.22 (wry 0.57.1 and
-# hyper-util have moved to 0.23); a solo 0.23 bump would only add a second
-# copy. Revisit once upstreams align.
+# Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, hf-hub,
+# ort-sys and pinvou-knowledge still require 0.22. rmcp 3 declares
+# base64 0.23 as an optional dependency enabled only by its
+# default/request-state/client-side-sse/auth-enterprise-managed/
+# server-side-http features; this graph enables just auth + client
+# (default-features = false), so rmcp adds no base64 requirement
+# here. A solo 0.23 bump would leave those holdouts on a separate
+# 0.22 copy. Revisit once upstreams align.
 base64 = "0.22"
 tempfile = "3"
 age = { version = "0.12", default-features = false }
