@@ -457,20 +457,34 @@ mod tests {
     /// 无法在 persist 与 bind 之间确定性注入故障：sidecar 落点由刚生成的
     /// 分支 id 决定，chmod 类前提无法对未知 id 预先布置）。回滚臂删除刚
     /// 落盘的分支，是「绑定复刻全有或全无」契约的失败半边；被删/改形即
-    /// 静默留下无绑定分支——正是绑定复刻要消灭的形态。
+    /// 静默留下无绑定分支——正是绑定复刻要消灭的形态。needle 由分段拼接：
+    /// 本测试源码自身也在 include_str! 的扫描面里，整句字面量会自匹配
+    /// （r8 教训），拆段后文件里不存在完整 needle 文本，生产臂恰好一次。
     #[test]
     fn fork_bind_failure_rollback_arm_is_pinned() {
         let source = include_str!("fork.rs").replace("\r\n", "\n");
-        for needle in [
-            "let rollback = self.delete(&forked.metadata.id);",
-            "return Err(match rollback {",
-            "Ok(()) => anyhow::anyhow!(\"bind workspace: {error:#}\")",
-        ] {
-            assert!(
-                source.contains(needle),
-                "fork bind-failure rollback arm drifted; the branch must be rolled back when workspace binding fails: `{needle}`"
-            );
-        }
+        let needle_delete = ["let rollback = self.", "delete(&forked.metadata.id);"].concat();
+        assert_eq!(
+            source.matches(&needle_delete).count(),
+            1,
+            "fork bind-failure rollback arm drifted; a failed workspace bind must roll the branch back (delete call)"
+        );
+        let needle_return = ["return Err(match ", "rollback {"].concat();
+        assert_eq!(
+            source.matches(&needle_return).count(),
+            1,
+            "a failed workspace bind must surface as the fork command's error (return shape)"
+        );
+        let needle_error = [
+            "Ok(()) => anyhow::anyhow!(\"bind workspace: ",
+            "{error:#}\")",
+        ]
+        .concat();
+        assert_eq!(
+            source.matches(&needle_error).count(),
+            1,
+            "rollback success must report the bind failure reason (error composition)"
+        );
     }
 
     /// 工作目录绑定按 id 键存 sidecar，不随记录克隆：分叉必须复刻源绑定，
