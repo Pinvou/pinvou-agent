@@ -240,9 +240,13 @@ test("the repair script only mutates an isolated, marked RUSTUP_HOME", () => {
   // vacuously once its needle is gone (both indexOf calls return -1).
   assert.match(rustToolchainGuard, /\[IO\.FileShare\]::None/u);
   assert.match(rustToolchainGuard, /shared RUSTUP_HOME/u);
+  assert.match(rustToolchainGuard, /workspace-scoped RUSTUP_HOME/u);
   assert.match(rustToolchainGuard, /filesystem root as RUSTUP_HOME/u);
   assert.match(rustToolchainGuard, /rust-toolchain\.toml/u);
   assert.doesNotMatch(rustToolchainGuard, /Get-Process|Stop-Process/u);
+  // The guard must never widen its search to build-farm transient roots.
+  assert.doesNotMatch(rustToolchainGuard, /TEMPORARY|JENKINS_/u);
+  assert.doesNotMatch(rustToolchainGuard, /SkipProcessCleanup/u);
   // The adopt-or-refuse decision must run under the managed-home lock, so
   // two concurrent first-time builds cannot both adopt the same home.
   assert.ok(
