@@ -452,6 +452,27 @@ mod tests {
         assert_eq!(original.metadata.total_tokens, 1234);
     }
 
+    /// 绑定失败回滚臂的源码钉（r9 minor：REQUIRED_PINS 注释此前宣称
+    /// happy-path 绑定复刻测试覆盖「绑定失败回滚」，不实——真实文件系统上
+    /// 无法在 persist 与 bind 之间确定性注入故障：sidecar 落点由刚生成的
+    /// 分支 id 决定，chmod 类前提无法对未知 id 预先布置）。回滚臂删除刚
+    /// 落盘的分支，是「绑定复刻全有或全无」契约的失败半边；被删/改形即
+    /// 静默留下无绑定分支——正是绑定复刻要消灭的形态。
+    #[test]
+    fn fork_bind_failure_rollback_arm_is_pinned() {
+        let source = include_str!("fork.rs").replace("\r\n", "\n");
+        for needle in [
+            "let rollback = self.delete(&forked.metadata.id);",
+            "return Err(match rollback {",
+            "Ok(()) => anyhow::anyhow!(\"bind workspace: {error:#}\")",
+        ] {
+            assert!(
+                source.contains(needle),
+                "fork bind-failure rollback arm drifted; the branch must be rolled back when workspace binding fails: `{needle}`"
+            );
+        }
+    }
+
     /// 工作目录绑定按 id 键存 sidecar，不随记录克隆：分叉必须复刻源绑定，
     /// 否则分支的引擎/shell 落回空的私有执行根，且 mode_state 对无绑定会话
     /// 默认 Yolo（安全姿态静默降级）。无绑定源的分支保持无绑定。

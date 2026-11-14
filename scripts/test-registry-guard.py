@@ -35,11 +35,14 @@ MANIFEST = os.path.join("pinvou3-app", "src-tauri", "Cargo.toml")
 # pin's `#[test]` attribute was lost to an edit — the exact failure this
 # guard exists for (PR #455 rounds 26 and 28).
 REQUIRED_PINS = [
-    # features/sessions (PR #835 r8 wave): rollback-critical fork/import pins
-    # — a stolen `#[test]` here would let the fork bind-failure rollback, the
+    # features/sessions (PR #835 r8/r9 waves): rollback-critical fork/import
+    # pins — a stolen `#[test]` here would let the fork binding replication,
+    # the bind-failure rollback arm (source needle; no deterministic
+    # filesystem fault injection exists between persist and bind), the
     # three-state skip probe, or the counter-arm total forwarding regress
     # silently (each is a silent-data-shape failure class, the guard's charter).
     "fork_rebinds_workspace_binding_for_branch",
+    "fork_bind_failure_rollback_arm_is_pinned",
     "import_reports_stat_fault_instead_of_overwriting_existing_record",
     "all_transcript_commit_arms_forward_the_computed_total",
     # commands/tests.rs: the install-path consent rollback pair (round-33
