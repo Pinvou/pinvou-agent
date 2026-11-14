@@ -90,7 +90,7 @@ pub enum ModelsCommand {
     },
     Discover {
         base_url: String,
-        api_key: Option<String>,
+        api_key_env: Option<String>,
         preset: Option<ModelPreset>,
         wire: Option<DiscoveryProtocol>,
         json: bool,
@@ -685,7 +685,7 @@ list|set|test; note: `settings get` without a key always prints JSON regardless 
 /// command always prints — a fourth exit code would break every script that
 /// branches on the family-wide 0/1/2 table for a distinction the JSON row
 /// already carries.
-const DISCOVER_USAGE: &str = "usage: pinvou models discover --base-url <url> [--api-key <key>] \
+const DISCOVER_USAGE: &str = "usage: pinvou models discover --base-url <url> [--api-key-env V] \
 [--preset <name>] [--wire <anthropic|openai|kimi>] [--json]\nexit codes: 0 listed (an empty \
 list is still listed), 1 auth_required | unsupported | error (see the status field), 2 usage";
 
@@ -770,7 +770,7 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
                 "models",
                 "discover",
                 rest,
-                &["base-url", "api-key", "preset", "wire"],
+                &["base-url", "api-key-env", "preset", "wire"],
                 &["json"],
             )?;
             // Option-only subcommand: a stray positional here is usually a
@@ -793,10 +793,15 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
             let wire = opt_flag(&options, "wire", parse_discover_wire)?;
             Ok(ModelsCommand::Discover {
                 base_url,
-                // `parse_options` refuses a value that is empty or starts
-                // with `--`, so `Some` here is always a non-empty value; the
-                // empty-key (keyless) case is spelled by omitting the flag.
-                api_key: options.value("api-key").map(str::to_owned),
+                // Same credential entry as probe-local: the flag names an
+                // environment VARIABLE, and `gate_env_var` refuses a pasted
+                // literal secret at parse time (usage, exit 2, the value
+                // never echoed) — a literal on argv rides the shell history
+                // and the process list. The variable is read only when the
+                // command runs; the keyless (empty-key) case is spelled by
+                // omitting the flag, so `Some` here is always a non-empty
+                // NAME (`parse_options` refuses an empty or `--` value).
+                api_key_env: gate_env_var(options.value("api-key-env"))?,
                 preset,
                 wire,
                 json: options.has("json"),
@@ -1145,11 +1150,18 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
         ),
         ModelsCommand::Discover {
             base_url,
-            api_key,
+            api_key_env,
             preset,
             wire,
             json,
-        } => discover(&base_url, api_key.as_deref(), preset, wire, json, output),
+        } => discover(
+            &base_url,
+            api_key_env.as_deref(),
+            preset,
+            wire,
+            json,
+            output,
+        ),
         ModelsCommand::SettingsGet { key } => settings_get(&store, key, output),
         ModelsCommand::SettingsSet { key, value } => settings_set(key, value, output),
         ModelsCommand::SearchList => search_list(&store, output),
@@ -3900,12 +3912,16 @@ fn run_endpoint_discovery(
     }
 }
 
-/// `models discover --base-url <url> [--api-key <key>] [--preset <name>]
+/// `models discover --base-url <url> [--api-key-env V] [--preset <name>]
 /// [--wire <anthropic|openai|kimi>] [--json]`: list the models an endpoint
 /// reports, with the lengths the entries self-report. The GUI counterpart
 /// (`probe_endpoint_models`) additionally back-fills missing lengths from
 /// its model-length catalog; the CLI has no catalog, so `SOURCE` is always
 /// `endpoint` and absent lengths simply print as `-`.
+///
+/// `--api-key-env` names an environment VARIABLE holding the credential,
+/// the same discipline as probe-local — the keyless case is the flag's
+/// omission, and the variable is read only here, at execution time.
 ///
 /// A malformed `--base-url` is a usage error (argv is the caller's mistake,
 /// the same classification `probe-local --url` applies). The protocol comes
@@ -3915,7 +3931,7 @@ fn run_endpoint_discovery(
 /// the output row, usage 2.
 fn discover(
     base_url: &str,
-    api_key: Option<&str>,
+    api_key_env: Option<&str>,
     preset: Option<ModelPreset>,
     wire: Option<DiscoveryProtocol>,
     json: bool,
@@ -3926,10 +3942,45 @@ fn discover(
             "pinvou models discover: --base-url is not a valid url\n{DISCOVER_USAGE}"
         )));
     }
+    // Usage validation stays ahead of credential resolution (the ordering
+    // `probe_local` documents): a script keying on the exit-code contract
+    // must see the usage error (2) even when the named variable is also
+    // missing (which would be exit 1).
+    let api_key = match api_key_env {
+        Some(var) => Some(resolve_discover_api_key(var)?),
+        None => None,
+    };
     let protocol = resolve_discovery_protocol(preset, wire);
-    let listing = run_endpoint_discovery(base_url, api_key, protocol);
+    let listing = run_endpoint_discovery(base_url, api_key.as_deref(), protocol);
     let output = if json { OutputMode::Json } else { output };
     Ok(render_discovery_outcome(&listing, output))
+}
+
+/// The name→value step of discover's `--api-key-env`, the same contract
+/// `probe_local` Phase 2 enforces (its comment justifies each branch): a
+/// set-but-non-UTF-8 variable is distinct from an unset one, and a
+/// set-but-empty variable fails the command — `run_endpoint_discovery`
+/// filters an empty key into an anonymous round, an authenticated endpoint
+/// would answer 401, and the caller would get `auth_required` with no hint
+/// that the credential they named never reached the request. The failures
+/// are host failures (exit 1), never usage: the flag was spelled
+/// correctly, the ENVIRONMENT is wrong. Only the variable NAME may appear
+/// in a message — the value never does.
+fn resolve_discover_api_key(var: &str) -> Result<String, CliError> {
+    let value = std::env::var(var).map_err(|error| match error {
+        std::env::VarError::NotUnicode(_) => CliError::failed(format!(
+            "discover: api key environment variable {var} is set but not valid UTF-8"
+        )),
+        _ => CliError::failed(format!(
+            "discover: api key environment variable {var} is not set"
+        )),
+    })?;
+    if value.trim().is_empty() {
+        return Err(CliError::failed(format!(
+            "discover: api key environment variable {var} is set but empty"
+        )));
+    }
+    Ok(value)
 }
 
 /// One human table cell for an untrusted endpoint-provided value: control
@@ -3990,7 +4041,7 @@ fn render_discovery_human(listing: &EndpointModelsListing) -> String {
         lines.push(match listing.status {
             ListingStatus::AuthRequired => {
                 "hint: the endpoint rejected the request as unauthenticated; rerun with \
-                 --api-key <key>"
+                 --api-key-env V"
                     .to_owned()
             }
             ListingStatus::Unsupported => {
@@ -6057,15 +6108,15 @@ mod tests {
             "discover".to_owned(),
             "--base-url".to_owned(),
             " http://127.0.0.1:11434 ".to_owned(),
-            "--api-key".to_owned(),
-            "probe-key".to_owned(),
+            "--api-key-env".to_owned(),
+            "PINVOU_TEST_DISCOVER_PARSE_KEY".to_owned(),
             "--preset".to_owned(),
             "anthropic".to_owned(),
             "--json".to_owned(),
         ];
         let ModelsCommand::Discover {
             base_url,
-            api_key,
+            api_key_env,
             preset,
             wire,
             json,
@@ -6074,7 +6125,12 @@ mod tests {
             panic!("parse must produce a Discover command");
         };
         assert_eq!(base_url, "http://127.0.0.1:11434", "the value is trimmed");
-        assert_eq!(api_key.as_deref(), Some("probe-key"));
+        // The flag carries an environment VARIABLE NAME, stored verbatim;
+        // the variable is read only when the command runs.
+        assert_eq!(
+            api_key_env.as_deref(),
+            Some("PINVOU_TEST_DISCOVER_PARSE_KEY")
+        );
         assert_eq!(preset, Some(ModelPreset::Anthropic));
         assert_eq!(wire, None);
         assert!(json);
@@ -6147,12 +6203,41 @@ mod tests {
             "discover".to_owned(),
             "--base-url".to_owned(),
             "http://127.0.0.1:11434".to_owned(),
-            "--api-key".to_owned(),
+            "--api-key-env".to_owned(),
             "--preset".to_owned(),
             "openai".to_owned(),
         ])
         .expect_err("a value flag cannot consume another flag");
         assert_eq!(flag_as_value.exit_code(), ExitCode::Usage);
+    }
+
+    /// The secret-discipline pin: the literal-key flag this subcommand
+    /// shipped with for one round (`--api-key <key>`) must stay refused. A
+    /// pasted secret on argv rides the shell history and the process list —
+    /// exactly what the family-wide `--api-key-env` entry exists to prevent
+    /// — so the literal flag is now an unknown option (usage, exit 2), and
+    /// the refusal must not echo the pasted value.
+    #[test]
+    fn discover_parse_refuses_the_literal_api_key_flag() {
+        let error = parse(&[
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            "http://127.0.0.1:11434".to_owned(),
+            "--api-key".to_owned(),
+            "sk-pasted-literal".to_owned(),
+        ])
+        .expect_err("the literal --api-key flag is no longer part of the surface");
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown option --api-key"),
+            "the refusal names the unknown flag: {message}"
+        );
+        assert!(
+            !message.contains("sk-pasted-literal"),
+            "the pasted value is never echoed: {message}"
+        );
     }
 
     /// The malformed-URL gate is argv-origin (usage, exit 2), the same
@@ -6687,7 +6772,10 @@ mod tests {
     /// The OpenAI-compatible ladder over a `{data}` envelope: the candidate
     /// round consumes one body (the `/v1/models` 404 fallback), the listing
     /// ladder the second; lengths land endpoint-sourced and the short-circuit
-    /// reports the all-miss kind as `generic`.
+    /// reports the all-miss kind as `generic`. The credential enters through
+    /// `--api-key-env` — the mock lanes set the variable and call the real
+    /// `discover()` lane, so the env-var entry is exercised end to end and
+    /// no test hands a literal key into the ladder below it.
     #[test]
     fn discover_openai_envelope_lists_endpoint_sourced_facts() {
         let body = r#"{"data":[
@@ -6698,37 +6786,45 @@ mod tests {
             "/models",
             vec![(200u16, body), (200, body)],
         )]));
-        let listing = run_endpoint_discovery(
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _key = TempEnv::set("PINVOU_TEST_DISCOVER_ROUTE_KEY", " route-key ");
+        let outcome = discover(
             &base,
-            Some(" route-key "),
-            DiscoveryProtocol::OpenAiCompatible,
-        );
-        assert_eq!(listing.status, ListingStatus::Listed);
+            Some("PINVOU_TEST_DISCOVER_ROUTE_KEY"),
+            None,
+            Some(DiscoveryProtocol::OpenAiCompatible),
+            true,
+            OutputMode::Human,
+        )
+        .expect("a completed discovery is a result, not a command failure");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        let listing: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("single-line json");
+        assert_eq!(listing["status"], "listed");
         assert_eq!(
-            listing.server_kind,
-            Some("generic"),
+            listing["server_kind"], "generic",
             "an all-miss short-circuit round is generic"
         );
-        assert!(!listing.truncated);
+        assert_eq!(listing["truncated"], false);
         assert_eq!(
-            listing.http_status, None,
+            listing["http_status"],
+            serde_json::Value::Null,
             "a listed answer carries no http_status, exactly like the GUI's assembly"
         );
-        assert_eq!(listing.models.len(), 2);
-        assert_eq!(listing.models[0].id, "glm-4.7");
-        assert_eq!(listing.models[0].context_window_tokens, Some(131072));
-        assert_eq!(listing.models[0].max_output_tokens, Some(8192));
+        assert_eq!(listing["models"].as_array().expect("models array").len(), 2);
+        assert_eq!(listing["models"][0]["id"], "glm-4.7");
+        assert_eq!(listing["models"][0]["context_window_tokens"], 131072);
+        assert_eq!(listing["models"][0]["max_output_tokens"], 8192);
+        assert_eq!(listing["models"][0]["context_from"], "endpoint");
         assert_eq!(
-            listing.models[0].context_from,
-            Some(ModelFactSource::Endpoint)
-        );
-        assert_eq!(
-            listing.models[1].context_window_tokens, None,
+            listing["models"][1]["context_window_tokens"],
+            serde_json::Value::Null,
             "no fabricated lengths"
         );
         // The ladder request must carry the same-origin bearer credential.
         // The path was requested twice (candidate fallback + ladder); every
-        // request must carry the same-origin trimmed bearer.
+        // request must carry the same-origin trimmed bearer — the padding on
+        // the environment value is trimmed by the ladder, not read verbatim.
         let bearers = log.header_values("/models", "authorization");
         assert!(
             bearers.len() == 2 && bearers.iter().all(|value| value == "Bearer route-key"),
@@ -6796,24 +6892,39 @@ mod tests {
     /// two-page `has_more` + `after_id` pagination, and `max_input_tokens` /
     /// `max_tokens` / `display_name` per entry. The protocol ladder runs
     /// even against loopback — the local short-circuit belongs to the
-    /// OpenAI-compatible protocol only.
+    /// OpenAI-compatible protocol only. The credential enters through
+    /// `--api-key-env` (env var set, real `discover()` lane, JSON payload
+    /// re-read), like every mock lane that presents a key.
     #[test]
     fn discover_anthropic_paginates_with_native_auth_headers() {
         let page1 = r#"{"data":[{"id":"claude-a","display_name":"Claude A","max_input_tokens":200000,"max_tokens":8192}],"has_more":true}"#;
         let page2 = r#"{"data":[{"id":"claude-b","max_input_tokens":1000000}],"has_more":false}"#;
         let (base, log) =
             spawn_discover_mock(&[("/v1/models", vec![(200u16, page1), (200, page2)])]);
-        let listing =
-            run_endpoint_discovery(&base, Some("probe-key"), DiscoveryProtocol::Anthropic);
-        assert_eq!(listing.status, ListingStatus::Listed);
-        assert_eq!(listing.models.len(), 2);
-        assert_eq!(listing.models[0].context_window_tokens, Some(200000));
-        assert_eq!(listing.models[0].max_output_tokens, Some(8192));
-        assert_eq!(listing.models[0].title.as_deref(), Some("Claude A"));
-        assert_eq!(listing.models[1].context_window_tokens, Some(1000000));
-        assert!(!listing.truncated);
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _key = TempEnv::set("PINVOU_TEST_DISCOVER_ANTHROPIC_KEY", "probe-key");
+        let outcome = discover(
+            &base,
+            Some("PINVOU_TEST_DISCOVER_ANTHROPIC_KEY"),
+            None,
+            Some(DiscoveryProtocol::Anthropic),
+            true,
+            OutputMode::Human,
+        )
+        .expect("a completed discovery is a result, not a command failure");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        let listing: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("single-line json");
+        assert_eq!(listing["status"], "listed");
+        assert_eq!(listing["models"].as_array().expect("models array").len(), 2);
+        assert_eq!(listing["models"][0]["context_window_tokens"], 200000);
+        assert_eq!(listing["models"][0]["max_output_tokens"], 8192);
+        assert_eq!(listing["models"][0]["title"], "Claude A");
+        assert_eq!(listing["models"][1]["context_window_tokens"], 1000000);
+        assert_eq!(listing["truncated"], false);
         assert_eq!(
-            listing.server_kind, None,
+            listing["server_kind"],
+            serde_json::Value::Null,
             "no short-circuit on the native protocol"
         );
         assert_eq!(log.hits_for("/v1/models"), 2, "two pages, one path");
@@ -6872,7 +6983,9 @@ mod tests {
 
     /// Gemini: `/openai` (and `/v1beta`) suffixes stripped to the native
     /// root, `x-goog-api-key` auth, generateContent-only filtering and the
-    /// `nextPageToken` pagination.
+    /// `nextPageToken` pagination. The credential enters through
+    /// `--api-key-env` (env var set, real `discover()` lane), like every
+    /// mock lane that presents a key.
     #[test]
     fn discover_gemini_strips_suffixes_filters_and_paginates() {
         let page1 = r#"{"models":[
@@ -6883,21 +6996,35 @@ mod tests {
         let (base, log) =
             spawn_discover_mock(&[("/v1beta/models", vec![(200u16, page1), (200, page2)])]);
         let base = format!("{base}/openai");
-        let listing = run_endpoint_discovery(&base, Some("goog-key"), DiscoveryProtocol::Gemini);
-        assert_eq!(listing.status, ListingStatus::Listed);
-        let ids: Vec<&str> = listing
-            .models
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _key = TempEnv::set("PINVOU_TEST_DISCOVER_GEMINI_KEY", "goog-key");
+        let outcome = discover(
+            &base,
+            Some("PINVOU_TEST_DISCOVER_GEMINI_KEY"),
+            None,
+            Some(DiscoveryProtocol::Gemini),
+            true,
+            OutputMode::Human,
+        )
+        .expect("a completed discovery is a result, not a command failure");
+        assert_eq!(outcome.exit_code, ExitCode::Success);
+        let listing: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("single-line json");
+        assert_eq!(listing["status"], "listed");
+        let ids: Vec<&str> = listing["models"]
+            .as_array()
+            .expect("models array")
             .iter()
-            .map(|model| model.id.as_str())
+            .map(|model| model["id"].as_str().expect("every row carries an id"))
             .collect();
         assert_eq!(
             ids,
             ["gemini-x", "gemini-y"],
             "the embed entry is filtered out"
         );
-        assert_eq!(listing.models[0].context_window_tokens, Some(1000000));
-        assert_eq!(listing.models[0].title.as_deref(), Some("Gemini X"));
-        assert!(!listing.truncated);
+        assert_eq!(listing["models"][0]["context_window_tokens"], 1000000);
+        assert_eq!(listing["models"][0]["title"], "Gemini X");
+        assert_eq!(listing["truncated"], false);
         assert_eq!(log.hits_for("/v1beta/models"), 2);
         let keys = log.header_values("/v1beta/models", "x-goog-api-key");
         assert!(
@@ -7071,20 +7198,32 @@ mod tests {
 
     /// The redaction doctrine: transport failures classify from reqwest's
     /// structured flags, so the error row carries NEITHER the raw error text
-    /// (URL and userinfo included) NOR the api key. Port 1 is refused
+    /// (URL and userinfo included) NOR the api key. The key now enters
+    /// through `--api-key-env`, so the whole lane runs end to end: env var
+    /// set, real `discover()` call, both output modes. Port 1 is refused
     /// locally, so the test stays hermetic.
     #[test]
     fn discover_transport_failure_leaks_neither_url_nor_key() {
-        let listing = run_endpoint_discovery(
-            "http://user:pass@127.0.0.1:1",
-            Some("super-secret-key"),
-            DiscoveryProtocol::OpenAiCompatible,
-        );
-        assert_eq!(listing.status, ListingStatus::Error);
-        assert_eq!(listing.transport, Some("connect"));
-        assert_eq!(listing.http_status, None);
-        for output in [OutputMode::Json, OutputMode::Human] {
-            let outcome = render_discovery_outcome(&listing, output);
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _key = TempEnv::set("PINVOU_TEST_DISCOVER_LEAK_KEY", "super-secret-key");
+        for (json, output) in [(false, OutputMode::Human), (true, OutputMode::Json)] {
+            let outcome = discover(
+                "http://user:pass@127.0.0.1:1",
+                Some("PINVOU_TEST_DISCOVER_LEAK_KEY"),
+                None,
+                Some(DiscoveryProtocol::OpenAiCompatible),
+                json,
+                output,
+            )
+            .expect("a completed discovery is a result, not a command failure");
+            assert_eq!(outcome.exit_code, ExitCode::Failed);
+            if json {
+                let value: serde_json::Value =
+                    serde_json::from_str(&outcome.stdout).expect("single-line json");
+                assert_eq!(value["status"], "error");
+                assert_eq!(value["transport"], "connect");
+                assert_eq!(value["http_status"], serde_json::Value::Null);
+            }
             for secret in ["user:pass", "127.0.0.1:1", "super-secret-key"] {
                 assert!(
                     !outcome.stdout.contains(secret),
@@ -7093,9 +7232,50 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            render_discovery_outcome(&listing, OutputMode::Json).exit_code,
-            ExitCode::Failed
+    }
+
+    /// The env→value step inherits probe-local's contract: a named-but-unset
+    /// or set-but-empty variable fails the command as a host failure
+    /// (exit 1, after the usage gates), the message names the VARIABLE and
+    /// never echoes any value.
+    #[test]
+    fn discover_key_env_var_failures_name_the_variable_not_the_value() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(
+            std::env::var("PINVOU_TEST_DISCOVER_UNSET_KEY").is_err(),
+            "precondition: this test's missing-variable name must start unset"
+        );
+        let missing = discover(
+            "http://127.0.0.1:1",
+            Some("PINVOU_TEST_DISCOVER_UNSET_KEY"),
+            None,
+            Some(DiscoveryProtocol::Anthropic),
+            true,
+            OutputMode::Human,
+        )
+        .expect_err("a named-but-unset key variable fails the command");
+        assert_eq!(missing.exit_code(), ExitCode::Failed);
+        let message = missing.to_string();
+        assert!(
+            message.contains("PINVOU_TEST_DISCOVER_UNSET_KEY") && message.contains("is not set"),
+            "the error names the variable: {message}"
+        );
+        let _empty = TempEnv::set("PINVOU_TEST_DISCOVER_EMPTY_KEY", "   ");
+        let empty = discover(
+            "http://127.0.0.1:1",
+            Some("PINVOU_TEST_DISCOVER_EMPTY_KEY"),
+            None,
+            Some(DiscoveryProtocol::Anthropic),
+            true,
+            OutputMode::Human,
+        )
+        .expect_err("a set-but-empty key variable fails the command");
+        assert_eq!(empty.exit_code(), ExitCode::Failed);
+        let message = empty.to_string();
+        assert!(
+            message.contains("PINVOU_TEST_DISCOVER_EMPTY_KEY")
+                && message.contains("is set but empty"),
+            "the error names the variable: {message}"
         );
     }
 
@@ -7171,7 +7351,7 @@ mod tests {
         assert_eq!(outcome.exit_code, ExitCode::Failed);
         assert!(outcome.stdout.contains("status: auth_required"));
         assert!(outcome.stdout.contains("http_status: 401"));
-        assert!(outcome.stdout.contains("--api-key <key>"));
+        assert!(outcome.stdout.contains("--api-key-env V"));
         let transport_error = error_listing(None, Some("timeout"));
         let outcome = render_discovery_outcome(&transport_error, OutputMode::Human);
         assert_eq!(outcome.exit_code, ExitCode::Failed);
