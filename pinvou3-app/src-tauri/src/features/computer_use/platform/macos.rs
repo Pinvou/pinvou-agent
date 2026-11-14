@@ -439,6 +439,9 @@ unsafe fn try_new_application(pid: libc::pid_t) -> Option<CFRetained<AXUIElement
     // SAFETY: AXUIElementCreateApplication returns a +1 top-level
     // accessibility object for the pid, or NULL.
     let ret = unsafe { AXUIElementCreateApplication(pid) };
+    // SAFETY: from_raw consumes exactly the +1 the call above transferred
+    // (per its C contract, documented on this fn); the pointer is non-NULL
+    // (the map arm only runs on Some).
     ret.map(|ptr| unsafe { CFRetained::from_raw(ptr) })
 }
 
@@ -2240,6 +2243,10 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             SelfShadow::SelfOwned => return Err(self_owned_ax_error("element_at_point")),
             SelfShadow::Unproven => return Err(unproven_owner_ax_error("element_at_point")),
             SelfShadow::Foreign { pid } => {
+                // SAFETY: try_new_application only wraps
+                // AXUIElementCreateApplication — a plain object creation
+                // valid for any pid; this pid is the Foreign arm's verified
+                // owner of the window that owns the point.
                 let Some(app) = (unsafe { try_new_application(pid) }) else {
                     return Err(unpinnable_target_ax_error("element_at_point"));
                 };
