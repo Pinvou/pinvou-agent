@@ -54,21 +54,25 @@ export function factSourceLabelKey(source) {
 
 const normalizeBaseUrlKey = baseUrl => {
   // while + endsWith instead of a /\/+$/ regex: sonarjs/super-linear-regex
-  // flags the trailing-slash strip and the loop is just as clear.
+  // flags the trailing-slash strip and the loop is just as clear. Lowercase
+  // folds the URL so SavedModel records and probe rows dedup case-blind
+  // (hosts are case-insensitive; a path-casing difference is never a
+  // different endpoint for dedup purposes).
   let text = String(baseUrl || '').trim();
   while (text.endsWith('/')) text = text.slice(0, -1);
-  return text;
+  return text.toLowerCase();
 };
 
 /**
  * Dedup key for one model entry: (model id + base_url), case-insensitive on
- * the id, trailing-slash-insensitive on the URL (spec §2.6 batch dedup rule).
+ * the id AND on the URL, trailing-slash-insensitive on the URL (spec §2.6
+ * batch dedup rule; ids already fold via toLowerCase, the URL folds here).
  * '\n' separates the parts so an id can never collide across base URLs.
  * @param {string} modelId Wire model id.
  * @param {string} baseUrl Endpoint base URL the model was found on / saved with.
  */
 export function modelDuplicationKey(modelId, baseUrl) {
-  return `${String(modelId || '').trim().toLowerCase()}\n${normalizeBaseUrlKey(baseUrl)}`;
+  return `${(modelId || '').trim().toLowerCase()}\n${normalizeBaseUrlKey(baseUrl)}`;
 }
 
 /**
@@ -127,7 +131,7 @@ export function normalizeDiscoveredRows(listing) {
  * @returns {Array<{id: string, title?: string}>} Filtered rows in discovery order.
  */
 export function filterModelRows(rows, query) {
-  const needle = String(query || '').trim().toLowerCase();
+  const needle = (query || '').trim().toLowerCase();
   if (!needle) return Array.isArray(rows) ? [...rows] : [];
   return (Array.isArray(rows) ? rows : []).filter(row =>
     row.id.toLowerCase().includes(needle)
