@@ -142,4 +142,16 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(tmp);
     }
+
+    /// lib.rs 的 invoke_handler 注册在 repo 级无 pin(command_protocol! 只钉
+    /// 源码形状,注册被删时所有测试仍绿,命令 404;同 global_shortcut 的
+    /// 处理),此处钉本命令的注册条目。
+    #[test]
+    fn get_session_stats_stays_registered_in_invoke_handler() {
+        let lib = include_str!("../../lib.rs");
+        assert!(
+            lib.contains("commands::timeline::get_session_stats,"),
+            "get_session_stats 必须保留在 generate_handler 注册表"
+        );
+    }
 }

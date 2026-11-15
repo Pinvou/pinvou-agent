@@ -1329,6 +1329,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
+    /// 首末时间戳口径按值钉死(round-3 M2 突变实证:去掉 .rev()、退化成
+    /// events.first()/events.last() 的突变此前全绿——既有测试只断言
+    /// is_some / first <= last,且孤儿夹具的 2026-01-01 时间戳排在真实事件
+    /// 之前,无法暴露泄漏)。用带头尾带外事件的裸 JSONL 夹具:头部孤儿
+    /// done、尾部 context_snapshot、尾部孤儿 done 都不是配对轮事件,
+    /// first 必须是首个真实轮的 user_start;last 在末轮已收口时是该轮
+    /// assistant_done,未收口时是该轮 user_start。
+    #[test]
+    fn compute_stats_first_last_ts_semantics() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-ts-semantics-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // 末轮已收口:头孤儿 done(T0)→ 轮A(T1,T2)→ 轮B(T3,T4)
+        // → 尾部 context_snapshot(T5)→ 尾孤儿 done(T6)。
+        let settled = "session-ts-settled";
+        let settled_lines = r#"{"event":"assistant_done","turn_id":"orphan_head","timestamp":1000,"ts":"2026-02-01T00:00:00+00:00","status":"Completed"}
+{"event":"user_start","turn_id":"turn_a","timestamp":2000,"ts":"2026-02-01T00:00:01+00:00"}
+{"event":"assistant_done","turn_id":"turn_a","timestamp":3000,"ts":"2026-02-01T00:00:02+00:00","status":"Completed"}
+{"event":"user_start","turn_id":"turn_b","timestamp":4000,"ts":"2026-02-01T00:00:03+00:00"}
+{"event":"assistant_done","turn_id":"turn_b","timestamp":5000,"ts":"2026-02-01T00:00:04+00:00","status":"Completed"}
+{"event":"context_snapshot","turn_id":"context-snapshot-42","timestamp":6000,"ts":"2026-02-01T00:00:05+00:00"}
+{"event":"assistant_done","turn_id":"orphan_tail","timestamp":7000,"ts":"2026-02-01T00:00:06+00:00","status":"Completed"}
+"#;
+        let settled_path = crate::platform::paths::session_timing_events(settled);
+        std::fs::create_dir_all(settled_path.parent().unwrap()).unwrap();
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&settled_path)
+            .and_then(|mut f| f.write_all(settled_lines.as_bytes()))
+            .unwrap();
+        let stats = compute_stats(settled).unwrap();
+        assert_eq!(stats.turn_count, 2);
+        assert_eq!(stats.completed_turns, 2);
+        assert_eq!(
+            stats.first_turn_ts.as_deref(),
+            Some("2026-02-01T00:00:01+00:00"),
+            "first 必须是首个真实轮的 user_start,头孤儿/带外事件不得当选"
+        );
+        assert_eq!(
+            stats.last_turn_ts.as_deref(),
+            Some("2026-02-01T00:00:04+00:00"),
+            "末轮已收口时 last 必须是该轮 assistant_done,尾部带外事件不得当选"
+        );
+
+        // 末轮未收口:同上,再加一轮只有 user_start(T7)→ 尾孤儿 done(T8)。
+        let unsettled = "session-ts-unsettled";
+        let unsettled_lines = format!(
+            "{settled_lines}{{\"event\":\"user_start\",\"turn_id\":\"turn_c\",\"timestamp\":8000,\"ts\":\"2026-02-01T00:00:07+00:00\"}}\n{{\"event\":\"assistant_done\",\"turn_id\":\"orphan_tail2\",\"timestamp\":9000,\"ts\":\"2026-02-01T00:00:08+00:00\",\"status\":\"Completed\"}}\n"
+        );
+        let unsettled_path = crate::platform::paths::session_timing_events(unsettled);
+        std::fs::create_dir_all(unsettled_path.parent().unwrap()).unwrap();
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&unsettled_path)
+            .and_then(|mut f| f.write_all(unsettled_lines.as_bytes()))
+            .unwrap();
+        let stats = compute_stats(unsettled).unwrap();
+        assert_eq!(stats.turn_count, 3);
+        assert_eq!(stats.completed_turns, 2);
+        assert_eq!(stats.incomplete_turns, 1);
+        assert_eq!(
+            stats.first_turn_ts.as_deref(),
+            Some("2026-02-01T00:00:01+00:00")
+        );
+        assert_eq!(
+            stats.last_turn_ts.as_deref(),
+            Some("2026-02-01T00:00:07+00:00"),
+            "末轮未收口时 last 必须是该轮 user_start,尾孤儿 done 不得当选"
+        );
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
     /// [F4] 缺 timestamp / 类型错的脏事件之前 unwrap_or(0) 变成 1970-01-01,
     /// 污染 first_turn_ts / last_turn_ts。验证现在被整条跳过:
     /// turn_count 不被多算、first/last 不被 1970 污染。
