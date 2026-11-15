@@ -770,6 +770,11 @@ impl SavedModel {
             return;
         }
         if self.provider_kind.as_deref() == Some(MODEL_PROVIDER_KIND_CODING_PLAN) {
+            // 「coding_plan」戳但 URL 不是托管入口:降级为按 preset 重推的
+            // custom/official 记录(上方托管分支未命中)。此时 kind 被清、
+            // UI 重新按 URL 派生 isCodingPlan=false,免鉴权开关恢复渲染 ——
+            // 声明与分类重新自洽,无需像托管命中那样清 auth_mode(真正不可
+            // 关闭的死局只存在于托管入口,那里已在上方强制清空)。
             self.provider_kind = None;
         }
         if self.provider_kind.is_none() {
