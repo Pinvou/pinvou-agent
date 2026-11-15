@@ -17,7 +17,8 @@
 //! 是两条路共同的最终闸门（扫描器经 `to_record`、watcher 经事件路径），坏名目录
 //! 下的「干净叶子」同样到不了记录装配（扫描器则按 empty-name 语义在 filter_entry
 //! 剪掉整棵子树）——落库结果一致。这类路径的删除事件按 lossy 拼写匹配不到任何
-//! 行，安全 no-op。
+//! 行（除非某行的名字恰好含字面 U+FFFD 替换字符——合法 UTF-8 但极端罕见），正常
+//! 情况是安全 no-op。
 //!
 //! 排除范围与扫描器对齐：recursive 监听不会自动剪枝，事件里仍会冒出
 //! node_modules/.ssh 等深处的路径，先按**受监听根的可见范围**做组件级排除（根自身
@@ -25,20 +26,25 @@
 //! 删除事件同样适用，存活路径再按 `is_skipped` 判类型。
 //!
 //! `spawn` 先把每个根 `canonicalize`（失败即告警跳过该根；同一实体的重复拼写只
-//! 注册一次），watch 注册与事件归因统一用规范化拼写——macOS fsevent 本来就把
-//! 事件投递成 canonical 路径、Linux inotify 会把相对根拼成绝对路径，按原拼写
-//! 归因会被拼写差击穿（整根事件落到根外 fallback、或按两套拼写各成一行）。
-//! **接线方须给扫描器与 `spawn` 传同一拼写**（建议都传 canonical 路径），否则
-//! 扫描行与事件行的拼写分裂，删除/更新事件只命中其一。
+//! 注册一次；非 UTF-8 根同样拒收——fsevent 注册内部 `to_str().unwrap()` 会
+//! panic，且 `to_str` 闸门下这类根本产不出记录行，跳过无损失），watch 注册与
+//! 事件归因统一用规范化拼写——macOS fsevent 本来就把事件投递成 canonical 路径、
+//! Linux inotify 会把相对根拼成绝对路径，按原拼写归因会被拼写差击穿（整根事件
+//! 落到根外 fallback、或按两套拼写各成一行）。**接线方须给扫描器与 `spawn` 传
+//! 同一拼写**（建议都传 canonical 路径），否则扫描行与事件行的拼写分裂，删除/
+//! 更新事件只命中其一。
 //!
 //! 已知限制（接线方需知）：
 //! - Linux 递归监听 `$HOME` 级根会消耗大量 inotify watch，可能撞
 //!   `fs.inotify.max_user_watches`。首注册阶段撞上限：notify 把首个注册错误直接
 //!   返回，`watch()` 报 Err、本侧告警且**不**把该根计入已监听——但此前已注册的
 //!   watch 不回滚，该根处于部分监听。真正静默的部分监听另有其源：注册遍历中
-//!   stat 抖动/不可读条目被后端吞掉（watch() 照常 Ok，日志仍报已 watch）。运行
-//!   期新目录注册失败则以 channel `Err`（MaxFilesWatch）到达并只告警一次，此后
-//!   新目录都不再被监听直到重启。大批量根以懒触发重扫兜底。
+//!   stat 抖动/不可读条目被后端吞掉（watch() 照常 Ok，日志仍报已 watch）。部分
+//!   监听根的已注册子 watch 仍会投递事件，而它不在已监听集合里：这些事件落到
+//!   根外 fallback 按**全路径**判组件——若该根位于排除名祖先之下（`build`/…），
+//!   它的增量事件会被整片静默丢弃（扫描行仍在，等重扫补）。运行期新目录注册
+//!   失败则以 channel `Err`（MaxFilesWatch）到达并只告警一次，此后新目录都不再
+//!   被监听直到重启。大批量根以懒触发重扫兜底。
 //! - 兜底重扫是**懒触发**的（进文件管理页才跑 `kb_start_scan`），没有周期重扫；
 //!   溢出/掉 watch 只能告警，索引在下次重扫前保持陈旧——接线方应把 `need_rescan`
 //!   告警接成重扫触发。Linux inotify 的 Q_OVERFLOW 事件**不携带路径**（内核队列
@@ -64,10 +70,13 @@
 //!   长事务/慢盘拖住时队列会积累（十万级事件 ≈ 数十 MB 量级），大批量灌入场景
 //!   由接线方评估 coalescing（file_watcher.rs 的防抖只覆盖 sched-*.json，参考其
 //!   窗口思路而非照搬）。
-//! - 扫描与事件的并发窗：重扫中途删除的文件可能被扫描批次重新写回（批量提交晚
-//!   于事件的删除），行留到下次重扫清；需要强一致的接线方可暂停事件应用。另：
-//!   目录被改名进排除名（如 `proj`→`node_modules`）后，其下文件的后续事件都带
-//!   排除组件被丢弃，改名前入库的旧行等重扫清。
+//! - 扫描与事件、事件与事件之间的并发窗：重扫中途删除的文件可能被扫描批次重新
+//!   写回（批量提交晚于事件的删除），行留到下次重扫清。同理，目录删除事件排队
+//!   期间该路径被原样重建（`rm -rf && mkdir` 的常见节奏）时，按存在性判定这条
+//!   删除会变成新实体的 upsert，旧目录的子行（旧 inode，不再有事件）残留到重扫。
+//!   需要强一致的接线方可暂停事件应用。另：目录被改名进排除名（如
+//!   `proj`→`node_modules`）后，其下文件的后续事件都带排除组件被丢弃；改名前
+//!   入库的旧行由旧路径的删除事件清掉（旧侧事件未到达时才等重扫）。
 //!
 //! 当前未接线：`spawn` 尚无生产调用方（与闭源侧一致为落库待接线状态）；入口由
 //! 后续接线方在启动扫描时按根调用。watcher 是 app 级单例语义：`spawn` 内置了
@@ -134,7 +143,8 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) {
         return;
     };
     thread::spawn(move || {
-        // 守卫随线程体存活：panic 展开时先走 Drop 释放，spawn 不被终身闩死。
+        // 守卫随线程体存活：包括 panic 被 catch_unwind 收容在内的任何退出路径都会
+        // 走到闭包结尾的 Drop 释放，spawn 不被终身闩死。
         let _active = active;
         // 同 feature 扫描线程的同款收容（见 mod.rs）：线程 panic 只留一条可追
         // 日志，不无声死亡。
@@ -147,6 +157,36 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) {
             );
         }
     });
+}
+
+/// 根集合的注册前准备：canonicalize（失败告警跳过）、同实体重复拼写去重、
+/// 非 UTF-8 拒收。独立成纯函数便于单测。
+///
+/// 非 UTF-8 根必须拒收：fsevent（macOS 默认后端）的注册路径内部做
+/// `to_str().unwrap()`，非 UTF-8 根会让整个 watcher 线程 panic（catch_unwind
+/// 收容后其余根陪葬）。这个拒收在任何平台都不损失覆盖——`record_from_parts`
+/// 的 `to_str` 闸门决定了这类根下的事件路径永远装配不出一行记录，watch 了也只
+/// 产 no-op。
+fn prepare_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut prepared: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        let Ok(canonical) = root.canonicalize() else {
+            warn!("root({}) canonicalize failed; skipping it", root.display());
+            continue;
+        };
+        if prepared.contains(&canonical) {
+            continue; // 同一实体的重复拼写只注册一次
+        }
+        if canonical.to_str().is_none() {
+            warn!(
+                "root({}) is not valid UTF-8; skipping it",
+                canonical.display()
+            );
+            continue;
+        }
+        prepared.push(canonical);
+    }
+    prepared
 }
 
 /// 线程体（独立于 `spawn`，便于 catch_unwind 收容）：注册所有根后循环消费事件。
@@ -165,18 +205,10 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
                 return; // ActiveGuard::drop 释放守卫
             }
         };
-    // 根先 canonicalize：macOS fsevent 把事件投递成 canonical 路径、Linux inotify
-    // 把相对根拼成绝对路径，按调用方原拼写归因会被拼写差击穿（整根事件落到根外
-    // fallback，或两套拼写各成一行）。watch 注册与事件归因统一用规范化拼写。
+    // 根先经 prepare_roots（canonicalize/去重/非 UTF-8 拒收，见其注释）：watch
+    // 注册与事件归因统一用规范化拼写。
     let mut watched_roots: Vec<PathBuf> = Vec::new();
-    for root in roots {
-        let Ok(canonical) = root.canonicalize() else {
-            warn!("root({}) canonicalize failed; skipping it", root.display());
-            continue;
-        };
-        if watched_roots.contains(&canonical) {
-            continue; // 同一实体的重复拼写只注册一次
-        }
+    for canonical in prepare_roots(roots) {
         match watcher.watch(&canonical, RecursiveMode::Recursive) {
             Ok(()) => watched_roots.push(canonical),
             // 多半是 inotify 上限/权限；告警即可，懒触发重扫兜底。
@@ -227,6 +259,14 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
             }
         }
     }
+    // 循环在这里退出只有一种途径：notify 后端线程死亡（其内部 panic 不向通道
+    // 投递任何 Err 事件——如 inotify 的 poll 失败 panic、fsevent 的处理器锁中毒
+    // 时，tx 随线程展开被 drop，rx 正常收尾）。这是模块里唯一无声的失效路径，
+    // 必须喊出来。守卫已释放，之后 spawn 可重新武装。
+    warn!(
+        "event channel closed; the watcher backend is gone (index stays stale until \
+         the next scan, a later spawn re-arms)"
+    );
 }
 
 /// 事件准入：只有 Create/Modify/Remove 改变索引状态。Access（读/开/关）与
@@ -259,8 +299,8 @@ fn excluded(ex: &Excluder, roots: &[PathBuf], path: &Path) -> bool {
     }
 }
 
-/// 处理单条事件：按存在性分桶（存活 → upsert，消失 → delete），每事件一次批量写。
-/// 独立于线程闭包，便于单元测试。
+/// 处理单条事件：按存在性分桶（存活 → upsert，消失 → delete），每事件至多两笔
+/// 批量写（删除批、写入批各一）。独立于线程闭包，便于单元测试。
 fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
     let mut ups: Vec<FileRecord> = Vec::new();
     let mut dels: Vec<String> = Vec::new();
@@ -485,8 +525,8 @@ mod tests {
     }
 
     /// 分离的 From/To 事件与 Both 等价：Windows 后端只发分离事件、从不发 Both，
-    /// macOS 只发新路径——「skip From/To、Both 收尾」式的重构若破坏分离形状，
-    /// Windows 的 rename 处理会静默坏掉，这条测试咬住它。
+    /// macOS 把新旧两侧各自独立到达（无法关联）——「skip From/To、Both 收尾」式
+    /// 的重构若破坏分离形状，Windows 的 rename 处理会静默坏掉，这条测试咬住它。
     #[test]
     fn separate_from_to_rename_events_match_the_both_shape() {
         let base = tmp("renft");
@@ -777,6 +817,44 @@ mod tests {
             vec![inner.join("报告.pdf").to_string_lossy().into_owned()],
             "the deepest containing root decides; the outer root's excluded \
              basename must not drop the event"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 注册前准备（纯函数）：存在的根 canonicalize、同实体（含经软链的两种拼写）
+    /// 只留一个、不存在的根跳过、非 UTF-8 根拒收。非 UTF-8 fixture 在 APFS 上造
+    /// 不出来（探针跳过），该断言在 ext4 CI（ubuntu 全量腿）上真实执行——同
+    /// `non_utf8_spellings_never_enter_the_index` 的探针习惯。
+    #[test]
+    fn prepare_roots_canonicalizes_dedups_and_skips_unusable_roots() {
+        let base = tmp("prep");
+        let root = base.join("proj");
+        fs::create_dir_all(&root).unwrap();
+
+        let mut inputs = vec![root.clone(), base.join("missing"), root.clone()];
+        // 软链拼写与实体路径 canonicalize 到同一路径 → 去重成一个。
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, base.join("link")).unwrap();
+            inputs.insert(1, base.join("link"));
+        }
+        // 非 UTF-8 根：造得出来才断言拒收。
+        #[cfg(unix)]
+        {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt as _;
+            let bad = base.join(OsStr::from_bytes(b"\xff.bad"));
+            if fs::create_dir_all(&bad).is_ok() {
+                inputs.insert(0, bad);
+            }
+        }
+
+        let out = prepare_roots(&inputs);
+        assert_eq!(
+            out,
+            vec![root.canonicalize().unwrap()],
+            "one canonical entry per usable entity; missing and non-UTF-8 roots are dropped"
         );
 
         let _ = fs::remove_dir_all(&base);

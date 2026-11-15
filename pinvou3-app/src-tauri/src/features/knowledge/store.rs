@@ -50,8 +50,10 @@ fn schema_is_disposable(version: i64) -> bool {
     (0..3).contains(&version)
 }
 
-/// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`）。
-const SCHEMA: &str = r#"
+/// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`，触发器替换对除外）。
+/// 触发器语句单列为 [`FILES_AU_TRIGGER`]（建库批次与稳态升级共用同一份文本），
+/// 本常量由 [`schema_sql`] 拼接而成。
+const SCHEMA_HEAD: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 
@@ -94,11 +96,23 @@ END;
 CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
 END;
--- files_au 用 DROP+CREATE 而非 IF NOT EXISTS：旧版触发器没有 WHEN 子句，而 UPSERT
--- 的 SET 恒含 name=，`AFTER UPDATE OF name` 只看 SET 清单不看值——name 没变的
--- 写入（watcher 的 Modify 事件、扫描器的状态位刷新）也会白做一轮 trigram
--- delete+insert。WHEN 让触发器语义与上面注释一致；每次 open 原地升级既有库
--- （元数据操作，FTS 内容不变，无需 schema 版本迁移，旧二进制会重建回旧触发器）。
+-- files_au 不在此建（替换语句单列为 [`FILES_AU_TRIGGER`]，本批次经 [`schema_sql`]
+-- 拼接同一份文本）：旧版触发器没有 WHEN 子句，而 UPSERT 的 SET 恒含 name=，
+-- `AFTER UPDATE OF name` 只看 SET 清单不看值——name 没变的写入（watcher 的
+-- Modify 事件、扫描器的状态位刷新）也会白做一轮 trigram delete+insert。WHEN 让
+-- 触发器语义与上面注释一致。本批次只覆盖新建库与迁移库；已在 v4 稳态的存量库
+-- 由 open() 的只读探测原地升级（见 FILES_AU_TRIGGER 注释）。
+"#;
+
+/// files_au 的成对替换语句。DROP+CREATE 包在 BEGIN IMMEDIATE 里保证原子：两进程
+/// 竞跑首次建库（或竞跑本升级）时，语句级交错会让无条件的 CREATE 撞
+/// "already exists"——旧版全 `IF NOT EXISTS` 批次没有这个失败模式——整对原子化后，
+/// 后到者只是等锁后幂等重放。SCHEMA 批次（新建/迁移）与 open() 稳态升级共用这
+/// 一份文本，形状不会漂移（`trigger_replacement_matches_the_schema_built_shape`）。
+/// 升级探测按 `WHEN old.name IS NOT new.name` 子串识别旧形状：sqlite_master.sql
+/// 保存建触发器时的原语句文本，旧版形状不含该子句。
+const FILES_AU_TRIGGER: &str = r#"
+BEGIN IMMEDIATE;
 DROP TRIGGER IF EXISTS files_au;
 CREATE TRIGGER files_au AFTER UPDATE OF name ON files
 WHEN old.name IS NOT new.name
@@ -106,6 +120,12 @@ BEGIN
     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
     INSERT INTO files_fts(rowid, name) VALUES (new.id, new.name);
 END;
+COMMIT;
+"#;
+
+/// 建库批次尾段（L1 知识库与导入任务表），与 [`SCHEMA_HEAD`]、[`FILES_AU_TRIGGER`]
+/// 拼接成完整批次。
+const SCHEMA_TAIL: &str = r#"
 
 -- ============ L1 知识库（见 l1.rs）============
 -- 知识集：用户圈定的一批文件，内容化后供检索/问答。
@@ -200,6 +220,13 @@ CREATE TABLE IF NOT EXISTS knowledge_import_staged_chunks (
     PRIMARY KEY(job_id, item_id, ord)
 );
 "#;
+
+/// 建库批次：头段（L0 表与触发器声明）+ files_au 替换 + 尾段（L1 表）。
+/// 幂等（`IF NOT EXISTS`，files_au 替换对除外——它自带 BEGIN IMMEDIATE 原子化，
+/// 重复执行幂等）。
+fn schema_sql() -> String {
+    format!("{SCHEMA_HEAD}{FILES_AU_TRIGGER}{SCHEMA_TAIL}")
+}
 
 // hash 只剩历史库里的遗留值（去重功能已下线，不再写入/读取）；列保留 nullable 以兼容
 // 用户的既有 index.db，UPSERT 不再触碰它。
@@ -420,12 +447,32 @@ impl Store {
                 ));
             }
             w.execute_batch("PRAGMA synchronous = NORMAL;")?;
+            // v4 稳态库可能还带着旧形状的 files_au（WHEN 升级落地前打开过；本分支
+            // 跳过 DDL 批次，批次里的替换到不了存量库）。这里用只读探测识别旧形状
+            // （sqlite_master.sql 无 WHEN 子句），仅在确实需要时执行替换——探测是
+            // 普通 SELECT，不取写锁，稳态开库的两进程争用窗口不变；替换语句自带
+            // BEGIN IMMEDIATE，撞上另一进程的同款升级也只是等锁后幂等重放（FTS
+            // 内容不变，纯元数据操作）。触发器被外力整个删掉时不在此补建：与上方
+            // 「外部删表不自愈、语句显式失败」的取舍一致。
+            let trigger_sql: Option<String> = w
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if trigger_sql
+                .as_deref()
+                .is_some_and(|sql| !sql.contains("WHEN old.name IS NOT new.name"))
+            {
+                w.execute_batch(FILES_AU_TRIGGER)?;
+            }
         } else {
             // Fresh create / in-place v3 migration: the DDL batch and the
             // version write each take the write lock once; busy_timeout makes
             // them wait out the other process's short transaction instead of
             // failing immediately.
-            w.execute_batch(SCHEMA)?;
+            w.execute_batch(&schema_sql())?;
             w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
@@ -447,7 +494,7 @@ impl Store {
 
     #[cfg(test)]
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(&schema_sql())?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         // 内存库(测试)：无并发扫描，读写共用同一连接。
         let arc = Arc::new(Mutex::new(conn));
@@ -532,10 +579,13 @@ impl Store {
 
     /// watcher 删除：目录记录连带子树一并删，文件记录退化为精确删除。单事务，FTS 由触发器同步。
     ///
-    /// 事务用 `Immediate`：本函数是库里唯一的 SELECT-first 写事务，deferred 事务在
-    /// WAL 下的写升级若撞上并发进程（GUI + headless CLI 同库是受支持用法）的提交，
-    /// 会以 `SQLITE_BUSY_SNAPSHOT` 失败且 busy handler 不重试——把可等待的锁竞争
-    /// 变成整批删除报错丢事件。写锁随 BEGIN 即取，等待发生在最前面。
+    /// 事务用 `Immediate`：SELECT-first 的写事务若用 deferred，写升级在 WAL 下撞上
+    /// 并发进程（GUI + headless CLI 同库是受支持用法）的提交时，会以
+    /// `SQLITE_BUSY_SNAPSHOT` 失败且 busy handler 不重试——把可等待的锁竞争变成
+    /// 整批删除报错丢事件。写锁随 BEGIN 即取，等待发生在最前面。（库内另有同构的
+    /// SELECT-first 写事务：import_jobs 的任务准备与条目领取。那两处是自恢复的
+    /// 作业状态机——失败返回 Err、条目保持 pending 由下次重试接管——本次未改，
+    /// 见 `prepare_items`/`claim_next`。）
     ///
     /// 为什么需要子树删除：目录被 rename/move-out 时，inotify 只会在（仍被监听的）父目录上
     /// 冒出该目录自身的事件，其下的文件不会有任何事件；精确删除会在索引里留下整树「幽灵」，
@@ -1374,6 +1424,95 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// 稳态升级钉：DDL 批次只在新建/迁移时执行，v4 稳态开库走的是跳过批次的那条
+    /// 分支——若存量库还带着旧版（无 WHEN）files_au，open() 必须靠只读探测识别并
+    /// 原地替换。这个场景只有本测试能看到（open_in_memory 永远跑全批次，触发器
+    /// 天然是新版）。顺带钉升级幂等（二次 open 形状稳定）。
+    #[test]
+    fn open_upgrades_a_v4_store_still_carrying_the_old_trigger_shape() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_oldtrig_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+
+        let trigger_sql = |path: &Path| {
+            let c = Connection::open(path).unwrap();
+            c.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+
+        // 新二进制建库后，把 files_au 退化回旧版（无 WHEN）形状——精确模拟「旧
+        // 二进制写出的 v4 稳态库」在探测视角下的全部差异。
+        drop(Store::open(&path).unwrap());
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "DROP TRIGGER files_au;
+                 CREATE TRIGGER files_au AFTER UPDATE OF name ON files
+                 BEGIN
+                     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
+                     INSERT INTO files_fts(rowid, name) VALUES (new.id, new.name);
+                 END;",
+            )
+            .unwrap();
+        }
+        assert!(
+            !trigger_sql(&path).contains("WHEN old.name IS NOT new.name"),
+            "fixture must start from the old (no-WHEN) shape"
+        );
+
+        // 重新 open：稳态探测识别旧形状 → 原地替换。
+        let store = Store::open(&path).unwrap();
+        drop(store);
+        let upgraded = trigger_sql(&path);
+        assert!(
+            upgraded.contains("WHEN old.name IS NOT new.name"),
+            "a v4 steady-state open must upgrade the old trigger in place, got: {upgraded}"
+        );
+
+        // 升级幂等：再开一次，形状稳定，不报错。
+        drop(Store::open(&path).unwrap());
+        assert_eq!(trigger_sql(&path), upgraded, "second open must be a no-op");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// 升级路径与建库路径共用同一份 FILES_AU_TRIGGER 文本（schema_sql 拼接）；
+    /// 这里钉两路建出的触发器语句文本（sqlite_master.sql）一致，防止将来有人把
+    /// SCHEMA 内联回去后两处漂移。
+    #[test]
+    fn trigger_replacement_matches_the_schema_built_shape() {
+        let via_schema = Connection::open_in_memory().unwrap();
+        via_schema.execute_batch(&schema_sql()).unwrap();
+        // 触发器建立时校验引用的表存在，替换语句单跑需要 SCHEMA_HEAD 先把
+        // files/files_fts 建出来。
+        let via_upgrade = Connection::open_in_memory().unwrap();
+        via_upgrade.execute_batch(SCHEMA_HEAD).unwrap();
+        via_upgrade.execute_batch(FILES_AU_TRIGGER).unwrap();
+        let sql = |conn: &Connection| {
+            conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(sql(&via_schema), sql(&via_upgrade));
     }
 
     /// Every connection a file-backed open creates must carry the 5 s
