@@ -1560,20 +1560,34 @@ mod tests {
     // 拒绝:update_collection 是 manage 级(与 create/delete 同类),
     // trashed_* 是 owner 级(对应 /api/v2/owner/trash 路由)。连接直接
     // 写入内存态,绕过 load_connections 对 legacy 标志的端点归一化。
+    // 只读连接那半边钉的是门的存在性(而非只钉门级别):整个删掉
+    // require_manage 的话,只读调用会落到 client_for 的旧版拦截,
+    // 与互换突变不同,那在全套件下也是绿的。
     #[tokio::test]
     async fn service_guards_separate_manage_from_owner_surface() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("remote-connections.json");
         let service = RemoteKnowledgeService::load(path).unwrap();
-        *service.connections.write() = vec![RemoteConnection {
-            server_id: "srv-guard".to_string(),
-            name: "Cube".to_string(),
-            endpoint: "https://100.64.0.1:3210".to_string(),
-            scope: AccessScope::Manage,
-            device_id: "dev-guard".to_string(),
-            tls_ca: "test-ca".to_string(),
-            legacy_insecure_http: true,
-        }];
+        *service.connections.write() = vec![
+            RemoteConnection {
+                server_id: "srv-guard".to_string(),
+                name: "Cube".to_string(),
+                endpoint: "https://100.64.0.1:3210".to_string(),
+                scope: AccessScope::Manage,
+                device_id: "dev-guard".to_string(),
+                tls_ca: "test-ca".to_string(),
+                legacy_insecure_http: true,
+            },
+            RemoteConnection {
+                server_id: "srv-guard-read".to_string(),
+                name: "Cube (read-only)".to_string(),
+                endpoint: "https://100.64.0.1:3210".to_string(),
+                scope: AccessScope::Read,
+                device_id: "dev-guard-read".to_string(),
+                tls_ca: "test-ca".to_string(),
+                legacy_insecure_http: true,
+            },
+        ];
 
         // Manage 通过 update_collection 的门,随后在 client_for 的旧版
         // HTTP 拦截处失败——若门被误换成 owner 级,这里会变成“仅限所有者”。
@@ -1582,8 +1596,19 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            error.contains("旧版"),
+            error.contains("旧版保留"),
             "manage 级门应当放行 update_collection,实际错误:{error}"
+        );
+
+        // 只读连接在 manage 门即被拒——若 require_manage 被整个删除而非
+        // 互换,这里会变成旧版拦截文案,门的存在性由此钉住。
+        let error = service
+            .update_collection("srv-guard-read", 1, "renamed".to_string(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("只读"),
+            "只读连接应当在 manage 门被拒,实际错误:{error}"
         );
 
         // Manage 不能通过 trashed_* 的 owner 门;门拒绝发生在 client_for 之前,
