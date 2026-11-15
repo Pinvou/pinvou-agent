@@ -1184,6 +1184,57 @@ mod tests {
         assert_eq!(listed.len(), 500);
     }
 
+    // 对端不按 offset 翻页(恒回整页)时,短页终止永不触发,循环会无界
+    // 追加同一批条目直到内存耗尽。参考实现对 offset 有界,已由上面两用例
+    // 覆盖;这里用不识别 offset 的最小桩路由(直接回固定整页)钉住页数
+    // 上界:超界必须快速报错而不是挂死或静默截断。突变对照:删掉
+    // paged_trash_all 的页数上界检查后,本用例被外层 timeout 兜底为失败。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_peer_ignoring_offset_errors_at_page_cap() {
+        async fn always_full_page() -> Json<Vec<Collection>> {
+            let entry = Collection {
+                id: 1,
+                name: "病态对端".to_string(),
+                description: None,
+                status: "active".to_string(),
+                doc_count: 0,
+                chunk_count: 0,
+                total_bytes: 0,
+                created_at: 0,
+                updated_at: 0,
+                deleted_at: Some(0),
+            };
+            Json(vec![
+                entry;
+                crate::client::KnowledgeClient::TRASH_PAGE_LIMIT
+            ])
+        }
+        let app = Router::new().route("/api/v2/owner/trash/collections", get(always_full_page));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>()),
+        );
+
+        let client = crate::client::KnowledgeClient::new(
+            &format!("http://{address}"),
+            "stub-token-not-checked-by-the-fixtures",
+        )
+        .unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("页数上界必须让病态对端快速失败而非挂死")
+        .unwrap_err();
+        assert!(error.contains("整页"), "实际错误:{error}");
+    }
+
     // 懒装载时代的廉价校验回归:空查询/超量知识集选择必须在模型装载门之前
     // 应答(200 [] / 400),冷服务(模型未装载且 model_dir 无模型文件)不得
     // 触发 568MB 冷读,也不得把本应 200/400 的请求变成 503。boot 同步装载
