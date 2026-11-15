@@ -103,40 +103,66 @@ pub(super) fn apply_model_credential(
     // inside the transaction would leave the model configured-but-secretless
     // when the save then fails — the same defect class `delete_model` fixed.
     let mut deferred_delete: Option<CredentialReference> = None;
-    match action {
-        CredentialEditAction::KeepExisting => {
-            if let Some(old) = old {
-                model.credential_ref = old.credential_ref.clone();
-                model.credential_state = old.credential_state;
-                model.has_secret = old.has_secret;
-            } else if model.api_key.trim().is_empty() {
-                model.mark_missing();
-            } else {
-                let reference = model.credential_reference();
-                store
-                    .set(&reference, model.api_key.trim())
-                    .map_err(|e| e.user_message())?;
-                model.mark_configured(reference);
-            }
+    // Defense in depth: a keyless declaration is the endpoint's contract —
+    // no credential may be materialized for the record, whatever the client
+    // action says. The GUI scopes its delete/replace to the same posture,
+    // so this only fires for a legacy or alternate writer that sends
+    // keep_existing (or a typed key) while declaring `auth_mode = "none"`:
+    // the dual state the read-side ladder already neutralizes must not be
+    // able to persist. Removal rides the same post-commit deferral as the
+    // explicit Delete arm; a record with no live credential and no typed
+    // key just stays missing (the GUI's clean keyless save keeps its shape —
+    // no keyring touch at all).
+    if model.declares_keyless_auth() {
+        let live_reference = model
+            .credential_ref
+            .clone()
+            .or_else(|| old.and_then(|m| m.credential_ref.clone()));
+        let typed_key = !model.api_key.trim().is_empty();
+        model.mark_missing();
+        if live_reference.is_some() || typed_key {
+            // Even with no recorded reference, the deterministic model
+            // reference is where a legacy writer's store.set would have
+            // landed — attempt the removal (a benign miss downgrades to the
+            // post-commit warning).
+            deferred_delete = Some(live_reference.unwrap_or_else(|| model.credential_reference()));
         }
-        CredentialEditAction::Replace => {
-            let key = model.api_key.trim().to_string();
-            if key.is_empty() {
-                model.mark_missing();
-            } else {
-                let reference = model.credential_reference();
-                store.set(&reference, &key).map_err(|e| e.user_message())?;
-                model.mark_configured(reference);
+    } else {
+        match action {
+            CredentialEditAction::KeepExisting => {
+                if let Some(old) = old {
+                    model.credential_ref = old.credential_ref.clone();
+                    model.credential_state = old.credential_state;
+                    model.has_secret = old.has_secret;
+                } else if model.api_key.trim().is_empty() {
+                    model.mark_missing();
+                } else {
+                    let reference = model.credential_reference();
+                    store
+                        .set(&reference, model.api_key.trim())
+                        .map_err(|e| e.user_message())?;
+                    model.mark_configured(reference);
+                }
             }
-        }
-        CredentialEditAction::Delete => {
-            let reference = model
-                .credential_ref
-                .clone()
-                .or_else(|| old.and_then(|m| m.credential_ref.clone()))
-                .unwrap_or_else(|| model.credential_reference());
-            model.mark_missing();
-            deferred_delete = Some(reference);
+            CredentialEditAction::Replace => {
+                let key = model.api_key.trim().to_string();
+                if key.is_empty() {
+                    model.mark_missing();
+                } else {
+                    let reference = model.credential_reference();
+                    store.set(&reference, &key).map_err(|e| e.user_message())?;
+                    model.mark_configured(reference);
+                }
+            }
+            CredentialEditAction::Delete => {
+                let reference = model
+                    .credential_ref
+                    .clone()
+                    .or_else(|| old.and_then(|m| m.credential_ref.clone()))
+                    .unwrap_or_else(|| model.credential_reference());
+                model.mark_missing();
+                deferred_delete = Some(reference);
+            }
         }
     }
     model.clear_plaintext_key();
@@ -2399,6 +2425,133 @@ mod tests {
             unsafe { std::env::remove_var("PINVOU3_HOME") };
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn keyless_save_forces_residual_credential_deletion() {
+        // 服务端纵深防御:记录声明免鉴权时,save 的凭据动作必须收敛为「删除」——
+        // 旧客户端/其他写入方可以在声明 auth_mode="none" 的同时送 keep_existing
+        // 或带类型化 key(GUI 的 delete/replace 已与开关同口径,不会走到这里),
+        // 「声明+活凭据」双态不得落盘(读侧 ladder 只能把双态变惰性,写侧必须
+        // 收敛)。删除仍走 post-commit 延迟通道,这里只断言返回的引用与状态;
+        // 干净记录(无引用、无 key)保持原形态,完全不触碰 keyring。
+        struct RecordingStore {
+            ops: std::cell::RefCell<Vec<String>>,
+        }
+        impl RecordingStore {
+            fn new() -> Self {
+                Self {
+                    ops: std::cell::RefCell::new(Vec::new()),
+                }
+            }
+        }
+        impl CredentialStore for RecordingStore {
+            fn get(
+                &self,
+                _reference: &CredentialReference,
+            ) -> Result<Option<String>, crate::platform::credential_store::CredentialError>
+            {
+                Ok(None)
+            }
+            fn set(
+                &self,
+                reference: &CredentialReference,
+                _value: &str,
+            ) -> Result<(), crate::platform::credential_store::CredentialError> {
+                self.ops
+                    .borrow_mut()
+                    .push(format!("set:{}", reference.account));
+                Ok(())
+            }
+            fn delete(
+                &self,
+                reference: &CredentialReference,
+            ) -> Result<(), crate::platform::credential_store::CredentialError> {
+                self.ops
+                    .borrow_mut()
+                    .push(format!("delete:{}", reference.account));
+                Ok(())
+            }
+        }
+        let record = |auth_mode: Option<&str>, api_key: &str, ref_id: Option<&str>| SavedModel {
+            auth_mode: auth_mode.map(str::to_string),
+            id: "save-fixtured".to_string(),
+            name: "fixture".to_string(),
+            alias: None,
+            preset: crate::platform::prefs::ModelPreset::OpenaiCompatible,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "fixture-model".to_string(),
+            base_url: "https://fixture.example/v1".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: Default::default(),
+            vision_model_id: None,
+            api_key: api_key.to_string(),
+            credential_ref: ref_id.map(CredentialReference::for_model),
+            credential_state: Default::default(),
+            has_secret: false,
+            credential_action: None,
+        };
+        let store = RecordingStore::new();
+        // 旧写入方送 keep_existing(缺省动作)但记录带声明:残留引用必须收敛为
+        // missing + 延迟删除,且不落任何新 keyring 写。
+        let old = record(None, "", Some("old-fixtured"));
+        let (saved, deferred) = apply_model_credential(
+            record(Some("none"), "", Some("stale-on-record")),
+            Some(&old),
+            &store,
+        )
+        .unwrap();
+        assert!(
+            saved.credential_ref.is_none(),
+            "声明免鉴权的记录不得携带活引用"
+        );
+        assert_eq!(
+            deferred.map(|r| r.account),
+            // 与显式 Delete 臂同一优先级:记录自身的引用先于旧记录的引用。
+            Some("model:stale-on-record".to_string()),
+            "残留引用必须进 post-commit 延迟删除"
+        );
+        assert!(
+            saved.has_secret == false && matches!(saved.credential_state, CredentialState::Missing)
+        );
+        assert!(
+            store.ops.borrow().iter().all(|op| !op.starts_with("set:")),
+            "免鉴权声明下不得物化任何凭据: {:?}",
+            store.ops.borrow()
+        );
+        // 带类型化 key 的声明记录:不得落 store,连同确定性引用一起延迟删除。
+        let (saved, deferred) =
+            apply_model_credential(record(Some("none"), "sk-typed-legacy", None), None, &store)
+                .unwrap();
+        assert!(saved.credential_ref.is_none());
+        assert_eq!(
+            deferred.map(|r| r.account),
+            Some("model:save-fixtured".to_string()),
+            "类型化 key 也不得物化;确定性引用进延迟删除"
+        );
+        assert!(store.ops.borrow().iter().all(|op| !op.starts_with("set:")));
+        // 反方向:GUI 的干净免鉴权保存(replace 空 key)不触碰 keyring,原形态不变。
+        let mut clean = record(Some("none"), "", None);
+        clean.credential_action = Some(CredentialEditAction::Replace);
+        let (saved, deferred) = apply_model_credential(clean, None, &store).unwrap();
+        assert!(deferred.is_none(), "干净免鉴权保存不得产生 keyring 删除");
+        assert!(matches!(saved.credential_state, CredentialState::Missing));
+        // 过度抑制守卫:无声明记录的 keep_existing 语义原样保留。
+        let old = record(None, "", Some("kept-on-record"));
+        let (saved, deferred) =
+            apply_model_credential(record(None, "", Some("kept-on-record")), Some(&old), &store)
+                .unwrap();
+        assert_eq!(
+            saved.credential_ref.map(|r| r.account),
+            Some("model:kept-on-record".to_string()),
+            "无声明记录的 keep_existing 不得被免鉴权分支吞掉"
+        );
+        assert!(deferred.is_none());
+        assert!(store.ops.borrow().iter().all(|op| !op.starts_with("set:")));
     }
 
     #[test]
