@@ -2191,6 +2191,7 @@ fn parse_raw_status_line(line: &str) -> Option<CheckpointChange> {
         path,
         status: label.to_string(),
     })
+}
 
 /// r39 minor 4：暂记成员校验专用——区分「索引读失败」与「条目确认不存在」。
 /// 此前三条成员腿（matching_pending_pre_restore 的 PreRestore、
@@ -2214,7 +2215,6 @@ fn checkpoint_entry_present(ledger_root: &Path, checkpoint_id: &str) -> Result<b
             if io_rooted { Err(error) } else { Ok(false) }
         }
     }
-
 }
 
 /// 待完成回退的暂记（评审 r6 M2）：rewind 的恢复阶段已创建（或复用）PreRestore
@@ -5130,6 +5130,8 @@ pub(crate) ",
         assert!(
             !error.contains(".checkpoint-diff-") && !error.contains("--output"),
             "the error must not name the spill path or argv, got: {error}"
+        );
+    }
 
     /// r24 B1 回归：大小写变体构建目录（Dist/，用户配置只排除小写 dist/）
     /// 在大小写敏感文件系统上曾被「info/exclude 裸小写不命中 + icase purge
@@ -5181,7 +5183,6 @@ pub(crate) ",
             exec.read("Dist/assets.bin").as_deref(),
             Some("user asset\n"),
             "大小写变体构建目录必须在 restore 后存活（r24 B1 数据丢失）"
-
         );
     }
 

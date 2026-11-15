@@ -54,7 +54,6 @@ pub(crate) fn user_turn_prompt_cut_indices(messages: &[Message]) -> Vec<usize> {
 pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
     user_turn_prompt_cut_indices(messages).len() as u32
 }
-}
 
 /// Exact user-turn count over raw JSON messages. Headless callers (the CLI)
 /// do not link the foundation crate and only hold the JSON message array
@@ -75,6 +74,7 @@ pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepseek_tui::is_user_turn_prompt;
 
     fn text_message(role: &str, text: &str) -> Message {
         Message {

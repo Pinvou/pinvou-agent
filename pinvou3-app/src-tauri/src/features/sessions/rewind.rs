@@ -288,7 +288,6 @@ fn quarantine_and_continue(
     Ok(HashMap::new())
 }
 
-
 fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> Result<()> {
     let path = rewound_turns_path();
     if map.values().all(|records| records.is_empty()) {
@@ -337,7 +336,10 @@ impl SessionStore {
         // 截断、UI 三处口径一致。era 口径比单消息 is_user_turn_prompt 多计入
         // post-provenance 历史里粘贴的压缩摘要头 turn——底座文档明确 host
         // turn 编号应统一读这一个列表（fork 分叉同一口径）。
-        let turn_prompt_indices: Vec<usize> = crate::features::code_checkpoints::turns::user_turn_prompt_cut_indices(&session.messages);
+        let turn_prompt_indices: Vec<usize> =
+            crate::features::code_checkpoints::turns::user_turn_prompt_cut_indices(
+                &session.messages,
+            );
         let total_turns = turn_prompt_indices.len() as u32;
         if keep_turns >= total_turns {
             bail!("会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾（无可截内容）");
@@ -512,13 +514,10 @@ impl SessionStore {
                 bail!("回退后对话内容已被编辑，不可反悔");
             }
         }
-        let restored_turns = record
-            .removed_messages
-            .iter()
-            .filter(|message| {
-                crate::features::code_checkpoints::turns::counts_as_user_turn(message)
-            })
-            .count() as u32;
+        let restored_turns = crate::features::code_checkpoints::turns::user_turn_prompt_cut_indices(
+            &record.removed_messages,
+        )
+        .len() as u32;
         let restored = record.removed_messages.len();
         session.messages.extend(record.removed_messages);
         session.metadata.message_count = session.messages.len();
