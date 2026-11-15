@@ -166,6 +166,10 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
   // save 校验通过后暂存模型槽位/上下文窗口 payload：doSave 与自绘确认
   // 回调（JSX onClick）跨函数共享，不能直接引用 save 内的局部变量。
   const payloadRef = useRef({ slotPayload: null, contextWindowPayload: null });
+  // base URL 实时镜像(复审 M5):探测在飞时改了 base URL,resolve 后的旧端点
+  // 结果作废,不在新 URL 的表单下展示。
+  const baseUrlRef = useRef(baseUrl);
+  baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   // 自绘确认步骤（null = 无）：'emptyKey'（新建空 key）/ 'deleteKey'（编辑删除已存密钥）
@@ -178,6 +182,9 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
   const [endpointListing, setEndpointListing] = useState(null);
   const [endpointPickerOpen, setEndpointPickerOpen] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
+  // 每次「获取模型列表」点击递增,作为共享 picker 的 React key:新列表重挂,
+  // filterDraft/滚动位置干净复位(与聊天线同一处理)。
+  const [endpointFetchSeq, setEndpointFetchSeq] = useState(0);
 
   // 模型建议列表：选择预设后按该厂商官方在列名单筛选；「其它」显示全部官方在列模型。
   // Claude 额外提供该厂商的 1M 上下文变体（仅 CC 需要显式声明 [1m]；选中预设
@@ -204,15 +211,18 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
 
   useEffect(() => {
     const onKey = event => {
-      // 二级确认弹窗打开时 Escape 只关确认层，不连带关闭整个表单
+      // Escape 逐层关闭(复审 ACP minor):候选面板打开时只关面板,其次二级
+      // 确认弹窗(打开时只关确认层),最后才是整个表单——上层浮层绝不连带
+      // 下层一起消失。
       if (event.key === 'Escape') {
-        if (confirmStep) setConfirmStep(null);
+        if (endpointPickerOpen) setEndpointPickerOpen(false);
+        else if (confirmStep) setConfirmStep(null);
         else onClose();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, confirmStep]);
+  }, [onClose, confirmStep, endpointPickerOpen]);
 
   // 编辑有 key 的 Provider 时回填真实密钥：输入框 type=password 自然掩码，
   // 点「显示」切 text 变明文（密码管理器范式）。仅编辑时拉取，列表永不回传。
@@ -242,10 +252,22 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
   // 「不可自行填写」的误解，也兼容中转商自有的模型名。
   // wire 按 Agent 适配：Kimi 原生预设（Moonshot/Kimi Code）用于非 Kimi Agent
   // 时落到 OpenAI 兼容（这些端点同样提供 OpenAI 协议）；Claude 固定 Anthropic。
+  // base URL 变更即失效既有探测结果(复审 M5,与聊天线同一不变量):URL A 上
+  // 探到的候选列表绝不许当 URL B 的结果展示/使用。手输与预设回填两条路径都要清。
+  const clearEndpointProbeState = () => {
+    setEndpointListing(null);
+    setEndpointPickerOpen(false);
+  };
+  const handleBaseUrlChange = value => {
+    setBaseUrl(value);
+    clearEndpointProbeState();
+  };
+
   const applyPreset = preset => {
     if (!preset) return;
     const useAnthropicEndpoint = agent === 'claude' || preset.wireApi === 'anthropic';
     setBaseUrl((useAnthropicEndpoint && preset.baseUrlAnthropic) || preset.baseUrl || '');
+    clearEndpointProbeState();
     if (wireLocked) return;
     if (preset.wireApi === 'kimi' && agent !== 'kimi') {
       setWireApi('openai');
@@ -280,6 +302,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
     if (!probeEndpointModelsAvailable || fetchingModels) return;
     const probedBaseUrl = String(baseUrl || '').trim();
     if (!probedBaseUrl) return;
+    setEndpointFetchSeq(seq => seq + 1);
     setFetchingModels(true);
     setError('');
     try {
@@ -288,10 +311,20 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
         apiKey: String(apiKey || '').trim() || null,
         wire: wireApi,
       });
+      // 探测期间 base URL 已被改走 → 结果作废(复审 M5 同因)。
+      if (String(baseUrlRef.current || '').trim() !== probedBaseUrl) return;
       setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
       setEndpointPickerOpen(true);
     } catch (e) {
-      setError(String(e));
+      // reject 穿透的是命令层错误,直接 String(e) 会把英文原始串透出到表单;
+      // 按聊天线 normalizeConnectionTestResult 的同一映射归一为三语文案。
+      const connectionCopy = t.uiSettingsDetail.connectionMessages;
+      if (e && typeof e === 'object' && !Array.isArray(e)) {
+        const code = String(e.code || (e.ok ? 'ok' : 'unknown'));
+        setError(String(connectionCopy[code] || connectionCopy.unknown || e.message || code));
+      } else {
+        setError(String(connectionCopy.unknown || ''));
+      }
     } finally {
       setFetchingModels(false);
     }
@@ -456,7 +489,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
             data-testid="acp-provider-base-url"
             className={`${inputClass} mt-1.5 font-mono`}
             value={baseUrl}
-            onChange={event => setBaseUrl(event.target.value)}
+            onChange={event => handleBaseUrlChange(event.target.value)}
             placeholder={copy.baseUrlPlaceholder}
             spellCheck={false}
           />
@@ -694,6 +727,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
             不传 onAddAll（无批量添加），不传 savedKeys（provider 无已保存模型
             去重语义，组件按「无已保存」处理：行恒可添加、无「已保存」标记）。 */}
         <EndpointModelPicker
+          key={endpointFetchSeq}
           open={endpointPickerOpen}
           onClose={() => setEndpointPickerOpen(false)}
           listing={endpointListing}

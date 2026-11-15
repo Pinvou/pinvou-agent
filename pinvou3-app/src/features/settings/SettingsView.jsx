@@ -446,6 +446,9 @@ function hasStoredCredential(record) {
       const [endpointListing, setEndpointListing] = useState(null);
       const [endpointPickerOpen, setEndpointPickerOpen] = useState(false);
       const [fetchingModels, setFetchingModels] = useState(false);
+      // 每次「获取模型列表」点击递增:作为 picker 的 React key,按探测结果重挂
+      // 组件,让 filterDraft/滚动位置在新列表上干净复位(复审 picker minor)。
+      const [endpointFetchSeq, setEndpointFetchSeq] = useState(0);
       // 探测请求失败(reject)时的行内提示,经 normalizeConnectionTestResult 映射
       // 为三语 connectionMessages 文案,不透出原始 URL/key。
       const [fetchModelsMessage, setFetchModelsMessage] = useState(null);
@@ -458,6 +461,15 @@ function hasStoredCredential(record) {
       // 「全部添加」挂起批次(应用内 SheetConfirmDialog 确认闸门的数据):先记
       // (addable, truncated) 快照,确认后才批量落库;取消则原样丢弃。
       const [addAllModelsConfirm, setAddAllModelsConfirm] = useState(/** @type {{ addable: Array, truncated: boolean } | null} */ (null));
+      // 最新表单字段镜像(复审 M6):「测试连接」是异步探测,resolve 时空字段
+      // 判定必须看当时的输入值,而不是点击瞬间捕获的旧值——否则探测期间用户
+      // 手输的 context/max_output 会被过期的「空」判定清掉。每次渲染同步。
+      const latestFieldsRef = useRef({ contextWindow, maxOutput });
+      latestFieldsRef.current = { contextWindow, maxOutput }; // eslint-disable-line react-hooks/refs -- synchronously mirror the latest field drafts during render so the async probe callback judges emptiness against current values (round-1 review M6)
+      // base URL 同款镜像(复审 M5):探测在飞时改 URL,resolve 后的旧端点结果
+      // 必须作废,不允许在 URL B 的表单头/落库 payload 下展示 URL A 的列表。
+      const baseUrlRef = useRef(baseUrl);
+      baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
       // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
       // 已下线的「保存时检测」(auto)档残留值按「自动处理」(pinvou)回显。
       // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
@@ -559,6 +571,11 @@ function hasStoredCredential(record) {
         setMaxOutput('');
         // 显式换模型:上一次端点探测的自动填入提示已失效,一并清除。
         setFilledFromEndpoint(false);
+        // 目录切换会改写 base_url(复审 M5 同因):旧 URL 上探到的候选列表、
+        // 打开的 picker 与挂起的批量确认一并作废,绝不许在新 URL 下复用。
+        setEndpointListing(null);
+        setEndpointPickerOpen(false);
+        setAddAllModelsConfirm(null);
         // Reset the thinking effort to the new entry's default tier when the
         // catalog item changes (vllm→low (lowest thinking tier), others→high;
         // models without tiers get null = not explicitly set). Pass nextBaseUrl
@@ -596,6 +613,12 @@ function hasStoredCredential(record) {
         // 避免红色提示挂在已修正的 URL 上（端口框下次输入会重新校验）。
         setBaseUrlPortError(null);
         renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
+        // base URL 变更即失效既有探测结果(复审 M5):URL A 上探到的列表绝不许
+        // 在 URL B 的表单里打开或落库(picker 头部与保存 payload 都按当前输入
+        // 的 URL 走),挂起的批量确认一并丢弃。
+        setEndpointListing(null);
+        setEndpointPickerOpen(false);
+        setAddAllModelsConfirm(null);
       }
       // 解析 http/https URL；其余 scheme（或无法解析）返回 null。端口框只在
       // 可解析的 http(s) 地址上工作，避免 "127.0.0.1:8003"（无 scheme）被
@@ -644,15 +667,16 @@ function hasStoredCredential(record) {
         return parsed.pathname === '/' ? serialized.replace(/\/$/, '') : serialized;
       }
       // 测试连接成功后,把端点探测到的 context/max_output 仅填入空字段
-      // (规格 §2.6:绝不覆盖非空值)。context_window_tokens/max_output_tokens
-      // 是可选新字段,老后端不返回时 Number() 落 NaN 自然跳过。
+      // (规格 §2.6:绝不覆盖非空值)。空字段判定读 latestFieldsRef(复审 M6):
+      // resolve 时刻的最新输入,而非点击瞬间捕获的旧值。context_window_tokens/
+      // max_output_tokens 是可选新字段,老后端不返回时 Number() 落 NaN 自然跳过。
       function applyProbedFacts(result) {
         if (!result || typeof result !== 'object' || !result.ok) return;
         const probedContext = Number(result.context_window_tokens);
         const probedOutput = Number(result.max_output_tokens);
         let filled = false;
-        if (!contextWindow && Number.isFinite(probedContext) && probedContext > 0) { setContextWindow(String(probedContext)); filled = true; }
-        if (!maxOutput && Number.isFinite(probedOutput) && probedOutput > 0) { setMaxOutput(String(probedOutput)); filled = true; }
+        if (!latestFieldsRef.current.contextWindow && Number.isFinite(probedContext) && probedContext > 0) { setContextWindow(String(probedContext)); filled = true; }
+        if (!latestFieldsRef.current.maxOutput && Number.isFinite(probedOutput) && probedOutput > 0) { setMaxOutput(String(probedOutput)); filled = true; }
         if (filled) setFilledFromEndpoint(true);
       }
       async function handleTest() {
@@ -681,6 +705,8 @@ function hasStoredCredential(record) {
         if (!bridge.available || typeof bridge.models.probeEndpointModels !== 'function' || fetchingModels) return;
         const probedBaseUrl = baseUrl.trim();
         if (!probedBaseUrl) return;
+        // 探测序号递增:picker 以此为 key 重挂,新列表的 filter/滚动干净复位。
+        setEndpointFetchSeq(seq => seq + 1);
         setFetchingModels(true);
         setFetchModelsMessage(null);
         try {
@@ -689,6 +715,9 @@ function hasStoredCredential(record) {
             apiKey: keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '',
             preset,
           });
+          // 复审 M5:探测在飞时用户改了 base URL → 这份 URL A 的结果作废
+          // (baseUrlRef 是 resolve 时刻的实时输入);静默丢弃,不打扰用户。
+          if (baseUrlRef.current.trim() !== probedBaseUrl) return;
           setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
           setEndpointPickerOpen(true);
         } catch (e) {
@@ -738,21 +767,29 @@ function hasStoredCredential(record) {
         if (addable.length === 0) return;
         setAddAllModelsConfirm({ addable, truncated });
       }
-      // 确认后的批量保存:逐行 saveModel(桥内自带 loadModels 刷新),全部成功
-      // 才关 picker 并提示数量;失败保持弹窗与提示,不静默丢弃。
+      // 确认后的批量保存(复审 M9):逐行 saveModel 带 deferRefresh 跳过桥内
+      // 的三连 reload(100 行 × 3 次 IPC 的风暴),循环结束后统一刷新一次;
+      // 失败路径也补一次刷新,让已落库的前缀行正确出现在列表里。全部成功才
+      // 关 picker 并提示数量;失败保持弹窗与提示,不静默丢弃。老桌面/web 桥
+      // 没有 reloadSavedModels 时回退旧行为(逐行全量刷新,不加 options)。
       async function confirmAddAllEndpointModels() {
         if (!addAllModelsConfirm || addingAllModels) return;
         const { addable } = addAllModelsConfirm;
+        const batchReloadAvailable = bridge.available && typeof bridge.models.reloadSavedModels === 'function';
         setAddingAllModels(true);
         let added = 0;
         try {
           for (const row of addable) {
-            await onSave(buildEndpointModelPayload(row));
+            await onSave(buildEndpointModelPayload(row), batchReloadAvailable ? { deferRefresh: true } : undefined);
             added += 1;
           }
+          if (batchReloadAvailable) await bridge.models.reloadSavedModels();
           setEndpointAddResult(settingsCopy.addedCount(added));
           setEndpointPickerOpen(false);
         } catch (e) {
+          if (batchReloadAvailable) {
+            try { await bridge.models.reloadSavedModels(); } catch { /* best-effort: keep the save error visible */ }
+          }
           setEndpointAddResult(settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)));
         }
         finally { setAddingAllModels(false); setAddAllModelsConfirm(null); }
@@ -1074,8 +1111,9 @@ function hasStoredCredential(record) {
           // 同一 provider 内换模型时重置思考深度到新模型的默认档位：K2.6 选 off 后切 K3
           // 会残留不在 K3 档位表内的 off，界面无高亮且保存仍写旧值；与 applyCatalogItem 一致。
           setReasoningEffort(reasoningEffortForModelSwitch({ preset, model: nextModel, vendor, base_url: baseUrl }));
-          // Explicit model switches also reset the manual context window so it never leaks across models (same reset discipline as applyCatalogItem).
+          // Explicit model switches also reset the manual context window and the output cap so neither leaks across models (same reset discipline as applyCatalogItem).
           setContextWindow('');
+          setMaxOutput('');
           setFilledFromEndpoint(false);
           // 与 applyCatalogItem 一致:未手动改过档位时按新条目的视觉能力标注预填。
           if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(nextModel));
@@ -1743,6 +1781,7 @@ function hasStoredCredential(record) {
           {/* 端点模型选择面板(规格 §2.6):纯 props 驱动,绝不自行发请求、
               绝不自动添加;聊天线传 onAddAll(批量 confirm 在父层),ACP 线复用时不传。 */}
           <EndpointModelPicker
+            key={endpointFetchSeq}
             open={endpointPickerOpen}
             onClose={() => setEndpointPickerOpen(false)}
             listing={endpointListing}
@@ -1763,10 +1802,11 @@ function hasStoredCredential(record) {
               confirmTestId="add-all-models-confirm-ok"
               title={settingsCopy.addAllConfirm(addAllModelsConfirm.addable.length)}
               desc={addAllModelsConfirm.truncated ? settingsCopy.addAllTruncated(ADD_ALL_BATCH_LIMIT) : undefined}
-              confirmLabel={settingsCopy.addAllModels}
+              confirmLabel={addingAllModels ? settingsCopy.saving : settingsCopy.addAllModels}
               cancelLabel={settingsCopy.cancel}
               onConfirm={confirmAddAllEndpointModels}
               onCancel={() => setAddAllModelsConfirm(null)}
+              busy={addingAllModels}
             />
           )}
         </div>
@@ -1930,7 +1970,8 @@ function hasStoredCredential(record) {
     // iOS-style confirm dialog (stacked buttons: red confirm on top, blue cancel below; backdrop click does not close).
     // Four isomorphic sites: model delete / search source delete / memory delete / feedback close; RestartDialog (two-column grid, wider) is not one of them.
     // Optional testid/confirmTestId mount the test pins the memory-delete and feedback-close dialogs need; desc is omitted where the dialog carries no description row.
-    const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel, testid, confirmTestId }) => (
+    // Optional busy disables both buttons so an in-flight batch (add-all) cannot be double-submitted or dismissed mid-loop.
+    const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel, testid, confirmTestId, busy = false }) => (
       <div data-testid={testid} className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
         <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
           <div className="px-5 pt-5 pb-4 text-center">
@@ -1938,8 +1979,8 @@ function hasStoredCredential(record) {
             {desc && <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</p>}
           </div>
           <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
-            <button type="button" data-testid={confirmTestId} onClick={onConfirm} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{confirmLabel}</button>
-            <button type="button" onClick={onCancel} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{cancelLabel}</button>
+            <button type="button" data-testid={confirmTestId} onClick={onConfirm} disabled={busy} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12] disabled:opacity-45`}>{confirmLabel}</button>
+            <button type="button" onClick={onCancel} disabled={busy} className="w-full h-12 text-[17px] font-semibold text-[#007AFF] disabled:opacity-45">{cancelLabel}</button>
           </div>
         </div>
       </div>

@@ -231,6 +231,22 @@ for (const command of [
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
 
+// Round-1 review M3 (endpoint model discovery): the probe command is
+// deliberately WEB-ALLOWED, so pin the positive half of that contract the
+// same way the desktop-only half above is anti-pinned — otherwise a policy
+// edit could silently un-allowlist it and strand the ACP/settings picker on
+// web. Rationale: probe_endpoint_models is keyring-blind — the caller
+// supplies whatever key the form holds, the command never reads the local
+// keyring or saved credentials, so probing from a paired browser leaks no
+// stored secret. That is exactly why it may ride the web RPC lane while
+// test_model_connection (resolves SAVED keys by model id → keyring access)
+// and save_model (credential writes) stay desktop-only above.
+assert.equal(
+  allowed.has('probe_endpoint_models'),
+  true,
+  'probe_endpoint_models must stay web-allowlisted (keyring-blind: caller supplies the key; no saved-credential read, unlike test_model_connection)',
+);
+
 // Round-11 复审 M4:结构性互斥钉——remote_control.rs 里定义的每一个
 // web_access_* 命令必须要么在 Web 策略里(受 positive wrapper 钉约束),
 // 要么在上面的桌面专用反钉清单里。手工反钉清单的结构性漏网

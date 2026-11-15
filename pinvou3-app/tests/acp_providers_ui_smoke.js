@@ -527,9 +527,22 @@ async function clickSettingsSection(page, label) {
     document.querySelector('[data-testid="acp-provider-model"]').value === 'gpt-5.2'
     && document.querySelector('[data-testid="acp-provider-context-window"]').value === '262144'
   ));
-  // 收尾:取消表单,不产生保存调用,不污染后续切换/删除流程
-  await page.click('[data-testid="acp-provider-form-cancel"]');
-  await sleep(300);
+  // 收尾(复审 ACP minor):Escape 逐层关闭——先重开候选面板,第一下 Escape 只关
+  // 面板(表单保留),第二下才关表单;随后断言全程未产生保存调用。
+  await page.click('[data-testid="acp-provider-fetch-models"]');
+  await sleep(500);
+  await page.keyboard.press('Escape');
+  await sleep(200);
+  rec('⑥.18a Escape closes the endpoint picker first and keeps the form open', await page.evaluate(() =>
+    !document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
+    && !!document.querySelector('[data-testid="acp-provider-form-dialog"]')
+  ));
+  await page.keyboard.press('Escape');
+  await sleep(200);
+  rec('⑥.18b second Escape closes the form once the picker is closed', await page.evaluate(() =>
+    !document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
+    && !document.querySelector('[data-testid="acp-provider-form-dialog"]')
+  ));
   rec('⑥.19 候选流程未产生保存调用', (await callCount(page, 'save_acp_provider')) === savesBeforeAcpFetch);
 
   // 一键切换

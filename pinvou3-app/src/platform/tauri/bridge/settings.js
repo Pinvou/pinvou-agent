@@ -96,12 +96,26 @@ async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
   // model 对象字段须与 Rust 侧 SavedModel 的 serde 契约逐字段一致(snake_case):
   // 字段清单以 src-tauri/src/platform/prefs/mod.rs 的 SavedModel 定义为准,此处
   // 不逐一列举以免两处漂移。
- async function saveModel(model) {
+ async function saveModel(model, options) {
+   // options.deferRefresh (round-1 review M9): the batch add-all loop saves
+   // up to 100 rows back-to-back; skipping the three reloads per row avoids a
+   // 100x IPC storm. The caller reloads once via reloadSavedModels() when the
+   // loop finishes. Default (no options) keeps the save-then-refresh chain
+   // every single-row caller relies on.
    await invoke("save_model", { model });
+   if (options && options.deferRefresh) return;
    await loadModels();
    await loadSettings();
    await loadEffectiveModelConfig();
  }
+// Post-batch refresh twin of saveModel's reload tail (round-1 review M9):
+// exactly the three loaders the save chain runs, executed once for the whole
+// confirmed add-all batch.
+async function reloadSavedModels() {
+  await loadModels();
+  await loadSettings();
+  await loadEffectiveModelConfig();
+}
 async function revealModelApiKey(id) { return pinvouSharedtauriSettings().revealModelApiKey(id); }
  async function deleteModel(id) {
    await invoke("delete_model", { id });
@@ -235,6 +249,7 @@ async function probeEndpointModels(request) { return pinvouSharedtauriSettings()
       getImageInputCapability,
       loadModels,
       saveModel,
+      reloadSavedModels,
       revealModelApiKey,
       deleteModel,
       setActiveModel,

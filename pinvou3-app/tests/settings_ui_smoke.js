@@ -241,20 +241,49 @@ assert.match(
   /typeof bridge\.models\.probeEndpointModels !== 'function' \|\| fetchingModels\) return;/,
   'fetch handler must bail when the probe bridge method is unavailable (old desktop/web builds)',
 );
+// 复审 M5(base URL 错配竞态):结果只能属于探测时的 URL。手输改 URL 必须作废
+// 既有列表/picker/挂起批量;在飞探测 resolve 时发现 URL 已变也必须静默丢弃。
+const baseUrlChangeStart = settingsViewSource.indexOf('function handleBaseUrlChange(');
+assert.notStrictEqual(baseUrlChangeStart, -1, 'base URL change handler must exist');
+const baseUrlChangeSource = settingsViewSource.slice(baseUrlChangeStart, baseUrlChangeStart + 800);
+assert.match(
+  baseUrlChangeSource,
+  /setEndpointListing\(null\);\s*setEndpointPickerOpen\(false\);\s*setAddAllModelsConfirm\(null\);/,
+  'editing the base URL must drop the probed listing, close the picker and discard any pending batch (no URL A results under URL B)',
+);
+assert.match(
+  settingsViewSource,
+  /if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;/,
+  'an in-flight probe whose base URL changed mid-flight must be discarded at resolve time',
+);
+// 复审 picker minor:picker 按探测序号重挂(key={endpointFetchSeq}),新列表上
+// filterDraft/滚动干净复位。
+assert.match(
+  settingsViewSource,
+  /<EndpointModelPicker\s+key=\{endpointFetchSeq\}/,
+  'the endpoint picker must remount per fetch so filter draft and scroll reset with each new listing',
+);
 // 测试连接自动填入:仅空字段、绝不覆盖非空值(规格决策 4)。取 applyProbedFacts
-// 片段钉条件,把「填空条件取反」的突变变红。
+// 片段钉条件,把「填空条件取反」的突变变红。复审 M6:空字段判定必须读
+// latestFieldsRef(resolve 时刻的最新输入),而不是点击瞬间捕获的闭包旧值——
+// 正则钉住 ref 读取形状,删掉空检查或回退到闭包值都会变红。
 const probedFactsStart = settingsViewSource.indexOf('function applyProbedFacts(');
 assert.notStrictEqual(probedFactsStart, -1, 'endpoint fact auto-fill helper must exist');
 const probedFactsSource = settingsViewSource.slice(probedFactsStart, probedFactsStart + 900);
 assert.match(
-  probedFactsSource,
-  /!contextWindow && Number\.isFinite\(probedContext\) && probedContext > 0/,
-  'context auto-fill must stay gated on an EMPTY context field (never overwrite)',
+  settingsViewSource,
+  /const latestFieldsRef = useRef\(\{ contextWindow, maxOutput \}\);/,
+  'the empty-field judgment must read a latest-values ref (async resolve sees current input, not click-time closure)',
 );
 assert.match(
   probedFactsSource,
-  /!maxOutput && Number\.isFinite\(probedOutput\) && probedOutput > 0/,
-  'max output auto-fill must stay gated on an EMPTY max output field (never overwrite)',
+  /!latestFieldsRef\.current\.contextWindow && Number\.isFinite\(probedContext\) && probedContext > 0/,
+  'context auto-fill must stay gated on an EMPTY context field read from the latest-values ref (never overwrite, never stale-closure)',
+);
+assert.match(
+  probedFactsSource,
+  /!latestFieldsRef\.current\.maxOutput && Number\.isFinite\(probedOutput\) && probedOutput > 0/,
+  'max output auto-fill must stay gated on an EMPTY max output field read from the latest-values ref (never overwrite, never stale-closure)',
 );
 // 批量「全部添加」:应用内 SheetConfirmDialog 是硬闸门(规格决策 1;原生
 // window.confirm 在 Tauri WebView2 不渲染,见 tests/settings_window_confirm.test.mjs),
@@ -285,6 +314,30 @@ assert.match(
   addAllConfirmBody,
   /for \(const row of addable\)/,
   'the batch save loop must run only in the confirmed path (confirm first, saves after)',
+);
+// 复审 M9(批量 IPC 风暴):确认批量的逐行保存必须带 deferRefresh 跳过桥内
+// 逐行三连 reload,循环后(含失败路径)统一 reloadSavedModels 一次;旧行为
+// (逐行全量刷新)只允许在桥缺 reloadSavedModels 时作为回退出现。
+assert.match(
+  addAllConfirmBody,
+  /onSave\(buildEndpointModelPayload\(row\), batchReloadAvailable \? \{ deferRefresh: true \} : undefined\)/,
+  'batch rows must save with deferRefresh so each row skips the three reloads (single reload after the loop)',
+);
+assert.match(
+  addAllConfirmBody,
+  /await bridge\.models\.reloadSavedModels\(\)/,
+  'the confirmed batch must refresh saved models exactly once via reloadSavedModels after the loop',
+);
+// 复审 M9(忙态闸门):批量进行中确认弹窗双按钮禁用,防重复提交/中途取消。
+assert.match(
+  settingsViewSource,
+  /confirmLabel=\{addingAllModels \? settingsCopy\.saving : settingsCopy\.addAllModels\}/,
+  'the add-all confirm must switch to the busy label while the batch saves',
+);
+assert.match(
+  settingsViewSource,
+  /busy=\{addingAllModels\}/,
+  'the add-all confirm must disable both buttons while the batch saves',
 );
 // 确认弹窗本体:同一 SheetConfirmDialog 配方,testid 供 smoke 驱动;标题/描述
 // 仍表达规格语义(数量、去重、截断)。
@@ -595,12 +648,49 @@ assert.doesNotMatch(
   /savedKeys=/,
   'the ACP line must omit savedKeys so picker rows stay addable (providers have no saved-model dedup)',
 );
+// 复审 ACP minor(Escape 逐层关闭):候选面板打开时 Escape 只关面板,其次二级
+// 确认层,最后才是整个表单——上层浮层不得连带下层一起消失。顺序钉死。
+assert.match(
+  providerFormModalSource,
+  /if \(event\.key === 'Escape'\) \{\s*if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else if \(confirmStep\) setConfirmStep\(null\);\s*else onClose\(\);/,
+  'Escape must close the endpoint picker first, then the confirm step, then the whole form (topmost layer only)',
+);
+// 复审 M5(ACP 线同因):手输改 base URL 必须作废既有探测状态。
+assert.match(
+  providerFormModalSource,
+  /const handleBaseUrlChange = value => \{\s*setBaseUrl\(value\);\s*clearEndpointProbeState\(\);/,
+  'editing the ACP base URL must clear the probed listing and close the picker (no URL A results under URL B)',
+);
 // i18n:ACP 簇的探活禁用提示三语齐备(组件内不得硬编码文案)。
 for (const settingsI18nSource of settingsI18nSources) {
   assert.match(
     settingsI18nSource,
     /\.uiAcpProviders,\s*\{[^}]*?fetchUnavailable:/,
     'the ACP fetch-unavailable hint must be provided in every UI language',
+  );
+}
+// i18n(复审 picker minor):筛选空态/截断提示/N 条未显示尾注三语齐备,且死键
+// acpNoModelsFound(引用已删)不得残留。
+for (const settingsI18nSource of settingsI18nSources) {
+  assert.match(
+    settingsI18nSource,
+    /modelListFilterEmpty:/,
+    'the filtered-empty picker copy must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /modelListTruncated:/,
+    'the truncated-listing notice must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /modelListMoreCount:\s*n\s*=>/,
+    'the render-cap footer must interpolate the hidden row count in every UI language',
+  );
+  assert.doesNotMatch(
+    settingsI18nSource,
+    /acpNoModelsFound/,
+    'the dead acpNoModelsFound key must stay deleted from every UI language',
   );
 }
 // Memory delete / feedback close confirm-dialog wiring (no native
@@ -2159,6 +2249,7 @@ async function modalWidth(page, headingText) {
   // 后先断言对话框出现且尚未落库(保存调用数不增),点确认按钮才逐行保存;
   // 重复行(glm-5.3-flash 已在 ⑥.5g 保存、glm-5-flash 刚保存)跳过,只落 kimi-k3。
   const savesBeforeAddAll = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length);
+  const reloadsBeforeAddAll = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'list_models').length);
   await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
   await sleep(300);
   const addAllGate = await page.evaluate(() => {
@@ -2171,7 +2262,7 @@ async function modalWidth(page, headingText) {
   });
   await page.evaluate(() => document.querySelector('[data-testid="add-all-models-confirm-ok"]').click());
   await sleep(900);
-  const batchState = await page.evaluate(() => {
+  const batchState = await page.evaluate(reloadsBefore => {
     const calls = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model');
     const saved = new Set(calls.map(call => `${call.args.model.model}@${call.args.model.base_url}`));
     return {
@@ -2181,11 +2272,15 @@ async function modalWidth(page, headingText) {
       hasEndpointGlm: saved.has('glm-5-flash@https://example.com/v1'),
       // glm-5.3-flash 只有 ⑥.5g/⑥.5i 的两次保存,批量添加不得再落一次。
       dupSaveCalls: calls.filter(call => call.args.model.model === 'glm-5.3-flash' && call.args.model.base_url === 'https://example.com/v1').length,
+      // 复审 M9:批量逐行 deferRefresh,整个批次只允许一次 list_models 重载
+      // (旧实现逐行 reload,1 行也会打满 3 个 loader;这里钉「恰好一次」)。
+      reloadBursts: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'list_models').length - reloadsBefore,
     };
-  });
-  rec('⑥.5k6 confirmed add-all saves only non-duplicate rows and closes the picker',
+  }, reloadsBeforeAddAll);
+  rec('⑥.5k6 confirmed add-all saves only non-duplicate rows, reloads once, and closes the picker',
     addAllGate.shown && addAllGate.savesBeforeConfirm === savesBeforeAddAll && addAllGate.title.includes('1')
-      && batchState.pickerClosed && batchState.dialogClosed && batchState.hasKimi && batchState.hasEndpointGlm && batchState.dupSaveCalls === 2,
+      && batchState.pickerClosed && batchState.dialogClosed && batchState.hasKimi && batchState.hasEndpointGlm && batchState.dupSaveCalls === 2
+      && batchState.reloadBursts === 1,
     JSON.stringify({ addAllGate, batchState }));
   // 恢复默认 test_model_connection 响应,不污染后续流程。
   await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({ ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 }));
