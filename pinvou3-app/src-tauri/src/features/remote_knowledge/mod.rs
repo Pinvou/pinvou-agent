@@ -1169,6 +1169,10 @@ impl RemoteKnowledgeService {
             .await
     }
 
+    /// Full-replace PUT semantics: `description: None` clears the stored
+    /// description on the peer (it is not a keep-as-is marker — compare
+    /// [`Self::update_device`], whose PATCH treats `None` as keep). Callers
+    /// that only intend to rename must echo the current description.
     pub async fn update_collection(
         &self,
         server_id: &str,

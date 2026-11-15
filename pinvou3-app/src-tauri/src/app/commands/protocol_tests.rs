@@ -265,6 +265,30 @@ fn preinstalled_model_startup_commands_are_not_registered() {
         );
     }
 }
+
+#[test]
+fn remote_knowledge_registrations_match_the_command_surface() {
+    // command_protocol! pins the source-side list only; the invoke-handler
+    // registration in lib.rs is repo-wide unpinned (dropping an entry 404s
+    // the command with every test green — global_shortcut.rs documents the
+    // same class for its own command). Sort both sides: registration order
+    // need not follow file order, but the sets must match exactly so a
+    // dropped, renamed, or unregistered command fails here.
+    let lib = include_str!("../../lib.rs");
+    let mut registered: Vec<String> = lib
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("commands::remote_knowledge::"))
+        .filter_map(|entry| entry.strip_suffix(','))
+        .map(|name| name.to_string())
+        .collect();
+    let mut defined = command_names(include_str!("remote_knowledge.rs"));
+    registered.sort_unstable();
+    defined.sort_unstable();
+    assert_eq!(
+        defined, registered,
+        "every command in remote_knowledge.rs must stay registered in lib.rs's generate_handler, and vice versa"
+    );
+}
 command_protocol!(
     marketplace_protocol,
     "marketplace.rs",

@@ -265,6 +265,9 @@ pub async fn remote_kb_update_device(
         .await
 }
 
+/// Rename a shared collection. Full-replace PUT: `description: None`
+/// clears the stored description rather than keeping it, so a rename-only
+/// call must echo the current description.
 #[tauri::command]
 pub async fn remote_kb_update_collection(
     state: State<'_, RemoteKnowledgeService>,
