@@ -4390,6 +4390,7 @@ fn ask_on_guardrail_toggle_persists_for_entry_less_sessions() {
 fn aux_ask_seed_rechecks_override_under_io_mutex() {
     use crate::features::sessions::mode_state::{
         AUX_SEED_AT_LOCK_BOUNDARY_FOR_TEST, AUX_SEED_GATE_ARMED_FOR_TEST,
+        AUX_SEED_GATE_TARGET_FOR_TEST,
     };
     use std::sync::atomic::Ordering;
 
@@ -4407,6 +4408,12 @@ fn aux_ask_seed_rechecks_override_under_io_mutex() {
     // passes its pre-lock value probe and reaches the mutex at all.
     let parent_ask = !store.mode_state(aux).ask_on_guardrail;
 
+    // Target-scope the gate to THIS aux id (review JensenChen28 4576891300):
+    // the flags are process-global, and a parallel test's aux-creation seed
+    // must neither park on the gate nor flip the boundary flag.
+    *AUX_SEED_GATE_TARGET_FOR_TEST
+        .lock()
+        .expect("gate target mutex") = Some(aux.to_string());
     AUX_SEED_GATE_ARMED_FOR_TEST.store(true, Ordering::Release);
     let store_for_thread = std::sync::Arc::clone(&store);
     let handle =
