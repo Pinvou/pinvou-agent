@@ -71,7 +71,7 @@ test('every view loader has an explicit lazy chunk contract', () => {
   );
 });
 
-test('web codeSplitting groups stay deliberate; desktop keeps automatic splitting', () => {
+test('web codeSplitting groups stay deliberate; desktop split stays deliberate', () => {
   // The entry-budget gate only measures the entry FILE, not the startup
   // closure (entry + statically imported chunks + index.html modulepreload),
   // so these pins carry the structural protection the byte gate cannot.
@@ -86,10 +86,22 @@ test('web codeSplitting groups stay deliberate; desktop keeps automatic splittin
   const markdownGroup = webOutput.codeSplitting.groups.find(group => group.name === 'markdown-vendor');
   assert.match(String(markdownGroup.test), /marked\|dompurify/u);
   assert.doesNotMatch(String(markdownGroup.test), /highlight/u);
-  // The desktop multi-entry build keeps rolldown's automatic splitting (see
-  // the web-only ternary in vite.config.mjs).
+  // The desktop multi-entry build keeps rolldown's automatic splitting except
+  // ONE deliberate, documented group: once the rewind modules joined the
+  // entry graph, rolldown's automatic extraction stopped pulling the
+  // ConversationTimeline subgraph out of the entry FILE (563191 B vs the
+  // 492_000 gate). The group is $-anchored to ChatView.jsx (pet/reader
+  // shared chunks untouched) and ChatView stays statically imported, so the
+  // startup closure is unchanged — only the entry FILE shrinks. Same
+  // deliberateness contract as the web lane: any additional desktop group
+  // must land here with the same measured rationale.
   const desktopOutput = createViteConfig({ command: 'build', mode: 'production' }).build.rolldownOptions.output;
-  assert.equal(desktopOutput, undefined);
+  assert.deepEqual(
+    desktopOutput.codeSplitting.groups.map(group => group.name),
+    ['chat-view'],
+  );
+  const desktopChatView = desktopOutput.codeSplitting.groups[0];
+  assert.match(String(desktopChatView.test), /ChatView/u);
 });
 
 test('scheduled task cards have a production lazy-chunk gate', () => {
