@@ -129,6 +129,47 @@ impl SessionStore {
     /// 从归档文件导入会话。`.json` 后缀按单条 session 记录读取，其余按
     /// `export_session` 的 tar.xz 归档读取。
     pub(crate) fn import_archive(&self, path: &Path) -> Result<SessionImportSummary> {
+        // Import lane (review r10 P2): hold it across the whole import so two
+        // concurrent imports never interleave probe → stage → commit. The r9
+        // window-2 convergence argument ("the loser's staged bytes are
+        // identical to the winner's, same-name atomic overwrite converges")
+        // only holds when both imports come from the SAME archive; two
+        // different archives carrying the same session id would both pass the
+        // window-1 probe, stage disjoint bytes over the same artifact paths,
+        // and the first record to persist would end up pointing at the second
+        // archive's bytes (the later commit only re-checks presence, not
+        // content ownership). Imports are rare user actions; serializing the
+        // whole call is the honest cheap shape, and the lane is deliberately
+        // NOT `scheduled_mutation` so ordinary session persists never wait on
+        // a large archive's staging.
+        let _import_lane = self.session_import_lane.lock();
+        // Test-only barrier (review round-10 follow-up): the pin's fixed
+        // sleep cannot prove the loser thread reached the lane — under CI
+        // scheduling delay the loser could first run after the winner's
+        // record commit and pass through a normal re-probe, so the pin would
+        // pass even without this lane. When armed and targeting this archive
+        // path, park after taking the lane and flip the boundary flag so the
+        // test lands the winner deterministically first. Compiled out of
+        // production.
+        #[cfg(test)]
+        {
+            let gate_targets_this_call = crate::features::sessions::IMPORT_LANE_GATE_TARGET_FOR_TEST
+                .lock()
+                .expect("import lane gate target mutex")
+                .as_deref() == Some(path);
+            if gate_targets_this_call
+                && crate::features::sessions::IMPORT_LANE_GATE_ARMED_FOR_TEST
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                crate::features::sessions::IMPORT_LANE_AT_LANE_FOR_TEST
+                    .store(true, std::sync::atomic::Ordering::Release);
+                while crate::features::sessions::IMPORT_LANE_GATE_ARMED_FOR_TEST
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    std::thread::yield_now();
+                }
+            }
+        }
         if path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -1208,6 +1249,133 @@ mod tests {
             "artifacts must land for a fresh id (regression: dead import path)"
         );
         let _ = std::fs::remove_file(&archive);
+    }
+
+    /// Round-10 P2 (review JensenChen28, artifact staging commit race): two
+    /// concurrent imports of DIFFERENT archives carrying the same session id
+    /// used to interleave probe → stage → commit — both passed the window-1
+    /// probe, both staged their bytes over the same artifact paths, and the
+    /// first record to persist ended up pointing at the second archive's
+    /// bytes (the window-2 re-probe checks presence, not content ownership;
+    /// the r9 "loser bytes are identical to the winner's" convergence only
+    /// holds within one archive). The import lane serializes whole imports;
+    /// this pin drives the interleaving deterministically: hold the lane,
+    /// spawn the second import (it must block before probing), land the
+    /// first archive's stage+record through the raw legs while the lane is
+    /// held, release — and the loser must come out skipped_existing with the
+    /// winner's bytes intact on disk.
+    #[test]
+    fn concurrent_imports_serialize_per_archive_lane() {
+        let (store, _lock, _env) = isolated_store();
+        let store = std::sync::Arc::new(store);
+        let source = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let id = source.metadata.id.clone();
+        let mut session = store.load(&id).expect("load");
+        session.messages = vec![turn_prompt("并发导入"), assistant_text("回复")];
+        store.save(&session).expect("seed messages");
+        seed_artifact(&store, &id, "summary.md", b"winner bytes");
+
+        let dir = std::env::temp_dir();
+        let archive_a = dir.join(format!(
+            "pinvou3-import-lane-a-{}-{}.tar.xz",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let archive_b = dir.join(format!(
+            "pinvou3-import-lane-b-{}-{}.tar.xz",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        store
+            .export_archive(&id, &archive_a, true)
+            .expect("export a");
+        // Second archive, SAME id, DIFFERENT artifact bytes: the r9
+        // byte-identical convergence does not apply to this pair.
+        seed_artifact(&store, &id, "summary.md", b"loser bytes");
+        store
+            .export_archive(&id, &archive_b, true)
+            .expect("export b");
+
+        // Race window: no record on disk, so both imports would pass the
+        // window-1 probe if they were free to run.
+        store.delete(&id).expect("delete source");
+
+        let store_for_thread = std::sync::Arc::clone(&store);
+        let archive_b_for_thread = archive_b.clone();
+        // Deterministic barrier (review round-10 follow-up): arm the gate for
+        // THIS archive path, then wait until the loser signals it is parked
+        // on the lane — a fixed sleep cannot prove the loser reached the lane
+        // before the winner's record lands, and a delayed loser would re-probe
+        // normally and pass the pin even without the lane.
+        use crate::features::sessions::{
+            IMPORT_LANE_AT_LANE_FOR_TEST, IMPORT_LANE_GATE_ARMED_FOR_TEST,
+            IMPORT_LANE_GATE_TARGET_FOR_TEST,
+        };
+        use std::sync::atomic::Ordering;
+        *IMPORT_LANE_GATE_TARGET_FOR_TEST
+            .lock()
+            .expect("gate target mutex") = Some(archive_b_for_thread.clone());
+        IMPORT_LANE_GATE_ARMED_FOR_TEST.store(true, Ordering::Release);
+        let outcome = std::thread::spawn(move || {
+            store_for_thread
+                .import_archive(&archive_b_for_thread)
+                .expect("import b")
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !IMPORT_LANE_AT_LANE_FOR_TEST.load(Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the loser never reached the lane"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // The parked loser HOLDS the lane: this ownership assert is what
+        // makes a lane-less mutant red (without the lane the gate still
+        // parks the loser, but nothing is held and try_lock succeeds).
+        assert!(
+            store.session_import_lane.try_lock().is_none(),
+            "the parked loser must be holding the import lane"
+        );
+
+        // The winner lands its stage + record while the lane is held — the
+        // same legs the commit window uses, invoked raw to stand in for an
+        // import that already holds the lane.
+        super::import_artifacts(
+            &store,
+            &id,
+            &[("reports/summary.md".to_string(), b"winner bytes".to_vec())],
+        )
+        .expect("stage winner artifacts");
+        // `session` was captured before the race-window delete: it is the
+        // record the winning import would have persisted.
+        store.save(&session).expect("persist winner record");
+
+        IMPORT_LANE_GATE_ARMED_FOR_TEST.store(false, Ordering::Release);
+        let summary_b = outcome.join().expect("loser thread join");
+        assert_eq!(
+            summary_b.skipped_existing,
+            vec![id.clone()],
+            "the loser must skip on the re-probe instead of staging over the winner"
+        );
+        assert!(
+            summary_b.imported.is_empty(),
+            "the loser must not import over the winner"
+        );
+        let artifact_path = store
+            .sessions_dir()
+            .join(&id)
+            .join("artifacts")
+            .join("reports")
+            .join("summary.md");
+        assert_eq!(
+            std::fs::read(&artifact_path).expect("read artifact"),
+            b"winner bytes",
+            "the record must never point at the other archive's bytes"
+        );
+        let _ = std::fs::remove_file(&archive_a);
+        let _ = std::fs::remove_file(&archive_b);
     }
 
     #[test]

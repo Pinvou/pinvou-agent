@@ -285,6 +285,7 @@ impl SessionStore {
             scheduled_profiles_path: Arc::new(scheduled_profiles_path),
             scheduled_root: Arc::new(scheduled_root),
             scheduled_mutation: Arc::new(Mutex::new(())),
+            session_import_lane: Arc::new(Mutex::new(())),
             active: Arc::new(RwLock::new(None)),
             mode_states: Arc::new(RwLock::new(HashMap::new())),
             multi_agent_flags_io: Arc::new(Mutex::new(())),
