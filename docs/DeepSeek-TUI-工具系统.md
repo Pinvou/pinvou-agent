@@ -9,10 +9,13 @@
 > 完成治理重构（`PINVOU3_ALLOWED_TOOLS` 白名单 + canonical 工具名，部分 builder 方法已更名/移除，
 > Plan 模式现注册只读文件/shell 之外的完整只读面）；现行工具面与迁移记录见
 > [`tool-governance.md`](./tool-governance.md)，本文请勿按现状使用。
-> 2026-11-15 修正：按 v0.8.37 tag 实测校正 builder 清单与工具计数（`append_file` 并不存在于
+> 2026-11-15 修正：按 v0.8.37 tag 逐 builder 实测校正全部清单与计数（`append_file` 并不存在于
 > v0.8.37，系 2026-06-29 fork 提交 `092e3c885` 引入；`code_execution` 在 v0.8.37 已是独立
 > catalog 工具；`with_shell_tools` 含 exec_shell_wait / exec_shell_interact；v0.8.37 无
-> `/tools` slash command）。
+> `/tools` slash command；web 工具含 finance 且 web_run 实名 `web.run`；task 全量
+> 23 个 / 只读 8 个，github 与 automation 均已注册；子代理仅 agent_open / agent_eval /
+> agent_close 三个；`multi_tool_use.parallel` 未注册；MCP 命名为 `mcp_<server>_<tool>`；
+> Yolo 约 77、Plan 约 40）。
 
 ---
 
@@ -83,7 +86,7 @@ pub trait ToolSpec: Send + Sync {
 | `with_file_tools` | read_file, write_file, edit_file, list_dir |
 | `with_read_only_file_tools` | read_file, list_dir（另注册 retrieve_tool_result） |
 | `with_search_tools` | grep_files, file_search |
-| `with_web_tools` | web_search, fetch_url, web_run |
+| `with_web_tools` | web_search, fetch_url, finance, web_run（实名 `web.run`） |
 | `with_shell_tools` | exec_shell, exec_shell_wait, exec_shell_interact, exec_shell_cancel（另注册 exec_wait / exec_interact 别名，共 6 个注册） |
 | `with_patch_tools` | apply_patch |
 | `with_git_tools` | git_status, git_diff |
@@ -97,23 +100,23 @@ pub trait ToolSpec: Send + Sync {
 | `with_validation_tools` | validate_data |
 | `with_tool_result_retrieval_tool` | retrieve_tool_result |
 | `with_handle_tools` | handle_read |
-| `with_runtime_task_tools` | task_create, task_list, task_read, task_cancel, task_gate_run, task_shell_start, task_shell_wait, pr_attempt_* |
-| `with_runtime_read_only_task_tools` | task_list, task_read |
+| `with_runtime_task_tools` | task_create, task_list, task_read, task_cancel, task_gate_run, task_shell_start, task_shell_wait, github_issue_context, github_pr_context, github_comment, github_close_issue, pr_attempt_record, pr_attempt_list, pr_attempt_read, pr_attempt_preflight, automation_create, automation_list, automation_read, automation_update, automation_pause, automation_resume, automation_delete, automation_run（共 23） |
+| `with_runtime_read_only_task_tools` | task_list, task_read, github_issue_context, github_pr_context, pr_attempt_list, pr_attempt_read, automation_list, automation_read（共 8） |
 | `with_revert_turn_tool` | revert_turn |
 | `with_rlm_tool` | rlm_open, rlm_eval, rlm_configure, rlm_close |
 | `with_review_tool` | review |
 | `with_recall_archive_tool` | recall_archive |
 | `with_user_input_tool` | request_user_input |
-| `with_parallel_tool` | multi_tool_use.parallel |
+| `with_parallel_tool` | （空操作 —— v0.8.37 未注册 multi_tool_use.parallel，仅 dispatch 层保留对其的 legacy 解析） |
 | `with_note_tool` | note |
 | `with_fim_tool` | fim_edit |
-| `with_todo_tool` | todo_write, todo_add, todo_update, todo_list（checklist + 普通各一份，共 8） |
+| `with_todo_tool` | todo_write, todo_add, todo_update, todo_list, checklist_write, checklist_add, checklist_update, checklist_list（8 个不同名注册） |
 | `with_plan_tool` | update_plan |
-| `with_subagent_tools` | agent_open, agent_eval, agent_result, agent_cancel, agent_close, agent_list, resume_agent, delegate_to_agent |
+| `with_subagent_tools` | agent_open, agent_eval, agent_close（仅 3 个） |
 | `with_vision_tools` | image_analyze |
 | `with_remember_tool` | remember |
 | `with_notify_tool` | notify |
-| `with_mcp_tools` | （MCP server 动态注册） |
+| `with_mcp_tools` | （v0.8.37 为 `#[allow(dead_code)]`；MCP 工具实际经 catalog 层注入，见 §5 MCP） |
 
 两个聚合方法：
 - `with_agent_tools(allow_shell)` — 用于 Agent/Yolo 通用基线
@@ -146,8 +149,8 @@ with_agent_tools(allow_shell) + with_todo_tool + with_plan_tool
 ```
 
 **Features 守卫（tool_setup.rs 内）**：
-- `Feature::ApplyPatch && !Plan` → `with_patch_tools()` （多余 —— `with_agent_tools` 已包含）
-- `Feature::WebSearch` → `with_web_tools()` （多余 —— 同上）
+- `Feature::ApplyPatch && !Plan` → `with_patch_tools()` （对 Agent/Yolo 多余 —— `with_agent_tools` 已包含）
+- `Feature::WebSearch` → `with_web_tools()` （对 Agent/Yolo 多余；但 Plan 分支没有其它 web 来源，此守卫开关直接增减 Plan 的工具列表）
 - `Feature::ShellTool && allow_shell && !Plan` → `with_shell_tools()` （多余）
 - `Feature::VisionModel && vision_config.is_some()` → `with_vision_tools()`
 - `memory_enabled` → `with_remember_tool()`
@@ -157,7 +160,7 @@ with_agent_tools(allow_shell) + with_todo_tool + with_plan_tool
 - `Feature::Subagents` → `with_subagent_tools(...)` + 启用 fork_context + mailbox
 - `Feature::Mcp` → 把 McpPool 工具注册进 registry
 
-**关键认知**：`Feature::ApplyPatch / WebSearch / ShellTool` 在 registry 层**没有任何效果**——因为 `with_agent_tools` 内部已无条件添加。真正能改变工具列表的只有 `Subagents / Mcp / VisionModel`。
+**关键认知**：对 Agent/Yolo 而言 `Feature::ApplyPatch / WebSearch / ShellTool` 在 registry 层**没有任何效果**——`with_agent_tools` 内部已无条件添加。但 `WebSearch` 是例外中例外：它同时是 Plan 模式 web 工具的唯一开关（Plan 分支无其它 web 来源）。真正能改变 Agent/Yolo 工具列表的只有 `Subagents / Mcp / VisionModel`（外加 `memory_enabled`）。
 
 ### 3.3 沙箱
 
@@ -192,16 +195,17 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 每个工具的 `approval_requirement` 决定是否在执行前发 `Event::ApprovalRequest`：
 - `Auto` — 直接跑（read_file / git_log / web_search 等）
 - `Suggest` — 默认跑，但 `approval_mode=suggest` 时弹审批（write_file / edit_file 等）
-- `Required` — 必须用户点同意才跑（exec_shell / apply_patch 等）
+- `Required` — 必须用户点同意才跑（exec_shell 等；apply_patch 在 v0.8.37 是显式 `ApprovalRequirement::Suggest` 覆盖，不走 capabilities 推断）
 
 `auto_approve: true`（YOLO）跳过所有 Required 审批。
 
 ### 4.4 大输出处理
 
-`large_output_router.rs` 把超长 tool_result 拆成：
-- 头部摘要直接喂模型
-- 完整内容存 handle，下次模型用 `handle_read` 按需读
-- 同时存 `tool_result_retrieval` 索引，可按 tool_call_id 重取
+超长 tool_result 的处理（v0.8.37）分两层：
+- `tools/truncate.rs` — 截断为头部摘要，尾部追加溢出指针（SPILLOVER_HEAD 头 + 按 `tool_call_id` 回取的尾注）
+- `tools/tool_result_retrieval.rs` — 供 `retrieve_tool_result` 按 `tool_call_id` 重取完整历史结果
+
+`tools/large_output_router.rs` 是 workshop/V4-Flash 的合成结果路由（`last_tool_result` + `promote_to_context`），与上述不是同一机制；`handle_read` 属 var_handle 大对象机制，也不承载 tool 输出溢出。
 
 ---
 
@@ -249,7 +253,8 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 |---|---|---|
 | web_search | with_web_tools | 关键词搜索（走 search_provider） |
 | fetch_url | with_web_tools | 拉单 URL 内容 |
-| web_run | with_web_tools | 浏览器/JS 执行的高级 fetch |
+| web_run（实名 `web.run`） | with_web_tools | 浏览器/JS 执行的高级 fetch |
+| finance | with_web_tools | 金融/行情数据查询 |
 
 ### Git
 
@@ -261,9 +266,9 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 | git_show | with_git_history_tools | 单次 commit 详情 |
 | git_blame | with_git_history_tools | 行级追责 |
 
-### GitHub（按需启用）
+### GitHub
 
-`github_issue_context / github_pr_context / github_comment / github_close_issue` — 走 GitHub API，需要 token，pinvou3 未注册。
+`github_issue_context / github_pr_context / github_comment / github_close_issue` — 走 GitHub API，需要 token。v0.8.37 由 `with_runtime_task_tools` 无条件注册（Agent/Yolo 全量 4 个；Plan 经 `with_runtime_read_only_task_tools` 也有 issue_context / pr_context 两个只读）。
 
 ### 任务 / 流程
 
@@ -272,7 +277,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 | task_create / task_list / task_read / task_cancel | with_runtime_task_tools | 持久化任务管理（DeepSeek-TUI 的 RLM workflow） |
 | task_gate_run | with_runtime_task_tools | task 依赖门控 |
 | pr_attempt_record / _list / _read / _preflight | with_runtime_task_tools | PR 提交尝试记录（用于自动化迭代） |
-| todo_write / todo_add / todo_update / todo_list | with_todo_tool | 模型自维护 TODO 清单（两套 view：checklist + plan，故 8 个变体） |
+| todo_write / todo_add / todo_update / todo_list（另有 checklist_write / checklist_add / checklist_update / checklist_list，8 个不同名注册） | with_todo_tool | 模型自维护 TODO 清单（todo_* 与 checklist_* 两套命名） |
 | update_plan | with_plan_tool | Plan 模式下的方案大纲 |
 | review | with_review_tool | 自审子流程（模型回看刚做的改动） |
 | recall_archive | with_recall_archive_tool | 翻 checkpoint 归档 |
@@ -283,11 +288,12 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 |---|---|---|
 | request_user_input | with_user_input_tool | 弹模态框问用户（pinvou3 渲染为内嵌卡片） |
 | notify | with_notify_tool | OSC 9 桌面通知 |
-| multi_tool_use.parallel | with_parallel_tool | 单次调用里并发多个子工具 |
+
+> `multi_tool_use.parallel` 在 v0.8.37 **未注册**（`with_parallel_tool` 是空操作）；dispatch 层仅保留对它的 legacy 解析。
 
 ### 子代理（experimental）
 
-`agent_open / agent_eval / agent_result / agent_cancel / agent_close / agent_list / resume_agent / delegate_to_agent` —— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
+`agent_open / agent_eval / agent_close`（v0.8.37 仅这三个；`agent_result / agent_cancel / agent_list / resume_agent / delegate_to_agent` 是后来版本才有的名字）—— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
 
 ### RLM（Read-Eval-Loop Model）持久会话
 
@@ -312,24 +318,26 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 | run_tests | with_test_runner_tool | 跑测试套件 |
 | load_skill | with_skill_tools | 加载 SKILL.md 引导 |
 | remember | with_remember_tool | 写入 user_memory（pinvou3 关闭） |
-| automation_create / _list / _read / _update / _run | （未在默认 builder） | 持久 automation 定义 |
+| automation_create / _list / _read / _update / _pause / _resume / _delete / _run | with_runtime_task_tools | 持久 automation 定义（Agent/Yolo 全量 8 个；Plan 有 list / read 两个只读） |
 
 ### MCP（动态）
 
-任何 MCP server 暴露的工具会被 `with_mcp_tools` 反射进 registry，命名前缀 `mcp__<server>__<tool>`。pinvou3 当前未连接任何 MCP server。
+任何 MCP server 暴露的工具会被注入 catalog，v0.8.37 命名前缀为 `mcp_<server>_<tool>`（单下划线，`mcp.rs:1936`；双下划线 `mcp__<server>__<tool>` 是后来的改名）。注入路径：`with_mcp_tools` 在 v0.8.37 是 dead_code，实际由 `build_model_tool_catalog` 在 catalog 层完成。pinvou3 当前未连接任何 MCP server。
 
 ---
 
 ## 6. pinvou3 实际可见的工具
 
-`build_turn_tool_registry_builder` Yolo 路径展开后大约 **66 个工具**（含别名与 ×2 重复注册）：
+`build_turn_tool_registry_builder` Yolo 路径展开后约 **77 个注册**（pandoc/OCR 探测失败时 75；
+全部为不同名注册，含 exec_wait/exec_interact 两个别名；catalog 层另有 code_execution /
+js_execution 推送，模型可见约 78–79）：
 
 ```
 read_file write_file edit_file list_dir
 grep_files file_search
 exec_shell exec_shell_wait exec_shell_interact exec_shell_cancel
 exec_wait exec_interact note
-web_search fetch_url web_run
+web_search fetch_url web.run finance
 apply_patch revert_turn fim_edit
 git_status git_diff git_log git_show git_blame
 diagnostics validate_data handle_read retrieve_tool_result
@@ -337,19 +345,22 @@ project_map run_tests load_skill
 pandoc_convert image_ocr
 task_create task_list task_read task_cancel task_gate_run
 task_shell_start task_shell_wait
+github_issue_context github_pr_context github_comment github_close_issue
 pr_attempt_record pr_attempt_list pr_attempt_read pr_attempt_preflight
-todo_write × 2 todo_add × 2 todo_update × 2 todo_list × 2
+automation_create automation_list automation_read automation_update
+automation_pause automation_resume automation_delete automation_run
+todo_write todo_add todo_update todo_list
+checklist_write checklist_add checklist_update checklist_list
 update_plan
 review request_user_input recall_archive
 rlm_open rlm_eval rlm_configure rlm_close
-multi_tool_use.parallel notify
-agent_open agent_eval agent_result agent_cancel agent_close agent_list
-resume_agent delegate_to_agent
+notify
+agent_open agent_eval agent_close
 ```
 
 INSTRUCTIONS_MD（`prompts/base.md`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox）。剩余工具靠模型自行从 schema 探索。
 
-Plan 模式约 **33 个工具**（按 §3.2 组成展开：file 只读 3、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 2、todo 8、plan、review、user_input、parallel、recall_archive、retrieve_tool_result、shared 等）：file 只读、search、git（含 history）、diagnostics、skill、validation、handle、task 只读、todo、plan、review、user_input、parallel、recall_archive。
+Plan 模式约 **40 个工具**（`Feature::WebSearch` 默认开；关闭则约 36）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/github/pr_attempt/automation 各自的 list/read）、todo 8、plan、review、user_input、recall_archive、notify、web 4。
 
 ---
 

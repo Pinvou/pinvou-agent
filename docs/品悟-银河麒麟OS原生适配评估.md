@@ -130,10 +130,10 @@ Tauri Linux 应用依赖宿主系统 glibc。当前开发机直接构建的 AMD6
 
 ### 5.2 WebKitGTK 准入
 
-品悟 Tauri 2 Linux 端依赖 `webkit2gtk = "2.0"`，生成的 DEB 会依赖：
+品悟 Tauri 2 Linux 端依赖 `webkit2gtk = "2.0"`，生成的 DEB 会依赖（2026-11 注：按现行 `config/platforms/linux/tauri.conf.json` 的 `depends` 实测；`libgtk-3-0` 为传递依赖，不直接声明）：
 
-- `libwebkit2gtk-4.1-0`；
-- `libgtk-3-0`。
+- `libwebkit2gtk-4.1-0 (>= 2.40)`；
+- `webkit2gtk-driver`、`libpipewire-0.3-0`、`libgbm1`、`libegl1`。
 
 每个目标麒麟版本都必须先确认软件源是否提供 WebKitGTK 4.1。若目标版本只提供 WebKitGTK 4.0，当前 Tauri 2 包不能直接安装。
 
@@ -490,7 +490,7 @@ latest-amd64.json
 | 国产 GPU 驱动与 WebKit EGL 冲突 | 中 | 高 | 物理机矩阵；按环境选择渲染后端，保留软件渲染降级 |
 | 全局 sudo 免密阻碍认证 | 高 | 高 | PolicyKit + 最小权限 helper |
 | 依赖包在私网或某架构不可用 | 高 | 中高 | 自包含、纯 Rust 替代或管理员预装 |
-| 单一 OTA 清单覆盖错误架构 | 高 | 高 | 分架构清单和包架构校验 |
+| 单一 OTA 清单覆盖错误架构 | 高 | 高 | 分架构清单和包架构校验（注：已由 §5.8 的 per-platform `packages` 映射解决） |
 | 把客户端适配误解为本机模型适配 | 中 | 高 | 明确第一阶段模型仍由内网推理服务提供 |
 
 ## 10. 推荐决策
@@ -512,7 +512,7 @@ latest-amd64.json
 - 在没有真实硬件验证时承诺龙芯、申威、MIPS 全支持；
 - 为了进入沙箱而删除品悟的文件、工具和 Agent 核心能力；
 - 继续把 `NOPASSWD: ALL` 带入政企或认证版本；
-- 用一个 `latest.json` 同时发布多个 CPU 架构。
+- 用一个 `latest.json` 同时发布多个 CPU 架构。（注：已由 §5.8 的 per-platform `packages` 映射解决）
 
 ## 11. 验收标准
 

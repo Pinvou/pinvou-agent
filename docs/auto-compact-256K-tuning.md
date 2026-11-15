@@ -150,7 +150,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 
 担心"单个大工具输出(几十 K 的 grep/read)一步污染上下文、跳过 nice 压缩直奔 emergency"。调研结论:**底座已防住,无需配 large_output_router / workshop**。
 
-**底座每-工具-结果截断(始终生效):** `turn_loop.rs:1970` 对**每个**工具结果调 `compact_tool_result_for_context`,产出的压缩版(`output_for_context`)才进 `session.messages` 喂模型(`turn_loop.rs:2004`);全文只给前端显示(`tool_call.set_result`)。
+**底座每-工具-结果截断(始终生效):** `turn_loop.rs`（写档 era HEAD `9c8e4826` 约 :1847/:1880，文中旧行号 :1970/:2004 勿按现树查）对**每个**工具结果调 `compact_tool_result_for_context`,产出的压缩版(`output_for_context`)才进 `session.messages` 喂模型;全文只给前端显示(`tool_call.set_result`)。
 - 档位由窗口决定(`context.rs:262`):`window ≥ 500K` 用大限(180K 字符),否则小限。**pinvou3 256K < 500K → 硬压到 `TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS = 12,000` 字符/结果**(head/tail snippet + 元数据摘要)。
 - 即单次工具输出进上下文 ≤ **~3-4K tokens**,**跳不过 nice(~195K)→ emergency(230,400)的 ~35K 缺口**。
 
@@ -198,7 +198,7 @@ codex 抓 `build_dt_config` 没 export `DEEPSEEK_MAX_OUTPUT_TOKENS`。`effective
 
 → B2 算 `context_input_budget = 256K - 64K - 1K = 191K`（而非文档承诺的 ~239K），preflight emergency 提前 48K 触发，长 turn 可能因输出预算太满而被强制压缩或 provider 400。`PINVOU3_MAX_OUTPUT_TOKENS` 和 `prefs.advanced.max_output_tokens` 的接入点（`Pinvou3Bridge::max_output_tokens()`）建好了但**没有 wire 给 engine**。
 
-当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。Community #210 后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束，云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
+当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。Community #210（内部社区帖，不在本仓库）后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束，云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
 
 同时 round 4 把 bridge 自己的 compaction 注释里 "60K-200K 区间纯本地去重" 也删了（round 3 只改了 docs，bridge 注释漏改）。
 

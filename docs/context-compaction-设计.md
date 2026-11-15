@@ -43,7 +43,7 @@
 
 ### 两把尺问题（所有复杂度的根）
 
-- **T 的判据**（`should_compact`，`crates/tui/src/compaction.rs`，0.9.5 约 :765）：可摘要**子集**的 **raw 尺**（bytes÷4，无放大）。
+- **T 的判据**（`should_compact`，`crates/tui/src/compaction.rs`，0.9.5 约 :765）：可摘要**子集**的 **raw 尺**（bytes÷4，无放大）。（注：子集尺判据为 ≤0.9.5 行为；现行底座压力门按全量 input 估算、触发更早，app 侧 `derive_compaction_threshold` 仍按子集模型推导。）
 - **E 的判据**（保守估算，`crates/tui/src/compaction.rs`，0.9.5 约 :749）：**全量** input 的 **conservative 尺**（raw×1.5 + system÷3 + framing）。
 
 两条线不是一把尺，差异是**乘性的 ×1.5**，不是加性的。这就是为什么 T 必须做尺换算、
@@ -93,8 +93,8 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 5. v0.9 底座只补最小 embed API：把宿主 limits 附到 resolved route；显式 route output
    优先于未知模型名的 4K 兼容 fallback，未声明 route 的上游行为不变。
 
-连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs:933）、请求输出 cap
-按小窗自动钳制（context.rs:62）、context report 百分比 route-aware（context_report.rs:179）。
+连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs，0.9.5 时代约 :933）、请求输出 cap
+按小窗自动钳制（context.rs，0.9.5 时代约 :62）、context report 百分比 route-aware（context_report.rs，0.9.5 时代约 :179；行号为当时快照，勿按现树查）。
 
 ### T 推导公式（阶段一，同尺换算 + 守护余量）
 
@@ -232,7 +232,7 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 
 | 方案 | 为什么现在不值 | 重新考虑的信号 |
 |---|---|---|
-| layered seam（底座已有，默认关） | 复杂 + 每次多请求，底座自己没敢默认开 | 出现超长自主 agent 循环，压缩成热路径 |
+| layered seam（底座曾有，默认关；2026-07-23 已从底座移除，配置键保留但被忽略） | 复杂 + 每次多请求，底座自己没敢默认开 | 出现超长自主 agent 循环，压缩成热路径 |
 | 会话 RAG（pinvou 有 L1 基础） | 对话连续性/指代不能靠检索 | 同上 |
 | 结构化状态（todo/notes） | 底座已部分覆盖，业务非长循环 | 同上 |
 | vLLM `/tokenize` 精确计数 | 每 turn 多一次往返 + pinvou 专用 | 仅作回灌异常时的对账探针 |

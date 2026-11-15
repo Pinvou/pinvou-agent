@@ -1,6 +1,6 @@
 # Plan/Yolo 回归底座式 改造方案
 
-> 状态：已完成并收尾（阶段 1/2/3/4 全 done，2026-06-25；§0 的底座文件/行号为 v0.8.x 旧态，仅作历史引用）。2026-11 回填留档：改造结果在当前代码中可验证——`PlanPhase` 已删除、composer `ComposerModeChip` 已上线、`plan_stuck` 兜底保留。
+> 状态：已完成并收尾（阶段 1/2/3/4 全 done，2026-06-25；§0 及 §3/§4 的底座/前端文件名与行号均为改造时旧态，仅作历史引用）。2026-11 回填留档：改造结果在当前代码中可验证——`PlanPhase` 已删除、composer `ComposerModeChip` 已上线、`plan_stuck` 兜底保留。
 > 目标：砍掉 app 自建的 `PlanPhase` 四态生命周期，回归底座原生的 Plan/Yolo 二态 + 底座 plan 交接闭环；模式切换入口做成 composer（信息输入栏）chip；plan 决策保留卡片形态。
 
 ## 0. 背景与判断
@@ -153,7 +153,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 
 阶段2 已删 M3 后端 emit，前端监听器随之成死代码（永不触发）。本次评估后**决定不重做 M3，把残骸清干净**。
 
-**为什么放弃**（推翻 §6.3 原"重做"决议）：
+**为什么放弃**（推翻 §6 第 3 条原"重做"决议）：
 1. 底座 `update_plan → chat:plan_ready → 方案卡「✅就这么干」→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
 2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡直接干」。
 3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。

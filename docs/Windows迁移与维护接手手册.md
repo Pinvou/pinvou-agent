@@ -8,7 +8,7 @@
 
 ## 1. 一句话定位
 
-pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.0 桌面壳、前端交互、配置桥接、session/workflow 编排；`DeepSeek-TUI/` 是底座 submodule，负责 LLM 调用、工具循环、流式 SSE、session、skill、MCP、hooks、compaction 等核心 agent 能力；本地 vLLM 上的 Qwen3.6-35B-A3B-FP8 是默认推理后端。
+pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.0 桌面壳、前端交互、配置桥接、session/workflow 编排；`DeepSeek-TUI/` 是底座 submodule，负责 LLM 调用、工具循环、流式 SSE、session、skill、MCP、hooks、compaction 等核心 agent 能力；本地 vLLM 上的 Qwen3.6-35B-A3B-FP8 是默认推理后端。（2026-11 注：现为平台感知默认预设 —— Windows/macOS 首启默认 DeepSeek 远程 API，Linux 保持 LocalVllm，见 `platform/prefs/model.rs`。）
 
 最重要的边界：不要在 pinvou3 里重写 DeepSeek-TUI 已有的 Engine、ToolRegistry、SSE、Session、SkillRegistry、Commands 路由、MCP client、Hooks、Cycle、Compaction。新增领域能力优先走 `SKILL.md`、`~/.deepseek/commands/*.md`、独立 MCP server 或 pinvou3-app 的 UI/Rust wrapper。
 
@@ -132,7 +132,7 @@ tauri-bridge.js listen("chat:*")
 
 1. `ensure_release_env()` 注入 reasoning、HTTP/SSE timeout 和平台 UI 等运行时默认值；provider 由当前模型预设决定，输出上限也不再通过全局环境变量注入。
 2. 初始化 Tauri builder 和插件。
-3. 执行工作流迁移 `workflow_migrate::migrate_if_needed()`。
+3. 执行工作流迁移 `workflow_migrate::migrate_if_needed()`。（快照注：工作流子系统已移除，该迁移步骤已不存在。）
 4. 启动 `SessionStore::boot()`，加载 `~/.pinvou3/sessions/`。
 5. 初始化 `EnginePool::new()`，但不立即 spawn engine。
 6. 初始化 `MonitorState`。
@@ -261,7 +261,7 @@ Windows 风险：
 - submodule 分支应是 `pinvou3-clean`。（快照口径；当前主干 gitlink 不固定分支。）
 - fork drift 有明确统计和 fork guard 守护。
 - pinvou3 通过 Cargo path dependency 使用底座 crate：`deepseek-tui = { path = "../../DeepSeek-TUI/crates/tui", package = "codewhale-tui" }`（当前主干 path 为 `../../CodeWhale/crates/tui`）。
-- 上游 v0.8.45 起 rebrand 为 `codewhale-tui`，本地 alias 保持 `deepseek-tui`（当前 path 为 `../../CodeWhale/crates/tui`）。
+- 上游 v0.8.41 起 rebrand 为 `codewhale-tui`，本地 alias 保持 `deepseek-tui`（当前 path 为 `../../CodeWhale/crates/tui`）。
 
 必须保护的 fork 主题：
 
@@ -293,7 +293,7 @@ cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- --test-thre
 
 ## 10. 本地模型与 256K 约束
 
-默认模型名是 `qwen36_35b_256k`。`_256k` 后缀不是装饰，它让底座派生 256K context window。
+默认模型名是 `qwen36_35b_256k`。`_256k` 后缀不是装饰，它让底座派生 256K context window。（2026-11 注：该名是 LocalVllm 预设；Windows/macOS 首启默认预设为 DeepSeek 远程 API，见 `platform/prefs/model.rs`。本节描述本地 vLLM 场景。）
 
 vLLM 需要用匹配的 served model name：
 

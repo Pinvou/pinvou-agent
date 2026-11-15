@@ -9,7 +9,8 @@
 > 分层：`compose_static_layers` 不再装配 `base.md`、`AUTHORITY_RECAP` 清空，prompt 治理
 > 迁移到底座 `StaticPromptComposer` 合同。本文记录的 249 行 `base.md`、三个 override
 > 常量与 #28–#42 指纹清单是历史状态（残留说明见 `resources/common/bundle/base.md`
-> 文首注释），当前 prompt 链路以代码为准。
+> 文首注释），当前 prompt 链路以代码为准。另注：正文的 `resources/bundle/base.md` 路径为
+> 当时代样貌（`common/` 目录 2026-07-22 才拆分），回填时未按现行布局改写正文路径。
 
 ## 执行进度 — 阶段2 已完成（2026-05-29）
 

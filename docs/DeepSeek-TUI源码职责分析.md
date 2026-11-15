@@ -1,6 +1,6 @@
 # DeepSeek-TUI 源码职责分析
 
-> **注（2026-11 回填）**：本文为本地目录仍名 `DeepSeek-TUI/` 时期的历史快照（基线 v0.8.60——晚于上游 v0.8.45 更名，本地 alias 当时未随上游改名，见 Windows 迁移手册 §9）。底座上游 v0.8.45 起更名
+> **注（2026-11 回填）**：本文为本地目录仍名 `DeepSeek-TUI/` 时期的历史快照（基线 v0.8.60——晚于上游 v0.8.41 更名，本地 alias 当时未随上游改名，见 Windows 迁移手册 §9）。底座上游 v0.8.41 起更名
 > `CodeWhale`（现仓库子模块 `CodeWhale/`，本文写作时为 v0.8.60，现已演进至 v0.9.x），文中
 > `DeepSeek-TUI/` 路径对应现 `CodeWhale/`；`pinvou3-app/src-tauri/src/` 的旧扁平布局
 > （`bridge/mod.rs`、`commands.rs`、`engine.rs`、`engine_pool.rs` 等）已重构为
