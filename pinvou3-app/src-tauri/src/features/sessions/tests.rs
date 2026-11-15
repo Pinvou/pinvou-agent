@@ -4370,6 +4370,71 @@ fn ask_on_guardrail_toggle_persists_for_entry_less_sessions() {
     assert_eq!(reopened.mode_state(sid).ask_on_guardrail, !global_default);
 }
 
+/// Round-9 P2 (review JensenChen28 4574979867, third pass on
+/// 4574821715/4574969224): the aux ask seed probed the explicit override
+/// BEFORE taking the I/O mutex, so a concurrent `set_ask_on_guardrail`
+/// (which holds the same mutex across persist and mirror publication)
+/// landing between the probe and the lock was then overwritten by the
+/// parent value. The seed now rechecks under the mutex; this pin drives
+/// exactly that interleaving: hold the mutex, let the seed block past its
+/// pre-lock probes, publish the override mid-flight, release — and the
+/// explicit value must survive both the mirror and the persisted sidecar.
+#[test]
+fn aux_ask_seed_rechecks_override_under_io_mutex() {
+    let (store, _g) = isolated_store();
+    let store = std::sync::Arc::new(store);
+    let aux = "seed-recheck-session";
+    // A real session record keeps the id alive across the reopen path's
+    // boot ghost sweep (same discipline as the entry-less toggle pin
+    // above): without it the override would be swept as dead-id state and
+    // the reload assertion would read absence, not the surviving value.
+    store
+        .save_session_atomic(&chat_model_session(aux.to_string()))
+        .expect("materialize session record");
+    // The parent value must differ from the current resolution so the seed
+    // passes its pre-lock value probe and reaches the mutex at all.
+    let parent_ask = !store.mode_state(aux).ask_on_guardrail;
+    let io = store.session_mode_states_io.lock();
+    let store_for_thread = std::sync::Arc::clone(&store);
+    let seeded = {
+        let handle =
+            std::thread::spawn(move || store_for_thread.seed_aux_ask_from_parent(aux, parent_ask));
+        // Give the seed thread a beat to clear its pre-lock probes and
+        // block on the mutex, then publish the concurrent override exactly
+        // as `set_ask_on_guardrail` would: sidecar persist + mirror insert.
+        // This test thread holds the same mutex the real setter takes (the
+        // setter itself cannot be called here without deadlocking the
+        // interleaving this pin constructs), so the two-step publication
+        // below replays its observable effects faithfully.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        SessionStore::apply_ask_on_guardrail_mutation_locked(&[(aux, !parent_ask)], &[])
+            .expect("persist the racing override");
+        store
+            .ask_on_guardrail_overrides
+            .write()
+            .insert(aux.to_string(), !parent_ask);
+        drop(io);
+        handle.join().expect("seed thread join")
+    };
+    assert!(
+        !seeded,
+        "the seed must abort once the explicit override is visible under the lock"
+    );
+    assert_eq!(
+        store.ask_on_guardrail_overrides.read().get(aux),
+        Some(&!parent_ask),
+        "the explicit override survives the seed in the in-memory mirror"
+    );
+    // And the seed must not have re-persisted the parent value over the
+    // racing override: a reboot reload resolves to the explicit value.
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(
+        reopened.ask_on_guardrail_overrides.read().get(aux).copied(),
+        Some(!parent_ask),
+        "persisted state keeps the explicit value, not the parent seed"
+    );
+}
+
 /// 启动幽灵清扫（retention 对齐，评审 round-7）：会话记录删除与 mode/
 /// ask-on-guardrail sidecar 清理之间崩溃（绕过 store.delete 直接删记录文件
 /// 模拟）留下的幽灵条目，重启后必须被清扫——mode 条目、显式 Auto 伴随旗与

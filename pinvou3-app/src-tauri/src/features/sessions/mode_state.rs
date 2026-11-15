@@ -1695,6 +1695,17 @@ impl SessionStore {
             return false;
         }
         let _io = self.session_mode_states_io.lock();
+        // Recheck the explicit override UNDER the mutex (review JensenChen28
+        // 4574979867, third pass on 4574821715/4574969224): a concurrent
+        // `set_ask_on_guardrail` holds this same mutex across its persist
+        // and its mirror publication, so an override that landed between
+        // the pre-lock probe and this acquisition is visible only here —
+        // seeding past it would overwrite an explicit aux choice with the
+        // parent's value. An override that lands after the seed releases
+        // the mutex still writes last and wins.
+        if self.ask_on_guardrail_overrides.read().get(aux_id).is_some() {
+            return false;
+        }
         match Self::apply_ask_on_guardrail_mutation_locked(&[(aux_id, parent_ask)], &[]) {
             Ok(()) => {
                 if let Some(entry) = self.mode_states.write().get_mut(aux_id) {
