@@ -524,12 +524,18 @@ impl Store {
     ///
     /// 为什么需要子树删除：目录被 rename/move-out 时，inotify 只会在（仍被监听的）父目录上
     /// 冒出该目录自身的事件，其下的文件不会有任何事件；精确删除会在索引里留下整树「幽灵」，
-    /// 一直撑到下次重扫。先按主键查 `is_dir`，目录才走前缀删除——前缀比较无法用索引，
-    /// 文件（绝大多数事件）保持索引精确删除的代价。
+    /// 一直撑到下次重扫。先按主键查 `is_dir`，目录才走前缀删除——前缀比较是全表扫描，
+    /// 文件（绝大多数事件）保持索引精确删除的代价。已知残留缺口（幽灵方向，重扫兜底）：
+    /// 库里残留 `is_dir=false` 的陈旧行、而磁盘上已是目录时，本次只精确删除，子树行留待
+    /// 重扫清（is_dir 门是省全表扫描的取舍，事件流的批量合并另见 watcher 侧）。
     ///
     /// 前缀匹配用 `path + 主分隔符` 的 substr 精确比较：路径可含 `%`/`_`/`[`，不能走
-    /// LIKE/GLOB；SQLite 的 `length`/`substr` 按 Unicode 字符计数，与 Rust `chars().count()`
-    /// 一致，CJK 路径安全。
+    /// LIKE/GLOB；也不换成「上界 range」——BINARY 文本序下前缀范围没有有限上界
+    /// （后缀可任意延长并超过任何候补上界），substr 是既不用模式语义又能全 Unicode
+    /// 精确的形态。SQLite 的 `length`/`substr` 按 Unicode 字符计数，与 Rust
+    /// `chars().count()` 一致，CJK 路径安全。入参容忍**尾部分隔符**（接线方传根
+    /// PathBuf 时可能带 `/`），统一去掉后再比对，否则 `dir` + `/` 拼出 `dir//`
+    /// 而整树漏删。
     pub fn delete_tree(&self, paths: &[String]) -> rusqlite::Result<()> {
         let mut guard = self.conn.lock();
         let tx = guard.transaction()?;
@@ -539,7 +545,13 @@ impl Store {
             let mut del_sub = tx.prepare_cached(
                 "DELETE FROM files WHERE length(path) >= ?1 AND substr(path, 1, ?1) = ?2",
             )?;
-            for p in paths {
+            for p_raw in paths {
+                let p = p_raw
+                    .trim_end_matches(std::path::MAIN_SEPARATOR)
+                    .trim_end_matches('/');
+                if p.is_empty() {
+                    continue;
+                }
                 let is_dir: Option<bool> = q.query_row(params![p], |r| r.get(0)).optional()?;
                 del_exact.execute(params![p])?;
                 if is_dir == Some(true) {
@@ -1518,5 +1530,73 @@ mod tests {
         s.delete_tree(&["/never/indexed.md".into(), "/also/missing".into()])
             .unwrap();
         assert!(s.load_index().unwrap().is_empty());
+    }
+
+    /// 尾部分隔符必须规范化后再比对：接线方传根 PathBuf 时可能带 `/`，若拿
+    /// `dir` + `/` 直接拼会得到 `dir//`，整树静默漏删（幽灵直到重扫）。
+    #[test]
+    fn delete_tree_normalizes_a_trailing_separator() {
+        let s = Store::open_in_memory().unwrap();
+        let mut dir = rec("/t/sub", "sub", None, 0, 1);
+        dir.is_dir = true;
+        s.upsert_many(&[dir, rec("/t/sub/a.md", "a.md", Some("md"), 3, 2)])
+            .unwrap();
+
+        s.delete_tree(&["/t/sub/".into()]).unwrap();
+
+        assert!(
+            s.load_index().unwrap().is_empty(),
+            "a trailing-separator path must still remove the whole subtree"
+        );
+    }
+
+    /// 前缀匹配必须按字面比较：被删目录名里的 `%`/`_`/`[` 一旦被当成 LIKE/GLOB
+    /// 模式语义，会误删只共享前缀字符的兄弟。当前 substr 形态对三者全免疫。
+    #[test]
+    fn delete_tree_is_literal_about_pattern_metachars() {
+        let s = Store::open_in_memory().unwrap();
+        let mut dir = rec("/home/u/met_100%[1]", "met_100%[1]", None, 0, 1);
+        dir.is_dir = true;
+        s.upsert_many(&[
+            dir,
+            rec(
+                "/home/u/met_100%[1]/报告.pdf",
+                "报告.pdf",
+                Some("pdf"),
+                8,
+                2,
+            ),
+            // 字面含相同前缀字符的兄弟：非模式语义不得被波及。
+            rec(
+                "/home/u/met_100%[1]_备份.md",
+                "met_100%[1]_备份.md",
+                Some("md"),
+                5,
+                3,
+            ),
+            // 在未转义 LIKE ('met_100%[1]%') 下会假阳性命中的名字：必须幸存。
+            rec(
+                "/home/u/metX100Yfoo1Z.md",
+                "metX100Yfoo1Z.md",
+                Some("md"),
+                6,
+                4,
+            ),
+        ])
+        .unwrap();
+
+        s.delete_tree(&["/home/u/met_100%[1]".into()]).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(!left.contains_key("/home/u/met_100%[1]"));
+        assert!(!left.contains_key("/home/u/met_100%[1]/报告.pdf"));
+        assert!(
+            left.contains_key("/home/u/met_100%[1]_备份.md"),
+            "literal-prefix sibling must survive"
+        );
+        assert!(
+            left.contains_key("/home/u/metX100Yfoo1Z.md"),
+            "a name that unescaped-LIKE would false-positive must survive"
+        );
     }
 }

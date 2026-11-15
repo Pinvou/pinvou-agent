@@ -6,35 +6,52 @@
 //! 实时增量索引：notify 监听已纳入的根，文件变化即时更新 L0 元数据库。
 //!
 //! 事件处理（对齐 file_watcher.rs 的「按存在性判定」做法），对事件里的每条路径：
-//! - `symlink_metadata` 成功且是普通文件/目录 → 组件级排除 + [`Excluder::is_skipped`]
-//!   （与扫描器同一策略源，含 `is_dir` 上下文，带点目录/无扩展名文件与扫描结果一致）
-//!   后 `upsert`
+//! - `symlink_metadata` 成功且是普通文件/目录 → **根范围内**组件级排除 +
+//!   [`Excluder::is_skipped`]（与扫描器同一策略源，含 `is_dir` 上下文，带点目录/
+//!   无扩展名文件与扫描结果一致）后 `upsert`
 //! - `NotFound`（已删除 / rename 移走）→ [`Store::delete_tree`]：目录记录连带子树
 //!   一并删（dir rename/move-out 只会冒出父路径事件），文件退化为精确删除
 //! - 其他 stat 错误（权限收紧/挂载抖动）→ 只告警不删，避免把仍存在的记录误删
 //!
-//! 排除：recursive 监听不会自动剪枝，事件里仍会冒出 node_modules/.ssh 等深处的路径，
-//! 先做组件级 [`Excluder::is_excluded_path`]（删除事件同样适用），存活路径再按
-//! `is_skipped` 判类型。
+//! 排除范围与扫描器对齐：recursive 监听不会自动剪枝，事件里仍会冒出
+//! node_modules/.ssh 等深处的路径，先按**受监听根的可见范围**做组件级排除（根自身
+//! basename + 根下组件；根之上的祖先组件扫描器永不可见，不得据此丢整根事件），
+//! 删除事件同样适用，存活路径再按 `is_skipped` 判类型。
 //!
 //! 已知限制（接线方需知）：
 //! - Linux 递归监听 `$HOME` 级根会消耗大量 inotify watch，可能撞
-//!   `fs.inotify.max_user_watches`；`watch()` 失败只告警不重试。符号链接根会被
-//!   notify 后端静默空 watch（不下探 symlink）。
+//!   `fs.inotify.max_user_watches`；`watch()` 失败只告警不重试。watch 注册由后端
+//!   自行遍历完成（不剪枝），中途失败会**静默留下部分子树未监听**，而日志仍报告
+//!   该根已 watch——大批量根以懒触发重扫兜底。
 //! - 兜底重扫是**懒触发**的（进文件管理页才跑 `kb_start_scan`），没有周期重扫；
 //!   溢出/掉 watch（Q_OVERFLOW、MaxFilesWatch）只能告警，索引在下次重扫前保持
-//!   陈旧——接线方应把 `need_rescan` 告警接成受影响根的重扫触发。
-//! - macOS fsevent 的 rename 只报新路径，旧路径记录要等重扫清理；被监听根自身被删
-//!   则 watch 永久失效（无父 watch 可重挂）。
+//!   陈旧——接线方应把 `need_rescan` 告警接成重扫触发。注意 Linux inotify 的
+//!   Q_OVERFLOW 事件**不携带路径**（内核队列被所有根共享），只能整组根重扫；
+//!   macOS fsevent 的丢事件信号带受影响路径。
+//! - 树内软链目录不下探：watcher 以 `with_follow_symlinks(false)` 构造，与扫描器
+//!   `follow_links(false)` 同向（notify 默认是跟随的，必须显式关掉）。软链**根本
+//!   身**不被支持：Linux inotify 下得不到任何 watch（空监听），macOS fsevent 会
+//!   把根规范化到实体路径（同样不按软链字面监听）——接线方应拒绝或先规范化根。
+//! - Linux 的目录 rename 只冒出该目录自身的新旧路径事件：旧子树由
+//!   [`Store::delete_tree`] 清掉，但**新路径下的子文件没有任何事件**（inotify 的
+//!   watch 跟随 inode，未变动的子文件不触发），其记录要到下次重扫或被改写才补齐。
+//! - 被监听根自身：Linux inotify 下被删则 watch 永久失效（无父 watch 可重挂），
+//!   被 rename 则事件永远带着旧前缀路径（等同失效）——两者都靠重扫兜底；
+//!   macOS fsevent 的流按路径存活，根重建后事件恢复。
+//! - macOS fsevent 的 rename 只报新路径，旧路径记录要等重扫清理。
 //! - 无去抖：同一文件的连发事件各写一次（幂等、量小）；大批量灌入场景由接线方
-//!   评估 coalescing（参考 file_watcher.rs 的 trailing-edge 防抖）。
+//!   评估 coalescing（file_watcher.rs 的防抖只覆盖 sched-*.json，参考其窗口思路
+//!   而非照搬）。
 //!
 //! 当前未接线：`spawn` 尚无生产调用方（与闭源侧一致为落库待接线状态）；入口由
-//! 后续接线方在启动扫描时按根调用。
+//! 后续接线方在启动扫描时按根调用。watcher 是 app 级单例语义：`spawn` 内置了
+//! 防重入守卫，重复调用直接忽略——需要更换根集合时，先给线程补停止接口（#869），
+//! 不能靠再 spawn 一条。
 
 #![allow(dead_code)] // 库先行：接线前 spawn 无生产调用方（见上方注记）
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
@@ -44,18 +61,36 @@ use super::exclude::Excluder;
 use super::scanner::{ext_of, record_from_parts};
 use super::store::{FileRecord, Store};
 
-/// 启动后台 watcher 线程，监听给定根。spawn 后即返回，线程随 app 存活。
+/// 单实例守卫：watcher 线程随 app 存活，重复 `spawn` 会叠出第二条线程对同一批根
+/// 重复消费事件（还会叠加 inotify watch 占用）。接线方要换根集合时必须先停线程。
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 启动后台 watcher 线程，监听给定根。spawn 后即返回，线程随 app 存活；
+/// 已有活跃 watcher 时本次调用直接忽略（见 [`ACTIVE`]）。
 pub fn spawn(store: Store, roots: Vec<PathBuf>) {
     if roots.is_empty() {
+        return;
+    }
+    if ACTIVE
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        eprintln!("[kb_watcher] spawn ignored: a watcher thread is already active");
         return;
     }
     thread::spawn(move || {
         let ex = Excluder::default();
         let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
-        let mut watcher: RecommendedWatcher = match notify::recommended_watcher(tx) {
+        // follow_symlinks(false)：notify 默认跟随软链（inotify 注册时连软链目录
+        // 一起下探），与扫描器 follow_links(false) 相反——必须在构造处显式关闭。
+        let mut watcher: RecommendedWatcher = match RecommendedWatcher::new(
+            tx,
+            notify::Config::default().with_follow_symlinks(false),
+        ) {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("[kb_watcher] init failed: {e}");
+                ACTIVE.store(false, Ordering::SeqCst);
                 return;
             }
         };
@@ -69,6 +104,7 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) {
         }
         if watched == 0 {
             eprintln!("[kb_watcher] no root could be watched; idle until restart");
+            ACTIVE.store(false, Ordering::SeqCst);
             return;
         }
         eprintln!("[kb_watcher] watching {watched}/{} root(s)", roots.len());
@@ -89,7 +125,7 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) {
                         ev.kind,
                         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
                     ) {
-                        apply(&ex, &store, &ev);
+                        apply(&ex, &store, &roots, &ev);
                     }
                 }
                 // 通道上的 Err：读循环 IO 错误、中途 MaxFilesWatch（notify 之后不再扩
@@ -104,24 +140,39 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) {
 /// Other（无 Rescan flag 的杂项）不得进入存在性判定——否则一条 Access 事件会
 /// 把「已索引但刚被删」的路径当作删除信号以外的误判源（读一个不存在的路径
 /// 不意味着索引要删它）。
-fn apply(ex: &Excluder, store: &Store, ev: &Event) {
+fn apply(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
     if !matches!(
         ev.kind,
         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
     ) {
         return;
     }
-    handle_event(ex, store, ev);
+    handle_event(ex, store, roots, ev);
+}
+
+/// 事件路径的组件级排除，按受监听根取**相对范围**：与扫描器的可见组件一致
+/// （walkdir 的 filter_entry 首个看到的就是根本身，其上的祖先组件扫描器永不可见）。
+/// 找不到所属根的路径（正常不会发生，防御性保留）退回全路径判定。
+fn excluded(ex: &Excluder, roots: &[PathBuf], path: &Path) -> bool {
+    match roots
+        .iter()
+        .filter(|r| path.starts_with(r))
+        .max_by_key(|r| r.components().count())
+        .map(|r| r.as_path())
+    {
+        Some(root) => ex.is_excluded_under_root(path, root),
+        None => ex.is_excluded_path(path),
+    }
 }
 
 /// 处理单条事件：按存在性分桶（存活 → upsert，消失 → delete），每事件一次批量写。
 /// 独立于线程闭包，便于单元测试。
-fn handle_event(ex: &Excluder, store: &Store, ev: &Event) {
+fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
     let mut ups: Vec<FileRecord> = Vec::new();
     let mut dels: Vec<String> = Vec::new();
     for path in &ev.paths {
-        // 组件级排除（祖先 + 末级的 names/secrets）：churn 目录整条跳过，不 stat。
-        if ex.is_excluded_path(path) {
+        // 组件级排除（根自身 + 根下的 names/secrets）：churn 目录整条跳过，不 stat。
+        if excluded(ex, roots, path) {
             continue;
         }
         match std::fs::symlink_metadata(path) {
@@ -150,20 +201,24 @@ fn handle_event(ex: &Excluder, store: &Store, ev: &Event) {
             Err(e) => eprintln!("[kb_watcher] stat({}) failed: {e}", path.display()),
         }
     }
+    // 写失败与 stat 抖动同类：都是「增量索引悄悄漏了一拍」。必须喊出来——索引在
+    // 下次重扫前会一直缺这条更新，静默吞掉会让「需要重扫」的信号无处可寻。
     if !ups.is_empty() {
-        let _ = store.upsert_many(&ups);
+        if let Err(e) = store.upsert_many(&ups) {
+            eprintln!("[kb_watcher] upsert({}) failed: {e}", ups.len());
+        }
     }
     if !dels.is_empty() {
-        let _ = store.delete_tree(&dels);
+        if let Err(e) = store.delete_tree(&dels) {
+            eprintln!("[kb_watcher] delete({}) failed: {e}", dels.len());
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{
-        AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
-    };
+    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind, RenameMode};
     use std::fs;
     use std::path::Path;
 
@@ -197,11 +252,19 @@ mod tests {
         fs::write(base.join("notes.md"), b"# note").unwrap();
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
+        let roots = vec![base.clone()];
 
-        apply(&ex, &store, &ev(creates_file(), &[&base.join("notes.md")]));
-        let idx = indexed(&store);
-        assert!(idx.contains(&base.join("notes.md").to_string_lossy().into_owned()));
-        assert_eq!(store.stats().unwrap().total_files, 1);
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(creates_file(), &[&base.join("notes.md")]),
+        );
+        assert_eq!(
+            indexed(&store),
+            vec![base.join("notes.md").to_string_lossy().into_owned()],
+            "create event upserts exactly the touched file"
+        );
 
         // Access（读/关）不改变索引状态：路径已从盘上消失但事件只是 Access——
         // 若准入失守，这条事件会顺着 NotFound 走到删除分支。
@@ -209,13 +272,14 @@ mod tests {
         apply(
             &ex,
             &store,
+            &roots,
             &ev(
                 EventKind::Access(AccessKind::Close(AccessMode::Write)),
                 &[&base.join("notes.md")],
             ),
         );
         assert_eq!(
-            store.stats().unwrap().total_files,
+            indexed(&store).len(),
             1,
             "access events must not reach the delete branch"
         );
@@ -223,6 +287,7 @@ mod tests {
         apply(
             &ex,
             &store,
+            &roots,
             &ev(
                 EventKind::Remove(RemoveKind::File),
                 &[&base.join("notes.md")],
@@ -247,15 +312,18 @@ mod tests {
         fs::write(base.join("项目备份.md"), b"s").unwrap();
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
+        let roots = vec![base.clone()];
 
         apply(
             &ex,
             &store,
+            &roots,
             &ev(EventKind::Create(CreateKind::Folder), &[&base.join("项目")]),
         );
         apply(
             &ex,
             &store,
+            &roots,
             &ev(
                 EventKind::Create(CreateKind::File),
                 &[
@@ -271,6 +339,7 @@ mod tests {
         apply(
             &ex,
             &store,
+            &roots,
             &ev(EventKind::Remove(RemoveKind::Folder), &[&base.join("项目")]),
         );
 
@@ -291,16 +360,19 @@ mod tests {
         fs::write(base.join("old.md"), b"# old").unwrap();
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
+        let roots = vec![base.clone()];
 
         apply(
             &ex,
             &store,
-            &ev(EventKind::Create(CreateKind::File), &[&base.join("old.md")]),
+            &roots,
+            &ev(creates_file(), &[&base.join("old.md")]),
         );
         fs::rename(base.join("old.md"), base.join("新文档.md")).unwrap();
         apply(
             &ex,
             &store,
+            &roots,
             &ev(
                 EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
                 &[&base.join("old.md"), &base.join("新文档.md")],
@@ -311,6 +383,99 @@ mod tests {
         assert_eq!(
             idx,
             vec![base.join("新文档.md").to_string_lossy().into_owned()]
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 分离的 From/To 事件与 Both 等价：Windows 后端只发分离事件、从不发 Both，
+    /// macOS 只发新路径——「skip From/To、Both 收尾」式的重构若破坏分离形状，
+    /// Windows 的 rename 处理会静默坏掉，这条测试咬住它。
+    #[test]
+    fn separate_from_to_rename_events_match_the_both_shape() {
+        let base = tmp("renft");
+        fs::write(base.join("旧.md"), b"# old").unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let ex = Excluder::default();
+        let roots = vec![base.clone()];
+
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(creates_file(), &[&base.join("旧.md")]),
+        );
+        fs::rename(base.join("旧.md"), base.join("新.md")).unwrap();
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(
+                EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                &[&base.join("旧.md")],
+            ),
+        );
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(
+                EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                &[&base.join("新.md")],
+            ),
+        );
+
+        assert_eq!(
+            indexed(&store),
+            vec![base.join("新.md").to_string_lossy().into_owned()],
+            "From deletes the old path, To upserts the new one"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 排除范围止于受监听根：根**之上**的祖先组件不再参与排除——扫描器对
+    /// `build`/`snap` 这类排除名祖先下的根照常全量入库（walkdir 从根本身走起，
+    /// 看不见上面的祖先），watcher 若按全路径判组件会把整根事件静默丢光；而根本
+    /// 身 basename 命中名单时，扫描器的 filter_entry 对首个 entry（根本身）同样
+    /// 剪枝整棵树，watcher 必须一致。
+    #[test]
+    fn exclusion_scope_stops_at_the_watched_root() {
+        let base = tmp("rootscope");
+        let root = base.join("build/proj"); // 祖先 "build" ∈ SKIP_NAMES
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("报告.pdf"), b"r").unwrap();
+        let excluded_root = base.join("node_modules"); // 根自身 basename 命中名单
+        fs::create_dir_all(excluded_root.join("pkg")).unwrap();
+        fs::write(excluded_root.join("pkg/x.pdf"), b"x").unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let ex = Excluder::default();
+        let roots = vec![root.clone(), excluded_root.clone()];
+
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(creates_file(), &[&root.join("报告.pdf")]),
+        );
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(EventKind::Create(CreateKind::Folder), &[&excluded_root]),
+        );
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(creates_file(), &[&excluded_root.join("pkg/x.pdf")]),
+        );
+
+        assert_eq!(
+            indexed(&store),
+            vec![root.join("报告.pdf").to_string_lossy().into_owned()],
+            "ancestors above the watched root must not exclude events; a root whose \
+             own basename is excluded stays pruned like the scanner"
         );
 
         let _ = fs::remove_dir_all(&base);
@@ -329,6 +494,7 @@ mod tests {
         fs::write(base.join("报告.pdf"), b"r").unwrap();
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
+        let roots = vec![base.clone()];
 
         let creates = EventKind::Create(CreateKind::File);
         for p in [
@@ -337,11 +503,12 @@ mod tests {
             "main.c",
             "报告.pdf",
         ] {
-            apply(&ex, &store, &ev(creates, &[&base.join(p)]));
+            apply(&ex, &store, &roots, &ev(creates, &[&base.join(p)]));
         }
         apply(
             &ex,
             &store,
+            &roots,
             &ev(
                 EventKind::Create(CreateKind::Folder),
                 &[&base.join("backup.old")],
@@ -371,10 +538,12 @@ mod tests {
         fs::write(base.join("backup.old/报告.pdf"), b"p").unwrap();
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
+        let roots = vec![base.clone()];
 
         apply(
             &ex,
             &store,
+            &roots,
             &ev(
                 EventKind::Create(CreateKind::Folder),
                 &[&base.join("backup.old")],
@@ -383,6 +552,7 @@ mod tests {
         apply(
             &ex,
             &store,
+            &roots,
             &ev(creates_file(), &[&base.join("backup.old/报告.pdf")]),
         );
         assert_eq!(indexed(&store).len(), 2);
@@ -391,6 +561,7 @@ mod tests {
         apply(
             &ex,
             &store,
+            &roots,
             &ev(
                 EventKind::Remove(RemoveKind::Folder),
                 &[&base.join("backup.old")],
@@ -405,11 +576,38 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// symlink 本体不入库（与扫描器 to_record 拒收、follow_links(false) 一致）。
+    #[test]
+    #[cfg(unix)]
+    fn symlink_events_do_not_index_the_link() {
+        let base = tmp("symlink");
+        fs::write(base.join("报告.pdf"), b"r").unwrap();
+        std::os::unix::fs::symlink(base.join("报告.pdf"), base.join("link.pdf")).unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let ex = Excluder::default();
+        let roots = vec![base.clone()];
+
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(creates_file(), &[&base.join("link.pdf")]),
+        );
+
+        assert!(
+            indexed(&store).is_empty(),
+            "the symlink body must not enter the index"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
     /// stat 抖动（父目录权限收紧等）不得把仍存在的记录当删除处理——
     /// `Path::exists()` 会把一切错误折叠成 false，旧版在此误删活记录。
     #[test]
     #[cfg(unix)]
     fn transient_stat_errors_do_not_delete_records() {
+        use notify::event::DataChange;
         use std::os::unix::fs::PermissionsExt as _;
 
         let base = tmp("staterr");
@@ -417,10 +615,12 @@ mod tests {
         fs::write(base.join("sub/notes.md"), b"# n").unwrap();
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
+        let roots = vec![base.clone()];
 
         apply(
             &ex,
             &store,
+            &roots,
             &ev(creates_file(), &[&base.join("sub/notes.md")]),
         );
         assert_eq!(store.stats().unwrap().total_files, 1);
@@ -438,6 +638,7 @@ mod tests {
         apply(
             &ex,
             &store,
+            &roots,
             &ev(
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)),
                 &[&base.join("sub/notes.md")],

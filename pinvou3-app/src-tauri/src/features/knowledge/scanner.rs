@@ -165,9 +165,11 @@ pub(super) fn ext_of(p: &Path) -> Option<String> {
         .map(|s| s.to_lowercase())
 }
 
-/// 从单个路径 stat 出一条记录（watcher 增量用的单路径入口）。用 `symlink_metadata`
+/// 从单个路径 stat 出一条记录。预留的单路径入口：接线 PR（#869）的重扫/刷新走
+/// 这里；watcher 的事件路径不走它（`handle_event` 需要 stat 结果先分桶
+/// NotFound/其他错误，`Option<FileRecord>` 表达不了那层分派）。用 `symlink_metadata`
 /// 不跟随软链，与扫描器 `follow_links(false)` 一致；symlink/socket 等返回 None 跳过。
-#[allow(dead_code)] // watcher 库先行：接线前仅测试引用（watcher 走 record_from_parts stat 先行）
+#[allow(dead_code)] // watcher 库先行：接线前仅测试引用
 pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
     let md = std::fs::symlink_metadata(path).ok()?;
     let ft = md.file_type();
@@ -230,6 +232,8 @@ mod tests {
     }
 
     /// 非 UTF-8 路径：与扫描器同语义（to_str() 失败即跳过），不得 panic。
+    /// 注意 APFS 等文件系统拒绝非 UTF-8 文件名（EILSEQ），fixture 造不出来——
+    /// 与 chmod-000 fixture 同款探针：造不出来就跳过，不在敌意文件系统上假红。
     #[test]
     #[cfg(unix)]
     fn record_from_path_skips_non_utf8_paths() {
@@ -241,7 +245,10 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         let p = base.join(OsStr::from_bytes(b"\xff\xfe.bad"));
-        fs::write(&p, b"x").unwrap();
+        if fs::write(&p, b"x").is_err() {
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
 
         assert!(record_from_path(&p).is_none());
 

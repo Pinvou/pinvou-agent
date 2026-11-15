@@ -130,6 +130,12 @@ impl Excluder {
         false
     }
 
+    /// 单个 basename 命中 names/secrets 即排除（组件级判定的最小单元）。
+    #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
+    pub fn is_excluded_name(&self, name: &str) -> bool {
+        self.names.contains(name) || self.secrets.contains(name)
+    }
+
     /// 组件级排除：路径的**每一级** basename（含末级）命中 names/secrets 即排除。
     /// watcher 用——递归监听不会自动剪枝，事件里仍会冒出 node_modules/.ssh 等深处的路径，
     /// 扫描器走 walkdir `filter_entry` 逐层剪枝，无此需要。
@@ -142,13 +148,39 @@ impl Excluder {
         for comp in path.components() {
             if let Component::Normal(os) = comp {
                 if let Some(name) = os.to_str() {
-                    if self.names.contains(name) || self.secrets.contains(name) {
+                    if self.is_excluded_name(name) {
                         return true;
                     }
                 }
             }
         }
         false
+    }
+
+    /// 根范围内组件级排除：根本身 basename + 根下相对组件命中 names/secrets 即排除。
+    /// 与扫描器的可见范围对齐——walkdir 的 `filter_entry` 首个看到的就是根本身，
+    /// 其上的祖先组件扫描器永不可见（根位于 `build`/`snap` 这类排除名目录之下时，
+    /// 扫描器照常全量入库，watcher 不得据祖先组件把整根事件静默丢光）。根外路径
+    /// 不归本方法管（调用方退回 [`Excluder::is_excluded_path`]）。
+    ///
+    /// 扩展名策略不在此判，同 [`Excluder::is_excluded_path`]。
+    #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
+    pub fn is_excluded_under_root(&self, path: &Path, root: &Path) -> bool {
+        // 根自身 basename：扫描器对根本身执行同一名单判定（filter_entry 应用于
+        // 首个 entry，命中即整棵树剪枝）。
+        if let Some(name) = root.file_name().and_then(|s| s.to_str()) {
+            if self.is_excluded_name(name) {
+                return true;
+            }
+        }
+        match path.strip_prefix(root) {
+            Ok(rel) => rel.components().any(|comp| {
+                matches!(&comp, Component::Normal(os)
+                    if os.to_str().is_some_and(|n| self.is_excluded_name(n)))
+            }),
+            // path 不在 root 之下：调用方应先做根归属，这里防御性退回全组件判定。
+            Err(_) => self.is_excluded_path(path),
+        }
     }
 }
 
@@ -192,6 +224,44 @@ mod tests {
         assert!(!ex.is_excluded_path(Path::new("/home/u/Documents/保险报价单.pdf")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/Downloads/report.docx")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/proj")));
+    }
+
+    /// 根范围判定与扫描器可见范围对齐：根之上的祖先（`build` ∈ SKIP_NAMES）不参与
+    /// 判定（扫描器对这种根照常入库，watcher 不得丢整根事件）；根本身 basename 命中
+    /// 名单则整根排除（filter_entry 对首个 entry 的剪枝）；根下深处的 churn 祖先
+    /// 照常命中；根外路径退回全组件判定。
+    #[test]
+    fn excluded_under_root_scopes_to_the_watched_root() {
+        let ex = Excluder::default();
+        // 祖先 "build" 之上于根 → 不参与判定
+        assert!(!ex.is_excluded_under_root(
+            Path::new("/home/build/proj/报告.pdf"),
+            Path::new("/home/build/proj"),
+        ));
+        // 根自身 basename 命中名单 → 整根排除（含根自身与根下任意深度）
+        assert!(ex.is_excluded_under_root(
+            Path::new("/home/u/node_modules"),
+            Path::new("/home/u/node_modules"),
+        ));
+        assert!(ex.is_excluded_under_root(
+            Path::new("/home/u/node_modules/pkg/deep.pdf"),
+            Path::new("/home/u/node_modules"),
+        ));
+        // 根下深处的 churn 祖先照常命中
+        assert!(ex.is_excluded_under_root(
+            Path::new("/home/u/proj/node_modules/a/index.js"),
+            Path::new("/home/u/proj"),
+        ));
+        // 干净路径放行（扩展名不在此判，交给 is_skipped）
+        assert!(!ex.is_excluded_under_root(
+            Path::new("/home/build/proj/src"),
+            Path::new("/home/build/proj"),
+        ));
+        // 根外路径（防御臂）退回全组件判定
+        assert!(ex.is_excluded_under_root(
+            Path::new("/elsewhere/.ssh/config"),
+            Path::new("/home/u/proj"),
+        ));
     }
 
     /// 扩展名策略与扫描器同源（is_skipped）：带点目录名不受扩展名约束（watcher
