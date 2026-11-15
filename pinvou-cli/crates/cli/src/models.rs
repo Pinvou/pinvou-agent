@@ -416,11 +416,6 @@ fn parse_search_provider(raw: &str) -> Result<SearchProvider, CliError> {
 /// module is not exported through `pinvou3_lib`, so the CLI carries its own
 /// equivalent — the variants and their preset/wire mapping are the shared
 /// contract, pinned by tests on both sides.
-/// The wire protocol a `models discover` run speaks. Named after the GUI
-/// command's `DiscoveryProtocol` (`core::endpoint_discovery`); the app-private
-/// module is not exported through `pinjou3_lib`, so the CLI carries its own
-/// equivalent — the variants and their preset/wire mapping are the shared
-/// contract, pinned by tests on both sides.
 /// `pub` for the same reason as `SettingsKey`: the payload type of a `pub`
 /// command variant must not be more private than the variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -450,11 +445,16 @@ fn protocol_for_preset(preset: ModelPreset) -> DiscoveryProtocol {
     }
 }
 
-/// The frozen wire → protocol mapping (the ACP provider wires).
+/// The frozen wire → protocol mapping (the ACP provider wires). `responses`
+/// joins the OpenAI-compatible family: the GUI's wire mapping treats the
+/// responses wire (and everything unknown) as OpenAI-compatible, and an ACP
+/// provider configured on that wire must reach the same ladder here. The CLI
+/// stays STRICTER than the GUI about unknown wires on purpose — a typo on the
+/// command line should be a usage error, not a silently different protocol.
 fn protocol_for_wire(wire: &str) -> Option<DiscoveryProtocol> {
     match wire.trim().to_ascii_lowercase().as_str() {
         "anthropic" => Some(DiscoveryProtocol::Anthropic),
-        "openai" | "kimi" => Some(DiscoveryProtocol::OpenAiCompatible),
+        "openai" | "kimi" | "responses" => Some(DiscoveryProtocol::OpenAiCompatible),
         _ => None,
     }
 }
@@ -463,7 +463,7 @@ fn protocol_for_wire(wire: &str) -> Option<DiscoveryProtocol> {
 fn parse_discover_wire(raw: &str) -> Result<DiscoveryProtocol, CliError> {
     protocol_for_wire(raw).ok_or_else(|| {
         CliError::usage(format!(
-            "invalid wire {raw:?}; valid wires: anthropic, openai, kimi"
+            "invalid wire {raw:?}; valid wires: anthropic, openai, kimi, responses"
         ))
     })
 }
@@ -585,8 +585,15 @@ fn parse_options(
                 flags.push(name.to_owned());
                 index += 1;
             } else {
+                // An unknown `--flag=value` token (`--api-key=sk-...`, the
+                // way a pasted secret arrives) must be reported by its FLAG
+                // name only: everything from the `=` on is the caller's own
+                // text, and echoing it back would write a secret into the
+                // terminal — the same never-echo doctrine the value-flag and
+                // stray-positional refusals above follow.
+                let spelled = name.split_once('=').map(|(flag, _)| flag).unwrap_or(name);
                 return Err(CliError::usage(format!(
-                    "unknown option --{name} for {label}"
+                    "unknown option --{spelled} for {label}"
                 )));
             }
         } else {
@@ -686,8 +693,9 @@ list|set|test; note: `settings get` without a key always prints JSON regardless 
 /// branches on the family-wide 0/1/2 table for a distinction the JSON row
 /// already carries.
 const DISCOVER_USAGE: &str = "usage: pinvou models discover --base-url <url> [--api-key-env V] \
-[--preset <name>] [--wire <anthropic|openai|kimi>] [--json]\nexit codes: 0 listed (an empty \
-list is still listed), 1 auth_required | unsupported | error (see the status field), 2 usage";
+[--preset <name>] [--wire <anthropic|openai|kimi|responses>] [--json]\nexit codes: 0 listed (an \
+empty list is still listed), 1 auth_required | unsupported | error (see the status field), \
+2 usage";
 
 pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
     let family = values[0].as_str();
@@ -2366,6 +2374,27 @@ fn connection_client() -> Option<&'static reqwest::blocking::Client> {
     singleton_client(&CLIENT, |builder| builder.timeout(Duration::from_secs(8)))
 }
 
+/// The `models discover` client: the connection client's 8 s timeout PLUS
+/// redirects disabled. Discovery sends carry user credentials in custom
+/// headers (`x-api-key`, `x-goog-api-key`), and reqwest strips only the
+/// Authorization/Cookie family on a cross-origin redirect — following one
+/// would re-send those headers to a host the user never named (the reason
+/// [`probe_client`] pins `Policy::none()` for the local probes; the GUI's
+/// `discovery_client` pins it for the same reason). A one-shot listing has
+/// no business following a 302 anyway: with redirects off, a 3xx response
+/// arrives as-is and classifies as an ordinary `error` row with its status
+/// kept ([`discovery_status_listing`]). `models test` stays on
+/// [`connection_client`] — its lane follows the GUI's redirect semantics.
+fn discovery_client() -> Option<&'static reqwest::blocking::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
+        std::sync::OnceLock::new();
+    singleton_client(&CLIENT, |builder| {
+        builder
+            .timeout(Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::none())
+    })
+}
+
 /// The `settings search test` client: [`SEARCH_PROBE_TIMEOUT`] (15 s, the
 /// product's own search timeout) — the 8 s of `models test` is too tight for
 /// these endpoints, and a premature `timeout` on a perfectly good key would
@@ -2401,19 +2430,22 @@ enum BodyRead {
     TooLarge,
 }
 
-/// Reads one probe response body under [`PROBE_BODY_CAP_BYTES`] — the
-/// bounded-IO rule every network read in this module follows: the timeout
-/// bounds time, but a hostile endpoint can stream within it.
-fn read_body_capped(response: reqwest::blocking::Response) -> BodyRead {
+/// Reads one probe response body under `cap` — the bounded-IO rule every
+/// network read in this module follows: the timeout bounds time, but a
+/// hostile endpoint can stream within it. The cap is a parameter because
+/// the lanes legitimately differ: probes and search ride
+/// [`PROBE_BODY_CAP_BYTES`], while the discovery listing read uses
+/// [`DISCOVER_BODY_CAP_BYTES`], mirroring the GUI's listing cap.
+fn read_body_capped(response: reqwest::blocking::Response, cap: usize) -> BodyRead {
     let mut bytes = Vec::new();
     if response
-        .take(PROBE_BODY_CAP_BYTES as u64 + 1)
+        .take(cap as u64 + 1)
         .read_to_end(&mut bytes)
         .is_err()
     {
         return BodyRead::Unreadable;
     }
-    if bytes.len() > PROBE_BODY_CAP_BYTES {
+    if bytes.len() > cap {
         return BodyRead::TooLarge;
     }
     BodyRead::Bytes(bytes)
@@ -2423,7 +2455,7 @@ fn read_body_capped(response: reqwest::blocking::Response) -> BodyRead {
 /// an over-cap or non-JSON body degrades to `None` like any other probe
 /// failure.
 fn read_json_capped(response: reqwest::blocking::Response) -> Option<serde_json::Value> {
-    match read_body_capped(response) {
+    match read_body_capped(response, PROBE_BODY_CAP_BYTES) {
         BodyRead::Bytes(bytes) => serde_json::from_slice(&bytes).ok(),
         BodyRead::Unreadable | BodyRead::TooLarge => None,
     }
@@ -3250,6 +3282,24 @@ fn discovery_transport_class(error: &reqwest::Error) -> &'static str {
 /// (`apply_anthropic_auth_headers`); the same literal `models test` sends.
 const DISCOVER_ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// The discovery listing body cap: 8 MiB, the GUI discovery ladder's own
+/// `LISTING_BODY_CAP_BYTES` — the two surfaces must truncate the same
+/// oversized answer the same way. Wider than the probe lanes'
+/// [`PROBE_BODY_CAP_BYTES`] (4 MiB) because a gateway listing thousands of
+/// models with extension fields is a real shape here; the timeout still
+/// bounds time, this only bounds a hostile within-timeout stream.
+const DISCOVER_BODY_CAP_BYTES: usize = 8 * 1024 * 1024;
+
+/// The Ollama per-model `/api/show` sweep's overall wall-clock budget: the
+/// count cap (50) bounds the LOOKUPS, but each runs on the 8s discovery
+/// client, so a stalled-but-accepting server could stack the sweep into
+/// minutes. 20s — the GUI discovery ladder's `OLLAMA_SHOW_BUDGET` — bounds
+/// the whole sweep instead; past it the remaining entries keep their
+/// undeclared context and the run reports `truncated`. (The CLI has no
+/// shared show cache to consult — that part of the GUI lane is GUI-side —
+/// so the budget is the only bound the two surfaces share verbatim.)
+const DISCOVER_OLLAMA_SHOW_BUDGET: Duration = Duration::from_secs(20);
+
 /// What one discovery HTTP round produced. The failure variants carry only
 /// structured facts (a status number or a transport class) — never the
 /// reqwest error text, so no redaction pass can regress into leaking a URL
@@ -3257,19 +3307,25 @@ const DISCOVER_ANTHROPIC_VERSION: &str = "2023-06-01";
 enum DiscoveryAnswer {
     /// 2xx with a parsed JSON body and its status code.
     Json(serde_json::Value, u16),
-    /// 2xx whose body is not JSON or is over the probe body cap (a captive
+    /// 2xx whose body is not JSON or is over the listing body cap (a captive
     /// portal, a Cloudflare interstitial): the endpoint exists but did not
     /// speak the protocol.
     Unusable(u16),
-    /// Any non-2xx final status (redirects are followed by the client).
+    /// Any non-2xx FINAL status. The discovery client does not follow
+    /// redirects ([`discovery_client`]), so a 3xx arrives here as-is and
+    /// [`discovery_status_listing`] files it under `error` — a redirect is
+    /// never silently re-sent with the caller's credentials attached.
     Status(u16),
     /// Request-level failure, classified WITHOUT the error text.
     Transport(&'static str),
 }
 
 /// Sends one discovery request and reduces it to a [`DiscoveryAnswer`]. The
-/// body read goes through the same 4 MiB cap every other network read in
-/// this module uses.
+/// body read goes through [`DISCOVER_BODY_CAP_BYTES`], the GUI listing
+/// ladder's own cap — wider than the probe lanes' 4 MiB because a gateway
+/// listing thousands of models with OpenRouter-style extension fields is a
+/// real shape, and truncating a legitimate listing into "not JSON" would
+/// misclassify a working endpoint as unsupported.
 fn discovery_send(request: reqwest::blocking::RequestBuilder) -> DiscoveryAnswer {
     let response = match request.send() {
         Ok(response) => response,
@@ -3279,7 +3335,7 @@ fn discovery_send(request: reqwest::blocking::RequestBuilder) -> DiscoveryAnswer
     if !(200..300).contains(&status) {
         return DiscoveryAnswer::Status(status);
     }
-    match read_body_capped(response) {
+    match read_body_capped(response, DISCOVER_BODY_CAP_BYTES) {
         BodyRead::Bytes(bytes) => serde_json::from_slice(&bytes)
             .map(|value| DiscoveryAnswer::Json(value, status))
             .unwrap_or(DiscoveryAnswer::Unusable(status)),
@@ -3306,12 +3362,16 @@ fn discovery_status_listing(status: u16) -> Option<EndpointModelsListing> {
 /// larger than another cap the same entry reported, and an over-reported
 /// window lets upstream silently truncate (the conservative direction is
 /// always down).
-const DISCOVER_CONTEXT_FIELDS: &[&str] = &[
-    "max_model_len",
-    "context_length",
-    "context_window",
-    "max_context_length",
-];
+///
+/// `max_context_length` is deliberately ABSENT. It is LM Studio's capability
+/// ceiling — the maximum the model supports — not a window the server will
+/// serve; an entry reporting only that name has NO declared context. The
+/// connection-test lane refuses it for the same reason
+/// (`parse_models_response_list_refuses_lmstudio_cap_alias`), the GUI's
+/// native LM Studio lane reads only the loaded window, and the compat lane
+/// must match: a remote entry that carried the ceiling into `discover` would
+/// ride the empty-form prefill / bulk-add path into a deployment fact.
+const DISCOVER_CONTEXT_FIELDS: &[&str] = &["max_model_len", "context_length", "context_window"];
 
 /// Per-entry output limit, mirroring the GUI probes'
 /// `parse_entry_output_limit`: direct `max_output_tokens` /
@@ -3406,7 +3466,7 @@ fn discovery_openai_request(
 /// version segment is preserved), `{data}` or bare array accepted, entry cap
 /// 2000.
 fn discovery_openai_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
-    let Some(client) = connection_client() else {
+    let Some(client) = discovery_client() else {
         return error_listing(None, None);
     };
     let request = discovery_openai_request(
@@ -3480,7 +3540,7 @@ fn discovery_anthropic_page(
 /// the `truncated` flag, never a silent loss.
 fn discovery_anthropic_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
     const DISCOVER_ANTHROPIC_PAGE_CAP: usize = 3;
-    let Some(client) = connection_client() else {
+    let Some(client) = discovery_client() else {
         return error_listing(None, None);
     };
     // The messages-endpoint normalization rule (`anthropic_messages_url`):
@@ -3603,7 +3663,7 @@ fn discovery_gemini_page(
 /// THREE pages.
 fn discovery_gemini_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
     const DISCOVER_GEMINI_PAGE_CAP: usize = 3;
-    let Some(client) = connection_client() else {
+    let Some(client) = discovery_client() else {
         return error_listing(None, None);
     };
     // The native root: a configured OpenAI-compatibility surface (`/openai`
@@ -3761,8 +3821,9 @@ fn discovery_ollama_query_show(
 /// effective contexts) + `/api/tags` (the downloaded list) + per-model
 /// `/api/show` `num_ctx` lookups for entries WITHOUT a context fact
 /// (unloaded ones — loaded entries already carry the `/api/ps` truth). The
-/// lookups are bounded at [`DISCOVER_OLLAMA_SHOW_CAP`], taken from the FRONT
-/// of the missing list; more missing entries than the cap set `truncated`
+/// lookups are bounded at [`DISCOVER_OLLAMA_SHOW_CAP`] (taken from the FRONT
+/// of the missing list) AND by the [`DISCOVER_OLLAMA_SHOW_BUDGET`]
+/// wall-clock budget; either bound ending the sweep early sets `truncated`
 /// (every downloaded model is still listed — the flag says the context facts
 /// are partial, not that rows were dropped).
 ///
@@ -3775,7 +3836,7 @@ fn discovery_ollama_models(
     key: Option<&str>,
 ) -> Option<(Vec<DiscoveredModel>, bool)> {
     const DISCOVER_OLLAMA_SHOW_CAP: usize = 50;
-    let client = connection_client()?;
+    let client = discovery_client()?;
     let host = strip_v1_suffix(base_url);
     // Loaded set and effective contexts: any failure reads as empty (all
     // unloaded, no window facts) without losing the downloaded list.
@@ -3814,7 +3875,17 @@ fn discovery_ollama_models(
         .filter(|&index| models[index].context_window_tokens.is_none())
         .collect();
     let truncated = missing.len() > DISCOVER_OLLAMA_SHOW_CAP;
+    // The sweep is bounded by the count cap AND a wall-clock budget: 50
+    // serial 8s-timeout requests could legitimately stack into minutes for a
+    // stalled-but-not-dead server, and a one-shot click must not wait that
+    // out. Past the budget the sweep stops and the remainder is disclosed
+    // through `truncated` — the same partial-facts semantics as the count
+    // cap (the GUI's `OLLAMA_SHOW_BUDGET` check, mirrored per iteration).
+    let started = std::time::Instant::now();
     for &index in missing.iter().take(DISCOVER_OLLAMA_SHOW_CAP) {
+        if started.elapsed() >= DISCOVER_OLLAMA_SHOW_BUDGET {
+            return Some((models, true));
+        }
         let name = models[index].id.clone();
         if let Some(context) = discovery_ollama_query_show(client, &host, key, &name) {
             models[index].context_window_tokens = Some(context);
@@ -3871,7 +3942,7 @@ fn discovery_lmstudio_v0_models(value: &serde_json::Value) -> Option<Vec<Discove
 /// guessed shape), falling back to `/v1/models` (loaded unknown) when the
 /// native round trip does not produce a usable listing.
 fn discovery_lmstudio_listing(base_url: &str) -> EndpointModelsListing {
-    let Some(client) = connection_client() else {
+    let Some(client) = discovery_client() else {
         return error_listing(None, None);
     };
     let host = strip_v1_suffix(base_url);
@@ -3914,6 +3985,26 @@ fn discovery_lmstudio_v1_fallback(
     }
 }
 
+/// The `server_kind` string `models discover` reports, in the GUI's kind
+/// vocabulary (`endpoint_discovery::local_server_kind_str`, the same table
+/// `monitor.rs` speaks): `lm_studio` with the underscore, not the detector's
+/// internal `lmstudio` spelling — the discover code claims one vocabulary
+/// across surfaces, so the strings it emits must BE the GUI's. The two
+/// probe-local honesty sentinels are absence-of-a-classification, and the
+/// GUI's kind table answers exactly that case with `generic`. The CLI has no
+/// Tachyon candidate probe, so `tachyon` never arrives here — a Tachyon
+/// server stays `generic` (the honest absence, NOT a misclassification to
+/// fix by adding detection).
+fn discovery_server_kind_str(kind: &'static str) -> &'static str {
+    match kind {
+        "lmstudio" => "lm_studio",
+        "vllm" | "ollama" | "lm_studio" | "sglang" | "llamacpp" | "koboldcpp" | "lmdeploy"
+        | "dockermodelrunner" | "generic" => kind,
+        LOCAL_KIND_UNKNOWN_AUTHENTICATED | LOCAL_KIND_PROBE_FAILED => "generic",
+        _ => "generic",
+    }
+}
+
 /// The full discovery ladder for one endpoint, mirroring the GUI's
 /// `probe_endpoint_models`: the loopback/private short-circuit (native
 /// ollama / lmstudio lanes, otherwise the OpenAI-compatible ladder) serves
@@ -3942,15 +4033,9 @@ fn run_endpoint_discovery(
             // protocol only (the explicit native protocols above keep their
             // own ladders even on loopback). Every outcome of this branch —
             // including a fallback and the sentinels — carries the detected
-            // server kind; the two probe-local honesty sentinels are
-            // absence-of-a-classification, and the GUI's kind table answers
-            // exactly that case with `generic`, so the strings stay in one
-            // vocabulary across surfaces.
+            // server kind, translated into the GUI's kind vocabulary by
+            // [`discovery_server_kind_str`].
             let kind = select_local_server_kind_from_hits(&probe_candidates(base_url.trim(), key));
-            let server_kind = match kind {
-                LOCAL_KIND_UNKNOWN_AUTHENTICATED | LOCAL_KIND_PROBE_FAILED => "generic",
-                detected => detected,
-            };
             let mut listing = match kind {
                 "ollama" => match discovery_ollama_models(base_url, key) {
                     Some((models, truncated)) => listed_listing(models, truncated),
@@ -3959,14 +4044,14 @@ fn run_endpoint_discovery(
                 "lmstudio" => discovery_lmstudio_listing(base_url),
                 _ => discovery_openai_listing(base_url, key),
             };
-            listing.server_kind = Some(server_kind);
+            listing.server_kind = Some(discovery_server_kind_str(kind));
             listing
         }
     }
 }
 
 /// `models discover --base-url <url> [--api-key-env V] [--preset <name>]
-/// [--wire <anthropic|openai|kimi>] [--json]`: list the models an endpoint
+/// [--wire <anthropic|openai|kimi|responses>] [--json]`: list the models an endpoint
 /// reports, with the lengths the entries self-report. The GUI counterpart
 /// (`probe_endpoint_models`) additionally back-fills missing lengths from
 /// its model-length catalog; the CLI has no catalog, so `SOURCE` is always
@@ -4867,7 +4952,7 @@ fn search_response_probe(
     // the timeout bounds time, but a hostile endpoint can stream within it, so
     // the body is read through [`PROBE_BODY_CAP_BYTES`] instead of an
     // unbounded `text()`.
-    let body = match read_body_capped(response) {
+    let body = match read_body_capped(response, PROBE_BODY_CAP_BYTES) {
         // The status says success but the body never arrived: the probe
         // learned the endpoint is reachable, not that it answered cleanly.
         BodyRead::Unreadable => {
@@ -5038,7 +5123,7 @@ fn run_bing_probe() -> SearchProbe {
             // the shape check runs. Over-cap degrades to unshaped, same as a
             // read failure.
             let body_is_result_shaped = status.is_success()
-                && match read_body_capped(response) {
+                && match read_body_capped(response, PROBE_BODY_CAP_BYTES) {
                     BodyRead::Bytes(bytes) => body_carries_result_element(&bytes),
                     BodyRead::Unreadable | BodyRead::TooLarge => false,
                 };
@@ -6127,8 +6212,8 @@ mod tests {
         );
         assert_eq!(
             protocol_for_wire("responses"),
-            None,
-            "only the three ACP wires are spellable from the CLI"
+            Some(DiscoveryProtocol::OpenAiCompatible),
+            "the GUI's responses wire is OpenAI-compatible on both surfaces"
         );
         assert_eq!(protocol_for_wire(" claude "), None);
         assert_eq!(
@@ -6228,7 +6313,11 @@ mod tests {
             "grpc".to_owned(),
         ])
         .expect_err("an unknown wire is a usage error naming the valid values");
-        assert!(unknown_wire.to_string().contains("anthropic, openai, kimi"));
+        assert!(
+            unknown_wire
+                .to_string()
+                .contains("anthropic, openai, kimi, responses")
+        );
         let unknown_preset = parse(&[
             "models".to_owned(),
             "discover".to_owned(),
@@ -6269,7 +6358,9 @@ mod tests {
     /// pasted secret on argv rides the shell history and the process list —
     /// exactly what the family-wide `--api-key-env` entry exists to prevent
     /// — so the literal flag is now an unknown option (usage, exit 2), and
-    /// the refusal must not echo the pasted value.
+    /// the refusal must not echo the pasted value. The single-token `=` form
+    /// (`--api-key=sk-...`) carries the secret INSIDE the flag token, so the
+    /// unknown-option refusal reports the flag name only.
     #[test]
     fn discover_parse_refuses_the_literal_api_key_flag() {
         let error = parse(&[
@@ -6290,6 +6381,26 @@ mod tests {
         assert!(
             !message.contains("sk-pasted-literal"),
             "the pasted value is never echoed: {message}"
+        );
+        // The `=` spelling lands on the same refusal with the same redaction:
+        // the message carries the flag name, never the value after the `=`.
+        let joined = parse(&[
+            "models".to_owned(),
+            "discover".to_owned(),
+            "--base-url".to_owned(),
+            "http://127.0.0.1:11434".to_owned(),
+            "--api-key=sk-pasted-literal".to_owned(),
+        ])
+        .expect_err("the joined --api-key=<secret> form is the same unknown flag");
+        assert_eq!(joined.exit_code(), ExitCode::Usage);
+        let message = joined.to_string();
+        assert!(
+            message.contains("unknown option --api-key"),
+            "the refusal names the flag without the = value: {message}"
+        );
+        assert!(
+            !message.contains("sk-pasted-literal"),
+            "the pasted value after the = is never echoed: {message}"
         );
     }
 
@@ -6338,6 +6449,9 @@ mod tests {
     /// The classification ladder is the error contract scripts read: 401/403
     /// (Groq uses 403) → auth_required, 404/405 → unsupported, every other
     /// ≥400 → error with the status kept, 2xx → the caller keeps parsing.
+    /// 3xx rows are in the SAME error bucket: the discovery client does not
+    /// follow redirects, so a 302/307/308 arrives as a decided final status
+    /// and files as plain `error` — never listed, never auth/unsupported.
     #[test]
     fn discover_status_classification_is_pinned() {
         use ListingStatus::*;
@@ -6352,19 +6466,70 @@ mod tests {
             assert_eq!(listing.status, Unsupported);
             assert_eq!(listing.http_status, Some(status));
         }
-        for status in [400u16, 402, 408, 429, 500, 503] {
+        for status in [302u16, 307, 308, 400, 402, 408, 429, 500, 503] {
             let listing = discovery_status_listing(status).expect("other statuses decide");
             assert_eq!(listing.status, Error);
             assert_eq!(listing.http_status, Some(status));
+            assert!(listing.models.is_empty(), "{status} carries no rows");
         }
         assert_eq!(discovery_status_listing(200), None, "2xx keeps parsing");
     }
 
-    /// Entry parsing normalizes the four context spellings (tightest wins —
+    /// The `server_kind` strings discover emits speak the GUI's kind
+    /// vocabulary (`local_server_kind_str`, the same table monitor speaks),
+    /// not the detector's internal spellings: LM Studio reports as
+    /// `lm_studio`, the probe-local honesty sentinels read as `generic`,
+    /// and the kinds that already match pass through unchanged. Tachyon is
+    /// deliberately absent from the pass-through set — the CLI has no
+    /// candidate probe for it, so such a server stays `generic` instead of
+    /// growing a detection the CLI cannot honestly perform.
+    #[test]
+    fn discover_server_kind_speaks_the_gui_vocabulary() {
+        assert_eq!(discovery_server_kind_str("lmstudio"), "lm_studio");
+        for passthrough in [
+            "vllm",
+            "ollama",
+            "sglang",
+            "llamacpp",
+            "koboldcpp",
+            "lmdeploy",
+            "dockermodelrunner",
+            "generic",
+        ] {
+            assert_eq!(
+                discovery_server_kind_str(passthrough),
+                passthrough,
+                "{passthrough} is already the GUI spelling"
+            );
+        }
+        assert_eq!(
+            discovery_server_kind_str(LOCAL_KIND_UNKNOWN_AUTHENTICATED),
+            "generic",
+            "absence-of-a-classification reads as generic, the GUI table's answer"
+        );
+        assert_eq!(
+            discovery_server_kind_str(LOCAL_KIND_PROBE_FAILED),
+            "generic"
+        );
+    }
+
+    /// Constant pins mirroring the GUI discovery ladder's own pins: the 8
+    /// MiB listing body cap (its `LISTING_BODY_CAP_BYTES`) and the 20s
+    /// Ollama show sweep budget (its `OLLAMA_SHOW_BUDGET`) must not drift
+    /// silently out of parity.
+    #[test]
+    fn discover_bounds_match_the_gui_ladder() {
+        assert_eq!(DISCOVER_BODY_CAP_BYTES, 8 * 1024 * 1024);
+        assert_eq!(DISCOVER_OLLAMA_SHOW_BUDGET, Duration::from_secs(20));
+    }
+
+    /// Entry parsing normalizes the THREE context spellings (tightest wins —
     /// the same only-tighten doctrine as the output side) and the three
     /// output shapes including OpenRouter's `top_provider`; non-positive,
     /// out-of-range and non-numeric values read as undeclared, and an entry
-    /// without an id is not a model.
+    /// without an id is not a model. `max_context_length` is not one of the
+    /// spellings: LM Studio's capability ceiling is refused, alone (no
+    /// declared context) and against a tighter effective window alike.
     #[test]
     fn discover_openai_entry_parses_lengths_tightest_first() {
         let entry = serde_json::json!({
@@ -6393,9 +6558,34 @@ mod tests {
         assert_eq!(model.output_from, Some(ModelFactSource::Endpoint));
         assert_eq!(model.loaded, None);
         assert_eq!(model.title, None);
+        // The capability ceiling never speaks for the entry: alone it is an
+        // undeclared context (the compat lane's counterpart of the
+        // connection-test lane's cap-alias refusal), and beside an effective
+        // window it is never adopted — not even as the looser alternative.
+        let cap_only = discovery_openai_entry(&serde_json::json!({
+            "id": "m2",
+            "max_context_length": 16384,
+        }))
+        .expect("an id-only entry parses");
+        assert_eq!(
+            cap_only.context_window_tokens, None,
+            "a capability ceiling alone is not a served window"
+        );
+        assert_eq!(cap_only.context_from, None, "no length, no source");
+        let mixed = discovery_openai_entry(&serde_json::json!({
+            "id": "m3",
+            "max_model_len": 8192,
+            "max_context_length": 131072,
+        }))
+        .expect("an effective-window entry parses");
+        assert_eq!(
+            mixed.context_window_tokens,
+            Some(8192),
+            "the effective window wins; the capability ceiling is never adopted"
+        );
         // Zero / negative / non-numeric values never fabricate a length.
         let lying = serde_json::json!({
-            "id": "m2",
+            "id": "m4",
             "max_model_len": 0,
             "context_length": -8192,
             "context_window": "huge",
@@ -6941,6 +7131,31 @@ mod tests {
         );
     }
 
+    /// Redirects are NOT followed: the discovery client pins
+    /// `Policy::none()` because reqwest strips only the Authorization/Cookie
+    /// family on a cross-origin redirect, so a followed 302 would carry
+    /// `x-api-key` / `x-goog-api-key` to a host the user never named. The
+    /// 3xx response therefore arrives as the final status and files under
+    /// plain `error` — never a second hop, never a listed/auth/unsupported
+    /// reading of whatever the redirect target would have answered.
+    #[test]
+    fn discover_redirect_is_not_followed_and_classifies_as_error() {
+        let (base, log) = spawn_discover_mock(&discover_routes(&[(
+            "/models",
+            vec![(302u16, ""), (302, "")],
+        )]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Error);
+        assert_eq!(listing.http_status, Some(302), "the 3xx status is kept");
+        assert_eq!(listing.transport, None, "a decided status is not transport");
+        assert!(listing.models.is_empty(), "failures carry no half data");
+        assert_eq!(
+            log.hits_for("/models"),
+            2,
+            "candidate fallback + ladder, each answered once — no third hop"
+        );
+    }
+
     /// Anthropic: `x-api-key` + `anthropic-version` (never a bearer), the
     /// two-page `has_more` + `after_id` pagination, and `max_input_tokens` /
     /// `max_tokens` / `display_name` per entry. The protocol ladder runs
@@ -7193,7 +7408,11 @@ mod tests {
         )]));
         let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
         assert_eq!(listing.status, ListingStatus::Listed);
-        assert_eq!(listing.server_kind, Some("lmstudio"));
+        assert_eq!(
+            listing.server_kind,
+            Some("lm_studio"),
+            "discover reports the GUI vocabulary, not the detector's internal spelling"
+        );
         assert_eq!(listing.models.len(), 2);
         assert_eq!(
             listing.models[0].context_window_tokens,
@@ -7229,7 +7448,7 @@ mod tests {
         ]));
         let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
         assert_eq!(listing.status, ListingStatus::Listed);
-        assert_eq!(listing.server_kind, Some("lmstudio"));
+        assert_eq!(listing.server_kind, Some("lm_studio"));
         assert_eq!(listing.models.len(), 1);
         assert_eq!(listing.models[0].id, "x");
         assert_eq!(listing.models[0].context_window_tokens, Some(4096));
