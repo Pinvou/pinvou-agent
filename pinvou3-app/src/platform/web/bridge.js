@@ -470,7 +470,6 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       manageAddFolderTitle: "Choose a folder to add to the project",
       workspacePickFolderTitle: "Choose a workspace folder",
       metricUnavailable: "Not provided",
-      betaVersionSuffix: " (Beta)",
       memoryWriteFailed: "Failed to write memory: ",
       memoryIgnoreFailed: "Failed to ignore memory: ",
       memoryNeverFailed: "Failed to update the never-ask setting: ",
@@ -601,7 +600,6 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       manageAddFolderTitle: "プロジェクトに追加するフォルダーを選択",
       workspacePickFolderTitle: "ワークスペースフォルダーを選択",
       metricUnavailable: "未提供",
-      betaVersionSuffix: " (ベータ版)",
       memoryWriteFailed: "メモリの書き込みに失敗：",
       memoryIgnoreFailed: "メモリの無視に失敗：",
       memoryNeverFailed: "「今後表示しない」の設定に失敗：",
@@ -732,7 +730,6 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       manageAddFolderTitle: "选择要添加到项目的文件夹",
       workspacePickFolderTitle: "选择工作区文件夹",
       metricUnavailable: "未提供",
-      betaVersionSuffix: " (内测版)",
       memoryWriteFailed: "记忆写入失败：",
       memoryIgnoreFailed: "忽略记忆失败：",
       memoryNeverFailed: "设置不再提示失败：",
@@ -4707,8 +4704,8 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
 
   // ── Monitor ──────────────────────────────────────────────────────
   // pollMonitor/appQueueSnapshot/monitorFmtEqual 与格式化 fallback 统一在
-  // shared/bridge-shared-helpers.js 的 tauriMonitor/web cluster（betaVersionSuffix
-  // 键两侧同值同名）；此处仅保留 lane 内转发的公开入口。
+  // shared/bridge-shared-helpers.js 的 tauriMonitor/web cluster（翻译键
+  // 两侧同值同名）；此处仅保留 lane 内转发的公开入口。
 
 function numOr0(x) { return pinvouSharedweb().numOr0(x); }
 
