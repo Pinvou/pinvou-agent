@@ -35,9 +35,13 @@
 //! panic，且 `to_str` 闸门下这类根本产不出记录行，跳过无损失），watch 注册与
 //! 事件归因统一用规范化拼写——macOS fsevent 本来就把事件投递成 canonical 路径、
 //! Linux inotify 会把相对根拼成绝对路径，按原拼写归因会被拼写差击穿（整根事件
-//! 落到根外 fallback、或按两套拼写各成一行）。**接线方须给扫描器与 `spawn` 传
-//! 同一拼写**（建议都传 canonical 路径），否则扫描行与事件行的拼写分裂，删除/
-//! 更新事件只命中其一。
+//! 落到根外 fallback、或按两套拼写各成一行）。**接线方必须给扫描器与 `spawn`
+//! 传同一 canonical 拼写（硬性要求，非建议）**：`spawn` 内部无条件 canonicalize，
+//! 扫描器若按原拼写行走，软链根会直接分裂——walkdir 默认跟随根软链（
+//! `follow_root_links`），原拼名的软链根整树入库，而 watcher 按实体路径归因：
+//! 实体名在排除名单（`node_modules` 等）内时事件被整根丢弃、扫描行照常产生；
+//! 名单外时两套拼写各成一行，删除/更新事件只命中其一——排除判定与增量维护
+//! 同时分裂。
 //!
 //! 已知限制（接线方需知）：
 //! - Linux 递归监听 `$HOME` 级根会消耗大量 inotify watch，可能撞
@@ -50,6 +54,14 @@
 //!   它的增量事件会被整片静默丢弃（扫描行仍在，等重扫补）。运行期新目录注册
 //!   失败则以 channel `Err`（MaxFilesWatch）到达并只告警一次，此后新目录都不再
 //!   被监听直到重启。大批量根以懒触发重扫兜底。
+//! - Linux inotify 的后端线程若在**注册窗内**死亡（notify 的线程 spawn 失败被
+//!   `let _ =` 吞掉、或 poll 失败 panic），`watch()` 不返回 Err 而是 panic
+//!   （send/wake 的 unwrap 打在已死的 event loop 上），且展开途中 notify 的
+//!   `INotifyWatcher::drop` 会再 panic（对死 loop 的 send(Shutdown) 同样
+//!   unwrap）——panic 套 panic 直接 abort 进程。本侧已在 [`run_watcher`] 用
+//!   ManuallyDrop + 注册期 catch_unwind 收容（见其注释）：失败降级为告警 +
+//!   守卫释放 + 可重试；notify 层的 unwrap 语义只能上游修，接线后如需更强
+//!   保证先跟上游 issue。
 //! - 兜底重扫是**懒触发**的（进文件管理页才跑 `kb_start_scan`），没有周期重扫；
 //!   溢出/掉 watch 只能告警，索引在下次重扫前保持陈旧——接线方应把 `need_rescan`
 //!   告警接成重扫触发。Linux inotify 的 Q_OVERFLOW 事件**不携带路径**（内核队列
@@ -62,29 +74,39 @@
 //!   出现，notify 内部 `to_str().expect()`），而非线程展开；即便后端线程无
 //!   panic 地死掉，用户侧 tx 也被 `FsEventWatcher` 结构体持有而不 drop，`rx`
 //!   永远挂起（通道关闭告警不触发、守卫不解锁）。macOS 上懒触发重扫就是唯一
-//!   兜底，接线方不应假设 macOS 侧可观测、可重试。
+//!   兜底，接线方不应假设 macOS 侧可观测、可重试。另有两处 macOS 特有的不保真：
+//!   fsevent 的 `watch()` 在 runloop 线程 spawn 失败/`FSEventStreamStart` 失败时
+//!   仍返回 Ok（notify 忽略两处返回值），启动行照报「已监听」而后端已死——成功
+//!   日志在 macOS 不保真；多根注册每根都会重启整条流（stop+run，sinceWhen=
+//!   SinceNow），注册窗内先注册根的事件会丢（仅启动期，首轮扫描覆盖）。
 //! - 树内软链目录不下探：watcher 以 `with_follow_symlinks(false)` 构造，与扫描器
 //!   `follow_links(false)` 同向（notify 默认是跟随的，必须显式关掉）。该配置由
 //!   inotify/kqueue/poll 后端执行；fsevent/Windows 忽略它，但那两个后端本就不
 //!   下探软链目录（Windows 对 junction 的遍历行为尚未验证，接线时补测）。软链
 //!   **根本身**：canonicalize 后按实体路径监听与归因，不再有「空监听/部分监听」
 //!   的歧义。
-//! - Linux 的目录 rename 只冒出该目录自身的新旧路径事件：旧子树由
-//!   [`Store::delete_tree`] 清掉，但**新路径下的子文件没有任何事件**（inotify 的
-//!   watch 跟随 inode，未变动的子文件不触发），其记录要到下次重扫或被改写才补齐。
+//! - 目录 rename 只冒出该目录自身的新旧路径事件，**新路径下的子文件没有任何
+//!   事件**——三平台同形（Linux inotify 的 watch 跟随 inode，未变动的子文件不
+//!   触发；Windows 只报该目录的 OLD_NAME/NEW_NAME；macOS FSEvents 只报目录不报
+//!   内容）：旧子树由 [`Store::delete_tree`] 清掉，子行记录要到下次重扫或被改写
+//!   才补齐。
 //! - 被监听根自身：Linux inotify 下被删则 watch 永久失效（无父 watch 可重挂），
 //!   被 rename 则事件永远带着旧前缀路径（等同失效）——两者都靠重扫兜底；
-//!   macOS fsevent 的流按路径存活，根重建后事件恢复。
+//!   macOS fsevent 的流按路径存活，根重建后事件恢复；**Windows 完全无声**：
+//!   watch 按句柄存活，根 rename 后事件仍以旧前缀持续到达（存在性判定随后会把
+//!   旧行清掉），新位置的事件永远不来，且无任何日志/channel Err——懒触发重扫
+//!   是唯一兜底。
 //! - macOS fsevent 的 rename 以 `RenameMode::Any` 单路径事件到达，新旧两侧各自
 //!   独立到达、无法关联；按存在性判定旧侧事件到达即清掉旧记录，未到达时旧记录
 //!   等重扫。但大小写不敏感文件系统（APFS 默认、Windows NTFS）上的**仅大小写
 //!   改名**（`mv notes.md NOTES.MD`）会击穿该判定：旧拼写的 stat 仍能解析到改名
 //!   后的文件 → 旧侧被当存活 upsert，新旧拼写成两行并存，其一永久陈旧直到重扫
 //!   （旧拼写的删除事件再也不会到来）。此类旧行的清理属接线方决策（#869）。
-//! - 无去抖：同一文件的连发事件各写一次（幂等）；事件 channel 无界，消费端被
-//!   长事务/慢盘拖住时队列会积累（十万级事件 ≈ 数十 MB 量级），大批量灌入场景
-//!   由接线方评估 coalescing（file_watcher.rs 的防抖只覆盖 sched-*.json，参考其
-//!   窗口思路而非照搬）。
+//! - 无去抖：同一文件的连发事件各处理一次；写入侧按 [`UPSERT_IF_CHANGED_SQL`]
+//!   消解——内容与库中一致的重复事件整行跳过（indexed_at 不动），有变化的照常
+//!   重写（幂等）。事件 channel 无界，消费端被长事务/慢盘拖住时队列会积累（十万
+//!   级事件 ≈ 数十 MB 量级），大批量灌入场景由接线方评估 coalescing
+//!   （file_watcher.rs 的防抖只覆盖 sched-*.json，参考其窗口思路而非照搬）。
 //! - 扫描与事件、事件与事件之间的并发窗：重扫中途删除的文件可能被扫描批次重新
 //!   写回（批量提交晚于事件的删除），行留到下次重扫清。同理，目录删除事件排队
 //!   期间该路径被原样重建（`rm -rf && mkdir` 的常见节奏）时，按存在性判定这条
@@ -95,10 +117,14 @@
 //!
 //! 当前未接线：`spawn` 尚无生产调用方（与闭源侧一致为落库待接线状态）；入口由
 //! 后续接线方在启动扫描时按根调用。watcher 是 app 级单例语义：`spawn` 内置了
-//! 防重入守卫，重复调用直接忽略；线程任何退出路径（init 失败、全部根注册失败、
-//! panic 展开）都会释放守卫，之后可重新 `spawn` 重新武装（但 macOS fsevent 的
-//! 后端死亡既不展开本线程也不关闭通道——见下方已知限制，守卫不解锁、无从重试）；
-//! 需要更换根集合时，仍应先给线程补停止接口（#869），不能靠叠 spawn。
+//! 防重入守卫，重复调用直接忽略；线程的**可达**退出路径（init 失败、全部根注册
+//! 失败、事件循环收尾、panic 被 catch_unwind 收容）都会释放守卫，之后可重新
+//! `spawn` 重新武装。两条已披露的例外（见已知限制）：macOS fsevent 的后端死亡
+//! 既不展开本线程也不关闭通道，守卫不解锁、无从重试；Linux inotify 的注册窗
+//! 死亡由 [`run_watcher`] 的 ManuallyDrop + catch_unwind 收容，降级为「失败告警
+//! + 可重试」（收容前的写法会把 panic 套 panic 放大成进程 abort）。诊断语义
+//! 由此分平台不等价——macOS/部分 Windows 场景不可观测，接线方不能假设统一
+//! 失败信号。需要更换根集合时，仍应先给线程补停止接口（#869），不能靠叠 spawn。
 
 #![allow(dead_code)] // 库先行：接线前 spawn 无生产调用方（见上方注记）
 
@@ -213,27 +239,53 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
     // 一起下探），与扫描器 follow_links(false) 相反——必须在构造处显式关闭。
     // 该配置由 inotify/kqueue/poll 后端执行；fsevent/Windows 忽略它，但那两个
     // 后端本就不下探软链目录。
-    let mut watcher: RecommendedWatcher =
+    // ManuallyDrop 是注册窗死亡收容的一半（见下方 catch_unwind 注释）：unwind
+    // 途中不得触发 notify 的 panic-prone Drop——inotify 的 `INotifyWatcher::drop`
+    // 对死 loop 的 send(Shutdown)/wake 一律 unwrap，Drop 自身再 panic 就是
+    // panic 套 panic，进程直接 abort。
+    let mut watcher = std::mem::ManuallyDrop::new(
         match RecommendedWatcher::new(tx, notify::Config::default().with_follow_symlinks(false)) {
             Ok(w) => w,
             Err(e) => {
                 warn!("init failed: {e}");
                 return; // ActiveGuard::drop 释放守卫
             }
-        };
+        },
+    );
     // 根先经 prepare_roots（canonicalize/去重/非 UTF-8 拒收，见其注释）：watch
     // 注册与事件归因统一用规范化拼写。
     let mut watched_roots: Vec<PathBuf> = Vec::new();
-    for canonical in prepare_roots(roots) {
-        match watcher.watch(&canonical, RecursiveMode::Recursive) {
-            Ok(()) => watched_roots.push(canonical),
-            // 多半是 inotify 上限/权限；告警即可，懒触发重扫兜底。
-            Err(e) => warn!("watch({}) failed: {e}", canonical.display()),
+    // 注册窗死亡收容：inotify 后端线程若在注册前/中死亡（notify 以 let _ = 吞掉
+    // 线程 spawn 失败、poll 失败直接 panic），`watch()` 不返回 Err 而是 panic
+    // （send/wake 的 unwrap 打在已死的 event loop 上）。收容后 forget 掉
+    // watcher——后端已死，Drop 既会再次 panic 也无从清理（fd 由死掉的 event
+    // loop 持有，随其展开已关闭）；线程按普通失败退出，守卫在闭包结尾释放，
+    // 之后 spawn 可重新武装。此路径无法单测（需要真实后端死亡），以 notify
+    // 8.2.0 源码为证（inotify.rs 的 watch_inner 与 Drop 的 unwrap）。
+    let registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        for canonical in prepare_roots(roots) {
+            match watcher.watch(&canonical, RecursiveMode::Recursive) {
+                Ok(()) => watched_roots.push(canonical),
+                // 多半是 inotify 上限/权限；告警即可，懒触发重扫兜底。
+                Err(e) => warn!("watch({}) failed: {e}", canonical.display()),
+            }
         }
+    }));
+    if registration.is_err() {
+        // SAFETY: `take` 把 watcher 从 ManuallyDrop 里移出（此后 `watcher` 保持
+        // 逻辑未初始化，本函数立即 return、绝不再触碰它），外层 `forget` 抑制其
+        // panic-prone 的 Drop（见上方注释）——这正是本次收容的目的。
+        std::mem::forget(unsafe { std::mem::ManuallyDrop::take(&mut watcher) });
+        warn!("watcher backend died during registration; inactive until a later spawn retries");
+        return; // ActiveGuard::drop 释放守卫
     }
+    // 注册完成（含全部根 Err 的失败态）：恢复普通所有权，后续早退走正常
+    // Drop——活着的后端需要 Drop 发 Shutdown 才能干净退出（关 fd、停线程）。
+    // 事件循环不再调用 watcher，之后唯一用途是收尾时的 forget（见下）。
+    let watcher = std::mem::ManuallyDrop::into_inner(watcher);
     if watched_roots.is_empty() {
         warn!("no root could be watched; inactive until a later spawn retries");
-        return; // ActiveGuard::drop 释放守卫
+        return; // ActiveGuard::drop 释放守卫；watcher 正常 Drop 收尾活后端
     }
     warn!("watching {}/{} root(s)", watched_roots.len(), roots.len());
 
@@ -272,15 +324,22 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
             }
         }
     }
-    // 循环在这里结束 = 用户侧 tx 已被全部丢弃。这发生在 Linux/Windows 后端线程
-    // 死亡时（其内部 panic 不向通道投递任何 Err——如 inotify 的 poll 失败 panic；
-    // Windows 服务线程退出——线程展开时按所有权 drop 掉 tx，rx 收尾）；后端线程
-    // 自身 spawn 失败（notify 以 let _ = 忽略）同样立即落到这里。macOS fsevent
-    // 不在此列：回调 panic 在 extern "C" 边界上直接 abort 进程（不可观察），而
-    // handler Arc 由 FsEventWatcher 结构体自身持有，后端线程死掉 tx 也不 drop——
-    // rx 永远挂起、本告警不触发、守卫不解锁。macOS 的兜底只有懒触发重扫（见模块
-    // 文档已知限制）。守卫在调用闭包结尾释放（比本条日志晚一步），之后 spawn 可
-    // 重新武装。
+    // 循环在这里结束 = 用户侧 tx 已被全部丢弃 = 后端已死（tx 只由后端持有）。
+    // 先 forget 掉本地 watcher 再告警：inotify 的 Drop 对死 loop 的 send/wake
+    // 一律 unwrap，正常 drop 会被外层 catch_unwind 收容成第二条「thread
+    // panicked」日志——一次后端死亡报出两个故障，误导排查；forget 免掉它
+    // （后端已死，Drop 也无物可清：Windows 对死 server 的优雅 Drop 本就是
+    // no-op，inotify 的 fd 由死掉的 event loop 持有）。本告警的可达场景：
+    // Linux 后端线程死亡（event loop 展开，持有 tx 一并 drop）、两端的后端
+    // 线程 spawn 失败（notify 以 let _ = 忽略，闭包即刻丢弃）。Windows 服务
+    // 线程运行中死亡目前没有可达 panic 路径；若上游引入，在途请求持有的
+    // handler Arc 会让 tx 不 drop、rx 不收尾——届时这里也不触发（与 macOS
+    // 同形，懒触发重扫兜底）。macOS fsevent 一直如此：回调 panic 在 extern "C"
+    // 边界 abort 进程，handler Arc 由 FsEventWatcher 结构体自身持有，后端线程
+    // 死掉 tx 也不 drop——rx 永远挂起、本告警不触发、守卫不解锁。macOS 的兜底
+    // 只有懒触发重扫（见模块文档已知限制）。守卫在调用闭包结尾释放（比本条
+    // 日志晚一步），之后 spawn 可重新武装。
+    std::mem::forget(watcher);
     warn!(
         "event channel closed; the watcher backend is gone (index stays stale until \
          the next scan, a later spawn re-arms)"
@@ -367,7 +426,10 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
         }
     }
     if !ups.is_empty() {
-        if let Err(e) = store.upsert_many(&ups) {
+        // 增量路径用消解式 upsert（内容一致的重复事件不重写行）；扫描全量
+        // 路径保持 upsert_many 的逐行触碰语义（restart 的 last_scan_finished_at
+        // 回退读 MAX(indexed_at)），见 UPSERT_IF_CHANGED_SQL。
+        if let Err(e) = store.upsert_many_if_changed(&ups) {
             warn!("upsert({}) failed: {e}", ups.len());
         }
     }

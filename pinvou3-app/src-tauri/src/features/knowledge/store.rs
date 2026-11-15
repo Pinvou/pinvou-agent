@@ -109,8 +109,8 @@ END;
 /// "already exists"——旧版全 `IF NOT EXISTS` 批次没有这个失败模式——整对原子化后，
 /// 后到者只是等锁后幂等重放。SCHEMA 批次（新建/迁移）与 open() 稳态升级共用这
 /// 一份文本，形状不会漂移（`trigger_replacement_matches_the_schema_built_shape`）。
-/// 升级探测按 `WHEN old.name IS NOT new.name` 子串识别旧形状：sqlite_master.sql
-/// 保存建触发器时的原语句文本，旧版形状不含该子句。
+/// 升级探测按 [`FILES_AU_WHEN_CLAUSE`] 子串识别旧形状：sqlite_master.sql 保存建
+/// 触发器时的原语句文本，旧版形状不含该子句。
 const FILES_AU_TRIGGER: &str = r#"
 BEGIN IMMEDIATE;
 DROP TRIGGER IF EXISTS files_au;
@@ -122,6 +122,13 @@ BEGIN
 END;
 COMMIT;
 "#;
+
+/// 新形状 `files_au` 独有的 WHEN 子句文本。open() 的稳态探测以此子串区分旧形状
+/// （无 WHEN，每次 upsert 都白做一轮 trigram 重写）与新形状。抽出成常量让探测与
+/// 触发器文本共享同一份 matcher：未来重排 [`FILES_AU_TRIGGER`] 文本时若把子句改样，
+/// `trigger_replacement_matches_the_schema_built_shape` 的断言会红，而不会发生
+/// 「探测子串失配 → 每次稳态开库都空转重放升级」的静默退化。
+const FILES_AU_WHEN_CLAUSE: &str = "WHEN old.name IS NOT new.name";
 
 /// 建库批次尾段（L1 知识库与导入任务表），与 [`SCHEMA_HEAD`]、[`FILES_AU_TRIGGER`]
 /// 拼接成完整批次。
@@ -237,6 +244,26 @@ ON CONFLICT(path) DO UPDATE SET
     name=excluded.name, ext=excluded.ext, size=excluded.size,
     mtime=excluded.mtime, is_dir=excluded.is_dir, status='indexed',
     indexed_at=excluded.indexed_at
+"#;
+
+/// watcher 增量路径专用（[`upsert_many_if_changed`]）：与 [`UPSERT_SQL`] 的唯一
+/// 差异是 conflict 分支多一个 WHERE——行内容（name/ext/size/mtime/is_dir）与库中
+/// 完全一致时整行跳过。同一文件一秒内的连发事件、chmod 等纯元数据抖动不再逐
+/// 事件重写整行。跳过时 indexed_at 保持为最后一次实际变化的时间：restart 的
+/// `last_scan_finished_at` 回退读 `MAX(indexed_at)`（见该方法），所以扫描全量路径
+/// 仍走 [`UPSERT_SQL`] 保持「重扫即逐行触碰」语义，写放大消解只放在增量侧。
+/// WHERE 对旧行用裸列名、对新行用 `excluded.`，`IS NOT` 对 NULL 稳健（SQLite
+/// NULL 安全比较）。
+const UPSERT_IF_CHANGED_SQL: &str = r#"
+INSERT INTO files(path, name, ext, size, mtime, is_dir, status, indexed_at)
+VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'indexed', strftime('%s','now'))
+ON CONFLICT(path) DO UPDATE SET
+    name=excluded.name, ext=excluded.ext, size=excluded.size,
+    mtime=excluded.mtime, is_dir=excluded.is_dir, status='indexed',
+    indexed_at=excluded.indexed_at
+WHERE excluded.name IS NOT name OR excluded.ext IS NOT ext
+   OR excluded.size IS NOT size OR excluded.mtime IS NOT mtime
+   OR excluded.is_dir IS NOT is_dir
 "#;
 
 /// 一条待写入的文件元数据。
@@ -463,7 +490,7 @@ impl Store {
                 .optional()?;
             if trigger_sql
                 .as_deref()
-                .is_some_and(|sql| !sql.contains("WHEN old.name IS NOT new.name"))
+                .is_some_and(|sql| !sql.contains(FILES_AU_WHEN_CLAUSE))
             {
                 w.execute_batch(FILES_AU_TRIGGER)?;
             }
@@ -551,6 +578,27 @@ impl Store {
         tx.commit()
     }
 
+    /// 增量 upsert（watcher 用，单事务）：内容与库中一致的行整行跳过，写放大
+    /// 消解见 [`UPSERT_IF_CHANGED_SQL`]。插入分支与 [`upsert_many`] 完全一致。
+    pub fn upsert_many_if_changed(&self, recs: &[FileRecord]) -> rusqlite::Result<()> {
+        let mut guard = self.conn.lock();
+        let tx = guard.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(UPSERT_IF_CHANGED_SQL)?;
+            for r in recs {
+                stmt.execute(params![
+                    r.path,
+                    r.name,
+                    r.ext,
+                    r.size as i64,
+                    r.mtime,
+                    r.is_dir as i64,
+                ])?;
+            }
+        }
+        tx.commit()
+    }
+
     /// 现有索引快照 `path → (mtime, size)`，给增量扫描比对用（只取未变文件可跳过 upsert）。
     pub fn load_index(&self) -> rusqlite::Result<HashMap<String, (i64, u64)>> {
         let guard = self.read.lock();
@@ -603,7 +651,9 @@ impl Store {
     /// 恰好等于「以 `p+sep` 为字节前缀」的行集合（含按 `p+sep` 拼写入库的根行本身）。
     /// 库内行全部经 `record_from_parts` 的 `to_str` 闸门（合法 UTF-8，UTF-8 字节序与
     /// 码点序一致），CJK/emoji 路径同样精确；应用内不存在 BLOB 行（唯一写入方绑定
-    /// TEXT），外力注入的 BLOB 行按损坏数据一并删除。
+    /// TEXT）。外力注入的 BLOB 行两个删除都匹配不到——SQLite 存储类排序把 BLOB 放在
+    /// 一切 TEXT 之上，`path = ?`（TEXT 绑定）不相等、范围上界比较也判大——会作为
+    /// 幽灵残留到下次重扫；没有应用内可达路径，仅按实情记录。
     ///
     /// 分隔符拼写：入参容忍**尾部分隔符**（接线方传根 PathBuf 时可能带 `/`），也容忍
     /// 混合尾（`dir\/`），统一按「主分隔符或 `/`」一遍去掉后再比对。行侧则可能按
@@ -837,6 +887,17 @@ mod tests {
             mtime,
             is_dir: false,
         }
+    }
+
+    /// 夹具路径统一按主分隔符拼写：delete_tree 的边界数学（下界 `p+sep`、上界
+    /// `p+分隔符后继字符`）用的就是 MAIN_SEPARATOR，`/` 字面量夹具在 Windows
+    /// （`\` 分隔符、后继为 `]`）下会让这些纯 SQL 测试整体红掉（行按 `/` 排序
+    /// 落在下界之外）。经此拼出的路径与删除实现同源，任何平台语义一致。
+    fn sep_path(parts: &[&str]) -> String {
+        let sep = std::path::MAIN_SEPARATOR;
+        let mut s = String::from(sep);
+        s.push_str(&parts.join(&sep.to_string()));
+        s
     }
 
     fn seed() -> Store {
@@ -1518,6 +1579,17 @@ mod tests {
             .unwrap()
         };
         assert_eq!(sql(&via_schema), sql(&via_upgrade));
+        // 探测子串防漂移钉：触发器常量文本与建库落库文本都必须包含稳态探测
+        // 所匹配的 WHEN 子句——否则每次开库都会误判旧形状而空转重放升级
+        // （幂等但破坏「稳态开库不取写锁」的设计）。
+        assert!(
+            FILES_AU_TRIGGER.contains(FILES_AU_WHEN_CLAUSE),
+            "the trigger const must keep the WHEN clause the steady-state probe matches on"
+        );
+        assert!(
+            sql(&via_schema).contains(FILES_AU_WHEN_CLAUSE),
+            "the schema-built stored sql must contain the probe substring"
+        );
     }
 
     /// Every connection a file-backed open creates must carry the 5 s
@@ -1631,20 +1703,23 @@ mod tests {
     #[test]
     fn delete_tree_on_a_file_is_exact() {
         let s = Store::open_in_memory().unwrap();
+        let f = sep_path(&["a", "b", "notes.md"]);
+        let f_bak = sep_path(&["a", "b", "notes.md.bak"]);
+        let f2 = sep_path(&["a", "b", "notes.md2"]);
         s.upsert_many(&[
-            rec("/a/b/notes.md", "notes.md", Some("md"), 10, 1),
+            rec(&f, "notes.md", Some("md"), 10, 1),
             // 只共享前缀字符的兄弟路径不能被误删。
-            rec("/a/b/notes.md.bak", "notes.md.bak", Some("bak"), 10, 1),
-            rec("/a/b/notes.md2", "notes.md2", None, 10, 1),
+            rec(&f_bak, "notes.md.bak", Some("bak"), 10, 1),
+            rec(&f2, "notes.md2", None, 10, 1),
         ])
         .unwrap();
 
-        s.delete_tree(&["/a/b/notes.md".into()]).unwrap();
+        s.delete_tree(std::slice::from_ref(&f)).unwrap();
 
         let left = s.load_index().unwrap();
-        assert!(!left.contains_key("/a/b/notes.md"));
-        assert!(left.contains_key("/a/b/notes.md.bak"));
-        assert!(left.contains_key("/a/b/notes.md2"));
+        assert!(!left.contains_key(&f));
+        assert!(left.contains_key(&f_bak));
+        assert!(left.contains_key(&f2));
     }
 
     /// 目录记录连带子树：dir rename/move-out 只会冒出父路径事件，子树必须被
@@ -1653,39 +1728,46 @@ mod tests {
     #[test]
     fn delete_tree_on_a_dir_removes_the_subtree_only() {
         let s = Store::open_in_memory().unwrap();
-        let mut dir = rec("/home/u/项目", "项目", None, 0, 1);
+        let dir_p = sep_path(&["home", "u", "项目"]);
+        let dir_en_p = sep_path(&["home", "u", "proj"]);
+        let child_cjk = sep_path(&["home", "u", "项目", "报告.pdf"]);
+        let child_sub = sep_path(&["home", "u", "项目", "sub", "a.md"]);
+        let child_src = sep_path(&["home", "u", "proj", "src", "notes.md"]);
+        // 与被删目录只共享前缀字符（`项目` vs `项目备份`）。
+        let sib_cjk = sep_path(&["home", "u", "项目备份.md"]);
+        let sib_en = sep_path(&["home", "u", "proj-notes.md"]);
+        let mut dir = rec(&dir_p, "项目", None, 0, 1);
         dir.is_dir = true;
-        let mut dir_en = rec("/home/u/proj", "proj", None, 0, 1);
+        let mut dir_en = rec(&dir_en_p, "proj", None, 0, 1);
         dir_en.is_dir = true;
         s.upsert_many(&[
             dir,
             dir_en,
-            rec("/home/u/项目/报告.pdf", "报告.pdf", Some("pdf"), 8, 2),
-            rec("/home/u/项目/sub/a.md", "a.md", Some("md"), 3, 3),
-            rec("/home/u/proj/src/notes.md", "notes.md", Some("md"), 4, 4),
-            // 与被删目录只共享前缀字符（`项目` vs `项目备份`）。
-            rec("/home/u/项目备份.md", "项目备份.md", Some("md"), 5, 5),
-            rec("/home/u/proj-notes.md", "proj-notes.md", Some("md"), 6, 6),
+            rec(&child_cjk, "报告.pdf", Some("pdf"), 8, 2),
+            rec(&child_sub, "a.md", Some("md"), 3, 3),
+            rec(&child_src, "notes.md", Some("md"), 4, 4),
+            rec(&sib_cjk, "项目备份.md", Some("md"), 5, 5),
+            rec(&sib_en, "proj-notes.md", Some("md"), 6, 6),
         ])
         .unwrap();
 
         s.delete_tree(&[
-            "/home/u/项目".to_string(),
-            "/home/u/proj".to_string(),
+            dir_p.clone(),
+            dir_en_p.clone(),
             // 同批混入一条文件路径：必须保持精确删除。
-            "/home/u/proj-notes.md".to_string(),
+            sib_en.clone(),
         ])
         .unwrap();
 
         let left = s.load_index().unwrap();
-        assert!(!left.contains_key("/home/u/项目"));
-        assert!(!left.contains_key("/home/u/项目/报告.pdf"));
-        assert!(!left.contains_key("/home/u/项目/sub/a.md"));
-        assert!(!left.contains_key("/home/u/proj"));
-        assert!(!left.contains_key("/home/u/proj/src/notes.md"));
-        assert!(!left.contains_key("/home/u/proj-notes.md"));
+        assert!(!left.contains_key(&dir_p));
+        assert!(!left.contains_key(&child_cjk));
+        assert!(!left.contains_key(&child_sub));
+        assert!(!left.contains_key(&dir_en_p));
+        assert!(!left.contains_key(&child_src));
+        assert!(!left.contains_key(&sib_en));
         assert!(
-            left.contains_key("/home/u/项目备份.md"),
+            left.contains_key(&sib_cjk),
             "deleting 项目 must not touch the 项目备份.md sibling"
         );
     }
@@ -1696,12 +1778,13 @@ mod tests {
     #[test]
     fn delete_tree_tolerates_unknown_paths() {
         let s = Store::open_in_memory().unwrap();
-        s.upsert_many(&[rec("/real/notes.md", "notes.md", Some("md"), 1, 1)])
+        let real = sep_path(&["real", "notes.md"]);
+        s.upsert_many(&[rec(&real, "notes.md", Some("md"), 1, 1)])
             .unwrap();
         s.delete_tree(&[
-            "/never/indexed.md".into(),
-            "/also/missing".into(),
-            "/real/notes.md".into(),
+            sep_path(&["never", "indexed.md"]),
+            sep_path(&["also", "missing"]),
+            real.clone(),
         ])
         .unwrap();
         assert!(s.load_index().unwrap().is_empty());
@@ -1714,12 +1797,15 @@ mod tests {
     #[test]
     fn delete_tree_matches_a_root_row_stored_with_a_trailing_separator() {
         let s = Store::open_in_memory().unwrap();
-        let mut dir = rec("/t/sub/", "sub", None, 0, 1);
+        let dir_p = sep_path(&["t", "sub"]);
+        let root_row = format!("{dir_p}{}", std::path::MAIN_SEPARATOR);
+        let child = sep_path(&["t", "sub", "a.md"]);
+        let mut dir = rec(&root_row, "sub", None, 0, 1);
         dir.is_dir = true;
-        s.upsert_many(&[dir, rec("/t/sub/a.md", "a.md", Some("md"), 3, 2)])
+        s.upsert_many(&[dir, rec(&child, "a.md", Some("md"), 3, 2)])
             .unwrap();
 
-        s.delete_tree(&["/t/sub".into()]).unwrap();
+        s.delete_tree(&[dir_p]).unwrap();
 
         assert!(
             s.load_index().unwrap().is_empty(),
@@ -1768,12 +1854,16 @@ mod tests {
     #[test]
     fn delete_tree_normalizes_a_trailing_separator() {
         let s = Store::open_in_memory().unwrap();
-        let mut dir = rec("/t/sub", "sub", None, 0, 1);
+        let dir_p = sep_path(&["t", "sub"]);
+        let child = sep_path(&["t", "sub", "a.md"]);
+        let mut dir = rec(&dir_p, "sub", None, 0, 1);
         dir.is_dir = true;
-        s.upsert_many(&[dir, rec("/t/sub/a.md", "a.md", Some("md"), 3, 2)])
+        s.upsert_many(&[dir, rec(&child, "a.md", Some("md"), 3, 2)])
             .unwrap();
 
-        s.delete_tree(&["/t/sub/".into()]).unwrap();
+        // 输入带尾分隔符（接线方传根 PathBuf 时可能带 `/`）。
+        s.delete_tree(&[format!("{dir_p}{}", std::path::MAIN_SEPARATOR)])
+            .unwrap();
 
         assert!(
             s.load_index().unwrap().is_empty(),
@@ -1786,47 +1876,33 @@ mod tests {
     #[test]
     fn delete_tree_is_literal_about_pattern_metachars() {
         let s = Store::open_in_memory().unwrap();
-        let mut dir = rec("/home/u/met_100%[1]", "met_100%[1]", None, 0, 1);
+        let dir_p = sep_path(&["home", "u", "met_100%[1]"]);
+        let child = sep_path(&["home", "u", "met_100%[1]", "报告.pdf"]);
+        // 字面含相同前缀字符的兄弟：非模式语义不得被波及。
+        let sib = sep_path(&["home", "u", "met_100%[1]_备份.md"]);
+        // 在未转义 LIKE ('met_100%[1]%') 下会假阳性命中的名字：必须幸存。
+        let other = sep_path(&["home", "u", "metX100Yfoo1Z.md"]);
+        let mut dir = rec(&dir_p, "met_100%[1]", None, 0, 1);
         dir.is_dir = true;
         s.upsert_many(&[
             dir,
-            rec(
-                "/home/u/met_100%[1]/报告.pdf",
-                "报告.pdf",
-                Some("pdf"),
-                8,
-                2,
-            ),
-            // 字面含相同前缀字符的兄弟：非模式语义不得被波及。
-            rec(
-                "/home/u/met_100%[1]_备份.md",
-                "met_100%[1]_备份.md",
-                Some("md"),
-                5,
-                3,
-            ),
-            // 在未转义 LIKE ('met_100%[1]%') 下会假阳性命中的名字：必须幸存。
-            rec(
-                "/home/u/metX100Yfoo1Z.md",
-                "metX100Yfoo1Z.md",
-                Some("md"),
-                6,
-                4,
-            ),
+            rec(&child, "报告.pdf", Some("pdf"), 8, 2),
+            rec(&sib, "met_100%[1]_备份.md", Some("md"), 5, 3),
+            rec(&other, "metX100Yfoo1Z.md", Some("md"), 6, 4),
         ])
         .unwrap();
 
-        s.delete_tree(&["/home/u/met_100%[1]".into()]).unwrap();
+        s.delete_tree(std::slice::from_ref(&dir_p)).unwrap();
 
         let left = s.load_index().unwrap();
-        assert!(!left.contains_key("/home/u/met_100%[1]"));
-        assert!(!left.contains_key("/home/u/met_100%[1]/报告.pdf"));
+        assert!(!left.contains_key(&dir_p));
+        assert!(!left.contains_key(&child));
         assert!(
-            left.contains_key("/home/u/met_100%[1]_备份.md"),
+            left.contains_key(&sib),
             "literal-prefix sibling must survive"
         );
         assert!(
-            left.contains_key("/home/u/metX100Yfoo1Z.md"),
+            left.contains_key(&other),
             "a name that unescaped-LIKE would false-positive must survive"
         );
     }
@@ -1837,29 +1913,83 @@ mod tests {
     #[test]
     fn delete_tree_range_bounds_exclude_boundary_siblings() {
         let s = Store::open_in_memory().unwrap();
-        let mut dir = rec("/t/sub", "sub", None, 0, 1);
+        let sep = std::path::MAIN_SEPARATOR;
+        // 上界 = p + 分隔符后继字符，按平台现算（unix '/'(0x2F)→'0'(0x30)，
+        // Windows '\'(0x5C)→']'(0x5D)）——同一份夹具在任何平台都钉住精确上界。
+        let succ = (sep as u8 + 1) as char;
+        let dir_p = sep_path(&["t", "sub"]);
+        let child = sep_path(&["t", "sub", "a.md"]);
+        // 恰为上界字符的拼写：必须幸存。
+        let at_upper = format!("{dir_p}{succ}");
+        // 分隔符字节序之前的近邻（'-' < sep，两平台分隔符均 ASCII）：必须幸存。
+        let below = sep_path(&["t", "sub-文件.md"]);
+        let mut dir = rec(&dir_p, "sub", None, 0, 1);
         dir.is_dir = true;
         s.upsert_many(&[
             dir,
-            rec("/t/sub/a.md", "a.md", Some("md"), 3, 2),
-            // 恰为上界字符 '0' 的拼写：必须幸存。
-            rec("/t/sub0", "sub0", None, 0, 3),
-            // 分隔符 '/'(0x2F) 字节序之前的近邻 '-'(0x2D)：必须幸存。
-            rec("/t/sub-文件.md", "sub-文件.md", Some("md"), 4, 4),
+            rec(&child, "a.md", Some("md"), 3, 2),
+            rec(&at_upper, &format!("sub{succ}"), None, 0, 3),
+            rec(&below, "sub-文件.md", Some("md"), 4, 4),
         ])
         .unwrap();
 
-        s.delete_tree(&["/t/sub".into()]).unwrap();
+        s.delete_tree(std::slice::from_ref(&dir_p)).unwrap();
 
         let left = s.load_index().unwrap();
-        assert!(!left.contains_key("/t/sub/a.md"));
+        assert!(!left.contains_key(&child));
         assert!(
-            left.contains_key("/t/sub0"),
+            left.contains_key(&at_upper),
             "the exact upper-bound sibling must survive"
         );
         assert!(
-            left.contains_key("/t/sub-文件.md"),
+            left.contains_key(&below),
             "a below-bound sibling must survive"
         );
+    }
+
+    /// watcher 增量路径的写放大消解：内容与库中一致的重复 upsert 整行跳过
+    /// （indexed_at 保持为最后实际变化的时间——用哨兵值代替真实时钟，确定性
+    /// 断言），任一内容列变化即照常重写。这是 [`UPSERT_IF_CHANGED_SQL`] 的
+    /// WHERE 钉：删掉 WHERE 的突变会让哨兵被 strftime('now') 覆盖而红。
+    #[test]
+    fn watcher_upsert_skips_a_content_identical_row() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_many_if_changed(&[rec("/t/f.md", "f.md", Some("md"), 10, 100)])
+            .unwrap();
+        // 哨兵：把 indexed_at 拨到一个确定的过去值。
+        s.conn
+            .lock()
+            .execute("UPDATE files SET indexed_at = 1234567890", [])
+            .unwrap();
+        s.upsert_many_if_changed(&[rec("/t/f.md", "f.md", Some("md"), 10, 100)])
+            .unwrap();
+        let at: i64 = s
+            .read
+            .lock()
+            .query_row(
+                "SELECT indexed_at FROM files WHERE path = '/t/f.md'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            at, 1234567890,
+            "a content-identical re-upsert must skip the row (sentinel must survive)"
+        );
+
+        // 任一内容列变化：照常重写（哨兵被替换），行内容更新。
+        s.upsert_many_if_changed(&[rec("/t/f.md", "f.md", Some("md"), 11, 100)])
+            .unwrap();
+        let (at, size): (i64, i64) = s
+            .read
+            .lock()
+            .query_row(
+                "SELECT indexed_at, size FROM files WHERE path = '/t/f.md'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(at != 1234567890, "a real change must rewrite the row");
+        assert_eq!(size, 11);
     }
 }
