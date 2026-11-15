@@ -33,6 +33,9 @@ test('startup gates remain active in desktop and web production builds', () => {
   // PR #847's rebase re-measure 494_000 desktop raise follows the same
   // policy; the config comment preserves both platforms' measurements.
   assert.equal(MAIN_ENTRY_BUDGET_BYTES, 494_000);
+  // PR #847's rebase re-measure raises (494_000, then the 495_000 step)
+  // follow the same policy; the config comment preserves measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 495_000);
   assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 129_000);
   for (const mode of ['production', 'web']) {
     const pluginNames = new Set(buildPlugins(mode).map(plugin => plugin.name));

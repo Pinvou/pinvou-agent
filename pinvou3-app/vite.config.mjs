@@ -665,7 +665,12 @@ function enforceLazyChunks() {
 // the limits-audit frontend lanes measure into the 493,8xx B range on the
 // node 26 toolchain, so the desktop ceiling takes the next thousand step
 // (figure re-verified by build measurement on the rebased head).
-export const MAIN_ENTRY_BUDGET_BYTES = 494_000;
+// PR #847's rebase re-measure (2026-11-23 rebase onto main@a6f276c87b):
+// the limits-audit frontend lanes join the shared startup graph on the
+// node 26 toolchain; the desktop ceiling takes the thousand step above
+// the measured figure (re-verified by build measurement on the rebased
+// head). This cap does not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 495_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
