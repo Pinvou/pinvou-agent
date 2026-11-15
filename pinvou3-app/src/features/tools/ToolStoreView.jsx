@@ -743,11 +743,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <div className={`text-[17px] font-semibold mb-1.5 break-all text-slate-900 dark:text-white`}>
                     {alert.title}
                   </div>
-                  {alert.subtitle ? (
+                  {alert.subtitle && (
                     <div className={`text-[13px] leading-relaxed break-all text-slate-500 dark:text-slate-400`}>
                       {alert.subtitle}
                     </div>
-                  ) : !alert.isError && !alert.suppressHint && (
+                  )}
+                  {!alert.isError && !alert.suppressHint && (alert.subtitle ? alert.isInstall : true) && (
                     <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>
                       {alert.isInstall ? copy.installHint : copy.removeHint}
                     </div>
@@ -1862,11 +1863,22 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // production reader). Absent or empty (the tool declares no
           // validation) keeps the title-only card.
           const discoveredTools = Array.isArray(validationReport) ? validationReport : [];
+          // 清单完全受远端控制：成功卡只列前 8 个名字，余量以计数收尾。
+          // React 转义防注入但不防布局灾难——恶意/失控远端可用海量长名把
+          // 卡片撑成巨幕，展示长度不能信任远端（review follow-up）。
+          const MAX_REPORTED_TOOLS = 8;
+          const reportedTools = discoveredTools.slice(0, MAX_REPORTED_TOOLS);
+          const overflowCount = discoveredTools.length - reportedTools.length;
           setAlert({
             visible: true,
             loading: false,
             title: hasConfig ? storeCopy.connectedQuoted(name) : storeCopy.installedQuoted(name),
-            subtitle: discoveredTools.length > 0 ? storeCopy.validatedToolsDiscovered(discoveredTools) : undefined,
+            subtitle:
+              discoveredTools.length > 0
+                ? storeCopy.validatedToolsDiscovered(
+                    overflowCount > 0 ? [...reportedTools, `+${overflowCount}`] : reportedTools,
+                  )
+                : undefined,
             isInstall: true,
             isError: false,
             toolId: backendId,

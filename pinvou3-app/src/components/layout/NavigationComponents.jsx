@@ -223,9 +223,10 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
             <>
               {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成置顶/更多按钮,重命名/收纳/删除在更多菜单里。
                   窄屏无 hover：按钮组常显；日期同样常显并以 max-w+truncate 让位——
-                  #854 把副标题并入日期槽时这里加了 max-sm:hidden,而旧副标题本无窄屏
-                  门控,定时任务的状态·时间因此在触屏上不可见;恢复信息可见,拥挤由
-                  截断控制(标题仍有 flex-1 truncate 兜底)。 */}
+                  日期槽自 #473(785f4ef8e4)起带 max-sm:hidden,按钮组的窄屏常显是同
+                  一批引入;#854 把定时任务的状态·时间并进该槽,而旧副标题本无窄屏
+                  门控,状态·时间因此在触屏上不可见;#871 恢复日期槽常显,拥挤由截断
+                  控制(标题仍有 flex-1 truncate 兜底)。 */}
               {chat.date && (
                 <span className="text-[11px] mr-4 min-w-0 max-w-[45%] truncate opacity-60 group-hover:hidden group-focus-within:hidden text-[#5F6368] dark:text-[#9AA0A6]">
                   {chat.date}

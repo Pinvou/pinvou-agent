@@ -40,4 +40,7 @@ assert.ok(script.includes('data-pinvou-design-hover'));
 assert.ok(script.includes("Object.prototype.hasOwnProperty.call(payload, 'oldValue')"));
 assert.ok(script.includes('hasOriginalValue ? String(originalValue'));
 
+assert.ok(script.includes('event.source !== window.parent'),
+  'control-plane messages must reject non-parent senders (sibling frames enumerate parent.frames)');
+
 console.log('design_runtime_logic: ok');
