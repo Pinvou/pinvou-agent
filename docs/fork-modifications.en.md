@@ -70,12 +70,12 @@
 - Local native Windows verification: `cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` passed 23 tests (Cargo substring matching selects 19 `sandbox::tests::*` and 4 `repl::sandbox::tests::*`; Linux selects 26 because of cfg differences). Both opt-in tool tests passed with system Python 3.14 and bundled Python 3.13.14 (four executions); the separate Git Bash environment probe passed once. Earlier, restoring the original builders made both native tool tests fail for each interpreter with corrupted Python Chinese and intact PowerShell Chinese. Formatting, architecture guard, and fast fork fingerprints passed.
 - Windows evidence above is prior local author verification, not a claim that later documentation revisions reran native tests. The parent Windows regression step now selects the three deterministic default-merge, constructor-wiring, and case-insensitive-override filters, each with a nonzero-test guard. The actual [Windows regression job at `91e262ba2`](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) ran all three filters successfully. That receipt covers the older head and unchanged foundation, not later revisions. The two Python-dependent opt-in tests remain local author evidence. The maintenance fork's `pinvou3-clean` workflow is Ubuntu-only; Windows-gated tests do not run in that CI lane. The Linux-visible `windows_shell_default_env_forces_python_pipe_stdio_utf8` checks the helper result, not its constructor wiring; the case-insensitive overlay also requires native Windows regression. Upstream PR codewhale-hq/Codewhale#7041 is the contribution path for eventual upstream Windows CI coverage, not evidence that such a lane has run. No customer-device replay, PowerShell 7 verification, or installer release was performed.
 
-## Current state (2026-11-14)
+## Current state (2026-11-15)
 
-- Public maintenance and parent gitlink: `8e8d52fdb4a418bf4310db4b5d03dce5345c54d5` (2026-11-14). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`. This round maintenance followed with one signed rustc/clippy 1.100 stable lint-adaptation commit (see the top row of the commit-sequence table) and the parent gitlink followed.
-- Measured history: 99 commits above upstream v0.9.12 `dcd4c200f`, 84 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits remain #107 `f27672935` and #116 `e9a7f48da1` (this round's commit is signed). The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Public maintenance and parent gitlink: `687358f7efde6abd3592737b8ec48adc74ba5a84` (2026-11-15). #123 merged as `e5a8af221`, #124 as `449edbf0b`, #129 as `4e560354c`, #131 as `e2a0e14fd`, #133 as `4e75c6a07`, #134 as `8a4719fd4`, #135 as `11cba403d`; #136 as `37be2844f`, #142 as `78804c83e`, #148 as `5f15cce57`, #150 as `e972a9a05`, #152 as `6f7a3a748`, #156 as `8e8d52fdb`, #157 as `687358f7e`. This round maintenance followed with one session-reader read-only classification commit (see the top row of the commit-sequence table) and the parent gitlink followed.
+- Measured history: 100 commits above upstream v0.9.12 `dcd4c200f`, 85 above r1 `1fafee7e2`; 97 carry DCO sign-offs. The unsigned commits are #107 `f27672935`, #116 `e9a7f48da1` and #157 `687358f7e` (the CodeWhale-side squash merge landed without a sign-off; the parent-side follow commit carries one). Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
-- Measured drift: 551 files, +121123/-49817, net +71306; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
+- Measured drift: 551 files, +121146/-49817, net +71329; 301 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 
 ### 2026-10-23 batch maintenance integration (#115/#116/#117)
 
@@ -120,6 +120,7 @@ These upstream tests were replaced, not silently deleted, because registered Pin
 
 | Commit | Topic |
 |---|---|
+| `687358f7e` | T2: read-only classification fix for the host's first-party session-reader read surface — `mcp_session-reader_read_session` and `mcp_session-reader_list_sessions` join the engine's read-only helper list by exact tool name; the server-side contract (cursor pagination, completed turns only, per-item truncation, cross-session prefixes refused) makes them genuinely read-only, and the previous misclassification as approval-required network tools dead-ended a Plan-pinned aux lane whose sole tool was the scoped read before execution. Exact-name matching keeps prefixed impostors (`mcp_session-reader_read_session_export`) on the approval-required side. registry/tests.rs extends the existing read-surface test with data entries (no new `forkguard_*` behavior names, the register stays at 301); the parent has no mirrored classification and is transparent (#157) |
 | `8e8d52fdb` | T2: five equivalent rewrites for rustc/clippy 1.100 stable (2026-11-09) new lints, no behavior change — the terminal probe test's `map_err(|err| io::Error::other(err.to_string()))` calls `to_string()` on an `Infallible` (ratatui 0.30 `with_options` returns `B::Error`; `TestBackend::Error` is uninhabited), provably dead once 1.100 stabilized the never type and upgraded `unreachable_code`; now `map_err(io::Error::other)` passed as a function value (the conversion is load-bearing and stays); `fleet/manager.rs` needless_bool reduced to `Ok(started)`; subagent coord ledger and `tui/auto_review.rs` needless_bool tails become boolean expressions; `tui/transcript/tests.rs` ×2 needless_range_loop rewritten to `per_cell[..3].iter().enumerate()`. Re-running the same commands on pristine `6f7a3a748` with 1.99.1 confirms these five are exactly the 1.100-new findings; the strict all-targets surface still carries 2 `collapsible_if` errors and 4 rustdoc private-link errors under `cargo doc -Dwarnings` that exist identically on 1.99.1 (pre-existing debt, untouched, left for a follow-up). First surfaced via the parent Windows regression leg (codewhale-tui lib test compile) (#156) |
 | `6f7a3a748` | deps: rusqlite 0.41.1 / libsqlite3-sys 0.39.1 (bundled SQLite 3.54.1, closes RUSTSEC-2026-0459), rmcp 3.9.0 (closes RUSTSEC-2026-0462), rio-vt 0.5.29 (closes RUSTSEC-2026-0430); the declared submodule MSRV moves to rust-version 1.89 (below the parent's 1.90 floor, no parent action) (#152) |
 | `e972a9a05` | T1/T2: expose the engine route output budget to hosts — a public read-only wrapper so hosts can query each route's output budget; purely additive, parent-transparent (#150) |
@@ -612,3 +613,19 @@ base (11cba403d), the official v0.9.12 root (dcd4c200) and the immutable
 r1 closure are unchanged ancestors, and the public-head transition
 contract stays gitlink == branch head with the r3 tag pinned at its
 closure (61cb769be).
+
+## CodeWhale baseline follow to 687358f7e (2026-11-15)
+
+The submodule gitlink follows pinvou3-clean to 687358f7e (CodeWhale#157's
+session-reader read-only classification: the host's first-party
+session-reader read surface joins the engine's read-only helper list by
+exact tool name, and prefixed impostors stay approval-gated). The fork
+line grows by one commit (99→100); 687358f7e itself landed in the
+CodeWhale repository as an unsigned squash, so the documented unsigned
+set is now three commits (see §0). fork-guard re-registers the review
+head (687358f7e) and the commits-above-v0.9.12 census (100); the
+maintenance base (11cba403d), the official v0.9.12 root (dcd4c200) and
+the immutable r1 closure are unchanged ancestors, and the public-head
+transition contract stays gitlink == branch head with the r3 tag pinned
+at its closure (61cb769be). The parent carries no mirrored
+classification and no other source change in this follow.
