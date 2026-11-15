@@ -170,7 +170,7 @@ pinvou_vc_redist_ready:
   ; nsExec pushes the literal "error", and LogicLib "=" is numeric
   ; ("error" parses as 0), so the guard must string-compare ("==") and
   ; require a non-empty path before deleting.
-  nsExec::ExecToStack '/OEM powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-user-profile.ps1"'
+  nsExec::ExecToStack /OEM 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-user-profile.ps1"'
   Pop $8
   Pop $9
   ${If} $8 == 0

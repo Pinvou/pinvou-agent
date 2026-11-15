@@ -351,8 +351,13 @@ assert.match(
 );
 assert.match(
   baseInstallerHooks,
-  /nsExec::ExecToStack '\/OEM powershell -NoProfile -ExecutionPolicy Bypass -File "\$PLUGINSDIR\\pinvou-user-profile\.ps1"'/u,
-  "the resolver invocation must request /OEM decoding: PowerShell writes redirected stdout in the OEM code page and a mis-decoded path would silently no-op the deletion",
+  /nsExec::ExecToStack \/OEM 'powershell -NoProfile -ExecutionPolicy Bypass -File "\$PLUGINSDIR\\pinvou-user-profile\.ps1"'/u,
+  "the resolver invocation must pass /OEM as a separate nsExec parameter: the nsExec switch parser recognizes /OEM only when a popped argument equals it, so a quoted '/OEM powershell ...' single argument is treated as the whole command line and the resolver never starts",
+);
+assert.doesNotMatch(
+  baseInstallerHooks,
+  /nsExec::ExecToStack '\/OEM /u,
+  "the quoted '/OEM powershell ...' single-argument form must never return: nsExec would treat it as the command line (spawn failure), silently keeping every uninstall's app data",
 );
 assert.match(
   baseInstallerHooks,
