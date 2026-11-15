@@ -30,8 +30,9 @@
 //!   `rewind_to_turn` / `undo_last_rewind` orchestration. User-turn counting
 //!   goes through `code_checkpoints::count_user_turns_in_json`, which reads
 //!   the transcript JSON through the engine's own era form
-//!   (`user_turn_prompt_indices`; the single-message
-//!   `is_user_turn_prompt` predicate it historically matched is retired)
+//!   (`user_turn_prompt_indices` minus the step-budget-notification cut;
+//!   the single-message `is_user_turn_prompt` predicate it historically
+//!   matched is retired)
 //!   (the CLI cannot depend on the foundation crate directly, so the
 //!   shared entry point lives in the app crate — no local approximation to
 //!   drift).

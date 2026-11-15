@@ -5367,7 +5367,8 @@
         // ToolResult + 图片标记），仅合成历史可触发，如需彻底对齐需上游决策。
         const utext = lane.userMessageDisplayText(
           toolResultCarrier ? blocks.filter(b => !isImageMarkerTextBlock(b)) : blocks, true);
-        // 步数预算通知（r10 M3）：过滤气泡，与 Rust 计数侧（counts_as_user_turn）
+        // 步数预算通知（r10 M3）：过滤气泡，与 Rust 计数侧（count_user_turns 的
+        // 步数预算过滤，user_turn_prompt_cut_indices）
         // 同口径——否则调和门序号错位 / 假用户气泡。
         const stepBudgetNotice = utext && (utext.indexOf("Step budget soft landing:") === 0 || utext.indexOf("Your model-step budget was exhausted") === 0);
         if (utext && !stepBudgetNotice) {

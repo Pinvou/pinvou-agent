@@ -4227,7 +4227,7 @@ fn ",
 
     /// F6：工作模式 Plan 会话的批准轮快照——accept_plan 与 chat 共用
     /// `create_turn_checkpoint`，其门（scheduled_profile.is_none）对 Plan 工作模式
-    /// 会话放行，批准轮（is_user_turn_prompt 同口径计数的真实用户消息）照常登记。
+    /// 会话放行，批准轮（count_user_turns 同口径计数的真实用户消息）照常登记。
     /// 时序镜像生产：快照先于该轮消息落盘。
     #[tokio::test]
     async fn work_mode_plan_approval_turn_snapshots() {

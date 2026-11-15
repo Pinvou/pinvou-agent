@@ -4507,7 +4507,12 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     }
   }); });
 
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）本就贴着 30 上限；r7 M2 的计数基线重置以单个条件位并入 done 腿（与 tauri 车道逐字同文，bridge-messages 计数器原语旁），内聚高于拆分
+  // Web 车道没有 invalidateSessionBuffer 能力（rewind/检查点为桌面专属，见
+  // access-policy.json 的桌面门）：本车道恒为 null，typeof 守卫使 r39-M1
+  // 失效臂退化为纯通知，done 臂的直接引用被同一守卫前置短路（不可达）。
+  // 绑定仅为通过 no-undef；与 tauri 车道的逐字同文由 chat_manual_compact
+  // 的字节同文门强制（覆盖 listen 起点之后，不含本绑定）。
+  const invalidateSessionBuffer = null;
   listen("chat:compaction", function (e) {
     const compactionSid = e.payload && e.payload.session_id;
     const prePhase = e.payload && e.payload.phase;
@@ -4541,6 +4546,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     // 通知条照常挂载（缓存未失效，挂载落点正确）。
     const compactionInvalidated =
       compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）本就贴着 30 上限；r40-M1 换入前捕获外移后超限的是换入域回调本体，内聚高于拆分
     onSessionEvent(e, function () {
     if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;

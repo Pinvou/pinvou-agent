@@ -3,9 +3,10 @@
 //! 原地截断并备份被截段，fork 不动源会话、另存新支。
 //!
 //! 切点口径与 rewind 同源：底座 [`deepseek_tui::user_turn_prompt_indices`]
-//! 的 era 口径（比单消息 [`deepseek_tui::is_user_turn_prompt`] 多计入
-//! post-provenance 历史里粘贴的压缩摘要头 turn——底座文档明确 host 编号应
-//! 统一读这一个列表）。前端入口表（forkEntriesByTurnId）按
+//! 的 era 口径再剔除步数预算通知（[`crate::features::code_checkpoints::turns`]
+//! `user_turn_prompt_cut_indices`；era 形比单消息
+//! [`deepseek_tui::is_user_turn_prompt`] 多计入 post-provenance 历史里粘贴的
+//! 压缩摘要头 turn——底座文档明确 host 编号应统一读这一个列表）。前端入口表（forkEntriesByTurnId）按
 //! `turnHasUserText` + 引擎 `<context_update>` 运行时消息的 per-session
 //! 计数（bridge 层在投递/重载两路把计数附加到下一个用户气泡）对齐同一
 //! 列表。已知残留（前端比后端少计一格、序号向后错位）：post-provenance
@@ -56,7 +57,6 @@
 use anyhow::Result;
 use chrono::Utc;
 use deepseek_tui::session_manager::SessionMetadata;
-use deepseek_tui::user_turn_prompt_indices;
 
 use super::SessionStore;
 
@@ -116,7 +116,15 @@ impl SessionStore {
         // （parking_lot），persist 直接走 `persist_then_reconcile` 而非 `save`。
         let mutation = self.scheduled_mutation.lock();
         let source = self.load(session_id)?;
-        let turn_prompt_indices = user_turn_prompt_indices(&source.messages);
+        // 与 rewind/前端同口径：底座 era 形列表再剔除步数预算通知
+        // （user_turn_prompt_cut_indices）。步数预算通知以 ExternalUser
+        // provenance 落盘、era 口径会计成边界，但前端 fork/rewind 入口表
+        // 都不为它计序号——漏剔除会把「分叉到第 N 轮」切到通知前一个边界，
+        // 静默丢掉被点击的 turn。
+        let turn_prompt_indices =
+            crate::features::code_checkpoints::turns::user_turn_prompt_cut_indices(
+                &source.messages,
+            );
         let total_turns = turn_prompt_indices.len();
         let keep = keep_turns as usize;
         if total_turns == 0 {

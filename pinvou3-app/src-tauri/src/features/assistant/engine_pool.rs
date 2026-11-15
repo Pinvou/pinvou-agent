@@ -4349,7 +4349,8 @@ impl EnginePool {
     /// work-mode session but does NOT produce a snapshot — the snapshot
     /// seam lives only at chat.rs and interaction.rs (accept_plan). The
     /// delivered turn counts on the rewind surface (persisted user message
-    /// → counts_as_user_turn) but the UI can only offer a conversation-only
+    /// → count_user_turns, the era-list + step-budget-cut form) but the UI can
+    /// only offer a conversation-only
     /// chip; workspace changes made during this turn cannot be rewound past.
     /// Hooking this path into the snapshot seam is a tracked follow-up.
     pub(crate) async fn deliver_messaging_turn(

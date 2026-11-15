@@ -65,7 +65,7 @@
 
 **移植时的修正**：
 
-1. **turn 计数口径**（必须改）：feat 分支用 `messages.iter().filter(|m| m.role == "user").count() + 1`，会把 tool_result（同样以 `role="user"` 落盘）计入，导致 turn 号错位。改用 `is_user_turn_prompt` 同口径谓词（`CodeWhale/crates/tui/src/runtime_handoff.rs:637`，`deepseek_tui` 已 re-export），与 `8d4d2a991`「编辑重发三层同口径」保持一致。
+1. **turn 计数口径**（必须改）：feat 分支用 `messages.iter().filter(|m| m.role == "user").count() + 1`，会把 tool_result（同样以 `role="user"` 落盘）计入，导致 turn 号错位。改用底座 era 形 `user_turn_prompt_indices` 再剔除步数预算通知（现 `features/code_checkpoints/turns.rs` 的 `user_turn_prompt_cut_indices`；r49 集成期由初版单消息 `is_user_turn_prompt` 谓词升级——era 口径多计入 post-provenance 历史里粘贴的压缩摘要头 turn，步数预算通知以 ExternalUser provenance 落盘、turn_meta 无 non-authoritative 标记，两者都会被底座口径误计，见 turns.rs 模块文档），与 `8d4d2a991`「编辑重发三层同口径」保持一致。
 2. **模块落位**：feat 分支依赖 `code_sessions` 模块拆分，本方案不引入该重构；移植到现有 `codex_acp` 相邻位置或新建 `features/code_checkpoints/`，按架构守卫边界落位。
 3. **快照钩子**：保留原生车道两条缝——`chat_with_reservation`（`app/commands/chat.rs`）与 `accept_plan()`（`app/commands/interaction.rs`，车道门同口径），删除 ACP `codex_acp_prompt` 钩子。
 
@@ -73,7 +73,7 @@
 
 feat 分支没有的部分，本方案新增：
 
-1. **磁盘截断**：`SessionStore` 新增「截断到第 N 轮」方法，复用 `8d4d2a991` 的同口径定位逻辑（`is_user_turn_prompt` rposition）；被截段落写入 sidecar `_rewound_turns.json`（留恢复可能，UI 不暴露 redo）；放行 `looks_like_truncating_overwrite` 守卫（`sessions/transcript.rs:26`）的显式回退路径。
+1. **磁盘截断**：`SessionStore` 新增「截断到第 N 轮」方法，复用 `8d4d2a991` 的同口径定位逻辑（era 形列表 + 步数预算剔除的统一 `user_turn_prompt_cut_indices`）；被截段落写入 sidecar `_rewound_turns.json`（留恢复可能，UI 不暴露 redo）；放行 `looks_like_truncating_overwrite` 守卫（`sessions/transcript.rs:26`）的显式回退路径。
 2. **engine 内存态**：不新增 fork Op。回退后**回收该会话 engine 实例**，下次发送时走既有 `Op::SyncSession` 用截断后的 messages 重新注水（注水链路 `features/assistant/engine.rs:1866` 的 `sync_session` 现成）。回退只发生在空闲态，无在途状态可丢。
 3. **前端**：每个 turn 边界渲染回退入口（移植 `CheckpointChip.jsx` + `checkpoints.js` 的 `checkpointMapByTurn` 对齐与兜底规则），点击后懒加载 diff 预览（`checkpoint_diff`）+ 二次确认；确认后串行执行：恢复代码 → 截断对话 → 刷新时间线。
 
@@ -209,7 +209,7 @@ check-then-act 窗口为「复检返回 → apply 启动」（毫秒级）；app
 ## 12. 已知限制（2026-08-21 设计审阅留痕；同日后两项已落地）
 
 - **SECRET_EXCLUDES 交叉引用**（r47 补登记）：影子快照/恢复路径的秘密排除集以
-  `SECRET_EXCLUDES` 常量为准（`pinjou3-app/src-tauri/src/features/code_checkpoints/mod.rs:139`），
+  `SECRET_EXCLUDES` 常量为准（`pinvou3-app/src-tauri/src/features/code_checkpoints/mod.rs:141`），
   由 create/restore 两侧的 icase purge 腿与 clean `-e` 腿共同消费；本设计 §5/§12
   提及的「秘密排除」行为一律以该常量及其注释为单一事实来源，修订排除集时须
   同步评估 clean `-e` 顺序与影子腿的字符类形式（r19 M5/M1 前提）。

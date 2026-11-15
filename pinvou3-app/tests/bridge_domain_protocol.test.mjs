@@ -275,7 +275,7 @@ const expectedProtocolHashes = {
   // Recomputed on the r49 rebase onto main 4fd8642cbd: the captured
   // chat:compaction listener body now carries main's in-flight marker
   // bookkeeping plus the PR's real-shrink resync arm (r39-M1/r40-M1).
-  chat: '0fe9e53b2c972857276224b44446423986b2fe6906ccbea91cbbf1641d0516af',
+  chat: '3aa4cf406c648d9485b4bf849a848b67aa1a38dd31c5ade6dc743116f7e1078e',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

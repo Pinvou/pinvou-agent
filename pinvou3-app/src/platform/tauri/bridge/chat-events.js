@@ -1294,6 +1294,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     // 通知条照常挂载（缓存未失效，挂载落点正确）。
     const compactionInvalidated =
       compactionResync && invalidateSessionBuffer(compactionSid, { refuseWhenBusy: true }) !== false;
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）本就贴着 30 上限；r40-M1 换入前捕获外移后超限的是换入域回调本体，内聚高于拆分
     onSessionEvent(e, function () {
     if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
