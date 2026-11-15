@@ -188,7 +188,7 @@ test("command-wrapped fork rejections classify via the embedded marker (r7 minor
   // Copy-kind markers carry no parseable payload, so the embedded fallback
   // is safe; SESSIONS_BUSY (which carries ids) stays prefix-only.
   const wrapped =
-    "fork_session: a workspace rebind or an exclusive write is in progress; retry the fork later (REBIND_IN_PROGRESS: held by another fenced writer)";
+    "fork_session: a workspace rebind or an exclusive write is in progress; retry the fork later (REBIND_IN_PROGRESS: another workspace binding rebind or fenced writer is already running)";
   const classified = classifyRebindError(wrapped, dictEn);
   assert.equal(classified.kind, "copy");
   assert.equal(classified.message, dictEn.uiProjects.rebindInProgress);

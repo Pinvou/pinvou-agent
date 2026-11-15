@@ -581,9 +581,8 @@ fn import_one_session_inner(
 /// so tests drive the non-NotFound arm (and pin its folded reason)
 /// deterministically through this seam.
 #[cfg(test)]
-static REPROBE_STAT_FAULTS: LazyLock<
-    Mutex<HashMap<String, std::io::ErrorKind>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static REPROBE_STAT_FAULTS: LazyLock<Mutex<HashMap<String, std::io::ErrorKind>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
 fn take_reprobe_stat_fault(id: &str) -> Option<std::io::ErrorKind> {
@@ -1081,10 +1080,10 @@ fn session_schema_version_ceiling() -> u32 {
 mod tests {
     use super::super::{SessionImportFailure, SessionImportSummary};
     use super::{
-        ImportOutcome, MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES, REPROBE_STAT_FAULTS,
-        SessionStore, commit_staged_import, ensure_artifacts_exportable,
+        GENERATED_MEMBER_COUNT, ImportOutcome, MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES,
+        REPROBE_STAT_FAULTS, SessionStore, commit_staged_import, ensure_artifacts_exportable,
         ensure_artifacts_exportable_with, ensure_parent_resolves_inside_artifacts_dir,
-        import_artifacts, validated_artifact_target, GENERATED_MEMBER_COUNT,
+        import_artifacts, validated_artifact_target,
     };
     use deepseek_tui::models::{ContentBlock, Message, Role};
 
@@ -2247,11 +2246,7 @@ mod tests {
             .map(|index| format!("artifacts/f{index}.txt"))
             .collect();
         let mut members: Vec<(&str, &[u8])> = vec![("session.json", &record)];
-        members.extend(
-            names
-                .iter()
-                .map(|name| (name.as_str(), b"x".as_slice())),
-        );
+        members.extend(names.iter().map(|name| (name.as_str(), b"x".as_slice())));
         assert_eq!(
             members.len(),
             MAX_MEMBER_COUNT + 1,
@@ -2664,12 +2659,10 @@ mod tests {
         ensure_artifacts_exportable_with(Some(&artifacts), 64, 64, MAX_TOTAL_BYTES, cap)
             .expect("exactly (cap - GENERATED_MEMBER_COUNT) artifacts must pass the prescan");
         std::fs::write(artifacts.join("f3.txt"), b"x").expect("seed the 4th artifact");
-        let error = ensure_artifacts_exportable_with(Some(&artifacts), 64, 64, MAX_TOTAL_BYTES, cap)
-            .expect_err("one artifact past the inclusive cap must fail the prescan");
-        assert!(
-            format!("{error:#}").contains("member-count"),
-            "{error:#}"
-        );
+        let error =
+            ensure_artifacts_exportable_with(Some(&artifacts), 64, 64, MAX_TOTAL_BYTES, cap)
+                .expect_err("one artifact past the inclusive cap must fail the prescan");
+        assert!(format!("{error:#}").contains("member-count"), "{error:#}");
         let _ = std::fs::remove_dir_all(&base);
     }
 

@@ -10232,8 +10232,7 @@ fn generate_unused_session_id_fails_loud_on_stat_fault() {
     struct RestorePermissions<'a>(&'a std::path::Path, u32);
     impl Drop for RestorePermissions<'_> {
         fn drop(&mut self) {
-            if std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(self.1)).is_err()
-            {
+            if std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(self.1)).is_err() {
                 eprintln!(
                     "PERM-RESTORE-FAILED[generate_unused_session_id_fails_loud_on_stat_fault]: the sessions dir may be left 0o000"
                 );

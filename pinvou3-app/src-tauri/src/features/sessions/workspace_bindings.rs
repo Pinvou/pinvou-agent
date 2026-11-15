@@ -349,7 +349,8 @@ impl SessionStore {
                 let _ = writeln!(
                     std::io::stderr(),
                     "[sessions] workspace binding sidecar version {} above supported {}, ignored",
-                    sidecar.version, SESSION_WORKSPACE_SIDECAR_VERSION,
+                    sidecar.version,
+                    SESSION_WORKSPACE_SIDECAR_VERSION,
                 );
                 WorkspaceBindingProbe::Unknown
             }
