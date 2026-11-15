@@ -106,7 +106,11 @@ cp "$WORK/sv/build/bin/sense-voice-main" "$engine_tmp" || { rm -f "$engine_tmp";
 mv -f "$engine_tmp" "$ASR_DIR/sense-voice-main"
 
 echo "[4/5] 下载模型 $MODEL_FILE（modelscope，国内可达）…"
-curl --retry 4 --retry-all-errors --connect-timeout 15 --max-time 600 -fsSL -o "$WORK/$MODEL_FILE" \
+# 总时长预算 900s：与 CLI 自己对同级别 ~254 MiB 模型的下载预算对齐
+# （voice.rs 的 ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT 注释按 ~300 KB/s 推算）。
+# 600s 只够 q4_k 在 ~300 KB/s 下勉强完成，q8_0 档（~250 MB）必超；断点续传
+# （-C -）让超时重试从已收字节继续，而不是每次从头重烧全部流量。
+curl --retry 4 --retry-all-errors --connect-timeout 15 --max-time 900 -C - -fsSL -o "$WORK/$MODEL_FILE" \
   "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/$MODEL_FILE"
 printf '%s  %s\n' "$MODEL_SHA256" "$WORK/$MODEL_FILE" | sha256sum --check --status \
   || { echo "❌ model sha256 check failed (corrupt download or changed upstream asset): $MODEL_FILE (expected $MODEL_SHA256, actual $(sha256sum "$WORK/$MODEL_FILE" | cut -d' ' -f1))" >&2; exit 1; }
