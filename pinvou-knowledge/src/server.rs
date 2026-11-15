@@ -98,8 +98,16 @@ pub fn router(service: Arc<KnowledgeService>) -> Router {
             patch(owner_update_device).delete(owner_delete_device),
         )
         .route(
+            "/api/v2/owner/trash/collections",
+            get(owner_trashed_collections),
+        )
+        .route(
             "/api/v2/owner/trash/collections/{id}",
             axum::routing::delete(owner_permanently_delete_collection),
+        )
+        .route(
+            "/api/v2/owner/trash/documents",
+            get(owner_trashed_documents),
         )
         .route(
             "/api/v2/owner/trash/documents/{id}",
@@ -376,6 +384,32 @@ fn map_device_mutation_error(error: DeviceMutationError) -> ApiError {
         DeviceMutationError::Revoked => ApiError::conflict("请先恢复该成员设备"),
         DeviceMutationError::Database(error) => ApiError::internal(error.to_string()),
     }
+}
+
+async fn owner_trashed_collections(
+    State(service): State<Arc<KnowledgeService>>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> ApiResult<Json<Vec<Collection>>> {
+    require_owner_device(&service, &headers)?;
+    Ok(Json(
+        service
+            .trashed_collections_page(query.limit.unwrap_or(200), query.offset)
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+async fn owner_trashed_documents(
+    State(service): State<Arc<KnowledgeService>>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> ApiResult<Json<Vec<TrashedDocument>>> {
+    require_owner_device(&service, &headers)?;
+    Ok(Json(
+        service
+            .trashed_documents_page(query.limit.unwrap_or(200), query.offset)
+            .map_err(ApiError::internal)?,
+    ))
 }
 
 async fn owner_permanently_delete_collection(
@@ -961,6 +995,79 @@ mod tests {
         assert_eq!(collections.status(), StatusCode::UNAUTHORIZED);
         let body = collections.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("访问令牌"));
+    }
+
+    // 回收站清单 v2 路由必须真实可达:GET /api/v2/owner/trash/{collections,
+    // documents} 返回 owner 作用域的清单,文档条目带所属知识集名;未认证请求
+    // 保持 401。这与客户端 trashed_* 方法一一对应,防止路由再次被整段移除。
+    #[tokio::test]
+    async fn owner_trash_listings_serve_collections_and_documents() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0004";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+
+        let active = service
+            .create_collection(CreateCollectionRequest {
+                name: "在用资料".to_string(),
+                description: None,
+            })
+            .unwrap();
+        let document = service
+            .upload_document(active.id, "doc.txt", b"body".to_vec())
+            .await
+            .unwrap();
+        service.trash_document(document.id).unwrap();
+
+        let trashed = service
+            .create_collection(CreateCollectionRequest {
+                name: "待删集".to_string(),
+                description: None,
+            })
+            .unwrap();
+        service.trash_collection(trashed.id).unwrap();
+        let app = router(service.clone());
+
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v2/owner/trash/collections?limit=10&offset=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let mut collections = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/collections?limit=10&offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut collections, owner_token);
+        let response = app.clone().oneshot(collections).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed: Vec<Collection> = decode_body(response).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, trashed.id);
+
+        let mut documents = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/documents?limit=10&offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut documents, owner_token);
+        let response = app.oneshot(documents).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed: Vec<TrashedDocument> = decode_body(response).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].document.id, document.id);
+        assert_eq!(listed[0].collection_name, "在用资料");
     }
 
     // 懒装载时代的廉价校验回归:空查询/超量知识集选择必须在模型装载门之前

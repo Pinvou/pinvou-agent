@@ -761,6 +761,26 @@ impl KnowledgeService {
             .map_err(|error| error.to_string())
     }
 
+    pub fn trashed_collections_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Collection>, String> {
+        self.store
+            .list_trashed_collections_page(limit, offset)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn trashed_documents_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<TrashedDocument>, String> {
+        self.store
+            .list_trashed_documents_page(limit, offset)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn create_collection(
         &self,
         request: CreateCollectionRequest,
@@ -2007,6 +2027,84 @@ mod tests {
             std::fs::read_dir(&service.documents_dir).unwrap().count(),
             1
         );
+    }
+
+    // PUT 更新是全量替换:None 清空描述(而非保留旧值),空白名称回落到
+    // 默认名"知识集";回收站中的知识集必须先恢复才能再改。
+    #[tokio::test]
+    async fn update_collection_full_replaces_description_and_blank_name_falls_back() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "specs".to_string(),
+                description: Some("original".to_string()),
+            })
+            .unwrap();
+
+        let renamed = service
+            .update_collection(
+                collection.id,
+                CreateCollectionRequest {
+                    name: "   ".to_string(),
+                    description: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(renamed.name, "知识集");
+        assert_eq!(renamed.description, None);
+
+        let too_long = service
+            .update_collection(
+                collection.id,
+                CreateCollectionRequest {
+                    name: "x".repeat(121),
+                    description: Some("keep".to_string()),
+                },
+            )
+            .unwrap_err();
+        assert!(too_long.contains("名称无效或过长"));
+    }
+
+    #[tokio::test]
+    async fn update_collection_rejects_trashed_collection_until_restored() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "trash-me".to_string(),
+                description: Some("desc".to_string()),
+            })
+            .unwrap();
+
+        service.trash_collection(collection.id).unwrap();
+        let error = service
+            .update_collection(
+                collection.id,
+                CreateCollectionRequest {
+                    name: "renamed".to_string(),
+                    description: Some("desc".to_string()),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error, "知识集不存在或已删除");
+
+        service.restore_collection(collection.id).unwrap();
+        let restored = service
+            .update_collection(
+                collection.id,
+                CreateCollectionRequest {
+                    name: "renamed".to_string(),
+                    description: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(restored.name, "renamed");
+        assert_eq!(restored.description, None);
     }
 
     #[tokio::test]
