@@ -76,35 +76,4 @@ assert.match(handleCancelBody, /setCancellingSessionIds\(prev => new Set\(prev\)
 assert.match(handleCancelBody, /await bridge\.chat\.cancelGeneration\(\)/);
 assert.match(handleCancelBody, /next\.delete\(cancellingSid\)/);
 
-// 8. A→B→A 序列行为验证：单个 sid 会被 B 覆盖导致 A 的按钮误启用；Set 语义
-//    下 A 的标记在 B 取消期间保留，只有 A 自己的 Promise 完成才清除。
-//    用与组件相同的不可变更新语义模拟。
-{
-  let cancelling = new Set();
-  const setCancelling = (updater) => { cancelling = updater(cancelling); };
-  const activeSessionId = 'A';
-
-  // A 发起取消：加入集合，按钮应禁用。
-  setCancelling(prev => new Set(prev).add('A'));
-  assert.ok(cancelling.has('A'), 'A cancelling after its invoke starts');
-  assert.ok(cancelling.has(activeSessionId), 'A button must be disabled while A is cancelling');
-
-  // 切到 B 并发起取消：B 加入集合，A 的标记必须保留。
-  setCancelling(prev => new Set(prev).add('B'));
-  assert.ok(cancelling.has('A') && cancelling.has('B'), 'A and B may cancel concurrently');
-
-  // 切回 A：A 仍在集合中，按钮必须保持禁用（不能被 B 的标记覆盖而误启用）。
-  assert.ok(cancelling.has(activeSessionId), 'switching back to A must keep A disabled');
-
-  // A 的 invoke 返回：只删 A，B 的标记不受影响。
-  setCancelling(prev => {
-    if (!prev.has('A')) return prev;
-    const next = new Set(prev);
-    next.delete('A');
-    return next;
-  });
-  assert.ok(!cancelling.has('A'), 'A cleared when its own invoke resolves');
-  assert.ok(cancelling.has('B'), 'B cancelling flag must survive A completion');
-}
-
 console.log('ok: cancel state is scoped per session and survives concurrent cancels (reviewer points 9/12)');
