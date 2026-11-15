@@ -269,17 +269,30 @@ fn preinstalled_model_startup_commands_are_not_registered() {
 #[test]
 fn remote_knowledge_registrations_match_the_command_surface() {
     // command_protocol! pins the source-side list only; the invoke-handler
-    // registration in lib.rs is repo-wide unpinned (dropping an entry 404s
-    // the command with every test green — global_shortcut.rs documents the
-    // same class for its own command). Sort both sides: registration order
-    // need not follow file order, but the sets must match exactly so a
-    // dropped, renamed, or unregistered command fails here.
+    // registration for this module is otherwise unpinned (dropping an entry
+    // 404s the command with every test green — global_shortcut.rs documents
+    // the same class for its own command). Sort both sides: registration
+    // order need not follow file order, but the sets must match exactly so
+    // a dropped, renamed, or unregistered command fails here.
+    //
+    // Split on the module path instead of matching line prefixes plus a
+    // trailing comma: an entry may legitimately end the handler list
+    // without one (rustfmt keeps either form), and a comma-strict parse
+    // would fail on good code. Residual limitations, shared with
+    // command_names: text mentioning the path — a comment included —
+    // counts as an occurrence, and include_str! cannot see #[cfg] (the
+    // handler list carries none today).
     let lib = include_str!("../../lib.rs");
-    let mut registered: Vec<String> = lib
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("commands::remote_knowledge::"))
-        .filter_map(|entry| entry.strip_suffix(','))
-        .map(|name| name.to_string())
+    let mut registered: Vec<&str> = lib
+        .split("commands::remote_knowledge::")
+        .skip(1)
+        .filter_map(|rest| {
+            let end = rest
+                .char_indices()
+                .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+                .map_or(rest.len(), |(i, _)| i);
+            if end == 0 { None } else { Some(&rest[..end]) }
+        })
         .collect();
     let mut defined = command_names(include_str!("remote_knowledge.rs"));
     registered.sort_unstable();
