@@ -22,8 +22,6 @@ use deepseek_tui::session_manager::SessionManager;
 /// 漂移。
 pub(crate) const RESERVED_SESSION_ID_STEMS: [&str; 2] = ["session_boot_owners", "checkpoints"];
 
-/// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
-/// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
 /// `pub` for the pinvou-cli `projects` family: the rebind orphan probe
 /// validates an id before joining it into a sessions-root path (the same
 /// fail-closed rule the GUI path applies), through the `features::sessions`
@@ -456,6 +454,15 @@ pub(crate) fn scheduled_session_file(manager: &SessionManager, id: &str) -> Resu
     Ok(manager.sessions_dir().join(format!("{id}.json")))
 }
 
+/// Generate a URL-safe session id: 13 lowercase base36 chars encoding the
+/// wall-clock nanos at generation time (the historical "timestamp + nanos
+/// hash" doc sat misplaced on `validate_session_id`; the implementation is
+/// pure nanos, and the id shape is what `aux-{parent_id}` derivation and
+/// the sessions-filename UX build on). Callers must never persist it
+/// unconditionally — route it through the store's
+/// `generate_unused_session_id` so a clock step or coarse-clock collision
+/// with an existing record fails loudly instead of silently replacing a
+/// live session.
 pub(crate) fn generate_session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()

@@ -47,6 +47,38 @@ static POST_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
 static PRE_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Test-only candidate queue for wiring pins: when non-empty,
+/// `generate_unused_session_id` draws candidates from here instead of the
+/// wall clock, so tests can drive the collision/exhaustion path through the
+/// public call sites (fork / create_new). Same `#[cfg(test)]`-hook idiom as
+/// `PRE_RECORD_DELETE_FAULTS`; every store-booting test holds the env lock
+/// for its whole run, so a queued sequence cannot interleave with another
+/// test's allocation.
+#[cfg(test)]
+static TEST_GENERATED_ID_QUEUE: LazyLock<Mutex<Vec<String>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Queue candidates for the next `generate_unused_session_id` calls; draw
+/// order is preserved.
+#[cfg(test)]
+pub(crate) fn push_test_generated_id_candidates(candidates: &[&str]) {
+    TEST_GENERATED_ID_QUEUE
+        .lock()
+        .extend(candidates.iter().map(|candidate| (*candidate).to_string()));
+}
+
+#[cfg(test)]
+fn take_all_test_generated_id_candidates() -> std::collections::VecDeque<String> {
+    std::mem::take(&mut *TEST_GENERATED_ID_QUEUE.lock()).into()
+}
+
+/// Panic-safety drain for wiring-pin tests: leftovers would poison the next
+/// queued allocation, so tests drop a guard that clears the queue.
+#[cfg(test)]
+pub(crate) fn clear_test_generated_id_queue() {
+    TEST_GENERATED_ID_QUEUE.lock().clear();
+}
+
 /// Cap on the number of ordinary chat sessions retained on disk before the
 /// oldest is evicted by [`super::retention::SessionStore::enforce_session_retention_locked`].
 pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
@@ -710,12 +742,33 @@ impl SessionStore {
         )
     }
 
+    /// Wall-clock-derived candidates to probe before refusing loudly. Eight
+    /// covers any realistic transient collision; on a genuinely frozen clock
+    /// the candidates repeat and the allocation fails loudly by design (the
+    /// scheduled-run executor records the run as failed and retryable).
+    const GENERATED_ID_ATTEMPTS: usize = 8;
+
     /// 新会话 id 的占用探测：[`generate_session_id`] 取自墙钟纳秒，时钟回拨
     /// 或粗时钟粒度上可能与既有 id 撞车，而按 id 落盘是原子覆盖——撞车即
     /// 静默换掉一条活会话。这里以 [`Self::durable_session_record_is_absent`]
     /// 的真实 NotFound 口径确认可用：占用（撞车）与元数据故障（EACCES/EIO）
     /// 都换下一个候选重试，耗尽后如实报错，绝不拿未确认可用的 id 落盘。
     pub(crate) fn generate_unused_session_id(&self) -> Result<String> {
+        #[cfg(test)]
+        {
+            // Wiring pins: a queued candidate sequence routes this whole
+            // allocation through the probe, so the fork / create_new call
+            // sites can drive the collision and exhaustion paths
+            // deterministically (falling back to the clock when the queue
+            // drains).
+            let queued = take_all_test_generated_id_candidates();
+            if !queued.is_empty() {
+                let mut candidates = queued.into_iter();
+                return self.generate_unused_session_id_with(|| {
+                    candidates.next().unwrap_or_else(generate_session_id)
+                });
+            }
+        }
         self.generate_unused_session_id_with(generate_session_id)
     }
 
@@ -725,16 +778,17 @@ impl SessionStore {
         &self,
         mut generate: G,
     ) -> Result<String> {
-        for _ in 0..8 {
+        for _ in 0..Self::GENERATED_ID_ATTEMPTS {
             let candidate = generate();
             if self.durable_session_record_is_absent(&candidate) {
                 return Ok(candidate);
             }
         }
         bail!(
-            "could not allocate an unused session id after 8 attempts; \
+            "could not allocate an unused session id after {} attempts; \
              clock-derived ids keep colliding with existing records or the \
-             sessions directory metadata is unreadable"
+             sessions directory metadata is unreadable",
+            Self::GENERATED_ID_ATTEMPTS
         )
     }
 
@@ -1067,6 +1121,14 @@ impl SessionStore {
         model_id: Option<String>,
         workspace: PathBuf,
     ) -> Result<SavedSession> {
+        // Probe→persist is not one atomic step here: `save` re-takes the
+        // non-reentrant scheduled_mutation, so the lock cannot simply span
+        // both. Two concurrent create_new calls landing on the same clock
+        // tick (coarse-clock VM) can both probe absent and the later atomic
+        // replace still wins — the same disclosed residual window as
+        // create_aux_session ("closing that window needs a foundation-level
+        // exclusive-create"). fork and the sched- namespace hold the lock
+        // across probe+persist and have no such window.
         let id = self.generate_unused_session_id()?;
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),

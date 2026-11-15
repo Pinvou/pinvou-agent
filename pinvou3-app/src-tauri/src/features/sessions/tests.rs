@@ -22,7 +22,10 @@ use std::sync::Arc;
 // Crate-visible helpers exercised directly by the suite (not re-exported by
 // the facade because they are internal collaboration seams).
 use super::scheduled::ScheduledProfileRegistry;
-use super::store::{HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
+use super::store::{
+    HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND, clear_test_generated_id_queue,
+    push_test_generated_id_candidates,
+};
 use super::validators::generate_session_id;
 
 /// RAII teardown for `isolated_store`. Field order is drop order: env is
@@ -10223,25 +10226,113 @@ fn generate_unused_session_id_fails_loud_on_stat_fault() {
         .expect("stat sessions dir")
         .permissions()
         .mode();
+    // 0o000 复原走 Drop guard：断言 panic 时不得把目录留在 0o000——
+    // TestHomeGuard 的 remove_dir_all 会被 0o000 卡死，整个临时 home
+    // 泄漏进 /tmp。
+    struct RestorePermissions<'a>(&'a std::path::Path, u32);
+    impl Drop for RestorePermissions<'_> {
+        fn drop(&mut self) {
+            if std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(self.1)).is_err()
+            {
+                eprintln!(
+                    "PERM-RESTORE-FAILED[generate_unused_session_id_fails_loud_on_stat_fault]: the sessions dir may be left 0o000"
+                );
+            }
+        }
+    }
+    // Root 判定只能靠「已存在的文件能否被 stat 到」：NotFound 对 root
+    // 与非 root 同形，stat 一个从未创建的文件分辨不出前提是否成立。
+    let probe = sessions_dir.join("probe.json");
+    std::fs::write(&probe, b"{}").expect("plant probe file");
     std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
         .expect("chmod sessions dir");
-    if std::fs::metadata(sessions_dir.join("probe.json")).is_ok() {
-        std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
-            .expect("restore permissions");
+    let _restore = RestorePermissions(&sessions_dir, original);
+    if std::fs::metadata(&probe).is_ok() {
         eprintln!(
-            "skipped generate_unused_session_id_fails_loud_on_stat_fault: running as root, the 0o000 precondition does not hold"
+            "ROOT-SKIP[generate_unused_session_id_fails_loud_on_stat_fault]: running as root, the 0o000 precondition does not hold; NOT exercised"
         );
         return;
     }
     let error = store
         .generate_unused_session_id()
         .expect_err("a stat-faulted sessions dir must fail loudly, not hand out an unverified id");
-    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
-        .expect("restore permissions");
     assert!(
         error
             .to_string()
             .contains("could not allocate an unused session id"),
         "{error}"
+    );
+}
+
+/// wiring 钉：测试候选队列把撞车序列穿过 `fork_session_record` 的真实
+/// 调用点——把 fork 的 id 分配回退成裸 `generate_session_id()` 的突变
+/// 在此转红（此前该回退全套绿，见评审 M4）。
+#[test]
+fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
+    let (store, _env) = isolated_store();
+    let source = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let mut session = store.load(&source.metadata.id).expect("load");
+    session.messages = vec![user_text("第一轮"), assistant_text("回复")];
+    store.save(&session).expect("seed");
+    std::fs::write(store.sessions_dir().join("occupied.json"), b"{}")
+        .expect("plant occupied record file");
+    struct ClearIdQueueOnDrop;
+    impl Drop for ClearIdQueueOnDrop {
+        fn drop(&mut self) {
+            clear_test_generated_id_queue();
+        }
+    }
+    let _queue_guard = ClearIdQueueOnDrop;
+
+    // 占满整个候选预算 → fork 必须响亮失败，源记录原样。
+    push_test_generated_id_candidates(&["occupied"; 8]);
+    let error = store
+        .fork_session_record(&source.metadata.id, 1)
+        .expect_err("an always-occupied candidate source must fail the fork loudly");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error:#}"
+    );
+    assert!(
+        store.load(&source.metadata.id).is_ok(),
+        "the source record must be intact past the loud failure"
+    );
+
+    // 占用后接新鲜候选 → fork 落在注入的新鲜 id 上：只有穿过探测的
+    // wiring 才可能产出这个 id（裸时钟给出的是时钟值）。
+    push_test_generated_id_candidates(&["occupied", "fresh"]);
+    let forked = store
+        .fork_session_record(&source.metadata.id, 1)
+        .expect("the fresh second candidate must land");
+    assert_eq!(forked.id, "fresh");
+}
+
+/// [`SessionStore::create_new`] 的同款 wiring 钉：预算耗尽必须响亮失败，
+/// 且不落任何记录。
+#[test]
+fn create_new_fails_loud_when_every_generated_candidate_is_occupied() {
+    let (store, _env) = isolated_store();
+    std::fs::write(store.sessions_dir().join("occupied.json"), b"{}")
+        .expect("plant occupied record file");
+    struct ClearIdQueueOnDrop;
+    impl Drop for ClearIdQueueOnDrop {
+        fn drop(&mut self) {
+            clear_test_generated_id_queue();
+        }
+    }
+    let _queue_guard = ClearIdQueueOnDrop;
+    push_test_generated_id_candidates(&["occupied"; 8]);
+    let error = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect_err("an always-occupied candidate source must fail create_new loudly");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error:#}"
     );
 }
