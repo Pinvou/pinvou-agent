@@ -768,11 +768,25 @@ export default defineConfig(({ mode }) => {
               ],
             },
           }
-        // The desktop multi-entry build keeps rolldown's automatic splitting: a
-        // recursive group here absorbs the pet/reader windows' shared modules
-        // into the group chunk and inflates those windows' startup payload by
-        // ~0.5 MB each.
-        : undefined,
+        : {
+            // Desktop keeps automatic splitting for everything else: a
+            // recursive vendor-style group here would absorb the pet/reader
+            // windows' shared modules into the group chunk and inflate those
+            // windows' startup payload by ~0.5 MB each. The single targeted
+            // group only moves ChatView's closure (the ConversationTimeline
+            // subgraph rolldown stopped splitting automatically once the
+            // rewind modules joined the entry graph) out of the entry FILE
+            // for entry-budget headroom and cache stability; it does not
+            // change what loads at startup.
+            codeSplitting: {
+              groups: [
+                {
+                  name: 'chat-view',
+                  test: /[\\/]features[\\/]chat[\\/]ChatView\.jsx$/,
+                },
+              ],
+            },
+          },
     },
   },
   };
