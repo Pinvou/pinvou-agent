@@ -46,12 +46,36 @@ pub fn redact_storage_prefix(text: &str) -> String {
     if prefix.is_empty() {
         return text.to_string();
     }
+    // Windows canonicalize yields verbatim spellings (`\\?\C:\...`, UNC as
+    // `\\?\UNC\server\share\...`) while the storage root is recorded
+    // non-verbatim, so a literal replace would miss the prefix entirely and
+    // leak the user name. Try the de-verbatimed form first; a fold there
+    // returns the normalized forward-slash form, and when nothing folds —
+    // including verbatim text outside the storage root — the original text
+    // is returned untouched (the stem is never stripped without a fold).
+    let deverbatimed = strip_windows_verbatim_stem(text);
+    let folded = deverbatimed.replace(&prefix, "~/.pinvou3");
+    if &folded != deverbatimed.as_ref() {
+        return folded.replace('\\', "/");
+    }
     let folded = text.replace(&prefix, "~/.pinvou3");
     if folded == text {
         folded
     } else {
         folded.replace('\\', "/")
     }
+}
+
+/// `\\?\C:\Users\...` → `C:\Users\...` and `\\?\UNC\server\share\...` →
+/// `\\server\share\...`; anything else is returned unchanged.
+fn strip_windows_verbatim_stem(text: &str) -> std::borrow::Cow<'_, str> {
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return text.into();
+    };
+    if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        return format!(r"\\{unc}").into();
+    }
+    rest.into()
 }
 
 pub fn settings_path() -> PathBuf {
@@ -942,6 +966,45 @@ pub(crate) mod tests {
                 "the folded remainder must use forward slashes on every platform"
             );
         });
+    }
+
+    /// Windows canonicalize yields verbatim spellings (`\\?\C:\...`, UNC as
+    /// `\\?\UNC\...`) while the storage root is recorded non-verbatim: the
+    /// fold must engage through the de-verbatimed form, or the raw prefix
+    /// (with the OS user name) leaks outbound (fix wave R2).
+    #[test]
+    fn redact_storage_prefix_folds_windows_verbatim_canonicalized_text() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", r"C:\Users\me\.pinvou3") };
+        assert_eq!(
+            redact_storage_prefix(r"\\?\C:\Users\me\.pinvou3\sessions\a.json"),
+            "~/.pinvou3/sessions/a.json",
+            "a verbatim canonicalized path under the storage root must fold"
+        );
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", r"\\server\share\.pinvou3") };
+        assert_eq!(
+            redact_storage_prefix(r"\\?\UNC\server\share\.pinvou3\user\memory\snapshot.md"),
+            "~/.pinvou3/user/memory/snapshot.md",
+            "a UNC verbatim path under the storage root must fold"
+        );
+    }
+
+    /// Verbatim text outside the storage root must pass through byte-identical:
+    /// stripping the stem without a fold would rewrite the text (same
+    /// discipline as the sibling-prefix pin below).
+    #[test]
+    fn redact_storage_prefix_keeps_verbatim_non_storage_text_untouched() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", r"C:\Users\me\.pinvou3") };
+        let text = r"\\?\C:\Users\me\Documents\notes.txt";
+        assert_eq!(
+            redact_storage_prefix(text),
+            text,
+            "verbatim text outside the storage root must pass through unchanged"
+        );
     }
 
     /// Round-14 复审 M1:`ad0971d2e` 并行波插入 separators 钉时吞掉了本钉

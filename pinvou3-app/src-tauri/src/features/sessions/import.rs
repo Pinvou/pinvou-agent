@@ -26,11 +26,19 @@
 //!   不敏感；round-36 minor 2 的同一口径——`SCHED-x` 落盘后会被大小写
 //!   不敏感的调度门归为定时会话，从列表隐身又拒绝删除）。
 
+// Hook-only imports (REPROBE_STAT_FAULTS below is `#[cfg(test)]`): keep the
+// plain lib build free of unused imports.
+#[cfg(test)]
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+#[cfg(test)]
+use parking_lot::Mutex;
 use serde::Serialize;
 
 use deepseek_tui::session_manager::SavedSession;
@@ -397,7 +405,11 @@ fn import_one_session(
             if let Some(error) = artifacts_error {
                 summary.artifacts_failed.push(SessionImportFailure {
                     session_id: id.clone(),
-                    reason: format!("{error:#}"),
+                    // Boundary fold, same discipline as the two fail
+                    // closures: artifact error chains embed canonicalized
+                    // storage paths, and every outbound reason must leave
+                    // with the storage prefix folded.
+                    reason: crate::platform::paths::redact_storage_prefix(&format!("{error:#}")),
                 });
             }
             summary.imported.push(id);
@@ -413,9 +425,15 @@ fn import_one_session_inner(
     artifacts: Vec<(String, Vec<u8>)>,
 ) -> ImportOutcome {
     let id = session.metadata.id.clone();
+    // Boundary fold: every Failed reason leaving either window (staging or
+    // commit) passes through redact_storage_prefix once here, so no
+    // formation site can embed the raw storage prefix (with the OS user
+    // name) in an outbound reason — probe/re-probe, persist (save_session
+    // _atomic's "write session {path}"), verify-staged, and any future
+    // arm all fold at this single point.
     let fail = |reason: String| SessionImportFailure {
         session_id: id.clone(),
-        reason,
+        reason: crate::platform::paths::redact_storage_prefix(&reason),
     };
     if let Err(reason) = super::validators::validate_session_id(&id) {
         return ImportOutcome::Failed(fail(format!("invalid session id: {reason:#}")));
@@ -465,8 +483,10 @@ fn import_one_session_inner(
     match std::fs::metadata(&record_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return ImportOutcome::Failed(fail(crate::platform::paths::redact_storage_prefix(
-                &format!("probe existing record {}: {error}", record_path.display()),
+            // (folded at the fail closure — no per-site wrap needed)
+            return ImportOutcome::Failed(fail(format!(
+                "probe existing record {}: {error}",
+                record_path.display()
             )));
         }
         Ok(_) => return ImportOutcome::SkippedExisting(id),
@@ -554,6 +574,22 @@ fn import_one_session_inner(
 /// - 删除/驱逐持同一把锁且都以记录存在为前提；探测窗已证实无记录，
 ///   无锁暂存窗内它们到不了本会话目录——原单窗锁防的「reclaim 清扫
 ///   remove_dir_all 刚写入的成员」场景需要记录先行存在，与探测结论矛盾。
+/// Test-only re-probe fault injection (same `#[cfg(test)]` hook idiom as
+/// store.rs's `PRE_RECORD_DELETE_FAULTS`): session id → `ErrorKind` the
+/// commit-window re-probe reports instead of a real `metadata` call. A real
+/// fault between staging and commit cannot be timed from outside the call,
+/// so tests drive the non-NotFound arm (and pin its folded reason)
+/// deterministically through this seam.
+#[cfg(test)]
+static REPROBE_STAT_FAULTS: LazyLock<
+    Mutex<HashMap<String, std::io::ErrorKind>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+fn take_reprobe_stat_fault(id: &str) -> Option<std::io::ErrorKind> {
+    REPROBE_STAT_FAULTS.lock().remove(id)
+}
+
 /// 回滚语义与原实现逐字一致：仅当本次导入创建的会话目录且 artifacts
 /// 完整写入时才整目录删除。
 fn commit_staged_import(
@@ -564,24 +600,38 @@ fn commit_staged_import(
     created_session_dir: bool,
 ) -> ImportOutcome {
     let id = session.metadata.id.clone();
+    // Boundary fold: every Failed reason leaving either window (staging or
+    // commit) passes through redact_storage_prefix once here, so no
+    // formation site can embed the raw storage prefix (with the OS user
+    // name) in an outbound reason — probe/re-probe, persist (save_session
+    // _atomic's "write session {path}"), verify-staged, and any future
+    // arm all fold at this single point.
     let fail = |reason: String| SessionImportFailure {
         session_id: id.clone(),
-        reason,
+        reason: crate::platform::paths::redact_storage_prefix(&reason),
     };
     let record_path = store.sessions_dir().join(format!("{id}.json"));
     let session_dir = store.sessions_dir().join(&id);
     let mutation = store.scheduled_mutation.lock();
-    match std::fs::metadata(&record_path) {
+    let reprobe = std::fs::metadata(&record_path);
+    #[cfg(test)]
+    let reprobe = match take_reprobe_stat_fault(&id) {
+        Some(kind) => Err(std::io::Error::new(
+            kind,
+            "injected re-probe stat fault before persist",
+        )),
+        None => reprobe,
+    };
+    match reprobe {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             if artifacts_result.is_ok() && created_session_dir {
                 let _ = std::fs::remove_dir_all(&session_dir);
             }
-            return ImportOutcome::Failed(fail(crate::platform::paths::redact_storage_prefix(
-                &format!(
-                    "re-probe existing record before persist {}: {error}",
-                    record_path.display()
-                ),
+            // (folded at the fail closure — no per-site wrap needed)
+            return ImportOutcome::Failed(fail(format!(
+                "re-probe existing record before persist {}: {error}",
+                record_path.display()
             )));
         }
         Ok(_) => return ImportOutcome::SkippedExisting(id),
@@ -1031,9 +1081,10 @@ fn session_schema_version_ceiling() -> u32 {
 mod tests {
     use super::super::{SessionImportFailure, SessionImportSummary};
     use super::{
-        ImportOutcome, MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES, SessionStore,
-        commit_staged_import, ensure_artifacts_exportable, ensure_artifacts_exportable_with,
-        ensure_parent_resolves_inside_artifacts_dir, import_artifacts, validated_artifact_target,
+        ImportOutcome, MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES, REPROBE_STAT_FAULTS,
+        SessionStore, commit_staged_import, ensure_artifacts_exportable,
+        ensure_artifacts_exportable_with, ensure_parent_resolves_inside_artifacts_dir,
+        import_artifacts, validated_artifact_target, GENERATED_MEMBER_COUNT,
     };
     use deepseek_tui::models::{ContentBlock, Message, Role};
 
@@ -2182,17 +2233,30 @@ mod tests {
     }
 
     /// 成员数上限：总量账本按声明大小记账，海量零字节成员贡献 0 却制造
-    /// 海量头解析——超过 [`MAX_MEMBER_COUNT`] 的归档整档拒绝。
+    /// 海量头解析——超过 [`MAX_MEMBER_COUNT`] 的归档整档拒绝。fixture 带
+    /// `session.json`（记录本体计入同一计数器）：若计数器漏掉记录本体，
+    /// 10,000 个 artifacts 恰好等于 cap、归档放行——本测试随之转红
+    /// （计数范围的突变此前全绿，成员上限钉只钉比较形状，不钉范围）。
     #[test]
     fn import_enforces_member_count_cap() {
         let (store, _lock, _env) = isolated_store();
-        let names: Vec<String> = (0..=MAX_MEMBER_COUNT)
+        let record_path = write_json_record(&store, "capover1");
+        let record = std::fs::read(&record_path).expect("read session record");
+        let _ = std::fs::remove_file(&record_path);
+        let names: Vec<String> = (0..MAX_MEMBER_COUNT)
             .map(|index| format!("artifacts/f{index}.txt"))
             .collect();
-        let members: Vec<(&str, &[u8])> = names
-            .iter()
-            .map(|name| (name.as_str(), b"x".as_slice()))
-            .collect();
+        let mut members: Vec<(&str, &[u8])> = vec![("session.json", &record)];
+        members.extend(
+            names
+                .iter()
+                .map(|name| (name.as_str(), b"x".as_slice())),
+        );
+        assert_eq!(
+            members.len(),
+            MAX_MEMBER_COUNT + 1,
+            "the fixture must sit one member past the cap"
+        );
         let archive = build_archive(&members);
         let error = store
             .import_archive(&archive)
@@ -2210,8 +2274,9 @@ mod tests {
     #[test]
     fn import_accepts_exactly_member_count_cap() {
         let (store, _lock, _env) = isolated_store();
-        let record =
-            std::fs::read(write_json_record(&store, "capedge1")).expect("read session record");
+        let record_path = write_json_record(&store, "capedge1");
+        let record = std::fs::read(&record_path).expect("read session record");
+        let _ = std::fs::remove_file(&record_path);
         let mut members: Vec<(&str, &[u8])> = vec![("session.json", &record)];
         let artifacts: Vec<String> = (1..MAX_MEMBER_COUNT)
             .map(|index| format!("artifacts/f{index}.txt"))
@@ -2304,6 +2369,46 @@ mod tests {
         let live = store.load("probeio1").expect("live record intact");
         assert_eq!(live.messages.len(), 2);
         let _ = std::fs::remove_file(&second);
+    }
+
+    /// commit-window re-probe 的非 NotFound 腿（注入 seam，真实窗口无法
+    /// 从调用外定时）：必须按失败口径整档回滚出 failed，绝不 persist，
+    /// 且原因经 fail 闭包的边界折叠出站——原始 home 前缀（含 OS 用户名）
+    /// 不得进 summary（窗口-1 探测腿的同款钉）。
+    #[test]
+    fn import_reports_folded_reason_on_reprobe_stat_fault_before_persist() {
+        let (store, _lock, _env) = isolated_store();
+        let record_path = write_json_record(&store, "reprobefault1");
+        let record = std::fs::read(&record_path).expect("read session record");
+        let _ = std::fs::remove_file(&record_path);
+        let archive = build_archive(&[("session.json", &record)]);
+        REPROBE_STAT_FAULTS.lock().insert(
+            "reprobefault1".to_string(),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        let summary = store.import_archive(&archive).expect("summary returned");
+        assert!(
+            summary.imported.is_empty(),
+            "a re-probe fault must not persist the record: {:?}",
+            summary.imported
+        );
+        assert_eq!(summary.failed.len(), 1, "{:?}", summary.failed);
+        let reason = &summary.failed[0].reason;
+        assert!(
+            reason.contains(
+                "re-probe existing record before persist ~/.pinvou3/sessions/reprobefault1.json"
+            ),
+            "reason must be storage-prefix folded: {reason}"
+        );
+        assert!(
+            !reason.contains("pinvou3-import-test-"),
+            "reason must not leak the raw home prefix: {reason}"
+        );
+        assert!(
+            store.load("reprobefault1").is_err(),
+            "no record may land past a re-probe stat fault"
+        );
+        let _ = std::fs::remove_file(&archive);
     }
 
     /// 非 UTF-8 成员名拒绝（而非 lossy 改名）：不同的非法字节名经
@@ -2537,6 +2642,35 @@ mod tests {
             "{error:#}"
         );
         let _ = std::fs::remove_file(&archive);
+    }
+
+    /// 导出预扫描的成员数边界同样是含边界 `>`：既有导出钉用 ledger
+    /// cap+4 的超限形状，`>=` 突变全绿（与导入侧 exact-cap 钉同款盲区）。
+    /// 参数化 seam 上取小上限钉两臂——恰好 `cap - GENERATED` 个 artifacts
+    /// 必须过（导出器自产成员恰好补满），再 +1 必须拒。
+    #[test]
+    fn export_prescan_member_count_boundary_is_inclusive() {
+        let base = std::env::temp_dir().join(format!(
+            "pinvou3-export-pin-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let artifacts = base.join("artifacts");
+        std::fs::create_dir_all(&artifacts).expect("mkdir artifacts");
+        for index in 0..3 {
+            std::fs::write(artifacts.join(format!("f{index}.txt")), b"x").expect("seed artifact");
+        }
+        let cap = 3 + GENERATED_MEMBER_COUNT;
+        ensure_artifacts_exportable_with(Some(&artifacts), 64, 64, MAX_TOTAL_BYTES, cap)
+            .expect("exactly (cap - GENERATED_MEMBER_COUNT) artifacts must pass the prescan");
+        std::fs::write(artifacts.join("f3.txt"), b"x").expect("seed the 4th artifact");
+        let error = ensure_artifacts_exportable_with(Some(&artifacts), 64, 64, MAX_TOTAL_BYTES, cap)
+            .expect_err("one artifact past the inclusive cap must fail the prescan");
+        assert!(
+            format!("{error:#}").contains("member-count"),
+            "{error:#}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Reparse-point 收口 helper 的直接单测（r9 minor）：canonicalize 故障
