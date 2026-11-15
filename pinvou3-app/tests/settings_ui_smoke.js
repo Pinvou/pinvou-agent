@@ -287,6 +287,22 @@ for (const settingsI18nSource of settingsI18nSources) {
     1,
     'the keyless-endpoint toggle must be rendered exactly once via its testid',
   );
+  // The toggle's input wiring is pinned separately from its render: a
+  // regression that renders the row but detaches the flip (no onClick) keeps
+  // every payload/derivation guard green while the headline interaction
+  // breaks inert (round-6 review).
+  assert.match(
+    settingsViewSource,
+    /onClick=\{\(\) => setNoAuth\(v => !v\)\}/,
+    'the keyless toggle must actually flip the noAuth state on click',
+  );
+  // Same caliber for the port row: the row can render correctly while its
+  // onChange silently stops rewriting the URL — pin the wiring itself.
+  assert.match(
+    settingsViewSource,
+    /onChange: e => handleBaseUrlPortChange\(e\.target\.value\)/,
+    'the port row must actually rewrite the URL through handleBaseUrlPortChange on input',
+  );
   assert.match(
     settingsViewSource,
     /auth_mode: !isLocalPreset && !isCodingPlan && noAuth \? 'none' : null/,
