@@ -718,11 +718,18 @@ pub struct SessionTimelineStats {
     pub completed_turns: usize,
     pub failed_turns: usize,
     /// 用户主动 Ctrl-C / 超时中断的轮次(engine 上游 TurnOutcomeStatus::Interrupted)。
-    /// 之前被 `_ => {}` 静默丢弃,导致 turn_count 与 completed+failed 对不上。
+    /// 官方树曾把该终态落进 `_ => {}` 静默丢弃(见 [F2] 测试注释);本仓曾在
+    /// #562(3612d08b7)按死代码移除聚合,现随官方同步恢复并补齐分桶。
     pub interrupted_turns: usize,
+    /// ACP 会话因 MaxTokens / MaxTurnRequests 上限收口的轮次(codex_acp 落盘
+    /// "LimitReached"):既非失败也非中断,单独成桶避免落进 unknown。
+    pub limit_reached_turns: usize,
+    /// ACP 会话模型拒绝(StopReason::Refusal → "Refused")收口的轮次。
+    pub refused_turns: usize,
     /// 有 user_start 但没有 assistant_done 的轮次,常见于进程退出或文件尾部截断。
     pub incomplete_turns: usize,
-    /// assistant_done 存在,但状态不是当前已知枚举。单独暴露,避免静默制造差值。
+    /// assistant_done 存在,但状态不是当前已知枚举(含缺失 status 的脏数据)。
+    /// 单独暴露,避免静默制造差值。
     pub unknown_status_turns: usize,
 }
 
@@ -795,6 +802,8 @@ pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> 
                 stats.failed_turns += 1;
             }
             Some(s) if s.eq_ignore_ascii_case("Interrupted") => stats.interrupted_turns += 1,
+            Some(s) if s.eq_ignore_ascii_case("LimitReached") => stats.limit_reached_turns += 1,
+            Some(s) if s.eq_ignore_ascii_case("Refused") => stats.refused_turns += 1,
             _ => stats.unknown_status_turns += 1,
         }
     }
@@ -1101,9 +1110,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(tmp);
     }
 
-    /// [F2] Interrupted 终态之前被 `_ => {}` 静默丢弃,导致 turn_count 与
-    /// completed+failed 对不上。验证 compute_stats 现在能正确分类三个终态,
-    /// 且大小写不敏感(engine 上游落盘是 PascalCase,但脏数据可能是 lowercase)。
+    /// [F2] 官方树曾把 Interrupted 终态落进 `_ => {}` 静默丢弃,导致
+    /// completed+failed 与 turn_count 对不上;该叙事随官方同步带回归本仓
+    /// (#562/3612d08b7 曾把整个聚合按死代码移除,本 PR 恢复)。验证全部
+    /// 终态桶(含 Interrupted)都被分类,且大小写不敏感(产线写入
+    /// PascalCase,脏数据可能是 lowercase)。
     #[test]
     fn compute_stats_counts_interrupted_terminal_state() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1134,12 +1145,92 @@ mod tests {
         assert_eq!(stats.completed_turns, 1);
         assert_eq!(stats.failed_turns, 1);
         assert_eq!(stats.interrupted_turns, 2);
-        // 三个终态加起来必须等于 turn_count——这是 F2 修复的本质保证
+        // 全部终态桶加 incomplete/unknown 必须等于 turn_count——产线还可能
+        // 写 LimitReached/Refused/send_error/脏状态,单看三个终态会对不上。
         assert_eq!(
-            stats.completed_turns + stats.failed_turns + stats.interrupted_turns,
+            stats.completed_turns
+                + stats.failed_turns
+                + stats.interrupted_turns
+                + stats.limit_reached_turns
+                + stats.refused_turns
+                + stats.incomplete_turns
+                + stats.unknown_status_turns,
             stats.turn_count
         );
 
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// 缺失 session(sidecar 不存在)返回全零 stats,而不是报错——
+    /// 2026-07 之前的老 session 没有侧车文件,诊断入口按零值展示。
+    /// (随 #562 移除的 compute_stats_on_missing_session_is_default 恢复。)
+    #[test]
+    fn compute_stats_on_missing_session_is_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe {
+            std::env::set_var(
+                "PINVOU3_HOME",
+                std::env::temp_dir().join(format!("nope-{}", now_ms())),
+            )
+        };
+        let stats = compute_stats("does-not-exist").unwrap();
+        assert_eq!(stats.turn_count, 0);
+        assert_eq!(stats.total_input_tokens, 0);
+        assert_eq!(stats.completed_turns, 0);
+        assert!(stats.first_turn_ts.is_none());
+        assert!(stats.last_turn_ts.is_none());
+    }
+
+    /// 真实产线写出的边缘终态全部归位:send_error 归 failed、未知状态归
+    /// unknown、未收口 turn 归 incomplete、ACP 的 LimitReached/Refused 归
+    /// 各自的桶。(随 #562 移除的 compute_stats_classifies_real_terminal_edges
+    /// 恢复,并补上 ACP 两个状态——此前它们会静默落进 unknown。)
+    #[test]
+    fn compute_stats_classifies_real_terminal_edges() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-terminal-edges-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-terminal-edges";
+        start_turn(sid);
+        finish_turn(sid, "send_error", Some("engine unavailable"));
+        start_turn(sid);
+        finish_turn(sid, "FutureStatus", None);
+        start_turn(sid);
+        finish_turn(sid, "LimitReached", None);
+        start_turn(sid);
+        finish_turn(sid, "refused", None);
+        start_turn(sid);
+
+        let stats = compute_stats(sid).unwrap();
+        assert_eq!(stats.turn_count, 5);
+        assert_eq!(stats.failed_turns, 1);
+        assert_eq!(stats.limit_reached_turns, 1);
+        assert_eq!(stats.refused_turns, 1);
+        assert_eq!(stats.incomplete_turns, 1);
+        assert_eq!(stats.unknown_status_turns, 1);
+        // 未知状态与未收口也计入分区——七桶之和必须等于 turn_count
+        assert_eq!(
+            stats.completed_turns
+                + stats.failed_turns
+                + stats.interrupted_turns
+                + stats.limit_reached_turns
+                + stats.refused_turns
+                + stats.incomplete_turns
+                + stats.unknown_status_turns,
+            stats.turn_count
+        );
+
+        // 清掉进程内 ACTIVE_TURNS 的未完成记录,避免影响同进程后续测试。
+        finish_turn(sid, "Interrupted", None);
         let _ = std::fs::remove_dir_all(tmp);
     }
 
