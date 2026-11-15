@@ -1770,10 +1770,18 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                         const prog = (idx && idx.running && idx.collectionId === c.id && idx.total > 0) ? Math.round((idx.done / idx.total) * 100) : null;
                         const isIdx = c.status === 'indexing' || prog != null;
                         return (
-                        // biome-ignore lint/a11y/useKeyWithClickEvents: collection-card click is a shortcut; keyboard path handled by the in-card action buttons
-                        // biome-ignore lint/a11y/noStaticElementInteractions: collection-card click hot zone; not a standalone interactive control
-                        // eslint-disable-next-line react-hooks/refs -- openColl→loadDocs touch the pagination generation refs only inside this event-callback-invoked async fn, never during render
-                        <div key={c.id} onClick={() => openColl(c)} className={`p-4 rounded-2xl cursor-pointer transition-all ${panel} ${panelHover}`}
+                        /* eslint-disable react-hooks/refs -- openColl→loadDocs touch the pagination generation refs only inside this event-callback-invoked async fn, never during render; re-enabled right after the card element */
+                        // biome-ignore lint/a11y/useSemanticElements: the collection-card hot zone wraps in-card action buttons; a native <button> cannot contain them (ArtifactsPanel row precedent)
+                        <div key={c.id} role="button" tabIndex={0} onClick={() => openColl(c)}
+                          onKeyDown={(event) => {
+                            // Enter/Space activate the card hot zone; keys and
+                            // clicks bubbled from the in-card action buttons stay native.
+                            if (event.target !== event.currentTarget) return;
+                            if (event.key !== 'Enter' && event.key !== ' ') return;
+                            event.preventDefault();
+                            openColl(c);
+                          }}
+                          className={`p-4 rounded-2xl cursor-pointer transition-all ${panel} ${panelHover}`}
                           style={activeColl && activeColl.id === c.id ? { borderColor: collColor(c), boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 2px ${collColor(c)}55` } : panelShadow}>{/* isDark dynamic-value: 保留 (boxShadow 含运行时 collColor) */}
                           <div className="flex items-start gap-3">
                             <div className="w-11 h-11 rounded-xl grid place-items-center shrink-0" style={{ background: collColor(c) + (isDark ? '33' : '1f'), color: collColor(c) }}><BookOpen size={20} /></div> {/* isDark dynamic-value: 保留 (background 依赖运行时 collColor) */}
@@ -1797,6 +1805,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                             <StatusPill s={c.status} t={t} />
                           </div>
                         </div>
+                        /* eslint-enable react-hooks/refs */
                       );})}
                     </div>
                   </div>
