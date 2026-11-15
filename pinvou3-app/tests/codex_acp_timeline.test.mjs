@@ -730,6 +730,23 @@ try {
     /NewSessionRequest::new\(\s*workspace\s*\)/.test(runtime),
     'a missing saved session must rebuild through session/new on the same workspace',
   );
+  // The session/new and config/mode WRAPS join the load pin (r9 review):
+  // removing either `tokio::time::timeout(...)` wrap compiles and leaves
+  // every const-literal pin above green — the constants stay referenced by
+  // their own timeout messages — so the wiring itself needs pins. Mutation
+  // evidence: the session/new wrap was removed, the suite stayed green.
+  assert.ok(
+    /tokio::time::timeout\(\s*ACP_SESSION_NEW_TIMEOUT,\s*connection\s*\.send_request\(\s*NewSessionRequest::new\(\s*workspace\s*\),?\s*\)\s*\.block_task\(\)\s*,?\s*\)/.test(runtime),
+    'the fresh session/new await must stay wrapped in the ACP_SESSION_NEW_TIMEOUT bound',
+  );
+  assert.ok(
+    /tokio::time::timeout\(\s*ACP_CONFIG_REQUEST_TIMEOUT,\s*connection\s*\.send_request\(\s*SetSessionConfigOptionRequest::new\(/.test(runtime),
+    'set_config_option must stay wrapped in the ACP_CONFIG_REQUEST_TIMEOUT bound',
+  );
+  assert.ok(
+    /tokio::time::timeout\(\s*ACP_CONFIG_REQUEST_TIMEOUT,\s*connection\s*\.send_request\(\s*SetSessionModeRequest::new\(/.test(runtime),
+    'set_mode must stay wrapped in the ACP_CONFIG_REQUEST_TIMEOUT bound',
+  );
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
   assert.ok(runtime.includes('apply_saved_mode('), 'saved Full Access mode must be restored after new/load');
   // Commit 22559510e extracted the repeated permission+elicitation settlement
