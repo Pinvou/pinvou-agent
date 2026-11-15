@@ -704,7 +704,7 @@ fn parse_timeline_line(line: &str) -> Option<TimelineEvent> {
 }
 
 /// session 级聚合统计,供内部诊断入口使用。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SessionTimelineStats {
     pub turn_count: usize,
     pub total_input_tokens: u64,
@@ -713,7 +713,12 @@ pub struct SessionTimelineStats {
     pub total_cache_miss_tokens: u64,
     pub total_cache_write_tokens: u64,
     pub total_reasoning_tokens: u64,
+    /// 首个有 user_start 的 turn 的首个事件时间(产线上即该轮的
+    /// user_start 写入时刻)。
     pub first_turn_ts: Option<String>,
+    /// 最后一个有 user_start 的 turn 的最后一个事件时间——已收口时是
+    /// 该轮 assistant_done(即结束时刻),不是该轮的开始时刻;两侧口径
+    /// 因此不对称(首=开始,末=结束)。
     pub last_turn_ts: Option<String>,
     pub completed_turns: usize,
     pub failed_turns: usize,
@@ -726,7 +731,9 @@ pub struct SessionTimelineStats {
     pub limit_reached_turns: usize,
     /// ACP 会话模型拒绝(StopReason::Refusal → "Refused")收口的轮次。
     pub refused_turns: usize,
-    /// 有 user_start 但没有 assistant_done 的轮次,常见于进程退出或文件尾部截断。
+    /// 有 user_start 但没有 assistant_done 的轮次:进程退出、文件尾部截断、
+    /// 提交前取消(start_turn 后走 unsubmitted-interrupt 通道,不落终态)、
+    /// 或 user_start 之后的写盘失败,都落在这里。
     pub incomplete_turns: usize,
     /// assistant_done 存在,但状态不是当前已知枚举(含缺失 status 的脏数据)。
     /// 单独暴露,避免静默制造差值。
@@ -740,11 +747,12 @@ pub struct SessionTimelineStats {
 pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> {
     let events = read_timeline(session_id)?;
     let mut stats = SessionTimelineStats::default();
-    // 按 turn_id 索引;一个 turn 由 user_start + assistant_done 组成
-    let mut by_turn: HashMap<String, (Option<&TimelineEvent>, Option<&TimelineEvent>)> =
+    // 按 turn_id 索引;一个 turn 由 user_start + assistant_done 组成。
+    // 键借用 events,避免逐事件克隆 turn_id(克隆件在去重后即被丢弃)。
+    let mut by_turn: HashMap<&str, (Option<&TimelineEvent>, Option<&TimelineEvent>)> =
         HashMap::new();
     for e in &events {
-        let entry = by_turn.entry(e.turn_id.clone()).or_insert((None, None));
+        let entry = by_turn.entry(e.turn_id.as_str()).or_insert((None, None));
         if e.event == "assistant_done" {
             entry.1 = Some(e);
         } else if e.event == "user_start" {
@@ -759,7 +767,7 @@ pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> 
         .iter()
         .find(|event| {
             by_turn
-                .get(&event.turn_id)
+                .get(event.turn_id.as_str())
                 .is_some_and(|pair| pair.0.is_some())
         })
         .map(|event| event.ts.clone());
@@ -768,7 +776,7 @@ pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> 
         .rev()
         .find(|event| {
             by_turn
-                .get(&event.turn_id)
+                .get(event.turn_id.as_str())
                 .is_some_and(|pair| pair.0.is_some())
         })
         .map(|event| event.ts.clone());
@@ -1106,6 +1114,9 @@ mod tests {
         assert_eq!(stats.total_cache_miss_tokens, 1000);
         assert!(stats.first_turn_ts.is_some());
         assert!(stats.last_turn_ts.is_some());
+        // 两侧口径:首=首个 user_start,末=最后收口的 assistant_done,
+        // 同 offset RFC3339 字典序即时间序(同毫秒并发轮允许相等)。
+        assert!(stats.first_turn_ts.clone().unwrap() <= stats.last_turn_ts.clone().unwrap());
 
         let _ = std::fs::remove_dir_all(tmp);
     }
