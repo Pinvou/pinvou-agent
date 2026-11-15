@@ -348,6 +348,14 @@ pub struct SessionStore {
     /// `pinned_sessions_io`): shared by set_mode / set_mode_and_persist / the
     /// retention sweep.
     session_mode_states_io: Arc<Mutex<()>>,
+    /// Per-call lane held across each `import_archive`: two concurrent
+    /// imports of DIFFERENT archives carrying the same session id must not
+    /// interleave probe → stage → commit, or the first record to persist can
+    /// end up pointing at the second archive's artifact bytes (the r9
+    /// byte-identical convergence argument only holds within one archive's
+    /// staging). Imports are rare user actions; whole-import serialization
+    /// is the honest cheap shape.
+    session_import_lane: Arc<Mutex<()>>,
     /// In-process snapshot cache of `manager.list_sessions()`. Every upstream
     /// call does a full-directory read_dir + per-file prefix parsing, and the
     /// startup paths (boot restore / retention policy / AcpPool metadata) plus
