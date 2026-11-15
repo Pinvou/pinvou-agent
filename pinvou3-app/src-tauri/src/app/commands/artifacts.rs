@@ -403,8 +403,15 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
     // preview lane, so a file grown between the precheck and the read can
     // no longer balloon memory either (r5 review).
     const MAX_ARTIFACT_IMAGE_BYTES: u64 = 25_000_000;
+    // MB figure derived from the constant (same convention as the sibling
+    // >50 MiB / 2 GiB / 4 GiB lanes; r8 review): a future resize cannot
+    // leave the error string lying.
+    let oversized = format!(
+        "图片过大(>{}MB),请用外部打开",
+        MAX_ARTIFACT_IMAGE_BYTES / 1_000_000
+    );
     if std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0) > MAX_ARTIFACT_IMAGE_BYTES {
-        return Err("图片过大(>25MB),请用外部打开".into());
+        return Err(oversized);
     }
     let bytes = {
         use std::io::Read;
@@ -416,7 +423,7 @@ pub async fn read_artifact_image_b64(path: String) -> Result<String, String> {
         buf
     };
     if bytes.len() as u64 > MAX_ARTIFACT_IMAGE_BYTES {
-        return Err("图片过大(>25MB),请用外部打开".into());
+        return Err(oversized);
     }
     let ext = p
         .extension()

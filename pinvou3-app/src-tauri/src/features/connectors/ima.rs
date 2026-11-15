@@ -113,7 +113,11 @@ async fn read_json_response(response: reqwest::Response) -> Result<Value, String
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("读取 IMA 响应失败: {e}"))?;
         if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-            return Err("IMA 响应超过 16 MiB 安全上限。".to_string());
+            // 上限数值从常量推导（r8 审）：常量再调整时错误文案不再说谎。
+            return Err(format!(
+                "IMA 响应超过 {} MiB 安全上限。",
+                MAX_RESPONSE_BYTES / (1024 * 1024)
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -469,10 +473,10 @@ mod tests {
 
     #[test]
     fn ima_response_cap_stays_at_16mib() {
-        // Mutation tripwire: the CLI mirrors this constant by value (it cannot
-        // import this `pub(crate)` const), so pin the shipped value here too —
-        // a silent 16→1 revert turns red on both sides of the mirror
-        // (r5 review).
+        // Mutation tripwire: the CLI mirrors this constant by value (the
+        // const is module-private, so the CLI crate cannot import it), so
+        // pin the shipped value here too — a silent 16→1 revert turns red
+        // on both sides of the mirror (r5 review).
         assert_eq!(MAX_RESPONSE_BYTES, 16 * 1024 * 1024);
     }
 
