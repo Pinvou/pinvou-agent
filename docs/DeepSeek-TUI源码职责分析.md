@@ -35,7 +35,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 
 ### DeepSeek-TUI 工作区
 
-当前 `DeepSeek-TUI/Cargo.toml` 是 Rust workspace，版本为 `0.8.60`，edition 为 `2024`，`rust-version` 要求 `1.88`。workspace 成员如下：
+当前 `DeepSeek-TUI/Cargo.toml` 是 Rust workspace，版本为 `0.8.60`（⚠️ 快照检出版实际为 0.8.65：快照构建点晚于 v0.8.60 tag，见顶部注记），edition 为 `2024`，`rust-version` 要求 `1.88`。workspace 成员如下：
 
 | crate/目录 | 主要职责 | pinvou3 接入状态 |
 |---|---|---|
@@ -44,7 +44,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | `crates/hooks` | Hook 事件、sink、dispatcher | 当前直接接入配置，运行期由底座调度 |
 | `crates/mcp` | MCP server/client 管理、工具/资源描述、启动状态 | 间接依赖，通过底座工具体系和 MCP 配置接入 |
 | `crates/tools` | 工作区中独立的工具能力 crate | 间接依赖，主入口仍经 `crates/tui/src/tools` 和 registry |
-| `crates/core` | 共享核心类型或底层能力 | 间接依赖，仅被 `crates/app-server` 消费（v0.8.60 基线口径）；pinvou3 依赖链当时只有 `deepseek-tui`（→ `codewhale-tui`）——`codewhale-secrets` 系快照后 2026-07-02（`d49bcd40a`）才加入。（⚠️ 现行口径：pinvou3-app 已直接依赖五个基座 crate——deepseek-tui、codewhale-secrets、codewhale-core、codewhale-config、codewhale-execpolicy，其中 `codewhale-core` 自 2026-09-30（`e50da6995`，#484）起被直接消费，不再与本 crate 无关；fork 现树上本 crate 亦被 app-server/command-contract/tui 三处消费。）`deepseek_tui::core::*` 是 tui 自身模块一句仍成立 |
+| `crates/core` | 共享核心类型或底层能力 | 间接依赖，仅被 `crates/app-server` 消费（v0.8.60 基线口径）；pinvou3 依赖链当时只有 `deepseek-tui`（→ `codewhale-tui`）——`codewhale-secrets` 系快照后 2026-07-02（`d49bcd40a`，原 work 分支提交）才加入（该哈希不在 main 谱系，main 谱系落地于 2026-07-24 `e34024e62` 重建基线）。（⚠️ 现行口径：pinvou3-app 已直接依赖五个基座 crate——deepseek-tui、codewhale-secrets、codewhale-core、codewhale-config、codewhale-execpolicy，其中 `codewhale-core` 自 `9c5dc603f`（#484，2026-10-20 squash 落地）起被直接消费，不再与本 crate 无关；fork 现树上本 crate 亦被 app-server/command-contract/tui 三处消费。）`deepseek_tui::core::*` 是 tui 自身模块一句仍成立 |
 | `crates/protocol` | 协议结构 | 间接依赖，由 runtime、MCP、API 层消费 |
 | `crates/state` | 状态相关能力 | 间接依赖 |
 | `crates/secrets` | 密钥/敏感配置处理 | 间接依赖 |
@@ -157,7 +157,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 
 | 证据点 | 路径或类型 | 说明 |
 |---|---|---|
-| 1 | `DeepSeek-TUI/Cargo.toml` | workspace、版本 `0.8.60`、Rust `1.88`、crate 成员 |
+| 1 | `DeepSeek-TUI/Cargo.toml` | workspace、版本 `0.8.60`（快照检出版实际 0.8.65，见 §2 注）、Rust `1.88`、crate 成员 |
 | 2 | `DeepSeek-TUI/crates/tui/src/core/engine.rs::EngineConfig` | Engine 配置主结构 |
 | 3 | `DeepSeek-TUI/crates/tui/src/core/engine.rs::EngineHandle` | pinvou3 持有并发送 `Op` 的 runtime handle |
 | 4 | `DeepSeek-TUI/crates/tui/src/core/engine.rs::spawn_engine` | pinvou3 创建 Engine 的底座工厂 |

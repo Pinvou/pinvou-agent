@@ -2,6 +2,8 @@
 
 > 面向：刚接触本项目、需要把项目迁移到 Windows 并长期迭代维护的 Windows 应用开发工程师。
 >
+> 同期姊妹篇：[`Windows端功能清单与测试用例.md`](./Windows端功能清单与测试用例.md)（2026-07-23 功能盘点与验收用例快照）。
+>
 > 生成日期：2026-06-15。本文基于当时仓库源码、`README.md`、`process.md`（内部协作文档，未随本仓库发布，见 §16 注）、`docs/fork-modifications.md`、`docs/auto-compact-256K-tuning.md`、`docs/DeepSeek-TUI-工具系统.md` 与相关 Tauri/Rust/前端代码梳理。
 >
 > **注（2026-11 回填）**：本文为 2026-06-15 迁移期快照，未按当前主干逐条复核，接手时注意以下布局均已变化：底座子模块已由 `DeepSeek-TUI/` 更名 `CodeWhale/`（无 `branch` 字段，另新增 `private-runtimes/windows` 私有运行时子模块）；前端由 `tauri-bridge.js` 单文件迁移为 `src/features/*` + `src/platform/` 分层；Rust 由根级 `commands.rs`/`engine.rs`/`bridge/` 迁移为 `app/commands/` + `features/` + `platform/`；§8 的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`）已在主干整体移除（正文其余散落的 workflow 提及——§1/§2/§4/§5/§6/§9/§12/§13/§14/§18 等——同为快照口径，不随本注逐条列举）；§11「Windows 打包必须重做」的结论已过时——NSIS 打包已在主干落地。现行权威入口：`AGENTS.md`、`docs/fork-modifications.md`、`docs/windows-private-runtime-submodule.md`、`docs/windows-rust-ci.md`。
@@ -30,7 +32,7 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 
 接手时优先确认这 8 个核心模块：`pinvou3-app/src/tauri-bridge.js`、`commands.rs`、`engine_pool.rs`、`engine.rs`、`bridge/mod.rs`、`file_ingest.rs`、`harness.rs`、`DeepSeek-TUI/crates/tui`。前 7 个在 app 层，最后一个是底座依赖。（2026-11 注：`harness.rs` 属已移除的工作流子系统，实际待确认模块以现行 `app/commands/` + `features/` 布局为准。）
 
-当前 `.gitmodules` 指向：
+快照期 `.gitmodules` 指向（⚠️ 快照条目：现行 `.gitmodules` 见下方块注）：
 
 ```ini
 [submodule "DeepSeek-TUI"]
@@ -429,7 +431,7 @@ Windows 原生后建议增加这些测试：
 
 - 品悟 v2 review 已推翻并从源码移除，当前新方案另行设计。
 - 多 subagent 大研究 fan-out 已废弃，只保留单 + 串行。
-- Plan/YOLO 收敛已完成：`PlanPhase` 状态机已删除，composer 提供 Plan/Yolo 手切 chip（默认 Yolo），`plan_stuck` 兜底卡保留；不要再按旧 PlanPhase / plan-fallback 逻辑开发。
+- Plan/YOLO 收敛已完成：`PlanPhase` 状态机已删除，composer 提供 Plan/Yolo 手切 chip（默认 Yolo），`plan_stuck` 兜底卡保留；不要再按旧 PlanPhase / plan-fallback 逻辑开发。（改造方案与决策记录见 [`plan-yolo-回归底座式改造方案.md`](./plan-yolo-回归底座式改造方案.md)。）
 - 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩（现为按路由的 `route_inline_char_budget`，结论不变）。
 
 ## 16. 推荐阅读顺序

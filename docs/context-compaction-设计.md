@@ -66,7 +66,7 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 > ✅ **已实证坐实**（2026-07-02，见 §6）：写死 190K 在**健康 256K 机器上也是倒置的**。
 > 触发顺序实证（真实 `should_compact`）：262K 窗口下 emergency 在 N=198 条触发，而
 > `should_compact(T=190K)` 要到 N=255 条才触发——**紧急线先，正常线永远轮不到**。之所以
-> 长期没暴露，是 emergency 路径**也先跑 LLM 摘要**（engine.rs:2942），成功时体验与正常
+> 长期没暴露，是 emergency 路径**也先跑 LLM 摘要**（写作期约 engine.rs:2942，勿按 0.9.5 或现树查），成功时体验与正常
 > 路径几乎一样；直到窗口被误判成 128K，emergency 摘要救不回落到本地 trim，才以抖动暴露。
 
 ## 3. 方案总纲
@@ -218,7 +218,7 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 上游 PR，属通用优化（所有本地/自托管小窗口用户受益，符合 fork-policy §2「通用优化才提上游」）。
 
 - 事实基础：真实 `usage.input_tokens` 每 turn 从 provider 免费返回，现在只喂成本统计
-  （pricing.rs）+ goal 预算（engine.rs:1922）+ footer，**从不回灌估算器**。
+  （pricing.rs）+ goal 预算（写作期约 engine.rs:1922，勿按 0.9.5 或现树查）+ footer，**从不回灌估算器**。
 - 做法：① 回灌校准 k（`observed = real / raw_estimate`，EWMA 平滑）；② 让正常压缩
   也用 `estimated_input_tokens()`（全量）判据，与 E 同尺 → T/E 退化成同轴两个百分比，
   规则变一句话「input ≥ 75%W 温和压，≥ E 强制压」，S/M/R/档位全部消失。

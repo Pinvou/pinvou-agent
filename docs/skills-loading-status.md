@@ -10,6 +10,7 @@
 > marketplace 接口取代；`pinvou-review-plan/final` 已于 0.7 下线（SKILL.md 删除于 commit
 > `9aaff554b`，2026-06-05，其提交说明即「bundle 0.7 清装机残留」；`95502ac81`（2026-08-17，提交处
 > VERSION 读 0.8.3、首个收录 tag 为 v0.8.4）为三省六部移除
+> （⚠️ `9aaff554b`/`95502ac81` 均为父仓库 pinvou3-app 提交，非 CodeWhale 子模块提交，在子模块对象库中不可解析）
 > #285，仅顺带删除已死的 `WORKFLOW_HIDDEN_SKILLS` 过滤常量）并由 `cleanup_retired_skills`
 > 启动清理。§2 卡牌池机制描述仍有效（agency-agents.json 现 268 个 agent）。文中 fork patch
 > 序号（#41/#25/#26/#432 等）为重建前私有编号，与现行 [`fork-modifications.md`](./fork-modifications.md)
@@ -21,7 +22,7 @@
   1. **Skill 加载**（底座 `SkillRegistry` / `load_skill` 工具）—— 渐进式披露，扫目录读 `SKILL.md`。
   2. **卡牌池 / persona 加持**（pinvou3 自建）—— 专家能力档案，**编译进二进制的 JSON**，加持时文本注入。**不是 skill，不扫任何目录。**
 - 底座原本扫 ~10 个 skill 目录；pinvou3 **fork patch #41** 已砍到只剩 `~/.agents/skills` + 注入的 bundle 目录。危险的 workspace(=$HOME)相对扫描全部移除。
-- **残留口子**：`~/.agents/skills` 仍被运行时 `load_skill` 工具扫描（本机该目录已存在，目前为空）。
+- **残留口子**：`~/.agents/skills` 仍被运行时 `load_skill` 工具扫描（本机该目录已存在，目前为空）。（❌ 本条已失效：见顶部 2026-11 归档注记——现行 materialization + `explicit_skills_root_only` 下该口子不再存在。）
 
 ---
 
@@ -63,8 +64,8 @@ pinvou3 **fork patch #41**（`CodeWhale/crates/tui/src/skills/mod.rs:601` `skill
 ## 3. 安全态 / 待决
 
 - **已屏蔽**：底座 $HOME 相对的多目录扫描（patch #41）。✅
-- **残留口子**：`~/.agents/skills`。谁往里丢 `SKILL.md`，模型 `load_skill` 工具即可加载，且**不显示在 pinvou3 工作流 UI**。本机该目录已存在（空）。
-- **若要 airtight 隔离**：在 `skills_directories_with_home`（mod.rs:601）再去掉 `~/.agents/skills`，只留注入的 bundle 目录（1 行改动）。当前未做 —— 视作"用户跨工具共享 skill"的有意保留。
+- **残留口子**：`~/.agents/skills`。谁往里丢 `SKILL.md`，模型 `load_skill` 工具即可加载，且**不显示在 pinvou3 工作流 UI**。本机该目录已存在（空）。（❌ 本条已失效：见顶部 2026-11 归档注记。）
+- **若要 airtight 隔离**：在 `skills_directories_with_home`（mod.rs:601）再去掉 `~/.agents/skills`，只留注入的 bundle 目录（1 行改动）。当前未做（❌ 已失效：现行经 materialization + `explicit_skills_root_only: true` 已收口，见顶部注记）—— 视作"用户跨工具共享 skill"的有意保留。
 
 ## 相关
 

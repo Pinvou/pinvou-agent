@@ -143,11 +143,11 @@ Pinvou 采用以下组合方案：
 | 能力 | 采用方案 |
 |---|---|
 | 私有 Node / ACP Tool | 随 Pinvou 内置小型 Bridge Runtime |
-| Codex 原生二进制 | 系统兼容版本优先；缺失或不兼容时按需下载 |
+| Codex 原生二进制 | 系统兼容版本优先；缺失或不兼容时按需下载（⚠️ 快照口径：现行不设「系统优先」固定序——`PINVOU3_CODEX_PATH` 覆盖优先，否则在 legacy 内置与系统 CLI 之间择新兼容者（`runtime.rs` 的 `select_newest_eligible`，见 §2 注）；亦无按需下载，Codex 由用户自行安装/升级，应用仅提供安装指引与 brew/npm/官方脚本动作） |
 | 认证和配置目录 | 复用 Codex 默认 `~/.codex` |
 | ChatGPT 登录 | Pinvou 内发起，授权页面仍由官方 Codex 流程处理 |
 | API Key | 高级备选，不作为默认首次使用路径 |
-| 健康检查 | 真实 ACP 握手，不以文件存在为结论 |
+| 健康检查 | 真实 ACP 握手，不以文件存在为结论（⚠️ 设计口径：现行就绪判定为 `codex --version` 版本兼容探测 + 登录态复查，无独立 ACP initialize 握手探针；「不以文件存在为结论」部分仍成立，见 §5.1 注） |
 | 后端实现 | 保持 Tauri/Rust 直连，不引入 AionCore 或额外 HTTP 服务层 |
 
 ## 5. 总体架构
@@ -609,11 +609,11 @@ codex-runtime://status
 
 ### 12.2 不破坏用户 Codex
 
-- 默认复用但不写入 `~/.codex`。
+- 默认复用但不写入 `~/.codex`。（⚠️ 快照口径收窄：现行 relay provider 显式配置时会写入 `~/.codex/config.toml` 及 `~/.codex` 下的托管 catalog（`features/codex_acp/providers/codex.rs`），默认路径仍不写入。）
 - “重新下载/删除托管 Codex”只处理 `~/.pinvou3/runtimes/codex/`（⚠️ 快照口径：现行
   目录为 `~/.pinvou3/runtimes/codex-acp-1.1.5/`，见 §12.1 注）；Bridge 损坏通过
   修复或重新安装 Pinvou 处理。
-- 用户全局安装的 Codex CLI 不被升级、删除或覆盖。
+- 用户全局安装的 Codex CLI 不被升级、删除或覆盖。（⚠️ 快照口径：现行应用提供用户显式触发的全局 CLI 安装/升级动作——`install_acp_agent` 的 `brew_upgrade`（`brew upgrade --cask codex`）/`npm_upgrade`（`npm install -g @openai/codex@latest`）/`official_script`（`install.rs` 的 `install_action_for`），会升级或覆盖用户全局 CLI；「不被升级」仅指无后台静默升级。）
 - 开发覆盖变量只影响当前 Pinvou 进程。
 
 ### 12.3 会话兼容

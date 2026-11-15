@@ -40,7 +40,7 @@
 
 ---
 
-## 阶段 1 已完成（commit `5f847284`，submodule pinvou3-patches 分支；重建前哈希，现不可解析）
+## 阶段 1 已完成（commit `5f847284`，submodule pinvou3-patches 分支（内部仓分支、`fork` remote 指内部 fork，均不在本仓库）；重建前哈希，现不可解析）
 
 `crates/tui/src/prompts.rs` 加了 3 个 `OnceLock` override + setter + `effective_*()` getter，
 三处使用点改用 getter。**向后兼容**：override 未 set → 返回原 const，行为完全不变。

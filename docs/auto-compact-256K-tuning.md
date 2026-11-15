@@ -12,7 +12,8 @@
 > 阈值由 `derive_compaction_threshold` 按模型窗口动态推导
 > （`features/assistant/platform/bridge.rs`），推导脉络仍以本文为史。另注：下文提到的回归测试
 > `compaction_threshold_stays_below_emergency_budget`（app 侧 `bridge/mod.rs` 测试）已随本仓库
-> PR #91「压缩阈值按探测窗口推导」重构移除——现行 `bridge.rs` 认为其
+> PR #91「压缩阈值按探测窗口推导」重构移除（⚠️ 注：该 PR 编号系 2026-07-24 历史重建前的旧编号，
+> 现仓库编号体系的 #91 已是另一 PR；以引号内标题「压缩阈值按探测窗口推导」为准）——现行 `bridge.rs` 认为其
 > 「threshold + 20K margin ≤ budget」不变式混用了两把口径不一致的度量尺（跨尺伪不变式），
 > 同一防倒置场景现由 `forkguard_compaction_threshold_below_emergency_all_windows` 测试锁定。
 
@@ -21,7 +22,7 @@
 
 ## TL;DR
 
-底座 CodeWhale **已经在 turn_loop preflight 内置了 should_compact 触发**（turn_loop.rs:90），按 `token_threshold` 直接调 `compact_messages_safe` 走 LLM 摘要。但对 pinvou3 + Qwen 原生配置仍不工作，根因有二：
+底座 CodeWhale **已经在 turn_loop preflight 内置了 should_compact 触发**（写档时点 turn_loop.rs:90，勿按现树查；现行触发原语为 `ContextBudget::should_compact`），按 `token_threshold` 直接调 `compact_messages_safe` 走 LLM 摘要。但对 pinvou3 + Qwen 原生配置仍不工作，根因有二：
 
 1. 模型名 `qwen36_35b` 没 `_Nk` 后缀，`context_window_for_model` 返回 `None` → preflight 二级保险 (`recover_context_overflow`) 静默禁用。
 2. 即便加了后缀让底座识别 256K，`context_input_budget` 仍按 `TURN_MAX_OUTPUT_TOKENS = 262K` 算 input budget → `256K - 262K - 1K = 负数` → 同样返回 `None`，emergency 路径静默禁用。

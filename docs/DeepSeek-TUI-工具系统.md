@@ -178,7 +178,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 ### 4.1 调度（`core/engine/dispatch.rs`）
 
 模型一轮可能输出多个 tool_call。dispatch 决定：
-- **串行 vs 并行**：`should_parallelize_tool_batch` 判断——实际谓词为 `read_only && supports_parallel && !approval_required && !interactive`（dispatch.rs:274-279；「无副作用冲突」的代码化表述）才并行
+- **串行 vs 并行**：`tool_plan_is_parallel_safe` 判断（`should_parallelize_tool_batch` 为同名谓词的 `#[cfg(test)]` 测试助手）——实际谓词为 `read_only && supports_parallel && !approval_required && !interactive`（dispatch.rs:274-279；「无副作用冲突」的代码化表述）才并行
 - **批处理**：`multi_tool_use.parallel` 是个特殊工具，模型可以用一次调用包多个子调用
 
 ### 4.2 单次执行（`tool_execution.rs::execute_tool_with_lock`）
@@ -362,7 +362,7 @@ agent_open agent_eval agent_close
 
 `BASE_PROMPT`（`include_str!("prompts/base.md")`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox 和 tool_search_tool_regex / tool_search_tool_bm25 deferred discovery）。剩余工具靠模型自行从 schema 探索。
 
-Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/github/pr_attempt/automation 各自的 list/read）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 Plan/Agent 预设走 `apply_native_tool_deferral`，初始模型可见仅约 16 个，其余经 ToolSearch 激活；Yolo 不做 deferral，§5 的约 81 即为模型可见数。）
+Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/github/pr_attempt/automation 各自的 list/read）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 Plan/Agent 预设走 `apply_native_tool_deferral`，初始模型可见仅约 16 个，其余经 ToolSearch 激活；Yolo 不做 deferral，§6 推导的约 81 即为模型可见数。）
 
 ---
 

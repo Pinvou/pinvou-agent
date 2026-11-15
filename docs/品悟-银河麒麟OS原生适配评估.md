@@ -202,7 +202,7 @@ sense-voice-main-x86_64-unknown-linux-gnu
 sense-voice-main-aarch64-unknown-linux-gnu
 ```
 
-（注：现行打包布局为按机器目录映射——`target/linux-asr-runtime/<machine>/sense-voice-main` → 包内 `runtime/asr/sense-voice-main`，见 `config/platforms/linux/{x86_64,aarch64}/tauri.conf.json` 与 `scripts/tauri/build.js`。）
+（注：现行打包布局为按机器目录映射——`target/linux-asr-runtime/<machine>/sense-voice-main` → 包内 `runtime/asr/sense-voice-main`，见 `pinvou3-app/src-tauri/config/platforms/linux/{x86_64,aarch64}/tauri.conf.json` 与 `pinvou3-app/scripts/tauri/build.js`（注意与本文其余仓库根 `scripts/` 引用分属两个 root）。）
 
 第一阶段只建议承诺 AMD64 或 ARM64。LoongArch、MIPS64、SW64 等架构应分别立项验证，不能仅因为 Rust 主程序可编译就视为整包可用。（注：LoongArch64 交叉构建与发布链路已于 2026-10 落地主线——`scripts/ci-build-linux-loongarch64.sh` 与 release 专用 job；「整包可用」仍需按本节原则做真机回归。）
 

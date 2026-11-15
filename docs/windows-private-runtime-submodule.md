@@ -1,5 +1,7 @@
 # Windows 独立运行时 submodule
 
+> 相关 Windows 接手/验收史料（2026-11 回填留档）：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md) · [`Windows端功能清单与测试用例.md`](./Windows端功能清单与测试用例.md)。
+
 ## 目标
 
 Windows 分支只维护代码、安装器模板和 submodule gitlink。Poppler、Tesseract、Python、

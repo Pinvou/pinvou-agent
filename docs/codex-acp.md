@@ -7,6 +7,10 @@
 > 品悟原生会话的设计决策、开发节点与改动说明见
 > [`code-native-agent.md`](./code-native-agent.md)。
 > 本文说明当前 MVP 的使用、验证和发布方式。
+>
+> 历史设计记录（2026-11 回填留档，以本文现状为准）：
+> [`Codex-ACP-整体架构决策.md`](./Codex-ACP-整体架构决策.md) ·
+> [`Codex-ACP-运行环境与首次使用设计.md`](./Codex-ACP-运行环境与首次使用设计.md)。
 
 pinvou3 在主页输入区提供“工作 / 代码”两种模式：“工作”保持原有品悟输入框，
 “代码”可选 Codex / Claude Code / Kimi（ACP）或品悟原生。两类会话按最近更新时间

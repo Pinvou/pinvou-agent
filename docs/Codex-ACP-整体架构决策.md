@@ -6,7 +6,7 @@
 > 归档说明：本文为回填的历史决策记录，未纳入 [`docs/adr/`](./adr/) 编号系列；该系列编号供新决策顺延使用，历史回填不占号
 > 对应分支：`feat/codex-acp`
 > 当前原型基线：`2b84908b`
-> AionUI 参考基线：`1b215f2f`，AionCore `v0.1.50` / `10cdd579`（AionUI/AionCore 为公开开源项目 github.com/iOfficeAI，不在本仓库）
+> AionUI 参考基线：`1b215f2f`，AionCore v0.1.50 时代（tag 指向 `4089fced`，参考提交取其后 3 commit 的 `10cdd579`；AionUI/AionCore 为公开开源项目 github.com/iOfficeAI，不在本仓库）
 
 ## 1. 一句话决策
 
@@ -188,7 +188,7 @@ flowchart TB
 ### 6.1 入口与页面决策
 
 - 主页输入区提供“工作 / 代码”模式，不在主导航增加独立 Codex Tab。
-- “工作”保持原有品悟输入框；“代码”当前只有 Codex，未来可扩展其他代码 Agent。
+- “工作”保持原有品悟输入框；“代码”当前只有 Codex，未来可扩展其他代码 Agent。（⚠️ 时代注：现行「代码」已支持 Codex / Claude Code / Kimi（ACP）与品悟原生会话，见 [`codex-acp.md`](./codex-acp.md) 与 [`multi-agent-acp.md`](./multi-agent-acp.md)。）
 - DeepSeek 与 Codex 会话在左侧统一列表中按最近更新时间混排，Codex 会话名前显示代码图标。
 - Codex 使用专属 timeline、输入框和运行状态，不复用 DeepSeek `ChatView` 的消息语义。
 - 代码草稿默认选择临时目录，首条发送时才物化会话；输入框下方也可选择项目目录或最近项目。
@@ -325,7 +325,8 @@ MVP 验收时需要用 pinvou 固定的 `codex-acp` / Codex CLI 版本验证 Cod
 > `user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call` /
 > `tool_call_update` / `plan` / `available_commands` / `usage`，以及 turn / permission /
 > elicitation、`runtime_notice` / `runtime_ready` 等事件（`features/codex_acp/events.rs`），
-> 命名与本文草案不同。
+> 命名与本文草案不同（仅 `turn_started` / `turn_completed` / `permission_requested` /
+> `permission_resolved` 四名与草案逐字一致，其余事件名均与草案不同）。
 
 合同规则：
 
