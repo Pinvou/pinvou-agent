@@ -169,6 +169,10 @@ pub(super) fn ext_of(p: &Path) -> Option<String> {
 /// 这里；watcher 的事件路径不走它（`handle_event` 需要 stat 结果先分桶
 /// NotFound/其他错误，`Option<FileRecord>` 表达不了那层分派）。用 `symlink_metadata`
 /// 不跟随软链，与扫描器 `follow_links(false)` 一致；symlink/socket 等返回 None 跳过。
+/// **调用方须先按扫描器同源策略做排除判定**（组件级 names/secrets +
+/// [`Excluder::is_skipped`]）：本函数只装配字段，不做任何排除——扫描器路径经
+/// filter_entry 已排除，watcher 路径在 `handle_event` 先排除，走这里的刷新代码
+/// 必须自带同款判定，否则 .ssh/密钥等会经单路径入口入库。
 #[allow(dead_code)] // watcher 库先行：接线前仅测试引用
 pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
     let md = std::fs::symlink_metadata(path).ok()?;

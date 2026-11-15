@@ -29,7 +29,8 @@ pub use model_download::{configured_model_dir, configured_model_dir_from};
 mod query;
 mod scanner;
 mod store;
-// 实时增量索引(notify)。当前两侧均未接线;库+测试先行落位,接线由启动扫描方负责。
+// 实时增量索引(notify)。事件侧(watcher::spawn)与单路径刷新侧(scanner::record_from_path)
+// 均未接线;库+测试先行落位,接线由启动扫描方负责。
 mod watcher;
 
 pub(crate) use exclude::Excluder;

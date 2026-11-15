@@ -14,7 +14,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
+use rusqlite::{
+    Connection, OptionalExtension, TransactionBehavior, params, params_from_iter, types::Value,
+};
 use serde::{Deserialize, Serialize};
 
 /// schema 版本。v3 起包含用户创建的 L1 数据，后续版本必须提供原地迁移。
@@ -92,7 +94,15 @@ END;
 CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
 END;
-CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE OF name ON files BEGIN
+-- files_au 用 DROP+CREATE 而非 IF NOT EXISTS：旧版触发器没有 WHEN 子句，而 UPSERT
+-- 的 SET 恒含 name=，`AFTER UPDATE OF name` 只看 SET 清单不看值——name 没变的
+-- 写入（watcher 的 Modify 事件、扫描器的状态位刷新）也会白做一轮 trigram
+-- delete+insert。WHEN 让触发器语义与上面注释一致；每次 open 原地升级既有库
+-- （元数据操作，FTS 内容不变，无需 schema 版本迁移，旧二进制会重建回旧触发器）。
+DROP TRIGGER IF EXISTS files_au;
+CREATE TRIGGER files_au AFTER UPDATE OF name ON files
+WHEN old.name IS NOT new.name
+BEGIN
     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
     INSERT INTO files_fts(rowid, name) VALUES (new.id, new.name);
 END;
@@ -522,9 +532,14 @@ impl Store {
 
     /// watcher 删除：目录记录连带子树一并删，文件记录退化为精确删除。单事务，FTS 由触发器同步。
     ///
+    /// 事务用 `Immediate`：本函数是库里唯一的 SELECT-first 写事务，deferred 事务在
+    /// WAL 下的写升级若撞上并发进程（GUI + headless CLI 同库是受支持用法）的提交，
+    /// 会以 `SQLITE_BUSY_SNAPSHOT` 失败且 busy handler 不重试——把可等待的锁竞争
+    /// 变成整批删除报错丢事件。写锁随 BEGIN 即取，等待发生在最前面。
+    ///
     /// 为什么需要子树删除：目录被 rename/move-out 时，inotify 只会在（仍被监听的）父目录上
     /// 冒出该目录自身的事件，其下的文件不会有任何事件；精确删除会在索引里留下整树「幽灵」，
-    /// 一直撑到下次重扫。先按主键查 `is_dir`，目录才走前缀删除——前缀比较是全表扫描，
+    /// 一直撑到下次重扫。先查 `is_dir`，目录才走前缀删除——前缀比较是全表扫描，
     /// 文件（绝大多数事件）保持索引精确删除的代价。已知残留缺口（幽灵方向，重扫兜底）：
     /// 库里残留 `is_dir=false` 的陈旧行、而磁盘上已是目录时，本次只精确删除，子树行留待
     /// 重扫清（is_dir 门是省全表扫描的取舍，事件流的批量合并另见 watcher 侧）。
@@ -533,12 +548,16 @@ impl Store {
     /// LIKE/GLOB；也不换成「上界 range」——BINARY 文本序下前缀范围没有有限上界
     /// （后缀可任意延长并超过任何候补上界），substr 是既不用模式语义又能全 Unicode
     /// 精确的形态。SQLite 的 `length`/`substr` 按 Unicode 字符计数，与 Rust
-    /// `chars().count()` 一致，CJK 路径安全。入参容忍**尾部分隔符**（接线方传根
-    /// PathBuf 时可能带 `/`），统一去掉后再比对，否则 `dir` + `/` 拼出 `dir//`
-    /// 而整树漏删。
+    /// `chars().count()` 一致，CJK 路径安全。
+    ///
+    /// 分隔符拼写：入参容忍**尾部分隔符**（接线方传根 PathBuf 时可能带 `/`），也容忍
+    /// 混合尾（`dir\/`），统一按「主分隔符或 `/`」一遍去掉后再比对。行侧则可能按
+    /// **带尾分隔符**的拼写入库（walkdir verbatim 记录扫描根，接线方传
+    /// `--root /media/usb/` 即得 `/media/usb/` 行）——`is_dir` 探测在规范拼写未命中时
+    /// 退试 `p + 主分隔符` 的根行拼写，前缀模式本身精确命中该行，整树照常删除。
     pub fn delete_tree(&self, paths: &[String]) -> rusqlite::Result<()> {
         let mut guard = self.conn.lock();
-        let tx = guard.transaction()?;
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
         {
             let mut q = tx.prepare_cached("SELECT is_dir FROM files WHERE path = ?1")?;
             let mut del_exact = tx.prepare_cached("DELETE FROM files WHERE path = ?1")?;
@@ -546,18 +565,23 @@ impl Store {
                 "DELETE FROM files WHERE length(path) >= ?1 AND substr(path, 1, ?1) = ?2",
             )?;
             for p_raw in paths {
-                let p = p_raw
-                    .trim_end_matches(std::path::MAIN_SEPARATOR)
-                    .trim_end_matches('/');
+                let p = p_raw.trim_end_matches(|c| c == std::path::MAIN_SEPARATOR || c == '/');
                 if p.is_empty() {
                     continue;
                 }
-                let is_dir: Option<bool> = q.query_row(params![p], |r| r.get(0)).optional()?;
+                // 行可能按规范拼写或「p + 分隔符」的根行拼写入库，两种都探。
+                let with_sep = format!("{}{}", p, std::path::MAIN_SEPARATOR);
+                let is_dir: Option<bool> = match q.query_row(params![p], |r| r.get(0)).optional()? {
+                    Some(dir) => Some(dir),
+                    None => q.query_row(params![with_sep], |r| r.get(0)).optional()?,
+                };
                 del_exact.execute(params![p])?;
                 if is_dir == Some(true) {
-                    // 行内容只会是 `p` 自身或 `p + 分隔符 + 后代`；以「p + 分隔符」为前缀，
-                    // 名字只共享前缀字符的兄弟（如 `prefix-sibling.md`）不会被误删。
-                    let pat = format!("{}{}", p, std::path::MAIN_SEPARATOR);
+                    // 行内容只会是 `p` 自身、`p + 分隔符`（根行带尾分隔符的拼写）或
+                    // `p + 分隔符 + 后代`；以「p + 分隔符」为前缀，名字只共享前缀字符的
+                    // 兄弟（如 `prefix-sibling.md`）不会被误删，带尾分隔符的根行本身
+                    // 则被模式精确命中一并清掉。
+                    let pat = with_sep;
                     del_sub.execute(params![pat.chars().count() as i64, pat])?;
                 }
             }
@@ -1523,13 +1547,76 @@ mod tests {
     }
 
     /// 库里没有的路径（从未索引/已被先行删除）必须安静通过，不能报错——
-    /// watcher 的删除分支对任何 NotFound 事件都会发起删除。
+    /// watcher 的删除分支对任何 NotFound 事件都会发起删除；同批混入真实存在的
+    /// 路径时，未知的不得阻断后续路径的删除。
     #[test]
     fn delete_tree_tolerates_unknown_paths() {
         let s = Store::open_in_memory().unwrap();
-        s.delete_tree(&["/never/indexed.md".into(), "/also/missing".into()])
+        s.upsert_many(&[rec("/real/notes.md", "notes.md", Some("md"), 1, 1)])
             .unwrap();
+        s.delete_tree(&[
+            "/never/indexed.md".into(),
+            "/also/missing".into(),
+            "/real/notes.md".into(),
+        ])
+        .unwrap();
         assert!(s.load_index().unwrap().is_empty());
+    }
+
+    /// 扫描根可能按带尾分隔符的拼写入库（walkdir verbatim 记录扫描根，接线方传
+    /// `--root /media/usb/` 即得 `/media/usb/` 行）。删除输入按规范拼写给出时也
+    /// 必须命中：is_dir 探测退试「p + 分隔符」的根行拼写，前缀模式精确命中该行，
+    /// 整树照常删除，不静默漏。
+    #[test]
+    fn delete_tree_matches_a_root_row_stored_with_a_trailing_separator() {
+        let s = Store::open_in_memory().unwrap();
+        let mut dir = rec("/t/sub/", "sub", None, 0, 1);
+        dir.is_dir = true;
+        s.upsert_many(&[dir, rec("/t/sub/a.md", "a.md", Some("md"), 3, 2)])
+            .unwrap();
+
+        s.delete_tree(&["/t/sub".into()]).unwrap();
+
+        assert!(
+            s.load_index().unwrap().is_empty(),
+            "a root row stored with a trailing separator must still be swept"
+        );
+    }
+
+    /// FTS 与 name 变化同步、与纯内容变化脱钩：files_au 触发器带 WHEN（name 没变
+    /// 的 UPSERT 不再重写 trigram），name 变化必须照常传导到搜索，纯 size/mtime
+    /// 变化不得碰坏 FTS 行。路径刻意不含搜索词（LIKE 兜底连 path 一起匹配，会
+    /// 掩盖 FTS 的真实状态）；断言用 ≥3 字符走 FTS MATCH 分支。
+    #[test]
+    fn fts_follows_name_changes_and_ignores_content_only_updates() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_many(&[rec("/t/doc-1.pdf", "报告书.pdf", Some("pdf"), 1, 1)])
+            .unwrap();
+        let hits = |text: &str| {
+            s.search(&SearchQuery {
+                text: Some(text.into()), // 3 字符 → FTS5 trigram MATCH
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap()
+            .len()
+        };
+        assert_eq!(hits("报告书"), 1);
+
+        // 仅 size/mtime 变化（name 不变）：FTS 行不动，搜索仍命中。
+        s.upsert_many(&[rec("/t/doc-1.pdf", "报告书.pdf", Some("pdf"), 99, 2)])
+            .unwrap();
+        assert_eq!(
+            hits("报告书"),
+            1,
+            "content-only upsert must not disturb FTS"
+        );
+
+        // name 变化：旧名退出、新名进入。
+        s.upsert_many(&[rec("/t/doc-1.pdf", "会议纪要.pdf", Some("pdf"), 99, 3)])
+            .unwrap();
+        assert_eq!(hits("报告书"), 0, "old name must leave the FTS index");
+        assert_eq!(hits("会议纪要"), 1, "new name must enter the FTS index");
     }
 
     /// 尾部分隔符必须规范化后再比对：接线方传根 PathBuf 时可能带 `/`，若拿
