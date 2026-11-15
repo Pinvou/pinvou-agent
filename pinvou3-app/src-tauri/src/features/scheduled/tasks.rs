@@ -1648,7 +1648,14 @@ fn map_scheduled_run_with_task(
         status: automation_run_status_label(&record.status),
         created_at: record.created_at.to_rfc3339(),
         ended_at: record.ended_at.map(|value| value.to_rfc3339()),
-        error: record.error,
+        thread_id: record.thread_id,
+        // Round-27 review m3: old run records persisted before the fold discipline
+        // landed still carry raw `<home>/...` text in their error field and would
+        // leave verbatim through the success-path DTO — fold with the same primitive
+        // on read (idempotent; already-folded text passes through unchanged).
+        error: record
+            .error
+            .map(|error| crate::platform::paths::redact_storage_prefix(&error)),
         unread,
         session_title,
         pinned,
