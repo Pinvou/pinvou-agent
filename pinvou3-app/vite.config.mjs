@@ -645,6 +645,18 @@ function enforceLazyChunks() {
 // desktop ceiling takes the next thousand step. The web entry measured
 // 126,911 B and stays under 129_000. This cap does not promise headroom
 // for unrelated main changes.
+// PR #826 (measured per policy): the computer-use virtual display target
+// joins the shared startup graph. What grows the desktop entry is the
+// consent, chat and computer-use logic surface, which the desktop build
+// inlines into main-*.js where the web build lazy-splits it into the
+// chat-view group; the tauri bridge files are classic startup scripts
+// OUTSIDE this module graph (they have a script count gate, not a byte
+// gate) and the locale dicts stay lazy chunks (the consent caveat keys
+// land there, not in the entry). Measured same-base against main@eb06c5e6f
+// (the 2026-11-15 rebase base, after #835's 492_000 re-measure): 491,677
+// B desktop and 126,578 B web on the local toolchain — inside the 492_000
+// desktop and 129_000 web ceilings main already set, so no raise of its
+// own. This cap does not promise headroom for unrelated main changes.
 export const MAIN_ENTRY_BUDGET_BYTES = 492_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 

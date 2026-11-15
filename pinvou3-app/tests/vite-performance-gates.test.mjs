@@ -28,8 +28,9 @@ test('startup gates remain active in desktop and web production builds', () => {
   // 488_000 desktop raise, PR #835's 129_000 web raise, PR #835's
   // review-fix-wave 489_000 desktop raise, PR #835's second fix wave
   // 490_000 desktop raise, and PR #835's rebase re-measure 492_000
-  // desktop raise are measured per policy; the config comment preserves
-  // both platforms' measurements.
+  // desktop raise are measured per policy (PR #826 measured inside the
+  // ceiling current at each of its rebase bases, no raise of its own);
+  // the config comment preserves both platforms' measurements.
   assert.equal(MAIN_ENTRY_BUDGET_BYTES, 492_000);
   assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 129_000);
   for (const mode of ['production', 'web']) {

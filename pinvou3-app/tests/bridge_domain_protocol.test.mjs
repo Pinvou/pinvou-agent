@@ -132,7 +132,11 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the zero-caller getStatus
   // wrapper (computer_use_get_status invoke) was removed — refreshStatus
   // owns the status read path.
-  computerUse: 'e0f4aadbba8ab68e1dd54f9ab172680657958d548e3c3da50a489931cf525388',
+  // Recomputed for the virtual-display preference: the domain gains the
+  // computer_use_set_virtual_display_preference invoke (the settings row's
+  // "prefer isolated virtual display" switch; desktop-only, off the web
+  // access-policy allowlist like the rest of the domain).
+  computerUse: '6e06e71458a8f8e347e83abda1fc39cd04ecbf80c78168abf43f3d8873cf0d75',
   multiAgent: '36821de03628eaa4ec3926b925fc96443ee1657c9dd43c67cbda13a7177ea9ba',
   // Recomputed for the subagent status flicker fix: the agent_progress listen
   // forwards the structured worker_status token (same vocabulary as the
