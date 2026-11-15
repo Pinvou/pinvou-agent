@@ -242,6 +242,7 @@ pub struct ScheduledRunDto {
     pub status: String,
     pub created_at: String,
     pub ended_at: Option<String>,
+    pub thread_id: Option<String>,
     pub error: Option<String>,
     pub unread: bool,
     pub session_title: Option<String>,
