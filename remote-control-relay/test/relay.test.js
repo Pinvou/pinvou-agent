@@ -2449,7 +2449,31 @@ test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME
   // line" drift (the same posture as the Rust-side comment_filtered);
   // line-start anchoring (^…$ multiline) also makes a prefix reordering (e.g.
   // pub const) mismatch, freezing spelling as strongly as the value.
-  const rustCode = rust
+  // Round-31 review: strip closed block comments first — a block-commented
+  // decoy line starting at column 0 would otherwise still satisfy the ^…$m
+  // needle (JS block comments do not nest; the scan freezes at the first
+  // closer, and an unterminated block is kept verbatim as compile-error
+  // territory).
+  const stripClosedBlockComments = (text) => {
+    let out = "";
+    let index = 0;
+    while (index < text.length) {
+      const open = text.indexOf("/*", index);
+      if (open === -1) {
+        out += text.slice(index);
+        break;
+      }
+      const close = text.indexOf("*/", open + 2);
+      if (close === -1) {
+        out += text.slice(index);
+        break;
+      }
+      out += `${text.slice(index, open)} `;
+      index = close + 2;
+    }
+    return out;
+  };
+  const rustCode = stripClosedBlockComments(rust)
     .split('\n')
     .filter((line) => {
       const trimmed = line.trimStart();
@@ -2464,6 +2488,115 @@ test("pins the desktop inbound bound byte-equal to the relay's DESKTOP_MAX_FRAME
      at this bound and tungstenite kills the connection one byte past it, \
      so desktop-side drift silently resurrects the round-15 reconnect flap",
   );
+});
+
+test("clamps an oversized revoke reason before the revoked frames reach any desktop", async () => {
+  // Round-31 review: the server ingress cap is 4 MiB while the desktop inbound
+  // bound is 4 MiB − 64 KiB, so a revoke reason sized into that 64 KiB window
+  // passes ingress and — unclamped — pushes the desktop_endpoint_revoked /
+  // endpoint_revoked teardown frames past the revoked desktop's own bound,
+  // killing its socket with a capacity error instead of the graceful 4003
+  // policy close. The clamp at intake keeps every teardown frame small; this
+  // test drives the cross-endpoint shape (desktop A revokes endpoint B with
+  // B's secret) so the frame under test is B's desktop inbound direction.
+  const isolated = await spawnRelay();
+  const suffix = Date.now();
+  const accessToken = `access-token-revreason-${suffix}-000001`;
+  const secretA = `desktop-secret-revreason-a-${suffix}-001`;
+  const secretB = `desktop-secret-revreason-b-${suffix}-001`;
+  let desktopA;
+  let desktopB;
+  let webB;
+  try {
+    desktopA = await registerDesktop(`endpoint_revr_a_${suffix}`, accessToken, secretA, isolated.wsUrl);
+    desktopB = await registerDesktop(`endpoint_revr_b_${suffix}`, accessToken, secretB, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+    const connectedB = nextMessage(desktopB.ws, "web_client_connected");
+    webB = await joinWeb(`endpoint_revr_b_${suffix}`, accessToken, {}, isolated.wsUrl);
+    await connectedB;
+
+    // Sized so the revoke request passes the 4 MiB ingress cap while its
+    // unclamped echo would exceed the 4 MiB − 64 KiB desktop bound. All three
+    // waiters attach before the send: teardownEndpoint notifies the requester
+    // first, then the web client, then the revoked desktop — a waiter created
+    // after an earlier await would miss its already-delivered frame. Timeouts
+    // are generous: the tombstone persist plus a ~4 MB frame parse can
+    // legitimately exceed the 3 s default on a loaded machine.
+    const oversizedReason = "r".repeat(4_150_000);
+    const revokedB = nextMessage(desktopB.ws, "desktop_endpoint_revoked", 15000);
+    const answerA = nextMessage(desktopA.ws, "desktop_endpoint_revoked", 15000);
+    const webNotice = nextMessage(webB.ws, "endpoint_revoked", 15000);
+    desktopA.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: `endpoint_revr_b_${suffix}`,
+      desktop_secret: secretB,
+      reason: oversizedReason,
+    }));
+
+    const tornDown = await revokedB;
+    assert.equal(tornDown.reason, "revoked",
+      "an oversized revoke reason must be clamped at intake; the verbatim echo \
+       would exceed the revoked desktop's inbound bound and kill its socket");
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(tornDown)) <= 4 * 1024 * 1024 - 64 * 1024,
+      "the teardown frame delivered to the revoked desktop must stay inside its bound",
+    );
+
+    const requesterCopy = await answerA;
+    assert.equal(requesterCopy.reason, "revoked",
+      "the requester's copy must carry the same clamped reason");
+    assert.equal(desktopA.ws.readyState, desktopA.ws.OPEN,
+      "a cross-endpoint revoker keeps its own socket");
+
+    const notice = await webNotice;
+    assert.equal(notice.reason, "revoked",
+      "the web client's notice must carry the clamped reason too");
+  } finally {
+    closeSocket(webB?.ws);
+    closeSocket(desktopA?.ws);
+    closeSocket(desktopB?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("truncates the echoed type in unsupported_message_type inside the desktop bound", async () => {
+  // Round-31 review: the unsupported-type error is sent back to the desktop
+  // sender; a full-length echo of a near-ingress-cap type would exceed the
+  // desktop's own 4 MiB − 64 KiB inbound bound (ingress allows 4 MiB) and
+  // kill its socket. The echo truncates at 64 characters.
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_typeecho_${Date.now()}`;
+  const accessToken = "access-token-typeecho-000000000000001";
+  const desktopSecret = "desktop-secret-typeecho-00000000001";
+  let desktop;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl, {
+      maxPayload: 4 * 1024 * 1024 - 64 * 1024,
+    });
+
+    // Passes the 4 MiB ingress cap; an unclamped echo would not fit the
+    // desktop bound above.
+    desktop.ws.send(JSON.stringify({ v: 2, type: "x".repeat(4_150_000) }));
+    const rejected = await nextMessage(desktop.ws, "error");
+    assert.equal(rejected.code, "unsupported_message_type",
+      "an unknown desktop message type must still be refused");
+    assert.equal(
+      rejected.message,
+      `unsupported desktop message type: ${"x".repeat(64)}`,
+      "the echo must truncate the offending type at 64 characters",
+    );
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(rejected)) <= 4 * 1024 * 1024 - 64 * 1024,
+      "the error frame must stay inside the desktop's inbound bound",
+    );
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the truncated error must not kill the desktop socket");
+  } finally {
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
 });
 
 test("answers desktop_offline before measuring an oversized frame", async () => {

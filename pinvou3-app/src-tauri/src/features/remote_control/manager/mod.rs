@@ -356,11 +356,16 @@ const RELAY_ERROR_TEXT_MAX_CHARS: usize = 16_384;
 /// lifetime (the wedge heals only at restart, which silently drops the
 /// memory-only leftovers anyway). Retiring the OLDEST entries loudly
 /// converts that permanent wedge into a bounded, named loss under the same
-/// "endpoints stay joinable until revoked manually" discipline as the
-/// salvage truncation log; the newest intents stay ackable, and a retired
-/// entry re-enters only by being requeued. The ack error arm needs no cap:
-/// its `remaining` is taken from an already-capped backlog and drops the
-/// acked entry before re-pushing it.
+/// manual-revocation discipline as the salvage truncation log — with the
+/// caveat that a retired entry can still be disk-backed, in which case its
+/// replay worker keeps retrying instead of leaving it joinable; the newest
+/// intents stay ackable, and a retired entry re-enters only by being
+/// requeued. The acknowledgement arms cap both stores: the acked entry can be
+/// a sibling that an earlier re-cap already retired from the memory backlog
+/// while its disk-backed worker stayed alive, so the retain may drop nothing
+/// and the failure arm's re-push would otherwise grow past the cap and
+/// re-wedge every later acknowledgement (the exact wedge class above, in
+/// miniature).
 fn cap_pending_revocation_backlog(backlog: &mut Vec<PendingRevocation>) {
     let excess = backlog.len().saturating_sub(MAX_PENDING_REVOCATIONS);
     if excess == 0 {
@@ -371,7 +376,7 @@ fn cap_pending_revocation_backlog(backlog: &mut Vec<PendingRevocation>) {
         .map(|entry| clip_pending_endpoint_id_for_log(&entry.endpoint_id))
         .collect();
     eprintln!(
-        "[web-access] pending revocation backlog passed the capacity of {} — retired the oldest {} {} (endpoints stay joinable at the relay until revoked manually): {}",
+        "[web-access] pending revocation backlog passed the capacity of {} — retired the oldest {} {} (memory-only entries stay joinable until revoked manually; disk-backed entries keep retrying on replay): {}",
         MAX_PENDING_REVOCATIONS,
         excess,
         if excess == 1 { "entry" } else { "entries" },
@@ -1665,6 +1670,13 @@ impl RemoteControlManager {
                 std::mem::take(&mut inner.pending_revocation_backlog)
             };
             remaining.retain(|entry| entry != &pending);
+            // Cap before the ledger is built: the acked entry can be a sibling
+            // an earlier re-cap already retired from memory (its disk-backed
+            // worker kept living), so the retain may drop nothing and an
+            // over-cap backlog would otherwise persist a ledger that
+            // `validate_pending_revocation_ledger` rejects — re-wedging every
+            // later acknowledgement until the next lifecycle replay.
+            cap_pending_revocation_backlog(&mut remaining);
             let mut ledger = PendingRevocationLedger::default();
             ledger.entries = remaining.iter().cloned().collect();
             match persist_pending_revocations(&ledger) {
@@ -1673,6 +1685,7 @@ impl RemoteControlManager {
                 }
                 Err(error) => {
                     remaining.push(pending);
+                    cap_pending_revocation_backlog(&mut remaining);
                     self.inner.lock().pending_revocation_backlog = remaining;
                     eprintln!(
                         "[web-access] persist revocation acknowledgement for {endpoint_id} \
@@ -2777,6 +2790,11 @@ impl RemoteControlManager {
     }
 
     fn handle_replaced(&self, endpoint_id: &str) {
+        // Disclosed residual (round-30): `desktop_endpoint_replaced` stays
+        // transient-classified on purpose — no revocation-grade cleanup runs
+        // here pending a coordinated relay+client change; this arm only rests
+        // in Error with rotate guidance and leaves `last_error_code` unset so
+        // the terminal-registration machinery does not treat it as terminal.
         {
             let mut inner = self.inner.lock();
             let Some(endpoint) = inner.endpoint.as_mut() else {
@@ -5727,6 +5745,48 @@ mod tests {
             push_at < cap_at,
             "the cap must run after the push, or the just-queued entry can be \
              the one silently over cap"
+        );
+    }
+
+    #[test]
+    fn revocation_ack_arms_cap_the_backlog_before_both_stores() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn finish_pending_revocation(")
+            .expect("finish_pending_revocation must exist");
+        let rest = &source[start..];
+        let end = ["\n    fn ", "\n    pub fn "]
+            .iter()
+            .filter_map(|needle| rest.find(needle))
+            .min()
+            .expect("finish_pending_revocation body must be terminated by the next fn item");
+        let body = comment_filtered(&rest[..end]);
+        let retain_at = body
+            .find("remaining.retain(")
+            .expect("the acknowledged arm must retain past the acked entry");
+        let ledger_at = body
+            .find("PendingRevocationLedger::default()")
+            .expect("the acknowledged arm must build the whole-ledger persist");
+        let push_at = body
+            .find("remaining.push(pending)")
+            .expect("the persist-failure arm must re-queue the entry");
+        let cap_needle = "cap_pending_revocation_backlog(&mut remaining)";
+        let first_cap = body
+            .find(cap_needle)
+            .expect("the acknowledged arm must cap the backlog before the ledger build");
+        assert!(
+            retain_at < first_cap && first_cap < ledger_at,
+            "the cap must run after the retain and before the ledger is built, or \
+             a retired-sibling re-push can persist an over-cap ledger that \
+             validation rejects"
+        );
+        let failure_cap = body[push_at..].find(cap_needle).expect(
+            "the persist-failure arm must cap again after the re-push, or \
+                     the re-push can grow the backlog past MAX_PENDING_REVOCATIONS",
+        );
+        assert!(
+            push_at < push_at + failure_cap,
+            "the failure-arm cap must sit after the re-push"
         );
     }
 

@@ -436,7 +436,11 @@ pub(crate) fn force_private_file_mode(path: &std::path::Path, mode: u32) -> bool
 /// is gone (an unterminated `/*` is kept verbatim).
 /// Residual exposure, unchanged and handled per pin's disclosed residuals:
 /// a needle mentioned in a trailing `//` comment on an executable line,
-/// or inside a string literal, still satisfies a `contains` pin.
+/// or inside a string literal, still satisfies a `contains` pin. The filter
+/// is string-literal-blind in the other direction too: a `/* … */` inside a
+/// string literal is stripped like a comment, so over-stripping can only
+/// shorten a pin window and fail it red (fail-closed) — never keep a dead
+/// needle alive.
 #[cfg(test)]
 pub(crate) fn comment_filtered(source: &str) -> String {
     let without_line_comments = source

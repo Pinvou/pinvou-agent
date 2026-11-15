@@ -1343,7 +1343,16 @@ async function revokeFromSocket(ws, msg) {
     rejectSocket(ws, "revoke_persistence_failed", "failed to persist endpoint revocation");
     return;
   }
-  revokeEndpoint(endpoint, msg.reason || "revoked", ws);
+  // Round-31 review: the reason is client-supplied and otherwise unbounded
+  // (up to the 4 MiB ingress frame), and teardownEndpoint embeds it verbatim
+  // in the desktop_endpoint_revoked / endpoint_revoked frames — an oversized
+  // reason would push the desktop's own frame past its 4 MiB − 64 KiB inbound
+  // bound and kill the desktop with a capacity error, the same boundary-kill
+  // class the web-forward gate closed. Clamp at intake; short reasons pass
+  // through unchanged.
+  const revokeReason =
+    typeof msg.reason === "string" && msg.reason.length <= 256 ? msg.reason : "revoked";
+  revokeEndpoint(endpoint, revokeReason, ws);
   // Only a socket of the revoked endpoint goes down with it. A desktop
   // revoking a different endpoint with that endpoint's secret keeps its own
   // session; teardownEndpoint already told it desktop_endpoint_revoked.
@@ -1455,7 +1464,10 @@ function forwardAuthenticatedMessage(ws, msg) {
         v: 2,
         type: "error",
         code: "unsupported_message_type",
-        message: `unsupported desktop message type: ${String(msg.type || "")}`,
+        // Round-31 review: truncate the echo — this error is sent back to the
+        // desktop sender, and a full-length echo of a near-bound frame would
+        // exceed the desktop's own inbound bound and kill its socket.
+        message: `unsupported desktop message type: ${String(msg.type || "").slice(0, 64)}`,
       });
       return;
     }

@@ -367,28 +367,26 @@ impl ScheduledChatExecutor {
             Some(Err(error)) => TaskExecutionResult {
                 status: TaskStatus::Failed,
                 result_text: None,
-                // Secret-only redaction here, matching what this chain can
-                // actually carry today: ensure_deliverable_target collapses
+                // Fold-first redaction (round-31: the arm previously ran
+                // secret-only on the rationale that this chain carries no proven
+                // absolute-path carrier — ensure_deliverable_target collapses
                 // store-load failures into static text and the per-session
-                // sidecar reads surface only error kinds, so no proven
-                // absolute-path carrier exists on this chain. (Round-20 review
-                // correction: the earlier "sidecar error contexts use bare file
-                // names" claim was inaccurate — the session-agent index store's
-                // SessionAgentStore::load_from embeds path.display() in its
-                // contexts; no leak today only because the collapse above folds
-                // it into static text, and if that collapse were removed this arm
-                // would have to adopt redact_storage_prefix like the organize
-                // arm.) Round-19 review: this comment previously claimed the same
-                // discipline as this file's organize arm — inaccurate; since
-                // round-18 the organize arm additionally folds the storage root
-                // (its chain's bounded-read io Display genuinely carries absolute
-                // paths); if this arm ever introduces a path-carrying error
-                // constructor, it must adopt redact_storage_prefix in the same
-                // change (see the organize arm's comment).
-                error: Some(format!(
+                // sidecar reads surface only error kinds). The rationale stays
+                // true for the enumerated sources, but the arm's `{error:#}`
+                // chain also embeds the deliver_messaging_turn internals
+                // (dispatch-after-steer), whose construction sites one refactor
+                // could make path-carrying; folding is idempotent and this is a
+                // cold failure path, so the arm now applies the same inline
+                // fold-then-scan order as the organize arm instead of carrying
+                // the covenant forward. (Round-20/19 history: the earlier
+                // "sidecar error contexts use bare file names" claim was
+                // inaccurate — SessionAgentStore::load_from embeds
+                // path.display(); no leak today only because the collapse above
+                // folds it into static text.)
+                error: Some(crate::platform::credential_store::redact_secret(&format!(
                     "scheduled message delivery: {}",
-                    crate::platform::credential_store::redact_secret(&format!("{error:#}"))
-                )),
+                    crate::platform::paths::redact_storage_prefix(&format!("{error:#}"))
+                ))),
                 terminal_reason: TaskTerminalReason::Failed,
             },
         }
@@ -633,9 +631,10 @@ fn map_completion(completion: ScheduledTurnCompletion) -> TaskExecutionResult {
 /// helper; re-inlining the old order at an arm is blocked by the census pin; the
 /// whitespace-home behavioral tooth lives in
 /// failed_folds_before_the_secret_scan_on_whitespace_homes. Already-folded text is
-/// idempotent under re-folding. The organize arm (format! prefix assembly) and the
-/// secret-only delivery arm do not go through this helper (each has its own source
-/// pin); the census pins the whole file's spelling counts.
+/// idempotent under re-folding. The organize arm (format! prefix assembly) does
+/// not go through this helper — it inlines the same fold-then-scan order with
+/// its own source pin; the delivery arm has inlined the same order since
+/// round-31. The census pins the whole file's spelling counts.
 fn fold_then_redact(raw: &str) -> String {
     crate::platform::credential_store::redact_secret(
         &crate::platform::paths::redact_storage_prefix(raw),
@@ -1400,12 +1399,15 @@ mod tests {
 
     /// Review round-15 N10: the delivery-failure reason passes through
     /// `redact_secret` before it reaches the run record (credential /
-    /// endpoint-probing detail; Round-20 review correction: the old aside "app
-    /// error chains carry store paths" contradicts this arm's own comment's field
-    /// findings — the chain has no proven absolute-path carrier today, so folding
-    /// the storage root is not part of this arm's discipline) — deleting the call kept
+    /// endpoint-probing detail) — deleting the call kept
     /// every behavioral test green, so the call site is pinned textually,
     /// the same way as the live body above.
+    /// Round-31: the pin's needle now captures the fold-then-scan pair (outer
+    /// `redact_secret` over inner `redact_storage_prefix`) — the arm inlines
+    /// the same order as the organize arm; the round-20 aside about the chain
+    /// carrying no proven absolute-path carrier remains true for the enumerated
+    /// sources, and the fold is cheap idempotent insurance on a cold failure
+    /// path (see the arm comment).
     /// Review round-15 N10, rewritten in round-17 M5: the delivery-failure
     /// reason passes through `redact_secret` before it reaches the run
     /// record. The textual pin needs TWO bounds to be mutation-sensitive:
@@ -1433,12 +1435,22 @@ mod tests {
         let failure_arm = body
             .find("Some(Err(error))")
             .expect("the failure arm present");
-        let redact = body
-            .find("redact_secret(&format!(\"{error:#}\"))")
+        let secret = body
+            .find("crate::platform::credential_store::redact_secret(&format!(")
             .expect("the failure reason must pass through redact_secret");
+        let fold = body
+            .find("crate::platform::paths::redact_storage_prefix(&format!(\"{error:#}\"))")
+            .expect(
+                "the failure reason must fold the storage root (round-31: the \
+                 secret-only rationale left the arm's {error:#} chain one \
+                 refactor away from a path-carrying constructor)",
+            );
         assert!(
-            failure_arm < redact,
-            "the redaction sits inside the delivery-failure arm"
+            failure_arm < secret && secret < fold,
+            "the fold must sit INSIDE the secret scan's format args (outer \
+             redact_secret over inner redact_storage_prefix) — scan-then-fold \
+             lets the >=24-char secret family destroy the fold needle on \
+             whitespace-containing homes (the S10-1 shape)"
         );
     }
 
@@ -2033,9 +2045,10 @@ mod tests {
             production
                 .matches("crate::platform::paths::redact_storage_prefix(")
                 .count(),
-            2,
-            "exactly the helper and the organize arm may fold; new error arms \
-             must route through fold_then_redact"
+            3,
+            "exactly the helper, the organize arm and the delivery arm may fold \
+             (organize and delivery inline the same fold-then-scan order); new \
+             error arms must route through fold_then_redact"
         );
         // Round-25 review MINOR: on top of the primitive-spelling census, add a
         // helper-call-site census — the unsupported-kind arm's fold_then_redact call

@@ -1275,10 +1275,11 @@ mod tests {
     /// `redact_storage_prefix` (same policy as the Round-9-fixed warning details;
     /// today's std os error Display embeds no paths, but any future
     /// path-embedding error constructor would make this a leak point). Since
-    /// round-27 the `reserve edit_last_turn` exception arm folds too (its error
-    /// chain carries storage paths via store.load, and the command is
-    /// web-reachable; the raw chain goes only to desktop logs per the established
-    /// policy). Per-`map_err(|e|` arm windows are asserted, without depending on
+    /// round-27 the `reserve edit_last_turn` exception arm folds too (the
+    /// command is web-reachable and the fold is idempotent insurance; the raw
+    /// chain goes only to desktop logs per the established policy — note the
+    /// chain's std io error Display itself embeds no paths, so the round-27
+    /// wording overstated the carrier). Per-`map_err(|e|` arm windows are asserted, without depending on
     /// rustfmt's line shapes (the single-line shape count was once silently evaded
     /// by folding the line — confirmed by mutation re-runs).
     #[test]

@@ -1306,6 +1306,45 @@ pub(crate) mod tests {
         );
     }
     #[test]
+    fn redact_storage_prefix_keeps_dotted_i_homes_out_of_ascii_folding() {
+        // Round-31 review: redaction folds ASCII case only (eq_ignore_ascii_case),
+        // by design — a full Unicode fold would over-fold the Turkish İ (U+0130),
+        // whose Unicode lowercase expands to "i" + combining dot (the Windows
+        // identity-key side accepts that expansion as a recorded tradeoff; the
+        // redact side does not). This pin fixes the under-fold residual
+        // direction statically: a home whose needle carries İ does not match an
+        // ASCII-i spelling, so such spellings pass through unfolded (recorded in
+        // redact_storage_prefix's residual comment block; the identity-key
+        // expansion behavior has its own pin,
+        // volume_fold_spelling_expansion_is_pinned_directly).
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let root = std::env::temp_dir().join("PathsRedact\u{0130}Home");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes
+        // serialized in-process (platform::test_support discipline).
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let root = pinvou3_home();
+        let verbatim = format!("{}\\user\\memory\\x.json", root.display());
+        assert!(
+            redact_storage_prefix(&verbatim).starts_with("~/.pinvou3"),
+            "the exact needle spelling (including İ) must fold"
+        );
+        let ascii_i = verbatim.replace('\u{0130}', "i");
+        assert_eq!(
+            redact_storage_prefix(&ascii_i),
+            ascii_i,
+            "an ASCII-i spelling of an İ-carrying home must NOT fold — ASCII-only \
+             case folding cannot match U+0130; this is the recorded under-fold \
+             residual"
+        );
+        let dotted_lowercase = verbatim.replace('\u{0130}', "i\u{0307}");
+        assert_eq!(
+            redact_storage_prefix(&dotted_lowercase),
+            dotted_lowercase,
+            "the Unicode lowercase expansion (i + combining dot) must not fold either"
+        );
+    }
+
+    #[test]
     fn redact_storage_prefix_passes_already_folded_text_through() {
         crate::platform::test_support::with_temp_home("paths-redact-folded", || {
             // Text already in the ~/.pinvou3 folded form must pass through unchanged, without re-folding or rewriting.
