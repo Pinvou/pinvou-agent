@@ -170,3 +170,25 @@ test('download failure removes pending work and ignores late progress events', a
   assert.equal(runtime.state.updateProgress, 25, 'progress arriving after failure must be ignored');
   assert.deepEqual(runtime.notifications, notificationsAfterFailure, 'late progress after failure must not notify');
 });
+
+test('out-of-range progress payloads clamp to the 0-100 range', () => {
+  const runtime = loadUpdaterFeature();
+
+  runtime.emitProgress(1500, 1000);
+  assert.equal(runtime.state.updateProgress, 100, 'an over-total payload must clamp to 100');
+  assert.deepEqual(runtime.notifications, [100]);
+
+  const negative = loadUpdaterFeature();
+  negative.emitProgress(250, 1000);
+  negative.emitProgress(-300, 1000);
+  negative.flushTimers();
+  assert.equal(negative.state.updateProgress, 0, 'a negative payload must clamp to 0');
+  assert.deepEqual(negative.notifications, [0], 'the coalesced publication must expose the clamped value');
+});
+
+test('progress percentages round to the nearest integer', () => {
+  const runtime = loadUpdaterFeature();
+
+  runtime.emitProgress(249, 1000);
+  assert.equal(runtime.state.updateProgress, 25, '24.9% must round to 25 instead of flooring to 24');
+});

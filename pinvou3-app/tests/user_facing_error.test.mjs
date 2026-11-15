@@ -12,6 +12,7 @@ test('errorCode parses snake_case codes from objects and message prefixes', () =
   assert.equal(errorCode({ code: 123 }), '', 'non-string codes are rejected');
   assert.equal(errorCode('no separator here'), '');
   assert.equal(errorCode(':leading-separator'), '', 'an empty prefix is not a code');
+  assert.equal(errorCode('conn : timeout'), 'conn', 'message-prefix codes are trimmed');
   assert.equal(errorCode(null), '');
   assert.equal(errorCode({ other: 'x' }), '');
 });
@@ -33,6 +34,12 @@ test('localizedErrorMessage never resolves inherited Object.prototype keys', () 
   assert.equal(typeof resolved, 'string');
   // An own 'constructor' key is a legitimate dict entry and must still win.
   assert.equal(localizedErrorMessage({ code: 'constructor' }, { constructor: 'own copy' }, 'FALLBACK'), 'own copy');
+  // An inherited string-valued key is still a prototype hit and must fall back
+  // even though the string-type guard alone would have accepted the value.
+  assert.equal(
+    localizedErrorMessage({ code: 'leaked' }, Object.create({ leaked: 'inherited copy' }), 'FALLBACK'),
+    'FALLBACK',
+  );
 });
 
 test('localizedErrorMessage only ever returns string copy', () => {
