@@ -216,8 +216,10 @@ fn configure_provider(
     // declaration: the engine then short-circuits key resolution and
     // suppresses credential-shaped request headers
     // (`auth_mode_disables_api_key` + `is_upstream_auth_header`). Written
-    // into the ACTIVE route's table only — never the root `auth_mode`,
-    // which would disable auth for fallback providers too.
+    // into the ACTIVE route's provider table — the same key on the root
+    // config would be broader: engine consumers consult it for the active
+    // provider as a fallback after the tables, so keeping it scoped to the
+    // table leaves the root untouched for any other consumer.
     if no_auth {
         config.auth_mode = Some("none".to_string());
     }
