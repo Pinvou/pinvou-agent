@@ -3433,7 +3433,7 @@ mod tests {
             matches!(chord_shift_plan(&ctrl, &solo_s), Ok(ShiftSynthesis::None)),
             "unshifted faces never synthesize"
         );
-        let multi = vec![&Key::Char('+'), &Key::F4];
+        let multi = vec![&Key::Char('+'), &Key::Function(4)];
         assert!(
             chord_shift_plan(&[], &multi).is_err(),
             "a shifted character beside another key is refused — the wrap \
