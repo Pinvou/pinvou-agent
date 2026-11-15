@@ -242,7 +242,7 @@ export const dictEn = {
         kbStReady: 'Ready', kbStIndexing: 'Parsing', kbStPending: 'Pending',
         kbImportInterrupted: 'Unfinished import found', kbImportInterruptedHint: 'Progress from the previous run was saved. Continue from the unfinished file or chunk.', kbResumeImport: 'Continue import', kbCancelImport: 'Cancel task',
         kbImportProgress: 'File progress', kbCurrentFile: 'Current file:', kbChunkProgress: 'Chunk progress', kbFailedFiles: 'Failed files', kbRetryFile: 'Retry', kbImportErrors: 'failed', kbImportDoneWithErrors: 'Import finished with errors',
-        kbImportDoneSkipped: 'Import finished — files were skipped by index rules', kbSkippedByExcluder: (n) => `${n} file(s) skipped by index rules (unsupported types; folders matched by exclusion rules are not descended into)`,
+        kbImportDoneSkipped: 'Import finished — some files were skipped by index rules', kbSkippedByExcluder: (n) => `${n} file(s) skipped by index rules (unsupported types; folders matched by exclusion rules are not descended into)`,
         kbResumeImportFailed: 'Failed to continue import', kbCancelImportFailed: 'Failed to cancel import', kbRetryImportFailed: 'Failed to retry file',
         kbLoadMoreFailedFiles: 'Load more failed files', kbLoadingFailedFiles: 'Loading…', kbLoadFailedFilesFailed: 'Failed to load failed files',
         kbDocsShowingFirst: n => `Showing first ${n} documents`,
