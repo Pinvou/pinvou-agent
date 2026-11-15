@@ -443,7 +443,7 @@ pub struct SavedModel {
     /// `normalize_provider_metadata` 归一：仅保留底座
     /// `auth_mode_disables_api_key` 认可的 no-auth 同义词并统一为 `"none"`，
     /// 其余值（含空串）清空。None = 默认按 provider/端点规则决定是否要 Key。
-    /// 非字符串 JSON 值按未声明处理（见 [`deserialize_auth_mode_lenient`]），
+    /// 非字符串 JSON 值按未声明处理（见 `deserialize_auth_mode_lenient`），
     /// 不让整份文档解析失败。
     #[serde(
         default,

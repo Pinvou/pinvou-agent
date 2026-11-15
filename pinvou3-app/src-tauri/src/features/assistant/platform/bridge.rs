@@ -1800,7 +1800,7 @@ impl Pinvou3Bridge {
     /// OpenAI-compatible services explicitly pointing at a local loopback
     /// allow no auth; cloud/LAN addresses still require a Key by default —
     /// unless the model record explicitly declares the endpoint keyless
-    /// (`auth_mode = "none"`, see [`Self::model_declares_no_auth`]).
+    /// (`auth_mode = "none"`, see `Self::model_declares_no_auth`).
     pub fn api_key_required(&self) -> bool {
         // vLLM, Tachyon (驭光) and Ollama (including probed LAN Ollama) default
         // to no auth and the foundation also allows an empty key (Ollama
