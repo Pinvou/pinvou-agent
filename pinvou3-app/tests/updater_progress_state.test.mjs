@@ -95,6 +95,19 @@ test('update progress coalesces burst events before notifying the React tree', (
   assert.deepEqual(runtime.notifications, [50], 'the coalesced publication must expose the latest percentage');
 });
 
+test('a repeated percentage does not schedule a redundant publication', () => {
+  const runtime = loadUpdaterFeature();
+
+  runtime.emitProgress(250, 1000);
+  runtime.flushTimers();
+  assert.deepEqual(runtime.notifications, [25]);
+
+  runtime.emitProgress(250, 1000);
+  runtime.flushTimers();
+  assert.equal(runtime.pendingTimerCount(), 0, 'an unchanged percentage must not schedule a publication');
+  assert.deepEqual(runtime.notifications, [25], 'an unchanged percentage must not re-notify');
+});
+
 test('completion flushes immediately and cancels a pending progress publication', () => {
   const runtime = loadUpdaterFeature();
 
