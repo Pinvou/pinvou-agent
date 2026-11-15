@@ -385,7 +385,13 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     // 产物）；仅当字节截断可能切在字符中间时才容忍尾部损字。
     let content = match String::from_utf8(bytes) {
         Ok(text) => text,
-        Err(e) if read_capped => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        Err(e) if read_capped => {
+            let lossy = String::from_utf8_lossy(e.as_bytes()).into_owned();
+            if lossy_is_mostly_replacement(&lossy) {
+                return None;
+            }
+            lossy
+        }
         Err(_) => return None,
     };
     let n = content.chars().count();
@@ -405,6 +411,16 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
         content
     };
     Some((path, bounded))
+}
+
+/// 判断损字解码结果是否以替换符为主，即源字节本就是二进制（.docx/.pdf），
+/// 而非「截断恰好切在一个多字节字符中间」的文本：U+FFFD 占比 >1% 视为
+/// 二进制。截断切字符只产生至多一个替换符，在数千万字的读取里占比远低于
+/// 该阈值；带零星坏字节的文本产物则依旧展示（比原 read_to_string 的整体
+/// 跳过更宽容，与 r8 审的取舍一致）。
+fn lossy_is_mostly_replacement(lossy: &str) -> bool {
+    let replacement = lossy.matches('\u{FFFD}').count();
+    replacement * 100 > lossy.chars().count()
 }
 
 /// 账目是否已被 Boss 结清、核账不再核（§5）：accept=缺陷接受现状、confirmed=需核实但 Boss
@@ -3828,6 +3844,23 @@ mod tests {
              Take-limited read; deleting it re-opens the unbounded read \
              (r9 review m8, ported to the Take-limited successor)"
         );
+    }
+
+    /// r8 审：截断损字容忍只属于「文本被截断」形态。二进制产物（密集
+    /// U+FFFD）必须被判为二进制并跳过，而不是整段替换符噪声进召唤；
+    /// 单个切界替换符的正常文本必须保留。1% 阈值的两侧都要钉住。
+    #[test]
+    fn lossy_detector_skips_binary_and_keeps_boundary_split_text() {
+        // 单个切界损字（50 MiB 文本只会在截断边界产生 1 个）——保留。
+        // 阈值按真实读取规模（数百万字）设计，fixture 用 200 万字级别。
+        let boundary_split = format!("{}{}", "正常正文 ".repeat(400_000), '\u{FFFD}');
+        assert!(!lossy_is_mostly_replacement(&boundary_split));
+        // 全坏字节（二进制产物头部形态）——跳过。
+        assert!(lossy_is_mostly_replacement(&"\u{FFFD}".repeat(4)));
+        // 密集替换符但夹带可读字节（PDF/zip 混合形态）——仍判二进制。
+        assert!(lossy_is_mostly_replacement("\u{FFFD}\u{FFFD}ab"));
+        // 空串不是二进制（防御臂，实际路径到不了）。
+        assert!(!lossy_is_mostly_replacement(""));
     }
 
     /// r6 审 m3：finish_reason=length 诊断层——k3 旧线上「预算全被 reasoning
