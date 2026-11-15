@@ -33,6 +33,19 @@ use crate::platform::prefs::{CodePermissionPrefs, UserPrefs};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 
+/// Test barrier for `aux_ask_seed_rechecks_override_under_io_mutex`
+/// (review JensenChen28 4576594546): arming the gate makes
+/// `seed_aux_ask_from_parent` park after its pre-lock probes and flip the
+/// boundary flag, so the test publishes the racing override at a provably
+/// post-probe, pre-lock point instead of guessing with a fixed sleep. Both
+/// flags are compiled out of production builds.
+#[cfg(test)]
+pub(crate) static AUX_SEED_GATE_ARMED_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static AUX_SEED_AT_LOCK_BOUNDARY_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Test-only crash seam for the shared→companion sidecar write pair
 /// (round-9 minor 1, mirroring the rebind pair's
 /// `inject_rebind_crash_after_legacy_rewrite`): armed by
@@ -1693,6 +1706,27 @@ impl SessionStore {
         }
         if self.ask_on_guardrail_seed(aux_id) == parent_ask {
             return false;
+        }
+        // Test-only barrier (review JensenChen28 4576594546): a fixed sleep
+        // in `aux_ask_seed_rechecks_override_under_io_mutex` cannot prove the
+        // seed reached this point past its pre-lock probes before the test
+        // publishes the racing override — under CI scheduling delay the seed
+        // could read the override for the first time after the lock release
+        // and pass through the pre-lock probe, letting the pin pass without
+        // ever exercising the under-lock recheck. When armed, the seed parks
+        // here and flips the boundary flag, so the test publishes at a
+        // provably post-probe, pre-lock point. Compiled out of production.
+        #[cfg(test)]
+        if crate::features::sessions::mode_state::AUX_SEED_GATE_ARMED_FOR_TEST
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            crate::features::sessions::mode_state::AUX_SEED_AT_LOCK_BOUNDARY_FOR_TEST
+                .store(true, std::sync::atomic::Ordering::Release);
+            while crate::features::sessions::mode_state::AUX_SEED_GATE_ARMED_FOR_TEST
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                std::thread::yield_now();
+            }
         }
         let _io = self.session_mode_states_io.lock();
         // Recheck the explicit override UNDER the mutex (review JensenChen28

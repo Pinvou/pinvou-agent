@@ -4375,12 +4375,24 @@ fn ask_on_guardrail_toggle_persists_for_entry_less_sessions() {
 /// BEFORE taking the I/O mutex, so a concurrent `set_ask_on_guardrail`
 /// (which holds the same mutex across persist and mirror publication)
 /// landing between the probe and the lock was then overwritten by the
-/// parent value. The seed now rechecks under the mutex; this pin drives
-/// exactly that interleaving: hold the mutex, let the seed block past its
-/// pre-lock probes, publish the override mid-flight, release — and the
-/// explicit value must survive both the mirror and the persisted sidecar.
+/// parent value. The seed now rechecks under the mutex. Round-9 follow-up
+/// (review JensenChen28 4576594546): a fixed sleep cannot prove the seed
+/// reached the lock boundary — under CI scheduling delay the seed could
+/// read the override for the first time after release and pass through the
+/// pre-lock probe, letting this pin pass without exercising the recheck.
+/// The `AUX_SEED_GATE_ARMED_FOR_TEST` barrier makes the interleaving
+/// deterministic: the seed parks after its pre-lock probes and signals the
+/// boundary, the test then publishes the racing override through the REAL
+/// `set_ask_on_guardrail` (whose mutex the parked seed has not taken yet),
+/// releases the gate, and requires the seed to abort with the explicit
+/// value intact in both the mirror and the persisted sidecar.
 #[test]
 fn aux_ask_seed_rechecks_override_under_io_mutex() {
+    use crate::features::sessions::mode_state::{
+        AUX_SEED_AT_LOCK_BOUNDARY_FOR_TEST, AUX_SEED_GATE_ARMED_FOR_TEST,
+    };
+    use std::sync::atomic::Ordering;
+
     let (store, _g) = isolated_store();
     let store = std::sync::Arc::new(store);
     let aux = "seed-recheck-session";
@@ -4394,28 +4406,33 @@ fn aux_ask_seed_rechecks_override_under_io_mutex() {
     // The parent value must differ from the current resolution so the seed
     // passes its pre-lock value probe and reaches the mutex at all.
     let parent_ask = !store.mode_state(aux).ask_on_guardrail;
-    let io = store.session_mode_states_io.lock();
+
+    AUX_SEED_GATE_ARMED_FOR_TEST.store(true, Ordering::Release);
     let store_for_thread = std::sync::Arc::clone(&store);
-    let seeded = {
-        let handle =
-            std::thread::spawn(move || store_for_thread.seed_aux_ask_from_parent(aux, parent_ask));
-        // Give the seed thread a beat to clear its pre-lock probes and
-        // block on the mutex, then publish the concurrent override exactly
-        // as `set_ask_on_guardrail` would: sidecar persist + mirror insert.
-        // This test thread holds the same mutex the real setter takes (the
-        // setter itself cannot be called here without deadlocking the
-        // interleaving this pin constructs), so the two-step publication
-        // below replays its observable effects faithfully.
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        SessionStore::apply_ask_on_guardrail_mutation_locked(&[(aux, !parent_ask)], &[])
-            .expect("persist the racing override");
-        store
-            .ask_on_guardrail_overrides
-            .write()
-            .insert(aux.to_string(), !parent_ask);
-        drop(io);
-        handle.join().expect("seed thread join")
-    };
+    let handle =
+        std::thread::spawn(move || store_for_thread.seed_aux_ask_from_parent(aux, parent_ask));
+    // Deterministic barrier: wait until the seed signals it has cleared its
+    // pre-lock probes and parked at the lock boundary.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !AUX_SEED_AT_LOCK_BOUNDARY_FOR_TEST.load(Ordering::Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the seed never reached the lock boundary"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+
+    // Publish the racing override through the REAL setter — safe here
+    // because the parked seed has not taken `session_mode_states_io` yet;
+    // this exercises the setter's own persist + mirror publication verbatim.
+    store
+        .set_ask_on_guardrail(aux, !parent_ask)
+        .expect("publish the racing override");
+
+    // Release the seed: it takes the mutex, and the under-lock recheck must
+    // now observe the override and abort.
+    AUX_SEED_GATE_ARMED_FOR_TEST.store(false, Ordering::Release);
+    let seeded = handle.join().expect("seed thread join");
     assert!(
         !seeded,
         "the seed must abort once the explicit override is visible under the lock"
