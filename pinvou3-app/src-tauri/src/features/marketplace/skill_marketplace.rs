@@ -2032,11 +2032,17 @@ fn read_skill_md_capped_strict(md_path: &Path) -> Result<String, String> {
         .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
     let bytes = crate::platform::filesystem::read_capped(&mut file, MAX_SKILL_MD_READ_BYTES)
         .map_err(|e| {
-            format!(
-                "读取 {} 失败: {e}（SKILL.md 超过 {} KiB 审读上限）",
-                md_path.display(),
-                MAX_SKILL_MD_READ_BYTES / 1024
-            )
+            // 只有真正超界才补「超上限」诊断；普通 IO 失败(EACCES/EIO)挂上
+            // 这句会让用户把权限问题当尺寸问题排查（r8 审）。
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                format!(
+                    "读取 {} 失败: {e}（SKILL.md 超过 {} KiB 审读上限）",
+                    md_path.display(),
+                    MAX_SKILL_MD_READ_BYTES / 1024
+                )
+            } else {
+                format!("读取 {} 失败: {e}", md_path.display())
+            }
         })?;
     String::from_utf8(bytes).map_err(|e| format!("{} 不是有效 UTF-8: {e}", md_path.display()))
 }
