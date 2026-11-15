@@ -1815,6 +1815,7 @@ mod tests {
             ModelPreset::LocalVllm,
             None,
             Some(262_144),
+            false,
         )
         .await
         .expect("a local target yields a snapshot even when unreachable");
@@ -1841,6 +1842,7 @@ mod tests {
             ModelPreset::LocalVllm,
             Some("secret"),
             Some(262_144),
+            false,
         )
         .await
         .expect("snapshot");
@@ -1864,6 +1866,7 @@ mod tests {
             ModelPreset::LocalVllm,
             Some("secret"),
             None,
+            false,
         )
         .await
         .expect("snapshot");
@@ -1893,6 +1896,7 @@ mod tests {
             ModelPreset::LocalVllm,
             None,
             Some(262_144),
+            false,
         )
         .await
         .expect("snapshot");
@@ -1921,6 +1925,7 @@ mod tests {
             ModelPreset::LocalVllm,
             None,
             None,
+            false,
         )
         .await
         .expect("a local target yields a snapshot even when unreachable");
