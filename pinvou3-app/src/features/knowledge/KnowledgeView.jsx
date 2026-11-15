@@ -917,11 +917,13 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           setActiveColl((current) => (current ? c.find((item) => item.id === current.id) || null : null));
           kbCache.colls = c;
         } catch { /* silently degrade */ }
+        // 与 loadDocs 同序:先自增代际再发请求(此前是落地后才自增,重置在途
+        // 时新旧代际相等,921 行的拒发形同虚设——r4 review)。重置在途时的
+        // 「加载更多」点击随即被拒,不会拿旧 offset 配新表发注定作废的请求。
+        // 代际提升到 try 外声明,catch 的代际校验才拿得到它(loadDocs 同款;
+        // try 内声明的 const 在 catch 不可见,失败路径会直接 ReferenceError)。
+        const generation = ++allDocsGenerationRef.current;
         try {
-          // 与 loadDocs 同序:先自增代际再发请求(此前是落地后才自增,重置在途
-          // 时新旧代际相等,921 行的拒发形同虚设——r4 review)。重置在途时的
-          // 「加载更多」点击随即被拒,不会拿旧 offset 配新表发注定作废的请求。
-          const generation = ++allDocsGenerationRef.current;
           const d = await invokeTauri('kb_documents', { collectionId: 0, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
           if (generation !== allDocsGenerationRef.current) return;
           setAllDocs(d);
