@@ -4223,7 +4223,11 @@ df() { :; }
             "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
             npm_step,
         )
-        self.assertIn("npm ci", npm_step)
+        # The r8 wave routed the bounded install through
+        # scripts/ci/npm-ci-bounded.sh — on this macOS leg a bare `timeout`
+        # prefix exits 127 (the image ships no GNU timeout), so the helper
+        # call IS the npm ci invocation; both forms satisfy the fold pin.
+        self.assertRegex(npm_step, r"(npm ci|npm-ci-bounded\.sh)")
         # The dual rustup targets feed the same universal build (lipo needs
         # both arches); they are smoke-only provisioning too, so they carry
         # the identical gate — otherwise unrelated pushes pay rustup while
@@ -4664,25 +4668,6 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_release_working_directories_resolve_to_real_paths(self):
-        # Round-37 shipped a `pinvoy3-app/...` filter entry (dead), and the
-        # r6 fixwave shipped `working-directory: pinvoy3-app` in all five
-        # release build jobs at once — GitHub fails a step whose
-        # working-directory does not exist and none of those steps is
-        # continue-on-error, so every release leg died at 安装前端依赖
-        # before producing artifacts. Top-level segments of the build-time
-        # paths (…/target/release/bundle/…) cannot be checked deeper than
-        # the checkout, so the pin asserts the first path segment of every
-        # working-directory exists in the repository — exactly the
-        # granularity this typo class has bitten at, twice.
-        for raw in re.findall(r"working-directory:[ \t]*([^\n#]+)", self.release_workflow):
-            path = raw.strip().strip("\"'")
-            first = path.split("/")[0]
-            self.assertTrue(
-                bool(first) and (ROOT / first).exists(),
-                f"release working-directory names a path that does not exist: {path!r}",
-            )
-
     def test_release_linux_build_jobs_prepare_disk_and_prune_apt(self):
         # Release build jobs (single-disk hosted runner; with the old 16G
         # /mnt swapfile in place x64 builds had only ~13-14G free) must clean
@@ -5051,6 +5036,41 @@ exit 0
         self.assertIn("dpkg admin state repaired (configure attempt 1)", proc.stdout)
 
 
+class WorkflowWorkingDirectoryPolicyTests(unittest.TestCase):
+    """Every `working-directory:` in the CI workflows names a path that exists.
+
+    Round-37 shipped a `pinvoy3-app/...` filter entry (dead), and the r6
+    fixwave shipped `working-directory: pinvoy3-app` in all five release
+    build jobs at once — GitHub fails a step whose working-directory does
+    not exist and none of those steps is continue-on-error, so every
+    release leg died at 安装前端依赖 before producing artifacts. The r8
+    sweep widened the pin from release-packages.yml to every CI workflow:
+    the same first-segment typo class in pr-check.yml would kill PR legs
+    the same way, and PR CI does not exercise the release workflow at all,
+    so only an in-repo pin can hold the class dead. Top-level segments of
+    the build-time paths (…/target/release/bundle/…) cannot be checked
+    deeper than the checkout, so the pin asserts the first path segment of
+    every working-directory exists in the repository — exactly the
+    granularity this typo class has bitten at, twice.
+    """
+
+    WORKFLOW_FILES = (
+        ROOT / ".github/workflows/pr-check.yml",
+        ROOT / ".github/workflows/release-packages.yml",
+    )
+
+    def test_workflow_working_directories_resolve_to_real_paths(self):
+        for workflow in self.WORKFLOW_FILES:
+            text = workflow.read_text(encoding="utf-8")
+            for raw in re.findall(r"working-directory:[ \t]*([^\n#]+)", text):
+                path = raw.strip().strip("\"'")
+                first = path.split("/")[0]
+                self.assertTrue(
+                    bool(first) and (ROOT / first).exists(),
+                    f"{workflow.name}: working-directory names a path that does not exist: {path!r}",
+                )
+
+
 class NpmCiBoundsPolicyTests(unittest.TestCase):
     """Every npm ci lane in CI and the journey script carries a per-leg timeout bound.
 
@@ -5058,12 +5078,32 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
     closed the last two stragglers (relay-test, release-contract-test); a
     lane regressing to a bare `npm ci` re-opens the exact wedged-registry
     hang this policy exists for ("fails the leg, not the job window").
+
+    The r8 wave added the guarded-helper shape for the non-Linux lanes
+    (scripts/ci/npm-ci-bounded.sh): the macOS images ship no GNU timeout and
+    the Windows pwsh lanes resolve `timeout` to System32's sleep utility, so
+    a bare `timeout` prefix there failed the leg (exit 127 / "Invalid
+    syntax") before npm even started. Those lanes call the helper under
+    `bash`, so they carry no in-file `npm ci` line for the lane pin below to
+    see — test_non_linux_npm_ci_legs_use_the_guarded_helper pins them
+    explicitly instead.
     """
 
+    # Enumerated from the workflows at pin time; a NEW workflow file with an
+    # npm ci lane is picked up automatically by the all-workflows pin below,
+    # and its non-Linux jobs must call the helper to satisfy this class.
     BOUNDED_FILES = (
         ROOT / ".github/workflows/pr-check.yml",
         ROOT / ".github/workflows/release-packages.yml",
         ROOT / "scripts/run-user-journey-tests.sh",
+    )
+
+    # (file, exact count of helper invocations, the jobs the calls belong to)
+    HELPER_SITES = (
+        (ROOT / ".github/workflows/pr-check.yml", 2,
+         "macos-rust-check universal-bundle smoke + windows-codex-runtime-test"),
+        (ROOT / ".github/workflows/release-packages.yml", 2,
+         "build-windows-x64 + build-macos-universal"),
     )
 
     def test_every_npm_ci_lane_is_timeout_bounded(self):
@@ -5074,17 +5114,55 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         # same regex — an earlier draft keyed on the literal substring
         # "npm ci", which `npm --prefix X ci` does not contain, and the
         # mutation probe against a stripped prefix lane stayed green.
+        # The r8 wave tightened the bound check from a bare "timeout"
+        # substring (a trailing `# add timeout later` comment could satisfy
+        # it while the lane stayed unbounded) to requiring an actual timeout
+        # invocation between the line head and the npm token.
         for path in self.BOUNDED_FILES:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if stripped.startswith("#"):
-                    continue
-                if re.search(r"\bnpm( --prefix \S+)? ci\b", stripped):
-                    self.assertIn(
-                        "timeout",
-                        stripped,
-                        f"{path.name}: npm ci lane without a timeout bound: {stripped!r}",
-                    )
+            self._assert_lanes_bounded(path)
+
+    def test_every_workflow_npm_ci_lane_is_covered(self):
+        # The lane pin above enumerates a fixed file list, so a brand-new
+        # workflow file could grow an unbounded npm ci lane invisibly.
+        # This pin walks every workflow file in the repo with the same
+        # assertion, so new files are covered the moment they appear.
+        workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+        self.assertTrue(workflows, "no workflow files found")
+        for path in workflows:
+            self._assert_lanes_bounded(path)
+
+    def _assert_lanes_bounded(self, path):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            npm_match = re.search(r"\bnpm( --prefix \S+)? ci\b", stripped)
+            if not npm_match:
+                continue
+            head = stripped[:npm_match.start()]
+            self.assertRegex(
+                head,
+                r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s+$",
+                f"{path.name}: npm ci lane without a timeout bound before the invocation: {stripped!r}",
+            )
+
+    def test_non_linux_npm_ci_legs_use_the_guarded_helper(self):
+        # The four non-Linux npm ci legs carry no `npm ci` line (they call
+        # the helper), so the lane pins cannot see them. Pin the exact
+        # helper-invocation count per file instead: dropping a call (falling
+        # back to a bare `timeout`, which is what exited 127 / "Invalid
+        # syntax" on macOS and pwsh) or deleting the helper handoff turns
+        # this red.
+        for path, expected, jobs in self.HELPER_SITES:
+            count = path.read_text(encoding="utf-8").count("npm-ci-bounded.sh")
+            self.assertEqual(
+                count, expected,
+                f"{path.name}: expected {expected} npm-ci-bounded.sh call(s) ({jobs}), found {count}",
+            )
+        self.assertTrue(
+            (ROOT / "scripts/ci/npm-ci-bounded.sh").exists(),
+            "scripts/ci/npm-ci-bounded.sh is missing — the non-Linux npm ci legs call it",
+        )
 
 
 if __name__ == "__main__":
