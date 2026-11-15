@@ -8,7 +8,7 @@
 |---|---|
 | 适用产品 | PINVOU Windows 桌面端 |
 | 当前版本 | `0.6.3` |
-| 代码基线 | 主仓库 `025-architecture-migration`；DeepSeek-TUI 子模块 `c32bb73f4605`（上游基线 `v0.9.0`） |
+| 代码基线 | 主仓库 `025-architecture-migration`；DeepSeek-TUI 子模块 `c32bb73f4605`（上游基线 `v0.9.0`；重建前哈希，现对象库不可解析） |
 | 核对日期 | 2026-07-23 |
 | 目标架构 | Windows x64（当前随包运行时、VC++ 检测和 NSIS 资源均为 x64） |
 | 文档性质 | 依据当前代码生成的功能盘点、系统测试设计与发版验收基线 |
@@ -47,6 +47,8 @@
 | 7-Zip CLI | ZIP、RAR、7Z 解压与递归识别 | 随包安装 |
 | 离线 ASR 执行程序和 VAD 模型 | 中文语音输入 | 小型运行时随包安装，大型 SenseVoice 模型首次使用时下载 |
 | VC++ Redistributable | 原生运行时依赖 | 安装器检测并按需安装 |
+
+> 注（2026-11 回填）：表中精确版本号（Python 3.13.14 / Node 24.18.0 / Pandoc 3.10 / ONNX Runtime 1.20）取自内部私有 runtime lock（`private-runtimes/windows` 子模块，未随本仓库发布）；公开树可核对的是 `runtime/python|node|pandoc|onnxruntime` 目录布局与打包合同（`tests/windows_runtime_packaging_contract.test.js`）。
 
 以下能力仍可能依赖外部环境：旧版 Office/WPS 文档、演示文稿和表格的完整转换依赖 LibreOffice；本地模型能力依赖本地 vLLM 服务；远程模型、工具市场、连接器、反馈和 OTA 依赖网络及对应服务可用（快照口径：Windows OTA 未随主线发布，见文首失效声明）。
 
@@ -93,7 +95,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | CHAT-01 | 流式文本回复 | 可用 | 模型输出通过事件持续追加到当前消息 |
 | CHAT-02 | 思考与工具阶段展示 | 可用 | 显示思考、工具调用、耗时和工具结果卡片 |
 | CHAT-03 | 多会话并行状态隔离 | 可用 | 切换会话时，后台会话事件不会污染当前会话；返回后可恢复状态 |
-| CHAT-04 | 同会话消息插话与排队 | 可用 | 当前轮仍在运行时，普通文本新消息立即 steer 注入当前轮（发送钮提示「生成中发送：文字优先注入本轮（不可用时排队），附件一律排队」；界面无「已插话」徽标，注插消息按当前轮内分组呈现）；附件等受限载荷仍排队至本轮结束后发送，可移除队列项 |
+| CHAT-04 | 同会话消息插话与排队 | 可用 | 当前轮仍在运行时，普通文本新消息立即 steer 注入当前轮（发送钮提示「生成中发送：文字优先注入本轮（不可用时排队），附件一律排队」；界面无「已插话」徽标，插话消息按当前轮内分组呈现）；附件等受限载荷仍排队至本轮结束后发送，可移除队列项 |
 | CHAT-05 | 取消生成 | 可用 | 取消当前 turn，并通过权威终态解除界面 busy 状态；Engine 缺失时仍返回可完成的取消结果 |
 | CHAT-06 | 编辑上一轮 | 可用 | 修改上一条用户输入并重新生成后续内容 |
 | CHAT-07 | 手动上下文压缩 | 可用 | 用户可主动压缩长会话上下文，底座也支持自动压缩 |
@@ -158,7 +160,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | MODEL-06 | 环境变量锁定 | 可用 | 被环境变量覆盖的模型字段在设置页标记为不可由普通设置覆盖 |
 | MODEL-07 | 本地 vLLM 自动发现 | 条件可用 | 探测本机服务、模型名和上下文长度 |
 | MODEL-09 | 会话模型记忆 | 可用 | 各会话保存所用模型，切换会话时恢复 |
-| MODEL-10 | 部署级上下文配置 | 基础能力 | 后端按模型配置、实时探测和路由上限计算上下文与输出预算；当前设置页不展示高级参数输入框 |
+| MODEL-10 | 部署级上下文配置 | 基础能力 | 后端按模型配置、实时探测和路由上限计算上下文与输出预算；当前设置页不展示高级参数输入框（快照口径：现行设置页已为非本地预设模型开放「上下文窗口」可编辑输入，见 `SettingsView.jsx` 的 `model-form-context-window`；ACP 供应商表单亦有对应字段；最大输出预算仍由后端计算） |
 
 ### 3.6 本地知识库
 
@@ -323,12 +325,12 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-INSTALL-001 | P0 | 干净 Windows x64，管理员账号 | 运行 NSIS 安装包并完成安装 | 安装成功；开始菜单/卸载信息正确；应用可启动 |
 | WIN-INSTALL-002 | P0 | 未安装目标版本 VC++ 运行库 | 安装应用 | 安装器静默安装 VC++；失败时中止并显示退出码，不留下不可运行安装 |
 | WIN-INSTALL-003 | P1 | 已安装满足版本的 VC++ 运行库 | 安装应用 | 跳过重复安装，原运行库不被破坏 |
-| WIN-INSTALL-009 | P1 | `C:\Windows\Temp` 或 `C:\Windows\Installer` 缺失，或缺少 SYSTEM/Administrators 必需权限 | 安装应用 | 安装器仅补齐缺失目录、权限和无效机器级 TEMP/TMP，随后完成 VC++ 安装；不清理已有 Installer 缓存 |
 | WIN-INSTALL-004 | P0 | 普通用户无提权 | 尝试机器级安装并拒绝 UAC | 安装安全退出，不产生残缺运行时和错误 PATH 项 |
 | WIN-INSTALL-005 | P1 | 安装目录含空格或中文 | 安装并启动 | Python、Node、Pandoc、Poppler、OCR、7-Zip 和 ASR 路径解析正常 |
 | WIN-INSTALL-006 | P0 | 已有旧版本及用户会话 | 覆盖升级 | 用户数据保留；新版本可读取原会话、设置、工具状态 |
 | WIN-INSTALL-007 | P1 | 已安装应用和用户数据 | 卸载时不勾选删除数据 | 程序和运行时移除，`.pinvou3` 保留 |
 | WIN-INSTALL-008 | P0 | 已安装应用和测试数据 | 卸载时勾选删除数据 | 当前用户 `.pinvou3` 删除；非当前用户和无关目录不受影响 |
+| WIN-INSTALL-009 | P1 | `C:\Windows\Temp` 或 `C:\Windows\Installer` 缺失，或缺少 SYSTEM/Administrators 必需权限 | 安装应用 | 安装器仅补齐缺失目录、权限和无效机器级 TEMP/TMP，随后完成 VC++ 安装；不清理已有 Installer 缓存 |
 | WIN-BOOT-001 | P0 | 正常安装 | 冷启动应用 | 主窗口最大化显示；无黑色控制台闪窗；启动过程无永久白屏 |
 | WIN-BOOT-002 | P1 | 断网 | 冷启动应用 | 本地界面和历史会话可用；账号、更新等后台检查失败不阻塞启动 |
 | WIN-BOOT-003 | P1 | 应用已运行且主窗口最小化 | 再次启动应用 | 复用已有实例，主窗口显示、还原并获得焦点；不会出现两个独立会话状态 |
@@ -408,7 +410,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | WIN-MODEL-007 | P1 | 配置兼容 API | 保存、替换、保留和删除密钥 | 凭据状态正确；UI 和设置文件不回显明文密钥 |
 | WIN-MODEL-008 | P1 | 两个可用模型 | 设置全局模型，再为单会话切换 | 新会话使用全局默认；指定会话恢复自己的模型 |
 | WIN-MODEL-009 | P1 | 打开模型新增/编辑弹窗并填写未保存内容 | 点击遮罩层，再分别点取消和保存 | 点击遮罩层不关闭弹窗或丢失输入；只有显式取消/保存关闭并执行对应动作 |
-| WIN-MODEL-010 | P2 | 打开模型设置 | 检查可编辑字段并进行连接测试 | 当前界面不展示上下文窗口、最大输出等高级输入；运行预算仍由已保存部署信息、探测结果和路由上限正确计算 |
+| WIN-MODEL-010 | P2 | 打开模型设置 | 检查可编辑字段并进行连接测试 | 当前界面不展示上下文窗口、最大输出等高级输入；运行预算仍由已保存部署信息、探测结果和路由上限正确计算（快照口径：现行界面已展示「上下文窗口」可编辑输入，见 §3 MODEL-10 注） |
 | WIN-SEARCH-001 | P1 | 有有效搜索凭据 | 配置搜索源并重启 | 新 Engine 使用新搜索源，凭据不出现在日志和会话 |
 | WIN-SEARCH-002 | P1 | 凭据来自环境变量 | 打开设置并尝试覆盖 | 显示环境覆盖状态，行为符合锁定规则 |
 | WIN-SEARCH-003 | P1 | 搜索服务不可达 | 触发联网查询 | 工具失败可见，聊天 turn 能继续或安全结束，不永久 busy |
@@ -624,7 +626,7 @@ npm run build:nsis
 7. **LibreOffice 不在当前随包运行时清单中。** DOC、WPS、PPT、DPS、XLS、ET 等路径需要外部 LibreOffice；缺失时必须给出依赖提示。
 8. **音视频附件尚未自动转写。** 聊天框麦克风输入已有离线 ASR，但添加 MP3/MP4 文件当前只登记元数据。
 9. **附件单文件上限为 20 MiB。** 压缩包另有 50 条目和解压后 100 MiB 总量限制。
-10. **模型高级参数当前不在设置页开放。** 上下文窗口和最大输出预算由保存的部署事实、探测结果与路由上限决定；普通用户不能直接在 UI 中修改这些字段。
+10. **模型高级参数当前不在设置页开放。** 上下文窗口和最大输出预算由保存的部署事实、探测结果与路由上限决定；普通用户不能直接在 UI 中修改这些字段（快照口径：现行设置页已开放「上下文窗口」输入字段，输出预算仍由后端计算，见 §3 MODEL-10 注）。
 11. **外部服务能力必须按失败类型处理。** 暂时性网络/服务错误不能等同于账号不存在或凭据无效；只有权威“无账号/已撤销/鉴权失败”结果才能清理缓存、回滚安装或熔断重试。
 
 ## 8. Windows 发版验收清单
@@ -663,7 +665,7 @@ npm run build:nsis
 | 记忆和角色卡 | `SettingsView.jsx`、`features/personas/` | `commands.rs`、`memory.rs`、`personas.rs` | `tests/ui_smoke.js`、对应 Rust 模块测试 |
 | 工作流和技能 | `features/workflow/WorkflowView.jsx`、`tauri-bridge.js` | `commands.rs`、`harness.rs`、`workflow_registry.rs`、`workflow_runs.rs` | `tests/ui_smoke.js`、工作流 Rust 测试 |
 | 输入框工具与技能 | `features/settings/SettingsView.jsx`、`composer-tool-menu-logic.js` | `commands.rs`、`connector_visibility.rs` | `tests/composer_tool_menu_logic.test.js`、`tests/composer_tools_smoke.js` |
-| 工具市场与 OAuth | `features/tools/`、`features/settings/SettingsView.jsx` | `bridge/marketplace.rs`、`bridge/skill_marketplace.rs` | `tests/tool_store_smoke.js`、`tests/marketplace_oauth_logic.test.js`、`scripts/mcp-server-contract-smoke.py` |
+| 工具市场与 OAuth | `features/tools/`、`features/settings/SettingsView.jsx` | `bridge/marketplace.rs`、`bridge/skill_marketplace.rs` | `tests/tool_store_smoke.js`、`tests/marketplace_oauth_logic.test.js`、`scripts/mcp-server-contract-smoke.py`（仓库根，非 `pinvou3-app/scripts/`） |
 | 企业连接器 | `features/tools/ToolStoreView.jsx`、`tauri-bridge.js` | `feishu.rs`、`wecom.rs`、`dingtalk.rs` | 连接器模块测试、`tests/tool_store_smoke.js` |
 | 定时任务 | `features/scheduled/ScheduledTasksView.jsx`、`features/chat/ChatView.jsx`、`tauri-bridge.js` | `scheduled_tasks.rs`、`scheduled_executor.rs`、`bridge/sessions.rs` | `tests/scheduled_tasks_unit.test.js`、`tests/scheduled_tasks_smoke.js`、底座 `automation_manager` 测试 |
 | 桌伴公仔 | `features/pet/`、`pet-main.jsx`、`pet-menu-main.js`、`main.jsx` | `pet_window.rs`、`selected_pet.rs` | `tests/pet_*.test.mjs`、`tests/pet_selector_ui_smoke.js`、对应 Rust 测试 |

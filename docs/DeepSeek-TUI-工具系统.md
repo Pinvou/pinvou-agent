@@ -15,7 +15,7 @@
 > `/tools` slash command；web 工具含 finance 且 web_run 实名 `web.run`；task 全量
 > 23 个 / 只读 8 个，github 与 automation 均已注册；子代理仅 agent_open / agent_eval /
 > agent_close 三个；`multi_tool_use.parallel` 未注册；MCP 命名为 `mcp_<server>_<tool>`；
-> Yolo 约 77、Plan 约 40）。
+> Yolo 约 77、Plan 约 39（关 WebSearch 约 35））。
 
 ---
 
@@ -293,7 +293,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### 子代理（experimental）
 
-`agent_open / agent_eval / agent_close`（v0.8.37 仅这三个；`agent_result / agent_cancel / agent_list / resume_agent / delegate_to_agent` 是后来版本才有的名字）—— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
+`agent_open / agent_eval / agent_close`（v0.8.37 仅注册这三个；`agent_result / agent_cancel / agent_list / resume_agent / delegate_to_agent` 等名字在 v0.8.37 源码中已存在、但只是未注册的历史结构体/字面量，作为注册名是后来版本才出现）—— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
 
 ### RLM（Read-Eval-Loop Model）持久会话
 
@@ -322,7 +322,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### MCP（动态）
 
-任何 MCP server 暴露的工具会被注入 catalog，v0.8.37 命名前缀为 `mcp_<server>_<tool>`（单下划线，`mcp.rs:1936`；双下划线 `mcp__<server>__<tool>` 是后来的改名）。注入路径：`with_mcp_tools` 在 v0.8.37 是 dead_code，实际由 `build_model_tool_catalog` 在 catalog 层完成。pinvou3 当前未连接任何 MCP server。
+任何 MCP server 暴露的工具会被注入 catalog，v0.8.37 命名前缀为 `mcp_<server>_<tool>`（单下划线，`mcp.rs:1936`；现行版本注册名仍为单下划线，双下划线 `mcp__<server>__<tool>` 形式仅出现在 hooks 条件匹配等场景，并非注册名改名）。注入路径：`with_mcp_tools` 在 v0.8.37 是 dead_code，实际由 `build_model_tool_catalog` 在 catalog 层完成。pinvou3 当前未连接任何 MCP server。
 
 ---
 
@@ -368,7 +368,7 @@ Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 
 
 ## 7. 与上游差异 / pinvou3 自定义
 
-pinvou3 不改 ToolRegistry 或 ToolSpec —— 完全复用上游。差异只在：
+pinvou3 不改 ToolRegistry 或 ToolSpec —— 完全复用上游（本节为 v0.8.37 时点口径；现行 fork 已触及 `tools/registry.rs`/`file.rs`/`tool_catalog.rs`，pinvou3-app bridge 侧维护工具 allowlist，见文首注记）。差异只在：
 
 1. **EngineConfig.features**：默认全 on，未自定义裁剪（这是后续可优化点）
 2. **memory_enabled = false** → remember 不注册
@@ -389,7 +389,7 @@ RUST_LOG=engine.tool_execution=debug ./pinvou3-app/run-dev.sh
 
 输出 `tool.exec.start` 和 `tool.exec.end`，含 tool 名、dispatch 路径、耗时、输出字节数、success 标志。
 
-查工具是否注册：v0.8.37 的 registry 构建本身不打日志；可在 engine 调用点断点检查
+查工具是否注册：v0.8.37 的 registry 构建无逐工具注册日志（仅重名覆盖时 `tracing::warn!`）；可在 engine 调用点断点检查
 `ToolRegistry::contains / names / len`，或按上文设置 `RUST_LOG=engine.tool_execution=debug`
 观察每次实际执行（`tool.exec.start/end`）反推。注意 v0.8.37 没有 `/tools` slash command（该命令是后来版本加入的 debug
 入口，且它展示的是最近一次 Prepared Tool Request 快照而非当前 registry）。

@@ -2,15 +2,15 @@
 
 > 面向：刚接触本项目、需要把项目迁移到 Windows 并长期迭代维护的 Windows 应用开发工程师。
 >
-> 生成日期：2026-06-15。本文基于当前仓库源码、`README.md`、`process.md`、`docs/fork-modifications.md`、`docs/auto-compact-256K-tuning.md`、`docs/DeepSeek-TUI-工具系统.md` 与相关 Tauri/Rust/前端代码梳理。
+> 生成日期：2026-06-15。本文基于当时仓库源码、`README.md`、`process.md`（内部协作文档，未随本仓库发布，见 §16 注）、`docs/fork-modifications.md`、`docs/auto-compact-256K-tuning.md`、`docs/DeepSeek-TUI-工具系统.md` 与相关 Tauri/Rust/前端代码梳理。
 >
-> **注（2026-11 回填）**：本文为 2026-06-15 迁移期快照，未按当前主干逐条复核，接手时注意以下布局均已变化：底座子模块已由 `DeepSeek-TUI/` 更名 `CodeWhale/`（无 `branch` 字段，另新增 `private-runtimes/windows` 私有运行时子模块）；前端由 `tauri-bridge.js` 单文件迁移为 `src/features/*` + `src/platform/` 分层；Rust 由根级 `commands.rs`/`engine.rs`/`bridge/` 迁移为 `app/commands/` + `features/` + `platform/`；§8 的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`）已在主干整体移除（正文其余散落的 workflow 提及——§1/§2/§4/§6/§12/§14 等——同为快照口径，不随本注逐条列举）；§11「Windows 打包必须重做」的结论已过时——NSIS 打包已在主干落地。现行权威入口：`AGENTS.md`、`docs/fork-modifications.md`、`docs/windows-private-runtime-submodule.md`、`docs/windows-rust-ci.md`。
+> **注（2026-11 回填）**：本文为 2026-06-15 迁移期快照，未按当前主干逐条复核，接手时注意以下布局均已变化：底座子模块已由 `DeepSeek-TUI/` 更名 `CodeWhale/`（无 `branch` 字段，另新增 `private-runtimes/windows` 私有运行时子模块）；前端由 `tauri-bridge.js` 单文件迁移为 `src/features/*` + `src/platform/` 分层；Rust 由根级 `commands.rs`/`engine.rs`/`bridge/` 迁移为 `app/commands/` + `features/` + `platform/`；§8 的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`）已在主干整体移除（正文其余散落的 workflow 提及——§1/§2/§4/§5/§6/§9/§12/§13/§14/§18 等——同为快照口径，不随本注逐条列举）；§11「Windows 打包必须重做」的结论已过时——NSIS 打包已在主干落地。现行权威入口：`AGENTS.md`、`docs/fork-modifications.md`、`docs/windows-private-runtime-submodule.md`、`docs/windows-rust-ci.md`。
 
 ## 1. 一句话定位
 
 pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.0 桌面壳、前端交互、配置桥接、session/workflow 编排；`DeepSeek-TUI/` 是底座 submodule，负责 LLM 调用、工具循环、流式 SSE、session、skill、MCP、hooks、compaction 等核心 agent 能力；本地 vLLM 上的 Qwen3.6-35B-A3B-FP8 是默认推理后端。（2026-11 注：现为平台感知默认预设 —— Windows/macOS 首启默认 DeepSeek 远程 API，Linux 保持 LocalVllm，见 `platform/prefs/model.rs`。）
 
-最重要的边界：不要在 pinvou3 里重写 DeepSeek-TUI 已有的 Engine、ToolRegistry、SSE、Session、SkillRegistry、Commands 路由、MCP client、Hooks、Cycle、Compaction。新增领域能力优先走 `SKILL.md`、`~/.deepseek/commands/*.md`、独立 MCP server 或 pinvou3-app 的 UI/Rust wrapper。
+最重要的边界：不要在 pinvou3 里重写 DeepSeek-TUI 已有的 Engine、ToolRegistry、SSE、Session、SkillRegistry、Commands 路由、MCP client、Hooks、Cycle、Compaction。新增领域能力优先走 `SKILL.md`、`~/.deepseek/commands/*.md`（2026-11 注：底座现以 `<workspace>/.codewhale/commands/`（项目级）与 `~/.codewhale/commands/`（用户级）为主，`.deepseek/commands` 仅 legacy 回退，见底座 `commands/user_commands.rs`）、独立 MCP server 或 pinvou3-app 的 UI/Rust wrapper。
 
 维护判断口诀：凡是“让 AI 如何思考/调用工具/管理上下文/执行工具循环”的问题，先查 DeepSeek-TUI；凡是“桌面 UI 如何呈现、配置如何落地、session/workflow 如何接到 UI”的问题，再查 `pinvou3-app/`。
 
@@ -130,7 +130,7 @@ tauri-bridge.js listen("chat:*")
 
 `lib.rs::run()` 做这些事：
 
-1. `ensure_release_env()` 注入 reasoning、HTTP/SSE timeout 和平台 UI 等运行时默认值；provider 由当前模型预设决定，输出上限也不再通过全局环境变量注入。
+1. `ensure_release_env()` 注入 HTTP/SSE timeout 和平台 UI 等运行时默认值；provider 由当前模型预设决定，输出上限也不再通过全局环境变量注入。
 2. 初始化 Tauri builder 和插件。
 3. 执行工作流迁移 `workflow_migrate::migrate_if_needed()`。（快照注：工作流子系统已移除，该迁移步骤已不存在。）
 4. 启动 `SessionStore::boot()`，加载 `~/.pinvou3/sessions/`。
@@ -148,7 +148,7 @@ pinvou3 不直接使用 `~/.deepseek/` 作为主数据目录，而是隔离到 `
 | 目录或文件 | 用途 |
 |---|---|
 | `~/.pinvou3/settings.json` | 用户设置、模型 preset、本地/远端 API 配置 |
-| `~/.pinvou3/bundle/` | 内嵌 bundle 解包后的 prompt、workflow、MCP server 等 |
+| `~/.pinvou3/bundle/` | 内嵌 bundle 解包后的 prompt、workflow、MCP server 等（快照条目：现行 bundle 为说明、内置技能、MCP 配置、personas 等，无 workflow 内容） |
 | `~/.pinvou3/user/skills/` | pinvou3 私有用户 skills |
 | `~/.deepseek/skills/` | DeepSeek-TUI 标准用户 skills，工作流视图会合并展示（快照条目：底座现以 `.codewhale` 为主目录、`.deepseek` 仅 legacy fallback，工作流视图已移除） |
 | `~/.pinvou3/user/personas/` | 用户自创专家卡 |
@@ -309,7 +309,7 @@ vllm serve /path/to/model \
 |---|---|
 | `DEEPSEEK_BASE_URL` 默认 | `http://127.0.0.1:8000/v1` |
 | `DEEPSEEK_PROVIDER` | 不全局注入，由当前模型预设决定 |
-| `DEEPSEEK_REASONING_EFFORT` | `off` |
+| `DEEPSEEK_REASONING_EFFORT` | `off`（⚠️ 快照条目：现行主干不注入也不读取该变量，reasoning effort 已改为按模型偏好 `saved_models[].reasoning_effort`，此行仅作快照留档） |
 | 输出上限 | 本地 vLLM route 显式为 `24576`；云端由底座请求上限、厂商及 route 能力共同决定 |
 | compaction token threshold | 约 `190000`（⚠️ 快照条目：现由 `derive_compaction_threshold` 动态推导，见 [`auto-compact-256K-tuning.md`](./auto-compact-256K-tuning.md)） |
 | emergency input budget | 约 `230400`（⚠️ 快照条目：同上，以现行代码为准） |
@@ -376,7 +376,7 @@ Windows 迁移必须重做或拆分：
 | 想做的事 | 首选入口 | 不建议 |
 |---|---|---|
 | 新增领域 agent / 工具组合 | `SKILL.md`，放用户或 bundle skills | 直接写 Rust agent loop |
-| 新增 `/xxx` 命令 | `~/.deepseek/commands/xxx.md` | 在 Tauri command 里硬编码 LLM 行为 |
+| 新增 `/xxx` 命令 | `~/.deepseek/commands/xxx.md`（快照条目：现为 `~/.codewhale/commands/xxx.md`，`.deepseek` 仅 legacy 回退，见 §1 注） | 在 Tauri command 里硬编码 LLM 行为 |
 | 接外部业务 API | 独立 MCP server | 直接塞进底座 ToolRegistry |
 | 修改模型、base_url、API key | `bridge/prefs.rs`、`bridge/mod.rs`、设置页 | 到处读 env |
 | 改聊天 UI | `index.html` + `tauri-bridge.js` | 绕过 bridge 直接调用后端 |

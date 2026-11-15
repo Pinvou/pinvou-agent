@@ -17,7 +17,7 @@
 
 全部落地并验证通过：
 
-**submodule（commit `af64e9f7`，在阶段1 `5f847284` 之上；`af64e9f7` 可由父仓提交 `50752183b` 的 gitlink 佐证，`5f847284`/`54151a4b` 为 2026-07-24 重建前哈希，现对象库不可解析）**
+**submodule（commit `af64e9f7`，在阶段1 `5f847284` 之上；`af64e9f7` 可由父仓提交 `50752183b` 的 gitlink 佐证；`5f847284` 为 2026-07-24 重建前哈希，现对象库不可解析。`54151a4b` 则为幸存于重建的上游 commit（2026-05-26 "#2235"），现对象库可解析，本文下方 `git show/diff 54151a4b` 指令至今可直接复核）**
 - `base.md` 回退上游原文（`git diff 54151a4b` = 0，字节一致）
 - `prompts.rs` 品牌词回退 codewhale（locale / authority / doc 注释 3 处）
 - 删除 6 个内容 forkguard 测试（职责移到 pinvou3-app），authority 测试断言回退 CodeWhale
@@ -130,7 +130,7 @@
 
 ## 上游 PR
 
-hook（`set_*_override` + `effective_*`）是通用 embedder 能力 → 按 fork-policy §2 Q2 提上游 PR。
+hook（`set_*_override` + `effective_*`）是通用 embedder 能力 → 按 fork-policy §2「所有 CodeWhale embedder 都受益」行提上游 PR（2026-11 注：原文写「§2 Q2」，现行 fork-policy §2 为决策表、无 Q 编号）。
 merge 后连 hook 那 ~45 行 fork drift 也归零 = prompt 终态零 fork。
 
 ## 注意（本次环境）

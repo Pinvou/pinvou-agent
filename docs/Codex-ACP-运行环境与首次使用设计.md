@@ -3,7 +3,8 @@
 > 文档状态：已归档（2026-07-23 设计记录；分支 `feat/codex-acp` 不在本仓库）
 >
 > 落地情况（2026-11 归档注记）：Bridge 打包、事件合同、权限模式与工作区模型的思路已落地；
-> §5–§8、§11 的托管 Codex 下载、`CodexRuntime*` 状态机与 `codex-runtime://status` 事件**未被采纳**，
+> §1、§5–§9、§11、§14、§15、§17 中描述的托管 Codex 下载、`CodexRuntime*` 状态机
+> （含 §9 `RuntimeFailureKind` 失败分类）与 `codex-runtime://status` 事件**未被采纳**，
 > 现行实现为 `CodexAcpStatus` 布尔状态契约 + `acp:install-progress` 事件（§10 的 `CodexRuntimeGate`
 > 全量门控 UI 同样未被采纳，现行仅保留轻量运行时提示）；§6.1 的 Node 22.x / codex-acp
 > 1.1.5 基线已过时（现行 Bridge 钉扎 Node 24.22.1、适配器 2.2.2）；§11 的 `prepare_codex_acp` /
@@ -23,8 +24,8 @@
 `codex-acp` 不兼容时，Pinvou 再按需下载固定版本的托管 Codex。
 
 Pinvou 安装包只携带体积较小的 **ACP Bridge Runtime**（私有 Node +
-`codex-acp`，不携带大体积 Codex 平台二进制），从而保证 ACP Host 自身不依赖系统
-Node/npm。用户只负责完成 ChatGPT 登录或显式提供 API Key。
+`codex-acp` / `claude-agent-acp` 等适配器，不携带大体积 Codex 平台二进制），从而保证
+ACP Host 自身不依赖系统 Node/npm。用户只负责完成 ChatGPT 登录或显式提供 API Key。
 
 运行组件和用户配置采用以下边界：
 
@@ -88,7 +89,9 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 > Node Bridge（`scripts/prepare-codex-bridge-runtime.sh` 下载并 sha256 校验 Node
 > 24.22.1，`install.rs` 含随包 bridge 候选），缺口 1 已解决；bridge 构建会剪除
 > `@openai/codex` 二进制，Codex CLI 由用户自行安装（`install.rs` 按
-> `PINVOU3_CODEX_ACP_BIN`/随包/私有目录/`PATH` 顺序解析）；登录走 codex CLI
+> `PINVOU3_CODEX_ACP_BIN`/随包/私有目录/`PATH` 顺序解析的是 **adapter**；Codex CLI
+> 本体经 `resolve_codex_cli` 官方脚本→`PATH` 解析，Codex 二进制经
+> `PINVOU3_CODEX_PATH`→系统→legacy 随包解析，见 `runtime.rs`）；登录走 codex CLI
 > （`login.rs`）而非 `codex-acp login`；认证判断现为三个 env 变量 + `~/.codex/config.toml`
 > relay key + 真实 `codex login status` 复检。其余缺口以现行
 > [`codex-acp.md`](./codex-acp.md) 为准。
@@ -600,7 +603,7 @@ codex-runtime://status
 - 不修改全局 `PATH`、`HOME`、Node 环境或 DeepSeek-TUI Engine 配置。
 - Codex 子进程的环境变量仅作用于该子进程。
 - Codex Runtime 失败不发布 `chat:*` 事件，也不进入 DeepSeek 会话状态。
-- Runtime 文件只位于 `~/.pinvou3/runtimes/codex/`。
+- Runtime 文件只位于 `~/.pinvou3/runtimes/codex/`。（2026-11 注：现行 managed runtime 目录为 `~/.pinvou3/runtimes/codex-acp-1.1.5/`，目录名沿用旧版、不随适配器版本变化，见 §6.1 注。）
 
 ### 12.2 不破坏用户 Codex
 

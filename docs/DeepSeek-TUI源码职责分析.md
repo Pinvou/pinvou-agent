@@ -40,7 +40,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | crate/目录 | 主要职责 | pinvou3 接入状态 |
 |---|---|---|
 | `crates/tui` | 主 runtime，包含 `EngineConfig`、`EngineHandle`、`spawn_engine`、`Op`、`Event`、tool registry、skill registry、session manager、compaction、TUI app、runtime API | 当前直接接入，是 pinvou3-app 最核心依赖 |
-| `crates/config` | API provider、模型、配置类型 | 当前直接接入，`bridge/mod.rs` 构造 `DtConfig`（v0.8.60 时搜索类型在 `crates/tui/src/config.rs`，本 crate 仅有 provider 目录与 `prefer_codebase_search` 开关） |
+| `crates/config` | API provider、模型、配置类型 | 当前直接接入，`bridge/mod.rs` 构造 `DtConfig`（v0.8.60 时搜索类型在 `crates/tui/src/config.rs`，本 crate 仅有 provider 模块（`lib.rs` + `provider.rs`）与 `prefer_codebase_search` 开关） |
 | `crates/hooks` | Hook 事件、sink、dispatcher | 当前直接接入配置，运行期由底座调度 |
 | `crates/mcp` | MCP server/client 管理、工具/资源描述、启动状态 | 间接依赖，通过底座工具体系和 MCP 配置接入 |
 | `crates/tools` | 工作区中独立的工具能力 crate | 间接依赖，主入口仍经 `crates/tui/src/tools` 和 registry |
