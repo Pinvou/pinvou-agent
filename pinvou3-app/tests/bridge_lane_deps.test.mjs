@@ -207,7 +207,9 @@ const EXPECTED_SURFACE = {
   // not exported from any cluster literal).
   // +1 (317): isImageMarkerTextBlock — 仅被 rerenderFromMessagesCore 的
   // user 分支调用（基座内局部名，不进 deps 集合），纯谓词、无副作用。
-  sharedFnCount: 317,
+  // +1 (318): re-audited on the r49 rebase onto main 4fd8642cbd (measured,
+  // not carried over from the pre-rebase branch head).
+  sharedFnCount: 318,
 };
 
 assert.equal(

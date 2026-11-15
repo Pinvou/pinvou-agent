@@ -253,7 +253,7 @@ const userTurn = id => ({ id, userItem: { type: 'user', text: `第${id}轮` } })
 // 全部入口消失；快照之前的 steer 已计入 ledger，仍精确比对（r19-M1 类
 // 漂移不掩盖）。
 {
-  const steerTurn = id => ({ id, userItem: { type: 'user', steeredMidTurn: true } });
+  const steerTurn = id => ({ id, userItem: { type: 'user', text: `代发-${id}`, steeredMidTurn: true } });
   // steer 在最后一个快照之后：ledger=2、时间线序号 3（恰差 1 个 steer）。
   const after = [userTurn('t1'), userTurn('t2'), steerTurn('s1')];
   const checkpoints2 = [

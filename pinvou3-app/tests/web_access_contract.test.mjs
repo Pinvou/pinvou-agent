@@ -563,14 +563,16 @@ assert.match(commands,
 assert.match(rustCommandBlock(commands, 'chat'),
   /require_active_sid[\s\S]{0,80}if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'chat() must reject ACP sessions at its own entry (after require_active_sid) — deleting this gate must fail here (r15 M6: anchored to the entry shape, not the shared seam body)');
-// r11 M4：counts_as_user_turn 的接线点 pin——删掉 is_step_budget_notification
-// 排除（回滚为纯 is_user_turn_prompt）后序号双侧失配、调和门隐藏全部入口。
+// r11 M4：步数预算通知排除的接线点 pin——删掉 is_step_budget_notification
+// 过滤（回滚为纯 era 列表）后序号双侧失配、调和门隐藏全部入口。
 // 快照序号的计数链走 create_turn_checkpoint → checkpoints::count_user_turns →
-// counts_as_user_turn；chat() 自身不直接调用——改为在 turns 源码上锚定排除条件
-// 本体（删掉 is_step_budget_notification 排除即回滚 r10-M3，必须变红）。
+// user_turn_prompt_cut_indices；chat() 自身不直接调用——改为在 turns 源码上
+// 锚定排除条件本体（删掉过滤即回滚 r10-M3，必须变红）。r49 rebase 起计数
+// 升级为底座 era 列表（user_turn_prompt_indices）之上的过滤，形状随接线点
+// 更新，语义不变。
 assert.match(turnsSource,
-  /fn counts_as_user_turn[\s\S]{0,200}?is_user_turn_prompt\(message\) && !is_step_budget_notification\(message\)/,
-  'counts_as_user_turn 必须排除步数预算通知——删掉排除条件必须变红（r10-M3 接线锚）');
+  /fn user_turn_prompt_cut_indices[\s\S]{0,220}?!is_step_budget_notification\(&messages\[index\]\)/,
+  'user_turn_prompt_cut_indices 必须排除步数预算通知——删掉过滤条件必须变红（r10-M3 接线锚）');
 
 assert.match(rustCommandBlock(commands, 'chat'),
   /if !store\.is_scheduled_session\(&sid\)\.unwrap_or\(true\)\s*&& !crate::features::sessions::is_aux_session_id\(&sid\)\s*\{[\s\S]{0,1700}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
