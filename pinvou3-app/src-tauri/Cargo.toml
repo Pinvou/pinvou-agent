@@ -224,8 +224,9 @@ futures-util = "0.3"
 rand = "0.10"
 # Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, termwiz,
 # pinvou-knowledge and this crate itself still require 0.22 (hf-hub and
-# ort-sys carry no base64 dependency at all — verify against Cargo.lock
-# before listing a holdout here). rmcp 3 declares
+# ort-sys have no direct base64 dependency — theirs arrives transitively
+# via reqwest and ureq; verify against Cargo.lock before listing a
+# holdout here). rmcp 3 declares
 # base64 0.23 as an optional dependency enabled only by its
 # default/request-state/client-side-sse/auth-enterprise-managed/
 # server-side-http features; this graph enables just auth + client

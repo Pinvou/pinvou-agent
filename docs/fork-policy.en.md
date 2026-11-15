@@ -1,6 +1,6 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-11-14. Public maintenance 8e8d52fdb contains #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152 plus #156; parent gitlink follows the public maintenance head.
+> Updated: 2026-11-15. Public maintenance 687358f7e contains #114/#125, #123/#124/#129/#131/#133/#134/#135, #136/#142/#148/#150/#152, #156 plus #157; parent gitlink follows the public maintenance head.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 Integrated upstream backport and historical provenance: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756). The public maintenance gate and section 6 authorization requirement continue to apply.
