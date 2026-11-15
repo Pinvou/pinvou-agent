@@ -220,6 +220,9 @@ fn process_usage_pct(
     if logical_processors == 0 {
         return None;
     }
+    // checked_sub only rejects a wrapped counter; an exact zero delta is a
+    // real idle interval and reports Some(0.0) — the same convention as the
+    // system gauge and the POSIX samplers.
     let cpu_delta = current.cpu_100ns.checked_sub(prev.cpu_100ns)?;
     let elapsed_100ns = current
         .sampled_at
@@ -378,13 +381,46 @@ mod tests {
     }
 
     #[test]
+    fn process_usage_reports_zero_for_idle_interval() {
+        let now = Instant::now();
+        let prev = ProcessTimes {
+            cpu_100ns: 10_000_000,
+            sampled_at: now,
+        };
+        let current = ProcessTimes {
+            cpu_100ns: 10_000_000,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        // Same convention as the system gauge: a fully idle interval is a
+        // measured 0%, not missing data (POSIX sampler parity).
+        assert_eq!(process_usage_pct(prev, current, 4), Some(0.0));
+    }
+
+    #[test]
     fn process_usage_returns_none_without_elapsed_wall_time() {
         let now = Instant::now();
         let sample = ProcessTimes {
             cpu_100ns: 10,
             sampled_at: now,
         };
+        // Identical samples mean zero elapsed wall time, which is unusable
+        // regardless of the CPU delta.
         assert_eq!(process_usage_pct(sample, sample, 4), None);
+    }
+
+    #[test]
+    fn process_usage_returns_none_without_parallelism() {
+        let now = Instant::now();
+        let prev = ProcessTimes {
+            cpu_100ns: 0,
+            sampled_at: now,
+        };
+        let current = ProcessTimes {
+            cpu_100ns: 10_000_000,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        // A probe-failed denominator (0) cannot normalize a percentage.
+        assert_eq!(process_usage_pct(prev, current, 0), None);
     }
 
     #[test]

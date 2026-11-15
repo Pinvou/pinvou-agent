@@ -68,10 +68,18 @@ pub struct GpuSnapshot {
 pub struct CpuSnapshot {
     pub name: String,
     pub total_usage_pct: Option<f64>,
-    /// 进程级 CPU 占用（platform/{linux,macos,windows}_cpu.rs 的
-    /// process_usage_pct；首轮采样无前值时为 None）。
+    /// Per-process CPU usage (from `process_usage_pct` in
+    /// platform/{linux,macos,windows}_cpu.rs). `None` until the second
+    /// sample, when the probe fails, or when the raw counter moves
+    /// backwards (wraparound); an idle interval reports `Some(0.0)`.
+    /// Process-wide across all threads (getrusage/GetProcessTimes/procfs
+    /// all aggregate the whole process).
     pub process_usage_pct: Option<f64>,
-    /// 逻辑核数（进程占用按核归一的分母；探测失败为 0）。
+    /// Parallelism available to this process
+    /// (`std::thread::available_parallelism`: respects affinity masks and,
+    /// on Linux, cgroup CPU quotas — it can be lower than the host's
+    /// logical core count). Denominator for per-core normalization;
+    /// `0` when probing fails.
     pub logical_processors: u32,
 }
 

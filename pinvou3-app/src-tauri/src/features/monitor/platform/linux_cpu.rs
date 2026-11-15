@@ -11,7 +11,8 @@ use super::super::cpu_math::{SystemDeltaState, SystemTicks, clamp_pct};
 /// （1024，非 Tauri 目标）；Rust std 无 sysconf 接口，按 100 换算与 procps/top 一致。
 const USER_HZ: f64 = 100.0;
 
-/// CPU 名称与逻辑核数在进程生命周期内不变，采样每秒一次也不必重复读 /proc。
+/// CPU name and parallelism are stable for the process lifetime; sampling at
+/// 1 Hz need not re-read /proc for them.
 static CPU_IDENTITY: OnceLock<(String, u32)> = OnceLock::new();
 
 static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
@@ -103,9 +104,10 @@ fn parse_proc_stat_total(line: &str) -> Option<SystemTicks> {
     })
 }
 
-/// 解析 `/proc/self/stat` 的 utime+stime 节拍数。comm 字段（第 2 列）可能含空格，
-/// 必须从最后一个 `)` 之后取字段：剩余序列第 12/13 个 token 对应全字段序的
-/// utime(14)/stime(15)。
+/// Parse the utime+stime tick counts from `/proc/self/stat`. The comm field
+/// (2nd field) may contain spaces and parentheses, so fields must be located
+/// after the LAST `)`; in the remaining token sequence, tokens 12/13
+/// correspond to full-field utime(14)/stime(15).
 fn parse_proc_self_stat_cpu_ticks(text: &str) -> Option<u64> {
     let after_comm = text.rsplit_once(')')?.1;
     let fields: Vec<&str> = after_comm.split_whitespace().collect();
@@ -140,9 +142,12 @@ fn process_usage_pct(
     if logical_processors == 0 {
         return None;
     }
-    // f64 无 checked_sub：计数器回绕时差值为负，直接按无进展处理。
+    // f64 has no checked_sub: a negative delta means the counter moved
+    // backwards (wraparound); the pair is unusable, not "idle". An exact
+    // zero delta is a real idle interval and reports Some(0.0) — the same
+    // convention as the system gauge and the Windows sampler.
     let cpu_delta = current.cpu_secs - prev.cpu_secs;
-    if cpu_delta <= 0.0 {
+    if cpu_delta < 0.0 {
         return None;
     }
     let elapsed_secs = current
@@ -189,22 +194,44 @@ mod tests {
 
     #[test]
     fn parse_proc_self_stat_handles_spaced_comm() {
-        // comm 含空格/括号：必须从最后一个 ')' 之后定位字段。after 序列第 11/12
-        // 个 token 是 utime(14)/stime(15)：下方 fixture 对应 100/200 → 合计 300。
+        // comm may contain spaces/parens: fields must be located after the
+        // LAST ')'. Tokens 11/12 after ')' are utime(14)/stime(15): the
+        // fixture below is 100/200 → total 300.
         let text = "12345 (python3 -m t) R 1 2 3 4 5 6 7 8 9 10 100 200 0 0 \
                     20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
         assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(300));
-        // 真实 /proc/self/stat 快照（comm 无空格）同样按最后 ')' 解析。
+        // A real /proc/self/stat snapshot (comm without spaces) parses via
+        // the last ')' the same way.
         let text = "4242 (pinvou3-tauri) S 4241 4242 4242 0 -1 4194304 12345 0 0 0 \
                     9876 5432 0 0 20 0 12 0 0 0 0 0 0 0 0 0 0";
         assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(9876 + 5432));
     }
 
     #[test]
+    fn parse_proc_self_stat_comm_with_parens_uses_the_last_paren() {
+        // The advertised comm edge: ')' inside comm. Only rsplit_once (last
+        // ')') lands on utime/stime; splitting at the FIRST ')' would read
+        // 10/100 instead of 100/200, so this fixture bites that regression.
+        let text = "999 (a)b)c) R 1 2 3 4 5 6 7 8 9 10 100 200 0 0 \
+                    20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(300));
+    }
+
+    #[test]
     fn parse_proc_self_stat_rejects_truncated_input() {
-        // ')' 之后字段不足 utime（12 个）时返回 None 而非 panic。
+        // Fewer than 12 tokens after ')': no utime → None, never a panic.
         let text = "1 (sh) S 0 1 1 0 -1 4194560";
         assert!(parse_proc_self_stat_cpu_ticks(text).is_none());
+    }
+
+    #[test]
+    fn parse_proc_self_stat_rejects_missing_stime() {
+        // The 12/13-token boundary: with utime reachable but stime missing
+        // the answer is None (not utime alone); one more token flips it.
+        let twelve = "1 (sh) S 0 1 1 0 -1 4194560 7 0 0 0 50";
+        assert!(parse_proc_self_stat_cpu_ticks(twelve).is_none());
+        let thirteen = "1 (sh) S 0 1 1 0 -1 4194560 7 0 0 0 50 0";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(thirteen), Some(50));
     }
 
     #[test]
@@ -218,8 +245,24 @@ mod tests {
             cpu_secs: 1.0,
             sampled_at: now + std::time::Duration::from_secs(1),
         };
-        // 1 秒耗 1 CPU 秒 / 4 核 = 25%
+        // 1 CPU-second over 1 second / 4 cores = 25%
         assert_eq!(process_usage_pct(prev, current, 4), Some(25.0));
+    }
+
+    #[test]
+    fn process_usage_reports_zero_for_idle_interval() {
+        let now = Instant::now();
+        let prev = ProcessTicks {
+            cpu_secs: 2.0,
+            sampled_at: now,
+        };
+        let current = ProcessTicks {
+            cpu_secs: 2.0,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        // Same convention as the system gauge: a fully idle interval is a
+        // measured 0%, not missing data (Windows sampler parity).
+        assert_eq!(process_usage_pct(prev, current, 4), Some(0.0));
     }
 
     #[test]
@@ -229,7 +272,24 @@ mod tests {
             cpu_secs: 1.0,
             sampled_at: now,
         };
+        // Identical samples mean zero elapsed wall time, which is unusable
+        // regardless of the CPU delta.
         assert_eq!(process_usage_pct(sample, sample, 4), None);
+    }
+
+    #[test]
+    fn process_usage_returns_none_without_parallelism() {
+        let now = Instant::now();
+        let prev = ProcessTicks {
+            cpu_secs: 0.0,
+            sampled_at: now,
+        };
+        let current = ProcessTicks {
+            cpu_secs: 1.0,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        // A probe-failed denominator (0) cannot normalize a percentage.
+        assert_eq!(process_usage_pct(prev, current, 0), None);
     }
 
     #[test]
@@ -251,5 +311,37 @@ mod tests {
         let snapshot = cpu_snapshot().expect("Linux CPU snapshot should include basic identity");
         assert!(!snapshot.name.trim().is_empty());
         assert!(snapshot.logical_processors > 0);
+    }
+}
+
+#[cfg(test)]
+mod smoke_tests {
+    use super::*;
+
+    /// Real-host smoke (#[ignore]): the /proc sampling chain works end to
+    /// end and the second sample yields usage. Run:
+    ///   cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- \
+    ///     --ignored --nocapture linux_cpu
+    #[test]
+    #[ignore]
+    fn second_sample_yields_real_usage() {
+        let _ = cpu_snapshot();
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let s = cpu_snapshot().expect("snapshot");
+        println!(
+            "name={} logical={} total={:?} process={:?}",
+            s.name, s.logical_processors, s.total_usage_pct, s.process_usage_pct
+        );
+        let v = s
+            .total_usage_pct
+            .expect("second sample should yield system usage");
+        assert!((0.0..=100.0).contains(&v), "usage should be 0-100, got {v}");
+        let p = s
+            .process_usage_pct
+            .expect("second sample should yield process usage");
+        assert!(
+            (0.0..=100.0).contains(&p),
+            "process usage should be 0-100, got {p}"
+        );
     }
 }
