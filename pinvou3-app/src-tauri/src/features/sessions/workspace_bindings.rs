@@ -200,9 +200,6 @@ fn read_workspace_sidecar(path: &Path) -> Option<SessionWorkspaceSidecar> {
             // Log hygiene (review #463 round-13 M3): the path embeds
             // sessions/<id>/, so only the error kind is logged — the same
             // rule the rebind write-path logs below follow (8fc7f7201).
-            // Log hygiene (review #463 round-13 M3): the path embeds
-            // sessions/<id>/, so only the error kind is logged — the same
-            // rule the rebind write-path logs below follow (8fc7f7201).
             // writeln! not eprintln!: a packaged-Windows build with an
             // invalid stderr handle makes eprintln! panic (lib.rs carries
             // the same note for its writes); a failed diagnostic must not
@@ -324,7 +321,16 @@ impl SessionStore {
                 };
             }
             Err(error) => {
-                eprintln!(
+                // writeln! not eprintln!: this is the probe the fork task
+                // runs (fork.rs), and these three arms are exactly its
+                // fail-closed refusal conditions — a packaged-Windows build
+                // with an invalid stderr handle makes eprintln! panic inside
+                // the fork's spawn_blocking closure, replacing the clean
+                // Unknown refusal with "task failed" and zero log trace.
+                // Same rationale and log-hygiene rule as
+                // `read_workspace_sidecar` above.
+                let _ = writeln!(
+                    std::io::stderr(),
                     "[sessions] read workspace binding sidecar failed: {:?}",
                     error.kind()
                 );
@@ -340,14 +346,18 @@ impl SessionStore {
                 )
             }
             Ok(sidecar) => {
-                eprintln!(
+                let _ = writeln!(
+                    std::io::stderr(),
                     "[sessions] workspace binding sidecar version {} above supported {}, ignored",
                     sidecar.version, SESSION_WORKSPACE_SIDECAR_VERSION,
                 );
                 WorkspaceBindingProbe::Unknown
             }
             Err(error) => {
-                eprintln!("[sessions] parse workspace binding sidecar failed: {error}");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[sessions] parse workspace binding sidecar failed: {error}"
+                );
                 WorkspaceBindingProbe::Unknown
             }
         }
