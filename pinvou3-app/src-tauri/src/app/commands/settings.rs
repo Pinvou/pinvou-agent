@@ -1048,8 +1048,10 @@ async fn read_models_body_bounded(mut resp: reqwest::Response) -> Option<String>
 /// `parse_models_response` 的匹配语义找配置模型自己的条目——精确 id →
 /// ASCII 大小写不敏感 → ollama `:latest` 规范形;未命中不填。OpenAI 形态
 /// 直接复用 [`crate::core::model_endpoint::parse_models_response_list`]
-/// (窗口 + 三形态输出上限的既有口径),anthropic / gemini 原生形态用同一
-/// `parse_positive_u32` 非正值拒收口径解析各自字段名。
+/// (窗口 + 三形态输出上限的既有口径);anthropic / gemini 原生形态复用
+/// [`crate::core::endpoint_discovery`] 的共享单条目解析(字段名知识只此
+/// 一份,与发现翻页同源)。刻意差异:发现侧 gemini 列表页按
+/// `generateContent` 过滤条目,富化不过滤——配置了哪个条目就匹配哪个。
 fn connection_model_facts(
     body: &str,
     shape: ModelsListingShape,
@@ -1069,16 +1071,8 @@ fn connection_model_facts(
             .as_array()?
             .iter()
             .filter_map(|item| {
-                let id = item.get("id").and_then(serde_json::Value::as_str)?.trim();
-                (!id.is_empty()).then(|| {
-                    (
-                        id.to_string(),
-                        item.get("max_input_tokens")
-                            .and_then(crate::core::model_endpoint::parse_positive_u32),
-                        item.get("max_tokens")
-                            .and_then(crate::core::model_endpoint::parse_positive_u32),
-                    )
-                })
+                crate::core::endpoint_discovery::anthropic_entry_facts(item)
+                    .map(|facts| (facts.id, facts.context, facts.output))
             })
             .collect(),
         ModelsListingShape::Gemini => value
@@ -1086,17 +1080,8 @@ fn connection_model_facts(
             .as_array()?
             .iter()
             .filter_map(|item| {
-                let name = item.get("name").and_then(serde_json::Value::as_str)?.trim();
-                let id = name.strip_prefix("models/").unwrap_or(name);
-                (!id.is_empty()).then(|| {
-                    (
-                        id.to_string(),
-                        item.get("inputTokenLimit")
-                            .and_then(crate::core::model_endpoint::parse_positive_u32),
-                        item.get("outputTokenLimit")
-                            .and_then(crate::core::model_endpoint::parse_positive_u32),
-                    )
-                })
+                crate::core::endpoint_discovery::gemini_entry_facts(item)
+                    .map(|facts| (facts.id, facts.context, facts.output))
             })
             .collect(),
     };
@@ -3045,14 +3030,15 @@ mod tests {
     fn connection_facts_match_openai_entry_folds() {
         let body = r#"{"data":[
             {"id":"Qwen3-32B","max_model_len":40960,"max_completion_tokens":8192},
-            {"id":"ollama-served"}
+            {"id":"ollama-served:latest"}
         ]}"#;
         // 精确 id 命中。
         let facts = connection_model_facts(body, ModelsListingShape::OpenAi, Some("qwen3-32b"));
         let facts = facts.expect("case-insensitive fold must hit the entry");
         assert_eq!(facts.context_window_tokens, Some(40_960));
         assert_eq!(facts.max_output_tokens, Some(8_192));
-        // ollama 裸名 → `name:latest` 规范形命中(条目无长度字段 → 双 None)。
+        // ollama 裸名配置 → `name:latest` 规范形命中列表里的规范形条目
+        // (Ollama 原生列表的真实形态;条目无长度字段 → 双 None)。
         let facts = connection_model_facts(body, ModelsListingShape::OpenAi, Some("ollama-served"))
             .expect("ollama canonical fold must hit the entry");
         assert_eq!(facts.context_window_tokens, None);
@@ -3081,6 +3067,14 @@ mod tests {
         );
         // configured_model_name:未知 id 与 None 都不解析出名字。
         assert_eq!(configured_model_name(None), None);
+    }
+
+    /// 限长常量钉(round-1 fix wave):4 MiB 富化读取上限只应显式改动;
+    /// 截断 → 解析失败 → 无事实的良性退化由上方 miss 用例覆盖形状,这里
+    /// 守住「静默放大」(core 侧 LISTING_BODY_CAP_BYTES 有对应的常量钉)。
+    #[test]
+    fn connection_models_body_cap_is_pinned() {
+        assert_eq!(CONNECTION_MODELS_BODY_CAP_BYTES, 4 * 1024 * 1024);
     }
 
     /// anthropic / gemini 原生形态命中:max_input_tokens/max_tokens 与

@@ -13,9 +13,17 @@
 //! - 结果结构(`EndpointModelsListing` / `DiscoveredModel`)只携带分类码、
 //!   HTTP 状态、transport 类别与端点自报的模型事实,绝不携带原始 reqwest
 //!   错误文本 / URL / key(与 monitor 探测的脱敏先例同一纪律)。
+//! - 三个协议阶梯走禁用重定向的专用客户端([`discovery_client`]):一次性
+//!   点击探测没有跟随 302 的业务理由,而 reqwest 跨源重定向只剥
+//!   `Authorization`/`Cookie` 族,`x-api-key` / `x-goog-api-key` 会原样
+//!   带给重定向目标——把用户 key 泄给用户从未点名的主机(仓库先例:CLI
+//!   `probe_client` 的 `Policy::none()` 同一理由)。本地短路里的 kind 判别
+//!   与 Ollama / LM Studio 原生探测继续复用 [`crate::core::model_endpoint`
+//!   ::shared_probe_client](既有函数;Bearer 在跨源重定向时会被 reqwest
+//!   剥除,不新增暴露面)。
 //! - Ollama 的 GGUF 训练窗口(`model_info.<arch>.context_length`)刻意不
-//!   采纳(仓库不变量,见 [`crate::core::model_endpoint`
-//!   ::parse_ollama_show_context] 文档);发现同样只消费 `/api/ps` 生效值
+//!   采纳(仓库不变量,见 [`crate::core::model_endpoint::
+//!   parse_ollama_show_context`]);发现同样只消费 `/api/ps` 生效值
 //!   与 `/api/show` 的 `num_ctx` 声明。
 
 use std::time::Duration;
@@ -25,16 +33,18 @@ use serde_json::Value;
 
 use crate::core::model_context::{resolved_context_window, resolved_output_limit};
 use crate::core::model_endpoint::{
-    LocalServerKind, OllamaShowProbe, apply_anthropic_auth_headers, apply_bearer,
-    base_url_uses_local_or_private, models_probe_url, parse_entry_output_limit, parse_positive_u32,
-    probe_lmstudio_models, probe_local_server_kind, probe_ollama_models, probe_ollama_show_context,
-    shared_probe_client_with_timeout, with_opencode_session_header,
+    LocalServerKind, apply_anthropic_auth_headers, apply_bearer, base_url_uses_local_or_private,
+    cached_ollama_show_context, models_probe_url, parse_entry_output_limit, parse_positive_u32,
+    probe_lmstudio_models, probe_local_server_kind, probe_ollama_models,
+    with_opencode_session_header,
 };
 use crate::platform::prefs::ModelPreset;
 
 /// 用户点击型探测的逐请求超时:8s,与连接测试(`test_model_connection` 的
-/// 8s client)同一量级;客户端复用 [`shared_probe_client_with_timeout`]`(None)`
-/// 的无超时连接池,超时逐请求挂(`.timeout()`),不污染常驻探测的 3s 语义。
+/// 8s client)同一量级。三个协议阶梯的每个 HTTP 请求各自挂 `.timeout()`;
+/// 本地短路分支(kind 判别 / Ollama / LM Studio 原生探测)复用常驻探测的
+/// 共享客户端,保持其客户端级 3s 语义——Ollama 逐模型 `/api/show` 补查
+/// 另有整体墙钟预算([`OLLAMA_SHOW_BUDGET`]),不会按 50 × 8s 放大。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// OpenAI 兼容列表的条数上限:超过截断并置 `truncated`(一次性把上万条
@@ -48,6 +58,14 @@ const PAGINATION_PAGE_CAP: usize = 3;
 /// Ollama 逐模型 `/api/show` 补查上限:缺窗口事实(未加载)的条目超过该数
 /// 时只查前 50 个并置 `truncated`,不无限扇出 GGUF 元数据重读。
 const OLLAMA_SHOW_LOOKUP_CAP: usize = 50;
+
+/// Ollama 逐模型 `/api/show` 补查的整体墙钟预算:每个 show 走共享探测
+/// 客户端的 3s 超时,50 个串行最坏 ≈150s——一次性发现不应让用户干等
+/// 这么久。超预算即停,余下未补查条目置 `truncated`(与条数上限同一
+/// 语义:列表是完整的,窗口事实不全)。补查本身走 60s TTL 的共享缓存
+/// ([`cached_ollama_show_context`]),与 monitor 轮询共享 GGUF 元数据
+/// 读取,不重复打服务端。
+const OLLAMA_SHOW_BUDGET: Duration = Duration::from_secs(20);
 
 /// 发现阶梯按哪种协议的模型列表形态探测。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -294,6 +312,8 @@ enum ProbeOutcome {
     Unsupported(u16),
     /// 其余 ≥400。
     HttpError(u16),
+    /// 2xx body 中途断流:带状态码的传输失败(分类 `network`,可重试)。
+    BrokenBody(u16),
     /// 传输失败,类别顺序 is_timeout → is_dns → is_connect → network。
     Transport(&'static str),
 }
@@ -331,7 +351,11 @@ async fn send_classified(request: reqwest::RequestBuilder, timeout: Duration) ->
         Ok(v) => ProbeOutcome::Body(v),
         // 2xx 但非 JSON / 截断(Cloudflare HTML 盾页、超大恶意列表等):
         // 端点没有可解析的列表。
-        Err(_) => ProbeOutcome::Unsupported(status.as_u16()),
+        Err(BodyReadFail::Unusable) => ProbeOutcome::Unsupported(status.as_u16()),
+        // 2xx body 中途断流(代理/VPN 掐断等):传输层失败,重试可能成功,
+        // 与「形状不认识」严格区分——误报 Unsupported 会把可重试错误钉成
+        // 「端点不支持发现」。
+        Err(BodyReadFail::MidStream) => ProbeOutcome::BrokenBody(status.as_u16()),
     }
 }
 
@@ -341,7 +365,15 @@ async fn send_classified(request: reqwest::RequestBuilder, timeout: Duration) ->
 /// 循环:到上限或流结束即停,响应其余部分随 drop 丢弃、绝不排干。
 const LISTING_BODY_CAP_BYTES: usize = 8 * 1024 * 1024;
 
-async fn read_json_body_bounded(resp: &mut reqwest::Response) -> Result<Value, ()> {
+/// 2xx body 读取失败的两种形态:不可解析(收口 Unsupported)与中途断流
+/// (收口传输类 Error)。截断(到 cap 仍未读完)由「cap 处停读 → 解析
+/// 失败」自然落进 `Unusable`。
+enum BodyReadFail {
+    Unusable,
+    MidStream,
+}
+
+async fn read_json_body_bounded(resp: &mut reqwest::Response) -> Result<Value, BodyReadFail> {
     let mut buf: Vec<u8> = Vec::new();
     while buf.len() < LISTING_BODY_CAP_BYTES {
         match resp.chunk().await {
@@ -350,11 +382,11 @@ async fn read_json_body_bounded(resp: &mut reqwest::Response) -> Result<Value, (
                 buf.extend_from_slice(&chunk[..take]);
             }
             Ok(None) => break,
-            // 中途断流:body 不可信,与解析失败同归(调用方按 Unsupported 收口)。
-            Err(_) => return Err(()),
+            // 中途断流:body 不可信,但这是传输层事实,不是「形状不认识」。
+            Err(_) => return Err(BodyReadFail::MidStream),
         }
     }
-    serde_json::from_slice(&buf).map_err(|_| ())
+    serde_json::from_slice(&buf).map_err(|_| BodyReadFail::Unusable)
 }
 
 /// 阶梯的最终形态:成功给出端点自报条目(可为空)或按分类失败。
@@ -377,6 +409,10 @@ fn terminal_from_outcome(outcome: ProbeOutcome) -> Terminal {
             http: Some(http),
             transport: None,
         },
+        ProbeOutcome::BrokenBody(http) => Terminal::Error {
+            http: Some(http),
+            transport: Some("network"),
+        },
         ProbeOutcome::Transport(class) => Terminal::Error {
             http: None,
             transport: Some(class),
@@ -385,18 +421,18 @@ fn terminal_from_outcome(outcome: ProbeOutcome) -> Terminal {
 }
 
 /// OpenAI 兼容条目的上下文字段名归一化:`max_model_len`(vLLM / 标准形态)
-/// | `context_length` | `context_window` | `max_context_length`。同一条目
-/// 报了多个名字时取最紧(与输出侧的 only-tighten 口径一致),绝不取松。
+/// | `context_length` | `context_window`。同一条目报了多个名字时取最紧
+/// (与输出侧的 only-tighten 口径一致),绝不取松。**刻意不含
+/// `max_context_length`**:那是 LM Studio 的能力上限(capability cap)而非
+/// 服务窗口——远程兼容端点不会命中本地短路,这个字段一旦被采纳就会经
+/// 空表单预填 / 批量添加落成部署事实;仓库不变量
+/// `parse_models_response_list_refuses_lmstudio_cap_alias` 对连接测试路径
+/// 钉了同一拒绝,发现路径口径一致(下方同口径拒绝测试钉住)。
 fn parse_entry_context_window(item: &Value) -> Option<u32> {
-    [
-        "max_model_len",
-        "context_length",
-        "context_window",
-        "max_context_length",
-    ]
-    .into_iter()
-    .filter_map(|key| item.get(key).and_then(parse_positive_u32))
-    .min()
+    ["max_model_len", "context_length", "context_window"]
+        .into_iter()
+        .filter_map(|key| item.get(key).and_then(parse_positive_u32))
+        .min()
 }
 
 /// OpenAI 兼容 `/models` 响应的发现版解析:接受 `{data:[...]}` **和裸数组**
@@ -430,11 +466,29 @@ fn parse_openai_listing(v: &Value) -> Option<(Vec<RawModel>, bool)> {
     Some((models, truncated))
 }
 
+/// 发现阶梯专用客户端(一次性点击探测):唯一与共享探测客户端的语义差异
+/// 是**禁用重定向**。reqwest 默认跟随 ≤10 跳,且跨源重定向只剥
+/// `Authorization`/`Cookie`/`Proxy-Authorization` 族——`x-api-key`(anthropic
+/// 阶梯)与 `x-goog-api-key`(gemini 阶梯)是自定义头,会原样发给重定向
+/// 目标,把用户 key 泄给用户从未点名的主机。禁用后 3xx 直接落
+/// [`ProbeOutcome::HttpError`] 分类,不再有第二跳。
+fn discovery_client() -> Option<reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .ok()
+        })
+        .clone()
+}
+
 /// OpenAI 兼容阶梯:GET [`models_probe_url(base_url)`](不强行补 /v1——glm
 /// `/paas/v4`、火山 `/api/v3`、gemini 兼容端点的 `/models` 都存在,补了
 /// 反而 404)。本地与远端共用同一函数,错误分类口径一致。
 async fn ladder_openai(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
-    let Some(client) = shared_probe_client_with_timeout(None) else {
+    let Some(client) = discovery_client() else {
         return Terminal::Error {
             http: None,
             transport: None,
@@ -466,6 +520,52 @@ fn anthropic_models_url(base_url: &str) -> String {
     }
 }
 
+/// 原生形态单条目的公共解析结果(字段名知识只此一份:发现翻页与连接测试
+/// 富化共用 [`anthropic_entry_facts`] / [`gemini_entry_facts`],字段改名
+/// 不再需要跨层同步)。
+pub(crate) struct NativeEntryFacts {
+    pub id: String,
+    pub context: Option<u32>,
+    pub output: Option<u32>,
+    pub title: Option<String>,
+}
+
+/// Anthropic 单条目:`max_input_tokens` → context、`max_tokens` → output、
+/// `display_name` → title;条目缺 `id` / `id` 空白 → `None`。非正值 / 越界
+/// 长度按 [`parse_positive_u32`] 口径视为未声明。
+pub(crate) fn anthropic_entry_facts(item: &Value) -> Option<NativeEntryFacts> {
+    let id = item.get("id").and_then(Value::as_str)?.trim();
+    (!id.is_empty()).then(|| NativeEntryFacts {
+        id: id.to_string(),
+        context: item.get("max_input_tokens").and_then(parse_positive_u32),
+        output: item.get("max_tokens").and_then(parse_positive_u32),
+        title: item
+            .get("display_name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+/// Gemini 单条目:`inputTokenLimit` → context、`outputTokenLimit` → output、
+/// `displayName` → title;`name` 的 `models/` 前缀剥掉;缺 `name` / 空白 →
+/// `None`。注意:条目级过滤(`supportedGenerationMethods` 含
+/// `generateContent`)只属于列表页解析([`parse_gemini_page`]),连接测试
+/// 富化不过滤——配置了哪个条目就匹配哪个,与 monitor「匹配已配置条目」
+/// 同一纪律。
+pub(crate) fn gemini_entry_facts(item: &Value) -> Option<NativeEntryFacts> {
+    let name = item.get("name").and_then(Value::as_str)?.trim();
+    let id = name.strip_prefix("models/").unwrap_or(name);
+    (!id.is_empty()).then(|| NativeEntryFacts {
+        id: id.to_string(),
+        context: item.get("inputTokenLimit").and_then(parse_positive_u32),
+        output: item.get("outputTokenLimit").and_then(parse_positive_u32),
+        title: item
+            .get("displayName")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
 /// Anthropic 列表页解析:`max_input_tokens` → context、`max_tokens` →
 /// output、`display_name` → title;翻页游标 `has_more` + 末条 `id`
 /// (作为下一请求的 `after_id`)。
@@ -474,16 +574,12 @@ fn parse_anthropic_page(v: &Value) -> Option<(Vec<RawModel>, bool, Option<String
     let models = entries
         .iter()
         .filter_map(|item| {
-            let id = item.get("id").and_then(Value::as_str)?.trim();
-            (!id.is_empty()).then(|| RawModel {
-                id: id.to_string(),
-                context: item.get("max_input_tokens").and_then(parse_positive_u32),
-                output: item.get("max_tokens").and_then(parse_positive_u32),
+            anthropic_entry_facts(item).map(|facts| RawModel {
+                id: facts.id,
+                context: facts.context,
+                output: facts.output,
                 loaded: None,
-                title: item
-                    .get("display_name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                title: facts.title,
             })
         })
         .collect::<Vec<_>>();
@@ -502,7 +598,7 @@ fn parse_anthropic_page(v: &Value) -> Option<(Vec<RawModel>, bool, Option<String
 /// [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置 truncated。游标经
 /// reqwest `.query()` 编码后拼入——端点自报的 id 不做字符串拼接。
 async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
-    let Some(client) = shared_probe_client_with_timeout(None) else {
+    let Some(client) = discovery_client() else {
         return Terminal::Error {
             http: None,
             transport: None,
@@ -574,17 +670,12 @@ fn parse_gemini_page(v: &Value) -> Option<(Vec<RawModel>, Option<String>)> {
             if !generates {
                 return None;
             }
-            let name = item.get("name").and_then(Value::as_str)?.trim();
-            let id = name.strip_prefix("models/").unwrap_or(name);
-            (!id.is_empty()).then(|| RawModel {
-                id: id.to_string(),
-                context: item.get("inputTokenLimit").and_then(parse_positive_u32),
-                output: item.get("outputTokenLimit").and_then(parse_positive_u32),
+            gemini_entry_facts(item).map(|facts| RawModel {
+                id: facts.id,
+                context: facts.context,
+                output: facts.output,
                 loaded: None,
-                title: item
-                    .get("displayName")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                title: facts.title,
             })
         })
         .collect::<Vec<_>>();
@@ -601,7 +692,7 @@ fn parse_gemini_page(v: &Value) -> Option<(Vec<RawModel>, Option<String>)> {
 /// → `pageToken`,最多 [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置
 /// truncated。游标经 reqwest `.query()` 编码后拼入。
 async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
-    let Some(client) = shared_probe_client_with_timeout(None) else {
+    let Some(client) = discovery_client() else {
         return Terminal::Error {
             http: None,
             transport: None,
@@ -637,12 +728,14 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
 }
 
 /// Ollama 分支:[`probe_ollama_models`] 的列表(`/api/ps` 已给已加载模型
-/// 生效窗口)+ 缺窗口事实(未加载)条目逐模型 [`probe_ollama_show_context`]
-/// 的 `num_ctx` 补查。补查条数以 [`OLLAMA_SHOW_LOOKUP_CAP`] 为上限,缺事实
-/// 条目超过上限时置 truncated。GGUF 训练窗口(`model_info` 的
-/// `<arch>.context_length`)刻意不采纳——`/api/show` 解析只认 `num_ctx`,
-/// 见 [`parse_ollama_show_context`][crate::core::model_endpoint
-/// ::parse_ollama_show_context] 文档。
+/// 生效窗口)+ 缺窗口事实(未加载)条目逐模型 `/api/show` 的 `num_ctx`
+/// 补查。补查条数以 [`OLLAMA_SHOW_LOOKUP_CAP`] 为上限、整体受
+/// [`OLLAMA_SHOW_BUDGET`] 墙钟预算约束(超预算即停,余量置 truncated,
+/// 不让一次点击串行等待 ≈50 × 3s);补查走 60s TTL 共享缓存
+/// ([`cached_ollama_show_context`]),与 monitor 轮询共享 GGUF 元数据读取。
+/// GGUF 训练窗口(`model_info` 的 `<arch>.context_length`)刻意不采纳——
+/// `/api/show` 解析只认 `num_ctx`,见 [`parse_ollama_show_context`]
+/// [crate::core::model_endpoint::parse_ollama_show_context] 文档。
 async fn ollama_discovered(base_url: &str, api_key: Option<&str>) -> Option<(Vec<RawModel>, bool)> {
     let probe = probe_ollama_models(base_url, api_key).await?;
     let mut models = probe
@@ -659,11 +752,15 @@ async fn ollama_discovered(base_url: &str, api_key: Option<&str>) -> Option<(Vec
     let missing = (0..models.len())
         .filter(|&index| models[index].context.is_none())
         .collect::<Vec<_>>();
-    let truncated = missing.len() > OLLAMA_SHOW_LOOKUP_CAP;
+    let mut truncated = missing.len() > OLLAMA_SHOW_LOOKUP_CAP;
+    let started = std::time::Instant::now();
     for &index in missing.iter().take(OLLAMA_SHOW_LOOKUP_CAP) {
-        if let OllamaShowProbe::Declared(ctx) =
-            probe_ollama_show_context(base_url, api_key, &models[index].id).await
-        {
+        if started.elapsed() >= OLLAMA_SHOW_BUDGET {
+            truncated = true;
+            break;
+        }
+        // None = 无声明 / 瞬态失败(均不入缓存或按语义返回 None),条目保持未报。
+        if let Some(ctx) = cached_ollama_show_context(base_url, api_key, &models[index].id).await {
             models[index].context = Some(ctx);
         }
     }
@@ -694,7 +791,7 @@ async fn lmstudio_discovered(base_url: &str) -> Option<Vec<RawModel>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model_endpoint::models_mock;
+    use crate::core::model_endpoint::{clear_ollama_show_cache, models_mock};
 
     const SHORT_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -753,6 +850,59 @@ mod tests {
         assert_eq!(listing.status, ListingStatus::Listed);
         assert!(listing.models.is_empty());
         assert!(!listing.truncated);
+    }
+
+    /// 自审补钉(round-1 fix wave):`max_context_length` 是 LM Studio 能力
+    /// 上限而非服务窗口——兼容条目只报它时上下文保持未声明,绝不经空表单
+    /// 预填 / 批量添加落成部署事实(连接测试路径的
+    /// `parse_models_response_list_refuses_lmstudio_cap_alias` 同口径)。
+    #[tokio::test]
+    async fn compat_lane_refuses_lmstudio_capability_cap() {
+        let mock = models_mock::spawn(&[(
+            "/models",
+            200,
+            r#"{"data":[
+                {"id":"cap-only","max_context_length":131072},
+                {"id":"mixed","max_model_len":8192,"max_context_length":131072}
+            ]}"#
+            .into(),
+        )]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::OpenAiCompatible).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        let cap_only = model_of(&listing, "cap-only");
+        assert_eq!(cap_only.context_window_tokens, None);
+        assert_eq!(cap_only.context_from, None);
+        // 生效窗口字段照常采纳,且不被同条目的能力上限覆盖(8192,非 131072)。
+        assert_eq!(
+            model_of(&listing, "mixed").context_window_tokens,
+            Some(8_192)
+        );
+    }
+
+    /// Gemini 翻页同样受页数上限约束:静态 `nextPageToken` 的无限页在第
+    /// 3 页封顶并置 truncated(anthropic 侧已有同形钉,此处补 gemini 侧)。
+    #[tokio::test]
+    async fn gemini_pagination_caps_at_three_pages() {
+        let mock = models_mock::spawn(&[(
+            "/v1beta/models",
+            200,
+            r#"{"models":[
+                {"name":"models/gemini-loop","supportedGenerationMethods":["generateContent"]}
+            ],"nextPageToken":"tok"}"#
+                .into(),
+        )]);
+        let listing = probe(&mock.base_url, Some("gkey"), DiscoveryProtocol::Gemini).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert!(listing.truncated, "静态翻页在第 3 页封顶必须置 truncated");
+        assert_eq!(mock.hits_for("/v1beta/models"), 3);
+    }
+
+    /// 限长常量钉:8 MiB 是「截断 → 解析失败 → Unusable」分类的前提;大小
+    /// 只应显式改动(下方 oversized 用例的 fixture 在任何不小于其长度的
+    /// cap 下都不变红,常量钉守住「静默放大」)。
+    #[test]
+    fn listing_body_cap_is_pinned() {
+        assert_eq!(LISTING_BODY_CAP_BYTES, 8 * 1024 * 1024);
     }
 
     #[tokio::test]
@@ -927,6 +1077,8 @@ mod tests {
 
     #[tokio::test]
     async fn ollama_chain_ps_tags_and_show() {
+        // show 补查走 60s 共享缓存;测试间端口可能复用,先清缓存防串扰。
+        clear_ollama_show_cache();
         // 规格 §2.10-6:/api/ps 生效窗口 → /api/tags 下载列表 → 未加载条目
         // 逐模型 /api/show 的 num_ctx;GGUF 训练窗口(model_info 的
         // context_length)不采纳。
@@ -1162,6 +1314,8 @@ mod tests {
     /// 50 个 show,并置 truncated——一次性发现不无限扇出 GGUF 重读。
     #[tokio::test]
     async fn ollama_show_lookups_cap_at_50_and_mark_truncated() {
+        // show 补查走 60s 共享缓存;测试间端口可能复用,先清缓存防串扰。
+        clear_ollama_show_cache();
         let names = (0..55)
             .map(|index| format!(r#"{{"name":"bulk-{index}"}}"#))
             .collect::<Vec<_>>()
