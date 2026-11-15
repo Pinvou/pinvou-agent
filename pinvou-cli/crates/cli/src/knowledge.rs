@@ -261,9 +261,24 @@ const REMOTE_SEARCH_OPTIONS: &[&str] = &["--limit"];
 /// GUI's default rose to 24 in the limits-audit batch, a frontend product
 /// choice — do not re-point the parity rationale at it), clamped to the
 /// same 1..50 envelope the server applies to `SearchRequest.limit`
-/// (`pinjou-knowledge` service search).
+/// (`pinvou-knowledge` service search).
 const REMOTE_SEARCH_LIMIT_DEFAULT: usize = 8;
 const REMOTE_SEARCH_LIMIT_MAX: usize = 50;
+
+#[cfg(test)]
+mod remote_search_limit_pins {
+    use super::{REMOTE_SEARCH_LIMIT_DEFAULT, REMOTE_SEARCH_LIMIT_MAX};
+
+    /// The contract suite pins the clamp bounds and the pass-through
+    /// values, but nothing asserted the DEFAULT a bare `remote search`
+    /// uses — a silent 8→24/8→1 drift would only falsify the docs row
+    /// (r8 review). Value tripwire, same shape as the ima mirror pins.
+    #[test]
+    fn remote_search_default_and_cap_hold_shipped_values() {
+        assert_eq!(REMOTE_SEARCH_LIMIT_DEFAULT, 8);
+        assert_eq!(REMOTE_SEARCH_LIMIT_MAX, 50);
+    }
+}
 
 /// Boolean (valueless) flags, per subcommand.
 const DELETE_FLAGS: &[&str] = &["--yes"];
