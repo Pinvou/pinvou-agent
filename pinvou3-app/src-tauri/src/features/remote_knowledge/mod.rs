@@ -994,11 +994,18 @@ impl RemoteKnowledgeService {
         self.client_for(server_id)?.remove_device(device_id).await
     }
 
+    /// Full trash listing: the client pages through every offset (server
+    /// pages clamp to 500 and carry no total) and aggregates, so nothing is
+    /// silently truncated — the same return-everything contract as
+    /// [`Self::collections`]. Pinned end-to-end by the loopback-HTTP tests
+    /// in `pinvou-knowledge/src/server.rs` (`trash_listing_clients_*`).
     pub async fn trashed_collections(&self, server_id: &str) -> Result<Vec<Collection>, String> {
         self.require_owner(server_id)?;
         self.client_for(server_id)?.trashed_collections().await
     }
 
+    /// See [`Self::trashed_collections`]: full aggregation across pages, no
+    /// truncation window.
     pub async fn trashed_documents(&self, server_id: &str) -> Result<Vec<TrashedDocument>, String> {
         self.require_owner(server_id)?;
         self.client_for(server_id)?.trashed_documents().await
@@ -1172,7 +1179,10 @@ impl RemoteKnowledgeService {
     /// Full-replace PUT semantics: `description: None` clears the stored
     /// description on the peer (it is not a keep-as-is marker — compare
     /// [`Self::update_device`], whose PATCH treats `None` as keep). Callers
-    /// that only intend to rename must echo the current description.
+    /// that only intend to rename must echo the current description. The
+    /// peer side is pinned by the
+    /// `update_collection_full_replaces_description_and_blank_name_falls_back`
+    /// contract test in `pinvou-knowledge/src/service.rs`.
     pub async fn update_collection(
         &self,
         server_id: &str,

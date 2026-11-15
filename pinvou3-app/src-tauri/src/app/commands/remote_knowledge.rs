@@ -290,6 +290,8 @@ pub async fn remote_kb_remove_device(
     state.remove_device(&server_id, &device_id).await
 }
 
+/// Trash listings aggregate every server page (the client walks offsets
+/// until a short page), so the result is complete — not a first-window cut.
 #[tauri::command]
 pub async fn remote_kb_trashed_collections(
     state: State<'_, RemoteKnowledgeService>,
@@ -298,6 +300,7 @@ pub async fn remote_kb_trashed_collections(
     state.trashed_collections(&server_id).await
 }
 
+/// See `remote_kb_trashed_collections`: full aggregation, no truncation.
 #[tauri::command]
 pub async fn remote_kb_trashed_documents(
     state: State<'_, RemoteKnowledgeService>,
