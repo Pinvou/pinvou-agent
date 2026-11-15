@@ -723,7 +723,8 @@ pub struct SessionTimelineStats {
     pub last_turn_ts: Option<String>,
     pub completed_turns: usize,
     pub failed_turns: usize,
-    /// 用户主动 Ctrl-C / 超时中断的轮次(engine 上游 TurnOutcomeStatus::Interrupted)。
+    /// 用户主动 Ctrl-C / 超时中断的轮次(engine TurnOutcomeStatus::Interrupted、
+    /// ACP Cancelled 映射、调度取消兜底均落此桶)。
     /// 官方树曾把该终态落进 `_ => {}` 静默丢弃(见 [F2] 测试注释);本仓曾在
     /// #562(3612d08b7)按死代码移除聚合,现随官方同步恢复并补齐分桶。
     pub interrupted_turns: usize,
@@ -744,8 +745,9 @@ pub struct SessionTimelineStats {
 /// 聚合 session timeline 为单个 stats 对象。
 ///
 /// 算法:遍历 read_timeline(),按 turn_id 配对 (user_start, assistant_done),
-/// 每对算一个 turn。token / 状态从 assistant_done 取(失败轮与 ACP 收口不写
-/// usage,token 计 0)。孤儿 assistant_done(无 user_start,多来自 user_start
+/// 每对算一个 turn。token / 状态从 assistant_done 取(ACP 收口与 send_error
+/// 兜底不写 usage,token 计 0;引擎正常链路的失败轮可能携带 usage 并计入)。
+/// 孤儿 assistant_done(无 user_start,多来自 user_start
 /// 写盘失败)不配对:不计 turn_count、不入任何分桶或 token 总和。
 pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> {
     let events = read_timeline(session_id)?;
