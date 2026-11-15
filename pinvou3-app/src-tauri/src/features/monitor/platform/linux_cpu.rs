@@ -191,6 +191,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_proc_self_stat_saturates_the_ticks_sum() {
+        // utime+stime is hardened with saturating_add: u64::MAX + 2 stays
+        // u64::MAX (a wrapping add would yield 1, a panicking add would
+        // abort the sampler on corrupted input).
+        let text = "1 (sh) S 0 1 1 0 -1 4194560 7 0 0 0 18446744073709551615 2";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(u64::MAX));
+    }
+
+    #[test]
     fn parse_cpuinfo_extracts_model_name() {
         let text =
             "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: AMD Ryzen 9\nflags\t: fpu\n";

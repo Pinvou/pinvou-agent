@@ -290,9 +290,14 @@ fn snapshot_payload(
         Some(cpu) => {
             // The process gauge mirrors its JSON fields (parity note above):
             // `None` means "not sampled yet, probe failed, or an unusable
-            // sample pair (counter wraparound)" and prints like the system
-            // gauge's missing reading; `cores` is the per-core normalization
-            // denominator (omitted when probing failed).
+            // sample pair (counter wraparound, zero elapsed wall time)" and
+            // prints like the system gauge's missing reading; `cores` is the
+            // per-core normalization denominator (omitted when probing
+            // failed). In THIS lane both gauges are always `-`: the snapshot
+            // is taken once per process, and a usage percentage needs an
+            // interval, so the first sample has no predecessor (the same
+            // one-shot property the `not_applicable_headless` disclosures
+            // cover for self_perf and session_uptime).
             let mut line = format!(
                 "Cpu: {}\t{}",
                 crate::support::collapse_control_characters(&cpu.name),
@@ -910,6 +915,30 @@ mod tests {
             ..MonitorSnapshot::default()
         };
         let (_, value) = snapshot_payload(&sample, Some(1)).expect("renders");
+        assert_eq!(
+            keys(&value["cpu"]),
+            [
+                "name",
+                "total_usage_pct",
+                "process_usage_pct",
+                "logical_processors",
+            ],
+            "the cpu object's key set moved — update this pin in the same change"
+        );
+
+        // The None form must keep the same four keys: a future
+        // `skip_serializing_if` on either Option field would make the
+        // published key set conditional on the sample state.
+        let unsampled = MonitorSnapshot {
+            cpu: Some(pinvou3_lib::features::monitor::CpuSnapshot {
+                name: "test-cpu".to_owned(),
+                total_usage_pct: None,
+                process_usage_pct: None,
+                logical_processors: 4,
+            }),
+            ..MonitorSnapshot::default()
+        };
+        let (_, value) = snapshot_payload(&unsampled, Some(1)).expect("renders");
         assert_eq!(
             keys(&value["cpu"]),
             [

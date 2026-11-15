@@ -201,9 +201,16 @@ fn read_process_ticks() -> Option<ProcessSample> {
         return None;
     }
     Some(ProcessSample {
-        cpu_secs: timevalue_secs(usage.ru_utime) + timevalue_secs(usage.ru_stime),
+        cpu_secs: process_secs(&usage),
         sampled_at: Instant::now(),
     })
+}
+
+/// The sampled quantity: user + system time in seconds for one rusage
+/// reading. Extracted from the read path so the sum itself (not just the
+/// per-field conversion) has a pin.
+fn process_secs(usage: &ffi::Rusage) -> f64 {
+    timevalue_secs(usage.ru_utime) + timevalue_secs(usage.ru_stime)
 }
 
 fn timevalue_secs(value: ffi::Timeval) -> f64 {
@@ -253,9 +260,29 @@ mod tests {
     }
 
     #[test]
+    fn process_secs_sums_user_and_system_time() {
+        // Pins the sum site: dropping ru_stime (or swapping the fields)
+        // changes this answer, which the per-field conversion test alone
+        // cannot see.
+        let usage = ffi::Rusage {
+            ru_utime: ffi::Timeval {
+                seconds: 3,
+                microseconds: 0,
+            },
+            ru_stime: ffi::Timeval {
+                seconds: 0,
+                microseconds: 500_000,
+            },
+            ..Default::default()
+        };
+        assert_eq!(process_secs(&usage), 3.5);
+    }
+
+    #[test]
     fn cpu_snapshot_returns_basic_identity() {
-        // 集成测试（macOS host）：host_statistics64/getrusage 在普通进程即可调用，
-        // 快照始终携带身份信息；首次调用无使用率（需要两次采样）。
+        // Integration test (macOS host): host_statistics64/getrusage are
+        // callable from an ordinary process, the snapshot always carries
+        // identity; the first call has no usage (two samples are needed).
         let snapshot = cpu_snapshot().expect("macOS CPU snapshot should include basic identity");
         assert!(!snapshot.name.trim().is_empty());
         assert!(snapshot.logical_processors > 0);

@@ -1,10 +1,14 @@
-//! CPU 采样的纯节拍数学 —— linux/macos 采样器共享。
+//! Pure tick math for CPU sampling — shared by the linux/macos samplers.
 //!
-//! FFI(`host_statistics64`)与 `/proc` 读取留在各平台文件(`platform/{macos,linux}_cpu.rs`);
-//! 这里只收与平台无关的部分:聚合节拍结构、两次采样的差分→使用率换算、
-//! 百分比钳制,以及跨两次调用的差分状态机。Windows 系统侧的 `SystemTimes`
-//! 口径不同(100ns 粒度、busy 由 total−idle 反推),系统差分状态机不共用;
-//! 进程侧(`ProcessSample`/`ProcessDeltaState`)与 `clamp_pct` 三平台共用。
+//! FFI (`host_statistics64`) and `/proc` reads stay in the platform files
+//! (`platform/{macos,linux}_cpu.rs`); this module keeps only the
+//! platform-independent part: aggregated tick structures, the two-sample
+//! delta → usage conversion, percentage clamping, and the cross-call delta
+//! state machines. The Windows system side uses a different gauge shape
+//! (`SystemTimes`: 100ns granularity, busy derived as total−idle), so the
+//! system delta state machine is not shared; the process side
+//! (`ProcessSample`/`ProcessDeltaState`) and `clamp_pct` are shared by all
+//! three platforms.
 // architecture-guard: allow-target-cfg -- the system delta-state half below is consumed exclusively by the cfg-gated linux/macos samplers (platform/{linux,macos}_cpu.rs); it is cfg-gated in this shared pure-math module so Windows lib builds carry no dead system-delta machinery, while clamp_pct and the process-delta half (ProcessSample/ProcessDeltaState/logical_processors) stay universal for all three samplers. The system delta path is exercised by this module's unit tests on linux/macos; the process path by the universal tests below.
 use std::time::Instant;
 
@@ -98,7 +102,9 @@ impl ProcessDeltaState {
 /// the pair is unusable, so the answer is `None`. An exact zero delta is a
 /// real idle interval and reports `Some(0.0)` — a measured reading, not
 /// missing data. The remaining `None` causes are a probe-failed denominator
-/// (`0` cores) and zero elapsed wall time.
+/// (`0` cores), zero elapsed wall time, and a non-monotonic sample pair
+/// (`checked_duration_since` rejects a current timestamp before the
+/// previous one — defensive; `Instant` is monotonic).
 pub(crate) fn process_usage_pct(
     prev: ProcessSample,
     current: ProcessSample,

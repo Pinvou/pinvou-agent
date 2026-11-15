@@ -195,8 +195,10 @@ fn read_process_times() -> Option<ProcessSample> {
         return None;
     }
     Some(ProcessSample {
-        // 100ns ticks -> seconds, exact in f64 far past any realistic
-        // process lifetime (2^53 ticks ~ 29k years of accumulated CPU time).
+        // 100ns ticks -> seconds, exact in f64 until 2^53 ticks (~28.5
+        // accumulated CPU-years; the u64 counter itself only wraps at ~29k
+        // years). Past that the loss is ulp-level quantization and stays
+        // monotone, so the shared wraparound guard remains sound.
         cpu_secs: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)) as f64
             / 10_000_000.0,
         sampled_at: Instant::now(),
@@ -329,12 +331,14 @@ mod tests {
     #[test]
     fn filetime_combines_low_and_high_words() {
         // Direct pin for the second consumer this PR gave filetime_to_u64:
-        // a high/low word swap survives every FFI-path test otherwise.
+        // a high/low word swap survives every FFI-path test otherwise. The
+        // words must be DISTINCT — low=1/high=1 is swap-symmetric and a
+        // swapped implementation would pass; low=1/high=2 does not.
         let value = FILETIME {
             dwLowDateTime: 1,
-            dwHighDateTime: 1,
+            dwHighDateTime: 2,
         };
-        assert_eq!(filetime_to_u64(value), (1u64 << 32) | 1);
+        assert_eq!(filetime_to_u64(value), (2u64 << 32) | 1);
     }
 
     #[test]

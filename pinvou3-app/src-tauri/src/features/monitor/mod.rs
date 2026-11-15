@@ -68,8 +68,8 @@ pub struct GpuSnapshot {
 pub struct CpuSnapshot {
     pub name: String,
     pub total_usage_pct: Option<f64>,
-    /// Per-process CPU usage (from `process_usage_pct` in
-    /// platform/{linux,macos,windows}_cpu.rs). `None` until the second
+    /// Per-process CPU usage (from `process_usage_pct` in `cpu_math.rs`,
+    /// fed by the platform samplers). `None` until the second
     /// sample, when the probe fails, or when the raw counter moves
     /// backwards (wraparound); an idle interval reports `Some(0.0)`.
     /// Process-wide across all threads (getrusage/GetProcessTimes/procfs
