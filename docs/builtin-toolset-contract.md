@@ -418,7 +418,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   last-writer-wins snapshots can never clobber an external edit. A steered
   delivery stays queued until the engine reports `SteerCommitted` for it — the
   done marker and the spool-file removal land on commit (the marker is what a
-  keyed retry consults for dedup), while a dropped steer leaves the file
+  keyed retry consults for dedup — it vouches by content: the marker records a
+  SHA-256 fingerprint of the delivered body, so only a re-spooled body that still
+  matches the fingerprint is suppressed; a body replaced in the commit-tail window
+  re-delivers once under the at-least-once discipline, and legacy empty markers
+  vouch for nothing), while a dropped steer leaves the file
   queued and re-delivers on the next poll — or later in the same pass, when
   the drop lands ahead of the file's sorted position — bounded per process
   (a watcher restart re-buys the cycle budget, the same per-process
