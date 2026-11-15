@@ -17,7 +17,14 @@ function errorCode(value) {
 
 function localizedErrorMessage(value, messages, fallback) {
   const code = errorCode(value);
-  return (code && messages && messages[code]) || fallback;
+  // Guard the prototype chain before the dict lookup: 'constructor' passes
+  // the snake_case pattern and would otherwise resolve to the inherited
+  // Object constructor instead of the fallback (house pattern from
+  // connectorErrorCopy).
+  if (!code || !messages || !Object.prototype.hasOwnProperty.call(messages, code)) {
+    return fallback;
+  }
+  return messages[code] || fallback;
 }
 
 export { errorCode, localizedErrorMessage };
