@@ -1309,8 +1309,11 @@ Object.assign(dictJa.uiSettingsDetail, {
   filledFromEndpoint:'エンドポイントの検出結果から入力しました',
   modelAlreadySaved:'保存済み',
   fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
+  modelListFilterEmpty:'フィルターに一致するモデルはありません',
+  modelListTruncated:'エンドポイント一覧は切り詰められました',
+  modelListMoreCount:n=>`他 ${n} 件があります — フィルターで絞り込んでください`,
 });
 Object.assign(dictJa.uiAcpProviders, {
-  fetchModels:'モデル一覧を取得', fetchingModels:'モデル一覧を取得中…', acpNoModelsFound:'エンドポイントはモデルを返しませんでした',
+  fetchModels:'モデル一覧を取得', fetchingModels:'モデル一覧を取得中…',
   fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
 });

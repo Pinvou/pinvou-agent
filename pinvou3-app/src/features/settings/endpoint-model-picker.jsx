@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { RefreshCw, Search, X } from '../../components/icons.jsx';
 import {
   FILTER_VISIBLE_ROW_LIMIT,
@@ -15,6 +15,12 @@ const ROW_DIVIDER = 'border-b last:border-b-0 border-black/[0.10] dark:border-wh
 const MUTED_TEXT = 'text-[#8A8A8E] dark:text-[#98989D]';
 const TAG_CLASS = 'shrink-0 text-[12px] px-2 py-0.5 rounded-md bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]';
 const ACTION_CLASS = 'shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/[0.28] disabled:opacity-45';
+
+// Rows above this count stop rendering (Rust already caps a listing at 2000):
+// one DOM row per model is the picker's main render cost, so a capped list +
+// "N more — refine the filter" footer keeps keystrokes on huge endpoints flat
+// (round-1 review M7). Refining the filter re-slices the same pipeline.
+const PICKER_RENDER_CAP = 200;
 
 /**
  * Endpoint model picker (frozen spec §2.6): a pure, props-driven candidate
@@ -47,10 +53,19 @@ const ACTION_CLASS = 'shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium
 const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterable = true, onAddAll, baseUrl, savedKeys, t }) => {
   const settingsCopy = t.uiSettingsDetail;
   const [filterDraft, setFilterDraft] = useState('');
-  if (!open) return null;
-  const rows = normalizeDiscoveredRows(listing);
+  // Rows pipeline memoized on [listing, filterDraft] (round-1 review M7):
+  // normalize + filter previously re-ran on every keystroke-render.
+  const rows = useMemo(() => normalizeDiscoveredRows(listing), [listing]);
   const showFilter = filterable && rows.length > FILTER_VISIBLE_ROW_LIMIT;
-  const visibleRows = showFilter ? filterModelRows(rows, filterDraft) : rows;
+  const visibleRows = useMemo(
+    () => (showFilter ? filterModelRows(rows, filterDraft) : rows),
+    [rows, showFilter, filterDraft],
+  );
+  // Render cap: only the first PICKER_RENDER_CAP filtered rows hit the DOM;
+  // the rest collapse into the "N more" footer below the list.
+  const renderedRows = visibleRows.slice(0, PICKER_RENDER_CAP);
+  const hiddenRowCount = visibleRows.length - renderedRows.length;
+  if (!open) return null;
   const savedSet = savedKeys instanceof Set ? savedKeys : null;
   const dupKeyOf = row => modelDuplicationKey(row.id, baseUrl);
   const addableCount = savedSet
@@ -69,6 +84,10 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
         || connectionCopy.http_error;
     } else if (listing.status === 'listed' && rows.length === 0) statusText = settingsCopy.noModelsFound;
   }
+  // Rust caps a listing (pagination / row / metadata budgets) and reports it
+  // via the serde `truncated` flag — surface it instead of silently dropping
+  // rows the user never sees (round-1 review picker minor).
+  const listingTruncated = !loading && !!listing && listing.truncated === true;
   const renderFactBadge = (tokens, source) => {
     const text = formatTokensCount(tokens);
     if (!text) return null;
@@ -113,6 +132,9 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
             {!loading && statusText && (
               <div data-testid="endpoint-model-picker-status" className={`px-1 py-3 text-[13px] leading-5 ${MUTED_TEXT}`}>{statusText}</div>
             )}
+            {listingTruncated && (
+              <div data-testid="endpoint-model-picker-truncated" className={`px-1 pt-3 text-[13px] leading-5 ${MUTED_TEXT}`}>{settingsCopy.modelListTruncated}</div>
+            )}
             {!loading && !statusText && rows.length > 0 && (
               <div className="overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]">
                 {showFilter && (
@@ -129,7 +151,7 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
                     />
                   </div>
                 )}
-                {visibleRows.map(row => {
+                {renderedRows.map(row => {
                   const alreadySaved = !!savedSet && savedSet.has(dupKeyOf(row));
                   return (
                     <div key={row.key} data-testid="endpoint-model-row" className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left ${ROW_DIVIDER}`}>
@@ -159,7 +181,12 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
                   );
                 })}
                 {showFilter && visibleRows.length === 0 && (
-                  <div className={`px-3.5 py-3 text-[13px] leading-5 ${MUTED_TEXT}`}>{settingsCopy.noModelsFound}</div>
+                  // Filtered-empty is NOT the same as "the endpoint returned
+                  // nothing": use the dedicated copy (round-1 review minor).
+                  <div data-testid="endpoint-model-filter-empty" className={`px-3.5 py-3 text-[13px] leading-5 ${MUTED_TEXT}`}>{settingsCopy.modelListFilterEmpty}</div>
+                )}
+                {hiddenRowCount > 0 && (
+                  <div data-testid="endpoint-model-picker-more" className={`px-3.5 py-3 text-[13px] leading-5 ${MUTED_TEXT}`}>{settingsCopy.modelListMoreCount(hiddenRowCount)}</div>
                 )}
               </div>
             )}

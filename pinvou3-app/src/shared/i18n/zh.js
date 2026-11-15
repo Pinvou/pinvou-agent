@@ -1198,8 +1198,11 @@ Object.assign(dictZh.uiSettingsDetail, {
   filledFromEndpoint:'已从端点探测填入',
   modelAlreadySaved:'已保存',
   fetchUnavailable:'当前版本暂不支持获取模型列表',
+  modelListFilterEmpty:'没有符合筛选条件的模型',
+  modelListTruncated:'端点列表已截断',
+  modelListMoreCount:n=>`还有 ${n} 个未显示 — 请缩小筛选范围`,
 });
 Object.assign(dictZh.uiAcpProviders, {
-  fetchModels:'获取模型列表', fetchingModels:'正在获取模型列表…', acpNoModelsFound:'端点未返回模型',
+  fetchModels:'获取模型列表', fetchingModels:'正在获取模型列表…',
   fetchUnavailable:'当前版本暂不支持获取模型列表',
 });

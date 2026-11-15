@@ -1302,8 +1302,11 @@ Object.assign(dictEn.uiSettingsDetail, {
   filledFromEndpoint:'Filled from the endpoint probe',
   modelAlreadySaved:'Saved',
   fetchUnavailable:'This build cannot fetch model lists yet',
+  modelListFilterEmpty:'No models match this filter',
+  modelListTruncated:'The endpoint list was truncated',
+  modelListMoreCount:n=>`…and ${n} more — refine the filter`,
 });
 Object.assign(dictEn.uiAcpProviders, {
-  fetchModels:'Fetch models', fetchingModels:'Fetching models…', acpNoModelsFound:'The endpoint returned no models',
+  fetchModels:'Fetch models', fetchingModels:'Fetching models…',
   fetchUnavailable:'This build cannot fetch model lists yet',
 });

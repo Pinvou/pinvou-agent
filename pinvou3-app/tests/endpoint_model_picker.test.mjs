@@ -92,6 +92,12 @@ test('modelDuplicationKey is id-case-insensitive and trailing-slash-insensitive'
   assert.notEqual(modelDuplicationKey('glm-5', 'https://a.com/v1'), modelDuplicationKey('glm-5', 'https://b.com/v1'));
   assert.notEqual(modelDuplicationKey('glm-5', 'https://a.com/v1'), modelDuplicationKey('glm-6', 'https://a.com/v1'));
 });
+test('modelDuplicationKey folds base URL case too (round-1 review minor)', () => {
+  assert.equal(modelDuplicationKey('glm-5', 'HTTPS://API.Example.COM/v1'), modelDuplicationKey('glm-5', 'https://api.example.com/v1'));
+  assert.equal(modelDuplicationKey('glm-5', 'https://a.com/V1/'), modelDuplicationKey('glm-5', 'https://a.com/v1'));
+  // 大小写折叠不得吞掉真正不同的端点。
+  assert.notEqual(modelDuplicationKey('glm-5', 'https://a.com/v1'), modelDuplicationKey('glm-5', 'https://a.com/v2'));
+});
 test('savedModelKeys reads SavedModel wire ids and tolerates junk', () => {
   const keys = [...savedModelKeys([
     { id: 'm1', model: 'DeepSeek-V4', base_url: 'https://api.deepseek.com' },
@@ -213,5 +219,48 @@ test('component treats non-Set savedKeys as "nothing saved" and onAddAll as opti
     componentSource,
     /\{onAddAll && \(\s*<button type="button" data-testid="endpoint-model-add-all"/,
     'the batch add-all button must render only when onAddAll is provided (ACP line omits it)',
+  );
+});
+
+// --- 复审 M7:行管线 memo 化 + 渲染上限(200 行)---
+test('rows pipeline is memoized and the render is capped with an "N more" footer', () => {
+  const componentSource = fs.readFileSync(
+    path.join(root, 'src', 'features', 'settings', 'endpoint-model-picker.jsx'),
+    'utf8',
+  );
+  assert.match(
+    componentSource,
+    /const PICKER_RENDER_CAP = 200;/,
+    'the render cap constant must stay pinned at 200 rows',
+  );
+  assert.match(
+    componentSource,
+    /useMemo\(\(\) => normalizeDiscoveredRows\(listing\), \[listing\]\)/,
+    'normalizeDiscoveredRows must run in a useMemo keyed on the listing (not per keystroke render)',
+  );
+  assert.match(
+    componentSource,
+    /useMemo\(\s*\(\) => \(showFilter \? filterModelRows\(rows, filterDraft\) : rows\),\s*\[rows, showFilter, filterDraft\],\s*\)/,
+    'filterModelRows must run in a useMemo keyed on [rows, showFilter, filterDraft]',
+  );
+  assert.match(
+    componentSource,
+    /visibleRows\.slice\(0, PICKER_RENDER_CAP\)/,
+    'the DOM render must cap at PICKER_RENDER_CAP rows',
+  );
+  assert.match(
+    componentSource,
+    /settingsCopy\.modelListMoreCount\(hiddenRowCount\)/,
+    'hidden rows must surface as the localized "N more — refine the filter" footer',
+  );
+  assert.match(
+    componentSource,
+    /settingsCopy\.modelListFilterEmpty/,
+    'the filtered-empty branch must use the dedicated "no models match this filter" copy (not noModelsFound)',
+  );
+  assert.match(
+    componentSource,
+    /settingsCopy\.modelListTruncated/,
+    'the listing truncated flag must surface as a localized notice line',
   );
 });
