@@ -2341,7 +2341,7 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let noop = || {};
-        let (files, skipped) = expand_import_roots(&[root.clone()], &cancel, &noop);
+        let (files, skipped) = expand_import_roots(std::slice::from_ref(&root), &cancel, &noop);
         assert_eq!(files.len(), 2, "only allowlisted files survive the walk");
         assert_eq!(skipped, 3, "every directly rejected file is counted");
         let _ = std::fs::remove_dir_all(&root);
@@ -2368,7 +2368,7 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let noop = || {};
-        let (files, skipped) = expand_import_roots(&[root.clone()], &cancel, &noop);
+        let (files, skipped) = expand_import_roots(std::slice::from_ref(&root), &cancel, &noop);
         assert_eq!(files.len(), 0, "a name-excluded root is not descended into");
         assert_eq!(skipped, 1, "the excluded root itself is the counted entry");
         let _ = std::fs::remove_dir_all(&base);
