@@ -2668,6 +2668,30 @@ fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
     });
 }
 
+/// Pin 3 (round-2 review P2 routing): the post-install legs thread the
+/// remote validation's discovered inventory through to the command return —
+/// a pack that declares no validation reports the empty inventory (the same
+/// Ok shape `validate_remote_connection` returns on this path), so the UI
+/// install report has a real producer even without the validation leg.
+#[test]
+fn install_post_install_returns_inventory_shape() {
+    crate::platform::test_support::with_temp_home("install-post-inventory", || {
+        write_test_marketplace_files("yuandian-noinv-test", serde_json::json!({}), false);
+        let inventory = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(install_marketplace_tool_post_install(
+                "yuandian-mcp".to_string(),
+            ))
+            .unwrap();
+        assert!(
+            inventory.is_empty(),
+            "a pack without remote validation reports the empty inventory: {inventory:?}"
+        );
+    });
+}
+
 // ---- model deletion ordering (delete_model saves prefs before the keyring) ----
 
 fn model_deletion_test_model(id: &str, with_credential: bool) -> SavedModel {
