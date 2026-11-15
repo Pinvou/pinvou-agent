@@ -460,8 +460,6 @@ function hasStoredCredential(record) {
       // 测试图片能力(设计 §7.3):仅主动点击触发;表单关键值变化后上一次结果不再可信,清除。
       const [imageTesting, setImageTesting] = useState(false);
       const [imageTestResult, setImageTestResult] = useState(null); // { status, verified, summary } | null
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
-      useEffect(() => { setImageTestResult(null); }, [model, baseUrl, apiKey, preset]);
       const localizeProvider = group => group
         ? { ...group, ...settingsCopy.providerCatalog[group.key] }
         : null;
@@ -687,6 +685,8 @@ function hasStoredCredential(record) {
       const showCustomCloudKeyField = !isLocalPreset && customModel && !noAuthActive;
       const showLocalKeyField = isLocalPreset && localKeyEnabled;
       const showNoAuthToggle = !isLocalPreset && !isCodingPlan;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker; the keyless posture is part of the same freshness contract — a posture flip changes what a re-test would send, so the banner must not survive it (round-6 review)
+      useEffect(() => { setImageTestResult(null); }, [model, baseUrl, apiKey, preset, noAuthActive]);
       const showDisplayNameField = isLocalPreset && !initial.__new;
       const showAliasField = !isLocalPreset;
       const showConfigFields = showAliasField || showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField || showNoAuthToggle;
