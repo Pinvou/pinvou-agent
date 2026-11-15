@@ -2924,4 +2924,123 @@ mod tests {
         let pre = ordered_chord_keys(&[Key::Shift, Key::Char('a')]);
         assert_eq!(pre, vec![Key::Shift, Key::Char('a')]);
     }
+
+    /// The self-target guard IS the crash fix: `ensure_not_self_owned` is
+    /// fully unit-tested as a predicate, but no test drives real AX reads,
+    /// so a refactor that deletes one of the wired call sites — or moves a
+    /// site behind the reads it protects — would keep every behavioral test
+    /// green while reopening the WebKit abort (review follow-up W1). These
+    /// pins make each wiring site load-bearing: the needles are unique
+    /// source lines, so deleting a site or reordering it after its read
+    /// turns this test red.
+    #[test]
+    fn self_target_guard_call_sites_precede_the_reads_they_protect() {
+        // Bound the search to the production region so these needles can
+        // never be satisfied by this test's own string literals.
+        let source = include_str!("macos.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production region precedes the test module");
+
+        let pos = |needle: &str| {
+            production
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing needle: {needle}"))
+        };
+
+        // ui_tree: the app-level guard sits between the focused-application
+        // probe (disclosed as application-level, not web-view dispatching)
+        // and the first window attribute read.
+        let app_guard = pos("ensure_not_self_owned(element_pid(&app), self_pid(), \"ui_tree\")?");
+        assert!(
+            app_guard > pos("let Some(app) = focused_application(&system, &names)"),
+            "the ui_tree guard must run after the focused-application probe"
+        );
+        assert!(
+            app_guard < pos("let root = focused_window_root(app, &names)"),
+            "the ui_tree guard must precede the focused-window read"
+        );
+
+        // write_tree_node: every node re-checks before ANY of its attribute
+        // reads, and the recursion propagates a self-owned child as an error.
+        let node_guard =
+            pos("ensure_not_self_owned(element_pid(element), self_pid(), \"ui_tree\")?");
+        assert!(
+            node_guard
+                < pos(
+                    "let info = read_node_info(element, names, &mut writer.errors, depth < max_depth)"
+                ),
+            "the per-node guard must precede the node attribute reads"
+        );
+        assert!(
+            node_guard < pos("match ax_array(element, &names.children)"),
+            "the per-node guard must precede the children read"
+        );
+        assert!(
+            production
+                .contains("write_tree_node(&child, depth + 1, max_depth, names, writer, out)?;"),
+            "the tree recursion must propagate a refused child as an error"
+        );
+
+        // element_at_point: the pre-hit-test shadow rules plus the
+        // second-line guard before the hit element's attribute reads.
+        assert!(
+            production.contains(
+                "SelfShadow::SelfOwned => return Err(self_owned_ax_error(\"element_at_point\"))"
+            ),
+            "the hit-test must refuse a self-shadowed point"
+        );
+        assert!(
+            production.contains(
+                "SelfShadow::Unproven => return Err(unproven_owner_ax_error(\"element_at_point\"))"
+            ),
+            "the hit-test must refuse an unproven point fail-closed"
+        );
+        let point_guard =
+            pos("ensure_not_self_owned(element_pid(&element), self_pid(), \"element_at_point\")?");
+        // The hit element's read sits between this guard and the (later,
+        // separately guarded) focused_element chain, so slicing on the next
+        // action string isolates element_at_point's read.
+        let focused_app_guard =
+            pos("ensure_not_self_owned(element_pid(&app), self_pid(), \"focused_element\")?");
+        let point_read = production[point_guard..focused_app_guard]
+            .find("read_node_info(&element, &names, &mut errors, true)")
+            .expect("element_at_point must read the hit element after its guard");
+        assert!(
+            point_read > 0,
+            "element_at_point's attribute read must follow its guard"
+        );
+
+        // focused_element: each chain level re-checks the reply-derived
+        // token before the next attribute read (the pids are
+        // reply-controlled — see the module docs). The chain is ordered
+        // within the slice that starts at the app guard: earlier fns spell
+        // the same reads identically (focused_window_root also reads the
+        // app's focused window), so a whole-file first-occurrence search
+        // would alias them.
+        let chain = &production[focused_app_guard..];
+        let chain_pos = |needle: &str| {
+            chain
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing chain needle: {needle}"))
+        };
+        let window_read = chain_pos("ax_ui_element(&app, &names.focused_window)");
+        let window_guard = chain_pos(
+            "ensure_not_self_owned(element_pid(&window), self_pid(), \"focused_element\")?",
+        );
+        let element_read = chain_pos("ax_ui_element(&window, &names.focused_ui_element)");
+        let element_guard = chain_pos(
+            "ensure_not_self_owned(element_pid(&element), self_pid(), \"focused_element\")?",
+        );
+        let final_read =
+            chain_pos("let info = read_node_info(&element, &names, &mut errors, true)");
+        assert!(
+            window_read < window_guard
+                && window_guard < element_read
+                && element_read < element_guard
+                && element_guard < final_read,
+            "each focused_element chain level must re-check ownership before its attribute read"
+        )
+    }
 }
