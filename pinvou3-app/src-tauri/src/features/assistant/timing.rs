@@ -755,11 +755,12 @@ pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> 
     let mut by_turn: HashMap<&str, (Option<&TimelineEvent>, Option<&TimelineEvent>)> =
         HashMap::new();
     for e in &events {
-        let entry = by_turn.entry(e.turn_id.as_str()).or_insert((None, None));
+        // 只为两种配对事件建 entry:context_snapshot 等其余事件
+        // (context-snapshot-<ms> 独立 id)不会留下 (None, None) 空位。
         if e.event == "assistant_done" {
-            entry.1 = Some(e);
+            by_turn.entry(e.turn_id.as_str()).or_default().1 = Some(e);
         } else if e.event == "user_start" {
-            entry.0 = Some(e);
+            by_turn.entry(e.turn_id.as_str()).or_default().0 = Some(e);
         }
     }
     stats.turn_count = by_turn
