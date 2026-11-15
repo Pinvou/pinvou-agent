@@ -1,14 +1,18 @@
 # pinvou3 Skill 加载 / 卡牌池 状态
 
-> 留档日期：2026-06-03。验证基线：CodeWhale submodule `0c9542dd`（2026-07-24 重建基线前的旧史哈希，现仓库对象库中已不可解析），pinvou3-app（card-pool-agency 分支，内部工作分支，不随本仓库发布）。
+> 留档日期：2026-06-03。验证基线：CodeWhale submodule `0c9542dd`（2026-07-24 重建基线前的旧史哈希，现仓库对象库中已不可解析），pinvou3-app（`card-pool-agency` 分支；§2 Side A 所提 `card-pool` 分支同为内部工作分支，两者均不随本仓库发布）。
 > 下面所有 file:line 是写档时的位置，改动后以代码为准。
 >
 > **2026-11 归档注记**：写档后的重构已使本文多项"当前态"描述失效，§1/§3 请勿按现状使用：
 > skill 发现已改为 per-session 组合目录 + materialization（`features/assistant/skill_materialization.rs`、
 > `features/assistant/platform/bridge.rs` 的 `explicit_skills_root_only`），「`~/.agents/skills` 残留口子」与
 > 「UI 读 bundle / 工具读 ~/.agents 的两套不对称」均不再成立；`list_skills_v2` 已由
-> marketplace 接口取代；`pinvou-review-plan/final` 已于 0.8.3 下线（commit `95502ac81`，2026-08-17）并由 `cleanup_retired_skills`
-> 启动清理。§2 卡牌池机制描述仍有效（agency-agents.json 现 268 个 agent）。
+> marketplace 接口取代；`pinvou-review-plan/final` 已于 0.7 下线（SKILL.md 删除于 commit
+> `9aaff554b`，2026-06-05，其提交说明即「bundle 0.7 清装机残留」；`95502ac81` 为 0.8.3 的三省六部移除
+> #285，仅顺带删除已死的 `WORKFLOW_HIDDEN_SKILLS` 过滤常量）并由 `cleanup_retired_skills`
+> 启动清理。§2 卡牌池机制描述仍有效（agency-agents.json 现 268 个 agent）。文中 fork patch
+> 序号（#41/#25/#26/#432 等）为重建前私有编号，与现行 [`fork-modifications.md`](./fork-modifications.md)
+> 登记编号无关。
 
 ## TL;DR
 

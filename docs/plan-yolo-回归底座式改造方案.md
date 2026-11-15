@@ -1,6 +1,6 @@
 # Plan/Yolo 回归底座式 改造方案
 
-> 状态：已完成并收尾（阶段 1/2/3/4 全 done，2026-06-25；§0 及 §3/§4 的底座/前端文件名与行号均为改造时旧态，仅作历史引用）。2026-11 回填留档：改造结果在当前代码中可验证——`PlanPhase` 已删除、composer `ComposerModeChip` 已上线、`plan_stuck` 兜底保留。
+> 状态：已完成并收尾（阶段 1/2/3/4 全 done，2026-06-25；§0–§2 与 §3/§4 的底座/前端文件名、行号及底座符号名——如 `DangerFullAccess`、`should_stop_after_plan_tool`，现行底座已演进为 `AppMode::Plan/Agent/Operate` 与 plan handoff 交接——均为改造时旧态，仅作历史引用）。2026-11 回填留档：改造结果在当前代码中可验证——`PlanPhase` 已删除、composer `ComposerModeChip` 已上线、`plan_stuck` 兜底保留。
 > 目标：砍掉 app 自建的 `PlanPhase` 四态生命周期，回归底座原生的 Plan/Yolo 二态 + 底座 plan 交接闭环；模式切换入口做成 composer（信息输入栏）chip；plan 决策保留卡片形态。
 
 ## 0. 背景与判断
@@ -45,7 +45,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 
 | # | 决策 | 取舍 |
 |---|---|---|
-| D1 | **chip 带下拉**（默认 Yolo，Plan 手切） | 照 `ComposerKbSelector`（`index.html:3219`）下拉形态：chip 显示当前 mode，点开下拉选 Yolo/Plan（各带一句说明）。比单击 toggle 更易懂两个模式各是什么 |
+| D1 | **chip 带下拉**（默认 Yolo，Plan 手切） | 照 `ComposerKbSelector`（改造时在 `index.html:3219`，现已迁至 `src/features/chat/composer-controls.jsx`）下拉形态：chip 显示当前 mode，点开下拉选 Yolo/Plan（各带一句说明）。比单击 toggle 更易懂两个模式各是什么 |
 | D2 | **不暴露 Agent** | 沿用现状（底座三态取其二）。Accept 只有一个目标=Yolo，卡片 3 选项不变 |
 | D3 | **accept 保留执行指令注入** | 对齐底座 `"Proceed with the accepted plan."`，切 Yolo 后 AI 靠注入指令 + 共享 PlanState 续做 |
 | D4 | **砍 M2 自驱续跑** ⚠️行为变化 | 回到底座行为：执行一个 turn 后停下，用户决定是否继续。原 M2 会自动发"继续执行"循环——砍掉 |

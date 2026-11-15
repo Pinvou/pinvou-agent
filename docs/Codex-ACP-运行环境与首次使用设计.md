@@ -84,6 +84,15 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
    UI 只能区分 Node 缺失、adapter 缺失、未登录和普通错误，不能准确区分下载失败、
    组件损坏、登录过期、Codex 配置错误、网络错误和平台不支持。
 
+> 注（2026-11 归档）：本节为快照时点状态，多处「当前」已不成立——现行已带私有
+> Node Bridge（`scripts/prepare-codex-bridge-runtime.sh` 下载并 sha256 校验 Node
+> 24.22.1，`install.rs` 含随包 bridge 候选），缺口 1 已解决；bridge 构建会剪除
+> `@openai/codex` 二进制，Codex CLI 由用户自行安装（`install.rs` 按
+> `PINVOU3_CODEX_ACP_BIN`/随包/私有目录/`PATH` 顺序解析）；登录走 codex CLI
+> （`login.rs`）而非 `codex-acp login`；认证判断现为三个 env 变量 + `~/.codex/config.toml`
+> relay key + 真实 `codex login status` 复检。其余缺口以现行
+> [`codex-acp.md`](./codex-acp.md) 为准。
+
 ## 3. 目标与非目标
 
 ### 3.1 目标
@@ -758,7 +767,7 @@ pinvou3-app/src/features/codex/
     └── RuntimeRepairCard.jsx
 ```
 
-构建脚本建议替换当前仅 npm 安装的脚本：
+构建脚本建议替换当时仅 npm 安装的脚本（2026-11 注：现行 `scripts/prepare-codex-bridge-runtime.sh` 已是该类下载＋校验脚本，本节为设计稿残留）：
 
 ```text
 pinvou3-app/scripts/codex-runtime/

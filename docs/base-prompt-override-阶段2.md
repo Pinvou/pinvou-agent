@@ -9,14 +9,15 @@
 > 分层：`compose_static_layers` 不再装配 `base.md`、`AUTHORITY_RECAP` 清空，prompt 治理
 > 迁移到底座 `StaticPromptComposer` 合同。本文记录的 249 行 `base.md`、三个 override
 > 常量与 #28–#42 指纹清单是历史状态（残留说明见 `resources/common/bundle/base.md`
-> 文首注释），当前 prompt 链路以代码为准。另注：正文的 `resources/bundle/base.md` 路径为
-> 当时代样貌（`common/` 目录 2026-07-22 才拆分），回填时未按现行布局改写正文路径。
+> 文首注释），当前 prompt 链路以代码为准。另注：正文 `base.md` 路径在此前机械重构
+> （2026-07-22 拆分 `common/` 目录，`ed6636fcf`）中已改为现行 `resources/common/bundle/base.md`，
+> 回填按该已改写状态保留。
 
 ## 执行进度 — 阶段2 已完成（2026-05-29）
 
 全部落地并验证通过：
 
-**submodule（commit `af64e9f7`，在阶段1 `5f847284` 之上）**
+**submodule（commit `af64e9f7`，在阶段1 `5f847284` 之上；`af64e9f7` 可由父仓提交 `50752183b` 的 gitlink 佐证，`5f847284`/`54151a4b` 为 2026-07-24 重建前哈希，现对象库不可解析）**
 - `base.md` 回退上游原文（`git diff 54151a4b` = 0，字节一致）
 - `prompts.rs` 品牌词回退 codewhale（locale / authority / doc 注释 3 处）
 - 删除 6 个内容 forkguard 测试（职责移到 pinvou3-app），authority 测试断言回退 CodeWhale
@@ -38,7 +39,7 @@
 
 ---
 
-## 阶段 1 已完成（commit `5f847284`，submodule pinvou3-patches 分支）
+## 阶段 1 已完成（commit `5f847284`，submodule pinvou3-patches 分支；重建前哈希，现不可解析）
 
 `crates/tui/src/prompts.rs` 加了 3 个 `OnceLock` override + setter + `effective_*()` getter，
 三处使用点改用 getter。**向后兼容**：override 未 set → 返回原 const，行为完全不变。

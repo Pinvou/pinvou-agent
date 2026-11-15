@@ -4,7 +4,7 @@
 >
 > 生成日期：2026-06-15。本文基于当前仓库源码、`README.md`、`process.md`、`docs/fork-modifications.md`、`docs/auto-compact-256K-tuning.md`、`docs/DeepSeek-TUI-工具系统.md` 与相关 Tauri/Rust/前端代码梳理。
 >
-> **注（2026-11 回填）**：本文为 2026-06-15 迁移期快照，未按当前主干逐条复核，接手时注意以下布局均已变化：底座子模块已由 `DeepSeek-TUI/` 更名 `CodeWhale/`（无 `branch` 字段，另新增 `private-runtimes/windows` 私有运行时子模块）；前端由 `tauri-bridge.js` 单文件迁移为 `src/features/*` + `src/platform/` 分层；Rust 由根级 `commands.rs`/`engine.rs`/`bridge/` 迁移为 `app/commands/` + `features/` + `platform/`；§8 的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`）已在主干整体移除；§11「Windows 打包必须重做」的结论已过时——NSIS 打包已在主干落地。现行权威入口：`AGENTS.md`、`docs/fork-modifications.md`、`docs/windows-private-runtime-submodule.md`、`docs/windows-rust-ci.md`。
+> **注（2026-11 回填）**：本文为 2026-06-15 迁移期快照，未按当前主干逐条复核，接手时注意以下布局均已变化：底座子模块已由 `DeepSeek-TUI/` 更名 `CodeWhale/`（无 `branch` 字段，另新增 `private-runtimes/windows` 私有运行时子模块）；前端由 `tauri-bridge.js` 单文件迁移为 `src/features/*` + `src/platform/` 分层；Rust 由根级 `commands.rs`/`engine.rs`/`bridge/` 迁移为 `app/commands/` + `features/` + `platform/`；§8 的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`）已在主干整体移除（正文其余散落的 workflow 提及——§1/§2/§4/§6/§12/§14 等——同为快照口径，不随本注逐条列举）；§11「Windows 打包必须重做」的结论已过时——NSIS 打包已在主干落地。现行权威入口：`AGENTS.md`、`docs/fork-modifications.md`、`docs/windows-private-runtime-submodule.md`、`docs/windows-rust-ci.md`。
 
 ## 1. 一句话定位
 
@@ -23,10 +23,10 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 | `pinvou3-app/src-tauri/` | Rust 后端、Tauri 配置、bundle 资源 | Windows 兼容主要改这里和打包配置 |
 | `DeepSeek-TUI/` | 底座 submodule，Cargo path dependency | 当前工作区该目录可能为空；必须先初始化 submodule |
 | `docs/` | 项目设计、阶段报告、fork 说明、测试方案 | 接手时要先读 `fork-modifications.md` 和 `process.md` |
-| `workflows/` | 开发源工作流数据与 Python 调度脚本 | `build.rs` 会同步到 Tauri bundle 快照 |
+| `workflows/` | 开发源工作流数据与 Python 调度脚本（快照条目：已在主干整体移除） | `build.rs` 同步到 Tauri bundle 快照（该同步已不存在） |
 | `scripts/` | 辅助脚本，包括 fork guard、模拟脚本、release 脚本 | 多数脚本偏 Bash/Linux，需要 Windows 适配 |
 
-接手时优先确认这 8 个核心模块：`pinvou3-app/src/tauri-bridge.js`、`commands.rs`、`engine_pool.rs`、`engine.rs`、`bridge/mod.rs`、`file_ingest.rs`、`harness.rs`、`DeepSeek-TUI/crates/tui`。前 7 个在 app 层，最后一个是底座依赖。
+接手时优先确认这 8 个核心模块：`pinvou3-app/src/tauri-bridge.js`、`commands.rs`、`engine_pool.rs`、`engine.rs`、`bridge/mod.rs`、`file_ingest.rs`、`harness.rs`、`DeepSeek-TUI/crates/tui`。前 7 个在 app 层，最后一个是底座依赖。（2026-11 注：`harness.rs` 属已移除的工作流子系统，实际待确认模块以现行 `app/commands/` + `features/` 布局为准。）
 
 当前 `.gitmodules` 指向：
 
@@ -119,7 +119,7 @@ tauri-bridge.js listen("chat:*")
 | `chat:user_input_required` | request_user_input 工具 | 渲染用户选择气泡 |
 | `chat:plan_ready` | Plan 模式方案产出 | 渲染方案卡 |
 | `artifact:disk` | file watcher | 监听 session workspace 新产物 |
-| `workflow:*` | harness/workflow | 工作流看板、角色状态、gate、fanout |
+| `workflow:*` | harness/workflow | 工作流看板、角色状态、gate、fanout（快照条目：工作流子系统已移除） |
 | `update:progress` | updater | 应用内升级下载进度 |
 
 多 session 并发是前端和后端一起保证的：后端每个 Engine 事件都带 `session_id`，前端 `onSessionEvent` 按 session buffer 分流，避免后台会话的 token 流污染当前会话。
@@ -150,7 +150,7 @@ pinvou3 不直接使用 `~/.deepseek/` 作为主数据目录，而是隔离到 `
 | `~/.pinvou3/settings.json` | 用户设置、模型 preset、本地/远端 API 配置 |
 | `~/.pinvou3/bundle/` | 内嵌 bundle 解包后的 prompt、workflow、MCP server 等 |
 | `~/.pinvou3/user/skills/` | pinvou3 私有用户 skills |
-| `~/.deepseek/skills/` | DeepSeek-TUI 标准用户 skills，工作流视图会合并展示 |
+| `~/.deepseek/skills/` | DeepSeek-TUI 标准用户 skills，工作流视图会合并展示（快照条目：底座现以 `.codewhale` 为主目录、`.deepseek` 仅 legacy fallback，工作流视图已移除） |
 | `~/.pinvou3/user/personas/` | 用户自创专家卡 |
 | `~/.pinvou3/sessions/<id>.json` | session 元数据和 messages |
 | `~/.pinvou3/sessions/<id>/workspace/` | 每个 session 独立工作目录 |
@@ -164,7 +164,7 @@ Windows 风险：代码多处默认读 `HOME`，Windows 原生通常是 `USERPRO
 
 - session JSON 与 artifacts 是用户价值数据，迁移/卸载/升级都应默认保留。
 - bundle 是可再生成资源，版本变化时可重解包，但不能覆盖 `~/.pinvou3/user/` 下的用户自定义内容。
-- workflow run 目录与 session 目录不同，不要把工作流项目误清理成普通聊天产物。
+- workflow run 目录与 session 目录不同，不要把工作流项目误清理成普通聊天产物。（快照条目：工作流子系统已移除，现无 workflow run 目录。）
 
 ## 7. 附件 ingestion 流程
 
@@ -475,9 +475,9 @@ Windows 原生后建议增加这些测试：
 - `pinvou3-app/` 和 `DeepSeek-TUI/` 分别负责什么？
 - 一条聊天消息如何从 `tauri-bridge.js` 进入 `commands.rs::chat`，再经过 `EnginePool`、`AppEngine`、DeepSeek-TUI 和 vLLM 回到 `chat:*` 事件？
 - 为什么不能在 pinvou3 里重新实现 Engine、ToolRegistry、SSE、Session、SkillRegistry、Commands、MCP、Hooks、Cycle、Compaction？
-- `~/.pinvou3/settings.json`、`sessions/`、`workspace/`、`artifacts/`、`workflows/`、`bundle/` 分别保存什么？
+- `~/.pinvou3/settings.json`、`sessions/`、`workspace/`、`artifacts/`、`workflows/`、`bundle/` 分别保存什么？（快照口径：`workflows/` 已随工作流子系统移除）
 - 新增领域 agent、slash command、外部 API、LLM 行为引导和 Tauri UI 分别应该改哪里？
-- `file_ingest.rs`、`harness.rs`、`bridge/mod.rs` 在主链路中分别承担什么职责？
+- `file_ingest.rs`、`harness.rs`、`bridge/mod.rs` 在主链路中分别承担什么职责？（快照口径：`harness.rs` 已移除）
 - 当前 `DeepSeek-TUI/` submodule 为空时会出现什么问题，如何初始化？
 - 哪些文档是接手时必须优先阅读的单一真相源？
 

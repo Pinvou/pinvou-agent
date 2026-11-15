@@ -30,7 +30,7 @@ core/engine/dispatch.rs        ── 解析 / 批处理 / 并行决策
         ▼
 core/engine/tool_execution.rs::execute_tool_with_lock
         │
-        ├─ MCP tool？  ─▶  McpPool::execute
+        ├─ MCP tool？  ─▶  McpPool::call_tool
         └─ Registry tool？  ─▶  ToolRegistry::execute_full_with_context
                                   │
                                   ▼
@@ -71,7 +71,7 @@ pub trait ToolSpec: Send + Sync {
 
 `ApprovalRequirement` 三档：`Auto` / `Suggest` / `Required`，由 capabilities 自动推断：含 `ExecutesCode` → Required，含 `WritesFiles` → Suggest，否则 Auto。
 
-`ToolContext`（同文件）携带：workspace 路径、sandbox policy、shell_manager、task_manager、handle_store、rlm_sessions、hook_executor、features、trust_mode、auto_approve、approval_mode 等会话级状态。
+`ToolContext`（同文件）携带：workspace 路径、sandbox policy、shell_manager、task_manager、handle_store、rlm_sessions、hook_executor、features、trust_mode、auto_approve 等会话级状态（`approval_mode` 挂在 App 层，不在 `ToolContext`）。
 
 ---
 
@@ -192,7 +192,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### 4.3 审批门控
 
-每个工具的 `approval_requirement` 决定是否在执行前发 `Event::ApprovalRequest`：
+每个工具的 `approval_requirement` 决定是否在执行前发 `Event::ApprovalRequired`：
 - `Auto` — 直接跑（read_file / git_log / web_search 等）
 - `Suggest` — 默认跑，但 `approval_mode=suggest` 时弹审批（write_file / edit_file 等）
 - `Required` — 必须用户点同意才跑（exec_shell 等；apply_patch 在 v0.8.37 是显式 `ApprovalRequirement::Suggest` 覆盖，不走 capabilities 推断）
@@ -328,9 +328,10 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ## 6. pinvou3 实际可见的工具
 
-`build_turn_tool_registry_builder` Yolo 路径展开后约 **77 个注册**（pandoc/OCR 探测失败时 75；
-全部为不同名注册，含 exec_wait/exec_interact 两个别名；catalog 层另有 code_execution /
-js_execution 推送，模型可见约 78–79）：
+`build_turn_tool_registry_builder` Yolo 路径展开后约 **74 个注册**，`engine.rs` 另注入 3 个 `agent_*` 子代理工具，合计约 **77 个**（pandoc/OCR 探测失败时 75；全部为不同名注册，含
+exec_wait/exec_interact 两个别名）。catalog 层 `ensure_advanced_tooling`（`turn_loop.rs` 每种模式都会调用）另推送 4 个：code_execution / js_execution（Python/Node 探针门控）与
+tool_search_tool_regex / tool_search_tool_bm25（无条件推送，`base.md` 即列有这两个 deferred
+discovery 工具），模型可见合计约 **81**，探针不可用时约 79：
 
 ```
 read_file write_file edit_file list_dir
@@ -356,11 +357,12 @@ review request_user_input recall_archive
 rlm_open rlm_eval rlm_configure rlm_close
 notify
 agent_open agent_eval agent_close
+＋ catalog 推送 4：code_execution js_execution tool_search_tool_regex tool_search_tool_bm25
 ```
 
-INSTRUCTIONS_MD（`prompts/base.md`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox）。剩余工具靠模型自行从 schema 探索。
+`BASE_PROMPT`（`include_str!("prompts/base.md")`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox 和 tool_search_tool_regex / tool_search_tool_bm25 deferred discovery）。剩余工具靠模型自行从 schema 探索。
 
-Plan 模式约 **40 个工具**（`Feature::WebSearch` 默认开；关闭则约 36）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/github/pr_attempt/automation 各自的 list/read）、todo 8、plan、review、user_input、recall_archive、notify、web 4。
+Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/github/pr_attempt/automation 各自的 list/read）、todo 8、plan、review、user_input、recall_archive、notify、web 4。
 
 ---
 
@@ -387,8 +389,9 @@ RUST_LOG=engine.tool_execution=debug ./pinvou3-app/run-dev.sh
 
 输出 `tool.exec.start` 和 `tool.exec.end`，含 tool 名、dispatch 路径、耗时、输出字节数、success 标志。
 
-查工具是否注册：设置 `RUST_LOG` 后在日志里查 registry 构建输出，或在 engine 调用点断点检查
-`ToolRegistry`。注意 v0.8.37 没有 `/tools` slash command（该命令是后来版本加入的 debug
+查工具是否注册：v0.8.37 的 registry 构建本身不打日志；可在 engine 调用点断点检查
+`ToolRegistry::contains / names / len`，或按上文设置 `RUST_LOG=engine.tool_execution=debug`
+观察每次实际执行（`tool.exec.start/end`）反推。注意 v0.8.37 没有 `/tools` slash command（该命令是后来版本加入的 debug
 入口，且它展示的是最近一次 Prepared Tool Request 快照而非当前 registry）。
 
 ---

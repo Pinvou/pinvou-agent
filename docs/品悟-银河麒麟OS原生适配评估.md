@@ -8,11 +8,11 @@
 >
 > 当前结论：技术可行，无需重写为 Qt/GTK；单版本、单架构适配复杂度中等，V11 开明包、严格沙箱、官方认证及全国产 CPU 矩阵会显著提高复杂度。
 >
-> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-15 评估快照，未按当前主干逐条复核；总体「技术可行」结论仍有效，正文个别已过时的事实均已就地加注修正——§3/§5.1 的 glibc 归因出入以 [`麒麟OS-V11适配踩坑记录.md`](./麒麟OS-V11适配踩坑记录.md) 与 `scripts/check-linux-glibc-floor.sh` 为准、§5.4 SenseVoice 打包布局已改为按机器目录映射、§5.8 的「单包 OTA 清单互相覆盖」问题已由 `latest.json` 平台 `packages` 映射在协议层解决（§9/§10 的对应风险与决策行同步失效）、LoongArch64 构建与发布链路已于 2026-10 落地主线（仍需按本节原则做真机回归）。麒麟适配现行记录以踩坑记录为准。
+> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-15 评估快照，未按当前主干逐条复核；总体「技术可行」结论仍有效，正文个别已过时的事实均已就地加注修正——§3/§5.1 的 glibc 归因出入以 [`麒麟OS-V11适配踩坑记录.md`](./麒麟OS-V11适配踩坑记录.md) 与 `scripts/check-linux-glibc-floor.sh` 为准、§5.4 SenseVoice 打包布局已改为按机器目录映射、§5.8 的「单包 OTA 清单互相覆盖」问题在现行 `latest.json` 数据模型下已不复存在（`platforms` 多平台映射，类型见 `features/updater/mod.rs`；应用内 OTA 通道本身尚未实施，§9/§10 的对应风险与决策行同步失效）、LoongArch64 构建与发布链路已于 2026-10 落地主线（仍需按本节原则做真机回归）。麒麟适配现行记录以踩坑记录为准。
 
 ## 1. 评估背景
 
-品悟当前已具备 Linux ARM64 DEB 发布和 OTA 能力，需要评估其面向银河麒麟桌面操作系统进行原生适配时的技术可行性、工作范围、风险和预计投入。
+品悟当前已具备 Linux ARM64 DEB 发布能力（应用内 OTA 为未实施的规划能力，见 §5.8 注），需要评估其面向银河麒麟桌面操作系统进行原生适配时的技术可行性、工作范围、风险和预计投入。
 
 本评估参考：
 
@@ -181,7 +181,8 @@ XMODIFIERS=@im=fcitx
 品悟不仅包含主 Rust ELF，还包含或调用其他本地二进制。当前打包链路需要覆盖：
 
 - SenseVoice runtime 从固定上游 commit 在对应架构的 Ubuntu 22.04 runner 原生构建，
-  经 `x86_64` / `aarch64` overlay 分别装入；源码树不再保存单架构 ELF；
+  经 `x86_64` / `aarch64` / `loongarch64` overlay 分别装入（LoongArch64 为交叉构建，
+  见下文 2026-10 注）；源码树不再保存单架构 ELF；
 - 历史 x86_64 包中的 `web-template` 曾混入 ARM64 esbuild；
 - fastembed/ONNX Runtime 需要逐架构确认可用性；
 - ffmpeg、pandoc、poppler、tesseract、LibreOffice 等系统包需要确认目标架构的软件源支持。
@@ -273,7 +274,7 @@ sense-voice-main-aarch64-unknown-linux-gnu
 
 当前 Linux OTA 使用单个 `latest.json`，清单只包含一个包 URL。发布第二个架构时，后上传的清单会覆盖前一个架构，导致另一架构客户端可能下载错误安装包。
 
-> 注（2026-11 归档）：现行主干 `latest.json` 已支持按平台 `packages` 映射（`macos-universal` / `linux-arm64` 等，含 per-platform `url/sha256/size/version` 与顶层字段回退，见 `features/updater/mod.rs`），本节描述的"单包 URL 互相覆盖"问题在协议层已解决；本节其余建议按现行协议评估即可。
+> 注（2026-11 归档）：现行主干 `latest.json` 的数据模型已支持按平台 `platforms` 映射（`macos-universal` / `linux-arm64` 等，含 per-platform `url/sha256/size/version` 与顶层字段回退，类型见 `features/updater/mod.rs`），本节描述的"单包 URL 互相覆盖"问题在采用该清单格式后即不复存在；注意应用内 OTA 通道本身尚未实施（`features/updater/` 各平台均为 unsupported 占位），本节其余建议按该数据模型评估即可。
 
 应改为以下任一协议：
 
@@ -453,7 +454,7 @@ latest-amd64.json
 - [ ] 网页类任务和 esbuild；
 - [ ] MCP server；
 - [ ] 连接器 CLI；
-- [ ] 定时任务和工作流；
+- [ ] 定时任务和工作流（快照口径：工作流子系统未随主线发布，现行仅定时任务在列）；
 - [ ] 远控和产物预览。
 
 ### 8.4 安全与权限
@@ -486,11 +487,11 @@ latest-amd64.json
 | 目标系统缺少 WebKitGTK 4.1 | 中 | 高 | 首周探针确认；使用 Kaiming runtime 或提高最低版本 |
 | Kaiming 沙箱无法承载宿主命令和文件访问 | 高 | 高 | 提前与麒麟确认权限；必要时拆分宿主服务 |
 | 包内混入错误架构 ELF | 已发生 | 高 | 构建后自动扫描全部 ELF 和 Node native binary |
-| 新系统构建导致 glibc 过高 | 已发生 | 高 | 固定 Debian 12/目标麒麟兼容构建基线 |
+| 新系统构建导致 glibc 过高 | 已发生 | 高 | 固定 Ubuntu 22.04（glibc 2.35）构建基线；勿用 Debian 12 等更高 glibc 环境构建（见踩坑记录与 `release-packages.yml` 发布基线） |
 | 国产 GPU 驱动与 WebKit EGL 冲突 | 中 | 高 | 物理机矩阵；按环境选择渲染后端，保留软件渲染降级 |
 | 全局 sudo 免密阻碍认证 | 高 | 高 | PolicyKit + 最小权限 helper |
 | 依赖包在私网或某架构不可用 | 高 | 中高 | 自包含、纯 Rust 替代或管理员预装 |
-| 单一 OTA 清单覆盖错误架构 | 高 | 高 | 分架构清单和包架构校验（注：已由 §5.8 的 per-platform `packages` 映射解决） |
+| 单一 OTA 清单覆盖错误架构 | 高 | 高 | 分架构清单和包架构校验（注：现行 `latest.json` 数据模型已含 per-platform `platforms` 映射，见 §5.8 注；OTA 通道本身未实施） |
 | 把客户端适配误解为本机模型适配 | 中 | 高 | 明确第一阶段模型仍由内网推理服务提供 |
 
 ## 10. 推荐决策
@@ -512,7 +513,7 @@ latest-amd64.json
 - 在没有真实硬件验证时承诺龙芯、申威、MIPS 全支持；
 - 为了进入沙箱而删除品悟的文件、工具和 Agent 核心能力；
 - 继续把 `NOPASSWD: ALL` 带入政企或认证版本；
-- 用一个 `latest.json` 同时发布多个 CPU 架构。（注：已由 §5.8 的 per-platform `packages` 映射解决）
+- 用一个 `latest.json` 同时发布多个 CPU 架构。（注：现行数据模型的 per-platform `platforms` 映射已覆盖，见 §5.8 注）
 
 ## 11. 验收标准
 
