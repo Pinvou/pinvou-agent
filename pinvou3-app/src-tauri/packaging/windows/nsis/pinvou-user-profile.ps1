@@ -11,7 +11,13 @@
 # name collisions would make a name-based map pick the wrong profile or
 # none). Exits non-zero WITHOUT printing a path when the owner cannot be
 # determined unambiguously; the caller must treat any non-zero exit as
-# "keep user data" (fail safe - never guess a profile to wipe).
+# "keep user data" (fail safe - never guess a profile to wipe). The same
+# contract covers the stdout encoding: the uninstaller consumes this output
+# through nsExec /OEM, which decodes the byte stream with the system OEM
+# code page, so a profile path that is not representable in that code page
+# would be silently rewritten with replacement characters (the printed path
+# would stop matching the real profile) - the resolver detects that case
+# and exits non-zero before printing anything, keeping the data instead.
 $ErrorActionPreference = "Stop"
 
 $sessionId = (Get-Process -Id $PID).SessionId
@@ -42,6 +48,25 @@ foreach ($userProfile in Get-CimInstance -ClassName Win32_UserProfile) {
     }
 }
 if ($profileMatches.Count -ne 1) {
+    exit 2
+}
+
+# Loss check for the nsExec /OEM consumption (the uninstaller decodes this
+# stream with the system OEM code page): verify the resolved path survives a
+# strict round-trip through that exact encoding. With an exception-throwing
+# encoder fallback, the first unrepresentable character aborts before any
+# output, so the caller keeps the data and shows the manual-removal guidance
+# instead of deleting against a replacement-mangled prefix that would
+# silently miss every real target.
+$oemCp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage' -Name OEMCP).OEMCP
+$oemEncoding = [System.Text.Encoding]::GetEncoding(
+    $oemCp,
+    [System.Text.EncoderExceptionFallback]::new(),
+    [System.Text.DecoderExceptionFallback]::new()
+)
+try {
+    [void]$oemEncoding.GetBytes($profileMatches[0])
+} catch {
     exit 2
 }
 [Console]::Out.Write($profileMatches[0])

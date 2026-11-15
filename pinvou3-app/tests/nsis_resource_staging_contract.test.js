@@ -404,6 +404,21 @@ assert.match(
   /exit 2/u,
   "the resolver must fail closed (non-zero exit, no path printed) when the owner is ambiguous",
 );
+assert.match(
+  userProfileScript,
+  /OEMCP/u,
+  "the resolver must learn the exact code page the uninstaller's nsExec /OEM decode uses, not assume its own console encoding",
+);
+assert.match(
+  userProfileScript,
+  /EncoderExceptionFallback[\s\S]*?GetBytes\(\$profileMatches\[0\]\)/u,
+  "the resolver must round-trip the resolved path through the /OEM code page with an exception-throwing fallback: a path with characters outside that code page would be rewritten with replacement characters, every deletion target would miss, and the zero-status/nonempty guard would hide the loss",
+);
+assert.match(
+  userProfileScript,
+  /GetBytes[\s\S]*?exit 2[\s\S]*?\[Console\]::Out\.Write/u,
+  "the encoding loss check must sit between path resolution and stdout emission, exiting non-zero without printing so the uninstaller keeps the data under the existing manual-removal guidance",
+);
 assert.doesNotMatch(
   userProfileScript,
   /RmDir|Remove-Item/u,
