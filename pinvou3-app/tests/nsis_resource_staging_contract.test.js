@@ -112,11 +112,12 @@ assert.match(
 // Round-2 space safety: trailing separators are stripped from the staging
 // source and destination before the native robocopy call (PowerShell 5.1
 // parses a trailing backslash before a closing quote as a literal quote,
-// corrupting the argument for checkout paths containing spaces).
-assert.match(
-  stageScript,
-  /TrimEnd\('\\',\s*'\/'\)/u,
-  "staging source and destination paths must strip trailing separators before robocopy (both call sites)",
+// corrupting the argument for checkout paths containing spaces). Both call
+// sites are load-bearing — dropping either one corrupts one side of the
+// robocopy invocation — so the pin counts occurrences, not mere presence.
+assert.ok(
+  (stageScript.match(/TrimEnd\('\\',\s*'\/'\)/gu) || []).length >= 2,
+  "staging source and destination paths must both strip trailing separators before robocopy (both call sites)",
 );
 assert.match(stageScript, /Measure-Object -Property Length -Sum/u);
 assert.match(stageScript, /File \/a \/r/u);
@@ -281,7 +282,7 @@ assert.match(
 
 // MSI user-data deletion must stay behind an explicit opt-in property
 // (mirroring the NSIS uninstaller's unchecked delete-app-data checkbox,
-// which additionally removes the WebView2 cache directories).
+// which additionally removes the WebView2 app-data directories).
 assert.match(
   mainWxs,
   /\(REMOVE = "ALL"\) AND NOT UPGRADINGPRODUCTCODE AND PINVOU_REMOVE_USER_DATA/u,
@@ -302,11 +303,6 @@ assert.match(
   /Base: tauri-cli-v2\.12\.4/u,
   "main.wxs must carry the same provenance contract as the NSIS template",
 );
-assert.match(
-  mainWxs,
-  /Base: tauri-cli-v2\.12\.4/u,
-  "main.wxs must carry the same provenance contract as the NSIS template",
-);
 // The provenance version must track the bundler actually pinned by
 // package.json: a CLI bump without re-basing the template passes every
 // other pin (no CI lane runs makensis), so bind the header to the
@@ -319,37 +315,84 @@ assert.ok(
     cliPin +
     "); re-base the template when the CLI moves",
 );
-// The NSIS delete-app-data checkbox must still remove ~/.pinvou3 (MSI
-// RemovePinvouUserData parity), but through the interactive session
-// owner's profile: the uninstaller runs elevated, and under
-// over-the-shoulder elevation $PROFILE (like SetShellVarContext current)
-// resolves against the elevation token's account, which would wipe the
-// admin's data instead of the prompting user's. Resolution fails safe —
-// any non-zero resolver exit keeps the data and says so.
+// The NSIS delete-app-data checkbox must remove the prompting user's
+// ~/.pinvou3 and app-data directories (MSI RemovePinvouUserData parity),
+// through the interactive session owner's profile: the uninstaller runs
+// elevated, and under over-the-shoulder elevation the shell constants
+// ($PROFILE/$APPDATA/$LOCALAPPDATA, like SetShellVarContext current)
+// resolve against the elevation token's account, which would wipe the
+// admin's data instead of the prompting user's. The whole deletion block
+// therefore lives in the Pinvou-owned hooks macro (not the rebase-costly
+// template fork) and derives every target from the resolver's profile.
+assert.match(
+  baseInstallerHooks,
+  /!macro PinvouDeleteInteractiveUserData/u,
+  "the delete-app-data resolution must stay in the Pinvou-owned hooks macro, not the upstream-fork template",
+);
+assert.doesNotMatch(
+  baseInstallerHooks,
+  /!insertmacro PinvouDeleteInteractiveUserData/u,
+  "the hooks must define PinvouDeleteInteractiveUserData, not insert it",
+);
 assert.match(
   installerTemplate,
-  /RmDir \/r "\$9\\\.pinvou3"/u,
-  "the checkbox must remove ~/.pinvou3 via the resolved interactive-user profile, not $PROFILE",
+  /!insertmacro PinvouDeleteInteractiveUserData/u,
+  "the template must invoke the hook macro from the delete-app-data checkbox",
 );
 assert.doesNotMatch(
   installerTemplate,
-  /RmDir \/r "\$PROFILE/u,
-  "the uninstaller must not target $PROFILE: it follows the elevation token under over-the-shoulder elevation",
+  /RmDir \/r "\$(PROFILE|APPDATA|LOCALAPPDATA)/u,
+  "the uninstaller must not delete through token-following shell constants: $PROFILE/$APPDATA/$LOCALAPPDATA follow the elevation token under over-the-shoulder elevation",
 );
 assert.match(
-  installerTemplate,
-  /pinvou-user-profile\.ps1/u,
-  "the interactive-user profile resolver must ship with the uninstaller",
+  baseInstallerHooks,
+  /File "\/oname=\$PLUGINSDIR\\pinvou-user-profile\.ps1" "\$\{PINVOU_HOOKS_DIR\}\\\.\.\\\.\.\\\.\.\\packaging\\windows\\nsis\\pinvou-user-profile\.ps1"/u,
+  "the resolver must be packed from the committed packaging/windows/nsis source (same ${PINVOU_HOOKS_DIR} arithmetic as the sibling hook scripts)",
 );
 assert.match(
-  installerTemplate,
+  baseInstallerHooks,
+  /nsExec::ExecToStack '\/OEM powershell -NoProfile -ExecutionPolicy Bypass -File "\$PLUGINSDIR\\pinvou-user-profile\.ps1"'/u,
+  "the resolver invocation must request /OEM decoding: PowerShell writes redirected stdout in the OEM code page and a mis-decoded path would silently no-op the deletion",
+);
+assert.match(
+  baseInstallerHooks,
+  /\$\{If\} \$8 == 0\s*\$\{AndIf\} \$9 != ""/u,
+  "the delete guard must string-compare the exit code and require a non-empty path: nsExec pushes the literal \"error\" on spawn failure and LogicLib '=' is numeric (\"error\" parses as 0)",
+);
+assert.match(
+  baseInstallerHooks,
+  /RmDir \/r "\$9\\AppData\\Roaming\\\$\{BUNDLEID\}"\s*RmDir \/r "\$9\\AppData\\Local\\\$\{BUNDLEID\}"\s*RmDir \/r "\$9\\\.pinvou3"/u,
+  "all three deletion targets must derive from the resolved interactive-user profile",
+);
+assert.match(
+  baseInstallerHooks,
   /Could not identify the interactive user's profile/,
-  "profile-resolution failure must keep ~/.pinvou3 and tell the user (fail safe, never guess-and-wipe)",
+  "profile-resolution failure must keep the data and tell the user (fail safe, never guess-and-wipe)",
 );
 assert.match(
   userProfileScript,
   /Win32_Process/u,
   "the resolver must derive the owner from the interactive session's shell process",
+);
+assert.match(
+  userProfileScript,
+  /SessionId = \$sessionId/u,
+  "the resolver must scope the shell-process enumeration to the uninstaller's own session: over-the-shoulder elevation keeps the requesting user's session, while the first explorer.exe across all sessions can belong to any other logged-in user",
+);
+assert.match(
+  userProfileScript,
+  /GetOwnerSid/u,
+  "the resolver must take the session owner's SID, never its bare account name",
+);
+assert.match(
+  userProfileScript,
+  /ReturnValue -eq 0/u,
+  "the resolver must check GetOwnerSid's ReturnValue before trusting the SID",
+);
+assert.match(
+  userProfileScript,
+  /Win32_UserProfile[\s\S]*?SID -ieq \$ownerSids\[0\]/u,
+  "profile mapping must compare Win32_UserProfile SID against the session owner's SID: name-based leaf matching breaks on renames and picks the wrong profile on cross-domain name collisions",
 );
 assert.match(
   userProfileScript,
@@ -361,12 +404,20 @@ assert.doesNotMatch(
   /RmDir|Remove-Item/u,
   "the resolver must never delete anything itself",
 );
+assert.doesNotMatch(
+  baseInstallerHooks,
+  /pinjou_/u,
+  "the hooks must never reference a j-spelled identifier: it would be a makensis-dangling label no test lane compiles away",
+);
 // Template delta pin: the dump_system_prompt dev-tool exclusion has no
-// runtime test today (nothing enumerates that binary yet), so pin its
-// presence in both binary loops (install and uninstall) — dropping either
-// would reinstall the dev tool into every machine.
+// runtime test today (nothing enumerates that binary yet), so pin the
+// exclusion in both binary loops (install and uninstall). The count targets
+// the loop guard itself — the template's third dump_system_prompt mention
+// is the provenance comment, which must not be able to keep the pin green
+// after either loop loses its exclusion.
 assert.ok(
-  (installerTemplate.match(/dump_system_prompt/g) || []).length >= 2,
+  (installerTemplate.match(/!if "\{\{this\}\}" != "dump_system_prompt\.exe"/gu) || [])
+    .length >= 2,
   "dump_system_prompt.exe must be excluded in both binary loops (install and uninstall)",
 );
 

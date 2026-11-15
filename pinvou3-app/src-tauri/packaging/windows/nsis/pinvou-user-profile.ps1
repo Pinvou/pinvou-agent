@@ -1,39 +1,43 @@
 # Prints the interactive session user's profile directory (no trailing
-# newline) so the NSIS uninstaller can target the prompting user's
-# ~/.pinvou3 under over-the-shoulder elevation, where the elevated process
-# token belongs to the admin account rather than the uninstalling user
-# ($PROFILE and SetShellVarContext current both follow the elevation token).
+# newline) so the NSIS uninstaller can target the prompting user's data
+# under over-the-shoulder elevation, where the elevated process token
+# belongs to the admin account rather than the uninstalling user.
 #
-# Resolution: the owner of the first explorer.exe process (the shell of the
-# interactive session) mapped to a Win32_UserProfile LocalPath whose leaf
-# equals the owner's account name. Exits non-zero WITHOUT printing a path
-# when the owner cannot be determined or the mapping is ambiguous; the
-# caller must treat any non-zero exit as "keep user data" (fail safe —
-# never guess a profile to wipe).
+# Resolution: the session owner is taken from the shell processes of the
+# uninstaller's OWN session - UAC elevation swaps the token but keeps the
+# requesting user's session, so this process's session id identifies the
+# prompting user regardless of the elevation - and is matched against
+# Win32_UserProfile by SID, never by name (account renames and cross-domain
+# name collisions would make a name-based map pick the wrong profile or
+# none). Exits non-zero WITHOUT printing a path when the owner cannot be
+# determined unambiguously; the caller must treat any non-zero exit as
+# "keep user data" (fail safe - never guess a profile to wipe).
 $ErrorActionPreference = "Stop"
 
-$owner = $null
-foreach ($process in Get-CimInstance -ClassName Win32_Process -Filter "Name = 'explorer.exe'") {
+$sessionId = (Get-Process -Id $PID).SessionId
+
+$ownerSids = @()
+foreach ($process in Get-CimInstance -ClassName Win32_Process -Filter "Name = 'explorer.exe' AND SessionId = $sessionId") {
     try {
-        $candidate = Invoke-CimMethod -InputObject $process -MethodName GetOwner
+        $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid
     } catch {
         continue
     }
-    if ($null -ne $candidate -and -not [string]::IsNullOrWhiteSpace($candidate.User)) {
-        $owner = $candidate
-        break
+    if ($null -ne $owner -and $owner.ReturnValue -eq 0 -and -not [string]::IsNullOrWhiteSpace($owner.Sid)) {
+        $ownerSids += $owner.Sid
     }
 }
-if ($null -eq $owner) {
+$ownerSids = @($ownerSids | Select-Object -Unique)
+if ($ownerSids.Count -ne 1) {
     exit 2
 }
 
 $profileMatches = @()
 foreach ($userProfile in Get-CimInstance -ClassName Win32_UserProfile) {
-    if ([string]::IsNullOrWhiteSpace($userProfile.LocalPath)) {
+    if ([string]::IsNullOrWhiteSpace($userProfile.LocalPath) -or [string]::IsNullOrWhiteSpace($userProfile.SID)) {
         continue
     }
-    if ((Split-Path -Path $userProfile.LocalPath -Leaf) -ieq $owner.User) {
+    if ($userProfile.SID -ieq $ownerSids[0]) {
         $profileMatches += $userProfile.LocalPath
     }
 }
