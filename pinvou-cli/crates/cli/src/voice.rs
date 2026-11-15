@@ -2858,8 +2858,8 @@ mod tests {
         anthropic_stop_reason_says_truncated, apply_postprocess_reasoning_controls,
         asr_download_max_bytes, asr_preflight, asr_timeout_secs, download_to, execute,
         native_engine_timeout_secs, postprocess_anthropic_body, postprocess_chat_body,
-        postprocess_http_exchange, transcribe_with, voice_postprocess_max_tokens,
-        voice_postprocess_prompt,
+        postprocess_http_exchange, transcribe_with, voice_postprocess_input_clipped,
+        voice_postprocess_max_tokens, voice_postprocess_prompt,
     };
 
     /// Serves `body` exactly once on a loopback `std::net::TcpListener` (no
@@ -3716,6 +3716,69 @@ content-length: {}\r\n\r\n{}",
             error.to_string().contains("--text"),
             "the refusal must name the text-source options: {error}"
         );
+    }
+
+    /// r8 review: the r6 waiver declined a test for the clip-OR composition
+    /// on the model path (host-gated), but the empty-input short-circuit is
+    /// host-free — `execute` runs it without config or a model, so the OR's
+    /// edit-mode gating is directly assertable. Dropping the `Edit` gate
+    /// (the exact one-token slip the r2 wave fixed in the GUI — dictation
+    /// flagged for reference-context clipping) or dropping the OR itself
+    /// both turn this red.
+    #[test]
+    fn empty_input_carries_the_clip_flag_with_edit_mode_gating() {
+        let clipped_draft = "d".repeat(20_000);
+        assert!(
+            voice_postprocess_input_clipped(&clipped_draft),
+            "the fixture must actually clip (guards against a silent cap raise past the fixture)"
+        );
+
+        // Edit mode: a clipped draft is the rewrite target — its clipping
+        // must OR into `truncated` on the empty short-circuit.
+        let edit = execute(
+            VoiceCommand::Postprocess {
+                mode: PostprocessMode::Edit,
+                text: Some("   \n\t".to_string()),
+                text_file: None,
+                draft: Some(clipped_draft.clone()),
+                draft_file: None,
+            },
+            OutputMode::Json,
+        )
+        .expect("the empty short-circuit must succeed without a host");
+        assert!(
+            edit.stdout.contains("\"source\":\"empty\""),
+            "{}",
+            edit.stdout
+        );
+        assert!(
+            edit.stdout.contains("\"truncated\":true"),
+            "edit-mode draft clipping must flag the empty result: {}",
+            edit.stdout
+        );
+
+        // Task mode: the same clipped draft is reference context only —
+        // the Edit gate must keep `truncated` false.
+        let task = execute(
+            VoiceCommand::Postprocess {
+                mode: PostprocessMode::Task,
+                text: Some("   \n\t".to_string()),
+                text_file: None,
+                draft: Some(clipped_draft),
+                draft_file: None,
+            },
+            OutputMode::Json,
+        )
+        .expect("the empty short-circuit must succeed without a host");
+        assert!(
+            task.stdout.contains("\"truncated\":false"),
+            "reference-context clipping must NOT flag the empty result: {}",
+            task.stdout
+        );
+        // (The first OR leg — raw-text clipping — cannot reach the empty
+        // short-circuit: a clipped raw text truncates to a non-empty
+        // prefix, so the model path runs instead. Only the draft leg can
+        // contribute here, which is exactly what the two cases above pin.)
     }
 }
 
