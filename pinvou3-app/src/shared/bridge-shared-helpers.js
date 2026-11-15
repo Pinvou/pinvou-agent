@@ -3469,7 +3469,7 @@
           gen: sadj.gen == null ? null : sadj.gen,
           prompt: sadj.prompt == null ? null : sadj.prompt,
         } : null,
-        appVersion: snap.app ? snap.app.pinvou3_version + bt("betaVersionSuffix") : "—",
+        appVersion: snap.app ? snap.app.pinvou3_version : "—",
         uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
       };
       if (snap.vllm && snap.vllm.max_model_len) {

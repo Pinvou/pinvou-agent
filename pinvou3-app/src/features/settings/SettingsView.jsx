@@ -3087,7 +3087,7 @@ function hasStoredCredential(record) {
         return (
           <div ref={versionUpdateRef} id="settings-version-update">
             <IOSSection title={t.uiSettings.version}>
-              <IOSRow label={t.uiSettings.currentVersion} desc={t.uiSettings.beta} value={`v${currentVersion}`} />
+              <IOSRow label={t.uiSettings.currentVersion} value={`v${currentVersion}`} />
               <IOSRow label={upd && upd.available ? t.newVersionFound : t.checkUpdate} desc={updateStatusDesc}>
               <button type="button" data-settings-update-action="true" onClick={handleUpdateAction} disabled={updateButtonDisabled} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed">{updateButtonLabel}</button>
             </IOSRow>
