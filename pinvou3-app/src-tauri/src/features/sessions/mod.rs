@@ -239,6 +239,25 @@ pub enum SessionKind {
 /// LLM stops after a single tool call, the bridge automatically sends a
 /// "continue" message to drive the agent loop. Reset to 0 on every
 /// user-initiated message.
+/// Test barrier for `concurrent_imports_serialize_per_archive_lane`
+/// (review round-10 follow-up, same shape as the mode-state aux-seed
+/// gate): arming the gate makes `import_archive` park right after taking
+/// the lane and flip the boundary flag, so the test lands the winner's
+/// stage + record at a provably post-lane point instead of guessing with
+/// a fixed sleep. Target-scoped to one archive path: the flags are
+/// process-global under cargo's parallel test runner, and another test's
+/// import must never park here or flip the boundary. All three are
+/// compiled out of production builds.
+#[cfg(test)]
+static IMPORT_LANE_GATE_ARMED_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static IMPORT_LANE_GATE_TARGET_FOR_TEST: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+#[cfg(test)]
+static IMPORT_LANE_AT_LANE_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[derive(Clone)]
 pub struct SessionStore {
     /// Underlying upstream session manager (durable JSON store).
