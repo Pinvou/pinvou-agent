@@ -3811,41 +3811,22 @@ mod tests {
         );
     }
 
-    /// r9 审 m8：产物读取字节帽——超大文件跳过（退对话流审查），不为截 30k
-    /// 字符整读进内存。行为钉 helper 本体；调用点用源钉（删调用=红）。
+    /// r9 审 m8 + 限制审计 rebase 后继：产物读取硬读界——读取侧 Take 限长
+    /// （取代 stat 预检，同时闭合 stat→read 的 TOCTOU 窗）。行为 fixture
+    /// （>50 MiB）不重（同 visual_preview r4 豁免口径：常量编译期定，fixture
+    /// 成本压过覆盖收益）；调用点用源钉（删调用=红）。
     #[test]
-    fn latest_artifact_file_caps_oversize_reads() {
-        let ws = tempfile::tempdir().expect("tempdir");
-        let small = ws.path().join("small.txt");
-        std::fs::write(&small, b"hello artifact").expect("write small");
-        assert!(
-            artifact_within_read_cap(&small),
-            "normal artifact within cap must be readable"
-        );
-
-        let big = ws.path().join("big.txt");
-        std::fs::write(&big, vec![b'a'; (ARTIFACT_READ_BYTE_CAP + 1) as usize]).expect("write big");
-        assert!(
-            !artifact_within_read_cap(&big),
-            "oversize artifact must be skipped, not fully read into memory"
-        );
-
-        let missing = ws.path().join("missing.txt");
-        assert!(
-            !artifact_within_read_cap(&missing),
-            "unreadable artifact = skip (same degradation as binary files)"
-        );
-
+    fn latest_artifact_file_take_limited_read_stays_wired() {
         // 只扫生产区（tests module 之前）——self-反引：include_str 全文含本测试
         // 自身的 needle 文本，删调用点也恒绿（r9 突变复核抓出）；也不能锚
         // #[cfg(test)] 首现（生产区 182 行有 cfg 辅助项）。
         let source = include_str!("mod.rs");
         let prod_end = source.find("mod tests {").expect("tests module present");
         assert!(
-            source[..prod_end].contains("if !artifact_within_read_cap(&abs) {"),
-            "the cap guard must be wired into latest_artifact_file before \
-             read_to_string; deleting the call site re-opens the unbounded \
-             read (r9 review m8)"
+            source[..prod_end].contains("file.take(hard_cap + 1)"),
+            "the hard read cap must be wired into latest_artifact_file's \
+             Take-limited read; deleting it re-opens the unbounded read \
+             (r9 review m8, ported to the Take-limited successor)"
         );
     }
 
