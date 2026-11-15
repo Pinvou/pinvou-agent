@@ -418,11 +418,19 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   last-writer-wins snapshots can never clobber an external edit. A steered
   delivery stays queued until the engine reports `SteerCommitted` for it — the
   done marker and the spool-file removal land on commit (the marker is what a
-  keyed retry consults for dedup — it vouches by content: the marker records a
-  SHA-256 fingerprint of the delivered body, so only a re-spooled body that still
-  matches the fingerprint is suppressed; a body replaced in the commit-tail window
-  re-delivers once under the at-least-once discipline, and legacy empty markers
-  vouch for nothing), while a dropped steer leaves the file
+  keyed retry consults for dedup, and the two consumers answer it differently:
+  the app-side Rust watcher vouches by content — the marker records a SHA-256
+  fingerprint of the delivered body, so a re-spooled body whose spool file
+  still exists when the watcher reaches it is suppressed only while the
+  fingerprint still matches, a mismatching body re-delivers, and a legacy
+  empty marker vouches for nothing — while the public MCP sender answers a
+  retry by marker existence alone, reporting delivered for any surviving
+  marker including a legacy empty one, without comparing content). Watcher
+  content replay therefore applies only to a replacement body whose spool
+  file remains queued when the watcher's pass reaches it; a replacement that
+  lands inside the committed arm's re-verify-to-removal residual is removed
+  untried under the old body's marker (the µs-scale residual disclosed
+  below), not re-delivered. A dropped steer leaves the file
   queued and re-delivers on the next poll — or later in the same pass, when
   the drop lands ahead of the file's sorted position — bounded per process
   (a watcher restart re-buys the cycle budget, the same per-process
