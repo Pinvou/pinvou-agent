@@ -657,8 +657,22 @@ function enforceLazyChunks() {
 // B desktop and 126,578 B web on the local toolchain — inside the 492_000
 // desktop and 129_000 web ceilings main already set, so no raise of its
 // own. This cap does not promise headroom for unrelated main changes.
-
-export const MAIN_ENTRY_BUDGET_BYTES = 494_000;
+//
+// PR #847 rebase re-measure on the limits-audit tip rebased onto the
+// 2026-11-15 main: the audit's frontend lanes join the shared startup
+// graph — the rewind chip's bounded-window expander, the knowledge
+// paging generation guards plus the "showing first N" disclosure keys,
+// the localized paste-refusal copy delivered through
+// attachments.notifyPasteRejected, the archive 200-entry strings, and
+// the derived design-inspector copy figures. Measured on the local
+// node 26 toolchain: 493,834 B desktop — 1,834 B over the 492_000
+// ceiling — so the desktop ceiling takes the next thousand step; with
+// #826's virtual-display surface and #835's fork/archive-import UI in
+// the same base, the same re-measure reads 494,589 B desktop — 589 B
+// over the 494_000 step — so the ceiling takes the next thousand step
+// again. The web entry measured 126,560 B and stays under 129_000. This
+// cap does not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 495_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
