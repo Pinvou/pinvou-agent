@@ -3,8 +3,10 @@
 // message in the current UI language; the raw backend diagnostic never
 // reaches the card (matching the Official repo's PR #442 behavior).
 
-// Code parsing lives in the shared helper (also consumed by app/main.jsx);
-// this module keeps re-exporting `errorCode` as part of its public surface.
+// Code parsing lives in the shared helper so the deferred picker
+// localization can consume it without a second extraction; this module is
+// its only production consumer today and keeps re-exporting `errorCode` as
+// part of its public surface.
 import { errorCode } from '../../shared/user-facing-error.js';
 
 // Round-37 F3 (review #455): the install channels' consent-failure marker,
