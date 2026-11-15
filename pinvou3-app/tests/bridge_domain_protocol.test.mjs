@@ -376,13 +376,12 @@ const expectedProtocolHashes = {
   // plugin registration and the prefs persistence; update_settings stays
   // untouched).
   settings: '981a53b39cce9c689425c458bdab7c73119e3e8e6c2298b9a5e3160d35380ef3',
-  // Recomputed for the dead-code cleanup: the never-emitted
-  // remote_control:status / remote_control:session_created listeners were
-  // removed, and the update:progress listener plus its coalescing timer
-  // machinery were deleted with it (the backend download loop no longer has a
-  // frontend progress consumer; completion still flips updateProgress to 100
-  // in downloadAndInstallUpdate). tests/updater_progress_state.test.mjs was
-  // removed along with the machinery it pinned.
+  // Recomputed for the reintroduced update:progress listener: the 200 ms
+  // download-progress coalescing machinery (trailing throttle, completion
+  // flush, cancel/failure cleanup) is back as the frontend contract for the
+  // backend resuming `update:progress` emission; completion still flips
+  // updateProgress to 100 in downloadAndInstallUpdate.
+  // tests/updater_progress_state.test.mjs re-pins the machinery.
   updater: '30a3762ee45f378d476efec934dc4be50522a02a5b9a97111191496510d4d7d4',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
