@@ -415,6 +415,17 @@ fingerprints=(
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
   "APP|chainable panic-hook registry module       |pinvou3-app/src-tauri/src/core/panic_hooks.rs|pub(crate) fn chain("
   "APP|worker panic redaction behavior regression |pinvou3-app/src-tauri/src/features/computer_use/backend.rs|fn worker_thread_panics_are_redacted_and_other_panics_forwarded"
+  # Scheduled-session EngineCumulative accounting kernel (registered in
+  # docs/fork-modifications.md §11): the variant is producer-unwired
+  # (tests-only) until an app-side follow-up lands, and main's 60dba2f64
+  # dead-code sweep already deleted its single-variant predecessor once.
+  # The regression test keeps the official build's name (deliberately not
+  # forkguard_-renamed), so these fingerprints pull the kernel, the shared
+  # lifetime encoding, and the test's existence into the sub-second layer —
+  # a sweep or alignment sync that silently removes them turns red here.
+  "APP|scheduled EngineCumulative accounting variant         |pinvou3-app/src-tauri/src/features/sessions/scheduled.rs|EngineCumulative {"
+  "APP|shared scheduled lifetime-total encoding              |pinvou3-app/src-tauri/src/features/sessions/retention.rs|fn scheduled_lifetime_total(base_total_tokens: u64, engine_total_tokens: u64) -> u64"
+  "APP|scheduled token-accounting contract regression       |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts"
 )
 
 for fp in "${fingerprints[@]}"; do
