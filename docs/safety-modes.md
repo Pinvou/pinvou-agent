@@ -214,10 +214,13 @@ TUI 的作用域语义且**按会话隔离**（跨会话不得互相放行/连�
   epoch 保护的统一收敛点写回，在途旧读作废。审批/守卫/模式三类事件都进
   remote_control 的事件转发白名单（`RUST_FORWARDED_EVENTS`）；面向 Web 的
   RPC 命令仍受既有多智能体执行 denylist 管辖——本 PR 在 denylist 登记了
-  五个新的模式/审批变更命令（`decide_approval`/`set_session_mode`/
-  `set_ask_on_guardrail`/`set_plan_mode_next`/`web_access_codex_acp_prompt`）、
-  在 `web_session_scope` 与 access-policy 登记
-  了新表面，只读**策略**不变（多智能体执行面依旧拒绝写操作）。
+  五条新拒绝命令：四条模式/审批变更命令（`decide_approval`/
+  `set_session_mode`/`set_ask_on_guardrail`/`set_plan_mode_next`），外加
+  `web_access_codex_acp_prompt`——它不是模式/审批控制，而是外部 ACP
+  Agent 的提示/轮次执行入口（`web_access_chat`/`submit_user_input` 的
+  ACP 同类项），因同一「多智能体执行面只读」承诺被拒；并在
+  `web_session_scope` 与 access-policy 登记了新表面，只读**策略**不变
+  （多智能体执行面依旧拒绝写操作）。
 
 ## 5. 规则档（SafetyRuleProfile）
 

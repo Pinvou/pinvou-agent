@@ -230,8 +230,10 @@ session's share and does not mistakenly revoke other sessions' grants.
   back through the epoch-protected unified convergence point, invalidating in-flight stale reads. All three event
   kinds — approval, guardrail, mode — enter the remote_control event-forwarding allowlist
   (`RUST_FORWARDED_EVENTS`); Web-facing RPC commands remain governed by the existing multi-agent-execution
-  denylist — this PR registers five new mode/approval change commands in the denylist
-  (`decide_approval`/`set_session_mode`/`set_ask_on_guardrail`/`set_plan_mode_next`/`web_access_codex_acp_prompt`) and registers new surfaces
+  denylist — this PR registers five new denylisted commands: four mode/approval change commands
+  (`decide_approval`/`set_session_mode`/`set_ask_on_guardrail`/`set_plan_mode_next`) plus `web_access_codex_acp_prompt` —
+  which is not a mode/approval control but the ACP prompt/turn execution entry for an external ACP agent (the ACP twin of
+  `web_access_chat`/`submit_user_input`, denied for the same read-only-promise reason) — and registers new surfaces
   in `web_session_scope` and the access policy; the read-only **policy** is unchanged (the multi-agent execution
   face still rejects write operations).
 
