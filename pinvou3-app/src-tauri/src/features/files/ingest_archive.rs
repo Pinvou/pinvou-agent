@@ -388,6 +388,16 @@ mod tests {
         assert_eq!(plain, "7z 调用失败: spawn 7z failed: program not found");
     }
 
+    /// Value tripwire (r9 review): the behavioral test above is
+    /// cap-relative and the i18n pin only holds the user-facing copy, so a
+    /// silent 200→50 revert left the whole suite green (mutation-verified).
+    /// Hold both shipped caps literally.
+    #[test]
+    fn archive_caps_hold_shipped_values() {
+        assert_eq!(MAX_ARCHIVE_ENTRIES, 200);
+        assert_eq!(MAX_ARCHIVE_EXPANDED_BYTES, 100 * 1024 * 1024);
+    }
+
     #[test]
     fn archive_limits_accept_boundaries_and_reject_excess() {
         assert!(
