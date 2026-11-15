@@ -162,7 +162,12 @@ SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # face (schema_sanitize.rs, MFJS anyOf cap) is byte-identical to the
 # previously blessed 8e8d52fdb, verified via the layer-2 source assertions
 # on a populated tree before flipping the pin.
-_PINNED_CODEWHALE_GITLINK = "687358f7efde6abd3592737b8ec48adc74ba5a84"
+# Re-blessed again 2026-11-15 onto the limits-audit head f47cb9f36
+# (CodeWhale#154): the 16-commit audit branch replayed onto 687358f7e with
+# schema_sanitize.rs and the registry files byte-identical across the rebase
+# (git diff 687358f7e f47cb9f36 on those paths is empty), re-verified via the
+# layer-2 source assertions on the populated tree before flipping the pin.
+_PINNED_CODEWHALE_GITLINK = "f47cb9f36af8d3b83ac6c215de1a11cc4509aa51"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
