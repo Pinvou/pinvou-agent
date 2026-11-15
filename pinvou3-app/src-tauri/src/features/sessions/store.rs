@@ -710,6 +710,34 @@ impl SessionStore {
         )
     }
 
+    /// 新会话 id 的占用探测：[`generate_session_id`] 取自墙钟纳秒，时钟回拨
+    /// 或粗时钟粒度上可能与既有 id 撞车，而按 id 落盘是原子覆盖——撞车即
+    /// 静默换掉一条活会话。这里以 [`Self::durable_session_record_is_absent`]
+    /// 的真实 NotFound 口径确认可用：占用（撞车）与元数据故障（EACCES/EIO）
+    /// 都换下一个候选重试，耗尽后如实报错，绝不拿未确认可用的 id 落盘。
+    pub(crate) fn generate_unused_session_id(&self) -> Result<String> {
+        self.generate_unused_session_id_with(generate_session_id)
+    }
+
+    /// [`Self::generate_unused_session_id`] 的可注入变体：测试用固定候选
+    /// 驱动撞车/重试路径；`sched-` 等前缀命名空间用同一探测口径拼前缀。
+    pub(crate) fn generate_unused_session_id_with<G: FnMut() -> String>(
+        &self,
+        mut generate: G,
+    ) -> Result<String> {
+        for _ in 0..8 {
+            let candidate = generate();
+            if self.durable_session_record_is_absent(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        bail!(
+            "could not allocate an unused session id after 8 attempts; \
+             clock-derived ids keep colliding with existing records or the \
+             sessions directory metadata is unreadable"
+        )
+    }
+
     fn invoke_session_manager_delete(&self, id: &str) -> std::io::Result<()> {
         #[cfg(test)]
         if let Some(kind) = PRE_RECORD_DELETE_FAULTS.lock().remove(id) {
@@ -1039,7 +1067,7 @@ impl SessionStore {
         model_id: Option<String>,
         workspace: PathBuf,
     ) -> Result<SavedSession> {
-        let id = generate_session_id();
+        let id = self.generate_unused_session_id()?;
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),
             &[],

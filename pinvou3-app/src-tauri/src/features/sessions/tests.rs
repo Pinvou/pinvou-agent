@@ -10180,3 +10180,68 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
         );
     }
 }
+
+#[test]
+fn generate_unused_session_id_retries_past_an_occupied_candidate() {
+    let (store, _env) = isolated_store();
+    // 占位候选：探测只看 <id>.json 的存在性，落一个最小文件即可。
+    std::fs::write(store.sessions_dir().join("occupied.json"), b"{}")
+        .expect("plant occupied record file");
+
+    let mut calls = 0u32;
+    let error = store
+        .generate_unused_session_id_with(|| {
+            calls += 1;
+            "occupied".to_string()
+        })
+        .expect_err("an always-occupied candidate must exhaust and fail loudly");
+    assert_eq!(calls, 8, "the retry budget is 8 candidates");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error}"
+    );
+
+    let mut seq = ["occupied", "fresh"].into_iter();
+    let id = store
+        .generate_unused_session_id_with(|| seq.next().unwrap().to_string())
+        .expect("a fresh second candidate must land");
+    assert_eq!(id, "fresh");
+}
+
+/// 元数据故障（0o000 目录）与占用同路：探测非 NotFound 一律不可用，
+/// 重试耗尽后响亮报错——绝不拿未确认可用的 id 落盘（fork/create_new
+/// 的静默覆盖面由此关闭）。
+#[cfg(unix)]
+#[test]
+fn generate_unused_session_id_fails_loud_on_stat_fault() {
+    use std::os::unix::fs::PermissionsExt;
+    let (store, _env) = isolated_store();
+    let sessions_dir = store.sessions_dir();
+    let original = std::fs::metadata(&sessions_dir)
+        .expect("stat sessions dir")
+        .permissions()
+        .mode();
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
+        .expect("chmod sessions dir");
+    if std::fs::metadata(sessions_dir.join("probe.json")).is_ok() {
+        std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
+            .expect("restore permissions");
+        eprintln!(
+            "skipped generate_unused_session_id_fails_loud_on_stat_fault: running as root, the 0o000 precondition does not hold"
+        );
+        return;
+    }
+    let error = store
+        .generate_unused_session_id()
+        .expect_err("a stat-faulted sessions dir must fail loudly, not hand out an unverified id");
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
+        .expect("restore permissions");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error}"
+    );
+}

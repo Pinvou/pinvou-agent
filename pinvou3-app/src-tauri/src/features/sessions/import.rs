@@ -465,9 +465,8 @@ fn import_one_session_inner(
     match std::fs::metadata(&record_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return ImportOutcome::Failed(fail(format!(
-                "probe existing record {}: {error}",
-                record_path.display()
+            return ImportOutcome::Failed(fail(crate::platform::paths::redact_storage_prefix(
+                &format!("probe existing record {}: {error}", record_path.display()),
             )));
         }
         Ok(_) => return ImportOutcome::SkippedExisting(id),
@@ -578,9 +577,11 @@ fn commit_staged_import(
             if artifacts_result.is_ok() && created_session_dir {
                 let _ = std::fs::remove_dir_all(&session_dir);
             }
-            return ImportOutcome::Failed(fail(format!(
-                "re-probe existing record before persist {}: {error}",
-                record_path.display()
+            return ImportOutcome::Failed(fail(crate::platform::paths::redact_storage_prefix(
+                &format!(
+                    "re-probe existing record before persist {}: {error}",
+                    record_path.display()
+                ),
             )));
         }
         Ok(_) => return ImportOutcome::SkippedExisting(id),
@@ -2203,6 +2204,39 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
     }
 
+    /// 上限边界钉：恰好 [`MAX_MEMBER_COUNT`] 个成员必须成功导入（生产端
+    /// 是含边界的 `>` 比较）。固化它，防止 `>=` 突变把上限静默收紧 1
+    /// 而全部现有测试仍然全绿（超限测试用的是 cap+1，两种突变下都红）。
+    #[test]
+    fn import_accepts_exactly_member_count_cap() {
+        let (store, _lock, _env) = isolated_store();
+        let record =
+            std::fs::read(write_json_record(&store, "capedge1")).expect("read session record");
+        let mut members: Vec<(&str, &[u8])> = vec![("session.json", &record)];
+        let artifacts: Vec<String> = (1..MAX_MEMBER_COUNT)
+            .map(|index| format!("artifacts/f{index}.txt"))
+            .collect();
+        for name in &artifacts {
+            members.push((name.as_str(), b"x".as_slice()));
+        }
+        assert_eq!(
+            members.len(),
+            MAX_MEMBER_COUNT,
+            "the fixture must sit exactly on the cap"
+        );
+        let archive = build_archive(&members);
+        let summary = store
+            .import_archive(&archive)
+            .expect("exactly-cap archive must import");
+        assert_eq!(summary.imported, vec!["capedge1".to_string()]);
+        assert!(
+            summary.failed.is_empty(),
+            "no member may fail at the exact cap: {:?}",
+            summary.failed
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
     /// skip 探测是三态的（store.rs doctrine）：`exists()` 会把 EACCES/EIO
     /// 折叠成「不存在」，随后的原子落盘会静默覆盖一条活会话的记录——
     /// 元数据失败必须进 failed 让用户重试，绝不写入。
@@ -2252,6 +2286,18 @@ mod tests {
         assert!(
             summary.failed[0].reason.contains("probe existing record"),
             "{}",
+            summary.failed[0].reason
+        );
+        // 失败原因经 redact_storage_prefix 折叠后出站：原始 home 前缀
+        // （含 OS 用户名）不得进 summary/toast（tasks.rs 同款纪律）。
+        assert!(
+            summary.failed[0].reason.contains("~/.pinvou3/"),
+            "reason must be storage-prefix folded: {}",
+            summary.failed[0].reason
+        );
+        assert!(
+            !summary.failed[0].reason.contains("pinvou3-import-test-"),
+            "reason must not leak the raw home prefix: {}",
             summary.failed[0].reason
         );
         // 活记录原样（未被归档副本覆盖）。

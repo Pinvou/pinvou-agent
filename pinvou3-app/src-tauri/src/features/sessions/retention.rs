@@ -1123,7 +1123,8 @@ impl SessionStore {
                 profile.workspace.display()
             )
         })?;
-        let id = format!("sched-{}", generate_session_id());
+        let id =
+            self.generate_unused_session_id_with(|| format!("sched-{}", generate_session_id()))?;
         let mode = profile.mode.as_label();
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),

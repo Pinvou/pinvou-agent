@@ -138,7 +138,7 @@ impl SessionStore {
         let parent_metadata = source.metadata.clone();
         let captured_message_count = source.messages.len();
         let mut forked = source;
-        forked.metadata.id = super::validators::generate_session_id();
+        forked.metadata.id = self.generate_unused_session_id()?;
         forked.metadata.mark_forked_from(&parent_metadata);
         // 血缘计数取实际捕获的消息数：metadata.message_count 由引擎路径维护，
         // 直存/外部改写的记录可能滞后，以 messages 为准。

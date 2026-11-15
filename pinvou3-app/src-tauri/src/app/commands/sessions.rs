@@ -739,14 +739,17 @@ pub async fn fork_session(
     projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
     if pool.is_turn_active(&session_id) {
-        return Err("会话正在执行，请等当前轮结束再分叉".to_string());
+        return Err("session is running a turn; wait for it to finish before forking".to_string());
     }
     if pool.is_compaction_in_flight(&session_id) {
-        return Err("会话正在压缩上下文，请等压缩结束再分叉".to_string());
+        return Err(
+            "session is compacting context; wait for compaction to finish before forking"
+                .to_string(),
+        );
     }
     let reservation = pool
         .reserve_turn(&session_id)
-        .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
+        .map_err(|error| format!("reserve session turn failed (session busy?): {error:#}"))?;
     let store_inner = store.inner().clone();
     let projects_inner = projects.inner().clone();
     let forked = tauri::async_runtime::spawn_blocking(move || {
@@ -764,12 +767,14 @@ pub async fn fork_session(
             // 措辞不指认持锁方：fork 自身持 fence 期间，其他 fenced writer
             //（项目编辑/移动/codex set_workspace）被拒时看到的也是这条
             // REBIND_IN_PROGRESS 尾巴，指认「目录 rebind」会误导。
-            anyhow::anyhow!("工作区绑定迁移或互斥写入进行中，请稍后重试分叉（{error}）")
+            anyhow::anyhow!(
+                "a workspace rebind or an exclusive write is in progress; retry the fork later ({error})"
+            )
         })?;
         store_inner.fork_session_record(&session_id, keep_turns)
     })
     .await
-    .map_err(|error| format!("fork_session: 任务失败: {error}"))?
+    .map_err(|error| format!("fork_session: task failed: {error}"))?
     .map_err(|error| format!("fork_session: {error:#}"))?;
     // 侧栏经 session:list_changed 去抖刷新；不发事件的命令产出的会话在
     // 切走后 UI 不可达（review finding：fork 分支曾只存在于存储）。
