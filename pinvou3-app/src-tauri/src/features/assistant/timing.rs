@@ -718,7 +718,8 @@ pub struct SessionTimelineStats {
     pub first_turn_ts: Option<String>,
     /// 最后一个有 user_start 的 turn 的最后一个事件时间——已收口时是
     /// 该轮 assistant_done(即结束时刻),不是该轮的开始时刻;两侧口径
-    /// 因此不对称(首=开始,末=结束)。
+    /// 因此不对称(首=开始,末=结束)。末轮未收口(崩溃/截断/提交前取消,
+    /// 见 incomplete_turns)时,该值是这轮 user_start 的时刻。
     pub last_turn_ts: Option<String>,
     pub completed_turns: usize,
     pub failed_turns: usize,
@@ -743,7 +744,9 @@ pub struct SessionTimelineStats {
 /// 聚合 session timeline 为单个 stats 对象。
 ///
 /// 算法:遍历 read_timeline(),按 turn_id 配对 (user_start, assistant_done),
-/// 每对算一个 turn。token / 状态从 assistant_done 取(失败时 usage 可能为 None)。
+/// 每对算一个 turn。token / 状态从 assistant_done 取(失败轮与 ACP 收口不写
+/// usage,token 计 0)。孤儿 assistant_done(无 user_start,多来自 user_start
+/// 写盘失败)不配对:不计 turn_count、不入任何分桶或 token 总和。
 pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> {
     let events = read_timeline(session_id)?;
     let mut stats = SessionTimelineStats::default();

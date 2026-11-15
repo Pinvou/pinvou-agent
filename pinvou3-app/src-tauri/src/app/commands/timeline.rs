@@ -31,7 +31,9 @@ pub async fn get_session_timeline(
 
 /// 聚合 session 级 stats:轮数 / token 累计 / cache 命中 / 成功失败数 / 首末时间。
 /// 可供后续诊断入口消费。token 来自 timing_events 的 usage 字段(2026-07 起写入);
-/// 老于此的 session 这些字段为 0(只显示 turn_count + 时间)。
+/// 老于此的 session 这些字段为 0(只显示 turn_count + 时间)。注意:失败轮与
+/// ACP 会话收口走不带 usage 的 finish_turn,这些轮 token 恒为 0,是写入侧
+/// 事实而非统计缺陷。
 #[tauri::command]
 pub async fn get_session_stats(
     session_id: String,
