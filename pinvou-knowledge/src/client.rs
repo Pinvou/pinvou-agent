@@ -399,14 +399,43 @@ impl KnowledgeClient {
         .await
     }
 
+    /// 服务端单页上限(store 侧 `limit.clamp(1, 500)`)。逐页请求时
+    /// 必须恰好取到该上限,更大的值会被 clamp 缩回,更小的值只增加往返。
+    const TRASH_PAGE_LIMIT: usize = 500;
+
+    /// 逐页拉全回收站路由:服务端按 offset 分页且无总数返回,只在短页处
+    /// 终止;否则首窗之外的条目会静默不可见(回收站条目无上界)。边界
+    /// 恰好整页时由下一页空结果收尾(多一次空页往返,不挂死),排序键
+    /// (deleted_at, id)保证分页间稳定。
+    async fn paged_trash_all<T: DeserializeOwned>(
+        &self,
+        base_path: &str,
+    ) -> Result<Vec<T>, String> {
+        let mut all = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page: Vec<T> = self
+                .get(&format!(
+                    "{base_path}?limit={}&offset={offset}",
+                    Self::TRASH_PAGE_LIMIT
+                ))
+                .await?;
+            let fetched = page.len();
+            all.extend(page);
+            if fetched < Self::TRASH_PAGE_LIMIT {
+                return Ok(all);
+            }
+            offset += fetched;
+        }
+    }
+
     pub async fn trashed_collections(&self) -> Result<Vec<Collection>, String> {
-        self.get("/api/v2/owner/trash/collections?limit=200&offset=0")
+        self.paged_trash_all("/api/v2/owner/trash/collections")
             .await
     }
 
     pub async fn trashed_documents(&self) -> Result<Vec<TrashedDocument>, String> {
-        self.get("/api/v2/owner/trash/documents?limit=200&offset=0")
-            .await
+        self.paged_trash_all("/api/v2/owner/trash/documents").await
     }
 
     pub async fn permanently_delete_collection(&self, id: i64) -> Result<(), String> {

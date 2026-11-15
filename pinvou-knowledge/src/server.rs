@@ -1070,6 +1070,120 @@ mod tests {
         assert_eq!(listed[0].collection_name, "在用资料");
     }
 
+    // 客户端回收站清单必须翻页取全量:服务端按 offset 分页且不返回总数,
+    // 首窗硬编码(limit=200)会静默截断,第 201 条起对用户不可见。600 条
+    // 跨过单页上限 500 验证聚合;文档腿验证同一 helper 在 TrashedDocument
+    // 反序列化路径上也成立。走真实回环 HTTP,与 KnowledgeClient 全链路一致。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_clients_page_through_every_offset() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0006";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+
+        let active = service
+            .create_collection(CreateCollectionRequest {
+                name: "在用资料".to_string(),
+                description: None,
+            })
+            .unwrap();
+        for index in 0..600 {
+            let created = service
+                .create_collection(CreateCollectionRequest {
+                    name: format!("回收站 {index:03}"),
+                    description: None,
+                })
+                .unwrap();
+            service.trash_collection(created.id).unwrap();
+        }
+        for index in 0..3 {
+            let document = service
+                .upload_document(active.id, &format!("doc{index}.txt"), b"body".to_vec())
+                .await
+                .unwrap();
+            service.trash_document(document.id).unwrap();
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(router(service).into_make_service_with_connect_info::<SocketAddr>()),
+        );
+
+        let client =
+            crate::client::KnowledgeClient::new(&format!("http://{address}"), owner_token).unwrap();
+        let listed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("回收站清单翻页不得挂死")
+        .unwrap();
+        assert_eq!(listed.len(), 600);
+        let documents = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_documents(),
+        )
+        .await
+        .expect("回收站文档清单翻页不得挂死")
+        .unwrap();
+        assert_eq!(documents.len(), 3);
+    }
+
+    // 恰好整页(500 = 单页上限)必须多取一页空结果收尾:终止条件退化成
+    // `fetched <= 上限` 时永远只取首页(静默截断,由 600 条用例抓红),
+    // offset 不按页长推进时窗口重叠或原地重取(突变实证两用例皆红);
+    // 旧实现(200 首窗)则只返回 200 不足 500。外层 timeout 把病态
+    // 循环兜底成测试失败而非套件挂起。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_boundary_page_terminates_cleanly() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0007";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+
+        for index in 0..500 {
+            let created = service
+                .create_collection(CreateCollectionRequest {
+                    name: format!("边界集 {index:03}"),
+                    description: None,
+                })
+                .unwrap();
+            service.trash_collection(created.id).unwrap();
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(router(service).into_make_service_with_connect_info::<SocketAddr>()),
+        );
+
+        let client =
+            crate::client::KnowledgeClient::new(&format!("http://{address}"), owner_token).unwrap();
+        let listed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("整页边界必须终止")
+        .unwrap();
+        assert_eq!(listed.len(), 500);
+    }
+
     // 懒装载时代的廉价校验回归:空查询/超量知识集选择必须在模型装载门之前
     // 应答(200 [] / 400),冷服务(模型未装载且 model_dir 无模型文件)不得
     // 触发 568MB 冷读,也不得把本应 200/400 的请求变成 503。boot 同步装载
