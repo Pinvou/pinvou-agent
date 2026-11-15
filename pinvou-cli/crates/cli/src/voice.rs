@@ -2292,7 +2292,12 @@ fn postprocess_http_exchange(
             &user,
             max_tokens,
         ));
-        if !api_key.trim().is_empty() {
+        // Keyless parity (round-6 review): the OpenAI lane below gates on the
+        // declaration explicitly; this lane relied solely on `api_key()`'s
+        // upstream short-circuit, so a future reorder there would silently
+        // start sending x-api-key against declared-keyless endpoints. The
+        // declaration is authoritative here, same caliber as the GUI mirror.
+        if !declares_no_auth && !api_key.trim().is_empty() {
             request = request.header("x-api-key", api_key.trim());
         }
         let value = send_json(request)?;
@@ -3388,6 +3393,81 @@ content-length: {}\r\n\r\n{}",
             header_of(&request).as_deref(),
             Some("Bearer sk-live"),
             "an undeclared keyed record keeps the bearer: {request}"
+        );
+    }
+
+    /// Wire pin for the Anthropic lane's keyless posture (round-6 review):
+    /// the lane used to gate only on a non-empty key, which was correct
+    /// solely because `api_key()` short-circuits upstream — a future reorder
+    /// there would have silently started sending x-api-key against
+    /// declared-keyless endpoints. The declaration is now authoritative in
+    /// the lane itself, and the promised-unchanged historical shape
+    /// (undeclared + empty key sends no header) is pinned alongside.
+    #[test]
+    fn voice_anthropic_lane_honors_the_keyless_declaration() {
+        use std::time::Duration;
+
+        let body =
+            "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"stop_reason\":\"end_turn\"}";
+        let header_of = |request: &str| -> Option<String> {
+            request
+                .split_once("\r\n\r\n")
+                .expect("headers then body")
+                .0
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("x-api-key")
+                        .then(|| value.trim().to_owned())
+                })
+        };
+        let exchange = |url: String, api_key: &str, declares_no_auth: bool| {
+            postprocess_http_exchange(
+                url,
+                api_key.to_owned(),
+                declares_no_auth,
+                "anthropic".to_owned(),
+                pinvou3_lib::platform::prefs::ModelPreset::Anthropic,
+                voice_postprocess_prompt("task"),
+                "user".to_owned(),
+                "model".to_owned(),
+                voice_postprocess_max_tokens("task", false),
+                Duration::from_secs(10),
+            )
+            .expect("the mock exchange must succeed")
+        };
+
+        // Declared keyless: no x-api-key header even with a residual key.
+        let (url, request_rx) = serve_once(body.to_owned());
+        let _ = exchange(url, "sk-residual", true);
+        let captured = request_rx.recv().expect("captured");
+        let request = String::from_utf8_lossy(&captured);
+        assert!(
+            header_of(&request).is_none(),
+            "a keyless-declared anthropic exchange must send no x-api-key header: {request}"
+        );
+
+        // Undeclared with a key: the x-api-key keeps flowing.
+        let (url, request_rx) = serve_once(body.to_owned());
+        let _ = exchange(url, "sk-live", false);
+        let captured = request_rx.recv().expect("captured");
+        let request = String::from_utf8_lossy(&captured);
+        assert_eq!(
+            header_of(&request).as_deref(),
+            Some("sk-live"),
+            "an undeclared keyed record keeps x-api-key: {request}"
+        );
+
+        // Historical shape (promised unchanged): undeclared + empty key
+        // sends no header at all.
+        let (url, request_rx) = serve_once(body.to_owned());
+        let _ = exchange(url, "", false);
+        let captured = request_rx.recv().expect("captured");
+        let request = String::from_utf8_lossy(&captured);
+        assert!(
+            header_of(&request).is_none(),
+            "undeclared empty-key records keep the historical header-less shape: {request}"
         );
     }
 
