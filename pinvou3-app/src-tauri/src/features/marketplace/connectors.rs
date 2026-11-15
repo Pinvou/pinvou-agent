@@ -1704,6 +1704,40 @@ mod pip_rounds_tests {
     /// deps, so a silent loosening back to an unbounded (or effectively
     /// unbounded) probe re-opens the hang this bound closes — the probe is
     /// the one site the bounded-ladder comment cannot cover.
+    /// The install ladder's other bounds shipped with no test references
+    /// (r9 review): the attempt timeout and the stderr-tail width were
+    /// covered only by comments. Hold their shipped values.
+    #[test]
+    fn pip_lane_bounds_hold_shipped_values() {
+        assert_eq!(
+            PIP_INSTALL_ATTEMPT_TIMEOUT,
+            std::time::Duration::from_secs(1800)
+        );
+        assert_eq!(PIP_FAILURE_TAIL_LINES, 20);
+    }
+
+    /// The probe pin above holds only the value: reverting the call site to
+    /// an unbounded `output()` compiled and stayed green (r9 mutation). Pin
+    /// the wiring — the construction must reach the bounded kill-tree
+    /// helper carrying the probe constant.
+    #[test]
+    fn pip_satisfied_probe_wiring_is_bounded() {
+        let source = include_str!("connectors.rs");
+        let start = source
+            .find("let mut probe = std::process::Command::new(python_cmd);")
+            .expect("probe construction site present");
+        let window: String = source[start..]
+            .lines()
+            .take(12)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            window.contains("output_with_timeout_and_kill_tree(")
+                && window.contains("PIP_SATISFIED_PROBE_TIMEOUT"),
+            "the satisfied probe must run under the bounded kill-tree helper"
+        );
+    }
+
     #[test]
     fn pip_satisfied_probe_stays_at_30s() {
         assert_eq!(
