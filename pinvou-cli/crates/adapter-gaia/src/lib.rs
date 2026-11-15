@@ -126,8 +126,9 @@ impl GaiaAdapter {
                     // protocol is not known to define one, so the run is
                     // bounded only by the engine's own limits (model steps
                     // per turn, per-turn wall clock, cancellation). The
-                    // harness's own LOCAL phases (prepare/resolve_output/
-                    // close) are covered separately: the runner gives each
+                    // harness's own LOCAL phases (attachment resolution,
+                    // prepare, resolve_output, close) are covered
+                    // separately: the runner gives each
                     // of them a 600 s fail-closed cap under this `None`
                     // deadline, so a wedged local phase cannot hang the run.
                     // A harness-side deadline for the turn itself would be

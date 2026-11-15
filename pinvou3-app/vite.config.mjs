@@ -663,8 +663,9 @@ function enforceLazyChunks() {
 // graph — the rewind chip's bounded-window expander, the knowledge
 // paging generation guards plus the "showing first N" disclosure keys,
 // the localized paste-refusal copy delivered through
-// attachments.notifyPasteRejected, the archive 200-entry strings, and
-// the derived design-inspector copy figures. Measured on the local
+// attachments.notifyPasteRejected, and the archive 200-entry strings
+// (the audit's other derived-MB figures live in Rust error strings and
+// paste-image.js, which is listed separately above). Measured on the local
 // node 26 toolchain: 493,834 B desktop — 1,834 B over the 492_000
 // ceiling — so the desktop ceiling takes the next thousand step; with
 // #826's virtual-display surface and #835's fork/archive-import UI in
