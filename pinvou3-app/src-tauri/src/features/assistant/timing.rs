@@ -1097,6 +1097,8 @@ mod tests {
                     output_tokens: 200,
                     cache_hit_tokens: 500,
                     cache_miss_tokens: 500,
+                    cache_write_tokens: 300,
+                    reasoning_tokens: 50,
                     ..Default::default()
                 }),
             );
@@ -1112,6 +1114,8 @@ mod tests {
         assert_eq!(stats.total_output_tokens, 400);
         assert_eq!(stats.total_cache_hit_tokens, 1000);
         assert_eq!(stats.total_cache_miss_tokens, 1000);
+        assert_eq!(stats.total_cache_write_tokens, 600);
+        assert_eq!(stats.total_reasoning_tokens, 100);
         assert!(stats.first_turn_ts.is_some());
         assert!(stats.last_turn_ts.is_some());
         // 两侧口径:首=首个 user_start,末=最后收口的 assistant_done,
@@ -1197,6 +1201,8 @@ mod tests {
     /// unknown、未收口 turn 归 incomplete、ACP 的 LimitReached/Refused 归
     /// 各自的桶。(随 #562 移除的 compute_stats_classifies_real_terminal_edges
     /// 恢复,并补上 ACP 两个状态——此前它们会静默落进 unknown。)
+    /// 每个终态都同时给一个非产线大小写的变体(completed/failed/
+    /// limitreached/refused),防止局部改回大小写敏感匹配的突变存活。
     #[test]
     fn compute_stats_classifies_real_terminal_edges() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1220,12 +1226,21 @@ mod tests {
         start_turn(sid);
         finish_turn(sid, "refused", None);
         start_turn(sid);
+        finish_turn(sid, "Refused", None);
+        start_turn(sid);
+        finish_turn(sid, "limitreached", None);
+        start_turn(sid);
+        finish_turn(sid, "failed", None);
+        start_turn(sid);
+        finish_turn(sid, "completed", None);
+        start_turn(sid);
 
         let stats = compute_stats(sid).unwrap();
-        assert_eq!(stats.turn_count, 5);
-        assert_eq!(stats.failed_turns, 1);
-        assert_eq!(stats.limit_reached_turns, 1);
-        assert_eq!(stats.refused_turns, 1);
+        assert_eq!(stats.turn_count, 9);
+        assert_eq!(stats.completed_turns, 1);
+        assert_eq!(stats.failed_turns, 2);
+        assert_eq!(stats.limit_reached_turns, 2);
+        assert_eq!(stats.refused_turns, 2);
         assert_eq!(stats.incomplete_turns, 1);
         assert_eq!(stats.unknown_status_turns, 1);
         // 未知状态与未收口也计入分区——七桶之和必须等于 turn_count
@@ -1242,6 +1257,69 @@ mod tests {
 
         // 清掉进程内 ACTIVE_TURNS 的未完成记录,避免影响同进程后续测试。
         finish_turn(sid, "Interrupted", None);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// 孤儿 assistant_done(同 turn_id 无 user_start,多来自 user_start
+    /// 写盘失败或截断)不得计入 turn_count、任何终态分桶或 token 总和。
+    /// 此前套件没有这种夹具:turn_count 改成 by_turn.len()、去掉
+    /// start.is_none() 跳过的突变都是绿的。
+    #[test]
+    fn compute_stats_excludes_orphan_assistant_done() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-orphan-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-orphan-done";
+        start_turn(sid);
+        finish_turn_with_usage(
+            sid,
+            "Completed",
+            None,
+            Some(TurnUsage {
+                input_tokens: 11,
+                ..Default::default()
+            }),
+        );
+        // 直接注入一条无 user_start 的 assistant_done(孤儿 done)。
+        let path = crate::platform::paths::session_timing_events(sid);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                f.write_all(
+                    br#"{"event":"assistant_done","turn_id":"orphan_done_probe","timestamp":1767225600000,"ts":"2026-01-01T00:00:00+00:00","status":"Completed","usage":{"input_tokens":999}}
+"#,
+                )
+            })
+            .unwrap();
+
+        let stats = compute_stats(sid).unwrap();
+        assert_eq!(stats.turn_count, 1, "孤儿 done 不得计入 turn_count");
+        assert_eq!(stats.completed_turns, 1);
+        assert_eq!(
+            stats.total_input_tokens, 11,
+            "孤儿 done 的 usage 不得计入总和"
+        );
+        assert_eq!(stats.incomplete_turns + stats.unknown_status_turns, 0);
+        assert_eq!(
+            stats.completed_turns
+                + stats.failed_turns
+                + stats.interrupted_turns
+                + stats.limit_reached_turns
+                + stats.refused_turns
+                + stats.incomplete_turns
+                + stats.unknown_status_turns,
+            stats.turn_count
+        );
+
         let _ = std::fs::remove_dir_all(tmp);
     }
 
