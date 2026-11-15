@@ -31,4 +31,16 @@ test('localizedErrorMessage never resolves inherited Object.prototype keys', () 
   const resolved = localizedErrorMessage('constructor: evil', {}, 'FALLBACK');
   assert.equal(resolved, 'FALLBACK');
   assert.equal(typeof resolved, 'string');
+  // An own 'constructor' key is a legitimate dict entry and must still win.
+  assert.equal(localizedErrorMessage({ code: 'constructor' }, { constructor: 'own copy' }, 'FALLBACK'), 'own copy');
+});
+
+test('localizedErrorMessage only ever returns string copy', () => {
+  // i18n dicts also hold function-valued keys (t.uiSettings.downloading, ...)
+  // and array-valued keys (uiRemote.status.connecting_relay, ...); a hit on
+  // such a key must fall through instead of handing the value to the DOM.
+  const messages = { downloading: (p) => `Downloading ${p}%`, relay: ['a', 'b'], numeric: 42 };
+  assert.equal(localizedErrorMessage({ code: 'downloading' }, messages, 'FALLBACK'), 'FALLBACK');
+  assert.equal(localizedErrorMessage({ code: 'relay' }, messages, 'FALLBACK'), 'FALLBACK');
+  assert.equal(localizedErrorMessage({ code: 'numeric' }, messages, 'FALLBACK'), 'FALLBACK');
 });

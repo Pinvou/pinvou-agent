@@ -17,11 +17,16 @@ function errorCode(value) {
 
 function localizedErrorMessage(value, messages, fallback) {
   const code = errorCode(value);
-  // Guard the prototype chain before the dict lookup: 'constructor' passes
-  // the snake_case pattern and would otherwise resolve to the inherited
-  // Object constructor instead of the fallback (house pattern from
-  // connectorErrorCopy).
-  if (!code || !messages || !Object.prototype.hasOwnProperty.call(messages, code)) {
+  // Mirror the full `connectorErrorCopy` house pattern: guard the prototype
+  // chain before the dict lookup ('constructor' passes the snake_case pattern
+  // and would otherwise resolve to the inherited Object constructor), and
+  // only ever return string copy — i18n dicts also hold function- and
+  // array-valued keys that must fall through instead of reaching the DOM.
+  if (
+    !code || !messages
+    || !Object.prototype.hasOwnProperty.call(messages, code)
+    || typeof messages[code] !== 'string'
+  ) {
     return fallback;
   }
   return messages[code] || fallback;
