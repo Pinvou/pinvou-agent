@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { invokeTauri as invoke } from '../../platform/tauri/client.js';
 import { canInvoke } from '../../shared/platform.js';
-import { turnHasUserText } from '../conversation/deepseek-conversation.js';
+import { turnHasUserText } from './deepseek-conversation.js';
 
 /**
  * checkpoint 列表 → Map<turnNumber, checkpoint>。
