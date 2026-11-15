@@ -53,7 +53,9 @@ pub async fn get_session_stats(
 // tests, so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
 mod tests {
-    use crate::features::assistant::timing::{finish_turn, start_turn};
+    use crate::features::assistant::timing::{
+        TurnUsage, finish_turn, finish_turn_with_usage, start_turn,
+    };
 
     /// ADR-0024 read-surface register, command-layer pin (round-2 m3): the
     /// registered surface is THIS command fn, not only the timing reader
@@ -86,6 +88,53 @@ mod tests {
         assert_eq!(timeline.len(), 2, "aux timing events must stay readable");
         assert_eq!(timeline[0].event, "user_start");
         assert_eq!(timeline[1].event, "assistant_done");
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    /// 命令层 pin:validate_session_id → spawn_blocking → 错误映射的整条链
+    /// 在此真实执行(仅靠 protocol_tests 的源码形状 pin 不覆盖),非法
+    /// 字符集的 id 必须在命令层被拒而不是落盘读取。
+    #[tokio::test]
+    async fn get_session_stats_aggregates_and_rejects_bad_ids() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timeline-stats-cmd-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let sid = "session-stats-cmd";
+        start_turn(sid);
+        finish_turn_with_usage(
+            sid,
+            "Completed",
+            None,
+            Some(TurnUsage {
+                input_tokens: 7,
+                ..Default::default()
+            }),
+        );
+
+        let stats = super::get_session_stats(sid.to_string())
+            .await
+            .expect("command-layer stats read");
+        assert_eq!(stats.turn_count, 1);
+        assert_eq!(stats.completed_turns, 1);
+        assert_eq!(stats.total_input_tokens, 7);
+
+        assert!(
+            super::get_session_stats("bad/id".to_string())
+                .await
+                .is_err(),
+            "字符集外的 session_id 必须在命令层被拒"
+        );
 
         let _ = std::fs::remove_dir_all(tmp);
     }
