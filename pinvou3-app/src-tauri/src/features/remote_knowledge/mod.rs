@@ -997,8 +997,10 @@ impl RemoteKnowledgeService {
     /// Full trash listing: the client pages through every offset (server
     /// pages clamp to 500 and carry no total) and aggregates, so nothing is
     /// silently truncated — the same return-everything contract as
-    /// [`Self::collections`]. Pinned end-to-end by the loopback-HTTP tests
-    /// in `pinvou-knowledge/src/server.rs` (`trash_listing_clients_*`).
+    /// [`Self::collections`]. A peer that never serves a short page
+    /// (ignoring `offset`) trips the client's page cap and errors loudly
+    /// instead of looping. Pinned end-to-end by the loopback-HTTP tests
+    /// in `pinvou-knowledge/src/server.rs` (`trash_listing_*`).
     pub async fn trashed_collections(&self, server_id: &str) -> Result<Vec<Collection>, String> {
         self.require_owner(server_id)?;
         self.client_for(server_id)?.trashed_collections().await

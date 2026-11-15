@@ -267,7 +267,9 @@ pub async fn remote_kb_update_device(
 
 /// Rename a shared collection. Full-replace PUT: `description: None`
 /// clears the stored description rather than keeping it, so a rename-only
-/// call must echo the current description.
+/// call must echo the current description. The peer also normalizes the
+/// name: blank falls back to the default "知识集", and more than 120
+/// characters is rejected.
 #[tauri::command]
 pub async fn remote_kb_update_collection(
     state: State<'_, RemoteKnowledgeService>,
@@ -291,7 +293,9 @@ pub async fn remote_kb_remove_device(
 }
 
 /// Trash listings aggregate every server page (the client walks offsets
-/// until a short page), so the result is complete — not a first-window cut.
+/// until a short page, and fails loudly if a peer serves one full page too
+/// many — an offset-ignoring peer must error, not loop forever), so the
+/// result is complete — not a first-window cut.
 #[tauri::command]
 pub async fn remote_kb_trashed_collections(
     state: State<'_, RemoteKnowledgeService>,
