@@ -285,6 +285,8 @@ latest-amd64.json
 
 或：
 
+（下例沿用快照期「packages」键名，仅作方案示意；现行 updater 数据模型键名为「platforms」，见本节首注。）
+
 ```json
 {
   "version": "x.y.z",

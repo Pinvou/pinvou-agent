@@ -38,7 +38,7 @@
 
 **关键 bug:两条触发顺序倒置 → nice 路径死掉**
 
-turn_loop 一个 turn 内:先判 `should_compact`(:116),后判 emergency(:201),但度量/阈值不同:
+turn_loop 一个 turn 内:先判 `should_compact`(写档 era `9c8e4826` 约 :90-91),后判 emergency 预检(约 :192-193;文中旧行号 :116/:201 为更早快照,勿按现树查),但度量/阈值不同:
 - **should_compact**(nice LLM 摘要):可摘要**子集** > `token_threshold − pinned` ⟹ **总量 > ~token_threshold + 近4条**。
 - **emergency**(强制 `recover_context_overflow`):**全量** input > `context_input_budget`。
 
@@ -151,7 +151,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 担心"单个大工具输出(几十 K 的 grep/read)一步污染上下文、跳过 nice 压缩直奔 emergency"。调研结论:**底座已防住,无需配 large_output_router / workshop**。
 
 **底座每-工具-结果截断(始终生效):** `turn_loop.rs`（写档 era HEAD `9c8e4826` 约 :1847/:1880，文中旧行号 :1970/:2004 勿按现树查）对**每个**工具结果调 `compact_tool_result_for_context`,产出的压缩版(`output_for_context`)才进 `session.messages` 喂模型;全文只给前端显示(`tool_call.set_result`)。
-- 档位由窗口决定(`context.rs:262`):`window ≥ 500K` 用大限(180K 字符),否则小限。**pinvou3 256K < 500K → 硬压到 `TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS = 12,000` 字符/结果**(head/tail snippet + 元数据摘要)。
+- 档位由窗口决定(`context.rs:262`):`window ≥ 500K` 用大限(180K 字符),否则小限。**pinvou3 256K < 500K → 硬压到 `TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS = 12,000` 字符/结果**(head/tail snippet + 元数据摘要)。(⚠️ 时代口径:档位数字为 `9c8e4826` 时点;现行 per-result 内联预算改为窗口 3%×4 字符、上限 `TOOL_OUTPUT_INLINE_MAX_CHARS = 100_000`(route_budget.rs `route_inline_char_budget`),256K 约 31K 字符/条;「大工具输出会被截断」的结论本身仍有效。)
 - 即单次工具输出进上下文 ≤ **~3-4K tokens**,**跳不过 nice(~195K)→ emergency(230,400)的 ~35K 缺口**。
 
 **`large_output_router`(#548 / workshop)是冗余且不完整,不要开:**
@@ -171,7 +171,7 @@ B1 + B2 都是上游友好的改动，可独立 PR：
 | B1 | models.rs:212 | ~5 行 | 让 `_Nk` hint 适用于任何 vendor，自托管 / 第三方部署友好 |
 | B2 | engine/context.rs:366 + 调用方 | ~25 行 | 修 < 500K 窗口模型 input budget 为负 → None 的静默禁用 bug，含双路径回归测试 |
 
-按 `docs/fork-policy.md` 的上游回流约束处理。fork 总 patch 量 ~30 行，已 commit 在 CodeWhale submodule（`pinvou3-patches` branch tip = `7e5288e3`），父仓库 gitlink 已 stage。
+按 `docs/fork-policy.md` 的上游回流约束处理。fork 总 patch 量 ~30 行，已 commit 在 CodeWhale submodule（`pinvou3-patches` branch tip = `7e5288e3`），父仓库 gitlink 已 stage。（2026-11 注：`pinvou3-patches` 为内部仓分支、`fork` remote 指内部 fork，均不在本仓库；`7e5288e3` 为重建前哈希，现对象库不可解析，见文首注。）
 
 ## Codex adversarial review 反馈历程
 
@@ -196,7 +196,7 @@ codex 抓 cycle_manager.rs:184 在 256K 窗口下 `trigger_floor=0`（saturating
 codex 抓 `build_dt_config` 没 export `DEEPSEEK_MAX_OUTPUT_TOKENS`。`effective_max_output_tokens` 只读这个 env，clean env 启动时（用户直接双击 Tauri app，不走 `run-dev.sh`）返回 fallback：
 - `min(window/2, API_MAX_OUTPUT_TOKENS) = min(128K, 64K) = 64K`
 
-→ B2 算 `context_input_budget = 256K - 64K - 1K = 191K`（而非文档承诺的 ~239K），preflight emergency 提前 48K 触发，长 turn 可能因输出预算太满而被强制压缩或 provider 400。`PINVOU3_MAX_OUTPUT_TOKENS` 和 `prefs.advanced.max_output_tokens` 的接入点（`Pinvou3Bridge::max_output_tokens()`）建好了但**没有 wire 给 engine**。
+→ B2 算 `context_input_budget = 256K - 64K - 1K = 191K`（写档时按 64K=64,000 十进制粗算；严格按 `API_MAX_OUTPUT_TOKENS = 65,536` 应为 189,440，与上文 B1 段的 189,440 同口径。而非文档承诺的 ~239K），preflight emergency 提前约 48K 触发，长 turn 可能因输出预算太满而被强制压缩或 provider 400。`PINVOU3_MAX_OUTPUT_TOKENS` 和 `prefs.advanced.max_output_tokens` 的接入点（`Pinvou3Bridge::max_output_tokens()`）建好了但**没有 wire 给 engine**。
 
 当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。Community #210（内部社区帖，不在本仓库）后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束，云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
 

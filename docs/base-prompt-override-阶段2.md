@@ -6,7 +6,7 @@
 > mode/approval/compact 小文案留 fork（边际收益低于改造成本）。
 >
 > **2026-11 归档注记**：阶段 2 完成约两周后（2026-06-15），宪法层被并入 `instructions-*.md`
-> 分层：`compose_static_layers` 不再装配 `base.md`、`AUTHORITY_RECAP` 清空，prompt 治理
+> 分层：`compose_default_static_layers`（现行函数名；写档时名 `compose_static_layers`）不再装配 `base.md`、`AUTHORITY_RECAP` 清空，prompt 治理
 > 迁移到底座 `StaticPromptComposer` 合同。本文记录的 249 行 `base.md`、三个 override
 > 常量与 #28–#42 指纹清单是历史状态（残留说明见 `resources/common/bundle/base.md`
 > 文首注释），当前 prompt 链路以代码为准。另注：正文 `base.md` 路径在此前机械重构
@@ -18,7 +18,7 @@
 全部落地并验证通过：
 
 **submodule（commit `af64e9f7`，在阶段1 `5f847284` 之上；`af64e9f7` 可由父仓提交 `50752183b` 的 gitlink 佐证；`5f847284` 为 2026-07-24 重建前哈希，现对象库不可解析。`54151a4b` 则为幸存于重建的上游 commit（2026-05-26 "#2235"），现对象库可解析，本文下方 `git show/diff 54151a4b` 指令至今可直接复核）**
-- `base.md` 回退上游原文（`git diff 54151a4b` = 0，字节一致）
+- `base.md` 回退上游原文（当时验证 `git diff 54151a4b` = 0，字节一致；今现树与该 commit 已分叉，复核用下方 `git show 54151a4b:…` 直接取原文）
 - `prompts.rs` 品牌词回退 codewhale（locale / authority / doc 注释 3 处）
 - 删除 6 个内容 forkguard 测试（职责移到 pinvou3-app），authority 测试断言回退 CodeWhale
 - 全量测试 **3349 passed / 0 failed**；hook（3 个 `set_*_override`）完好
@@ -27,6 +27,7 @@
 - `resources/common/bundle/base.md` = pinvou3 版 base.md（249 行）
 - `bridge/bundle.rs` 3 常量（`BASE_PROMPT_MD` + `LOCALE_PREAMBLE_ZH_HANS` + `AUTHORITY_RECAP`）+ `install_prompt_overrides()` + 3 个新 forkguard 测试（内容锚点 + override 端到端生效）
 - `bridge/mod.rs` `boot()` 调 `install_prompt_overrides()`（早于 ensure_dirs；dump_system_prompt bin 同经此 boot）
+  （2026-11 注：上两条的 `bridge/bundle.rs`、`bridge/mod.rs` 路径已迁——常量与 `install_prompt_overrides()` 现位于 `features/runtime_bundle/platform/mod.rs`，boot 调用点现位于 `features/assistant/platform/bridge.rs`。）
 - forkguard 测试 **4 passed / 0 failed**
 
 **fork-guard.sh + 文档**
@@ -60,7 +61,9 @@
 1. **base.md 回退上游原文**：
    `git show 54151a4b:crates/tui/src/prompts/base.md > crates/tui/src/prompts/base.md`
    （`54151a4b` = merge-base(origin/main, HEAD)，即 fork 改动前的上游 base.md，297 行。
-   也可用 `origin/main:` 版，内容一致。回退后 submodule base.md fork drift = 0。）
+   也可用 `origin/main:` 版，内容一致。回退后 submodule base.md fork drift = 0。
+   2026-11 注：`origin/main:` 为当时本地仓引用，重建后的子模块无该 ref；今复核以
+   `git show 54151a4b:crates/tui/src/prompts/base.md` 为准（亲验 297 行）。）
 
 2. **LOCALE_PREAMBLE_ZH_HANS 回退品牌词**：把常量里 `你正在 pinvou3 中运行` 改回
    `你正在 codewhale 中运行`（仅此 1 词差，其余文本两版相同）。

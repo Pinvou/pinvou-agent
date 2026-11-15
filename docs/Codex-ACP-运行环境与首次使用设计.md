@@ -91,7 +91,9 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 > `@openai/codex` 二进制，Codex CLI 由用户自行安装（`install.rs` 按
 > `PINVOU3_CODEX_ACP_BIN`/随包/私有目录/`PATH` 顺序解析的是 **adapter**；Codex CLI
 > 本体经 `resolve_codex_cli` 官方脚本→`PATH` 解析，Codex 二进制经
-> `PINVOU3_CODEX_PATH`→系统→legacy 随包解析，见 `runtime.rs`）；登录走 codex CLI
+> `PINVOU3_CODEX_PATH`→ 系统/legacy 随包**择新可兼容者**解析（`select_newest_eligible`
+> 按版本比较，旧系统 CLI 会被 `MIN_CODEX_VERSION` 过滤让位于新 legacy，并非固定
+> 「系统优先」序），见 `runtime.rs`）；登录走 codex CLI
 > （`login.rs`）而非 `codex-acp login`；认证判断现为三个 env 变量 + `~/.codex/config.toml`
 > relay key + 真实 `codex login status` 复检。其余缺口以现行
 > [`codex-acp.md`](./codex-acp.md) 为准。
@@ -608,7 +610,8 @@ codex-runtime://status
 ### 12.2 不破坏用户 Codex
 
 - 默认复用但不写入 `~/.codex`。
-- “重新下载/删除托管 Codex”只处理 `~/.pinvou3/runtimes/codex/`；Bridge 损坏通过
+- “重新下载/删除托管 Codex”只处理 `~/.pinvou3/runtimes/codex/`（⚠️ 快照口径：现行
+  目录为 `~/.pinvou3/runtimes/codex-acp-1.1.5/`，见 §12.1 注）；Bridge 损坏通过
   修复或重新安装 Pinvou 处理。
 - 用户全局安装的 Codex CLI 不被升级、删除或覆盖。
 - 开发覆盖变量只影响当前 Pinvou 进程。

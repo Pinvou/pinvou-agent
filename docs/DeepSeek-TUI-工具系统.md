@@ -178,7 +178,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 ### 4.1 调度（`core/engine/dispatch.rs`）
 
 模型一轮可能输出多个 tool_call。dispatch 决定：
-- **串行 vs 并行**：`should_parallelize_tool_batch` 判断——全部工具 `supports_parallel: true` 且无副作用冲突才并行
+- **串行 vs 并行**：`should_parallelize_tool_batch` 判断——实际谓词为 `read_only && supports_parallel && !approval_required && !interactive`（dispatch.rs:274-279；「无副作用冲突」的代码化表述）才并行
 - **批处理**：`multi_tool_use.parallel` 是个特殊工具，模型可以用一次调用包多个子调用
 
 ### 4.2 单次执行（`tool_execution.rs::execute_tool_with_lock`）
@@ -202,7 +202,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 ### 4.4 大输出处理
 
 超长 tool_result 的处理（v0.8.37）分两层：
-- `tools/truncate.rs` — 截断为头部摘要，尾部追加溢出指针（SPILLOVER_HEAD 头 + 按 `tool_call_id` 回取的尾注）
+- `tools/truncate.rs` — 截断为头部摘要，尾部追加溢出指针（`SPILLOVER_HEAD_BYTES` 头 + 按 `tool_call_id` 回取的尾注）
 - `tools/tool_result_retrieval.rs` — 供 `retrieve_tool_result` 按 `tool_call_id` 重取完整历史结果
 
 `tools/large_output_router.rs` 是 workshop/V4-Flash 的合成结果路由（`last_tool_result` + `promote_to_context`），与上述不是同一机制；`handle_read` 属 var_handle 大对象机制，也不承载 tool 输出溢出。
@@ -293,7 +293,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### 子代理（experimental）
 
-`agent_open / agent_eval / agent_close`（v0.8.37 仅注册这三个；`agent_result / agent_cancel / agent_list / resume_agent / delegate_to_agent` 等名字在 v0.8.37 源码中已存在、但只是未注册的历史结构体/字面量，作为注册名是后来版本才出现）—— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
+`agent_open / agent_eval / agent_close`（v0.8.37 仅注册这三个；`agent_result / agent_cancel / agent_list / resume_agent / delegate_to_agent` 等名字在 v0.8.37 源码中已存在、但只是未注册的历史结构体/字面量，后续各版本至现行 HEAD 也未将其注册为工具名——系被移除/替代的遗留，而非「后来才注册」）—— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
 
 ### RLM（Read-Eval-Loop Model）持久会话
 
@@ -322,7 +322,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### MCP（动态）
 
-任何 MCP server 暴露的工具会被注入 catalog，v0.8.37 命名前缀为 `mcp_<server>_<tool>`（单下划线，`mcp.rs:1936`；现行版本注册名仍为单下划线，双下划线 `mcp__<server>__<tool>` 形式仅出现在 hooks 条件匹配等场景，并非注册名改名）。注入路径：`with_mcp_tools` 在 v0.8.37 是 dead_code，实际由 `build_model_tool_catalog` 在 catalog 层完成。pinvou3 当前未连接任何 MCP server。
+任何 MCP server 暴露的工具会被注入 catalog，v0.8.37 命名前缀为 `mcp_<server>_<tool>`（单下划线，`mcp.rs:1936`；现行版本模型可见注册名仍为单下划线，双下划线 `mcp__<server>__<tool>` 形式出现在 hooks 条件匹配与 codewhale-mcp 管理面限定名（`McpManager::qualify_tool_name`，`crates/mcp/src/lib.rs`）等非注册名场景，并非注册名改名）。注入路径：`with_mcp_tools` 在 v0.8.37 是 dead_code，实际由 `build_model_tool_catalog` 在 catalog 层完成。pinvou3 当前未连接任何 MCP server。
 
 ---
 
@@ -362,7 +362,7 @@ agent_open agent_eval agent_close
 
 `BASE_PROMPT`（`include_str!("prompts/base.md")`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox 和 tool_search_tool_regex / tool_search_tool_bm25 deferred discovery）。剩余工具靠模型自行从 schema 探索。
 
-Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/github/pr_attempt/automation 各自的 list/read）、todo 8、plan、review、user_input、recall_archive、notify、web 4。
+Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/github/pr_attempt/automation 各自的 list/read）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 Plan/Agent 预设走 `apply_native_tool_deferral`，初始模型可见仅约 16 个，其余经 ToolSearch 激活；Yolo 不做 deferral，§5 的约 81 即为模型可见数。）
 
 ---
 

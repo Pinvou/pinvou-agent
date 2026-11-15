@@ -147,6 +147,8 @@ AionUI 并不会替换 Codex 自带的 Agent 内核。它的做法是：
 
 ## 6. 目标总体架构
 
+（2026-11 注：本节为设计期目标架构；下图主导航中的「Codex」入口未按原样采纳——最终态为复用主页输入框「工作 / 代码」模式与现有会话列表，不设独立 Codex Tab，与 §11/§18 决策一致，见现行 `codex-acp.md`。）
+
 ```mermaid
 flowchart TB
   Window[PINVOU 主窗口]
@@ -447,6 +449,8 @@ running -> cancelling -> ready
 * -> disconnected / failed / shutting_down
 ```
 
+（2026-11 注：§12 的 `CodexRuntime*` 状态机未被采纳——现行状态契约是 `CodexAcpStatus` 布尔投影加 `acp:install-progress` / `runtime_notice` / `runtime_ready` 事件，见姊妹篇文首 banner 与 `features/codex_acp/events.rs`。）
+
 ### 12.2 持久化分层
 
 ```text
@@ -571,7 +575,7 @@ running -> cancelling -> ready
 
 - pinvou 主页有“工作 / 代码”入口，左侧会话按时间混排，现有 DeepSeek 输入框不再承担 backend 切换。
 - 未安装、安装中、未登录、登录成功、启动失败均有明确 UI。
-- MVP 环境缺少 Node 20+ 时给出明确诊断，不进入伪启动状态。
+- MVP 环境缺少 Node 20+ 时给出明确诊断，不进入伪启动状态。（2026-11 注：验收口径为 system-Node 时代；现行随包私有 Node 24.22.1，见 §13 注。）
 - 新建会话、继续会话、切换会话、重启应用后恢复可用。
 - 新建会话可明确选择真实项目目录或临时目录；同项目可创建多个会话。
 - 项目会话的 adapter cwd、`session/new`、`session/load` 均为所选目录，恢复时不漂移。

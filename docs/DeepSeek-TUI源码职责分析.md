@@ -44,7 +44,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | `crates/hooks` | Hook 事件、sink、dispatcher | 当前直接接入配置，运行期由底座调度 |
 | `crates/mcp` | MCP server/client 管理、工具/资源描述、启动状态 | 间接依赖，通过底座工具体系和 MCP 配置接入 |
 | `crates/tools` | 工作区中独立的工具能力 crate | 间接依赖，主入口仍经 `crates/tui/src/tools` 和 registry |
-| `crates/core` | 共享核心类型或底层能力 | 间接依赖，仅被 `crates/app-server` 消费；pinvou3 依赖链只有 `deepseek-tui`（→ `codewhale-tui`）与 `codewhale-secrets`，`deepseek_tui::core::*` 是 tui 自身模块，与本 crate 无关 |
+| `crates/core` | 共享核心类型或底层能力 | 间接依赖，仅被 `crates/app-server` 消费（v0.8.60 基线口径）；pinvou3 依赖链当时只有 `deepseek-tui`（→ `codewhale-tui`）——`codewhale-secrets` 系快照后 2026-07-02（`d49bcd40a`）才加入。（⚠️ 现行口径：pinvou3-app 已直接依赖五个基座 crate——deepseek-tui、codewhale-secrets、codewhale-core、codewhale-config、codewhale-execpolicy，其中 `codewhale-core` 自 2026-09-30（`e50da6995`，#484）起被直接消费，不再与本 crate 无关；fork 现树上本 crate 亦被 app-server/command-contract/tui 三处消费。）`deepseek_tui::core::*` 是 tui 自身模块一句仍成立 |
 | `crates/protocol` | 协议结构 | 间接依赖，由 runtime、MCP、API 层消费 |
 | `crates/state` | 状态相关能力 | 间接依赖 |
 | `crates/secrets` | 密钥/敏感配置处理 | 间接依赖 |
@@ -92,7 +92,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - 通过 `EngineHandle::send(...)` 注入 `Op::SendMessage`、`Op::SyncSession`、`Op::SpawnSubAgent`、`Op::CompactContext` 等操作。
 - 后台读取 `EngineHandle::rx_event`，把 CodeWhale `Event` 转为 Tauri 前端事件，例如 `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:done`、`workflow:agent_progress`、`chat:compaction`。其中只有底座明确产生的 `ThinkingStarted` / `ThinkingDelta` / `ThinkingComplete` 才会形成独立思考生命周期，普通回答文本不会被推断为思考。（2026-11 注：本条的 `chat:reasoning_start/delta/done` 转发与「Thinking\* 独立思考生命周期」均为快照后行为——`chat:reasoning_*` 2026-07-29 起才加入转发，快照期 `engine.rs:444-445` 反而显式丢弃 `Event::ThinkingDelta`，思考流不单独转发成生命周期。）
 
-（2026-11 注：本段为快照后行为，快照期不成立——快照 `bridge/mod.rs` 除 Kimi→`"moonshot"` 外把 GLM/MiniMax/MiMo/豆包 预设一律映射 wire provider `"openai"`；`Zai`/`Minimax`/`XiaomiMimo`/`Volcengine` 分厂商映射、「腾讯 Coding Plan」预设与 Kimi `reasoning_effort = "high"` 均为 2026-07 起的后续版本内容；`reasoning_stream_style` 为上游 v0.8.65 才引入的字段，不在本文声明的 v0.8.60 基线内。）模型 route 还必须区分“厂商身份”和“wire protocol”：GLM、MiniMax、MiMo、豆包、Kimi 即使都兼容 OpenAI Chat Completions，也要分别映射到底座已有的 `Zai`、`Minimax`、`XiaomiMimo`、`Volcengine`、`Moonshot` provider，才能保留各厂商的思考字段解析、回放和开关语义。字段解析与请求端开关也必须分开处理：Kimi Code 的 always-thinking 模型显式使用 `reasoning_effort = "high"`，由底座转换成 `thinking: {"type":"enabled"}`，避免工具调用前的计划落入普通 `content`；Qwen 与腾讯 Coding Plan 暂时沿用 OpenAI wire route，但显式声明 `reasoning_stream_style = "separate_field"`；未知自定义端点保持安全默认值，不注入厂商参数，也不按回答文字猜测思考内容。
+（2026-11 注：本段为快照后行为，快照期不成立——快照 `bridge/mod.rs` 除 Kimi→`"moonshot"` 外把 GLM/MiniMax/MiMo/豆包 预设一律映射 wire provider `"openai"`；`Zai`/`Minimax`/`XiaomiMimo`/`Volcengine` 分厂商映射与「腾讯 Coding Plan」预设为 2026-07 起的后续版本内容，Kimi `reasoning_effort = "high"` 则为 2026-11-06（`135456026`，preset catalog 刷新）才进入 pinvou3；`reasoning_stream_style` 为上游 v0.8.65 才引入的字段，不在本文声明的 v0.8.60 基线内。）模型 route 还必须区分“厂商身份”和“wire protocol”：GLM、MiniMax、MiMo、豆包、Kimi 即使都兼容 OpenAI Chat Completions，也要分别映射到底座已有的 `Zai`、`Minimax`、`XiaomiMimo`、`Volcengine`、`Moonshot` provider，才能保留各厂商的思考字段解析、回放和开关语义。字段解析与请求端开关也必须分开处理：Kimi Code 的 always-thinking 模型显式使用 `reasoning_effort = "high"`，由底座转换成 `thinking: {"type":"enabled"}`，避免工具调用前的计划落入普通 `content`；Qwen 与腾讯 Coding Plan 暂时沿用 OpenAI wire route，但显式声明 `reasoning_stream_style = "separate_field"`；未知自定义端点保持安全默认值，不注入厂商参数，也不按回答文字猜测思考内容。
 
 ### engine_pool：多 session 生命周期管理
 

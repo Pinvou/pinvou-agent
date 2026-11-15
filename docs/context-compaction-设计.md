@@ -94,8 +94,8 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 5. v0.9 底座只补最小 embed API：把宿主 limits 附到 resolved route；显式 route output
    优先于未知模型名的 4K 兼容 fallback，未声明 route 的上游行为不变。
 
-连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs，0.9.5 时代约 :933）、请求输出 cap
-按小窗自动钳制（context.rs，0.9.5 时代约 :62）、context report 百分比 route-aware（context_report.rs，0.9.5 时代约 :179；行号为当时快照，勿按现树查）。
+连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs，写作期约 :933）、请求输出 cap
+按小窗自动钳制（context.rs，写作期约 :62）、context report 百分比 route-aware（context_report.rs，写作期约 :179；行号为本文写作期 2026-07-02、v0.8.6x 基快照，勿按 0.9.5 或现树查）。
 
 ### T 推导公式（阶段一，同尺换算 + 守护余量）
 
@@ -160,7 +160,7 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 
 ### v0.8 一期：后端探测 + 多窗口适配（历史上零 fork）
 
-> **实施状态（2026-07-02，分支 `pinvou3-compact`）**：✅ 代码完成 + 编译通过 + 275
+> **实施状态（2026-07-02，分支 `pinvou3-compact`——内部 worktree 分支，不在本仓库）**：✅ 代码完成 + 编译通过 + 275
 > lib 测试全绿 + fork-guard `--fast` 零变化（证实零 fork）。
 > ✅ **真机探测已验证**：对测试 vLLM 端点跑 `live_probe_returns_window`,
 > probe→`(qwen36_35b_256k, 262144)`,端到端 derive→T=133029(非写死 190K)。

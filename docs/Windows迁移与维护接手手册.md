@@ -16,9 +16,11 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 
 ## 2. 当前仓库结构
 
+（2026-11 注：本节表格为快照期 0.6.x 布局，路径与「当前」措辞按当时口径陈述；现行布局为 `app/` + `features/` + `platform/`，Windows 打包目标 msi+nsis 已上线。）
+
 | 路径 | 作用 | Windows 接手要点 |
 |---|---|---|
-| `pinvou3-app/` | 主应用，Tauri 2.0 + Rust 后端 + 静态前端 | 迁移主战场；当前打包目标主要是 Linux `.deb` |
+| `pinvou3-app/` | 主应用，Tauri 2.0 + Rust 后端 + 静态前端 | 迁移主战场；当前打包目标主要是 Linux `.deb`（⚠️ 快照条目：现行 Windows `msi`+`nsis` 打包已上线，见 `config/platforms/windows/tauri.conf.json`，§11 结论已纠正） |
 | `pinvou3-app/src/` | 前端入口，`index.html` + `tauri-bridge.js` + vendor JS | `tauri-bridge.js` 是前后端通信唯一集中封装 |
 | `pinvou3-app/src-tauri/` | Rust 后端、Tauri 配置、bundle 资源 | Windows 兼容主要改这里和打包配置 |
 | `DeepSeek-TUI/` | 底座 submodule，Cargo path dependency | 当前工作区该目录可能为空；必须先初始化 submodule |
@@ -310,7 +312,7 @@ vllm serve /path/to/model \
 | `DEEPSEEK_BASE_URL` 默认 | `http://127.0.0.1:8000/v1` |
 | `DEEPSEEK_PROVIDER` | 不全局注入，由当前模型预设决定 |
 | `DEEPSEEK_REASONING_EFFORT` | `off`（⚠️ 快照条目：现行主干不注入也不读取该变量，reasoning effort 已改为按模型偏好 `saved_models[].reasoning_effort`，此行仅作快照留档） |
-| 输出上限 | 本地 vLLM route 显式为 `24576`；云端由底座请求上限、厂商及 route 能力共同决定 |
+| 输出上限 | 本地 vLLM route 显式为 `24576`（⚠️ 快照条目：现行 route 输出声明由 `route_limits_for_model` 按窗口档位给出——≥500K→131072、≥250K→65536、否则 min(窗口/4, 32768)，未探测本地 vLLM 落 128K 回退→32000；24576 仅存于 `PINVOU3_MAX_OUTPUT_TOKENS`/prefs 回退，用于 min-clamp 显式 `max_output_tokens` 与压缩阈值推导）；云端由底座请求上限、厂商及 route 能力共同决定 |
 | compaction token threshold | 约 `190000`（⚠️ 快照条目：现由 `derive_compaction_threshold` 动态推导，见 [`auto-compact-256K-tuning.md`](./auto-compact-256K-tuning.md)） |
 | emergency input budget | 约 `230400`（⚠️ 快照条目：同上，以现行代码为准） |
 
