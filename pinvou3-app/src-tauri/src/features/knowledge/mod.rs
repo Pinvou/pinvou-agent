@@ -756,6 +756,8 @@ impl KnowledgeService {
     /// 启动一轮增量扫描（后台线程，立即返回；已在跑则原样返回当前状态）。**懒触发**：由前端
     /// 进入文件管理页时调，不进页 = 零扫描。不再常驻 watcher / 周期重扫——文件管理是低频功能，
     /// 不该长期占资源。增量只处理 mtime/size 变化的文件，进页时前端先用缓存秒显、扫完再刷新。
+    /// （增量事件侧现以库形式落位在 `watcher.rs`；本条的「不常驻」指不做周期兜底，
+    /// 是否接线常驻事件流属接线决策，权衡见 #869。）
     pub fn start_scan(&self, roots: Vec<PathBuf>) -> ScanState {
         {
             let mut st = self.scan_state.lock();

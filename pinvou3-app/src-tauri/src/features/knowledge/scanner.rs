@@ -3,7 +3,8 @@
 // architecture-guard: allow-target-cfg -- the walk-error counting test needs
 // a chmod-000 subtree fixture, and mode bits are a unix concept; the veto
 // logic under test is platform-independent (any walkdir error), only the
-// fixture cannot be expressed portably.
+// fixture cannot be expressed portably. The same class covers the unix-only
+// non-UTF-8 scan fixture (OsStrExt raw bytes, unexpressible portably).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -320,6 +321,74 @@ mod tests {
             visited_again.contains(&base.join("sub/locked.md").to_string_lossy().into_owned()),
             "the previously locked file is indexed once the subtree is readable"
         );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 扫描腿的非 UTF-8 剪枝（watcher 侧 `non_utf8_spellings_never_enter_the_index`
+    /// 的扫描器半边，钉住模块文档「两侧落库结果一致」的扫描端）：非 UTF-8 名目录经
+    /// filter_entry 的 empty-name 语义整株剪枝（干净叶子也不入库），`to_record` 的
+    /// `to_str` 闸门兜住其余形态。APFS 造不出 fixture（探针跳过），ext4 CI
+    /// （ubuntu 全量腿）真实执行——与 chmod-000 fixture 同款探针习惯。
+    #[test]
+    #[cfg(unix)]
+    fn scan_prunes_non_utf8_names_like_the_watcher() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let base =
+            std::env::temp_dir().join(format!("pinvou3_kb_scan_nonutf8_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let bad_dir = base.join(OsStr::from_bytes(b"\xff\xfe.dir"));
+        if fs::create_dir_all(&bad_dir).is_err() {
+            // 敌意文件系统（APFS 拒绝非 UTF-8 名）造不出 fixture，跳过。
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        let bad_leaf = bad_dir.join(OsStr::from_bytes(b"ok.pdf"));
+        if fs::write(&bad_leaf, b"p").is_err() {
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        fs::write(base.join("报告.pdf"), b"r").unwrap();
+
+        let store = Store::open_in_memory().unwrap();
+        let ex = Excluder::default();
+        let mut visited = HashSet::new();
+        let (walked, errors) = scan(
+            &base,
+            &store,
+            &ex,
+            &HashMap::new(),
+            &mut visited,
+            |_| {},
+            || {},
+        );
+
+        assert_eq!(errors, 0, "pruning is a policy decision, not a walk error");
+        // walked 恰为 2：walkdir 对根本身也产出一条（to_record 会为根目录建行），
+        // 加上干净叶子；被剪枝的子树一个都不计（round-6 CI ext4 实测 left=2）。
+        assert_eq!(
+            walked, 2,
+            "only the root row and the clean sibling are countable; the pruned \
+             subtree yields nothing"
+        );
+        assert!(
+            !visited.iter().any(|p| p.contains('\u{FFFD}')),
+            "no lossy-spelled path may enter the visit set"
+        );
+        let mut indexed: Vec<String> = store.load_index().unwrap().into_keys().collect();
+        indexed.sort();
+        assert_eq!(
+            indexed,
+            vec![
+                base.to_string_lossy().into_owned(),
+                base.join("报告.pdf").to_string_lossy().into_owned(),
+            ],
+            "the root row + clean sibling are indexed; the non-UTF-8 subtree \
+             stays out entirely"
+        );
+
         let _ = fs::remove_dir_all(&base);
     }
 

@@ -589,16 +589,21 @@ impl Store {
     ///
     /// 为什么需要子树删除：目录被 rename/move-out 时，inotify 只会在（仍被监听的）父目录上
     /// 冒出该目录自身的事件，其下的文件不会有任何事件；精确删除会在索引里留下整树「幽灵」，
-    /// 一直撑到下次重扫。先查 `is_dir`，目录才走前缀删除——前缀比较是全表扫描，
+    /// 一直撑到下次重扫。先查 `is_dir`，目录才走前缀删除——前缀范围走 UNIQUE 索引
+    /// （`path TEXT NOT NULL UNIQUE`，BINARY 排序），是索引查找 + 命中行删除，不是全表扫描；
     /// 文件（绝大多数事件）保持索引精确删除的代价。已知残留缺口（幽灵方向，重扫兜底）：
     /// 库里残留 `is_dir=false` 的陈旧行、而磁盘上已是目录时，本次只精确删除，子树行留待
-    /// 重扫清（is_dir 门是省全表扫描的取舍，事件流的批量合并另见 watcher 侧）。
+    /// 重扫清（is_dir 门是省扫描的取舍，事件流的批量合并另见 watcher 侧）。
     ///
-    /// 前缀匹配用 `path + 主分隔符` 的 substr 精确比较：路径可含 `%`/`_`/`[`，不能走
-    /// LIKE/GLOB；也不换成「上界 range」——BINARY 文本序下前缀范围没有有限上界
-    /// （后缀可任意延长并超过任何候补上界），substr 是既不用模式语义又能全 Unicode
-    /// 精确的形态。SQLite 的 `length`/`substr` 按 Unicode 字符计数，与 Rust
-    /// `chars().count()` 一致，CJK 路径安全。
+    /// 前缀匹配用 `[path + 主分隔符, path + 分隔符后继)` 的范围精确比较：路径可含
+    /// `%`/`_`/`[`，不能走 LIKE/GLOB 的模式语义。下界 = `p + sep`；上界 = `p +
+    /// 分隔符字节的后继字符`（unix `/`(0x2F)→`0`(0x30)，Windows `\`(0x5C)→`]`(0x5D)，
+    /// 两平台分隔符均为 ASCII，后继无歧义）——BINARY 字节序下，任何以 `p+sep` 开头的行
+    /// 与上界的比较都在分隔符这一字节上分出高下，后缀任意延长不改变结局，所以该闭开区间
+    /// 恰好等于「以 `p+sep` 为字节前缀」的行集合（含按 `p+sep` 拼写入库的根行本身）。
+    /// 库内行全部经 `record_from_parts` 的 `to_str` 闸门（合法 UTF-8，UTF-8 字节序与
+    /// 码点序一致），CJK/emoji 路径同样精确；应用内不存在 BLOB 行（唯一写入方绑定
+    /// TEXT），外力注入的 BLOB 行按损坏数据一并删除。
     ///
     /// 分隔符拼写：入参容忍**尾部分隔符**（接线方传根 PathBuf 时可能带 `/`），也容忍
     /// 混合尾（`dir\/`），统一按「主分隔符或 `/`」一遍去掉后再比对。行侧则可能按
@@ -611,9 +616,8 @@ impl Store {
         {
             let mut q = tx.prepare_cached("SELECT is_dir FROM files WHERE path = ?1")?;
             let mut del_exact = tx.prepare_cached("DELETE FROM files WHERE path = ?1")?;
-            let mut del_sub = tx.prepare_cached(
-                "DELETE FROM files WHERE length(path) >= ?1 AND substr(path, 1, ?1) = ?2",
-            )?;
+            let mut del_sub =
+                tx.prepare_cached("DELETE FROM files WHERE path >= ?1 AND path < ?2")?;
             for p_raw in paths {
                 let p = p_raw.trim_end_matches(|c| c == std::path::MAIN_SEPARATOR || c == '/');
                 if p.is_empty() {
@@ -628,11 +632,12 @@ impl Store {
                 del_exact.execute(params![p])?;
                 if is_dir == Some(true) {
                     // 行内容只会是 `p` 自身、`p + 分隔符`（根行带尾分隔符的拼写）或
-                    // `p + 分隔符 + 后代`；以「p + 分隔符」为前缀，名字只共享前缀字符的
-                    // 兄弟（如 `prefix-sibling.md`）不会被误删，带尾分隔符的根行本身
-                    // 则被模式精确命中一并清掉。
-                    let pat = with_sep;
-                    del_sub.execute(params![pat.chars().count() as i64, pat])?;
+                    // `p + 分隔符 + 后代`；闭开区间 `[p+sep, p+sep后继)` 恰为这全体
+                    // （见方法注释），名字只共享前缀字符的兄弟（如 `prefix-sibling.md`，
+                    // 或恰好等于上界的 `p0`）不会被误删，带尾分隔符的根行本身则被
+                    // 下界精确命中一并清掉。
+                    let upper = format!("{}{}", p, (std::path::MAIN_SEPARATOR as u8 + 1) as char);
+                    del_sub.execute(params![with_sep, upper])?;
                 }
             }
         }
@@ -1823,6 +1828,38 @@ mod tests {
         assert!(
             left.contains_key("/home/u/metX100Yfoo1Z.md"),
             "a name that unescaped-LIKE would false-positive must survive"
+        );
+    }
+
+    /// 前缀范围的两个边界都必须精确：恰为上界的兄弟（`sub0` = `p + 分隔符后继`）
+    /// 与低于下界的兄弟（`sub-…`，分隔符字节序在前）必须幸存——闭开区间多删一个
+    /// 字节序近邻就是误删。
+    #[test]
+    fn delete_tree_range_bounds_exclude_boundary_siblings() {
+        let s = Store::open_in_memory().unwrap();
+        let mut dir = rec("/t/sub", "sub", None, 0, 1);
+        dir.is_dir = true;
+        s.upsert_many(&[
+            dir,
+            rec("/t/sub/a.md", "a.md", Some("md"), 3, 2),
+            // 恰为上界字符 '0' 的拼写：必须幸存。
+            rec("/t/sub0", "sub0", None, 0, 3),
+            // 分隔符 '/'(0x2F) 字节序之前的近邻 '-'(0x2D)：必须幸存。
+            rec("/t/sub-文件.md", "sub-文件.md", Some("md"), 4, 4),
+        ])
+        .unwrap();
+
+        s.delete_tree(&["/t/sub".into()]).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(!left.contains_key("/t/sub/a.md"));
+        assert!(
+            left.contains_key("/t/sub0"),
+            "the exact upper-bound sibling must survive"
+        );
+        assert!(
+            left.contains_key("/t/sub-文件.md"),
+            "a below-bound sibling must survive"
         );
     }
 }

@@ -1,7 +1,9 @@
 // architecture-guard: allow-target-cfg -- the stat-error-vs-delete test needs a
 // chmod-000 parent fixture, and mode bits are a unix concept; the production
 // branch under test (stat error != NotFound must not delete) is
-// platform-independent, only the fixture cannot be expressed portably.
+// platform-independent, only the fixture cannot be expressed portably. The same
+// class covers this file's other unix-only test fixtures (symlink creation and
+// non-UTF-8 names via OsStrExt, likewise unexpressible portably).
 
 //! 实时增量索引：notify 监听已纳入的根，文件变化即时更新 L0 元数据库。
 //!
@@ -11,6 +13,9 @@
 //!   无扩展名文件与扫描结果一致）后 `upsert`
 //! - `NotFound`（已删除 / rename 移走）→ [`Store::delete_tree`]：目录记录连带子树
 //!   一并删（dir rename/move-out 只会冒出父路径事件），文件退化为精确删除
+//! - stat 成功但不可入库类型（软链/socket/fifo）→ 同样走删除分支：实体被原地
+//!   替换成软链等（`rm f && ln -s` 的常见节奏）时旧记录已成幽灵，清掉；库中
+//!   无行时是安全 no-op（扫描器本就从不为这类类型建行）
 //! - 其他 stat 错误（权限收紧/挂载抖动）→ 只告警不删，避免把仍存在的记录误删
 //!
 //! 非 UTF-8 拼写的路径两侧都不入库：[`scanner::record_from_parts`] 的 `to_str`
@@ -49,8 +54,15 @@
 //!   溢出/掉 watch 只能告警，索引在下次重扫前保持陈旧——接线方应把 `need_rescan`
 //!   告警接成重扫触发。Linux inotify 的 Q_OVERFLOW 事件**不携带路径**（内核队列
 //!   被所有根共享），只能整组根重扫；macOS fsevent 的丢事件信号带受影响路径；
-//!   **Windows 没有任何丢事件信号**——后端缓冲溢出/根删除在其内部记日志并静默
-//!   停 watch（既无事件也无 channel Err），Windows 上懒触发重扫就是唯一兜底。
+//!   **Windows 没有任何丢事件信号**——后端缓冲溢出只在其内部 `log` 记录（装了
+//!   logger 才可见）、根删除更是完全无声，两者都静默停 watch（既无事件也无
+//!   channel Err），Windows 上懒触发重扫就是唯一兜底。
+//! - macOS fsevent 的后端线程死亡同样不可观察：事件回调 panic 在 extern "C"
+//!   边界上直接 abort 整个进程（如投递路径含非 UTF-8——exFAT/SMB 等挂载上可能
+//!   出现，notify 内部 `to_str().expect()`），而非线程展开；即便后端线程无
+//!   panic 地死掉，用户侧 tx 也被 `FsEventWatcher` 结构体持有而不 drop，`rx`
+//!   永远挂起（通道关闭告警不触发、守卫不解锁）。macOS 上懒触发重扫就是唯一
+//!   兜底，接线方不应假设 macOS 侧可观测、可重试。
 //! - 树内软链目录不下探：watcher 以 `with_follow_symlinks(false)` 构造，与扫描器
 //!   `follow_links(false)` 同向（notify 默认是跟随的，必须显式关掉）。该配置由
 //!   inotify/kqueue/poll 后端执行；fsevent/Windows 忽略它，但那两个后端本就不
@@ -64,8 +76,11 @@
 //!   被 rename 则事件永远带着旧前缀路径（等同失效）——两者都靠重扫兜底；
 //!   macOS fsevent 的流按路径存活，根重建后事件恢复。
 //! - macOS fsevent 的 rename 以 `RenameMode::Any` 单路径事件到达，新旧两侧各自
-//!   独立到达、无法关联；按存在性判定两者都能正确处理——旧侧事件到达即清掉旧
-//!   记录，未到达时旧记录等重扫。
+//!   独立到达、无法关联；按存在性判定旧侧事件到达即清掉旧记录，未到达时旧记录
+//!   等重扫。但大小写不敏感文件系统（APFS 默认、Windows NTFS）上的**仅大小写
+//!   改名**（`mv notes.md NOTES.MD`）会击穿该判定：旧拼写的 stat 仍能解析到改名
+//!   后的文件 → 旧侧被当存活 upsert，新旧拼写成两行并存，其一永久陈旧直到重扫
+//!   （旧拼写的删除事件再也不会到来）。此类旧行的清理属接线方决策（#869）。
 //! - 无去抖：同一文件的连发事件各写一次（幂等）；事件 channel 无界，消费端被
 //!   长事务/慢盘拖住时队列会积累（十万级事件 ≈ 数十 MB 量级），大批量灌入场景
 //!   由接线方评估 coalescing（file_watcher.rs 的防抖只覆盖 sched-*.json，参考其
@@ -81,8 +96,9 @@
 //! 当前未接线：`spawn` 尚无生产调用方（与闭源侧一致为落库待接线状态）；入口由
 //! 后续接线方在启动扫描时按根调用。watcher 是 app 级单例语义：`spawn` 内置了
 //! 防重入守卫，重复调用直接忽略；线程任何退出路径（init 失败、全部根注册失败、
-//! panic 展开）都会释放守卫，之后可重新 `spawn` 重新武装——需要更换根集合时，
-//! 仍应先给线程补停止接口（#869），不能靠叠 spawn。
+//! panic 展开）都会释放守卫，之后可重新 `spawn` 重新武装（但 macOS fsevent 的
+//! 后端死亡既不展开本线程也不关闭通道——见下方已知限制，守卫不解锁、无从重试）；
+//! 需要更换根集合时，仍应先给线程补停止接口（#869），不能靠叠 spawn。
 
 #![allow(dead_code)] // 库先行：接线前 spawn 无生产调用方（见上方注记）
 
@@ -101,7 +117,7 @@ use super::store::{FileRecord, Store};
 /// 非 panicking stderr 写：stderr 关闭时 `eprintln!` 会 panic（Rust 忽略 SIGPIPE，
 /// 写失败即 panic），watcher 线程死在这类日志上会无声断掉增量索引——写失败就地
 /// 忽略（与 mod.rs 扫描线程的内联防护同款，见其注释）。展开成块表达式（而非裸
-/// 语句），使调用在 let-else 的表达式位置也可用。
+/// 语句），在 let-else 分支体内与其他语句并列时同样可用。
 macro_rules! warn {
     ($($arg:tt)*) => {{
         let _ = writeln!(std::io::stderr(), "[kb_watcher] {}", format_args!($($arg)*));
@@ -231,15 +247,12 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
                 if ev.need_rescan() {
                     warn!(
                         "backend dropped events (rescan requested); \
-                         index stays stale until the next scan"
+                             index stays stale until the next scan"
                     );
                 }
-                if matches!(
-                    ev.kind,
-                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                ) {
-                    apply(&ex, store, &watched_roots, &ev);
-                }
+                // 事件准入（Create/Modify/Remove）由 apply 统一判（测试契约所在），
+                // 这里不再前置重复判定。
+                apply(&ex, store, &watched_roots, &ev);
             }
             // 通道上的 Err：读循环 IO 错误、中途 MaxFilesWatch（notify 之后不再扩
             // watch）等，同样不能静默吞掉。MaxFilesWatch 会对每个新目录重复到达，
@@ -259,10 +272,15 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
             }
         }
     }
-    // 循环在这里退出只有一种途径：notify 后端线程死亡（其内部 panic 不向通道
-    // 投递任何 Err 事件——如 inotify 的 poll 失败 panic、fsevent 的处理器锁中毒
-    // 时，tx 随线程展开被 drop，rx 正常收尾）。这是模块里唯一无声的失效路径，
-    // 必须喊出来。守卫已释放，之后 spawn 可重新武装。
+    // 循环在这里结束 = 用户侧 tx 已被全部丢弃。这发生在 Linux/Windows 后端线程
+    // 死亡时（其内部 panic 不向通道投递任何 Err——如 inotify 的 poll 失败 panic；
+    // Windows 服务线程退出——线程展开时按所有权 drop 掉 tx，rx 收尾）；后端线程
+    // 自身 spawn 失败（notify 以 let _ = 忽略）同样立即落到这里。macOS fsevent
+    // 不在此列：回调 panic 在 extern "C" 边界上直接 abort 进程（不可观察），而
+    // handler Arc 由 FsEventWatcher 结构体自身持有，后端线程死掉 tx 也不 drop——
+    // rx 永远挂起、本告警不触发、守卫不解锁。macOS 的兜底只有懒触发重扫（见模块
+    // 文档已知限制）。守卫在调用闭包结尾释放（比本条日志晚一步），之后 spawn 可
+    // 重新武装。
     warn!(
         "event channel closed; the watcher backend is gone (index stays stale until \
          the next scan, a later spawn re-arms)"
@@ -313,7 +331,11 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
             Ok(md) => {
                 let ft = md.file_type();
                 if !ft.is_file() && !ft.is_dir() {
-                    continue; // symlink/socket/fifo 本体不入库（与扫描器一致）
+                    // symlink/socket/fifo 本体不入库（与扫描器一致）。但实体被原地
+                    // 替换成软链等类型时，旧路径的记录已成幽灵 → 走删除分支清掉
+                    // （库中无行时是安全 no-op，有目录行时连带子树一并清）。
+                    dels.push(path.to_string_lossy().into_owned());
+                    continue;
                 }
                 let is_dir = ft.is_dir();
                 let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -738,6 +760,48 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// 实体被原地替换成软链（`rm f && ln -s` 的常见节奏）：替换后事件的 stat
+    /// 成功但命中的是非入库类型，旧记录若还在就是幽灵 → 必须走删除分支清掉。
+    /// 无记录时（本文件 symlink 测试的形状）是安全 no-op，两条测试合起来钉住
+    /// 「非入库类型：清旧行、绝不建行」两个方向。
+    #[test]
+    #[cfg(unix)]
+    fn replacement_by_symlink_removes_the_stale_row() {
+        let base = tmp("replsymlink");
+        fs::write(base.join("报告.pdf"), b"r").unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let ex = Excluder::default();
+        let roots = vec![base.clone()];
+
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(creates_file(), &[&base.join("报告.pdf")]),
+        );
+        assert_eq!(indexed(&store).len(), 1);
+
+        // rm 后原地 ln -s：路径上同名实体已换成交叉软链。
+        fs::remove_file(base.join("报告.pdf")).unwrap();
+        std::os::unix::fs::symlink(base.join("其他.pdf"), base.join("报告.pdf")).unwrap();
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(
+                EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                &[&base.join("报告.pdf")],
+            ),
+        );
+
+        assert!(
+            indexed(&store).is_empty(),
+            "a file replaced by a symlink must drop its stale row"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
     /// stat 抖动（父目录权限收紧等）不得把仍存在的记录当删除处理——
     /// `Path::exists()` 会把一切错误折叠成 false，旧版在此误删活记录。
     #[test]
@@ -832,6 +896,9 @@ mod tests {
         let root = base.join("proj");
         fs::create_dir_all(&root).unwrap();
 
+        // mut 仅 cfg(unix) 的 fixture 注入用到；Windows 腿以 -D unused-mut 编译
+        // （round-6 review B1：无守卫时 cfg 块整体编译掉，mut 悬空红 required-gate）。
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut inputs = vec![root.clone(), base.join("missing"), root.clone()];
         // 软链拼写与实体路径 canonicalize 到同一路径 → 去重成一个。
         #[cfg(unix)]
