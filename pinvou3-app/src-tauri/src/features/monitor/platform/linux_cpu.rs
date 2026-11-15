@@ -4,64 +4,46 @@ use std::time::Instant;
 use parking_lot::Mutex;
 
 use super::super::CpuSnapshot;
-use super::super::cpu_math::{SystemDeltaState, SystemTicks, clamp_pct};
+use super::super::cpu_math::{
+    ProcessDeltaState, ProcessSample, SystemDeltaState, SystemTicks, logical_processors,
+};
 
 /// `/proc` 中 CPU 时间的基本频率。内核 USER_HZ 在 Tauri 支持的架构
 /// （x86_64/aarch64/riscv64 等）上都恒为 100，唯一例外是已废弃的 alpha
 /// （1024，非 Tauri 目标）；Rust std 无 sysconf 接口，按 100 换算与 procps/top 一致。
 const USER_HZ: f64 = 100.0;
 
-/// CPU name and parallelism are stable for the process lifetime; sampling at
-/// 1 Hz need not re-read /proc for them.
-static CPU_IDENTITY: OnceLock<(String, u32)> = OnceLock::new();
+/// The CPU name is stable for the process lifetime; sampling at 1 Hz need
+/// not re-read /proc for it.
+static CPU_NAME: OnceLock<String> = OnceLock::new();
 
 static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
 
 #[derive(Debug, Default)]
 struct CpuSampleState {
     system: SystemDeltaState,
-    process: Option<ProcessTicks>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ProcessTicks {
-    cpu_secs: f64,
-    sampled_at: Instant,
+    process: ProcessDeltaState,
 }
 
 pub fn cpu_snapshot() -> Option<CpuSnapshot> {
-    let (name, logical_processors) = cpu_identity();
+    let name = cpu_name();
+    let logical_processors = logical_processors();
     let current = read_system_ticks();
     let process = read_process_ticks();
     let state = CPU_SAMPLE_STATE.get_or_init(|| Mutex::new(CpuSampleState::default()));
     let mut state = state.lock();
 
-    let total_usage_pct = state.system.absorb(current);
-    let process_usage_pct = match (state.process, process) {
-        (Some(prev), Some(current)) => process_usage_pct(prev, current, logical_processors),
-        _ => None,
-    };
-    if process.is_some() {
-        state.process = process;
-    }
-
     Some(CpuSnapshot {
         name,
-        total_usage_pct,
-        process_usage_pct,
+        total_usage_pct: state.system.absorb(current),
+        process_usage_pct: state.process.absorb(process, logical_processors),
         logical_processors,
     })
 }
 
-fn cpu_identity() -> (String, u32) {
-    CPU_IDENTITY
-        .get_or_init(|| {
-            let logical_processors = std::thread::available_parallelism()
-                .map(|n| n.get() as u32)
-                .unwrap_or(0);
-            let name = read_cpuinfo_model_name().unwrap_or_else(|| "CPU".to_string());
-            (name, logical_processors)
-        })
+fn cpu_name() -> String {
+    CPU_NAME
+        .get_or_init(|| read_cpuinfo_model_name().unwrap_or_else(|| "CPU".to_string()))
         .clone()
 }
 
@@ -71,10 +53,10 @@ fn read_system_ticks() -> Option<SystemTicks> {
     parse_proc_stat_total(line)
 }
 
-fn read_process_ticks() -> Option<ProcessTicks> {
+fn read_process_ticks() -> Option<ProcessSample> {
     let text = std::fs::read_to_string("/proc/self/stat").ok()?;
     let ticks = parse_proc_self_stat_cpu_ticks(&text)?;
-    Some(ProcessTicks {
+    Some(ProcessSample {
         cpu_secs: ticks as f64 / USER_HZ,
         sampled_at: Instant::now(),
     })
@@ -113,7 +95,9 @@ fn parse_proc_self_stat_cpu_ticks(text: &str) -> Option<u64> {
     let fields: Vec<&str> = after_comm.split_whitespace().collect();
     let utime: u64 = fields.get(11)?.parse().ok()?;
     let stime: u64 = fields.get(12)?.parse().ok()?;
-    Some(utime + stime)
+    // Hygiene against a debug-build panic on corrupted input; real kernel
+    // counters are u64-bounded and cannot overflow here.
+    Some(utime.saturating_add(stime))
 }
 
 fn read_cpuinfo_model_name() -> Option<String> {
@@ -132,34 +116,6 @@ fn parse_cpuinfo_model_name(text: &str) -> Option<String> {
             }
         })
         .filter(|s| !s.is_empty())
-}
-
-fn process_usage_pct(
-    prev: ProcessTicks,
-    current: ProcessTicks,
-    logical_processors: u32,
-) -> Option<f64> {
-    if logical_processors == 0 {
-        return None;
-    }
-    // f64 has no checked_sub: a negative delta means the counter moved
-    // backwards (wraparound); the pair is unusable, not "idle". An exact
-    // zero delta is a real idle interval and reports Some(0.0) — the same
-    // convention as the system gauge and the Windows sampler.
-    let cpu_delta = current.cpu_secs - prev.cpu_secs;
-    if cpu_delta < 0.0 {
-        return None;
-    }
-    let elapsed_secs = current
-        .sampled_at
-        .checked_duration_since(prev.sampled_at)?
-        .as_secs_f64();
-    if elapsed_secs <= 0.0 {
-        return None;
-    }
-    Some(clamp_pct(
-        cpu_delta * 100.0 / elapsed_secs / logical_processors as f64,
-    ))
 }
 
 #[cfg(test)]
@@ -232,64 +188,6 @@ mod tests {
         assert!(parse_proc_self_stat_cpu_ticks(twelve).is_none());
         let thirteen = "1 (sh) S 0 1 1 0 -1 4194560 7 0 0 0 50 0";
         assert_eq!(parse_proc_self_stat_cpu_ticks(thirteen), Some(50));
-    }
-
-    #[test]
-    fn process_usage_accounts_for_logical_processors() {
-        let now = Instant::now();
-        let prev = ProcessTicks {
-            cpu_secs: 0.0,
-            sampled_at: now,
-        };
-        let current = ProcessTicks {
-            cpu_secs: 1.0,
-            sampled_at: now + std::time::Duration::from_secs(1),
-        };
-        // 1 CPU-second over 1 second / 4 cores = 25%
-        assert_eq!(process_usage_pct(prev, current, 4), Some(25.0));
-    }
-
-    #[test]
-    fn process_usage_reports_zero_for_idle_interval() {
-        let now = Instant::now();
-        let prev = ProcessTicks {
-            cpu_secs: 2.0,
-            sampled_at: now,
-        };
-        let current = ProcessTicks {
-            cpu_secs: 2.0,
-            sampled_at: now + std::time::Duration::from_secs(1),
-        };
-        // Same convention as the system gauge: a fully idle interval is a
-        // measured 0%, not missing data (Windows sampler parity).
-        assert_eq!(process_usage_pct(prev, current, 4), Some(0.0));
-    }
-
-    #[test]
-    fn process_usage_returns_none_without_cpu_progress() {
-        let now = Instant::now();
-        let sample = ProcessTicks {
-            cpu_secs: 1.0,
-            sampled_at: now,
-        };
-        // Identical samples mean zero elapsed wall time, which is unusable
-        // regardless of the CPU delta.
-        assert_eq!(process_usage_pct(sample, sample, 4), None);
-    }
-
-    #[test]
-    fn process_usage_returns_none_without_parallelism() {
-        let now = Instant::now();
-        let prev = ProcessTicks {
-            cpu_secs: 0.0,
-            sampled_at: now,
-        };
-        let current = ProcessTicks {
-            cpu_secs: 1.0,
-            sampled_at: now + std::time::Duration::from_secs(1),
-        };
-        // A probe-failed denominator (0) cannot normalize a percentage.
-        assert_eq!(process_usage_pct(prev, current, 0), None);
     }
 
     #[test]

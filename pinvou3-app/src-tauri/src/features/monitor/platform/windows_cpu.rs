@@ -14,7 +14,7 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, GetSystemTimes};
 
 use super::super::CpuSnapshot;
-use super::super::cpu_math::clamp_pct;
+use super::super::cpu_math::{ProcessDeltaState, ProcessSample, clamp_pct, logical_processors};
 
 static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
 
@@ -24,21 +24,15 @@ struct SystemTimes {
     total_100ns: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ProcessTimes {
-    cpu_100ns: u64,
-    sampled_at: Instant,
-}
-
 #[derive(Debug, Default)]
 struct CpuSampleState {
     system: Option<SystemTimes>,
-    process: Option<ProcessTimes>,
+    process: ProcessDeltaState,
     pdh: Option<PdhCpuCounter>,
 }
 
 pub fn cpu_snapshot() -> Option<CpuSnapshot> {
-    let logical_processors = logical_processor_count();
+    let logical_processors = logical_processors();
     let name = cpu_name().unwrap_or_else(|| "CPU".to_string());
     let system = read_system_times();
     let process = read_process_times();
@@ -58,16 +52,10 @@ pub fn cpu_snapshot() -> Option<CpuSnapshot> {
         .as_mut()
         .and_then(PdhCpuCounter::sample)
         .or(system_usage);
-    let process_usage_pct = match (state.process, process) {
-        (Some(prev), Some(current)) => process_usage_pct(prev, current, logical_processors),
-        _ => None,
-    };
+    let process_usage_pct = state.process.absorb(process, logical_processors);
 
     if system.is_some() {
         state.system = system;
-    }
-    if process.is_some() {
-        state.process = process;
     }
 
     Some(CpuSnapshot {
@@ -187,7 +175,7 @@ fn read_system_times() -> Option<SystemTimes> {
     })
 }
 
-fn read_process_times() -> Option<ProcessTimes> {
+fn read_process_times() -> Option<ProcessSample> {
     let mut creation = FILETIME::default();
     let mut exit = FILETIME::default();
     let mut kernel = FILETIME::default();
@@ -206,41 +194,13 @@ fn read_process_times() -> Option<ProcessTimes> {
     if ok == 0 {
         return None;
     }
-    Some(ProcessTimes {
-        cpu_100ns: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)),
+    Some(ProcessSample {
+        // 100ns ticks -> seconds, exact in f64 far past any realistic
+        // process lifetime (2^53 ticks ~ 29k years of accumulated CPU time).
+        cpu_secs: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)) as f64
+            / 10_000_000.0,
         sampled_at: Instant::now(),
     })
-}
-
-fn process_usage_pct(
-    prev: ProcessTimes,
-    current: ProcessTimes,
-    logical_processors: u32,
-) -> Option<f64> {
-    if logical_processors == 0 {
-        return None;
-    }
-    // checked_sub only rejects a wrapped counter; an exact zero delta is a
-    // real idle interval and reports Some(0.0) — the same convention as the
-    // system gauge and the POSIX samplers.
-    let cpu_delta = current.cpu_100ns.checked_sub(prev.cpu_100ns)?;
-    let elapsed_100ns = current
-        .sampled_at
-        .checked_duration_since(prev.sampled_at)?
-        .as_secs_f64()
-        * 10_000_000.0;
-    if elapsed_100ns <= 0.0 {
-        return None;
-    }
-    Some(clamp_pct(
-        cpu_delta as f64 * 100.0 / elapsed_100ns / logical_processors as f64,
-    ))
-}
-
-fn logical_processor_count() -> u32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as u32)
-        .unwrap_or(0)
 }
 
 fn system_usage_pct(prev: SystemTimes, current: SystemTimes) -> Option<f64> {
@@ -367,60 +327,14 @@ mod tests {
     }
 
     #[test]
-    fn process_usage_accounts_for_logical_processors() {
-        let now = Instant::now();
-        let prev = ProcessTimes {
-            cpu_100ns: 0,
-            sampled_at: now,
+    fn filetime_combines_low_and_high_words() {
+        // Direct pin for the second consumer this PR gave filetime_to_u64:
+        // a high/low word swap survives every FFI-path test otherwise.
+        let value = FILETIME {
+            dwLowDateTime: 1,
+            dwHighDateTime: 1,
         };
-        let current = ProcessTimes {
-            cpu_100ns: 10_000_000,
-            sampled_at: now + std::time::Duration::from_secs(1),
-        };
-        assert_eq!(process_usage_pct(prev, current, 4), Some(25.0));
-    }
-
-    #[test]
-    fn process_usage_reports_zero_for_idle_interval() {
-        let now = Instant::now();
-        let prev = ProcessTimes {
-            cpu_100ns: 10_000_000,
-            sampled_at: now,
-        };
-        let current = ProcessTimes {
-            cpu_100ns: 10_000_000,
-            sampled_at: now + std::time::Duration::from_secs(1),
-        };
-        // Same convention as the system gauge: a fully idle interval is a
-        // measured 0%, not missing data (POSIX sampler parity).
-        assert_eq!(process_usage_pct(prev, current, 4), Some(0.0));
-    }
-
-    #[test]
-    fn process_usage_returns_none_without_elapsed_wall_time() {
-        let now = Instant::now();
-        let sample = ProcessTimes {
-            cpu_100ns: 10,
-            sampled_at: now,
-        };
-        // Identical samples mean zero elapsed wall time, which is unusable
-        // regardless of the CPU delta.
-        assert_eq!(process_usage_pct(sample, sample, 4), None);
-    }
-
-    #[test]
-    fn process_usage_returns_none_without_parallelism() {
-        let now = Instant::now();
-        let prev = ProcessTimes {
-            cpu_100ns: 0,
-            sampled_at: now,
-        };
-        let current = ProcessTimes {
-            cpu_100ns: 10_000_000,
-            sampled_at: now + std::time::Duration::from_secs(1),
-        };
-        // A probe-failed denominator (0) cannot normalize a percentage.
-        assert_eq!(process_usage_pct(prev, current, 0), None);
+        assert_eq!(filetime_to_u64(value), (1u64 << 32) | 1);
     }
 
     #[test]

@@ -289,9 +289,10 @@ fn snapshot_payload(
     let cpu_line = match &snapshot.cpu {
         Some(cpu) => {
             // The process gauge mirrors its JSON fields (parity note above):
-            // `None` means "not sampled yet / probe failed" and prints like
-            // the system gauge's missing reading; `cores` is the per-core
-            // normalization denominator (omitted when probing failed).
+            // `None` means "not sampled yet, probe failed, or an unusable
+            // sample pair (counter wraparound)" and prints like the system
+            // gauge's missing reading; `cores` is the per-core normalization
+            // denominator (omitted when probing failed).
             let mut line = format!(
                 "Cpu: {}\t{}",
                 crate::support::collapse_control_characters(&cpu.name),

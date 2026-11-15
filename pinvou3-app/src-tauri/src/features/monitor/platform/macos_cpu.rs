@@ -4,7 +4,9 @@ use std::time::Instant;
 use parking_lot::Mutex;
 
 use super::super::CpuSnapshot;
-use super::super::cpu_math::{SystemDeltaState, SystemTicks};
+use super::super::cpu_math::{
+    ProcessDeltaState, ProcessSample, SystemDeltaState, SystemTicks, logical_processors,
+};
 
 // mach/BSD 原语直接走 libSystem FFI（Rust 对 macOS 默认链接），避免为一个
 // 采样函数引入 libc/mach2 依赖——与 CodeWhale tui 的 CoreGraphics 直连风格一致
@@ -23,8 +25,9 @@ mod ffi {
     #[repr(C)]
     #[derive(Default, Clone, Copy)]
     pub struct Timeval {
-        /// 对应 sys/time.h 的 timeval（tv_sec: long + tv_usec: int32 + 4 字节
-        /// padding，共 16 字节）；注意不是 mach 的 time_value_t（i32+i32 共 8 字节）。
+        /// Mirrors sys/time.h `struct timeval` (`tv_sec: long` + `tv_usec:
+        /// int32` + 4 bytes of padding, 16 bytes total) — not mach's
+        /// `time_value_t` (`i32` + `i32`, 8 bytes).
         pub seconds: i64,
         pub microseconds: i32,
     }
@@ -76,8 +79,9 @@ const CPU_STATE_IDLE: usize = 2;
 const CPU_STATE_NICE: usize = 3;
 const RUSAGE_SELF: i32 = 0;
 
-/// CPU 名称与逻辑核数在进程生命周期内不变；brand_string 只需 sysctl 一次。
-static CPU_IDENTITY: OnceLock<(String, u32)> = OnceLock::new();
+/// The CPU name is stable for the process lifetime; brand_string is only
+/// sysctl'd once.
+static CPU_NAME: OnceLock<String> = OnceLock::new();
 
 /// host 端口进程生命周期内稳定。mach_host_self() 每次调用都会给同一端口 +1 个
 /// send right 引用（实测 1Hz 采样约 18 小时饱和 65535 上限），只取一次并持有
@@ -97,48 +101,28 @@ static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
 #[derive(Debug, Default)]
 struct CpuSampleState {
     system: SystemDeltaState,
-    process: Option<ProcessTicks>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ProcessTicks {
-    cpu_secs: f64,
-    sampled_at: Instant,
+    process: ProcessDeltaState,
 }
 
 pub fn cpu_snapshot() -> Option<CpuSnapshot> {
-    let (name, logical_processors) = cpu_identity();
+    let name = cpu_name();
+    let logical_processors = logical_processors();
     let current = read_system_ticks();
     let process = read_process_ticks();
     let state = CPU_SAMPLE_STATE.get_or_init(|| Mutex::new(CpuSampleState::default()));
     let mut state = state.lock();
 
-    let total_usage_pct = state.system.absorb(current);
-    let process_usage_pct = match (state.process, process) {
-        (Some(prev), Some(current)) => process_usage_pct(prev, current, logical_processors),
-        _ => None,
-    };
-    if process.is_some() {
-        state.process = process;
-    }
-
     Some(CpuSnapshot {
         name,
-        total_usage_pct,
-        process_usage_pct,
+        total_usage_pct: state.system.absorb(current),
+        process_usage_pct: state.process.absorb(process, logical_processors),
         logical_processors,
     })
 }
 
-fn cpu_identity() -> (String, u32) {
-    CPU_IDENTITY
-        .get_or_init(|| {
-            let logical_processors = std::thread::available_parallelism()
-                .map(|n| n.get() as u32)
-                .unwrap_or(0);
-            let name = read_brand_string().unwrap_or_else(|| "CPU".to_string());
-            (name, logical_processors)
-        })
+fn cpu_name() -> String {
+    CPU_NAME
+        .get_or_init(|| read_brand_string().unwrap_or_else(|| "CPU".to_string()))
         .clone()
 }
 
@@ -205,7 +189,7 @@ fn read_system_ticks() -> Option<SystemTicks> {
     })
 }
 
-fn read_process_ticks() -> Option<ProcessTicks> {
+fn read_process_ticks() -> Option<ProcessSample> {
     let mut usage = ffi::Rusage::default();
     // SAFETY: getrusage only writes this process's statistics into usage
     // under RUSAGE_SELF semantics; Rusage matches the darwin 64-bit
@@ -216,7 +200,7 @@ fn read_process_ticks() -> Option<ProcessTicks> {
     if status != 0 {
         return None;
     }
-    Some(ProcessTicks {
+    Some(ProcessSample {
         cpu_secs: timevalue_secs(usage.ru_utime) + timevalue_secs(usage.ru_stime),
         sampled_at: Instant::now(),
     })
@@ -224,31 +208,6 @@ fn read_process_ticks() -> Option<ProcessTicks> {
 
 fn timevalue_secs(value: ffi::Timeval) -> f64 {
     value.seconds as f64 + value.microseconds as f64 / 1_000_000.0
-}
-
-fn process_usage_pct(
-    prev: ProcessTicks,
-    current: ProcessTicks,
-    logical_processors: u32,
-) -> Option<f64> {
-    if logical_processors == 0 {
-        return None;
-    }
-    // f64 无 checked_sub：计数器回绕时差值为负，直接按无进展处理。
-    let cpu_delta = current.cpu_secs - prev.cpu_secs;
-    if cpu_delta <= 0.0 {
-        return None;
-    }
-    let elapsed_secs = current
-        .sampled_at
-        .checked_duration_since(prev.sampled_at)?
-        .as_secs_f64();
-    if elapsed_secs <= 0.0 {
-        return None;
-    }
-    Some(super::super::cpu_math::clamp_pct(
-        cpu_delta * 100.0 / elapsed_secs / logical_processors as f64,
-    ))
 }
 
 #[cfg(test)]
@@ -271,12 +230,17 @@ mod tests {
 
     #[test]
     fn rusage_layout_matches_kernel_struct() {
-        // 布局防线：struct rusage 在 darwin 64 位上恒为 144 字节（2 个 timeval
-        // 各 16 + 14 个 long 各 8）。声明错小会让内核写越界到调用方栈上。
+        // Layout tripwire: `struct rusage` is exactly 144 bytes on 64-bit
+        // darwin (two 16-byte timevals + 14 8-byte longs); a too-small
+        // declaration would let the kernel write past the caller's stack.
+        // The Timeval offsets additionally pin the `tv_sec` field width
+        // (8 bytes) and the timeval split point.
         assert_eq!(std::mem::size_of::<ffi::Rusage>(), 144);
         assert_eq!(std::mem::offset_of!(ffi::Rusage, ru_utime), 0);
         assert_eq!(std::mem::offset_of!(ffi::Rusage, ru_stime), 16);
         assert_eq!(std::mem::size_of::<ffi::Timeval>(), 16);
+        assert_eq!(std::mem::offset_of!(ffi::Timeval, seconds), 0);
+        assert_eq!(std::mem::offset_of!(ffi::Timeval, microseconds), 8);
     }
 
     #[test]
@@ -286,30 +250,6 @@ mod tests {
             microseconds: 500_000,
         };
         assert_eq!(timevalue_secs(value), 3.5);
-    }
-
-    #[test]
-    fn process_usage_accounts_for_logical_processors() {
-        let now = Instant::now();
-        let prev = ProcessTicks {
-            cpu_secs: 0.0,
-            sampled_at: now,
-        };
-        let current = ProcessTicks {
-            cpu_secs: 1.0,
-            sampled_at: now + std::time::Duration::from_secs(1),
-        };
-        assert_eq!(process_usage_pct(prev, current, 4), Some(25.0));
-    }
-
-    #[test]
-    fn process_usage_returns_none_without_cpu_progress() {
-        let now = Instant::now();
-        let sample = ProcessTicks {
-            cpu_secs: 1.0,
-            sampled_at: now,
-        };
-        assert_eq!(process_usage_pct(sample, sample, 4), None);
     }
 
     #[test]
@@ -342,5 +282,12 @@ mod smoke_tests {
         );
         let v = s.total_usage_pct.expect("第二次采样应有系统使用率");
         assert!((0.0..=100.0).contains(&v), "使用率应在 0-100，实际 {v}");
+        let p = s
+            .process_usage_pct
+            .expect("second sample should yield process usage");
+        assert!(
+            (0.0..=100.0).contains(&p),
+            "process usage should be 0-100, got {p}"
+        );
     }
 }
