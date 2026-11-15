@@ -707,7 +707,6 @@ pub(super) fn persist_pending_revocations(ledger: &PendingRevocationLedger) -> R
     persist_pending_revocations_to(&pending_revocations_path(), ledger)
 }
 
-
 pub(super) fn eligible_pending_revocations(
     ledger: &PendingRevocationLedger,
     current: Option<&WebAccessConfig>,
