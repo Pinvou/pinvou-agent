@@ -895,10 +895,10 @@ async function modalWidth(page, headingText) {
     };
   });
   const afterDownloadCalls = await callCount(page, 'download_update');
-  // Download progress no longer rides the update:progress frontend event (the
-  // listener was deleted); the downloading state only asserts the button
-  // entering "取消下载" and the description entering "正在下载更新" copy,
-  // without asserting a specific percentage.
+  // The update:progress listener is back as the dormant frontend contract
+  // (nothing emits the event today), so the downloading state still only
+  // asserts the button entering "取消下载" and the description entering
+  // "正在下载更新" copy, without asserting a specific percentage.
   rec('①b 设置页下载按钮进入下载态后可取消',
     beforeDownloadCalls === 0
     && afterDownloadCalls === 1
