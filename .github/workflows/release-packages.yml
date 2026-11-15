@@ -746,8 +746,12 @@ jobs:
         working-directory: pinvou3-app
         # Wedged-registry bound, same class as the pr-check frontend lane:
         # 900s fails the leg long before any of these release jobs' 90-360
-        # minute caps can fire.
-        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
+        # minute caps can fire. Through the guarded helper: Git Bash's
+        # coreutils availability differs across runner images, and a bare
+        # `timeout` that is absent kills the release leg at its first step
+        # instead of bounding it. The helper path is relative to this
+        # step's working-directory.
+        run: bash ../scripts/ci/npm-ci-bounded.sh 900
 
       - name: 初始化 Windows 独立运行时
         working-directory: pinvou3-app
@@ -880,8 +884,11 @@ jobs:
         working-directory: pinvou3-app
         # Wedged-registry bound, same class as the pr-check frontend lane:
         # 900s fails the leg long before any of these release jobs' 90-360
-        # minute caps can fire.
-        run: timeout --kill-after=15 900 npm ci --prefer-offline --no-audit
+        # minute caps can fire. Through the guarded helper: the macos-15
+        # image ships no GNU timeout, so a bare `timeout` here exits 127
+        # at this release leg's first step and no dmg is produced. The
+        # helper path is relative to this step's working-directory.
+        run: bash ../scripts/ci/npm-ci-bounded.sh 900
 
       - name: 构建 dmg
         working-directory: pinvou3-app

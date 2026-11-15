@@ -2906,8 +2906,11 @@ jobs:
       - name: Install frontend deps (universal bundle smoke, push only)
         if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         working-directory: pinvou3-app
-        # Wedged-registry bound (job cap is 240 minutes; 600s always fires first).
-        run: timeout --kill-after=15 600 npm ci --prefer-offline --no-audit
+        # Wedged-registry bound (job cap is 240 minutes; 600s always fires
+        # first), through the guarded helper: the macos-15 image ships no
+        # GNU timeout, so a bare `timeout` here exits 127 before npm starts.
+        # The helper path is relative to this step's working-directory.
+        run: bash ../scripts/ci/npm-ci-bounded.sh 600
 
       # The macOS 27+ strip=none workaround (folded in from mac-build.yml) is
       # removed: every stable toolchain since 1.98 (2026-09) contains the
@@ -3082,11 +3085,14 @@ jobs:
         run: node pinvou3-app/tests/browser_wrapper_lazy.test.mjs
 
       - name: 安装构建依赖
-        run: |
-          # Per-leg bound sized UNDER this job's 15-minute cap so a wedged
-          # registry fails the leg, not the job window — the r6 sweep's third
-          # straggler, found by the npm-ci bounds pin below.
-          timeout --kill-after=15 600 npm --prefix pinvou3-app ci --prefer-offline --no-audit
+        # Per-leg bound sized UNDER this job's 15-minute cap so a wedged
+        # registry fails the leg, not the job window — the r6 sweep's third
+        # straggler, found by the npm-ci bounds pin below. The bound goes
+        # through the guarded helper: this job's default shell is pwsh,
+        # where bare `timeout` resolves to System32's sleep utility, which
+        # rejects the GNU flags and fails the leg before npm even starts.
+        # Still one command per step, per this job's own convention above.
+        run: bash scripts/ci/npm-ci-bounded.sh 600 --prefix pinvou3-app
 
       # One npm invocation per step: a multi-command pwsh run block only
       # reports the last command's exit code, so a harness that dies before
