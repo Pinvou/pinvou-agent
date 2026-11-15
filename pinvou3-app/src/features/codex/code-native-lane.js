@@ -43,6 +43,10 @@ export function createNativeLane() {
     memory: null,
     // chat:compaction phase=start → true，done/fail → false；用于禁用手动压缩入口。
     compacting: false,
+    // Approval replay terminal generation (review P3): advanced at the chat:done terminal
+    // sweep (see applyNativeChatEvent); CodexAcpView.loadSession's get_pending_approvals
+    // replay uses it to invalidate late snapshots as a whole batch (same as the main lane's sessions.js).
+    approvalReplayTerminalSeq: 0,
     seq: 0,
   };
 }
@@ -576,6 +580,102 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       });
       return true;
     }
+    case 'chat:approval_required': {
+      // tri-mode approval card (popped with ask-on-guardrail armed / in the Auto posture).
+      // Idempotent dedup by approvalId (the backend registry replaces the same approval in
+      // place, and a post-remount get_pending_approvals replay must not produce duplicate cards).
+      // Fields align with both channels — PendingApproval (the serde camelCase query return) and
+      // the event's snake_case payload: both casings are read compatibly here, the lane stores camelCase uniformly.
+      const approvalId = String(p.approval_id || p.approvalId || '');
+      if (!approvalId) return false;
+      if (lane.items.some(item => (
+        item && item.type === 'approval' && item.approvalId === approvalId
+      ))) return false;
+      // Replay tombstone (review P2): if the approval settles from another surface while the
+      // get_pending_approvals snapshot is in its await, chat:approval_resolved arrives first with
+      // no card in the lane and the empty branch leaves a tombstone; the late stale snapshot is blocked here, no longer re-inserting the decided approval as an active card.
+      if (lane.approvalTombstones && lane.approvalTombstones.has(approvalId)) return false;
+      lane.items.push({
+        id: nextId(lane),
+        type: 'approval',
+        approvalId,
+        toolName: String(p.tool_name || p.toolName || ''),
+        description: String(p.description || ''),
+        intentSummary: (p.intent_summary ?? p.intentSummary) == null
+          ? ''
+          : String(p.intent_summary ?? p.intentSummary),
+        input: (p.input ?? null),
+        forcePrompt: Boolean(p.force_prompt ?? p.forcePrompt),
+        resolved: false,
+        cardState: 'active',
+      });
+      return true;
+    }
+    case 'chat:guardrail_denied': {
+      // Guardrail hard deny (no card): reason is a stable English key; the render layer maps
+      // localized copy per key; unknown keys pass through verbatim for auditability (the same normalization as chat:tool_gate_decision).
+      lane.items.push({
+        id: nextId(lane),
+        type: 'system',
+        guardrailDenied: true,
+        toolName: String(p.tool_name || ''),
+        reason: String(p.reason || ''),
+      });
+      return true;
+    }
+    case 'chat:approval_resolved': {
+      // Approval-decision convergence broadcast (tri-mode M5): the decision may come from a
+      // second window or a remote surface; once the backend's decide_approval settles it broadcasts
+      // the terminal state, and this lane's undecided same-id card settles in place. Applies to
+      // undecided cards only (idempotent): the initiator's settled terminal state and the terminal sweep's cancelled must not be overwritten by the echo. The payload carries no tool input (pinned at the backend construction site).
+      const resolvedId = String(p.approval_id || p.approvalId || '');
+      if (!resolvedId) return false;
+      const decision = String(p.decision || '');
+      // fail-neutral (same treatment as the chat-events main lane): unknown/missing decision values
+      // return early as no-op — a malformed payload on the approval surface must not map an undecided
+      // card to "allowed"; better to leave it undecided for the authoritative echo / terminal sweep.
+      // decision "unknown" (host P2) is the backend's authoritative disposition of its unknown-outcome
+      // arm (ack + settle dual-window timeout, registry entry dropped): the card moves to the undecidable
+      // unknown state (resolved stays false — a late authoritative resolution event can still settle it in
+      // place, and the turn-terminal sweep takes over otherwise), the button face stops inviting a re-click on a possibly consumed decision; other unknown values stay malformed-payload no-ops.
+      if (!['deny', 'allow', 'allow_for_session', 'unknown'].includes(decision)) return false;
+      let changed = false;
+      lane.items.forEach(item => {
+        if (item && item.type === 'approval' && item.approvalId === resolvedId && !item.resolved) {
+          if (decision === 'unknown') {
+            item.cardState = 'unknown';
+          } else {
+            item.resolved = true;
+            item.cardState = decision === 'deny' ? 'denied'
+              : decision === 'allow_for_session' ? 'allowed_session' : 'allowed';
+          }
+          changed = true;
+        }
+      });
+      // No undecided card to settle: the decision came from another surface inside the snapshot's
+      // in-flight window. Leave a tombstone — the in-flight snapshot's return must not re-insert this decided
+      // approval as an active card (the lane rebuilds with its session, so the tombstone never crosses sessions).
+      if (!changed) {
+        if (!lane.approvalTombstones) lane.approvalTombstones = new Set();
+        lane.approvalTombstones.add(resolvedId);
+        // 512 cap, oldest-insertion evicted — the main lane's tombstone map
+        // is capped the same way and the PR body's "512 entries, evict oldest" claim
+        // covers both lanes (round-8 L8-2: the native set was the uncapped
+        // one). The lane rebuilds with its session, so the cap is a
+        // long-session hygiene bound, not a correctness primitive.
+        if (lane.approvalTombstones.size > 512) {
+          const oldest = lane.approvalTombstones.values().next().value;
+          lane.approvalTombstones.delete(oldest);
+        }
+      }
+      return changed;
+    }
+    case 'chat:mode_changed': {
+      // Authoritative mode broadcast: the lane holds no mode display of its own (native controls
+      // are driven by CodexAcpView.refreshNativeControls per sessionId, with request sequence +
+      // ownership protection); nothing visual changes here — return false, no render bump.
+      return false;
+    }
     case 'chat:memory': {
       // 每轮 chat 后后端推送的本会话注入记忆快照（chat.rs 对全部会话发射）。
       // 只归一化 id/kind/text 三字段，渲染层做轻量展示（条数徽标 + 弹层列表）。
@@ -644,6 +744,26 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         item.state = 'done';
         item.success = item.success === null ? false : item.success;
       }
+      // Approval-card terminal sweep (tri-mode, round-2 M3): mirrors the
+      // main lane's chat-events.js sweep — the backend registry is cleared
+      // at every terminal (emit_chat_terminal → clear_pending), so a stale
+      // active card's click can only ever yield "approval not found".
+      // Settle it in place as cancelled (status copy maps
+      // nativeApprovalCancelled) and stop the buttons, exactly like the
+      // main lane; only a session switch/remount previously cleared these.
+      for (const item of lane.items) {
+        if (!(item && item.type === 'approval' && !item.resolved)) continue;
+        item.resolved = true;
+        item.cardState = 'cancelled';
+      }
+      // Terminal-generation fence for the get_pending_approvals replay
+      // (review P3): the backend registry is cleared at every terminal, so a
+      // snapshot captured before this point is stale even when no in-place
+      // card existed (fresh-remount lane). The consumer in
+      // CodexAcpView.loadSession drops the whole snapshot when the counter
+      // moved on; mirrors the main lane's chat-events.js
+      // approvalReplayTerminalSeq bump consumed by sessions.js.
+      lane.approvalReplayTerminalSeq = (lane.approvalReplayTerminalSeq || 0) + 1;
       const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;
@@ -746,12 +866,14 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       || Object.keys(lane.toolMeta).length > 0,
   );
   const messages = saved && Array.isArray(saved.messages) ? saved.messages : [];
-  // Tool-gate decisions are host-visible audit records rather than model
-  // messages. Keep them across an authoritative SavedSession rehydrate just
-  // like the work/web bridge keeps live-only system items in its session
-  // buffer; otherwise a reconnect immediately erases the decision.
-  const liveToolGateNotices = lane.items
-    .filter(item => item && item.type === 'system' && item.toolGateDecision)
+  // Tool-gate decisions and guardrail hard-denials are host-visible audit
+  // records rather than model messages. Keep them across an authoritative
+  // SavedSession rehydrate just like the work/web bridge keeps live-only
+  // system items in its session buffer; otherwise a reconnect immediately
+  // erases the decision (guardrail notices carry the same live-only shape —
+  // round-9 extends the toolGateDecision preserve to chat:guardrail_denied).
+  const liveAuditNotices = lane.items
+    .filter(item => item && item.type === 'system' && (item.toolGateDecision || item.guardrailDenied))
     .map(item => ({ ...item }));
   const resultById = {};
   for (const message of messages) {
@@ -892,11 +1014,19 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     item.state = 'done';
     item.success = item.success === null ? false : item.success;
   }
-  for (const notice of liveToolGateNotices) {
-    const duplicate = lane.items.some(item => (
-      item && item.type === 'system' && item.toolGateDecision
-        && item.toolId === notice.toolId && item.decision === notice.decision
-    ));
+  for (const notice of liveAuditNotices) {
+    // Dedup only against same-kind markers (saved session messages never restore these two
+    // live-only system item kinds, so the comparison here is defensive): tool-gate by
+    // toolId+decision, guardrail hard deny by toolName+reason.
+    const duplicate = lane.items.some(item => {
+      if (!item || item.type !== 'system') return false;
+      if (notice.toolGateDecision) {
+        return item.toolGateDecision
+          && item.toolId === notice.toolId && item.decision === notice.decision;
+      }
+      return item.guardrailDenied
+        && item.toolName === notice.toolName && item.reason === notice.reason;
+    });
     if (!duplicate) lane.items.push({ ...notice, id: nextId(lane) });
   }
   lane.timeline = Array.isArray(timelineEvents) ? [...timelineEvents] : [];

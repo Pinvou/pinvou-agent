@@ -6,9 +6,11 @@
 //! - **写/删都走 pkexec**：用户拨开关 → 系统密码框 → root 写文件，零终端命令。
 //! - **No reliance on the careful hook**: the base's 5 hard blocks in
 //!   command_safety.rs (`rm -rf /` etc., consumed by the shell tool) only
-//!   fire outside the YOLO posture; pinvou3 production sessions always
-//!   auto-approve (equivalent to YOLO), so that backstop is skipped and must
-//!   not be treated as a mechanical gate. This switch only turns "sudo
+//!   fire outside the YOLO posture. pinvou3 sessions sit in a non-Yolo
+//!   posture unless explicitly switched (unbound work-lane plain sessions
+//!   resolve to Auto; code-lane sessions follow their last mode), so the
+//!   backstop does fire there; only an explicitly switched YOLO session
+//!   skips it, and only in that posture is it not a mechanical gate. This switch only turns "sudo
 //!   stalls on a password prompt" into "sudo runs directly".
 //!
 //! pkexec 退出码约定：
@@ -51,7 +53,7 @@ pub fn is_enabled() -> bool {
 /// 真正的开/关指令由 [`turn_reminder`] 每 turn 注入(`build_send_message_op`),
 /// 始终实时。这里只留一句指引,把状态判断交给 per-turn reminder。
 pub fn instruction_block() -> &'static str {
-    "\n## 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(交互会话的执行模式每轮附带,辅助会话不附带,实时,以那里为准;Plan 模式只读、不执行命令,无需关心此开关)。"
+    "\n## 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(交互会话的执行模式每轮附带,辅助会话不附带,实时,以那里为准;Plan 模式只读不执行命令,无需关心此开关;Auto 模式下命中本开关的命令,开启「守卫命中时询问」时弹审批卡,否则按规则拒绝;YOLO 模式自动放行,`visudo` 等 sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时同样弹卡)。"
 }
 
 /// 每 turn 注入 `<system-reminder>` 的超级权限状态指令。
@@ -61,7 +63,7 @@ pub fn instruction_block() -> &'static str {
 /// no-op 的关键(静态 prompt 刷不动,就每 turn 重新注入)。
 ///
 /// **开启**:直接 sudo 一步到位,别先试裸命令(否则模型对 `/etc` 写只会裸 touch 然后放弃)。
-/// **Off**: sudo is denied (the execpolicy deny rule rejects it immediately instead of blocking until timeout); guide the user to enable the toggle.
+/// **Off**: sudo is denied in Plan/Auto unless the session arms its ask-on-guardrail switch (the execpolicy deny rule rejects it immediately instead of blocking until timeout; armed, that deny face becomes an approval prompt the user decides — a Yolo session carries no sudo deny rule at all, so the toggle does not gate it); guide the user to enable the toggle. (Round-20 review minor: the shipped `ask_on_guardrail_default` is true, so a fresh session gets the prompt arm, not a silent deny — do not describe the deny face as the default.)
 pub fn turn_reminder() -> &'static str {
     crate::platform::os::super_permission_turn_reminder()
 }
@@ -76,6 +78,40 @@ pub fn disable() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Anchor test for the static `instruction_block` (round-8 L9-1): all four platforms' per-turn reminders
+    /// have anchors, but this render-once static copy previously had no pin — wording drift (say, flipping
+    /// "YOLO auto-allow" into semantics opposite the implementation) would slip through silently. Pinning the
+    /// load-bearing phrases of the three-state semantics (Auto armed raises a card / unarmed denies by rule; YOLO auto-allow +
+    /// the sudoers floor's two toggle states; Plan is read-only and exempt from caring).
+    #[test]
+    fn static_instruction_block_pins_the_tri_state_semantics() {
+        let block = instruction_block();
+        assert!(
+            block.contains(
+                "Auto 模式下命中本开关的命令,开启「守卫命中时询问」时弹审批卡,否则按规则拒绝"
+            ),
+            "the static block must state the Auto armed-card / unarmed-deny split verbatim"
+        );
+        assert!(
+            block.contains("YOLO 模式自动放行"),
+            "the static block must state the Yolo full-auto face"
+        );
+        assert!(
+            block.contains(
+                "`visudo` 等 sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时同样弹卡"
+            ),
+            "the static block must state the sudoers floor's toggle-dependent face"
+        );
+        assert!(
+            block.contains("Plan 模式只读不执行命令,无需关心此开关"),
+            "the static block must state the Plan read-only exemption"
+        );
+        assert!(
+            block.contains("见每轮对话顶部的 `<system-reminder>`"),
+            "the static block must defer live state to the per-turn reminder"
+        );
+    }
     use super::*;
     use std::sync::{
         Arc,

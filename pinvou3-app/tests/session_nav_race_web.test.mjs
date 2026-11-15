@@ -477,3 +477,51 @@ test('web discardPlan：成功路径必须回写 planResolutionConfirmed（tauri
     return card && card.planResolutionConfirmed === true;
   }, '成功放弃方案后必须确认卡片已决议；否则 catch 复位守卫会把已放弃卡复活为 active');
 });
+
+// ── 审批补读重放 vs turn 终态（tri-mode，评审 5768948485 P2）──────────
+// bootstrap 补读快照（get_pending_approvals）与 chat:done 分属两条异步
+// 通道：快照 promise 晚于终态解决时，迟到回程不得把等待通告/busy 面插回
+// 已结束的会话（终态已清空后端登记表，快照只是终态前的旧状态回声，且此
+// 后可能没有下一个终态来清除）。webReplayPendingApprovals 在快照发出前
+// 取该会话的终态栅栏序号，回程序号已推进即整批作废（桌面
+// sessions.js approvalReplayTerminalSeq 同形先例）。
+
+function emptyTranscript(id) {
+  return chunkResponse({
+    metadata: { id, title: id }, messages: [], artifacts: [], transcript_revision: 1,
+  });
+}
+
+test('web approval replay：终态先到、快照后到 → 整批作废（不落通告、不拉 busy）', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', () => emptyTranscript('chat-fence'));
+  // 挂住补读快照，制造真实「快照在途」窗口（defer 前无 handler 注册）。
+  const pendingSnapshot = rt.defer('get_pending_approvals');
+  assert.equal(await rt.sessions.switchToSession('chat-fence'), true);
+  // 终态先到：受理的 turn 终态推进该会话的栅栏序号（此刻快照仍在途）。
+  rt.emit('chat:done', { session_id: 'chat-fence', status: 'Completed' });
+  // 快照迟到回程：携带终态前登记的审批 → 必须整批作废。
+  pendingSnapshot.resolve([
+    { approvalId: 'ap-late', toolName: 'shell_exec', description: 'rm -rf build/' },
+  ]);
+  // 快照回程链是纯微任务；数个 tick 后断言稳定终态（busy 不得被拉起）。
+  for (let tick = 0; tick < 4; tick++) await new Promise(r => { setTimeout(r, 0); });
+  const view = rt.view();
+  assert.equal(view.busy, false,
+    '迟到回程的终态前快照不得把已结束的会话拉回 busy（停止键无依据复活）');
+  assert.ok(!view.chatItems.some(item => item && item.webApprovalUnsupported),
+    '迟到回程的终态前快照不得落等待通告（引擎登记表已被终态清空）');
+});
+
+test('web approval replay：正常顺序（无终态介入）保持既有补读行为', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', () => emptyTranscript('chat-live'));
+  rt.setHandler('get_pending_approvals', () => Promise.resolve([
+    { approvalId: 'ap-live', toolName: 'write_file', description: 'd' },
+  ]));
+  assert.equal(await rt.sessions.switchToSession('chat-live'), true);
+  await waitFor(() => rt.view().chatItems.some(item => item && item.webApprovalUnsupported),
+    '正常顺序的补读必须落等待通告（栅栏只拦终态后的迟到快照）');
+  assert.equal(rt.view().busy, true,
+    '在途审批补读必须复原 busy/remoteTurnActive 面（停止键可见）');
+});

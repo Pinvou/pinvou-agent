@@ -1647,17 +1647,99 @@ pub async fn rebind_workspace_root(
     let from_for_agents = from.clone();
     let to_for_agents = to_display.clone();
     let prefix_outcome = super::settings::join_blocking("rebind_workspace_root", move || {
-        agents
-            .rebind_workspace_prefix(&from_for_agents, &to_for_agents)
-            .map_err(|e| format!("rebind_workspace_root: {e:#}"))
+        // Single identity boundary (review zhuowp 5780927743 P2): the codex
+        // binding publish and the per-session identity advance + approval
+        // memory clear share ONE approval-store critical section — the same
+        // lock, in the same order, as the spawn-side identity capture
+        // (pending_approvals::capture_workspace_identity). A capture racing
+        // this fence can only observe the complete pre-commit state (old
+        // roots + old generation + old cache) or the complete post-commit
+        // state (new roots + new generation + grants cleared); the
+        // "new roots published, approval memory not yet invalidated" window
+        // of the previous two-step commit is unobservable, so a fresh spawn
+        // in that interval can no longer slip through with a stale cached
+        // grant. Lock-order audit (this round, precise): codex_acp and the
+        // bridge hold no approval-store acquisitions under their locks; the
+        // sessions side is ONE-directional — `SessionStore::delete` holds
+        // `scheduled_mutation` across its purge hook, which acquires the
+        // approval-store lock (lib.rs `pending_approvals::clear_session`).
+        // The safety property is therefore "no path acquires
+        // `scheduled_mutation` (or any sessions lock) while INSIDE a
+        // publish/resolve closure" — verified for all three closures here
+        // and in the capture (they take only `session_workspaces` /
+        // codex-section / fs / read-path locks). Keep that direction
+        // one-way: a closure that calls a `scheduled_mutation`-taking
+        // SessionStore method would complete an AB-BA against a concurrent
+        // session delete.
+        // Partial publication (review 5784078802): the lane CAN fail after
+        // bindings are durably published (the divergence-repair persist arm
+        // rolls back only the re-keyed records, so earlier index-pass moves
+        // stay effective). The typed `RebindPrefixError` carries that
+        // published population, and the fence derives the moved set from
+        // BOTH arms — on the failure arm the advance/clear runs INSIDE this
+        // critical section, before the formatted Err returns and the rebind
+        // gate unlocks. The String mapping therefore stays OUTSIDE the
+        // fence: a blanket `map_err` on the publish closure would strip the
+        // typed population back off the failure.
+        crate::features::assistant::pending_approvals::commit_rebind_publication(
+            || {
+                agents
+                    .rebind_workspace_prefix(&from_for_agents, &to_for_agents)
+            },
+            |outcome| match outcome {
+                Ok(outcome) => outcome.affected.iter().map(|(sid, _)| sid.clone()).collect(),
+                Err(error) => error
+                    .downcast_ref::<crate::features::codex_acp::RebindPrefixError>()
+                    .map(|typed| {
+                        typed
+                            .published_affected
+                            .iter()
+                            .map(|(sid, _)| sid.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            },
+        )
+        .map_err(|e| format!("rebind_workspace_root: {e:#}"))
     })
+    // Partial-publication arm (review 5784078802; supersedes the round-10
+    // premise that every Err arm fires before any binding reaches disk):
+    // a failure here has already run the identity advance/clear for the
+    // published population inside the fence above, so this early return
+    // cannot skip the binding-commit-point invalidation — a session moved
+    // and persisted before the failure keeps no old-directory grant.
     .await?;
     // Plain-chat binding sidecars (review #463 round-8 B1): the sidecar pass
     // of the batch planned above — the legacy table already carries the
     // plan's translations, so a fault here heals forward at the next boot. A
     // sidecar whose write failed stays on disk with the old path, is reported
     // below, and the next run's `from` scan still matches it.
-    let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);
+    // Approval-memory isolation at the identity-switch commit point (review
+    // round P2, round-8 R8-2, single identity boundary per zhuowp
+    // 5780927743): the binding publish is the moment a session's runtime
+    // directory actually changes, so the plain lane fences the publish
+    // together with the per-session identity advance + grant/denial clear in
+    // one approval-store critical section — not at the metadata sync, where
+    // every failure arm and the pre-sync-unknown branch would otherwise
+    // leave stale pre-rebind decisions answering post-rebind requests. The
+    // plain sidecar moves (plain_rebind.rebound) are this lane's
+    // moved-this-run population; the codex population is fenced inside the
+    // join_blocking closure above.
+    // Round-13 review: the plain lane joins the codex lane's blocking-worker
+    // discipline — the publish is per-session fsync'd file I/O under the
+    // global approval-store mutex, and inlining it parked a runtime worker
+    // AND froze the whole approval surface for the duration. The fence and
+    // its critical section are unchanged; only the worker moves.
+    let plain_store = sessions.inner().clone();
+    let plain_rebind = super::settings::join_blocking("rebind_workspace_root_plain", move || {
+        Ok::<_, String>(
+            crate::features::assistant::pending_approvals::commit_rebind_publication(
+                || plain_store.apply_rebind_workspace_bindings(plain_plan),
+                |outcome| outcome.rebound.iter().map(|(sid, _)| sid.clone()).collect(),
+            ),
+        )
+    })
+    .await?;
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
     // Round-20 minor 2: plain chats whose sidecar move FAILED must not
     // capture a codex-lane baseline when their metadata sync succeeds —
@@ -1751,9 +1833,27 @@ pub async fn rebind_workspace_root(
         let agents = acp_pool.agents().clone();
         let stranded_for_repair = stranded.clone();
         let repaired_ids = super::settings::join_blocking("rebind_workspace_root", move || {
-            agents
-                .repair_stranded_index_records(&stranded_for_repair)
-                .map_err(|e| format!("rebind_workspace_root: {e:#}"))
+            // Authority-retirement boundary at the recovery repair (review
+            // 5798123981): the stranded re-key is an effective workspace
+            // publication — the runtime resolver reads the index, so the
+            // re-key moves the session's effective execution directory onto
+            // the sidecar's target. Every effective publication retires the
+            // previous workspace's approval authority, so the repair rides
+            // the same publication fence (identity advance + preserve-
+            // generation clear in one approval-store critical section) as the
+            // codex and plain binding lanes above. Unlike the prefix lane's
+            // typed failure, a persist failure here rolls back every re-key
+            // (commit_index_rekeys restores all mutated records), so the
+            // failure arm publishes nothing and contributes an empty set —
+            // no typed population rides this error.
+            crate::features::assistant::pending_approvals::commit_rebind_publication(
+                || agents.repair_stranded_index_records(&stranded_for_repair),
+                |outcome| match outcome {
+                    Ok(repaired) => repaired.clone(),
+                    Err(_) => Vec::new(),
+                },
+            )
+            .map_err(|e| format!("rebind_workspace_root: {e:#}"))
         })
         .await?;
         // SF-C (review #463 round-15): the repair re-keys the index onto the
@@ -2068,6 +2168,11 @@ pub async fn rebind_workspace_root(
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
                 synced_this_loop = true;
+                // Approval memory was already dropped at the binding-move
+                // commit point above (round-8 R8-2): the identity switch
+                // happened when the binding moved, not when the metadata
+                // caught up, and gating the clear here would skip it on
+                // every failure arm and on an unreadable pre-sync record.
                 // Post-write owner re-check (round-24 MAJOR 1): a delete
                 // landing between this save's lock release and the report
                 // push would otherwise push a freshly dead id into the
@@ -4836,6 +4941,572 @@ mod tests {
         // Case-only drift folds to the same directory on Windows (the
         // platform identity-key implementation owns that behavior; not
         // asserted here to keep the file free of target-cfg exceptions).
+    }
+
+    /// Review round P2 (approval memory vs directory rebind): a true
+    /// working-directory identity switch must drop the session's grant AND
+    /// denial memory — the session id survives the rebind, the host-side
+    /// cache keys on the session id alone, and the engine's normal-call
+    /// approval keys are operation-scoped (only delegated child calls carry
+    /// the `@root` binding), so a pre-rebind decision would otherwise answer
+    /// a matching request executed under the moved directory. Driven through
+    /// the production publication fence (`commit_rebind_publication`, the
+    /// single identity boundary of review zhuowp 5780927743) with a no-op
+    /// binding publish standing in for the storage passes. Mutation
+    /// (negative-first): no-op'ing the clear inside the fence fails the
+    /// first two asserts.
+    #[test]
+    fn rebind_identity_switch_clears_session_approval_memory() {
+        use crate::features::assistant::pending_approvals as approvals;
+        // Registry + generation are process-global: serialize against this
+        // module's own probes (same lock, round-13 review).
+        let _registry = approvals::test_registry_lock_for_sibling_tests();
+        let rebound: Vec<String> = vec!["approval-rebind-switch".to_string()];
+        approvals::clear_session("approval-rebind-switch");
+        approvals::clear_session("approval-rebind-bystander");
+        approvals::remember_grant("approval-rebind-switch", "shell:11:cargo build", None);
+        approvals::remember_denial("approval-rebind-switch", "shell:29:rm -rf /tmp/x", None);
+        approvals::remember_grant("approval-rebind-bystander", "shell:11:cargo build", None);
+        assert!(approvals::session_granted(
+            "approval-rebind-switch",
+            "shell:11:cargo build"
+        ));
+        assert!(approvals::session_denied(
+            "approval-rebind-switch",
+            "shell:29:rm -rf /tmp/x"
+        ));
+        assert!(approvals::session_granted(
+            "approval-rebind-bystander",
+            "shell:11:cargo build"
+        ));
+
+        // The binding passes moved these sessions across directories: both
+        // faces of the session-level memory must go for every rebound id,
+        // and ONLY those (fail-safe: re-prompting is cheap, a stale silent
+        // approval is not; other sessions' shares stay untouched).
+        approvals::commit_rebind_publication(|| (), |_| rebound.clone());
+        assert!(
+            !approvals::session_granted("approval-rebind-switch", "shell:11:cargo build"),
+            "a pre-rebind grant must not satisfy a matching post-rebind request"
+        );
+        assert!(
+            !approvals::session_denied("approval-rebind-switch", "shell:29:rm -rf /tmp/x"),
+            "a pre-rebind denial must not suppress a matching post-rebind request"
+        );
+        assert!(
+            approvals::session_granted("approval-rebind-bystander", "shell:11:cargo build"),
+            "untouched sessions keep their shares"
+        );
+        // Identity switch = generation boundary (review 5764675531): the
+        // moved session's workspace generation advanced at the same commit
+        // point, so a late old-era (None) decision write is rejected even
+        // though the grant set was already cleared.
+        assert_eq!(
+            approvals::workspace_generation("approval-rebind-switch"),
+            Some(1),
+            "the binding commit must advance the moved session's workspace generation"
+        );
+        assert!(
+            !approvals::remember_grant("approval-rebind-switch", "shell:11:cargo build", None),
+            "a late old-era (None) decision write must be rejected after the advance"
+        );
+        assert!(
+            approvals::workspace_generation("approval-rebind-bystander").is_none(),
+            "sessions outside the moved set must not advance"
+        );
+        approvals::clear_session("approval-rebind-switch");
+        approvals::clear_session("approval-rebind-bystander");
+    }
+
+    /// Scoping control for the same P2: a session whose binding did NOT move
+    /// this run is simply not in the rebound set, so the fence never touches
+    /// it — the same-directory keep semantics now live in the run gate
+    /// (alias-equal from→to early-returns before the binding passes) plus set
+    /// membership, not in a per-call identity compare.
+    #[test]
+    fn rebind_same_directory_commit_keeps_session_approval_memory() {
+        use crate::features::assistant::pending_approvals as approvals;
+        let _registry = approvals::test_registry_lock_for_sibling_tests();
+        approvals::clear_session("approval-rebind-same-dir");
+        approvals::remember_grant("approval-rebind-same-dir", "shell:11:cargo build", None);
+        approvals::remember_denial("approval-rebind-same-dir", "shell:29:rm -rf /tmp/x", None);
+
+        // The session is not in the moved set: nothing clears it.
+        approvals::commit_rebind_publication(|| (), |_| Vec::new());
+        assert!(approvals::session_granted(
+            "approval-rebind-same-dir",
+            "shell:11:cargo build"
+        ));
+        assert!(approvals::session_denied(
+            "approval-rebind-same-dir",
+            "shell:29:rm -rf /tmp/x"
+        ));
+        // Same-directory keep semantics extend to the generation: a session
+        // not in the moved set never advances (review 5764675531), so its
+        // no-generation decisions keep comparing equal.
+        assert!(
+            approvals::workspace_generation("approval-rebind-same-dir").is_none(),
+            "an unmoved session must not advance its workspace generation"
+        );
+        approvals::clear_session("approval-rebind-same-dir");
+    }
+
+    /// Wiring pin for the same P2 (round-8 R8-2, single identity boundary
+    /// per zhuowp 5780927743): BOTH binding publishes must ride the
+    /// approval-store publication fence (`commit_rebind_publication`) at the
+    /// BINDING-MOVE commit point — before the metadata loop — and the old
+    /// metadata-success-gated clear must be gone (it skipped every failure
+    /// arm and the unreadable-pre-sync branch, leaving stale pre-rebind
+    /// decisions live under the new directory). Source-level like the other
+    /// command-layer probes. Mutation: unwrapping either publish from its
+    /// fence (or moving it after set_workspace) fails the ordering asserts;
+    /// deleting a fence call fails the find.
+    #[test]
+    fn rebind_clears_approval_memory_at_the_binding_commit_point() {
+        let src = production_source();
+        let codex_lane = src
+            .find("let prefix_outcome = super::settings::join_blocking(\"rebind_workspace_root\", move || {")
+            .expect("the codex join_blocking lane must exist");
+        let codex_fence = src
+            .find("pending_approvals::commit_rebind_publication(")
+            .expect("the codex binding publish must be fenced");
+        let plain_fence = src
+            .find("let plain_rebind = super::settings::join_blocking(\"rebind_workspace_root_plain\", move || {")
+            .expect("the plain binding publish must be fenced too");
+        // Round CR 5798123981: a third production fence now exists — the
+        // recovery repair (stranded-index re-key) rides the same boundary;
+        // its wiring is pinned separately by
+        // stranded_repair_publish_rides_the_authority_retirement_fence, so
+        // this pin re-anchors the plain fence on its own lane instead of
+        // "last fence in the file", which the repair fence displaced.
+        let codex_publish = src
+            .find("agents\n                    .rebind_workspace_prefix(")
+            .expect("the codex publish must stay inside its fence closure");
+        let plain_publish = src
+            .find("|| plain_store.apply_rebind_workspace_bindings(plain_plan)")
+            .expect("the plain publish must stay inside its fence closure");
+        let plain_rebind_let = src
+            .find("let plain_rebind =")
+            .expect("the plain fence result must bind plain_rebind");
+        let set_ws = src
+            .find("sessions.set_workspace(session_id, new_path.clone())")
+            .expect("set_workspace must exist");
+        assert!(
+            codex_lane < codex_fence && codex_fence < codex_publish,
+            "the codex binding publish must run inside the publication fence"
+        );
+        assert!(
+            plain_rebind_let < plain_publish,
+            "the plain publish must run inside the publication fence closure"
+        );
+        assert!(
+            codex_fence < plain_fence && plain_fence < set_ws,
+            "both moved populations must fence at the binding commit point, before any metadata step can fail"
+        );
+        let plain_affected = src[plain_fence..]
+            .find("outcome.rebound.iter().map(|(sid, _)| sid.clone()).collect()")
+            .expect("the plain fence must advance/clear the plain rebound set");
+        let codex_affected = src[codex_fence..plain_fence]
+            .find("outcome.affected.iter().map(|(sid, _)| sid.clone()).collect()")
+            .expect("the codex fence must advance/clear the codex affected set");
+        assert!(
+            codex_fence + codex_affected > codex_publish,
+            "the codex fence must derive its moved set from the publish outcome"
+        );
+        assert!(
+            plain_fence + plain_affected > plain_publish,
+            "the plain fence must derive its moved set from the publish outcome"
+        );
+        assert!(
+            !src.contains("clear_approval_memory_on_identity_switch("),
+            "the metadata-success-gated clear must be gone (it skipped failure arms and pre-sync-unknown)"
+        );
+        assert!(
+            !src.contains("let mut pre_sync_workspace"),
+            "the pre-sync snapshot for the removed clear must be gone with it"
+        );
+        assert!(
+            !src.contains("if let Some(previous_workspace) = &pre_sync_workspace {"),
+            "the Ok-arm gate for the removed clear must be gone with it"
+        );
+        assert!(
+            !src.contains("fn clear_approval_memory_for_rebound_sessions<"),
+            "the two-step helper must be gone: publishes and their identity advance/clear share one fence"
+        );
+    }
+
+    /// Wiring pin for the partial-publication P2 (review 5784078802): the
+    /// codex prefix lane's typed failure must ride the publication fence —
+    /// the fence derives the moved set from BOTH arms (the typed
+    /// `RebindPrefixError` carries the durably published population, whose
+    /// advance/clear runs inside the fence's critical section before the
+    /// failure returns and the rebind gate unlocks), and the String mapping
+    /// sits AFTER the fence so the error reaches the caller contract
+    /// un-flattened. Source-level like the other command-layer probes.
+    /// Mutation: re-broadening the lane error back into a blanket `map_err`
+    /// on the publish closure fails the ordering assert (the typed
+    /// population would be stripped before the fence sees it); deleting the
+    /// typed Err arm of the moved-set match fails the finds.
+    #[test]
+    fn rebind_partial_failure_arm_invalidates_before_returning() {
+        let src = production_source();
+        let fence = src
+            .find("pending_approvals::commit_rebind_publication(")
+            .expect("the codex publish must ride the publication fence");
+        let body = &src[fence..];
+        let err_arm = body
+            .find("Err(error) => error")
+            .expect("the moved set must come from the typed error arm too");
+        let downcast = err_arm
+            + body[err_arm..]
+                .find("downcast_ref::<crate::features::codex_acp::RebindPrefixError>()")
+                .expect(
+                    "the fence must downcast the typed error (plain anyhow failures clear nothing)",
+                );
+        let _published = err_arm
+            + body[err_arm..]
+                .find("published_affected")
+                .expect("the typed error must contribute its published population to the fence");
+        let string_map = body
+            .find(".map_err(|e| format!(\"rebind_workspace_root: {e:#}\"))")
+            .expect("the String mapping must exist for the caller contract");
+        assert!(
+            err_arm < downcast && downcast < string_map,
+            "the typed error must reach the fence BEFORE the String flattening (the fence clears the published population inside its critical section)"
+        );
+        assert!(
+            !src.contains("clear_approval_memory_for_published_rebind"),
+            "the post-join downcast helper must stay gone: the fence clears inside its own critical section"
+        );
+        assert!(
+            !src.contains("let prefix_join = tauri::async_runtime::spawn_blocking(move || {"),
+            "the unfenced blocking join must not come back"
+        );
+    }
+
+    /// Review 5784078802 (P2), production flow: S1 (matching index+sidecar
+    /// under A) is moved and durably published, THEN S2's divergence-repair
+    /// persist fails and the whole codex prefix call reports Err. The
+    /// command layer runs the SAME publication fence as the success path —
+    /// the fence invalidates exactly the published population carried by
+    /// the typed error before the failure returns — asserting S1 cannot
+    /// reuse the grant remembered under A (the grant must be gone and the
+    /// generation advanced, so fresh startups resolve B unfenced), while S2
+    /// (whose re-key rolled back, effective binding unchanged) keeps its
+    /// shares. Mutation: dropping the typed Err arm of the fence's moved-set
+    /// match (mapping every Err to an empty set, the pre-fix shape) reds the
+    /// S1 grant/generation asserts below.
+    #[test]
+    fn rebind_partial_failure_invalidates_the_published_population() {
+        use crate::features::assistant::pending_approvals as approvals;
+        let _registry = approvals::test_registry_lock_for_sibling_tests();
+        let base = unique_dir("partial-pub");
+        for dir in ["from", "to", "elsewhere"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        let from = canonical_form(&base.join("from"));
+        let to = canonical_form(&base.join("to"));
+        let elsewhere = canonical_form(&base.join("elsewhere"));
+        let agents_dir = base.join("agents");
+        let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
+
+        // S1: matching index + sidecar at A — a normal rebind member whose
+        // index move the first persist commits durably.
+        agents
+            .bind_code_native_session(
+                "partial-pub-s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                vec![from.clone()],
+            )
+            .unwrap();
+        // S2: index at T (outside A), sidecar stranded at A — the
+        // divergence shape the repair pass re-keys onto B.
+        agents
+            .bind_code_native_session(
+                "partial-pub-s2",
+                CodexWorkspaceKind::Project,
+                Some(elsewhere.clone()),
+                vec![elsewhere.clone()],
+            )
+            .unwrap();
+        let s2_sidecar = agents_dir.join("sessions").join("partial-pub-s2");
+        std::fs::create_dir_all(&s2_sidecar).unwrap();
+        std::fs::write(
+            s2_sidecar.join("code-session.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 2,
+                "workspace_kind": "project",
+                "workspace_path": from.to_string_lossy(),
+                "workspace_roots": [from.to_string_lossy()],
+                "explicit_ancestor_roots": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        seed_agent_owner(&agents_dir, "partial-pub-s1");
+        seed_agent_owner(&agents_dir, "partial-pub-s2");
+
+        // Approval memory remembered under A: S1 holds a grant, S2 a
+        // bystander share that must survive (its effective binding never
+        // moved). Generations start unset, mirroring a pre-rebind session.
+        approvals::clear_session("partial-pub-s1");
+        approvals::clear_session("partial-pub-s2");
+        approvals::remember_grant("partial-pub-s1", "shell:11:cargo build", None);
+        approvals::remember_grant("partial-pub-s2", "shell:11:cargo test", None);
+        assert!(approvals::session_granted(
+            "partial-pub-s1",
+            "shell:11:cargo build"
+        ));
+        assert!(approvals::session_granted(
+            "partial-pub-s2",
+            "shell:11:cargo test"
+        ));
+
+        // The index-pass persist (first) succeeds so S1's move to B is
+        // durable; the divergence-repair persist (second) fails.
+        agents.inject_persist_failure_after_skips(1);
+
+        // The production error arm — the SAME wiring as the command's codex
+        // lane: the typed result rides the publication fence, whose
+        // advance/clear covers the published population carried by the
+        // typed error INSIDE its critical section, before the failure
+        // returns and the rebind gate unlocks.
+        let published = crate::features::assistant::pending_approvals::commit_rebind_publication(
+            || agents.rebind_workspace_prefix(&from, &to),
+            |outcome| match outcome {
+                Ok(outcome) => outcome
+                    .affected
+                    .iter()
+                    .map(|(sid, _)| sid.clone())
+                    .collect(),
+                Err(error) => error
+                    .downcast_ref::<crate::features::codex_acp::RebindPrefixError>()
+                    .map(|typed| {
+                        typed
+                            .published_affected
+                            .iter()
+                            .map(|(sid, _)| sid.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            },
+        );
+        published
+            .err()
+            .expect("the armed divergence-repair persist failure must fail the run");
+
+        // S1's A-era grant must not survive the identity switch: cleared,
+        // generation advanced, and a late old-era (None) write rejected.
+        assert!(
+            !approvals::session_granted("partial-pub-s1", "shell:11:cargo build"),
+            "a grant remembered under A must not answer a request after S1 durably moved to B"
+        );
+        assert_eq!(
+            approvals::workspace_generation("partial-pub-s1"),
+            Some(1),
+            "the published move must advance S1's workspace generation even on the failure arm"
+        );
+        assert!(
+            !approvals::remember_grant("partial-pub-s1", "shell:11:cargo build", None),
+            "a late old-era (None) grant write must be rejected after the advance"
+        );
+        // S2's re-key rolled back: its effective binding (the index, at T)
+        // never moved, so its share stays and no generation advanced.
+        assert!(
+            approvals::session_granted("partial-pub-s2", "shell:11:cargo test"),
+            "a session whose re-key rolled back keeps its shares — its effective binding is unchanged"
+        );
+        assert_eq!(
+            approvals::workspace_generation("partial-pub-s2"),
+            None,
+            "a session excluded from the published population must not advance"
+        );
+        // The durable state matches what was invalidated: S1's index move
+        // survived the error, S2's index stayed at T.
+        assert_eq!(
+            agents.get("partial-pub-s1").workspace_path.as_deref(),
+            Some(to.as_path())
+        );
+        assert_eq!(
+            agents.get("partial-pub-s2").workspace_path.as_deref(),
+            Some(elsewhere.as_path())
+        );
+
+        approvals::clear_session("partial-pub-s1");
+        approvals::clear_session("partial-pub-s2");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Review 5798123981 (P2), production flow: the recovery repair — the
+    /// stranded-index re-key — is an effective workspace publication. The
+    /// runtime resolver reads the index, so re-keying the stranded record
+    /// onto the sidecar's target moves the session's effective execution
+    /// directory from the stale intermediate target (`to`) to the repaired
+    /// one (`to2`), and the same authority-retirement boundary as the normal
+    /// binding lanes must fire: the grant remembered in the stranded era
+    /// must not answer a request served at the repaired target. Driven
+    /// through the publication fence exactly as the command wires it.
+    /// Mutation: deriving an empty moved set (or skipping the fence's
+    /// advance/clear) keeps the `to`-era grant and the unadvanced generation,
+    /// reding the asserts below; unwrapping the production repair from its
+    /// fence is owned by
+    /// stranded_repair_publish_rides_the_authority_retirement_fence.
+    #[test]
+    fn stranded_repair_publication_retires_previous_workspace_authority() {
+        use crate::features::assistant::pending_approvals as approvals;
+        let base = unique_dir("stranded-repair");
+        for dir in ["to", "to2"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        let to = canonical_form(&base.join("to"));
+        let to2 = canonical_form(&base.join("to2"));
+        let agents_dir = base.join("agents");
+        let agents = SessionAgentStore::for_test(agents_dir.join("session-agents.json"));
+
+        // The strand shape, constructed directly (same as the store-level
+        // recovery test): index record at the stale intermediate target `to`
+        // — what the resolver serves during the strand — and the sidecar at
+        // the real target `to2`. Persisted, mirroring the run-1/run-2
+        // recovery history that strands the record between prefix scans.
+        agents
+            .bind_code_native_session(
+                "stranded-repair-s1",
+                CodexWorkspaceKind::Project,
+                Some(to.clone()),
+                vec![to.clone()],
+            )
+            .unwrap();
+        seed_agent_owner(&agents_dir, "stranded-repair-s1");
+        std::fs::write(
+            agents_dir
+                .join("sessions")
+                .join("stranded-repair-s1")
+                .join("code-session.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 2,
+                "workspace_kind": "project",
+                "workspace_path": to2.to_string_lossy(),
+                "workspace_roots": [to2.to_string_lossy()],
+                "explicit_ancestor_roots": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // The stranded-era authority the CR posits: a grant (and its memory
+        // companion) remembered while the session effectively served `to`,
+        // with no generation recorded — run 2's fence skipped this session
+        // because its divergence re-key rolled back.
+        approvals::clear_session("stranded-repair-s1");
+        approvals::clear_session("stranded-repair-bystander");
+        approvals::remember_grant("stranded-repair-s1", "shell:11:cargo build", None);
+        approvals::remember_grant("stranded-repair-bystander", "shell:11:cargo test", None);
+        assert!(approvals::session_granted(
+            "stranded-repair-s1",
+            "shell:11:cargo build"
+        ));
+        assert!(
+            approvals::workspace_generation("stranded-repair-s1").is_none(),
+            "precondition: the strand history must have left the session unadvanced"
+        );
+
+        // The production wiring: the repair publish rides the publication
+        // fence; the moved set is exactly what the repair actually re-keyed.
+        let repaired = crate::features::assistant::pending_approvals::commit_rebind_publication(
+            || {
+                agents.repair_stranded_index_records(&[(
+                    "stranded-repair-s1".to_string(),
+                    to2.clone(),
+                )])
+            },
+            |outcome| match outcome {
+                Ok(repaired) => repaired.clone(),
+                Err(_) => Vec::new(),
+            },
+        )
+        .expect("the strand repair publish must succeed");
+        assert_eq!(repaired, vec!["stranded-repair-s1".to_string()]);
+
+        // The re-key is durable at the repaired target: the resolver now
+        // serves `to2`, which is why the authority had to retire.
+        assert_eq!(
+            agents.get("stranded-repair-s1").workspace_path.as_deref(),
+            Some(to2.as_path()),
+            "the repair must have re-keyed the index onto the sidecar target"
+        );
+
+        // The `to`-era grant must not answer a `to2`-era request, the
+        // identity advanced at the same commit point, and a late old-era
+        // (None) decision write is rejected.
+        assert!(
+            !approvals::session_granted("stranded-repair-s1", "shell:11:cargo build"),
+            "a grant remembered in the stranded era must not survive the repair publication"
+        );
+        assert_eq!(
+            approvals::workspace_generation("stranded-repair-s1"),
+            Some(1),
+            "the repair publication must advance the repaired session's workspace generation"
+        );
+        assert!(
+            !approvals::remember_grant("stranded-repair-s1", "shell:11:cargo build", None),
+            "a late old-era (None) grant write must be rejected after the advance"
+        );
+        // A session the repair never re-keyed keeps its share.
+        assert!(
+            approvals::session_granted("stranded-repair-bystander", "shell:11:cargo test"),
+            "untouched sessions keep their shares"
+        );
+
+        approvals::clear_session("stranded-repair-s1");
+        approvals::clear_session("stranded-repair-bystander");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Wiring pin for the same review 5798123981: the recovery repair must
+    /// ride the approval-store publication fence inside its blocking lane —
+    /// the publish runs in the fence closure, the moved set is derived from
+    /// the repair outcome (the empty rollback arm documents that a persist
+    /// failure publishes nothing, unlike the prefix lane's typed error), and
+    /// the String mapping stays outside the fence. Source-level like the
+    /// other command-layer probes. Mutation: unwrapping the repair publish
+    /// from its fence (a bare `repair_stranded_index_records` call in the
+    /// blocking closure, the pre-fix shape) fails the first ordering assert;
+    /// widening the failure arm to the detected strand list would fail the
+    /// rollback-arm find (it would clear sessions the repair never re-keyed).
+    #[test]
+    fn stranded_repair_publish_rides_the_authority_retirement_fence() {
+        let src = production_source();
+        let lane = src
+            .find("let repaired_ids = super::settings::join_blocking(\"rebind_workspace_root\", move || {")
+            .expect("the stranded-repair blocking lane must exist");
+        let fence = src[lane..]
+            .find("pending_approvals::commit_rebind_publication(")
+            .expect("the recovery repair must ride the publication fence");
+        let publish = src[lane..]
+            .find(".repair_stranded_index_records(&stranded_for_repair)")
+            .expect("the repair publish must exist");
+        let ok_arm = src[lane..]
+            .find("Ok(repaired) => repaired.clone()")
+            .expect("the moved set must come from the actually re-keyed ids");
+        let rollback_arm = src[lane..]
+            .find("Err(_) => Vec::new()")
+            .expect("a rolled-back repair must publish nothing");
+        let string_map = src[lane..]
+            .find(".map_err(|e| format!(\"rebind_workspace_root: {e:#}\"))")
+            .expect("the String mapping must stay for the caller contract");
+        assert!(
+            fence < publish,
+            "the repair publish must run inside the fence closure"
+        );
+        assert!(
+            fence < ok_arm && fence < rollback_arm,
+            "both arms of the moved-set match must feed the fence"
+        );
+        assert!(
+            fence < string_map,
+            "the String mapping must sit after the fence (same contract as the codex lane)"
+        );
     }
 
     /// Round-26 MAJOR-4: the eviction-tail refusal glue — a refused or

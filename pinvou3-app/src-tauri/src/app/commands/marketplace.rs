@@ -32,12 +32,18 @@ pub fn list_marketplace_tools()
 async fn hot_refresh(
     pool: &tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
     disallowed: bool,
-) {
+) -> Result<(), String> {
     if disallowed {
         pool.refresh_disallowed_tools().await;
     }
     pool.refresh_live_sessions_skills().await;
-    pool.refresh_permission_rulesets().await;
+    // Delivery failures ride the command result (round-32 review Jensen
+    // 5863866339 P2): a cancelled ruleset send means that engine resumes on
+    // its OLD hard-deny rules, so the caller must surface it instead of
+    // reporting the install/uninstall as fully applied.
+    pool.refresh_permission_rulesets()
+        .await
+        .map_err(|error| format!("refresh_permission_rulesets: {error:#}"))
 }
 
 /// 上传展示名净化（仅写 bundles.json 的 upload 来源标记用）：去路径分隔符与
@@ -258,7 +264,7 @@ pub async fn install_marketplace_tool(
     // read it): without this refresh live engines keep the pre-install
     // admission — a package's native tool stays denied, and a newly installed
     // connector's tools stay admitted — until respawn.
-    hot_refresh(&pool, true).await;
+    hot_refresh(&pool, true).await?;
     post_install
 }
 
@@ -633,7 +639,7 @@ pub async fn uninstall_marketplace_tool(
     // Keep the native-tool deny list uniform with the skill uninstall path
     // (no live effect today: no current MCP manifest owns a native tool, but
     // the uninstall postcondition must not depend on that accident).
-    hot_refresh(&pool, true).await;
+    hot_refresh(&pool, true).await?;
     Ok(())
 }
 
@@ -793,7 +799,7 @@ pub async fn install_marketplace_skill(
     // The native-tool ownership gate (NATIVE_PACKAGE_TOOLS) reads install
     // state: without this refresh a package owning a native tool (ima) stays
     // denied in live engines until respawn.
-    hot_refresh(&pool, true).await;
+    hot_refresh(&pool, true).await?;
     Ok(())
 }
 
@@ -898,7 +904,7 @@ pub async fn update_marketplace_skill(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 内容变了:重写在线会话组合目录（下一轮 prompt 生效,与安装/卸载一致）。
-    hot_refresh(&pool, false).await;
+    hot_refresh(&pool, false).await?;
     Ok(())
 }
 
@@ -930,7 +936,7 @@ pub async fn update_bundle_display_meta(
     // 已动过 SKILL.md（窄窗口），失败点在 sync 前/中/后不可知，按「可能动过」
     // 处理——热刷是幂等的目录重扫，多刷一次无害。
     if may_touch_skill_md {
-        hot_refresh(&pool, false).await;
+        hot_refresh(&pool, false).await?;
     }
     result
 }
@@ -1157,7 +1163,7 @@ pub async fn import_plugin_package_cmd(
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
     pool.mark_mcp_config_updated();
-    hot_refresh(&pool, true).await;
+    hot_refresh(&pool, true).await?;
     log::info!(
         "[marketplace] 插件导入: id={} kind={:?} icon={}",
         report.id,
@@ -1213,7 +1219,7 @@ pub async fn import_plugin_package_bytes_cmd(
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
     pool.mark_mcp_config_updated();
-    hot_refresh(&pool, true).await;
+    hot_refresh(&pool, true).await?;
     Ok(report.id)
 }
 
@@ -1256,7 +1262,7 @@ pub async fn import_skill_md_bytes(
     // follow the same install postcondition as the marketplace paths.
     // The composite-dir rewrite is finalized by hot_refresh (round-20 minor 4:
     // the duplicate hand-written refresh_live_sessions_skills call is gone).
-    hot_refresh(&pool, true).await;
+    hot_refresh(&pool, true).await?;
     Ok(report.id)
 }
 
@@ -1273,7 +1279,7 @@ pub async fn uninstall_marketplace_skill(
     // ima_logout) keeps the package's keyring credentials: a skill owning a
     // native tool (ima) would stay admitted and executable until respawn
     // without this refresh.
-    hot_refresh(&pool, true).await;
+    hot_refresh(&pool, true).await?;
     Ok(())
 }
 
@@ -1346,7 +1352,7 @@ pub async fn restore_recycled_plugin(
     pool.mark_mcp_config_updated();
     // 恢复 = 重新进入供给：mcp 热刷工具白名单 + skills 热刷会话组合目录 +
     // 包脚本纳入 deny 规则集（与 import/uninstall 同一时机语义）。
-    hot_refresh(&pool, true).await;
+    hot_refresh(&pool, true).await?;
     Ok(result)
 }
 
