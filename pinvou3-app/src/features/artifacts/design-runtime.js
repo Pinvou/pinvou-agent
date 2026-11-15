@@ -647,7 +647,8 @@ function buildDesignRuntimeScript() {
       if (!data || !data.type) return;
       // 控制面消息只收父窗口（与帧 bootstrap 的 sibling-rejection 同款纪律）：
       // 同页兄弟帧可通过 parent.frames 枚举互投 DESTROY/APPLY_CHANGE，不校验
-      // 来源即互相操纵编辑面。顶层用法（parent===self）下自投仍放行。
+      // 来源即互相操纵编辑面。当前唯一宿主是沙箱预览帧（parent 即应用窗口）；
+      // 若将来出现顶层用法（parent===self），自投仍放行。
       if (!event.source || event.source !== window.parent) return;
       if (data.type === TYPES.DESTROY) {
         destroy();

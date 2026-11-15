@@ -324,10 +324,12 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         } catch { /* not ready/cross-origin; ignore */ }
       }, [managedZoom, canvasW, zoomMode, customScale, onScaleChange]);
       useEffect(() => { setReady(false); setBox(null); naturalRef.current = null; }, [html]); // eslint-disable-line react-hooks/set-state-in-effect -- an html switch means a different artifact; synchronously clear measurement state
-      // 这两个 effect 刻意沿用参数列表而不是 measure 身份：调用方常传
-      // inline onScaleChange，identity 驱动会让它们每渲染重跑（重挂
-      // observer/re-measure），churn 大于收益；消息监听器一侧才需要
-      // identity 驱动（见下）。
+      // 这两个 effect 刻意沿用参数列表而不是 measure 身份：今天唯一的
+      // onScaleChange 是稳定 setter（ArtifactsPanel 的 setHtmlScale），identity
+      // 驱动并不会多跑；真正每渲染换身份的是 onCustomScaleChange（不进 measure
+      // 依赖）。若将来调用方改传 inline onScaleChange，identity 驱动会让它们
+      // 每渲染重跑（重挂 observer/re-measure），churn 大于收益。消息监听器
+      // 一侧才需要 identity 驱动（见下）。
       // eslint-disable-next-line react-hooks/exhaustive-deps -- measure is an in-component closure; re-measure only when the zoom parameters change
       useEffect(() => { measure(); }, [zoomMode, customScale]);
       useEffect(() => {

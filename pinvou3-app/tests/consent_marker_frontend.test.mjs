@@ -242,6 +242,45 @@ assert.ok(
   'TsAlert must honor suppressHint in its installHint/removeHint fallback — reverting the condition renders the stale off-by-default copy again',
 );
 
+// (a2) The alongside-subtitle hint is opt-in per card (PR #881 review wave).
+// The marketplace inventory success card sets showInstallHint explicitly; the
+// hint fallback for every other card stays subtitle-free only. An isInstall-
+// based fallback re-renders installHint ("off by default") beneath the
+// dingtalk/tmeet connected toast whose subtitle says the opposite ("enabled
+// by default") and duplicates it on the IMA connected card — the same
+// stale-copy class as the round-3 review MAJOR above.
+assert.ok(
+  collapsedStore.includes('(alert.showInstallHint || !alert.subtitle)'),
+  'TsAlert hint must be opt-in (showInstallHint) or subtitle-free — an isInstall-based subtitle fallback resurrects the contradictory off-by-default claim beneath the enabled-by-default toast',
+);
+assert.ok(
+  !collapsedStore.includes('alert.subtitle ? alert.isInstall : true'),
+  'the leaky isInstall-based hint fallback must stay dead',
+);
+assert.ok(
+  collapsedStore.includes('showInstallHint: true,'),
+  'only an explicit opt-in card (the marketplace inventory success card) may render the hint alongside a subtitle',
+);
+
+// (a3) The remote-controlled inventory line is display-capped twice: at most
+// MAX_REPORTED_TOOLS names with a +N overflow count, and each name clipped to
+// MAX_REPORTED_TOOL_NAME_CHARS (64, aligned with the backend display-name cap).
+// tools/list is fully remote-controlled — React escaping prevents injection
+// but not a layout disaster, so neither entry count nor entry length may be
+// trusted to the remote.
+assert.ok(
+  collapsedStore.includes('const MAX_REPORTED_TOOLS = 8;') && collapsedStore.includes('const MAX_REPORTED_TOOL_NAME_CHARS = 64;'),
+  'the inventory display caps must stay module-level constants (count + per-name length)',
+);
+assert.ok(
+  collapsedStore.includes('.slice(0, MAX_REPORTED_TOOLS)') && collapsedStore.includes('toolName.length > MAX_REPORTED_TOOL_NAME_CHARS'),
+  'the success-card inventory must cap the reported count and clip each name before joining',
+);
+assert.ok(
+  collapsedStore.includes('overflowCount > 0 ? [...reportedTools, `+${overflowCount}`] : reportedTools'),
+  'the overflow must render as a +N count tail, not as additional joined names',
+);
+
 // (b) Every composer notify in the connector apply flows is settle-ordered
 // in the module-level listener: fire-and-forget success + failure, awaited
 // success + failure — exactly four. The mounted subscription's done phase
