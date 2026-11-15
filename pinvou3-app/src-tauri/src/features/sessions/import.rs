@@ -2402,13 +2402,20 @@ mod tests {
             crate::platform::paths::tests::unique_suffix()
         ));
         let non_utf8_name = std::ffi::OsStr::from_bytes(b"bad\xFFname.txt");
-        // 非 UTF-8 文件名这条腿的平台前提是文件系统接受任意字节名：
-        // ext4 接受，APFS/macOS 会以 EILSEQ(92)/EINVAL(22)、Linux 其他
-        // 文件系统可能以 EILSEQ(84) 拒绝。前提不成立时响亮跳过该腿
-        // （与下方 root 探针同款纪律），不可读目录腿照跑。
+        // This leg's platform premise is a filesystem that accepts
+        // arbitrary-byte names: ext4 accepts, while APFS/macOS and
+        // name-restricting Linux filesystems (vfat/exFAT/NTFS-3G) reject
+        // the name with EILSEQ or EINVAL. When the premise does not hold,
+        // skip this leg loudly (same discipline as the root probe below);
+        // the unreadable-dir leg keeps running.
         let non_utf8_seeded = match std::fs::write(artifacts.join(non_utf8_name), b"x") {
             Ok(()) => true,
-            Err(error) if matches!(error.raw_os_error(), Some(22) | Some(84) | Some(92)) => {
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EINVAL) | Some(libc::EILSEQ)
+                ) =>
+            {
                 eprintln!(
                     "skipped export_prescan_reports_unreadable_dirs_and_non_utf8_names (non-UTF-8 leg): the filesystem rejects non-UTF-8 names ({}), the platform precondition does not hold",
                     error
