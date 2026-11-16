@@ -165,6 +165,14 @@
 //!   **root** itself: after canonicalization it is watched and attributed
 //!   under the entity path, with no more "empty watch / partial watch"
 //!   ambiguity.
+//! - `spawn` takes directory roots by contract and does not reject a
+//!   **file** root: after canonicalization it registers — and on Windows
+//!   the backend emulates a single-file watch by watching the file's parent
+//!   directory (with the requested recursive mode), so the whole sibling
+//!   tree's events arrive, fall to the out-of-root fallback, and are
+//!   judged/indexed over their real paths — a watch scope far beyond the
+//!   requested root, silently. The wiring side must filter roots to
+//!   directories (#869).
 //! - A directory rename surfaces events only for the directory's own old and
 //!   new paths; **the files under the new path produce no events at all** —
 //!   the same shape on all three platforms (Linux inotify's watch follows
@@ -182,6 +190,14 @@
 //!   prefix (the existence judgment then clears the old rows), while events
 //!   for the new location never come, with no log and no channel Err — the
 //!   lazy-triggered rescan is the only backstop.
+//! - The store's whole-index delete guard covers drive-root spellings only
+//!   ([`Store::delete_tree`]/`is_drive_root`): a **UNC share root** enrolled
+//!   as a watched root (`\\srv\share`, verbatim `\\?\UNC\srv\share`) is not
+//!   covered — one transient false NotFound event for that root would
+//!   range-delete every indexed row under the share (and set no rescan
+//!   flag; the delete succeeded). The lazy rescan restores the rows;
+//!   enrolling share roots is a wiring-side decision (#869) that must
+//!   weigh this gap.
 //! - macOS fsevent renames arrive as `RenameMode::Any` single-path events;
 //!   the old and new sides arrive independently and cannot be correlated;
 //!   judging by existence, the old-side event clears the old record as soon
@@ -193,9 +209,11 @@
 //!   rows, one of them permanently stale until rescan (a delete event for
 //!   the old spelling will never come). Cleaning up such old rows is a
 //!   wiring-side decision (#869). Related, same filesystems: the exclusion
-//!   lists match **exact case** on every platform, so a differently-cased
-//!   spelling (`Node_Modules`, `.SSH`) bypasses them on both the scanner
-//!   and the watcher — they share one policy source, so neither side is
+//!   **name/secret lists** match **exact case** on every platform, so a
+//!   differently-cased spelling (`Node_Modules`, `.SSH`) bypasses them on
+//!   both the scanner and the watcher (the extension lists fold case on
+//!   both sides via `ext_of`'s lowercase normalization — the divergence is
+//!   names-only) — they share one policy source, so neither side is
 //!   narrower; widening the match is a shared-policy change, not wiring.
 
 //! - No debouncing: consecutive events for the same file are each processed;
@@ -213,17 +231,21 @@
 //!   transaction or slow disk the queue accumulates (100k-scale events ≈
 //!   tens of MB); bulk-ingestion scenarios are for the wiring side to
 //!   evaluate coalescing on (file_watcher.rs's debounce covers only
-//!   sched-*.json — borrow its window idea, not its scope). One class the
-//!   elision cannot cover: **directory rows on child churn** — a
-//!   directory's mtime genuinely changes when entries are created/removed
-//!   in it (Linux fires IN_ATTRIB on the parent for every child change), so
-//!   each child event also rewrites the parent's row (its FTS trigrams are
-//!   skipped by the WHEN clause, but the files-table row rewrite remains);
-//!   per-event transactions also mean bulk deletes take the write lock once
-//!   per delivered Remove event — on Linux/Windows an `rm -rf` with F files
+//!   sched-*.json — borrow its window idea, not its scope). Directory rows
+//!   are the one shape the event stream under-maintains — in the loss
+//!   direction, not the write direction: no backend delivers a parent event
+//!   for child churn (probed on Linux inotify: the ATTRIB mask on child
+//!   create/remove carries the child's own name/metadata, never the
+//!   parent's; Windows and macOS are per-item models — a parent mtime
+//!   update was previously claimed here as a per-child event cost, which is
+//!   false), so a directory's mtime change goes unnoticed and its row —
+//!   whose name/ext never change — stays accurate while `indexed_at` goes
+//!   stale until the next rescan. The write-side cost that remains is
+//!   per-event transactions: bulk deletes take the write lock once per
+//!   delivered Remove event — on Linux/Windows an `rm -rf` with F files
 //!   and D directories delivers F+D events (every deleted file in a watched
 //!   dir fires its own event; macOS FSEvents coalesces to ≈D), and F≫D in
-//!   real trees — both are amortization targets for the
+//!   real trees — an amortization target for the
 //!   wiring-side drain window.
 //! - Concurrency windows between scan and events, and between events: a file
 //!   deleted mid-rescan may be written back by the scan batch (the batched
@@ -231,8 +253,11 @@
 //!   next rescan. Likewise, when a path is recreated in place while its
 //!   directory-deletion event is queued (the common `rm -rf && mkdir`
 //!   rhythm), the existence judgment turns that deletion into the new
-//!   entity's upsert, and the old directory's child rows (old inode, no more
-//!   events) remain until rescan. Sibling shape: a directory replaced in
+//!   entity's upsert, and the old directory's child rows (old inode) then
+//!   remain until rescan **only when the child Remove events were lost**
+//!   (kernel queue overflow, Windows buffer drop) — at normal delivery
+//!   pace the child deletes arrive first and clear them. Sibling shape: a
+//!   directory replaced in
 //!   place by a **file that fails the whitelist** (`rm -rf d && touch d`)
 //!   gets neither a delete nor an upsert — the stat succeeds and the type
 //!   gate passes, but `is_skipped` drops the event before either write, so
@@ -659,7 +684,17 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
                     continue;
                 }
                 let is_dir = ft.is_dir();
-                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                // A component-less spelling (`/`, a Windows drive root) has
+                // no file_name; walkdir's DirEntry::file_name falls back to
+                // the full path for exactly those entries, so the scanner
+                // stores such a root row under that spelling — fall back the
+                // same way, or the empty-name rule below would drop the
+                // root's own events while the scan-stored row exists.
+                let name = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .or_else(|| path.to_str())
+                    .unwrap_or("");
                 let ext = if is_dir { None } else { ext_of(path) };
                 if ex.is_skipped(name, is_dir, ext.as_deref()) {
                     continue;
@@ -723,7 +758,9 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind, RenameMode};
+    use notify::event::{
+        AccessKind, AccessMode, CreateKind, MetadataKind, ModifyKind, RemoveKind, RenameMode,
+    };
     use std::fs;
     use std::path::Path;
 
@@ -1454,6 +1491,38 @@ mod tests {
 
     fn creates_file() -> EventKind {
         EventKind::Create(CreateKind::File)
+    }
+
+    /// A component-less root spelling (`/`; a Windows drive root on
+    /// Windows) has no file_name: walkdir's DirEntry::file_name falls back
+    /// to the full path for exactly those entries, so the scanner stores
+    /// the root row under that spelling and judges it with that name. The
+    /// watcher's event-side name derivation must fall back the same way —
+    /// under the plain `unwrap_or("")` the empty-name rule dropped the
+    /// root's own events while the scan-stored row existed (divergence:
+    /// the row could only be refreshed by a rescan).
+    #[test]
+    #[cfg(unix)]
+    fn componentless_root_events_maintain_the_scan_stored_root_row() {
+        let store = Store::open_in_memory().unwrap();
+        let ex = Excluder::default();
+        let roots = vec![PathBuf::from("/")];
+
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(
+                EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+                &[Path::new("/")],
+            ),
+        );
+        assert!(
+            indexed(&store).contains(&"/".to_string()),
+            "the component-less root's own event must upsert the scan-stored \
+             row, got: {:?}",
+            indexed(&store)
+        );
     }
 
     /// The rescan-request flag must read once and clear: the wiring side's

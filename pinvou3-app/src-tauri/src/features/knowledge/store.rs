@@ -524,9 +524,10 @@ impl Store {
             // busy_timeout race (a one-time migration window on stores
             // still carrying the old shape; a >5s write-lock holder makes
             // BEGIN IMMEDIATE time out where a pre-upgrade binary's
-            // steady-state open took no write lock at all), report and open
-            // with the old trigger — correct, just slower — and let the
-            // next open retry the upgrade.
+            // steady-state open took no write lock at all), roll the
+            // interrupted batch back (see the rollback comment below) and
+            // report and open with the old trigger — correct, just slower —
+            // and let the next open retry the upgrade.
             let trigger_sql: Option<String> = w
                 .query_row(
                     "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
@@ -539,6 +540,18 @@ impl Store {
                 .is_some_and(|sql| sql.contains(FILES_AU_WHEN_CLAUSE))
             {
                 if let Err(err) = w.execute_batch(FILES_AU_TRIGGER) {
+                    // A mid-batch failure (e.g. the `files` table was dropped
+                    // externally — which silently drops the trigger with it)
+                    // leaves the batch's BEGIN IMMEDIATE transaction open:
+                    // SQLite does not auto-rollback on a statement error, and
+                    // a stranded txn would break every later
+                    // `Connection::transaction()` on this write connection
+                    // ("cannot start a transaction within a transaction"),
+                    // make plain executes ride the uncommitted batch, and
+                    // hold the write lock against the other process until
+                    // close. Roll it back explicitly (no-op when the batch
+                    // failed before BEGIN) before reporting.
+                    let _ = w.execute_batch("ROLLBACK");
                     eprintln!(
                         "[kb_store] files_au upgrade skipped (will retry on next open): {err}"
                     );
@@ -1778,6 +1791,75 @@ mod tests {
         };
         assert_eq!(hits("before"), 0, "the rebuilt trigger must follow renames");
         assert_eq!(hits("after"), 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// A failed steady-state upgrade must not strand the batch's open
+    /// transaction on the write connection. Damage shape: the `files` table
+    /// dropped externally (which silently drops `files_au` with it — the
+    /// same tampering class the rebuild path advertises), so the next
+    /// open's rebuild batch gets past `BEGIN IMMEDIATE` and fails at
+    /// `CREATE TRIGGER` ("no such table: main.files"). Without the explicit
+    /// ROLLBACK the swallowed error left the transaction open: every later
+    /// write transaction on this Store failed with "cannot start a
+    /// transaction within a transaction" and the write lock stayed held
+    /// against the other process until close. The regression signal is the
+    /// failure class of the next write: a clean missing-table error proves
+    /// the transaction machinery is intact.
+    #[test]
+    fn open_survives_a_failed_trigger_upgrade_without_stranding_the_write_lock() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_aufail_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+
+        drop(Store::open(&path).unwrap());
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("DROP TABLE files;").unwrap();
+        }
+        assert!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .unwrap()
+                .is_none(),
+            "dropping files must take the trigger with it"
+        );
+
+        // Reopen: the rebuild batch fails (no `files` to hang the trigger
+        // on), the error is swallowed per the documented degradation, and
+        // open still succeeds — without stranding the write transaction.
+        let store = Store::open(&path).unwrap();
+        let err = store
+            .upsert_many(&[rec(&sep_path(&["t", "x.pdf"]), "x.pdf", Some("pdf"), 1, 1)])
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("within a transaction"),
+            "the failed upgrade stranded a transaction on the write connection: {msg}"
+        );
+        assert!(
+            msg.contains("no such table"),
+            "the next write must fail on the (tampered-away) table, not on \
+             transaction machinery, got: {msg}"
+        );
 
         drop(store);
         let _ = std::fs::remove_file(&path);
