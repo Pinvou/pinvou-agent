@@ -1969,6 +1969,27 @@ pub(crate) mod models_mock {
         }))
     }
 
+    /// 逐条「状态 + 响应体」顺序变体:同一路径的第 n 次命中返回第 n 个
+    /// (status, body)(队列取空后重复最后一个)。[`spawn_seq`] 的状态码
+    /// 是路由级的,表达不了「先 200 后 500」的瞬态失败序列(minor-7 钉:
+    /// kind 判别成功、随后原生探测 5xx)。
+    pub(crate) fn spawn_seq_status(routes: &[(&str, Vec<(u16, String)>)]) -> ModelsMock {
+        let mut map: HashMap<String, Vec<(u16, String)>> = routes
+            .iter()
+            .map(|(path, seq)| ((*path).to_string(), seq.clone()))
+            .collect();
+        serve(Box::new(move |path| {
+            map.get_mut(path).map(|seq| {
+                let (status, body) = if seq.len() > 1 {
+                    seq.remove(0)
+                } else {
+                    seq[0].clone()
+                };
+                MockResponse::simple(status, body)
+            })
+        }))
+    }
+
     fn serve(mut respond: Responder) -> ModelsMock {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
         let addr = listener.local_addr().expect("mock listener addr");

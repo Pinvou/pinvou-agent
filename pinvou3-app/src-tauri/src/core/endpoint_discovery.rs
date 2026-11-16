@@ -36,7 +36,7 @@ use crate::core::model_endpoint::{
     LocalServerKind, apply_anthropic_auth_headers, apply_bearer, base_url_uses_local_or_private,
     cached_ollama_show_context, models_probe_url, parse_entry_output_limit, parse_positive_u32,
     probe_lmstudio_models, probe_local_server_kind, probe_ollama_models, raw_error_looks_like_tls,
-    with_opencode_session_header,
+    strip_v1_suffix, with_opencode_session_header,
 };
 use crate::platform::prefs::ModelPreset;
 
@@ -192,9 +192,15 @@ async fn probe_endpoint_models_with_timeout(
         match kind {
             LocalServerKind::Ollama => match ollama_discovered(base_url, api_key).await {
                 Some((models, truncated)) => Terminal::Listed(models, truncated),
-                // 列表探测失败(/api/tags 空/失败):回落 OpenAI 兼容阶梯,
-                // 让分类逻辑给出同一个口径的错误结果。
-                None => ladder_openai_local(base_url, api_key, request_timeout).await,
+                // 列表探测失败(/api/tags 空/失败):先复核 tags——kind 缓存
+                // 刚确认过的 Ollama 若瞬态失败,按真实失败收口(见
+                // [`ollama_native_failure`]),否则回落 OpenAI 兼容阶梯
+                // (含裸 base 的 /v1 回退),保持「不再是 Ollama / 空列表」
+                // 的既有语义。
+                None => match ollama_native_failure(base_url, api_key).await {
+                    Some(terminal) => terminal,
+                    None => ladder_openai_local(base_url, api_key, request_timeout).await,
+                },
             },
             LocalServerKind::LmStudio => match lmstudio_discovered(base_url).await {
                 Some(models) => Terminal::Listed(models, false),
@@ -804,6 +810,24 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
 /// GGUF 训练窗口(`model_info` 的 `<arch>.context_length`)刻意不采纳——
 /// `/api/show` 解析只认 `num_ctx`,见 [`parse_ollama_show_context`]
 /// [crate::core::model_endpoint::parse_ollama_show_context] 文档。
+/// kind 缓存确认 Ollama 后的瞬态失败复核(minor-7):[`ollama_discovered`]
+/// 返回 `None` 时(列表探测失败)调用——重新打一发 `/api/tags`:
+/// - 5xx / 传输失败 / 401·403 → `Some(按真实分类的 Terminal)`,绝不回落
+///   OpenAI 兼容阶梯把可重试的「服务端正忙」钉成 Unsupported(404);
+/// - tags 合形应答(200,含空列表)或 404/405 → `None`,回落阶梯保持既有
+///   语义(空列表不是失败;404 = kind 缓存过期、服务已不是 Ollama)。
+async fn ollama_native_failure(base_url: &str, api_key: Option<&str>) -> Option<Terminal> {
+    let Some(client) = discovery_client() else {
+        return None;
+    };
+    let host = strip_v1_suffix(base_url)?;
+    let request = apply_bearer(client.get(format!("{host}/api/tags")), api_key);
+    match send_classified(request, REQUEST_TIMEOUT).await {
+        ProbeOutcome::Body(_) | ProbeOutcome::Unsupported(_) => None,
+        outcome => Some(terminal_from_outcome(outcome)),
+    }
+}
+
 async fn ollama_discovered(base_url: &str, api_key: Option<&str>) -> Option<(Vec<RawModel>, bool)> {
     let probe = probe_ollama_models(base_url, api_key).await?;
     let mut models = probe
@@ -1267,6 +1291,44 @@ mod tests {
         assert_eq!(listing.status, ListingStatus::Unsupported);
         assert_eq!(listing.http_status, Some(404));
         assert_eq!(mock.hits_for("/v1/models"), 2, "/v1 形 base 无回退候选");
+    }
+
+    /// minor-7 钉:kind 判别(/api/tags 200)确认 Ollama 后,列表探测与
+    /// 失败复核连吃 5xx——按真实失败收口 Error{http:500}(server_kind 仍
+    /// 是 ollama),绝不回落 OpenAI 兼容阶梯钉成 Unsupported(404)。删掉
+    /// [`ollama_native_failure`] 接线时本测试变红:回落阶梯在裸 base 上
+    /// 拿到 /models 与 /v1/models 双 404,终局 Unsupported(404)。
+    #[tokio::test]
+    async fn confirmed_ollama_native_failure_reports_real_error() {
+        // show 补查走 60s 共享缓存;测试间端口可能复用,先清缓存防串扰。
+        clear_ollama_show_cache();
+        let mock = models_mock::spawn_seq_status(&[(
+            "/api/tags",
+            vec![
+                (200, r#"{"models":[{"name":"qwen3:8b"}]}"#.to_string()),
+                (500, r#"{"error":"busy"}"#.to_string()),
+            ],
+        )]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::OpenAiCompatible).await;
+        assert_eq!(listing.status, ListingStatus::Error);
+        assert_eq!(listing.http_status, Some(500));
+        assert_eq!(listing.transport, None);
+        assert_eq!(
+            listing.server_kind.as_deref(),
+            Some("ollama"),
+            "kind 已确认,失败分类不得丢掉 server_kind"
+        );
+        assert_eq!(
+            mock.hits_for("/api/tags"),
+            3,
+            "kind 判别 + 列表探测 + 失败复核各一次"
+        );
+        // OpenAI 阶梯绝不回落:裸 base 的 kind 判别自身会打 /v1/models 与
+        // /models(fetch_v1_models 主候选 + 404 回退)各一次——那是判别
+        // 探测,不是阶梯。阶梯若回落,/v1/models 会再 +1(裸 base 的
+        // /v1 回退)。删掉失败复核接线时这里翻成 2。
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(mock.hits_for("/models"), 1);
     }
 
     #[tokio::test]
