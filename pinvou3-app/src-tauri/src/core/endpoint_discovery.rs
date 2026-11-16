@@ -646,7 +646,12 @@ async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Durati
         if let Some(id) = &after_id {
             request = request.query(&[("after_id", id)]);
         }
-        let request = apply_anthropic_auth_headers(request, key);
+        // 网关探测带会话亲和头(与 OpenAI 阶梯同一装配);非网关是 no-op。
+        let request = with_opencode_session_header(
+            apply_anthropic_auth_headers(request, key),
+            base_url,
+            "models-probe",
+        );
         match send_classified(request, timeout).await {
             ProbeOutcome::Body(v) => match parse_anthropic_page(&v) {
                 Some((models, has_more, next_after)) => {
@@ -743,6 +748,8 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
         if let Some(token) = &page_token {
             request = request.query(&[("pageToken", token)]);
         }
+        // 网关探测带会话亲和头(与 OpenAI 阶梯同一装配);非网关是 no-op。
+        let request = with_opencode_session_header(request, base_url, "models-probe");
         match send_classified(request, timeout).await {
             ProbeOutcome::Body(v) => match parse_gemini_page(&v) {
                 Some((models, next_page_token)) => {
