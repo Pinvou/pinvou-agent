@@ -720,6 +720,25 @@ mod tests {
     }
 
     #[test]
+    fn cancel_flag_is_scoped_to_one_guarded_flow() {
+        // kb_model_cancel 无 State 形参，可绕过命令宏直接调用（上面的 harness
+        // 限制只约束带 State 的命令体）。本测试钉住旗标机制的两个原语：命令
+        // 负责上膛，DownloadGuard::drop 负责在流程出口把两个旗标一起清零——
+        // 防残旗（空闲期上膛泄漏到下一次下载入口，凭空报「已取消」）与占位
+        // 泄漏（DOWNLOADING 卡 true 拒绝后续下载）。旗标语义的另一半——
+        // 「入口消费空闲期上膛」——在 kb_model_download 入口，需完整流程
+        // 才能驱动，由读码验证（守卫块先于热加载分支）。
+        DOWNLOADING.store(false, Ordering::SeqCst);
+        CANCEL.store(false, Ordering::Relaxed);
+        kb_model_cancel();
+        assert!(CANCEL.load(Ordering::Relaxed));
+        assert!(!DOWNLOADING.swap(true, Ordering::SeqCst));
+        drop(DownloadGuard);
+        assert!(!DOWNLOADING.load(Ordering::SeqCst));
+        assert!(!CANCEL.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn installed_model_load_is_skipped_when_local_embed_is_unsupported() {
         // 与下载闸同一双向宿主执行模式：决策函数在此钉死两个方向；把它接到
         // load_installed_embedder 第一条语句（先于使用探测、安装锁与一切
