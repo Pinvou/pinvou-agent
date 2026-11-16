@@ -318,3 +318,5 @@ assert.deepEqual(
     "a value matching no real branch must not be satisfied by the false branch",
   );
 }
+
+console.log(`tauri config schema gate: ok (${path.relative(tauriRoot, schemaPath)})`);
