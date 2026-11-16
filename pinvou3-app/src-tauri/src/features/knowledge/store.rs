@@ -502,15 +502,25 @@ impl Store {
             // DDL batch, so the batch's replacement never reaches existing
             // stores). Identify the old shape with a read-only probe
             // (sqlite_master.sql without the WHEN clause) and run the
-            // replacement only when actually needed — the probe is a plain
-            // SELECT and takes no write lock, so the steady-state open's
-            // two-process contention window is unchanged; the replacement
-            // statement carries its own BEGIN IMMEDIATE, so racing another
-            // process's identical upgrade just waits for the lock and
-            // replays idempotently (FTS content unchanged, a pure metadata
-            // operation). A trigger deleted by external force is not rebuilt
-            // here: the same trade as the "externally dropped tables are not
-            // self-healed, statements fail explicitly" stance above.
+            // replacement when the trigger is missing or wrong-shaped —
+            // the probe is a plain SELECT and takes no write lock, so the
+            // steady-state open's two-process contention window is unchanged
+            // (a present, correct trigger means neither branch fires); the
+            // replacement statement carries its own BEGIN IMMEDIATE, so
+            // racing another process's identical upgrade just waits for the
+            // lock and replays idempotently (FTS content unchanged, a pure
+            // metadata operation). Rebuilding covers the externally-dropped
+            // trigger too — unlike an externally dropped *table*, a missing
+            // `files_au` fails nothing: DML just stops updating FTS, so
+            // renames would silently go stale in search until a rescan (the
+            // "statements fail explicitly" trade does not apply to
+            // triggers). Should the replacement itself lose the
+            // busy_timeout race (a one-time migration window on stores
+            // still carrying the old shape; a >5s write-lock holder makes
+            // BEGIN IMMEDIATE time out where a pre-upgrade binary's
+            // steady-state open took no write lock at all), report and open
+            // with the old trigger — correct, just slower — and let the
+            // next open retry the upgrade.
             let trigger_sql: Option<String> = w
                 .query_row(
                     "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
@@ -518,11 +528,15 @@ impl Store {
                     |row| row.get(0),
                 )
                 .optional()?;
-            if trigger_sql
+            if !trigger_sql
                 .as_deref()
-                .is_some_and(|sql| !sql.contains(FILES_AU_WHEN_CLAUSE))
+                .is_some_and(|sql| sql.contains(FILES_AU_WHEN_CLAUSE))
             {
-                w.execute_batch(FILES_AU_TRIGGER)?;
+                if let Err(err) = w.execute_batch(FILES_AU_TRIGGER) {
+                    eprintln!(
+                        "[kb_store] files_au upgrade skipped (will retry on next open): {err}"
+                    );
+                }
             }
         } else {
             // Fresh create / in-place v3 migration: the DDL batch and the
@@ -723,6 +737,13 @@ impl Store {
     /// — the is_dir probe falls back to the `p + primary separator`
     /// root-row spelling when the canonical spelling misses, and the prefix
     /// pattern hits that row exactly, so the whole tree is still deleted.
+    ///
+    /// Whole-index inputs are skipped, not swept: an input that trims to
+    /// empty (the bare separator spelling, `/` or `\`) is dropped, and so is
+    /// a drive-root spelling (`C:` after `C:\` trims — the spelling a
+    /// Windows GUI root actually produces), because a single transient
+    /// false NotFound event must not turn into an unbounded sweep of every
+    /// indexed row; the rows wait for the rescan instead.
     pub fn delete_tree(&self, paths: &[String]) -> rusqlite::Result<()> {
         let mut guard = self.conn.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -733,7 +754,7 @@ impl Store {
                 tx.prepare_cached("DELETE FROM files WHERE path >= ?1 AND path < ?2")?;
             for p_raw in paths {
                 let p = p_raw.trim_end_matches(|c| c == std::path::MAIN_SEPARATOR || c == '/');
-                if p.is_empty() {
+                if p.is_empty() || is_drive_root(p) {
                     continue;
                 }
                 // A row may be stored under the canonical spelling or the
@@ -904,6 +925,16 @@ impl Store {
 /// v0 文件名含 `%`/`_` 的子串搜索可能略宽，可接受；FTS5 路径(≥3 字符)才是主路径。
 fn escape_like(s: &str) -> String {
     s.replace(['%', '_'], "")
+}
+
+/// A trimmed delete input that is a drive-root spelling (`C:` — what `C:\`
+/// trims to; the same whole-index class as a bare-separator input for a
+/// Windows store root). Only the exact two-character spelling matches: a
+/// one-character name or a longer path ending in `:` is a legal entity name
+/// and deletes normally.
+fn is_drive_root(p: &str) -> bool {
+    let b = p.as_bytes();
+    b.len() == 2 && b[1] == b':' && b[0].is_ascii_alphabetic()
 }
 
 #[cfg(test)]
@@ -1636,6 +1667,92 @@ mod tests {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
+    /// An **externally dropped** `files_au` must be rebuilt on open, not
+    /// just an old-shaped one: unlike a dropped table, a missing trigger
+    /// fails nothing at DML time — renames silently stop updating FTS and
+    /// search goes stale until a rescan, so the "statements fail explicitly"
+    /// trade does not cover this class. `CREATE TRIGGER` costs no write
+    /// lock when the trigger already exists, so the steady-state open stays
+    /// contention-free.
+    #[test]
+    fn open_rebuilds_an_externally_dropped_files_au_trigger() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_droptrig_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+
+        let trigger_sql = |path: &Path| {
+            let c = Connection::open(path).unwrap();
+            c.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
+        };
+
+        drop(Store::open(&path).unwrap());
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("DROP TRIGGER files_au;").unwrap();
+        }
+        assert!(
+            trigger_sql(&path).is_none(),
+            "fixture must start with files_au gone"
+        );
+
+        // Reopen: the probe's missing arm rebuilds the trigger in place.
+        drop(Store::open(&path).unwrap());
+        let rebuilt = trigger_sql(&path);
+        assert!(
+            rebuilt.is_some(),
+            "a missing files_au must be rebuilt on open"
+        );
+        assert!(
+            rebuilt
+                .as_deref()
+                .unwrap()
+                .contains("WHEN old.name IS NOT new.name"),
+            "the rebuilt trigger must carry the WHEN clause, got: {rebuilt:?}"
+        );
+
+        // And the rebuilt trigger actually follows renames (the FTS
+        // staleness this class would otherwise cause).
+        let store = Store::open(&path).unwrap();
+        let p = sep_path(&["t", "rebuilt.pdf"]);
+        store
+            .upsert_many(&[rec(&p, "before-name.pdf", Some("pdf"), 1, 1)])
+            .unwrap();
+        store
+            .upsert_many(&[rec(&p, "after-name.pdf", Some("pdf"), 2, 2)])
+            .unwrap();
+        let hits = |text: &str| {
+            store
+                .search(&SearchQuery {
+                    text: Some(text.into()),
+                    limit: 10,
+                    ..Default::default()
+                })
+                .unwrap()
+                .len()
+        };
+        assert_eq!(hits("before"), 0, "the rebuilt trigger must follow renames");
+        assert_eq!(hits("after"), 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
     /// The upgrade path and the create path share the same FILES_AU_TRIGGER
     /// text (spliced by schema_sql); this pins that the trigger statement
     /// text built by both routes (sqlite_master.sql) is identical, so a
@@ -2104,9 +2221,11 @@ mod tests {
         assert_eq!(size, 11);
     }
 
-    /// A delete input that trims to empty (a bare separator spelling, e.g. a
-    /// root PathBuf of `/` or `C:\`) must be skipped, not turned into an
-    /// unbounded range. The load-bearing scenario needs a store root row
+    /// A delete input that names a whole filesystem root must be skipped,
+    /// not turned into an unbounded range: a bare separator spelling trims
+    /// to empty, and a drive root (`C:\`) trims to the drive-root spelling
+    /// `C:` — both are guarded (see [`is_drive_root`]). The load-bearing
+    /// scenario needs a store root row
     /// spelled as the bare separator (walkdir records a scanned filesystem
     /// root `/` verbatim as an is_dir row): without the empty guard the
     /// with_sep probe fallback resolves the empty path to that row, is_dir
@@ -2149,5 +2268,89 @@ mod tests {
         );
         assert!(left.contains_key(&root_row));
         assert!(left.contains_key(&other));
+    }
+
+    /// A drive-root input (`C:\`, the spelling a Windows GUI root actually
+    /// produces) is the same whole-index class as the bare separator: it
+    /// trims to `C:` — non-empty, so the empty guard alone misses it — and
+    /// under the guardless flow the `with_sep` probe resolves the stored
+    /// root row to `is_dir`, whose range sweeps every row under the drive.
+    /// Fixtures use the platform separator so the sweep is real on both
+    /// platforms (unix: rows spelled `C:/…`; windows: `C:\…`).
+    #[test]
+    fn delete_tree_skips_drive_root_spellings() {
+        let s = Store::open_in_memory().unwrap();
+        let sep = std::path::MAIN_SEPARATOR;
+        let root_row = format!("C:{sep}");
+        let child = format!("C:{sep}Users{sep}notes.md");
+        let other = sep_path(&["elsewhere", "doc.md"]);
+        let mut root = rec(&root_row, "", None, 0, 1);
+        root.is_dir = true;
+        s.upsert_many(&[
+            root,
+            rec(&child, "notes.md", Some("md"), 1, 1),
+            rec(&other, "doc.md", Some("md"), 2, 2),
+        ])
+        .unwrap();
+
+        // The drive-root input must be skipped (rescan owns the rows); the
+        // unrelated path in the same batch proves the skip is per-path,
+        // not a dead call.
+        let related = sep_path(&["elsewhere", "doc2.md"]);
+        s.upsert_many(&[rec(&related, "doc2.md", Some("md"), 3, 3)])
+            .unwrap();
+        s.delete_tree(&[root_row.clone(), related.clone()]).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(
+            left.contains_key(&root_row),
+            "the drive-root row must survive"
+        );
+        assert!(
+            left.contains_key(&child),
+            "the drive subtree must not be swept by a drive-root input"
+        );
+        assert!(
+            !left.contains_key(&related),
+            "the unrelated path in the same batch must still be deleted"
+        );
+        assert!(left.contains_key(&other));
+    }
+
+    /// The delete-side FTS trigger (`files_ad`) must keep parity when a
+    /// rowid is reused: delete a row, recreate the same path under a new
+    /// name — SQLite hands the INSERT the freed rowid, so a broken delete
+    /// side leaves the old name's ghost in FTS and `search` returns the
+    /// deleted file's name as a hit for a different file. The insert/update
+    /// triggers alone cannot expose this (the rowid JOIN hides a plain
+    /// ghost row), which is why the other FTS tests stay green under that
+    /// regression.
+    #[test]
+    fn fts_delete_side_does_not_ghost_a_reused_rowid() {
+        let s = Store::open_in_memory().unwrap();
+        let p = sep_path(&["t", "doc-7.pdf"]);
+        s.upsert_many(&[rec(&p, "quarterly-report.pdf", Some("pdf"), 1, 1)])
+            .unwrap();
+        let hits = |text: &str| {
+            s.search(&SearchQuery {
+                text: Some(text.into()), // 3 chars → FTS5 trigram MATCH
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap()
+            .len()
+        };
+        assert_eq!(hits("quarterly"), 1);
+
+        s.delete_tree(&[p.clone()]).unwrap();
+        s.upsert_many(&[rec(&p, "annual-summary.pdf", Some("pdf"), 2, 2)])
+            .unwrap();
+
+        assert_eq!(
+            hits("quarterly"),
+            0,
+            "the deleted name must leave FTS even when its rowid is reused"
+        );
+        assert_eq!(hits("annual"), 1, "the recreated name must be searchable");
     }
 }
