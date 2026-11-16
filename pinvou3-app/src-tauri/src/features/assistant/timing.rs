@@ -1263,8 +1263,9 @@ mod tests {
             stats.turn_count
         );
 
-        // 清掉进程内 ACTIVE_TURNS 的未完成记录,避免影响同进程后续测试。
-        finish_turn(sid, "Interrupted", None);
+        // 清掉进程内 ACTIVE_TURNS 的未完成记录,避免影响同进程后续测试
+        // (clear_session 只清内存队列,不写 sidecar 事件)。
+        clear_session(sid);
         let _ = std::fs::remove_dir_all(tmp);
     }
 
