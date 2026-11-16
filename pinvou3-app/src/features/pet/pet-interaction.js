@@ -66,7 +66,7 @@ function monitorArea(monitor) {
 }
 
 function monitorAreas(monitors) {
-  return (Array.isArray(monitors) ? monitors : []).map(monitorArea).filter(Boolean);
+  return (Array.isArray(monitors) ? monitors : []).map(monitorArea).filter((area) => area !== null);
 }
 
 function areaContains(area, x, y) {
@@ -92,6 +92,7 @@ function connectedMonitorArea(monitors, seed) {
   const queue = [seedIndex];
   while (queue.length > 0) {
     const index = queue.shift();
+    if (index === undefined) break; // unreachable: queue.length was checked
     const current = areas[index];
     for (let candidate = 0; candidate < areas.length; candidate += 1) {
       if (selected.has(candidate)) continue;
@@ -300,6 +301,7 @@ export function clampPetDragToDesktop(state, { monitors, ...geometry }) {
     const distance = (nx - cx) ** 2 + (ny - cy) ** 2;
     if (!best || distance < best.distance) best = { distance, cx: nx, cy: ny };
   }
+  if (!best) return state; // unreachable: areas.length > 0 was checked above
   const next = { ...state, x: best.cx - offsetX, y: best.cy - offsetY };
   if (next.x !== x) {
     next.vx = 0;

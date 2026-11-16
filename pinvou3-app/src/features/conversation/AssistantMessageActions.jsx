@@ -166,6 +166,7 @@ export function AssistantMessageActions({ resolveText, copy, onRetry }) {
   };
 
   const handleMenuKeyDown = event => {
+    if (!menu) return; // handler is only attached to the rendered menu
     if (event.key === 'Tab') {
       closeMenu(menu.kind);
       return;
@@ -364,8 +365,6 @@ export function AssistantMessageActions({ resolveText, copy, onRetry }) {
                 <span className="min-w-0"><span className="block font-medium">{copy.shareSystem}</span><span className="block truncate text-[11px] text-[#747775] dark:text-[#9AA0A6]">{copy.shareSystemHint}</span></span>
               </button>
               {/* biome-ignore lint/a11y/useSemanticElements: visual menu divider; hr would break the established menu styling */}
-              {/* biome-ignore lint/a11y/useAriaPropsForRole: visual menu divider; valuenow semantics do not apply */}
-              {/* biome-ignore lint/a11y/useFocusableInteractive: visual menu divider; not a focusable control */}
               <div role="separator" className="mx-3 my-1 border-t border-black/[0.08] dark:border-white/10" />
               <div id={`${menuIds.share}-apps-label`} role="presentation" className="px-3 pb-1 pt-1 text-[11px] font-medium text-[#747775] dark:text-[#9AA0A6]">{copy.shareApps}</div>
               {/* biome-ignore lint/a11y/useSemanticElements: the group-label container carries the established layout styles; fieldset cannot */}

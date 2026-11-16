@@ -5,7 +5,7 @@ const ACCENT_PALETTE = ['#3f7bf0', '#7b5fe6', '#1aa07a', '#d6873e', '#d6589a', '
 
 /** Stable color per collection name / category: same input always yields the same color, so both views match naturally. Accepts an extended palette. */
 export function stableAccentColor(value, palette = ACCENT_PALETTE) {
-  const hash = [...String(value || '')].reduce((total, ch) => total + ch.codePointAt(0), 0);
+  const hash = [...String(value || '')].reduce((total, ch) => total + (ch.codePointAt(0) ?? 0), 0);
   return palette[Math.abs(hash) % palette.length];
 }
 

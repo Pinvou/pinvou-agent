@@ -59,7 +59,7 @@ const ComposerKbSelector = ({
     if (collectionId == null || (source === 'remote' && !serverId) || seenMounted.has(key)) return null;
     seenMounted.add(key);
     return { key, source, serverId, collectionId, enabled: typeof entry === 'object' ? entry.enabled !== false : true };
-  }).filter(Boolean);
+  }).filter(entry => entry != null);
   const mountedEntry = collection => {
     const key = typeof collection === 'string' ? collection : (collection.key || `local:${collection.id}`);
     return mountedEntries.find(entry => entry.key === key) || null;

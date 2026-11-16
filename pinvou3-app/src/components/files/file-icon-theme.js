@@ -84,7 +84,7 @@ const FILE_EXTENSION_ICONS = {
 };
 
 function baseName(name) {
-  return String(name || '').split(/[\\/]/u).pop().toLowerCase();
+  return (String(name || '').split(/[\\/]/u).pop() || '').toLowerCase();
 }
 
 function extensionOf(base) {

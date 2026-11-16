@@ -111,6 +111,7 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
   // must reject or accept a real-time event without waiting for a state
   // update). Every write goes through commitEntries.
   const entriesRef = useRef({});
+  /** @type {import('react').MutableRefObject<(() => void) | null>} */
   const kickPollRef = useRef(null);
   const commitEntries = useCallback(next => {
     entriesRef.current = next;

@@ -104,14 +104,22 @@ const ACTIVITY_COPY_KEYS = Object.freeze([
   'activityStartFailed',
   'activityTitleFallback',
 ]);
+/** @returns {Record<string, string>} the zh fallback copy, keyed like the uiPet namespace. */
 function defaultActivityCopy() {
   const zh = zhDict().uiPet || {};
-  const copy = {};
+  const copy = /** @type {Record<string, string>} */ ({});
   for (const key of ACTIVITY_COPY_KEYS) copy[key] = zh[key] || key;
   return copy;
 }
 
-/** Apply a broadcast chat/pet event to the lightweight per-session activity model. */
+/**
+ * Apply a broadcast chat/pet event to the lightweight per-session activity model.
+ * @param {ReturnType<typeof createPetState>} state - Per-session activity model created by createPetState().
+ * @param {string} name - Broadcast event name handled by this module (pet:* / chat:*).
+ * @param {{ [key: string]: string } | null} payload - Event payload fields read by the matching case below.
+ * @param {number} now - Timestamp in milliseconds used for activity freshness and TTL.
+ * @param {Record<string, string> | null} [copy] - uiPet copy table; falls back to defaultActivityCopy().
+ */
 export function applyEvent(state, name, payload, now = Date.now(), copy = null) {
   copy = copy || defaultActivityCopy();
   const sid = sessionPayloadId(payload);
@@ -259,6 +267,12 @@ function pruneExpired(state, now) {
   }
 }
 
+/**
+ * Project the live session activities for display, with display titles attached.
+ * @param {ReturnType<typeof createPetState>} state - Per-session activity model created by createPetState().
+ * @param {number} now - Timestamp in milliseconds used for expiry pruning.
+ * @param {Record<string, string> | null} [copy] - uiPet copy table; falls back to defaultActivityCopy().
+ */
 export function deriveActivities(state, now = Date.now(), copy = null) {
   copy = copy || defaultActivityCopy();
   pruneExpired(state, now);
