@@ -65,7 +65,7 @@
 //!   (`features::sessions::mode_state`, deliberately not persisted), so a
 //!   one-shot CLI process can neither observe nor durably mutate them. The
 //!   refusal is returned before any `SessionStore::boot()`, which enforces
-//!   the 50-sessions-per-kind retention and would evict the user's oldest
+//!   the 500-sessions-per-kind retention and would evict the user's oldest
 //!   sessions on the way to an answer that can never be anything else.
 //! - remote connections/collections/search → `RemoteKnowledgeService` over
 //!   `~/.pinvou3/knowledge/remote-connections.json`. These are async network
@@ -1379,7 +1379,7 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
     // operates on the calling process's in-memory mode states and would
     // return an empty list here by construction. Earlier rounds booted the
     // whole session store just to prove that emptiness — `SessionStore::boot`
-    // is not a read (it enforces the 50-sessions-per-kind retention and
+    // is not a read (it enforces the 500-sessions-per-kind retention and
     // irreversibly evicts the oldest non-pinned sessions), a destructive
     // side effect no knowledge command should trigger. The running app's
     // own mount bookkeeping is its concern; the desktop app's kb delete
@@ -2921,7 +2921,7 @@ fn host_status(_output: OutputMode) -> Result<CliOutcome, CliError> {
 ///
 /// The refusal is returned BEFORE any store is opened. It does not depend on
 /// the session at all, and `SessionStore::boot()` is not a read: it enforces
-/// the 50-sessions-per-kind retention policy, which irreversibly deletes the
+/// the 500-sessions-per-kind retention policy, which irreversibly deletes the
 /// user's oldest non-pinned sessions. Booting it to decorate an unavoidable
 /// refusal with "session not found" would destroy chat history as a side
 /// effect of a command that cannot succeed — and that holds for the

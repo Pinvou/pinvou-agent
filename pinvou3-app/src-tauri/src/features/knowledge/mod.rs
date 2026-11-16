@@ -1411,8 +1411,8 @@ pub fn kb_collection_add_sources(
 }
 
 /// 列出知识集文档（collectionId<=0 列出全部知识集，给「知识库内文件」表）。
-/// `offset` 为可选分页起点（缺省 0，旧前端不传即保持原行为）；GUI 以
-/// limit=200+offset 翻页，避免大库整表一次性渲染。
+/// `offset` 为可选分页起点（缺省 0，旧前端不传即保持原行为）；GUI 以固定
+/// limit=200、每页按返回条数递增 offset 翻页，避免大库整表一次性渲染。
 pub async fn kb_documents(
     state: State<'_, KnowledgeService>,
     collection_id: i64,
