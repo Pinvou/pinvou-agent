@@ -2262,7 +2262,7 @@ fn connection_probe_request(
         request = if pinvou3_lib::model_probe::is_anthropic_api_url(parsed_url) {
             request
                 .header("x-api-key", key.trim())
-                .header("anthropic-version", "2023-06-01")
+                .header("anthropic-version", DISCOVER_ANTHROPIC_VERSION)
         } else {
             request.bearer_auth(key.trim())
         };
@@ -2649,13 +2649,22 @@ fn fetch_v1_models(base_url: &str, bearer: Option<&str>) -> V1ModelsProbe {
             Some(format!("{trimmed}/models")),
         )
     };
-    let Ok(response) = apply_bearer(client.get(&primary), bearer).send() else {
+    // The gateway affinity header rides both legs (round-5 review m1: the
+    // GUI's fetch_v1_models attaches it and this mirror's doc claimed
+    // "exactly" — the header was missing, so a gateway-owned loopback base
+    // lost the owned_by evidence and degraded tachyon/vllm/lmdeploy kinds
+    // to generic where the GUI classified them).
+    let Ok(response) =
+        with_discovery_affinity(apply_bearer(client.get(&primary), bearer), base_url).send()
+    else {
         return V1ModelsProbe::Miss;
     };
     let response = match (response.status().as_u16(), fallback) {
         (200..=299, _) => response,
         (404 | 405, Some(url)) => {
-            let Ok(response) = apply_bearer(client.get(&url), bearer).send() else {
+            let Ok(response) =
+                with_discovery_affinity(apply_bearer(client.get(&url), bearer), base_url).send()
+            else {
                 return V1ModelsProbe::Miss;
             };
             match response.status().as_u16() {
@@ -7993,12 +8002,14 @@ mod tests {
         });
         // The anthropic protocol takes no local short-circuit: the ladder
         // dials the bare listener directly, one request.
-        let listing =
-            run_endpoint_discovery(&format!("http://{addr}/"), None, DiscoveryProtocol::Anthropic);
+        let listing = run_endpoint_discovery(
+            &format!("http://{addr}/"),
+            None,
+            DiscoveryProtocol::Anthropic,
+        );
         assert_eq!(listing.status, ListingStatus::Error);
         assert_eq!(
-            listing.http_status,
-            None,
+            listing.http_status, None,
             "a timeout is not an HTTP-status failure — the response never completed"
         );
         assert_eq!(listing.transport.as_deref(), Some("timeout"));
