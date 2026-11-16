@@ -696,16 +696,18 @@ for (const settingsI18nSource of settingsI18nSources) {
     /if \(!isCodingPlan && noAuth\) return hasSavedKey \? 'delete' : 'replace'/,
     'the stored-credential delete action must stay scoped to non-managed keyless declarations (a stale toggle over a live coding-plan URL must not delete the credential)',
   );
-  // The keyless test-key posture exists at exactly two sites (handleTest +
-  // handleImageCapabilityTest); a plain assert.match would stay green when
-  // only ONE site regresses, so pin the count.
+  // The keyless test-key posture exists at exactly three sites (handleTest +
+  // handleImageCapabilityTest + handleFetchModels, the latter closed in the
+  // round-5 review: a residual typed key must not ride the fetch-models
+  // probe either); a plain assert.match would stay green when only ONE site
+  // regresses, so pin the count.
   const keylessTestKeySites = settingsViewSource.match(
     /!isLocalPreset && !isCodingPlan && noAuth\s*\?\s*''\s*:/g,
   ) || [];
   assert.strictEqual(
     keylessTestKeySites.length,
-    2,
-    'connection AND image-capability tests must both refuse to send a typed key while the keyless declaration is active (a single-site regression must fail here)',
+    3,
+    'connection test, image-capability test, AND fetch-models must all refuse to send a typed key while the keyless declaration is active (a single-site regression must fail here)',
   );
   assert.match(
     settingsViewSource,
@@ -2571,6 +2573,41 @@ async function modalWidth(page, headingText) {
   rec('⑥.5k3 fetch button probes probe_endpoint_models with the form base URL and preset',
     !!endpointProbeCall && endpointProbeCall.baseUrl === 'https://example.com/v1' && endpointProbeCall.preset === 'openai_compatible' && endpointProbeCall.apiKey === null,
     JSON.stringify(endpointProbeCall));
+  // round-5 审 M1 运行时钉:免鉴权声明生效时,已输入的残留 key 绝不随
+  // 「获取模型列表」发出。输入 key → 开免鉴权(输入行隐藏但 state 残留)
+  // → 再点获取:probe args 的 apiKey 必须仍是 null——探测与保存后的鉴权
+  // 形态一致(#851;handleTest/图片能力测试早有同款臂,fetch-models 是
+  // round-5 补上的第三条路径)。旧实现漏臂时残留 key 原样发出,本步变红。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const keyInput = root.querySelector('input[placeholder="输入 API Key"]');
+    setter.call(keyInput, 'sk-residual-key');
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-no-auth-toggle"]').click());
+  await sleep(200);
+  await clickModalExact(page, '获取模型列表');
+  await sleep(600);
+  const keylessProbeCall = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'probe_endpoint_models');
+    return call && call.args;
+  });
+  rec('⑥.5k3b fetch-models under an active keyless declaration sends NO residual typed key (all three probe sites share the #851 shape-parity arm)',
+    !!keylessProbeCall && keylessProbeCall.apiKey === null && keylessProbeCall.baseUrl === 'https://example.com/v1',
+    JSON.stringify(keylessProbeCall));
+  // 还原表单:关免鉴权、清残留 key——⑥.5k4 起的落库断言(credential ladder /
+  // auth_mode)依赖默认形态,残留状态不得外溢。
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-no-auth-toggle"]').click());
+  await sleep(150);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const keyInput = root.querySelector('input[placeholder="输入 API Key"]');
+    setter.call(keyInput, '');
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(100);
   const pickerRows = await page.evaluate(() => {
     const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
     if (!dialog) return { open: false };

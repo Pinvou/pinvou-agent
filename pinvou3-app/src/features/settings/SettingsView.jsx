@@ -748,7 +748,13 @@ function hasStoredCredential(record) {
         try {
           const listing = await bridge.models.probeEndpointModels({
             baseUrl: probedBaseUrl,
-            apiKey: keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '',
+            // 与 handleTest/图片能力测试同一口径(round-5 审 M1,#851 一致性):
+            // 免鉴权声明生效时不携带已输入的 key——开关开着时 key 行隐藏,
+            // 但已输入的 key 仍残留 state;探测要与保存后的鉴权形态一致
+            // (免鉴权记录运行时不发鉴权头),残留 key 也不得发往新填的 URL。
+            apiKey: !isLocalPreset && !isCodingPlan && noAuth
+              ? ''
+              : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '',
             preset,
           });
           // 复审 M5:探测在飞时用户改了 base URL → 这份 URL A 的结果作废
