@@ -5065,10 +5065,29 @@ class WorkflowWorkingDirectoryPolicyTests(unittest.TestCase):
             for raw in re.findall(r"working-directory:[ \t]*([^\n#]+)", text):
                 path = raw.strip().strip("\"'")
                 first = path.split("/")[0]
+                # A `./`-prefixed segment names the same directory as the
+                # bare form; strip the prefix so the r6 typo class cannot
+                # hide behind it (`./pinjou3-app` must resolve too).
+                if first.startswith("./"):
+                    first = first[2:] or "."
                 self.assertTrue(
                     bool(first) and (ROOT / first).exists(),
                     f"{workflow.name}: working-directory names a path that does not exist: {path!r}",
                 )
+
+
+def _invocation_lines(path):
+    """The shared lane scanner for the npm/pip bounds walkers: comment
+    lines dropped first, backslash continuations joined, whitespace runs
+    squeezed (see NpmCiBoundsPolicyTests._npm_ci_scan_text for the r14
+    rationale; the pip walker adopted it in the r15 review)."""
+    code = "\n".join(
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith("#")
+    )
+    joined = re.sub(r"\\\n", " ", code)
+    return [re.sub(r"[ \t]+", " ", line.strip()) for line in joined.splitlines()]
 
 
 class NpmCiBoundsPolicyTests(unittest.TestCase):
@@ -5144,17 +5163,13 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         # the r14 review found the unjoined line-based matcher let a pure
         # reflow disarm the policy), and whitespace runs are squeezed so an
         # indent-shifted `npm   ci` cannot dodge the token match either.
-        code = "\n".join(
-            line
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.strip().startswith("#")
-        )
-        joined = re.sub(r"\\\n", " ", code)
-        return [re.sub(r"[ \t]+", " ", line.strip()) for line in joined.splitlines()]
+        # Shared with the pip walker since the r15 review (its unjoined
+        # scanner false-red on the same reflow class).
+        return _invocation_lines(path)
 
     def _assert_lanes_bounded(self, path):
         for stripped in self._npm_ci_scan_text(path):
-            npm_match = re.search(r"\bnpm( --prefix \S+)? ci\b", stripped)
+            npm_match = re.search(r"\bnpm(?: --?[^\s=]+(?:=\S+)?)* ci\b", stripped)
             if not npm_match:
                 continue
             head = stripped[:npm_match.start()]
@@ -5178,9 +5193,10 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         script_files = sorted(
             list((ROOT / "scripts").glob("*.sh"))
             + list((ROOT / "scripts/ci").glob("*.sh"))
+            + list((ROOT / "scripts/asr").glob("*.sh"))
         )
         script_files = [p for p in script_files if p.name != "npm-ci-bounded.sh"]
-        self.assertGreaterEqual(len(script_files), 18, "scripts walk lost its coverage")
+        self.assertGreaterEqual(len(script_files), 20, "scripts walk lost its coverage")
         for path in script_files:
             self._assert_lanes_bounded(path)
 
@@ -5333,26 +5349,22 @@ class PipCiBoundsPolicyTests(unittest.TestCase):
         seen = 0
         for path in paths:
             self.assertTrue(path.exists(), f"{path} is missing")
-            for line in path.read_text(encoding="utf-8").splitlines():
-                stripped = line.strip()
-                if stripped.startswith("#"):
-                    continue
-                pip_match = re.search(r"\bpip3? install\b", stripped)
+            for stripped in _invocation_lines(path):
+                # The match consumes the `python3 -m` prefix (and accepts the
+                # `-mpip` spelling), so the bound must END the head: a decoy
+                # invocation followed by `true && pip …` cannot satisfy the
+                # anchor. The r15 review found the previous any-in-head
+                # search accepted `env timeout … 300 true && pip install …`
+                # with pip running unbounded, and the unjoined line scanner
+                # false-red on a legitimately reflowed lane.
+                pip_match = re.search(r"(?:python3 -m )?\bm?pip3? install\b", stripped)
                 if not pip_match:
                     continue
                 seen += 1
                 head = stripped[:pip_match.start()]
-                # pip routes through `python3 -m`, so unlike the npm walker
-                # the bound need not sit immediately before the pip token —
-                # a real timeout/run_with_timeout invocation anywhere in the
-                # head is the contract (a trailing comment cannot match,
-                # since comment lines are skipped above and the bound must
-                # be an actual invocation).
-                self.assertIsNotNone(
-                    re.search(
-                        r"(?:^|\s)(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)(?:\s|$)",
-                        head,
-                    ),
+                self.assertRegex(
+                    head,
+                    r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*$",
                     f"{path.name}: pip install lane without a timeout bound before the invocation: {stripped!r}",
                 )
         self.assertEqual(
