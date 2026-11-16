@@ -429,6 +429,11 @@ assert.match(
   /GetBytes[\s\S]*?exit 2[\s\S]*?\[Console\]::Out\.Write/u,
   "the encoding loss check must sit between path resolution and stdout emission, exiting non-zero without printing so the uninstaller keeps the data under the existing manual-removal guidance",
 );
+assert.match(
+  userProfileScript,
+  /\[Console\]::OutputEncoding = \$oemEncoding/u,
+  "the stdout channel must be bound to the validated OEM encoder before emitting: validating one encoder while writing through another leaves the reviewer's transport finding open (a lossless round-trip proof for the validated encoder does not cover bytes the Console.Out encoder mangles)",
+);
 assert.doesNotMatch(
   userProfileScript,
   /RmDir|Remove-Item/u,

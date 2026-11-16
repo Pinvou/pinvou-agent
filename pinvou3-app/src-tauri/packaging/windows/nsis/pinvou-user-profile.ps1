@@ -76,6 +76,14 @@ try {
         [System.Text.EncoderExceptionFallback]::new(),
         [System.Text.DecoderExceptionFallback]::new()
     )
+    # Bind the write channel to the validated encoder BEFORE emitting:
+    # Console.Out would otherwise use its own output encoding, so a path
+    # that passed the strict round-trip could still be mangled on the wire
+    # (the reviewer's transport finding). With the write channel pinned to
+    # the OEM code page, the bytes nsExec /OEM reads are exactly the bytes
+    # the strict round-trip just proved lossless; anything unrepresentable
+    # already exited above.
+    [Console]::OutputEncoding = $oemEncoding
     [void]$oemEncoding.GetBytes($profileMatches[0])
 } catch {
     exit 2
