@@ -1133,6 +1133,43 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// A root that does NOT contain the path must never grab attribution
+    /// just by having more components: `excluded` filters roots by
+    /// containment before the deepest-root `max_by_key`. Removing that
+    /// filter survives every fixture where the fallback's full-path judgment
+    /// coincides — this fixture makes them diverge (a non-containing root
+    /// whose own basename is on the exclusion list), so a filter removal now
+    /// flips this test red: the event would be judged against the deeper
+    /// non-containing root, its excluded basename would trip the full-path
+    /// fallback, and the whole event would be dropped.
+    #[test]
+    fn a_deeper_non_containing_root_never_grabs_attribution() {
+        let base = tmp("grab");
+        let root = base.join("proj");
+        let decoy = root.join("deeper").join("build"); // basename ∈ SKIP_NAMES
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("报告.pdf"), b"r").unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let ex = Excluder::default();
+        let roots = vec![root.clone(), decoy];
+
+        apply(
+            &ex,
+            &store,
+            &roots,
+            &ev(creates_file(), &[&root.join("报告.pdf")]),
+        );
+
+        assert_eq!(
+            indexed(&store),
+            vec![root.join("报告.pdf").to_string_lossy().into_owned()],
+            "the containing root decides; a deeper non-containing root must \
+             not pull the event into the exclusion judgment"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
     /// Pre-registration preparation (pure function): existing roots are
     /// canonicalized, one entity (including both spellings via a symlink)
     /// keeps a single entry, missing roots are skipped, non-UTF-8 roots are

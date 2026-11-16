@@ -2104,4 +2104,50 @@ mod tests {
         assert_eq!(size, 11);
     }
 
+    /// A delete input that trims to empty (a bare separator spelling, e.g. a
+    /// root PathBuf of `/` or `C:\`) must be skipped, not turned into an
+    /// unbounded range. The load-bearing scenario needs a store root row
+    /// spelled as the bare separator (walkdir records a scanned filesystem
+    /// root `/` verbatim as an is_dir row): without the empty guard the
+    /// with_sep probe fallback resolves the empty path to that row, is_dir
+    /// comes back Some(true), and the range `["/", "0")` — on unix every
+    /// absolute row — wipes the whole index. The guard's removal is inert
+    /// against every other delete_tree fixture (no row answers the probe for
+    /// the empty path), which is why this branch went unpinned.
+    #[test]
+    fn delete_tree_skips_an_input_that_trims_to_empty() {
+        let s = Store::open_in_memory().unwrap();
+        let root_row = std::path::MAIN_SEPARATOR.to_string();
+        let f = sep_path(&["t", "notes.md"]);
+        let other = sep_path(&["elsewhere", "doc.md"]);
+        let mut root = rec(&root_row, "", None, 0, 1);
+        root.is_dir = true;
+        s.upsert_many(&[
+            root,
+            rec(&f, "notes.md", Some("md"), 1, 1),
+            rec(&other, "doc.md", Some("md"), 2, 2),
+        ])
+        .unwrap();
+
+        // The bare-separator input trims to empty and must be ignored (the
+        // scanned-root row it names is cleaned by rescan, never by a
+        // whole-index subtree delete); the real path in the same batch is
+        // still deleted (the guard skips per path, not the whole batch).
+        let bare = std::path::MAIN_SEPARATOR.to_string();
+        s.delete_tree(&[bare, f.clone()]).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(
+            !left.contains_key(&f),
+            "the real path in the batch must still be deleted"
+        );
+        assert_eq!(
+            left.len(),
+            2,
+            "the separator-only input must not sweep the store (a guardless \
+             bare-separator input would wipe the whole index)"
+        );
+        assert!(left.contains_key(&root_row));
+        assert!(left.contains_key(&other));
+    }
 }
