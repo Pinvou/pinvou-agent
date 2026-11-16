@@ -3245,6 +3245,7 @@ mod tests {
                 credential_state: Default::default(),
                 has_secret: false,
                 credential_action: None,
+                auth_mode: None,
             });
             prefs.upsert_model(SavedModel {
                 id: "m-miss".to_string(),
@@ -3266,12 +3267,13 @@ mod tests {
                 credential_state: Default::default(),
                 has_secret: false,
                 credential_action: None,
+                auth_mode: None,
             });
             Ok(())
         })
         .expect("seed models should save");
 
-        let hit = probe_model_connection(&mock.base_url, "", Some("m-list")).await;
+        let hit = probe_model_connection(&mock.base_url, "", Some("m-list"), false).await;
         assert!(hit.ok, "hit case must stay a successful connection");
         assert_eq!(hit.context_window_tokens, Some(40_960));
         assert_eq!(
@@ -3291,7 +3293,7 @@ mod tests {
 
         // wire 名不在列表 → 长度四字段全部缺席;序列化串不带这些键。
         // fact_model 照常回带(条目未命中也要让前端知道事实属于哪个模型)。
-        let miss = probe_model_connection(&mock.base_url, "", Some("m-miss")).await;
+        let miss = probe_model_connection(&mock.base_url, "", Some("m-miss"), false).await;
         assert!(miss.ok);
         assert_eq!(miss.context_window_tokens, None);
         assert_eq!(miss.context_from, None);
@@ -3306,7 +3308,7 @@ mod tests {
 
         // model_id None(新建表单)→ 无名字 → 无事实(不借激活模型),
         // fact_model 亦缺席。
-        let unnamed = probe_model_connection(&mock.base_url, "", None).await;
+        let unnamed = probe_model_connection(&mock.base_url, "", None, false).await;
         assert!(unnamed.ok);
         assert_eq!(unnamed.context_window_tokens, None);
         assert_eq!(unnamed.context_from, None);
@@ -3329,7 +3331,7 @@ mod tests {
         use crate::core::model_endpoint::models_mock;
 
         let mock = models_mock::spawn_redirect("/models", "/v1/models");
-        let result = probe_model_connection(&mock.base_url, "", None).await;
+        let result = probe_model_connection(&mock.base_url, "", None, false).await;
         assert!(!result.ok);
         assert_eq!(result.code, "redirect");
         assert_eq!(mock.hits_for("/models"), 1, "首跳只发生一次");

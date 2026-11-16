@@ -3264,14 +3264,18 @@ pub(crate) mod tests {
     /// cap 处停读、解析失败按「探测未命中」折叠为 false → SGLang 不识别
     /// （其余签名端点默认 404，整体落 Generic），绝不无界吃内存，也绝不把
     /// 半截 body 当命中。旧的无界 `json()` 读取会把整个 body 推进内存；
-    /// 换用 [`read_json_body_bounded`] 后由超大 fixture 守住不回退（fixture
-    /// 构造方式与发现阶梯的 oversized 用例同款）。
+    /// 换用 [`read_json_body_bounded`] 后由超大 fixture 守住不回退。fixture
+    /// **整体是合法 JSON**(version 字段可解析):限长读取在 cap 处截断后必
+    /// 解析失败、折叠为未命中;若有人退回无界的 resp.json(),全量解析会
+    /// 成功、探测误命中,本钉立即变红——这正是 M2 要挡的「超时窗口内敌意
+    /// 端点撑爆内存」路径的可观察面。
     #[tokio::test]
     async fn kind_probe_folds_oversized_body_to_miss() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
-        // 5 MiB × "1," ≈ 10 MiB > 8 MiB cap，且永不闭合为合法 JSON。
-        let oversized =
-            format!("{{\"version\":\"0.4.9\",\"pad\":\"{}", "1,".repeat(5 * 1024 * 1024));
+        let oversized = format!(
+            "{{\"version\":\"0.4.9\",\"pad\":\"{}\"}}",
+            "1".repeat(9 * 1024 * 1024)
+        );
         assert!(oversized.len() > 8 * 1024 * 1024);
         let mock = models_mock::spawn(&[("/get_server_info", 200, oversized)]);
         // 直探：签名探测本身必须按未命中折叠。
