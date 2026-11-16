@@ -59,9 +59,12 @@ static REWIND_BACKUP_LOCK: Mutex<()> = Mutex::new(());
 /// `.json.lock` file serializes the RMW across processes and is
 /// kernel-released when a holder dies — the same discipline as the
 /// settings transaction lock. Acquired only while `REWIND_BACKUP_LOCK` is
-/// already held, so it stays a leaf lock; the whole-map RMW is a
-/// millisecond-scale disk round trip, so an uncontended acquire is
-/// imperceptible.
+/// already held, so it stays a leaf lock. The RMW cost is pinned by the
+/// byte budgets below: at a full 32 MiB map one round trip is a ~32 MiB
+/// parse plus a serialize and an atomic write — tens-to-hundreds of
+/// milliseconds under both locks, not the millisecond scale of the
+/// pre-budget sidecar — so waiters queue under the bounded
+/// [`REWIND_BACKUP_LOCK_WAIT`] rather than sampling a negligible hold.
 ///
 /// The wait is BOUNDED ([`REWIND_BACKUP_LOCK_WAIT`], the same wedged-peer
 /// hazard the purge path already degrades around with
