@@ -5384,9 +5384,13 @@ impl AcpPool {
                 // whose flush already ran (r12 review honesty note: a
                 // `session/new` timeout on the load-ERROR fallback, or on
                 // the fresh path, also lands here while a bridge may still
-                // exist; the settle is then cancel-only and the card
-                // lingers until the next info refresh — frontend-only,
-                // no journal/seq impact, accepted residual).
+                // exist; the r14 review adds the initialize-timeout arm to
+                // the same class — a request handler is live from connect,
+                // so a protocol-unusual agent can register a card in the
+                // pre-initialize window and its settle is likewise
+                // cancel-only here; the card lingers until the next info
+                // refresh — frontend-only, no journal/seq impact, accepted
+                // residual).
                 self.cancel_runtime_pending_cards(session_id, None).await;
                 diagnostics::write(
                     &operation_id,
