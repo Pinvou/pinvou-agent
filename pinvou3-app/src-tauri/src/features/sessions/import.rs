@@ -2396,30 +2396,51 @@ mod tests {
             .join(&source.metadata.id)
             .join("artifacts");
         std::fs::create_dir_all(&artifacts).expect("mkdir artifacts");
-        std::fs::write(
-            artifacts.join(std::ffi::OsStr::from_bytes(b"bad\xFFname.txt")),
-            b"x",
-        )
-        .expect("write non-utf8 artifact");
         let archive = std::env::temp_dir().join(format!(
             "pinvou3-prescan-utf8-{}-{}.tar.xz",
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        let error = store
-            .export_archive(&source.metadata.id, &archive, true)
-            .expect_err("non-UTF-8 artifact name must fail the export");
-        assert!(
-            format!("{error:#}").contains("not valid UTF-8"),
-            "{error:#}"
-        );
-        let _ = std::fs::remove_file(&archive);
+        let non_utf8_name = std::ffi::OsStr::from_bytes(b"bad\xFFname.txt");
+        // This leg's platform premise is a filesystem that accepts
+        // arbitrary-byte names: ext4 accepts, while APFS/macOS and
+        // name-restricting Linux filesystems (vfat/exFAT/NTFS-3G) reject
+        // the name with EILSEQ or EINVAL. When the premise does not hold,
+        // skip this leg loudly (same discipline as the root probe below);
+        // the unreadable-dir leg keeps running.
+        let non_utf8_seeded = match std::fs::write(artifacts.join(non_utf8_name), b"x") {
+            Ok(()) => true,
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EINVAL) | Some(libc::EILSEQ)
+                ) =>
+            {
+                eprintln!(
+                    "skipped export_prescan_reports_unreadable_dirs_and_non_utf8_names (non-UTF-8 leg): the filesystem rejects non-UTF-8 names ({}), the platform precondition does not hold",
+                    error
+                );
+                false
+            }
+            Err(error) => panic!("write non-utf8 artifact: {error}"),
+        };
+        if non_utf8_seeded {
+            let error = store
+                .export_archive(&source.metadata.id, &archive, true)
+                .expect_err("non-UTF-8 artifact name must fail the export");
+            assert!(
+                format!("{error:#}").contains("not valid UTF-8"),
+                "{error:#}"
+            );
+            let _ = std::fs::remove_file(&archive);
+        }
 
         // 不可读子目录：预扫描必须指名，而非静默跳过。
         let locked = artifacts.join("locked");
         std::fs::create_dir_all(&locked).expect("mkdir locked");
-        std::fs::remove_file(artifacts.join(std::ffi::OsStr::from_bytes(b"bad\xFFname.txt")))
-            .expect("remove non-utf8 artifact");
+        if non_utf8_seeded {
+            std::fs::remove_file(artifacts.join(non_utf8_name)).expect("remove non-utf8 artifact");
+        }
         let original = std::fs::metadata(&locked)
             .expect("stat")
             .permissions()
