@@ -2727,6 +2727,43 @@ mod tests {
         assert_eq!(chunk_count, 0);
     }
 
+    // 改名是"UPDATE+回读"同事务的原子操作:活行改名返回更新后的完整行;
+    // 回收站中的行与不存在的 id 都必须原样拒绝(QueryReturnedNoRows),
+    // 且回收站行绝不能被写到。两条 deleted_at 守卫各由一条断言钉住——
+    // 去掉 UPDATE 的守卫会让"偷改"落到回收站行上(名称断言落红),
+    // 去掉 SELECT 的守卫会让回收站改名误报成功(unwrap_err 落红)。
+    #[test]
+    fn update_collection_renames_atomically_and_rejects_absent_rows() {
+        let store = Store::in_memory().unwrap();
+        let live = store.create_collection("旧名", Some("原始描述")).unwrap();
+        let renamed = store
+            .update_collection(live.id, "新名", Some("替换描述"))
+            .unwrap();
+        assert_eq!(renamed.name, "新名");
+        assert_eq!(renamed.description.as_deref(), Some("替换描述"));
+        assert_eq!(
+            store
+                .collection(live.id, false)
+                .unwrap()
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("替换描述")
+        );
+
+        let trashed = store.create_collection("回收站集", None).unwrap();
+        store.trash_collection(trashed.id).unwrap();
+        let error = store
+            .update_collection(trashed.id, "偷改", None)
+            .unwrap_err();
+        assert!(matches!(error, rusqlite::Error::QueryReturnedNoRows));
+        let untouched = store.collection(trashed.id, true).unwrap().unwrap();
+        assert_eq!(untouched.name, "回收站集");
+
+        let missing = store.update_collection(999_999, "ghost", None).unwrap_err();
+        assert!(matches!(missing, rusqlite::Error::QueryReturnedNoRows));
+    }
+
     #[test]
     fn expired_trash_is_purged_with_managed_paths() {
         let store = Store::in_memory().unwrap();

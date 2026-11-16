@@ -2114,6 +2114,23 @@ mod tests {
         assert_eq!(restored.description, None);
     }
 
+    // 改名错误映射只吞"查无此行":BUSY/磁盘 I/O 等真实故障必须原样
+    // 透传,而不是被误报成"知识集不存在"。此前该分支不可注入故障
+    // (仓库内无法让 SQLite 真的 BUSY),抽出 rename_error_message 后
+    // 用合成错误即可钉住两个分支。
+    #[test]
+    fn rename_error_mapping_only_swallows_missing_rows() {
+        assert_eq!(
+            rename_error_message(rusqlite::Error::QueryReturnedNoRows),
+            "知识集不存在或已删除"
+        );
+        let busy = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some("database is locked".into()),
+        );
+        assert_eq!(rename_error_message(busy), "database is locked");
+    }
+
     #[tokio::test]
     async fn source_file_rejects_database_paths_outside_managed_documents() {
         let root = tempfile::tempdir().unwrap();
