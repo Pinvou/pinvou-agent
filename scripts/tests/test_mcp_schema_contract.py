@@ -174,7 +174,16 @@ SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # computer-use exec plugin — schema_sanitize.rs and the registry files stay
 # byte-identical (git diff 687358f7e db4da7fde on those paths is empty,
 # reproduced at the pinned trees), so the layer-2 source face is unchanged.
-_PINNED_CODEWHALE_GITLINK = "db4da7fdefffb038eb683a1e0fc013c2c957533d"
+# Re-blessed again 2026-11-16 onto the limits-audit round-7 head
+# 42a4a9833 (r11 review: the round-7 follow commit moved the parent gitlink
+# but skipped this re-bless — the round-6 wave's own finding class):
+# db4da7fde..42a4a9833 (4 commits) touches only runtime_threads.rs,
+# session_manager.rs, tools/git.rs, tools/git_history.rs, the verifiers
+# harness and the computer-use exec plugin — schema_sanitize.rs and the
+# registry files stay byte-identical (git diff 687358f7e 42a4a9833 on those
+# paths is empty, reproduced at the pinned tree), so the layer-2 source
+# face is unchanged and the flip is safe.
+_PINNED_CODEWHALE_GITLINK = "42a4a9833fe3fcf178fc290bca2844f931137eae"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
