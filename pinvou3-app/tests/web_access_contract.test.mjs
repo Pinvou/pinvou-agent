@@ -269,18 +269,23 @@ for (const command of [
 // endpoint per invocation — exact on the remote ladders, which stay
 // no-redirect and are pinned, while the LOCAL lane's probes ride the shared
 // probe client, which follows redirects (reqwest default, up to 10 hops);
-// only Bearer is attached there and reqwest strips it cross-origin, so no
-// credential reaches a second host, but the probe's requests may land on
+// only Bearer is attached there and reqwest strips it on any host-or-port
+// change (scheme is NOT compared — a same-host scheme downgrade keeps it,
+// but that host already received the key), so no credential reaches a second
+// host, but the probe's requests may land on
 // hosts the caller-supplied URL redirects to (still a single starting
 // point; the shape is not a scanner, the page must issue its own requests);
-// and the model-management UI stays web-hidden (modelManagement:false in
-// platform/web/bootstrap.js), so today only page JS reaches the command.
+// and today only page JS reaches the command: the probe's UI entries stay
+// off the web lane because the web bridge never populates
+// platformCapabilities.codexAcpSupported (the ACP tab's gate) and the
+// saved-model editor additionally gates on modelManagement:false
+// (platform/web/bootstrap.js).
 // discoverLocalVllm (the multi-candidate local discovery) stays
 // desktop-only — see tests/bridge_domain_contract.mjs.
 assert.equal(
   allowed.has('probe_endpoint_models'),
   true,
-  'probe_endpoint_models must stay web-allowlisted (keyring-blind: caller supplies the key; no saved-credential read, unlike test_model_connection; disclosed GLOBAL reach: the command accepts any caller-supplied URL and the remote ladders classify any public host — a port/service/model oracle with the desktop as vantage, bounded only by MAX_RPC_IN_FLIGHT=32 — accepted because the sanitized response never echoes the URL or key, one caller-supplied endpoint per invocation with the remote ladders no-redirect and pinned while the local lane may follow redirects (Bearer stripped cross-origin), typed keys transit the relay frame where the relay operator can observe them (saved credentials never readable; localhost default unaffected), the ledger fingerprint redacts secret-named args at any depth to their length, and the model-management UI stays web-hidden via modelManagement:false)',
+  'probe_endpoint_models must stay web-allowlisted (keyring-blind: caller supplies the key; no saved-credential read, unlike test_model_connection; disclosed GLOBAL reach: the command accepts any caller-supplied URL and the remote ladders classify any public host — a port/service/model oracle with the desktop as vantage, bounded only by MAX_RPC_IN_FLIGHT=32 — accepted because the sanitized response never echoes the URL or key, one caller-supplied endpoint per invocation with the remote ladders no-redirect and pinned while the local lane may follow redirects (Bearer stripped on any host-or-port change; scheme is not compared), typed keys transit the relay frame where the relay operator can observe them (saved credentials never readable; localhost default unaffected), the ledger fingerprint redacts secret-named args at any depth to their length, and only page JS reaches the command today — the probe UI stays off the web lane because the web bridge never populates platformCapabilities.codexAcpSupported, with the saved-model editor additionally gated on modelManagement:false)',
 );
 
 // Round-11 复审 M4:结构性互斥钉——remote_control.rs 里定义的每一个

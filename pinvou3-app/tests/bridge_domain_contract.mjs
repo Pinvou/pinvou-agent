@@ -92,7 +92,7 @@ export const desktopOnlyBridgeApi = {
   // Local vLLM discovery probes loopback services on the desktop host; the web capability bit is always false
   // and the command is not in the access-policy allowlist. Deliberate exception (round-2 review M7): the
   // single-endpoint probe_endpoint_models (one caller-supplied URL per invocation; the remote ladders stay
-  // no-redirect and pinned, while the local lane may follow redirects with Bearer stripped cross-origin —
+  // no-redirect and pinned, while the local lane may follow redirects with Bearer stripped on any host-or-port change (scheme is not compared) —
   // round-4 amendment) IS web-allowlisted for the model form's fetch-models button —
   // keyring-blind, caller-supplied key only. Its reach is disclosed (round-3 review M5 amendment) in
   // tests/web_access_contract.test.mjs: GLOBAL, not loopback-private — the command accepts any caller-supplied
