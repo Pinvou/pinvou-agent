@@ -460,6 +460,10 @@ function hasStoredCredential(record) {
       // addNotice 透传进 picker,不再被其全屏遮罩挡住。
       const [endpointAddResult, setEndpointAddResult] = useState(/** @type {{ ok: boolean, text: string } | null} */ (null));
       const [addingAllModels, setAddingAllModels] = useState(false);
+      // 单行添加在飞(round-3 审 M3):state 驱动 picker 行按钮禁用,ref 同步
+      // 挡同一 tick 的双击(异步 setState 在下一次渲染才可见,挡不住连击)。
+      const [pickSavingModel, setPickSavingModel] = useState(false);
+      const pickInFlightRef = useRef(false);
       // 「全部添加」挂起批次(应用内 SheetConfirmDialog 确认闸门的数据):先记
       // (addable, truncated) 快照,确认后才批量落库;取消则原样丢弃。
       const [addAllModelsConfirm, setAddAllModelsConfirm] = useState(/** @type {{ addable: Array, truncated: boolean } | null} */ (null));
@@ -579,11 +583,12 @@ function hasStoredCredential(record) {
         setFilledFromEndpoint(false);
         // 目录切换会改写 base_url(复审 M5 同因):旧 URL 上探到的候选列表、
         // 打开的 picker 与挂起的批量确认一并作废,绝不许在新 URL 下复用;
-        // 旧 URL 下的添加提示同因作废(复审 M4)。
+        // 旧 URL 下的添加提示与探测失败提示同因作废(复审 M4 + round-3 minor)。
         setEndpointListing(null);
         setEndpointPickerOpen(false);
         setAddAllModelsConfirm(null);
         setEndpointAddResult(null);
+        setFetchModelsMessage(null);
         // Reset the thinking effort to the new entry's default tier when the
         // catalog item changes (vllm→low (lowest thinking tier), others→high;
         // models without tiers get null = not explicitly set). Pass nextBaseUrl
@@ -612,6 +617,10 @@ function hasStoredCredential(record) {
       function handleModelIdChange(value) {
         setModel(value);
         renormalizeReasoningEffort({ preset, model: value, vendor, base_url: baseUrl });
+        // 手输模型 ID 是显式换模型(round-3 审 minor:此前只有目录项切换/
+        // chooseModel 清除):上一次端点探测的自动填入提示已失效,一并清除,
+        // 不让旧模型的「已从端点填入」小字挂在新模型下面误导。
+        setFilledFromEndpoint(false);
         // 手输模型 ID 命中目录标注同样预填;手动改过档位后不再跟随。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(value));
       }
@@ -623,11 +632,14 @@ function hasStoredCredential(record) {
         renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
         // base URL 变更即失效既有探测结果(复审 M5):URL A 上探到的列表绝不许
         // 在 URL B 的表单里打开或落库(picker 头部与保存 payload 都按当前输入
-        // 的 URL 走),挂起的批量确认一并丢弃;旧 URL 下的添加提示同因作废。
+        // 的 URL 走),挂起的批量确认一并丢弃;旧 URL 下的添加提示与探测失败
+        // 提示同因作废(round-3 审 minor:fetchModelsMessage 此前漏在失效
+        // 清扫外,旧 URL 的红色失败提示会挂在新 URL 下)。
         setEndpointListing(null);
         setEndpointPickerOpen(false);
         setAddAllModelsConfirm(null);
         setEndpointAddResult(null);
+        setFetchModelsMessage(null);
       }
       // 解析 http/https URL；其余 scheme（或无法解析）返回 null。端口框只在
       // 可解析的 http(s) 地址上工作，避免 "127.0.0.1:8003"（无 scheme）被
@@ -696,20 +708,24 @@ function hasStoredCredential(record) {
         const testKey = !isLocalPreset && !isCodingPlan && noAuth
           ? ''
           : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
-        // 复审 M2:与 handleFetchModels 同一 resolve 时刻守卫——点击瞬间快照
-        // base URL 与 wire 模型,resolve 时发现表单已改走就整份丢弃:
-        // - URL 已变:结果(含失败结果)属于旧端点,静默丢弃,不打扰用户;
-        // - 模型已换:URL 未变时测试结论仍可展示,但端点事实按模型探得,
-        //   绝不许把旧模型的数字填进新模型的空字段(规格 §2.6 + 复审 M5 口径)。
+        // resolve 时刻守卫(复审 M5):点击瞬间快照 base URL,resolve 时发现
+        // 表单已改走就整份丢弃——结果(含失败结果)属于旧端点,静默丢弃,
+        // 不打扰用户。
         const probedBaseUrl = baseUrl.trim();
-        const testedModel = model.trim();
         try {
           // noAuth 随请求下发：后端据此跳过已保存凭据回退（残留 key 不得
           // 在保存前发往新填的 URL，与保存后的鉴权形态完全一致）。
           const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           if (baseUrlRef.current.trim() !== probedBaseUrl) return;
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
-          if (modelRef.current.trim() === testedModel) applyProbedFacts(result);
+          // round-3 审 M2:端点事实按**已保存记录**的 model 字段探得并匹配
+          // (后端经 fact_model 回带这个名字),编辑表单里未保存的 model-ID
+          // 改动会让表单模型与事实模型分叉——旧守卫拿表单模型跟自己比,
+          // 分叉时旧模型的数字会填进新模型的空字段并存盘。守卫对齐到
+          // fact_model:表单当前模型仍是事实所属模型才填;fact_model 缺席
+          // (新建表单/未知 id)时结果必无事实字段,照旧调用为空操作。
+          const factModel = typeof result.fact_model === 'string' ? result.fact_model.trim() : '';
+          if (!factModel || modelRef.current.trim() === factModel) applyProbedFacts(result);
         } catch (e) {
           if (baseUrlRef.current.trim() !== probedBaseUrl) return;
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
@@ -741,6 +757,10 @@ function hasStoredCredential(record) {
           setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
           setEndpointPickerOpen(true);
         } catch (e) {
+          // round-3 审 minor:reject 路径与 try 路径同一 resolve 时刻守卫——
+          // URL A 的探测失败不许以红色提示挂在已改走的 URL B 表单下
+          // (handleTest 的 catch 早已同款守卫,这里是补齐)。
+          if (baseUrlRef.current.trim() !== probedBaseUrl) return;
           setFetchModelsMessage(normalizeConnectionTestResult(e, isCodingPlan));
         }
         finally { setFetchingModels(false); }
@@ -769,13 +789,24 @@ function hasStoredCredential(record) {
         };
       }
       async function handleEndpointModelPick(row) {
-        if (savingModel || addingAllModels) return;
+        // round-3 审 M3:单行添加此前没有在飞守卫——savingModel/addingAllModels
+        // 都不在这条路径上置位,行按钮也只在 alreadySaved 后才禁用,快速
+        // 双击会以两个新 id 把同一 (model, base_url) 落库两次。ref 在同步
+        // 序列里立即置位挡住同一 tick 的第二次点击,state 驱动行按钮禁用
+        // (保存 IPC + 刷新链路的窗口内不给可点的第二下)。
+        if (pickInFlightRef.current || savingModel || addingAllModels) return;
+        pickInFlightRef.current = true;
+        setPickSavingModel(true);
         try {
           await onSave(buildEndpointModelPayload(row));
           setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(1) });
         } catch (e) {
           // 失败:picker 保持打开供重试,提示以 addNotice 就地透传(复审 M4)。
           setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
+        }
+        finally {
+          pickInFlightRef.current = false;
+          setPickSavingModel(false);
         }
       }
       // 「全部添加」(聊天线):先与已保存模型按 (model id + base_url) 去重,把
@@ -1095,6 +1126,7 @@ function hasStoredCredential(record) {
         setEndpointPickerOpen(false);
         setAddAllModelsConfirm(null);
         setEndpointAddResult(null);
+        setFetchModelsMessage(null);
         // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(''));
         // Local model → manual add is an explicit route switch: drop the
@@ -1823,6 +1855,7 @@ function hasStoredCredential(record) {
             baseUrl={baseUrl.trim()}
             savedKeys={endpointSavedKeys}
             addNotice={endpointAddResult}
+            pickBusy={pickSavingModel || savingModel}
             t={t}
           />
           {/* 「全部添加」应用内确认弹窗(Tauri WebView2 不渲染原生 confirm;与

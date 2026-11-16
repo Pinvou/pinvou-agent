@@ -1305,6 +1305,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   modelListFilterEmpty:'No models match this filter',
   modelListTruncated:'The endpoint list was truncated',
   modelListMoreCount:n=>`…and ${n} more — refine the filter`,
+  modelListMoreCountPlain:n=>`…and ${n} more`,
 });
 Object.assign(dictEn.uiAcpProviders, {
   fetchModels:'Fetch models', fetchingModels:'Fetching models…',

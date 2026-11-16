@@ -37,7 +37,14 @@ export function formatTokensCount(value) {
       : millions.toFixed(1).replace(/\.0$/, '');
     return `${text}M`;
   }
-  if (count >= 1000) return `${Math.round(count / 1000)}K`;
+  // Round before branching inside the K band (round-3 review minor):
+  // 999999 previously rendered as Math.round(999.999) = '1000K' — the
+  // rounded kilos crossing 1000 fold up to '1M'.
+  if (count >= 1000) {
+    const kilos = Math.round(count / 1000);
+    if (kilos >= 1000) return '1M';
+    return `${kilos}K`;
+  }
   return String(Math.round(count));
 }
 

@@ -318,6 +318,9 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
     } catch (e) {
       // reject 穿透的是命令层错误,直接 String(e) 会把英文原始串透出到表单;
       // 按聊天线 normalizeConnectionTestResult 的同一映射归一为三语文案。
+      // round-3 审 minor:reject 路径与 try 路径同一 resolve 时刻守卫——
+      // URL A 的探测失败不许以错误条挂在已改走的 URL B 表单下。
+      if (String(baseUrlRef.current || '').trim() !== probedBaseUrl) return;
       const connectionCopy = t.uiSettingsDetail.connectionMessages;
       if (e && typeof e === 'object' && !Array.isArray(e)) {
         const code = String(e.code || (e.ok ? 'ok' : 'unknown'));
@@ -515,7 +518,13 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
                   key={option.key}
                   data-testid={`acp-provider-wire-${option.key}`}
                   type="button"
-                  onClick={() => setWireApi(option.key)}
+                  onClick={() => {
+                    setWireApi(option.key);
+                    // round-3 审 minor:wire 切换使既有探测结果跨协议失效——
+                    // anthropic wire 下探到的列表不许在 openai wire 的表单下
+                    // 打开/回填(与 base URL 变更同一不变量)。
+                    clearEndpointProbeState();
+                  }}
                   className={`h-9 px-3.5 rounded-full text-[12px] font-semibold transition-colors ${
                     wireApi === option.key
                       ? 'bg-[#007AFF] text-white'

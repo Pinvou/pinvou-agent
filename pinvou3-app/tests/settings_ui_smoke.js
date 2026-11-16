@@ -272,11 +272,12 @@ assert.match(
   /if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;/,
   'an in-flight probe whose base URL changed mid-flight must be discarded at resolve time',
 );
-// 复审 M2(测试连接的 resolve 时刻守卫):handleTest 与 handleFetchModels 同一
-// 口径——点击瞬间快照 base URL 与 wire 模型;resolve 时 URL 已变整份静默丢弃
-// (含失败结果),URL 未变但模型已换时测试结论仍展示、端点事实绝不自动填入
-// (事实按模型探得,规格 §2.6 + 复审 M5 口径)。切片钉住 handleTest 函数体:
-// 删掉任一守卫或把 applyProbedFacts 挪到模型比较之外都会变红。
+// 复审 M2(round-3 修订,测试连接的 resolve 时刻守卫):handleTest 快照 base
+// URL,resolve 时 URL 已变整份静默丢弃(含失败结果);端点事实按**已保存记录**
+// 的 model 字段探得,后端经 fact_model 回带事实所属模型——空字段填充守卫
+// 对齐到 fact_model(表单模型 ≠ fact_model 时不填),不再拿表单模型跟自己比
+// (旧守卫在编辑表单里未保存的 model-ID 改动下形同虚设)。切片钉住 handleTest
+// 函数体:删掉任一守卫或把 applyProbedFacts 挪到 fact_model 比较之外都会变红。
 const handleTestStart = settingsViewSource.indexOf('async function handleTest()');
 assert.notStrictEqual(handleTestStart, -1, 'connection test handler must exist');
 const handleTestSource = settingsViewSource.slice(
@@ -285,8 +286,8 @@ const handleTestSource = settingsViewSource.slice(
 );
 assert.match(
   handleTestSource,
-  /const probedBaseUrl = baseUrl\.trim\(\);\s*const testedModel = model\.trim\(\);/,
-  'handleTest must snapshot the base URL AND the wire model at click time',
+  /const probedBaseUrl = baseUrl\.trim\(\);/,
+  'handleTest must snapshot the base URL at click time',
 );
 assert.match(
   handleTestSource,
@@ -295,8 +296,13 @@ assert.match(
 );
 assert.match(
   handleTestSource,
-  /if \(modelRef\.current\.trim\(\) === testedModel\) applyProbedFacts\(result\);/,
-  'probed endpoint facts are per-model: they must fill only while the live wire model still equals the click-time one',
+  /const factModel = typeof result\.fact_model === 'string' \? result\.fact_model\.trim\(\) : '';/,
+  'the backend hands back the saved model name the facts actually matched (fact_model) and the fill guard must read it',
+);
+assert.match(
+  handleTestSource,
+  /if \(!factModel \|\| modelRef\.current\.trim\(\) === factModel\) applyProbedFacts\(result\);/,
+  'probed endpoint facts are per-saved-model: they must fill only while the live wire model still equals fact_model (the click-time form value compared to itself proved vacuous in edit mode)',
 );
 assert.match(
   settingsViewSource,
@@ -360,6 +366,92 @@ assert.match(
   settingsViewSource,
   /<EndpointModelPicker\s+key=\{endpointFetchSeq\}/,
   'the endpoint picker must remount per fetch so filter draft and scroll reset with each new listing',
+);
+// round-3 审 M3(单行添加双击重复落库):handleEndpointModelPick 需要自己的
+// 在飞守卫——ref 同步挡同一 tick 的第二次点击,state 驱动 picker 行按钮禁用
+// (保存 IPC + 刷新链路的窗口内不给可点的第二下);picker 行按钮按 pickBusy
+// 禁用。四个形状缺一都会变红。
+const pickStart = settingsViewSource.indexOf('async function handleEndpointModelPick(row)');
+assert.notStrictEqual(pickStart, -1, 'single-row endpoint pick handler must exist');
+const pickSource = settingsViewSource.slice(pickStart, settingsViewSource.indexOf('async function handleAddAllEndpointModels()', pickStart));
+assert.match(
+  pickSource,
+  /if \(pickInFlightRef\.current \|\| savingModel \|\| addingAllModels\) return;/,
+  'the pick handler must re-entry-guard on a dedicated in-flight ref (savingModel/addingAllModels are never set on this path)',
+);
+assert.match(
+  pickSource,
+  /pickInFlightRef\.current = true;\s*setPickSavingModel\(true\);/,
+  'the pick handler must raise both the sync ref (same-tick double click) and the busy state (row-button disable) before the await',
+);
+assert.match(
+  pickSource,
+  /finally \{\s*pickInFlightRef\.current = false;\s*setPickSavingModel\(false\);\s*\}/,
+  'the in-flight flags must clear on BOTH the success and failure paths so a retry is possible',
+);
+assert.match(
+  settingsViewSource,
+  /const pickInFlightRef = useRef\(false\);/,
+  'the pick in-flight flag must be a ref (state alone cannot catch a same-tick double click)',
+);
+assert.match(
+  settingsViewSource,
+  /pickBusy=\{pickSavingModel \|\| savingModel\}/,
+  'the chat-line picker must receive the pick-busy prop',
+);
+assert.match(
+  endpointPickerSource,
+  /disabled=\{alreadySaved \|\| pickBusy\}/,
+  'the row add button must disable while a pick-save is in flight (round-3 review M3)',
+);
+// round-3 审 minor(提示失效清扫):URL 变更/目录切换/手动本地路由三个失效点
+// 都要清探测失败提示,旧 URL 的红色失败提示不许挂在新表单下。
+const baseUrlHandlerStart = settingsViewSource.indexOf('function handleBaseUrlChange(value)');
+const baseUrlHandlerSource = settingsViewSource.slice(baseUrlHandlerStart, settingsViewSource.indexOf('function applyProbedFacts(', baseUrlHandlerStart));
+assert.match(
+  baseUrlHandlerSource,
+  /setFetchModelsMessage\(null\);/,
+  'a base-URL change must clear the stale fetch-failure message (round-3 review minor)',
+);
+const catalogItemHandlerSource = settingsViewSource.slice(
+  settingsViewSource.indexOf('function applyCatalogItem(group, item)'),
+  settingsViewSource.indexOf('function handleModelIdChange(value)'),
+);
+assert.match(
+  catalogItemHandlerSource,
+  /setFetchModelsMessage\(null\);/,
+  'a catalog switch must clear the stale fetch-failure message (round-3 review minor)',
+);
+const manualLocalHandlerSource = settingsViewSource.slice(
+  settingsViewSource.indexOf('function startManualLocalModel()'),
+  settingsViewSource.indexOf('const catalogSectionTitleClass', settingsViewSource.indexOf('function startManualLocalModel()')),
+);
+assert.match(
+  manualLocalHandlerSource,
+  /setFetchModelsMessage\(null\);/,
+  'the manual-local route switch must clear the stale fetch-failure message (round-3 review minor)',
+);
+// round-3 审 minor(获取失败提示的 resolve 时刻守卫):handleFetchModels 的
+// catch 与 try 同一 URL 守卫——URL A 的探测失败不许在 URL B 下渲染。
+const fetchHandlerSource = settingsViewSource.slice(
+  settingsViewSource.indexOf('async function handleFetchModels()'),
+  settingsViewSource.indexOf('function buildEndpointModelPayload(row)'),
+);
+assert.match(
+  fetchHandlerSource,
+  /catch \(e\) \{[\s\S]*?if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;[\s\S]*?setFetchModelsMessage\(/,
+  'the fetch-models reject path must carry the same resolve-time URL guard as its try path (and as handleTest)',
+);
+// round-3 审 minor(手输模型 ID 换模型):手动改 model 字段要清自动填入小字
+// (与目录项切换/chooseModel 同一纪律),旧模型的提示不许挂在新模型下。
+const modelIdHandlerSource = settingsViewSource.slice(
+  settingsViewSource.indexOf('function handleModelIdChange(value)'),
+  settingsViewSource.indexOf('function handleBaseUrlChange(value)'),
+);
+assert.match(
+  modelIdHandlerSource,
+  /setFilledFromEndpoint\(false\);/,
+  'a manual model-ID edit must clear the filled-from-endpoint hint (explicit model switch)',
 );
 // 测试连接自动填入:仅空字段、绝不覆盖非空值(规格决策 4)。取 applyProbedFacts
 // 片段钉条件,把「填空条件取反」的突变变红。复审 M6:空字段判定必须读
@@ -784,6 +876,11 @@ for (const settingsI18nSource of settingsI18nSources) {
     settingsI18nSource,
     /modelListMoreCount:\s*n\s*=>/,
     'the render-cap footer must interpolate the hidden row count in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /modelListMoreCountPlain:\s*n\s*=>/,
+    'the untouched-filter footer variant (no "refine the filter" advice) must exist in every UI language (round-3 review minor)',
   );
   assert.doesNotMatch(
     settingsI18nSource,

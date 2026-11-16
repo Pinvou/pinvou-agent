@@ -1312,6 +1312,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   modelListFilterEmpty:'フィルターに一致するモデルはありません',
   modelListTruncated:'エンドポイント一覧は切り詰められました',
   modelListMoreCount:n=>`他 ${n} 件があります — フィルターで絞り込んでください`,
+  modelListMoreCountPlain:n=>`他 ${n} 件があります`,
 });
 Object.assign(dictJa.uiAcpProviders, {
   fetchModels:'モデル一覧を取得', fetchingModels:'モデル一覧を取得中…',

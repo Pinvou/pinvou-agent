@@ -64,6 +64,11 @@ test('formatTokensCount: K/M thresholds', () => {
   assert.equal(formatTokensCount(1500000), '1.5M');
   assert.equal(formatTokensCount(12000000), '12M');
 });
+test('formatTokensCount: the K→M rounding boundary folds to 1M, never 1000K (round-3 review minor)', () => {
+  assert.equal(formatTokensCount(999499), '999K', 'below the rounding midpoint stays K');
+  assert.equal(formatTokensCount(999500), '1M', '999500/1000 rounds to 1000 kilos → 1M');
+  assert.equal(formatTokensCount(999999), '1M', 'the top of the K band must fold to 1M');
+});
 test('formatTokensCount: absent or invalid values render no badge', () => {
   assert.equal(formatTokensCount(null), '');
   assert.equal(formatTokensCount(), '');
@@ -212,7 +217,7 @@ test('component treats non-Set savedKeys as "nothing saved" and onAddAll as opti
   );
   assert.match(
     componentSource,
-    /const addableCount = savedSet\s*\?\s*rows\.filter\(\s*row => !savedSet\.has\(dupKeyOf\(row\)\)\)\.length\s*:\s*rows\.length/,
+    /if \(!savedSet\) return rows\.length;/,
     'with no saved set every row must stay addable (ACP line has no saved-model dedup)',
   );
   assert.match(
@@ -250,8 +255,18 @@ test('rows pipeline is memoized and the render is capped with an "N more" footer
   );
   assert.match(
     componentSource,
+    /const addableCount = useMemo\(\(\) => \{[\s\S]*?rows\.filter\(row => !savedSet\.has\(modelDuplicationKey\(row\.id, baseUrl\)\)\)\.length;[\s\S]*?\}, \[rows, savedSet, baseUrl\]\);/,
+    'the addable count must be memoized on [rows, savedSet, baseUrl] — it previously rebuilt a dup key per row on every keystroke render (round-3 review minor)',
+  );
+  assert.match(
+    componentSource,
     /settingsCopy\.modelListMoreCount\(hiddenRowCount\)/,
-    'hidden rows must surface as the localized "N more — refine the filter" footer',
+    'a filtered footer must surface as the localized "N more — refine the filter" line',
+  );
+  assert.match(
+    componentSource,
+    /settingsCopy\.modelListMoreCountPlain\(hiddenRowCount\)/,
+    'an untouched filter must get the plain "N more" footer (the refine advice presupposes a filter in use, round-3 review minor)',
   );
   assert.match(
     componentSource,

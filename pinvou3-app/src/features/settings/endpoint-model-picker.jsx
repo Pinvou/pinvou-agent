@@ -18,8 +18,8 @@ const ACTION_CLASS = 'shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium
 
 // Rows above this count stop rendering (Rust already caps a listing at 2000):
 // one DOM row per model is the picker's main render cost, so a capped list +
-// "N more — refine the filter" footer keeps keystrokes on huge endpoints flat
-// (round-1 review M7). Refining the filter re-slices the same pipeline.
+// "N more" footer keeps keystrokes on huge endpoints flat (round-1 review M7).
+// Refining the filter re-slices the same pipeline.
 const PICKER_RENDER_CAP = 200;
 
 /**
@@ -47,6 +47,9 @@ const PICKER_RENDER_CAP = 200;
  *   dedup (id + base_url).
  * - `savedKeys` Set of saved-model keys (savedModelKeys()); matching rows are
  *   tagged 已保存 and their add button is disabled.
+ * - `pickBusy` optional: a row-add save is in flight (round-3 review M3) —
+ *   every row's add button disables so a rapid double-click cannot fire a
+ *   second save with a fresh record id.
  * - `addNotice` optional `{ ok, text } | null`: a row/batch add result passed
  *   through while the picker stays open on failure (round-2 review M4) — the
  *   form's own status line sits beneath this full-screen overlay, so a failed
@@ -55,12 +58,13 @@ const PICKER_RENDER_CAP = 200;
  * - `t` the i18n dictionary prop passed down the SettingsView tree (same
  *   pattern as ReasoningTierPicker; no direct i18n import here).
  */
-const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterable = true, onAddAll, baseUrl, savedKeys, addNotice, t }) => {
+const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterable = true, onAddAll, baseUrl, savedKeys, addNotice, pickBusy = false, t }) => {
   const settingsCopy = t.uiSettingsDetail;
   const [filterDraft, setFilterDraft] = useState('');
   // Rows pipeline memoized on [listing, filterDraft] (round-1 review M7):
   // normalize + filter previously re-ran on every keystroke-render.
   const rows = useMemo(() => normalizeDiscoveredRows(listing), [listing]);
+  const savedSet = savedKeys instanceof Set ? savedKeys : null;
   const showFilter = filterable && rows.length > FILTER_VISIBLE_ROW_LIMIT;
   const visibleRows = useMemo(
     () => (showFilter ? filterModelRows(rows, filterDraft) : rows),
@@ -70,12 +74,15 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
   // the rest collapse into the "N more" footer below the list.
   const renderedRows = visibleRows.slice(0, PICKER_RENDER_CAP);
   const hiddenRowCount = visibleRows.length - renderedRows.length;
+  // Addable count memoized on [rows, savedSet, baseUrl] (round-3 review
+  // minor: it previously recomputed — one dup-key build per row — on every
+  // render including every filter keystroke it does not depend on).
+  const addableCount = useMemo(() => {
+    if (!savedSet) return rows.length;
+    return rows.filter(row => !savedSet.has(modelDuplicationKey(row.id, baseUrl))).length;
+  }, [rows, savedSet, baseUrl]);
   if (!open) return null;
-  const savedSet = savedKeys instanceof Set ? savedKeys : null;
   const dupKeyOf = row => modelDuplicationKey(row.id, baseUrl);
-  const addableCount = savedSet
-    ? rows.filter(row => !savedSet.has(dupKeyOf(row))).length
-    : rows.length;
   // Status copy: map the serde ListingStatus onto the tri-lingual hints;
   // transport errors reuse the existing connectionMessages voices so a
   // timeout/DNS failure reads like the connection test next to the button.
@@ -204,7 +211,7 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
                           </span>
                         )}
                       </span>
-                      <button type="button" data-testid="endpoint-model-row-add" disabled={alreadySaved}
+                      <button type="button" data-testid="endpoint-model-row-add" disabled={alreadySaved || pickBusy}
                         onClick={() => onPick(row)} className={ACTION_CLASS}>{settingsCopy.addModelRow}</button>
                     </div>
                   );
@@ -215,7 +222,14 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
                   <div data-testid="endpoint-model-filter-empty" className={`px-3.5 py-3 text-[13px] leading-5 ${MUTED_TEXT}`}>{settingsCopy.modelListFilterEmpty}</div>
                 )}
                 {hiddenRowCount > 0 && (
-                  <div data-testid="endpoint-model-picker-more" className={`px-3.5 py-3 text-[13px] leading-5 ${MUTED_TEXT}`}>{settingsCopy.modelListMoreCount(hiddenRowCount)}</div>
+                  // round-3 review minor: the "refine the filter" advice only
+                  // makes sense once a filter is actually in use; with an
+                  // untouched filter the footer carries the plain count.
+                  <div data-testid="endpoint-model-picker-more" className={`px-3.5 py-3 text-[13px] leading-5 ${MUTED_TEXT}`}>
+                    {filterDraft.trim()
+                      ? settingsCopy.modelListMoreCount(hiddenRowCount)
+                      : settingsCopy.modelListMoreCountPlain(hiddenRowCount)}
+                  </div>
                 )}
               </div>
             )}
