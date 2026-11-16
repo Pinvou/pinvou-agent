@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 147 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 151 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,9 +11,9 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # CodeWhale#156 (rustc/clippy 1.100 stable lint adaptation),
 # and CodeWhale#157 (session-reader read-only classification) merged,
 # plus the #154 limits-audit branch (squash 841fe98fe + review fixwaves
-# r1-r6) rebased onto 687358f7e.
-EXPECTED_HEAD="db4da7fdefffb038eb683a1e0fc013c2c957533d"
-EXPECTED_COMMITS=147
+# r1-r7) rebased onto 687358f7e.
+EXPECTED_HEAD="42a4a9833fe3fcf178fc290bca2844f931137eae"
+EXPECTED_COMMITS=151
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.

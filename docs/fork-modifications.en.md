@@ -693,3 +693,37 @@ the immutable r1 closure are unchanged ancestors, and the public-head
 transition contract stays gitlink == branch head with the r3 tag pinned at
 its closure (61cb769be). The parent side of the batch is registered in
 pinvou-agent#847.
+
+## CodeWhale limits-audit follow to 42a4a9833 (2026-11-16, round-7)
+
+The submodule gitlink moves from the limits-audit round-6 head `db4da7fde` to
+`42a4a9833` (CodeWhale#154 now 51 commits: the `841fe98fe` squash plus the
+r1–r7 review fixwaves). The round-7 fresh review re-derived all 85 changed
+files from scratch in twelve lanes and returned approve-level (0 blocker,
+0 major; every headline constant and mechanism re-verified at its claimed
+value, the six prior fixwaves' fixes confirmed genuine on trace). The wave
+carries the review's two code findings and four comment corrections: the
+five stdout-as-result git tool sites (`git_status`/`git_diff`/`git_log`/
+`git_show`/`git_blame`) now OR the shared runner's `drain_truncated` into
+their `truncated` metadata, so output cut by the 2 s drain grace is no
+longer reported as complete; computer-use exec carries the `error`-event
+diagnostic outside the capped stderr storage so it survives an over-cap
+stderr, and the byte-truthful capture gains a chunk-split pin (a 3-byte
+char split across two pipe chunks must decode without a fabricated
+replacement character); the verifiers harness pins the hung-timeout paths
+of the version-check and install call sites (was two of four runtime call
+sites); and four stale bounds comments are corrected (the janitor-throttle
+doc no longer names the round-2 threat the round-3 `save_session_edit`
+routing made moot; `save_session`'s doc no longer claims recurring-saves-
+only; `ROUTED_USAGE_FLUSH_BATCH`'s doc stands alone and states the
+sustained-failure regime's O(N²) re-serialization CPU;
+`append_routed_usage_staged` documents its `Result<bool>` semantics).
+The review's remaining items are disclosed in the #154 body as
+on-the-record residuals with behavior unchanged.
+fork-guard re-registers the review head (`42a4a9833`) and the census (151);
+the register stays at 301 forkguard_* behavior names (the wave's tests live
+on the CodeWhale side). The maintenance base (11cba403d), the official
+v0.9.12 root (dcd4c200) and the immutable r1 closure are unchanged
+ancestors, and the public-head transition contract stays gitlink == branch
+head with the r3 tag pinned at its closure (61cb769be). The parent side of
+the batch is registered in pinvou-agent#847.
