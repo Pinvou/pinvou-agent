@@ -35,7 +35,7 @@ use crate::core::model_context::{resolved_context_window, resolved_output_limit}
 use crate::core::model_endpoint::{
     LocalServerKind, apply_anthropic_auth_headers, apply_bearer, base_url_uses_local_or_private,
     cached_ollama_show_context, models_probe_url, parse_entry_output_limit, parse_positive_u32,
-    probe_lmstudio_models, probe_local_server_kind, probe_ollama_models,
+    probe_lmstudio_models, probe_local_server_kind, probe_ollama_models, raw_error_looks_like_tls,
     with_opencode_session_header,
 };
 use crate::platform::prefs::ModelPreset;
@@ -128,8 +128,10 @@ pub enum ListingStatus {
 pub struct EndpointModelsListing {
     pub status: ListingStatus,
     pub http_status: Option<u16>,
-    /// 传输失败类别:"timeout" | "dns" | "connect" | "network"(顺序
-    /// is_timeout → is_dns → is_connect,与 monitor 的 transport_class 一致)。
+    /// 传输失败类别:"timeout" | "dns" | "connect" | "tls" | "network"
+    /// (顺序 is_timeout → is_dns → is_connect → 裸文本 TLS 启发式,与
+    /// monitor 的 transport_class / 连接测试的 transport_code_for 同源)。
+    /// 小写 snake_case,前端 connectionMessages 按词消费。
     pub transport: Option<String>,
     /// 本地短路时探测出的 [`LocalServerKind`] 字符串;远端/非兼容协议为
     /// `None`。
@@ -325,7 +327,10 @@ enum ProbeOutcome {
 }
 
 /// 传输失败 → 稳定类别词。顺序照搬 monitor 的 transport_class:DNS 检查
-/// 必须先于 connect(hyper-util 把解析器失败也归入 Connect kind)。
+/// 必须先于 connect(hyper-util 把解析器失败也归入 Connect kind)。TLS 用
+/// 与连接测试 `transport_code_for` 同源的裸文本启发式
+/// ([`raw_error_looks_like_tls`])补 "tls" 类别——结构化标志 Answer 之后的
+/// 兜底文本臂,证书校验失败不再误落 network。
 fn transport_class(err: &reqwest::Error) -> &'static str {
     if err.is_timeout() {
         "timeout"
@@ -333,6 +338,8 @@ fn transport_class(err: &reqwest::Error) -> &'static str {
         "dns"
     } else if err.is_connect() {
         "connect"
+    } else if raw_error_looks_like_tls(&err.to_string()) {
+        "tls"
     } else {
         "network"
     }
@@ -1318,6 +1325,25 @@ mod tests {
         assert_eq!(listing.http_status, Some(200));
         assert!(listing.models.is_empty());
         assert!(!listing.truncated);
+    }
+
+    /// minor-3 钉:TLS 裸文本启发式与连接测试(`transport_code_for`)共用
+    /// 一份关键词表——证书校验 / 握手失败在发现阶梯补 "tls" 类别而不是落
+    /// 兜底 network;普通连接失败不误报 tls。reqwest 错误无法脱离真实
+    /// TLS 握手构造,类别臂的集成覆盖由关键词启发式的单测 + 顺序
+    /// (timeout/dns/connect 先行)守口。
+    #[test]
+    fn raw_error_looks_like_tls_pins_keyword_heuristic() {
+        assert!(raw_error_looks_like_tls(
+            "error sending request: certificate verify failed"
+        ));
+        assert!(raw_error_looks_like_tls("tls handshake failure"));
+        assert!(raw_error_looks_like_tls(
+            "SSL routines::wrong version number"
+        ));
+        assert!(!raw_error_looks_like_tls("connection refused"));
+        assert!(!raw_error_looks_like_tls("operation was canceled"));
+        assert!(!raw_error_looks_like_tls(""));
     }
 
     #[tokio::test]

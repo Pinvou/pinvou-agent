@@ -823,6 +823,16 @@ pub fn model_probe_http_code(status: reqwest::StatusCode) -> &'static str {
 /// had lost `tls_error`). The dns arm must precede the connect arm:
 /// hyper-util files resolver failures under its Connect kind, so `is_dns`
 /// only classifies if it runs first.
+/// TLS-failure keyword heuristic over a raw (already redacted, text-only)
+/// error string. `pub(crate)`: the discovery ladder's `transport_class`
+/// reuses the exact same keywords, so the "tls" class it now emits stays
+/// vocabulary-compatible with the connection test's `tls_error` wire code —
+/// one keyword list, two surfaces, no drift.
+pub(crate) fn raw_error_looks_like_tls(raw: &str) -> bool {
+    let lower = raw.to_lowercase();
+    lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl")
+}
+
 pub fn transport_code_for(
     is_timeout: bool,
     is_dns: bool,
@@ -847,7 +857,7 @@ pub fn transport_code_for(
         "dns_failed"
     } else if is_connect {
         "connection_refused"
-    } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+    } else if raw_error_looks_like_tls(display_text) {
         "tls_error"
     } else if lower.contains("dns")
         || lower.contains("lookup")
