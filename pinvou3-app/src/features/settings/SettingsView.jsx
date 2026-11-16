@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Code, Cpu, Database, Globe, MessageSquare, Plus, RefreshCw, Search, Sparkles, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -1466,8 +1466,9 @@ function hasStoredCredential(record) {
       // 历史探测误判残留,不应隐藏,如 kimi-for-coding)。
       const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
       // 端点面板的「已保存」标记与批量去重键(规格 §2.6:model id + base_url)。
-      // memo 化(round-4 FE polish):models 不变时不再每次渲染重建键集。
-      const endpointSavedKeys = useMemo(() => savedModelKeys(models), [models]);
+      // 不 memo 化:React Compiler 在本组件的早退结构上无法保持手工 memo
+      // (preserve-manual-memoization lint),而重复构建键集是亚毫秒级开销。
+      const endpointSavedKeys = savedModelKeys(models);
       // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
       // 探活禁用按钮并给 title 提示(与 testImageInputCapability 同款惯例)。
       const probeEndpointModelsAvailable = !!(bridge.available && typeof bridge.models.probeEndpointModels === 'function');
