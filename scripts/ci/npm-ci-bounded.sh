@@ -28,5 +28,5 @@ shift
 if timeout --version >/dev/null 2>&1; then
   exec timeout --kill-after=15 "$secs" npm ci --prefer-offline --no-audit "$@"
 fi
-echo "::warning::GNU timeout unavailable on $(uname -s); npm ci runs under this job's timeout-minutes cap only"
+echo "::warning::GNU timeout unavailable on $(uname -s); npm ci runs without a per-leg bound (under CI the job's timeout-minutes cap still applies)"
 exec npm ci --prefer-offline --no-audit "$@"
