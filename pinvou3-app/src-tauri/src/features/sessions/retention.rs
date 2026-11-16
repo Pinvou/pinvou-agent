@@ -1122,6 +1122,13 @@ impl SessionStore {
         }
 
         let _mutation = self.scheduled_mutation.lock();
+        // Allocate the id before any side effect: id exhaustion is a
+        // fallible step, and running it first keeps the loud-failure path
+        // free of an orphan empty task-workspace dir (the workspace is
+        // reused idempotently, but leaving one behind on a pure allocation
+        // error is still an avoidable error-state side effect).
+        let id =
+            self.generate_unused_session_id_with(|| format!("sched-{}", generate_session_id()))?;
         // Each run creates its own conversation; all conversations of the same
         // automation share the task workspace.
         // workspace is derived only from the stable task_id (automation_id);
@@ -1133,8 +1140,6 @@ impl SessionStore {
                 profile.workspace.display()
             )
         })?;
-        let id =
-            self.generate_unused_session_id_with(|| format!("sched-{}", generate_session_id()))?;
         let mode = profile.mode.as_label();
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),

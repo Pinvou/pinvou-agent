@@ -2743,12 +2743,15 @@ fn scheduled_delete_profile_persistence_failure_remains_retryable_after_record_c
 
 #[test]
 fn scheduled_creation_rolls_back_when_profile_write_fails() {
-    // 本测试刻意不经 isolated_store（自带 root、不依赖 PINVOU3_HOME），但
-    // 它的 create_new/create_scheduled_run 会排干进程级候选队列
-    // （store.rs TEST_GENERATED_ID_QUEUE）——默认 `cargo test` 是多线程
-    // 的，必须持 ENV_LOCK 与 wiring 钉测试串行，否则会在 wiring 测试
-    // push 之后、消费之前偷走整个队列，造成 expect_err 假红
-    // （R2 REQUIRED-2；CI 的 --test-threads=1 掩盖该竞窗）。
+    // This test deliberately bypasses isolated_store (which brings its own
+    // root and does not depend on PINVOU3_HOME), but its
+    // create_new/create_scheduled_run calls drain the process-global
+    // candidate queue (store.rs TEST_GENERATED_ID_QUEUE) — the default
+    // `cargo test` run is multi-threaded, so it must hold ENV_LOCK to
+    // serialize against the wiring-pin tests; otherwise it could steal the
+    // whole queue between a wiring test's push and its consume and turn an
+    // expect_err spuriously red (R2 REQUIRED-2; CI's --test-threads=1
+    // masks this race window).
     let _env_lock = ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -10196,7 +10199,8 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
 #[test]
 fn generate_unused_session_id_retries_past_an_occupied_candidate() {
     let (store, _env) = isolated_store();
-    // 占位候选：探测只看 <id>.json 的存在性，落一个最小文件即可。
+    // Placeholder candidate: the probe only checks <id>.json existence, so a
+    // minimal file is enough.
     std::fs::write(store.sessions_dir().join("occupied.json"), b"{}")
         .expect("plant occupied record file");
 
@@ -10222,9 +10226,10 @@ fn generate_unused_session_id_retries_past_an_occupied_candidate() {
     assert_eq!(id, "fresh");
 }
 
-/// 元数据故障（0o000 目录）与占用同路：探测非 NotFound 一律不可用，
-/// 重试耗尽后响亮报错——绝不拿未确认可用的 id 落盘（fork/create_new
-/// 的静默覆盖面由此关闭）。
+/// A metadata fault (0o000 dir) rides the same path as occupancy: any
+/// non-NotFound probe verdict counts as unavailable, and exhausted retries
+/// fail loudly — an unconfirmed id is never persisted (this closes the
+/// silent-overwrite surface of fork/create_new).
 #[cfg(unix)]
 #[test]
 fn generate_unused_session_id_fails_loud_on_stat_fault() {
@@ -10235,9 +10240,9 @@ fn generate_unused_session_id_fails_loud_on_stat_fault() {
         .expect("stat sessions dir")
         .permissions()
         .mode();
-    // 0o000 复原走 Drop guard：断言 panic 时不得把目录留在 0o000——
-    // TestHomeGuard 的 remove_dir_all 会被 0o000 卡死，整个临时 home
-    // 泄漏进 /tmp。
+    // The 0o000 restore goes through a Drop guard: an asserting panic must
+    // not leave the dir at 0o000 — TestHomeGuard's remove_dir_all would
+    // wedge on 0o000 and leak the whole temp home.
     struct RestorePermissions<'a>(&'a std::path::Path, u32);
     impl Drop for RestorePermissions<'_> {
         fn drop(&mut self) {
@@ -10248,8 +10253,9 @@ fn generate_unused_session_id_fails_loud_on_stat_fault() {
             }
         }
     }
-    // Root 判定只能靠「已存在的文件能否被 stat 到」：NotFound 对 root
-    // 与非 root 同形，stat 一个从未创建的文件分辨不出前提是否成立。
+    // Root detection can only rely on "can an existing file be stat'd":
+    // NotFound looks identical for root and non-root, and stat'ing a file
+    // that was never created cannot tell whether the precondition holds.
     let probe = sessions_dir.join("probe.json");
     std::fs::write(&probe, b"{}").expect("plant probe file");
     std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
@@ -10270,16 +10276,19 @@ fn generate_unused_session_id_fails_loud_on_stat_fault() {
             .contains("could not allocate an unused session id"),
         "{error}"
     );
-    // 成功路径显式复原并验证（Drop guard 只兜 panic 窗；与姊妹测试
-    // import_reports_stat_fault… 同形状）：恢复失败让测试转红而非静默
-    // 泄漏整个临时 home（TestHomeGuard 的 remove_dir_all 会被 0o000 卡死）。
+    // Explicitly restore and verify on the happy path (the Drop guard only
+    // covers the panic window; same shape as the sister test
+    // import_reports_stat_fault…): a failed restore turns the test red
+    // instead of silently leaking the whole temp home (TestHomeGuard's
+    // remove_dir_all would wedge on 0o000).
     std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
         .expect("restore the sessions dir permissions");
 }
 
-/// wiring 钉：测试候选队列把撞车序列穿过 `fork_session_record` 的真实
-/// 调用点——把 fork 的 id 分配回退成裸 `generate_session_id()` 的突变
-/// 在此转红（此前该回退全套绿，见评审 M4）。
+/// Wiring pin: the test candidate queue drives the collision sequence
+/// through `fork_session_record`'s real call site — a mutation that reverts
+/// fork's id allocation to bare `generate_session_id()` turns red here
+/// (that revert previously stayed green across the whole suite, review M4).
 #[test]
 fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
     let (store, _env) = isolated_store();
@@ -10299,7 +10308,8 @@ fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
     }
     let _queue_guard = ClearIdQueueOnDrop;
 
-    // 占满整个候选预算 → fork 必须响亮失败，源记录原样。
+    // Fill the whole candidate budget → the fork must fail loudly with the
+    // source record intact.
     push_generated_id_candidates_for_test(&["occupied"; 8]);
     let error = store
         .fork_session_record(&source.metadata.id, 1)
@@ -10314,8 +10324,9 @@ fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
         store.load(&source.metadata.id).is_ok(),
         "the source record must be intact past the loud failure"
     );
-    // 耗尽路径不得落任何分支记录（sessions 目录里只有源记录与预置的
-    // occupied.json 两个 .json）。
+    // The exhausted path must not land any branch record (the sessions dir
+    // holds only the source record and the planted occupied.json — two
+    // .json files).
     let json_names: Vec<String> = std::fs::read_dir(store.sessions_dir())
         .expect("list sessions")
         .filter_map(Result::ok)
@@ -10328,8 +10339,9 @@ fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
         "no branch record may land: {json_names:?}"
     );
 
-    // 占用后接新鲜候选 → fork 落在注入的新鲜 id 上：只有穿过探测的
-    // wiring 才可能产出这个 id（裸时钟给出的是时钟值）。
+    // An occupied candidate followed by a fresh one → the fork lands on the
+    // injected fresh id: only wiring through the probe can produce this id
+    // (bare generation yields a clock value).
     push_generated_id_candidates_for_test(&["occupied", "fresh"]);
     let forked = store
         .fork_session_record(&source.metadata.id, 1)
@@ -10341,8 +10353,8 @@ fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
     );
 }
 
-/// [`SessionStore::create_new`] 的同款 wiring 钉：预算耗尽必须响亮失败，
-/// 且不落任何记录。
+/// The same wiring pin for [`SessionStore::create_new`]: budget exhaustion
+/// must fail loudly and land no record.
 #[test]
 fn create_new_fails_loud_when_every_generated_candidate_is_occupied() {
     let (store, _env) = isolated_store();
@@ -10365,8 +10377,9 @@ fn create_new_fails_loud_when_every_generated_candidate_is_occupied() {
             .contains("could not allocate an unused session id"),
         "{error:#}"
     );
-    // 耗尽路径不得落任何记录（注释所claim的「不落任何记录」在此钉死：
-    // sessions 目录里只剩预置的 occupied.json）。
+    // The exhausted path must not land any record (the doc's "no record"
+    // claim is pinned here: the sessions dir holds only the planted
+    // occupied.json).
     let json_names: Vec<String> = std::fs::read_dir(store.sessions_dir())
         .expect("list sessions")
         .filter_map(Result::ok)
@@ -10380,9 +10393,10 @@ fn create_new_fails_loud_when_every_generated_candidate_is_occupied() {
     );
 }
 
-/// persist 失败原因在形成点折叠（R2 SHOULD-2）：fork / create_new / import
-/// / aux 的命令包装都把 `write session {path}` 原样送进 toast——折叠必须
-/// 在 `save_session_atomic` 一处完成，任何调用方都不得再漏。
+/// Persist failure reasons fold at the formation point (R2 SHOULD-2): the
+/// fork / create_new / import / aux command wrappers forward
+/// `write session {path}` verbatim into toasts — the fold must happen once
+/// inside `save_session_atomic`, and no caller may leak past it.
 #[cfg(unix)]
 #[test]
 fn save_persist_failure_reasons_fold_the_storage_prefix() {
@@ -10399,8 +10413,9 @@ fn save_persist_failure_reasons_fold_the_storage_prefix() {
         .expect("stat sessions dir")
         .permissions()
         .mode();
-    // 0o000 复原走 Drop guard：断言 panic 时不得把目录留在 0o000（与
-    // generate_unused_session_id_fails_loud_on_stat_fault 同款形状）。
+    // The 0o000 restore goes through a Drop guard: an asserting panic must
+    // not leave the dir at 0o000 (same shape as
+    // generate_unused_session_id_fails_loud_on_stat_fault).
     struct RestorePermissions<'a>(&'a std::path::Path, u32);
     impl Drop for RestorePermissions<'_> {
         fn drop(&mut self) {
@@ -10411,8 +10426,8 @@ fn save_persist_failure_reasons_fold_the_storage_prefix() {
             }
         }
     }
-    // Root 判定靠已存在文件能否被 stat 到（对 root 与非 root 同形的前提
-    // 必须先成立）。
+    // Root detection relies on whether an existing file can be stat'd (the
+    // precondition must hold identically for root and non-root).
     let probe = sessions_dir.join("probe-save.json");
     std::fs::write(&probe, b"{}").expect("plant probe file");
     std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
@@ -10436,16 +10451,20 @@ fn save_persist_failure_reasons_fold_the_storage_prefix() {
         !text.contains("pinvou3-sessions-test-"),
         "the persist reason must not leak the raw home prefix: {text}"
     );
-    // 成功路径显式复原并验证（Drop guard 只兜 panic 窗）：恢复失败让
-    // 测试转红而非静默泄漏整个临时 home。
+    // Explicitly restore and verify on the happy path (the Drop guard only
+    // covers the panic window): a failed restore turns the test red instead
+    // of silently leaking the whole temp home.
     std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
         .expect("restore the sessions dir permissions");
 }
 
-/// wiring 钉：sched- 命名空间同穿占用探测（retention 的分配闭包经
-/// `generate_unused_session_id_with` 的候选队列）——把 sched 站点回退成
-/// 裸 `format!("sched-{}", generate_session_id())` 的突变在此转红
-/// （R2 SHOULD-1/M2R：此前该回退与基线逐字节同绿，全 suite 无信号）。
+/// Wiring pin: the sched- namespace rides the same occupancy probe
+/// (retention's allocation closure goes through
+/// `generate_unused_session_id_with`'s candidate queue) — a mutation that
+/// reverts the sched site to bare `format!("sched-{}",
+/// generate_session_id())` turns red here (R2 SHOULD-1/M2R: that revert
+/// previously stayed byte-identically green against the baseline, no
+/// signal anywhere in the suite).
 #[test]
 fn create_scheduled_run_draws_candidates_through_the_occupancy_probe() {
     let (store, _env) = isolated_store();
@@ -10459,8 +10478,8 @@ fn create_scheduled_run_draws_candidates_through_the_occupancy_probe() {
     std::fs::write(store.sessions_dir().join("sched-occupied.json"), b"{}")
         .expect("plant occupied record file");
 
-    // 占满整个候选预算 → create_scheduled_run 必须响亮失败，且不落任何
-    // sched 记录。
+    // Fill the whole candidate budget → create_scheduled_run must fail
+    // loudly and land no sched record.
     push_generated_id_candidates_for_test(&["sched-occupied"; 8]);
     let error = store
         .create_scheduled_run(scheduled_profile("task-sched-pin"))
@@ -10482,9 +10501,19 @@ fn create_scheduled_run_draws_candidates_through_the_occupancy_probe() {
         vec!["sched-occupied.json".to_string()],
         "no sched record may land past exhaustion: {json_names:?}"
     );
+    // The id allocation runs before any side effect: exhaustion must not
+    // leave an orphan empty task-workspace dir behind.
+    assert!(
+        !store
+            .scheduled_workspace_for_task("task-sched-pin")
+            .expect("derive task workspace")
+            .exists(),
+        "id exhaustion must not create the task workspace dir"
+    );
 
-    // 占用后接新鲜候选 → 落在注入的 sched- 前缀 id 上：只有穿过探测的
-    // wiring 才可能产出这个 id（裸时钟给出的是时钟值）。
+    // An occupied candidate followed by a fresh one → the run lands on the
+    // injected sched- prefixed id: only wiring through the probe can
+    // produce this id (bare generation yields a clock value).
     push_generated_id_candidates_for_test(&["sched-occupied", "sched-fresh"]);
     let session = store
         .create_scheduled_run(scheduled_profile("task-sched-pin2"))
