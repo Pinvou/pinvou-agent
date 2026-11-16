@@ -24,7 +24,10 @@
 //! - Ollama 的 GGUF 训练窗口(`model_info.<arch>.context_length`)刻意不
 //!   采纳(仓库不变量,见 [`crate::core::model_endpoint::
 //!   parse_ollama_show_context`]);发现同样只消费 `/api/ps` 生效值
-//!   与 `/api/show` 的 `num_ctx` 声明。
+//!   与 `/api/show` 的 `num_ctx` 声明。目录补全对 GGUF 文件族 lane
+//!   (ollama / lm_studio / llamacpp / koboldcpp)豁免:目录行按名字匹配到
+//!   的厂商值是云端 API 的事实,对本地模型文件是高报方向的错误事实
+//!   (round-3 审 M1,入口处钉)。
 
 use std::time::Duration;
 
@@ -34,9 +37,9 @@ use serde_json::Value;
 use crate::core::model_context::{resolved_context_window, resolved_output_limit};
 use crate::core::model_endpoint::{
     LocalServerKind, apply_anthropic_auth_headers, apply_bearer, base_url_uses_local_or_private,
-    cached_ollama_show_context, models_probe_url, parse_entry_output_limit, parse_positive_u32,
-    probe_lmstudio_models, probe_local_server_kind, probe_ollama_models, raw_error_looks_like_tls,
-    strip_v1_suffix, with_opencode_session_header,
+    cached_ollama_show_context, error_chain_looks_like_tls, models_probe_url,
+    parse_entry_output_limit, parse_positive_u32, probe_lmstudio_models, probe_local_server_kind,
+    probe_ollama_models, strip_v1_suffix, with_opencode_session_header,
 };
 use crate::platform::prefs::ModelPreset;
 
@@ -180,6 +183,8 @@ async fn probe_endpoint_models_with_timeout(
     request_timeout: Duration,
 ) -> EndpointModelsListing {
     let mut server_kind: Option<String> = None;
+    // 目录补全豁免标记:GGUF 文件族 lane(见下方 skip 注释)不做目录补全。
+    let mut catalog_fill_skipped = false;
     // 本地短路只属于 OpenAI 兼容阶梯:环回/私网地址先判服务类型,ollama /
     // lmstudio 走各自原生列表。Anthropic / Gemini 协议即使指向环回(本地
     // claude 代理、gemini 网关)也必须按其协议探测——本地判别探测的签名
@@ -189,6 +194,23 @@ async fn probe_endpoint_models_with_timeout(
     {
         let kind = probe_local_server_kind(base_url, api_key).await;
         server_kind = Some(local_server_kind_str(kind).to_string());
+        // round-3 审 M1:GGUF 文件族(Ollama / LM Studio / llama.cpp /
+        // KoboldCpp)的条目是本地模型文件——厂商目录行按名字前缀/子串/
+        // `1m` 提示匹配到的 1M/128K 是云端 API 的事实,采信会把 GGUF/
+        // 本地服务端默认(常见 4096)高报成部署事实,高报方向被仓库不变量
+        // 禁止(compaction/输入预算放宽后由上游静默截断)。这些 lane 的
+        // 窗口事实只来自 `/api/ps` 生效值、`num_ctx` 声明与 LM Studio 的
+        // `loaded_context_length`;报不出的字段就留空,宁可无徽章也不给
+        // 错数字。服务型 kind(vllm / sglang / tachyon / … / generic,
+        // 含兼容阶梯回落)部署的是同名云端模型的副本,目录行描述的正是
+        // 那个名字的模型,补全保留(来源徽章可见,端点自报值永不覆盖)。
+        catalog_fill_skipped = matches!(
+            kind,
+            LocalServerKind::Ollama
+                | LocalServerKind::LmStudio
+                | LocalServerKind::LlamaCpp
+                | LocalServerKind::KoboldCpp
+        );
         match kind {
             LocalServerKind::Ollama => match ollama_discovered(base_url, api_key).await {
                 Some((models, truncated)) => Terminal::Listed(models, truncated),
@@ -197,7 +219,7 @@ async fn probe_endpoint_models_with_timeout(
                 // [`ollama_native_failure`]),否则回落 OpenAI 兼容阶梯
                 // (含裸 base 的 /v1 回退),保持「不再是 Ollama / 空列表」
                 // 的既有语义。
-                None => match ollama_native_failure(base_url, api_key).await {
+                None => match ollama_native_failure(base_url, api_key, request_timeout).await {
                     Some(terminal) => terminal,
                     None => ladder_openai_local(base_url, api_key, request_timeout).await,
                 },
@@ -242,8 +264,15 @@ async fn probe_endpoint_models_with_timeout(
     // 目录补全只在 Listed 时发生:endpoint 未报的字段用本地目录补 `Catalog`
     // 来源;endpoint 自报的值在 RawModel → DiscoveredModel 时已标 `Endpoint`,
     // 绝不被覆盖。非 Listed 时模型列表恒空(错误状态不带半截数据)。
+    // GGUF 文件族 lane 的豁免见上方 catalog_fill_skipped 注释(round-3 审 M1)。
     let models = match status {
-        ListingStatus::Listed => raw_models.into_iter().map(fill_from_catalog).collect(),
+        ListingStatus::Listed if !catalog_fill_skipped => {
+            raw_models.into_iter().map(fill_from_catalog).collect()
+        }
+        ListingStatus::Listed => raw_models
+            .into_iter()
+            .map(RawModel::endpoint_sourced)
+            .collect(),
         _ => Vec::new(),
     };
     EndpointModelsListing {
@@ -335,8 +364,12 @@ enum ProbeOutcome {
 /// 传输失败 → 稳定类别词。顺序照搬 monitor 的 transport_class:DNS 检查
 /// 必须先于 connect(hyper-util 把解析器失败也归入 Connect kind)。TLS 用
 /// 与连接测试 `transport_code_for` 同源的裸文本启发式
-/// ([`raw_error_looks_like_tls`])补 "tls" 类别——结构化标志 Answer 之后的
-/// 兜底文本臂,证书校验失败不再误落 network。
+/// ([`raw_error_looks_like_tls`])补 "tls" 类别——但只扫 error source 链的
+/// 内层文本,不扫顶层 `to_string()`:reqwest 顶层 Display 内嵌完整 URL,
+/// 主机名恰好含 tls/ssl/certificate 时会把无关失败误判成 tls(URL 偏置,
+/// `transport_code_for` 自己的文档警告过);证书事实在 rustls/hyper 的
+/// 内层错误里(round-3 审 minor:真证书失败只落 connect/network,而 URL
+/// 含敏感词的残余错误反而误报 tls——同臂换源后两者都收敛)。
 fn transport_class(err: &reqwest::Error) -> &'static str {
     if err.is_timeout() {
         "timeout"
@@ -344,7 +377,7 @@ fn transport_class(err: &reqwest::Error) -> &'static str {
         "dns"
     } else if err.is_connect() {
         "connect"
-    } else if raw_error_looks_like_tls(&err.to_string()) {
+    } else if error_chain_looks_like_tls(err) {
         "tls"
     } else {
         "network"
@@ -439,7 +472,14 @@ enum Terminal {
 
 fn terminal_from_outcome(outcome: ProbeOutcome) -> Terminal {
     match outcome {
-        ProbeOutcome::Body(_) => unreachable!("send_classified 的 Body 由各协议解析分支消费"),
+        // send_classified 的 Body 由各协议解析分支消费——今天没有调用方能
+        // 把 Body 递进来(四个 call site 全部先 match Body)。防御臂收口成
+        // network 而非 unreachable!:未来调用方把形状解析外的 Body 委托
+        // 过来时,面板不该 panic(round-3 审 minor),错分类比进程崩溃可收。
+        ProbeOutcome::Body(_) => Terminal::Error {
+            http: None,
+            transport: Some("network"),
+        },
         ProbeOutcome::Auth(http) => Terminal::Auth(http),
         ProbeOutcome::Unsupported(http) => Terminal::Unsupported(Some(http)),
         ProbeOutcome::HttpError(http) => Terminal::Error {
@@ -636,8 +676,10 @@ pub(crate) fn gemini_entry_facts(item: &Value) -> Option<NativeEntryFacts> {
 
 /// Anthropic 列表页解析:`max_input_tokens` → context、`max_tokens` →
 /// output、`display_name` → title;翻页游标 `has_more` + 末条 `id`
-/// (作为下一请求的 `after_id`)。
-fn parse_anthropic_page(v: &Value) -> Option<(Vec<RawModel>, bool, Option<String>)> {
+/// (作为下一请求的 `after_id`)。`has_more` 缺失/非布尔 → `None`:畸形
+/// 应答不能静默当作完整列表(round-3 审 minor:旧 `unwrap_or(false)` 把
+/// 坏应答收成「无截断的完整列表」,与缺游标处的截断口径不一致)。
+fn parse_anthropic_page(v: &Value) -> Option<(Vec<RawModel>, Option<bool>, Option<String>)> {
     let entries = v.get("data")?.as_array()?;
     let models = entries
         .iter()
@@ -651,7 +693,7 @@ fn parse_anthropic_page(v: &Value) -> Option<(Vec<RawModel>, bool, Option<String
             })
         })
         .collect::<Vec<_>>();
-    let has_more = v.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+    let has_more = v.get("has_more").and_then(Value::as_bool);
     let after_id = entries
         .last()
         .and_then(|item| item.get("id"))
@@ -700,13 +742,20 @@ async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Durati
             ProbeOutcome::Body(v) => match parse_anthropic_page(&v) {
                 Some((models, has_more, next_after)) => {
                     all.extend(models);
-                    if !has_more {
-                        return finish_native_listing(all, false);
-                    }
-                    // has_more 但拿不到游标(末条缺 id):无法续页,按截断收尾。
-                    match next_after {
-                        Some(id) => after_id = Some(id),
+                    match has_more {
+                        // 明确「无下一页」:完整列表。
+                        Some(false) => return finish_native_listing(all, false),
+                        // 缺失/非布尔(round-3 审 minor):无法确认没有下一页,
+                        // 但也不再盲发一页——按截断收尾(与缺游标同口径),
+                        // 绝不静默当作完整列表。
                         None => return finish_native_listing(all, true),
+                        Some(true) => {
+                            // has_more 但拿不到游标(末条缺 id):无法续页,按截断收尾。
+                            match next_after {
+                                Some(id) => after_id = Some(id),
+                                None => return finish_native_listing(all, true),
+                            }
+                        }
                     }
                 }
                 None => return Terminal::Unsupported(Some(200)),
@@ -731,7 +780,10 @@ fn gemini_native_root(base_url: &str) -> String {
 }
 
 /// Gemini 列表页解析:`supportedGenerationMethods` 含 `generateContent`
-/// 的条目才保留(embedding / 纯补全类剔除);`name` 的 `models/` 前缀剥掉;
+/// 的条目才保留(embedding / 纯补全类剔除);**字段缺席的条目按可列入
+/// 处理**(round-3 审 minor:官方形态恒带该字段,第三方网关省略时静默
+/// 剔到 0 行会把「网关有模型」误报成「端点没模型」——宁可多列一行也不
+/// 丢真实存在的条目);`name` 的 `models/` 前缀剥掉;
 /// `inputTokenLimit` → context、`outputTokenLimit` → output、
 /// `displayName` → title;翻页游标 `nextPageToken`。
 fn parse_gemini_page(v: &Value) -> Option<(Vec<RawModel>, Option<String>)> {
@@ -739,16 +791,18 @@ fn parse_gemini_page(v: &Value) -> Option<(Vec<RawModel>, Option<String>)> {
     let models = entries
         .iter()
         .filter_map(|item| {
-            let generates = item
+            let generates = match item
                 .get("supportedGenerationMethods")
                 .and_then(Value::as_array)
-                .is_some_and(|methods| {
-                    methods.iter().any(|method| {
-                        method
-                            .as_str()
-                            .is_some_and(|s| s.eq_ignore_ascii_case("generateContent"))
-                    })
-                });
+            {
+                Some(methods) => methods.iter().any(|method| {
+                    method
+                        .as_str()
+                        .is_some_and(|s| s.eq_ignore_ascii_case("generateContent"))
+                }),
+                // 字段缺席(非数组同理):无过滤依据,不剔除。
+                None => true,
+            };
             if !generates {
                 return None;
             }
@@ -826,13 +880,17 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
 ///   OpenAI 兼容阶梯把可重试的「服务端正忙」钉成 Unsupported(404);
 /// - tags 合形应答(200,含空列表)或 404/405 → `None`,回落阶梯保持既有
 ///   语义(空列表不是失败;404 = kind 缓存过期、服务已不是 Ollama)。
-async fn ollama_native_failure(base_url: &str, api_key: Option<&str>) -> Option<Terminal> {
+async fn ollama_native_failure(
+    base_url: &str,
+    api_key: Option<&str>,
+    request_timeout: Duration,
+) -> Option<Terminal> {
     let Some(client) = discovery_client() else {
         return None;
     };
     let host = strip_v1_suffix(base_url)?;
     let request = apply_bearer(client.get(format!("{host}/api/tags")), api_key);
-    match send_classified(request, REQUEST_TIMEOUT).await {
+    match send_classified(request, request_timeout).await {
         ProbeOutcome::Body(_) | ProbeOutcome::Unsupported(_) => None,
         outcome => Some(terminal_from_outcome(outcome)),
     }
@@ -904,6 +962,9 @@ async fn lmstudio_discovered(base_url: &str) -> Option<Vec<RawModel>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 只在测试里用:transport_class 本体已改走 source 链版
+    // (error_chain_looks_like_tls),关键词表本身仍是单测对象。
+    use crate::core::model_endpoint::raw_error_looks_like_tls;
     use crate::core::model_endpoint::{clear_ollama_show_cache, models_mock};
 
     const SHORT_TIMEOUT: Duration = Duration::from_millis(500);
@@ -1218,6 +1279,89 @@ mod tests {
         );
     }
 
+    /// round-3 审 M1 钉:目录补全只属于远端阶梯——本地 lane(Ollama)的
+    /// 条目即使 id 命中目录(kimi-k3 → 1M),未报字段也保持 None。目录行
+    /// 是云端 API 的事实,对本地 GGUF 是高报方向的错误事实(仓库不变量
+    /// 「高报会让上游截断」)。旧实现(对所有 Listed 无差别补全)下本测
+    /// 试红:kimi-k3 会被补成 1_048_576。
+    #[tokio::test]
+    async fn local_lane_skips_catalog_completion() {
+        clear_ollama_show_cache();
+        let mock = models_mock::spawn_seq(&[
+            ("/api/ps", 200, vec![r#"{"models":[]}"#.into()]),
+            (
+                "/api/tags",
+                200,
+                // kimi-k3:目录精确命中(云端 1M);kimi-k3-local:前缀+`-`
+                // 容忍同样命中。两条都无 num_ctx 声明——本地窗口事实只能
+                // 来自 /api/ps 生效值与 /api/show 的 num_ctx,报不出就留空。
+                vec![r#"{"models":[{"name":"kimi-k3"},{"name":"kimi-k3-local"}]}"#.into()],
+            ),
+            // show 无声明:两个条目都不补窗口。
+            (
+                "/api/show",
+                200,
+                vec![
+                    r#"{"model_info":{"qwen3.context_length":40960}}"#.into(),
+                    r#"{"model_info":{"qwen3.context_length":40960}}"#.into(),
+                ],
+            ),
+        ]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::OpenAiCompatible).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.server_kind.as_deref(), Some("ollama"));
+        let kimi = model_of(&listing, "kimi-k3");
+        assert_eq!(
+            kimi.context_window_tokens, None,
+            "本地 lane 不做目录补全:目录值是云端事实,对 GGUF 是高报"
+        );
+        assert_eq!(kimi.context_from, None);
+        let local = model_of(&listing, "kimi-k3-local");
+        assert_eq!(local.context_window_tokens, None);
+        assert_eq!(local.context_from, None);
+    }
+
+    /// round-3 审 minor 钉:`has_more` 缺失/非布尔 → 截断收尾,不再静默
+    /// 当作完整列表;且不再盲发一页(1 次命中)。旧实现(unwrap_or(false))
+    /// 下本测试红:truncated 为 false。
+    #[tokio::test]
+    async fn anthropic_malformed_has_more_ends_truncated() {
+        let mock = models_mock::spawn(&[(
+            "/v1/models",
+            200,
+            r#"{"data":[{"id":"claude-a","max_input_tokens":200000}],"has_more":"yes"}"#.into(),
+        )]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::Anthropic).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert!(
+            listing.truncated,
+            "畸形 has_more 不能收成「无截断的完整列表」"
+        );
+        assert_eq!(mock.hits_for("/v1/models"), 1, "不再盲发后续页");
+    }
+
+    /// round-3 审 minor 钉:条目缺 `supportedGenerationMethods` 按可列入
+    /// 处理——第三方网关省略字段时不再被静默剔到 0 行;显式不带
+    /// generateContent 的条目(embedding)照旧过滤。
+    #[tokio::test]
+    async fn gemini_entry_missing_generation_methods_is_included() {
+        let mock = models_mock::spawn(&[(
+            "/v1beta/models",
+            200,
+            r#"{"models":[
+                    {"name":"models/gateway-pro","inputTokenLimit":960000},
+                    {"name":"models/gateway-embed",
+                     "supportedGenerationMethods":["embeddingContent"]}
+                ]}"#
+            .into(),
+        )]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::Gemini).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 1, "缺字段条目保留,embedding 条目过滤");
+        let kept = model_of(&listing, "gateway-pro");
+        assert_endpoint(kept, Some(960_000), None);
+    }
+
     #[tokio::test]
     async fn ollama_chain_ps_tags_and_show() {
         // show 补查走 60s 共享缓存;测试间端口可能复用,先清缓存防串扰。
@@ -1525,6 +1669,71 @@ mod tests {
         assert!(!raw_error_looks_like_tls("connection refused"));
         assert!(!raw_error_looks_like_tls("operation was canceled"));
         assert!(!raw_error_looks_like_tls(""));
+    }
+
+    /// round-3 审 minor 钉:tls 臂走 **source 链**的 [`crate::core::
+    /// model_endpoint::error_chain_looks_like_tls`],顶层 URL 文本不参与——
+    /// 合成 error 链验证:内层 rustls 文本命中、顶层含 tls 字样的 URL 不再
+    /// 误报(旧实现扫 `err.to_string()`,主机名含 ssl 的失败会被判 tls)。
+    #[test]
+    fn tls_class_walks_source_chain_not_top_level_display() {
+        use crate::core::model_endpoint::error_chain_looks_like_tls;
+
+        #[derive(Debug)]
+        struct Wrapper(&'static str);
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Wrapper {}
+
+        #[derive(Debug)]
+        struct Chained {
+            display: &'static str,
+            source: Wrapper,
+        }
+        impl std::fmt::Display for Chained {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.display)
+            }
+        }
+        impl std::error::Error for Chained {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.source)
+            }
+        }
+
+        // 真实形态:顶层是 reqwest 的 "error sending request for url(...)"
+        // (URL 里带 ssl 字样),证书事实在内层 rustls 文本 → 命中。
+        let real_tls = Chained {
+            display: "error sending request for url (https://ba-ssl-gw.example.com/v1/models)",
+            source: Wrapper("certificate verify failed: self-signed certificate"),
+        };
+        assert!(error_chain_looks_like_tls(&real_tls));
+        // URL 偏置形态:内层无证书事实,只有顶层 URL 带 ssl 字样 → 不误报。
+        let biased = Chained {
+            display: "error sending request for url (https://ba-ssl-gw.example.com/v1/models)",
+            source: Wrapper("operation was canceled"),
+        };
+        assert!(!error_chain_looks_like_tls(&biased));
+        // 深链:io::Error → Chained → Wrapper 两层 source,孙子层命中同样算数。
+        let layered = std::io::Error::new(
+            std::io::ErrorKind::Other,
+            Chained {
+                display: "request failed",
+                source: Wrapper("SSL routines::wrong version number"),
+            },
+        );
+        assert!(error_chain_looks_like_tls(&layered));
+        let layered_clean = std::io::Error::new(
+            std::io::ErrorKind::Other,
+            Chained {
+                display: "request failed",
+                source: Wrapper("connection reset by peer"),
+            },
+        );
+        assert!(!error_chain_looks_like_tls(&layered_clean));
     }
 
     #[tokio::test]

@@ -13,6 +13,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+use crate::core::endpoint_discovery::read_json_body_bounded;
+
 /// 探测结果 TTL 缓存：同一 base_url 的本地服务类型在短时间内不会变化。
 /// Probes are issued in parallel via `tokio::join!` (all requests share a 3s
 /// timeout; a hung endpoint costs ~3s at worst). Repeated probes across
@@ -105,6 +107,14 @@ pub(crate) fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> 
     direct.chain(top_provider).min()
 }
 
+/// 通用探测/列表读取的限长上限:8 MiB,与发现阶梯的
+/// `LISTING_BODY_CAP_BYTES` 同一量级。超时只约束时间,敌意环回端点可在
+/// 时限内推流数 GB,而 serde_json Value 树的内存放大 ~30-40 倍——本模块的
+/// 探测读取(round-3 审 minor)统一走
+/// [`crate::core::endpoint_discovery::read_json_body_bounded`] 的同一 chunk
+/// 循环,超限 body 解析失败按「探测未命中」折叠(与 json() 错误同路)。
+const PROBE_JSON_BODY_CAP_BYTES: usize = 8 * 1024 * 1024;
+
 /// 通用 OpenAI 兼容 `/models` 探测。探测地址与云端 probe / 连接测试同一口径
 /// （`models_probe_url`）：upstream 不带 `/v1` 也不补——glm `/paas/v4`、火山方舟
 /// `/api/v3`、gemini `/v1beta/openai` 的 `/models` 端点均存在，补 `/v1` 会拼成
@@ -116,14 +126,16 @@ pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
     // Same consistency hardening as fetch_v1_models: gateway probes carry the
     // session-affinity header (feature-label key); no-op off-gateway. All
     // current callers are loopback-only, so this is latent-gap hardening.
-    let resp = with_opencode_session_header(client.get(url), base_url, "models-probe")
+    let mut resp = with_opencode_session_header(client.get(url), base_url, "models-probe")
         .send()
         .await
         .ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    let v = resp.json::<serde_json::Value>().await.ok()?;
+    let v = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()?;
     Some(OpenAiModelsProbe {
         models: parse_models_response_list(v)?,
     })
@@ -456,7 +468,7 @@ pub(crate) async fn probe_ollama_show_context(
     let probe = async {
         let host = strip_v1_suffix(base_url)?;
         let client = shared_probe_client()?;
-        let resp = apply_bearer(client.post(format!("{host}/api/show")), bearer)
+        let mut resp = apply_bearer(client.post(format!("{host}/api/show")), bearer)
             .json(&serde_json::json!({ "model": model }))
             .send()
             .await
@@ -469,7 +481,9 @@ pub(crate) async fn probe_ollama_show_context(
         if !resp.status().is_success() {
             return None;
         }
-        let v = resp.json::<serde_json::Value>().await.ok()?;
+        let v = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+            .await
+            .ok()?;
         Some(parse_ollama_show_context(v))
     };
     match probe.await {
@@ -831,6 +845,25 @@ pub fn model_probe_http_code(status: reqwest::StatusCode) -> &'static str {
 pub(crate) fn raw_error_looks_like_tls(raw: &str) -> bool {
     let lower = raw.to_lowercase();
     lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl")
+}
+
+/// TLS 事实探测的 source 链版:**跳过顶层 Display,只扫 error source 链的
+/// 内层文本**。reqwest 顶层 Display 内嵌完整请求 URL,主机名/路径恰好含
+/// tls/ssl/certificate 的无关失败会命中关键字造成 URL 偏置误判
+/// (`transport_code_for` 的文档警告过同一偏置);证书事实只在 rustls /
+/// hyper 的内层错误文本里("certificate verify failed" 等)。发现阶梯的
+/// `transport_class` 与 CLI 的同臂共用这一份(单一事实源),合成 error
+/// 链即可单测——reqwest::Error 没有公开构造器,链走 `std::error::Error
+/// ::source`,与具体错误类型解耦。`pub`:CLI crate 经 lib 面引用同一份。
+pub fn error_chain_looks_like_tls(error: &(dyn std::error::Error + '_)) -> bool {
+    let mut source = error.source();
+    while let Some(err) = source {
+        if raw_error_looks_like_tls(&err.to_string()) {
+            return true;
+        }
+        source = err.source();
+    }
+    false
 }
 
 pub fn transport_code_for(
@@ -1310,12 +1343,14 @@ async fn probe_local_server_kind_uncached(base_url: &str, bearer: Option<&str>) 
 async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
     let client = shared_probe_client()?;
-    let resp = apply_bearer(client.get(format!("{host}/api/v0/models")), bearer)
+    let mut resp = apply_bearer(client.get(format!("{host}/api/v0/models")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
         .ok()?;
-    let v = resp.json::<serde_json::Value>().await.ok()?;
+    let v = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()?;
     Some(OpenAiModelsProbe {
         models: parse_lmstudio_v0_models(&v)?,
     })
@@ -1367,21 +1402,23 @@ pub(crate) async fn fetch_v1_models(
     // (401/403) are not helped by switching paths, and timeouts/connection
     // refusals mean the host is unreachable — neither is retried,
     // conservatively falling back to no facts.
-    let resp = match (resp.status().as_u16(), fallback) {
+    let mut resp = match (resp.status().as_u16(), fallback) {
         (200..=299, _) => resp,
         (404 | 405, Some(url)) => {
-            let resp = attach(apply_bearer(client.get(url), bearer))
+            let fallback_resp = attach(apply_bearer(client.get(url), bearer))
                 .send()
                 .await
                 .ok()?;
-            if !resp.status().is_success() {
+            if !fallback_resp.status().is_success() {
                 return None;
             }
-            resp
+            fallback_resp
         }
         _ => return None,
     };
-    resp.json::<serde_json::Value>().await.ok()
+    read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()
 }
 
 /// `/api/tags` 取数单一来源：GET（带可选 Bearer）→ 200 → 解析模型名列表；
@@ -1393,12 +1430,14 @@ async fn fetch_ollama_tag_names(
     host: &str,
     bearer: Option<&str>,
 ) -> Option<Vec<String>> {
-    let resp = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
+    let mut resp = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
         .ok()?;
-    let value = resp.json::<serde_json::Value>().await.ok()?;
+    let value = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()?;
     Some(parse_ollama_tag_names(value))
 }
 
