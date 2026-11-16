@@ -4588,7 +4588,7 @@
   // web+tauriKnowledgeModel 共享
   async function downloadKbModel(repair) {
     if (state.kbModelSetup.downloading) return state.kbModelSetup.status;
-    state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, progress: { stage: "start" } });
+    state.kbModelSetup = Object.assign({}, state.kbModelSetup, { downloading: true, error: null, cancelled: false, progress: { stage: "start" } });
     notify();
     try {
       const st = await invoke("kb_model_download", { repair: !!repair });
@@ -4598,17 +4598,23 @@
         startupReady: st && typeof st.ready === "boolean" ? st.ready : true,
         status: st,
         progress: { stage: "done" },
+        cancelled: false,
       });
       notify();
       return st;
     } catch (e) {
+      // 用户取消（后端哨兵 "cancelled"，见 pinvou-knowledge CANCELLED）不是失败：
+      // 记为中性 cancelled 态而非红色 error，下次下载启动时清除。
+      const message = String(e);
+      const cancelled = message === "cancelled";
       const failedStatus = await invoke("kb_model_status").catch(function () { return null; });
       state.kbModelSetup = Object.assign({}, state.kbModelSetup, {
         downloading: false,
         startupLoading: false,
         startupReady: failedStatus && typeof failedStatus.ready === "boolean" ? failedStatus.ready : false,
         status: failedStatus || state.kbModelSetup.status,
-        error: String(e),
+        error: cancelled ? null : message,
+        cancelled,
       });
       notify();
       throw e;
@@ -4616,11 +4622,12 @@
   }
 
   // tauriKnowledgeModel 共享: 取消进行中的模型下载(后端在下一个数据块/
-  // 校验边界生效)。web facade 在 platform/web/bridge.js 直连同一条命令;
-  // web 宿主的 access-policy 未放行 kb_model_cancel 时静默失败(同
-  // checkDependencies 的 policy-denied 约定)。
+  // 校验边界或复查/加载前的安装边界生效)。web facade 在 platform/web/bridge.js
+  // 直连同一条命令;web 宿主的 access-policy 未放行 kb_model_cancel 时静默失败
+  // (同 checkDependencies 的 policy-denied 约定)。返回永不 reject 的 promise
+  // (两 lane 等待语义一致);取消是否生效以 downloadKbModel 的 cancelled 态为准。
   function cancelKbModel() {
-    invoke("kb_model_cancel").catch(function () {});
+    return invoke("kb_model_cancel").catch(function () {});
   }
 
   // web+tauriVoice 共享
