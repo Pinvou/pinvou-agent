@@ -4822,6 +4822,8 @@ async function getImageInputCapability(...args) { return pinvouSharedweb().getIm
 async function loadModels() { return pinvouSharedweb().loadModels(); }
   // model 对象字段须是 snake_case(SavedModel serde):
   // {id,name,preset,context_window_tokens,max_output_tokens,reasoning_effort,model,base_url,api_key,credential_action,provider_kind,vendor,endpoint_mode,auth_mode,image_capability_override,vision_model_id,alias}
+  // （round-7 review：这 17 个是保存载荷的字段集——credential_ref /
+  // credential_state / has_secret 由后端按 credential_action 派生，前端不发送。）
  async function saveModel(model) {
    await invoke("save_model", { model });
    await loadModels();
