@@ -34,6 +34,19 @@ const tauriBridge = readFileSync(
   path.join(appRoot, 'src/platform/tauri/bridge.js'),
   'utf8',
 );
+// 跨语言哨兵钉：从 Rust 侧提取 CANCELLED 常量字节，再让本文件的 mock 用
+// 「提取值」拒绝（而非硬编码字面量）。Rust 单侧改名 → mock 拒绝新值而 JS
+// 映射仍比对旧字面量 → cancelled 断言红；JS 单侧改名同理。两侧协同改名
+// 则必须连 pinvoy-knowledge 的 Rust 字节钉一起修改，属有意的契约变更。
+const kbCancelledSentinel = (() => {
+  const coreSource = readFileSync(
+    path.join(appRoot, '..', 'pinvou-knowledge', 'src', 'model_download.rs'),
+    'utf8',
+  );
+  const match = coreSource.match(/pub const CANCELLED: &str = "([^"]+)"/u);
+  assert.ok(match, 'pinvou-knowledge must declare the CANCELLED sentinel const');
+  return match[1];
+})();
 
 test('authoritative model status replaces the stale startup snapshot', () => {
   const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
@@ -131,7 +144,7 @@ test('cancelled model downloads settle as neutral state and cancel returns a pro
       // tauri 对 Result<_, String> 以原始字符串拒绝，不是 Error 对象——
       // 仿真这一拒绝形态正是本钉的目的，故豁免 reject-errors 规则。
       // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
-      if (command === 'kb_model_download') return Promise.reject('cancelled');
+      if (command === 'kb_model_download') return Promise.reject(kbCancelledSentinel);
       // 取消命令本身也拒绝（web/旧后端的 policy-denial 形态）：cancelKbModel
       // 必须吞掉并 resolve，"永不 reject" 在拒绝式 mock 下才有牙。
       // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
@@ -142,11 +155,11 @@ test('cancelled model downloads settle as neutral state and cancel returns a pro
     listen() {},
   });
 
-  // 用户取消（后端哨兵 "cancelled"）不是失败：记为中性 cancelled 态而非红色
-  // error，downloading 复位，拒绝仍原样上抛给调用方。
+  // 用户取消（后端哨兵 = 从 Rust 源提取的 CANCELLED 字节）不是失败：记为
+  // 中性 cancelled 态而非红色 error，downloading 复位，拒绝仍原样上抛给调用方。
   await assert.rejects(
     () => feature.downloadKbModel(false),
-    (error) => String(error) === 'cancelled',
+    (error) => String(error) === kbCancelledSentinel,
   );
   assert.equal(state.kbModelSetup.cancelled, true);
   assert.equal(state.kbModelSetup.error, null);
