@@ -128,7 +128,10 @@ test('cancelled model downloads settle as neutral state and cancel returns a pro
     state,
     notify() {},
     invoke: async (command) => {
-      if (command === 'kb_model_download') throw 'cancelled';
+      // tauri 对 Result<_, String> 以原始字符串拒绝，不是 Error 对象——
+      // 仿真这一拒绝形态正是本钉的目的，故豁免 reject-errors 规则。
+      // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
+      if (command === 'kb_model_download') return Promise.reject('cancelled');
       if (command === 'kb_model_status') return { installed: true, ready: false, loading: false };
       return null;
     },
@@ -151,7 +154,8 @@ test('cancelled model downloads settle as neutral state and cancel returns a pro
     state,
     notify() {},
     invoke: async (command) => {
-      if (command === 'kb_model_download') throw '网络错误';
+      // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
+      if (command === 'kb_model_download') return Promise.reject('网络错误');
       if (command === 'kb_model_status') return null;
       return null;
     },
