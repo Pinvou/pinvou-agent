@@ -778,7 +778,7 @@ impl Store {
                 tx.prepare_cached("DELETE FROM files WHERE path >= ?1 AND path < ?2")?;
             for p_raw in paths {
                 let p = p_raw.trim_end_matches(|c| c == std::path::MAIN_SEPARATOR || c == '/');
-                if p.is_empty() || is_drive_root(p) {
+                if p.is_empty() || is_drive_root(p) || is_unc_share_root(p) {
                     continue;
                 }
                 // A row may be stored under the canonical spelling or the
@@ -971,13 +971,35 @@ fn escape_like(s: &str) -> String {
 /// check: on Unix a directory literally named `C:` is also skipped (legal
 /// name, ghosts until rescan) — accepted, the class is Windows-shaped and
 /// the alternative (Path::parent semantics) would make the guard
-/// platform-dependent. UNC share roots (`\\srv\share`, verbatim
-/// `\\?\UNC\srv\share`) are *not* covered here — same whole-index class,
-/// still unguarded, listed in the watcher's known limits.
+/// platform-dependent. UNC share roots are the same whole-index class;
+/// they get their own predicate ([`is_unc_share_root`]) with the same
+/// skip semantics.
 fn is_drive_root(p: &str) -> bool {
     let bare = p.strip_prefix(r"\\?\").unwrap_or(p).trim_end_matches('\\');
     let b = bare.as_bytes();
     b.len() == 2 && b[1] == b':' && b[0].is_ascii_alphabetic()
+}
+
+/// UNC share roots (`\\srv\share`, verbatim `\\?\UNC\srv\share`) are the
+/// same whole-index loss class as drive roots: one transient false NotFound
+/// for the root would range-delete every row under the share and set no
+/// rescan flag (review JensenChen28 2026-11-16 P2). Byte-based like
+/// [`is_drive_root`] (platform-independent, no `Path` semantics): exactly
+/// two non-empty components after the prefix — the share **root** only;
+/// deeper paths under the share delete normally, and drive-verbatim
+/// spellings (`\\?\C:\…`) do not match.
+pub(crate) fn is_unc_share_root(p: &str) -> bool {
+    let two_components = |tail: &str| -> bool {
+        let comps: Vec<&str> = tail.split('\\').filter(|c| !c.is_empty()).collect();
+        comps.len() == 2 && comps.iter().all(|c| !c.is_empty())
+    };
+    if let Some(tail) = p.strip_prefix(r"\\?\UNC\") {
+        return two_components(tail);
+    }
+    if let Some(tail) = p.strip_prefix(r"\\") {
+        return two_components(tail);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -2482,6 +2504,63 @@ mod tests {
             "the unrelated path in the same batch must still be deleted"
         );
         assert!(left.contains_key(&other));
+    }
+
+    /// UNC share roots (plain and verbatim) must be skipped like drive
+    /// roots: a transient false NotFound for the root during a share
+    /// disconnect would otherwise range-delete every row under the share
+    /// and set no rescan flag (review JensenChen28 2026-11-16 P2). The
+    /// deeper-path negative proves the guard protects the share ROOT only —
+    /// paths under the share delete normally. Root rows are seeded at the
+    /// EXACT spelling (no trailing separator) so the guard's teeth do not
+    /// depend on the platform MAIN_SEPARATOR arithmetic: on unix a
+    /// backslash-spelled root row sits outside the `with_sep` range, and
+    /// only the exact probe reaches it.
+    #[test]
+    fn delete_tree_skips_unc_share_root_spellings() {
+        let s = Store::open_in_memory().unwrap();
+        let plain_root = r"\\srv\share";
+        let plain_child = r"\\srv\share\notes.md";
+        let verbatim_root = r"\\?\UNC\srv\share";
+        let verbatim_child = r"\\?\UNC\srv\share\docs\a.md";
+        let other = sep_path(&["elsewhere", "doc.md"]);
+        s.upsert_many(&[
+            rec(plain_root, "", None, 0, 1),
+            rec(plain_child, "notes.md", Some("md"), 1, 1),
+            rec(verbatim_root, "", None, 0, 1),
+            rec(verbatim_child, "a.md", Some("md"), 1, 1),
+            rec(&other, "doc.md", Some("md"), 2, 2),
+        ])
+        .unwrap();
+
+        // Both root spellings must be skipped; the share-SUBTREE path and
+        // the unrelated path in the same batch prove the skip is per-path
+        // and root-anchored, not a dead call.
+        s.delete_tree(&[
+            plain_root.to_string(),
+            verbatim_root.to_string(),
+            plain_child.to_string(),
+            other.clone(),
+        ])
+        .unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(
+            left.contains_key(plain_root),
+            "the plain share-root row must survive"
+        );
+        assert!(
+            left.contains_key(verbatim_root),
+            "the verbatim share-root row must survive"
+        );
+        assert!(
+            !left.contains_key(plain_child),
+            "a path under the share must delete normally"
+        );
+        assert!(
+            !left.contains_key(&other),
+            "the unrelated path in the same batch must still be deleted"
+        );
     }
 
     /// `handle_event`'s delete-before-write order is load-bearing: if one

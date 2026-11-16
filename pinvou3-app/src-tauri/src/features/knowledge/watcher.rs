@@ -707,7 +707,25 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
             // subtree along (inotify will not deliver further events for the
             // moved subtree).
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                dels.push(path.to_string_lossy().into_owned());
+                // A UNC share root going NotFound is share loss (disconnect),
+                // not a deletion the user performed: keep every row under the
+                // share and treat it as a watch failure — loud warn plus an
+                // eager rescan request, the same notice class as a failed
+                // store write (review JensenChen28 2026-11-16 P2). Without
+                // this the store-level skip alone would silently wait for the
+                // lazy rescan while the share index looks intact.
+                let lossy = path.to_string_lossy();
+                if super::store::is_unc_share_root(
+                    lossy.trim_end_matches(|c| c == std::path::MAIN_SEPARATOR || c == '/'),
+                ) {
+                    request_rescan();
+                    warn_stderr!(
+                        "watched UNC share root {} went NotFound; keeping its rows and requesting a rescan",
+                        path.display()
+                    );
+                    continue;
+                }
+                dels.push(lossy.into_owned());
             }
             // Permission tightening / ESTALE jitter: do not delete — wrongly
             // deleting a record that still exists hurts more than missing one
