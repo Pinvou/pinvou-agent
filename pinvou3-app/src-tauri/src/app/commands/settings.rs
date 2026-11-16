@@ -967,7 +967,7 @@ pub async fn probe_model_connection(
     let req =
         crate::core::model_endpoint::with_opencode_session_header(req, base_url, "connection-test");
     match req.send().await {
-        Ok(resp) => {
+        Ok(mut resp) => {
             // 既有行为(状态阶梯、错误分类)原样保留;成功时额外做一次限长
             // body 读取,把命中条目的自报长度接进结果(§2.4)。
             let result = model_connection_http_result(resp.status());
@@ -975,9 +975,16 @@ pub async fn probe_model_connection(
                 return result;
             }
             let configured = configured_model_name(model_id);
-            let facts = match read_models_body_bounded(resp).await {
-                Some(body) => connection_model_facts(&body, listing_shape, configured.as_deref()),
-                None => None,
+            // 与发现列表共用 core 的限长读取器(minor-11:同一 chunk 循环、
+            // 各自上限;全部 Err 一律折叠为「无事实」,探测结果不受影响)。
+            let facts = match crate::core::endpoint_discovery::read_json_body_bounded(
+                &mut resp,
+                CONNECTION_MODELS_BODY_CAP_BYTES,
+            )
+            .await
+            {
+                Ok(value) => connection_model_facts(&value, listing_shape, configured.as_deref()),
+                Err(_) => None,
             };
             attach_connection_model_facts(result, facts)
         }
@@ -1019,45 +1026,27 @@ enum ModelsListingShape {
     Gemini,
 }
 
-/// 成功 body 的限长读取(与 `error_for_status_with_body` 的限长 chunk 循环
-/// 同款):到上限或流结束即停,响应其余部分随 drop 丢弃、绝不排干。模型
-/// 列表(2000 条量级)上限 4 MiB 足够;被截断的 body JSON 解析失败 →
-/// 无事实,探测结果不受影响。
+/// 成功 body 的限长上限:读取循环收敛在 core 的
+/// [`crate::core::endpoint_discovery::read_json_body_bounded`](minor-11,
+/// 与发现列表同一读法、各自 cap 常量)。模型列表(2000 条量级)上限
+/// 4 MiB 足够;被截断的 body JSON 解析失败 → 无事实,探测结果不受影响。
 const CONNECTION_MODELS_BODY_CAP_BYTES: usize = 4 * 1024 * 1024;
 
-async fn read_models_body_bounded(mut resp: reqwest::Response) -> Option<String> {
-    let mut buf: Vec<u8> = Vec::new();
-    while buf.len() < CONNECTION_MODELS_BODY_CAP_BYTES {
-        match resp.chunk().await {
-            Ok(Some(chunk)) => {
-                let take = chunk
-                    .len()
-                    .min(CONNECTION_MODELS_BODY_CAP_BYTES - buf.len());
-                buf.extend_from_slice(&chunk[..take]);
-            }
-            Ok(None) | Err(_) => break,
-        }
-    }
-    if buf.is_empty() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&buf).into_owned())
-}
-
-/// 连接测试的事实解析(§2.4,纯函数):按形态取条目列表,再按 monitor
-/// `parse_models_response` 的匹配语义找配置模型自己的条目——精确 id →
-/// ASCII 大小写不敏感 → ollama `:latest` 规范形;未命中不填。OpenAI 形态
-/// 直接复用 [`crate::core::model_endpoint::parse_models_response_list`]
-/// (窗口 + 三形态输出上限的既有口径);anthropic / gemini 原生形态复用
-/// [`crate::core::endpoint_discovery`] 的共享单条目解析(字段名知识只此
-/// 一份,与发现翻页同源)。刻意差异:发现侧 gemini 列表页按
-/// `generateContent` 过滤条目,富化不过滤——配置了哪个条目就匹配哪个。
+/// 连接测试的事实解析(§2.4,纯函数):body 已由共享限长读取器解析为
+/// JSON(`Err` 折叠为「无事实」,不进这里),按形态取条目列表,再按
+/// monitor `parse_models_response` 的匹配语义找配置模型自己的条目——
+/// 精确 id → ASCII 大小写不敏感 → ollama `:latest` 规范形;未命中不填。
+/// OpenAI 形态直接复用 [`crate::core::model_endpoint::
+/// parse_models_response_list`](窗口 + 三形态输出上限的既有口径);
+/// anthropic / gemini 原生形态复用 [`crate::core::endpoint_discovery`]
+/// 的共享单条目解析(字段名知识只此一份,与发现翻页同源)。刻意差异:
+/// 发现侧 gemini 列表页按 `generateContent` 过滤条目,富化不过滤——
+/// 配置了哪个条目就匹配哪个。
 fn connection_model_facts(
-    body: &str,
+    value: &serde_json::Value,
     shape: ModelsListingShape,
     configured: Option<&str>,
 ) -> Option<MatchedModelFacts> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let configured = configured.map(str::trim).filter(|name| !name.is_empty())?;
     let entries: Vec<(String, Option<u32>, Option<u32>)> = match shape {
         ModelsListingShape::OpenAi => {
@@ -3032,38 +3021,40 @@ mod tests {
             {"id":"Qwen3-32B","max_model_len":40960,"max_completion_tokens":8192},
             {"id":"ollama-served:latest"}
         ]}"#;
+        let value = serde_json::from_str::<serde_json::Value>(body).unwrap();
         // 精确 id 命中。
-        let facts = connection_model_facts(body, ModelsListingShape::OpenAi, Some("qwen3-32b"));
+        let facts = connection_model_facts(&value, ModelsListingShape::OpenAi, Some("qwen3-32b"));
         let facts = facts.expect("case-insensitive fold must hit the entry");
         assert_eq!(facts.context_window_tokens, Some(40_960));
         assert_eq!(facts.max_output_tokens, Some(8_192));
         // ollama 裸名配置 → `name:latest` 规范形命中列表里的规范形条目
         // (Ollama 原生列表的真实形态;条目无长度字段 → 双 None)。
-        let facts = connection_model_facts(body, ModelsListingShape::OpenAi, Some("ollama-served"))
-            .expect("ollama canonical fold must hit the entry");
+        let facts =
+            connection_model_facts(&value, ModelsListingShape::OpenAi, Some("ollama-served"))
+                .expect("ollama canonical fold must hit the entry");
         assert_eq!(facts.context_window_tokens, None);
         assert_eq!(facts.max_output_tokens, None);
     }
 
-    /// 未命中/空名/坏 body → 四字段不填(None):窗口绝不跨条目借用。
+    /// 未命中/空名/不合形状 → 四字段不填(None):窗口绝不跨条目借用。
+    /// 非 JSON body(Cloudflare HTML 盾页)在共享限长读取器处就 `Err`
+    /// 折叠为无事实(minor-11),不再进本函数。
     #[test]
     fn connection_facts_stay_absent_on_miss_or_unusable_input() {
         let body = r#"{"data":[{"id":"qwen3-32b","max_model_len":40960}]}"#;
+        let value = serde_json::from_str::<serde_json::Value>(body).unwrap();
         // 配置名不在列表里:不得借用首条目的窗口。
-        assert!(connection_model_facts(body, ModelsListingShape::OpenAi, Some("gone")).is_none());
+        assert!(connection_model_facts(&value, ModelsListingShape::OpenAi, Some("gone")).is_none());
         // 空/纯空白配置名:直接不匹配。
-        assert!(connection_model_facts(body, ModelsListingShape::OpenAi, Some("   ")).is_none());
-        // 非 JSON body(Cloudflare HTML 盾页)与缺 data 键的形状:均无事实。
+        assert!(connection_model_facts(&value, ModelsListingShape::OpenAi, Some("   ")).is_none());
+        // 空数组(条目为空):无匹配 → 无事实。
         assert!(
             connection_model_facts(
-                "<html>no</html>",
+                &serde_json::Value::Array(Vec::new()),
                 ModelsListingShape::OpenAi,
                 Some("qwen3-32b")
             )
             .is_none()
-        );
-        assert!(
-            connection_model_facts("[]", ModelsListingShape::OpenAi, Some("qwen3-32b")).is_none()
         );
         // configured_model_name:未知 id 与 None 都不解析出名字。
         assert_eq!(configured_model_name(None), None);
@@ -3081,21 +3072,27 @@ mod tests {
     /// inputTokenLimit/outputTokenLimit(含 models/ 前缀剥离)。
     #[test]
     fn connection_facts_parse_anthropic_and_gemini_native_shapes() {
-        let anthropic = r#"{"data":[
+        let anthropic = serde_json::from_str::<serde_json::Value>(
+            r#"{"data":[
             {"id":"claude-x","display_name":"Claude X",
              "max_input_tokens":200000,"max_tokens":8192}
-        ]}"#;
+        ]}"#,
+        )
+        .unwrap();
         let facts =
-            connection_model_facts(anthropic, ModelsListingShape::Anthropic, Some("claude-x"))
+            connection_model_facts(&anthropic, ModelsListingShape::Anthropic, Some("claude-x"))
                 .expect("anthropic shape must hit");
         assert_eq!(facts.context_window_tokens, Some(200_000));
         assert_eq!(facts.max_output_tokens, Some(8_192));
 
-        let gemini = r#"{"models":[
+        let gemini = serde_json::from_str::<serde_json::Value>(
+            r#"{"models":[
             {"name":"models/gemini-pro","displayName":"Gemini Pro",
              "inputTokenLimit":1000000,"outputTokenLimit":8192}
-        ]}"#;
-        let facts = connection_model_facts(gemini, ModelsListingShape::Gemini, Some("gemini-pro"))
+        ]}"#,
+        )
+        .unwrap();
+        let facts = connection_model_facts(&gemini, ModelsListingShape::Gemini, Some("gemini-pro"))
             .expect("gemini shape must hit");
         assert_eq!(facts.context_window_tokens, Some(1_000_000));
         assert_eq!(facts.max_output_tokens, Some(8_192));

@@ -370,7 +370,7 @@ async fn send_classified(request: reqwest::RequestBuilder, timeout: Duration) ->
         code if code >= 400 => return ProbeOutcome::HttpError(code),
         _ => {}
     }
-    match read_json_body_bounded(&mut resp).await {
+    match read_json_body_bounded(&mut resp, LISTING_BODY_CAP_BYTES).await {
         Ok(v) => ProbeOutcome::Body(v),
         // 2xx 但非 JSON / 截断(Cloudflare HTML 盾页、超大恶意列表等):
         // 端点没有可解析的列表。
@@ -393,18 +393,26 @@ const LISTING_BODY_CAP_BYTES: usize = 8 * 1024 * 1024;
 /// 断流(收口 BrokenBody → Error/network)与中途超时(收口 Transport
 /// timeout——同样可重试,但前端按超时给提示,而不是泛化的 http_error)。
 /// 截断(到 cap 仍未读完)由「cap 处停读 → 解析失败」自然落进 `Unusable`。
-enum BodyReadFail {
+/// `pub(crate)`:settings 的连接测试富化复用同一读取器(全部 `Err` 一律
+/// 折叠为「无事实」,探测结果不受影响)。
+pub(crate) enum BodyReadFail {
     Unusable,
     MidStream,
     MidStreamTimeout,
 }
 
-async fn read_json_body_bounded(resp: &mut reqwest::Response) -> Result<Value, BodyReadFail> {
+/// 2xx JSON body 的限长 chunk 读取(cap 由调用方注入:发现列表用
+/// [`LISTING_BODY_CAP_BYTES`],连接测试富化用其 4 MiB 常量——同一读法、
+/// 各自上限,不再各写一份循环)。
+pub(crate) async fn read_json_body_bounded(
+    resp: &mut reqwest::Response,
+    cap: usize,
+) -> Result<Value, BodyReadFail> {
     let mut buf: Vec<u8> = Vec::new();
-    while buf.len() < LISTING_BODY_CAP_BYTES {
+    while buf.len() < cap {
         match resp.chunk().await {
             Ok(Some(chunk)) => {
-                let take = chunk.len().min(LISTING_BODY_CAP_BYTES - buf.len());
+                let take = chunk.len().min(cap - buf.len());
                 buf.extend_from_slice(&chunk[..take]);
             }
             Ok(None) => break,
