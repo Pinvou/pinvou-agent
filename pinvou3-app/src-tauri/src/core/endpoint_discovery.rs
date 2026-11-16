@@ -37,9 +37,9 @@ use serde_json::Value;
 use crate::core::model_context::{resolved_context_window, resolved_output_limit};
 use crate::core::model_endpoint::{
     LocalServerKind, apply_anthropic_auth_headers, apply_bearer, base_url_uses_local_or_private,
-    cached_ollama_show_context, error_chain_looks_like_tls, models_probe_url,
-    parse_entry_output_limit, parse_positive_u32, probe_lmstudio_models, probe_local_server_kind,
-    probe_ollama_models, strip_v1_suffix, with_opencode_session_header,
+    cached_ollama_show_context, error_chain_looks_like_tls, is_anthropic_endpoint, models_probe_url,
+    parse_entry_output_limit, parse_ollama_tag_names, parse_positive_u32, probe_lmstudio_models,
+    probe_local_server_kind, probe_ollama_models, strip_v1_suffix, with_opencode_session_header,
 };
 use crate::platform::prefs::ModelPreset;
 
@@ -131,10 +131,12 @@ pub enum ListingStatus {
 pub struct EndpointModelsListing {
     pub status: ListingStatus,
     pub http_status: Option<u16>,
-    /// 传输失败类别:"timeout" | "dns" | "connect" | "tls" | "network"
-    /// (顺序 is_timeout → is_dns → is_connect → 裸文本 TLS 启发式,与
-    /// monitor 的 transport_class / 连接测试的 transport_code_for 同源)。
-    /// 小写 snake_case,前端 connectionMessages 按词消费。
+    /// 传输失败类别:"timeout" | "dns" | "tls" | "connect" | "network"
+    /// (顺序 is_timeout → is_dns → source 链 TLS 启发式 → is_connect →
+    /// network;tls 先于 connect——hyper-util 把 TLS 握手也归入 Connect
+    /// kind,见 [`transport_class`]。与 monitor 的 transport_class /
+    /// 连接测试的 transport_code_for 同源)。小写 snake_case,前端
+    /// connectionMessages 按词消费。
     pub transport: Option<String>,
     /// 本地短路时探测出的 [`LocalServerKind`] 字符串;远端/非兼容协议为
     /// `None`。
@@ -204,6 +206,10 @@ async fn probe_endpoint_models_with_timeout(
         // 错数字。服务型 kind(vllm / sglang / tachyon / … / generic,
         // 含兼容阶梯回落)部署的是同名云端模型的副本,目录行描述的正是
         // 那个名字的模型,补全保留(来源徽章可见,端点自报值永不覆盖)。
+        // 豁免边界是 lane 而不是部署位置(round-4 审 m1-14):GGUF 家族
+        // 服务端经 DNS 名 / VPS 地址到达时走的是远端 OpenAI 兼容阶梯、
+        // 不进本地短路,目录补全按设计照常发生——远端 lane 永远保留
+        // 补全,列表行的 catalog 来源徽章就是用户可见的信号。
         catalog_fill_skipped = matches!(
             kind,
             LocalServerKind::Ollama
@@ -215,10 +221,10 @@ async fn probe_endpoint_models_with_timeout(
             LocalServerKind::Ollama => match ollama_discovered(base_url, api_key).await {
                 Some((models, truncated)) => Terminal::Listed(models, truncated),
                 // 列表探测失败(/api/tags 空/失败):先复核 tags——kind 缓存
-                // 刚确认过的 Ollama 若瞬态失败,按真实失败收口(见
-                // [`ollama_native_failure`]),否则回落 OpenAI 兼容阶梯
-                // (含裸 base 的 /v1 回退),保持「不再是 Ollama / 空列表」
-                // 的既有语义。
+                // 刚确认过的 Ollama 若瞬态失败,按真实失败收口;复核健康且
+                // 非空时重试一次原生探测(m1-6 round-4),仍失败才回落
+                // OpenAI 兼容阶梯(含裸 base 的 /v1 回退),保持「不再是
+                // Ollama / 空列表」的既有语义(见 [`ollama_native_failure`])。
                 None => match ollama_native_failure(base_url, api_key, request_timeout).await {
                     Some(terminal) => terminal,
                     None => ladder_openai_local(base_url, api_key, request_timeout).await,
@@ -357,28 +363,34 @@ enum ProbeOutcome {
     HttpError(u16),
     /// 2xx body 中途断流:带状态码的传输失败(分类 `network`,可重试)。
     BrokenBody(u16),
-    /// 传输失败,类别顺序 is_timeout → is_dns → is_connect → network。
+    /// 传输失败,类别顺序 is_timeout → is_dns → tls(source 链)→
+    /// is_connect → network(见 [`transport_class`])。
     Transport(&'static str),
 }
 
-/// 传输失败 → 稳定类别词。顺序照搬 monitor 的 transport_class:DNS 检查
-/// 必须先于 connect(hyper-util 把解析器失败也归入 Connect kind)。TLS 用
-/// 与连接测试 `transport_code_for` 同源的裸文本启发式
-/// ([`raw_error_looks_like_tls`])补 "tls" 类别——但只扫 error source 链的
-/// 内层文本,不扫顶层 `to_string()`:reqwest 顶层 Display 内嵌完整 URL,
-/// 主机名恰好含 tls/ssl/certificate 时会把无关失败误判成 tls(URL 偏置,
-/// `transport_code_for` 自己的文档警告过);证书事实在 rustls/hyper 的
-/// 内层错误里(round-3 审 minor:真证书失败只落 connect/network,而 URL
-/// 含敏感词的残余错误反而误报 tls——同臂换源后两者都收敛)。
+/// 传输失败 → 稳定类别词。顺序:timeout → dns → tls → connect → network。
+/// - dns 先于 connect:hyper-util 把解析器失败也归入 Connect kind(与
+///   monitor 的 transport_class 同一理由)。
+/// - tls 先于 connect(round-4 审 M1):hyper-util 把整个连接器阶段——TLS
+///   握手也在内——归入 ErrorKind::Connect,reqwest 的 `is_connect()` 沿
+///   source 链找到该 hyper-util 错误即返回 true,真证书 / 握手失败按旧
+///   顺序(connect 在前)永远落不到 tls 臂。tls 判定走
+///   [`error_chain_looks_like_tls`],只扫 error source 链的内层文本、
+///   不碰顶层 `to_string()`(顶层内嵌完整 URL,主机名恰好含
+///   tls/ssl/certificate 的无关失败会造成 URL 偏置误判,`transport_code_for`
+///   自己的文档警告过);纯拒连的链内只有 "connection refused" 之类文本,
+///   不含证书关键词,不会被误判成 tls(真实拨号的正反两向集成钉见测试
+///   `tls_handshake_failure_classifies_tls_even_under_connect_kind` /
+///   `plain_refused_connection_stays_connect_not_tls`)。
 fn transport_class(err: &reqwest::Error) -> &'static str {
     if err.is_timeout() {
         "timeout"
     } else if err.is_dns() {
         "dns"
-    } else if err.is_connect() {
-        "connect"
     } else if error_chain_looks_like_tls(err) {
         "tls"
+    } else if err.is_connect() {
+        "connect"
     } else {
         "network"
     }
@@ -517,31 +529,42 @@ pub(crate) fn parse_entry_context_window(item: &Value) -> Option<u32> {
 /// OpenAI 兼容 `/models` 响应的发现版解析:接受 `{data:[...]}` **和裸数组**
 /// (Together 形态)。返回 `None` = 形状不认识(→ Unsupported);`Some` =
 /// 条目(可为空——空 data 数组是合法的 Listed)。条数超过
-/// [`OPENAI_LISTING_CAP`] 时截断并置 truncated。输出侧复用
-/// [`parse_entry_output_limit`](三形态取最紧);`loaded` / `title` 兼容端点
-/// 不提供。
+/// [`OPENAI_LISTING_CAP`] 时截断并置 truncated;达到上限后源里再出现有效
+/// 条目即停止物化(round-4 审 m1-3:上限后的条目注定被截掉,不再逐条
+/// 构造。截断语义不变:恰好 2000 条**有效条目**不截,第 2001 条有效条目
+/// 才置 truncated,保留前 2000 条——id 无效的源条目不计入,与旧实现按
+/// 有效条目计数的口径一致)。输出侧复用 [`parse_entry_output_limit`]
+/// (三形态取最紧);`loaded` / `title` 兼容端点不提供。
 fn parse_openai_listing(v: &Value) -> Option<(Vec<RawModel>, bool)> {
     let entries = if let Some(array) = v.as_array() {
         array
     } else {
         v.get("data")?.as_array()?
     };
-    let models = entries
-        .iter()
-        .filter_map(|item| {
-            let id = item.get("id").and_then(Value::as_str)?.trim();
-            (!id.is_empty()).then(|| RawModel {
-                id: id.to_string(),
-                context: parse_entry_context_window(item),
-                output: parse_entry_output_limit(item),
-                loaded: None,
-                title: None,
-            })
-        })
-        .collect::<Vec<_>>();
-    let truncated = models.len() > OPENAI_LISTING_CAP;
-    let mut models = models;
-    models.truncate(OPENAI_LISTING_CAP);
+    let mut models: Vec<RawModel> = Vec::new();
+    let mut truncated = false;
+    for item in entries {
+        let Some(id) = item
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        if models.len() >= OPENAI_LISTING_CAP {
+            // 上限后再遇有效条目:截断成立,余下源条目不再物化。
+            truncated = true;
+            break;
+        }
+        models.push(RawModel {
+            id: id.to_string(),
+            context: parse_entry_context_window(item),
+            output: parse_entry_output_limit(item),
+            loaded: None,
+            title: None,
+        });
+    }
     Some((models, truncated))
 }
 
@@ -705,16 +728,20 @@ fn parse_anthropic_page(v: &Value) -> Option<(Vec<RawModel>, Option<bool>, Optio
 /// 原生阶梯(anthropic / gemini)的收尾:与 OpenAI 阶梯同一总量语义——
 /// 恰好 [`NATIVE_LISTING_CAP`] 不截,超过才截断并置 `truncated`(翻页
 /// 页数上限只控制请求轮数,条数上限控制灌给前端的总量,两道闸缺一不可)。
+/// 两个翻页循环在总量超限后即停止发余下页(round-4 审 m1-3,见各自循环
+/// 内的早退),本函数仍是唯一的截断点:超限早退与页数封顶路径都从这里
+/// 收口,截断标记的边界语义(恰好 2000 不截)不会被循环早退改变。
 fn finish_native_listing(mut all: Vec<RawModel>, truncated: bool) -> Terminal {
     let truncated = truncated || all.len() > NATIVE_LISTING_CAP;
     all.truncate(NATIVE_LISTING_CAP);
     Terminal::Listed(all, truncated)
 }
 
-/// Anthropic 阶梯:`GET {规整 base}/models?limit=1000`,鉴权头走
-/// [`apply_anthropic_auth_headers`](`x-api-key` + `anthropic-version`,
-/// 与 Messages 直连同一口径);翻页 `has_more` + `after_id`,最多
-/// [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置 truncated。游标经
+/// Anthropic 阶梯:`GET {规整 base}/models?limit=1000`,鉴权见
+/// [`arm_anthropic_auth`](官方主机 x-api-key + anthropic-version,其余
+/// 主机 Bearer,与 Messages 直连同一口径);翻页 `has_more` + `after_id`,
+/// 最多 [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置 truncated;总量超
+/// [`NATIVE_LISTING_CAP`] 后不再发余下页(round-4 审 m1-3)。游标经
 /// reqwest `.query()` 编码后拼入——端点自报的 id 不做字符串拼接。
 async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
     let Some(client) = discovery_client() else {
@@ -732,9 +759,10 @@ async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Durati
         if let Some(id) = &after_id {
             request = request.query(&[("after_id", id)]);
         }
-        // 网关探测带会话亲和头(与 OpenAI 阶梯同一装配);非网关是 no-op。
+        // 鉴权见 [`arm_anthropic_auth`];网关探测带会话亲和头(与 OpenAI
+        // 阶梯同一装配);非网关是 no-op。
         let request = with_opencode_session_header(
-            apply_anthropic_auth_headers(request, key),
+            arm_anthropic_auth(request, base_url, key),
             base_url,
             "models-probe",
         );
@@ -742,6 +770,14 @@ async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Durati
             ProbeOutcome::Body(v) => match parse_anthropic_page(&v) {
                 Some((models, has_more, next_after)) => {
                     all.extend(models);
+                    if all.len() > NATIVE_LISTING_CAP {
+                        // 超限早退(round-4 审 m1-3):总量已注定超过上限,
+                        // 余下页的条目只会被 [`finish_native_listing`] 截掉,
+                        // 不再发请求(观测输出不变,少付页请求)。恰好 2000
+                        // 条时还不知道有没有下一页,照旧继续翻,边界语义
+                        // 不变。
+                        return finish_native_listing(all, true);
+                    }
                     match has_more {
                         // 明确「无下一页」:完整列表。
                         Some(false) => return finish_native_listing(all, false),
@@ -764,6 +800,29 @@ async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Durati
         }
     }
     finish_native_listing(all, true)
+}
+
+/// Anthropic 阶梯的鉴权装配(M6 round-4):与 Messages 直连 / 连接测试
+/// 同一口径——官方主机(api.anthropic.com,大小写不敏感)走
+/// [`apply_anthropic_auth_headers`](`x-api-key` + `anthropic-version`,
+/// 不接受 Bearer),其余主机一律 `Authorization: Bearer <key>`;
+/// keyless(空 / 空白 key)两臂都不加任何头(官方臂
+/// [`apply_anthropic_auth_headers`] 跳过空 key,Bearer 臂显式判空)。
+/// URL 解析失败按非官方处理([`is_anthropic_endpoint`] 同口径,走
+/// Bearer)。独立成纯装配函数:官方臂的头无法经 mock 驱动(测试服务不是
+/// 官方主机),构建出的 `reqwest::Request` 可在测试里直接断言头形状。
+fn arm_anthropic_auth(
+    request: reqwest::RequestBuilder,
+    base_url: &str,
+    key: &str,
+) -> reqwest::RequestBuilder {
+    if is_anthropic_endpoint(base_url) {
+        apply_anthropic_auth_headers(request, key)
+    } else if !key.trim().is_empty() {
+        request.bearer_auth(key.trim())
+    } else {
+        request
+    }
 }
 
 /// Gemini 原生 API 根:剥掉 OpenAI 兼容后缀 `/openai`,再剥掉版本段
@@ -826,7 +885,8 @@ fn parse_gemini_page(v: &Value) -> Option<(Vec<RawModel>, Option<String>)> {
 /// Gemini 阶梯:`GET {root}/v1beta/models?pageSize=1000`,鉴权
 /// `x-goog-api-key`(空 key 不加头,keyless 照发);翻页 `nextPageToken`
 /// → `pageToken`,最多 [`PAGINATION_PAGE_CAP`] 页,仍有下一页时置
-/// truncated。游标经 reqwest `.query()` 编码后拼入。
+/// truncated;总量超 [`NATIVE_LISTING_CAP`] 后不再发余下页(round-4 审
+/// m1-3)。游标经 reqwest `.query()` 编码后拼入。
 async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
     let Some(client) = discovery_client() else {
         return Terminal::Error {
@@ -852,6 +912,11 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
             ProbeOutcome::Body(v) => match parse_gemini_page(&v) {
                 Some((models, next_page_token)) => {
                     all.extend(models);
+                    if all.len() > NATIVE_LISTING_CAP {
+                        // 超限早退(round-4 审 m1-3):余下页的条目注定被截掉,
+                        // 不再发请求;finish 仍是唯一截断点,截断语义不变。
+                        return finish_native_listing(all, true);
+                    }
                     match next_page_token {
                         Some(token) => page_token = Some(token),
                         None => return finish_native_listing(all, false),
@@ -874,12 +939,21 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
 /// GGUF 训练窗口(`model_info` 的 `<arch>.context_length`)刻意不采纳——
 /// `/api/show` 解析只认 `num_ctx`,见 [`parse_ollama_show_context`]
 /// [crate::core::model_endpoint::parse_ollama_show_context] 文档。
-/// kind 缓存确认 Ollama 后的瞬态失败复核(minor-7):[`ollama_discovered`]
-/// 返回 `None` 时(列表探测失败)调用——重新打一发 `/api/tags`:
+/// kind 缓存确认 Ollama 后的瞬态失败复核(minor-7;m1-6 round-4 扩):
+/// [`ollama_discovered`] 返回 `None` 时(列表探测失败)调用——重新打一发
+/// `/api/tags`:
 /// - 5xx / 传输失败 / 401·403 → `Some(按真实分类的 Terminal)`,绝不回落
 ///   OpenAI 兼容阶梯把可重试的「服务端正忙」钉成 Unsupported(404);
-/// - tags 合形应答(200,含空列表)或 404/405 → `None`,回落阶梯保持既有
-///   语义(空列表不是失败;404 = kind 缓存过期、服务已不是 Ollama)。
+/// - tags 合形且**非空**(round-4 审 m1-6:服务仍是能列出模型的健康
+///   Ollama,列表探测刚才是瞬态失败)→ 重试一次 [`probe_ollama_models`]:
+///   成功 → `Some(Listed)`,原生事实照常入列表;重试仍失败 → `None`
+///   回落阶梯——绝不把事实缺失的 compat 列表伪标成 Ollama。重试整段
+///   复用 [`ollama_discovered`](ps + tags 装配与 show 补查口径单一来源),
+///   代价是瞬态路径上多付一发本地 GET,换取不为复核响应体另立一份
+///   列表装配;非空判定与重试成功的必要条件用同一份解析
+///   ([`parse_ollama_tag_names`]);
+/// - tags 空列表(合形)或 404/405 → `None`,回落阶梯保持既有语义
+///   (空列表不是失败;404 = kind 缓存过期、服务已不是 Ollama)。
 async fn ollama_native_failure(
     base_url: &str,
     api_key: Option<&str>,
@@ -891,7 +965,21 @@ async fn ollama_native_failure(
     let host = strip_v1_suffix(base_url)?;
     let request = apply_bearer(client.get(format!("{host}/api/tags")), api_key);
     match send_classified(request, request_timeout).await {
-        ProbeOutcome::Body(_) | ProbeOutcome::Unsupported(_) => None,
+        ProbeOutcome::Body(v) => {
+            // 解析按值取走 v:非空 → 重试一次原生探测;空列表与 404/405
+            // 同路回落(空列表不是失败;404 = kind 缓存过期、服务已不是
+            // Ollama)。
+            if parse_ollama_tag_names(v).is_empty() {
+                None
+            } else {
+                match ollama_discovered(base_url, api_key).await {
+                    Some((models, truncated)) => Some(Terminal::Listed(models, truncated)),
+                    // 重试仍失败:回落阶梯,与旧行为一致(瞬态不可硬钉)。
+                    None => None,
+                }
+            }
+        }
+        ProbeOutcome::Unsupported(_) => None,
         outcome => Some(terminal_from_outcome(outcome)),
     }
 }
@@ -1138,7 +1226,8 @@ mod tests {
     #[tokio::test]
     async fn anthropic_pagination_headers_and_facts() {
         // 规格 §2.10-4:两页翻页(has_more/after_id)+ max_input_tokens /
-        // max_tokens + display_name,并断言 anthropic-version 与 x-api-key 头。
+        // max_tokens + display_name,并断言鉴权头(M6 round-4:mock 是
+        // 非官方主机 → Bearer;官方臂见构建层钉)。
         let mock = models_mock::spawn_seq(&[(
             "/v1/models",
             200,
@@ -1179,17 +1268,18 @@ mod tests {
             model_of(&listing, "claude-c").context_window_tokens,
             Some(180_000)
         );
-        // 官方端点走 x-api-key + anthropic-version(2023-06-01),不发 Bearer。
+        // M6(round-4):mock 环回地址是非官方主机 → 与 Messages 直连同一
+        // 口径发 `Authorization: Bearer`,不带 x-api-key / anthropic-version。
+        // 官方主机臂(api.anthropic.com → x-api-key + anthropic-version、
+        // 无 Bearer)无法经 mock 驱动,由
+        // `anthropic_auth_official_host_pins_x_api_key_without_bearer` 在
+        // 构建层钉住。
         assert_eq!(
-            mock.header_for("/v1/models", "x-api-key").as_deref(),
-            Some("sk-ant-test")
+            mock.header_for("/v1/models", "authorization").as_deref(),
+            Some("Bearer sk-ant-test")
         );
-        assert_eq!(
-            mock.header_for("/v1/models", "anthropic-version")
-                .as_deref(),
-            Some("2023-06-01")
-        );
-        assert_eq!(mock.header_for("/v1/models", "authorization"), None);
+        assert_eq!(mock.header_for("/v1/models", "x-api-key"), None);
+        assert_eq!(mock.header_for("/v1/models", "anthropic-version"), None);
         // G2 钉:翻页游标真的发出去——第 2 页请求的 query 携带第 1 页末条
         // id(after_id=claude-b);删掉 `.query(&[("after_id", …)])` 的装配
         // 时本断言变红(顺序响应体会掩盖游标丢失,页 2 照样返回收尾页)。
@@ -1215,6 +1305,112 @@ mod tests {
         assert_eq!(listing.status, ListingStatus::Listed);
         assert!(listing.truncated);
         assert_eq!(mock.hits_for("/v1/models"), 3);
+    }
+
+    /// M6 钉(round-4):anthropic 阶梯对非官方主机(网关 / 环回 mock)发
+    /// `Authorization: Bearer <key>`,不带 x-api-key——与 Messages 直连 /
+    /// 连接测试同一口径(settings 按 [`crate::core::model_endpoint::
+    /// is_anthropic_api_url`] 分流)。旧实现(无条件 x-api-key +
+    /// anthropic-version)下本测试红:keyless 变体同时钉住 Bearer 臂的
+    /// 空白 key 不加头。
+    #[tokio::test]
+    async fn anthropic_ladder_sends_bearer_to_non_official_host() {
+        let mock = models_mock::spawn(&[(
+            "/v1/models",
+            200,
+            r#"{"data":[{"id":"gw-model"}]}"#.into(),
+        )]);
+        let listing = probe(
+            &mock.base_url,
+            Some("sk-gw-secret"),
+            DiscoveryProtocol::Anthropic,
+        )
+        .await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(model_of(&listing, "gw-model").id, "gw-model");
+        assert_eq!(
+            mock.header_for("/v1/models", "authorization").as_deref(),
+            Some("Bearer sk-gw-secret"),
+            "非官方主机必须走 Bearer"
+        );
+        assert_eq!(mock.header_for("/v1/models", "x-api-key"), None);
+        assert_eq!(mock.header_for("/v1/models", "anthropic-version"), None);
+        // keyless(空白 key):Bearer 臂同样不加任何鉴权头。
+        let mock = models_mock::spawn(&[(
+            "/v1/models",
+            200,
+            r#"{"data":[{"id":"gw-free"}]}"#.into(),
+        )]);
+        let listing = probe(&mock.base_url, Some("   "), DiscoveryProtocol::Anthropic).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(mock.header_for("/v1/models", "authorization"), None);
+        assert_eq!(mock.header_for("/v1/models", "x-api-key"), None);
+    }
+
+    /// M6 钉(round-4,构建层):官方主机臂——`arm_anthropic_auth` 对
+    /// api.anthropic.com(大小写不敏感)装配 x-api-key + anthropic-version
+    /// 且绝无 Bearer;keyless 官方端点两族头都不加;URL 解析失败按非官方
+    /// 处理走 Bearer(与 [`crate::core::model_endpoint::is_anthropic_endpoint`]
+    /// 同口径)。mock 无法驱动官方主机(测试服务不是 api.anthropic.com),
+    /// 头形状只能在构建出的 `reqwest::Request` 上断言。
+    #[test]
+    fn anthropic_auth_official_host_pins_x_api_key_without_bearer() {
+        let build = |base_url: &str, key: &str| {
+            arm_anthropic_auth(
+                reqwest::Client::new().get(anthropic_models_url(base_url)),
+                base_url,
+                key,
+            )
+            .build()
+            .expect("probe request builds offline")
+        };
+        for base_url in [
+            "https://api.anthropic.com",
+            "https://API.Anthropic.COM",
+            "https://api.anthropic.com/v1",
+        ] {
+            let request = build(base_url, "sk-ant-test");
+            assert_eq!(
+                request
+                    .headers()
+                    .get("x-api-key")
+                    .map(|v| v.to_str().expect("header is visible ascii")),
+                Some("sk-ant-test"),
+                "{base_url} 官方主机必须走 x-api-key"
+            );
+            assert_eq!(
+                request
+                    .headers()
+                    .get("anthropic-version")
+                    .map(|v| v.to_str().expect("header is visible ascii")),
+                Some("2023-06-01"),
+            );
+            assert_eq!(
+                request.headers().get("authorization"),
+                None,
+                "官方主机绝无 Bearer"
+            );
+        }
+        // keyless:官方端点也不加任何头(apply_anthropic_auth_headers 跳空 key)。
+        let request = build("https://api.anthropic.com", "   ");
+        assert_eq!(request.headers().get("x-api-key"), None);
+        assert_eq!(request.headers().get("authorization"), None);
+        // URL 解析失败:按非官方处理,Bearer(不是裸奔也不是 x-api-key)。
+        let request = arm_anthropic_auth(
+            reqwest::Client::new().get("http://127.0.0.1:9/v1/models"),
+            "not a url",
+            "sk-gw",
+        )
+        .build()
+        .expect("probe request builds offline");
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .map(|v| v.to_str().expect("header is visible ascii")),
+            Some("Bearer sk-gw"),
+        );
+        assert_eq!(request.headers().get("x-api-key"), None);
     }
 
     #[tokio::test]
@@ -1526,6 +1722,57 @@ mod tests {
         assert_eq!(mock.hits_for("/models"), 1);
     }
 
+    /// m1-6 钉(round-4):kind 判别确认 Ollama 后列表探测吃一次瞬态 5xx,
+    /// 复核 tags 健康且非空 → 原生探测重试一次并成功——原生事实(/api/ps
+    /// 生效窗口、加载状态)照常入列表,绝不静默回落 compat 阶梯把无事实
+    /// 列表伪标成 ollama。旧行为(复核 Body(_) 一律回落)下本测试红:
+    /// /api/tags 只有 3 次命中(缺重试),条目窗口事实为 None。
+    /// 瞬态 fixture 用 500 而不是真停听 socket:共享探测客户端的 3s 超时
+    /// 会把套件拖慢,500 与超时在「probe_ollama_models → None」处同路。
+    #[tokio::test]
+    async fn ollama_transient_blip_retries_native_after_healthy_recheck() {
+        // show 补查走 60s 共享缓存;测试间端口可能复用,先清缓存防串扰。
+        clear_ollama_show_cache();
+        let mock = models_mock::spawn_seq_status(&[
+            (
+                // ps 是静态健康路由(spawn_seq_status 队列取空后重复最后
+                // 一项):初探与重试各读一次,loaded-1 的生效窗口照常入表。
+                "/api/ps",
+                vec![(
+                    200,
+                    r#"{"models":[{"name":"loaded-1","context_length":8192}]}"#.to_string(),
+                )],
+            ),
+            (
+                // tags 命中序列:kind 判别 200 → 列表探测 500(瞬态)→
+                // 复核 200(健康非空)→ 重试 200。
+                "/api/tags",
+                vec![
+                    (200, r#"{"models":[{"name":"loaded-1"}]}"#.to_string()),
+                    (500, r#"{"error":"busy"}"#.to_string()),
+                    (200, r#"{"models":[{"name":"loaded-1"}]}"#.to_string()),
+                    (200, r#"{"models":[{"name":"loaded-1"}]}"#.to_string()),
+                ],
+            ),
+        ]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::OpenAiCompatible).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.server_kind.as_deref(), Some("ollama"));
+        assert!(!listing.truncated);
+        let loaded = model_of(&listing, "loaded-1");
+        assert_endpoint(loaded, Some(8_192), None);
+        assert_eq!(loaded.loaded, Some(true));
+        // 命中计数:tags 4 = kind 判别 + 列表探测 + 复核 + 重试(旧行为
+        // 无重试是 3);ps 2 = 初探 + 重试;show 0 = ps 已给生效窗口。
+        assert_eq!(mock.hits_for("/api/tags"), 4, "复核健康非空必须重试一次");
+        assert_eq!(mock.hits_for("/api/ps"), 2);
+        assert_eq!(mock.hits_for("/api/show"), 0);
+        // 兼容阶梯绝不回落:裸 base 的判别探测自身打 /v1/models 与 /models
+        // 各一次;回落会让两者再 +1。
+        assert_eq!(mock.hits_for("/v1/models"), 1);
+        assert_eq!(mock.hits_for("/models"), 1);
+    }
+
     #[tokio::test]
     async fn error_classification_ladder() {
         // 规格 §2.10-8:401/403→AuthRequired;404/非 JSON→Unsupported;
@@ -1654,9 +1901,10 @@ mod tests {
 
     /// minor-3 钉:TLS 裸文本启发式与连接测试(`transport_code_for`)共用
     /// 一份关键词表——证书校验 / 握手失败在发现阶梯补 "tls" 类别而不是落
-    /// 兜底 network;普通连接失败不误报 tls。reqwest 错误无法脱离真实
-    /// TLS 握手构造,类别臂的集成覆盖由关键词启发式的单测 + 顺序
-    /// (timeout/dns/connect 先行)守口。
+    /// 兜底 network;普通连接失败不误报 tls。类别臂顺序在 round-4 改为
+    /// tls 先于 connect(见 [`transport_class`]);tls / connect 两臂的真实
+    /// 错误集成覆盖由 `tls_handshake_failure_classifies_tls_even_under_connect_kind`
+    /// 与 `plain_refused_connection_stays_connect_not_tls` 的真实拨号补上。
     #[test]
     fn raw_error_looks_like_tls_pins_keyword_heuristic() {
         assert!(raw_error_looks_like_tls(
@@ -1734,6 +1982,90 @@ mod tests {
             },
         );
         assert!(!error_chain_looks_like_tls(&layered_clean));
+    }
+
+    /// M1 钉(round-4):tls 臂必须先于 connect 臂。hyper-util 把整个连接器
+    /// 阶段(TLS 握手在内)归入 Connect kind,reqwest 的 `is_connect()` 沿
+    /// source 链找到它——真 TLS 失败按旧顺序(connect 在前)永远落不到
+    /// tls 臂。reqwest::Error 没有公开构造器(monitor 同款结论),用真实
+    /// 拨号驱动:https 指向一个「读完 ClientHello 即关闭」的明文 TCP
+    /// socket,tokio-rustls 在握手中途读到 EOF,错误链内层是其固定文本
+    /// "tls handshake eof"(tokio-rustls 0.26 固定行为)——该错误同时满足
+    /// is_connect()(hyper-util Connect kind)与 TLS 关键词,正是 M1 描述
+    /// 的「connect kind 里藏着 TLS 事实」形态;旧顺序下分类 connect,
+    /// 本测试变红。
+    #[tokio::test]
+    async fn tls_handshake_failure_classifies_tls_even_under_connect_kind() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind plain listener");
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept probe connection");
+            // 精确排干一条完整 TLS 记录(5 字节记录头 type/version/length +
+            // 其声明的负载 = 整个 ClientHello,rustls 把首飞并成单记录):
+            // 保证关闭时 socket 无未读数据——带未读数据的 close 走 RST,
+            // 客户端会拿到 connection reset(无 TLS 关键词,分类落 connect),
+            // 钉不住 tls 臂;排干后关闭走优雅 FIN,客户端握手中途读 EOF。
+            let mut header = [0u8; 5];
+            std::io::Read::read_exact(&mut stream, &mut header).expect("read tls record header");
+            let payload_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+            let mut payload = vec![0u8; payload_len];
+            std::io::Read::read_exact(&mut stream, &mut payload).expect("read client hello");
+            drop(stream);
+            drop(listener);
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build direct client");
+        let err = client
+            .get(format!("https://{addr}/models"))
+            .send()
+            .await
+            .err()
+            .expect("plain-text socket must fail the TLS handshake");
+        // 前提钉:M1 的依据成立——TLS 握手失败确实挂在 hyper-util 的
+        // Connect kind 下。reqwest / hyper 若改变归类,这里是第一处报点。
+        assert!(
+            err.is_connect(),
+            "TLS 握手失败必须被 hyper-util 归入 Connect kind"
+        );
+        assert_eq!(
+            transport_class(&err),
+            "tls",
+            "connect kind 内的 TLS 事实必须收口 tls,不得被 connect 臂吞掉"
+        );
+        server.join().expect("closer thread joins");
+    }
+
+    /// M1 反向控制(round-4):tls 臂挪到 connect 之前不得误报纯拒连——
+    /// 真实拨号到一个「绑定后立即释放」的端口(不用特权端口,保证
+    /// ECONNREFUSED 确定性),错误链内只有 "connection refused" 之类文本、
+    /// 无证书关键词,分类必须仍是 connect。同款前提钉:该错误同样在
+    /// hyper-util 的 Connect kind 下(tls 先行的重排不影响它的去向)。
+    #[tokio::test]
+    async fn plain_refused_connection_stays_connect_not_tls() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build direct client");
+        let err = client
+            .get(format!("http://{addr}/models"))
+            .send()
+            .await
+            .err()
+            .expect("released port must refuse the connection");
+        assert!(
+            err.is_connect(),
+            "拒连必须挂在 hyper-util 的 Connect kind 下"
+        );
+        assert_eq!(
+            transport_class(&err),
+            "connect",
+            "纯拒连不得被 tls 臂误判(URL 偏置由 source 链扫描排除)"
+        );
     }
 
     #[tokio::test]
@@ -1848,6 +2180,41 @@ mod tests {
         assert!(!listing.truncated, "恰好 2000 不置 truncated");
     }
 
+    /// m1-3 钉(round-4):总量超过 [`NATIVE_LISTING_CAP`] 后不再发余下
+    /// 翻页请求——第 2 页把总数推过 2000 时立即按截断收尾,第 3 页 0 命中
+    /// (旧实现发满 3 页再整体 truncate:观测输出相同,多付页请求)。截断
+    /// 语义不变:保留前 2000 条、置 truncated。删掉超限早退时本测试在
+    /// hits 断言变红(spawn_seq 队列取空重复最后一项,第 3 页照常应答)。
+    #[tokio::test]
+    async fn anthropic_pagination_stops_fetching_after_cap_exceeded() {
+        let page_body = |start: usize, count: usize, has_more: bool| {
+            let entries = (start..start + count)
+                .map(|index| format!(r#"{{"id":"m{index}"}}"#))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(r#"{{"data":[{entries}],"has_more":{has_more}}}"#)
+        };
+        let mock = models_mock::spawn_seq(&[(
+            "/v1/models",
+            200,
+            vec![page_body(0, 1500, true), page_body(1500, 1500, true)],
+        )]);
+        let listing = probe(
+            &mock.base_url,
+            Some("sk-ant-cap"),
+            DiscoveryProtocol::Anthropic,
+        )
+        .await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 2000, "超限收尾仍保留恰好 2000 条");
+        assert!(listing.truncated);
+        assert_eq!(
+            mock.hits_for("/v1/models"),
+            2,
+            "第 2 页超限后第 3 页不再请求"
+        );
+    }
+
     /// minor-2 钉(gemini 侧):同上一条的上限与边界语义。
     #[tokio::test]
     async fn gemini_native_listing_cap_truncates_at_2000() {
@@ -1888,6 +2255,40 @@ mod tests {
         assert_eq!(listing.status, ListingStatus::Listed);
         assert_eq!(listing.models.len(), 2000);
         assert!(!listing.truncated, "恰好 2000 不置 truncated");
+    }
+
+    /// m1-3 钉(round-4,gemini 侧):与上一条同形——第 2 页把总量推过
+    /// [`NATIVE_LISTING_CAP`] 后第 3 页 0 命中,截断语义不变。
+    #[tokio::test]
+    async fn gemini_pagination_stops_fetching_after_cap_exceeded() {
+        let page_body = |start: usize, count: usize, token: Option<&str>| {
+            let entries = (start..start + count)
+                .map(|index| {
+                    format!(
+                        r#"{{"name":"models/g{index}","supportedGenerationMethods":["generateContent"]}}"#
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            match token {
+                Some(token) => format!(r#"{{"models":[{entries}],"nextPageToken":"{token}"}}"#),
+                None => format!(r#"{{"models":[{entries}]}}"#),
+            }
+        };
+        let mock = models_mock::spawn_seq(&[(
+            "/v1beta/models",
+            200,
+            vec![page_body(0, 1500, Some("t1")), page_body(1500, 1500, Some("t2"))],
+        )]);
+        let listing = probe(&mock.base_url, Some("gkey"), DiscoveryProtocol::Gemini).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 2000, "超限收尾仍保留恰好 2000 条");
+        assert!(listing.truncated);
+        assert_eq!(
+            mock.hits_for("/v1beta/models"),
+            2,
+            "第 2 页超限后第 3 页不再请求"
+        );
     }
 
     #[tokio::test]
@@ -1983,6 +2384,16 @@ mod tests {
     #[test]
     fn ollama_show_budget_is_pinned() {
         assert_eq!(OLLAMA_SHOW_BUDGET, Duration::from_secs(20));
+    }
+
+    /// m1-14 钉(b,round-4):REQUEST_TIMEOUT 常量钉——8s 与连接测试的
+    /// 8s client 同一量级,是发现阶梯「用户单次点击等待上限」的一半口径
+    /// (另一半是 OLLAMA_SHOW_BUDGET 的墙钟封顶)。静默改动用户等待上限
+    /// 必须显式过评审,与 [`OLLAMA_SHOW_BUDGET`] /
+    /// [`LISTING_BODY_CAP_BYTES`] 的常量钉同款。
+    #[test]
+    fn request_timeout_is_pinned() {
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(8));
     }
 
     /// 附加钉:协议映射(preset / wire)——openai 系全走兼容、anthropic /

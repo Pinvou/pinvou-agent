@@ -252,8 +252,10 @@ fn parse_ollama_show_context(v: serde_json::Value) -> Option<u32> {
     None
 }
 
-/// Ollama `/api/tags` 返回的已下载模型名列表（保持顺序、去重）。
-fn parse_ollama_tag_names(v: serde_json::Value) -> Vec<String> {
+/// Ollama `/api/tags` 返回的已下载模型名列表（保持顺序、去重）。`pub(crate)`:
+/// 发现阶梯的瞬态失败复核（round-4 审 m1-6）用同一份解析判定「tags 非空」，
+/// 复核口径与重试（`probe_ollama_models` 取到非空 tags 才算成功）一致。
+pub(crate) fn parse_ollama_tag_names(v: serde_json::Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if let Some(models) = v.get("models").and_then(|m| m.as_array()) {
         for item in models {
@@ -389,16 +391,19 @@ pub async fn probe_ollama_models(
     let host = strip_v1_suffix(base_url)?;
     let client = shared_probe_client()?;
     // 已加载集合与生效上下文表：失败按空（全部未加载、无窗口事实），不影响已下载列表。
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败与旧 json() Err 同路折叠为空。
     let (loaded_names, ps_contexts) =
         match apply_bearer(client.get(format!("{host}/api/ps")), bearer)
             .send()
             .await
             .and_then(|r| r.error_for_status())
         {
-            Ok(resp) => match resp.json::<serde_json::Value>().await {
-                Ok(v) => (parse_ollama_ps_names(&v), parse_ollama_ps_contexts(&v)),
-                Err(_) => Default::default(),
-            },
+            Ok(mut resp) => {
+                match read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES).await {
+                    Ok(v) => (parse_ollama_ps_names(&v), parse_ollama_ps_contexts(&v)),
+                    Err(_) => Default::default(),
+                }
+            }
             Err(_) => Default::default(),
         };
     // 已下载列表：/api/tags 是必需项，失败或为空则整个候选离线。
@@ -432,14 +437,18 @@ pub async fn fetch_ollama_contexts(
 ) -> Option<std::collections::HashMap<String, u32>> {
     let host = strip_v1_suffix(base_url)?;
     let client = shared_probe_client()?;
-    let resp = apply_bearer(client.get(format!("{host}/api/ps")), bearer)
+    let mut resp = apply_bearer(client.get(format!("{host}/api/ps")), bearer)
         .send()
         .await
         .ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    let v = resp.json::<serde_json::Value>().await.ok()?;
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 None（非 Ollama 形状 → 不补查 /api/show）。
+    let v = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()?;
     let ollama_shaped = v.get("models").and_then(|m| m.as_array()).is_some();
     ollama_shaped.then(|| parse_ollama_ps_contexts(&v))
 }
@@ -1468,14 +1477,16 @@ async fn probe_koboldcpp_version(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{host}/api/extra/version")), bearer)
+    let Ok(mut resp) = apply_bearer(client.get(format!("{host}/api/extra/version")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
     else {
         return false;
     };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 false（探测未命中）。
+    let Ok(v) = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES).await else {
         return false;
     };
     v.get("result")
@@ -1496,14 +1507,16 @@ async fn probe_llamacpp_props(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{host}/props")), bearer)
+    let Ok(mut resp) = apply_bearer(client.get(format!("{host}/props")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
     else {
         return false;
     };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 false（探测未命中）。
+    let Ok(v) = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES).await else {
         return false;
     };
     v.as_object().is_some_and(|obj| {
@@ -1522,14 +1535,16 @@ async fn probe_sglang_server_info(base_url: &str, bearer: Option<&str>) -> bool 
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{host}/get_server_info")), bearer)
+    let Ok(mut resp) = apply_bearer(client.get(format!("{host}/get_server_info")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
     else {
         return false;
     };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 false（探测未命中）。
+    let Ok(v) = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES).await else {
         return false;
     };
     v.get("version").and_then(Value::as_str).is_some()
@@ -1579,14 +1594,16 @@ async fn probe_docker_model_runner(base_url: &str, bearer: Option<&str>) -> bool
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{root}/models")), bearer)
+    let Ok(mut resp) = apply_bearer(client.get(format!("{root}/models")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
     else {
         return false;
     };
-    resp.json::<serde_json::Value>()
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 false（探测未命中）。
+    read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
         .await
         .ok()
         .is_some_and(|v| v.is_array())
@@ -3240,6 +3257,32 @@ pub(crate) mod tests {
         assert_eq!(
             probe_local_server_kind(&server.url, None).await,
             LocalServerKind::Sglang
+        );
+    }
+
+    /// round-4 审 M2 钉：kind 判别端点吐出超限 body（> 8 MiB）→ 限长读取在
+    /// cap 处停读、解析失败按「探测未命中」折叠为 false → SGLang 不识别
+    /// （其余签名端点默认 404，整体落 Generic），绝不无界吃内存，也绝不把
+    /// 半截 body 当命中。旧的无界 `json()` 读取会把整个 body 推进内存；
+    /// 换用 [`read_json_body_bounded`] 后由超大 fixture 守住不回退（fixture
+    /// 构造方式与发现阶梯的 oversized 用例同款）。
+    #[tokio::test]
+    async fn kind_probe_folds_oversized_body_to_miss() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        // 5 MiB × "1," ≈ 10 MiB > 8 MiB cap，且永不闭合为合法 JSON。
+        let oversized =
+            format!("{{\"version\":\"0.4.9\",\"pad\":\"{}", "1,".repeat(5 * 1024 * 1024));
+        assert!(oversized.len() > 8 * 1024 * 1024);
+        let mock = models_mock::spawn(&[("/get_server_info", 200, oversized)]);
+        // 直探：签名探测本身必须按未命中折叠。
+        assert!(
+            !probe_sglang_server_info(&mock.base_url, None).await,
+            "超限 body 必须折叠为探测未命中"
+        );
+        // 整链：其余签名端点默认 404，kind 落 Generic。
+        assert_eq!(
+            probe_local_server_kind(&mock.base_url, None).await,
+            LocalServerKind::Generic
         );
     }
 
