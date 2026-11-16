@@ -1126,8 +1126,33 @@ try {
   assert.equal(detachedNotice.modelRecovery.state, 'waiting');
   assert.ok(!detachedNotice.legacyConversationOnly);
   assert.ok(JSON.stringify(projectNativeLane(detachedLane, 'detached-session')).includes('Next attempt'));
+  // Switching away and back rehydrates the cached lane from a disk snapshot
+  // without child-only notices. Preserve the live wait, without claiming a turn.
+  const unrelatedLane = createNativeLane();
+  hydrateNativeLane(unrelatedLane, { messages: [] }, []);
+  assert.equal(unrelatedLane.items.some(item => item.modelRecovery), false);
+  for (let reload = 0; reload < 2; reload += 1) {
+    hydrateNativeLane(detachedLane, { messages: [] }, []);
+    assert.equal(detachedLane.busy, false);
+    const waiting = detachedLane.items.filter(item => item.modelRecovery);
+    assert.equal(waiting.length, 1, 'repeated hydration must not duplicate a child wait');
+    assert.equal(waiting[0].modelRecovery.agent_id, detachedReceipt.agent_id);
+    assert.equal(waiting[0].modelRecovery.operation_id, detachedReceipt.operation_id);
+    assert.ok(JSON.stringify(projectNativeLane(detachedLane, 'detached-session')).includes('Next attempt'));
+  }
+  applyNativeChatEvent(detachedLane, 'chat:transient_error', { model_recovery: { ...detachedReceipt, operation_id: 'unrelated-call', state: 'stopped' } }, { language: 'en' });
+  assert.ok(JSON.stringify(projectNativeLane(detachedLane, 'detached-session')).includes('Next attempt'));
   applyNativeChatEvent(detachedLane, 'chat:transient_error', { model_recovery: { ...detachedReceipt, state: 'recovered' } }, { language: 'en' });
   assert.ok(!JSON.stringify(projectNativeLane(detachedLane, 'detached-session')).includes('Next attempt'));
+  hydrateNativeLane(detachedLane, { messages: [] }, []);
+  assert.ok(!JSON.stringify(projectNativeLane(detachedLane, 'detached-session')).includes('Next attempt'), 'hydration must not revive a recovered child');
+
+  const liveParentLane = createNativeLane();
+  appendLocalUserMessage(liveParentLane, 'parent still running');
+  applyNativeChatEvent(liveParentLane, 'chat:transient_error', { model_recovery: detachedReceipt }, { language: 'en' });
+  hydrateNativeLane(liveParentLane, { messages: [] }, []);
+  assert.equal(liveParentLane.busy, true, 'keeping a child wait must preserve the existing foreground state');
+  assert.equal(liveParentLane.items.filter(item => item.modelRecovery).length, 1);
 
   // Off-turn child recovery belongs to its agent/operation across later user turns.
   const lateChildLane = createNativeLane();
