@@ -2333,7 +2333,12 @@ mod tests {
                 &self,
                 reference: &CredentialReference,
             ) -> Result<Option<String>, CredentialError> {
-                let seeded = reference.account.ends_with("seeded");
+                // Exact match, not a suffix test: the unseeded fixture arm
+                // uses "ladder-unseeded", which a `ends_with("seeded")`
+                // predicate would silently seed too (round-7 review); the
+                // seeded arm's full account is `model:ladder-seeded`
+                // (`CredentialReference::for_model`).
+                let seeded = reference.account == "model:ladder-seeded";
                 if seeded {
                     Ok(Some("sk-residual-stored-key".to_string()))
                 } else {
