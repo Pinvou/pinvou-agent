@@ -254,9 +254,14 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
   // 时落到 OpenAI 兼容（这些端点同样提供 OpenAI 协议）；Claude 固定 Anthropic。
   // base URL 变更即失效既有探测结果(复审 M5,与聊天线同一不变量):URL A 上
   // 探到的候选列表绝不许当 URL B 的结果展示/使用。手输与预设回填两条路径都要清。
+  // round-4 审 m1-1:探测失败写在本表单共享的 error 条上,此前只清 listing/picker,
+  // 旧 URL 的红色失败条会挂在已改走的新 URL/协议下(与聊天线 fetchModelsMessage
+  // 的 round-3 minor 同因)。error 的其余写入方是表单校验与保存失败,同属
+  // 「上一次尝试」的过期提示,随失效点一并清扫不会丢失任何活跃状态。
   const clearEndpointProbeState = () => {
     setEndpointListing(null);
     setEndpointPickerOpen(false);
+    setError('');
   };
   const handleBaseUrlChange = value => {
     setBaseUrl(value);

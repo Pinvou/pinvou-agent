@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, Code, Cpu, Database, Globe, MessageSquare, Plus, RefreshCw, Search, Sparkles, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -769,20 +769,36 @@ function hasStoredCredential(record) {
       // → bridge.models.saveModel(桥内自带 loadModels 刷新),成功后行内提示;
       // 失败保持弹窗与提示,不静默丢弃。
       function buildEndpointModelPayload(row) {
+        // 与 doSave 同一凭据阶梯 + 免鉴权声明,收口后 picker 添加的记录不会在
+        // chat 门被免鉴权声明外的凭据要求挡住。
+        const nextKeyAction = isLocalPreset
+          ? (localKeyEnabled && apiKey.trim() ? 'replace' : 'keep_existing')
+          : cloudCredentialAction();
+        const nextApiKey = isLocalPreset
+          ? (localKeyEnabled && apiKey.trim() ? apiKey.trim() : '')
+          : (!noAuthActive && apiKey.trim() ? apiKey.trim() : '');
+        // 与 buildLocalModelPayload 同一教义:listing 带 server_kind 时
+        // ollama / lm_studio 行的 context_window_tokens 是运行时生效值
+        // (/api/ps 生效窗口、loaded_context_length),持久化成声明会在
+        // resolve_context_window 里永久 min-clamp 后续探测——存 null,
+        // 行内徽章照常显示探测值,仅落库被闸。
+        const serverKind = endpointListing && typeof endpointListing === 'object' ? endpointListing.server_kind : null;
+        const runtimeProbedLane = serverKind === 'ollama' || serverKind === 'lm_studio';
         return {
           id: makeModelId(),
           name: row.title || row.id,
           preset,
-          context_window_tokens: row.contextWindowTokens,
+          alias: null,
+          context_window_tokens: runtimeProbedLane ? null : row.contextWindowTokens,
           max_output_tokens: row.maxOutputTokens,
           model: row.id,
           base_url: baseUrl.trim(),
-          api_key: apiKey.trim(),
-          // 与 doSave 同一凭据阶梯:表单新填 key 即 replace,否则保留已存凭据。
-          credential_action: apiKey.trim() || initial.__new || !hasSavedKey ? 'replace' : 'keep_existing',
+          api_key: nextApiKey,
+          credential_action: nextKeyAction,
           provider_kind: providerKind || null,
           vendor: vendor || null,
           endpoint_mode: endpointMode || null,
+          auth_mode: !isLocalPreset && !isCodingPlan && noAuth ? 'none' : null,
           image_capability_override: imageCapability || 'pinvou',
           vision_model_id: null,
           reasoning_effort: null,
@@ -793,8 +809,10 @@ function hasStoredCredential(record) {
         // 都不在这条路径上置位,行按钮也只在 alreadySaved 后才禁用,快速
         // 双击会以两个新 id 把同一 (model, base_url) 落库两次。ref 在同步
         // 序列里立即置位挡住同一 tick 的第二次点击,state 驱动行按钮禁用
-        // (保存 IPC + 刷新链路的窗口内不给可点的第二下)。
-        if (pickInFlightRef.current || savingModel || addingAllModels) return;
+        // (保存 IPC + 刷新链路的窗口内不给可点的第二下)。round-4 M4 补充:
+        // 批量确认弹窗挂着时同样禁入——挂起批次是「添加前」的旧快照,单行
+        // 若在其窗口内落库,确认后的批量保存会把它当未保存行再落一次。
+        if (pickInFlightRef.current || savingModel || addingAllModels || addAllModelsConfirm) return;
         pickInFlightRef.current = true;
         setPickSavingModel(true);
         try {
@@ -814,7 +832,10 @@ function hasStoredCredential(record) {
       // WebView2 不渲染;>100 时提示截断到 100)。确认是硬闸门:入口只记录挂起
       // 批次、绝不落库(settings_ui_smoke 源码守卫钉住)。
       async function handleAddAllEndpointModels() {
-        if (addingAllModels || !endpointListing) return;
+        // round-4 M4(批量×单行交错):单行添加在飞时(pickInFlightRef 同步挡
+        // 同 tick、pickSavingModel/savingModel 盖保存 IPC+刷新窗口)禁入——
+        // 此刻的去重快照会把正在保存的那一行当成未保存,确认后重复落库。
+        if (addingAllModels || pickInFlightRef.current || pickSavingModel || savingModel || !endpointListing) return;
         const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), endpointSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
         if (addable.length === 0) return;
         setAddAllModelsConfirm({ addable, truncated });
@@ -1445,7 +1466,8 @@ function hasStoredCredential(record) {
       // 历史探测误判残留,不应隐藏,如 kimi-for-coding)。
       const visionCandidates = (models || []).filter(item => item && item.id && item.id !== initial.id);
       // 端点面板的「已保存」标记与批量去重键(规格 §2.6:model id + base_url)。
-      const endpointSavedKeys = savedModelKeys(models);
+      // memo 化(round-4 FE polish):models 不变时不再每次渲染重建键集。
+      const endpointSavedKeys = useMemo(() => savedModelKeys(models), [models]);
       // 老版本桌面/被拒 web 白名单下 bridge.models.probeEndpointModels 不存在:
       // 探活禁用按钮并给 title 提示(与 testImageInputCapability 同款惯例)。
       const probeEndpointModelsAvailable = !!(bridge.available && typeof bridge.models.probeEndpointModels === 'function');

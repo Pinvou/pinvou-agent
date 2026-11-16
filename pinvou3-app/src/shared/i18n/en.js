@@ -1303,7 +1303,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   modelAlreadySaved:'Saved',
   fetchUnavailable:'This build cannot fetch model lists yet',
   modelListFilterEmpty:'No models match this filter',
-  modelListTruncated:'The endpoint list was truncated',
+  modelListTruncated:'Endpoint response was truncated; results may be incomplete',
   modelListMoreCount:n=>`…and ${n} more — refine the filter`,
   modelListMoreCountPlain:n=>`…and ${n} more`,
 });

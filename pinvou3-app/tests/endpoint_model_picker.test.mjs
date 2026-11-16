@@ -217,8 +217,8 @@ test('component treats non-Set savedKeys as "nothing saved" and onAddAll as opti
   );
   assert.match(
     componentSource,
-    /if \(!savedSet\) return rows\.length;/,
-    'with no saved set every row must stay addable (ACP line has no saved-model dedup)',
+    /if \(!savedSet\) return uniqueKeys\.size;/,
+    'with no saved set every (unique) row must stay addable (ACP line has no saved-model dedup)',
   );
   assert.match(
     componentSource,
@@ -255,8 +255,8 @@ test('rows pipeline is memoized and the render is capped with an "N more" footer
   );
   assert.match(
     componentSource,
-    /const addableCount = useMemo\(\(\) => \{[\s\S]*?rows\.filter\(row => !savedSet\.has\(modelDuplicationKey\(row\.id, baseUrl\)\)\)\.length;[\s\S]*?\}, \[rows, savedSet, baseUrl\]\);/,
-    'the addable count must be memoized on [rows, savedSet, baseUrl] — it previously rebuilt a dup key per row on every keystroke render (round-3 review minor)',
+    /const addableCount = useMemo\(\(\) => \{[\s\S]*?const uniqueKeys = new Set\(\);[\s\S]*?for \(const row of rows\) uniqueKeys\.add\(modelDuplicationKey\(row\.id, baseUrl\)\);[\s\S]*?if \(!savedSet\) return uniqueKeys\.size;[\s\S]*?\}, \[rows, savedSet, baseUrl\]\);/,
+    'the addable count must be memoized on [rows, savedSet, baseUrl] and counted over UNIQUE duplication keys — a per-row count advertised in-listing duplicates the confirmed batch collapses (round-3 review minor + round-4 review M4 follow-up)',
   );
   assert.match(
     componentSource,
@@ -277,6 +277,23 @@ test('rows pipeline is memoized and the render is capped with an "N more" footer
     componentSource,
     /settingsCopy\.modelListTruncated/,
     'the listing truncated flag must surface as a localized notice line',
+  );
+  // round-4 FE polish: the dialog labels itself with its visible title so
+  // screen readers announce the heading instead of an anonymous dialog.
+  assert.match(
+    componentSource,
+    /data-testid="endpoint-model-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="endpoint-model-picker-title"/,
+    'the picker dialog must reference its title heading via aria-labelledby',
+  );
+  assert.match(
+    componentSource,
+    /<h2 id="endpoint-model-picker-title"/,
+    'the title heading must carry the id the dialog labels itself with',
+  );
+  assert.match(
+    componentSource,
+    /disabled=\{loading \|\| pickBusy \|\| addableCount === 0\}/,
+    'the batch Add All button must also disable while a single-row save is in flight (a batch snapshot taken then would double-save that row, round-4 review M4)',
   );
 });
 
@@ -338,6 +355,11 @@ test('fact badges key with a role prefix and the picker renders the addNotice ba
     componentSource,
     /\{addNotice && \(\s*(?:\/\/[^\n]*\n\s*)*<div data-testid="endpoint-model-add-notice"/,
     'the banner renders only when the parent passes a non-null notice (optional prop, ACP line omits it)',
+  );
+  assert.match(
+    componentSource,
+    /data-testid="endpoint-model-add-notice" role="status" aria-live="polite"/,
+    'the async add result must be announced politely by screen readers without stealing focus (round-4 FE polish)',
   );
 });
 

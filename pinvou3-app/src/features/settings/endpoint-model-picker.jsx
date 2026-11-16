@@ -49,7 +49,9 @@ const PICKER_RENDER_CAP = 200;
  *   tagged 已保存 and their add button is disabled.
  * - `pickBusy` optional: a row-add save is in flight (round-3 review M3) —
  *   every row's add button disables so a rapid double-click cannot fire a
- *   second save with a fresh record id.
+ *   second save with a fresh record id; the batch Add All button disables
+ *   too (round-4 review M4): a batch snapshot taken while a single-row save
+ *   is still in flight would count that row as unsaved and save it twice.
  * - `addNotice` optional `{ ok, text } | null`: a row/batch add result passed
  *   through while the picker stays open on failure (round-2 review M4) — the
  *   form's own status line sits beneath this full-screen overlay, so a failed
@@ -77,9 +79,16 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
   // Addable count memoized on [rows, savedSet, baseUrl] (round-3 review
   // minor: it previously recomputed — one dup-key build per row — on every
   // render including every filter keystroke it does not depend on).
+  // Counted over UNIQUE duplication keys (round-4 review M4 follow-up): the
+  // confirmed batch collapses in-listing duplicate ids (splitBatchAdd), so a
+  // listing carrying the same id twice must not advertise two addable rows.
   const addableCount = useMemo(() => {
-    if (!savedSet) return rows.length;
-    return rows.filter(row => !savedSet.has(modelDuplicationKey(row.id, baseUrl))).length;
+    const uniqueKeys = new Set();
+    for (const row of rows) uniqueKeys.add(modelDuplicationKey(row.id, baseUrl));
+    if (!savedSet) return uniqueKeys.size;
+    let addable = 0;
+    for (const key of uniqueKeys) if (!savedSet.has(key)) addable += 1;
+    return addable;
   }, [rows, savedSet, baseUrl]);
   if (!open) return null;
   const dupKeyOf = row => modelDuplicationKey(row.id, baseUrl);
@@ -131,19 +140,19 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
     <div data-testid="endpoint-model-picker" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling; close button in the modal header */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer */}
-      <div data-testid="endpoint-model-picker-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
+      <div data-testid="endpoint-model-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="endpoint-model-picker-title" onClick={e => e.stopPropagation()}
         className={`w-[440px] max-w-[90vw] flex flex-col overflow-hidden rounded-[22px] shadow-2xl max-h-[76vh] bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
         {/* Scroll收敛在内层 min-h-0 容器(与 model-form-scroll 同款,WebKit 兼容见 SettingsView 注释)。 */}
         <div data-testid="endpoint-model-picker-scroll" className="min-h-0 flex-1 overflow-y-auto overscroll-contain custom-scrollbar">
           <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${ROW_DIVIDER}`}>
             <div className="min-w-0">
-              <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.modelListTitle}</h2>
+              <h2 id="endpoint-model-picker-title" className="text-[20px] leading-6 font-semibold">{settingsCopy.modelListTitle}</h2>
               <p className={`mt-1 text-[13px] leading-[18px] truncate ${MUTED_TEXT}`}>{baseUrl || ''}</p>
             </div>
             <div className="shrink-0 flex items-center gap-2">
               {onAddAll && (
                 <button type="button" data-testid="endpoint-model-add-all" onClick={onAddAll}
-                  disabled={loading || addableCount === 0}
+                  disabled={loading || pickBusy || addableCount === 0}
                   className={ACTION_CLASS}>{settingsCopy.addAllModels}</button>
               )}
               <button type="button" data-testid="endpoint-model-picker-close" onClick={onClose}
@@ -183,7 +192,9 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
                   // 复审 M4:添加结果就地透传——表单状态行在本组件的全屏遮罩
                   // 下方不可见,picker 保持打开重试时失败原因(或成功回执)必须
                   // 在行列表上方可见,父层在关闭/新一轮探测时清除。
-                  <div data-testid="endpoint-model-add-notice" className={`px-3.5 py-2.5 text-[13px] leading-5 ${ROW_DIVIDER} ${addNotice.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]'}`}>
+                  // role="status" + aria-live="polite"(round-4 FE polish):
+                  // 结果异步到达,读屏要播报而不抢焦点。
+                  <div data-testid="endpoint-model-add-notice" role="status" aria-live="polite" className={`px-3.5 py-2.5 text-[13px] leading-5 ${ROW_DIVIDER} ${addNotice.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]'}`}>
                     {addNotice.text}
                   </div>
                 )}

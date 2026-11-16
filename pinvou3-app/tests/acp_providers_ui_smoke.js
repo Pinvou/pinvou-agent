@@ -81,6 +81,9 @@ function injectSource() {
         { id: 'gpt-5.2', context_window_tokens: 131072, context_from: 'catalog', max_output_tokens: null, output_from: null, loaded: null, title: null },
       ],
     };
+    // probe 失败注入(round-4 m1-1 运行时钉):非 null 时 probe_endpoint_models
+    // reject,驱动探测失败 → 共享 error 条 → URL 编辑清扫的完整链路。
+    var probeEndpointError = null;
     // 跨挂载安装自愈测试：install promise 挂起到 resolvePendingInstall，
     // 模拟真实安装进行中设置面板被关闭/切走的窗口期
     var pendingInstalls = {};
@@ -154,8 +157,12 @@ function injectSource() {
           return Promise.resolve({ imported: 1, idConflicts: 0, skipped: 0 });
         // 一次性模型探针：smoke 不验证探针内容，返回 null（前端静默回退占位快照）
         case 'probe_acp_agent_models': return Promise.resolve(null);
-        // 端点模型自动发现(规格 §2.7):显式点击「获取模型列表」才会到达
-        case 'probe_endpoint_models': return Promise.resolve(JSON.parse(JSON.stringify(acpProbeListing)));
+        // 端点模型自动发现(规格 §2.7):显式点击「获取模型列表」才会到达;
+        // probeEndpointError 非 null 时 reject(命令层在真实后端把传输失败
+        // 映射进结果对象,这里用 reject 走前端 catch 分支,语义等价)。
+        case 'probe_endpoint_models':
+          if (probeEndpointError) return Promise.reject(new Error(probeEndpointError));
+          return Promise.resolve(JSON.parse(JSON.stringify(acpProbeListing)));
         // Stay pending instead of resolving immediately: a real install only
         // returns once finished, so pending covers the "component unmounted
         // mid-install" window (see the cross-mount heal steps at the end of
@@ -193,6 +200,7 @@ function injectSource() {
     window.__ACP_PROVIDERS_TEST__ = {
       calls: calls,
       setEnvConflicts: function (next, entries) { envConflicts = next; envEffectiveEntries = entries || []; },
+      setProbeEndpointError: function (message) { probeEndpointError = message || null; },
       // 安装中测试钩子：安装进行中的真实形态是 CLI 尚不可用（installed=false），
       // 安装入口保持渲染且按钮呈禁用 + 进行中文案
       setInstalling: function (agent, installing) {
@@ -543,6 +551,31 @@ async function clickSettingsSection(page, label) {
     !document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
     && !document.querySelector('[data-testid="acp-provider-form-dialog"]')
   ));
+  // round-4 m1-1:探测失败写在本表单共享的 error 条上;URL 编辑的失效清扫
+  // 必须连同清 error——旧 URL 的红色失败条不许挂在新 URL 下(运行时覆盖,
+  // 源码钉在 tests/settings_ui_smoke.js 的 clearEndpointProbeState 守卫)。
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setProbeEndpointError('probe exploded'));
+  await page.click('[data-testid="acp-provider-add"]');
+  await sleep(300);
+  await page.type('[data-testid="acp-provider-base-url"]', 'https://relay-error.example.com/v1');
+  await page.click('[data-testid="acp-provider-fetch-models"]');
+  await sleep(500);
+  rec('⑥.18c probe failure surfaces the shared form error banner', await page.evaluate(() =>
+    !!document.querySelector('[data-testid="acp-provider-form-error"]')
+  ));
+  await page.evaluate(() => {
+    const input = document.querySelector('[data-testid="acp-provider-base-url"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'https://relay-edited.example.com/v1');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(200);
+  rec('⑥.18d editing the base URL clears the stale probe-error banner (invalidation sweep covers the shared error state)',
+    await page.evaluate(() => !document.querySelector('[data-testid="acp-provider-form-error"]')
+      && !document.querySelector('[data-testid="endpoint-model-picker-dialog"]')));
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setProbeEndpointError(null));
+  await page.keyboard.press('Escape');
+  await sleep(200);
   rec('⑥.19 候选流程未产生保存调用', (await callCount(page, 'save_acp_provider')) === savesBeforeAcpFetch);
 
   // 一键切换

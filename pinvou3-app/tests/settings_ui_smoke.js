@@ -306,8 +306,8 @@ assert.match(
 );
 assert.match(
   settingsViewSource,
-  /const modelRef = useRef\(model\);/,
-  'the wire model must be mirrored into a render-time ref so the async resolve compares the live value (not the click-time closure)',
+  /const modelRef = useRef\(model\);\s*modelRef\.current = model;/,
+  'the wire model must be mirrored into a render-time ref (declaration AND the render-mirror assignment) so the async resolve compares the live value — deleting the mirror line freezes the ref at mount and silently disables the fact_model comparison (runtime-covered by ⑥.5k2b/⑥.5k2c since round-4)',
 );
 // 复审 M4(添加结果的可见性):endpointAddResult 升级为 { ok, text } | null——
 // 失败曾是硬编码绿色,且 picker 打开时表单状态行被全屏遮罩挡住。钉四条形状:
@@ -370,14 +370,15 @@ assert.match(
 // round-3 审 M3(单行添加双击重复落库):handleEndpointModelPick 需要自己的
 // 在飞守卫——ref 同步挡同一 tick 的第二次点击,state 驱动 picker 行按钮禁用
 // (保存 IPC + 刷新链路的窗口内不给可点的第二下);picker 行按钮按 pickBusy
-// 禁用。四个形状缺一都会变红。
+// 禁用。round-4 M4 补两个交错闭口:单行添加在批量确认挂起时禁入(旧快照),
+// 批量入口在单行保存在飞时禁入(快照会把在飞行当未保存)。
 const pickStart = settingsViewSource.indexOf('async function handleEndpointModelPick(row)');
 assert.notStrictEqual(pickStart, -1, 'single-row endpoint pick handler must exist');
 const pickSource = settingsViewSource.slice(pickStart, settingsViewSource.indexOf('async function handleAddAllEndpointModels()', pickStart));
 assert.match(
   pickSource,
-  /if \(pickInFlightRef\.current \|\| savingModel \|\| addingAllModels\) return;/,
-  'the pick handler must re-entry-guard on a dedicated in-flight ref (savingModel/addingAllModels are never set on this path)',
+  /if \(pickInFlightRef\.current \|\| savingModel \|\| addingAllModels \|\| addAllModelsConfirm\) return;/,
+  'the pick handler must re-entry-guard on a dedicated in-flight ref AND refuse while a batch confirm is pending (the pending snapshot predates the single-row save — confirming afterwards would double-save that row; round-4 review M4)',
 );
 assert.match(
   pickSource,
@@ -403,6 +404,11 @@ assert.match(
   endpointPickerSource,
   /disabled=\{alreadySaved \|\| pickBusy\}/,
   'the row add button must disable while a pick-save is in flight (round-3 review M3)',
+);
+assert.match(
+  endpointPickerSource,
+  /disabled=\{loading \|\| pickBusy \|\| addableCount === 0\}/,
+  'the batch add-all button must disable while a single-row save is in flight (a dedup snapshot taken then counts the in-flight row as unsaved and batch-saves it a second time, round-4 review M4)',
 );
 // round-3 审 minor(提示失效清扫):URL 变更/目录切换/手动本地路由三个失效点
 // 都要清探测失败提示,旧 URL 的红色失败提示不许挂在新表单下。
@@ -475,6 +481,57 @@ assert.match(
   /!latestFieldsRef\.current\.maxOutput && Number\.isFinite\(probedOutput\) && probedOutput > 0/,
   'max output auto-fill must stay gated on an EMPTY max output field read from the latest-values ref (never overwrite, never stale-closure)',
 );
+// round-4 #851 收口 + m1-2(server_kind 闸):picker 添加的是全新记录
+// (fresh makeModelId()),但保存载荷必须与 doSave 同一口径——
+// - 凭据阶梯直接复用 cloudCredentialAction(),api_key 按 noAuthActive 口径
+//   丢弃:免鉴权声明生效时 picker 添加的记录不得再带 key/凭据要求(chat 门
+//   否则会被声明外的凭据需求挡住);
+// - auth_mode 随载荷落库、alias 与表单保存同为 null(字段对齐);
+// - listing 带 server_kind(serde snake_case)时 ollama / lm_studio 行的
+//   context_window_tokens 是运行时生效值(/api/ps 生效窗口、
+//   loaded_context_length),与 buildLocalModelPayload 同一教义只存 null——
+//   行内徽章照常显示,仅落库被闸(声明会永久 min-clamp 后续探测)。
+const endpointPayloadStart = settingsViewSource.indexOf('function buildEndpointModelPayload(row)');
+assert.notStrictEqual(endpointPayloadStart, -1, 'endpoint row payload builder must exist');
+const endpointPayloadSource = settingsViewSource.slice(
+  endpointPayloadStart,
+  settingsViewSource.indexOf('async function handleEndpointModelPick(row)', endpointPayloadStart),
+);
+assert.match(
+  endpointPayloadSource,
+  /const nextKeyAction = isLocalPreset\s*\? \(localKeyEnabled && apiKey\.trim\(\) \? 'replace' : 'keep_existing'\)\s*: cloudCredentialAction\(\);/,
+  'the picker row payload must reuse the exact doSave credential ladder (cloudCredentialAction) so a keyless declaration deletes/replaces stored credentials the same way a form save does',
+);
+assert.match(
+  endpointPayloadSource,
+  /: \(!noAuthActive && apiKey\.trim\(\) \? apiKey\.trim\(\) : ''\)/,
+  'the picker row payload must drop the typed key under the keyless declaration (same noAuthActive caliber as doSave, never the raw noAuth)',
+);
+assert.match(
+  endpointPayloadSource,
+  /alias: null,/,
+  'picker-added records must carry the same null-alias default as a form save (payload field parity)',
+);
+assert.match(
+  endpointPayloadSource,
+  /auth_mode: !isLocalPreset && !isCodingPlan && noAuth \? 'none' : null/,
+  'the picker row payload must persist the keyless declaration via auth_mode (otherwise a picker-added record re-demands credentials at the chat gate despite the form declaring the endpoint keyless)',
+);
+assert.match(
+  endpointPayloadSource,
+  /const serverKind = endpointListing && typeof endpointListing === 'object' \? endpointListing\.server_kind : null;/,
+  'the runtime-effective context gate must read server_kind off the listing the picker received (serde snake_case, no prop threading needed)',
+);
+assert.match(
+  endpointPayloadSource,
+  /const runtimeProbedLane = serverKind === 'ollama' \|\| serverKind === 'lm_studio';/,
+  'the runtime-effective context lane must be exactly ollama/lm_studio (same set as buildLocalModelPayload)',
+);
+assert.match(
+  endpointPayloadSource,
+  /context_window_tokens: runtimeProbedLane \? null : row\.contextWindowTokens,/,
+  'picker rows on ollama/lm_studio must persist a null context declaration (the row still DISPLAYS the probed value; only persistence is gated) so it cannot min-clamp later probes',
+);
 // 批量「全部添加」:应用内 SheetConfirmDialog 是硬闸门(规格决策 1;原生
 // window.confirm 在 Tauri WebView2 不渲染,见 tests/settings_window_confirm.test.mjs),
 // 必须先记录挂起批次、确认后才进入逐行保存循环;同时钉去重截断文案来源
@@ -499,6 +556,11 @@ assert.match(
   'the entry handler must only record the pending batch in the in-app confirm state',
 );
 assert.doesNotMatch(addAllEntry, /onSave\(/, 'no save may run before the in-app confirm');
+assert.match(
+  addAllEntry,
+  /if \(addingAllModels \|\| pickInFlightRef\.current \|\| pickSavingModel \|\| savingModel \|\| !endpointListing\) return;/,
+  'the add-all entry must refuse while a single-row add is in flight (its dedup snapshot would count the in-flight row as unsaved and the confirmed batch would save it a second time, round-4 review M4) — removing any of the in-flight clauses must go red',
+);
 const addAllConfirmBody = addAllSource.slice(confirmHandlerIndex);
 assert.match(
   addAllConfirmBody,
@@ -851,6 +913,16 @@ assert.match(
   /const handleBaseUrlChange = value => \{\s*setBaseUrl\(value\);\s*clearEndpointProbeState\(\);/,
   'editing the ACP base URL must clear the probed listing and close the picker (no URL A results under URL B)',
 );
+// round-4 审 m1-1:探测失败写在本表单共享的 error 条上,失效清扫必须连同
+// 清 error——旧 URL 的红色失败条不许挂在新 URL/协议下(与聊天线
+// fetchModelsMessage 的 round-3 minor 同因;error 的其余写入方均为
+// 「上一次尝试」的过期提示,随失效点清扫无副作用)。运行时覆盖见
+// tests/acp_providers_ui_smoke.js ⑥.18c/⑥.18d。
+assert.match(
+  providerFormModalSource,
+  /const clearEndpointProbeState = \(\) => \{\s*setEndpointListing\(null\);\s*setEndpointPickerOpen\(false\);\s*setError\(''\);\s*\};/,
+  'the ACP probe-invalidation sweep must also clear the shared error state (the probe-failure banner rides it and must not survive a base-URL/wire/preset edit, round-4 review m1-1)',
+);
 // i18n:ACP 簇的探活禁用提示三语齐备(组件内不得硬编码文案)。
 for (const settingsI18nSource of settingsI18nSources) {
   assert.match(
@@ -1019,6 +1091,9 @@ function injectSource() {
     var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
     // save_model 失败注入:非 null 时 reject 该错误,模拟连接/写盘失败。
     var saveModelError = null;
+    // save_model 在飞窗口注入(round-4 M4 运行时钉):>0 时 save_model 延迟
+    // resolve/reject,拉长单行保存在飞窗口,供「全部添加」禁用断言驱动时序。
+    var saveModelDelay = 0;
     var dependencyCheckResponse = [];
     var memoryOverview = {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
@@ -1040,6 +1115,15 @@ function injectSource() {
     var pendingDownloadReject = null;
     var probedLocalKind = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
+    // save_model 的落库体(函数声明提升,save_model 分支同步/延迟两条路径共用)。
+    function applySaveModel(args) {
+      var savedModel = Object.assign({}, args.model, {
+        has_secret: !!args.model.api_key,
+        credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
+      });
+      models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
+      return null;
+    }
     // Deliberately not stubbing window.confirm here. SettingsView now routes
     // everything through in-app confirm dialogs (the native confirm does not
     // render in Tauri WebView2); if someone reintroduces a native confirm,
@@ -1095,13 +1179,19 @@ function injectSource() {
         case 'list_models': return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
         case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
         case 'save_model':
+          // 延迟窗口内同样按 saveModelError 决定 resolve/reject:错误注入与
+          // 在飞窗口两个旋钮可以正交组合(延迟成功 / 延迟失败)。无延迟时
+          // 保持既有即时语义。
+          if (saveModelDelay) {
+            return new Promise(function (resolve, reject) {
+              setTimeout(function () {
+                if (saveModelError) reject(new Error(saveModelError));
+                else resolve(applySaveModel(args));
+              }, saveModelDelay);
+            });
+          }
           if (saveModelError) return Promise.reject(new Error(saveModelError));
-          var savedModel = Object.assign({}, args.model, {
-            has_secret: !!args.model.api_key,
-            credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
-          });
-          models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
-          return Promise.resolve(null);
+          return Promise.resolve(applySaveModel(args));
         case 'delete_model':
           models = models.filter(function (model) { return model.id !== args.id; });
           if (activeModelId === args.id) activeModelId = models[0] && models[0].id;
@@ -1226,6 +1316,7 @@ function injectSource() {
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
       setSaveModelError: function (message) { saveModelError = message || null; },
+      setSaveModelDelay: function (ms) { saveModelDelay = Number(ms) || 0; },
       setModelImageCapability: function (id, override) {
         models = models.map(function (m) { return m.id === id ? Object.assign({}, m, { image_capability_override: override }) : m; });
       },
@@ -2411,6 +2502,65 @@ async function modalWidth(page, headingText) {
   rec('⑥.5k2 second test with different facts must NOT overwrite manually filled values (and the hint clears)',
     keptManual.context === '999' && keptManual.maxOutput === '777' && !keptManual.hintShown,
     JSON.stringify(keptManual));
+  // round-4 m1-8:fact_model 比较臂的运行时钉。⑥.5k1/k2 的 mock 响应不带
+  // fact_model,比较臂此前从未在运行时跑过——删掉渲染镜像
+  // modelRef.current = model(比较退化成挂载值 ≠ fact_model 的恒假分支)
+  // 全套用例仍然全绿。事实名引用 ⑥.5g 已保存的 glm-5.3-flash(后端按
+  // 已保存记录的 model 探得并经 fact_model 回带);先清空 ⑥.5k2 手填的
+  // 字段,fill-only-when-empty 才有可观察的落点。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const clear = input => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, '');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    clear(root.querySelector('[data-testid="model-form-context-window"]'));
+    clear(root.querySelector('[data-testid="model-form-max-output"]'));
+  });
+  await sleep(150);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({
+    ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200,
+    context_window_tokens: 555000, max_output_tokens: 444,
+    fact_model: 'glm-5.3-flash',
+  }));
+  const mismatchModelInput = await page.$('input[placeholder="输入模型 ID"]');
+  await mismatchModelInput.type('glm-9-other-model', { delay: 10 });
+  await clickModalExact(page, '测试连接');
+  await sleep(500);
+  const staleFactsDropped = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      context: root.querySelector('[data-testid="model-form-context-window"]').value,
+      maxOutput: root.querySelector('[data-testid="model-form-max-output"]').value,
+      hintShown: !!root.querySelector('[data-testid="model-form-filled-from-endpoint"]'),
+    };
+  });
+  rec('⑥.5k2b facts whose fact_model differs from the live wire model must NOT fill (the per-saved-model comparison arm runs at runtime)',
+    staleFactsDropped.context === '' && staleFactsDropped.maxOutput === '' && !staleFactsDropped.hintShown,
+    JSON.stringify(staleFactsDropped));
+  // 匹配臂:表单模型改回 fact_model 同名 → 照常填入。删掉渲染镜像或破坏
+  // 比较(拿表单模型跟自己比/恒真放行)在此臂变红。
+  await page.evaluate(() => {
+    const input = document.querySelector('input[placeholder="输入模型 ID"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'glm-5.3-flash');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
+  await clickModalExact(page, '测试连接');
+  await sleep(500);
+  const matchingFactsFilled = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      context: root.querySelector('[data-testid="model-form-context-window"]').value,
+      maxOutput: root.querySelector('[data-testid="model-form-max-output"]').value,
+      hintShown: !!root.querySelector('[data-testid="model-form-filled-from-endpoint"]'),
+    };
+  });
+  rec('⑥.5k2c facts whose fact_model equals the live wire model fill the empty fields (render-mirror comparison stays load-bearing)',
+    matchingFactsFilled.context === '555000' && matchingFactsFilled.maxOutput === '444' && matchingFactsFilled.hintShown,
+    JSON.stringify(matchingFactsFilled));
   // 获取模型列表:显式点击 → probe_endpoint_models(带表单 base_url + preset)。
   await clickModalExact(page, '获取模型列表');
   await sleep(600);
@@ -2448,11 +2598,55 @@ async function modalWidth(page, headingText) {
     const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
     return call && call.args && call.args.model;
   });
-  rec('⑥.5k5 explicit row add saves the discovered draft with endpoint facts',
+  rec('⑥.5k5 explicit row add saves the discovered draft with endpoint facts (payload parity with doSave: ladder + auth_mode + alias)',
     !!pickedSave && pickedSave.model === 'glm-5-flash' && pickedSave.base_url === 'https://example.com/v1'
       && pickedSave.context_window_tokens === 1048576 && pickedSave.max_output_tokens === 32768
-      && pickedSave.preset === 'openai_compatible',
+      && pickedSave.preset === 'openai_compatible'
+      && pickedSave.credential_action === 'replace' && pickedSave.api_key === ''
+      && pickedSave.auth_mode === null && pickedSave.alias === null,
     JSON.stringify(pickedSave));
+  // round-4 M4 运行时钉(⑥.5k6 前奏):单行保存在飞窗口内「全部添加」必须
+  // 禁用且点击是 no-op(确认弹窗绝不出现)。harness 用 saveModelDelay 拉长
+  // 在飞窗口、saveModelError 让该行保存失败收场——kimi-k3 仍未落库,不改
+  // 变 ⑥.5k6 的去重计划;顺带钉住失败横幅(add-notice)的运行时渲染。
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setSaveModelDelay(1500);
+    window.__SETTINGS_TEST__.setSaveModelError('save exploded');
+  });
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('kimi-k3'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(300);
+  const addAllWhilePick = await page.evaluate(() => {
+    const button = document.querySelector('[data-testid="endpoint-model-add-all"]');
+    return {
+      buttonDisabled: !!button && button.disabled,
+      pickerOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+    };
+  });
+  // 在飞窗口内点「全部添加」:守卫直接 return,确认弹窗不得出现。
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
+  await sleep(250);
+  const addAllNoOp = await page.evaluate(() => ({
+    noConfirm: !document.querySelector('[data-testid="add-all-models-confirm"]'),
+    pickerStillOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+  }));
+  await sleep(1500);
+  const pickFailure = await page.evaluate(() => ({
+    failureBanner: !!document.querySelector('[data-testid="endpoint-model-add-notice"]'),
+    pickerKeptOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+  }));
+  rec('⑥.5k5b Add All disables and stays a no-op while a row save is in flight; the failed row keeps the picker open with the notice banner',
+    addAllWhilePick.buttonDisabled && addAllWhilePick.pickerOpen && addAllNoOp.noConfirm
+    && addAllNoOp.pickerStillOpen && pickFailure.failureBanner && pickFailure.pickerKeptOpen,
+    JSON.stringify({ addAllWhilePick, addAllNoOp, pickFailure }));
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setSaveModelError(null);
+    window.__SETTINGS_TEST__.setSaveModelDelay(0);
+  });
+  await sleep(150);
   // 「全部添加」:应用内确认对话框(原生 confirm 在 WebView2 不渲染)。点按钮
   // 后先断言对话框出现且尚未落库(保存调用数不增),点确认按钮才逐行保存;
   // 重复行(glm-5.3-flash 已在 ⑥.5g 保存、glm-5-flash 刚保存)跳过,只落 kimi-k3。
@@ -2492,6 +2686,98 @@ async function modalWidth(page, headingText) {
     JSON.stringify({ addAllGate, batchState }));
   // 恢复默认 test_model_connection 响应,不污染后续流程。
   await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({ ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 }));
+  // round-4 m1-12:truncated 通知与渲染上限尾注的运行时钉(setProbeEndpointListing
+  // 此前是死钩子)。注入 truncated + 210 行(205 个 bulk- 前缀 + 5 个独立 id):
+  // 空筛选 → 平文尾注「还有 10 个未显示」;输入 bulk → 可见 205 行、隐藏 5 行,
+  // 尾注必须切到带「缩小筛选范围」建议的变体——三目两臂与 truncated 条件的
+  // 突变在此变红。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed', http_status: 200, transport: null, server_kind: null, truncated: true,
+    models: [
+      ...Array.from({ length: 205 }, (_, i) => ({ id: 'bulk-model-' + i, context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null })),
+      { id: 'solo-a', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+      { id: 'solo-b', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+      { id: 'solo-c', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+      { id: 'solo-d', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+      { id: 'solo-e', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+    ],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(600);
+  const truncatedState = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const footer = dialog && dialog.querySelector('[data-testid="endpoint-model-picker-more"]');
+    return {
+      open: !!dialog,
+      truncatedNotice: !!dialog && !!dialog.querySelector('[data-testid="endpoint-model-picker-truncated"]'),
+      footerShown: !!footer,
+      footerText: footer ? (footer.textContent || '').trim() : '',
+    };
+  });
+  rec('⑥.5k7 a truncated listing surfaces the notice and the plain-count "N more" footer while the filter is untouched',
+    truncatedState.open && truncatedState.truncatedNotice && truncatedState.footerShown
+      && truncatedState.footerText.includes('10') && !truncatedState.footerText.includes('缩小筛选范围'),
+    JSON.stringify(truncatedState));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const input = dialog.querySelector('[data-testid="endpoint-model-filter"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'bulk');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(300);
+  const filteredFooter = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const footer = dialog && dialog.querySelector('[data-testid="endpoint-model-picker-more"]');
+    return { footerText: footer ? (footer.textContent || '').trim() : '' };
+  });
+  rec('⑥.5k7b typing a filter swaps the footer to the refine-the-filter variant with the filtered hidden count',
+    filteredFooter.footerText.includes('5') && filteredFooter.footerText.includes('缩小筛选范围'),
+    JSON.stringify(filteredFooter));
+  // round-4 m1-2 运行时钉:listing 带 server_kind:'ollama' 时,行的
+  // context_window_tokens 是运行时生效值——徽章照常显示 33K,落库必须存
+  // null(server_kind 闸;非 ollama/lm_studio 的落库臂已由 ⑥.5k5 钉住)。
+  // 同轮断言 truncated:false 下截断通知不得渲染(条件的另一侧)。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed', http_status: 200, transport: null, server_kind: 'ollama', truncated: false,
+    models: [
+      { id: 'qwen2.5-coder:32b', context_window_tokens: 32768, context_from: 'endpoint', max_output_tokens: null, output_from: null, loaded: true, title: null },
+    ],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(600);
+  const ollamaBadge = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = dialog && [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('qwen2.5-coder'));
+    return {
+      truncatedNoticeAbsent: !!dialog && !dialog.querySelector('[data-testid="endpoint-model-picker-truncated"]'),
+      rowShown: !!row,
+      badgeShown: !!row && (row.textContent || '').includes('33K'),
+    };
+  });
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('qwen2.5-coder'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(700);
+  const ollamaRowSave = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5k8 ollama lane shows the runtime context badge but persists a null declaration (server_kind persistence gate)',
+    ollamaBadge.truncatedNoticeAbsent && ollamaBadge.rowShown && ollamaBadge.badgeShown
+      && !!ollamaRowSave && ollamaRowSave.model === 'qwen2.5-coder:32b' && ollamaRowSave.context_window_tokens === null,
+    JSON.stringify({ ollamaBadge, ollamaRowSave }));
+  // 恢复默认 probe 列表,不污染后续流程。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed', http_status: 200, transport: null, server_kind: null, truncated: false,
+    models: [
+      { id: 'glm-5.3-flash', context_window_tokens: 131072, context_from: 'catalog', max_output_tokens: null, output_from: null, loaded: null, title: null },
+      { id: 'glm-5-flash', context_window_tokens: 1048576, context_from: 'endpoint', max_output_tokens: 32768, output_from: 'endpoint', loaded: null, title: 'GLM-5 Flash' },
+      { id: 'kimi-k3', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
+    ],
+  }));
   await clickModalExact(page, '取消');
   await sleep(200);
 
