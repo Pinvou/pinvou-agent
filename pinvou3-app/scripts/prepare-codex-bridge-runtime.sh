@@ -399,7 +399,7 @@ npm_ci_for_target() {
     PATH="$NPM_NODE_ROOT/bin:$PATH" timeout --kill-after=15 "$NPM_CI_BUDGET_SECS" \
       "$NPM_NODE_ROOT/bin/npm" "${npm_args[@]}"
   else
-    echo "::warning::GNU timeout unavailable on $(uname -s); bridge-prep npm ci runs under this job's timeout-minutes cap only" >&2
+    echo "::warning::GNU timeout unavailable on $(uname -s); bridge-prep npm ci runs without a per-leg bound (under CI the job's timeout-minutes cap still applies)" >&2
     PATH="$NPM_NODE_ROOT/bin:$PATH" "$NPM_NODE_ROOT/bin/npm" "${npm_args[@]}"
   fi
 }
