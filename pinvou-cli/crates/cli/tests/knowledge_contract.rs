@@ -38,7 +38,7 @@
 //! no-op signal is placeholder capability (AGENTS.md §4). The session-mount surface refuses honestly
 //! (per-process app memory), and `collections delete` never boots the
 //! session store (the mount sweep was always empty in a one-shot process;
-//! the boot would run the 50-sessions-per-kind retention). Paths that need
+//! the boot would run the 500-sessions-per-kind retention). Paths that need
 //! the network, a model download, a configured remote server or the
 //! windowless product host stay behind `#[ignore]` with their opt-in
 //! command named (AGENTS.md rule: never touch the network in default
@@ -906,7 +906,7 @@ fn destructive_subcommands_require_yes_before_anything_else() {
 
 /// The mount surface refuses before opening the session store. The refusal
 /// cannot depend on the session (mounts are app-process memory), and
-/// `SessionStore::boot()` is not a read: it enforces the 50-sessions-per-kind
+/// `SessionStore::boot()` is not a read: it enforces the 500-sessions-per-kind
 /// retention policy and irreversibly evicts the user's oldest non-pinned
 /// sessions. A command that can only refuse must not destroy chat history on
 /// the way to saying so.
@@ -2432,7 +2432,7 @@ fn index_cancel_targets_a_stranded_running_job() {
 
 /// `collections delete` must never boot the session store: the GUI's mount
 /// sweep is always empty in a one-shot CLI process, while the boot would
-/// enforce the 50-sessions-per-kind retention and irreversibly evict the
+/// enforce the 500-sessions-per-kind retention and irreversibly evict the
 /// user's oldest non-pinned sessions as a side effect of a delete. Proof by
 /// occupation: the sessions root is a regular file, so any
 /// `SessionStore::boot()` would fail loudly ("session store unavailable") —
