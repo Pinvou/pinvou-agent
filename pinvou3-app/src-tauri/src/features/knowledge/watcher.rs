@@ -776,9 +776,14 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{
-        AccessKind, AccessMode, CreateKind, MetadataKind, ModifyKind, RemoveKind, RenameMode,
-    };
+    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind, RenameMode};
+    // MetadataKind is consumed only by the component-less-root fixture,
+    // which is unix-gated (the loss-class reproduction needs the inotify
+    // watch semantics) — an unconditional import is an unused import on
+    // Windows and the regression leg runs `-D warnings`
+    // (review JensenChen28 2026-11-16 P2).
+    #[cfg(unix)]
+    use notify::event::MetadataKind;
     use std::fs;
     use std::path::Path;
 
