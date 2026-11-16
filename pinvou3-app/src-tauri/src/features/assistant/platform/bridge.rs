@@ -222,6 +222,12 @@ fn configure_provider(
     // table leaves the root untouched for any other consumer.
     if no_auth {
         config.auth_mode = Some("none".to_string());
+    } else {
+        // Round-7 review hardening: `DtConfig` starts fresh per build, so a
+        // stale `Some("none")` is unreachable today — the explicit clear
+        // keeps a future warm/incremental caller from silently carrying a
+        // previous route's declaration into a now-keyed one.
+        config.auth_mode = None;
     }
 }
 
