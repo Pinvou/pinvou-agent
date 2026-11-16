@@ -323,16 +323,26 @@ struct RawModel {
     title: Option<String>,
 }
 
+/// 端点自报标签(id/display_name)的字符上界(round-5 审 minor):标签直通
+/// 前端 DOM,8 MiB body 里一条 megabyte 级 id 会把整份 IPC 载荷与 DOM 行
+/// 一起拖大。512 字符之外只可能是垃圾——任何真实模型 id/显示名都远短于
+/// 该界——按字符边界截断(非字节,避免切开 UTF-8)。
+const DISCOVERED_LABEL_MAX_CHARS: usize = 512;
+
+fn bound_label(value: &str) -> String {
+    value.chars().take(DISCOVERED_LABEL_MAX_CHARS).collect()
+}
+
 impl RawModel {
     fn endpoint_sourced(self) -> DiscoveredModel {
         DiscoveredModel {
-            id: self.id,
+            id: bound_label(&self.id),
             context_window_tokens: self.context,
             context_from: self.context.map(|_| ModelFactSource::Endpoint),
             max_output_tokens: self.output,
             output_from: self.output.map(|_| ModelFactSource::Endpoint),
             loaded: self.loaded,
-            title: self.title,
+            title: self.title.map(|title| bound_label(&title)),
         }
     }
 }
@@ -1167,6 +1177,38 @@ mod tests {
     /// 限长常量钉:8 MiB 是「截断 → 解析失败 → Unusable」分类的前提;大小
     /// 只应显式改动(下方 oversized 用例的 fixture 在任何不小于其长度的
     /// cap 下都不变红,常量钉守住「静默放大」)。
+    #[test]
+    fn endpoint_supplied_labels_are_length_bounded() {
+        // round-5 审 minor:8 MiB body 里一条 megabyte 级 id 会被截到
+        // DISCOVERED_LABEL_MAX_CHARS,不直通前端 DOM。
+        let giant = "x".repeat(6000);
+        let (raw, _) = parse_openai_listing(&serde_json::json!({"data":[{"id": giant}]}))
+            .expect("a valid single-entry body parses");
+        let models: Vec<DiscoveredModel> =
+            raw.into_iter().map(RawModel::endpoint_sourced).collect();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id.chars().count(), DISCOVERED_LABEL_MAX_CHARS);
+        // 标签上界同样作用于原生 lane 的 title(anthropic/gemini 的
+        // display_name 是唯一的 title 来源;compat lane 恒为 None)。
+        let clamped = RawModel {
+            id: "m".into(),
+            context: None,
+            output: None,
+            loaded: None,
+            title: Some(giant),
+        }
+        .endpoint_sourced();
+        assert_eq!(
+            clamped.title.as_deref().map(|title| title.chars().count()),
+            Some(DISCOVERED_LABEL_MAX_CHARS)
+        );
+        let (raw, _) = parse_openai_listing(&serde_json::json!({"data":[{"id": "normal-id"}]}))
+            .expect("a normal entry parses");
+        let models: Vec<DiscoveredModel> =
+            raw.into_iter().map(RawModel::endpoint_sourced).collect();
+        assert_eq!(models[0].id, "normal-id", "短标签原样保留");
+    }
+
     #[test]
     fn listing_body_cap_is_pinned() {
         assert_eq!(LISTING_BODY_CAP_BYTES, 8 * 1024 * 1024);

@@ -1040,6 +1040,10 @@ fn configured_model_name(model_id: Option<&str>) -> Option<String> {
     UserPrefs::load()
         .model_by_id(id)
         .map(|model| model.model.clone())
+        // 与 connection_model_facts 的空白拒绝同口径前移(round-5 审 nit):
+        // 手改记录的空 model 字段在这里就折成 None,不再为必拒的空白名
+        // 白付一次 4 MiB 限长 body 读。
+        .filter(|model| !model.is_empty())
 }
 
 /// 成功响应的列表形态判定(§2.4):与请求装配同一信号——anthropic 官方
