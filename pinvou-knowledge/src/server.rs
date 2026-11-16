@@ -1130,7 +1130,11 @@ mod tests {
             .unwrap();
         for index in 0..201 {
             let document = service
-                .upload_document(live.id, &format!("限界文档{index:03}.txt"), b"body".to_vec())
+                .upload_document(
+                    live.id,
+                    &format!("限界文档{index:03}.txt"),
+                    b"body".to_vec(),
+                )
                 .await
                 .unwrap();
             service.trash_document(document.id).unwrap();
@@ -1170,10 +1174,11 @@ mod tests {
     }
 
     // PUT /api/v1/collections/{id} 必须真实可达:owner 令牌完成全量替换
-    // 改名(响应回读新名称与新描述),未认证保持 401。与回收站 v2 路由
-    // 同理——这条 rename 链路曾被整段移除过,不能只靠 service 层测试保护
-    // 路由表。突变对照:路由表去掉 .put(update_collection) 后,重命名腿
-    // 以 405 落红。
+    // 改名(响应回读新名称与新描述),未认证保持 401,只读设备保持 403。
+    // 与回收站 v2 路由同理——这条 rename 链路曾被整段移除过,不能只靠
+    // service 层测试保护路由表。突变对照:路由表去掉 .put(update_collection)
+    // 后,重命名腿以 405 落红;require_access 丢掉 manage 判定后,只读腿
+    // 以 200 落红。
     #[tokio::test]
     async fn update_collection_route_serves_rename() {
         let root = tempfile::tempdir().unwrap();
@@ -1205,6 +1210,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        // 只读设备的 manage 写入必须 403(而不是 401/404):改名是管理面
+        // 操作,已认证的只读设备不能借道改写知识集。突变对照:require_access
+        // 丢掉 manage 判定后本腿以 200 落红。
+        let reader_credentials = crate::client::new_join_credentials();
+        let reader_join = service
+            .submit_join_request(
+                "192.168.1.30".parse().unwrap(),
+                JoinRequestCreate {
+                    device_name: "Reader".to_string(),
+                    device_token_hash: reader_credentials.device_token_hash.clone(),
+                    claim_secret: reader_credentials.claim_secret.clone(),
+                    share_secret: None,
+                },
+            )
+            .unwrap();
+        service
+            .approve_join_request(&reader_join.request.id, AccessScope::Read)
+            .unwrap();
+        let mut reader = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/api/v1/collections/{}", collection.id))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"越权名"}"#))
+            .unwrap();
+        add_bearer(&mut reader, &reader_credentials.device_token);
+        let response = app.clone().oneshot(reader).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         let mut rename = Request::builder()
             .method(Method::PUT)
@@ -1411,8 +1444,9 @@ mod tests {
 
     // client.devices() 与其它无 _page 后缀的清单方法一样必须逐页取全量:
     // 旧实现硬编码 ?limit=200&offset=0 首窗,设备数超过 200 时其余设备
-    // 静默不可见。这里用按 limit/offset 真实切片的桩路由(与真服务端
-    // 相同的 clamp 语义)钉住 600 台设备跨页聚合与顺序;突变对照:
+    // 静默不可见。这里用按 limit/offset 真实切片的桩路由钉住 600 台设备
+    // 跨页聚合与顺序;缺省 limit 返回全量,与真服务端 None=不限的约定
+    // 一致(paged_all 恒带显式 limit,缺省分支仅为忠实对齐)。突变对照:
     // devices() 退回单窗 ?limit=200 时,本用例恰好取到 200 ≠ 600 而落红。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn devices_client_pages_through_every_offset() {
@@ -1428,8 +1462,8 @@ mod tests {
         ) -> Json<Vec<DeviceGrant>> {
             let limit = query
                 .limit
-                .unwrap_or(200)
-                .clamp(1, crate::model::PAGE_LIMIT_CAP);
+                .map(|value| value.clamp(1, crate::model::PAGE_LIMIT_CAP))
+                .unwrap_or(items.len());
             Json(
                 items
                     .iter()

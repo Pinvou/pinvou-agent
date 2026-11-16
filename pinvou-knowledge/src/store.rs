@@ -2542,7 +2542,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(last_seen, None, "authorize_token must not write last_seen_at");
+        assert_eq!(
+            last_seen, None,
+            "authorize_token must not write last_seen_at"
+        );
     }
 
     #[test]
@@ -2750,10 +2753,11 @@ mod tests {
     }
 
     // 改名是"UPDATE+回读"同事务的原子操作:活行改名返回更新后的完整行;
-    // 回收站中的行与不存在的 id 都必须原样拒绝(QueryReturnedNoRows),
-    // 且回收站行绝不能被写到。两条 deleted_at 守卫各由一条断言钉住——
-    // 去掉 UPDATE 的守卫会让"偷改"落到回收站行上(名称断言落红),
-    // 去掉 SELECT 的守卫会让回收站改名误报成功(unwrap_err 落红)。
+    // 回收站中的行与不存在的 id 都必须原样拒绝(QueryReturnedNoRows)。
+    // SELECT 的 deleted_at 守卫是缺失哨兵的产生者,由 unwrap_err 断言
+    // 钉住;UPDATE 的同款守卫是纵深防御——回读失败即回滚,单独去掉它
+    // 在本层不可观察(突变实证:写被回滚吞掉,全量用例依旧绿),其
+    // 价值在于不依赖回滚结构的意图表达。
     #[test]
     fn update_collection_renames_atomically_and_rejects_absent_rows() {
         let store = Store::in_memory().unwrap();
