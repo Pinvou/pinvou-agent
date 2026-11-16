@@ -1334,20 +1334,10 @@ impl Store {
                 )
                 .optional()
         })?;
-        if let Some(grant) = &device
-            && !grant.revoked
-        {
-            // Authentication must remain responsive while a large index
-            // transaction owns the primary connection. Presence updates are
-            // telemetry, so skip rather than queue behind that transaction.
-            if let Some(connection) = self.conn.try_lock() {
-                let timestamp = now();
-                let _ = connection.execute(
-                    "UPDATE devices SET last_seen_at=?2 WHERE id=?1 AND (last_seen_at IS NULL OR last_seen_at<?3)",
-                    params![grant.id, timestamp, timestamp - 60],
-                );
-            }
-        }
+        // No presence write-back here: `last_seen_at` has no reader (see
+        // `map_device`'s wire-compat placeholder), and sweep #661 removed
+        // exactly this write as verified-unread telemetry. Re-land it only
+        // together with the reader half.
         Ok(device.filter(|grant| !grant.revoked))
     }
 
