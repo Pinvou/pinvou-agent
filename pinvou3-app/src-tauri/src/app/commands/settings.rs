@@ -743,6 +743,15 @@ pub struct ModelConnectionTestResult {
     pub max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_from: Option<crate::core::endpoint_discovery::ModelFactSource>,
+    /// 事实命中的配置模型 wire 名(`configured_model_name` 的解析结果):
+    /// 富化按**已保存记录**的 model 字段探得并匹配条目,而前端表单里的
+    /// model 字段是可编辑草稿——编辑表单里未保存的 model-ID 改动会让
+    /// 「表单模型」与「事实模型」分叉。前端把空字段填充守卫对齐到这个名字
+    /// (表单模型 ≠ fact_model 时不填),而不是拿表单模型跟自己比
+    /// (round-3 审 M2);无事实路径(新建表单/未知 id)缺席,既有 wire
+    /// 形状不变。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fact_model: Option<String>,
 }
 
 fn model_connection_result(
@@ -762,6 +771,7 @@ fn model_connection_result(
         context_from: None,
         max_output_tokens: None,
         output_from: None,
+        fact_model: None,
     }
 }
 
@@ -773,11 +783,15 @@ struct MatchedModelFacts {
 }
 
 /// 把命中事实接到既有结果上(其他字段一律不动——错误分类与既有行为
-/// 完全不变,成功时只是多带了长度事实)。
+/// 完全不变,成功时只是多带了长度事实)。`fact_model` 携带事实实际匹配
+/// 的配置模型 wire 名(round-3 审 M2):无论条目是否命中都设置——前端
+/// 据此判断「表单当前模型」是否还是探得事实的那个模型。
 fn attach_connection_model_facts(
     mut result: ModelConnectionTestResult,
     facts: Option<MatchedModelFacts>,
+    fact_model: Option<String>,
 ) -> ModelConnectionTestResult {
+    result.fact_model = fact_model;
     if let Some(facts) = facts {
         result.context_window_tokens = facts.context_window_tokens;
         result.context_from = facts
@@ -932,6 +946,11 @@ pub async fn probe_model_connection(
     };
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
+        // 禁用重定向(round-3 审 minor:与发现阶梯同一泄漏面):reqwest 跨源
+        // 重定向只剥 Authorization/Cookie 族,anthropic 端点的 `x-api-key`
+        // 会原样发给重定向目标。禁用后 3xx 按 `redirect` 码收口(既有映射,
+        // 此前因客户端跟随跳转而不可达),提示修 URL 而不是泄 key。
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(client) => client,
@@ -986,7 +1005,10 @@ pub async fn probe_model_connection(
             // 借用激活模型名字的回退被 configured_model_name 刻意拒绝。
             // 与发现列表共用 core 的限长读取器(minor-11:同一 chunk 循环、
             // 各自上限;全部 Err 一律折叠为「无事实」,探测结果不受影响)。
-            let facts = match configured_model_name(model_id) {
+            // fact_model 是解析出的配置名本身(round-3 审 M2):即使条目
+            // 未命中也回带,前端据此对齐表单模型与事实模型。
+            let configured = configured_model_name(model_id);
+            let facts = match configured.as_deref() {
                 Some(name) => {
                     match crate::core::endpoint_discovery::read_json_body_bounded(
                         &mut resp,
@@ -994,13 +1016,13 @@ pub async fn probe_model_connection(
                     )
                     .await
                     {
-                        Ok(value) => connection_model_facts(&value, listing_shape, Some(&name)),
+                        Ok(value) => connection_model_facts(&value, listing_shape, Some(name)),
                         Err(_) => None,
                     }
                 }
                 None => None,
             };
-            attach_connection_model_facts(result, facts)
+            attach_connection_model_facts(result, facts, configured)
         }
         Err(e) => model_connection_error_result(&e),
     }
@@ -3261,27 +3283,34 @@ mod tests {
             hit.output_from,
             Some(crate::core::endpoint_discovery::ModelFactSource::Endpoint)
         );
+        // round-3 审 M2 钉:fact_model 回带事实实际匹配的已保存 wire 名——
+        // 前端空字段填充守卫对齐到这个名字,而不是表单模型跟自己比。
+        assert_eq!(hit.fact_model.as_deref(), Some("qwen3-32b"));
         let hit_json = serde_json::to_string(&hit).expect("result serializes");
         assert!(hit_json.contains("context_window_tokens"));
 
-        // wire 名不在列表 → 四字段全部缺席;序列化串不带这些键。
+        // wire 名不在列表 → 长度四字段全部缺席;序列化串不带这些键。
+        // fact_model 照常回带(条目未命中也要让前端知道事实属于哪个模型)。
         let miss = probe_model_connection(&mock.base_url, "", Some("m-miss")).await;
         assert!(miss.ok);
         assert_eq!(miss.context_window_tokens, None);
         assert_eq!(miss.context_from, None);
         assert_eq!(miss.max_output_tokens, None);
         assert_eq!(miss.output_from, None);
+        assert_eq!(miss.fact_model.as_deref(), Some("not-in-listing"));
         let miss_json = serde_json::to_string(&miss).expect("result serializes");
         assert!(
             !miss_json.contains("context_window_tokens"),
             "skip_serializing_if must keep the miss wire shape unchanged: {miss_json}"
         );
 
-        // model_id None(新建表单)→ 无名字 → 无事实(不借激活模型)。
+        // model_id None(新建表单)→ 无名字 → 无事实(不借激活模型),
+        // fact_model 亦缺席。
         let unnamed = probe_model_connection(&mock.base_url, "", None).await;
         assert!(unnamed.ok);
         assert_eq!(unnamed.context_window_tokens, None);
         assert_eq!(unnamed.context_from, None);
+        assert_eq!(unnamed.fact_model, None);
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {
@@ -3289,6 +3318,22 @@ mod tests {
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+    }
+
+    /// round-3 审 minor 钉:连接测试客户端同样禁用重定向——anthropic 端点
+    /// 的 `x-api-key` 是自定义头,reqwest 跨源重定向只剥 Authorization/Cookie
+    /// 族,跟随会把 key 发给用户从未点名的主机。禁用后 302 以既有 `redirect`
+    /// 码收口(此分支此前因客户端跟随跳转而不可达),第二跳 0 次命中。
+    #[tokio::test]
+    async fn connection_test_redirect_is_not_followed_and_classifies_as_redirect() {
+        use crate::core::model_endpoint::models_mock;
+
+        let mock = models_mock::spawn_redirect("/models", "/v1/models");
+        let result = probe_model_connection(&mock.base_url, "", None).await;
+        assert!(!result.ok);
+        assert_eq!(result.code, "redirect");
+        assert_eq!(mock.hits_for("/models"), 1, "首跳只发生一次");
+        assert_eq!(mock.hits_for("/v1/models"), 0, "Location 第二跳绝不发生");
     }
 
     // ---- §2.3: probe_endpoint_models 命令薄壳 ----
