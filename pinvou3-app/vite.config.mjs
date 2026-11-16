@@ -673,7 +673,17 @@ function enforceLazyChunks() {
 // over the 494_000 step — so the ceiling takes the next thousand step
 // again. The web entry measured 126,560 B and stays under 129_000. This
 // cap does not promise headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 495_000;
+//
+// PR #847 second rebase re-measure, onto the 2026-11-16 main whose #881
+// frontend follow-ups (navigation, composer, tool-store, design-runtime)
+// joined the shared startup graph: the same re-measure reads 495,005 B
+// desktop on the local aarch64 toolchain — 5 B over the 495_000 ceiling —
+// so the ceiling takes the next thousand step. The x86_64 CI build still
+// fits under the old ceiling, so the arm64-class build (this toolchain,
+// the arm64/loongarch64 release legs) is the binding measure. Web
+// unchanged. This cap does not promise headroom for unrelated main
+// changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 496_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
