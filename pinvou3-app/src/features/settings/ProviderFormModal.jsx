@@ -170,6 +170,11 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
   // 结果作废,不在新 URL 的表单下展示。
   const baseUrlRef = useRef(baseUrl);
   baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
+  // wire 实时镜像(round-5 审 m1):kimi 表单是唯一带 wire 切换的面,探测
+  // 在飞时切换 wire,resolve 后的旧协议结果同样作废——URL 没变但协议变了,
+  // listing 的语义(乃至 auth_required 与否)属于旧 wire。
+  const wireRef = useRef(wireApi);
+  wireRef.current = wireApi; // eslint-disable-line react-hooks/refs -- mirror the live wire so an in-flight probe result can be discarded when the protocol toggled (round-5 review m1)
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   // 自绘确认步骤（null = 无）：'emptyKey'（新建空 key）/ 'deleteKey'（编辑删除已存密钥）
@@ -306,6 +311,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
   const handleFetchEndpointModels = async () => {
     if (!probeEndpointModelsAvailable || fetchingModels) return;
     const probedBaseUrl = String(baseUrl || '').trim();
+    const probedWire = wireApi;
     if (!probedBaseUrl) return;
     setEndpointFetchSeq(seq => seq + 1);
     setFetchingModels(true);
@@ -316,16 +322,21 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
         apiKey: String(apiKey || '').trim() || null,
         wire: wireApi,
       });
-      // 探测期间 base URL 已被改走 → 结果作废(复审 M5 同因)。
+      // 探测期间 base URL 已被改走 → 结果作废(复审 M5 同因);wire 切换了
+      // 也同样作废(round-5 审 m1)——URL 没变但协议变了,listing 的语义属于
+      // 旧 wire(kimi 表单是唯一带 wire 切换的面)。
       if (String(baseUrlRef.current || '').trim() !== probedBaseUrl) return;
+      if (wireRef.current !== probedWire) return;
       setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
       setEndpointPickerOpen(true);
     } catch (e) {
       // reject 穿透的是命令层错误,直接 String(e) 会把英文原始串透出到表单;
       // 按聊天线 normalizeConnectionTestResult 的同一映射归一为三语文案。
       // round-3 审 minor:reject 路径与 try 路径同一 resolve 时刻守卫——
-      // URL A 的探测失败不许以错误条挂在已改走的 URL B 表单下。
+      // URL A 的探测失败不许以错误条挂在已改走的 URL B 表单下;wire 同因
+      // (round-5 审 m1)。
       if (String(baseUrlRef.current || '').trim() !== probedBaseUrl) return;
+      if (wireRef.current !== probedWire) return;
       const connectionCopy = t.uiSettingsDetail.connectionMessages;
       if (e && typeof e === 'object' && !Array.isArray(e)) {
         const code = String(e.code || (e.ok ? 'ok' : 'unknown'));

@@ -925,6 +925,15 @@ assert.match(
   /const clearEndpointProbeState = \(\) => \{\s*setEndpointListing\(null\);\s*setEndpointPickerOpen\(false\);\s*setError\(''\);\s*\};/,
   'the ACP probe-invalidation sweep must also clear the shared error state (the probe-failure banner rides it and must not survive a base-URL/wire/preset edit, round-4 review m1-1)',
 );
+// round-5 审 m1:resolve 时刻守卫必须同时比对 wire 镜像——kimi 表单是唯一
+// 带 wire 切换的面,探测在飞时切 wire,URL 不变但协议变了,旧 wire 的
+// listing(乃至 auth_required 语义)不得挂在切换后的表单下。try/catch 两条
+// resolve 路径都要有(与 URL 守卫同款双臂)。
+assert.strictEqual(
+  (providerFormModalSource.match(/if \(wireRef\.current !== probedWire\) return;/g) || []).length,
+  2,
+  'both the try and catch resolve paths must discard an in-flight probe whose wire toggled (round-5 review m1; a single-arm regression must fail here)',
+);
 // i18n:ACP 簇的探活禁用提示三语齐备(组件内不得硬编码文案)。
 for (const settingsI18nSource of settingsI18nSources) {
   assert.match(
