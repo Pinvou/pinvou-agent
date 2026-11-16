@@ -397,8 +397,10 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     let n = content.chars().count();
     let bounded = if read_capped {
         let head: String = content.chars().take(ARTIFACT_CHAR_LIMIT).collect();
+        // 与下方未封顶分支同一披露纪律：字节硬读界与字符投影截取必须同时说明，
+        // 否则评审模型会把「读了 50 MiB」误当成「看到了 50 MiB 的内容」。
         format!(
-            "{head}\n\n…（产物超过 {} MiB 硬读界，仅读前 {} MiB；如需全审，让 Boss 拆分产物。P1 改 map-reduce 分块全审）",
+            "{head}\n\n…（产物超过 {} MiB 硬读界，仅读前 {} MiB，投影再截取前 {ARTIFACT_CHAR_LIMIT} 字；如需全审，让 Boss 拆分产物。P1 改 map-reduce 分块全审）",
             hard_cap / (1024 * 1024),
             hard_cap / (1024 * 1024),
         )
