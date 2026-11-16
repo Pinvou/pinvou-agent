@@ -1782,7 +1782,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                             event.preventDefault();
                             openColl(c);
                           }}
-                          className={`p-4 rounded-2xl cursor-pointer transition-all ${panel} ${panelHover}`}
+                          className={`p-4 rounded-2xl cursor-pointer transition-all outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/50 ${panel} ${panelHover}`}
                           style={activeColl && activeColl.id === c.id ? { borderColor: collColor(c), boxShadow: `${isDark ? '' : '0 1px 2px rgba(24,24,40,.04), '}0 0 0 2px ${collColor(c)}55` } : panelShadow}>{/* isDark dynamic-value: 保留 (boxShadow 含运行时 collColor) */}
                           <div className="flex items-start gap-3">
                             <div className="w-11 h-11 rounded-xl grid place-items-center shrink-0" style={{ background: collColor(c) + (isDark ? '33' : '1f'), color: collColor(c) }}><BookOpen size={20} /></div> {/* isDark dynamic-value: 保留 (background 依赖运行时 collColor) */}
