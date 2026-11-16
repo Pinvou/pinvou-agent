@@ -310,8 +310,9 @@ pub async fn kb_model_download(
     }
     let guard = DownloadGuard;
     // 取消旗标在这里消费而非抹除：占位下载位与清零之间恰好落下的取消按用户
-    // 意图立即生效（原「占位→清零」顺序会把这一窗口内的取消静默吞掉）；平时
-    // 则顺带清掉上次残留的过期旗标。此刻尚无任何磁盘产物，无需清理。
+    // 意图立即生效（原「占位→清零」顺序会把这一窗口内的取消静默吞掉）。
+    // 流程结束后的残旗由 DownloadGuard 统一清零，这里消费的是占位窗口内的
+    // 取消与空闲期直接调 kb_model_cancel 的上膛。此刻尚无任何磁盘产物。
     if CANCEL.swap(false, Ordering::Relaxed) {
         return Err(pinvou_knowledge::model_download::CANCELLED.into());
     }
@@ -684,10 +685,13 @@ fn replace_model_directory(candidate: &Path, destination: &Path) -> Result<Optio
 }
 
 /// `DOWNLOADING` 复位守卫（任何提前 return 都复位，含 `?` 早退与取消）。
+/// 同时清掉 `CANCEL`：旗标语义收敛为「一次在飞的下载」——流程结束后迟到
+/// 的取消是 no-op，而不是残旗被下一次下载的入口消费成一个凭空的取消错误。
 struct DownloadGuard;
 impl Drop for DownloadGuard {
     fn drop(&mut self) {
         DOWNLOADING.store(false, Ordering::SeqCst);
+        CANCEL.store(false, Ordering::Relaxed);
     }
 }
 
