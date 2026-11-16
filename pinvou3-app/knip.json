@@ -4,7 +4,6 @@
     "src/index.html",
     "src/pet.html",
     "src/reader.html",
-    "src/app/pet-main.jsx",
     "src/app/personas-overlay.js",
     "tests/*.test.{js,mjs}",
     "tests/*.js",
@@ -26,7 +25,6 @@
     "src/shared/markdown-bridge-fallback.js",
     "src/shared/model-service-errors.js",
     "src/shared/theme-boot.js",
-    "src/app/reader-main.jsx",
     "src/features/reader/ReaderApp.jsx",
     "scripts/tauri/*.js",
     "scripts/*.mjs"
@@ -39,9 +37,6 @@
   "paths": {
     "/src/*": ["./src/*"]
   },
-  "ignore": [
-    "src/vendor/**"
-  ],
   "ignoreDependencies": [
     "lightningcss"
   ],
