@@ -22,6 +22,10 @@ const localServerTiersSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'features', 'settings', 'local-server-tiers.jsx'),
   'utf8',
 );
+const endpointPickerSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'endpoint-model-picker.jsx'),
+  'utf8',
+);
 const settingsI18nSources = ['zh', 'en', 'ja'].map((lang) => fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'i18n', `${lang}.js`),
   'utf8',
@@ -200,6 +204,18 @@ const localDetectEnd = settingsViewSource.indexOf('function startManualLocalMode
 assert.notStrictEqual(localDetectStart, -1, 'local picker detect handler must exist');
 assert.notStrictEqual(localDetectEnd, -1, 'local picker detect handler boundary must exist');
 const localDetectSource = settingsViewSource.slice(localDetectStart, localDetectEnd);
+// 复审 minor-14:手动添加本地模型是显式路由切换,与 applyCatalogItem 同一纪律——
+// 上一个表单残留的端点探测状态(候选列表/picker/挂起批量/添加提示)必须清空,
+// 绝不许在新表单下复用。切片钉住 startManualLocalModel 函数体,漏清任一项即红。
+const manualLocalStart = localDetectEnd;
+const manualLocalEnd = settingsViewSource.indexOf('const catalogSectionTitleClass', manualLocalStart);
+assert.notStrictEqual(manualLocalEnd, -1, 'startManualLocalModel handler boundary must exist');
+const manualLocalSource = settingsViewSource.slice(manualLocalStart, manualLocalEnd);
+assert.match(
+  manualLocalSource,
+  /setEndpointListing\(null\);\s*setEndpointPickerOpen\(false\);\s*setAddAllModelsConfirm\(null\);\s*setEndpointAddResult\(null\);/,
+  'manual local-model entry must drop the leftover probe state (listing, picker, pending batch, add notice) like applyCatalogItem does',
+);
 assert.match(
   localDetectSource,
   /customPort/,
@@ -255,6 +271,88 @@ assert.match(
   settingsViewSource,
   /if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;/,
   'an in-flight probe whose base URL changed mid-flight must be discarded at resolve time',
+);
+// 复审 M2(测试连接的 resolve 时刻守卫):handleTest 与 handleFetchModels 同一
+// 口径——点击瞬间快照 base URL 与 wire 模型;resolve 时 URL 已变整份静默丢弃
+// (含失败结果),URL 未变但模型已换时测试结论仍展示、端点事实绝不自动填入
+// (事实按模型探得,规格 §2.6 + 复审 M5 口径)。切片钉住 handleTest 函数体:
+// 删掉任一守卫或把 applyProbedFacts 挪到模型比较之外都会变红。
+const handleTestStart = settingsViewSource.indexOf('async function handleTest()');
+assert.notStrictEqual(handleTestStart, -1, 'connection test handler must exist');
+const handleTestSource = settingsViewSource.slice(
+  handleTestStart,
+  settingsViewSource.indexOf('async function handleFetchModels', handleTestStart),
+);
+assert.match(
+  handleTestSource,
+  /const probedBaseUrl = baseUrl\.trim\(\);\s*const testedModel = model\.trim\(\);/,
+  'handleTest must snapshot the base URL AND the wire model at click time',
+);
+assert.match(
+  handleTestSource,
+  /if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;\s*setTestResult\(normalizeConnectionTestResult\(result, isCodingPlan\)\);/,
+  'a finished connection test whose base URL moved on must be discarded entirely BEFORE setTestResult on the resolve path (same silent semantics as handleFetchModels)',
+);
+assert.match(
+  handleTestSource,
+  /if \(modelRef\.current\.trim\(\) === testedModel\) applyProbedFacts\(result\);/,
+  'probed endpoint facts are per-model: they must fill only while the live wire model still equals the click-time one',
+);
+assert.match(
+  settingsViewSource,
+  /const modelRef = useRef\(model\);/,
+  'the wire model must be mirrored into a render-time ref so the async resolve compares the live value (not the click-time closure)',
+);
+// 复审 M4(添加结果的可见性):endpointAddResult 升级为 { ok, text } | null——
+// 失败曾是硬编码绿色,且 picker 打开时表单状态行被全屏遮罩挡住。钉四条形状:
+// 状态对象、.ok 双色三目、.text 渲染、prop 透传进 picker。
+assert.match(
+  settingsViewSource,
+  /setEndpointAddResult\(\{ ok: true, text: settingsCopy\.addedCount\(1\) \}\)/,
+  'a single-row add success must record { ok: true, text } (the status line colors by .ok)',
+);
+assert.match(
+  settingsViewSource,
+  /setEndpointAddResult\(\{ ok: false, text: settingsCopy\.imageCapabilitySaveFailed/,
+  'a failed row/batch save must record { ok: false, text } so the failure renders red',
+);
+assert.match(
+  settingsViewSource,
+  /endpointAddResult\.ok \? 'text-\[#137333\] dark:text-\[#93D5A6\]' : 'text-\[#FF3B30\]'/,
+  'the add-result status line must color by .ok (green success / red failure), never hardcoded green',
+);
+assert.match(
+  settingsViewSource,
+  /endpointAddResult\.text/,
+  'the add-result status line must render the notice text field (object shape, not a bare string)',
+);
+assert.match(
+  settingsViewSource,
+  /addNotice=\{endpointAddResult\}/,
+  'the chat-line picker must receive the add notice so a failed row/batch is visible while the picker stays open',
+);
+// 复审 M4(提示生命周期):新一轮探测开始与关闭 picker 都必须清空添加提示,
+// 旧结果绝不跨探测/跨开关残留。
+assert.match(
+  settingsViewSource,
+  /setFetchModelsMessage\(null\);\s*setEndpointAddResult\(null\);/,
+  'a new fetch must clear the previous add notice (stale result never survives into a fresh probe)',
+);
+assert.match(
+  settingsViewSource,
+  /onClose=\{\(\) => \{ setEndpointPickerOpen\(false\); setEndpointAddResult\(null\); \}\}/,
+  'closing the picker must clear the add notice so a reopen starts clean',
+);
+// 复审 M4(picker 内横幅):失败原因在 picker 行列表上方就地可见。
+assert.match(
+  endpointPickerSource,
+  /data-testid="endpoint-model-add-notice"/,
+  'the picker must render the add notice as an in-panel banner above the rows (the masked form status line is not enough)',
+);
+assert.match(
+  endpointPickerSource,
+  /addNotice\.ok \? 'text-\[#137333\] dark:text-\[#93D5A6\]' : 'text-\[#FF3B30\]'/,
+  'the in-picker banner must color by .ok too (red failure while the picker stays open for retry)',
 );
 // 复审 picker minor:picker 按探测序号重挂(key={endpointFetchSeq}),新列表上
 // filterDraft/滚动干净复位。
@@ -691,6 +789,19 @@ for (const settingsI18nSource of settingsI18nSources) {
     settingsI18nSource,
     /acpNoModelsFound/,
     'the dead acpNoModelsFound key must stay deleted from every UI language',
+  );
+  // i18n(复审 minor-8):picker 的 3xx/tls 错误嗓音复用连接测试的
+  // connectionMessages.redirect / tls_error(零新增键),三语齐备在此钉死,
+  // 防止后续清理误删导致 picker 静默回落到 http_error。
+  assert.match(
+    settingsI18nSource,
+    /connectionMessages:\{[^}]*redirect:/,
+    'the redirect voice reused by the picker must exist in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /connectionMessages:\{[^}]*tls_error:/,
+    'the tls voice reused by the picker must exist in every UI language',
   );
 }
 // Memory delete / feedback close confirm-dialog wiring (no native

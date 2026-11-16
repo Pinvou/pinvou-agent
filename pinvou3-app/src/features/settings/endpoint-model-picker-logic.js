@@ -68,11 +68,23 @@ const normalizeBaseUrlKey = baseUrl => {
  * the id AND on the URL, trailing-slash-insensitive on the URL (spec §2.6
  * batch dedup rule; ids already fold via toLowerCase, the URL folds here).
  * '\n' separates the parts so an id can never collide across base URLs.
+ *
+ * Ollama fold (round-2 review minor-17): the Rust enrichment matcher resolves
+ * a bare name to its canonical `{name}:latest` (ollama_canonical_name), so a
+ * saved `llama3` and a discovery row `llama3:latest` are the SAME model and
+ * must dedup as one — exactly one trailing `:latest` is stripped on BOTH
+ * sides (this same function hashes saved keys and row keys, so the fold is
+ * symmetric). Tradeoff: a literal non-Ollama pair `x` vs `x:latest` now
+ * over-dedupes into one entry — accepted, mirroring the Rust matcher; any
+ * other tag (`x:v1`) or a deeper `:latest` never folds (a different tag is a
+ * different model).
  * @param {string} modelId Wire model id.
  * @param {string} baseUrl Endpoint base URL the model was found on / saved with.
  */
 export function modelDuplicationKey(modelId, baseUrl) {
-  return `${(modelId || '').trim().toLowerCase()}\n${normalizeBaseUrlKey(baseUrl)}`;
+  let id = (modelId || '').trim().toLowerCase();
+  if (id.endsWith(':latest')) id = id.slice(0, -':latest'.length);
+  return `${id}\n${normalizeBaseUrlKey(baseUrl)}`;
 }
 
 /**

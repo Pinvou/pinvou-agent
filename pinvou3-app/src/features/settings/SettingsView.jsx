@@ -455,8 +455,10 @@ function hasStoredCredential(record) {
       // 测试连接成功后按「仅空字段」规则自动填入的端点事实;一次性小字,手动
       // 改字段或显式换模型即清除,绝不覆盖用户已填值。
       const [filledFromEndpoint, setFilledFromEndpoint] = useState(false);
-      // 逐行/批量添加后的行内结果(addedCount / 保存失败文案)。
-      const [endpointAddResult, setEndpointAddResult] = useState('');
+      // 逐行/批量添加后的行内结果:{ ok, text } | null——ok 决定状态行红/绿
+      // (复审 M4:失败曾硬编码绿色);失败时 picker 保持打开重试,同一份提示经
+      // addNotice 透传进 picker,不再被其全屏遮罩挡住。
+      const [endpointAddResult, setEndpointAddResult] = useState(/** @type {{ ok: boolean, text: string } | null} */ (null));
       const [addingAllModels, setAddingAllModels] = useState(false);
       // 「全部添加」挂起批次(应用内 SheetConfirmDialog 确认闸门的数据):先记
       // (addable, truncated) 快照,确认后才批量落库;取消则原样丢弃。
@@ -470,6 +472,10 @@ function hasStoredCredential(record) {
       // 必须作废,不允许在 URL B 的表单头/落库 payload 下展示 URL A 的列表。
       const baseUrlRef = useRef(baseUrl);
       baseUrlRef.current = baseUrl; // eslint-disable-line react-hooks/refs -- mirror the live base URL so an in-flight probe result can be discarded when the field moved on (round-1 review M5)
+      // wire 模型 ID 同款镜像(复审 M2):端点事实按模型探得,测试在飞时换了模型
+      // (目录切换/手输 ID/候选行填充),旧模型的数字不得填进新模型的空字段。
+      const modelRef = useRef(model);
+      modelRef.current = model; // eslint-disable-line react-hooks/refs -- synchronously mirror the live wire model so per-model probed facts are discarded when the model moved on (round-2 review M2)
       // 图片输入能力三档(pinvou/enabled/disabled)与兜底视觉模型引用(阶段 G 设置页控件)。
       // 已下线的「保存时检测」(auto)档残留值按「自动处理」(pinvou)回显。
       // 未人工钉死(非 enabled/disabled)时按目录视觉能力标注预填:命中已验证
@@ -572,10 +578,12 @@ function hasStoredCredential(record) {
         // 显式换模型:上一次端点探测的自动填入提示已失效,一并清除。
         setFilledFromEndpoint(false);
         // 目录切换会改写 base_url(复审 M5 同因):旧 URL 上探到的候选列表、
-        // 打开的 picker 与挂起的批量确认一并作废,绝不许在新 URL 下复用。
+        // 打开的 picker 与挂起的批量确认一并作废,绝不许在新 URL 下复用;
+        // 旧 URL 下的添加提示同因作废(复审 M4)。
         setEndpointListing(null);
         setEndpointPickerOpen(false);
         setAddAllModelsConfirm(null);
+        setEndpointAddResult(null);
         // Reset the thinking effort to the new entry's default tier when the
         // catalog item changes (vllm→low (lowest thinking tier), others→high;
         // models without tiers get null = not explicitly set). Pass nextBaseUrl
@@ -615,10 +623,11 @@ function hasStoredCredential(record) {
         renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
         // base URL 变更即失效既有探测结果(复审 M5):URL A 上探到的列表绝不许
         // 在 URL B 的表单里打开或落库(picker 头部与保存 payload 都按当前输入
-        // 的 URL 走),挂起的批量确认一并丢弃。
+        // 的 URL 走),挂起的批量确认一并丢弃;旧 URL 下的添加提示同因作废。
         setEndpointListing(null);
         setEndpointPickerOpen(false);
         setAddAllModelsConfirm(null);
+        setEndpointAddResult(null);
       }
       // 解析 http/https URL；其余 scheme（或无法解析）返回 null。端口框只在
       // 可解析的 http(s) 地址上工作，避免 "127.0.0.1:8003"（无 scheme）被
@@ -687,13 +696,22 @@ function hasStoredCredential(record) {
         const testKey = !isLocalPreset && !isCodingPlan && noAuth
           ? ''
           : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        // 复审 M2:与 handleFetchModels 同一 resolve 时刻守卫——点击瞬间快照
+        // base URL 与 wire 模型,resolve 时发现表单已改走就整份丢弃:
+        // - URL 已变:结果(含失败结果)属于旧端点,静默丢弃,不打扰用户;
+        // - 模型已换:URL 未变时测试结论仍可展示,但端点事实按模型探得,
+        //   绝不许把旧模型的数字填进新模型的空字段(规格 §2.6 + 复审 M5 口径)。
+        const probedBaseUrl = baseUrl.trim();
+        const testedModel = model.trim();
         try {
           // noAuth 随请求下发：后端据此跳过已保存凭据回退（残留 key 不得
           // 在保存前发往新填的 URL，与保存后的鉴权形态完全一致）。
           const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
+          if (baseUrlRef.current.trim() !== probedBaseUrl) return;
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
-          applyProbedFacts(result);
+          if (modelRef.current.trim() === testedModel) applyProbedFacts(result);
         } catch (e) {
+          if (baseUrlRef.current.trim() !== probedBaseUrl) return;
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
         }
         finally { setTesting(false); }
@@ -708,7 +726,9 @@ function hasStoredCredential(record) {
         // 探测序号递增:picker 以此为 key 重挂,新列表的 filter/滚动干净复位。
         setEndpointFetchSeq(seq => seq + 1);
         setFetchingModels(true);
+        // 新一轮探测开始:上一次探测提示与逐行/批量添加的行内结果一并作废(复审 M4)。
         setFetchModelsMessage(null);
+        setEndpointAddResult(null);
         try {
           const listing = await bridge.models.probeEndpointModels({
             baseUrl: probedBaseUrl,
@@ -752,9 +772,10 @@ function hasStoredCredential(record) {
         if (savingModel || addingAllModels) return;
         try {
           await onSave(buildEndpointModelPayload(row));
-          setEndpointAddResult(settingsCopy.addedCount(1));
+          setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(1) });
         } catch (e) {
-          setEndpointAddResult(settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)));
+          // 失败:picker 保持打开供重试,提示以 addNotice 就地透传(复审 M4)。
+          setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
         }
       }
       // 「全部添加」(聊天线):先与已保存模型按 (model id + base_url) 去重,把
@@ -784,13 +805,15 @@ function hasStoredCredential(record) {
             added += 1;
           }
           if (batchReloadAvailable) await bridge.models.reloadSavedModels();
-          setEndpointAddResult(settingsCopy.addedCount(added));
+          setEndpointAddResult({ ok: true, text: settingsCopy.addedCount(added) });
           setEndpointPickerOpen(false);
         } catch (e) {
           if (batchReloadAvailable) {
             try { await bridge.models.reloadSavedModels(); } catch { /* best-effort: keep the save error visible */ }
           }
-          setEndpointAddResult(settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)));
+          // 中途失败:已落库的前缀行保留,picker 保持打开并就地透传失败原因
+          // (表单状态行在遮罩下方不可见,复审 M4)。
+          setEndpointAddResult({ ok: false, text: settingsCopy.imageCapabilitySaveFailed(String(e && e.message ? e.message : e)) });
         }
         finally { setAddingAllModels(false); setAddAllModelsConfirm(null); }
       }
@@ -1065,6 +1088,13 @@ function hasStoredCredential(record) {
         setBaseUrlPortError(null);
         setCustomModel(true);
         setPickerOpen(false);
+        // 显式切换路由与 applyCatalogItem 同一纪律(复审 minor-14):残留的端点
+        // 探测状态(候选列表/picker/挂起批量/添加提示)一律清空,绝不许在手动
+        // 本地模型表单下复用上一个表单的探测结果。
+        setEndpointListing(null);
+        setEndpointPickerOpen(false);
+        setAddAllModelsConfirm(null);
+        setEndpointAddResult(null);
         // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
         if (!imageCapabilityTouched) setImageCapability(imageCapabilityForCatalogModel(''));
         // Local model → manual add is an explicit route switch: drop the
@@ -1754,8 +1784,10 @@ function hasStoredCredential(record) {
                     </div>
                   </div>
                   {(fetchModelsMessage || endpointAddResult) && (
-                    <div data-testid="model-form-fetch-lists-status" className={`px-1 mt-1.5 text-[12px] leading-4 ${fetchModelsMessage ? (fetchModelsMessage.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]') : 'text-[#137333] dark:text-[#93D5A6]'}`}>
-                      {fetchModelsMessage ? fetchModelsMessage.message : endpointAddResult}
+                    // 复审 M4:添加结果按 .ok 双色显示,不再硬编码绿色;失败时
+                    // picker 保持打开,同一份提示经 addNotice 在 picker 内可见。
+                    <div data-testid="model-form-fetch-lists-status" className={`px-1 mt-1.5 text-[12px] leading-4 ${fetchModelsMessage ? (fetchModelsMessage.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]') : (endpointAddResult.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]')}`}>
+                      {fetchModelsMessage ? fetchModelsMessage.message : endpointAddResult.text}
                     </div>
                   )}
                 </section>
@@ -1783,13 +1815,14 @@ function hasStoredCredential(record) {
           <EndpointModelPicker
             key={endpointFetchSeq}
             open={endpointPickerOpen}
-            onClose={() => setEndpointPickerOpen(false)}
+            onClose={() => { setEndpointPickerOpen(false); setEndpointAddResult(null); }}
             listing={endpointListing}
             loading={fetchingModels}
             onPick={handleEndpointModelPick}
             onAddAll={handleAddAllEndpointModels}
             baseUrl={baseUrl.trim()}
             savedKeys={endpointSavedKeys}
+            addNotice={endpointAddResult}
             t={t}
           />
           {/* 「全部添加」应用内确认弹窗(Tauri WebView2 不渲染原生 confirm;与

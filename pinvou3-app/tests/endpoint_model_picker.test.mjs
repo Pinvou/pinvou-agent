@@ -264,3 +264,100 @@ test('rows pipeline is memoized and the render is capped with an "N more" footer
     'the listing truncated flag must surface as a localized notice line',
   );
 });
+
+// --- 复审 minor-8:错误状态嗓音映射(3xx/tls/network 复用连接测试文案) ---
+test('error status maps 3xx redirects and tls/network transports onto the connectionMessages voices', () => {
+  const componentSource = fs.readFileSync(
+    path.join(root, 'src', 'features', 'settings', 'endpoint-model-picker.jsx'),
+    'utf8',
+  );
+  assert.match(
+    componentSource,
+    /httpStatus >= 300 && httpStatus < 400\s*\?\s*connectionCopy\.redirect/,
+    'a 3xx error listing must reuse the connection-test redirect voice (服务地址发生跳转), not the http_error fallback',
+  );
+  assert.match(
+    componentSource,
+    /network: connectionCopy\.unknown/,
+    'generic/mid-stream network failures must stop reading as the HTTP-error voice (http_status is null there)',
+  );
+  assert.match(
+    componentSource,
+    /tls: connectionCopy\.tls_error/,
+    'the Rust core tls transport must map onto the tls_error voice',
+  );
+  assert.match(
+    componentSource,
+    /connect: connectionCopy\.connection_refused/,
+    'the existing timeout/dns/connect arms stay pinned alongside the new ones',
+  );
+});
+
+// --- 复审 minor-15/M4:徽章 key 带 role 前缀 + addNotice 横幅 ---
+test('fact badges key with a role prefix and the picker renders the addNotice banner', () => {
+  const componentSource = fs.readFileSync(
+    path.join(root, 'src', 'features', 'settings', 'endpoint-model-picker.jsx'),
+    'utf8',
+  );
+  assert.match(
+    componentSource,
+    /renderFactBadge\(row\.contextWindowTokens, row\.contextFrom, 'ctx'\)/,
+    'the context badge must key with the ctx role prefix',
+  );
+  assert.match(
+    componentSource,
+    /renderFactBadge\(row\.maxOutputTokens, row\.outputFrom, 'out'\)/,
+    'the output badge must key with the out role prefix (identical source+value pairs must not collide)',
+  );
+  assert.match(
+    componentSource,
+    /key=\{`\$\{role\}-\$\{source\}-\$\{text\}`\}/,
+    'the badge React key must combine role + source + text',
+  );
+  assert.match(
+    componentSource,
+    /data-testid="endpoint-model-add-notice"/,
+    'a passed addNotice must render as an in-panel banner between the filter and the rows',
+  );
+  assert.match(
+    componentSource,
+    /\{addNotice && \(\s*(?:\/\/[^\n]*\n\s*)*<div data-testid="endpoint-model-add-notice"/,
+    'the banner renders only when the parent passes a non-null notice (optional prop, ACP line omits it)',
+  );
+});
+
+// --- 复审 minor-17:Ollama 裸名 :latest 折叠(与 Rust ollama_canonical_name 同口径) ---
+test('modelDuplicationKey folds exactly one trailing :latest (saved llama3 vs discovery llama3:latest)', () => {
+  assert.equal(
+    modelDuplicationKey('llama3', 'https://x/v1'),
+    modelDuplicationKey('llama3:latest', 'https://x/v1'),
+    'a saved bare name and its Ollama-canonical :latest form must dedup as one model',
+  );
+  assert.equal(
+    modelDuplicationKey('LLAMA3', 'https://x/v1'),
+    modelDuplicationKey('llama3:latest', 'https://x/v1'),
+    'the fold composes with the existing case-insensitive id fold',
+  );
+  // 只折一层 :latest:其余 tag 是不同模型,绝不折叠。
+  assert.notEqual(
+    modelDuplicationKey('llama3:latest:latest', 'https://x/v1'),
+    modelDuplicationKey('llama3:latest', 'https://x/v1'),
+  );
+  assert.notEqual(
+    modelDuplicationKey('llama3:v1', 'https://x/v1'),
+    modelDuplicationKey('llama3', 'https://x/v1'),
+    'a different tag is a different model; only :latest folds',
+  );
+  assert.notEqual(
+    modelDuplicationKey('foo:latest', 'https://x/v1'),
+    modelDuplicationKey('bar:latest', 'https://x/v1'),
+    'the fold must not collapse distinct ids that both carry :latest',
+  );
+});
+test('splitBatchAdd treats saved llama3 vs discovery llama3:latest as already saved', () => {
+  const baseUrl = 'https://x/v1';
+  const saved = savedModelKeys([{ model: 'llama3', base_url: baseUrl }]);
+  const result = splitBatchAdd([{ id: 'llama3:latest' }, { id: 'llama3' }], saved, baseUrl);
+  assert.deepEqual(toHost(result.addable), [], 'both spellings must dedup against the saved bare name');
+  assert.equal(result.duplicates, 2);
+});

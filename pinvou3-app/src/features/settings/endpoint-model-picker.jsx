@@ -47,10 +47,15 @@ const PICKER_RENDER_CAP = 200;
  *   dedup (id + base_url).
  * - `savedKeys` Set of saved-model keys (savedModelKeys()); matching rows are
  *   tagged 已保存 and their add button is disabled.
+ * - `addNotice` optional `{ ok, text } | null`: a row/batch add result passed
+ *   through while the picker stays open on failure (round-2 review M4) — the
+ *   form's own status line sits beneath this full-screen overlay, so a failed
+ *   save renders as a banner between the filter and the rows until the parent
+ *   clears it (close / new fetch).
  * - `t` the i18n dictionary prop passed down the SettingsView tree (same
  *   pattern as ReasoningTierPicker; no direct i18n import here).
  */
-const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterable = true, onAddAll, baseUrl, savedKeys, t }) => {
+const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterable = true, onAddAll, baseUrl, savedKeys, addNotice, t }) => {
   const settingsCopy = t.uiSettingsDetail;
   const [filterDraft, setFilterDraft] = useState('');
   // Rows pipeline memoized on [listing, filterDraft] (round-1 review M7):
@@ -80,20 +85,36 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
     if (listing.status === 'auth_required') statusText = settingsCopy.authRequiredHint;
     else if (listing.status === 'unsupported') statusText = settingsCopy.unsupportedHint;
     else if (listing.status === 'error') {
-      statusText = { timeout: connectionCopy.timeout, dns: connectionCopy.dns_failed, connect: connectionCopy.connection_refused }[listing.transport]
-        || connectionCopy.http_error;
+      // 复审 minor-8:错误嗓音全部复用连接测试的 connectionMessages 三语文案
+      // (零新增键,入口 chunk 有启动预算红线):
+      // - 3xx 跳转 → redirect(「服务地址发生跳转」,与连接测试同源);
+      // - tls / network(核心层的传输类别,http_status 为 null)各自取对应
+      //   提示——network 复用 unknown 的「连接失败,请稍后重试」,不再一律
+      //   落到 http_error 的「检查配置」(网络失败与配置无关)。
+      const httpStatus = typeof listing.http_status === 'number' ? listing.http_status : null;
+      statusText = httpStatus !== null && httpStatus >= 300 && httpStatus < 400
+        ? connectionCopy.redirect
+        : {
+          timeout: connectionCopy.timeout,
+          dns: connectionCopy.dns_failed,
+          connect: connectionCopy.connection_refused,
+          network: connectionCopy.unknown,
+          tls: connectionCopy.tls_error,
+        }[listing.transport] || connectionCopy.http_error;
     } else if (listing.status === 'listed' && rows.length === 0) statusText = settingsCopy.noModelsFound;
   }
   // Rust caps a listing (pagination / row / metadata budgets) and reports it
   // via the serde `truncated` flag — surface it instead of silently dropping
   // rows the user never sees (round-1 review picker minor).
   const listingTruncated = !loading && !!listing && listing.truncated === true;
-  const renderFactBadge = (tokens, source) => {
+  // role 前缀(ctx/out)进 React key(复审 minor-15):context/output 两枚徽章
+  // 可能同源同值(如都来自端点且都是 33K),不带 role 会撞出重复的 key。
+  const renderFactBadge = (tokens, source, role) => {
     const text = formatTokensCount(tokens);
     if (!text) return null;
     const sourceKey = factSourceLabelKey(source);
     return (
-      <span key={`${source}-${text}`} className={`shrink-0 inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded-md bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF]`}>
+      <span key={`${role}-${source}-${text}`} className={`shrink-0 inline-flex items-center gap-1 text-[12px] px-2 py-0.5 rounded-md bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF]`}>
         <span className="font-medium">{text}</span>
         {sourceKey && <span className={MUTED_TEXT}>{settingsCopy[sourceKey]}</span>}
       </span>
@@ -151,6 +172,14 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
                     />
                   </div>
                 )}
+                {addNotice && (
+                  // 复审 M4:添加结果就地透传——表单状态行在本组件的全屏遮罩
+                  // 下方不可见,picker 保持打开重试时失败原因(或成功回执)必须
+                  // 在行列表上方可见,父层在关闭/新一轮探测时清除。
+                  <div data-testid="endpoint-model-add-notice" className={`px-3.5 py-2.5 text-[13px] leading-5 ${ROW_DIVIDER} ${addNotice.ok ? 'text-[#137333] dark:text-[#93D5A6]' : 'text-[#FF3B30]'}`}>
+                    {addNotice.text}
+                  </div>
+                )}
                 {renderedRows.map(row => {
                   const alreadySaved = !!savedSet && savedSet.has(dupKeyOf(row));
                   return (
@@ -170,8 +199,8 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
                         )}
                         {(row.contextWindowTokens || row.maxOutputTokens) && (
                           <span className="mt-1 flex items-center gap-1.5 flex-wrap">
-                            {renderFactBadge(row.contextWindowTokens, row.contextFrom)}
-                            {renderFactBadge(row.maxOutputTokens, row.outputFrom)}
+                            {renderFactBadge(row.contextWindowTokens, row.contextFrom, 'ctx')}
+                            {renderFactBadge(row.maxOutputTokens, row.outputFrom, 'out')}
                           </span>
                         )}
                       </span>
