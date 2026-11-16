@@ -21,7 +21,9 @@ const cardClass = source
 assert.ok(cardClass, 'collection card focus class line is missing');
 
 assert.match(cardClass, /focus-visible:outline-2\b/);
-assert.match(cardClass, /focus-visible:outline-\[#0B57D0\]/);
+// The /60 alpha is part of the shipped indicator (subtle on the tinted
+// panel) — a silent drop to the full-opacity form would change the look.
+assert.match(cardClass, /focus-visible:outline-\[#0B57D0\]\/60/);
 assert.doesNotMatch(
   cardClass,
   /focus-visible:ring-/,
@@ -29,4 +31,6 @@ assert.doesNotMatch(
 );
 
 // The card still keeps its keyboard operability from the r8 a11y rework.
-assert.match(source, /role="button" tabIndex=\{0\} onClick=\{\(\) => openColl\(c\)\}/);
+// Attribute order matters, whitespace does not (a formatter reflow of
+// the one-line JSX must not false-red the pin).
+assert.match(source, /role="button"\s+tabIndex=\{0\}\s+onClick=\{\(\) => openColl\(c\)\}/);
