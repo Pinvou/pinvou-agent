@@ -74,7 +74,11 @@ pub(crate) struct ProcessSample {
 /// [`SystemDeltaState`]: `absorb` returns the usage between the previous and
 /// the current sample; the first call has no predecessor and returns `None`.
 /// A failed probe (`None` argument) keeps the previous sample so the next
-/// successful pair still spans the full elapsed interval.
+/// successful pair still spans the full elapsed interval. A rejected pair
+/// (counter wraparound, or a non-monotonic timestamp from an out-of-order
+/// caller that sampled before locking the shared state) never regresses the
+/// baseline: the temporally newer sample is kept, so the next reading
+/// measures a clean interval from the true latest observation.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessDeltaState {
     process: Option<ProcessSample>,
@@ -87,12 +91,27 @@ impl ProcessDeltaState {
         logical_processors: u32,
     ) -> Option<f64> {
         let usage_pct = match (self.process, current) {
-            (Some(prev), Some(current)) => process_usage_pct(prev, current, logical_processors),
+            (Some(prev), Some(current)) => {
+                let usage_pct = process_usage_pct(prev, current, logical_processors);
+                if usage_pct.is_none() {
+                    // Rejected pair: keep the temporally newer sample as the
+                    // baseline. A stale sample arriving out of order (each
+                    // platform samples before locking this state) would
+                    // otherwise overwrite the newer observation and make the
+                    // next reading measure an interval that overlaps it.
+                    if current.sampled_at < prev.sampled_at {
+                        return None;
+                    }
+                }
+                self.process = Some(current);
+                usage_pct
+            }
+            (None, Some(current)) => {
+                self.process = Some(current);
+                None
+            }
             _ => None,
         };
-        if current.is_some() {
-            self.process = current;
-        }
         usage_pct
     }
 }
@@ -247,6 +266,54 @@ mod tests {
         // The documented wraparound contract: a backwards counter is an
         // unusable pair, never a percentage.
         assert_eq!(process_usage_pct(prev, current, 4), None);
+    }
+
+    #[test]
+    fn absorb_keeps_newer_baseline_for_a_stale_out_of_order_sample() {
+        let now = Instant::now();
+        let newer = ProcessSample {
+            cpu_secs: 2.0,
+            sampled_at: now,
+        };
+        let stale = ProcessSample {
+            cpu_secs: 1.0,
+            sampled_at: now - std::time::Duration::from_millis(500),
+        };
+        let mut state = ProcessDeltaState {
+            process: Some(newer),
+        };
+        // A stale sample arriving out of order is a rejected pair; the
+        // baseline must stay the newer observation.
+        assert_eq!(state.absorb(Some(stale), 4), None);
+        assert_eq!(state.process.as_ref().unwrap().cpu_secs, 2.0);
+        // The next forward sample measures from the preserved baseline.
+        let next = ProcessSample {
+            cpu_secs: 2.5,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        assert_eq!(state.absorb(Some(next), 4), Some(12.5));
+        assert_eq!(state.process.as_ref().unwrap().cpu_secs, 2.5);
+    }
+
+    #[test]
+    fn absorb_installs_a_forward_sample_after_a_rejected_pair() {
+        let now = Instant::now();
+        let baseline = ProcessSample {
+            cpu_secs: 2.0,
+            sampled_at: now,
+        };
+        let wrapped = ProcessSample {
+            cpu_secs: 1.0,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        let mut state = ProcessDeltaState {
+            process: Some(baseline),
+        };
+        // A counter wraparound rejects the pair, but the wrapped sample is
+        // temporally newer: it becomes the forward baseline for the next
+        // reading.
+        assert_eq!(state.absorb(Some(wrapped), 4), None);
+        assert_eq!(state.process.as_ref().unwrap().cpu_secs, 1.0);
     }
 
     #[test]
