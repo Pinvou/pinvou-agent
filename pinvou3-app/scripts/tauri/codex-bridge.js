@@ -326,6 +326,12 @@ function prepareWindowsCodexBridge({
       nodeExecutable,
       npmArgs: WINDOWS_NPM_CI_ARGS,
     });
+    // Per-leg bound (r12 review), the same discipline as
+    // scripts/ci/npm-ci-bounded.sh: every npm ci lane in CI must fail at its
+    // own budget so a wedged registry fails the leg, not the release job's
+    // timeout-minutes window. spawnSync kills the child on expiry;
+    // checkedSpawn then surfaces the error loudly with this label.
+    const npmCiBudgetSecs = Number(process.env.NPM_CI_BUDGET_SECS || 900);
     console.log(`[codex-bridge] 使用现有 ${nodeVersion} 从锁文件准备 Windows ACP Bridge`);
     checkedSpawn(
       spawn,
@@ -335,8 +341,10 @@ function prepareWindowsCodexBridge({
         cwd: acpRoot,
         env: installEnvironment,
         stdio: "inherit",
+        timeout: npmCiBudgetSecs * 1000,
+        killSignal: "SIGKILL",
       },
-      "安装 Windows ACP Bridge",
+      `安装 Windows ACP Bridge（npm ci 上限 ${npmCiBudgetSecs} 秒，超时即失败本步）`,
     );
 
     pruneWindowsPlatformPackages(bridgeRoot);

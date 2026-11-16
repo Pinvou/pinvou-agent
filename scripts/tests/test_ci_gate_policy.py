@@ -5158,9 +5158,17 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         # helper-invocation count per file instead: dropping a call (falling
         # back to a bare `timeout`, which is what exited 127 / "Invalid
         # syntax" on macOS and pwsh) or deleting the helper handoff turns
-        # this red.
+        # this red. The count runs over comment-stripped lines (r12 review):
+        # a raw substring count let a prose comment naming the helper red the
+        # gate, and let a call line turned into a comment keep the count
+        # green with an unbounded leg.
         for path, expected, jobs in self.HELPER_SITES:
-            count = path.read_text(encoding="utf-8").count("npm-ci-bounded.sh")
+            code_lines = [
+                line
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if not line.strip().startswith("#")
+            ]
+            count = "\n".join(code_lines).count("npm-ci-bounded.sh")
             self.assertEqual(
                 count, expected,
                 f"{path.name}: expected {expected} npm-ci-bounded.sh call(s) ({jobs}), found {count}",
@@ -5168,6 +5176,58 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         self.assertTrue(
             (ROOT / "scripts/ci/npm-ci-bounded.sh").exists(),
             "scripts/ci/npm-ci-bounded.sh is missing — the non-Linux npm ci legs call it",
+        )
+        # The helper's guard must probe GNU-ness, not mere existence (r12
+        # review): on Windows images System32's `timeout.exe` resolves on
+        # PATH ahead of Git's coreutils and rejects `--version`, so an
+        # existence-only probe could silently become the exact "Invalid
+        # syntax" failure the helper exists to prevent if the image PATH
+        # order changes.
+        helper_text = (ROOT / "scripts/ci/npm-ci-bounded.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            "timeout --version >/dev/null 2>&1",
+            helper_text,
+            "npm-ci-bounded.sh must probe GNU-ness with `timeout --version`, not just command -v existence",
+        )
+
+    def test_bridge_prep_npm_ci_lanes_are_bounded(self):
+        # The bridge-prep lanes run `npm ci` from inside scripts the
+        # workflow-level pins cannot see (r12 review): the macOS runtime-test
+        # job calls prepare-codex-bridge-runtime.sh directly, and the release
+        # deb/macos/windows legs reach codex-bridge.js's spawnSync npm ci via
+        # build.js. Both now carry the same per-leg budget discipline as the
+        # workflow lanes; a regression to an unbounded npm ci in either file
+        # turns this red (the header contract in npm-ci-bounded.sh — "every
+        # npm ci lane in CI carries a per-leg bound" — covers these lanes
+        # too).
+        prepare = (ROOT / "pinvou3-app/scripts/prepare-codex-bridge-runtime.sh")
+        prepare_text = prepare.read_text(encoding="utf-8")
+        self.assertIn(
+            'timeout --kill-after=15 "$NPM_CI_BUDGET_SECS"',
+            prepare_text,
+            "bridge-prep npm ci must run under the bounded runner",
+        )
+        self.assertIn(
+            "timeout --version >/dev/null 2>&1",
+            prepare_text,
+            "the bridge-prep bound must probe GNU-ness, not mere existence",
+        )
+        self.assertIn(
+            "--connect-timeout 15 --max-time 600",
+            prepare_text,
+            "the Node runtime tarball download must carry a whole-transfer cap",
+        )
+        bridge = (ROOT / "pinvou3-app/scripts/tauri/codex-bridge.js")
+        bridge_text = bridge.read_text(encoding="utf-8")
+        self.assertIn(
+            "timeout: npmCiBudgetSecs * 1000",
+            bridge_text,
+            "the Windows bridge-prep spawnSync npm ci must carry a timeout",
+        )
+        self.assertIn(
+            'killSignal: "SIGKILL"',
+            bridge_text,
+            "the bounded npm ci must hard-kill on expiry (npm spawns children)",
         )
 
 

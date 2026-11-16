@@ -13,11 +13,19 @@
 #
 # One bound per invocation line, mirroring the NpmCiBoundsPolicyTests contract:
 # every npm ci lane in CI carries a per-leg bound so a wedged registry fails
-# the leg, not the job window.
+# the leg, not the job window — including the bridge-prep lanes inside
+# prepare-codex-bridge-runtime.sh (bash) and codex-bridge.js (spawnSync
+# timeout), which the workflow-level pins cannot see (r12 review).
 set -euo pipefail
 secs="${1:?usage: npm-ci-bounded.sh <seconds> [extra npm ci args...]}"
 shift
-if command -v timeout >/dev/null 2>&1; then
+# Probe GNU-ness, not mere existence (r12 review): Windows images put
+# System32's `timeout.exe` on PATH ahead of Git's coreutils, and it rejects
+# `--version` — so an existence-only `command -v` probe could silently select
+# the exact "Invalid syntax" failure this helper exists to prevent if the
+# image PATH order changes. GNU timeout answers `--version`; System32's
+# errors, sending us to the degrade branch.
+if timeout --version >/dev/null 2>&1; then
   exec timeout --kill-after=15 "$secs" npm ci --prefer-offline --no-audit "$@"
 fi
 echo "::warning::GNU timeout unavailable on $(uname -s); npm ci runs under this job's timeout-minutes cap only"
