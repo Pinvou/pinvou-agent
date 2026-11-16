@@ -1187,8 +1187,10 @@ mod tests {
     // 对端不按 offset 翻页(恒回整页)时,短页终止永不触发,循环会无界
     // 追加同一批条目直到内存耗尽。参考实现对 offset 有界,已由上面两用例
     // 覆盖;这里用不识别 offset 的最小桩路由(直接回固定整页)钉住页数
-    // 上界:超界必须快速报错而不是挂死或静默截断。突变对照:删掉
-    // paged_trash_all 的页数上界检查后,本用例被外层 timeout 兜底为失败。
+    // 上界:上界后的判别页仍是整页时必须快速报错而不是挂死或静默截断。
+    // 突变对照:放宽 paged_all 的页数上界后,本用例被外层 timeout 兜底为
+    // 失败;让判别页无条件收尾(不检查是否整页)则本用例的 unwrap_err
+    // 直接落空。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trash_listing_peer_ignoring_offset_errors_at_page_cap() {
         async fn always_full_page() -> Json<Vec<Collection>> {
@@ -1204,10 +1206,7 @@ mod tests {
                 updated_at: 0,
                 deleted_at: Some(0),
             };
-            Json(vec![
-                entry;
-                crate::client::KnowledgeClient::TRASH_PAGE_LIMIT
-            ])
+            Json(vec![entry; crate::model::PAGE_LIMIT_CAP])
         }
         let app = Router::new().route("/api/v2/owner/trash/collections", get(always_full_page));
 

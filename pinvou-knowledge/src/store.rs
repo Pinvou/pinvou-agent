@@ -11,7 +11,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use crate::embedding::{blob_to_vec, vec_to_blob};
 use crate::model::{
     AccessScope, Collection, DeviceGrant, Document, JoinRequestRecord, JoinRequestStatus,
-    SearchHit, ShareRecord, SourceChunk, TrashedDocument,
+    PAGE_LIMIT_CAP, SearchHit, ShareRecord, SourceChunk, TrashedDocument,
 };
 
 const SCHEMA_VERSION: i64 = 3;
@@ -331,7 +331,7 @@ impl Store {
         limit: usize,
         offset: usize,
     ) -> rusqlite::Result<Vec<Collection>> {
-        let limit = i64::try_from(limit.clamp(1, 500)).unwrap_or(500);
+        let limit = i64::try_from(limit.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64);
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(
@@ -584,7 +584,9 @@ impl Store {
              LIMIT ?2 OFFSET ?3"
         );
         let limit = limit
-            .map(|value| i64::try_from(value.clamp(1, 500)).unwrap_or(500))
+            .map(|value| {
+                i64::try_from(value.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64)
+            })
             .unwrap_or(-1);
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         self.with_read_connection(|connection| {
@@ -599,7 +601,7 @@ impl Store {
         limit: usize,
         offset: usize,
     ) -> rusqlite::Result<Vec<TrashedDocument>> {
-        let limit = i64::try_from(limit.clamp(1, 500)).unwrap_or(500);
+        let limit = i64::try_from(limit.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64);
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(
@@ -1171,7 +1173,9 @@ impl Store {
             statement
                 .query_map(
                     params![
-                        limit.map(|value| value.clamp(1, 500) as i64).unwrap_or(-1),
+                        limit
+                            .map(|value| value.clamp(1, PAGE_LIMIT_CAP) as i64)
+                            .unwrap_or(-1),
                         offset as i64
                     ],
                     map_join_request,
@@ -1357,7 +1361,9 @@ impl Store {
             )?;
             let rows = statement.query_map(
                 params![
-                    limit.map(|value| value.clamp(1, 500) as i64).unwrap_or(-1),
+                    limit
+                        .map(|value| value.clamp(1, PAGE_LIMIT_CAP) as i64)
+                        .unwrap_or(-1),
                     offset as i64
                 ],
                 map_device,

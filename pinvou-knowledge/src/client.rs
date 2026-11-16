@@ -399,57 +399,63 @@ impl KnowledgeClient {
         .await
     }
 
-    /// 服务端单页上限(store 侧 `limit.clamp(1, 500)`)。逐页请求时
-    /// 必须恰好取到该上限,更大的值会被 clamp 缩回,更小的值只增加往返。
-    pub(crate) const TRASH_PAGE_LIMIT: usize = 500;
-
     /// 逐页安全上界:短页终止依赖对端真的按 offset 翻页,对端若忽略
-    /// offset(恒回整页)会让循环无界追加同一批条目。100 页(5 万条)远超
-    /// 正常回收站规模,又能让病态对端快速失败而不是挂死客户端——超界
+    /// offset(恒回整页)会让循环无界追加同一批条目。到达 100 个整页
+    /// (约 5 万条,远超正常规模)时再多取一页判别(见
+    /// [`Self::paged_all`]),仍整页则快速报错而不是挂死客户端——超界
     /// 报错,不静默截断。
-    const TRASH_MAX_PAGES: usize = 100;
+    const PAGED_MAX_PAGES: usize = 100;
 
-    /// 逐页拉全回收站路由:服务端按 offset 分页且无总数返回,只在短页处
-    /// 终止;否则首窗之外的条目会静默不可见(回收站条目无上界)。边界
-    /// 恰好整页时由下一页空结果收尾(多一次空页往返,不挂死),排序键
-    /// (deleted_at, id)保证分页间稳定。整页数到达 [`Self::TRASH_MAX_PAGES`]
-    /// 仍无短页时按对端异常报错(见上界常量注释),而非无界追加或截断。
-    async fn paged_trash_all<T: DeserializeOwned>(
-        &self,
-        base_path: &str,
-    ) -> Result<Vec<T>, String> {
+    /// 逐页拉全 `base_path` 清单:服务端按 offset 分页且无总数返回,只在
+    /// 短页处终止;否则首窗之外的条目会静默不可见(清单条目无上界)。页长
+    /// 恰好取 [`PAGE_LIMIT_CAP`](与服务端 clamp 上限共用一个常量,防止两
+    /// 侧漂移后短页提前触发而静默截断),边界整页由下一页空结果收尾(多
+    /// 一次空页往返,不挂死),排序键(如 (deleted_at, id))保证分页间稳定。
+    /// 整页数到达 [`Self::PAGED_MAX_PAGES`] 时再多取一页判别归属:短页说
+    /// 明对端确实持有这么多条目,把该页并入后正常收尾(恰好整页规模的
+    /// 合法清单不误报);仍是整页则说明对端未按 offset 翻页(恒回整页),
+    /// 按对端异常报错,而非无界追加或截断。
+    async fn paged_all<T: DeserializeOwned>(&self, base_path: &str) -> Result<Vec<T>, String> {
         let mut all = Vec::new();
         let mut offset = 0;
         let mut full_pages = 0usize;
         loop {
             let page: Vec<T> = self
                 .get(&format!(
-                    "{base_path}?limit={}&offset={offset}",
-                    Self::TRASH_PAGE_LIMIT
+                    "{base_path}?limit={PAGE_LIMIT_CAP}&offset={offset}"
                 ))
                 .await?;
             let fetched = page.len();
             all.extend(page);
-            if fetched < Self::TRASH_PAGE_LIMIT {
+            if fetched < PAGE_LIMIT_CAP {
                 return Ok(all);
             }
             offset += fetched;
             full_pages += 1;
-            if full_pages >= Self::TRASH_MAX_PAGES {
-                return Err(format!(
-                    "回收站分页异常:已连续取到 {full_pages} 整页仍未遇到短页,对端可能未按 offset 翻页"
-                ));
+            if full_pages >= Self::PAGED_MAX_PAGES {
+                let probe: Vec<T> = self
+                    .get(&format!(
+                        "{base_path}?limit={PAGE_LIMIT_CAP}&offset={offset}"
+                    ))
+                    .await?;
+                if probe.len() >= PAGE_LIMIT_CAP {
+                    return Err(format!(
+                        "分页异常:已连续取到 {}+1 个整页仍未遇到短页,对端可能未按 offset 翻页",
+                        Self::PAGED_MAX_PAGES
+                    ));
+                }
+                all.extend(probe);
+                return Ok(all);
             }
         }
     }
 
     pub async fn trashed_collections(&self) -> Result<Vec<Collection>, String> {
-        self.paged_trash_all("/api/v2/owner/trash/collections")
-            .await
+        self.paged_all("/api/v2/owner/trash/collections").await
     }
 
     pub async fn trashed_documents(&self) -> Result<Vec<TrashedDocument>, String> {
-        self.paged_trash_all("/api/v2/owner/trash/documents").await
+        self.paged_all("/api/v2/owner/trash/documents").await
     }
 
     pub async fn permanently_delete_collection(&self, id: i64) -> Result<(), String> {

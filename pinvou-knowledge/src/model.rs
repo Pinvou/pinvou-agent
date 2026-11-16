@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+/// 单页查询的行数上限。服务端各列表查询把显式 limit 收敛到该值
+/// (`limit.clamp(1, PAGE_LIMIT_CAP)`);客户端逐页拉全量时必须恰好以
+/// 该值翻页——更大被 clamp 缩回后短页终止会提前触发而静默截断,更小
+/// 只增加往返。服务端与客户端共用一个常量,防止两侧页长漂移。
+pub(crate) const PAGE_LIMIT_CAP: usize = 500;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessScope {
