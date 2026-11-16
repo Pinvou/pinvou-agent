@@ -104,11 +104,15 @@ const ANNOTATION_KEYWORDS = new Set([
 
 function validate(value, node, pointer, errors) {
   if (node === undefined) return;
-  if (node === true || Object.keys(node).length === 0) return;
+  // Boolean schemas must be decided BEFORE the empty-object shortcut:
+  // Object.keys(false) is [], so a `false` schema hit the shortcut and was
+  // accepted as unconstrained - and a false branch counted as a match in
+  // anyOf/oneOf (review JensenChen28 2026-11-16 P2).
   if (node === false) {
     errors.push(`${pointer}: schema forbids any value`);
     return;
   }
+  if (node === true || Object.keys(node).length === 0) return;
   assert.ok(isObject(node), `schema node at ${pointer} must be an object`);
 
   for (const keyword of Object.keys(node)) {
@@ -276,3 +280,41 @@ assert.deepEqual(
   [],
   `tauri config files must satisfy the pinned CLI schema (${schema.$id}):\n${errors.join("\n")}`,
 );
+
+// Regression (review JensenChen28 2026-11-16 P2): boolean schema branches.
+// Object.keys(false) is [], so a `false` schema used to hit the
+// empty-object shortcut and accept everything - and count as a match in
+// anyOf/oneOf. `false` must reject, `true` must accept, and combinators
+// must count boolean branches correctly.
+{
+  const booleanErrors = [];
+  validate(42, false, "#", booleanErrors);
+  assert.ok(
+    booleanErrors.length > 0,
+    "a false schema must reject any value (Object.keys(false) must not reach the empty-object shortcut)",
+  );
+
+  const trueErrors = [];
+  validate(42, true, "#", trueErrors);
+  assert.deepEqual(trueErrors, [], "a true schema must accept any value");
+
+  const anyOfErrors = [];
+  validate(42, { anyOf: [{ type: "string" }, false] }, "#", anyOfErrors);
+  assert.deepEqual(
+    anyOfErrors,
+    ["#: matches no anyOf branch"],
+    "a false anyOf branch must not satisfy the combinator",
+  );
+
+  const oneOfString = [];
+  validate("x", { oneOf: [{ type: "string" }, false] }, "#", oneOfString);
+  assert.deepEqual(oneOfString, [], "exactly the real branch matches");
+
+  const oneOfNumber = [];
+  validate(42, { oneOf: [{ type: "string" }, false] }, "#", oneOfNumber);
+  assert.deepEqual(
+    oneOfNumber,
+    ["#: matches 0 oneOf branches, expected 1"],
+    "a value matching no real branch must not be satisfied by the false branch",
+  );
+}
