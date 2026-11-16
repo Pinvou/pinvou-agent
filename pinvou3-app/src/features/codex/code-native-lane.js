@@ -1,4 +1,4 @@
-import { upsertRecoveryNotice, settleRecoveryNotices } from '../conversation/model-recovery.js';
+import { isActiveChildRecoveryNotice, upsertRecoveryNotice, settleRecoveryNotices } from '../conversation/model-recovery.js';
 // 代码模块原生（品悟 Engine）会话的本地会话车道。
 //
 // ACP 会话由后端维护 timeline（get_codex_acp_timeline）；原生会话复用主聊天的
@@ -764,6 +764,9 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
   const liveToolGateNotices = lane.items
     .filter(item => item && item.type === 'system' && item.toolGateDecision)
     .map(item => ({ ...item }));
+  const liveChildRecoveryNotices = lane.items
+    .filter(isActiveChildRecoveryNotice)
+    .map(item => ({ ...item }));
   const resultById = {};
   for (const message of messages) {
     const blocks = Array.isArray(message && message.content) ? message.content : [];
@@ -916,6 +919,9 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
         && item.toolId === notice.toolId && item.decision === notice.decision
     ));
     if (!duplicate) lane.items.push({ ...notice, id: nextId(lane) });
+  }
+  for (const notice of liveChildRecoveryNotices) {
+    lane.items.push({ ...notice, id: nextId(lane) });
   }
   lane.timeline = Array.isArray(timelineEvents) ? [...timelineEvents] : [];
   // Restore the newest usage-bearing turn or compaction snapshot after the mutable lane is
