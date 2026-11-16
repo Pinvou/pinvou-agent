@@ -2426,10 +2426,31 @@ const PROBE_BODY_CAP_BYTES: usize = 4 * 1024 * 1024;
 /// failed — the search lane reports a read error (`response_unreadable`)
 /// differently from an over-cap body (`response_too_large`), while the JSON
 /// reader and the Bing shape check degrade both to "no usable body".
+/// `UnreadableTimeout` (round-3 review minor) splits the timeout case out of
+/// `Unreadable`: the discovery ladder reports a mid-body STALL as transport
+/// `timeout` (the GUI's `BodyReadFail::MidStreamTimeout`), a distinct
+/// retry-hint voice from a plain proxy cut (`network`); every other lane
+/// folds the two back together.
 enum BodyRead {
     Bytes(Vec<u8>),
     Unreadable,
+    UnreadableTimeout,
     TooLarge,
+}
+
+/// Whether one blocking-read io error carries a reqwest TIMEOUT in its
+/// source chain (the blocking `Read` impl wraps the reqwest error as the
+/// io error's source). URL-free: only structured flags are read.
+fn body_read_is_timeout(error: &std::io::Error) -> bool {
+    use std::error::Error as _;
+    let mut source = error.source();
+    while let Some(err) = source {
+        if let Some(reqwest_error) = err.downcast_ref::<reqwest::Error>() {
+            return reqwest_error.is_timeout();
+        }
+        source = err.source();
+    }
+    false
 }
 
 /// Reads one probe response body under `cap` — the bounded-IO rule every
@@ -2440,11 +2461,12 @@ enum BodyRead {
 /// [`DISCOVER_BODY_CAP_BYTES`], mirroring the GUI's listing cap.
 fn read_body_capped(response: reqwest::blocking::Response, cap: usize) -> BodyRead {
     let mut bytes = Vec::new();
-    if response
-        .take(cap as u64 + 1)
-        .read_to_end(&mut bytes)
-        .is_err()
-    {
+    if let Err(error) = response.take(cap as u64 + 1).read_to_end(&mut bytes) {
+        // Timeout split (round-3 review minor): a mid-body stall is a
+        // different retry hint than a proxy cut; see `BodyRead`.
+        if body_read_is_timeout(&error) {
+            return BodyRead::UnreadableTimeout;
+        }
         return BodyRead::Unreadable;
     }
     if bytes.len() > cap {
@@ -2459,7 +2481,7 @@ fn read_body_capped(response: reqwest::blocking::Response, cap: usize) -> BodyRe
 fn read_json_capped(response: reqwest::blocking::Response) -> Option<serde_json::Value> {
     match read_body_capped(response, PROBE_BODY_CAP_BYTES) {
         BodyRead::Bytes(bytes) => serde_json::from_slice(&bytes).ok(),
-        BodyRead::Unreadable | BodyRead::TooLarge => None,
+        BodyRead::Unreadable | BodyRead::UnreadableTimeout | BodyRead::TooLarge => None,
     }
 }
 
@@ -3271,11 +3293,18 @@ fn is_local_or_private_base_url(raw: &str) -> bool {
 }
 
 /// Transport class of a failed discovery request, from reqwest's structured
-/// flags rather than its `Display` text — the display embeds the full URL
-/// (userinfo included) and this lane's error rows must carry NEITHER the raw
-/// text NOR the URL NOR the key, so the classification never reads the text
-/// at all. Vocabulary is the discovery lane's own short table
-/// ("timeout" | "dns" | "connect" | "network", shared with the GUI's
+/// flags plus the error SOURCE CHAIN (round-3 review minor) rather than its
+/// top-level `Display` — the display embeds the full URL (userinfo included)
+/// and this lane's error rows must carry NEITHER the raw text NOR the URL NOR
+/// the key, so the classification never reads the top-level text at all. The
+/// `tls` arm (the GUI's `transport_class` gained it in round 2) walks the
+/// error's `source()` chain via the shared
+/// `pinvou3_lib::model_probe::error_chain_looks_like_tls`: certificate facts
+/// live in the inner rustls/hyper error texts, never in the top-level
+/// Display, so a host whose URL merely CONTAINS "ssl" cannot bias the class
+/// and a real certificate failure no longer falls through to `network`.
+/// Vocabulary is the discovery lane's own short table
+/// ("timeout" | "dns" | "connect" | "tls" | "network", shared with the GUI's
 /// `core::endpoint_discovery` transport_class — NOT the monitor facade's
 /// longer `dns_failed`/`connection_refused` codes, which feed different
 /// consumers). Order mirrors the GUI ladder: `is_dns` MUST precede
@@ -3288,6 +3317,8 @@ fn discovery_transport_class(error: &reqwest::Error) -> &'static str {
         "dns"
     } else if error.is_connect() {
         "connect"
+    } else if pinvou3_lib::model_probe::error_chain_looks_like_tls(error) {
+        "tls"
     } else {
         "network"
     }
@@ -3380,7 +3411,13 @@ fn discovery_send(request: reqwest::blocking::RequestBuilder) -> DiscoveryAnswer
         // simply fails the JSON parse, so it lands in `Unusable` above —
         // the same fold the GUI applies (`read_json_body_bounded`'s cap
         // stop never returns its MidStream arm).
+        //
+        // Round-3 review minor: a mid-body TIMEOUT splits out as transport
+        // `timeout` (the GUI's `BodyReadFail::MidStreamTimeout` →
+        // `ProbeOutcome::Transport("timeout")`, http None) — the retry hint
+        // names the real cause instead of the generic network cut.
         BodyRead::Unreadable => DiscoveryAnswer::BrokenBody(status),
+        BodyRead::UnreadableTimeout => DiscoveryAnswer::Transport("timeout"),
         BodyRead::TooLarge => DiscoveryAnswer::Unusable(status),
     }
 }
@@ -3493,6 +3530,20 @@ fn discovery_openai_request(
     base_url: &str,
 ) -> reqwest::blocking::RequestBuilder {
     let mut request = apply_bearer(client.get(url), key);
+    request = with_discovery_affinity(request, base_url);
+    request
+}
+
+/// The OpenCode gateway session-affinity header on a raw request builder
+/// (round-3 review minor: the GUI attaches it on all THREE ladders —
+/// `with_opencode_session_header` at the compat, anthropic and gemini steps
+/// — while the CLI only sent it on the compat lane; a gateway discovery of
+/// `--wire anthropic` 400'd with MissingSessionID in the CLI where the GUI
+/// was accepted). No-op off-gateway.
+fn with_discovery_affinity(
+    mut request: reqwest::blocking::RequestBuilder,
+    base_url: &str,
+) -> reqwest::blocking::RequestBuilder {
     if pinvou3_lib::model_probe::is_opencode_gateway_base_url(base_url) {
         request = request.header(
             "x-opencode-session",
@@ -3508,15 +3559,25 @@ fn discovery_openai_request(
 /// version segment is preserved), `{data}` or bare array accepted, entry cap
 /// 2000.
 fn discovery_openai_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
+    discovery_openai_listing_at(
+        &pinvou3_lib::model_probe::models_probe_url(base_url.trim()),
+        base_url,
+        key,
+    )
+}
+
+/// URL-qualified variant (the GUI ladder's `ladder_openai_url` shape): the
+/// local `/v1` retry re-enters with the assembled `{base}/v1/models` while
+/// the gateway-affinity decision still keys on the ORIGINAL base_url.
+fn discovery_openai_listing_at(
+    url: &str,
+    base_url: &str,
+    key: Option<&str>,
+) -> EndpointModelsListing {
     let Some(client) = discovery_client() else {
         return error_listing(None, None);
     };
-    let request = discovery_openai_request(
-        client,
-        &pinvou3_lib::model_probe::models_probe_url(base_url.trim()),
-        key,
-        base_url,
-    );
+    let request = discovery_openai_request(client, url, key, base_url);
     match discovery_send(request) {
         DiscoveryAnswer::Transport(class) => error_listing(None, Some(class)),
         DiscoveryAnswer::Status(status) => {
@@ -3525,7 +3586,8 @@ fn discovery_openai_listing(base_url: &str, key: Option<&str>) -> EndpointModels
         DiscoveryAnswer::Unusable(status) => unsupported_listing(Some(status)),
         // The GUI's BrokenBody terminal, field for field: error with the
         // status kept AND transport `network` — a mid-stream body break is
-        // retryable, never "unsupported".
+        // retryable, never "unsupported". (A mid-body TIMEOUT now carries
+        // transport `timeout` via [`DiscoveryAnswer::Transport`].)
         DiscoveryAnswer::BrokenBody(status) => error_listing(Some(status), Some("network")),
         DiscoveryAnswer::Json(value, status) => match discovery_openai_models(&value) {
             Some((models, truncated)) => listed_listing(models, truncated),
@@ -3534,12 +3596,35 @@ fn discovery_openai_listing(base_url: &str, key: Option<&str>) -> EndpointModels
     }
 }
 
+/// The local short-circuit's OpenAI-compatible ladder + the bare-host `/v1`
+/// retry (round-3 review M4b, the GUI `ladder_openai_local` mirror): healthy
+/// local vLLM / Ollama-compat servers are commonly configured as a bare
+/// address where `{base}/models` 404s while the service answers at
+/// `{base}/v1/models`. Only the LOCAL lanes retry (this fn is called from
+/// the short-circuit branch only), only on Unsupported(404/405), and only
+/// when the base does not already end `/v1`; remote roots vary (glm
+/// `/paas/v4` etc.) and a blind `/v1` append would launder a real
+/// "path not found" into another 404.
+fn discovery_openai_listing_local(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        return discovery_openai_listing(base_url, key);
+    }
+    let first = discovery_openai_listing(base_url, key);
+    match (&first.status, first.http_status) {
+        (ListingStatus::Unsupported, Some(404 | 405)) => {
+            discovery_openai_listing_at(&format!("{trimmed}/v1/models"), base_url, key)
+        }
+        _ => first,
+    }
+}
+
 /// One anthropic `/models` page → its entries, the `has_more` flag and the
 /// `after_id` cursor (the page's last entry id). Shape mismatch (`data` not
 /// an array) is `None` → unsupported.
 fn discovery_anthropic_page(
     value: &serde_json::Value,
-) -> Option<(Vec<DiscoveredModel>, bool, Option<String>)> {
+) -> Option<(Vec<DiscoveredModel>, Option<bool>, Option<String>)> {
     let data = value.get("data").and_then(serde_json::Value::as_array)?;
     let models = data
         .iter()
@@ -3576,7 +3661,10 @@ fn discovery_anthropic_page(
         .and_then(|item| item.get("id"))
         .and_then(|value| value.as_str())
         .map(str::to_owned);
-    Some((models, has_more.unwrap_or(false), after_id))
+    // Malformed/missing `has_more` is `None`, NOT `false` (round-3 review
+    // minor, the GUI parser's same amendment): a malformed answer must not
+    // collapse into "complete, untruncated" — the ladder ends it TRUNCATED.
+    Some((models, has_more, after_id))
 }
 
 /// The anthropic ladder: `GET {规整 base}/v1/models?limit=1000` with
@@ -3614,6 +3702,8 @@ fn discovery_anthropic_listing(base_url: &str, key: Option<&str>) -> EndpointMod
                 .header("x-api-key", key)
                 .header("anthropic-version", DISCOVER_ANTHROPIC_VERSION);
         }
+        // Gateway affinity, the GUI ladder's same attachment (round-3 minor).
+        let request = with_discovery_affinity(request, base_url);
         match discovery_send(request) {
             DiscoveryAnswer::Transport(class) => return error_listing(None, Some(class)),
             DiscoveryAnswer::Status(status) => {
@@ -3636,17 +3726,20 @@ fn discovery_anthropic_listing(base_url: &str, key: Option<&str>) -> EndpointMod
                     models.truncate(DISCOVER_NATIVE_LISTING_CAP);
                     return listed_listing(models, true);
                 }
-                if !has_more {
-                    return listed_listing(models, false);
-                }
-                // has_more without a usable cursor (the page's last entry has
-                // no id): the paging cannot continue, so the run ends
-                // TRUNCATED rather than silently losing the rest.
-                match after {
-                    Some(next_after) if page < DISCOVER_ANTHROPIC_PAGE_CAP => {
-                        after_id = Some(next_after);
-                    }
-                    _ => return listed_listing(models, true),
+                // Round-3 review minor, the GUI ladder's same three-way
+                // split: `Some(false)` completes the listing; a malformed
+                // or missing `has_more` (`None`) ends TRUNCATED without
+                // blindly probing another page; `Some(true)` continues on
+                // the cursor, or truncates when the page carries none.
+                match has_more {
+                    Some(false) => return listed_listing(models, false),
+                    None => return listed_listing(models, true),
+                    Some(true) => match after {
+                        Some(next_after) if page < DISCOVER_ANTHROPIC_PAGE_CAP => {
+                            after_id = Some(next_after);
+                        }
+                        _ => return listed_listing(models, true),
+                    },
                 }
             }
         }
@@ -3667,16 +3760,24 @@ fn discovery_gemini_page(
     let models = entries
         .iter()
         .filter_map(|item| {
-            let generates = item
+            // Round-3 review minor, the GUI parser's same amendment: an
+            // entry WITHOUT `supportedGenerationMethods` is kept — the
+            // official API always sends the field, a gateway omitting it
+            // must not silently filter the whole listing down to zero rows
+            // ("the endpoint has no models" for a demonstrably listing
+            // endpoint). Only an explicit list WITHOUT generateContent
+            // (embedding etc.) filters.
+            let generates = match item
                 .get("supportedGenerationMethods")
                 .and_then(serde_json::Value::as_array)
-                .is_some_and(|methods| {
-                    methods.iter().any(|method| {
-                        method
-                            .as_str()
-                            .is_some_and(|name| name.eq_ignore_ascii_case("generateContent"))
-                    })
-                });
+            {
+                Some(methods) => methods.iter().any(|method| {
+                    method
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("generateContent"))
+                }),
+                None => true,
+            };
             if !generates {
                 return None;
             }
@@ -3745,6 +3846,8 @@ fn discovery_gemini_listing(base_url: &str, key: Option<&str>) -> EndpointModels
         if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
             request = request.header("x-goog-api-key", key);
         }
+        // Gateway affinity, the GUI ladder's same attachment (round-3 minor).
+        let request = with_discovery_affinity(request, base_url);
         match discovery_send(request) {
             DiscoveryAnswer::Transport(class) => return error_listing(None, Some(class)),
             DiscoveryAnswer::Status(status) => {
@@ -3883,6 +3986,44 @@ fn discovery_ollama_query_show(
     }
 }
 
+/// The ollama branch's three outcomes (round-3 review M4a restructure):
+/// `Listed` for a usable native listing, `NotOllamaShaped` for a well-formed
+/// tags round trip with no usable name list (empty list / shape drift — the
+/// caller falls back to the OpenAI-compatible ladder, the historical
+/// "no longer Ollama" semantics), and `Failed` for a TRANSIENT tags failure
+/// re-checked and confirmed (busy 5xx / transport / auth) — reported at its
+/// REAL classification, never laundered into `unsupported(404)` by a
+/// compat-ladder rerun (the GUI's `ollama_native_failure` invariant:绝不把
+/// 可重试的「服务端正忙」钉成「端点不支持发现」).
+enum DiscoveryOllamaListing {
+    Listed(Vec<DiscoveredModel>, bool),
+    NotOllamaShaped,
+    Failed(EndpointModelsListing),
+}
+
+/// The transient-failure recheck: one more `/api/tags` round. A well-formed
+/// answer (2xx, any shape) or a 404/405 reconfirms the fall-back semantics
+/// (empty list is not a failure; 404 = the kind cache went stale, the server
+/// is no longer Ollama-shaped); every other outcome — the SAME transient
+/// failure twice — returns `Some` at its real classification.
+fn discovery_ollama_recheck_tags(
+    base_url: &str,
+    key: Option<&str>,
+) -> Option<EndpointModelsListing> {
+    let client = discovery_client()?;
+    let host = strip_v1_suffix(base_url);
+    let request = apply_bearer(client.get(format!("{host}/api/tags")), key);
+    match discovery_send(request) {
+        DiscoveryAnswer::Json(_, _) | DiscoveryAnswer::Unusable(_) => None,
+        DiscoveryAnswer::Status(404 | 405) => None,
+        DiscoveryAnswer::Status(status) => Some(
+            discovery_status_listing(status).unwrap_or_else(|| error_listing(Some(status), None)),
+        ),
+        DiscoveryAnswer::Transport(class) => Some(error_listing(None, Some(class))),
+        DiscoveryAnswer::BrokenBody(status) => Some(error_listing(Some(status), Some("network"))),
+    }
+}
+
 /// The ollama branch of the short-circuit: `/api/ps` (loaded state and
 /// effective contexts) + `/api/tags` (the downloaded list) + per-model
 /// `/api/show` `num_ctx` lookups for entries WITHOUT a context fact
@@ -3893,16 +4034,16 @@ fn discovery_ollama_query_show(
 /// (every downloaded model is still listed — the flag says the context facts
 /// are partial, not that rows were dropped).
 ///
-/// `None` = the tags round trip failed, answered a decided status, or was
-/// not Ollama-shaped (including empty): the caller re-runs the
-/// OpenAI-compatible ladder so the classification stays one single source of
-/// truth (the GUI's `ollama_discovered` → `ladder_openai` fallback).
-fn discovery_ollama_models(
-    base_url: &str,
-    key: Option<&str>,
-) -> Option<(Vec<DiscoveredModel>, bool)> {
+/// A tags round trip that fails at the transport/status level is re-checked
+/// once ([`discovery_ollama_recheck_tags`], the GUI's `ollama_native_failure`
+/// mirror — round-3 review M4a): a confirmed transient failure reports its
+/// REAL classification instead of rerunning the compat ladder, which would
+/// pin a busy Ollama as `unsupported(404)`.
+fn discovery_ollama_models(base_url: &str, key: Option<&str>) -> DiscoveryOllamaListing {
     const DISCOVER_OLLAMA_SHOW_CAP: usize = 50;
-    let client = discovery_client()?;
+    let Some(client) = discovery_client() else {
+        return DiscoveryOllamaListing::Failed(error_listing(None, None));
+    };
     let host = strip_v1_suffix(base_url);
     // Loaded set and effective contexts: any failure reads as empty (all
     // unloaded, no window facts) without losing the downloaded list.
@@ -3916,11 +4057,19 @@ fn discovery_ollama_models(
         };
     let value = match discovery_send(apply_bearer(client.get(format!("{host}/api/tags")), key)) {
         DiscoveryAnswer::Json(value, _) => value,
-        // Any non-listing outcome re-enters the OpenAI-compatible ladder,
-        // whose classification produces the same error row the GUI prints.
-        _ => return None,
+        // Round-3 review M4a: not "re-enter the compat ladder" — re-check
+        // once and classify honestly (the GUI's ollama_native_failure).
+        _ => {
+            return match discovery_ollama_recheck_tags(base_url, key) {
+                Some(listing) => DiscoveryOllamaListing::Failed(listing),
+                None => DiscoveryOllamaListing::NotOllamaShaped,
+            };
+        }
     };
-    let names = discovery_ollama_tag_names(&value).filter(|names| !names.is_empty())?;
+    let names = match discovery_ollama_tag_names(&value) {
+        Some(names) if !names.is_empty() => names,
+        _ => return DiscoveryOllamaListing::NotOllamaShaped,
+    };
     let mut models: Vec<DiscoveredModel> = names
         .into_iter()
         .map(|name| {
@@ -3950,7 +4099,7 @@ fn discovery_ollama_models(
     let started = std::time::Instant::now();
     for &index in missing.iter().take(DISCOVER_OLLAMA_SHOW_CAP) {
         if started.elapsed() >= DISCOVER_OLLAMA_SHOW_BUDGET {
-            return Some((models, true));
+            return DiscoveryOllamaListing::Listed(models, true);
         }
         let name = models[index].id.clone();
         if let Some(context) = discovery_ollama_query_show(client, &host, key, &name) {
@@ -3958,7 +4107,7 @@ fn discovery_ollama_models(
             models[index].context_from = Some(ModelFactSource::Endpoint);
         }
     }
-    Some((models, truncated))
+    DiscoveryOllamaListing::Listed(models, truncated)
 }
 
 /// LM Studio's native REST listing → entries with `state`-derived loaded
@@ -4002,12 +4151,14 @@ fn discovery_lmstudio_v0_models(value: &serde_json::Value) -> Option<Vec<Discove
 }
 
 /// The lmstudio ladder (short-circuit branch): native `/api/v0/models`
-/// first (loaded states, keyless — the GUI's `probe_lmstudio_models` carries
-/// no credential by construction, and an authenticated endpoint's 401
-/// classifies honestly as `auth_required` rather than degrading into a
-/// guessed shape), falling back to `/v1/models` (loaded unknown) when the
-/// native round trip does not produce a usable listing.
-fn discovery_lmstudio_listing(base_url: &str) -> EndpointModelsListing {
+/// first (loaded states — the GUI's `probe_lmstudio_models` carries the form
+/// credential the same way when its compat fallback runs), falling back to
+/// `/v1/models` (loaded unknown) when the native round trip does not produce
+/// a usable listing. The fallback rides the caller's key (round-3 review
+/// minor: the GUI falls back KEYED via `ladder_openai_local`; a keyless CLI
+/// fallback would report `auth_required` on an authenticated LM Studio
+/// where the GUI lists).
+fn discovery_lmstudio_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
     let Some(client) = discovery_client() else {
         return error_listing(None, None);
     };
@@ -4018,32 +4169,40 @@ fn discovery_lmstudio_listing(base_url: &str) -> EndpointModelsListing {
             // A 404/405 on the native endpoint is the legacy-server shape
             // the fallback exists for; every other decided status stands.
             if status == 404 || status == 405 {
-                discovery_lmstudio_v1_fallback(client, &host)
+                discovery_lmstudio_v1_fallback(client, &host, key)
             } else {
                 discovery_status_listing(status)
                     .unwrap_or_else(|| error_listing(Some(status), None))
             }
         }
-        DiscoveryAnswer::Unusable(_) => discovery_lmstudio_v1_fallback(client, &host),
+        DiscoveryAnswer::Unusable(_) => discovery_lmstudio_v1_fallback(client, &host, key),
         // A v0 body broken mid-stream is the same "native listing did not
         // produce a usable shape" recovery the GUI applies (its
         // `probe_lmstudio_v0_only` degrades any body failure to None and
         // falls back to the compat fetch): try `/v1/models`.
-        DiscoveryAnswer::BrokenBody(_) => discovery_lmstudio_v1_fallback(client, &host),
+        DiscoveryAnswer::BrokenBody(_) => discovery_lmstudio_v1_fallback(client, &host, key),
         DiscoveryAnswer::Json(value, _) => match discovery_lmstudio_v0_models(&value) {
             Some(models) => listed_listing(models, false),
-            None => discovery_lmstudio_v1_fallback(client, &host),
+            None => discovery_lmstudio_v1_fallback(client, &host, key),
         },
     }
 }
 
 /// The `/v1/models` fallback of the lmstudio ladder, in the OpenAI-compatible
-/// shape (context from the entry's own length fields, `loaded` unknown).
+/// shape (context from the entry's own length fields, `loaded` unknown). The
+/// key rides along (round-3 review minor) via the gateway-affinity request
+/// builder, which also keeps the affinity header the compat ladder sends.
 fn discovery_lmstudio_v1_fallback(
     client: &'static reqwest::blocking::Client,
     host: &str,
+    key: Option<&str>,
 ) -> EndpointModelsListing {
-    match discovery_send(client.get(format!("{host}/v1/models"))) {
+    match discovery_send(discovery_openai_request(
+        client,
+        &format!("{host}/v1/models"),
+        key,
+        host,
+    )) {
         DiscoveryAnswer::Transport(class) => error_listing(None, Some(class)),
         DiscoveryAnswer::Status(status) => {
             discovery_status_listing(status).unwrap_or_else(|| error_listing(Some(status), None))
@@ -4110,11 +4269,16 @@ fn run_endpoint_discovery(
             let kind = select_local_server_kind_from_hits(&probe_candidates(base_url.trim(), key));
             let mut listing = match kind {
                 "ollama" => match discovery_ollama_models(base_url, key) {
-                    Some((models, truncated)) => listed_listing(models, truncated),
-                    None => discovery_openai_listing(base_url, key),
+                    DiscoveryOllamaListing::Listed(models, truncated) => {
+                        listed_listing(models, truncated)
+                    }
+                    DiscoveryOllamaListing::Failed(listing) => listing,
+                    DiscoveryOllamaListing::NotOllamaShaped => {
+                        discovery_openai_listing_local(base_url, key)
+                    }
                 },
-                "lmstudio" => discovery_lmstudio_listing(base_url),
-                _ => discovery_openai_listing(base_url, key),
+                "lmstudio" => discovery_lmstudio_listing(base_url, key),
+                _ => discovery_openai_listing_local(base_url, key),
             };
             listing.server_kind = Some(discovery_server_kind_str(kind));
             listing
@@ -5041,7 +5205,9 @@ fn search_response_probe(
     let body = match read_body_capped(response, PROBE_BODY_CAP_BYTES) {
         // The status says success but the body never arrived: the probe
         // learned the endpoint is reachable, not that it answered cleanly.
-        BodyRead::Unreadable => {
+        // (The timeout split is a discovery-lane distinction; the search
+        // probe reports both as `response_unreadable`.)
+        BodyRead::Unreadable | BodyRead::UnreadableTimeout => {
             return SearchProbe {
                 ok: false,
                 code: "response_unreadable",
@@ -5211,7 +5377,9 @@ fn run_bing_probe() -> SearchProbe {
             let body_is_result_shaped = status.is_success()
                 && match read_body_capped(response, PROBE_BODY_CAP_BYTES) {
                     BodyRead::Bytes(bytes) => body_carries_result_element(&bytes),
-                    BodyRead::Unreadable | BodyRead::TooLarge => false,
+                    BodyRead::Unreadable | BodyRead::UnreadableTimeout | BodyRead::TooLarge => {
+                        false
+                    }
                 };
             let (ok, code) = if body_is_result_shaped {
                 (true, "ok")
@@ -6772,7 +6940,7 @@ mod tests {
             models[1].context_window_tokens, None,
             "a non-positive length reads undeclared"
         );
-        assert!(has_more);
+        assert_eq!(has_more, Some(true));
         assert_eq!(
             after_id.as_deref(),
             Some("claude-b"),
@@ -6781,7 +6949,8 @@ mod tests {
         let missing_cursor = serde_json::json!({ "data": [], "has_more": true });
         let (_, has_more, after_id) =
             discovery_anthropic_page(&missing_cursor).expect("an empty page parses");
-        assert!(has_more && after_id.is_none(), "no entries means no cursor");
+        assert_eq!(has_more, Some(true));
+        assert!(after_id.is_none(), "no entries means no cursor");
         assert_eq!(discovery_anthropic_page(&serde_json::json!({})), None);
     }
 
@@ -6810,10 +6979,13 @@ mod tests {
         });
         let (models, next) = discovery_gemini_page(&page).expect("a well-formed page parses");
         let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        // Round-3 review minor: an entry WITHOUT the field is KEPT (a
+        // gateway omitting it must not filter the listing to zero rows);
+        // only an explicit list without generateContent filters.
         assert_eq!(
             ids,
-            ["gemini-x", "case-variant"],
-            "only generateContent-capable entries stay (case-insensitive), with the models/ prefix stripped"
+            ["gemini-x", "no-methods", "case-variant"],
+            "generateContent-capable and missing-field entries stay (case-insensitive), with the models/ prefix stripped"
         );
         assert_eq!(models[0].context_window_tokens, Some(1000000));
         assert_eq!(models[0].max_output_tokens, Some(8192));
@@ -7277,11 +7449,20 @@ mod tests {
             (500, ListingStatus::Error, "error-500"),
         ] {
             let body = "{}";
+            // Round-3 review M4b: a bare LOCAL base now retries
+            // `{base}/v1/models` on 404/405 (the GUI `ladder_openai_local`
+            // mirror), so the raw status rows drive a `/v1`-suffixed base
+            // where the ladder answers `/v1/models` directly and no retry
+            // applies. The retry itself is pinned by
+            // `discover_bare_local_base_retries_v1_models`.
+            let v1_base = matches!(status, 404 | 405);
             let (base, _log) = spawn_discover_mock(&discover_routes(&[(
-                "/models",
+                if v1_base { "/v1/models" } else { "/models" },
                 vec![(status, body), (status, body)],
             )]));
-            let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+            let driven = if v1_base { format!("{base}/v1") } else { base };
+            let listing =
+                run_endpoint_discovery(&driven, None, DiscoveryProtocol::OpenAiCompatible);
             assert_eq!(listing.status, expected, "{name}");
             assert_eq!(listing.http_status, Some(status), "{name}");
             assert!(
@@ -7729,6 +7910,229 @@ mod tests {
             listing.models[51].context_window_tokens, None,
             "entries past the budget stay undeclared"
         );
+    }
+
+    /// Round-3 review M4b: a bare local base (no `/v1` segment) whose
+    /// `{base}/models` 404s retries `{base}/v1/models` once — the GUI's
+    /// `ladder_openai_local` mirror. The GUI listed here; the CLI previously
+    /// pinned the same healthy vLLM as `unsupported(404)`, contradicting the
+    /// mirror claim. The kind probe (vLLM owned_by via `/v1/models`) and the
+    /// listing retry are the two `/v1/models` hits.
+    #[test]
+    fn discover_bare_local_base_retries_v1_models() {
+        // Queue shape (the candidate round runs first): the kind probe's
+        // primary `/v1/models` 404s and its `/models` fallback 404s; the
+        // ladder's primary `/models` 404s again; the bare-base listing
+        // retry finally hits `/v1/models` and lists.
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            ("/models", vec![(404u16, "{}"), (404, "{}")]),
+            (
+                "/v1/models",
+                vec![
+                    (404u16, "{}"),
+                    (
+                        200u16,
+                        r#"{"data":[{"id":"bare-vllm","max_model_len":4096}]}"#,
+                    ),
+                ],
+            ),
+        ]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.server_kind, Some("generic"));
+        assert_eq!(listing.models.len(), 1);
+        assert_eq!(listing.models[0].id, "bare-vllm");
+        assert_eq!(listing.models[0].context_window_tokens, Some(4096));
+        assert_eq!(
+            log.hits_for("/models"),
+            2,
+            "the kind probe fallback plus the ladder primary"
+        );
+        assert_eq!(
+            log.hits_for("/v1/models"),
+            2,
+            "the kind probe primary plus the bare-base listing retry"
+        );
+    }
+
+    /// Round-3 review M4a: a detected Ollama whose `/api/tags` fails
+    /// TRANSIENTLY (busy 503) reports the REAL classification (error, 503)
+    /// after the re-check — never `unsupported(404)` from a compat-ladder
+    /// rerun. The GUI's `ollama_native_failure` invariant, mirrored: hit 1
+    /// is the kind probe, hit 2 the ladder fetch, hit 3 the re-check; the
+    /// same 503 twice is a confirmed transient, not a shape verdict.
+    #[test]
+    fn discover_busy_ollama_reports_real_failure_not_unsupported() {
+        let tags = r#"{"models":[{"name":"llama3:latest"}]}"#;
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            ("/api/tags", vec![(200u16, tags), (503, "{}"), (503, "{}")]),
+            ("/api/ps", vec![(503u16, "{}")]),
+        ]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(
+            listing.status,
+            ListingStatus::Error,
+            "a busy Ollama is a retryable error, not \"endpoint has no list interface\""
+        );
+        assert_eq!(listing.http_status, Some(503));
+        assert_eq!(listing.server_kind, Some("ollama"));
+        assert_eq!(
+            log.hits_for("/api/tags"),
+            3,
+            "kind probe + ladder fetch + the transient re-check"
+        );
+    }
+
+    /// The re-check's recovery arm: the re-run `/api/tags` answers
+    /// well-formed (here: an empty roster), so the historical fall-back
+    /// semantics stand — the compat ladder decides (unsupported on this
+    /// mock, via the local `/v1` retry).
+    #[test]
+    fn discover_ollama_transient_recheck_ok_falls_back_to_compat() {
+        let tags = r#"{"models":[{"name":"llama3:latest"}]}"#;
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            (
+                "/api/tags",
+                vec![(200u16, tags), (503, "{}"), (200u16, r#"{"models":[]}"#)],
+            ),
+            ("/api/ps", vec![(503u16, "{}")]),
+            ("/models", vec![(404u16, "{}")]),
+            ("/v1/models", vec![(404u16, "{}"), (404u16, "{}")]),
+        ]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Unsupported);
+        assert_eq!(listing.server_kind, Some("ollama"));
+        assert_eq!(log.hits_for("/api/tags"), 3);
+    }
+
+    /// Round-3 review minor: a malformed `has_more` ("yes" as a string)
+    /// ends the run TRUNCATED after one page — never silently complete, and
+    /// no blind extra page. (The old `unwrap_or(false)` collapsed it to an
+    /// untruncated complete listing.)
+    #[test]
+    fn discover_anthropic_malformed_has_more_ends_truncated() {
+        let (base, log) = spawn_discover_mock(&discover_routes(&[(
+            "/v1/models",
+            vec![(
+                200u16,
+                r#"{"data":[{"id":"claude-a","max_input_tokens":200000}],"has_more":"yes"}"#,
+            )],
+        )]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::Anthropic);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert!(
+            listing.truncated,
+            "malformed has_more must not read complete"
+        );
+        assert_eq!(listing.models.len(), 1);
+        assert_eq!(log.hits_for("/v1/models"), 1, "no blind extra page");
+    }
+
+    /// Round-3 review minor: an entry WITHOUT `supportedGenerationMethods`
+    /// is kept (a gateway omitting the field must not filter the listing to
+    /// zero rows); only an explicit list without generateContent filters.
+    #[test]
+    fn discover_gemini_entry_without_generation_methods_is_kept() {
+        let (base, log) = spawn_discover_mock(&discover_routes(&[(
+            "/v1beta/models",
+            vec![(
+                200u16,
+                r#"{"models":[
+                    {"name":"models/gateway-pro","inputTokenLimit":960000},
+                    {"name":"models/gateway-embed",
+                     "supportedGenerationMethods":["embeddingContent"]}
+                ]}"#,
+            )],
+        )]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::Gemini);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(
+            listing.models.len(),
+            1,
+            "missing-field kept, embedding filtered"
+        );
+        assert_eq!(listing.models[0].id, "gateway-pro");
+        assert_eq!(listing.models[0].context_window_tokens, Some(960_000));
+        assert_eq!(log.hits_for("/v1beta/models"), 1);
+    }
+
+    /// Round-3 review minor: the LM Studio compat fallback rides the
+    /// caller's key — the GUI falls back keyed, so an authenticated LM
+    /// Studio lists in the GUI; the keyless CLI fallback reported
+    /// auth_required on the same server.
+    #[test]
+    fn discover_lmstudio_v1_fallback_rides_the_key() {
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            (
+                "/api/v0/models",
+                vec![
+                    (
+                        200u16,
+                        r#"{"data":[{"id":"warmup","state":"loaded","loaded_context_length":8}]}"#,
+                    ),
+                    (200u16, r#"{"data":[]}"#),
+                ],
+            ),
+            (
+                "/v1/models",
+                vec![
+                    (
+                        200u16,
+                        r#"{"data":[{"id":"authed-x","max_model_len":4096}]}"#,
+                    ),
+                    (200, r#"{"data":[{"id":"authed-x","max_model_len":4096}]}"#),
+                ],
+            ),
+        ]));
+        let listing = run_endpoint_discovery(
+            &base,
+            Some("sk-live-123"),
+            DiscoveryProtocol::OpenAiCompatible,
+        );
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models[0].id, "authed-x");
+        // Both `/v1/models` rounds (the kind probe and the fallback) ride
+        // the caller's key — the GUI's keyed fallback mirror.
+        assert_eq!(
+            log.header_values("/v1/models", "authorization"),
+            vec![
+                "Bearer sk-live-123".to_string(),
+                "Bearer sk-live-123".to_string()
+            ],
+            "the compat fallback must send the caller's key"
+        );
+    }
+
+    /// Round-3 test-gap pin: the CLI has NO catalog, so `SOURCE` is always
+    /// `endpoint` and a catalog-known id with no self-reported lengths stays
+    /// UNDECLARED. The GUI's local-lane catalog skip (round-3 review M1)
+    /// must never grow a CLI twin by accident.
+    #[test]
+    fn discover_never_fills_lengths_from_a_catalog() {
+        let (base, _log) = spawn_discover_mock(&discover_routes(&[(
+            "/models",
+            vec![
+                (
+                    200u16,
+                    r#"{"data":[{"id":"kimi-k3"},{"id":"deepseek-r1-distill-qwen-7b"}]}"#,
+                ),
+                (
+                    200,
+                    r#"{"data":[{"id":"kimi-k3"},{"id":"deepseek-r1-distill-qwen-7b"}]}"#,
+                ),
+            ],
+        )]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(listing.status, ListingStatus::Listed);
+        for model in &listing.models {
+            assert_eq!(
+                model.context_window_tokens, None,
+                "{}: the CLI lane has no catalog back-fill",
+                model.id
+            );
+            assert_eq!(model.context_from, None);
+            assert_eq!(model.max_output_tokens, None);
+        }
     }
 
     /// LM Studio: the v0 listing is served twice (candidate + ladder) and
