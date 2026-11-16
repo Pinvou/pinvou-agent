@@ -1532,6 +1532,22 @@ fn edit<S: CredentialStore>(
                 // The resolver's contract is a returned key is already trimmed
                 // and non-empty, so Some is exactly "there is a key to store".
                 (Some(key), _) => {
+                    // An explicit replacement is the caller deliberately
+                    // re-authenticating the endpoint, so a stale keyless
+                    // declaration yields — the same explicit-key-outranks-
+                    // declaration precedence the probe lanes document.
+                    // Without this, `edit` is the one CLI writer that could
+                    // persist the declared+configured dual state the GUI's
+                    // `apply_model_credential` intercept exists to prevent
+                    // (`add` hardcodes `auth_mode: None`; a hand-edited
+                    // settings.json can carry the declaration). KeepExisting
+                    // deliberately does NOT clear: an unrelated field edit
+                    // must not silently mutate the credential posture, and
+                    // that residual dual state stays inert under the
+                    // read-side guards.
+                    if updated.declares_keyless_auth() {
+                        updated.auth_mode = None;
+                    }
                     let reference = updated.credential_reference();
                     let previous = store.get(&reference).map_err(|error| error.user_message());
                     written = Some((reference.clone(), previous));
@@ -5777,6 +5793,48 @@ mod tests {
             "the active lane must not read the stored credential under a declaration: {operations:?}"
         );
 
+        // Round-7 review: the documented precedence — an explicit probe-time
+        // key outranks even the declaration (the record posture governs
+        // stored credentials, not deliberate probe overrides) — had no pin.
+        // Wire-level against the mock: the bearer must reach the endpoint,
+        // and the store must stay untouched (the override arm reads the env
+        // var, not the keyring).
+        let mock = spawn_probe_mock(&[("/v1/models", 404, "{}"), ("/models", 404, "{}")]);
+        UserPrefs::update_transaction(|prefs| {
+            if let Some(record) = prefs
+                .advanced
+                .saved_models
+                .iter_mut()
+                .find(|model| model.id == id)
+            {
+                record.base_url = mock.base_url.clone();
+            }
+            Ok(())
+        })
+        .expect("repointing the record at the mock should save");
+        let before = store.operations().len();
+        probe_local(
+            &store,
+            None,
+            Some("MODELS_UNIT_TEST_KEY"),
+            None,
+            OutputMode::Json,
+        )
+        .expect("the explicit-key probe completes against the mock");
+        let operations = &store.operations()[before..];
+        assert!(
+            !operations.iter().any(|op| op.starts_with("get:")),
+            "the explicit key rides the override arm, not a store read: {operations:?}"
+        );
+        assert!(
+            mock.auth
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .values()
+                .any(|value| value == "Bearer sk-residual-stored"),
+            "an explicit probe-time key outranks the keyless declaration on the wire"
+        );
+
         // Reverse leg: clear the declaration and both lanes resolve (and
         // use) the stored credential again — no over-suppression.
         UserPrefs::update_transaction(|prefs| {
@@ -5856,6 +5914,127 @@ mod tests {
             !outcome.stdout.contains("auth_mode"),
             "an undeclared record renders no auth_mode line: {}",
             outcome.stdout
+        );
+    }
+
+    /// Round-7 review: `edit` was the one CLI writer that could persist the
+    /// declared+configured dual state the GUI's `apply_model_credential`
+    /// intercept exists to prevent — an explicit key replacement onto a
+    /// hand-declared record stored the secret while `auth_mode: "none"`
+    /// stayed (inert under the read-side guards, but a self-contradictory
+    /// record shape the GUI can never produce). An explicit replacement is
+    /// the caller deliberately re-authenticating the endpoint, so the stale
+    /// declaration yields (the same explicit-key-outranks-declaration
+    /// precedence the probe lanes document); keep-existing edits must not
+    /// silently mutate the posture.
+    #[test]
+    fn models_edit_yields_keyless_declaration_to_explicit_key() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _home = TempHome::new("edit-keyless-yield");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-explicit-replacement");
+        let store = RecordingStore::new();
+
+        let id = add_model(
+            &store,
+            "Keyless",
+            "M",
+            "http://127.0.0.1:9/v1",
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
+        // Hand-edited settings.json shape: declaration + residual credential.
+        UserPrefs::update_transaction(|prefs| {
+            if let Some(record) = prefs
+                .advanced
+                .saved_models
+                .iter_mut()
+                .find(|model| model.id == id)
+            {
+                record.auth_mode = Some("none".to_string());
+            }
+            Ok(())
+        })
+        .expect("keyless declaration should save");
+
+        // Explicit replacement: the declaration clears, the credential lands.
+        let outcome = edit_credential(&store, &id, Some("MODELS_UNIT_TEST_KEY"), false)
+            .expect("edit with an explicit key succeeds");
+        assert!(
+            outcome.stdout.contains("credential: replaced"),
+            "{}",
+            outcome.stdout
+        );
+        let record = UserPrefs::load()
+            .model_by_id(&id)
+            .expect("model persisted")
+            .clone();
+        assert_eq!(
+            record.auth_mode, None,
+            "an explicit key replacement must clear the stale declaration"
+        );
+        assert!(
+            record.credential_ref.is_some() && record.has_secret,
+            "the replacement credential must be stored: {:?}",
+            record.credential_state
+        );
+
+        // Keep-existing edit (no key flags): the posture is untouched — an
+        // unrelated field edit must not silently rewrite the declaration or
+        // the bookkeeping. (The residual dual state stays inert under the
+        // read-side guards, exactly as the probe lanes neutralize it.)
+        let outcome = edit_credential(&store, &id, None, false).expect("keep-existing edit");
+        assert!(
+            outcome.stdout.contains("credential: unchanged"),
+            "{}",
+            outcome.stdout
+        );
+        let record = UserPrefs::load()
+            .model_by_id(&id)
+            .expect("model persisted")
+            .clone();
+        assert_eq!(record.auth_mode, None);
+        assert!(record.credential_ref.is_some());
+
+        // `--clear-api-key` keeps the GUI Delete posture: the record goes
+        // missing (and the declaration, if any, stays a coherent keyless
+        // statement about the endpoint).
+        let id2 = add_model(
+            &store,
+            "Keyless2",
+            "M",
+            "http://127.0.0.1:9/v1",
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
+        UserPrefs::update_transaction(|prefs| {
+            if let Some(record) = prefs
+                .advanced
+                .saved_models
+                .iter_mut()
+                .find(|model| model.id == id2)
+            {
+                record.auth_mode = Some("none".to_string());
+            }
+            Ok(())
+        })
+        .expect("keyless declaration should save");
+        let outcome = edit_credential(&store, &id2, None, true).expect("clear succeeds");
+        assert!(
+            outcome.stdout.contains("credential: cleared"),
+            "{}",
+            outcome.stdout
+        );
+        let record = UserPrefs::load()
+            .model_by_id(&id2)
+            .expect("model persisted")
+            .clone();
+        assert_eq!(
+            record.credential_state,
+            CredentialState::Missing,
+            "the clear must mark the record missing (GUI Delete parity)"
+        );
+        assert_eq!(
+            record.auth_mode,
+            Some("none".to_string()),
+            "clearing the key keeps the endpoint's keyless statement"
         );
     }
 }
