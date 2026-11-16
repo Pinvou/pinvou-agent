@@ -4,9 +4,9 @@
 >
 > 同期姊妹篇：[`Windows端功能清单与测试用例.md`](./Windows端功能清单与测试用例.md)（2026-07-23 功能盘点与验收用例快照）。
 >
-> 生成日期：2026-06-15。本文基于当时仓库源码、`README.md`、`process.md`（内部协作文档，未随本仓库发布，见 §16 注）、`docs/fork-modifications.md`、`docs/auto-compact-256K-tuning.md`、`docs/DeepSeek-TUI-工具系统.md` 与相关 Tauri/Rust/前端代码梳理。
+> 生成日期：2026-06-15。本文基于当时仓库源码、`README.md`、`process.md`（内部协作文档，未随本仓库发布，见 §16 注）、[`docs/fork-modifications.md`](./fork-modifications.md)、[`docs/auto-compact-256K-tuning.md`](./auto-compact-256K-tuning.md)、[`docs/DeepSeek-TUI-工具系统.md`](./DeepSeek-TUI-工具系统.md) 与相关 Tauri/Rust/前端代码梳理。
 >
-> **注（2026-11 回填）**：本文为 2026-06-15 迁移期快照，未按当前主干逐条复核，接手时注意以下布局均已变化：底座子模块已由 `DeepSeek-TUI/` 更名 `CodeWhale/`（无 `branch` 字段，另新增 `private-runtimes/windows` 私有运行时子模块）；前端由 `tauri-bridge.js` 单文件迁移为 `src/features/*` + `src/platform/` 分层；Rust 由根级 `commands.rs`/`engine.rs`/`bridge/` 迁移为 `app/commands/` + `features/` + `platform/`；§8 的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`）已在主干整体移除（正文其余散落的 workflow 提及——§1/§2/§4/§5/§6/§9/§12/§13/§14/§18 等——同为快照口径，不随本注逐条列举）；§11「Windows 打包必须重做」的结论已过时——NSIS 打包已在主干落地。现行权威入口：`AGENTS.md`、`docs/fork-modifications.md`、`docs/windows-private-runtime-submodule.md`、`docs/windows-rust-ci.md`。
+> **注（2026-11 回填）**：本文为 2026-06-15 迁移期快照，未按当前主干逐条复核，接手时注意以下布局均已变化：底座子模块已由 `DeepSeek-TUI/` 更名 `CodeWhale/`（无 `branch` 字段，另新增 `private-runtimes/windows` 私有运行时子模块）；前端由 `tauri-bridge.js` 单文件迁移为 `src/features/*` + `src/platform/` 分层；Rust 由根级 `commands.rs`/`engine.rs`/`bridge/` 迁移为 `app/commands/` + `features/` + `platform/`；§8 的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`）已在主干整体移除（正文其余散落的 workflow 提及——§1/§2/§3/§4/§5/§6/§9/§12/§13/§14/§15/§18 等——同为快照口径，不随本注逐条列举）；§11「Windows 打包必须重做」的结论已过时——NSIS 打包已在主干落地。现行权威入口：`AGENTS.md`、`docs/fork-modifications.md`、`docs/windows-private-runtime-submodule.md`、`docs/windows-rust-ci.md`。
 
 ## 1. 一句话定位
 
@@ -22,7 +22,7 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 
 | 路径 | 作用 | Windows 接手要点 |
 |---|---|---|
-| `pinvou3-app/` | 主应用，Tauri 2.0 + Rust 后端 + 静态前端 | 迁移主战场；当前打包目标主要是 Linux `.deb`（⚠️ 快照条目：现行 Windows `msi`+`nsis` 打包已上线，见 `config/platforms/windows/tauri.conf.json`，§11 结论已纠正） |
+| `pinvou3-app/` | 主应用，Tauri 2.0 + Rust 后端 + 静态前端 | 迁移主战场；当前打包目标主要是 Linux `.deb`（⚠️ 快照条目：现行 Windows `msi`+`nsis` 打包已上线，见 `pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json`，§11 结论已纠正） |
 | `pinvou3-app/src/` | 前端入口，`index.html` + `tauri-bridge.js` + vendor JS | `tauri-bridge.js` 是前后端通信唯一集中封装 |
 | `pinvou3-app/src-tauri/` | Rust 后端、Tauri 配置、bundle 资源 | Windows 兼容主要改这里和打包配置 |
 | `DeepSeek-TUI/` | 底座 submodule，Cargo path dependency | 当前工作区该目录可能为空；必须先初始化 submodule |
@@ -272,7 +272,7 @@ Windows 风险：
 | 主题 | 为什么重要 |
 |---|---|
 | library facade | pinvou3-app 需要把底座作为库调用 |
-| tool blocklist | Qwen3.6 可见工具需精简，且要防 tool_search 绕过 |
+| tool blocklist | Qwen3.6 可见工具需精简，且要防 tool_search 绕过（⚠️ 快照条目：blocklist 已于 2026-08-11 退役，现行以 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理，见 `docs/tool-governance.md`） |
 | append_file / 大产物保护 | 本地慢 vLLM 和大文件生成依赖分块写 |
 | YOLO careful hook | 危险命令在 YOLO 下也要拦 |
 | project_context / skills 路径收窄 | GUI 助手不应乱读其他 AI 工具上下文 |
@@ -336,7 +336,7 @@ Windows 迁移建议：
 }
 ```
 
-> 快照口径：当前主干已落地 Windows 打包——`config/platforms/windows/tauri.conf.json` 已含 `"targets": ["msi","nsis"]`（perMachine、LZMA、VC++ 检测与安装钩子齐备）；基座 `tauri.conf.json` 不再写 `targets`，按平台目录拆分。本节「必须重做」清单仅对 0.6.x 状态成立，现行契约见 `docs/windows-private-runtime-submodule.md`。
+> 快照口径：当前主干已落地 Windows 打包——`pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json` 已含 `"targets": ["msi","nsis"]`（perMachine、LZMA、VC++ 检测与安装钩子齐备）；基座 `tauri.conf.json` 不再写 `targets`，按平台目录拆分。本节「必须重做」清单仅对 0.6.x 状态成立，现行契约见 `docs/windows-private-runtime-submodule.md`。
 
 Linux 安装说明在 `pinvou3-app/INSTALL.md`，依赖 `.deb`、`apt`、`pkexec`。应用内升级也围绕 `.deb` 下载、sha256 校验、`pkexec apt` 安装。
 
@@ -358,7 +358,7 @@ Windows 迁移必须重做或拆分：
 | 风险 | 涉及模块 | 建议优先级 |
 |---|---|---|
 | `DeepSeek-TUI/` 子模块未初始化导致 Cargo path 依赖断 | Git / Cargo | P0 |
-| Tauri bundle 只配了 `deb` | `tauri.conf.json` | P0 |
+| Tauri bundle 只配了 `deb` | `tauri.conf.json` | P0（⚠️ 快照条目：现行 Windows `msi`+`nsis` 打包已上线，见 §11 注） |
 | `HOME` 环境变量假设 | `bridge/paths.rs`、`file_ingest.rs` | P0 |
 | `which` 命令探测依赖 | `file_ingest.rs` | P0 |
 | `pkexec` / `apt` 一键安装依赖 | `file_ingest.rs`、`updater.rs` | P0 |
@@ -440,8 +440,8 @@ Windows 原生后建议增加这些测试：
 2. `README.md`：产品定位与能力概览。
 3. `process.md`：内部仓库的过程时间线（未随本仓库发布，跳过）。
 4. `docs/fork-modifications.md`：DeepSeek-TUI fork 单一真相源。
-5. `docs/auto-compact-256K-tuning.md`：本地 Qwen3.6 256K 上下文适配。
-6. `docs/DeepSeek-TUI-工具系统.md`：底座工具注册与执行链路。
+5. `docs/auto-compact-256K-tuning.md`：本地 Qwen3.6 256K 上下文适配（史料；写死阈值已被取代）。
+6. `docs/DeepSeek-TUI-工具系统.md`：底座工具注册与执行链路（v0.8.37 史料）。
 7. `pinvou3-app/src-tauri/src/lib.rs`、`engine_pool.rs`、`engine.rs`、`bridge/mod.rs`、`commands.rs`：后端主链路。
 8. `pinvou3-app/src/tauri-bridge.js`：前端状态与事件主链路。
 

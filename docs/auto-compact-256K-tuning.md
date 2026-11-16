@@ -145,6 +145,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 > 关键不变式:`token_threshold(190K) + 20K margin ≤ context_input_budget(230,400)`,由回归测试
 > `compaction_threshold_stays_below_emergency_budget` 按 `max_output_tokens()` 动态算 budget 锁住——
 > 改 output 预留(影响 budget)或 token_threshold 导致倒置都会被它挡下。
+> （⚠️ 快照口径：上述测试已随文首注退役——跨尺伪不变式；现行守卫为 `forkguard_compaction_threshold_below_emergency_all_windows`。）
 > 本地 vLLM output=24K 的依据见上文「修复②」（系统 prompt 强制 ≤16KB 分块写，单次回复 ≈ 3-5K tokens）；云端不套用该值。
 
 ## 大工具输出的上下文 bound（A1 调研结论:不需额外配置，2026-06-03）
@@ -197,9 +198,9 @@ codex 抓 cycle_manager.rs:184 在 256K 窗口下 `trigger_floor=0`（saturating
 codex 抓 `build_dt_config` 没 export `DEEPSEEK_MAX_OUTPUT_TOKENS`。`effective_max_output_tokens` 只读这个 env，clean env 启动时（用户直接双击 Tauri app，不走 `run-dev.sh`）返回 fallback：
 - `min(window/2, API_MAX_OUTPUT_TOKENS) = min(128K, 64K) = 64K`
 
-→ B2 算 `context_input_budget = 256K - 64K - 1K = 191K`（写档时按 64K=64,000 十进制粗算；严格按 `API_MAX_OUTPUT_TOKENS = 65,536` 应为 189,440，与上文 B1 段的 189,440 同口径。而非文档承诺的 ~239K），preflight emergency 提前约 48K 触发，长 turn 可能因输出预算太满而被强制压缩或 provider 400。`PINVOU3_MAX_OUTPUT_TOKENS` 和 `prefs.advanced.max_output_tokens` 的接入点（`Pinvou3Bridge::max_output_tokens()`）建好了但**没有 wire 给 engine**。
+→ B2 算 `context_input_budget = 256K - 64K - 1K = 191K`（写档时按 64K=64,000 十进制粗算；严格按 `API_MAX_OUTPUT_TOKENS = 65,536` 应为 189,440，与上文初版文档核对段（2026-05-19 假设勘误处）的 189,440 同口径（非 B1 段；B1 段仅记 `256_000` 十进制窗口口径）。而非文档承诺的 ~239K），preflight emergency 提前约 48K 触发，长 turn 可能因输出预算太满而被强制压缩或 provider 400。`PINVOU3_MAX_OUTPUT_TOKENS` 和 `prefs.advanced.max_output_tokens` 的接入点（`Pinvou3Bridge::max_output_tokens()`）建好了但**没有 wire 给 engine**。
 
-当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。Community #210（内部社区帖，不在本仓库）后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束，云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
+当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。Community #210（内部社区帖，不在本仓库）后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束（⚠️ 写档时点口径：现行 LocalVllm 上机器写入的 24576 已作为遗留哨兵被 `normalize_route_limits` 归一化为 None、让位给窗口档位——`prefs/mod.rs` 测试明言 "legacy machine-written local 24K is normalized to unset and takes the window tiers"；24576 现仅为进程级 `max_output_tokens()` 请求预算默认，不钳 route 声明，现行档位见 Windows 手册 §10 注），云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
 
 同时 round 4 把 bridge 自己的 compaction 注释里 "60K-200K 区间纯本地去重" 也删了（round 3 只改了 docs，bridge 注释漏改）。
 

@@ -74,6 +74,8 @@ ACP 是 Host 与 Agent 之间的协议。Codex 提供 Agent 能力，pinvou 仍�
 
 ## 4. 当前 pinvou 原型的真实状态
 
+> （2026-11 注：本节为原型时点状态。表中 `EventBridge`/`AgentThoughtChunk` 等符号在现行 main 代码中同名但行为已不同——现行 `EventBridge` 是 `acp:event` 发射器、`AgentThoughtChunk` 忠实转发为 `agent_thought_chunk`（`features/codex_acp/mod.rs`/`events.rs`），现行事件链路见 `codex-acp.md`。）
+
 当前 `feat/codex-acp` 已经打通了最小可运行链路：
 
 - 安装/发现 `@agentclientprotocol/codex-acp` 运行时。
@@ -147,7 +149,7 @@ AionUI 并不会替换 Codex 自带的 Agent 内核。它的做法是：
 
 ## 6. 目标总体架构
 
-（2026-11 注：本节为设计期目标架构；下图主导航中的「Codex」入口未按原样采纳——最终态为复用主页输入框「工作 / 代码」模式与现有会话列表，不设独立 Codex Tab，与 §11/§18 决策一致，见现行 `codex-acp.md`。）
+（2026-11 注：本节为设计期目标架构；下图主导航中的「Codex」入口未按原样采纳——最终态为复用主页输入框「工作 / 代码」模式与现有会话列表，不设独立 Codex Tab，与 §6.1/§18 决策一致，见现行 `codex-acp.md`。）
 
 ```mermaid
 flowchart TB
@@ -450,7 +452,7 @@ running -> cancelling -> ready
 * -> disconnected / failed / shutting_down
 ```
 
-（2026-11 注：§12 的 `CodexRuntime*` 状态机未被采纳——现行状态契约是 `CodexAcpStatus` 布尔投影加 `acp:install-progress` / `runtime_notice` / `runtime_ready` 事件，见姊妹篇文首 banner 与 `features/codex_acp/events.rs`。）
+（2026-11 注：§12.1 上列状态机文本块（姊妹篇所称 `CodexRuntime*` 组件族）未被采纳——现行状态契约是 `CodexAcpStatus` 布尔投影加 `acp:install-progress` / `runtime_notice` / `runtime_ready` 事件，见姊妹篇文首 banner 与 `features/codex_acp/events.rs`。）
 
 ### 12.2 持久化分层
 
@@ -511,7 +513,7 @@ running -> cancelling -> ready
 
 - MVP 开发和内部体验阶段允许依赖机器已经安装的 Node 20+，优先完成 ACP 协议、会话和 UI。（2026-11 注：现行 Bridge 运行时自带私有 Node 24.22.1、适配器 2.2.2，系统 Node 依赖已移除；姊妹篇《Codex-ACP-运行环境与首次使用设计》文首注记同。）
 - 如果 adapter/node_modules 已随包提供，运行时只需要 Node；npm 仅用于未内置或损坏后的安装回退。
-- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。（2026-11 注：本条捆绑 Codex CLI 的打包决策未被采纳——落地为安装包只携带体积较小的 ACP Bridge Runtime（私有 Node + `codex-acp`），不内置大体积 Codex 平台二进制，Codex 由用户自行安装/解析（现行 `install.rs`/`runtime.rs` 解析顺序），姊妹篇《Codex-ACP-运行环境与首次使用设计》§1/§6.4 及其文首 banner 记录了最终态。）
+- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。（2026-11 注：本条捆绑 Codex CLI 的打包决策未被采纳——落地为安装包只携带体积较小的 ACP Bridge Runtime（私有 Node + `codex-acp`），不内置大体积 Codex 平台二进制，Codex 由用户自行安装/解析（现行 `install.rs`/`runtime.rs` 解析顺序），姊妹篇《Codex-ACP-运行环境与首次使用设计》§1/§6.1 归档注及其文首 banner 记录了最终态（其 §6.4 主体为未被采纳的托管下载设计）。）
 - 正式用户不需要理解或手工安装 Node/npm。
 - 保留 `PINVOU3_CODEX_ACP_BIN` 作为开发/诊断覆盖，不作为普通用户安装步骤。
 
@@ -670,6 +672,8 @@ running -> cancelling -> ready
 - `pinvou3-app/src/platform/tauri/client.js`：前端统一 Tauri 平台适配。
 
 ### AionUI / AionCore 参考
+
+（下列 `packages/desktop/…` 两条属 AionUi 仓库，`crates/aionui-…` 各条属 AionCore 仓库；两仓库均不在本仓库，基线见文首注。）
 
 - `packages/desktop/src/renderer/pages/conversation/platforms/acp/AcpChat.tsx`
 - `packages/desktop/src/renderer/pages/conversation/platforms/acp/useAcpMessage.ts`

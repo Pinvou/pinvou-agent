@@ -4,7 +4,7 @@
 
 > **沿革**：`docs/tool-governance.md` 这一文件名曾在 #287 中被删除，本文是其继任者（后随通用文档回流恢复并按 v0.9.12 工具面重写）。它与被删除的旧文档不是同一份内容，旧外链请勿按其内容理解本文。
 >
-> **相关历史/推导文档**（2026-11 回填留档，现状以本文为准）：[`工具表精简方案.md`](./工具表精简方案.md)（v0.8.37 时代工具面裁剪方案与实测）、[`DeepSeek-TUI-工具系统.md`](./DeepSeek-TUI-工具系统.md)（v0.8.37 工具注册/派发机制史料）、[`DeepSeek-TUI源码职责分析.md`](./DeepSeek-TUI源码职责分析.md)（上游 crate 职责与 pinvou3 接入演化）、[`skills-loading-status.md`](./skills-loading-status.md)（skill 加载/卡牌池 2026-06 状态史）。
+> **相关历史/推导文档**（2026-11 回填留档，现状以本文为准）：[`工具表精简方案.md`](./工具表精简方案.md)（v0.8.37→v0.8.65 时代工具面裁剪方案与实测）、[`DeepSeek-TUI-工具系统.md`](./DeepSeek-TUI-工具系统.md)（v0.8.37 工具注册/派发机制史料）、[`DeepSeek-TUI源码职责分析.md`](./DeepSeek-TUI源码职责分析.md)（上游 crate 职责与 pinvou3 接入演化）、[`skills-loading-status.md`](./skills-loading-status.md)（skill 加载/卡牌池 2026-06 状态史）。
 
 ## 1. 当前治理链路
 

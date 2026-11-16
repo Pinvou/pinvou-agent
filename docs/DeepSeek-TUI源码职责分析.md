@@ -1,6 +1,6 @@
 # DeepSeek-TUI 源码职责分析
 
-> **注（2026-11 回填）**：本文为本地目录仍名 `DeepSeek-TUI/` 时期的历史快照（基线 v0.8.60——晚于上游 v0.8.41 更名，本地 alias 当时未随上游改名，见 Windows 迁移手册 §9）。底座上游 v0.8.41 起更名
+> **注（2026-11 回填）**：本文为本地目录仍名 `DeepSeek-TUI/` 时期的历史快照（基线 v0.8.60——晚于上游 v0.8.41 更名，本地 alias 当时未随上游改名，见 [Windows 迁移手册 §9](./Windows迁移与维护接手手册.md)）。底座上游 v0.8.41 起更名
 > `CodeWhale`（现仓库子模块 `CodeWhale/`，本文写作时为 v0.8.60，现已演进至 v0.9.x），文中
 > `DeepSeek-TUI/` 路径对应现 `CodeWhale/`；`pinvou3-app/src-tauri/src/` 的旧扁平布局
 > （`bridge/mod.rs`、`commands.rs`、`engine.rs`、`engine_pool.rs` 等）已重构为
@@ -127,7 +127,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 |---|---|---|---|---|
 | 应用启动 | `pinvou3-app/src-tauri/src/lib.rs` 初始化 Tauri state 和 commands | `SessionStore::boot()`、`EnginePool::new()`、`Pinvou3Bridge::boot()` | `SessionManager::new(...)`、`EngineConfig` 构造前置 | 建立 session 存储、全局 bridge、空 Engine 池 |
 | 首次发送消息 | 前端 invoke chat command | `commands.rs` 取 session/mode，`EnginePool::send_user_message()` lazy spawn | `spawn_engine(...)`、`Op::SendMessage`、`EngineHandle::send` | 模型 turn 开始，流式事件进入 `rx_event` |
-| 流式渲染首页/对话内容 | `EngineHandle::rx_event` | `engine.rs::spawn_event_forwarder` | `Event::MessageDelta`、`Event::ThinkingStarted`、`Event::ThinkingDelta`、`Event::ThinkingComplete`、`Event::ToolCallStarted`、`Event::ToolCallComplete`、`Event::TurnComplete` | Tauri emit `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:done`（`chat:reasoning_start/delta/done` 为快照后转发，见 §engine 注；快照期 `ThinkingDelta` 被显式丢弃） |
+| 流式渲染首页/对话内容 | `EngineHandle::rx_event` | `engine.rs::spawn_event_forwarder` | `Event::MessageDelta`、`Event::ThinkingStarted`、`Event::ThinkingDelta`、`Event::ThinkingComplete`、`Event::ToolCallStarted`、`Event::ToolCallComplete`、`Event::TurnComplete` | Tauri emit `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:done`（`chat:reasoning_start/delta/done` 为快照后转发，见上方「pinvou3 接入边界」节 engine 小节的 2026-11 注；快照期 `ThinkingDelta` 被显式丢弃） |
 | 切换或恢复 session | 前端加载历史 session | `SessionStore::load()`、`EnginePool::get_or_spawn()`、`AppEngine::sync_session()` | `SessionManager::load_session`、`Op::SyncSession` | 将磁盘 messages 和 workspace 注入该 session Engine |
 | 手动上下文压缩 | 前端 token/压缩入口 | `EnginePool::compact_now()`、`AppEngine::compact_now()` | `Op::CompactContext`、`CompactionConfig`、`Event::Compaction*` | 底座执行压缩，前端收到 `chat:compaction` |
 | skill 列表和启用 | 工作流/技能视图 | `commands.rs::list_skills_v2()`、`start_skill_session()` | `SkillRegistry::discover(...)` | 前端拿到 bundle skill 摘要；session 绑定 active skill |
@@ -157,7 +157,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 
 | 证据点 | 路径或类型 | 说明 |
 |---|---|---|
-| 1 | `DeepSeek-TUI/Cargo.toml` | workspace、版本 `0.8.60`（快照检出版实际 0.8.65，见 §2 注）、Rust `1.88`、crate 成员 |
+| 1 | `DeepSeek-TUI/Cargo.toml` | workspace、版本 `0.8.60`（快照检出版实际 0.8.65，见顶部注记与「源码全景」节注）、Rust `1.88`、crate 成员 |
 | 2 | `DeepSeek-TUI/crates/tui/src/core/engine.rs::EngineConfig` | Engine 配置主结构 |
 | 3 | `DeepSeek-TUI/crates/tui/src/core/engine.rs::EngineHandle` | pinvou3 持有并发送 `Op` 的 runtime handle |
 | 4 | `DeepSeek-TUI/crates/tui/src/core/engine.rs::spawn_engine` | pinvou3 创建 Engine 的底座工厂 |
@@ -190,7 +190,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | 用户目录路径 | `bridge/paths.rs` 和 `bridge/sessions.rs` 指向 `~/.pinvou3/...` | Windows 路径修复要注意盘符、UNC、中文用户名、rooted path |
 | session/artifact/settings 边界 | session 在 `~/.pinvou3/sessions/`，artifact 随 session 元数据，settings 在 pinvou3 用户目录 | 不要把 `~/.deepseek` 和 `~/.pinvou3` 混用 |
 | 打包产物路径 | Tauri release 产物在 `pinvou3-app/src-tauri/target/release/`，bundle/msi 在 `pinvou3-app/src-tauri/target/release/bundle/` | 问 exe 位置和 msi 位置时要区分 |
-| 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
+| 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort（快照后字段，2026-11 起，见上文 2026-11 注） | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
 | 搜索 provider/API key | `bridge/mod.rs` 将 pinvou3 prefs 翻译为 DeepSeek-TUI `SearchProvider` 和 `search_api_key` | 搜索不可用时先核对 provider 与 key 是否符合底座要求 |
 | 工具隐藏清单 | `lib.rs` 中 `blocklist_contract` 测试，`DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs` | 合并 fork 后若 tool schema 膨胀，先看 blocklist 是否丢失 |
 | 合并后冒烟 | `cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml`，再启动 release exe 观察 20 秒 | 确认进程未立即退出、窗口响应、日志没有 fatal |
@@ -221,7 +221,7 @@ cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml
 | 工具不可用 | `DeepSeek-TUI/crates/tui/src/tools/registry.rs`、`crates/tui/src/core/engine/tool_setup.rs`、`pinvou3_blocklist.rs`、`bridge/mod.rs` features | 判断是工具未注册、被隐藏、feature 未开、还是 MCP/server 配置问题 |
 | 技能不可用 | `commands.rs::list_skills_v2`、`SkillRegistry::discover`、`bridge/paths.rs::bundle_workflow_dir` | 检查 bundle skill 目录、`SKILL.md` 是否存在、是否被 skiplist 隐藏 |
 | workflow 异常 | `commands.rs::start_workflow`、`kick_workflow`、`engine.rs::AgentComplete` 分支、`harness.rs` | 判断卡在项目初始化、SubAgent 派发、AgentComplete 回传、gate 推进还是前端状态 |
-| 模型配置异常 | `bridge/mod.rs::build_dt_config`、`build_engine_config`、用户 settings、vLLM endpoint | 检查 provider、base_url、model、api_key、reasoning_effort、vision config |
+| 模型配置异常 | `bridge/mod.rs::build_dt_config`、`build_engine_config`、用户 settings、vLLM endpoint | 检查 provider、base_url、model、api_key、reasoning_effort（快照后字段，见上文 2026-11 注）、vision config |
 | 压缩异常 | `bridge/mod.rs` 中 `CompactionConfig`、`engine.rs` 的 `Event::Compaction*` 分支、`compaction.rs` | 判断是阈值过高、模型名不匹配、压缩事件未转译还是 context overflow |
 | MCP 不可用 | `mcp_config_path`、`DeepSeek-TUI/crates/mcp/src/lib.rs`、`ToolRegistryBuilder` MCP adapter | 先看 MCP 配置路径，再看 server 启动状态和工具是否进入 registry |
 | Hook 行为异常 | `bridge/mod.rs::build_hooks_config`、`DeepSeek-TUI/crates/hooks/src/lib.rs` | 检查 hook event 类型、sink、是否由 bridge 正确配置 |

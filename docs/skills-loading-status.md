@@ -9,9 +9,9 @@
 > 「UI 读 bundle / 工具读 ~/.agents 的两套不对称」均不再成立；`list_skills_v2` 已由
 > marketplace 接口取代；`pinvou-review-plan/final` 已于 0.7 下线（SKILL.md 删除于 commit
 > `9aaff554b`，2026-06-05，其提交说明即「bundle 0.7 清装机残留」；`95502ac81`（2026-08-17，提交处
-> VERSION 读 0.8.3、首个收录 tag 为 v0.8.4）为三省六部移除
-> （⚠️ `9aaff554b`/`95502ac81` 均为父仓库 pinvou3-app 提交，非 CodeWhale 子模块提交，在子模块对象库中不可解析）
-> #285，仅顺带删除已死的 `WORKFLOW_HIDDEN_SKILLS` 过滤常量）并由 `cleanup_retired_skills`
+> VERSION 读 0.8.3、首个收录 tag 为 v0.8.4）为三省六部移除 #285
+> （⚠️ `9aaff554b`/`95502ac81` 均为父仓库 pinvou3-app 提交，非 CodeWhale 子模块提交，在子模块对象库中不可解析），
+> 仅顺带删除已死的 `WORKFLOW_HIDDEN_SKILLS` 过滤常量）并由 `cleanup_retired_skills`
 > 启动清理。§2 卡牌池机制描述仍有效（agency-agents.json 现 268 个 agent）。文中 fork patch
 > 序号（#41/#25/#26/#432 等）为重建前私有编号，与现行 [`fork-modifications.md`](./fork-modifications.md)
 > 登记编号无关。
@@ -21,7 +21,7 @@
 - pinvou3 里有**两套互不相干**的机制，别混：
   1. **Skill 加载**（底座 `SkillRegistry` / `load_skill` 工具）—— 渐进式披露，扫目录读 `SKILL.md`。
   2. **卡牌池 / persona 加持**（pinvou3 自建）—— 专家能力档案，**编译进二进制的 JSON**，加持时文本注入。**不是 skill，不扫任何目录。**
-- 底座原本扫 ~10 个 skill 目录；pinvou3 **fork patch #41** 已砍到只剩 `~/.agents/skills` + 注入的 bundle 目录。危险的 workspace(=$HOME)相对扫描全部移除。
+- 底座原本扫 ~10 个 skill 目录；pinvou3 **fork patch #41** 已砍到只剩 `~/.agents/skills` + 注入的 bundle 目录。危险的 workspace(=$HOME)相对扫描全部移除。（❌ 本条已失效：见顶部 2026-11 归档注记——现行 skill 发现已改 per-session materialization + `explicit_skills_root_only`。）
 - **残留口子**：`~/.agents/skills` 仍被运行时 `load_skill` 工具扫描（本机该目录已存在，目前为空）。（❌ 本条已失效：见顶部 2026-11 归档注记——现行 materialization + `explicit_skills_root_only` 下该口子不再存在。）
 
 ---
@@ -54,7 +54,7 @@ pinvou3 **fork patch #41**（`CodeWhale/crates/tui/src/skills/mod.rs:601` `skill
 
 ## 2. 卡牌池 / persona（不是 skill）
 
-- 数据：`pinvou3-app/src-tauri/resources/common/bundle/personas/agency-agents.json`（Side B，201 个 agency-agents-zh agent，MIT）。
+- 数据：`pinvou3-app/src-tauri/resources/common/bundle/personas/agency-agents.json`（Side B，201 个 agency-agents-zh agent，MIT；写档时点值，现 268）。
 - 运行时：`include_str!` **编译进二进制**（快照时点为 `personas.rs:18`，现为 `features/personas/mod.rs:25`），首次访问解析进内存 `OnceLock`。**不落盘，~/.pinvou3 里没有**（主语限编译期内嵌 Side B 池；用户自创卡 source="user" 会落盘 `~/.pinvou3/user/personas/<id>.json`，见 `features/personas/mod.rs`），不被任何 SkillRegistry 发现。
 - 加持机制：选卡 → `equip_persona` 存 per-session active_persona + pending body → 该 session 首条 chat 一次性 prepend 完整 body（`personas::equip_body_injection`）+ 每 turn 注入轻锚点（`equip_anchor`）。详见 `features/personas/mod.rs`（快照时点为 `personas.rs`）。
 - Side A（card-pool 分支）：pinvou2 agent-market 1078 元数据卡，机制类似但只注入摘要。

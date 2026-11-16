@@ -12,7 +12,7 @@
 3. （TUI）自动弹 Plan Confirmation modal → 四选项 Accept(Agent)/Accept(YOLO)/Revise/Exit
 4. Accept(YOLO) → 自动 `set_mode(Yolo)` + 注入 `"Proceed with the accepted plan."` + 共享 `Arc<Mutex<PlanState>>` 不清
 
-pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是卡片**——这部分 pinvou3 已经有（`chat:plan_ready` 事件 → PlanCard → `accept_plan`）。pinvou3 真正多包的是 `Planning/Ready/Executing` 四态 enum + M2 自驱 + M3 兜底。
+pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是卡片**——这部分 pinvou3 已经有（`chat:plan_ready` 事件 → PlanCard → `accept_plan`）。pinvou3 真正多包的是 `None/Planning/Ready/Executing` 四态 enum（默认 `None`）+ M2 自驱 + M3 兜底。
 
 **改造 = 减法**：剥掉 phase 状态机，让卡片直接挂底座的 `update_plan` 交接信号，符合 `AGENTS.md` 的复用边界（不重复造轮子）。
 
