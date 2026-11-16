@@ -5379,11 +5379,14 @@ impl AcpPool {
                 // through its event bridge inside `spawn_session` (there the
                 // doomed bridge is still alive and emits
                 // permission_resolved/elicitation_resolved + journal
-                // entries); this arm covers the failure paths that have no
-                // bridge to emit through, so the settlement is only the
-                // cancelled response in the shared maps, same as the
-                // NoRuntime and Missing arms' None calls (the Dead arm
-                // passes the removed runtime's bridge instead).
+                // entries); this arm covers the failure paths that reach the
+                // Err arm without a journal flush — no bridge, or a bridge
+                // whose flush already ran (r12 review honesty note: a
+                // `session/new` timeout on the load-ERROR fallback, or on
+                // the fresh path, also lands here while a bridge may still
+                // exist; the settle is then cancel-only and the card
+                // lingers until the next info refresh — frontend-only,
+                // no journal/seq impact, accepted residual).
                 self.cancel_runtime_pending_cards(session_id, None).await;
                 diagnostics::write(
                     &operation_id,
