@@ -14,14 +14,18 @@ run_required() {
   (cd "$ROOT" && "$@")
 }
 
-# Per-leg install bound for the lanes below. GNU coreutils `timeout` is absent
-# on stock macOS, where a bare `timeout` would exit 127 and abort the whole
-# script under `set -euo pipefail`, so hosts without it run unbounded with a
-# loud warning instead. --kill-after escalates to SIGKILL for children that
-# ignore SIGTERM (the repo-wide timeout convention).
+# Per-leg install bound for the lanes below. The probe tests GNU-ness, not
+# mere existence (the npm-ci-bounded.sh discipline): on Windows hosts
+# System32's unrelated `timeout.exe` sits on PATH ahead of Git's coreutils and
+# rejects the GNU flags with "Invalid syntax", failing the lane — and, under
+# `set -euo pipefail`, aborting the whole script — before the command starts;
+# stock macOS ships no coreutils `timeout` at all, where a bare `timeout`
+# would exit 127 for the same effect. Hosts without a GNU timeout run
+# unbounded with a loud warning instead. --kill-after escalates to SIGKILL for
+# children that ignore SIGTERM (the repo-wide timeout convention).
 run_with_timeout() {
   local secs="$1"; shift
-  if command -v timeout >/dev/null 2>&1; then
+  if timeout --version >/dev/null 2>&1; then
     timeout --kill-after=15 "$secs" "$@"
   else
     echo "warning: GNU timeout not found; running unbounded: $*" >&2

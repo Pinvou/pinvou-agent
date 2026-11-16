@@ -4945,6 +4945,36 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
             bridge_text,
             "the bounded npm ci must hard-kill on expiry (npm spawns children)",
         )
+        self.assertIn(
+            "throw new Error(`${label}失败：${result.error.message ?? result.error}`)",
+            bridge_text,
+            "checkedSpawn must re-label spawn errors — a budget expiry surfaces as a bare ETIMEDOUT with a null exit code, never reaching the labeled status branch (r13 review)",
+        )
+
+    def test_journey_timeout_helper_body_is_bounded(self):
+        # The lane pins above only see `run_with_timeout <secs>` at the CALL
+        # sites; the bound itself lives in the helper body (r13 review). A
+        # body stripped down to a bare `"$@"` kept every lane pin green while
+        # every journey npm/pip lane ran unbounded — the exact gap the r12
+        # review closed for the bridge-prep lanes — and an existence-only
+        # `command -v` probe let Windows hosts select System32's
+        # reject-everything `timeout.exe` and abort the script before the
+        # first lane ran. Pin the body's bound line and its GNU-ness probe so
+        # both regressions turn red; call-site refactors cannot silence this
+        # because the pins target the helper's own source.
+        helper_text = (ROOT / "scripts/run-user-journey-tests.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'timeout --kill-after=15 "$secs" "$@"',
+            helper_text,
+            "run_with_timeout must actually bound its command — it is the only per-leg bound the journey npm/pip lanes have",
+        )
+        self.assertIn(
+            "timeout --version >/dev/null 2>&1",
+            helper_text,
+            "run_with_timeout must probe GNU-ness with `timeout --version`, not command -v existence (System32's timeout.exe rejects the GNU flags)",
+        )
 
 
 class PipCiBoundsPolicyTests(unittest.TestCase):
