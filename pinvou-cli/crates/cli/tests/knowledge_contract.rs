@@ -788,9 +788,11 @@ fn knowledge_rejects_invalid_usage_with_exit_code_two() {
         vec!["pinvou", "knowledge", "documents", "5", "--limit", "x"],
         vec!["pinvou", "knowledge", "documents", "5", "--offset"],
         vec!["pinvou", "knowledge", "documents", "5", "--offset", "-1"],
-        // usize::MAX parses but cannot be a SQLite i64 OFFSET: upstream it
-        // would wrap negative and silently serve page 0, so it is a usage
-        // error here (same out-of-range stance as the `index failed` lane).
+        // usize::MAX cannot land upstream as a SQLite i64 OFFSET: the upstream
+        // lanes saturate (i64::try_from(...).unwrap_or(i64::MAX)) and would
+        // answer an honest empty max-offset page, so rejecting it here is
+        // defense-in-depth that keeps the family's usage-error semantics
+        // (same out-of-range stance as the `index failed` lane).
         vec![
             "pinvou",
             "knowledge",
@@ -830,9 +832,10 @@ fn knowledge_rejects_invalid_usage_with_exit_code_two() {
             "--offset",
             "-1",
         ],
-        // usize::MAX parses but cannot be a SQLite i64 OFFSET: upstream it
-        // would wrap negative and silently serve page 0, so it is a usage
-        // error here (same out-of-range stance as `--limit 0`).
+        // usize::MAX cannot land upstream as a SQLite i64 OFFSET: the upstream
+        // failed-files lane saturates (i64::try_from(...).unwrap_or(i64::MAX))
+        // and would answer an honest empty max-offset page, so rejecting it
+        // here is defense-in-depth (same out-of-range stance as `--limit 0`).
         vec![
             "pinvou",
             "knowledge",
