@@ -1514,6 +1514,107 @@ mod tests {
         );
     }
 
+    // 桩分页路由只认 limit/offset(与真服务端 clamp 一致),给判别分支
+    // 用例复用:两个规模各起一个服务,互不共享状态。
+    async fn spawn_collection_paging_stub(total: usize) -> String {
+        #[derive(Deserialize)]
+        struct StubPageQuery {
+            limit: Option<usize>,
+            #[serde(default)]
+            offset: usize,
+        }
+        async fn paging_stub(
+            State(items): State<std::sync::Arc<Vec<Collection>>>,
+            Query(query): Query<StubPageQuery>,
+        ) -> Json<Vec<Collection>> {
+            let limit = query
+                .limit
+                .map(|value| value.clamp(1, crate::model::PAGE_LIMIT_CAP))
+                .unwrap_or(items.len());
+            Json(
+                items
+                    .iter()
+                    .skip(query.offset)
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+            )
+        }
+        let collections: std::sync::Arc<Vec<Collection>> = std::sync::Arc::new(
+            (0..total)
+                .map(|index| Collection {
+                    id: index as i64 + 1,
+                    name: format!("大清单 {index:06}"),
+                    description: None,
+                    status: "active".to_string(),
+                    doc_count: 0,
+                    chunk_count: 0,
+                    total_bytes: 0,
+                    created_at: 0,
+                    updated_at: 0,
+                    deleted_at: Some(0),
+                })
+                .collect(),
+        );
+        let app = Router::new()
+            .route("/api/v2/owner/trash/collections", get(paging_stub))
+            .with_state(collections);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>()),
+        );
+        format!("http://{address}")
+    }
+
+    // 合法大清单恰好压在页数上界时,判别页必须并入而不是误报:50,250 条
+    // = 100 个整页 + 250 条短尾页,paged_all 的判别分支把短判别页并入后
+    // 正常收尾——"约 5 万条以内的合法清单不误报"只有这条路径成立,此前
+    // 只有判别页整页的报错腿有测试。突变对照:丢弃判别页并入
+    // (all.extend(probe))后本用例以 50,000 ≠ 50,250 落红。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_probe_short_merges_the_tail_page() {
+        let base = spawn_collection_paging_stub(50_250).await;
+        let client =
+            crate::client::KnowledgeClient::new(&base, "stub-token-not-checked-by-the-fixtures")
+                .unwrap();
+        let listed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("合法大清单翻页不得挂死")
+        .unwrap();
+        assert_eq!(listed.len(), 50_250);
+        assert!(
+            listed.windows(2).all(|pair| pair[0].id < pair[1].id),
+            "跨页聚合不得重复或乱序"
+        );
+    }
+
+    // 对端完全正常、只是清单超过判别上界(50,500 条)时,同样必须快速
+    // 报错而不是静默截断;错误文案对"超上界"与"对端异常"两种可能都
+    // 保留余地。突变对照:判别页整页时误并入收尾,本用例的 unwrap_err
+    // 落空(该突变同时被病态对端用例钉住,这里补钉对端正常的形状)。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_legit_peer_over_cap_errors_loudly() {
+        let base = spawn_collection_paging_stub(50_500).await;
+        let client =
+            crate::client::KnowledgeClient::new(&base, "stub-token-not-checked-by-the-fixtures")
+                .unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("页数上界必须让超界清单快速失败而非挂死")
+        .unwrap_err();
+        assert!(error.contains("整页"), "实际错误:{error}");
+    }
+
     // 懒装载时代的廉价校验回归:空查询/超量知识集选择必须在模型装载门之前
     // 应答(200 [] / 400),冷服务(模型未装载且 model_dir 无模型文件)不得
     // 触发 568MB 冷读,也不得把本应 200/400 的请求变成 503。boot 同步装载
