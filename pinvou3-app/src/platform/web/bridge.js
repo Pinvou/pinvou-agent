@@ -327,6 +327,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'prepare'|'done', downloaded, total, ready }
       error: null,
+      cancelled: false,   // 最近一次下载被用户取消（中性态，与 error 互斥；web 上 downloading 恒 false）
     },
     scheduledTasks: [],
     selectedScheduledTaskId: null,
