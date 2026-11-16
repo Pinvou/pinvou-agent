@@ -2141,9 +2141,14 @@ fn connection_error_result(error: &reqwest::Error) -> ConnectionProbe {
     }
 }
 
-/// `models test <id>`: GET `{base_url}/models` with the saved credential,
-/// exactly like the GUI "test connection" button (8s timeout; Anthropic
-/// official endpoints authenticate with x-api-key + anthropic-version).
+/// `models test <id>`: GET `{base_url}/models` with the saved credential
+/// (8s timeout; Anthropic official endpoints authenticate with x-api-key +
+/// anthropic-version). Request shape and auth split match the GUI "test
+/// connection" button exactly; the GUI-only part NOT reproduced is the
+/// success-path FACT ENRICHMENT (the GUI attaches the matched entry's
+/// context/output facts + fact_model to the result so its form can
+/// prefill — round-5 review m1: previously disclosed nowhere while the
+/// wording claimed "exactly").
 fn test_connection<S: CredentialStore>(
     store: &S,
     id: &str,
@@ -2406,7 +2411,12 @@ fn connection_client() -> Option<&'static reqwest::blocking::Client> {
 /// on both its counterparts). A one-shot listing has no business following
 /// a 302 anyway: with redirects off, a 3xx response arrives as-is and
 /// classifies as an ordinary `error` row with its status kept
-/// ([`discovery_status_listing`]).
+/// ([`discovery_status_listing`]). Deliberate divergence, round-5 review
+/// m1 disclosure: the GUI's LOCAL lanes ride its shared probe client,
+/// which FOLLOWS redirects on a 3s deadline — this surface is stricter
+/// everywhere (no-redirect, 3s kind probes / 8s native listings), so a
+/// redirecting loopback shim classifies differently per surface by
+/// design (a 302 lists via the follow on the GUI and falls back here).
 fn discovery_client() -> Option<&'static reqwest::blocking::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
         std::sync::OnceLock::new();
@@ -3216,7 +3226,11 @@ struct EndpointModelsListing {
     transport: Option<&'static str>,
     /// The local server kind when the loopback/private short-circuit fired
     /// (the same strings `models probe-local` reports). The two probe-local
-    /// honesty sentinels are NOT server kinds, so they stay `None` here.
+    /// honesty sentinels are NOT server kinds themselves, but the short-
+    /// circuit carries the DETECTED kind on every outcome — `generic` for
+    /// the all-miss sentinel (round-5 review minor: this comment used to
+    /// claim `None`, which never happens on the local branch; the wire
+    /// always carries `"server_kind":"generic"` there).
     server_kind: Option<&'static str>,
     models: Vec<DiscoveredModel>,
     truncated: bool,
@@ -7754,8 +7768,10 @@ mod tests {
     /// ladder the second; lengths land endpoint-sourced and the short-circuit
     /// reports the all-miss kind as `generic`. The credential enters through
     /// `--api-key-env` — the mock lanes set the variable and call the real
-    /// `discover()` lane, so the env-var entry is exercised end to end and
-    /// no test hands a literal key into the ladder below it.
+    /// `discover()` lane, so the env-var entry is exercised end to end (the
+    /// LM Studio ladder tests below are the exception: they hand a fixture
+    /// key directly to `run_endpoint_discovery` because their subject is
+    /// the keyed-ladder route, not the credential entry).
     #[test]
     fn discover_openai_envelope_lists_endpoint_sourced_facts() {
         let body = r#"{"data":[

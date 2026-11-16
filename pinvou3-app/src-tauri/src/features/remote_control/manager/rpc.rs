@@ -420,9 +420,16 @@ pub(super) fn tombstone_completion_cacheable(tombstone: &RpcTombstone, fingerpri
 /// 占位让同长不同 key 折到同一指纹,id 复用不再报 request_id_conflict。
 /// 此时 Complete/Pending 缓存臂会把**旧 key 的**缓存补全当作新 key 请求
 /// 的答案交付(Pending 臂还会按旧 args 重派发),只有已确认墓碑臂是纯
-/// 抑制(应答 outcome_unknown)。重放永不再执行——任何指纹下都不会拿
-/// 新 key 重跑命令;且页面 mint 的 id 是随机数,只有 bug/恶意 id 复用
-/// 才会命中同长折叠。新增凭据字段须同步登记(测试钉住)。
+/// 抑制(应答 outcome_unknown)。**重启恢复臂是第四条路,语义相反**
+/// (round-5 审 low):已持久化但从未 begin_rpc 的墓碑在重启后重放同一
+/// id,会按**新 key 的 args** 执行——这是该 id 的第一次执行,「重放永不
+/// 再执行」字面成立,但新 key 在此生效,与上面三条「交旧答案」的臂不同。
+/// 重放永不重复执行——任何指纹下都不会对已执行过的命令拿新 key 重跑;
+/// 且页面 mint 的 id 是随机数,只有 bug/恶意 id 复用才会命中同长折叠。
+/// 新增凭据字段须同步登记(测试钉住);反向约定:非凭据参数**不得**命名
+/// 为 `apiKey`/`api_key`——精确键名匹配会让它被长度占位,同长值在 id
+/// 复用时被静默折叠(测试 `rpc_fingerprint_redacts_leaves_non_secret_
+/// nested_values_untouched` 钉住 `api_key_hint` 不受影响)。
 const RPC_FINGERPRINT_SECRET_FIELDS: &[&str] = &["apiKey", "api_key"];
 
 /// 把 args 任意深度上命中 [`RPC_FINGERPRINT_SECRET_FIELDS`] 的键的字符串

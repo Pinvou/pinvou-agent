@@ -47,8 +47,12 @@ use crate::platform::prefs::ModelPreset;
 /// 用户点击型探测的逐请求超时:8s,与连接测试(`test_model_connection` 的
 /// 8s client)同一量级。三个协议阶梯的每个 HTTP 请求各自挂 `.timeout()`;
 /// 本地短路分支(kind 判别 / Ollama / LM Studio 原生探测)复用常驻探测的
-/// 共享客户端,保持其客户端级 3s 语义——Ollama 逐模型 `/api/show` 补查
-/// 另有整体墙钟预算([`OLLAMA_SHOW_BUDGET`]),不会按 50 × 8s 放大。
+/// 共享客户端,保持其客户端级 3s 语义——例外是 round-4 m1-6 的确认
+/// Ollama 瞬态复核([`ollama_native_failure`]),它走本阶梯的 8s 客户端
+/// (round-5 审 minor 的文档修正:此前文档只说「复用共享客户端」,
+/// 未覆盖这条新增路径;挂死的本地 tags 最坏多付 8s 而非 3s)——Ollama
+/// 逐模型 `/api/show` 补查另有整体墙钟预算([`OLLAMA_SHOW_BUDGET`]),
+/// 不会按 50 × 8s 放大。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// OpenAI 兼容列表的条数上限:超过截断并置 `truncated`(一次性把上万条
