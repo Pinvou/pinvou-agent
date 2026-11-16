@@ -157,16 +157,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
-# The pinned engine face this mirror ships against; see
-# test_pinned_codewhale_gitlink_matches_registered_head. Re-blessed
-# 2026-11-24 onto the T11 close-out head cc2adf8ef: the Moonshot face
-# (#143) and the provider faces (#144/#145/#146) land on the gitlink, so
-# the layer-2 source assertions flip from the pre-T11 tripwire to the
-# shipped-face pins (anyOf cap 500, advisory strip, empty-items repair),
-# verified against the populated tree before flipping the pin. The
-# DeepSeek face (CodeWhale#147) is still open upstream and outside this
-# mirror's scope.
-_PINNED_CODEWHALE_GITLINK = "cc2adf8ef927fff072e9493734a0a32f3a044996"
+# The pre-T11 engine face the interim window is blessed against; see
+# test_pinned_codewhale_gitlink_matches_registered_head. Re-blessed 2026-11-17 onto the
+# collapsible-if repay head f70a499d0 (CodeWhale#164): #164 only folds two
+# nested ifs into let-chains and fixes rustdoc links — the pinned sanitizer
+# face (schema_sanitize.rs, MFJS anyOf cap) is byte-identical to the
+# previously blessed 687358f7e, verified via the layer-2 source assertions
+# on a populated tree before flipping the pin.
+_PINNED_CODEWHALE_GITLINK = "f70a499d030232623cdfb89ad3234feac5cc9389"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 

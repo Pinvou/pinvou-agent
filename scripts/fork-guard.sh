@@ -9,14 +9,11 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135,
 # CodeWhale#136/#142/#148/#150/#152 (incl. deps: rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29),
 # and CodeWhale#156 (rustc/clippy 1.100 stable lint adaptation),
-# and CodeWhale#157 (session-reader read-only classification),
-# and CodeWhale#127/#137/#139/#141/#143/#144/#145/#146/#149/#151/#155/#158/
-# CodeWhale#160/#164/#165/#166/#167/#168/#169/#170/#171 (incl. deps: rusqlite
-# 0.43 line and eslint 10; engine surfaces: bounded rate-limit recovery,
-# host model HTTP policies, idle engine retirement, shared route budget)
-# merged.
-EXPECTED_HEAD="cc2adf8ef927fff072e9493734a0a32f3a044996"
-EXPECTED_COMMITS=121
+# and CodeWhale#157 (session-reader read-only classification) merged,
+# followed by the 2026-11-16 strict-gate alignment batch (collapsible-if
+# repay + rustdoc link fixes, fork branch chore/lint-whitelist-repay-r1).
+EXPECTED_HEAD="f70a499d030232623cdfb89ad3234feac5cc9389"
+EXPECTED_COMMITS=101
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -416,6 +413,24 @@ fingerprints=(
   "T10|Tachyon effort ladder never emits high   |CodeWhale/crates/tui/src/client.rs|fn forkguard_tachyon_effort_ladder_never_emits_high"
   "T10|registered-only Tachyon table survives save |CodeWhale/crates/config/src/tests.rs|fn forkguard_tachyon_only_provider_table_survives_config_store_save"
 
+  # 2026-11-16 lint-debt batch (docs/fork-modifications.md, strict-gate
+  # parity): the last two collapsible_if sites were rewritten as let-chains
+  # and the four rustdoc private/broken intra-doc links became plain code
+  # text — zero behavior change, verified by the existing turn_loop and
+  # subagent regressions named in the register. These pins hold the fork-ci
+  # gate at upstream strength: --all-targets stays present, the collapsed
+  # allow-list adjacency keeps -A clippy::collapsible_if from silently
+  # returning between unnecessary_map_or and assertions_on_constants, and
+  # each rewritten source site keeps its folded/plain form (reverting to
+  # the nested or private-link shape drops the pin and turns red).
+  "T2|fork-ci lint 门禁保留 --all-targets       |CodeWhale/.github/workflows/fork-ci.yml|cargo clippy --workspace --all-targets --all-features --locked --"
+  "T2|fork-ci collapsible_if 白名单撤除邻接钉   |CodeWhale/.github/workflows/fork-ci.yml|-A clippy::unnecessary_map_or
+          -A clippy::assertions_on_constants"
+  "T2|turn_loop eviction notes let-chain 折叠   |CodeWhale/crates/tui/src/core/engine/turn_loop.rs|&& let Some(rendered) = super::tool_catalog::render_toolbox_eviction_notes("
+  "T2|subagent caller 所有权检查 let-chain 折叠 |CodeWhale/crates/tui/src/tools/subagent/mod.rs|&& !self.agent_id_is_owned_by_session(caller, active_session_id)"
+  "T2|runtime_handoff 私有 doc 链接改普通文本   |CodeWhale/crates/tui/src/runtime_handoff.rs|legacy reading of the history"
+  "T2|notify NotificationGate 链接改普通文本    |CodeWhale/crates/tui/src/tools/notify.rs|category through the process-wide \`NotificationGate\`"
+
   "APP|unified 2000-step budget default           |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|const HOST_STEP_BUDGET: u32 = 2_000;"
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
   "APP|chainable panic-hook registry module       |pinvou3-app/src-tauri/src/core/panic_hooks.rs|pub(crate) fn chain("
@@ -434,13 +449,40 @@ fingerprints=(
 )
 
 for fp in "${fingerprints[@]}"; do
-  IFS='|' read -r theme desc file pat <<<"$fp"
-  if grep -qF -- "$pat" "$REPO/$file" 2>/dev/null; then
-    green "  ✓ ${theme} ${desc}"
-  else
-    red "  ✗ ${theme} ${desc} — 指纹消失于 $file"
-    fail=1
-  fi
+  # Split on the first three '|' only; the pattern keeps any embedded
+  # newlines so a fingerprint can pin byte-adjacent multi-line blocks.
+  # grep -F would treat a newline inside the pattern as an alternation
+  # separator, so multi-line patterns go through awk index() instead —
+  # a literal substring match over the whole file, adjacency included.
+  __fprest="$fp"
+  theme="${__fprest%%|*}"; __fprest="${__fprest#*|}"
+  desc="${__fprest%%|*}"; __fprest="${__fprest#*|}"
+  file="${__fprest%%|*}"
+  pat="${__fprest#*|}"
+  case "$pat" in
+    *$'\n'*)
+      if PAT="$pat" FPFILE="$REPO/$file" awk '
+        BEGIN {
+          pat = ENVIRON["PAT"]; file = ENVIRON["FPFILE"]; buf = ""
+          while ((getline line < file) > 0) buf = buf (buf == "" ? "" : "\n") line
+          close(file)
+          exit index(buf, pat) == 0 ? 1 : 0
+        }'; then
+        green "  ✓ ${theme} ${desc}"
+      else
+        red "  ✗ ${theme} ${desc} — 指纹消失于 $file"
+        fail=1
+      fi
+      ;;
+    *)
+      if grep -qF -- "$pat" "$REPO/$file" 2>/dev/null; then
+        green "  ✓ ${theme} ${desc}"
+      else
+        red "  ✗ ${theme} ${desc} — 指纹消失于 $file"
+        fail=1
+      fi
+      ;;
+  esac
 done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
