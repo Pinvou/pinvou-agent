@@ -241,10 +241,26 @@ for (const command of [
 // stored secret. That is exactly why it may ride the web RPC lane while
 // test_model_connection (resolves SAVED keys by model id → keyring access)
 // and save_model (credential writes) stay desktop-only above.
+// Round-2 review M7: the grant is wider than the keyring argument alone —
+// the OpenAI-compatible ladder short-circuits loopback/private base URLs
+// (base_url_uses_local_or_private in core/endpoint_discovery.rs), so a
+// paired page also gains a bounded internal-network probe primitive: a
+// port-open/closed oracle via the transport class, service identification
+// via server_kind, and the loaded model names/titles of loopback/LAN
+// services — silent (no desktop-side confirmation) and with no per-command
+// rate limit (only the shared MAX_RPC_IN_FLIGHT=32 window). Disclosed and
+// accepted because the surface stays bounded: keyring-blind with a
+// caller-supplied key only; the sanitized response carries status codes,
+// transport class, server kind, and model entries, never the URL or key;
+// exactly one caller-supplied endpoint per invocation (no scanning); and
+// the model-management UI stays web-hidden (modelManagement:false in
+// platform/web/bootstrap.js), so today only page JS reaches the command.
+// discoverLocalVllm (the multi-candidate local discovery) stays
+// desktop-only — see tests/bridge_domain_contract.mjs.
 assert.equal(
   allowed.has('probe_endpoint_models'),
   true,
-  'probe_endpoint_models must stay web-allowlisted (keyring-blind: caller supplies the key; no saved-credential read, unlike test_model_connection)',
+  'probe_endpoint_models must stay web-allowlisted (keyring-blind: caller supplies the key; no saved-credential read, unlike test_model_connection; disclosed loopback/private reach: the OpenAI-compatible ladder short-circuits local base URLs, so a paired page gets a bounded port/service/model oracle on the desktop host — accepted because the sanitized response never echoes the URL or key, exactly one caller-supplied endpoint per invocation, and the model-management UI stays web-hidden via modelManagement:false)',
 );
 
 // Round-11 复审 M4:结构性互斥钉——remote_control.rs 里定义的每一个

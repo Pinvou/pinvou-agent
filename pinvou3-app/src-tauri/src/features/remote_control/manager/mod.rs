@@ -3916,6 +3916,17 @@ mod tests {
                 "{command} must be allowed on Web (aux chat)"
             );
         }
+        // The endpoint model probe is deliberately Web-allowed too: it is
+        // keyring-blind (the caller supplies the key; no saved credential is
+        // ever read), so a paired browser cannot use it to reach stored
+        // secrets. tests/web_access_contract.test.mjs pins the same
+        // access-policy.json entry and documents the disclosed loopback
+        // reach; this is the Rust-side positive pin, so dropping the entry
+        // from the embedded policy turns both red.
+        assert!(
+            policy.commands.contains("probe_endpoint_models"),
+            "probe_endpoint_models must stay Web-allowed (keyring-blind endpoint probe)"
+        );
         assert!(!policy.commands.contains("list_sessions"));
         assert!(!policy.commands.contains("list_archived_sessions"));
         // The native clipboard fallback must stay desktop-only: a browser relay
