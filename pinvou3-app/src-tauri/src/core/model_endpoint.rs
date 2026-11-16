@@ -1937,6 +1937,28 @@ pub(crate) mod models_mock {
         }))
     }
 
+    /// 截断 body 变体(G1 钉):`path` 以 `content-length: {declared_len}`
+    /// 应答但只写出 `body`,随后断开连接——客户端在 body 中途读到传输错误
+    /// (声明的长度没写满),而不是干净的流结尾;读完再断只会得到解析失败
+    /// 的分类,覆盖不了「中途断流」。
+    pub(crate) fn spawn_truncated(
+        path: &str,
+        status: u16,
+        body: &str,
+        declared_len: usize,
+    ) -> ModelsMock {
+        let route = path.to_string();
+        let body = body.to_string();
+        serve(Box::new(move |hit| {
+            (hit == route).then(|| MockResponse {
+                status,
+                body: body.clone(),
+                extra_headers: Vec::new(),
+                declared_len: Some(declared_len),
+            })
+        }))
+    }
+
     fn serve(mut respond: Responder) -> ModelsMock {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
         let addr = listener.local_addr().expect("mock listener addr");

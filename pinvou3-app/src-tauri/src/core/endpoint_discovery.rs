@@ -1285,6 +1285,26 @@ mod tests {
         server.join().expect("stall thread joins");
     }
 
+    /// G1 钉:2xx body 中途断流(声明长度没写满即断开)→
+    /// `BrokenBody` → Error + transport=network + http_status=200。
+    /// 把 MidStream 折叠进 Unusable 的旧实现把可重试的传输失败钉成
+    /// Unsupported,本测试随之变红(status 翻成 unsupported)。
+    #[tokio::test]
+    async fn truncated_body_is_error_network_with_http_status() {
+        let mock = models_mock::spawn_truncated(
+            "/v1/models",
+            200,
+            r#"{"data":[{"id":"claude-trunc""#,
+            512,
+        );
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::Anthropic).await;
+        assert_eq!(listing.status, ListingStatus::Error);
+        assert_eq!(listing.transport.as_deref(), Some("network"));
+        assert_eq!(listing.http_status, Some(200));
+        assert!(listing.models.is_empty());
+        assert!(!listing.truncated);
+    }
+
     #[tokio::test]
     async fn keyless_request_still_lists_on_200() {
         // 规格 §2.10-9:keyless(None / 空白 key)照常发请求,远端 200 →
