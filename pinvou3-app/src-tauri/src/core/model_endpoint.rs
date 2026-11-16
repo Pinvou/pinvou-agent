@@ -1860,6 +1860,7 @@ pub(crate) mod models_mock {
         hits: Arc<Mutex<HashMap<String, usize>>>,
         auth: Arc<Mutex<HashMap<String, String>>>,
         headers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>>,
+        queries: Arc<Mutex<HashMap<String, Vec<String>>>>,
     }
 
     impl ModelsMock {
@@ -1895,6 +1896,19 @@ pub(crate) mod models_mock {
                 .rev()
                 .find(|(header_name, _)| header_name == name)
                 .map(|(_, value)| value.clone())
+        }
+
+        /// 该路径各次命中的 query string(原始串,`?` 之后;无 query 为空
+        /// 串,按命中顺序)。G2 钉:翻页游标「真的发出去了」只能在这里
+        /// 断言——顺序响应体会让状态断言失真,删掉 `.query(...)` 的游标
+        /// 装配时既有断言全绿(每页仍返回各自的响应体)。
+        pub(crate) fn queries_for(&self, path: &str) -> Vec<String> {
+            self.queries
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .cloned()
+                .unwrap_or_default()
         }
     }
 
@@ -2000,6 +2014,9 @@ pub(crate) mod models_mock {
         let headers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let headers_thread = headers.clone();
+        let queries: Arc<Mutex<HashMap<String, Vec<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let queries_thread = queries.clone();
         std::thread::spawn(move || {
             // Serve at most 160 connections: the core tests each send 1-2
             // requests and the finalize wiring tests also go through the kind
@@ -2024,19 +2041,21 @@ pub(crate) mod models_mock {
                     }
                 }
                 let request = String::from_utf8_lossy(&buf);
-                let path = request
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("")
-                    .split('?')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
+                let target = request.split_whitespace().nth(1).unwrap_or("");
+                let mut target_parts = target.splitn(2, '?');
+                let path = target_parts.next().unwrap_or("").to_string();
+                let query = target_parts.next().unwrap_or("").to_string();
                 *hits_thread
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .entry(path.clone())
                     .or_insert(0) += 1;
+                queries_thread
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(path.clone())
+                    .or_default()
+                    .push(query);
                 let mut recorded: Vec<(String, String)> = Vec::new();
                 for line in request.lines().skip(1) {
                     if line.is_empty() {
@@ -2100,6 +2119,7 @@ pub(crate) mod models_mock {
             hits,
             auth,
             headers,
+            queries,
         }
     }
 }

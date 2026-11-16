@@ -1119,6 +1119,21 @@ mod tests {
             Some("2023-06-01")
         );
         assert_eq!(mock.header_for("/v1/models", "authorization"), None);
+        // G2 钉:翻页游标真的发出去——第 2 页请求的 query 携带第 1 页末条
+        // id(after_id=claude-b);删掉 `.query(&[("after_id", …)])` 的装配
+        // 时本断言变红(顺序响应体会掩盖游标丢失,页 2 照样返回收尾页)。
+        let queries = mock.queries_for("/v1/models");
+        assert_eq!(queries.len(), 2);
+        assert!(
+            queries[0].contains("limit=1000") && !queries[0].contains("after_id"),
+            "首页只带 limit,不带游标: {:?}",
+            queries[0]
+        );
+        assert!(
+            queries[1].contains("after_id=claude-b"),
+            "第 2 页必须携带第 1 页末条 id 作为游标: {:?}",
+            queries[1]
+        );
         // 静态 has_more=true 的无限页在 3 页封顶:截断置位。
         let mock = models_mock::spawn(&[(
             "/v1/models",
@@ -1176,6 +1191,21 @@ mod tests {
             Some("gkey-123")
         );
         assert_eq!(mock.header_for("/v1beta/models", "authorization"), None);
+        // G2 钉:第 2 页请求的 query 携带第 1 页的 nextPageToken
+        // (pageToken=tok-2);删掉 `.query(&[("pageToken", …)])` 的装配时
+        // 本断言变红(页 2 的响应体照常返回,游标丢失被顺序响应掩盖)。
+        let queries = mock.queries_for("/v1beta/models");
+        assert_eq!(queries.len(), 2);
+        assert!(
+            queries[0].contains("pageSize=1000") && !queries[0].contains("pageToken"),
+            "首页只带 pageSize,不带游标: {:?}",
+            queries[0]
+        );
+        assert!(
+            queries[1].contains("pageToken=tok-2"),
+            "第 2 页必须携带第 1 页的 nextPageToken 作为游标: {:?}",
+            queries[1]
+        );
     }
 
     #[tokio::test]
