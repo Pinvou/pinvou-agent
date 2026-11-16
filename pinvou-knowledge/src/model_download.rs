@@ -897,6 +897,14 @@ mod tests {
         );
     }
 
+    // JS 桥按字面量 `message === "cancelled"` 识别取消（bridge-shared-helpers.js
+    // downloadKbModel catch）。改值会让所有以常量自比的 Rust 测试保持绿而前端
+    // 退化为红色错误态，这里把跨语言契约字节钉死。
+    #[test]
+    fn cancelled_sentinel_bytes_are_the_js_contract() {
+        assert_eq!(CANCELLED, "cancelled");
+    }
+
     #[tokio::test]
     async fn cancelled_download_removes_its_candidate_directory() {
         let root = tempfile::tempdir().unwrap();
