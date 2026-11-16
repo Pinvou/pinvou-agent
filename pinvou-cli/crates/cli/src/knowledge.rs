@@ -677,9 +677,12 @@ fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>,
 
 /// Shared `--offset` parse for the paging lanes (`index failed`, `documents`):
 /// defaults to 0 and rejects values that cannot land upstream as a SQLite
-/// i64 (a larger usize would wrap negative in the cast and silently serve
-/// page 0 again). Rejected as usage, like every other out-of-range numeric
-/// flag in the family, rather than answered with a misleading empty page.
+/// i64. The upstream lanes saturate (i64::try_from(...).unwrap_or(i64::MAX)),
+/// so this rejection is defense-in-depth rather than load-bearing — it keeps
+/// the family's usage-error semantics for absurd offsets instead of letting
+/// them land as a silent max-page answer. Rejected as usage, like every
+/// other out-of-range numeric flag in the family, rather than answered with
+/// a misleading empty page.
 fn parse_offset(options: &[(&str, &str)]) -> Result<usize, CliError> {
     match option(options, "--offset") {
         None => Ok(0),
