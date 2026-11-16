@@ -194,13 +194,13 @@ async fn probe_endpoint_models_with_timeout(
                 Some((models, truncated)) => Terminal::Listed(models, truncated),
                 // 列表探测失败(/api/tags 空/失败):回落 OpenAI 兼容阶梯,
                 // 让分类逻辑给出同一个口径的错误结果。
-                None => ladder_openai(base_url, api_key, request_timeout).await,
+                None => ladder_openai_local(base_url, api_key, request_timeout).await,
             },
             LocalServerKind::LmStudio => match lmstudio_discovered(base_url).await {
                 Some(models) => Terminal::Listed(models, false),
-                None => ladder_openai(base_url, api_key, request_timeout).await,
+                None => ladder_openai_local(base_url, api_key, request_timeout).await,
             },
-            _ => ladder_openai(base_url, api_key, request_timeout).await,
+            _ => ladder_openai_local(base_url, api_key, request_timeout).await,
         }
     } else {
         match protocol {
@@ -512,6 +512,16 @@ fn discovery_client() -> Option<reqwest::Client> {
 /// `/paas/v4`、火山 `/api/v3`、gemini 兼容端点的 `/models` 都存在,补了
 /// 反而 404)。本地与远端共用同一函数,错误分类口径一致。
 async fn ladder_openai(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
+    ladder_openai_url(&models_probe_url(base_url), base_url, api_key, timeout).await
+}
+
+/// 指定完整列表地址的 OpenAI 兼容阶梯(base_url 仅用于网关亲和头判定)。
+async fn ladder_openai_url(
+    url: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+    timeout: Duration,
+) -> Terminal {
     let Some(client) = discovery_client() else {
         return Terminal::Error {
             http: None,
@@ -520,7 +530,7 @@ async fn ladder_openai(base_url: &str, api_key: Option<&str>, timeout: Duration)
     };
     // 网关探测带会话亲和头(与 probe_openai_models 同一装配);非网关是 no-op。
     let request = with_opencode_session_header(
-        apply_bearer(client.get(models_probe_url(base_url)), api_key),
+        apply_bearer(client.get(url), api_key),
         base_url,
         "models-probe",
     );
@@ -530,6 +540,24 @@ async fn ladder_openai(base_url: &str, api_key: Option<&str>, timeout: Duration)
             None => Terminal::Unsupported(Some(200)),
         },
         outcome => terminal_from_outcome(outcome),
+    }
+}
+
+/// 本地短路的 OpenAI 兼容阶梯 + 裸 base 的 `/v1` 回退:健康的本地 vLLM /
+/// Ollama 常以裸地址(`http://127.0.0.1:8000`)配置,`{base}/models` 404
+/// 而 kind 判别探测(fetch_v1_models)确认服务在 `{base}/v1/models`——
+/// 仅本地路径在 Unsupported(404/405) 且 base 不带 `/v1` 时补一发
+/// `{base}/v1/models`(与 fetch_v1_models 的 URL 装配同一口径)。远端行为
+/// 不变:远端版本根各异(glm `/paas/v4` 等),盲补 /v1 会把「路径不存在」
+/// 的真实事实洗成另一条 404。
+async fn ladder_openai_local(base_url: &str, api_key: Option<&str>, timeout: Duration) -> Terminal {
+    let terminal = ladder_openai(base_url, api_key, timeout).await;
+    let trimmed = base_url.trim_end_matches('/');
+    match terminal {
+        Terminal::Unsupported(Some(404 | 405)) if !trimmed.ends_with("/v1") => {
+            ladder_openai_url(&format!("{trimmed}/v1/models"), base_url, api_key, timeout).await
+        }
+        terminal => terminal,
     }
 }
 
@@ -1206,6 +1234,39 @@ mod tests {
         assert_eq!(listing.server_kind.as_deref(), Some("generic"));
         assert_endpoint(model_of(&listing, "legacy-z"), Some(4_096), None);
         assert_eq!(model_of(&listing, "legacy-z").loaded, None);
+    }
+
+    /// minor-6 钉:裸 base 的本地 vLLM——kind 判别确认 `/v1/models` 可服务
+    /// (fetch_v1_models),但 OpenAI 兼容阶梯先打 `{base}/models` 404。
+    /// 仅本地路径在 Unsupported(404/405) 且 base 不带 /v1 时补一发
+    /// `{base}/v1/models`,否则健康 vLLM 被钉成 Unsupported(404)。远端
+    /// 不走本地短路,行为不变。
+    #[tokio::test]
+    async fn bare_local_base_retries_v1_models_after_404() {
+        let mock = models_mock::spawn(&[
+            (
+                "/v1/models",
+                200,
+                r#"{"data":[{"id":"vllm-bare","max_model_len":16384}]}"#.into(),
+            ),
+            ("/models", 404, "{}".into()),
+        ]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::OpenAiCompatible).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.server_kind.as_deref(), Some("generic"));
+        assert_endpoint(model_of(&listing, "vllm-bare"), Some(16_384), None);
+        // kind 判别的 fetch_v1_models(裸 base 主候选)+ 阶梯回退各一次;
+        // /models 只被阶梯首发命中一次,且 404/405 才回退(只补一发)。
+        assert_eq!(mock.hits_for("/models"), 1);
+        assert_eq!(mock.hits_for("/v1/models"), 2);
+        // 带 /v1 结尾的 base 不回退(主候选 404 就是终局);两次命中 =
+        // kind 判别的 fetch_v1_models + 阶梯首发,绝无第三发回退。
+        let mock = models_mock::spawn(&[("/v1/models", 404, "{}".into())]);
+        let base = format!("{}/v1", mock.base_url);
+        let listing = probe(&base, None, DiscoveryProtocol::OpenAiCompatible).await;
+        assert_eq!(listing.status, ListingStatus::Unsupported);
+        assert_eq!(listing.http_status, Some(404));
+        assert_eq!(mock.hits_for("/v1/models"), 2, "/v1 形 base 无回退候选");
     }
 
     #[tokio::test]
