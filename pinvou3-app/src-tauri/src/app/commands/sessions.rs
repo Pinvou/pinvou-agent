@@ -774,7 +774,10 @@ pub async fn fork_session(
         store_inner.fork_session_record(&session_id, keep_turns)
     })
     .await
-    .map_err(|error| format!("fork_session: task failed: {error}"))?
+    // join 失败的包装不带命令前缀：外层 map_err 统一加 `fork_session: `，
+    // 否则 join 路径会出现 "fork_session: fork_session: task failed: …"
+    // 双包形状（R2 M-7）。
+    .map_err(|error| format!("task failed: {error}"))?
     .map_err(|error| format!("fork_session: {error:#}"))?;
     // 侧栏经 session:list_changed 去抖刷新；不发事件的命令产出的会话在
     // 切走后 UI 不可达（review finding：fork 分支曾只存在于存储）。

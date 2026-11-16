@@ -1023,7 +1023,9 @@ pub(crate) mod tests {
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", r"C:\Users\me\.pinvou3") };
         assert_eq!(
-            redact_storage_prefix(r"write artifact \\?\C:\Users\me\.pinvou3\artifacts\f1.txt: boom"),
+            redact_storage_prefix(
+                r"write artifact \\?\C:\Users\me\.pinvou3\artifacts\f1.txt: boom"
+            ),
             "write artifact ~/.pinvou3/artifacts/f1.txt: boom",
             "a mid-text verbatim drive path must fold cleanly (no //?/ remnant)"
         );
@@ -1053,7 +1055,6 @@ pub(crate) mod tests {
             "plain and verbatim occurrences of the root must both fold"
         );
     }
-
 
     /// Round-14 复审 M1:`ad0971d2e` 并行波插入 separators 钉时吞掉了本钉
     /// 的 `#[test]` 行,钉体静默失联(`dead_code=allow` 下零警告)。恢复

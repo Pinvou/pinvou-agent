@@ -10270,6 +10270,11 @@ fn generate_unused_session_id_fails_loud_on_stat_fault() {
             .contains("could not allocate an unused session id"),
         "{error}"
     );
+    // 成功路径显式复原并验证（Drop guard 只兜 panic 窗；与姊妹测试
+    // import_reports_stat_fault… 同形状）：恢复失败让测试转红而非静默
+    // 泄漏整个临时 home（TestHomeGuard 的 remove_dir_all 会被 0o000 卡死）。
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
+        .expect("restore the sessions dir permissions");
 }
 
 /// wiring 钉：测试候选队列把撞车序列穿过 `fork_session_record` 的真实
@@ -10309,6 +10314,19 @@ fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
         store.load(&source.metadata.id).is_ok(),
         "the source record must be intact past the loud failure"
     );
+    // 耗尽路径不得落任何分支记录（sessions 目录里只有源记录与预置的
+    // occupied.json 两个 .json）。
+    let json_names: Vec<String> = std::fs::read_dir(store.sessions_dir())
+        .expect("list sessions")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    assert_eq!(
+        json_names.len(),
+        2,
+        "no branch record may land: {json_names:?}"
+    );
 
     // 占用后接新鲜候选 → fork 落在注入的新鲜 id 上：只有穿过探测的
     // wiring 才可能产出这个 id（裸时钟给出的是时钟值）。
@@ -10317,6 +10335,10 @@ fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
         .fork_session_record(&source.metadata.id, 1)
         .expect("the fresh second candidate must land");
     assert_eq!(forked.id, "fresh");
+    assert!(
+        store.load("fresh").is_ok(),
+        "the forked record must land on disk under the injected id"
+    );
 }
 
 /// [`SessionStore::create_new`] 的同款 wiring 钉：预算耗尽必须响亮失败，
@@ -10342,6 +10364,19 @@ fn create_new_fails_loud_when_every_generated_candidate_is_occupied() {
             .to_string()
             .contains("could not allocate an unused session id"),
         "{error:#}"
+    );
+    // 耗尽路径不得落任何记录（注释所claim的「不落任何记录」在此钉死：
+    // sessions 目录里只剩预置的 occupied.json）。
+    let json_names: Vec<String> = std::fs::read_dir(store.sessions_dir())
+        .expect("list sessions")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    assert_eq!(
+        json_names,
+        vec!["occupied.json".to_string()],
+        "no record may land past create_new exhaustion: {json_names:?}"
     );
 }
 
@@ -10401,6 +10436,10 @@ fn save_persist_failure_reasons_fold_the_storage_prefix() {
         !text.contains("pinvou3-sessions-test-"),
         "the persist reason must not leak the raw home prefix: {text}"
     );
+    // 成功路径显式复原并验证（Drop guard 只兜 panic 窗）：恢复失败让
+    // 测试转红而非静默泄漏整个临时 home。
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
+        .expect("restore the sessions dir permissions");
 }
 
 /// wiring 钉：sched- 命名空间同穿占用探测（retention 的分配闭包经

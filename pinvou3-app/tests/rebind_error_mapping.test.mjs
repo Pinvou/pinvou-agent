@@ -182,7 +182,7 @@ test("a roots-commit failure yields its moved ids as carryover data", () => {
 
 test("command-wrapped fork rejections classify via the embedded marker (r7 minor 1)", () => {
   // The fork lane re-wraps the fence rejection as
-  // "fork_session: a workspace rebind … ({REBIND_IN_PROGRESS: …})" — the
+  // "fork_session: a workspace rebind … (REBIND_IN_PROGRESS: …)" — the
   // stable marker is buried mid-string, where the dialog-era prefix match
   // never fires and the raw diagnostic leaked into the toast.
   // Copy-kind markers carry no parseable payload, so the embedded fallback
