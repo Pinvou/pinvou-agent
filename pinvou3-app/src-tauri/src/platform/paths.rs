@@ -75,8 +75,9 @@ pub fn redact_storage_prefix(text: &str) -> String {
         changed = true;
     }
     if changed {
-        // Round-12 复审:发生折叠时把剩余文本里的路径分隔符统一为 `/`
-        // (消费端断言/pin 的是正斜杠形态;产出是展示文本,不回喂文件系统)。
+        // Round-12 review: when a fold happened, normalize the remaining
+        // path separators to `/` (consumers assert/pin the forward-slash
+        // form; the output is display text, never re-fed into the fs).
         folded.replace('\\', "/")
     } else {
         text.to_string()
@@ -1009,6 +1010,24 @@ pub(crate) mod tests {
             redact_storage_prefix(text),
             text,
             "verbatim text outside the storage root must pass through unchanged"
+        );
+    }
+
+    /// A verbatim UNC spelling OUTSIDE the storage root must also pass
+    /// through byte-identical: an unconditional `\\?\UNC\` fold would
+    /// rewrite unrelated network paths (sister pin of the drive-spelling
+    /// identity test above — the fold must gate on the actual root, never
+    /// on the spelling shape).
+    #[test]
+    fn redact_storage_prefix_keeps_verbatim_unc_non_storage_text_untouched() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", r"\\server\share\.pinvou3") };
+        let text = r"staged artifact \\?\UNC\otherhost\othershare\docs\notes.txt vanished";
+        assert_eq!(
+            redact_storage_prefix(text),
+            text,
+            "a verbatim UNC path outside the storage root must pass through unchanged"
         );
     }
 

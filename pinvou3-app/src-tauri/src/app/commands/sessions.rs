@@ -774,9 +774,10 @@ pub async fn fork_session(
         store_inner.fork_session_record(&session_id, keep_turns)
     })
     .await
-    // join 失败的包装不带命令前缀：外层 map_err 统一加 `fork_session: `，
-    // 否则 join 路径会出现 "fork_session: fork_session: task failed: …"
-    // 双包形状（R2 M-7）。
+    // The join-failure wrapper carries no command prefix: the outer map_err
+    // adds `fork_session: ` uniformly, otherwise the join path would produce
+    // the double-wrapped "fork_session: fork_session: task failed: …" shape
+    // (R2 M-7).
     .map_err(|error| format!("task failed: {error}"))?
     .map_err(|error| format!("fork_session: {error:#}"))?;
     // 侧栏经 session:list_changed 去抖刷新；不发事件的命令产出的会话在
@@ -2491,6 +2492,33 @@ mod fork_command_guard_pins {
         assert!(
             turn_at < compact_at && compact_at < reserve_at,
             "fast rejects must precede the atomic reservation"
+        );
+    }
+
+    /// Source pin for the join-failure wrapper shape (R3 review, Lane G):
+    /// the join leg re-labels failures WITHOUT a command prefix and the
+    /// outer map_err adds `fork_session: ` exactly once. The wrapper used
+    /// to double-prefix (`fork_session: fork_session: task failed: …`,
+    /// R2 M-7) and no behavioral test can see the join path (it needs a
+    /// panicking task), so a revert would ship the double-wrapped toast
+    /// text suite-green.
+    #[test]
+    fn fork_join_wrapper_stays_prefix_free() {
+        let block = fork_command_block(include_str!("sessions.rs"));
+        assert!(
+            block.contains(r#"format!("task failed: {error}")"#),
+            "the join wrapper must re-label the failure without a command prefix"
+        );
+        assert!(
+            !block.contains(r#"format!("fork_session: task failed"#),
+            "the join wrapper must not re-add the command prefix in its \
+             format string; the outer map_err adds it once and a double \
+             prefix ships \"fork_session: fork_session: task failed: …\" \
+             to the toast"
+        );
+        assert!(
+            block.contains(r#"format!("fork_session: {error:#}")"#),
+            "the outer wrapper must add the single command prefix"
         );
     }
 }
