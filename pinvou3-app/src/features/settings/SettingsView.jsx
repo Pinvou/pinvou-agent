@@ -609,7 +609,9 @@ function hasStoredCredential(record) {
       }
       // URL API 的 toString 在空路径时补一个尾斜杠；只剥这个补出来的斜杠，
       // 不顺手动用户自己写的路径尾斜杠（如 .../v1/ —— 与直接编辑 URL 行的
-      // 行为一致，手动输入不归一化）。
+      // 行为一致，手动输入不归一化）。裸主机（pathname === '/'）上用户自己
+      // 写的根斜杠无法与 WHATWG 补出的斜杠区分，会被一并剥掉（round-7
+      // review：注释如实披露这一例；HTTP 语义上两者等价，无行为影响）。
       function serializeParsedBaseUrl(parsed) {
         const serialized = parsed.toString();
         return parsed.pathname === '/' ? serialized.replace(/\/$/, '') : serialized;
@@ -685,8 +687,8 @@ function hasStoredCredential(record) {
       const showCustomCloudKeyField = !isLocalPreset && customModel && !noAuthActive;
       const showLocalKeyField = isLocalPreset && localKeyEnabled;
       const showNoAuthToggle = !isLocalPreset && !isCodingPlan;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker; the keyless posture is part of the same freshness contract — a posture flip changes what a re-test would send, so the banner must not survive it (round-6 review)
-      useEffect(() => { setImageTestResult(null); }, [model, baseUrl, apiKey, preset, noAuthActive]);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker; the keyless posture is part of the same freshness contract — a posture flip changes what a re-test would send, so the banner must not survive it (round-6 review). keyRevealError rides the same invalidation (round-7 review): the row hiding must not leave a stale reveal-failure message that reappears when the toggle flips back off.
+      useEffect(() => { setImageTestResult(null); setKeyRevealError(''); }, [model, baseUrl, apiKey, preset, noAuthActive]);
       const showDisplayNameField = isLocalPreset && !initial.__new;
       const showAliasField = !isLocalPreset;
       const showConfigFields = showAliasField || showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField || showNoAuthToggle;
