@@ -5694,14 +5694,78 @@ mod tests {
     /// classifies it as `redirect` — status handling unchanged, one hop
     /// fewer (a second hop would answer 404 here and read
     /// `endpoint_not_found`).
+    /// A `/models` 302 WITH a `location` header pointing at a second in-mock
+    /// path (everything else answers 404): the queue mock cannot emit headers,
+    /// and a bare 302 without `location` is terminal under reqwest's default
+    /// follow policy too - a no-follow pin fed by that shape never bites
+    /// (round-4 mutation: deleting `Policy::none()` stayed green). This mock
+    /// makes the second hop real.
+    fn spawn_connection_redirect_mock() -> (String, std::sync::Arc<DiscoverMockLog>) {
+        use std::io::Read as _;
+        use std::sync::Arc;
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind redirect mock listener");
+        let addr = listener.local_addr().expect("redirect mock listener addr");
+        let log = Arc::new(DiscoverMockLog::default());
+        let log_thread = log.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(20) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf).into_owned();
+                let target = request
+                    .split("\r\n")
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_owned();
+                let path = target.split('?').next().unwrap_or("").to_owned();
+                {
+                    let mut hits = log_thread.hits.lock().unwrap_or_else(|p| p.into_inner());
+                    *hits.entry(path.clone()).or_insert(0) += 1;
+                }
+                let response = if path == "/models" {
+                    let location = format!("http://{}\u{1F}{}", addr, "/elsewhere");
+                    let _ = location;
+                    format!(
+                        "HTTP/1.1 302 Found\r\nlocation: http://{}/elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        addr
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_owned()
+                };
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                let _ = std::io::Write::flush(&mut stream);
+            }
+        });
+        (format!("http://{addr}"), log)
+    }
+
     #[test]
     fn models_test_redirect_is_not_followed_and_classifies_as_redirect() {
-        let (base, log) = spawn_discover_mock(&[("/models", vec![(302u16, "")])]);
+        let (base, log) = spawn_connection_redirect_mock();
         let probe = run_connection_probe(&base, "");
         assert!(!probe.ok, "a redirect is not a successful probe");
         assert_eq!(probe.code, "redirect");
         assert_eq!(probe.http_status, Some(302));
         assert_eq!(log.hits_for("/models"), 1, "no second hop was followed");
+        assert_eq!(
+            log.hits_for("/elsewhere"), 0,
+            "the location target must never be requested"
+        );
     }
 
     #[test]
@@ -6905,10 +6969,19 @@ mod tests {
             "connect"
         );
         // The top-level Display (URL text included) is never read: a URL
-        // biased with tls/ssl words over a clean chain classifies by the
-        // flags alone.
+        // biased with tls/ssl words over a CLEAN chain (no certificate text
+        // in any source level - the tls_chain() fixture's inner text would
+        // legitimately answer tls) classifies by the flags alone.
         assert_eq!(
-            discovery_transport_class_from_flags(false, false, false, &tls_chain()),
+            discovery_transport_class_from_flags(
+                false,
+                false,
+                false,
+                &Chained {
+                    display: "error sending request for url (https://ba-ssl-gw.example.com/v1/models)",
+                    source: Wrapper("connection refused"),
+                }
+            ),
             "network",
             "no flags and no chain fact: the ssl-looking URL must not bias the class"
         );
@@ -8117,7 +8190,7 @@ mod tests {
                 .headers()
                 .get("x-goog-api-key")
                 .map(|value| value.to_str().expect("header ascii").to_owned()),
-            Some("goog-key"),
+            Some("goog-key".to_owned()),
             "the gemini ladder authenticates with x-goog-api-key on every host"
         );
     }
