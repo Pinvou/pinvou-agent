@@ -2033,6 +2033,27 @@ fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_prof
     assert_eq!(from_disk.system_prompt, persisted.system_prompt);
 }
 
+/// engine.rs 的 spawn 时点 base 读取必须走 `load_for_engine_spawn`（与两条
+/// persist 写入同一 `scheduled_mutation` 门）：裸 `store.load` 会与在途
+/// TurnComplete 落盘交错，新 incarnation 先读后写时把旧引擎最后几轮的
+/// 累计永久少记。行为级竞窗无法稳定复现，这里钉住调用点形状（换回裸读
+/// 即红）；去空白后匹配，对 rustfmt 换行不敏感。
+#[test]
+fn scheduled_spawn_base_reads_through_the_mutation_gate() {
+    let normalized: String = include_str!("../assistant/engine.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert!(
+        normalized.contains("store.load_for_engine_spawn(session_id)?"),
+        "engine spawn base must read through the scheduled_mutation gate"
+    );
+    assert!(
+        !normalized.contains("Some(store.load(session_id)?.metadata.total_tokens)"),
+        "the ungated bare load must not come back on the spawn base path"
+    );
+}
+
 #[test]
 fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts() {
     let (store, _g) = isolated_store();
