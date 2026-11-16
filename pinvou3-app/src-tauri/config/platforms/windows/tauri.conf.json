@@ -14,7 +14,7 @@
         "componentRefs": [
           "PythonNodeRuntimeEnvironment"
         ],
-        "languages": [
+        "language": [
           "en-US",
           "zh-CN",
           "ja-JP"
