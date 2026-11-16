@@ -16,7 +16,9 @@ use crate::features::codex_acp::{
     project_acp_permission_request_for_web, project_acp_value_for_web,
 };
 use crate::features::remote_control::{MAX_TRANSFER_CHUNK_BYTES, file_access, manager};
-use crate::features::remote_control::{RemoteControlManager, WebAccessInfo, WebAccessStatus};
+use crate::features::remote_control::{
+    RemoteControlManager, WebAccessInfo, WebAccessStatus, WebAccessStopOutcome,
+};
 use crate::features::sessions::SessionStore;
 use crate::platform::prefs::UserPrefs;
 
@@ -258,7 +260,7 @@ pub fn web_access_enable(
 pub fn web_access_disable(
     webview: Webview,
     manager: State<'_, RemoteControlManager>,
-) -> Result<(), String> {
+) -> Result<WebAccessStopOutcome, String> {
     // 停链与启用同口径:辅助 WebView(code-reader/宠物等)里的脚本不得
     // 静默切断用户的远程链接。
     require_main_webview(&webview)?;

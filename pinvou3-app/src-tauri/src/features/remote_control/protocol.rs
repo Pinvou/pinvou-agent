@@ -44,6 +44,33 @@ pub struct WebAccessInfo {
     pub url: String,
     pub qr_data_url: Option<String>,
     pub status: WebAccessStatusKind,
+    /// 本次操作对旧凭据远端撤销意图的处置口径(stop/rotate 有值,其余为
+    /// None):queue-full 时意图无处落地,调用方拿到的不再是含糊的 Ok,
+    /// 而是"本地完成、远端撤销未落地"的显式不完整结果(可缺省:既有
+    /// JSON 反序列化不受影响)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_disposition: Option<WebAccessRevocationDisposition>,
+}
+
+/// 旧凭据远端撤销意图的处置口径。
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebAccessRevocationDisposition {
+    /// 已持久入 pending 队列,重启后 replay 继续重试。
+    Queued,
+    /// 队列满:撤销意图无处落地,旧 endpoint 在 relay 过期或手动清理前
+    /// 仍可加入;需要手动清理或等 relay 过期。
+    DeferredFullQueue,
+    /// 无既有 endpoint,无需撤销。
+    NotNeeded,
+}
+
+/// 停止操作的显式结果口径:本地停止(配置删除、端点拆除)总是完成,
+/// `revocation` 如实报告旧凭据远端撤销意图的去向(queue-full 时为
+/// `DeferredFullQueue`,需要手动清理或等 relay 过期)。
+#[derive(Clone, Serialize, PartialEq, Eq)]
+pub struct WebAccessStopOutcome {
+    pub revocation: WebAccessRevocationDisposition,
 }
 
 impl std::fmt::Debug for WebAccessInfo {
@@ -168,6 +195,7 @@ mod tests {
             url: format!("https://relay.test/pinvou3/remote/#endpoint=ep_123&token={token}"),
             qr_data_url: Some(format!("data:image/png;base64,{token}")),
             status: WebAccessStatusKind::WaitingWebClient,
+            revocation_disposition: None,
         };
         let rendered = format!("{info:?}");
         assert!(

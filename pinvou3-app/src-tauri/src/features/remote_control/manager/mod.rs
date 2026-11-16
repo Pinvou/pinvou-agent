@@ -16,7 +16,8 @@ use tauri::{AppHandle, Emitter};
 
 use super::platform;
 use super::protocol::{
-    PROTOCOL_VERSION, WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind,
+    PROTOCOL_VERSION, WebAccessConfig, WebAccessInfo, WebAccessRevocationDisposition,
+    WebAccessStopOutcome, WebAccessStatus, WebAccessStatusKind,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
 use crate::platform::paths;
@@ -1214,9 +1215,18 @@ impl RemoteControlManager {
             .as_ref()
             .map(|endpoint| endpoint.config.clone())
             .or_else(|| persisted_previous.clone());
+        // The caller sees the revocation disposition on the returned info:
+        // local rotation completion and remote revocation are distinct
+        // outcomes, and the queue-full case is reported explicitly instead
+        // of only in a log line.
+        let mut revocation_disposition = None;
         if let Some(previous) = previous_config.as_ref() {
             match queue_pending_revocation(previous) {
-                Ok(()) => self.sync_pending_revocation_backlog(previous),
+                Ok(()) => {
+                    self.sync_pending_revocation_backlog(previous);
+                    revocation_disposition =
+                        Some(WebAccessRevocationDisposition::Queued);
+                }
                 // Round-15 review: a full queue no longer wedges rotation — rotation is a
                 // recovery path, and from the 33th relay-less rotation onward the queue is
                 // full, where `?` propagation would make every later refresh fail.
@@ -1229,10 +1239,15 @@ impl RemoteControlManager {
                 // the relay until relay expiry or manual cleanup, the same honest caliber
                 // as the salvage truncation log. Same-key-different-secret conflicts remain
                 // fail-closed per the design boundary recorded in round-14.
+                // The disposition travels on the returned info so the caller
+                // can state the incompleteness explicitly (review P2: logging
+                // alone does not give the caller a truthful completion state).
                 Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {
                     eprintln!(
                         "[web-access] refresh ignores full pending-revocation queue: {error}"
                     );
+                    revocation_disposition =
+                        Some(WebAccessRevocationDisposition::DeferredFullQueue);
                 }
                 Err(error) => return Err(error),
             }
@@ -1264,9 +1279,11 @@ impl RemoteControlManager {
         }
         self.activate(apply_runtime_relay_override(config))?;
         let inner = self.inner.lock();
-        Ok(pairing_info(inner.endpoint.as_ref().ok_or_else(|| {
+        let mut info = pairing_info(inner.endpoint.as_ref().ok_or_else(|| {
             "Web access endpoint failed to rotate".to_string()
-        })?))
+        })?);
+        info.revocation_disposition = revocation_disposition;
+        Ok(info)
     }
 
     /// Revokes host-directory authorization without disconnecting the link: later
@@ -1348,6 +1365,7 @@ impl RemoteControlManager {
                     url: String::new(),
                     qr_data_url: None,
                     status: WebAccessStatusKind::Stopped,
+                    revocation_disposition: None,
                 });
             }
         };
@@ -1445,6 +1463,7 @@ impl RemoteControlManager {
                 url: String::new(),
                 qr_data_url: None,
                 status: WebAccessStatusKind::Stopped,
+                revocation_disposition: None,
             }),
         }
     }
@@ -1455,7 +1474,7 @@ impl RemoteControlManager {
         self.inner.lock().code_session_predicate = Some(predicate);
     }
 
-    pub fn stop_current(&self) -> Result<(), String> {
+    pub fn stop_current(&self) -> Result<WebAccessStopOutcome, String> {
         let _lifecycle = self.lifecycle.lock();
         self.ensure_process_ownership()?;
         // Stopping is itself a recovery means; corrupt persistent state must not wedge
@@ -1472,17 +1491,30 @@ impl RemoteControlManager {
             .as_ref()
             .map(|endpoint| endpoint.config.clone())
             .or_else(|| persisted.clone());
+        // The stop itself always completes (config deleted, endpoint torn down
+        // below); the outcome carries what happened to the OLD credentials'
+        // remote revocation intent, so the caller can state the incompleteness
+        // explicitly on the queue-full path (review P2: logging alone does not
+        // give the caller a truthful completion state).
+        let mut revocation = WebAccessRevocationDisposition::NotNeeded;
         if let Some(config) = current_config.as_ref() {
             match queue_pending_revocation(config) {
-                Ok(()) => self.sync_pending_revocation_backlog(config),
+                Ok(()) => {
+                    self.sync_pending_revocation_backlog(config);
+                    revocation = WebAccessRevocationDisposition::Queued;
+                }
                 // Round-15 review: a full queue does not wedge stop (a recovery path; same
                 // rationale as the refresh arm); the cost is recorded honestly with the same
                 // caliber as the refresh arm — this stop's revocation intent landed nowhere,
                 // and the endpoint stays joinable on the relay until expiry or manual
                 // cleanup. Same-key-different-secret conflicts keep the round-14 fail-closed
                 // boundary.
+                // The explicit DeferredFullQueue outcome replaces log-only
+                // reporting: nothing durable was recorded, so nothing will
+                // replay for this endpoint after a restart either.
                 Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {
                     eprintln!("[web-access] stop ignores full pending-revocation queue: {error}");
+                    revocation = WebAccessRevocationDisposition::DeferredFullQueue;
                 }
                 Err(error) => return Err(error),
             }
@@ -1512,7 +1544,7 @@ impl RemoteControlManager {
             eprintln!("[web-access] stop ignores rpc-ledger removal failure: {error}");
         }
         self.emit_status();
-        Ok(())
+        Ok(WebAccessStopOutcome { revocation })
     }
 
     fn ensure_process_ownership(&self) -> Result<(), String> {
@@ -5649,6 +5681,50 @@ mod tests {
         std::fs::remove_dir_all(directory).ok();
     }
 
+    /// Review P2 (revocation durability on the full-queue path): the
+    /// stop/refresh degradation arms report `DeferredFullQueue` precisely
+    /// because nothing durable was recorded for the deferred endpoint. This
+    /// test crosses the restart boundary the way replay does — reload the
+    /// ledger from disk after the refusal — and pins that the deferred
+    /// endpoint is genuinely absent (nothing will replay for it) while every
+    /// capacity entry survives. A future change that silently persists the
+    /// deferred intent, or that drops capacity entries on reload, turns red.
+    #[test]
+    fn deferred_full_queue_intent_is_absent_from_the_restart_replay() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-revocation-restart-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        for index in 0..MAX_PENDING_REVOCATIONS {
+            queue_pending_revocation_at(
+                &path,
+                test_pending_revocation(&format!("ep_restart_full_{index:02}")),
+            )
+            .expect("filling the queue exactly to capacity must succeed");
+        }
+        let overflow = test_pending_revocation("ep_restart_deferred");
+        let refused =
+            queue_pending_revocation_at(&path, overflow.clone()).is_err();
+        assert!(refused, "the deferred endpoint must be refused at capacity");
+        // Restart: reload the ledger from disk the way replay does (strict
+        // read — the filled ledger is valid on disk).
+        let reloaded =
+            load_pending_revocations_from(&path).expect("restart reload must yield a ledger");
+        assert_eq!(reloaded.entries.len(), MAX_PENDING_REVOCATIONS);
+        assert!(
+            reloaded
+                .entries
+                .iter()
+                .all(|entry| entry.endpoint_id != overflow.endpoint_id),
+            "nothing durable may exist for the DeferredFullQueue endpoint: the \
+             outcome honestly states the intent will not replay after a restart"
+        );
+        std::fs::remove_dir_all(directory).ok();
+    }
+
     /// Round-29 review MINOR-1: the in-memory backlog must never grow past
     /// MAX_PENDING_REVOCATIONS — a salvage degradation that leaves memory-only
     /// siblings plus later distinct-key rotations used to push it over, and
@@ -7996,6 +8072,60 @@ mod tests {
         assert!(
             body.contains("remove_config()"),
             "stop must still remove the (corrupt) config file after the tolerant read"
+        );
+    }
+
+    /// Review P2 (revocation durability on the full-queue path): the
+    /// degradation arms must surface an explicit incomplete outcome to the
+    /// caller instead of log-only reporting — the stop result carries the
+    /// disposition, the full arms set DeferredFullQueue, the rotation result
+    /// travels it on the returned info, and the command wrapper hands the
+    /// outcome to the frontend. Deleting any leg turns red.
+    #[test]
+    fn revocation_dispositions_are_explicit_on_the_full_queue_paths() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub fn stop_current(&self)")
+            .expect("stop_current must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    pub fn ")
+            .or_else(|| body.find("\n    fn "))
+            .expect("stop_current body must be terminated by the next fn")];
+        assert!(
+            body.contains("revocation = WebAccessRevocationDisposition::DeferredFullQueue"),
+            "stop's full-queue arm must set the explicit DeferredFullQueue disposition"
+        );
+        assert!(
+            body.contains("Ok(WebAccessStopOutcome { revocation })"),
+            "stop must return the explicit outcome carrying the disposition"
+        );
+        let refresh_start = source
+            .find("pub fn refresh(&self)")
+            .expect("refresh must exist");
+        let refresh_body = &source[refresh_start..];
+        let refresh_body = &refresh_body[..refresh_body
+            .find("\n    pub fn ")
+            .or_else(|| refresh_body.find("\n    fn "))
+            .expect("refresh body must be terminated by the next fn")];
+        let normalized = refresh_body.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            normalized.contains(
+                "revocation_disposition = Some(WebAccessRevocationDisposition::DeferredFullQueue);",
+            ),
+            "refresh's full-queue arm must set the explicit DeferredFullQueue disposition"
+        );
+        assert!(
+            refresh_body.contains("info.revocation_disposition = revocation_disposition;"),
+            "refresh must travel the disposition on the returned info"
+        );
+        let command_source = include_str!(
+            "../../../app/commands/remote_control.rs"
+        );
+        assert!(
+            command_source
+                .contains("Result<WebAccessStopOutcome, String>"),
+            "the disable command must hand the explicit outcome to the frontend"
         );
     }
 

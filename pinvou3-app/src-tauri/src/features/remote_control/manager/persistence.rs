@@ -34,6 +34,7 @@ pub(super) fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
         url: endpoint.url.clone(),
         qr_data_url: crate::features::connectors::connector_cli::make_qr(&endpoint.url),
         status: endpoint.status,
+        revocation_disposition: None,
     }
 }
 
