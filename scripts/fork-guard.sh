@@ -12,8 +12,8 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # and CodeWhale#157 (session-reader read-only classification) merged,
 # plus the #154 limits-audit branch (squash 841fe98fe + review fixwave)
 # rebased onto 687358f7e.
-EXPECTED_HEAD="f47cb9f36af8d3b83ac6c215de1a11cc4509aa51"
-EXPECTED_COMMITS=116
+EXPECTED_HEAD="00a7a642717660ba687bb37d1745594a2b5ae489"
+EXPECTED_COMMITS=141
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
