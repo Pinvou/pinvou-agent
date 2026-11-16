@@ -1316,10 +1316,23 @@ impl RemoteControlManager {
         // in-memory flag to the disk side before returning: both state sides consistent,
         // the UI showing the real authorization state, and the error saying plainly that
         // the revocation did not take effect and should be retried.
-        {
+        // P2 (retryable durable revocation, refining the read-failure side of the
+        // paragraph above): a load failure does not prove the durable authorization was
+        // cleared — publishing a cleared flag here would let the settings page drop the
+        // Revoke action while a later start/restart could restore authorization from a
+        // recovered file, losing the revocation intent. Capture the durable mirror of the
+        // flag before invalidating (while memory and disk still agree) so a failed load
+        // can re-latch memory to it; the immediate invalidation of already-issued grants
+        // is kept either way.
+        let durable_flag = {
             let mut inner = self.inner.lock();
+            let durable_flag = inner
+                .endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.config.allow_host_workspace);
             revoke_host_workspace_state(&mut inner);
-        }
+            durable_flag
+        };
         // Round-12 review P3: revoking something never configured (before enable) is an
         // idempotent no-op — with no config, neither the flag nor grants can exist, and
         // the invalidation above was already a no-op. Returning Err previously let the
@@ -1338,13 +1351,26 @@ impl RemoteControlManager {
         let mut config = match load_config() {
             Ok(Some(config)) => config,
             Err(error) => {
-                // Round-20 review MINOR: on a strict-read failure the invalidation above
-                // really did flip the flag/clear grants (a real state change) — same
-                // rationale as the config-absent arm's Round-19 NIT below, so emit one
-                // status refresh before returning the error, keeping the UI from staying
-                // stuck on an authorized display until the next unrelated status push. No
-                // inner guard is held here (the invalidation block above is closed), so the
-                // exact lock-span pin is not triggered.
+                // P2: the load failed, so the durable side is unknown — re-latch the
+                // in-memory flag to the pre-invalidation durable mirror BEFORE propagating
+                // the error, keeping the Revoke action available and revocation retryable
+                // (the immediate invalidation of issued grants is kept); a transiently
+                // unreadable config that recovers later is revoked again by the retry. The
+                // guard is taken and dropped inside this standalone block, so no inner lock
+                // spans emit_status below (the exact lock-span pin stays satisfied).
+                if durable_flag == Some(true) {
+                    let mut inner = self.inner.lock();
+                    if let Some(endpoint) = inner.endpoint.as_mut() {
+                        endpoint.config.allow_host_workspace = true;
+                    }
+                }
+                // Round-20 review MINOR: the invalidation above really did clear the grants
+                // (a real state change even with the flag re-latched) — same rationale as
+                // the config-absent arm's Round-19 NIT below, so emit one status refresh
+                // before returning the error, keeping the UI from staying stuck until the
+                // next unrelated status push. The UI shows the re-latched (authorized)
+                // memory state, and the error says plainly that the revocation did not
+                // take effect and should be retried.
                 self.emit_status();
                 return Err(error);
             }
@@ -7064,6 +7090,12 @@ mod tests {
     /// revocation to the pre-fix behavior "memory-only change; minted grants stay redeemable
     /// for their 30-minute TTL" while the whole suite stays green (mutant executed: all 20
     /// revoke-matching tests green).
+    /// Wiring pin (P2, retryable durable revocation): a load failure must not publish a
+    /// cleared flag — the durable mirror is captured before invalidation and a failed load
+    /// re-latches memory to it BEFORE the error propagates, otherwise the settings page
+    /// drops the Revoke action while a later start/restart restores the durable
+    /// authorization and the revocation intent is lost. Deleting either step or reordering
+    /// them turns the suite red.
     #[test]
     fn revoke_host_workspace_wires_grant_invalidation_and_latches_the_flag() {
         let source = include_str!("mod.rs");
@@ -7073,6 +7105,22 @@ mod tests {
             .expect("revoke_host_workspace must exist");
         let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
         let body = comment_filtered(body);
+        assert!(
+            body.contains("let durable_flag = {")
+                && body.find("let durable_flag = {").unwrap()
+                    < body
+                        .find("revoke_host_workspace_state(&mut inner);")
+                        .unwrap(),
+            "the durable-mirroring flag must be captured before the live invalidation"
+        );
+        assert!(
+            body.contains("if durable_flag == Some(true) {")
+                && body
+                    .find("if durable_flag == Some(true) {")
+                    .unwrap()
+                    < body.find("return Err(error);").unwrap(),
+            "a load failure must re-latch the durable flag BEFORE propagating the error"
+        );
         assert!(
             body.contains("persist_config(&config)"),
             "revoke must latch the consent flag into the persisted config"
