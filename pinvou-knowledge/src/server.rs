@@ -1070,10 +1070,11 @@ mod tests {
 
     // 省略 limit 的手动调用必须返回全量清单,而不是回落到某个静默截断的
     // 默认窗——响应没有总数字段,截断对调用方不可见;owner_devices 与
-    // owner_join_requests 的约定都是 None=不限,回收站清单保持一致。
-    // 201 条跨过旧的 unwrap_or(200) 默认窗:不带 limit → 全量;显式
-    // limit=10 → 仍是单窗分页语义。突变对照:恢复 unwrap_or(200) 后,
-    // 不带 limit 的断言恰好取到 200 ≠ 201 而落红。
+    // owner_join_requests 的约定都是 None=不限,回收站清单(知识与文档
+    // 两条腿)保持一致。201 条跨过旧的 unwrap_or(200) 默认窗:不带
+    // limit → 全量;显式 limit=10 → 仍是单窗分页语义。突变对照:任一
+    // 条 store 查询恢复 unwrap_or(200) 后,对应的不带 limit 断言恰好
+    // 取到 200 ≠ 201 而落红。
     #[tokio::test]
     async fn trash_listing_without_limit_lists_everything() {
         let root = tempfile::tempdir().unwrap();
@@ -1115,6 +1116,57 @@ mod tests {
         let response = app.oneshot(windowed).await.unwrap();
         let window: Vec<Collection> = decode_body(response).await;
         assert_eq!(window.len(), 10);
+
+        // 文档腿的 None=全量约定同样钉住:客户端翻页恒带显式 limit,只有
+        // 手动 GET 才会触发缺省 limit,而文档清单的缺省分支此前同样回落
+        // unwrap_or(200)。201 条文档恰好跨过旧默认窗;突变对照:恢复
+        // unwrap_or(200) 后本断言取到 200 ≠ 201 落红。limit=0 收敛到
+        // 1 行、超界 offset 返回空,分页边界对调用方无意外。
+        let live = service
+            .create_collection(CreateCollectionRequest {
+                name: "文档宿主".to_string(),
+                description: None,
+            })
+            .unwrap();
+        for index in 0..201 {
+            let document = service
+                .upload_document(live.id, &format!("限界文档{index:03}.txt"), b"body".to_vec())
+                .await
+                .unwrap();
+            service.trash_document(document.id).unwrap();
+        }
+        let app = router(service);
+
+        let mut documents_all = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/documents?offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut documents_all, owner_token);
+        let response = app.clone().oneshot(documents_all).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let documents: Vec<TrashedDocument> = decode_body(response).await;
+        assert_eq!(documents.len(), 201);
+
+        let mut zero_limit = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/documents?limit=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut zero_limit, owner_token);
+        let response = app.clone().oneshot(zero_limit).await.unwrap();
+        let zero_window: Vec<TrashedDocument> = decode_body(response).await;
+        assert_eq!(zero_window.len(), 1, "limit=0 收敛到单行");
+
+        let mut beyond = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/documents?limit=10&offset=9999")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut beyond, owner_token);
+        let response = app.oneshot(beyond).await.unwrap();
+        let beyond_window: Vec<TrashedDocument> = decode_body(response).await;
+        assert!(beyond_window.is_empty());
     }
 
     // PUT /api/v1/collections/{id} 必须真实可达:owner 令牌完成全量替换

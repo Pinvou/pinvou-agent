@@ -414,6 +414,58 @@ mod wire_compat_tests {
         }
     }
 
+    // 回收站文档条目的官方线形:collectionName 与文档字段并列在同一层
+    // (serde(flatten) 摊平),绝不能出现嵌套 "document" 包装——其他测试
+    // 都经同一 Rust 结构往返,改回嵌套序列化它们依然全绿,只有对着
+    // 官方形状的裸 JSON 断言能抓住这种漂移。反序列化方向同时钉住官方
+    // 载荷缺 createdAt/updatedAt(serde default 占位)时的兼容。
+    #[test]
+    fn trashed_document_keeps_the_flat_official_wire_shape() {
+        let entry = TrashedDocument {
+            document: Document {
+                id: 7,
+                collection_id: 3,
+                name: "d.txt".into(),
+                ext: Some("txt".into()),
+                size: 4,
+                sha256: "sha".into(),
+                status: "ok".into(),
+                n_chunks: 1,
+                created_at: 0,
+                updated_at: 0,
+                deleted_at: Some(123),
+                error: None,
+                already_exists: false,
+            },
+            collection_name: "知识集".into(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            json.get("collectionName"),
+            Some(&serde_json::Value::from("知识集"))
+        );
+        assert_eq!(json.get("collectionId"), Some(&serde_json::Value::from(3)));
+        assert!(
+            json.get("document").is_none(),
+            "nested wrapper would break official hosts"
+        );
+        let canned: TrashedDocument = serde_json::from_value(serde_json::json!({
+            "id": 7,
+            "collectionId": 3,
+            "name": "d.txt",
+            "ext": "txt",
+            "size": 4,
+            "sha256": "sha",
+            "status": "ok",
+            "nChunks": 1,
+            "deletedAt": 123,
+            "error": null,
+            "collectionName": "知识集",
+        }))
+        .unwrap();
+        assert_eq!(canned, entry);
+    }
+
     #[test]
     fn search_hit_keeps_score_on_the_wire() {
         let hit = SearchHit {
