@@ -184,7 +184,7 @@ pub(super) fn ext_of(p: &Path) -> Option<String> {
 /// watcher path excludes first in `handle_event`, and refresh code going
 /// through here must carry the same judgment, otherwise .ssh/keys enter the
 /// store through the single-path entry.
-#[allow(dead_code)] // watcher 库先行：接线前仅测试引用
+#[allow(dead_code)] // watcher is library-first: only tests reference this before wiring
 pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
     let md = std::fs::symlink_metadata(path).ok()?;
     let ft = md.file_type();

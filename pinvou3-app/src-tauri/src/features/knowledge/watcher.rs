@@ -58,7 +58,12 @@
 //! under two spellings). **The load-bearing half of the wiring contract is
 //! the scanner side: the caller must give the scanner the same canonical
 //! spelling (hard requirement, not a suggestion).** `spawn` canonicalizes
-//! unconditionally, so whatever spelling reaches `spawn` is tolerated. The
+//! unconditionally, so whatever spelling reaches `spawn` is tolerated. On
+//! Windows "canonical spelling" means the verbatim `\\?\C:\…` form
+//! `fs::canonicalize` returns — rows will carry that prefix, and a
+//! non-verbatim decision (strip it at wiring time) must be made consciously
+//! and applied to **both** sides of the contract. The
+//! scanner, however, walks the raw spelling verbatim (walkdir follows root
 //! scanner, however, walks the raw spelling verbatim (walkdir follows root
 //! symlinks by default — `follow_root_links`), so a raw-spelled symlink root
 //! splits the policy by itself: rows land under the raw spelling while the
@@ -85,7 +90,11 @@
 //!   (`build`/…), its incremental events are silently dropped wholesale (scan
 //!   rows remain; rescan covers). A mid-run registration failure for a new
 //!   directory arrives as a channel `Err` (MaxFilesWatch) and warns only
-//!   once; afterwards no new directory is watched until restart. Large root
+//!   once; afterwards no new directory is watched until restart — and
+//!   mid-run `add_watch` failures *other* than the watch limit (EACCES on a
+//!   mode-000 directory, ENOENT after instant recreation) are swallowed
+//!   inside notify with no channel `Err`, leaving that branch unwatched for
+//!   the run; the lazy rescan covers both. Large root
 //!   sets fall back to the lazy-triggered rescan.
 //! - A root dropped before registration stays unwatched for the watcher
 //!   thread's entire lifetime: `prepare_roots` skips roots whose
@@ -98,8 +107,11 @@
 //! - The fallback rescan is **lazily triggered** (`kb_start_scan` runs when
 //!   the file-management page is entered); there is no periodic rescan.
 //!   Overflow / dropped watches can only warn, and the index stays stale
-//!   until the next rescan — the wiring side should turn the `need_rescan`
-//!   warning into an actual rescan trigger. Linux inotify's Q_OVERFLOW event
+//!   until the next rescan — turning the `need_rescan` warning into an
+//!   actual rescan trigger requires a machine-readable surface (a flag or
+//!   channel the scan entry can poll) **added to this module first**; today
+//!   the signal exists only as this thread's stderr warn, so #869 owns both
+//!   the surface and the wiring. Linux inotify's Q_OVERFLOW event
 //!   carries **no paths** (the kernel queue is shared by all roots), so only
 //!   a full all-roots rescan is possible; macOS fsevent's dropped-event
 //!   signal names the affected paths; **Windows has no dropped-events signal
@@ -107,6 +119,12 @@
 //!   (visible only when a logger is installed) and root deletion is
 //!   completely silent; both silently stop the watch (no events and no
 //!   channel Err). On Windows the lazy-triggered rescan is the only backstop.
+//!   Also not watchable at all: **non-local volumes** — fsevent ignores
+//!   `FSEventStreamStart`'s return on network mounts (FSEvents does not
+//!   support them), Linux inotify sees only same-host changes on NFS, and
+//!   Windows RDCW on SMB shares is best-effort — every case reports
+//!   "watching N/N" and silently delivers nothing, so the lazy rescan is
+//!   the only coverage there too.
 //! - macOS fsevent's backend-thread death is equally unobservable: an event
 //!   callback panic at the extern "C" boundary aborts the whole process
 //!   (e.g. a delivered path containing non-UTF-8 — possible on exFAT/SMB
@@ -123,7 +141,13 @@
 //!   success log is not trustworthy on macOS; and multi-root registration
 //!   restarts the whole stream per root (stop+run, sinceWhen=SinceNow), so
 //!   events for earlier-registered roots inside the registration window are
-//!   lost (startup only, covered by the first scan). A volume mounted under
+//!   lost (startup only, covered by the first scan). The opposite direction
+//!   also happens: fsevent can **replay writes made before `spawn`** when
+//!   registration lands after them (observed live: rows for pre-spawn files
+//!   appearing at startup in some processes) — benign for indexing
+//!   (idempotent upserts), but the wiring side must not assume
+//!   scan-then-spawn ordering means pre-spawn writes never arrive as
+//!   events. A volume mounted under
 //!   a root that is later ejected/yanked delivers one `Remove(Other)` on the
 //!   mount-point path while the underlying directory still stats — the
 //!   existence judgment treats it as that directory's (content-identical)
@@ -171,12 +195,27 @@
 //! - No debouncing: consecutive events for the same file are each processed;
 //!   the write side resolves them via [`UPSERT_IF_CHANGED_SQL`] — repeat
 //!   events whose content matches the store skip the whole row (indexed_at
-//!   untouched), changed content rewrites as usual (idempotent). The event
+//!   untouched), changed content rewrites as usual (idempotent). This is a
+//!   recorded decision, not an oversight: the `notify-debouncer-full` /
+//!   `-mini` companion crates were weighed against it and deliberately not
+//!   added — they would pull extra dependencies for ordering/rename tracking
+//!   this design does not need (existence judgment is order-insensitive),
+//!   while the SQL-level elision already collapses the repeat-event cost.
+//!   Re-evaluate only if the wiring side needs cross-event coalescing for
+//!   bulk storms; the event
 //!   channel is unbounded; when the consumer is stalled by a long
 //!   transaction or slow disk the queue accumulates (100k-scale events ≈
 //!   tens of MB); bulk-ingestion scenarios are for the wiring side to
 //!   evaluate coalescing on (file_watcher.rs's debounce covers only
-//!   sched-*.json — borrow its window idea, not its scope).
+//!   sched-*.json — borrow its window idea, not its scope). One class the
+//!   elision cannot cover: **directory rows on child churn** — a
+//!   directory's mtime genuinely changes when entries are created/removed
+//!   in it (Linux fires IN_ATTRIB on the parent for every child change), so
+//!   each child event also rewrites the parent's row (its FTS trigrams are
+//!   skipped by the WHEN clause, but the files-table row rewrite remains);
+//!   per-event transactions also mean an `rm -rf` with D directories takes
+//!   the write lock D times — both are amortization targets for the
+//!   wiring-side drain window.
 //! - Concurrency windows between scan and events, and between events: a file
 //!   deleted mid-rescan may be written back by the scan batch (the batched
 //!   commit lands after the event's delete), and the row stays until the
@@ -184,8 +223,10 @@
 //!   directory-deletion event is queued (the common `rm -rf && mkdir`
 //!   rhythm), the existence judgment turns that deletion into the new
 //!   entity's upsert, and the old directory's child rows (old inode, no more
-//!   events) remain until rescan. Wiring that needs strong consistency can
-//!   pause event application. Also: after a directory is renamed into an
+//!   events) remain until rescan. Wiring that needs strong consistency must
+//!   wait for a pause surface (a gate the event loop checks) **added to this
+//!   module first** (#869) — today event application cannot be paused or
+//!   stopped once `spawn` succeeds. Also: after a directory is renamed into an
 //!   excluded name (`proj`→`node_modules`), subsequent events for its files
 //!   all carry the excluded component and are dropped; the old rows stored
 //!   before the rename are cleared by the old-path delete event (only
@@ -236,12 +277,15 @@ macro_rules! warn {
     }};
 }
 
-/// Single-instance guard: the watcher thread lives as long as the app, and a
-/// duplicate `spawn` would stack a second thread double-consuming events for
+/// Single-instance guard: the watcher thread is designed to live for the
+/// app's lifetime (there is no stop interface yet, #869), and a duplicate
+/// `spawn` would stack a second thread double-consuming events for
 /// the same roots (and double-occupy inotify watches). The wiring side must
 /// stop the thread first when changing the root set. RAII: every exit path
 /// (init failure, all-roots registration failure, panic unwind, natural
-/// thread end) releases the guard, after which a fresh `spawn` can re-arm.
+/// thread end) releases the guard, after which a fresh `spawn` can re-arm —
+/// i.e. "lives as long as the app" is the intended steady state, not a
+/// guarantee (see the known-limits exit paths above).
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct ActiveGuard;
@@ -264,7 +308,9 @@ impl Drop for ActiveGuard {
 }
 
 /// Starts the background watcher thread watching the given roots. Returns
-/// immediately after spawning; the thread lives as long as the app; when a
+/// immediately after spawning; the thread is designed to live for the app's
+/// lifetime (its reachable exit paths are the known-limits list, and each
+/// releases the guard); when a
 /// watcher is already active this call is ignored (see [`ACTIVE`]). An empty
 /// root list returns immediately without arming anything (no log either).
 /// Pass a clone of the service's `Store` — do not `open()` a second store on

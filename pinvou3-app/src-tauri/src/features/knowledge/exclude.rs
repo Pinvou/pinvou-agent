@@ -132,7 +132,7 @@ impl Excluder {
 
     /// A single basename hitting names/secrets excludes (the minimal unit
     /// of component-level judgment).
-    #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
+    #[allow(dead_code)] // watcher is library-first: only tests and the unwired watcher reference this before wiring
     pub fn is_excluded_name(&self, name: &str) -> bool {
         self.names.contains(name) || self.secrets.contains(name)
     }
@@ -151,7 +151,7 @@ impl Excluder {
     /// [`Excluder::is_skipped`], the same policy source as the scanner. A
     /// delete event's path can no longer be stat-ed, so only the
     /// component-level judgment applies.
-    #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
+    #[allow(dead_code)] // watcher is library-first: only tests and the unwired watcher reference this before wiring
     pub fn is_excluded_path(&self, path: &Path) -> bool {
         for comp in path.components() {
             if let Component::Normal(os) = comp {
@@ -178,7 +178,7 @@ impl Excluder {
     ///
     /// The extension policy is not judged here, same as
     /// [`Excluder::is_excluded_path`].
-    #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
+    #[allow(dead_code)] // watcher is library-first: only tests and the unwired watcher reference this before wiring
     pub fn is_excluded_under_root(&self, path: &Path, root: &Path) -> bool {
         // The root's own basename: the scanner applies the same list to the
         // root itself (filter_entry applies to the first entry; a hit prunes
