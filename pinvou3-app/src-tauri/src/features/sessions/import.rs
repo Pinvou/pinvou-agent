@@ -2229,11 +2229,15 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
     }
 
-    /// 成员数上限：总量账本按声明大小记账，海量零字节成员贡献 0 却制造
-    /// 海量头解析——超过 [`MAX_MEMBER_COUNT`] 的归档整档拒绝。fixture 带
-    /// `session.json`（记录本体计入同一计数器）：若计数器漏掉记录本体，
-    /// 10,000 个 artifacts 恰好等于 cap、归档放行——本测试随之转红
-    /// （计数范围的突变此前全绿，成员上限钉只钉比较形状，不钉范围）。
+    /// Member-count cap: the size ledger books each member by its declared
+    /// size, so masses of zero-byte members contribute 0 while forcing
+    /// massive header parsing — archives beyond [`MAX_MEMBER_COUNT`] are
+    /// rejected whole. The fixture carries `session.json` (the record body
+    /// counts into the same counter): if the counter missed the record
+    /// body, exactly 10,000 artifacts would equal the cap and the archive
+    /// would pass — this test turns red on that (a counter-range mutation
+    /// previously stayed green; the cap pin only pinned the comparison
+    /// shape, not the range).
     #[test]
     fn import_enforces_member_count_cap() {
         let (store, _lock, _env) = isolated_store();
@@ -2261,9 +2265,11 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
     }
 
-    /// 上限边界钉：恰好 [`MAX_MEMBER_COUNT`] 个成员必须成功导入（生产端
-    /// 是含边界的 `>` 比较）。固化它，防止 `>=` 突变把上限静默收紧 1
-    /// 而全部现有测试仍然全绿（超限测试用的是 cap+1，两种突变下都红）。
+    /// Cap boundary pin: exactly [`MAX_MEMBER_COUNT`] members must import
+    /// successfully (production uses the inclusive `>` comparison).
+    /// Hardening it so a `>=` mutation cannot silently tighten the cap by 1
+    /// while every existing test stays green (the over-cap test uses
+    /// cap+1, which is red under both mutations).
     #[test]
     fn import_accepts_exactly_member_count_cap() {
         let (store, _lock, _env) = isolated_store();
@@ -2346,8 +2352,9 @@ mod tests {
             "{}",
             summary.failed[0].reason
         );
-        // 失败原因经 redact_storage_prefix 折叠后出站：原始 home 前缀
-        // （含 OS 用户名）不得进 summary/toast（tasks.rs 同款纪律）。
+        // The failure reason leaves only after the redact_storage_prefix
+        // fold: the raw home prefix (with the OS user name) must not reach
+        // the summary/toast (same discipline as tasks.rs).
         assert!(
             summary.failed[0].reason.contains("~/.pinvou3/"),
             "reason must be storage-prefix folded: {}",
@@ -2364,10 +2371,12 @@ mod tests {
         let _ = std::fs::remove_file(&second);
     }
 
-    /// commit-window re-probe 的非 NotFound 腿（注入 seam，真实窗口无法
-    /// 从调用外定时）：必须按失败口径整档回滚出 failed，绝不 persist，
-    /// 且原因经 fail 闭包的边界折叠出站——原始 home 前缀（含 OS 用户名）
-    /// 不得进 summary（窗口-1 探测腿的同款钉）。
+    /// The non-NotFound leg of the commit-window re-probe (injected seam —
+    /// the real window cannot be timed from outside the call): the archive
+    /// must roll back whole into `failed`, never persist, and the reason
+    /// must leave through the fail closure's boundary fold — the raw home
+    /// prefix (with the OS user name) must not reach the summary (same pin
+    /// as the window-minus-1 probe leg).
     #[test]
     fn import_reports_folded_reason_on_reprobe_stat_fault_before_persist() {
         let (store, _lock, _env) = isolated_store();
@@ -2375,8 +2384,9 @@ mod tests {
         let record = std::fs::read(&record_path).expect("read session record");
         let _ = std::fs::remove_file(&record_path);
         let archive = build_archive(&[("session.json", &record)]);
-        // Panic-safety drain（与 id 队列的 ClearIdQueueOnDrop 同款卫生）：
-        // 断言 panic 时残留的注入项不得带出本测试。
+        // Panic-safety drain (same hygiene as the id queue's
+        // ClearIdQueueOnDrop): an injected leftover must not outlive this
+        // test when an assertion panics.
         struct TakeReprobeFaultOnDrop;
         impl Drop for TakeReprobeFaultOnDrop {
             fn drop(&mut self) {
@@ -2413,17 +2423,24 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
     }
 
-    /// 结构折叠守卫（app/commands/memory.rs 同款 source-scan 形状）：本文件
-    /// 每个生产 `SessionImportFailure` 形成点必须在字面量内走
-    /// `redact_storage_prefix`——未来新增裸 reason 臂在 CI 直接转红，
-    /// 「每个现在与未来的臂都在边界折叠」不再只靠约定（R2 SHOULD-4，
-    /// 同时钉死此前 artifacts_failed 仅 by-construction 的披露缺口）。
+    /// Structural fold guard (same source-scan shape as
+    /// app/commands/memory.rs): every production `SessionImportFailure`
+    /// formation site in this file must route its reason through
+    /// `redact_storage_prefix` inside its literal — a future raw-reason arm
+    /// turns red in CI, so "every arm, now and in the future, folds at the
+    /// boundary" no longer relies on convention (R2 SHOULD-4; also closes
+    /// the previously disclosed artifacts_failed pinned-by-construction
+    /// gap). Scan assumption: the brace matcher counts raw `{`/`}` bytes
+    /// and is not string/comment aware, so a formation literal whose
+    /// strings or comments carry an unbalanced brace would shift the match
+    /// window — keep literals brace-balanced (today's three are).
     #[test]
     fn import_failure_formation_sites_fold_the_storage_prefix() {
         let source = include_str!("import.rs");
-        // Windows 检出（autocrlf）会把 include_str! 的文本变成 CRLF——扫描
-        // 前先归一化行尾，多行标记与字节偏移在两种检出下一致（windows
-        // regression 腿实红过的 checkout 依赖坑）。
+        // A Windows checkout (autocrlf) turns the include_str! text CRLF —
+        // normalize line endings before scanning so multi-line markers and
+        // byte offsets agree under both checkouts (a checkout dependency
+        // that actually redded the windows regression leg once).
         let source = source.replace("\r\n", "\n");
         let production = source
             .split_once("#[cfg(test)]\nmod tests")
@@ -2433,8 +2450,9 @@ mod tests {
         let mut cursor = 0;
         while let Some(found) = production[cursor..].find("SessionImportFailure {") {
             let at = cursor + found;
-            // 跳过 struct 定义本身（`pub struct SessionImportFailure {`），
-            // 只统计形成点（push 字面量与两个 fail 闭包）。
+            // Skip the struct definition itself (`pub struct
+            // SessionImportFailure {`); count formation sites only (the
+            // push literal and the two fail closures).
             if !production[..at].ends_with("struct ") {
                 sites.push(at);
             }
@@ -2708,10 +2726,13 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
     }
 
-    /// 导出预扫描的成员数边界同样是含边界 `>`：既有导出钉用 ledger
-    /// cap+4 的超限形状，`>=` 突变全绿（与导入侧 exact-cap 钉同款盲区）。
-    /// 参数化 seam 上取小上限钉两臂——恰好 `cap - GENERATED` 个 artifacts
-    /// 必须过（导出器自产成员恰好补满），再 +1 必须拒。
+    /// The export prescan's member-count boundary is likewise an inclusive
+    /// `>`: the existing export pin uses an over-shape at ledger cap+4, so
+    /// a `>=` mutation stayed green (the same blind spot as the import
+    /// side before its exact-cap pin). Pin both arms on the parameterized
+    /// seam with a small cap — exactly `cap - GENERATED` artifacts must
+    /// pass (the exporter's own members fill up the rest), and one more
+    /// must be rejected.
     #[test]
     fn export_prescan_member_count_boundary_is_inclusive() {
         let base = std::env::temp_dir().join(format!(

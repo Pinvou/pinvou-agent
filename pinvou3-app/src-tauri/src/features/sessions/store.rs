@@ -750,21 +750,27 @@ impl SessionStore {
     /// scheduled-run executor records the run as failed and retryable).
     const GENERATED_ID_ATTEMPTS: usize = 8;
 
-    /// 新会话 id 的占用探测：[`generate_session_id`] 取自墙钟纳秒，时钟回拨
-    /// 或粗时钟粒度上可能与既有 id 撞车，而按 id 落盘是原子覆盖——撞车即
-    /// 静默换掉一条活会话。这里以 [`Self::durable_session_record_is_absent`]
-    /// 的真实 NotFound 口径确认可用：占用（撞车）与元数据故障（EACCES/EIO）
-    /// 都换下一个候选重试，耗尽后如实报错，绝不拿未确认可用的 id 落盘。
+    /// Occupancy probe for a new session id: [`generate_session_id`] derives
+    /// from wall-clock nanos, so a backward clock step (or a coarse-clock VM)
+    /// can collide with an existing id, and persisting by id is an atomic
+    /// replace — a collision silently swaps a live record. Availability is
+    /// confirmed through the real NotFound verdict of
+    /// [`Self::durable_session_record_is_absent`]: occupancy (collision) and
+    /// metadata faults (EACCES/EIO) both move on to the next candidate, and
+    /// exhaustion fails loudly — an unconfirmed id is never persisted.
     pub(crate) fn generate_unused_session_id(&self) -> Result<String> {
         self.generate_unused_session_id_with(generate_session_id)
     }
 
-    /// [`Self::generate_unused_session_id`] 的可注入变体：测试用固定候选
-    /// 驱动撞车/重试路径；`sched-` 等前缀命名空间用同一探测口径拼前缀。
-    /// 候选队列挂在本变体而非便捷包装上（R2 SHOULD-1）：fork / create_new
-    /// 经包装进入，sched 站点经自己的前缀闭包进入——三个接线点都吃队列，
-    /// 任一站点回退成裸生成都会让对应 wiring 钉转红（此前 sched 回退与
-    /// 基线逐字节同绿，全 suite 无信号）。
+    /// Injectable variant of [`Self::generate_unused_session_id`]: tests
+    /// drive the collision/retry path with fixed candidates, and prefixed
+    /// namespaces such as `sched-` reuse the same probe discipline behind
+    /// their prefix. The candidate queue hooks this variant rather than the
+    /// convenience wrapper (R2 SHOULD-1): fork / create_new enter through
+    /// the wrapper, the sched site through its own prefixed closure — all
+    /// three wired sites consume the queue, so reverting any site to bare
+    /// generation turns its wiring pin red (a sched revert previously left
+    /// the whole suite byte-identically green, no signal at all).
     pub(crate) fn generate_unused_session_id_with<G: FnMut() -> String>(
         &self,
         generate: G,
@@ -773,9 +779,11 @@ impl SessionStore {
         {
             let queued = take_generated_id_queue_for_test();
             if !queued.is_empty() {
-                // mut 仅测试构建需要（闭包借 &mut 调用生成器）；lib 构建
-                // 里 generate 直通 inner，参数上的 mut 会被
-                // -D unused-mut 拒绝（R1 波的同款 cfg 门控教训）。
+                // `mut` is needed only in the test build (the closure takes
+                // the generator by &mut); in the lib build `generate` flows
+                // straight through to inner, and a `mut` on the parameter
+                // would be rejected by -D unused-mut (same cfg-gating
+                // lesson as the R1 wave).
                 let mut generate = generate;
                 let mut candidates = queued.into_iter();
                 return self.generate_unused_session_id_with_inner(move || {
@@ -786,8 +794,9 @@ impl SessionStore {
         self.generate_unused_session_id_with_inner(generate)
     }
 
-    /// 撞车/重试环本体（无测试钩子）：逐候选过占用探测，预算耗尽后如实
-    /// 报错，绝不拿未确认可用的 id 落盘。
+    /// Collision/retry loop body (no test hook): each candidate passes the
+    /// occupancy probe; exhaustion fails loudly — an unconfirmed id is
+    /// never persisted.
     fn generate_unused_session_id_with_inner<G: FnMut() -> String>(
         &self,
         mut generate: G,
