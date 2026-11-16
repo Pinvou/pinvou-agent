@@ -491,7 +491,7 @@ assert.match(
 //   context_window_tokens 是运行时生效值(/api/ps 生效窗口、
 //   loaded_context_length),与 buildLocalModelPayload 同一教义只存 null——
 //   行内徽章照常显示,仅落库被闸(声明会永久 min-clamp 后续探测)。
-const endpointPayloadStart = settingsViewSource.indexOf('function buildEndpointModelPayload(row)');
+const endpointPayloadStart = settingsViewSource.indexOf('function buildEndpointModelPayload(row, overrides)');
 assert.notStrictEqual(endpointPayloadStart, -1, 'endpoint row payload builder must exist');
 const endpointPayloadSource = settingsViewSource.slice(
   endpointPayloadStart,
@@ -552,8 +552,8 @@ assert.ok(confirmHandlerIndex !== -1, 'the confirmed batch-add handler must exis
 const addAllEntry = addAllSource.slice(0, confirmHandlerIndex);
 assert.match(
   addAllEntry,
-  /setAddAllModelsConfirm\(\{ addable, truncated \}\)/,
-  'the entry handler must only record the pending batch in the in-app confirm state',
+  /setAddAllModelsConfirm\(\{ addable, truncated, baseUrl: baseUrl\.trim\(\), preset \}\)/,
+  'the entry handler must only record the pending batch (with its snapshot base URL/preset, round-5 m1) in the in-app confirm state',
 );
 assert.doesNotMatch(addAllEntry, /onSave\(/, 'no save may run before the in-app confirm');
 assert.match(
@@ -572,8 +572,8 @@ assert.match(
 // (逐行全量刷新)只允许在桥缺 reloadSavedModels 时作为回退出现。
 assert.match(
   addAllConfirmBody,
-  /onSave\(buildEndpointModelPayload\(row\), batchReloadAvailable \? \{ deferRefresh: true \} : undefined\)/,
-  'batch rows must save with deferRefresh so each row skips the three reloads (single reload after the loop)',
+  /onSave\(buildEndpointModelPayload\(row, \{ baseUrl: confirmBaseUrl, preset: confirmPreset \}\), batchReloadAvailable \? \{ deferRefresh: true \} : undefined\)/,
+  'batch rows must save with deferRefresh against the confirmed snapshot URL so each row skips the three reloads (single reload after the loop; round-5 m1 snapshot)',
 );
 assert.match(
   addAllConfirmBody,
@@ -2445,6 +2445,23 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '取消');
   await sleep(200);
 
+  // round-5 审 m1 机制钉(装在 ⑥.5k 开始前,确保组件后续渲染捕获的都是
+  // 包裹后的引用):在桥 facade 层包一层 saveModel 记录 options——deferRefresh
+  // 不上 wire(invoke 只带 model),单看 reloadBursts===1 在 1 行批次下分不掉
+  // 「逐行 reload + 删循环后刷新」的回退实现;机制回退(丢 options)时 k6
+  // 的增量断言变红。
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.saveModelOptionLog = [];
+    const bridgeModels = window.TauriBridge && window.TauriBridge.models;
+    if (bridgeModels && typeof bridgeModels.saveModel === 'function' && !bridgeModels.__optionSpy) {
+      const orig = bridgeModels.saveModel.bind(bridgeModels);
+      bridgeModels.__optionSpy = true;
+      bridgeModels.saveModel = (model, options) => {
+        window.__SETTINGS_TEST__.saveModelOptionLog.push(options || null);
+        return orig(model, options);
+      };
+    }
+  });
   // ⑥.5k 端点模型自动发现(规格 §2.6):显式点击「获取模型列表」→ probe 命令 →
   // 候选面板(「已保存」行禁用)→ 逐行添加落库 → 应用内确认弹窗确认后批量添加(重复行跳过)。
   // 表单 base URL 刻意与 ⑥.5g 已保存的 glm-5.3-flash @ https://example.com/v1
@@ -2705,6 +2722,7 @@ async function modalWidth(page, headingText) {
   // 重复行(glm-5.3-flash 已在 ⑥.5g 保存、glm-5-flash 刚保存)跳过,只落 kimi-k3。
   const savesBeforeAddAll = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length);
   const reloadsBeforeAddAll = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'list_models').length);
+  const optionLogBefore = await page.evaluate(() => (window.__SETTINGS_TEST__.saveModelOptionLog || []).length);
   await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
   await sleep(300);
   const addAllGate = await page.evaluate(() => {
@@ -2717,23 +2735,7 @@ async function modalWidth(page, headingText) {
   });
   await page.evaluate(() => document.querySelector('[data-testid="add-all-models-confirm-ok"]').click());
   await sleep(900);
-  // round-5 审 m1 机制钉:在桥 facade 层包一层 saveModel 记录 options——
-  // deferRefresh 不上 wire(invoke 只带 model),单看 reloadBursts===1 在
-  // 1 行批次下分不掉「逐行 reload + 删循环后刷新」的回退实现;机制回退
-  // (丢 options)时本断言变红。
-  await page.evaluate(() => {
-    window.__SETTINGS_TEST__.saveModelOptionLog = [];
-    const bridgeModels = window.TauriBridge && window.TauriBridge.models;
-    if (bridgeModels && typeof bridgeModels.saveModel === 'function' && !bridgeModels.__optionSpy) {
-      const orig = bridgeModels.saveModel.bind(bridgeModels);
-      bridgeModels.__optionSpy = true;
-      bridgeModels.saveModel = (model, options) => {
-        window.__SETTINGS_TEST__.saveModelOptionLog.push(options || null);
-        return orig(model, options);
-      };
-    }
-  });
-  const batchState = await page.evaluate(reloadsBefore => {
+  const batchState = await page.evaluate((reloadsBefore, optionLogBefore) => {
     const calls = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model');
     const saved = new Set(calls.map(call => `${call.args.model.model}@${call.args.model.base_url}`));
     return {
@@ -2746,10 +2748,12 @@ async function modalWidth(page, headingText) {
       // 复审 M9:批量逐行 deferRefresh,整个批次只允许一次 list_models 重载
       // (旧实现逐行 reload,1 行也会打满 3 个 loader;这里钉「恰好一次」)。
       reloadBursts: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'list_models').length - reloadsBefore,
-      deferRefreshed: (window.__SETTINGS_TEST__.saveModelOptionLog || []).length > 0
-        && (window.__SETTINGS_TEST__.saveModelOptionLog || []).every(option => option && option.deferRefresh === true),
+      deferRefreshed: (() => {
+        const delta = (window.__SETTINGS_TEST__.saveModelOptionLog || []).slice(optionLogBefore);
+        return delta.length > 0 && delta.every(option => option && option.deferRefresh === true);
+      })(),
     };
-  }, reloadsBeforeAddAll);
+  }, reloadsBeforeAddAll, optionLogBefore);
   rec('⑥.5k6 confirmed add-all saves only non-duplicate rows, reloads once, defers per-row refresh, and closes the picker',
     addAllGate.shown && addAllGate.savesBeforeConfirm === savesBeforeAddAll && addAllGate.title.includes('1')
       && batchState.pickerClosed && batchState.dialogClosed && batchState.hasKimi && batchState.hasEndpointGlm && batchState.dupSaveCalls === 2
