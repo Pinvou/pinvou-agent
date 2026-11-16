@@ -183,6 +183,14 @@ test('splitBatchAdd: caps the batch at the limit and reports truncation', () => 
   assert.equal(toHost(result.addable)[0].id, 'm-0');
   assert.equal(result.truncated, true);
 });
+test('splitBatchAdd: the truncation flag flips exactly past the limit (round-5 m1: the >= mutant survives without this boundary)', () => {
+  const atLimit = splitBatchAdd(Array.from({ length: ADD_ALL_BATCH_LIMIT }, (_, i) => ({ id: `m-${i}` })), new Set(), 'https://x/v1');
+  assert.equal(toHost(atLimit.addable).length, ADD_ALL_BATCH_LIMIT);
+  assert.equal(atLimit.truncated, false, 'exactly at the limit the list is complete, not truncated');
+  const onePast = splitBatchAdd(Array.from({ length: ADD_ALL_BATCH_LIMIT + 1 }, (_, i) => ({ id: `m-${i}` })), new Set(), 'https://x/v1');
+  assert.equal(toHost(onePast.addable).length, ADD_ALL_BATCH_LIMIT);
+  assert.equal(onePast.truncated === true, true, 'one valid entry past the limit must set truncated');
+});
 test('splitBatchAdd: everything already saved yields an empty batch', () => {
   const baseUrl = 'https://x/v1';
   const saved = savedModelKeys([{ model: 'a', base_url: baseUrl }]);

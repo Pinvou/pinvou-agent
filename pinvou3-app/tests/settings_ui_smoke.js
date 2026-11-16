@@ -2671,13 +2671,20 @@ async function modalWidth(page, headingText) {
     pickerStillOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
   }));
   await sleep(1500);
-  const pickFailure = await page.evaluate(() => ({
-    failureBanner: !!document.querySelector('[data-testid="endpoint-model-add-notice"]'),
-    pickerKeptOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
-  }));
-  rec('⑥.5k5b Add All disables and stays a no-op while a row save is in flight; the failed row keeps the picker open with the notice banner',
+  const pickFailure = await page.evaluate(() => {
+    const banner = document.querySelector('[data-testid="endpoint-model-add-notice"]');
+    return {
+      failureBanner: !!banner,
+      // round-5 审 m1(此前仅源码钉):失败横幅必须是红色系(ok 类是绿色
+      // text-[#137333];失败臂 text-[#FF3B30])——ternary 两臂互换在此变红。
+      bannerRed: !!banner && (banner.className || '').includes('text-[#FF3B30]'),
+      bannerNotGreen: !!banner && !(banner.className || '').includes('text-[#137333]'),
+      pickerKeptOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+    };
+  });
+  rec('⑥.5k5b Add All disables and stays a no-op while a row save is in flight; the failed row keeps the picker open with the red notice banner',
     addAllWhilePick.buttonDisabled && addAllWhilePick.pickerOpen && addAllNoOp.noConfirm
-    && addAllNoOp.pickerStillOpen && pickFailure.failureBanner && pickFailure.pickerKeptOpen,
+    && addAllNoOp.pickerStillOpen && pickFailure.failureBanner && pickFailure.bannerRed && pickFailure.bannerNotGreen && pickFailure.pickerKeptOpen,
     JSON.stringify({ addAllWhilePick, addAllNoOp, pickFailure }));
   await page.evaluate(() => {
     window.__SETTINGS_TEST__.setSaveModelError(null);
@@ -2701,6 +2708,22 @@ async function modalWidth(page, headingText) {
   });
   await page.evaluate(() => document.querySelector('[data-testid="add-all-models-confirm-ok"]').click());
   await sleep(900);
+  // round-5 审 m1 机制钉:在桥 facade 层包一层 saveModel 记录 options——
+  // deferRefresh 不上 wire(invoke 只带 model),单看 reloadBursts===1 在
+  // 1 行批次下分不掉「逐行 reload + 删循环后刷新」的回退实现;机制回退
+  // (丢 options)时本断言变红。
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.saveModelOptionLog = [];
+    const bridgeModels = window.TauriBridge && window.TauriBridge.models;
+    if (bridgeModels && typeof bridgeModels.saveModel === 'function' && !bridgeModels.__optionSpy) {
+      const orig = bridgeModels.saveModel.bind(bridgeModels);
+      bridgeModels.__optionSpy = true;
+      bridgeModels.saveModel = (model, options) => {
+        window.__SETTINGS_TEST__.saveModelOptionLog.push(options || null);
+        return orig(model, options);
+      };
+    }
+  });
   const batchState = await page.evaluate(reloadsBefore => {
     const calls = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model');
     const saved = new Set(calls.map(call => `${call.args.model.model}@${call.args.model.base_url}`));
@@ -2714,12 +2737,14 @@ async function modalWidth(page, headingText) {
       // 复审 M9:批量逐行 deferRefresh,整个批次只允许一次 list_models 重载
       // (旧实现逐行 reload,1 行也会打满 3 个 loader;这里钉「恰好一次」)。
       reloadBursts: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'list_models').length - reloadsBefore,
+      deferRefreshed: (window.__SETTINGS_TEST__.saveModelOptionLog || []).length > 0
+        && (window.__SETTINGS_TEST__.saveModelOptionLog || []).every(option => option && option.deferRefresh === true),
     };
   }, reloadsBeforeAddAll);
-  rec('⑥.5k6 confirmed add-all saves only non-duplicate rows, reloads once, and closes the picker',
+  rec('⑥.5k6 confirmed add-all saves only non-duplicate rows, reloads once, defers per-row refresh, and closes the picker',
     addAllGate.shown && addAllGate.savesBeforeConfirm === savesBeforeAddAll && addAllGate.title.includes('1')
       && batchState.pickerClosed && batchState.dialogClosed && batchState.hasKimi && batchState.hasEndpointGlm && batchState.dupSaveCalls === 2
-      && batchState.reloadBursts === 1,
+      && batchState.reloadBursts === 1 && batchState.deferRefreshed,
     JSON.stringify({ addAllGate, batchState }));
   // 恢复默认 test_model_connection 响应,不污染后续流程。
   await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({ ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 }));
