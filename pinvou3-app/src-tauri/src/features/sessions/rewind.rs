@@ -726,9 +726,10 @@ mod tests {
     /// Budget enforcement (r11 review M6): with a budget that fits nothing
     /// but the protected record, every older record is evicted
     /// oldest-first and exactly the just-written backup survives; with a
-    /// generous budget nothing is touched. Any eviction order other than
-    /// oldest-first would leave a different survivor, so the survivor set
-    /// pins the order too.
+    /// generous budget nothing is touched. The mid-budget case pins the
+    /// eviction ORDER: oldest-first evicts the two old sessions and stops
+    /// with sess-new's front+tail intact, while any newest-first or
+    /// arbitrary order leaves a different survivor set.
     #[test]
     fn rewind_map_budget_evicts_oldest_and_protects_the_new_record() {
         let mut map = HashMap::new();
@@ -760,10 +761,39 @@ mod tests {
             "a generous budget must not evict anything"
         );
 
+        // Mid budget, derived not guessed: all four records serialize to
+        // the same byte count (identical shape, same-length timestamps —
+        // the probe below uses a same-length placeholder so its serialized
+        // size matches exactly), so budget = map_total − 2×record is
+        // exactly the post-two-evictions size — oldest-first evicts
+        // sess-old then sess-mid and stops with sess-new's front AND
+        // protected tail intact. Newest-first would evict sess-new's front
+        // first and end with sess-old surviving instead: a different final
+        // set.
+        let record_bytes =
+            rewound_record_serialized_len(&padded_rewound_record("0000-00-00T00:00:00+00:00", 400));
+        // The budget counts PRETTY bytes (the persisted format), so the
+        // measurement here must be pretty too.
+        let map_total = serde_json::to_vec_pretty(&map).expect("serialize").len();
+        let mut mid = map.clone();
+        let evicted =
+            enforce_rewound_map_budget(&mut mid, map_total - 2 * record_bytes, "sess-new");
+        assert_eq!(evicted, 2);
+        assert!(mid.contains_key("sess-new"), "protected session survives");
+        assert_eq!(
+            mid["sess-new"]
+                .iter()
+                .map(|r| r.rewound_at.as_str())
+                .collect::<Vec<_>>(),
+            ["2026-12-01T00:00:00+00:00", "2026-12-02T00:00:00+00:00"],
+            "oldest-first keeps the new session whole"
+        );
+        assert_eq!(mid.len(), 1, "emptied sessions are removed from the map");
+
         // Budget below one record: everything evictable goes except the
         // protected just-written record (sess-new's tail). Note sess-new's
         // FRONT (2026-12-01) is evictable while a newer sibling exists —
-        // only the tail is the protected backup — so 4 evictions run, and
+        // only the tail is the protected backup — so 3 evictions run, and
         // the loop then stops with only the protected record left even
         // though it alone exceeds the budget (the protected record may not
         // be evicted; the per-record cap bounds its size).
