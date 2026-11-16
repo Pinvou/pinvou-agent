@@ -652,6 +652,7 @@ function enforceLazyChunks() {
 // B desktop and 126,578 B web on the local toolchain — inside the 492_000
 // desktop and 129_000 web ceilings main already set, so no raise of its
 // own. This cap does not promise headroom for unrelated main changes.
+//
 // PR #894 (2026-11-18 rebase onto main@9a5968933, measured per policy):
 // the upload-lane wire-code localization joins the shared startup graph
 // (ACP error mapping, shared limit formatter, i18n/BT copy), measuring
@@ -661,15 +662,6 @@ function enforceLazyChunks() {
 // under 129_000. The r4 re-rebase onto main@34bb36b7af (#867) touches no
 // frontend entry file, so those figures carry over; the build gates
 // re-verified both ceilings on the rebased head.
-// PR #847's rebase re-measure (2026-11-23 rebase onto main@a6f276c87b):
-// the limits-audit frontend lanes measure into the 493,8xx B range on the
-// node 26 toolchain, so the desktop ceiling takes the next thousand step
-// (figure re-verified by build measurement on the rebased head).
-// PR #847's rebase re-measure (2026-11-23 rebase onto main@a6f276c87b):
-// the limits-audit frontend lanes join the shared startup graph on the
-// node 26 toolchain; the desktop ceiling takes the thousand step above
-// the measured figure (re-verified by build measurement on the rebased
-// head). This cap does not promise headroom for unrelated main changes.
 //
 // PR #847 rebase re-measure on the limits-audit tip rebased onto the
 // 2026-11-15 main: the audit's frontend lanes join the shared startup
@@ -686,7 +678,17 @@ function enforceLazyChunks() {
 // over the 494_000 step — so the ceiling takes the next thousand step
 // again. The web entry measured 126,560 B and stays under 129_000. This
 // cap does not promise headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 495_000;
+//
+// PR #847 second rebase re-measure, onto the 2026-11-16 main whose #881
+// frontend follow-ups (navigation, composer, tool-store, design-runtime)
+// joined the shared startup graph: the same re-measure reads 495,005 B
+// desktop on the local aarch64 toolchain — 5 B over the 495_000 ceiling —
+// so the ceiling takes the next thousand step. The x86_64 CI build still
+// fits under the old ceiling, so the arm64-class build (this toolchain,
+// the arm64/loongarch64 release legs) is the binding measure. Web
+// unchanged. This cap does not promise headroom for unrelated main
+// changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 496_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
