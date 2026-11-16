@@ -599,12 +599,10 @@ fn commit_staged_import(
     created_session_dir: bool,
 ) -> ImportOutcome {
     let id = session.metadata.id.clone();
-    // Boundary fold: every Failed reason leaving either window (staging or
-    // commit) passes through redact_storage_prefix once here, so no
-    // formation site can embed the raw storage prefix (with the OS user
-    // name) in an outbound reason — probe/re-probe, persist (save_session
-    // _atomic's "write session {path}"), verify-staged, and any future
-    // arm all fold at this single point.
+    // Boundary fold, same discipline as import_one_session_inner's fail
+    // closure (full rationale there): every Failed reason leaving the
+    // commit window passes through redact_storage_prefix once here; the
+    // structural scan test pins every formation site.
     let fail = |reason: String| SessionImportFailure {
         session_id: id.clone(),
         reason: crate::platform::paths::redact_storage_prefix(&reason),
@@ -2377,6 +2375,15 @@ mod tests {
         let record = std::fs::read(&record_path).expect("read session record");
         let _ = std::fs::remove_file(&record_path);
         let archive = build_archive(&[("session.json", &record)]);
+        // Panic-safety drain（与 id 队列的 ClearIdQueueOnDrop 同款卫生）：
+        // 断言 panic 时残留的注入项不得带出本测试。
+        struct TakeReprobeFaultOnDrop;
+        impl Drop for TakeReprobeFaultOnDrop {
+            fn drop(&mut self) {
+                REPROBE_STAT_FAULTS.lock().remove("reprobefault1");
+            }
+        }
+        let _fault_guard = TakeReprobeFaultOnDrop;
         REPROBE_STAT_FAULTS.lock().insert(
             "reprobefault1".to_string(),
             std::io::ErrorKind::PermissionDenied,
@@ -2404,6 +2411,68 @@ mod tests {
             "no record may land past a re-probe stat fault"
         );
         let _ = std::fs::remove_file(&archive);
+    }
+
+    /// 结构折叠守卫（app/commands/memory.rs 同款 source-scan 形状）：本文件
+    /// 每个生产 `SessionImportFailure` 形成点必须在字面量内走
+    /// `redact_storage_prefix`——未来新增裸 reason 臂在 CI 直接转红，
+    /// 「每个现在与未来的臂都在边界折叠」不再只靠约定（R2 SHOULD-4，
+    /// 同时钉死此前 artifacts_failed 仅 by-construction 的披露缺口）。
+    #[test]
+    fn import_failure_formation_sites_fold_the_storage_prefix() {
+        let source = include_str!("import.rs");
+        // Windows 检出（autocrlf）会把 include_str! 的文本变成 CRLF——扫描
+        // 前先归一化行尾，多行标记与字节偏移在两种检出下一致（windows
+        // regression 腿实红过的 checkout 依赖坑）。
+        let source = source.replace("\r\n", "\n");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("the tests module marker must exist")
+            .0;
+        let mut sites = Vec::new();
+        let mut cursor = 0;
+        while let Some(found) = production[cursor..].find("SessionImportFailure {") {
+            let at = cursor + found;
+            // 跳过 struct 定义本身（`pub struct SessionImportFailure {`），
+            // 只统计形成点（push 字面量与两个 fail 闭包）。
+            if !production[..at].ends_with("struct ") {
+                sites.push(at);
+            }
+            cursor = at + "SessionImportFailure {".len();
+        }
+        assert_eq!(
+            sites.len(),
+            3,
+            "expected exactly the three production formation sites \
+             (artifacts_failed + the two fail closures); update this guard \
+             when the boundary itself changes: {sites:?}"
+        );
+        for &at in &sites {
+            let block = &production[at..];
+            let open = block.find('{').expect("the literal opens");
+            let bytes = block.as_bytes();
+            let mut depth = 0usize;
+            let mut close = None;
+            for (index, &byte) in bytes.iter().enumerate().skip(open) {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(index);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let close = close.expect("the literal must close");
+            assert!(
+                block[open..=close].contains("redact_storage_prefix"),
+                "the SessionImportFailure site at byte {at} must fold its \
+                 reason through redact_storage_prefix at the boundary"
+            );
+        }
     }
 
     /// 非 UTF-8 成员名拒绝（而非 lossy 改名）：不同的非法字节名经
