@@ -328,10 +328,14 @@ impl Store {
 
     pub fn list_trashed_collections_page(
         &self,
-        limit: usize,
+        limit: Option<usize>,
         offset: usize,
     ) -> rusqlite::Result<Vec<Collection>> {
-        let limit = i64::try_from(limit.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64);
+        let limit = limit
+            .map(|value| {
+                i64::try_from(value.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64)
+            })
+            .unwrap_or(-1);
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(
@@ -598,10 +602,14 @@ impl Store {
 
     pub fn list_trashed_documents_page(
         &self,
-        limit: usize,
+        limit: Option<usize>,
         offset: usize,
     ) -> rusqlite::Result<Vec<TrashedDocument>> {
-        let limit = i64::try_from(limit.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64);
+        let limit = limit
+            .map(|value| {
+                i64::try_from(value.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64)
+            })
+            .unwrap_or(-1);
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(
@@ -2661,11 +2669,11 @@ mod tests {
             .unwrap();
         store.trash_collection(trashed_collection.id).unwrap();
 
-        let documents = store.list_trashed_documents_page(200, 0).unwrap();
+        let documents = store.list_trashed_documents_page(Some(200), 0).unwrap();
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].document.id, trashed_document.id);
         assert_eq!(documents[0].collection_name, "在用资料");
-        let collections = store.list_trashed_collections_page(200, 0).unwrap();
+        let collections = store.list_trashed_collections_page(Some(200), 0).unwrap();
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].id, trashed_collection.id);
         assert_eq!(collections[0].doc_count, 2);

@@ -763,7 +763,7 @@ impl KnowledgeService {
 
     pub fn trashed_collections_page(
         &self,
-        limit: usize,
+        limit: Option<usize>,
         offset: usize,
     ) -> Result<Vec<Collection>, String> {
         self.store
@@ -773,7 +773,7 @@ impl KnowledgeService {
 
     pub fn trashed_documents_page(
         &self,
-        limit: usize,
+        limit: Option<usize>,
         offset: usize,
     ) -> Result<Vec<TrashedDocument>, String> {
         self.store

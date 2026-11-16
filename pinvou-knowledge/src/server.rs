@@ -394,7 +394,7 @@ async fn owner_trashed_collections(
     require_owner_device(&service, &headers)?;
     Ok(Json(
         service
-            .trashed_collections_page(query.limit.unwrap_or(200), query.offset)
+            .trashed_collections_page(query.limit, query.offset)
             .map_err(ApiError::internal)?,
     ))
 }
@@ -407,7 +407,7 @@ async fn owner_trashed_documents(
     require_owner_device(&service, &headers)?;
     Ok(Json(
         service
-            .trashed_documents_page(query.limit.unwrap_or(200), query.offset)
+            .trashed_documents_page(query.limit, query.offset)
             .map_err(ApiError::internal)?,
     ))
 }
@@ -1068,6 +1068,55 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].document.id, document.id);
         assert_eq!(listed[0].collection_name, "在用资料");
+    }
+
+    // 省略 limit 的手动调用必须返回全量清单,而不是回落到某个静默截断的
+    // 默认窗——响应没有总数字段,截断对调用方不可见;owner_devices 与
+    // owner_join_requests 的约定都是 None=不限,回收站清单保持一致。
+    // 201 条跨过旧的 unwrap_or(200) 默认窗:不带 limit → 全量;显式
+    // limit=10 → 仍是单窗分页语义。突变对照:恢复 unwrap_or(200) 后,
+    // 不带 limit 的断言恰好取到 200 ≠ 201 而落红。
+    #[tokio::test]
+    async fn trash_listing_without_limit_lists_everything() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0008";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+        for index in 0..201 {
+            let created = service
+                .create_collection(CreateCollectionRequest {
+                    name: format!("限界集 {index:03}"),
+                    description: None,
+                })
+                .unwrap();
+            service.trash_collection(created.id).unwrap();
+        }
+        let app = router(service.clone());
+
+        let mut unbounded = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/collections?offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut unbounded, owner_token);
+        let response = app.clone().oneshot(unbounded).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed: Vec<Collection> = decode_body(response).await;
+        assert_eq!(listed.len(), 201);
+
+        let mut windowed = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/collections?limit=10&offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut windowed, owner_token);
+        let response = app.oneshot(windowed).await.unwrap();
+        let window: Vec<Collection> = decode_body(response).await;
+        assert_eq!(window.len(), 10);
     }
 
     // 客户端回收站清单必须翻页取全量:服务端按 offset 分页且不返回总数,
