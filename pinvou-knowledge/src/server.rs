@@ -579,11 +579,9 @@ async fn documents(
     Query(query): Query<DocumentListQuery>,
 ) -> ApiResult<Json<Vec<Document>>> {
     require_access(&service, &headers, query.include_deleted)?;
-    let documents = if query.limit.is_none() && query.offset == 0 {
-        service.documents(id, query.include_deleted)
-    } else {
-        service.documents_page(id, query.include_deleted, query.limit, query.offset)
-    };
+    // 缺省 limit/offset 时 documents_page 以 LIMIT -1 返回全量,与非分页
+    // 清单同一条路径,无需分支。
+    let documents = service.documents_page(id, query.include_deleted, query.limit, query.offset);
     Ok(Json(documents.map_err(ApiError::internal)?))
 }
 

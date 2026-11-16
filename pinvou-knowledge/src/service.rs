@@ -825,16 +825,6 @@ impl KnowledgeService {
         Ok(())
     }
 
-    pub fn documents(
-        &self,
-        collection_id: i64,
-        include_deleted: bool,
-    ) -> Result<Vec<Document>, String> {
-        self.store
-            .list_documents(collection_id, include_deleted)
-            .map_err(|error| error.to_string())
-    }
-
     pub fn documents_page(
         &self,
         collection_id: i64,

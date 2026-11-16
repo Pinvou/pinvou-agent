@@ -577,14 +577,6 @@ impl Store {
         Ok((document, true))
     }
 
-    pub fn list_documents(
-        &self,
-        collection_id: i64,
-        include_deleted: bool,
-    ) -> rusqlite::Result<Vec<Document>> {
-        self.list_documents_page(collection_id, include_deleted, None, 0)
-    }
-
     pub fn list_documents_page(
         &self,
         collection_id: i64,
