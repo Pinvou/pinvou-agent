@@ -177,7 +177,14 @@ pub(super) fn ext_of(p: &Path) -> Option<String> {
 /// NotFound/other errors first, which `Option<FileRecord>` cannot express).
 /// Uses `symlink_metadata` — no symlink following, consistent with the
 /// scanner's follow_links(false); symlink/socket etc. return None and are
-/// skipped. **The caller must first apply the scanner's same-source
+/// skipped. **Stat-failure contract**: *any* `symlink_metadata` failure —
+/// including transient jitter (EACCES on a tightened parent, ESTALE/EIO) —
+/// returns None, where the scanner for the same state stores a placeholder
+/// row (size/mtime 0) and keeps the path in its visited set; a refresh
+/// caller must therefore treat non-NotFound failures as a no-op (mirroring
+/// `handle_event`'s error arm) and never map None to a row delete, or a
+/// live file's row is dropped until rescan. **The caller must first apply
+/// the scanner's same-source
 /// exclusion policy** (component-level names/secrets +
 /// [`Excluder::is_skipped`]): this function only assembles fields and does
 /// no exclusion — the scanner path is already excluded by filter_entry, the

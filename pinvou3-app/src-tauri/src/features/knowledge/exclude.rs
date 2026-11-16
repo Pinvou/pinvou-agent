@@ -291,11 +291,11 @@ mod tests {
 
     /// The extension policy shares the scanner's source (is_skipped):
     /// dot-suffixed directory names are not subject to extension constraints
-    /// (the watcher once wrongly excluded `backup.old`-style directories by
-    /// last-component extension, swallowing even their delete events);
-    /// extensionless sensitive files are excluded as outside the whitelist
-    /// (the watcher once let `.bash_history` etc. through until rescan
-    /// cleared them).
+    /// (the extension judgment applies to files only — a directory named
+    /// `backup.old` must keep its delete events); extensionless sensitive
+    /// files are excluded as outside the whitelist (`.bash_history` has no
+    /// extension and must be excluded outright, never left for rescan to
+    /// clear).
     #[test]
     fn extension_policy_stays_in_is_skipped_with_kind_context() {
         let ex = Excluder::default();

@@ -64,7 +64,6 @@
 //! non-verbatim decision (strip it at wiring time) must be made consciously
 //! and applied to **both** sides of the contract. The
 //! scanner, however, walks the raw spelling verbatim (walkdir follows root
-//! scanner, however, walks the raw spelling verbatim (walkdir follows root
 //! symlinks by default — `follow_root_links`), so a raw-spelled symlink root
 //! splits the policy by itself: rows land under the raw spelling while the
 //! watcher attributes events under the entity path — when the entity's name
@@ -80,10 +79,11 @@
 //!   registration error directly, `watch()` reports Err, this side warns and
 //!   does **not** count that root as watched — but watches registered before
 //!   the failure are not rolled back, leaving the root partially watched.
-//!   Truly silent partial watching has another source: entries that
-//!   stat-jitter or are unreadable during the registration walk are swallowed
-//!   by the backend (watch() still returns Ok and the log still reports
-//!   watched). Events from already-registered sub-watches of a partially
+//!   Truly silent partial watching has another source: entries whose
+//!   registration-walk metadata fails to stat are swallowed by the backend
+//!   (watch() still returns Ok and the log still reports watched); an
+//!   *unreadable* directory (EACCES) fails the whole root's `watch()` with
+//!   Err instead (the bullet above). Events from already-registered sub-watches of a partially
 //!   watched root still arrive while the root is not in the watched set:
 //!   those events fall to the out-of-root fallback and are judged over the
 //!   **full path** — if that root sits under an excluded-name ancestor
@@ -106,12 +106,11 @@
 //!   lazy rescan is the only coverage for such roots.
 //! - The fallback rescan is **lazily triggered** (`kb_start_scan` runs when
 //!   the file-management page is entered); there is no periodic rescan.
-//!   Overflow / dropped watches can only warn, and the index stays stale
-//!   until the next rescan — turning the `need_rescan` warning into an
-//!   actual rescan trigger requires a machine-readable surface (a flag or
-//!   channel the scan entry can poll) **added to this module first**; today
-//!   the signal exists only as this thread's stderr warn, so #869 owns both
-//!   the surface and the wiring. Linux inotify's Q_OVERFLOW event
+//!   Overflow / dropped watches warn and set the module's rescan-request
+//!   flag (read-once via [`take_rescan_requested`], which the scan entry
+//!   can poll); the index still stays stale until that rescan — the flag is
+//!   only the signal, the wiring that polls it and schedules the scan is
+//!   #869's. Linux inotify's Q_OVERFLOW event
 //!   carries **no paths** (the kernel queue is shared by all roots), so only
 //!   a full all-roots rescan is possible; macOS fsevent's dropped-event
 //!   signal names the affected paths; **Windows has no dropped-events signal
@@ -134,7 +133,9 @@
 //!   so `rx` hangs forever (the channel-closed warning never fires, the
 //!   guard never unlocks). On macOS the lazy-triggered rescan is the only
 //!   backstop; the wiring side must not assume macOS is observable or
-//!   retryable. Two further macOS-specific infidelities: fsevent's `watch()`
+//!   retryable. Two further macOS-specific infidelities (stated against
+//!   notify 8.2.0; 8.2.1 started propagating FSEvents startup errors —
+//!   re-derive these bullets on any lockfile bump): fsevent's `watch()`
 //!   still returns Ok when the runloop thread spawn fails or
 //!   `FSEventStreamStart` fails (notify ignores both return values), so the
 //!   startup line reports "watched" while the backend is already dead — the
@@ -191,7 +192,12 @@
 //!   the old side is upserted as alive, old and new spellings coexist as two
 //!   rows, one of them permanently stale until rescan (a delete event for
 //!   the old spelling will never come). Cleaning up such old rows is a
-//!   wiring-side decision (#869).
+//!   wiring-side decision (#869). Related, same filesystems: the exclusion
+//!   lists match **exact case** on every platform, so a differently-cased
+//!   spelling (`Node_Modules`, `.SSH`) bypasses them on both the scanner
+//!   and the watcher — they share one policy source, so neither side is
+//!   narrower; widening the match is a shared-policy change, not wiring.
+
 //! - No debouncing: consecutive events for the same file are each processed;
 //!   the write side resolves them via [`UPSERT_IF_CHANGED_SQL`] — repeat
 //!   events whose content matches the store skip the whole row (indexed_at
@@ -213,8 +219,11 @@
 //!   in it (Linux fires IN_ATTRIB on the parent for every child change), so
 //!   each child event also rewrites the parent's row (its FTS trigrams are
 //!   skipped by the WHEN clause, but the files-table row rewrite remains);
-//!   per-event transactions also mean an `rm -rf` with D directories takes
-//!   the write lock D times — both are amortization targets for the
+//!   per-event transactions also mean bulk deletes take the write lock once
+//!   per delivered Remove event — on Linux/Windows an `rm -rf` with F files
+//!   and D directories delivers F+D events (every deleted file in a watched
+//!   dir fires its own event; macOS FSEvents coalesces to ≈D), and F≫D in
+//!   real trees — both are amortization targets for the
 //!   wiring-side drain window.
 //! - Concurrency windows between scan and events, and between events: a file
 //!   deleted mid-rescan may be written back by the scan batch (the batched
@@ -223,7 +232,12 @@
 //!   directory-deletion event is queued (the common `rm -rf && mkdir`
 //!   rhythm), the existence judgment turns that deletion into the new
 //!   entity's upsert, and the old directory's child rows (old inode, no more
-//!   events) remain until rescan. Wiring that needs strong consistency must
+//!   events) remain until rescan. Sibling shape: a directory replaced in
+//!   place by a **file that fails the whitelist** (`rm -rf d && touch d`)
+//!   gets neither a delete nor an upsert — the stat succeeds and the type
+//!   gate passes, but `is_skipped` drops the event before either write, so
+//!   the old directory row and its children persist until rescan (same
+//!   ghost class, same backstop). Wiring that needs strong consistency must
 //!   wait for a pause surface (a gate the event loop checks) **added to this
 //!   module first** (#869) — today event application cannot be paused or
 //!   stopped once `spawn` succeeds. Also: after a directory is renamed into an
@@ -236,8 +250,9 @@
 //! landed-but-unwired state as the closed-source side); the follow-up wiring
 //! owner calls it per root at the startup scan. The watcher is an app-level
 //! singleton by design: `spawn` has a built-in re-entry guard and duplicate
-//! calls are ignored; the thread's **reachable** exit paths (init failure,
-//! all-roots registration failure, event-loop end, panic contained by
+//! calls are ignored (reported via [`SpawnOutcome`]); the thread's
+//! **reachable** exit paths (init failure, all-roots registration failure,
+//! registration-window backend death, event-loop end, panic contained by
 //! catch_unwind) all release the guard, after which a fresh `spawn` re-arms.
 //! Two disclosed exceptions (see known limits): macOS fsevent backend death
 //! neither unwinds this thread nor closes the channel — the guard stays
@@ -248,7 +263,8 @@
 //! therefore not equivalent across platforms — some macOS/Windows scenarios
 //! are unobservable, and the wiring side must not assume a uniform failure
 //! signal. To change the root set, the thread still needs a stop interface
-//! first (#869); do not stack `spawn` calls.
+//! first (#869); do not stack `spawn` calls — [`is_active`] tells the
+//! wiring side whether a watcher is currently armed.
 
 #![allow(dead_code)] // library-first: spawn has no production caller before wiring (see the note above)
 
@@ -268,10 +284,10 @@ use super::store::{FileRecord, Store};
 /// (Rust ignores SIGPIPE, so a write failure panics), and the watcher thread
 /// dying on such a log would silently stop incremental indexing — a write
 /// failure is ignored in place (the same inline guard as mod.rs's scan
-/// thread, see its comment). Expanded as a block expression (rather than a
-/// bare statement) so it remains usable inside let-else branch bodies
-/// alongside other statements.
-macro_rules! warn {
+/// thread, see its comment). Deliberately not named `warn!`: this crate
+/// depends on `log`, and the #869 handoff routes these diagnostics through
+/// `log::` — a local `warn!` would collide with that import.
+macro_rules! warn_stderr {
     ($($arg:tt)*) => {{
         let _ = writeln!(std::io::stderr(), "[kb_watcher] {}", format_args!($($arg)*));
     }};
@@ -282,11 +298,54 @@ macro_rules! warn {
 /// `spawn` would stack a second thread double-consuming events for
 /// the same roots (and double-occupy inotify watches). The wiring side must
 /// stop the thread first when changing the root set. RAII: every exit path
-/// (init failure, all-roots registration failure, panic unwind, natural
-/// thread end) releases the guard, after which a fresh `spawn` can re-arm —
+/// (init failure, all-roots registration failure, registration-window
+/// backend death, panic unwind, natural thread end) releases the guard,
+/// after which a fresh `spawn` can re-arm —
 /// i.e. "lives as long as the app" is the intended steady state, not a
 /// guarantee (see the known-limits exit paths above).
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Set when the backend reports dropped events or a store write fails — the
+/// two "incremental indexing has become unreliable" classes. This is the
+/// machine-readable half of the stderr warn (stderr is invisible in release
+/// builds — log targets are LogDir-only there); the wiring side's rescan
+/// entry polls [`take_rescan_requested`] and schedules the scan.
+static RESCAN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Records that incremental indexing missed updates and a rescan is wanted.
+fn request_rescan() {
+    RESCAN_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+/// Reads and clears the rescan-request flag (once): `true` means the backend
+/// dropped events or a store write failed since the last take, and a rescan
+/// should be scheduled; `false` means no request is pending. Poll this at
+/// the rescan entry point (#869 wires the polling; the flag is module-local
+/// on purpose so the signal cannot be missed the way a stderr line can).
+pub fn take_rescan_requested() -> bool {
+    RESCAN_REQUESTED.swap(false, Ordering::SeqCst)
+}
+
+/// `true` while a watcher thread is armed (between a successful [`spawn`]
+/// and one of its exit paths). Lets the wiring side check the re-entry
+/// guard's state instead of scraping stderr, which is invisible in release
+/// builds.
+pub fn is_active() -> bool {
+    ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Outcome of a [`spawn`] call: lets the caller distinguish "armed" from
+/// "ignored" without parsing stderr (which is invisible in release builds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnOutcome {
+    /// The watcher thread was created and is armed.
+    Started,
+    /// A watcher thread is already active; the call was ignored (see
+    /// [`is_active`]).
+    AlreadyActive,
+    /// `roots` was empty; nothing to watch, nothing armed.
+    EmptyRoots,
+}
 
 struct ActiveGuard;
 
@@ -308,22 +367,25 @@ impl Drop for ActiveGuard {
 }
 
 /// Starts the background watcher thread watching the given roots. Returns
-/// immediately after spawning; the thread is designed to live for the app's
+/// immediately with the call's [`SpawnOutcome`]; the thread is designed to
+/// live for the app's
 /// lifetime (its reachable exit paths are the known-limits list, and each
 /// releases the guard); when a
-/// watcher is already active this call is ignored (see [`ACTIVE`]). An empty
-/// root list returns immediately without arming anything (no log either).
+/// watcher is already active the call is ignored and
+/// [`SpawnOutcome::AlreadyActive`] is returned (see [`ACTIVE`]). An empty
+/// root list returns [`SpawnOutcome::EmptyRoots`] without arming anything
+/// (no log either).
 /// Pass a clone of the service's `Store` — do not `open()` a second store on
 /// the same file: that is safe by design (WAL + busy_timeout, and the
 /// two-process pair is supported usage), but it buys extra lock contention
 /// for nothing.
-pub fn spawn(store: Store, roots: Vec<PathBuf>) {
+pub fn spawn(store: Store, roots: Vec<PathBuf>) -> SpawnOutcome {
     if roots.is_empty() {
-        return;
+        return SpawnOutcome::EmptyRoots;
     }
     let Some(active) = ActiveGuard::acquire() else {
-        warn!("spawn ignored: a watcher thread is already active");
-        return;
+        warn_stderr!("spawn ignored: a watcher thread is already active");
+        return SpawnOutcome::AlreadyActive;
     };
     thread::spawn(move || {
         // The guard lives with the thread body: every exit path — including a
@@ -336,12 +398,13 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) {
         if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_watcher(&store, &roots);
         })) {
-            warn!(
+            warn_stderr!(
                 "watcher thread panicked (contained; index stays stale until \
                  the next scan): {panic:?}"
             );
         }
     });
+    SpawnOutcome::Started
 }
 
 /// Pre-registration preparation for the root set: canonicalize (failure warns
@@ -359,14 +422,14 @@ fn prepare_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut prepared: Vec<PathBuf> = Vec::new();
     for root in roots {
         let Ok(canonical) = root.canonicalize() else {
-            warn!("root({}) canonicalize failed; skipping it", root.display());
+            warn_stderr!("root({}) canonicalize failed; skipping it", root.display());
             continue;
         };
         if prepared.contains(&canonical) {
             continue; // duplicate spellings of one entity register once
         }
         if canonical.to_str().is_none() {
-            warn!(
+            warn_stderr!(
                 "root({}) is not valid UTF-8; skipping it",
                 canonical.display()
             );
@@ -397,7 +460,7 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
         match RecommendedWatcher::new(tx, notify::Config::default().with_follow_symlinks(false)) {
             Ok(w) => w,
             Err(e) => {
-                warn!("init failed: {e}");
+                warn_stderr!("init failed: {e}");
                 return; // ActiveGuard::drop releases the guard
             }
         },
@@ -427,7 +490,7 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
                 Ok(()) => watched_roots.push(canonical.clone()),
                 // Usually the inotify limit or permissions; warn and let the
                 // lazy-triggered rescan cover it.
-                Err(e) => warn!("watch({}) failed: {e}", canonical.display()),
+                Err(e) => warn_stderr!("watch({}) failed: {e}", canonical.display()),
             }
         }
     }));
@@ -438,7 +501,9 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
         // suppresses its panic-prone Drop (see the comment above) — which is
         // exactly the purpose of this containment.
         std::mem::forget(unsafe { std::mem::ManuallyDrop::take(&mut watcher) });
-        warn!("watcher backend died during registration; inactive until a later spawn retries");
+        warn_stderr!(
+            "watcher backend died during registration; inactive until a later spawn retries"
+        );
         return; // ActiveGuard::drop releases the guard
     }
     // Registration finished (including the all-roots-Err failure state):
@@ -448,10 +513,10 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
     // its only remaining use is the forget at loop end (see below).
     let watcher = std::mem::ManuallyDrop::into_inner(watcher);
     if watched_roots.is_empty() {
-        warn!("no root could be watched; inactive until a later spawn retries");
+        warn_stderr!("no root could be watched; inactive until a later spawn retries");
         return; // ActiveGuard::drop releases the guard; the watcher's normal Drop winds down the live backend
     }
-    warn!(
+    warn_stderr!(
         "watching {}/{} root(s)",
         watched_roots.len(),
         prepared.len()
@@ -467,7 +532,8 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
                 // "incremental indexing has become unreliable" — it must be
                 // shouted so the wiring side can schedule a rescan.
                 if ev.need_rescan() {
-                    warn!(
+                    request_rescan();
+                    warn_stderr!(
                         "backend dropped events (rescan requested); \
                              index stays stale until the next scan"
                     );
@@ -485,13 +551,13 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
                 if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) {
                     if !max_files_warned {
                         max_files_warned = true;
-                        warn!(
+                        warn_stderr!(
                             "event error: {e} (watch limit hit; new dirs stay \
                              unwatched until restart, rescan covers the gap)"
                         );
                     }
                 } else {
-                    warn!("event error: {e}");
+                    warn_stderr!("event error: {e}");
                 }
             }
         }
@@ -503,8 +569,10 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
     // contained by the outer catch_unwind as a second "thread panicked" log —
     // one backend death reported as two faults, misleading triage; the forget
     // avoids it (the backend is dead and Drop has nothing to clean up: on
-    // Windows the graceful Drop against a dead server is already a no-op, and
-    // on inotify the fd is held by the dead event loop). Today's reachable
+    // Windows the graceful Drop against a dead server is already a no-op and
+    // on inotify the fd is held by the dead event loop — stated against
+    // notify 8.2.0; 8.2.2 hardened Windows shutdown against closed handles,
+    // re-derive on any lockfile bump). Today's reachable
     // scenario for this warning: a Linux backend thread dying mid-run (the
     // event loop unwinds, dropping the tx with it). Backend thread-spawn
     // failures never reach loop end — on Linux they surface through the
@@ -523,7 +591,7 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
     // guard is released at the calling closure's end (one step after this
     // log), after which a spawn can re-arm.
     std::mem::forget(watcher);
-    warn!(
+    warn_stderr!(
         "event channel closed; the watcher backend is gone (index stays stale until \
          the next scan, a later spawn re-arms)"
     );
@@ -609,21 +677,30 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
             // Permission tightening / ESTALE jitter: do not delete — wrongly
             // deleting a record that still exists hurts more than missing one
             // update; the lazy rescan covers it.
-            Err(e) => warn!("stat({}) failed: {e}", path.display()),
+            Err(e) => warn_stderr!("stat({}) failed: {e}", path.display()),
         }
     }
     // A failed store write is the same class as stat jitter: both are
     // "incremental indexing silently missed a beat". It must be shouted —
-    // the index keeps missing this update until the next rescan, and
-    // swallowing it silently leaves the "needs rescan" signal nowhere to be
-    // seen. Deletes run before writes: if one event ever carried both a
-    // "directory delete" and a "new file under it" (no current backend
-    // synthesizes this shape — a defensive guarantee), delete-first lets the
-    // new row survive, while the other order would let the prefix delete eat
-    // it.
+    // the warn plus the take_rescan_requested flag are the only notice (the
+    // flag survives where stderr is invisible in release builds), and the
+    // index keeps missing this update until the next rescan. Deletes run
+    // before writes: if one event ever carried both a "directory delete"
+    // and a "new file under it" (no current backend synthesizes the shape),
+    // delete-first lets the new row survive, while the other order would
+    // let the prefix range delete eat it. The order is enforced by statement
+    // order here; it cannot be pinned end-to-end because the contradictory
+    // shape (parent gone, child alive under it) cannot exist on a consistent
+    // filesystem at one instant — the store-level interplay test in store.rs
+    // pins the mechanism in both orders.
     if !dels.is_empty() {
         if let Err(e) = store.delete_tree(&dels) {
-            warn!("delete({}) failed: {e}", dels.len());
+            request_rescan();
+            warn_stderr!(
+                "delete({} path(s), first {}) failed: {e}",
+                dels.len(),
+                dels[0]
+            );
         }
     }
     if !ups.is_empty() {
@@ -633,7 +710,12 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
         // last_scan_finished_at fallback reads MAX(indexed_at)); see
         // UPSERT_IF_CHANGED_SQL.
         if let Err(e) = store.upsert_many_if_changed(&ups) {
-            warn!("upsert({}) failed: {e}", ups.len());
+            request_rescan();
+            warn_stderr!(
+                "upsert({} path(s), first {}) failed: {e}",
+                ups.len(),
+                ups[0].path
+            );
         }
     }
 }
@@ -968,9 +1050,9 @@ mod tests {
 
     /// A dot-suffixed directory's delete event must also run through
     /// (component-level exclusion must not swallow it): the directory record
-    /// and its subtree are both cleared, instead of — like the old version —
-    /// being blocked by the last-component extension judgment outside the
-    /// delete and leaving stale rows for rescan.
+    /// and its subtree are both cleared. The extension judgment applies to
+    /// files only — blocking a dot-suffixed directory's delete outside the
+    /// delete branch would leave stale rows for rescan.
     #[test]
     fn dot_suffixed_dir_delete_event_cleans_the_record() {
         let base = tmp("dotdir");
@@ -1090,9 +1172,9 @@ mod tests {
     }
 
     /// Stat jitter (a parent directory's permission tightened) must not
-    /// treat a still-existing record as deleted — `Path::exists()` folds
-    /// every error into false, which is exactly how the old version wrongly
-    /// deleted live records.
+    /// treat a still-existing record as deleted: `Path::exists()` folds
+    /// every error into false, so an unreadable live file would read as
+    /// deleted — the error-kind dispatch exists precisely to prevent that.
     #[test]
     #[cfg(unix)]
     fn transient_stat_errors_do_not_delete_records() {
@@ -1372,5 +1454,31 @@ mod tests {
 
     fn creates_file() -> EventKind {
         EventKind::Create(CreateKind::File)
+    }
+
+    /// The rescan-request flag must read once and clear: the wiring side's
+    /// rescan entry takes it before scheduling, so a second take must not
+    /// re-report the same request. The flag exists so the loss signal is
+    /// not stderr-only (stderr is invisible in release builds) — see the
+    /// module doc.
+    #[test]
+    fn take_rescan_requested_reports_a_request_exactly_once() {
+        // No pending request (nothing in this suite drives a store-write
+        // failure or a backend rescan signal).
+        assert!(!take_rescan_requested());
+        request_rescan();
+        assert!(take_rescan_requested());
+        assert!(!take_rescan_requested());
+    }
+
+    /// An empty root list must not arm the guard, and the caller must be
+    /// able to tell via the outcome instead of scraping stderr. Nothing in
+    /// this suite spawns a watcher (no CI backend), so `is_active` is
+    /// expected to be unset here.
+    #[test]
+    fn spawn_reports_empty_roots_without_arming() {
+        let outcome = spawn(Store::open_in_memory().unwrap(), Vec::new());
+        assert_eq!(outcome, SpawnOutcome::EmptyRoots);
+        assert!(!is_active());
     }
 }
