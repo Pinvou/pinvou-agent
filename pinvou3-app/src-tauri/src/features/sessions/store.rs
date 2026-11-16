@@ -48,34 +48,36 @@ static PRE_RECORD_DELETE_FAULTS: LazyLock<Mutex<HashMap<String, ErrorKind>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Test-only candidate queue for wiring pins: when non-empty,
-/// `generate_unused_session_id` draws candidates from here instead of the
-/// wall clock, so tests can drive the collision/exhaustion path through the
-/// public call sites (fork / create_new). Same `#[cfg(test)]`-hook idiom as
-/// `PRE_RECORD_DELETE_FAULTS`; every store-booting test holds the env lock
-/// for its whole run, so a queued sequence cannot interleave with another
-/// test's allocation.
+/// `generate_unused_session_id_with` draws candidates from here instead of
+/// the caller's generator, so tests can drive the collision/exhaustion path
+/// through every wired call site (fork / create_new via the convenience
+/// wrapper, sched- via its prefixed closure). Same `#[cfg(test)]`-hook
+/// idiom as `PRE_RECORD_DELETE_FAULTS`; the queue is a process global, so
+/// every test whose store can allocate ids must hold
+/// `platform::paths::tests::ENV_LOCK` for its whole run (see the wiring
+/// pins in features/sessions/tests.rs).
 #[cfg(test)]
 static TEST_GENERATED_ID_QUEUE: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
-/// Queue candidates for the next `generate_unused_session_id` calls; draw
-/// order is preserved.
+/// Queue candidates for the next `generate_unused_session_id_with` calls;
+/// draw order is preserved.
 #[cfg(test)]
-pub(crate) fn push_test_generated_id_candidates(candidates: &[&str]) {
+pub(crate) fn push_generated_id_candidates_for_test(candidates: &[&str]) {
     TEST_GENERATED_ID_QUEUE
         .lock()
         .extend(candidates.iter().map(|candidate| (*candidate).to_string()));
 }
 
 #[cfg(test)]
-fn take_all_test_generated_id_candidates() -> std::collections::VecDeque<String> {
+fn take_generated_id_queue_for_test() -> std::collections::VecDeque<String> {
     std::mem::take(&mut *TEST_GENERATED_ID_QUEUE.lock()).into()
 }
 
 /// Panic-safety drain for wiring-pin tests: leftovers would poison the next
 /// queued allocation, so tests drop a guard that clears the queue.
 #[cfg(test)]
-pub(crate) fn clear_test_generated_id_queue() {
+pub(crate) fn clear_generated_id_queue_for_test() {
     TEST_GENERATED_ID_QUEUE.lock().clear();
 }
 
@@ -754,27 +756,39 @@ impl SessionStore {
     /// 的真实 NotFound 口径确认可用：占用（撞车）与元数据故障（EACCES/EIO）
     /// 都换下一个候选重试，耗尽后如实报错，绝不拿未确认可用的 id 落盘。
     pub(crate) fn generate_unused_session_id(&self) -> Result<String> {
-        #[cfg(test)]
-        {
-            // Wiring pins: a queued candidate sequence routes this whole
-            // allocation through the probe, so the fork / create_new call
-            // sites can drive the collision and exhaustion paths
-            // deterministically (falling back to the clock when the queue
-            // drains).
-            let queued = take_all_test_generated_id_candidates();
-            if !queued.is_empty() {
-                let mut candidates = queued.into_iter();
-                return self.generate_unused_session_id_with(|| {
-                    candidates.next().unwrap_or_else(generate_session_id)
-                });
-            }
-        }
         self.generate_unused_session_id_with(generate_session_id)
     }
 
     /// [`Self::generate_unused_session_id`] 的可注入变体：测试用固定候选
     /// 驱动撞车/重试路径；`sched-` 等前缀命名空间用同一探测口径拼前缀。
+    /// 候选队列挂在本变体而非便捷包装上（R2 SHOULD-1）：fork / create_new
+    /// 经包装进入，sched 站点经自己的前缀闭包进入——三个接线点都吃队列，
+    /// 任一站点回退成裸生成都会让对应 wiring 钉转红（此前 sched 回退与
+    /// 基线逐字节同绿，全 suite 无信号）。
     pub(crate) fn generate_unused_session_id_with<G: FnMut() -> String>(
+        &self,
+        generate: G,
+    ) -> Result<String> {
+        #[cfg(test)]
+        {
+            let queued = take_generated_id_queue_for_test();
+            if !queued.is_empty() {
+                // mut 仅测试构建需要（闭包借 &mut 调用生成器）；lib 构建
+                // 里 generate 直通 inner，参数上的 mut 会被
+                // -D unused-mut 拒绝（R1 波的同款 cfg 门控教训）。
+                let mut generate = generate;
+                let mut candidates = queued.into_iter();
+                return self.generate_unused_session_id_with_inner(move || {
+                    candidates.next().unwrap_or_else(&mut generate)
+                });
+            }
+        }
+        self.generate_unused_session_id_with_inner(generate)
+    }
+
+    /// 撞车/重试环本体（无测试钩子）：逐候选过占用探测，预算耗尽后如实
+    /// 报错，绝不拿未确认可用的 id 落盘。
+    fn generate_unused_session_id_with_inner<G: FnMut() -> String>(
         &self,
         mut generate: G,
     ) -> Result<String> {

@@ -23,8 +23,8 @@ use std::sync::Arc;
 // the facade because they are internal collaboration seams).
 use super::scheduled::ScheduledProfileRegistry;
 use super::store::{
-    HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND, clear_test_generated_id_queue,
-    push_test_generated_id_candidates,
+    HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND, clear_generated_id_queue_for_test,
+    push_generated_id_candidates_for_test,
 };
 use super::validators::generate_session_id;
 
@@ -10280,13 +10280,13 @@ fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
     struct ClearIdQueueOnDrop;
     impl Drop for ClearIdQueueOnDrop {
         fn drop(&mut self) {
-            clear_test_generated_id_queue();
+            clear_generated_id_queue_for_test();
         }
     }
     let _queue_guard = ClearIdQueueOnDrop;
 
     // 占满整个候选预算 → fork 必须响亮失败，源记录原样。
-    push_test_generated_id_candidates(&["occupied"; 8]);
+    push_generated_id_candidates_for_test(&["occupied"; 8]);
     let error = store
         .fork_session_record(&source.metadata.id, 1)
         .expect_err("an always-occupied candidate source must fail the fork loudly");
@@ -10303,7 +10303,7 @@ fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
 
     // 占用后接新鲜候选 → fork 落在注入的新鲜 id 上：只有穿过探测的
     // wiring 才可能产出这个 id（裸时钟给出的是时钟值）。
-    push_test_generated_id_candidates(&["occupied", "fresh"]);
+    push_generated_id_candidates_for_test(&["occupied", "fresh"]);
     let forked = store
         .fork_session_record(&source.metadata.id, 1)
         .expect("the fresh second candidate must land");
@@ -10320,11 +10320,11 @@ fn create_new_fails_loud_when_every_generated_candidate_is_occupied() {
     struct ClearIdQueueOnDrop;
     impl Drop for ClearIdQueueOnDrop {
         fn drop(&mut self) {
-            clear_test_generated_id_queue();
+            clear_generated_id_queue_for_test();
         }
     }
     let _queue_guard = ClearIdQueueOnDrop;
-    push_test_generated_id_candidates(&["occupied"; 8]);
+    push_generated_id_candidates_for_test(&["occupied"; 8]);
     let error = store
         .create_new("/model".into(), None, std::env::temp_dir())
         .expect_err("an always-occupied candidate source must fail create_new loudly");
@@ -10391,5 +10391,63 @@ fn save_persist_failure_reasons_fold_the_storage_prefix() {
     assert!(
         !text.contains("pinvou3-sessions-test-"),
         "the persist reason must not leak the raw home prefix: {text}"
+    );
+}
+
+/// wiring 钉：sched- 命名空间同穿占用探测（retention 的分配闭包经
+/// `generate_unused_session_id_with` 的候选队列）——把 sched 站点回退成
+/// 裸 `format!("sched-{}", generate_session_id())` 的突变在此转红
+/// （R2 SHOULD-1/M2R：此前该回退与基线逐字节同绿，全 suite 无信号）。
+#[test]
+fn create_scheduled_run_draws_candidates_through_the_occupancy_probe() {
+    let (store, _env) = isolated_store();
+    struct ClearIdQueueOnDrop;
+    impl Drop for ClearIdQueueOnDrop {
+        fn drop(&mut self) {
+            clear_generated_id_queue_for_test();
+        }
+    }
+    let _queue_guard = ClearIdQueueOnDrop;
+    std::fs::write(store.sessions_dir().join("sched-occupied.json"), b"{}")
+        .expect("plant occupied record file");
+
+    // 占满整个候选预算 → create_scheduled_run 必须响亮失败，且不落任何
+    // sched 记录。
+    push_generated_id_candidates_for_test(&["sched-occupied"; 8]);
+    let error = store
+        .create_scheduled_run(scheduled_profile("task-sched-pin"))
+        .expect_err("an always-occupied candidate source must fail the sched run loudly");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error:#}"
+    );
+    let json_names: Vec<String> = std::fs::read_dir(store.sessions_dir())
+        .expect("list sessions")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    assert_eq!(
+        json_names,
+        vec!["sched-occupied.json".to_string()],
+        "no sched record may land past exhaustion: {json_names:?}"
+    );
+
+    // 占用后接新鲜候选 → 落在注入的 sched- 前缀 id 上：只有穿过探测的
+    // wiring 才可能产出这个 id（裸时钟给出的是时钟值）。
+    push_generated_id_candidates_for_test(&["sched-occupied", "sched-fresh"]);
+    let session = store
+        .create_scheduled_run(scheduled_profile("task-sched-pin2"))
+        .expect("the fresh second candidate must land");
+    assert_eq!(session.metadata.id, "sched-fresh");
+    assert!(
+        store.load("sched-fresh").is_ok(),
+        "the sched record must land under the injected id"
+    );
+    assert!(
+        store.scheduled_profile("sched-fresh").is_some(),
+        "the in-memory ownership metadata must exist for the injected id"
     );
 }
