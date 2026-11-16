@@ -356,6 +356,7 @@ async fn send_classified(request: reqwest::RequestBuilder, timeout: Duration) ->
         // 2xx 但非 JSON / 截断(Cloudflare HTML 盾页、超大恶意列表等):
         // 端点没有可解析的列表。
         Err(BodyReadFail::Unusable) => ProbeOutcome::Unsupported(status.as_u16()),
+        Err(BodyReadFail::MidStreamTimeout) => ProbeOutcome::Transport("timeout"),
         // 2xx body 中途断流(代理/VPN 掐断等):传输层失败,重试可能成功,
         // 与「形状不认识」严格区分——误报 Unsupported 会把可重试错误钉成
         // 「端点不支持发现」。
@@ -369,12 +370,14 @@ async fn send_classified(request: reqwest::RequestBuilder, timeout: Duration) ->
 /// 循环:到上限或流结束即停,响应其余部分随 drop 丢弃、绝不排干。
 const LISTING_BODY_CAP_BYTES: usize = 8 * 1024 * 1024;
 
-/// 2xx body 读取失败的两种形态:不可解析(收口 Unsupported)与中途断流
-/// (收口传输类 Error)。截断(到 cap 仍未读完)由「cap 处停读 → 解析
-/// 失败」自然落进 `Unusable`。
+/// 2xx body 读取失败的三种形态:不可解析(收口 Unsupported)、中途非超时
+/// 断流(收口 BrokenBody → Error/network)与中途超时(收口 Transport
+/// timeout——同样可重试,但前端按超时给提示,而不是泛化的 http_error)。
+/// 截断(到 cap 仍未读完)由「cap 处停读 → 解析失败」自然落进 `Unusable`。
 enum BodyReadFail {
     Unusable,
     MidStream,
+    MidStreamTimeout,
 }
 
 async fn read_json_body_bounded(resp: &mut reqwest::Response) -> Result<Value, BodyReadFail> {
@@ -387,6 +390,9 @@ async fn read_json_body_bounded(resp: &mut reqwest::Response) -> Result<Value, B
             }
             Ok(None) => break,
             // 中途断流:body 不可信,但这是传输层事实,不是「形状不认识」。
+            // 超时单独拆出:逐请求超时打到 body 读取段时,类别仍是 timeout
+            // (可重试、前端给重试提示),折叠进兜底 network 会丢掉这一语义。
+            Err(e) if e.is_timeout() => return Err(BodyReadFail::MidStreamTimeout),
             Err(_) => return Err(BodyReadFail::MidStream),
         }
     }
@@ -1240,6 +1246,43 @@ mod tests {
             0,
             "禁用重定向:Location 目标(第二跳)从不被请求,key 不重发"
         );
+    }
+
+    /// minor-1 钉:2xx 头已到、body 中途停住(声明超长 content-length 后只
+    /// 写几个字节并保持连接)——逐请求超时打到 body 读取段,分类必须是
+    /// timeout(可重试)而非兜底 network。把 chunk 错误整体折叠进 MidStream
+    /// 的旧实现让前端拿到 network/http_error 提示,丢失重试语义。
+    #[tokio::test]
+    async fn mid_body_stall_classifies_as_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stalled listener");
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept probe connection");
+            let mut buf = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            // 半截 200 应答:content-length 声明远大于实际写出的字节,写完
+            // 即挂住(不关流)——客户端的 chunk() 只能等到超时。
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 512\r\nconnection: close\r\n\r\n",
+            );
+            let _ = std::io::Write::write_all(&mut stream, br#"{"data":[{"id":"partial""#);
+            // 挂到客户端超时之后;限时后随 drop 收尾,不泄漏线程。
+            std::thread::sleep(Duration::from_secs(2));
+        });
+        // anthropic 协议不做本地短路,阶梯直接打裸监听 socket。
+        let listing = probe_endpoint_models_with_timeout(
+            &format!("http://{addr}/"),
+            None,
+            DiscoveryProtocol::Anthropic,
+            Duration::from_millis(300),
+        )
+        .await;
+        assert_eq!(listing.status, ListingStatus::Error);
+        assert_eq!(listing.http_status, None, "超时不是 HTTP 状态失败");
+        assert_eq!(listing.transport.as_deref(), Some("timeout"));
+        assert!(listing.models.is_empty());
+        server.join().expect("stall thread joins");
     }
 
     #[tokio::test]
