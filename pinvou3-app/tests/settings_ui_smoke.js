@@ -2806,6 +2806,55 @@ async function modalWidth(page, headingText) {
     ollamaBadge.truncatedNoticeAbsent && ollamaBadge.rowShown && ollamaBadge.badgeShown
       && !!ollamaRowSave && ollamaRowSave.model === 'qwen2.5-coder:32b' && ollamaRowSave.context_window_tokens === null,
     JSON.stringify({ ollamaBadge, ollamaRowSave }));
+  // round-5 审 m1(键盘可达的拆批)运行时钉:批量保存循环进行中改 URL,
+  // 已确认的批次必须整体落在确认时刻的快照端点上——确认弹窗没有焦点
+  // 陷阱,键盘用户可以在循环进行中改 URL(URL 变更清扫只摘弹窗与 picker,
+  // 已开跑的循环照常推进)。saveModelDelay 拉长循环,第一行在飞时改 URL:
+  // 旧实现逐行读 live state,第二行 payload 会落到新 URL(拆批),本步变红;
+  // 快照实现下两行都落在确认时刻的 URL。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed', http_status: 200, transport: null, server_kind: null, truncated: false,
+    models: [
+      { id: 'snap-a', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
+      { id: 'snap-b', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
+    ],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(500);
+  const snapSavesBefore = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(700));
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
+  await sleep(250);
+  await page.evaluate(() => document.querySelector('[data-testid="add-all-models-confirm-ok"]').click());
+  await sleep(400);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    setter.call(baseUrlInput, 'https://moved.example.com/v1');
+    baseUrlInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(1800);
+  const snapshotBatch = await page.evaluate(savesBefore => {
+    const calls = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').slice(savesBefore);
+    return {
+      savedModels: calls.map(call => `${call.args.model.model}@${call.args.model.base_url}`),
+      bothSnapshotted: calls.length === 2 && calls.every(call => call.args.model.base_url === 'https://example.com/v1'),
+    };
+  }, snapSavesBefore);
+  rec('⑥.5k9 a mid-batch base-URL edit cannot split the confirmed batch (both rows land on the snapshot endpoint, not the live field)',
+    snapshotBatch.bothSnapshotted && snapshotBatch.savedModels.includes('snap-a@https://example.com/v1') && snapshotBatch.savedModels.includes('snap-b@https://example.com/v1'),
+    JSON.stringify(snapshotBatch));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  // 还原 URL 与默认 probe 列表,不污染后续流程。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    setter.call(baseUrlInput, 'https://example.com/v1');
+    baseUrlInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
   // 恢复默认 probe 列表,不污染后续流程。
   await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
     status: 'listed', http_status: 200, transport: null, server_kind: null, truncated: false,

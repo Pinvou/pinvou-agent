@@ -774,7 +774,7 @@ function hasStoredCredential(record) {
       // picker 逐行「添加」(聊天线):构建 draft(当前 preset/base_url/表单 key)
       // → bridge.models.saveModel(桥内自带 loadModels 刷新),成功后行内提示;
       // 失败保持弹窗与提示,不静默丢弃。
-      function buildEndpointModelPayload(row) {
+      function buildEndpointModelPayload(row, overrides) {
         // 与 doSave 同一凭据阶梯 + 免鉴权声明,收口后 picker 添加的记录不会在
         // chat 门被免鉴权声明外的凭据要求挡住。
         const nextKeyAction = isLocalPreset
@@ -793,12 +793,12 @@ function hasStoredCredential(record) {
         return {
           id: makeModelId(),
           name: row.title || row.id,
-          preset,
+          preset: overrides && overrides.preset !== undefined ? overrides.preset : preset,
           alias: null,
           context_window_tokens: runtimeProbedLane ? null : row.contextWindowTokens,
           max_output_tokens: row.maxOutputTokens,
           model: row.id,
-          base_url: baseUrl.trim(),
+          base_url: overrides && overrides.baseUrl !== undefined ? overrides.baseUrl : baseUrl.trim(),
           api_key: nextApiKey,
           credential_action: nextKeyAction,
           provider_kind: providerKind || null,
@@ -844,7 +844,11 @@ function hasStoredCredential(record) {
         if (addingAllModels || pickInFlightRef.current || pickSavingModel || savingModel || !endpointListing) return;
         const { addable, truncated } = splitBatchAdd(normalizeDiscoveredRows(endpointListing), endpointSavedKeys, baseUrl.trim(), ADD_ALL_BATCH_LIMIT);
         if (addable.length === 0) return;
-        setAddAllModelsConfirm({ addable, truncated });
+        // round-5 审 m1(键盘可达的拆批):确认弹窗没有焦点陷阱,键盘用户可
+        // 以在批量保存循环进行中改 URL(URL 变更清扫只摘弹窗,已开跑的循环
+        // 不受影响)。去重与落库都以确认时刻的快照为准——循环内的 payload
+        // 用快照 URL/preset,后改的 URL 只影响下一轮,绝不产生 A/B 拆批。
+        setAddAllModelsConfirm({ addable, truncated, baseUrl: baseUrl.trim(), preset });
       }
       // 确认后的批量保存(复审 M9):逐行 saveModel 带 deferRefresh 跳过桥内
       // 的三连 reload(100 行 × 3 次 IPC 的风暴),循环结束后统一刷新一次;
@@ -853,13 +857,15 @@ function hasStoredCredential(record) {
       // 没有 reloadSavedModels 时回退旧行为(逐行全量刷新,不加 options)。
       async function confirmAddAllEndpointModels() {
         if (!addAllModelsConfirm || addingAllModels) return;
-        const { addable } = addAllModelsConfirm;
+        const { addable, baseUrl: confirmBaseUrl, preset: confirmPreset } = addAllModelsConfirm;
         const batchReloadAvailable = bridge.available && typeof bridge.models.reloadSavedModels === 'function';
         setAddingAllModels(true);
         let added = 0;
         try {
           for (const row of addable) {
-            await onSave(buildEndpointModelPayload(row), batchReloadAvailable ? { deferRefresh: true } : undefined);
+            // 快照 URL/preset(round-5 审 m1):循环期间改 URL 只影响下一轮,
+            // 本批行永远落在确认时刻的端点上。
+            await onSave(buildEndpointModelPayload(row, { baseUrl: confirmBaseUrl, preset: confirmPreset }), batchReloadAvailable ? { deferRefresh: true } : undefined);
             added += 1;
           }
           if (batchReloadAvailable) await bridge.models.reloadSavedModels();
