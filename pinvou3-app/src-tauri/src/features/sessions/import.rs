@@ -26,11 +26,19 @@
 //!   不敏感；round-36 minor 2 的同一口径——`SCHED-x` 落盘后会被大小写
 //!   不敏感的调度门归为定时会话，从列表隐身又拒绝删除）。
 
+// Hook-only imports (REPROBE_STAT_FAULTS below is `#[cfg(test)]`): keep the
+// plain lib build free of unused imports.
+#[cfg(test)]
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+#[cfg(test)]
+use parking_lot::Mutex;
 use serde::Serialize;
 
 use deepseek_tui::session_manager::SavedSession;
@@ -397,7 +405,11 @@ fn import_one_session(
             if let Some(error) = artifacts_error {
                 summary.artifacts_failed.push(SessionImportFailure {
                     session_id: id.clone(),
-                    reason: format!("{error:#}"),
+                    // Boundary fold, same discipline as the two fail
+                    // closures: artifact error chains embed canonicalized
+                    // storage paths, and every outbound reason must leave
+                    // with the storage prefix folded.
+                    reason: crate::platform::paths::redact_storage_prefix(&format!("{error:#}")),
                 });
             }
             summary.imported.push(id);
@@ -413,9 +425,15 @@ fn import_one_session_inner(
     artifacts: Vec<(String, Vec<u8>)>,
 ) -> ImportOutcome {
     let id = session.metadata.id.clone();
+    // Boundary fold: every Failed reason leaving either window (staging or
+    // commit) passes through redact_storage_prefix once here, so no
+    // formation site can embed the raw storage prefix (with the OS user
+    // name) in an outbound reason — probe/re-probe, persist (save_session
+    // _atomic's "write session {path}"), verify-staged, and any future
+    // arm all fold at this single point.
     let fail = |reason: String| SessionImportFailure {
         session_id: id.clone(),
-        reason,
+        reason: crate::platform::paths::redact_storage_prefix(&reason),
     };
     if let Err(reason) = super::validators::validate_session_id(&id) {
         return ImportOutcome::Failed(fail(format!("invalid session id: {reason:#}")));
@@ -465,6 +483,7 @@ fn import_one_session_inner(
     match std::fs::metadata(&record_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
+            // (folded at the fail closure — no per-site wrap needed)
             return ImportOutcome::Failed(fail(format!(
                 "probe existing record {}: {error}",
                 record_path.display()
@@ -555,6 +574,21 @@ fn import_one_session_inner(
 /// - 删除/驱逐持同一把锁且都以记录存在为前提；探测窗已证实无记录，
 ///   无锁暂存窗内它们到不了本会话目录——原单窗锁防的「reclaim 清扫
 ///   remove_dir_all 刚写入的成员」场景需要记录先行存在，与探测结论矛盾。
+/// Test-only re-probe fault injection (same `#[cfg(test)]` hook idiom as
+/// store.rs's `PRE_RECORD_DELETE_FAULTS`): session id → `ErrorKind` the
+/// commit-window re-probe reports instead of a real `metadata` call. A real
+/// fault between staging and commit cannot be timed from outside the call,
+/// so tests drive the non-NotFound arm (and pin its folded reason)
+/// deterministically through this seam.
+#[cfg(test)]
+static REPROBE_STAT_FAULTS: LazyLock<Mutex<HashMap<String, std::io::ErrorKind>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+fn take_reprobe_stat_fault(id: &str) -> Option<std::io::ErrorKind> {
+    REPROBE_STAT_FAULTS.lock().remove(id)
+}
+
 /// 回滚语义与原实现逐字一致：仅当本次导入创建的会话目录且 artifacts
 /// 完整写入时才整目录删除。
 fn commit_staged_import(
@@ -565,19 +599,33 @@ fn commit_staged_import(
     created_session_dir: bool,
 ) -> ImportOutcome {
     let id = session.metadata.id.clone();
+    // Boundary fold, same discipline as import_one_session_inner's fail
+    // closure (full rationale there): every Failed reason leaving the
+    // commit window passes through redact_storage_prefix once here; the
+    // structural scan test pins every formation site.
     let fail = |reason: String| SessionImportFailure {
         session_id: id.clone(),
-        reason,
+        reason: crate::platform::paths::redact_storage_prefix(&reason),
     };
     let record_path = store.sessions_dir().join(format!("{id}.json"));
     let session_dir = store.sessions_dir().join(&id);
     let mutation = store.scheduled_mutation.lock();
-    match std::fs::metadata(&record_path) {
+    let reprobe = std::fs::metadata(&record_path);
+    #[cfg(test)]
+    let reprobe = match take_reprobe_stat_fault(&id) {
+        Some(kind) => Err(std::io::Error::new(
+            kind,
+            "injected re-probe stat fault before persist",
+        )),
+        None => reprobe,
+    };
+    match reprobe {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             if artifacts_result.is_ok() && created_session_dir {
                 let _ = std::fs::remove_dir_all(&session_dir);
             }
+            // (folded at the fail closure — no per-site wrap needed)
             return ImportOutcome::Failed(fail(format!(
                 "re-probe existing record before persist {}: {error}",
                 record_path.display()
@@ -1030,9 +1078,10 @@ fn session_schema_version_ceiling() -> u32 {
 mod tests {
     use super::super::{SessionImportFailure, SessionImportSummary};
     use super::{
-        ImportOutcome, MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES, SessionStore,
-        commit_staged_import, ensure_artifacts_exportable, ensure_artifacts_exportable_with,
-        ensure_parent_resolves_inside_artifacts_dir, import_artifacts, validated_artifact_target,
+        GENERATED_MEMBER_COUNT, ImportOutcome, MAX_MEMBER_BYTES, MAX_MEMBER_COUNT, MAX_TOTAL_BYTES,
+        REPROBE_STAT_FAULTS, SessionStore, commit_staged_import, ensure_artifacts_exportable,
+        ensure_artifacts_exportable_with, ensure_parent_resolves_inside_artifacts_dir,
+        import_artifacts, validated_artifact_target,
     };
     use deepseek_tui::models::{ContentBlock, Message, Role};
 
@@ -2180,18 +2229,31 @@ mod tests {
         let _ = std::fs::remove_file(&archive);
     }
 
-    /// 成员数上限：总量账本按声明大小记账，海量零字节成员贡献 0 却制造
-    /// 海量头解析——超过 [`MAX_MEMBER_COUNT`] 的归档整档拒绝。
+    /// Member-count cap: the size ledger books each member by its declared
+    /// size, so masses of zero-byte members contribute 0 while forcing
+    /// massive header parsing — archives beyond [`MAX_MEMBER_COUNT`] are
+    /// rejected whole. The fixture carries `session.json` (the record body
+    /// counts into the same counter): if the counter missed the record
+    /// body, exactly 10,000 artifacts would equal the cap and the archive
+    /// would pass — this test turns red on that (a counter-range mutation
+    /// previously stayed green; the cap pin only pinned the comparison
+    /// shape, not the range).
     #[test]
     fn import_enforces_member_count_cap() {
         let (store, _lock, _env) = isolated_store();
-        let names: Vec<String> = (0..=MAX_MEMBER_COUNT)
+        let record_path = write_json_record(&store, "capover1");
+        let record = std::fs::read(&record_path).expect("read session record");
+        let _ = std::fs::remove_file(&record_path);
+        let names: Vec<String> = (0..MAX_MEMBER_COUNT)
             .map(|index| format!("artifacts/f{index}.txt"))
             .collect();
-        let members: Vec<(&str, &[u8])> = names
-            .iter()
-            .map(|name| (name.as_str(), b"x".as_slice()))
-            .collect();
+        let mut members: Vec<(&str, &[u8])> = vec![("session.json", &record)];
+        members.extend(names.iter().map(|name| (name.as_str(), b"x".as_slice())));
+        assert_eq!(
+            members.len(),
+            MAX_MEMBER_COUNT + 1,
+            "the fixture must sit one member past the cap"
+        );
         let archive = build_archive(&members);
         let error = store
             .import_archive(&archive)
@@ -2199,6 +2261,42 @@ mod tests {
         assert!(
             format!("{error:#}").contains("member import cap"),
             "{error:#}"
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    /// Cap boundary pin: exactly [`MAX_MEMBER_COUNT`] members must import
+    /// successfully (production uses the inclusive `>` comparison).
+    /// Hardening it so a `>=` mutation cannot silently tighten the cap by 1
+    /// while every existing test stays green (the over-cap test uses
+    /// cap+1, which is red under both mutations).
+    #[test]
+    fn import_accepts_exactly_member_count_cap() {
+        let (store, _lock, _env) = isolated_store();
+        let record_path = write_json_record(&store, "capedge1");
+        let record = std::fs::read(&record_path).expect("read session record");
+        let _ = std::fs::remove_file(&record_path);
+        let mut members: Vec<(&str, &[u8])> = vec![("session.json", &record)];
+        let artifacts: Vec<String> = (1..MAX_MEMBER_COUNT)
+            .map(|index| format!("artifacts/f{index}.txt"))
+            .collect();
+        for name in &artifacts {
+            members.push((name.as_str(), b"x".as_slice()));
+        }
+        assert_eq!(
+            members.len(),
+            MAX_MEMBER_COUNT,
+            "the fixture must sit exactly on the cap"
+        );
+        let archive = build_archive(&members);
+        let summary = store
+            .import_archive(&archive)
+            .expect("exactly-cap archive must import");
+        assert_eq!(summary.imported, vec!["capedge1".to_string()]);
+        assert!(
+            summary.failed.is_empty(),
+            "no member may fail at the exact cap: {:?}",
+            summary.failed
         );
         let _ = std::fs::remove_file(&archive);
     }
@@ -2254,10 +2352,145 @@ mod tests {
             "{}",
             summary.failed[0].reason
         );
+        // The failure reason leaves only after the redact_storage_prefix
+        // fold: the raw home prefix (with the OS user name) must not reach
+        // the summary/toast (same discipline as tasks.rs).
+        assert!(
+            summary.failed[0].reason.contains("~/.pinvou3/"),
+            "reason must be storage-prefix folded: {}",
+            summary.failed[0].reason
+        );
+        assert!(
+            !summary.failed[0].reason.contains("pinvou3-import-test-"),
+            "reason must not leak the raw home prefix: {}",
+            summary.failed[0].reason
+        );
         // 活记录原样（未被归档副本覆盖）。
         let live = store.load("probeio1").expect("live record intact");
         assert_eq!(live.messages.len(), 2);
         let _ = std::fs::remove_file(&second);
+    }
+
+    /// The non-NotFound leg of the commit-window re-probe (injected seam —
+    /// the real window cannot be timed from outside the call): the archive
+    /// must roll back whole into `failed`, never persist, and the reason
+    /// must leave through the fail closure's boundary fold — the raw home
+    /// prefix (with the OS user name) must not reach the summary (same pin
+    /// as the window-minus-1 probe leg).
+    #[test]
+    fn import_reports_folded_reason_on_reprobe_stat_fault_before_persist() {
+        let (store, _lock, _env) = isolated_store();
+        let record_path = write_json_record(&store, "reprobefault1");
+        let record = std::fs::read(&record_path).expect("read session record");
+        let _ = std::fs::remove_file(&record_path);
+        let archive = build_archive(&[("session.json", &record)]);
+        // Panic-safety drain (same hygiene as the id queue's
+        // ClearIdQueueOnDrop): an injected leftover must not outlive this
+        // test when an assertion panics.
+        struct TakeReprobeFaultOnDrop;
+        impl Drop for TakeReprobeFaultOnDrop {
+            fn drop(&mut self) {
+                REPROBE_STAT_FAULTS.lock().remove("reprobefault1");
+            }
+        }
+        let _fault_guard = TakeReprobeFaultOnDrop;
+        REPROBE_STAT_FAULTS.lock().insert(
+            "reprobefault1".to_string(),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        let summary = store.import_archive(&archive).expect("summary returned");
+        assert!(
+            summary.imported.is_empty(),
+            "a re-probe fault must not persist the record: {:?}",
+            summary.imported
+        );
+        assert_eq!(summary.failed.len(), 1, "{:?}", summary.failed);
+        let reason = &summary.failed[0].reason;
+        assert!(
+            reason.contains(
+                "re-probe existing record before persist ~/.pinvou3/sessions/reprobefault1.json"
+            ),
+            "reason must be storage-prefix folded: {reason}"
+        );
+        assert!(
+            !reason.contains("pinvou3-import-test-"),
+            "reason must not leak the raw home prefix: {reason}"
+        );
+        assert!(
+            store.load("reprobefault1").is_err(),
+            "no record may land past a re-probe stat fault"
+        );
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    /// Structural fold guard (same source-scan shape as
+    /// app/commands/memory.rs): every production `SessionImportFailure`
+    /// formation site in this file must route its reason through
+    /// `redact_storage_prefix` inside its literal — a future raw-reason arm
+    /// turns red in CI, so "every arm, now and in the future, folds at the
+    /// boundary" no longer relies on convention (R2 SHOULD-4; also closes
+    /// the previously disclosed artifacts_failed pinned-by-construction
+    /// gap). Scan assumption: the brace matcher counts raw `{`/`}` bytes
+    /// and is not string/comment aware, so a formation literal whose
+    /// strings or comments carry an unbalanced brace would shift the match
+    /// window — keep literals brace-balanced (today's three are).
+    #[test]
+    fn import_failure_formation_sites_fold_the_storage_prefix() {
+        let source = include_str!("import.rs");
+        // A Windows checkout (autocrlf) turns the include_str! text CRLF —
+        // normalize line endings before scanning so multi-line markers and
+        // byte offsets agree under both checkouts (a checkout dependency
+        // that actually redded the windows regression leg once).
+        let source = source.replace("\r\n", "\n");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("the tests module marker must exist")
+            .0;
+        let mut sites = Vec::new();
+        let mut cursor = 0;
+        while let Some(found) = production[cursor..].find("SessionImportFailure {") {
+            let at = cursor + found;
+            // Skip the struct definition itself (`pub struct
+            // SessionImportFailure {`); count formation sites only (the
+            // push literal and the two fail closures).
+            if !production[..at].ends_with("struct ") {
+                sites.push(at);
+            }
+            cursor = at + "SessionImportFailure {".len();
+        }
+        assert_eq!(
+            sites.len(),
+            3,
+            "expected exactly the three production formation sites \
+             (artifacts_failed + the two fail closures); update this guard \
+             when the boundary itself changes: {sites:?}"
+        );
+        for &at in &sites {
+            let block = &production[at..];
+            let open = block.find('{').expect("the literal opens");
+            let bytes = block.as_bytes();
+            let mut depth = 0usize;
+            let mut close = None;
+            for (index, &byte) in bytes.iter().enumerate().skip(open) {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(index);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let close = close.expect("the literal must close");
+            assert!(
+                block[open..=close].contains("redact_storage_prefix"),
+                "the SessionImportFailure site at byte {at} must fold its \
+                 reason through redact_storage_prefix at the boundary"
+            );
+        }
     }
 
     /// 非 UTF-8 成员名拒绝（而非 lossy 改名）：不同的非法字节名经
@@ -2491,6 +2724,36 @@ mod tests {
             "{error:#}"
         );
         let _ = std::fs::remove_file(&archive);
+    }
+
+    /// The export prescan's member-count boundary is likewise an inclusive
+    /// `>`: the existing export pin uses an over-shape at ledger cap+4, so
+    /// a `>=` mutation stayed green (the same blind spot as the import
+    /// side before its exact-cap pin). Pin both arms on the parameterized
+    /// seam with a small cap — exactly `cap - GENERATED` artifacts must
+    /// pass (the exporter's own members fill up the rest), and one more
+    /// must be rejected.
+    #[test]
+    fn export_prescan_member_count_boundary_is_inclusive() {
+        let base = std::env::temp_dir().join(format!(
+            "pinvou3-export-pin-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let artifacts = base.join("artifacts");
+        std::fs::create_dir_all(&artifacts).expect("mkdir artifacts");
+        for index in 0..3 {
+            std::fs::write(artifacts.join(format!("f{index}.txt")), b"x").expect("seed artifact");
+        }
+        let cap = 3 + GENERATED_MEMBER_COUNT;
+        ensure_artifacts_exportable_with(Some(&artifacts), 64, 64, MAX_TOTAL_BYTES, cap)
+            .expect("exactly (cap - GENERATED_MEMBER_COUNT) artifacts must pass the prescan");
+        std::fs::write(artifacts.join("f3.txt"), b"x").expect("seed the 4th artifact");
+        let error =
+            ensure_artifacts_exportable_with(Some(&artifacts), 64, 64, MAX_TOTAL_BYTES, cap)
+                .expect_err("one artifact past the inclusive cap must fail the prescan");
+        assert!(format!("{error:#}").contains("member-count"), "{error:#}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Reparse-point 收口 helper 的直接单测（r9 minor）：canonicalize 故障

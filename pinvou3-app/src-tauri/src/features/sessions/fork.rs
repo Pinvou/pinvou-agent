@@ -72,18 +72,20 @@ impl SessionStore {
         keep_turns: u32,
     ) -> Result<SessionMetadata> {
         if self.is_scheduled_session(session_id)? {
-            anyhow::bail!("定时任务运行会话不支持分叉");
+            anyhow::bail!("scheduled-run sessions do not support forking");
         }
         // aux 是主会话的受限只读旁路（ADR-0024），分叉语义未定义，如实拒绝。
         if super::validators::is_aux_session_id(session_id) {
-            anyhow::bail!("辅助对话不支持分叉");
+            anyhow::bail!("aux side-chats do not support forking");
         }
         // 原生代码会话的项目绑定/工作树状态按 id 键存于代码会话侧车（不在
         // 本 store），无法随分支复刻；分叉出的分支会以无绑定姿态落到空的
         // 私有执行根，且 mode_state 默认从 Plan 翻成 Yolo——如实拒绝，分叉
         // 语义只定义在 chat 会话上。
         if self.is_code_session(session_id) {
-            anyhow::bail!("原生代码会话不支持分叉：项目绑定与工作树状态不随分支走");
+            anyhow::bail!(
+                "native code sessions do not support forking: project bindings and worktree state do not carry over"
+            );
         }
         // 绑定源三态探测（先于 load/落盘 fail fast，见 workspace_bindings 的
         // 探针文档）：Unbound 分支保持无绑定；Unknown（sidecar 损坏/不可读/
@@ -91,25 +93,26 @@ impl SessionStore {
         // mode_state 安全姿态随之降级，恰是绑定复刻要消灭的形态。绑定与
         // roots 在锁外一次读取：fork 命令持有 projects rebind fence（见
         // sessions.rs fork_session），rebind 无法在读取与落盘之间改写绑定。
-        let (parent_workspace, parent_roots, parent_ancestor_roots) = match self
-            .session_workspace_binding_probe(session_id)
-        {
-            // 绑定/roots/provenance 来自同一份 sidecar 快照（单次读取）：warm
-            // 缓存下 sidecar 损坏/不可读走 Unknown fail-closed，不再经
-            // `session_workspace_roots` 的 `unwrap_or_default` 折叠成静默空
-            // roots（review r2）。
-            super::workspace_bindings::WorkspaceBindingProbe::Bound(
-                path,
-                roots,
-                ancestor_roots,
-            ) => (Some(path), roots, ancestor_roots),
-            super::workspace_bindings::WorkspaceBindingProbe::Unknown => anyhow::bail!(
-                "无法读取源会话的工作区绑定（文件损坏或由更新版本写入）；为避免分支静默降级为无绑定会话，已拒绝分叉"
-            ),
-            super::workspace_bindings::WorkspaceBindingProbe::Unbound => {
-                (None, Vec::new(), Vec::new())
-            }
-        };
+        let (parent_workspace, parent_roots, parent_ancestor_roots) =
+            match self.session_workspace_binding_probe(session_id) {
+                // 绑定/roots/provenance 来自同一份 sidecar 快照（单次读取）：warm
+                // 缓存下 sidecar 损坏/不可读走 Unknown fail-closed，不再经
+                // `session_workspace_roots` 的 `unwrap_or_default` 折叠成静默空
+                // roots（review r2）。
+                super::workspace_bindings::WorkspaceBindingProbe::Bound(
+                    path,
+                    roots,
+                    ancestor_roots,
+                ) => (Some(path), roots, ancestor_roots),
+                super::workspace_bindings::WorkspaceBindingProbe::Unknown => anyhow::bail!(
+                    "cannot read the source session's workspace binding (corrupt file or \
+                 written by a newer version); fork refused to avoid silently downgrading \
+                 the branch to an unbound session"
+                ),
+                super::workspace_bindings::WorkspaceBindingProbe::Unbound => {
+                    (None, Vec::new(), Vec::new())
+                }
+            };
         // load→persist 对与 delete/驱逐串行（与 truncate_to_user_turn 同一
         // 口径，delete 的文档写明该锁正是为此存在）：没有它，源会话在 load
         // 与落盘之间被删除/驱逐会留下指向已不存在记录的血缘。锁不可重入
@@ -120,10 +123,12 @@ impl SessionStore {
         let total_turns = turn_prompt_indices.len();
         let keep = keep_turns as usize;
         if total_turns == 0 {
-            anyhow::bail!("会话还没有可分叉的用户轮次（共 0 轮）");
+            anyhow::bail!("the session has no user turns to fork yet (0 turns total)");
         }
         if keep > total_turns {
-            anyhow::bail!("会话当前只有 {total_turns} 轮，无法分叉到第 {keep_turns} 轮末尾");
+            anyhow::bail!(
+                "the session currently has only {total_turns} turns; cannot fork past turn {keep_turns}"
+            );
         }
         // keep == total_turns：全量分支（切点即末尾）。
         let cut = if keep == total_turns {
@@ -138,7 +143,7 @@ impl SessionStore {
         let parent_metadata = source.metadata.clone();
         let captured_message_count = source.messages.len();
         let mut forked = source;
-        forked.metadata.id = super::validators::generate_session_id();
+        forked.metadata.id = self.generate_unused_session_id()?;
         forked.metadata.mark_forked_from(&parent_metadata);
         // 血缘计数取实际捕获的消息数：metadata.message_count 由引擎路径维护，
         // 直存/外部改写的记录可能滞后，以 messages 为准。
@@ -323,7 +328,7 @@ mod tests {
             .fork_session_record(&source.metadata.id, 3)
             .expect_err("2-turn session cannot fork past its end");
         assert!(
-            error.to_string().contains("只有 2 轮"),
+            error.to_string().contains("only 2 turns"),
             "must name the actual turn count: {error:#}"
         );
     }
@@ -343,7 +348,10 @@ mod tests {
             let error = store
                 .fork_session_record(&source.metadata.id, keep)
                 .expect_err("0-turn session must refuse fork");
-            assert!(error.to_string().contains("0 轮"), "keep={keep}: {error:#}");
+            assert!(
+                error.to_string().contains("0 turns total"),
+                "keep={keep}: {error:#}"
+            );
         }
         // 源会话不被半成品污染。
         let original = store.load(&source.metadata.id).expect("reload");
@@ -365,13 +373,13 @@ mod tests {
         let error = store
             .fork_session_record("sched-forktest1", 1)
             .expect_err("scheduled-run sessions must refuse fork");
-        assert!(error.to_string().contains("定时任务"), "{error:#}");
+        assert!(error.to_string().contains("scheduled-run"), "{error:#}");
 
         // aux：只看 id 前缀，无需落盘记录。
         let error = store
             .fork_session_record("aux-forktest1", 1)
             .expect_err("aux sessions must refuse fork");
-        assert!(error.to_string().contains("辅助对话"), "{error:#}");
+        assert!(error.to_string().contains("aux side-chat"), "{error:#}");
     }
 
     #[test]
@@ -566,7 +574,10 @@ mod tests {
         let error = store
             .fork_session_record(&source.metadata.id, 1)
             .expect_err("native code sessions must refuse fork");
-        assert!(error.to_string().contains("原生代码会话"), "{error:#}");
+        assert!(
+            error.to_string().contains("native code sessions"),
+            "{error:#}"
+        );
         // 源会话不被半成品污染。
         let original = store.load(&source.metadata.id).expect("reload");
         assert_eq!(original.messages.len(), 2);
@@ -623,7 +634,7 @@ mod tests {
         let error = store
             .fork_session_record(&source.metadata.id, 1)
             .expect_err("corrupt sidecar must refuse fork even with warm cache");
-        assert!(error.to_string().contains("工作区绑定"), "{error:#}");
+        assert!(error.to_string().contains("workspace binding"), "{error:#}");
         let entries: Vec<_> = std::fs::read_dir(store.sessions_dir())
             .expect("list sessions")
             .filter_map(Result::ok)
@@ -667,7 +678,7 @@ mod tests {
             .fork_session_record(&source.metadata.id, 1)
             .expect_err("corrupt sidecar must refuse fork");
         assert!(
-            error.to_string().contains("工作区绑定"),
+            error.to_string().contains("workspace binding"),
             "must name the binding probe: {error:#}"
         );
 
@@ -682,7 +693,7 @@ mod tests {
             .fork_session_record(&source.metadata.id, 1)
             .expect_err("future-version sidecar must refuse fork");
         assert!(
-            error.to_string().contains("工作区绑定"),
+            error.to_string().contains("workspace binding"),
             "must name the binding probe: {error:#}"
         );
         // 分支不得已落盘（拒绝发生在 load/落盘之前）。

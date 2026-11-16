@@ -429,6 +429,7 @@ jobs:
               - 'pinvou3-app/tests/linux_asr_runtime_packaging.test.js'
               - 'pinvou3-app/tests/macos_phase2_contract.test.js'
               - 'pinvou3-app/tests/tauri_effective_config.test.js'
+              - 'pinvou3-app/tests/tauri_config_schema.test.js'
             pet:
               - 'pinvou3-app/src/assets/pet/**'
               - 'pinvou3-app/src/features/pet/**'
@@ -879,6 +880,7 @@ jobs:
         run: |
           npm --prefix pinvou3-app run test:tauri-layout
           npm --prefix pinvou3-app run test:tauri-effective-config
+          npm --prefix pinvou3-app run test:tauri-config-schema
           npm --prefix pinvou3-app run test:macos-phase2
           npm --prefix pinvou3-app run test:knowledge-host-packaging
           npm --prefix pinvou3-app run test:linux-asr-runtime

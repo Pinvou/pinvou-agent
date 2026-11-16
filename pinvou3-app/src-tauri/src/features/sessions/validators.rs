@@ -22,8 +22,6 @@ use deepseek_tui::session_manager::SessionManager;
 /// 漂移。
 pub(crate) const RESERVED_SESSION_ID_STEMS: [&str; 2] = ["session_boot_owners", "checkpoints"];
 
-/// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
-/// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
 /// `pub` for the pinvou-cli `projects` family: the rebind orphan probe
 /// validates an id before joining it into a sessions-root path (the same
 /// fail-closed rule the GUI path applies), through the `features::sessions`
@@ -456,6 +454,15 @@ pub(crate) fn scheduled_session_file(manager: &SessionManager, id: &str) -> Resu
     Ok(manager.sessions_dir().join(format!("{id}.json")))
 }
 
+/// Generate a URL-safe session id: 13 lowercase base36 chars encoding the
+/// wall-clock nanos at generation time (the historical "timestamp + nanos
+/// hash" doc sat misplaced on `validate_session_id`; the implementation is
+/// pure nanos, and the id shape is what `aux-{parent_id}` derivation and
+/// the sessions-filename UX build on). Callers must never persist it
+/// unconditionally — route it through the store's
+/// `generate_unused_session_id` so a clock step or coarse-clock collision
+/// with an existing record fails loudly instead of silently replacing a
+/// live session.
 pub(crate) fn generate_session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -493,6 +500,47 @@ mod tests {
                 .to_string(),
             "Invalid scheduled task id 'has space'"
         );
+    }
+
+    /// Structural wiring guard (same source-scan shape as
+    /// import_failure_formation_sites_fold_the_storage_prefix): bare
+    /// `generate_session_id(` may appear in production code only at the
+    /// definition (this file) and the `sched-` prefixed closure
+    /// (retention.rs) — every other allocation site must route through the
+    /// store's occupancy probe (`generate_unused_session_id[_with]`), or a
+    /// clock-step collision silently replaces a live record again. A new
+    /// bare call site turns this guard red in CI instead of relying on the
+    /// doc-comment convention on `generate_session_id`.
+    #[test]
+    fn bare_generate_session_id_has_no_unwired_production_call_sites() {
+        let scanned = [
+            ("validators.rs", include_str!("validators.rs"), 1usize),
+            ("retention.rs", include_str!("retention.rs"), 1),
+            ("fork.rs", include_str!("fork.rs"), 0),
+            ("store.rs", include_str!("store.rs"), 0),
+            ("import.rs", include_str!("import.rs"), 0),
+        ];
+        for (name, source, expected) in scanned {
+            // A Windows checkout (autocrlf) turns the include_str! text
+            // CRLF — normalize before scanning. The production half ends
+            // at the tests-module marker when one exists; a file without
+            // the marker is production in full.
+            let source = source.replace("\r\n", "\n");
+            let production = match source.split_once("#[cfg(test)]\nmod tests") {
+                Some((production, _tests)) => production,
+                None => source.as_str(),
+            };
+            let found = production.matches("generate_session_id(").count();
+            assert_eq!(
+                found, expected,
+                "{name}: bare `generate_session_id(` occurrences in \
+                 production must stay exactly {expected}; route new \
+                 allocation sites through \
+                 SessionStore::generate_unused_session_id[_with] so a \
+                 clock collision fails loudly instead of silently \
+                 replacing a live record"
+            );
+        }
     }
 
     #[test]

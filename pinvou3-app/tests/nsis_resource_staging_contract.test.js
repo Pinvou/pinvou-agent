@@ -155,7 +155,7 @@ assert.ok(
   "installer languages must cover Simplified Chinese, English and Japanese",
 );
 assert.deepEqual(
-  windowsPlatformConfig.bundle.windows.wix.languages,
+  windowsPlatformConfig.bundle.windows.wix.language,
   ["en-US", "zh-CN", "ja-JP"],
   "MSI languages must cover English, Simplified Chinese and Japanese (repo i18n policy)",
 );

@@ -22,7 +22,10 @@ use std::sync::Arc;
 // Crate-visible helpers exercised directly by the suite (not re-exported by
 // the facade because they are internal collaboration seams).
 use super::scheduled::ScheduledProfileRegistry;
-use super::store::{HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND};
+use super::store::{
+    HEADLESS_SESSION_PREFIX, MAX_SESSIONS_PER_KIND, clear_generated_id_queue_for_test,
+    push_generated_id_candidates_for_test,
+};
 use super::validators::generate_session_id;
 
 /// RAII teardown for `isolated_store`. Field order is drop order: env is
@@ -2740,6 +2743,18 @@ fn scheduled_delete_profile_persistence_failure_remains_retryable_after_record_c
 
 #[test]
 fn scheduled_creation_rolls_back_when_profile_write_fails() {
+    // This test deliberately bypasses isolated_store (which brings its own
+    // root and does not depend on PINVOU3_HOME), but its
+    // create_new/create_scheduled_run calls drain the process-global
+    // candidate queue (store.rs TEST_GENERATED_ID_QUEUE) — the default
+    // `cargo test` run is multi-threaded, so it must hold ENV_LOCK to
+    // serialize against the wiring-pin tests; otherwise it could steal the
+    // whole queue between a wiring test's push and its consume and turn an
+    // expect_err spuriously red (R2 REQUIRED-2; CI's --test-threads=1
+    // masks this race window).
+    let _env_lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = std::env::temp_dir().join(format!(
         "pinvou3-scheduled-rollback-{}",
         std::time::SystemTime::now()
@@ -10179,4 +10194,337 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
             "the matching twin must agree with the titling twin"
         );
     }
+}
+
+#[test]
+fn generate_unused_session_id_retries_past_an_occupied_candidate() {
+    let (store, _env) = isolated_store();
+    // Placeholder candidate: the probe only checks <id>.json existence, so a
+    // minimal file is enough.
+    std::fs::write(store.sessions_dir().join("occupied.json"), b"{}")
+        .expect("plant occupied record file");
+
+    let mut calls = 0u32;
+    let error = store
+        .generate_unused_session_id_with(|| {
+            calls += 1;
+            "occupied".to_string()
+        })
+        .expect_err("an always-occupied candidate must exhaust and fail loudly");
+    assert_eq!(calls, 8, "the retry budget is 8 candidates");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error}"
+    );
+
+    let mut seq = ["occupied", "fresh"].into_iter();
+    let id = store
+        .generate_unused_session_id_with(|| seq.next().unwrap().to_string())
+        .expect("a fresh second candidate must land");
+    assert_eq!(id, "fresh");
+}
+
+/// A metadata fault (0o000 dir) rides the same path as occupancy: any
+/// non-NotFound probe verdict counts as unavailable, and exhausted retries
+/// fail loudly — an unconfirmed id is never persisted (this closes the
+/// silent-overwrite surface of fork/create_new).
+#[cfg(unix)]
+#[test]
+fn generate_unused_session_id_fails_loud_on_stat_fault() {
+    use std::os::unix::fs::PermissionsExt;
+    let (store, _env) = isolated_store();
+    let sessions_dir = store.sessions_dir();
+    let original = std::fs::metadata(&sessions_dir)
+        .expect("stat sessions dir")
+        .permissions()
+        .mode();
+    // The 0o000 restore goes through a Drop guard: an asserting panic must
+    // not leave the dir at 0o000 — TestHomeGuard's remove_dir_all would
+    // wedge on 0o000 and leak the whole temp home.
+    struct RestorePermissions<'a>(&'a std::path::Path, u32);
+    impl Drop for RestorePermissions<'_> {
+        fn drop(&mut self) {
+            if std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(self.1)).is_err() {
+                eprintln!(
+                    "PERM-RESTORE-FAILED[generate_unused_session_id_fails_loud_on_stat_fault]: the sessions dir may be left 0o000"
+                );
+            }
+        }
+    }
+    // Root detection can only rely on "can an existing file be stat'd":
+    // NotFound looks identical for root and non-root, and stat'ing a file
+    // that was never created cannot tell whether the precondition holds.
+    let probe = sessions_dir.join("probe.json");
+    std::fs::write(&probe, b"{}").expect("plant probe file");
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
+        .expect("chmod sessions dir");
+    let _restore = RestorePermissions(&sessions_dir, original);
+    if std::fs::metadata(&probe).is_ok() {
+        eprintln!(
+            "ROOT-SKIP[generate_unused_session_id_fails_loud_on_stat_fault]: running as root, the 0o000 precondition does not hold; NOT exercised"
+        );
+        return;
+    }
+    let error = store
+        .generate_unused_session_id()
+        .expect_err("a stat-faulted sessions dir must fail loudly, not hand out an unverified id");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error}"
+    );
+    // Explicitly restore and verify on the happy path (the Drop guard only
+    // covers the panic window; same shape as the sister test
+    // import_reports_stat_fault…): a failed restore turns the test red
+    // instead of silently leaking the whole temp home (TestHomeGuard's
+    // remove_dir_all would wedge on 0o000).
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
+        .expect("restore the sessions dir permissions");
+}
+
+/// Wiring pin: the test candidate queue drives the collision sequence
+/// through `fork_session_record`'s real call site — a mutation that reverts
+/// fork's id allocation to bare `generate_session_id()` turns red here
+/// (that revert previously stayed green across the whole suite, review M4).
+#[test]
+fn fork_session_record_draws_candidates_through_the_occupancy_probe() {
+    let (store, _env) = isolated_store();
+    let source = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let mut session = store.load(&source.metadata.id).expect("load");
+    session.messages = vec![user_text("第一轮"), assistant_text("回复")];
+    store.save(&session).expect("seed");
+    std::fs::write(store.sessions_dir().join("occupied.json"), b"{}")
+        .expect("plant occupied record file");
+    struct ClearIdQueueOnDrop;
+    impl Drop for ClearIdQueueOnDrop {
+        fn drop(&mut self) {
+            clear_generated_id_queue_for_test();
+        }
+    }
+    let _queue_guard = ClearIdQueueOnDrop;
+
+    // Fill the whole candidate budget → the fork must fail loudly with the
+    // source record intact.
+    push_generated_id_candidates_for_test(&["occupied"; 8]);
+    let error = store
+        .fork_session_record(&source.metadata.id, 1)
+        .expect_err("an always-occupied candidate source must fail the fork loudly");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error:#}"
+    );
+    assert!(
+        store.load(&source.metadata.id).is_ok(),
+        "the source record must be intact past the loud failure"
+    );
+    // The exhausted path must not land any branch record (the sessions dir
+    // holds only the source record and the planted occupied.json — two
+    // .json files).
+    let json_names: Vec<String> = std::fs::read_dir(store.sessions_dir())
+        .expect("list sessions")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    assert_eq!(
+        json_names.len(),
+        2,
+        "no branch record may land: {json_names:?}"
+    );
+
+    // An occupied candidate followed by a fresh one → the fork lands on the
+    // injected fresh id: only wiring through the probe can produce this id
+    // (bare generation yields a clock value).
+    push_generated_id_candidates_for_test(&["occupied", "fresh"]);
+    let forked = store
+        .fork_session_record(&source.metadata.id, 1)
+        .expect("the fresh second candidate must land");
+    assert_eq!(forked.id, "fresh");
+    assert!(
+        store.load("fresh").is_ok(),
+        "the forked record must land on disk under the injected id"
+    );
+}
+
+/// The same wiring pin for [`SessionStore::create_new`]: budget exhaustion
+/// must fail loudly and land no record.
+#[test]
+fn create_new_fails_loud_when_every_generated_candidate_is_occupied() {
+    let (store, _env) = isolated_store();
+    std::fs::write(store.sessions_dir().join("occupied.json"), b"{}")
+        .expect("plant occupied record file");
+    struct ClearIdQueueOnDrop;
+    impl Drop for ClearIdQueueOnDrop {
+        fn drop(&mut self) {
+            clear_generated_id_queue_for_test();
+        }
+    }
+    let _queue_guard = ClearIdQueueOnDrop;
+    push_generated_id_candidates_for_test(&["occupied"; 8]);
+    let error = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect_err("an always-occupied candidate source must fail create_new loudly");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error:#}"
+    );
+    // The exhausted path must not land any record (the doc's "no record"
+    // claim is pinned here: the sessions dir holds only the planted
+    // occupied.json).
+    let json_names: Vec<String> = std::fs::read_dir(store.sessions_dir())
+        .expect("list sessions")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    assert_eq!(
+        json_names,
+        vec!["occupied.json".to_string()],
+        "no record may land past create_new exhaustion: {json_names:?}"
+    );
+}
+
+/// Persist failure reasons fold at the formation point (R2 SHOULD-2): the
+/// fork / create_new / import / aux command wrappers forward
+/// `write session {path}` verbatim into toasts — the fold must happen once
+/// inside `save_session_atomic`, and no caller may leak past it.
+#[cfg(unix)]
+#[test]
+fn save_persist_failure_reasons_fold_the_storage_prefix() {
+    use std::os::unix::fs::PermissionsExt;
+    let (store, _env) = isolated_store();
+    let created = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let mut session = store.load(&created.metadata.id).expect("load");
+    session.messages = vec![user_text("hi"), assistant_text("ok")];
+
+    let sessions_dir = store.sessions_dir();
+    let original = std::fs::metadata(&sessions_dir)
+        .expect("stat sessions dir")
+        .permissions()
+        .mode();
+    // The 0o000 restore goes through a Drop guard: an asserting panic must
+    // not leave the dir at 0o000 (same shape as
+    // generate_unused_session_id_fails_loud_on_stat_fault).
+    struct RestorePermissions<'a>(&'a std::path::Path, u32);
+    impl Drop for RestorePermissions<'_> {
+        fn drop(&mut self) {
+            if std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(self.1)).is_err() {
+                eprintln!(
+                    "PERM-RESTORE-FAILED[save_persist_failure_reasons_fold_the_storage_prefix]: the sessions dir may be left 0o000"
+                );
+            }
+        }
+    }
+    // Root detection relies on whether an existing file can be stat'd (the
+    // precondition must hold identically for root and non-root).
+    let probe = sessions_dir.join("probe-save.json");
+    std::fs::write(&probe, b"{}").expect("plant probe file");
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
+        .expect("chmod sessions dir");
+    let _restore = RestorePermissions(&sessions_dir, original);
+    if std::fs::metadata(&probe).is_ok() {
+        eprintln!(
+            "ROOT-SKIP[save_persist_failure_reasons_fold_the_storage_prefix]: running as root, the 0o000 precondition does not hold; NOT exercised"
+        );
+        return;
+    }
+    let error = store
+        .save(&session)
+        .expect_err("a 0o000 sessions dir must fail the persist loudly");
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("write session ~/.pinvou3/sessions/"),
+        "the persist reason must be storage-prefix folded: {text}"
+    );
+    assert!(
+        !text.contains("pinvou3-sessions-test-"),
+        "the persist reason must not leak the raw home prefix: {text}"
+    );
+    // Explicitly restore and verify on the happy path (the Drop guard only
+    // covers the panic window): a failed restore turns the test red instead
+    // of silently leaking the whole temp home.
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(original))
+        .expect("restore the sessions dir permissions");
+}
+
+/// Wiring pin: the sched- namespace rides the same occupancy probe
+/// (retention's allocation closure goes through
+/// `generate_unused_session_id_with`'s candidate queue) — a mutation that
+/// reverts the sched site to bare `format!("sched-{}",
+/// generate_session_id())` turns red here (R2 SHOULD-1/M2R: that revert
+/// previously stayed byte-identically green against the baseline, no
+/// signal anywhere in the suite).
+#[test]
+fn create_scheduled_run_draws_candidates_through_the_occupancy_probe() {
+    let (store, _env) = isolated_store();
+    struct ClearIdQueueOnDrop;
+    impl Drop for ClearIdQueueOnDrop {
+        fn drop(&mut self) {
+            clear_generated_id_queue_for_test();
+        }
+    }
+    let _queue_guard = ClearIdQueueOnDrop;
+    std::fs::write(store.sessions_dir().join("sched-occupied.json"), b"{}")
+        .expect("plant occupied record file");
+
+    // Fill the whole candidate budget → create_scheduled_run must fail
+    // loudly and land no sched record.
+    push_generated_id_candidates_for_test(&["sched-occupied"; 8]);
+    let error = store
+        .create_scheduled_run(scheduled_profile("task-sched-pin"))
+        .expect_err("an always-occupied candidate source must fail the sched run loudly");
+    assert!(
+        error
+            .to_string()
+            .contains("could not allocate an unused session id"),
+        "{error:#}"
+    );
+    let json_names: Vec<String> = std::fs::read_dir(store.sessions_dir())
+        .expect("list sessions")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    assert_eq!(
+        json_names,
+        vec!["sched-occupied.json".to_string()],
+        "no sched record may land past exhaustion: {json_names:?}"
+    );
+    // The id allocation runs before any side effect: exhaustion must not
+    // leave an orphan empty task-workspace dir behind.
+    assert!(
+        !store
+            .scheduled_workspace_for_task("task-sched-pin")
+            .expect("derive task workspace")
+            .exists(),
+        "id exhaustion must not create the task workspace dir"
+    );
+
+    // An occupied candidate followed by a fresh one → the run lands on the
+    // injected sched- prefixed id: only wiring through the probe can
+    // produce this id (bare generation yields a clock value).
+    push_generated_id_candidates_for_test(&["sched-occupied", "sched-fresh"]);
+    let session = store
+        .create_scheduled_run(scheduled_profile("task-sched-pin2"))
+        .expect("the fresh second candidate must land");
+    assert_eq!(session.metadata.id, "sched-fresh");
+    assert!(
+        store.load("sched-fresh").is_ok(),
+        "the sched record must land under the injected id"
+    );
+    assert!(
+        store.scheduled_profile("sched-fresh").is_some(),
+        "the in-memory ownership metadata must exist for the injected id"
+    );
 }
