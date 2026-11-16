@@ -688,6 +688,11 @@ function enforceLazyChunks() {
 // the arm64/loongarch64 release legs) is the binding measure. Web
 // unchanged. This cap does not promise headroom for unrelated main
 // changes.
+//
+// PR #847 r12 rebase re-measure, onto the 2026-11-16 main that landed #851
+// (endpoint-model UI rides the lazy settings chunk) and #879: the desktop
+// entry measures 495,040 B on this toolchain — the 496_000 ceiling holds
+// with ~960 B of headroom, no re-cut needed.
 export const MAIN_ENTRY_BUDGET_BYTES = 496_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
