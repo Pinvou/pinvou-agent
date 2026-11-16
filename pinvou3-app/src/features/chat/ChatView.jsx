@@ -40,11 +40,10 @@ import { shouldVirtualizeConversationTurns } from '../conversation/conversation-
 import {
   codeBlockCopyLabels,
   copyCodeBlockFromButton,
-  ensureCodeCopyButtons,
   findCodeCopyButton,
-  observeCodeCopyButtons,
 } from '../conversation/code-block-copy.js';
-import { applyStreamFade } from '../conversation/stream-fade.js';
+import { commitRichTextFrame } from '../conversation/rich-text-dom.js';
+import { hasRichTextSelection } from '../conversation/rich-text-selection.js';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
   conversationItemsForMode,
@@ -508,15 +507,15 @@ const renderLegacyMarkdownCached = createWeakCache(
 // per item and reused while the tuple is unchanged; while streaming, the
 // item gets a new reference per delta so the cache invalidates naturally —
 // behavior unchanged.
-const parseAssistantBubblesCached = createWeakCache(
-  // biome-ignore lint/correctness/noUnusedFunctionParameters: createWeakCache cache-key contract — parameters are positional, not all are read
-  (item, html, streaming, allowScheduledTaskDraft, streamingDraftLabel) => {
-    const pd = streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
-    const sd = (streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
-    const cq = streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
-    return { pd, sd, cq };
-  },
-);
+// biome-ignore lint/correctness/noUnusedFunctionParameters: item owns the weak cache entry
+function parseAssistantBubbles(item, html, streaming, allowScheduledTaskDraft, streamingDraftLabel) {
+  const pd = streaming ? { draft: null, html: hideStreamingDraft(html, streamingDraftLabel) } : parsePersonaDraft(html);
+  const sd = (streaming || !allowScheduledTaskDraft) ? { draft: null, html: pd.html } : parseScheduledTaskDraft(pd.html);
+  const cq = streaming ? { q: null, html: sd.html } : parseCardQuestion(sd.html);
+  return { pd, sd, cq };
+}
+
+const parseAssistantBubblesCached = createWeakCache(parseAssistantBubbles);
 
 // The memory status label map depends only on the current language
 // dictionary t (a module singleton); caching per t avoids rebuilding the
@@ -2002,6 +2001,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // item, or every delta would re-force the bottom and overwrite the
         // scroll listener's "user scrolled up" state for the rest of the
         // turn (r13 review M1).
+        if (hasRichTextSelection(el)) return;
         if (shouldForceScrollFollow({
           following: autoScrollRef.current,
           lastItemType: lastItem.type,
@@ -5387,30 +5387,29 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       const assistantDraftLabel = item.type === 'assistant'
         ? (/scheduled-task-draft/.test(assistantHtml) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning))
         : null;
+      const assistantStreaming = !!item.streaming;
+      const copyLabels = codeBlockCopyLabels(t.uiConversation);
       const assistantParsed = item.type === 'assistant'
-        ? parseAssistantBubblesCached(item, assistantHtml, !!item.streaming, allowScheduledTaskDraft, assistantDraftLabel)
+        ? parseAssistantBubblesCached(item, assistantHtml, assistantStreaming, allowScheduledTaskDraft, assistantDraftLabel)
         : null;
-      // 代码块一键复制:assistant 气泡经 dangerouslySetInnerHTML 注入,按钮只能在
-      // 提交后补挂。目标 div 在流式首帧(item.streaming && !item.html)时不渲染,
-      // ref 可能为 null,因此不设 deps:每次渲染后重跑,目标挂载后的下一次渲染即
-      // 接上;ensureCodeCopyButtons 幂等(流式/重渲染会整体替换内部 DOM,新块自动
-      // 补装)。观察器与 ensure 同 effect:innerHTML 可能在 effect 不再触发时被整体
-      // 替换(冷启动懒注册重提交等),MutationObserver 自愈补装;重渲染时清理函数先
-      // 断开旧观察器再重挂,卸载时断开。
-      useEffect(() => {
+      // The transform is pure in this tuple. Stable policy identity lets text-
+      // only deltas skip work while source/policy changes still revalidate
+      // equal HTML rather than lending controls to another source block.
+      const assistantSourceTransform = useCallback(html => parseAssistantBubbles(null, html, assistantStreaming,
+        allowScheduledTaskDraft, assistantDraftLabel).cq.html || '',
+      [assistantStreaming, allowScheduledTaskDraft, assistantDraftLabel]);
+      // The first empty streaming frame has no target div. Re-run after every
+      // commit so the later mount is reconciled before paint. Retain existing
+      // code controls and install controls only for newly rendered blocks.
+      useLayoutEffect(() => {
         if (item.type !== 'assistant') return;
-        const target = assistantSelectionTargetRef.current;
-        if (!target) return;
-        const labels = codeBlockCopyLabels(t.uiConversation);
-        ensureCodeCopyButtons(target, labels);
-        // Wrap text streamed since the previous render in one-shot fade spans
-        // (no-op when nothing is new); runs before the observer below is
-        // (re)installed and the cleanup already disconnected the previous one,
-        // so the wrap's own mutations are not self-observed. `html` is the
-        // string this render injected: when unchanged, React skipped the
-        // write and the pass skips its DOM walk (see stream-fade.js).
-        applyStreamFade(target, { streaming: !!item.streaming, html: assistantParsed.cq.html || '' });
-        return observeCodeCopyButtons(target, labels);
+        return commitRichTextFrame(assistantSelectionTargetRef.current, assistantParsed.cq.html || '', {
+          streaming: assistantStreaming,
+          copyLabels,
+          markdownSource: assistantStreaming ? item.htmlSource : item.text,
+          sourceHtmlFiltered: assistantParsed.cq.html !== assistantHtml,
+          sourceHtmlTransform: assistantSourceTransform,
+        });
       });
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} t={t} isLatest={isLatestArtifact} />;
@@ -5457,7 +5456,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
                   const copyButton = findCodeCopyButton(e.target);
                   if (copyButton) {
                     e.preventDefault();
-                    copyCodeBlockFromButton(copyButton, { labels: codeBlockCopyLabels(t.uiConversation) });
+                    copyCodeBlockFromButton(copyButton, { labels: copyLabels });
                     return;
                   }
                   // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
@@ -5469,7 +5468,6 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
                     openChatExternalUrl(href);
                   }
                 }}
-                dangerouslySetInnerHTML={{ __html: cq.html || '' }}
               />
               <SelectionCopyButton hostRef={assistantSelectionHostRef} targetRef={assistantSelectionTargetRef} t={t} />
               {cq.q ? (

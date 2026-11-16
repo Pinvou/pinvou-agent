@@ -272,7 +272,10 @@ const expectedProtocolHashes = {
   // baseline; implemented in bridge-messages next to the other counter
   // primitives). Same event surface — no new invoke or listen entries; the
   // edit lives inside the existing listen(...) body.
-  chat: 'f877a9cfaeb4288eb1de8ec78beb6002d870ff7b0f4993acb1e032d4a85b546a',
+  // Stream bubbles now carry htmlSource for native selection provenance.
+  // This additive local state field is inside the hashed delta listener;
+  // invoke payloads and event names are unchanged.
+  chat: 'ea5066060105980417d564b45534926cb7ea7faae34eaefc29f65cc072bec73d',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

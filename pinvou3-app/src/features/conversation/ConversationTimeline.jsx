@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
@@ -36,11 +36,10 @@ import { AssistantMessageActions, AssistantMessageFooter } from './AssistantMess
 import {
   codeBlockCopyLabels,
   copyCodeBlockFromButton,
-  ensureCodeCopyButtons,
   findCodeCopyButton,
-  observeCodeCopyButtons,
 } from './code-block-copy.js';
-import { applyStreamFade } from './stream-fade.js';
+import { commitRichTextFrame } from './rich-text-dom.js';
+import { hasRichTextSelection } from './rich-text-selection.js';
 import { createWeakCache } from '../../shared/weak-cache.js';
 import { assistantResponseAvailable, assistantResponseText } from './message-clipboard.js';
 import {
@@ -125,25 +124,11 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
   const html = useMemo(() => renderMarkdown(renderText), [renderText, syntaxVersion]);
   const containerRef = useRef(null);
   const copyLabels = useMemo(() => codeBlockCopyLabels(c), [c]);
-  // 渲染 HTML 经 dangerouslySetInnerHTML 注入,代码块复制按钮只能在提交后挂到 DOM;
-  // 流式期间 html 每次 throttle 都整体替换,ensureCodeCopyButtons 幂等补装新块。
-  // 但 innerHTML 可能在 effect 不重新触发的情况下被整体替换(冷启动语法高亮注册、
-  // Suspense/懒注册重提交等),仅靠 [html] 依赖会漏装,因此挂 MutationObserver 自愈:
-  // 容器内任何结构变化都幂等补装,卸载时断开。
-  useEffect(() => {
-    ensureCodeCopyButtons(containerRef.current, copyLabels);
-    // Wrap text streamed since the previous throttled render in one-shot fade
-    // spans; seen text never re-animates (offset bookkeeping in
-    // stream-fade.js). Runs before the observer below is (re)installed and the
-    // cleanup already disconnected the previous one, so the wrap's own
-    // mutations are not self-observed. `streaming` joins the deps because the
-    // completion flush may coincide with no html change (final text already
-    // rendered) and the streaming=false pass must still run to forget the
-    // fade bookkeeping. `html` lets the pass skip its whole-tree walk when
-    // this string is unchanged (React skipped the write, DOM is identical).
-    applyStreamFade(containerRef.current, { streaming, html });
-    return observeCodeCopyButtons(containerRef.current, copyLabels);
-  }, [html, copyLabels, streaming]);
+  // Reconcile sanitized output before paint. Existing text and copy controls
+  // keep their DOM identity while the current paragraph/code continues growing.
+  useLayoutEffect(() => commitRichTextFrame(containerRef.current, html, {
+    streaming, copyLabels, markdownSource: renderText,
+  }), [html, renderText, copyLabels, streaming]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;
@@ -173,7 +158,6 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
       ref={containerRef}
       className={`codex-markdown conversation-markdown text-[15px] leading-7 ${className}`}
       onClick={onClick}
-      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }
@@ -1259,7 +1243,7 @@ export function ConversationTimeline({
     let firstFrame = 0;
     let secondFrame = 0;
     const stickToBottom = () => {
-      if (followOutputRef?.current !== true) return false;
+      if (followOutputRef?.current !== true || hasRichTextSelection(scrollElement)) return false;
       scrollElement.scrollTop = scrollElement.scrollHeight;
       return true;
     };

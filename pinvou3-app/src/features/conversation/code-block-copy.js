@@ -1,6 +1,6 @@
-// 对话 markdown 代码块(pre.pinvou-code-block)的一键复制按钮。
-// ConversationMarkdown 用 dangerouslySetInnerHTML 注入渲染结果,按钮只能在渲染后
-// 挂到 DOM 上;本模块集中按钮创建、点击识别、取文与复制反馈,逻辑与 React 解耦以便单测。
+// Copy controls for rendered Markdown code blocks (pre.pinvou-code-block).
+// Rich-text reconciliation retains these native controls across stream frames;
+// installation, delegated clicks, source snapshots and feedback live here.
 import { copyClipboardText } from '../../shared/clipboard.js';
 
 export const CODE_COPY_BUTTON_CLASS = 'pinvou-code-copy-btn';
@@ -30,6 +30,12 @@ const FEEDBACK_MS = 1600;
 const CODE_COPY_BUTTON_FLAG = '__pinvouCodeCopy';
 const CODE_COPY_LIVE_FLAG = '__pinvouCodeCopyLive';
 
+// Only JS-owned controls survive rich-text reconciliation. Model-provided
+// class names and data attributes cannot opt into this ownership boundary.
+export function isCodeCopyControl(node) {
+  return node?.[CODE_COPY_BUTTON_FLAG] === true || node?.[CODE_COPY_LIVE_FLAG] === true;
+}
+
 // 与 components/icons.jsx 的 Copy/Check/X 同一份 lucide 路径;按钮是渲染后注入的原生
 // DOM(非 React 组件),只能内联 SVG 字符串,改动图标时两边同步。
 const COPY_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
@@ -44,8 +50,9 @@ function setButtonLabel(button, label) {
   button.setAttribute('aria-label', label);
 }
 
-// 给容器内所有尚未装按钮的代码块补按钮;流式渲染每次 throttle 都整体替换 HTML,
-// 因此本函数必须幂等(已装过的块跳过),返回新装数量。已装块顺带同步 title/aria-label:
+// Install controls idempotently on new blocks and refresh existing labels.
+// Existing controls survive normal streaming reconciliation.
+// 已装块顺带同步 title/aria-label:
 // html 不随语言切换重建,历史消息的按钮提示文案只能在这里换;反馈态(is-copied/
 // is-failed)期间 title 是反馈文案,跳过以免刷掉。伪造元素(无安装标记,不限标签——
 // CSS 类名选择器不限标签,伪 div/span 同样算)全量摘掉本模块类名:伪元素回落为消毒
@@ -174,8 +181,8 @@ export async function copyCodeBlockFromButton(button, options = {}) {
       copied = false;
     }
   }
-  // 已知限制:流式期间 writeText 异步落定前按钮可能被整体 innerHTML 替换销毁,
-  // 反馈将作用在游离节点上不可见(复制本身已成功);复位路径对游离节点幂等无害。
+  // Rich-text reconciliation keeps this button mounted as its code grows.
+  // A removed message can still finish copying; detached feedback is harmless.
   showCopyFeedback(button, Boolean(copied), labels);
   return Boolean(copied);
 }

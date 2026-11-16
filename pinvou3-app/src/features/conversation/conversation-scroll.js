@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { hasRichTextSelection } from './rich-text-selection.js';
 import {
   isNearConversationBottom,
   isShrinkClampedToBottom,
@@ -92,11 +93,11 @@ export function startConversationBottomFollower({
     // baseline even while history browsing, so the next user scroll is not compared
     // with stale pre-reflow geometry and mistaken for a shrink-induced clamp.
     if (onMeasured) onMeasured(scrollElement);
-    if (!isFollowing()) return;
+    if (!isFollowing() || hasRichTextSelection(contentElement)) return;
     if (frame !== null) windowObject.cancelAnimationFrame(frame);
     frame = windowObject.requestAnimationFrame(() => {
       frame = null;
-      if (!isFollowing()) return;
+      if (!isFollowing() || hasRichTextSelection(contentElement)) return;
       restoreConversationScrollPosition(scrollElement, { stickToBottom: true, bottomGap: 0 });
       if (onRestored) onRestored(scrollElement.scrollTop);
     });

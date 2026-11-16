@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Streaming selection regression</title>
+    <style>
+      body { margin: 24px; }
+      #root, #legacy { width: 700px; }
+      pre.pinvou-code-block { position: relative; padding: 36px 12px 12px; background: #eee; }
+      .pinvou-code-copy-btn { position: absolute; right: 4px; top: 4px; width: 32px; height: 28px; }
+      .pinvou-code-copy-live { position: absolute; width: 1px; height: 1px; overflow: hidden; user-select: none; }
+      .stream-fade-seg { animation: fade 150ms ease-out both; }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+  </head>
+  <body>
+    <p id="outside">Outside message</p>
+    <div id="root"></div>
+    <div id="legacy"></div>
+    <script type="module" src="./streaming_rich_text.jsx"></script>
+  </body>
+</html>
