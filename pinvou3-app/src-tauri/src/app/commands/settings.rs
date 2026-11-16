@@ -872,6 +872,13 @@ pub(crate) async fn probe_endpoint_models(
     if base_url.trim().is_empty() {
         return Err("empty_base_url".to_string());
     }
+    // 与 test_model_connection 的 invalid_url 前置检查同一口径:base 连
+    // URL 都解析不了时早退稳定错误串,而不是把「没有 scheme 的裸 host」
+    // 之类交给探测阶梯——reqwest 对不可解析地址只会给出 client 层错误,
+    // 前端拿到的分类提示会失真。
+    if reqwest::Url::parse(base_url.trim()).is_err() {
+        return Err("invalid_url".to_string());
+    }
     // preset 优先(serde snake_case 反序列化即解析器),失败报稳定小写串;
     // preset 缺省时 wire 兜底,都缺省(或 wire 空)→ OpenAI 兼容。
     let protocol = match preset.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
@@ -3286,7 +3293,8 @@ mod tests {
 
     // ---- §2.3: probe_endpoint_models 命令薄壳 ----
 
-    /// 空 base_url 与未知 preset 的稳定错误串(直接调命令函数断言)。
+    /// 空 base_url、非 URL 形态与未知 preset 的稳定错误串(直接调命令函数
+    /// 断言)。invalid_url 与 test_model_connection 的前置检查同一稳定码。
     #[test]
     fn probe_endpoint_models_command_rejects_empty_url_and_unknown_preset() {
         let empty = tauri::async_runtime::block_on(probe_endpoint_models(
@@ -3296,6 +3304,17 @@ mod tests {
             None,
         ));
         assert_eq!(empty.unwrap_err(), "empty_base_url");
+        // minor-5:无 scheme 的裸 host(:前首段以数字开头,不成 scheme)与
+        // 任意非 URL 文本 → invalid_url,而不是探测阶梯的传输错误分类。
+        for malformed in ["127.0.0.1:8000", "not a url"] {
+            let malformed = tauri::async_runtime::block_on(probe_endpoint_models(
+                malformed.to_string(),
+                None,
+                None,
+                None,
+            ));
+            assert_eq!(malformed.unwrap_err(), "invalid_url");
+        }
         let unknown = tauri::async_runtime::block_on(probe_endpoint_models(
             "https://example.invalid/v1".to_string(),
             None,
