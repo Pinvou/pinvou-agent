@@ -694,11 +694,14 @@ fn replace_model_directory(candidate: &Path, destination: &Path) -> Result<Optio
 /// 同时清掉 `CANCEL`，把旗标语义收敛为「一次在飞的下载」：在飞窗口内落下的
 /// 取消在流程出口就地清零、不泄漏残旗；空闲期（无守卫在飞）上膛的取消按
 /// 契约留到下一次流程入口被消费（见 kb_model_download 入口注释）。
+/// 清 `CANCEL` 必须先于放 `DOWNLOADING`：放槽与清旗之间，第二次下载可以
+/// 占到槽位，随后这条旧守卫的清旗会把**新下载**的取消请求一并抹掉
+/// （review JensenChen28 2026-11-16 P2）。先退役旧请求再放槽，间隙即闭合。
 struct DownloadGuard;
 impl Drop for DownloadGuard {
     fn drop(&mut self) {
-        DOWNLOADING.store(false, Ordering::SeqCst);
         CANCEL.store(false, Ordering::Relaxed);
+        DOWNLOADING.store(false, Ordering::SeqCst);
     }
 }
 
