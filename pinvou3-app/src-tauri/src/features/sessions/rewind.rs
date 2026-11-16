@@ -355,8 +355,11 @@ fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> 
         .with_context(|| format!("写入回退备份失败: {}", path.display()))
 }
 
-/// 一条记录按落盘口径（pretty JSON）的序列化长度：预算计量与实际写出的字节
-/// 同一口径，淘汰扣减才不会漂移。
+/// 一条记录按落盘口径（pretty JSON）的序列化长度：预算计量与实际写出同为
+/// pretty 口径，淘汰扣减方向不会漂移。注意嵌套记录独立序列化时每行比它在
+/// map 里少两层缩进，扣减因此略微低估单条占比——淘汰会略微多淘汰几条，
+/// 最终 map 严格不超预算（偏安全方向）；「同一口径」指 pretty 与 pretty，
+/// 不是逐字节相等（r14 review 澄清）。
 fn rewound_record_serialized_len(record: &RewoundTurnsRecord) -> usize {
     serde_json::to_vec_pretty(record)
         .map(|bytes| bytes.len())
