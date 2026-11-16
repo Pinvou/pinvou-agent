@@ -3222,7 +3222,12 @@ mod tests {
             .unwrap();
         let swept = tmp.join("staged-swept.bin");
         std::fs::write(&swept, b"x").unwrap();
-        sweep_unreferenced_staged_copies(&store, "agentic_sweep_empty", true, &[swept.clone()]);
+        sweep_unreferenced_staged_copies(
+            &store,
+            "agentic_sweep_empty",
+            true,
+            std::slice::from_ref(&swept),
+        );
         assert!(
             !swept.exists(),
             "an untouched transcript's staged copies must be reclaimed"
@@ -3252,7 +3257,12 @@ mod tests {
             .unwrap();
         let kept = tmp.join("staged-kept.bin");
         std::fs::write(&kept, b"x").unwrap();
-        sweep_unreferenced_staged_copies(&store, "agentic_sweep_talking", true, &[kept.clone()]);
+        sweep_unreferenced_staged_copies(
+            &store,
+            "agentic_sweep_talking",
+            true,
+            std::slice::from_ref(&kept),
+        );
         assert!(
             kept.exists(),
             "a transcript with messages may reference the staged copies"
@@ -3262,7 +3272,12 @@ mod tests {
         // the whole record directory.
         let fresh = tmp.join("staged-fresh.bin");
         std::fs::write(&fresh, b"x").unwrap();
-        sweep_unreferenced_staged_copies(&store, "agentic_never_created", false, &[fresh.clone()]);
+        sweep_unreferenced_staged_copies(
+            &store,
+            "agentic_never_created",
+            false,
+            std::slice::from_ref(&fresh),
+        );
         assert!(fresh.exists(), "fresh sessions are the stub cleanup's job");
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3808,8 +3823,7 @@ mod tests {
         // The caller holds ENV_LOCK via `locked_env` and has already set
         // PINVOU3_HOME to the scratch home — `boot_inner_with` resolves
         // `paths::sessions_root()` from it at boot, so the store and every
-        // seeded record land inside the scratch home. SAFETY: ENV_LOCK held;
-        // env writes are serialized across tests.
+        // seeded record land inside the scratch home.
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-agentic-lifecycle-{tag}-{}",
             std::time::SystemTime::now()
@@ -3817,6 +3831,8 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        // SAFETY: ENV_LOCK held by every caller via `locked_env` (first
+        // statement of each test); env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store =
             SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot store");

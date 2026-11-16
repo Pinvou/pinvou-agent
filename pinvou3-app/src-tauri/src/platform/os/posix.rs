@@ -428,16 +428,22 @@ mod tests {
         // SAFETY: platform::paths::tests::ENV_LOCK is held and lib tests run
         // with --test-threads=1; env writes are serialized in-process.
         unsafe { std::env::remove_var("NPM_CONFIG_PREFIX") };
+        // SAFETY: platform::paths::tests::ENV_LOCK is held (same guard as the
+        // remove_var above); env writes are serialized in-process.
         unsafe { std::env::set_var("npm_config_prefix", &root) };
         let resolved = connector_cli_program("tmeet", "tmeet");
         match previous_upper {
             // SAFETY: same ENV_LOCK serialization as above.
             Some(value) => unsafe { std::env::set_var("NPM_CONFIG_PREFIX", value) },
+            // SAFETY: same ENV_LOCK serialization as above (guard alive to
+            // the end of this test).
             None => unsafe { std::env::remove_var("NPM_CONFIG_PREFIX") },
         }
         match previous_lower {
             // SAFETY: same ENV_LOCK serialization as above.
             Some(value) => unsafe { std::env::set_var("npm_config_prefix", value) },
+            // SAFETY: same ENV_LOCK serialization as above (guard alive to
+            // the end of this test).
             None => unsafe { std::env::remove_var("npm_config_prefix") },
         }
         let _ = std::fs::remove_dir_all(&root);

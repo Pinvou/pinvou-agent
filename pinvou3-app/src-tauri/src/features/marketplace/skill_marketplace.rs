@@ -4160,6 +4160,8 @@ mod tests {
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var("PINVOU3_HOME").ok();
         let tmp = fresh_dir("uninstall_refuse");
+        // SAFETY: ENV_LOCK held by _g (first statement of this test); env
+        // writes are serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // 已装包 m：manifest 声明 companion up-skill，且实体化了同名副本。
@@ -4226,7 +4228,11 @@ mod tests {
         );
 
         match prev {
+            // SAFETY: ENV_LOCK still held by _g (alive to the end of this
+            // test); env writes are serialized in-process.
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: ENV_LOCK still held by _g (alive to the end of this
+            // test); env writes are serialized in-process.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&tmp);
