@@ -53,7 +53,7 @@ const capCachedAllDocs = (docs) => (docs.length > KB_ALL_DOCS_CACHE_CAP ? docs.s
 const MODEL_PROGRESS_RADIUS = 31;
 const MODEL_PROGRESS_CIRCUMFERENCE = 2 * Math.PI * MODEL_PROGRESS_RADIUS;
 
-function ModelProgressIndicator({ downloading, percent, label, onCancel, cancelLabel }) {
+function ModelProgressIndicator({ downloading, percent, label, onCancel, cancelLabel, cancelPending }) {
   if (!downloading) {
     return (
       <div className="flex flex-col items-center gap-2.5" role="status" aria-live="polite">
@@ -101,8 +101,9 @@ function ModelProgressIndicator({ downloading, percent, label, onCancel, cancelL
       </div>
       <span className="text-[12.5px] font-semibold text-[#2f6beb] dark:text-[#A8C7FA]">{label}</span>
       {onCancel && (
-        <button type="button" onClick={onCancel}
-          className="rounded-full px-4 py-1.5 text-[12.5px] font-semibold bg-[#eceef7] text-[#3f4250] dark:bg-white/10 dark:text-white">{cancelLabel}</button>
+        <button type="button" onClick={onCancel} disabled={!!cancelPending}
+          aria-busy={cancelPending || undefined}
+          className="rounded-full px-4 py-1.5 text-[12.5px] font-semibold bg-[#eceef7] text-[#3f4250] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-white">{cancelLabel}</button>
       )}
     </div>
   );
@@ -862,9 +863,15 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       };
       // 取消进行中的模型下载：后端在下一个数据块/校验边界生效，下载 promise 以
       // "cancelled" 拒绝后由 bridge 记为中性 cancelled 态（UI 随 downloading=false 收起）。
+      const [kbCancelPending, setKbCancelPending] = useState(false);
+      // 取消请求受理后禁用按钮直到 downloading 结束：取消要到下一个块/校验边界
+      // 才落地（读超时上限 90s），期间按钮不应看起来仍可点。
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the interaction flag once the flow it gates has ended
+      useEffect(() => { if (!downloading) setKbCancelPending(false); }, [downloading]);
       const cancelModelDownload = async () => {
-        if (!downloading) return;
-        try { await bridge.knowledge.cancelKbModel(); } catch { /* policy-denied / backend gone */ }
+        if (!downloading || kbCancelPending) return;
+        setKbCancelPending(true);
+        try { await bridge.knowledge.cancelKbModel(); } catch { /* facade 永不 reject；这里只防实现退化为同步抛错 */ }
       };
       // 用户恰好在首帧后台加载期间进入知识库时，模型就绪后刷新语义状态徽标。
       useEffect(() => {
@@ -1399,6 +1406,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}
                       onCancel={downloading ? cancelModelDownload : undefined}
                       cancelLabel={downloading ? t.kbModelCancelBtn : undefined}
+                      cancelPending={kbCancelPending}
                     />
                   </div>
                 ) : (
@@ -1418,7 +1426,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     )}
                     <div className={`mt-3 text-[12px] ${muted}`}>{t.kbModelFoot}</div>
                     {(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && <div className="mt-2 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">{kbm.error || effectiveKbModel.error}</div>}
-                    {!kbm.error && kbm.cancelled && <div className={`mt-2 text-[12px] ${muted}`}>{t.kbModelCancelled}</div>}
+                    {/* 中性取消提示与红色错误互斥：错误源同上行（本地或后端 status），到来即让位 */}
+                    {!(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && kbm.cancelled && <div className={`mt-2 text-[12px] ${muted}`}>{t.kbModelCancelled}</div>}
                   </div>
                 ))}
               </div>
@@ -1478,7 +1487,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     <ModelProgressIndicator downloading={downloading} percent={dlPct}
                       label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}
                       onCancel={downloading ? cancelModelDownload : undefined}
-                      cancelLabel={downloading ? t.kbModelCancelBtn : undefined} />
+                      cancelLabel={downloading ? t.kbModelCancelBtn : undefined}
+                      cancelPending={kbCancelPending} />
                   </div>
                 )}
 
