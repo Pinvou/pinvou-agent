@@ -437,7 +437,7 @@ fn memory_profile_set_refuses_a_label_the_normalizer_would_wipe() {
         "--call-name",
         "Alice!",
     ]);
-    let profile = pinjou3_lib::features::memory::load_profile().unwrap();
+    let profile = pinvou3_lib::features::memory::load_profile().unwrap();
     assert_eq!(profile.identity.call_name, "Alice");
 }
 
@@ -455,7 +455,7 @@ fn memory_profile_set_refuses_a_stored_wipe_shaped_label_and_allows_the_repair()
     // Hand-write a stored profile whose call_name the normalizer would
     // silently empty (a plain name far over the twelve-character survivor
     // rule), bypassing the guarded write paths.
-    let path = pinjou3_lib::features::memory::profile_path();
+    let path = pinvou3_lib::features::memory::profile_path();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let raw_stored =
         r#"{"identity":{"call_name":"Bartholomew Whiskersworth","assistant_alias":""}}"#;
@@ -500,7 +500,7 @@ fn memory_profile_set_refuses_a_stored_wipe_shaped_label_and_allows_the_repair()
         "--assistant-alias",
         "Pin",
     ]);
-    let profile = pinjou3_lib::features::memory::load_profile().unwrap();
+    let profile = pinvou3_lib::features::memory::load_profile().unwrap();
     assert_eq!(profile.identity.call_name, "Alice");
     assert_eq!(profile.identity.assistant_alias, "Pin");
 }
