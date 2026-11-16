@@ -132,6 +132,10 @@ test('cancelled model downloads settle as neutral state and cancel returns a pro
       // 仿真这一拒绝形态正是本钉的目的，故豁免 reject-errors 规则。
       // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
       if (command === 'kb_model_download') return Promise.reject('cancelled');
+      // 取消命令本身也拒绝（web/旧后端的 policy-denial 形态）：cancelKbModel
+      // 必须吞掉并 resolve，"永不 reject" 在拒绝式 mock 下才有牙。
+      // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
+      if (command === 'kb_model_cancel') return Promise.reject('commandNotAllowed: kb_model_cancel');
       if (command === 'kb_model_status') return { installed: true, ready: false, loading: false };
       return null;
     },
@@ -168,7 +172,9 @@ test('cancelled model downloads settle as neutral state and cancel returns a pro
   assert.equal(state.kbModelSetup.error, '网络错误');
   assert.equal(state.kbModelSetup.cancelled, false);
 
-  // 两条 lane 的取消等待语义一致：cancelKbModel 返回永不 reject 的 promise。
+  // 取消等待语义：cancelKbModel 永不 reject——上面的 mock 连 kb_model_cancel
+  // 本身都以 policy-denial 拒绝，吞噬在此钉死。web lane 的内联副本同形，
+  // 其存在性由 web_bridge_domain_contract 钉。
   assert.equal(typeof feature.cancelKbModel().then, 'function');
   await feature.cancelKbModel();
 });
