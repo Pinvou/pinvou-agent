@@ -745,8 +745,10 @@ pub struct SessionTimelineStats {
 /// 聚合 session timeline 为单个 stats 对象。
 ///
 /// 算法:遍历 read_timeline(),按 turn_id 配对 (user_start, assistant_done),
-/// 每对算一个 turn。token / 状态从 assistant_done 取(ACP 收口与 send_error
-/// 兜底不写 usage,token 计 0;引擎正常链路的失败轮可能携带 usage 并计入)。
+/// 每个有 user_start 的 turn 算一个(未收口的轮计入 incomplete_turns,
+/// 不是只有配齐两半才计数)。token / 状态从 assistant_done 取(ACP 收口与
+/// send_error 兜底不写 usage,token 计 0;引擎正常链路的失败轮可能携带
+/// usage 并计入)。
 /// 孤儿 assistant_done(无 user_start,多来自 user_start
 /// 写盘失败)不配对:不计 turn_count、不入任何分桶或 token 总和。
 pub fn compute_stats(session_id: &str) -> std::io::Result<SessionTimelineStats> {

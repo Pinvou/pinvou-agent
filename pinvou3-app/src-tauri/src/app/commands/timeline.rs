@@ -32,10 +32,10 @@ pub async fn get_session_timeline(
 /// 聚合 session 级 stats:轮数 / token 累计 / cache 命中 / 成功失败数 / 首末时间。
 /// 可供后续诊断入口消费。token 来自 timing_events 的 usage 字段(2026-07 起写入);
 /// 老于此的 session 这些字段为 0。契约:sidecar 缺失时返回全零(与空 session
-/// 不可区分),超过 32MiB 上限整体报错,单行损坏的行整行跳过(不计入)。
-/// 注意:ACP 会话收口与提交前 send_error 兜底走不带 usage 的 finish_turn,
-/// 这些轮 token 恒为 0;引擎正常链路的失败轮(如收尾时转写落盘失败转
-/// Failed)可能携带 usage 并计入总和,是写入侧事实而非统计缺陷。
+/// 不可区分),超过 32MiB 上限整体报错,单行损坏的行整行跳过(不计入;
+/// 非法 UTF-8 字节无法按行读取,整体报错)。token 口径按写入者计——ACP
+/// 收口与提交前 send_error 兜底轮恒为 0,引擎正常链路的失败轮可能携带
+/// usage 并计入——逐条写入者证据见 `compute_stats` 文档,此处不重复。
 #[tauri::command]
 pub async fn get_session_stats(
     session_id: String,
