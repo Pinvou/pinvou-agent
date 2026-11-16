@@ -1405,7 +1405,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       percent={dlPct}
                       label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}
                       onCancel={downloading ? cancelModelDownload : undefined}
-                      cancelLabel={downloading ? t.kbModelCancelBtn : undefined}
+                      cancelLabel={downloading ? (kbCancelPending ? t.kbModelCancelling : t.kbModelCancelBtn) : undefined}
                       cancelPending={kbCancelPending}
                     />
                   </div>
@@ -1426,8 +1426,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     )}
                     <div className={`mt-3 text-[12px] ${muted}`}>{t.kbModelFoot}</div>
                     {(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && <div className="mt-2 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">{kbm.error || effectiveKbModel.error}</div>}
-                    {/* 中性取消提示与红色错误互斥：错误源同上行（本地或后端 status），到来即让位 */}
-                    {!(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && kbm.cancelled && <div className={`mt-2 text-[12px] ${muted}`}>{t.kbModelCancelled}</div>}
+                    {/* 中性取消提示与红色错误互斥：错误源同上行（本地或后端 status），到来即让位；
+                        对端（共享宿主）正在安装时同样让位，避免「已取消」与对端安装并存误导 */}
+                    {!(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && !kbPeerDownloading && kbm.cancelled && <div role="status" className={`mt-2 text-[12px] ${muted}`}>{t.kbModelCancelled}</div>}
                   </div>
                 ))}
               </div>
@@ -1487,7 +1488,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     <ModelProgressIndicator downloading={downloading} percent={dlPct}
                       label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}
                       onCancel={downloading ? cancelModelDownload : undefined}
-                      cancelLabel={downloading ? t.kbModelCancelBtn : undefined}
+                      cancelLabel={downloading ? (kbCancelPending ? t.kbModelCancelling : t.kbModelCancelBtn) : undefined}
                       cancelPending={kbCancelPending} />
                   </div>
                 )}

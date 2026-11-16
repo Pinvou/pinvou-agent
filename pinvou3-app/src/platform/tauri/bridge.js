@@ -74,6 +74,9 @@ function pinvouSharedtauriMain() {
       startupLoading: true,
       startupReady: null,
       error: null,
+      // 加载成功即取代既有结局：同步清掉陈旧的「已取消下载」中性提示，
+      // 否则先取消后（自动）加载成功的界面会复现早已过期的取消文案。
+      cancelled: false,
     });
     notify();
     try {
