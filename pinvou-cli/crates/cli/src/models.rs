@@ -40,10 +40,15 @@
 //!
 //! Those app functions live in the app-private `app` / `core` modules and are
 //! not exported through `pinvou3_lib`, so the exact semantics are
-//! reimplemented here on a blocking reqwest client (no async runtime). The
-//! real endpoints behind these paths are exercised only by `#[ignore]`
-//! tests; everything offline (parsing, classification, formatting, and the
-//! loopback HTTP mocks) is covered by default tests.
+//! reimplemented here on a blocking reqwest client (no async runtime). Live
+//! endpoints are exercised by exactly three `#[ignore]` opt-in tests
+//! (tests/models_contract.rs), and none of them cover this module's two
+//! mirrored network commands: the Bing probe and the live-key search probe
+//! exercise `settings search test`, and the third runs `models probe-local`
+//! against a local inference server. `models test` and `models discover`
+//! have NO `#[ignore]` live test — their network behavior is covered only by
+//! the loopback HTTP mocks of the default tests, alongside the offline
+//! parsing, classification and formatting units.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -693,11 +698,14 @@ list|set|test; note: `settings get` without a key always prints JSON regardless 
 /// exit 1 and are distinguished by the `status` field the command always
 /// prints — a fourth exit code would break every script that branches on
 /// the family-wide 0/1/2 table for a distinction the JSON row already
-/// carries.
+/// carries. The usage text also spells out the one exit-1 shape WITHOUT a
+/// status field: a failed `--api-key-env` (unset / non-UTF-8 / empty) is an
+/// `Err` the runner prints to stderr, leaving stdout empty, so a script
+/// that only parses stdout knows there is nothing to parse.
 const DISCOVER_USAGE: &str = "usage: pinvou models discover --base-url <url> [--api-key-env V] \
 [--preset <name>] [--wire <anthropic|openai|kimi|responses>] [--json]\nexit codes: 0 listed (an \
-empty list is still listed), 1 auth_required | unsupported | error (see the status field), \
-2 usage";
+empty list is still listed), 1 auth_required | unsupported | error (see the status field) or a \
+failed --api-key-env (message on stderr, stdout empty — no status field to parse), 2 usage";
 
 pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
     let family = values[0].as_str();
@@ -2369,11 +2377,23 @@ fn probe_client() -> Option<&'static reqwest::blocking::Client> {
 }
 
 /// The model-connection client (`models test`): 8 s timeout, matching the
-/// GUI's connection-test button.
+/// GUI's connection-test button, and redirects DISABLED — the same policy
+/// the GUI's `probe_model_connection` pins (this PR's round-3 review).
+/// The lane carries `x-api-key` + `anthropic-version` for anthropic
+/// official hosts, and reqwest strips only the Authorization/Cookie family
+/// on a cross-origin redirect, so a followed 302 would re-send those
+/// custom headers to a host the user never named. With redirects off, a
+/// 3xx arrives as the final response and classifies through the shared
+/// status ladder ([`connection_http_result`] → `model_probe_http_code`,
+/// code `redirect`) — status handling unchanged, one hop fewer.
 fn connection_client() -> Option<&'static reqwest::blocking::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
         std::sync::OnceLock::new();
-    singleton_client(&CLIENT, |builder| builder.timeout(Duration::from_secs(8)))
+    singleton_client(&CLIENT, |builder| {
+        builder
+            .timeout(Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::none())
+    })
 }
 
 /// The `models discover` client: the connection client's 8 s timeout PLUS
@@ -2381,12 +2401,12 @@ fn connection_client() -> Option<&'static reqwest::blocking::Client> {
 /// headers (`x-api-key`, `x-goog-api-key`), and reqwest strips only the
 /// Authorization/Cookie family on a cross-origin redirect — following one
 /// would re-send those headers to a host the user never named (the reason
-/// [`probe_client`] pins `Policy::none()` for the local probes; the GUI's
-/// `discovery_client` pins it for the same reason). A one-shot listing has
-/// no business following a 302 anyway: with redirects off, a 3xx response
-/// arrives as-is and classifies as an ordinary `error` row with its status
-/// kept ([`discovery_status_listing`]). `models test` stays on
-/// [`connection_client`] — its lane follows the GUI's redirect semantics.
+/// [`probe_client`] pins `Policy::none()` for the local probes and
+/// [`connection_client`] for `models test`; the GUI pins the same policy
+/// on both its counterparts). A one-shot listing has no business following
+/// a 302 anyway: with redirects off, a 3xx response arrives as-is and
+/// classifies as an ordinary `error` row with its status kept
+/// ([`discovery_status_listing`]).
 fn discovery_client() -> Option<&'static reqwest::blocking::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::blocking::Client>> =
         std::sync::OnceLock::new();
@@ -3301,24 +3321,49 @@ fn is_local_or_private_base_url(raw: &str) -> bool {
 /// error's `source()` chain via the shared
 /// `pinvou3_lib::model_probe::error_chain_looks_like_tls`: certificate facts
 /// live in the inner rustls/hyper error texts, never in the top-level
-/// Display, so a host whose URL merely CONTAINS "ssl" cannot bias the class
-/// and a real certificate failure no longer falls through to `network`.
+/// Display, so a host whose URL merely CONTAINS "ssl" cannot bias the class.
 /// Vocabulary is the discovery lane's own short table
 /// ("timeout" | "dns" | "connect" | "tls" | "network", shared with the GUI's
 /// `core::endpoint_discovery` transport_class — NOT the monitor facade's
 /// longer `dns_failed`/`connection_refused` codes, which feed different
-/// consumers). Order mirrors the GUI ladder: `is_dns` MUST precede
-/// `is_connect` — hyper-util files resolver failures under its Connect kind
-/// too.
+/// consumers). Order mirrors the GUI ladder (timeout → dns → tls →
+/// connect → network; round-4 review M1 moved tls AHEAD of connect):
+/// `is_dns` MUST precede the connect flag — hyper-util files resolver
+/// failures under its Connect kind — and the tls chain scan must precede
+/// `is_connect` for the same underlying reason: reqwest's `is_connect()`
+/// walks the source chain too, and hyper-util files the TLS handshake under
+/// its Connect kind, so a real certificate failure answers
+/// `is_connect() == true` and would never reach the tls arm.
 fn discovery_transport_class(error: &reqwest::Error) -> &'static str {
-    if error.is_timeout() {
+    discovery_transport_class_from_flags(
+        error.is_timeout(),
+        error.is_dns(),
+        error.is_connect(),
+        error,
+    )
+}
+
+/// The flag+chain core of [`discovery_transport_class`], split out for the
+/// same reason the app's `transport_code_for` takes booleans:
+/// `reqwest::Error` has no public constructor, so the ARM ORDER — the
+/// contract this lane shares with the GUI — is pinned by feeding the core
+/// synthetic error chains (the same construction the app-side
+/// `tls_class_walks_source_chain_not_top_level_display` test uses); the
+/// wrapper above is only the four flag reads.
+fn discovery_transport_class_from_flags(
+    is_timeout: bool,
+    is_dns: bool,
+    is_connect: bool,
+    error: &(dyn std::error::Error + '_),
+) -> &'static str {
+    if is_timeout {
         "timeout"
-    } else if error.is_dns() {
+    } else if is_dns {
         "dns"
-    } else if error.is_connect() {
-        "connect"
     } else if pinvou3_lib::model_probe::error_chain_looks_like_tls(error) {
         "tls"
+    } else if is_connect {
+        "connect"
     } else {
         "network"
     }
@@ -3667,10 +3712,56 @@ fn discovery_anthropic_page(
     Some((models, has_more, after_id))
 }
 
-/// The anthropic ladder: `GET {规整 base}/v1/models?limit=1000` with
-/// `x-api-key` + `anthropic-version` (no header at all when no key was
-/// given — the same bare-send rule the GUI probe applies), paginating with
-/// `has_more` + `after_id` up to THREE pages and a
+/// Whether `base_url` points at the official anthropic API host, the GUI's
+/// `is_anthropic_api_url` semantics (host equals `api.anthropic.com`,
+/// ASCII case-insensitive; the shared helper comes through the
+/// `pinvou3_lib::model_probe` facade). A parse failure reads as
+/// non-official — the same wrapper rule the GUI's string-level
+/// `is_anthropic_endpoint` applies — so the caller falls to the standard
+/// bearer arm instead of failing the ladder.
+fn discovery_anthropic_official_host(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url.trim())
+        .map(|url| pinvou3_lib::model_probe::is_anthropic_api_url(&url))
+        .unwrap_or(false)
+}
+
+/// One anthropic ladder request: auth headers + gateway affinity, the exact
+/// composition the GUI's ladder builds
+/// (`with_opencode_session_header(apply_anthropic_auth_headers(...))` over
+/// its host split). Auth follows the host: ONLY the official
+/// api.anthropic.com host authenticates with `x-api-key` +
+/// `anthropic-version` (its API rejects Bearer); ANY other host — a
+/// LiteLLM-style proxy, a corporate relay, a gateway — takes the key as a
+/// standard bearer credential (round-4 review M6: the unconditional
+/// `x-api-key` made every non-official anthropic-protocol endpoint look
+/// unauthenticated unless it also happened to read the custom header);
+/// keyless sends no auth header in either arm. Factored out of
+/// [`discovery_anthropic_listing`] so the header contract is inspectable
+/// without a network (the same seam `connection_probe_request` uses).
+/// Pagination queries are applied by the caller on the returned builder.
+fn discovery_anthropic_request(
+    client: &'static reqwest::blocking::Client,
+    url: String,
+    key: Option<&str>,
+    base_url: &str,
+) -> reqwest::blocking::RequestBuilder {
+    let mut request = client.get(url);
+    match key.map(str::trim).filter(|key| !key.is_empty()) {
+        Some(key) if discovery_anthropic_official_host(base_url) => {
+            request = request
+                .header("x-api-key", key)
+                .header("anthropic-version", DISCOVER_ANTHROPIC_VERSION);
+        }
+        Some(key) => request = request.bearer_auth(key),
+        None => {}
+    }
+    with_discovery_affinity(request, base_url)
+}
+
+/// The anthropic ladder: `GET {normalized base}/v1/models?limit=1000`
+/// (a configured root already ending in `/v1` appends directly), with the
+/// host-split auth headers of [`discovery_anthropic_request`],
+/// paginating with `has_more` + `after_id` up to THREE pages and a
 /// [`DISCOVER_NATIVE_LISTING_CAP`]-entry total cap; either bound ending the
 /// run early is the `truncated` flag, never a silent loss.
 fn discovery_anthropic_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
@@ -3691,19 +3782,12 @@ fn discovery_anthropic_listing(base_url: &str, key: Option<&str>) -> EndpointMod
     let mut models = Vec::new();
     let mut after_id: Option<String> = None;
     for page in 1..=DISCOVER_ANTHROPIC_PAGE_CAP {
-        let mut request = client
-            .get(format!("{base}/models"))
-            .query(&[("limit", "1000")]);
+        let mut request =
+            discovery_anthropic_request(client, format!("{base}/models"), key, base_url)
+                .query(&[("limit", "1000")]);
         if let Some(after) = after_id.as_deref() {
             request = request.query(&[("after_id", after)]);
         }
-        if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
-            request = request
-                .header("x-api-key", key)
-                .header("anthropic-version", DISCOVER_ANTHROPIC_VERSION);
-        }
-        // Gateway affinity, the GUI ladder's same attachment (round-3 minor).
-        let request = with_discovery_affinity(request, base_url);
         match discovery_send(request) {
             DiscoveryAnswer::Transport(class) => return error_listing(None, Some(class)),
             DiscoveryAnswer::Status(status) => {
@@ -3814,11 +3898,31 @@ fn discovery_gemini_page(
     Some((models, next_page_token))
 }
 
+/// One gemini ladder request: `x-goog-api-key` + gateway affinity. Unlike
+/// the anthropic ladder there is NO host split — the gemini API
+/// authenticates with `x-goog-api-key` on every host (mirror proxies
+/// included), and a keyless run sends no auth header. Factored out of
+/// [`discovery_gemini_listing`] for the same inspect-without-a-network
+/// seam as [`discovery_anthropic_request`]; pagination queries are applied
+/// by the caller on the returned builder.
+fn discovery_gemini_request(
+    client: &'static reqwest::blocking::Client,
+    url: String,
+    key: Option<&str>,
+    base_url: &str,
+) -> reqwest::blocking::RequestBuilder {
+    let mut request = client.get(url);
+    if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+        request = request.header("x-goog-api-key", key);
+    }
+    with_discovery_affinity(request, base_url)
+}
+
 /// The gemini ladder: a configured OpenAI-compatibility surface (`/openai`
 /// suffix) is stripped to the native root, then
-/// `GET {root}/v1beta/models?pageSize=1000` with `x-goog-api-key`
-/// (absent when no key was given), paginating with `nextPageToken` up to
-/// THREE pages and a [`DISCOVER_NATIVE_LISTING_CAP`]-entry total cap.
+/// `GET {root}/v1beta/models?pageSize=1000` with the
+/// [`discovery_gemini_request`] headers, paginating with `nextPageToken` up
+/// to THREE pages and a [`DISCOVER_NATIVE_LISTING_CAP`]-entry total cap.
 fn discovery_gemini_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
     const DISCOVER_GEMINI_PAGE_CAP: usize = 3;
     let Some(client) = discovery_client() else {
@@ -3837,17 +3941,12 @@ fn discovery_gemini_listing(base_url: &str, key: Option<&str>) -> EndpointModels
     let mut models = Vec::new();
     let mut page_token: Option<String> = None;
     for _page in 1..=DISCOVER_GEMINI_PAGE_CAP {
-        let mut request = client
-            .get(format!("{root}/v1beta/models"))
-            .query(&[("pageSize", "1000")]);
+        let mut request =
+            discovery_gemini_request(client, format!("{root}/v1beta/models"), key, base_url)
+                .query(&[("pageSize", "1000")]);
         if let Some(token) = page_token.as_deref() {
             request = request.query(&[("pageToken", token)]);
         }
-        if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
-            request = request.header("x-goog-api-key", key);
-        }
-        // Gateway affinity, the GUI ladder's same attachment (round-3 minor).
-        let request = with_discovery_affinity(request, base_url);
         match discovery_send(request) {
             DiscoveryAnswer::Transport(class) => return error_listing(None, Some(class)),
             DiscoveryAnswer::Status(status) => {
@@ -4150,70 +4249,36 @@ fn discovery_lmstudio_v0_models(value: &serde_json::Value) -> Option<Vec<Discove
     (!models.is_empty()).then_some(models)
 }
 
-/// The lmstudio ladder (short-circuit branch): native `/api/v0/models`
-/// first (loaded states — the GUI's `probe_lmstudio_models` carries the form
-/// credential the same way when its compat fallback runs), falling back to
-/// `/v1/models` (loaded unknown) when the native round trip does not produce
-/// a usable listing. The fallback rides the caller's key (round-3 review
-/// minor: the GUI falls back KEYED via `ladder_openai_local`; a keyless CLI
-/// fallback would report `auth_required` on an authenticated LM Studio
-/// where the GUI lists).
+/// The lmstudio ladder (short-circuit branch): the keyless native
+/// `/api/v0/models` round first (loaded states — the GUI's
+/// `probe_lmstudio_v0_only` sends no form credential either), and ANY
+/// non-listing v0 outcome — a transport failure, ANY decided status
+/// (404/405 legacy server, 401/403 authenticated, anything else), an
+/// unusable or mid-stream-broken body, or a 2xx body that is not a usable
+/// v0 shape — re-enters the KEYED local OpenAI-compatible ladder
+/// ([`discovery_openai_listing_local`], the `{base}/models` +
+/// `/v1/models`-on-404/405 mirror of the GUI's `ladder_openai_local`).
+/// That is exactly the GUI's composition (round-4 review M5): its
+/// `lmstudio_discovered` returns `None` on any v0 failure and its caller
+/// falls through to the keyed compat ladder, so an authenticated LM Studio
+/// LISTS there where this lane's old decided-status terminal reported
+/// `auth_required` from the keyless v0 round.
 fn discovery_lmstudio_listing(base_url: &str, key: Option<&str>) -> EndpointModelsListing {
     let Some(client) = discovery_client() else {
         return error_listing(None, None);
     };
     let host = strip_v1_suffix(base_url);
-    match discovery_send(client.get(format!("{host}/api/v0/models"))) {
-        DiscoveryAnswer::Transport(class) => error_listing(None, Some(class)),
-        DiscoveryAnswer::Status(status) => {
-            // A 404/405 on the native endpoint is the legacy-server shape
-            // the fallback exists for; every other decided status stands.
-            if status == 404 || status == 405 {
-                discovery_lmstudio_v1_fallback(client, &host, key)
-            } else {
-                discovery_status_listing(status)
-                    .unwrap_or_else(|| error_listing(Some(status), None))
-            }
-        }
-        DiscoveryAnswer::Unusable(_) => discovery_lmstudio_v1_fallback(client, &host, key),
-        // A v0 body broken mid-stream is the same "native listing did not
-        // produce a usable shape" recovery the GUI applies (its
-        // `probe_lmstudio_v0_only` degrades any body failure to None and
-        // falls back to the compat fetch): try `/v1/models`.
-        DiscoveryAnswer::BrokenBody(_) => discovery_lmstudio_v1_fallback(client, &host, key),
-        DiscoveryAnswer::Json(value, _) => match discovery_lmstudio_v0_models(&value) {
-            Some(models) => listed_listing(models, false),
-            None => discovery_lmstudio_v1_fallback(client, &host, key),
-        },
+    let v0 = discovery_send(client.get(format!("{host}/api/v0/models")));
+    if let DiscoveryAnswer::Json(value, _) = &v0
+        && let Some(models) = discovery_lmstudio_v0_models(value)
+    {
+        return listed_listing(models, false);
     }
-}
-
-/// The `/v1/models` fallback of the lmstudio ladder, in the OpenAI-compatible
-/// shape (context from the entry's own length fields, `loaded` unknown). The
-/// key rides along (round-3 review minor) via the gateway-affinity request
-/// builder, which also keeps the affinity header the compat ladder sends.
-fn discovery_lmstudio_v1_fallback(
-    client: &'static reqwest::blocking::Client,
-    host: &str,
-    key: Option<&str>,
-) -> EndpointModelsListing {
-    match discovery_send(discovery_openai_request(
-        client,
-        &format!("{host}/v1/models"),
-        key,
-        host,
-    )) {
-        DiscoveryAnswer::Transport(class) => error_listing(None, Some(class)),
-        DiscoveryAnswer::Status(status) => {
-            discovery_status_listing(status).unwrap_or_else(|| error_listing(Some(status), None))
-        }
-        DiscoveryAnswer::Unusable(status) => unsupported_listing(Some(status)),
-        DiscoveryAnswer::BrokenBody(status) => error_listing(Some(status), Some("network")),
-        DiscoveryAnswer::Json(value, status) => match discovery_openai_models(&value) {
-            Some((models, truncated)) => listed_listing(models, truncated),
-            None => unsupported_listing(Some(status)),
-        },
-    }
+    // Every non-listing v0 outcome lands here (see the doc): the keyed
+    // compat ladder decides, at ITS outcome's real classification — a
+    // transport failure of the compat legs still surfaces as transport,
+    // never laundered through the v0 round's facts.
+    discovery_openai_listing_local(base_url, key)
 }
 
 /// The `server_kind` string `models discover` reports, in the GUI's kind
@@ -5619,6 +5684,26 @@ mod tests {
         }
     }
 
+    /// `models test` does NOT follow redirects (round-4 review, the GUI
+    /// `probe_model_connection` mirror — it switched to `Policy::none()`
+    /// this PR): the lane carries `x-api-key` for anthropic official hosts,
+    /// and reqwest strips only the Authorization/Cookie family on a
+    /// cross-origin redirect, so a followed 302 would re-send those custom
+    /// headers to a host the user never named. With redirects off the 3xx
+    /// arrives as the final response and the shared status ladder
+    /// classifies it as `redirect` — status handling unchanged, one hop
+    /// fewer (a second hop would answer 404 here and read
+    /// `endpoint_not_found`).
+    #[test]
+    fn models_test_redirect_is_not_followed_and_classifies_as_redirect() {
+        let (base, log) = spawn_discover_mock(&[("/models", vec![(302u16, "")])]);
+        let probe = run_connection_probe(&base, "");
+        assert!(!probe.ok, "a redirect is not a successful probe");
+        assert_eq!(probe.code, "redirect");
+        assert_eq!(probe.http_status, Some(302));
+        assert_eq!(log.hits_for("/models"), 1, "no second hop was followed");
+    }
+
     #[test]
     fn secret_for_storage_strips_the_whitespace_ci_secrets_carry() {
         assert_eq!(secret_for_storage("sk-abc123\n"), "sk-abc123");
@@ -6746,6 +6831,89 @@ mod tests {
         assert_eq!(discovery_status_listing(200), None, "2xx keeps parsing");
     }
 
+    /// The transport class's ARM ORDER (round-4 review M1, the GUI
+    /// `transport_class` mirror): timeout → dns → tls → connect → network.
+    /// The tls chain scan must sit BEFORE `is_connect` because reqwest's
+    /// `is_connect()` walks the source chain too and hyper-util files the
+    /// TLS handshake under its Connect kind — a real certificate failure
+    /// answers `is_connect() == true` and would never reach the tls arm if
+    /// connect were consulted first. `reqwest::Error` has no public
+    /// constructor, so the order is pinned through the flags+chain core
+    /// ([`discovery_transport_class_from_flags`], the same testability seam
+    /// the app's `transport_code_for` exists for) with synthetic chains —
+    /// the same construction the app-side
+    /// `tls_class_walks_source_chain_not_top_level_display` test uses.
+    #[test]
+    fn discovery_transport_class_orders_tls_before_connect() {
+        #[derive(Debug)]
+        struct Wrapper(&'static str);
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Wrapper {}
+
+        #[derive(Debug)]
+        struct Chained {
+            display: &'static str,
+            source: Wrapper,
+        }
+        impl std::fmt::Display for Chained {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.display)
+            }
+        }
+        impl std::error::Error for Chained {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.source)
+            }
+        }
+
+        // Real shape: the top level is reqwest's url-bearing Display (the
+        // URL happens to carry "ssl"), the certificate fact lives in the
+        // inner rustls text.
+        let tls_chain = || Chained {
+            display: "error sending request for url (https://ba-ssl-gw.example.com/v1/models)",
+            source: Wrapper("certificate verify failed: self-signed certificate"),
+        };
+        assert_eq!(
+            discovery_transport_class_from_flags(false, false, true, &tls_chain()),
+            "tls",
+            "a TLS-handshake failure that also answers is_connect() must classify tls"
+        );
+        // The structured flags still dominate the chain scan.
+        assert_eq!(
+            discovery_transport_class_from_flags(true, true, true, &tls_chain()),
+            "timeout"
+        );
+        assert_eq!(
+            discovery_transport_class_from_flags(false, true, false, &tls_chain()),
+            "dns"
+        );
+        // A plain connect failure whose chain carries no certificate fact.
+        assert_eq!(
+            discovery_transport_class_from_flags(
+                false,
+                false,
+                true,
+                &Chained {
+                    display: "error sending request for url (http://127.0.0.1:9/v1/models)",
+                    source: Wrapper("connection refused"),
+                }
+            ),
+            "connect"
+        );
+        // The top-level Display (URL text included) is never read: a URL
+        // biased with tls/ssl words over a clean chain classifies by the
+        // flags alone.
+        assert_eq!(
+            discovery_transport_class_from_flags(false, false, false, &tls_chain()),
+            "network",
+            "no flags and no chain fact: the ssl-looking URL must not bias the class"
+        );
+    }
+
     /// The `server_kind` strings discover emits speak the GUI's kind
     /// vocabulary (`local_server_kind_str`, the same table monitor speaks),
     /// not the detector's internal spellings: LM Studio reports as
@@ -7605,15 +7773,28 @@ mod tests {
         assert_eq!(log.hits_for("/models"), 1, "the ladder's compat fetch");
     }
 
-    /// Anthropic: `x-api-key` + `anthropic-version` (never a bearer), the
-    /// two-page `has_more` + `after_id` pagination, and `max_input_tokens` /
-    /// `max_tokens` / `display_name` per entry. The protocol ladder runs
+    /// The anthropic ladder's pagination and its round-4 (M6) host-split
+    /// auth, plus the same facts the original test pinned: the two-page
+    /// `has_more` + `after_id` pagination and `max_input_tokens` /
+    /// `max_tokens` / `display_name` per entry (the protocol ladder runs
     /// even against loopback — the local short-circuit belongs to the
-    /// OpenAI-compatible protocol only. The credential enters through
-    /// `--api-key-env` (env var set, real `discover()` lane, JSON payload
-    /// re-read), like every mock lane that presents a key.
+    /// OpenAI-compatible protocol only; the credential enters through
+    /// `--api-key-env`, env var set, real `discover()` lane, like every
+    /// mock lane that presents a key). The wire half runs against the
+    /// loopback mock — a NON-official host — so the ladder must present the
+    /// caller's key as a standard BEARER there, with no
+    /// `x-api-key`/`anthropic-version` (the old unconditional `x-api-key`
+    /// made every non-official anthropic-protocol endpoint look
+    /// unauthenticated). The OFFICIAL-host arm (`x-api-key` +
+    /// `anthropic-version`, no bearer) cannot reach a loopback mock — the
+    /// host gate keys on `api.anthropic.com` — so it is pinned by building
+    /// the ladder's own factored request builder and reading its headers,
+    /// the same without-a-network seam the connection lane's gateway-header
+    /// test uses; that section also pins the gateway affinity header
+    /// (`x-opencode-session`, derived from "models-probe") that is a no-op
+    /// on the mock's loopback host.
     #[test]
-    fn discover_anthropic_paginates_with_native_auth_headers() {
+    fn discover_anthropic_pagination_and_the_official_host_auth_split() {
         let page1 = r#"{"data":[{"id":"claude-a","display_name":"Claude A","max_input_tokens":200000,"max_tokens":8192}],"has_more":true}"#;
         let page2 = r#"{"data":[{"id":"claude-b","max_input_tokens":1000000}],"has_more":false}"#;
         let (base, log) =
@@ -7645,19 +7826,23 @@ mod tests {
             "no short-circuit on the native protocol"
         );
         assert_eq!(log.hits_for("/v1/models"), 2, "two pages, one path");
-        let api_keys = log.header_values("/v1/models", "x-api-key");
+        // Non-official host: the key goes out as the standard bearer.
+        let bearers = log.header_values("/v1/models", "authorization");
         assert!(
-            api_keys.len() == 2 && api_keys.iter().all(|value| value == "probe-key"),
-            "every page presents x-api-key: {api_keys:?}"
-        );
-        let versions = log.header_values("/v1/models", "anthropic-version");
-        assert!(
-            versions.len() == 2 && versions.iter().all(|value| value == "2023-06-01"),
-            "every page pins anthropic-version: {versions:?}"
+            bearers.len() == 2 && bearers.iter().all(|value| value == "Bearer probe-key"),
+            "a non-official host takes the bearer credential: {bearers:?}"
         );
         assert!(
-            log.header_values("/v1/models", "authorization").is_empty(),
-            "the anthropic ladder never sends a bearer"
+            log.header_values("/v1/models", "x-api-key").is_empty()
+                && log
+                    .header_values("/v1/models", "anthropic-version")
+                    .is_empty(),
+            "the native headers belong to the official host only"
+        );
+        assert!(
+            log.header_values("/v1/models", "x-opencode-session")
+                .is_empty(),
+            "off-gateway the affinity header is a no-op"
         );
         let queries = log.queries_for("/v1/models");
         assert_eq!(queries.len(), 2);
@@ -7665,6 +7850,77 @@ mod tests {
         assert_eq!(
             queries[1], "limit=1000&after_id=claude-a",
             "the second page resumes from the first page's last id"
+        );
+
+        // The official-host arm, pinned on the ladder's own request builder
+        // (nothing is sent): x-api-key + anthropic-version, no bearer, and
+        // ASCII case-insensitivity of the host gate.
+        let client = discovery_client().expect("discovery client singleton");
+        for official_base in ["https://api.anthropic.com", "https://Api.Anthropic.COM/v1"] {
+            let request = discovery_anthropic_request(
+                client,
+                format!("{official_base}/v1/models"),
+                Some(" probe-key "),
+                official_base,
+            )
+            .build()
+            .unwrap();
+            assert_eq!(
+                request
+                    .headers()
+                    .get("x-api-key")
+                    .map(|value| value.to_str().expect("header ascii")),
+                Some("probe-key"),
+                "{official_base}: the key is trimmed into x-api-key"
+            );
+            assert_eq!(
+                request
+                    .headers()
+                    .get("anthropic-version")
+                    .map(|value| value.to_str().expect("header ascii")),
+                Some("2023-06-01")
+            );
+            assert!(
+                request.headers().get("authorization").is_none(),
+                "{official_base}: the official host never sends a bearer"
+            );
+        }
+        // Keyless sends no auth header in either arm.
+        for keyless_base in ["https://api.anthropic.com", "http://127.0.0.1:8000"] {
+            let request = discovery_anthropic_request(
+                client,
+                format!("{keyless_base}/v1/models"),
+                None,
+                keyless_base,
+            )
+            .build()
+            .unwrap();
+            assert!(request.headers().get("x-api-key").is_none());
+            assert!(request.headers().get("authorization").is_none());
+            assert!(request.headers().get("anthropic-version").is_none());
+        }
+        // The gateway affinity header rides this ladder too (the GUI
+        // attaches it on all three), with the shared "models-probe"
+        // derivation — present on a gateway base, keyed on the ORIGINAL
+        // base_url, not the request URL.
+        let gateway = "https://opencode.ai/zen/go/v1";
+        let request = discovery_anthropic_request(
+            client,
+            format!("{gateway}/v1/models"),
+            Some("probe-key"),
+            gateway,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .map(|value| value.to_str().expect("header ascii").to_owned()),
+            Some(pinvou3_lib::model_probe::opencode_session_id_for(
+                "models-probe"
+            )),
+            "the affinity value matches the shared models-probe derivation"
         );
     }
 
@@ -7820,9 +8076,50 @@ mod tests {
             keys.len() == 2 && keys.iter().all(|value| value == "goog-key"),
             "every page presents x-goog-api-key: {keys:?}"
         );
+        assert!(
+            log.header_values("/v1beta/models", "x-opencode-session")
+                .is_empty(),
+            "off-gateway the affinity header is a no-op"
+        );
         let queries = log.queries_for("/v1beta/models");
         assert_eq!(queries[0], "pageSize=1000");
         assert_eq!(queries[1], "pageSize=1000&pageToken=tok-1");
+        // The gateway session-affinity header rides this ladder too (the
+        // GUI attaches it on all three; round-3 review minor made the CLI
+        // match). A loopback mock can never be a gateway, so the presence
+        // half is pinned on the ladder's own factored request builder —
+        // the same without-a-network seam the connection lane's gateway
+        // header test uses — including the shared "models-probe" derivation
+        // and the host-agnostic `x-goog-api-key` (no anthropic-style host
+        // split on the gemini ladder).
+        let client = discovery_client().expect("discovery client singleton");
+        let gateway = "https://opencode.ai/zen/go/v1";
+        let request = discovery_gemini_request(
+            client,
+            format!("{gateway}/v1beta/models"),
+            Some("goog-key"),
+            gateway,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .map(|value| value.to_str().expect("header ascii").to_owned()),
+            Some(pinvou3_lib::model_probe::opencode_session_id_for(
+                "models-probe"
+            )),
+            "the affinity value matches the shared models-probe derivation"
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-goog-api-key")
+                .map(|value| value.to_str().expect("header ascii").to_owned()),
+            Some("goog-key"),
+            "the gemini ladder authenticates with x-goog-api-key on every host"
+        );
     }
 
     /// The ollama chain end to end: `/api/tags` for the downloaded list,
@@ -8056,12 +8353,16 @@ mod tests {
         assert_eq!(log.hits_for("/v1beta/models"), 1);
     }
 
-    /// Round-3 review minor: the LM Studio compat fallback rides the
-    /// caller's key — the GUI falls back keyed, so an authenticated LM
-    /// Studio lists in the GUI; the keyless CLI fallback reported
-    /// auth_required on the same server.
+    /// The lmstudio ladder's non-listing-v0 recovery (round-4 review M5,
+    /// subsuming the round-3 keyed-fallback minor): a v0 round that stops
+    /// yielding a usable listing between the candidate round and the ladder
+    /// fetch (here: empty `data`) falls to the KEYED local
+    /// OpenAI-compatible ladder — `{base}/models` first, the
+    /// `/v1/models` retry on 404/405 — the GUI's `ladder_openai_local`
+    /// mirror, not a narrower direct `/v1/models` hop. Every leg of the
+    /// compat ladder rides the caller's key.
     #[test]
-    fn discover_lmstudio_v1_fallback_rides_the_key() {
+    fn discover_lmstudio_v0_failure_rides_the_keyed_compat_ladder() {
         let (base, log) = spawn_discover_mock(&discover_routes(&[
             (
                 "/api/v0/models",
@@ -8090,9 +8391,11 @@ mod tests {
             DiscoveryProtocol::OpenAiCompatible,
         );
         assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.server_kind, Some("lm_studio"));
         assert_eq!(listing.models[0].id, "authed-x");
-        // Both `/v1/models` rounds (the kind probe and the fallback) ride
-        // the caller's key — the GUI's keyed fallback mirror.
+        // Both `/v1/models` rounds (the kind probe and the compat retry)
+        // ride the caller's key, and so does the `{base}/models` first leg
+        // the compat ladder tries before its 404-driven retry.
         assert_eq!(
             log.header_values("/v1/models", "authorization"),
             vec![
@@ -8101,6 +8404,186 @@ mod tests {
             ],
             "the compat fallback must send the caller's key"
         );
+        assert_eq!(
+            log.header_values("/models", "authorization"),
+            vec!["Bearer sk-live-123".to_string()],
+            "the compat ladder's first leg is keyed too"
+        );
+        assert_eq!(log.hits_for("/api/v0/models"), 2);
+        assert_eq!(log.hits_for("/models"), 1, "the compat ladder's first leg");
+        assert_eq!(log.hits_for("/v1/models"), 2);
+    }
+
+    /// Round-4 review M5: an authenticated LM Studio answers the keyless
+    /// native v0 round with 401 — a DECIDED status the old ladder reported
+    /// terminally as `auth_required`, where the GUI (whose
+    /// `lmstudio_discovered` returns `None` on ANY v0 failure) falls through
+    /// to the keyed compat ladder and LISTS. The queue order is
+    /// deterministic because the candidate round completes before the
+    /// ladder starts: the candidate sees the usable v0 shape (kind =
+    /// lmstudio), the ladder's own v0 fetch eats the 401.
+    #[test]
+    fn discover_lmstudio_v0_auth_failure_lists_through_the_keyed_ladder() {
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            (
+                "/api/v0/models",
+                vec![
+                    (
+                        200u16,
+                        r#"{"data":[{"id":"warmup","state":"loaded","loaded_context_length":8}]}"#,
+                    ),
+                    (401u16, r#"{"error":"unauthorized"}"#),
+                ],
+            ),
+            (
+                "/v1/models",
+                vec![
+                    (
+                        200u16,
+                        r#"{"data":[{"id":"authed-x","max_model_len":4096}]}"#,
+                    ),
+                    (200, r#"{"data":[{"id":"authed-x","max_model_len":4096}]}"#),
+                ],
+            ),
+        ]));
+        let listing = run_endpoint_discovery(
+            &base,
+            Some("sk-live-123"),
+            DiscoveryProtocol::OpenAiCompatible,
+        );
+        assert_eq!(
+            listing.status,
+            ListingStatus::Listed,
+            "a v0 401 must not terminate the ladder where the GUI lists"
+        );
+        assert_eq!(listing.server_kind, Some("lm_studio"));
+        assert_eq!(listing.models[0].id, "authed-x");
+        assert_eq!(listing.models[0].context_window_tokens, Some(4096));
+        assert_eq!(log.hits_for("/api/v0/models"), 2, "candidate plus ladder");
+        assert_eq!(log.hits_for("/models"), 1, "the compat ladder's first leg");
+        assert_eq!(
+            log.hits_for("/v1/models"),
+            2,
+            "the kind probe plus the compat retry"
+        );
+        assert_eq!(
+            log.header_values("/v1/models", "authorization"),
+            vec![
+                "Bearer sk-live-123".to_string(),
+                "Bearer sk-live-123".to_string()
+            ],
+            "the keyed retry carries the credential the v0 round lacked"
+        );
+    }
+
+    /// The v0 round failing at the TRANSPORT layer (the mock serves exactly
+    /// one usable v0 answer — the candidate's — and closes every later
+    /// connection without an HTTP response): the ladder re-enters the keyed
+    /// compat ladder, whose own transport failure surfaces at its REAL
+    /// class — `error` with transport `network` and no http status — never
+    /// laundered into `unsupported` by the 404 default of a live-but-broken
+    /// endpoint.
+    #[test]
+    fn discover_lmstudio_v0_transport_failure_surfaces_the_real_class() {
+        let (base, log) = spawn_discover_v0_then_close_mock();
+        let listing = run_endpoint_discovery(
+            &base,
+            Some("sk-live-123"),
+            DiscoveryProtocol::OpenAiCompatible,
+        );
+        assert_eq!(listing.status, ListingStatus::Error);
+        assert_eq!(listing.http_status, None);
+        assert_eq!(
+            listing.transport,
+            Some("network"),
+            "a connection closed before any response is a transport break"
+        );
+        assert_eq!(
+            listing.server_kind,
+            Some("lm_studio"),
+            "the candidate's v0 answer selected the lmstudio branch"
+        );
+        assert!(listing.models.is_empty(), "failures carry no half data");
+        assert_eq!(log.hits_for("/api/v0/models"), 2, "candidate plus ladder");
+        assert_eq!(
+            log.hits_for("/models"),
+            1,
+            "the compat ladder's first leg fails at transport and does not retry"
+        );
+        assert_eq!(
+            log.hits_for("/v1/models"),
+            1,
+            "only the candidate kind probe; a transport failure never retries"
+        );
+    }
+
+    /// The transport-failure mock for
+    /// [`discover_lmstudio_v0_transport_failure_surfaces_the_real_class`]:
+    /// the FIRST `/api/v0/models` request (the candidate round's signature
+    /// probe) is answered with a usable v0 listing — that is what selects
+    /// the `lmstudio` kind — and every LATER request on any path is served
+    /// by accepting the connection and closing it WITHOUT an HTTP response,
+    /// the transport break a crashed or killed server produces (distinct
+    /// from [`spawn_discover_truncated_mock`]'s mid-BODY cut: here no
+    /// status line is ever sent, so the request fails at the transport
+    /// layer). Same log type as [`spawn_discover_mock`].
+    fn spawn_discover_v0_then_close_mock() -> (String, std::sync::Arc<DiscoverMockLog>) {
+        use std::io::Read as _;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind v0-then-close mock listener");
+        let addr = listener
+            .local_addr()
+            .expect("v0-then-close mock listener addr");
+        let served_v0 = AtomicBool::new(false);
+        let log = Arc::new(DiscoverMockLog::default());
+        let log_thread = log.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(50) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf).into_owned();
+                let target = request
+                    .split("\r\n")
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_owned();
+                let path = target.split('?').next().unwrap_or("").to_owned();
+                {
+                    let mut hits = log_thread.hits.lock().unwrap_or_else(|p| p.into_inner());
+                    *hits.entry(path.clone()).or_insert(0) += 1;
+                }
+                let first_v0 = path == "/api/v0/models" && !served_v0.swap(true, Ordering::SeqCst);
+                if first_v0 {
+                    let body =
+                        r#"{"data":[{"id":"warmup","state":"loaded","loaded_context_length":8}]}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                }
+                // Otherwise drop the stream with nothing written: the client
+                // sees a connection closed before any response byte — the
+                // transport failure under test.
+            }
+        });
+        (format!("http://{addr}"), log)
     }
 
     /// Round-3 test-gap pin: the CLI has NO catalog, so `SOURCE` is always
