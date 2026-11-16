@@ -1186,6 +1186,36 @@ mod tests {
     }
 
     #[test]
+    fn devices_walk_source_keeps_the_bounded_page_loop() {
+        // r14 review: the value pins above hold the constants, but stripping
+        // the walk's own bound (the `0..DEVICES_MAX_PAGES` loop) kept them
+        // green — the pin must also hold the walk shape that converts a
+        // hostile always-full-page server into the loud error. The slice is
+        // function-scoped so these assertion strings cannot self-match.
+        let source = include_str!("client.rs");
+        let start = source
+            .find("pub async fn devices(")
+            .expect("the devices walk must stay present");
+        let end = start
+            + source[start..]
+                .find("pub async fn update_device(")
+                .expect("the devices walk slice must stay terminated");
+        let walk = source[start..end].replace([' ', '\n'], "");
+        assert!(
+            walk.contains("for_in0..Self::DEVICES_MAX_PAGES{"),
+            "the page walk must stay bounded by DEVICES_MAX_PAGES"
+        );
+        assert!(
+            walk.contains("iffetched<Self::DEVICES_PAGE_LIMIT{returnOk(devices);"),
+            "the short-page terminator must stay wired"
+        );
+        assert!(
+            walk.contains("devicelistingexceeded"),
+            "the over-cap outcome must stay the loud listing error"
+        );
+    }
+
+    #[test]
     fn stored_http_fqdn_is_retained_but_marked_for_secure_upgrade() {
         let stored = normalize_stored_endpoint(
             "http://knowledge.corp.example:3210/old/path?stale=value#fragment",
