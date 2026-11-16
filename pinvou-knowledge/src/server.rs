@@ -1042,6 +1042,53 @@ mod tests {
             .unwrap();
         assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
 
+        // 文档腿与集合腿同一守卫,未认证同样 401。突变对照:任一腿丢掉
+        // require_owner_device 后,对应腿的本断言落空。
+        let unauthenticated_documents = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v2/owner/trash/documents?limit=10&offset=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated_documents.status(), StatusCode::UNAUTHORIZED);
+
+        // 已认证但非 owner 的设备对两条回收站腿都只有 403:回收站清单是
+        // owner 专属面(比 manage 更严,已删内容的元数据不给成员看)。
+        // 突变对照:两腿换成 require_access(manage 判定)后,本腿以 200
+        // 落红。
+        let reader_credentials = crate::client::new_join_credentials();
+        let reader_join = service
+            .submit_join_request(
+                "192.168.1.31".parse().unwrap(),
+                JoinRequestCreate {
+                    device_name: "Reader".to_string(),
+                    device_token_hash: reader_credentials.device_token_hash.clone(),
+                    claim_secret: reader_credentials.claim_secret.clone(),
+                    share_secret: None,
+                },
+            )
+            .unwrap();
+        service
+            .approve_join_request(&reader_join.request.id, AccessScope::Read)
+            .unwrap();
+        for uri in [
+            "/api/v2/owner/trash/collections?limit=10&offset=0",
+            "/api/v2/owner/trash/documents?limit=10&offset=0",
+        ] {
+            let mut reader = Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            add_bearer(&mut reader, &reader_credentials.device_token);
+            let response = app.clone().oneshot(reader).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "腿 {uri}");
+        }
+
         let mut collections = Request::builder()
             .method(Method::GET)
             .uri("/api/v2/owner/trash/collections?limit=10&offset=0")
