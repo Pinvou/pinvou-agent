@@ -3,8 +3,10 @@
 // architecture-guard: allow-target-cfg -- the walk-error counting test needs
 // a chmod-000 subtree fixture, and mode bits are a unix concept; the veto
 // logic under test is platform-independent (any walkdir error), only the
-// fixture cannot be expressed portably. The same class covers the unix-only
-// non-UTF-8 scan fixture (OsStrExt raw bytes, unexpressible portably).
+// fixture cannot be expressed portably. The same class covers this file's
+// other unix-only test fixtures (the non-UTF-8 scan fixture via OsStrExt raw
+// bytes, and the record_from_path test's symlink creation, likewise
+// unexpressible portably).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -122,7 +124,8 @@ fn to_record(e: &DirEntry) -> Option<FileRecord> {
     if !ft.is_file() && !ft.is_dir() {
         return None; // symlink/socket/fifo 等不入库
     }
-    // metadata 失败（条目被并发删除）时仍入一条 size/mtime=0 的占位记录，保持既有行为。
+    // A metadata failure (the entry was concurrently deleted) still stores a
+    // placeholder row with size/mtime=0, preserving existing behavior.
     record_from_parts(
         e.path(),
         e.file_name().to_str()?,
@@ -131,10 +134,12 @@ fn to_record(e: &DirEntry) -> Option<FileRecord> {
     )
 }
 
-/// FileRecord 字段装配：扫描器（`to_record`，DirEntry）与 watcher（`record_from_parts`，
-/// 事件路径 stat）共用一份策略——目录 size=0/ext=None、mtime 秒级、历元前取 0，
-/// 两条路的记录字段不会漂移。路径/文件名非 UTF-8 返回 None（与库内只存 UTF-8 的
-/// 既有约束一致）。`md` 传 None 时 size/mtime 取 0。
+/// FileRecord field assembly: shared by the scanner (`to_record`, a DirEntry)
+/// and the watcher (`record_from_parts`, an event-path stat) so the two
+/// paths' record fields cannot drift — directories get size=0/ext=None,
+/// mtime in seconds, 0 before the epoch. Paths/file names that are not
+/// UTF-8 return None (consistent with the store's existing UTF-8-only
+/// constraint). With `md` = None, size/mtime are 0.
 pub(super) fn record_from_parts(
     path: &Path,
     name: &str,
@@ -166,14 +171,19 @@ pub(super) fn ext_of(p: &Path) -> Option<String> {
         .map(|s| s.to_lowercase())
 }
 
-/// 从单个路径 stat 出一条记录。预留的单路径入口：接线 PR（#869）的重扫/刷新走
-/// 这里；watcher 的事件路径不走它（`handle_event` 需要 stat 结果先分桶
-/// NotFound/其他错误，`Option<FileRecord>` 表达不了那层分派）。用 `symlink_metadata`
-/// 不跟随软链，与扫描器 `follow_links(false)` 一致；symlink/socket 等返回 None 跳过。
-/// **调用方须先按扫描器同源策略做排除判定**（组件级 names/secrets +
-/// [`Excluder::is_skipped`]）：本函数只装配字段，不做任何排除——扫描器路径经
-/// filter_entry 已排除，watcher 路径在 `handle_event` 先排除，走这里的刷新代码
-/// 必须自带同款判定，否则 .ssh/密钥等会经单路径入口入库。
+/// Assembles one record from a per-path stat. Reserved single-path entry:
+/// the wiring PR's (#869) rescan/refresh goes through here; the watcher's
+/// event path does not (`handle_event` needs the stat result to dispatch
+/// NotFound/other errors first, which `Option<FileRecord>` cannot express).
+/// Uses `symlink_metadata` — no symlink following, consistent with the
+/// scanner's follow_links(false); symlink/socket etc. return None and are
+/// skipped. **The caller must first apply the scanner's same-source
+/// exclusion policy** (component-level names/secrets +
+/// [`Excluder::is_skipped`]): this function only assembles fields and does
+/// no exclusion — the scanner path is already excluded by filter_entry, the
+/// watcher path excludes first in `handle_event`, and refresh code going
+/// through here must carry the same judgment, otherwise .ssh/keys enter the
+/// store through the single-path entry.
 #[allow(dead_code)] // watcher 库先行：接线前仅测试引用
 pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
     let md = std::fs::symlink_metadata(path).ok()?;
@@ -195,8 +205,9 @@ mod tests {
     use crate::features::knowledge::store::SearchQuery;
     use std::fs;
 
-    /// record_from_path 的字段装配：文件（name/ext/size/mtime）、目录（size=0、
-    /// ext=None）、symlink 拒收——watcher 增量与扫描器两条路共用的入库形状。
+    /// record_from_path's field assembly: file (name/ext/size/mtime),
+    /// directory (size=0, ext=None), symlink rejection — the store shape
+    /// shared by the watcher's incremental and the scanner's paths.
     #[test]
     fn record_from_path_builds_records_like_the_scanner() {
         let base = std::env::temp_dir().join(format!("pinvou3_kb_rfp_{}", std::process::id()));
@@ -209,36 +220,46 @@ mod tests {
         assert_eq!(file.ext.as_deref(), Some("pdf"));
         assert_eq!(file.size, 9);
         assert!(!file.is_dir);
-        assert!(file.mtime > 0, "mtime 装配自 stat，不应退化为 0");
+        assert!(
+            file.mtime > 0,
+            "mtime is assembled from stat, must not degrade to 0"
+        );
 
         let dir = record_from_path(&base).unwrap();
         assert!(dir.is_dir);
-        assert_eq!(dir.ext, None, "目录不入扩展名");
+        assert_eq!(dir.ext, None, "directories get no extension");
         assert_eq!(dir.size, 0);
 
-        // 带点目录名同样不入扩展名（fixture 必须带点，否则 ext_of 本来就返回
-        // None，is_dir 分支咬不住）。
+        // A dot-suffixed directory name likewise gets no extension (the
+        // fixture must be dotted, otherwise ext_of returns None anyway and
+        // the is_dir branch bites nothing).
         fs::create_dir_all(base.join("backup.old")).unwrap();
         let dotted_dir = record_from_path(&base.join("backup.old")).unwrap();
         assert!(dotted_dir.is_dir);
-        assert_eq!(dotted_dir.ext, None, "带点目录名的 ext 仍须为 None");
+        assert_eq!(
+            dotted_dir.ext, None,
+            "a dot-suffixed directory name's ext must still be None"
+        );
 
-        // symlink 本体不入库（symlink_metadata 不跟随），与扫描器一致。
+        // The symlink body does not enter the store (symlink_metadata does
+        // not follow), consistent with the scanner.
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(base.join("报告.pdf"), base.join("link.pdf")).unwrap();
             assert!(
                 record_from_path(&base.join("link.pdf")).is_none(),
-                "symlink 本体不入库"
+                "the symlink body does not enter the store"
             );
         }
 
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 非 UTF-8 路径：与扫描器同语义（to_str() 失败即跳过），不得 panic。
-    /// 注意 APFS 等文件系统拒绝非 UTF-8 文件名（EILSEQ），fixture 造不出来——
-    /// 与 chmod-000 fixture 同款探针：造不出来就跳过，不在敌意文件系统上假红。
+    /// Non-UTF-8 paths: the scanner's own semantics (to_str() failure →
+    /// skip), must not panic. Note APFS and friends reject non-UTF-8 file
+    /// names (EILSEQ), so the fixture cannot be created there — the same
+    /// probe as the chmod-000 fixture: skip when it cannot be created, no
+    /// false red on hostile filesystems.
     #[test]
     #[cfg(unix)]
     fn record_from_path_skips_non_utf8_paths() {
@@ -324,11 +345,14 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 扫描腿的非 UTF-8 剪枝（watcher 侧 `non_utf8_spellings_never_enter_the_index`
-    /// 的扫描器半边，钉住模块文档「两侧落库结果一致」的扫描端）：非 UTF-8 名目录经
-    /// filter_entry 的 empty-name 语义整株剪枝（干净叶子也不入库），`to_record` 的
-    /// `to_str` 闸门兜住其余形态。APFS 造不出 fixture（探针跳过），ext4 CI
-    /// （ubuntu 全量腿）真实执行——与 chmod-000 fixture 同款探针习惯。
+    /// The scan leg's non-UTF-8 pruning (the scanner half of the watcher's
+    /// `non_utf8_spellings_never_enter_the_index`, pinning the "both sides
+    /// store the same outcome" claim on the scan side): a non-UTF-8-named
+    /// directory is pruned whole at filter_entry via the empty-name
+    /// semantics (clean leaves stay out too), and `to_record`'s `to_str`
+    /// gate catches the remaining shapes. APFS cannot create the fixture
+    /// (probe-skip); the ext4 CI (ubuntu full leg) really executes it — the
+    /// same probe convention as the chmod-000 fixture.
     #[test]
     #[cfg(unix)]
     fn scan_prunes_non_utf8_names_like_the_watcher() {
@@ -341,7 +365,8 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         let bad_dir = base.join(OsStr::from_bytes(b"\xff\xfe.dir"));
         if fs::create_dir_all(&bad_dir).is_err() {
-            // 敌意文件系统（APFS 拒绝非 UTF-8 名）造不出 fixture，跳过。
+            // A hostile filesystem (APFS rejects non-UTF-8 names) cannot
+            // create the fixture; skip.
             let _ = fs::remove_dir_all(&base);
             return;
         }
@@ -366,8 +391,10 @@ mod tests {
         );
 
         assert_eq!(errors, 0, "pruning is a policy decision, not a walk error");
-        // walked 恰为 2：walkdir 对根本身也产出一条（to_record 会为根目录建行），
-        // 加上干净叶子；被剪枝的子树一个都不计（round-6 CI ext4 实测 left=2）。
+        // walked is exactly 2: walkdir also yields one entry for the root
+        // itself (to_record builds a row for the root), plus the clean leaf;
+        // the pruned subtree contributes nothing (round-6 CI ext4 measured
+        // left=2).
         assert_eq!(
             walked, 2,
             "only the root row and the clean sibling are countable; the pruned \

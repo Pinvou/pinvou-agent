@@ -130,19 +130,27 @@ impl Excluder {
         false
     }
 
-    /// 单个 basename 命中 names/secrets 即排除（组件级判定的最小单元）。
+    /// A single basename hitting names/secrets excludes (the minimal unit
+    /// of component-level judgment).
     #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
     pub fn is_excluded_name(&self, name: &str) -> bool {
         self.names.contains(name) || self.secrets.contains(name)
     }
 
-    /// 组件级排除：路径的**每一级** basename（含末级）命中 names/secrets 即排除。
-    /// watcher 用——递归监听不会自动剪枝，事件里仍会冒出 node_modules/.ssh 等深处的路径，
-    /// 扫描器走 walkdir `filter_entry` 逐层剪枝，无此需要。
+    /// Component-level exclusion: the path is excluded when **any** level's
+    /// basename (including the last) hits names/secrets. Used by the watcher
+    /// — recursive watching does not prune automatically, so paths deep
+    /// inside node_modules/.ssh etc. still surface in events, while the
+    /// scanner prunes level by level through walkdir's `filter_entry` and
+    /// has no such need.
     ///
-    /// 扩展名策略不在此判：它需要 `is_dir` 上下文（目录不受黑/白名单约束，否则
-    /// `backup.old` 这类带点目录会被误排），由调用方 stat 后交 [`Excluder::is_skipped`]
-    /// 与扫描器同一策略源判定；删除事件的路径已不可 stat，只做组件级判定。
+    /// The extension policy is not judged here: it needs the `is_dir`
+    /// context (directories are not subject to the block/allow lists,
+    /// otherwise dot-suffixed directories like `backup.old` would be wrongly
+    /// excluded); the caller stats and hands the entry to
+    /// [`Excluder::is_skipped`], the same policy source as the scanner. A
+    /// delete event's path can no longer be stat-ed, so only the
+    /// component-level judgment applies.
     #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
     pub fn is_excluded_path(&self, path: &Path) -> bool {
         for comp in path.components() {
@@ -157,17 +165,24 @@ impl Excluder {
         false
     }
 
-    /// 根范围内组件级排除：根本身 basename + 根下相对组件命中 names/secrets 即排除。
-    /// 与扫描器的可见范围对齐——walkdir 的 `filter_entry` 首个看到的就是根本身，
-    /// 其上的祖先组件扫描器永不可见（根位于 `build`/`snap` 这类排除名目录之下时，
-    /// 扫描器照常全量入库，watcher 不得据祖先组件把整根事件静默丢光）。根外路径
-    /// 不归本方法管（调用方退回 [`Excluder::is_excluded_path`]）。
+    /// Root-scoped component-level exclusion: excluded when the root's own
+    /// basename or any relative component below it hits names/secrets.
+    /// Aligned with the scanner's visible scope — walkdir's `filter_entry`
+    /// sees the root itself first, and ancestor components above it are
+    /// never visible to the scanner (when the root sits under an
+    /// excluded-name directory like `build`/`snap`, the scanner still
+    /// indexes in full, so the watcher must not silently drop a whole root's
+    /// events over ancestor components). Paths outside every root are not
+    /// this method's business (the caller falls back to
+    /// [`Excluder::is_excluded_path`]).
     ///
-    /// 扩展名策略不在此判，同 [`Excluder::is_excluded_path`]。
+    /// The extension policy is not judged here, same as
+    /// [`Excluder::is_excluded_path`].
     #[allow(dead_code)] // watcher 库先行：接线前仅测试与 watcher(未接线)引用
     pub fn is_excluded_under_root(&self, path: &Path, root: &Path) -> bool {
-        // 根自身 basename：扫描器对根本身执行同一名单判定（filter_entry 应用于
-        // 首个 entry，命中即整棵树剪枝）。
+        // The root's own basename: the scanner applies the same list to the
+        // root itself (filter_entry applies to the first entry; a hit prunes
+        // the whole tree).
         if let Some(name) = root.file_name().and_then(|s| s.to_str()) {
             if self.is_excluded_name(name) {
                 return true;
@@ -178,7 +193,9 @@ impl Excluder {
                 matches!(&comp, Component::Normal(os)
                     if os.to_str().is_some_and(|n| self.is_excluded_name(n)))
             }),
-            // path 不在 root 之下：调用方应先做根归属，这里防御性退回全组件判定。
+            // path is not below root: the caller should have resolved root
+            // ownership first; defensively fall back to the full-component
+            // judgment.
             Err(_) => self.is_excluded_path(path),
         }
     }
@@ -212,33 +229,40 @@ mod tests {
     #[test]
     fn excluded_path_checks_all_components() {
         let ex = Excluder::default();
-        // 深处的祖先组件命中即整条路径排除
+        // An ancestor component deep inside hitting means the whole path is
+        // excluded
         assert!(ex.is_excluded_path(Path::new("/home/u/proj/node_modules/a/b/index.js")));
         assert!(ex.is_excluded_path(Path::new("/home/u/.ssh/config")));
         assert!(ex.is_excluded_path(Path::new("/home/u/proj/.env")));
-        // 末级组件本身命中（删除事件的路径已不可 stat，只能靠组件级判定）
+        // The last component itself hitting (a delete event's path can no
+        // longer be stat-ed, so only the component-level judgment applies)
         assert!(ex.is_excluded_path(Path::new("/home/u/proj/node_modules")));
         assert!(ex.is_excluded_path(Path::new("/home/u/.ssh")));
-        // 无组件命中 → 组件级放行（扩展名策略由 is_skipped 按 is_dir 上下文判定）
+        // No component hits → component-level pass (the extension policy is
+        // judged by is_skipped with the is_dir context)
         assert!(!ex.is_excluded_path(Path::new("/home/u/vm/disk.qcow2")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/Documents/保险报价单.pdf")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/Downloads/report.docx")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/proj")));
     }
 
-    /// 根范围判定与扫描器可见范围对齐：根之上的祖先（`build` ∈ SKIP_NAMES）不参与
-    /// 判定（扫描器对这种根照常入库，watcher 不得丢整根事件）；根本身 basename 命中
-    /// 名单则整根排除（filter_entry 对首个 entry 的剪枝）；根下深处的 churn 祖先
-    /// 照常命中；根外路径退回全组件判定。
+    /// Root-scope judgment aligns with the scanner's visible scope:
+    /// ancestors above the root (`build` ∈ SKIP_NAMES) do not participate
+    /// (the scanner indexes such roots as usual, the watcher must not drop
+    /// whole-root events); a root whose own basename hits the list excludes
+    /// the whole root (filter_entry's first-entry pruning); churn ancestors
+    /// deep below the root still hit; out-of-root paths fall back to the
+    /// full-component judgment.
     #[test]
     fn excluded_under_root_scopes_to_the_watched_root() {
         let ex = Excluder::default();
-        // 祖先 "build" 之上于根 → 不参与判定
+        // The ancestor "build" sits above the root → does not participate
         assert!(!ex.is_excluded_under_root(
             Path::new("/home/build/proj/报告.pdf"),
             Path::new("/home/build/proj"),
         ));
-        // 根自身 basename 命中名单 → 整根排除（含根自身与根下任意深度）
+        // The root's own basename hits the list → whole root excluded
+        // (the root itself and any depth below it)
         assert!(ex.is_excluded_under_root(
             Path::new("/home/u/node_modules"),
             Path::new("/home/u/node_modules"),
@@ -247,37 +271,43 @@ mod tests {
             Path::new("/home/u/node_modules/pkg/deep.pdf"),
             Path::new("/home/u/node_modules"),
         ));
-        // 根下深处的 churn 祖先照常命中
+        // Churn ancestors deep below the root still hit
         assert!(ex.is_excluded_under_root(
             Path::new("/home/u/proj/node_modules/a/index.js"),
             Path::new("/home/u/proj"),
         ));
-        // 干净路径放行（扩展名不在此判，交给 is_skipped）
+        // Clean paths pass (extensions not judged here, left to is_skipped)
         assert!(!ex.is_excluded_under_root(
             Path::new("/home/build/proj/src"),
             Path::new("/home/build/proj"),
         ));
-        // 根外路径（防御臂）退回全组件判定
+        // Out-of-root paths (defensive arm) fall back to the full-component
+        // judgment
         assert!(ex.is_excluded_under_root(
             Path::new("/elsewhere/.ssh/config"),
             Path::new("/home/u/proj"),
         ));
     }
 
-    /// 扩展名策略与扫描器同源（is_skipped）：带点目录名不受扩展名约束（watcher
-    /// 曾按末级扩展名误排 `backup.old` 这类目录、连其删除事件一起吞掉）；无扩展名
-    /// 敏感文件按白名单外排除（watcher 曾放行 `.bash_history` 等直至重扫才清掉）。
+    /// The extension policy shares the scanner's source (is_skipped):
+    /// dot-suffixed directory names are not subject to extension constraints
+    /// (the watcher once wrongly excluded `backup.old`-style directories by
+    /// last-component extension, swallowing even their delete events);
+    /// extensionless sensitive files are excluded as outside the whitelist
+    /// (the watcher once let `.bash_history` etc. through until rescan
+    /// cleared them).
     #[test]
     fn extension_policy_stays_in_is_skipped_with_kind_context() {
         let ex = Excluder::default();
-        // 带点目录名：目录不受扩展名策略约束（与扫描器一致）
+        // A dot-suffixed directory name: directories are not subject to the
+        // extension policy (consistent with the scanner)
         assert!(!ex.is_skipped("backup.old", true, None));
         assert!(!ex.is_skipped("会议.2024.07", true, None));
-        // 同名作为文件则按扩展名/白名单判
+        // The same name as a file is judged by extension/whitelist
         assert!(ex.is_skipped("backup.old", false, Some("old")));
-        // 黑名单扩展名：文件排除
+        // Blocklisted extension: file excluded
         assert!(ex.is_skipped("disk.qcow2", false, Some("qcow2")));
-        // 无扩展名敏感文件（白名单外）排除
+        // Extensionless sensitive files (outside the whitelist) excluded
         assert!(ex.is_skipped(".bash_history", false, None));
         assert!(ex.is_skipped(".git-credentials", false, None));
         assert!(ex.is_skipped(".viminfo", false, None));
@@ -297,7 +327,8 @@ mod tests {
         assert!(!ex.is_skipped("年报.xlsx", false, Some("xlsx")));
         assert!(!ex.is_skipped("照片.jpg", false, Some("jpg")));
         assert!(!ex.is_skipped("压缩包.zip", false, Some("zip")));
-        // watcher 事件级：组件级放行后，类型判定与扫描器走同一个 is_skipped
+        // Watcher event level: after the component-level pass, the type
+        // judgment goes through the same is_skipped as the scanner
         assert!(!ex.is_excluded_path(Path::new("/home/u/proj/main.c")));
         assert!(ex.is_skipped("main.c", false, Some("c")));
         assert!(!ex.is_excluded_path(Path::new("/home/u/proj/src")));

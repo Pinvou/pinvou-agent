@@ -50,9 +50,11 @@ fn schema_is_disposable(version: i64) -> bool {
     (0..3).contains(&version)
 }
 
-/// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`，触发器替换对除外）。
-/// 触发器语句单列为 [`FILES_AU_TRIGGER`]（建库批次与稳态升级共用同一份文本），
-/// 本常量由 [`schema_sql`] 拼接而成。
+/// Tables + FTS5 virtual table + sync triggers. Idempotent (`IF NOT EXISTS`,
+/// except for the trigger replacement pair). The trigger statement is listed
+/// separately as [`FILES_AU_TRIGGER`] (shared verbatim by the fresh-create
+/// batch and the steady-state upgrade); this constant is spliced together by
+/// [`schema_sql`].
 const SCHEMA_HEAD: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -96,21 +98,30 @@ END;
 CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
 END;
--- files_au 不在此建（替换语句单列为 [`FILES_AU_TRIGGER`]，本批次经 [`schema_sql`]
--- 拼接同一份文本）：旧版触发器没有 WHEN 子句，而 UPSERT 的 SET 恒含 name=，
--- `AFTER UPDATE OF name` 只看 SET 清单不看值——name 没变的写入（watcher 的
--- Modify 事件、扫描器的状态位刷新）也会白做一轮 trigram delete+insert。WHEN 让
--- 触发器语义与上面注释一致。本批次只覆盖新建库与迁移库；已在 v4 稳态的存量库
--- 由 open() 的只读探测原地升级（见 FILES_AU_TRIGGER 注释）。
+-- files_au is not created here (the replacement pair is listed separately as
+-- [`FILES_AU_TRIGGER`]; this batch splices the same text via [`schema_sql`]):
+-- the old trigger had no WHEN clause while the UPSERT's SET list always
+-- includes name=, and `AFTER UPDATE OF name` inspects the SET list, not the
+-- values — so writes that leave the name unchanged (the watcher's Modify
+-- events, the scanner's status refreshes) still paid a full trigram
+-- delete+insert round. WHEN makes the trigger semantics match the comment
+-- above. This batch covers only fresh creates and migrations; existing
+-- stores already in the v4 steady state are upgraded in place by open()'s
+-- read-only probe (see the FILES_AU_TRIGGER comment).
 "#;
 
-/// files_au 的成对替换语句。DROP+CREATE 包在 BEGIN IMMEDIATE 里保证原子：两进程
-/// 竞跑首次建库（或竞跑本升级）时，语句级交错会让无条件的 CREATE 撞
-/// "already exists"——旧版全 `IF NOT EXISTS` 批次没有这个失败模式——整对原子化后，
-/// 后到者只是等锁后幂等重放。SCHEMA 批次（新建/迁移）与 open() 稳态升级共用这
-/// 一份文本，形状不会漂移（`trigger_replacement_matches_the_schema_built_shape`）。
-/// 升级探测按 [`FILES_AU_WHEN_CLAUSE`] 子串识别旧形状：sqlite_master.sql 保存建
-/// 触发器时的原语句文本，旧版形状不含该子句。
+/// The paired replacement statements for files_au. DROP+CREATE is wrapped in
+/// BEGIN IMMEDIATE for atomicity: when two processes race a first-time store
+/// creation (or this same upgrade), statement-level interleaving would let
+/// the unconditional CREATE hit "already exists" — the old all-`IF NOT
+/// EXISTS` batch had no such failure mode — and with the pair atomized, the
+/// loser merely waits for the lock and replays idempotently. The SCHEMA
+/// batch (fresh create / migration) and open()'s steady-state upgrade share
+/// this one text, so the shape cannot drift
+/// (`trigger_replacement_matches_the_schema_built_shape`). The upgrade probe
+/// recognizes the old shape by the [`FILES_AU_WHEN_CLAUSE`] substring:
+/// sqlite_master.sql preserves the statement text as the trigger was
+/// created, and the old shape lacks that clause.
 const FILES_AU_TRIGGER: &str = r#"
 BEGIN IMMEDIATE;
 DROP TRIGGER IF EXISTS files_au;
@@ -123,15 +134,19 @@ END;
 COMMIT;
 "#;
 
-/// 新形状 `files_au` 独有的 WHEN 子句文本。open() 的稳态探测以此子串区分旧形状
-/// （无 WHEN，每次 upsert 都白做一轮 trigram 重写）与新形状。抽出成常量让探测与
-/// 触发器文本共享同一份 matcher：未来重排 [`FILES_AU_TRIGGER`] 文本时若把子句改样，
-/// `trigger_replacement_matches_the_schema_built_shape` 的断言会红，而不会发生
-/// 「探测子串失配 → 每次稳态开库都空转重放升级」的静默退化。
+/// The WHEN clause text unique to the new-shape `files_au`. open()'s
+/// steady-state probe uses this substring to tell the old shape (no WHEN;
+/// every upsert paid a pointless trigram rewrite) from the new one.
+/// Extracted into a constant so the probe and the trigger text share one
+/// matcher: if a future reflow of [`FILES_AU_TRIGGER`] changes the clause's
+/// wording, `trigger_replacement_matches_the_schema_built_shape` goes red
+/// instead of the silent degradation where a probe-substring mismatch
+/// replays the upgrade on every steady-state open.
 const FILES_AU_WHEN_CLAUSE: &str = "WHEN old.name IS NOT new.name";
 
-/// 建库批次尾段（L1 知识库与导入任务表），与 [`SCHEMA_HEAD`]、[`FILES_AU_TRIGGER`]
-/// 拼接成完整批次。
+/// Tail of the fresh-create batch (the L1 knowledge base and import job
+/// tables), spliced with [`SCHEMA_HEAD`] and [`FILES_AU_TRIGGER`] into the
+/// full batch.
 const SCHEMA_TAIL: &str = r#"
 
 -- ============ L1 知识库（见 l1.rs）============
@@ -228,9 +243,10 @@ CREATE TABLE IF NOT EXISTS knowledge_import_staged_chunks (
 );
 "#;
 
-/// 建库批次：头段（L0 表与触发器声明）+ files_au 替换 + 尾段（L1 表）。
-/// 幂等（`IF NOT EXISTS`，files_au 替换对除外——它自带 BEGIN IMMEDIATE 原子化，
-/// 重复执行幂等）。
+/// The fresh-create batch: head (L0 tables and trigger declarations) +
+/// files_au replacement + tail (L1 tables). Idempotent (`IF NOT EXISTS`,
+/// except the files_au replacement pair — it carries its own BEGIN IMMEDIATE
+/// atomization, and repeating it is idempotent).
 fn schema_sql() -> String {
     format!("{SCHEMA_HEAD}{FILES_AU_TRIGGER}{SCHEMA_TAIL}")
 }
@@ -246,14 +262,21 @@ ON CONFLICT(path) DO UPDATE SET
     indexed_at=excluded.indexed_at
 "#;
 
-/// watcher 增量路径专用（[`upsert_many_if_changed`]）：与 [`UPSERT_SQL`] 的唯一
-/// 差异是 conflict 分支多一个 WHERE——行内容（name/ext/size/mtime/is_dir）与库中
-/// 完全一致时整行跳过。同一文件一秒内的连发事件、chmod 等纯元数据抖动不再逐
-/// 事件重写整行。跳过时 indexed_at 保持为最后一次实际变化的时间：restart 的
-/// `last_scan_finished_at` 回退读 `MAX(indexed_at)`（见该方法），所以扫描全量路径
-/// 仍走 [`UPSERT_SQL`] 保持「重扫即逐行触碰」语义，写放大消解只放在增量侧。
-/// WHERE 对旧行用裸列名、对新行用 `excluded.`，`IS NOT` 对 NULL 稳健（SQLite
-/// NULL 安全比较）。
+/// Watcher incremental path only ([`upsert_many_if_changed`]): the only
+/// difference from [`UPSERT_SQL`] is a WHERE in the conflict branch — the
+/// whole row is skipped when its content (name/ext/size/mtime/is_dir) is
+/// fully identical to the store's. Burst events for the same file within a
+/// second, chmod and other pure-metadata churn no longer rewrite the row per
+/// event. When a row is skipped, its indexed_at keeps the time of the last
+/// actual change. The restart fallback in `last_scan_finished_at` reads
+/// `MAX(indexed_at)` (see that method), so the scan path keeps
+/// [`UPSERT_SQL`]: every row the scanner actually writes touches
+/// `indexed_at` — rows whose (mtime, size) match the snapshot are
+/// pre-skipped by the scanner and never reach the statement — which keeps
+/// the fallback's semantics unchanged while the write-amplification elision
+/// lives only on the incremental side. The WHERE uses bare column names for
+/// the old row and `excluded.` for the new one; `IS NOT` is NULL-safe
+/// (SQLite's NULL-safe comparison).
 const UPSERT_IF_CHANGED_SQL: &str = r#"
 INSERT INTO files(path, name, ext, size, mtime, is_dir, status, indexed_at)
 VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'indexed', strftime('%s','now'))
@@ -474,13 +497,20 @@ impl Store {
                 ));
             }
             w.execute_batch("PRAGMA synchronous = NORMAL;")?;
-            // v4 稳态库可能还带着旧形状的 files_au（WHEN 升级落地前打开过；本分支
-            // 跳过 DDL 批次，批次里的替换到不了存量库）。这里用只读探测识别旧形状
-            // （sqlite_master.sql 无 WHEN 子句），仅在确实需要时执行替换——探测是
-            // 普通 SELECT，不取写锁，稳态开库的两进程争用窗口不变；替换语句自带
-            // BEGIN IMMEDIATE，撞上另一进程的同款升级也只是等锁后幂等重放（FTS
-            // 内容不变，纯元数据操作）。触发器被外力整个删掉时不在此补建：与上方
-            // 「外部删表不自愈、语句显式失败」的取舍一致。
+            // A v4 steady-state store may still carry the old-shape files_au
+            // (opened before the WHEN upgrade landed; this branch skips the
+            // DDL batch, so the batch's replacement never reaches existing
+            // stores). Identify the old shape with a read-only probe
+            // (sqlite_master.sql without the WHEN clause) and run the
+            // replacement only when actually needed — the probe is a plain
+            // SELECT and takes no write lock, so the steady-state open's
+            // two-process contention window is unchanged; the replacement
+            // statement carries its own BEGIN IMMEDIATE, so racing another
+            // process's identical upgrade just waits for the lock and
+            // replays idempotently (FTS content unchanged, a pure metadata
+            // operation). A trigger deleted by external force is not rebuilt
+            // here: the same trade as the "externally dropped tables are not
+            // self-healed, statements fail explicitly" stance above.
             let trigger_sql: Option<String> = w
                 .query_row(
                     "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
@@ -578,8 +608,10 @@ impl Store {
         tx.commit()
     }
 
-    /// 增量 upsert（watcher 用，单事务）：内容与库中一致的行整行跳过，写放大
-    /// 消解见 [`UPSERT_IF_CHANGED_SQL`]。插入分支与 [`upsert_many`] 完全一致。
+    /// Incremental upsert (watcher only, single transaction): rows whose
+    /// content matches the store are skipped whole; see
+    /// [`UPSERT_IF_CHANGED_SQL`] for the write-amplification elision. The
+    /// insert branch is identical to [`upsert_many`]'s.
     pub fn upsert_many_if_changed(&self, recs: &[FileRecord]) -> rusqlite::Result<()> {
         let mut guard = self.conn.lock();
         let tx = guard.transaction()?;
@@ -625,41 +657,72 @@ impl Store {
         tx.commit()
     }
 
-    /// watcher 删除：目录记录连带子树一并删，文件记录退化为精确删除。单事务，FTS 由触发器同步。
+    /// Watcher deletes: a directory record is deleted together with its
+    /// subtree, a file record degrades to an exact delete. Single transaction;
+    /// FTS is kept in sync by the triggers.
     ///
-    /// 事务用 `Immediate`：SELECT-first 的写事务若用 deferred，写升级在 WAL 下撞上
-    /// 并发进程（GUI + headless CLI 同库是受支持用法）的提交时，会以
-    /// `SQLITE_BUSY_SNAPSHOT` 失败且 busy handler 不重试——把可等待的锁竞争变成
-    /// 整批删除报错丢事件。写锁随 BEGIN 即取，等待发生在最前面。（库内另有同构的
-    /// SELECT-first 写事务：import_jobs 的任务准备与条目领取。那两处是自恢复的
-    /// 作业状态机——失败返回 Err、条目保持 pending 由下次重试接管——本次未改，
-    /// 见 `prepare_items`/`claim_next`。）
+    /// The transaction is `Immediate`: a SELECT-first write transaction under
+    /// the deferred behavior, when its write upgrade collides in WAL with a
+    /// concurrent process's commit (GUI + headless CLI on one store is
+    /// supported usage), fails with `SQLITE_BUSY_SNAPSHOT` and the busy
+    /// handler does not retry — turning a waitable lock race into a
+    /// whole-batch delete failure that drops events. The write lock is taken
+    /// at BEGIN, so the waiting happens up front. (The library has two more
+    /// isomorphic SELECT-first write transactions: import_jobs' job
+    /// preparation and entry claiming. Those are self-recovering job-state
+    /// machines — failure returns Err and the entries stay pending for the
+    /// next retry — left unchanged here; see `prepare_items`/`claim_next`.)
     ///
-    /// 为什么需要子树删除：目录被 rename/move-out 时，inotify 只会在（仍被监听的）父目录上
-    /// 冒出该目录自身的事件，其下的文件不会有任何事件；精确删除会在索引里留下整树「幽灵」，
-    /// 一直撑到下次重扫。先查 `is_dir`，目录才走前缀删除——前缀范围走 UNIQUE 索引
-    /// （`path TEXT NOT NULL UNIQUE`，BINARY 排序），是索引查找 + 命中行删除，不是全表扫描；
-    /// 文件（绝大多数事件）保持索引精确删除的代价。已知残留缺口（幽灵方向，重扫兜底）：
-    /// 库里残留 `is_dir=false` 的陈旧行、而磁盘上已是目录时，本次只精确删除，子树行留待
-    /// 重扫清（is_dir 门是省扫描的取舍，事件流的批量合并另见 watcher 侧）。
+    /// Why subtree deletion is needed: when a directory is renamed/moved
+    /// out, inotify only surfaces that directory's own event on the (still
+    /// watched) parent; its files get no events at all, and an exact delete
+    /// would leave a whole tree of "ghosts" in the index until the next
+    /// rescan. `is_dir` is probed first, and only a directory takes the
+    /// prefix delete — the prefix range rides the UNIQUE index (`path TEXT
+    /// NOT NULL UNIQUE`, BINARY ordering): an index seek plus deletion of
+    /// the hit rows, not a full-table scan; files (the vast majority of
+    /// events) keep the index exact-delete cost. Known residual gap (ghost
+    /// direction, rescan covers): the store holds a stale `is_dir=false`
+    /// row while the disk already has a directory — this call only
+    /// exact-deletes, and the subtree rows wait for rescan (the is_dir gate
+    /// is a scan-saving trade; batch merging of event streams is a
+    /// watcher-side matter).
     ///
-    /// 前缀匹配用 `[path + 主分隔符, path + 分隔符后继)` 的范围精确比较：路径可含
-    /// `%`/`_`/`[`，不能走 LIKE/GLOB 的模式语义。下界 = `p + sep`；上界 = `p +
-    /// 分隔符字节的后继字符`（unix `/`(0x2F)→`0`(0x30)，Windows `\`(0x5C)→`]`(0x5D)，
-    /// 两平台分隔符均为 ASCII，后继无歧义）——BINARY 字节序下，任何以 `p+sep` 开头的行
-    /// 与上界的比较都在分隔符这一字节上分出高下，后缀任意延长不改变结局，所以该闭开区间
-    /// 恰好等于「以 `p+sep` 为字节前缀」的行集合（含按 `p+sep` 拼写入库的根行本身）。
-    /// 库内行全部经 `record_from_parts` 的 `to_str` 闸门（合法 UTF-8，UTF-8 字节序与
-    /// 码点序一致），CJK/emoji 路径同样精确；应用内不存在 BLOB 行（唯一写入方绑定
-    /// TEXT）。外力注入的 BLOB 行两个删除都匹配不到——SQLite 存储类排序把 BLOB 放在
-    /// 一切 TEXT 之上，`path = ?`（TEXT 绑定）不相等、范围上界比较也判大——会作为
-    /// 幽灵残留到下次重扫；没有应用内可达路径，仅按实情记录。
+    /// The prefix match is an exact range compare over
+    /// `[path + primary separator, path + separator successor)`: paths may
+    /// contain `%`/`_`/`[`, so LIKE/GLOB's pattern semantics are unusable.
+    /// The lower bound is `p + sep`; the upper bound is `p + the character
+    /// after the separator byte` (unix `/`(0x2F)→`0`(0x30), Windows
+    /// `\`(0x5C)→`]`(0x5D); both separators are ASCII, so the successor is
+    /// unambiguous) — under BINARY byte ordering, any row starting with
+    /// `p+sep` decides its comparison against the upper bound at the
+    /// separator byte itself, and extending the suffix never changes the
+    /// outcome, so the half-open interval is exactly the set of rows
+    /// byte-prefixed by `p+sep` (including a root row stored under the
+    /// `p+sep` spelling itself). Every row in the store passed
+    /// `record_from_parts`'s `to_str` gate (legal UTF-8, and UTF-8 byte
+    /// order equals code point order), so CJK/emoji paths compare exactly;
+    /// no in-app BLOB rows can exist (the only writers bind TEXT).
+    /// Externally injected BLOB rows match neither delete — SQLite's
+    /// storage-class ordering puts BLOB above every TEXT, so `path = ?` (a
+    /// TEXT binding) is not equal and the range's upper-bound comparison
+    /// also judges larger — they ghost until the next rescan; no in-app
+    /// path can reach this, recorded as the fact it is. The same miss
+    /// befalls a row spelled with a **non-primary** separator (e.g. a
+    /// `/`-spelled root row on Windows, whose bytes sort below every
+    /// `\`-prefixed range): the same ghost-until-rescan class, unreachable
+    /// while scanner and watcher share one canonical spelling (the wiring
+    /// contract).
     ///
-    /// 分隔符拼写：入参容忍**尾部分隔符**（接线方传根 PathBuf 时可能带 `/`），也容忍
-    /// 混合尾（`dir\/`），统一按「主分隔符或 `/`」一遍去掉后再比对。行侧则可能按
-    /// **带尾分隔符**的拼写入库（walkdir verbatim 记录扫描根，接线方传
-    /// `--root /media/usb/` 即得 `/media/usb/` 行）——`is_dir` 探测在规范拼写未命中时
-    /// 退试 `p + 主分隔符` 的根行拼写，前缀模式本身精确命中该行，整树照常删除。
+    /// Separator spellings: the input tolerates a **trailing separator**
+    /// (the wiring side may pass a root PathBuf carrying `/`), and mixed
+    /// tails (`dir\/`); both are stripped in one pass by "primary
+    /// separator or `/`" before comparing. Rows, on the other hand, may be
+    /// stored under a **trailing-separator** spelling (walkdir records scan
+    /// roots verbatim; passing `--root /media/usb/` stores `/media/usb/`)
+    /// — the is_dir probe falls back to the `p + primary separator`
+    /// root-row spelling when the canonical spelling misses, and the prefix
+    /// pattern hits that row exactly, so the whole tree is still deleted.
     pub fn delete_tree(&self, paths: &[String]) -> rusqlite::Result<()> {
         let mut guard = self.conn.lock();
         let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -673,7 +736,8 @@ impl Store {
                 if p.is_empty() {
                     continue;
                 }
-                // 行可能按规范拼写或「p + 分隔符」的根行拼写入库，两种都探。
+                // A row may be stored under the canonical spelling or the
+                // "p + separator" root-row spelling; probe both.
                 let with_sep = format!("{}{}", p, std::path::MAIN_SEPARATOR);
                 let is_dir: Option<bool> = match q.query_row(params![p], |r| r.get(0)).optional()? {
                     Some(dir) => Some(dir),
@@ -681,11 +745,16 @@ impl Store {
                 };
                 del_exact.execute(params![p])?;
                 if is_dir == Some(true) {
-                    // 行内容只会是 `p` 自身、`p + 分隔符`（根行带尾分隔符的拼写）或
-                    // `p + 分隔符 + 后代`；闭开区间 `[p+sep, p+sep后继)` 恰为这全体
-                    // （见方法注释），名字只共享前缀字符的兄弟（如 `prefix-sibling.md`，
-                    // 或恰好等于上界的 `p0`）不会被误删，带尾分隔符的根行本身则被
-                    // 下界精确命中一并清掉。
+                    // Rows can only be `p` itself, `p + separator` (a
+                    // trailing-separator root-row spelling), or
+                    // `p + separator + descendant`; the half-open interval
+                    // `[p+sep, p+sep-successor)` is exactly that whole set
+                    // (see the method doc), so siblings sharing only prefix
+                    // characters (like `prefix-sibling.md`, or a `p0` that
+                    // exactly equals the upper bound) are not wrongly
+                    // deleted, while the trailing-separator root row itself
+                    // is caught exactly by the lower bound and cleared with
+                    // the rest.
                     let upper = format!("{}{}", p, (std::path::MAIN_SEPARATOR as u8 + 1) as char);
                     del_sub.execute(params![with_sep, upper])?;
                 }
@@ -889,10 +958,13 @@ mod tests {
         }
     }
 
-    /// 夹具路径统一按主分隔符拼写：delete_tree 的边界数学（下界 `p+sep`、上界
-    /// `p+分隔符后继字符`）用的就是 MAIN_SEPARATOR，`/` 字面量夹具在 Windows
-    /// （`\` 分隔符、后继为 `]`）下会让这些纯 SQL 测试整体红掉（行按 `/` 排序
-    /// 落在下界之外）。经此拼出的路径与删除实现同源，任何平台语义一致。
+    /// Fixture paths are spelled uniformly via the primary separator: the
+    /// boundary math of delete_tree (lower bound `p+sep`, upper bound
+    /// `p + separator successor`) uses MAIN_SEPARATOR, so `/`-literal
+    /// fixtures on Windows (`\` separator, successor `]`) would turn these
+    /// pure-SQL tests all-red (rows sorted under `/` fall outside the lower
+    /// bound). Paths built here share the delete implementation's source, so
+    /// the semantics agree on any platform.
     fn sep_path(parts: &[&str]) -> String {
         let sep = std::path::MAIN_SEPARATOR;
         let mut s = String::from(sep);
@@ -1492,10 +1564,13 @@ mod tests {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
-    /// 稳态升级钉：DDL 批次只在新建/迁移时执行，v4 稳态开库走的是跳过批次的那条
-    /// 分支——若存量库还带着旧版（无 WHEN）files_au，open() 必须靠只读探测识别并
-    /// 原地替换。这个场景只有本测试能看到（open_in_memory 永远跑全批次，触发器
-    /// 天然是新版）。顺带钉升级幂等（二次 open 形状稳定）。
+    /// Steady-state upgrade pin: the DDL batch runs only on fresh create /
+    /// migration, and a v4 steady-state open takes the branch that skips the
+    /// batch — if an existing store still carries the old (no-WHEN) files_au,
+    /// open() must identify it via the read-only probe and replace it in
+    /// place. Only this test can see that scenario (open_in_memory always
+    /// runs the full batch, so its trigger is naturally new-shape). Also pins
+    /// upgrade idempotence (a second open leaves the shape stable).
     #[test]
     fn open_upgrades_a_v4_store_still_carrying_the_old_trigger_shape() {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -1520,8 +1595,10 @@ mod tests {
             .unwrap()
         };
 
-        // 新二进制建库后，把 files_au 退化回旧版（无 WHEN）形状——精确模拟「旧
-        // 二进制写出的 v4 稳态库」在探测视角下的全部差异。
+        // After a fresh binary creates the store, degrade files_au back to
+        // the old (no-WHEN) shape — exactly simulating every difference a
+        // "v4 steady-state store written by an old binary" presents to the
+        // probe.
         drop(Store::open(&path).unwrap());
         {
             let c = Connection::open(&path).unwrap();
@@ -1540,7 +1617,8 @@ mod tests {
             "fixture must start from the old (no-WHEN) shape"
         );
 
-        // 重新 open：稳态探测识别旧形状 → 原地替换。
+        // Reopen: the steady-state probe identifies the old shape →
+        // in-place replacement.
         let store = Store::open(&path).unwrap();
         drop(store);
         let upgraded = trigger_sql(&path);
@@ -1549,7 +1627,7 @@ mod tests {
             "a v4 steady-state open must upgrade the old trigger in place, got: {upgraded}"
         );
 
-        // 升级幂等：再开一次，形状稳定，不报错。
+        // Upgrade idempotence: open once more, shape stable, no error.
         drop(Store::open(&path).unwrap());
         assert_eq!(trigger_sql(&path), upgraded, "second open must be a no-op");
 
@@ -1558,15 +1636,17 @@ mod tests {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
-    /// 升级路径与建库路径共用同一份 FILES_AU_TRIGGER 文本（schema_sql 拼接）；
-    /// 这里钉两路建出的触发器语句文本（sqlite_master.sql）一致，防止将来有人把
-    /// SCHEMA 内联回去后两处漂移。
+    /// The upgrade path and the create path share the same FILES_AU_TRIGGER
+    /// text (spliced by schema_sql); this pins that the trigger statement
+    /// text built by both routes (sqlite_master.sql) is identical, so a
+    /// future inline-back into SCHEMA cannot drift the two copies apart.
     #[test]
     fn trigger_replacement_matches_the_schema_built_shape() {
         let via_schema = Connection::open_in_memory().unwrap();
         via_schema.execute_batch(&schema_sql()).unwrap();
-        // 触发器建立时校验引用的表存在，替换语句单跑需要 SCHEMA_HEAD 先把
-        // files/files_fts 建出来。
+        // The trigger validates referenced tables at creation, so the
+        // replacement statement needs SCHEMA_HEAD to create files/files_fts
+        // first.
         let via_upgrade = Connection::open_in_memory().unwrap();
         via_upgrade.execute_batch(SCHEMA_HEAD).unwrap();
         via_upgrade.execute_batch(FILES_AU_TRIGGER).unwrap();
@@ -1579,9 +1659,11 @@ mod tests {
             .unwrap()
         };
         assert_eq!(sql(&via_schema), sql(&via_upgrade));
-        // 探测子串防漂移钉：触发器常量文本与建库落库文本都必须包含稳态探测
-        // 所匹配的 WHEN 子句——否则每次开库都会误判旧形状而空转重放升级
-        // （幂等但破坏「稳态开库不取写锁」的设计）。
+        // Probe-substring anti-drift pin: both the trigger const text and
+        // the schema-built stored sql must contain the WHEN clause the
+        // steady-state probe matches on — otherwise every open would
+        // misjudge the old shape and idly replay the upgrade (idempotent,
+        // but breaks the "steady-state open takes no write lock" design).
         assert!(
             FILES_AU_TRIGGER.contains(FILES_AU_WHEN_CLAUSE),
             "the trigger const must keep the WHEN clause the steady-state probe matches on"
@@ -1699,7 +1781,8 @@ mod tests {
         }
     }
 
-    /// delete_tree 对文件记录必须退化为精确删除——只删自身，不碰任何共享前缀的路径。
+    /// delete_tree must degrade to an exact delete for a file record —
+    /// deleting only itself, touching no path that merely shares a prefix.
     #[test]
     fn delete_tree_on_a_file_is_exact() {
         let s = Store::open_in_memory().unwrap();
@@ -1708,7 +1791,8 @@ mod tests {
         let f2 = sep_path(&["a", "b", "notes.md2"]);
         s.upsert_many(&[
             rec(&f, "notes.md", Some("md"), 10, 1),
-            // 只共享前缀字符的兄弟路径不能被误删。
+            // Sibling paths sharing only prefix characters must not be
+            // wrongly deleted.
             rec(&f_bak, "notes.md.bak", Some("bak"), 10, 1),
             rec(&f2, "notes.md2", None, 10, 1),
         ])
@@ -1722,9 +1806,11 @@ mod tests {
         assert!(left.contains_key(&f2));
     }
 
-    /// 目录记录连带子树：dir rename/move-out 只会冒出父路径事件，子树必须被
-    /// 前缀删除兜住；前缀比较按「路径+分隔符」精确对齐，只共享前缀字符的
-    /// 兄弟与父目录不受影响，CJK 路径按字符计数同样正确。
+    /// A directory record takes its subtree: a dir rename/move-out only
+    /// surfaces the parent-path event, so the prefix delete must cover the
+    /// children; the prefix compare aligns exactly on "path + separator",
+    /// siblings sharing only prefix characters and parents are unaffected,
+    /// and CJK paths compare just as exactly (UTF-8 byte order).
     #[test]
     fn delete_tree_on_a_dir_removes_the_subtree_only() {
         let s = Store::open_in_memory().unwrap();
@@ -1733,7 +1819,8 @@ mod tests {
         let child_cjk = sep_path(&["home", "u", "项目", "报告.pdf"]);
         let child_sub = sep_path(&["home", "u", "项目", "sub", "a.md"]);
         let child_src = sep_path(&["home", "u", "proj", "src", "notes.md"]);
-        // 与被删目录只共享前缀字符（`项目` vs `项目备份`）。
+        // Sibling sharing only prefix characters with the deleted dir
+        // (`项目` vs `项目备份`).
         let sib_cjk = sep_path(&["home", "u", "项目备份.md"]);
         let sib_en = sep_path(&["home", "u", "proj-notes.md"]);
         let mut dir = rec(&dir_p, "项目", None, 0, 1);
@@ -1754,7 +1841,8 @@ mod tests {
         s.delete_tree(&[
             dir_p.clone(),
             dir_en_p.clone(),
-            // 同批混入一条文件路径：必须保持精确删除。
+            // A file path mixed into the same batch must stay an exact
+            // delete.
             sib_en.clone(),
         ])
         .unwrap();
@@ -1772,9 +1860,10 @@ mod tests {
         );
     }
 
-    /// 库里没有的路径（从未索引/已被先行删除）必须安静通过，不能报错——
-    /// watcher 的删除分支对任何 NotFound 事件都会发起删除；同批混入真实存在的
-    /// 路径时，未知的不得阻断后续路径的删除。
+    /// Paths not in the store (never indexed / already deleted by an earlier
+    /// path) must pass quietly without error — the watcher's delete branch
+    /// fires a delete for every NotFound event; when real paths are mixed
+    /// into the batch, unknown ones must not block the rest.
     #[test]
     fn delete_tree_tolerates_unknown_paths() {
         let s = Store::open_in_memory().unwrap();
@@ -1790,10 +1879,12 @@ mod tests {
         assert!(s.load_index().unwrap().is_empty());
     }
 
-    /// 扫描根可能按带尾分隔符的拼写入库（walkdir verbatim 记录扫描根，接线方传
-    /// `--root /media/usb/` 即得 `/media/usb/` 行）。删除输入按规范拼写给出时也
-    /// 必须命中：is_dir 探测退试「p + 分隔符」的根行拼写，前缀模式精确命中该行，
-    /// 整树照常删除，不静默漏。
+    /// A scan root may be stored under a trailing-separator spelling
+    /// (walkdir records scan roots verbatim; passing `--root /media/usb/`
+    /// stores `/media/usb/`). It must still be hit when the delete input
+    /// uses the canonical spelling: the is_dir probe falls back to the
+    /// "p + separator" root-row spelling and the prefix pattern hits that
+    /// row exactly, so the whole tree is still deleted — no silent miss.
     #[test]
     fn delete_tree_matches_a_root_row_stored_with_a_trailing_separator() {
         let s = Store::open_in_memory().unwrap();
@@ -1813,10 +1904,13 @@ mod tests {
         );
     }
 
-    /// FTS 与 name 变化同步、与纯内容变化脱钩：files_au 触发器带 WHEN（name 没变
-    /// 的 UPSERT 不再重写 trigram），name 变化必须照常传导到搜索，纯 size/mtime
-    /// 变化不得碰坏 FTS 行。路径刻意不含搜索词（LIKE 兜底连 path 一起匹配，会
-    /// 掩盖 FTS 的真实状态）；断言用 ≥3 字符走 FTS MATCH 分支。
+    /// FTS stays in sync with name changes and decoupled from content-only
+    /// changes: the files_au trigger carries WHEN (an UPSERT leaving the name
+    /// unchanged no longer rewrites trigrams), a name change must still
+    /// propagate to search, and a pure size/mtime change must not disturb
+    /// the FTS row. Paths deliberately contain no search term (the LIKE
+    /// fallback matches path too, which would mask FTS's real state);
+    /// assertions use >= 3 chars to hit the FTS MATCH branch.
     #[test]
     fn fts_follows_name_changes_and_ignores_content_only_updates() {
         let s = Store::open_in_memory().unwrap();
@@ -1824,7 +1918,7 @@ mod tests {
             .unwrap();
         let hits = |text: &str| {
             s.search(&SearchQuery {
-                text: Some(text.into()), // 3 字符 → FTS5 trigram MATCH
+                text: Some(text.into()), // 3 chars → FTS5 trigram MATCH
                 limit: 10,
                 ..Default::default()
             })
@@ -1833,7 +1927,8 @@ mod tests {
         };
         assert_eq!(hits("报告书"), 1);
 
-        // 仅 size/mtime 变化（name 不变）：FTS 行不动，搜索仍命中。
+        // Only size/mtime change (name unchanged): the FTS row is untouched,
+        // search still hits.
         s.upsert_many(&[rec("/t/doc-1.pdf", "报告书.pdf", Some("pdf"), 99, 2)])
             .unwrap();
         assert_eq!(
@@ -1842,15 +1937,17 @@ mod tests {
             "content-only upsert must not disturb FTS"
         );
 
-        // name 变化：旧名退出、新名进入。
+        // Name change: the old name leaves, the new name enters.
         s.upsert_many(&[rec("/t/doc-1.pdf", "会议纪要.pdf", Some("pdf"), 99, 3)])
             .unwrap();
         assert_eq!(hits("报告书"), 0, "old name must leave the FTS index");
         assert_eq!(hits("会议纪要"), 1, "new name must enter the FTS index");
     }
 
-    /// 尾部分隔符必须规范化后再比对：接线方传根 PathBuf 时可能带 `/`，若拿
-    /// `dir` + `/` 直接拼会得到 `dir//`，整树静默漏删（幽灵直到重扫）。
+    /// Trailing separators must be normalized before comparing: the wiring
+    /// side may pass a root PathBuf carrying `/`; splicing `dir` + `/`
+    /// directly would build `dir//` and silently miss the whole subtree
+    /// (ghosts until rescan).
     #[test]
     fn delete_tree_normalizes_a_trailing_separator() {
         let s = Store::open_in_memory().unwrap();
@@ -1861,7 +1958,8 @@ mod tests {
         s.upsert_many(&[dir, rec(&child, "a.md", Some("md"), 3, 2)])
             .unwrap();
 
-        // 输入带尾分隔符（接线方传根 PathBuf 时可能带 `/`）。
+        // Input carries a trailing separator (the wiring side may pass a
+        // root PathBuf carrying `/`).
         s.delete_tree(&[format!("{dir_p}{}", std::path::MAIN_SEPARATOR)])
             .unwrap();
 
@@ -1871,16 +1969,21 @@ mod tests {
         );
     }
 
-    /// 前缀匹配必须按字面比较：被删目录名里的 `%`/`_`/`[` 一旦被当成 LIKE/GLOB
-    /// 模式语义，会误删只共享前缀字符的兄弟。当前 substr 形态对三者全免疫。
+    /// The prefix match must be literal: if `%`/`_`/`[` inside the deleted
+    /// directory's name were interpreted as LIKE/GLOB pattern semantics,
+    /// siblings sharing only prefix characters would be wrongly deleted. The
+    /// current range form is immune to all three (exact byte compare, no
+    /// pattern semantics).
     #[test]
     fn delete_tree_is_literal_about_pattern_metachars() {
         let s = Store::open_in_memory().unwrap();
         let dir_p = sep_path(&["home", "u", "met_100%[1]"]);
         let child = sep_path(&["home", "u", "met_100%[1]", "报告.pdf"]);
-        // 字面含相同前缀字符的兄弟：非模式语义不得被波及。
+        // Sibling literally containing the same prefix characters: a
+        // non-pattern compare must not touch it.
         let sib = sep_path(&["home", "u", "met_100%[1]_备份.md"]);
-        // 在未转义 LIKE ('met_100%[1]%') 下会假阳性命中的名字：必须幸存。
+        // A name that an unescaped LIKE ('met_100%[1]%') would
+        // false-positive on: must survive.
         let other = sep_path(&["home", "u", "metX100Yfoo1Z.md"]);
         let mut dir = rec(&dir_p, "met_100%[1]", None, 0, 1);
         dir.is_dir = true;
@@ -1907,21 +2010,25 @@ mod tests {
         );
     }
 
-    /// 前缀范围的两个边界都必须精确：恰为上界的兄弟（`sub0` = `p + 分隔符后继`）
-    /// 与低于下界的兄弟（`sub-…`，分隔符字节序在前）必须幸存——闭开区间多删一个
-    /// 字节序近邻就是误删。
+    /// Both bounds of the prefix range must be exact: the sibling exactly at
+    /// the upper bound (`sub0` = `p + separator successor`) and the sibling
+    /// below the lower bound (`sub-…`, byte order before the separator) must
+    /// survive — widening the half-open interval by one byte-order neighbor
+    /// is a wrong delete.
     #[test]
     fn delete_tree_range_bounds_exclude_boundary_siblings() {
         let s = Store::open_in_memory().unwrap();
         let sep = std::path::MAIN_SEPARATOR;
-        // 上界 = p + 分隔符后继字符，按平台现算（unix '/'(0x2F)→'0'(0x30)，
-        // Windows '\'(0x5C)→']'(0x5D)）——同一份夹具在任何平台都钉住精确上界。
+        // Upper bound = p + separator successor character, computed per
+        // platform (unix '/'(0x2F)→'0'(0x30), Windows '\'(0x5C)→']'(0x5D))
+        // — the same fixture pins the exact upper bound on any platform.
         let succ = (sep as u8 + 1) as char;
         let dir_p = sep_path(&["t", "sub"]);
         let child = sep_path(&["t", "sub", "a.md"]);
-        // 恰为上界字符的拼写：必须幸存。
+        // A spelling exactly at the upper-bound character: must survive.
         let at_upper = format!("{dir_p}{succ}");
-        // 分隔符字节序之前的近邻（'-' < sep，两平台分隔符均 ASCII）：必须幸存。
+        // A near neighbor preceding the separator's byte order ('-' < sep;
+        // both separators are ASCII): must survive.
         let below = sep_path(&["t", "sub-文件.md"]);
         let mut dir = rec(&dir_p, "sub", None, 0, 1);
         dir.is_dir = true;
@@ -1947,16 +2054,19 @@ mod tests {
         );
     }
 
-    /// watcher 增量路径的写放大消解：内容与库中一致的重复 upsert 整行跳过
-    /// （indexed_at 保持为最后实际变化的时间——用哨兵值代替真实时钟，确定性
-    /// 断言），任一内容列变化即照常重写。这是 [`UPSERT_IF_CHANGED_SQL`] 的
-    /// WHERE 钉：删掉 WHERE 的突变会让哨兵被 strftime('now') 覆盖而红。
+    /// Write-amplification elision on the watcher's incremental path: a
+    /// repeat upsert with identical content skips the whole row (indexed_at
+    /// keeps the time of the last actual change — asserted with a sentinel
+    /// instead of the real clock, deterministically), and any content-column
+    /// change rewrites as usual. This is the WHERE pin of
+    /// [`UPSERT_IF_CHANGED_SQL`]: the WHERE-removal mutation lets
+    /// strftime('now') overwrite the sentinel and goes red.
     #[test]
     fn watcher_upsert_skips_a_content_identical_row() {
         let s = Store::open_in_memory().unwrap();
         s.upsert_many_if_changed(&[rec("/t/f.md", "f.md", Some("md"), 10, 100)])
             .unwrap();
-        // 哨兵：把 indexed_at 拨到一个确定的过去值。
+        // Sentinel: set indexed_at to a definite past value.
         s.conn
             .lock()
             .execute("UPDATE files SET indexed_at = 1234567890", [])
@@ -1977,7 +2087,8 @@ mod tests {
             "a content-identical re-upsert must skip the row (sentinel must survive)"
         );
 
-        // 任一内容列变化：照常重写（哨兵被替换），行内容更新。
+        // Any content-column change: rewrite as usual (the sentinel is
+        // replaced), row content updated.
         s.upsert_many_if_changed(&[rec("/t/f.md", "f.md", Some("md"), 11, 100)])
             .unwrap();
         let (at, size): (i64, i64) = s
@@ -1992,4 +2103,5 @@ mod tests {
         assert!(at != 1234567890, "a real change must rewrite the row");
         assert_eq!(size, 11);
     }
+
 }

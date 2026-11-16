@@ -5,128 +5,211 @@
 // class covers this file's other unix-only test fixtures (symlink creation and
 // non-UTF-8 names via OsStrExt, likewise unexpressible portably).
 
-//! 实时增量索引：notify 监听已纳入的根，文件变化即时更新 L0 元数据库。
+//! Real-time incremental indexing: notify watches the roots already enrolled
+//! in the knowledge feature, and file changes update the L0 metadata store
+//! immediately.
 //!
-//! 事件处理（对齐 file_watcher.rs 的「按存在性判定」做法），对事件里的每条路径：
-//! - `symlink_metadata` 成功且是普通文件/目录 → **根范围内**组件级排除 +
-//!   [`Excluder::is_skipped`]（与扫描器同一策略源，含 `is_dir` 上下文，带点目录/
-//!   无扩展名文件与扫描结果一致）后 `upsert`
-//! - `NotFound`（已删除 / rename 移走）→ [`Store::delete_tree`]：目录记录连带子树
-//!   一并删（dir rename/move-out 只会冒出父路径事件），文件退化为精确删除
-//! - stat 成功但不可入库类型（软链/socket/fifo）→ 同样走删除分支：实体被原地
-//!   替换成软链等（`rm f && ln -s` 的常见节奏）时旧记录已成幽灵，清掉；库中
-//!   无行时是安全 no-op（扫描器本就从不为这类类型建行）
-//! - 其他 stat 错误（权限收紧/挂载抖动）→ 只告警不删，避免把仍存在的记录误删
+//! Event handling (aligned with file_watcher.rs's "judge by existence"
+//! approach), for every path carried by an event:
+//! - `symlink_metadata` succeeds and the type is a regular file or directory →
+//!   **root-scoped** component-level exclusion + [`Excluder::is_skipped`] (the
+//!   same policy source as the scanner, including the `is_dir` context, so
+//!   dot-suffixed directories and extensionless files agree with scan results),
+//!   then `upsert`
+//! - `NotFound` (deleted / renamed away) → [`Store::delete_tree`]: a directory
+//!   record is deleted together with its subtree (a dir rename/move-out only
+//!   surfaces the parent-path event), and a file degrades to an exact delete
+//! - stat succeeds but the type is not indexable (symlink/socket/fifo) → also
+//!   takes the delete branch: when the entity was replaced in place by a
+//!   symlink or similar (the common `rm f && ln -s` rhythm), the old record is
+//!   already a ghost — clear it; when the store has no row this is a safe
+//!   no-op (the scanner never builds rows for those types)
+//! - other stat errors (permission tightened / mount jitter) → warn only, do
+//!   not delete, to avoid removing records for entities that still exist
 //!
-//! 非 UTF-8 拼写的路径两侧都不入库：[`scanner::record_from_parts`] 的 `to_str`
-//! 是两条路共同的最终闸门（扫描器经 `to_record`、watcher 经事件路径），坏名目录
-//! 下的「干净叶子」同样到不了记录装配（扫描器则按 empty-name 语义在 filter_entry
-//! 剪掉整棵子树）——落库结果一致。这类路径的删除事件按 lossy 拼写匹配不到任何
-//! 行（除非某行的名字恰好含字面 U+FFFD 替换字符——合法 UTF-8 但极端罕见），正常
-//! 情况是安全 no-op。
+//! Paths with non-UTF-8 spellings enter the store on neither side:
+//! [`scanner::record_from_parts`]'s `to_str` is the shared final gate for both
+//! paths (the scanner goes through `to_record`, the watcher through event
+//! paths), so a "clean leaf" under a bad-name directory likewise never reaches
+//! record assembly (the scanner, per its empty-name semantics, prunes the whole
+//! subtree at filter_entry) — the stored outcome agrees. Delete events for such
+//! paths match no row under the lossy spelling (unless some row's name happens
+//! to contain a literal U+FFFD replacement character — legal UTF-8 but
+//! extremely rare); the normal case is a safe no-op.
 //!
-//! 排除范围与扫描器对齐：recursive 监听不会自动剪枝，事件里仍会冒出
-//! node_modules/.ssh 等深处的路径，先按**受监听根的可见范围**做组件级排除（根自身
-//! basename + 根下组件；根之上的祖先组件扫描器永不可见，不得据此丢整根事件），
-//! 删除事件同样适用，存活路径再按 `is_skipped` 判类型。
+//! Exclusion scope is aligned with the scanner: recursive watching does not
+//! prune automatically, so paths deep inside node_modules/.ssh etc. still
+//! surface in events; apply component-level exclusion over **the watched
+//! root's visible scope** first (the root's own basename + components below
+//! it; ancestor components above the root are never visible to the scanner
+//! and must not be allowed to drop a whole root's events); delete events
+//! apply the same, and surviving paths are then type-judged by `is_skipped`.
 //!
-//! `spawn` 先把每个根 `canonicalize`（失败即告警跳过该根；同一实体的重复拼写只
-//! 注册一次；非 UTF-8 根同样拒收——fsevent 注册内部 `to_str().unwrap()` 会
-//! panic，且 `to_str` 闸门下这类根本产不出记录行，跳过无损失），watch 注册与
-//! 事件归因统一用规范化拼写——macOS fsevent 本来就把事件投递成 canonical 路径、
-//! Linux inotify 会把相对根拼成绝对路径，按原拼写归因会被拼写差击穿（整根事件
-//! 落到根外 fallback、或按两套拼写各成一行）。**接线方必须给扫描器与 `spawn`
-//! 传同一 canonical 拼写（硬性要求，非建议）**：`spawn` 内部无条件 canonicalize，
-//! 扫描器若按原拼写行走，软链根会直接分裂——walkdir 默认跟随根软链（
-//! `follow_root_links`），原拼名的软链根整树入库，而 watcher 按实体路径归因：
-//! 实体名在排除名单（`node_modules` 等）内时事件被整根丢弃、扫描行照常产生；
-//! 名单外时两套拼写各成一行，删除/更新事件只命中其一——排除判定与增量维护
-//! 同时分裂。
+//! `spawn` first canonicalizes every root (failure warns and skips that root;
+//! duplicate spellings of one entity register once; non-UTF-8 roots are
+//! likewise rejected — fsevent's registration internally does
+//! `to_str().unwrap()` and a non-UTF-8 root would panic the whole watcher
+//! thread, and under the `to_str` gate such roots can never produce a row, so
+//! skipping loses nothing). Watch registration and event attribution both use
+//! the canonical spelling — macOS fsevent delivers canonicalized event paths
+//! and Linux inotify absolutizes relative roots, so attributing by the
+//! caller's original spelling would be pierced by spelling drift (a whole
+//! root's events falling to the out-of-root fallback, or one row per spelling
+//! under two spellings). **The load-bearing half of the wiring contract is
+//! the scanner side: the caller must give the scanner the same canonical
+//! spelling (hard requirement, not a suggestion).** `spawn` canonicalizes
+//! unconditionally, so whatever spelling reaches `spawn` is tolerated. The
+//! scanner, however, walks the raw spelling verbatim (walkdir follows root
+//! symlinks by default — `follow_root_links`), so a raw-spelled symlink root
+//! splits the policy by itself: rows land under the raw spelling while the
+//! watcher attributes events under the entity path — when the entity's name
+//! is on the exclusion list (`node_modules` etc.) the scanner keeps producing
+//! rows whose every event is dropped wholesale, and otherwise two spellings
+//! each grow a row while delete/update events only ever hit one of them —
+//! exclusion and incremental maintenance split at once.
 //!
-//! 已知限制（接线方需知）：
-//! - Linux 递归监听 `$HOME` 级根会消耗大量 inotify watch，可能撞
-//!   `fs.inotify.max_user_watches`。首注册阶段撞上限：notify 把首个注册错误直接
-//!   返回，`watch()` 报 Err、本侧告警且**不**把该根计入已监听——但此前已注册的
-//!   watch 不回滚，该根处于部分监听。真正静默的部分监听另有其源：注册遍历中
-//!   stat 抖动/不可读条目被后端吞掉（watch() 照常 Ok，日志仍报已 watch）。部分
-//!   监听根的已注册子 watch 仍会投递事件，而它不在已监听集合里：这些事件落到
-//!   根外 fallback 按**全路径**判组件——若该根位于排除名祖先之下（`build`/…），
-//!   它的增量事件会被整片静默丢弃（扫描行仍在，等重扫补）。运行期新目录注册
-//!   失败则以 channel `Err`（MaxFilesWatch）到达并只告警一次，此后新目录都不再
-//!   被监听直到重启。大批量根以懒触发重扫兜底。
-//! - Linux inotify 的后端线程若在**注册窗内**死亡（notify 的线程 spawn 失败被
-//!   `let _ =` 吞掉、或 poll 失败 panic），`watch()` 不返回 Err 而是 panic
-//!   （send/wake 的 unwrap 打在已死的 event loop 上），且展开途中 notify 的
-//!   `INotifyWatcher::drop` 会再 panic（对死 loop 的 send(Shutdown) 同样
-//!   unwrap）——panic 套 panic 直接 abort 进程。本侧已在 [`run_watcher`] 用
-//!   ManuallyDrop + 注册期 catch_unwind 收容（见其注释）：失败降级为告警 +
-//!   守卫释放 + 可重试；notify 层的 unwrap 语义只能上游修，接线后如需更强
-//!   保证先跟上游 issue。
-//! - 兜底重扫是**懒触发**的（进文件管理页才跑 `kb_start_scan`），没有周期重扫；
-//!   溢出/掉 watch 只能告警，索引在下次重扫前保持陈旧——接线方应把 `need_rescan`
-//!   告警接成重扫触发。Linux inotify 的 Q_OVERFLOW 事件**不携带路径**（内核队列
-//!   被所有根共享），只能整组根重扫；macOS fsevent 的丢事件信号带受影响路径；
-//!   **Windows 没有任何丢事件信号**——后端缓冲溢出只在其内部 `log` 记录（装了
-//!   logger 才可见）、根删除更是完全无声，两者都静默停 watch（既无事件也无
-//!   channel Err），Windows 上懒触发重扫就是唯一兜底。
-//! - macOS fsevent 的后端线程死亡同样不可观察：事件回调 panic 在 extern "C"
-//!   边界上直接 abort 整个进程（如投递路径含非 UTF-8——exFAT/SMB 等挂载上可能
-//!   出现，notify 内部 `to_str().expect()`），而非线程展开；即便后端线程无
-//!   panic 地死掉，用户侧 tx 也被 `FsEventWatcher` 结构体持有而不 drop，`rx`
-//!   永远挂起（通道关闭告警不触发、守卫不解锁）。macOS 上懒触发重扫就是唯一
-//!   兜底，接线方不应假设 macOS 侧可观测、可重试。另有两处 macOS 特有的不保真：
-//!   fsevent 的 `watch()` 在 runloop 线程 spawn 失败/`FSEventStreamStart` 失败时
-//!   仍返回 Ok（notify 忽略两处返回值），启动行照报「已监听」而后端已死——成功
-//!   日志在 macOS 不保真；多根注册每根都会重启整条流（stop+run，sinceWhen=
-//!   SinceNow），注册窗内先注册根的事件会丢（仅启动期，首轮扫描覆盖）。
-//! - 树内软链目录不下探：watcher 以 `with_follow_symlinks(false)` 构造，与扫描器
-//!   `follow_links(false)` 同向（notify 默认是跟随的，必须显式关掉）。该配置由
-//!   inotify/kqueue/poll 后端执行；fsevent/Windows 忽略它，但那两个后端本就不
-//!   下探软链目录（Windows 对 junction 的遍历行为尚未验证，接线时补测）。软链
-//!   **根本身**：canonicalize 后按实体路径监听与归因，不再有「空监听/部分监听」
-//!   的歧义。
-//! - 目录 rename 只冒出该目录自身的新旧路径事件，**新路径下的子文件没有任何
-//!   事件**——三平台同形（Linux inotify 的 watch 跟随 inode，未变动的子文件不
-//!   触发；Windows 只报该目录的 OLD_NAME/NEW_NAME；macOS FSEvents 只报目录不报
-//!   内容）：旧子树由 [`Store::delete_tree`] 清掉，子行记录要到下次重扫或被改写
-//!   才补齐。
-//! - 被监听根自身：Linux inotify 下被删则 watch 永久失效（无父 watch 可重挂），
-//!   被 rename 则事件永远带着旧前缀路径（等同失效）——两者都靠重扫兜底；
-//!   macOS fsevent 的流按路径存活，根重建后事件恢复；**Windows 完全无声**：
-//!   watch 按句柄存活，根 rename 后事件仍以旧前缀持续到达（存在性判定随后会把
-//!   旧行清掉），新位置的事件永远不来，且无任何日志/channel Err——懒触发重扫
-//!   是唯一兜底。
-//! - macOS fsevent 的 rename 以 `RenameMode::Any` 单路径事件到达，新旧两侧各自
-//!   独立到达、无法关联；按存在性判定旧侧事件到达即清掉旧记录，未到达时旧记录
-//!   等重扫。但大小写不敏感文件系统（APFS 默认、Windows NTFS）上的**仅大小写
-//!   改名**（`mv notes.md NOTES.MD`）会击穿该判定：旧拼写的 stat 仍能解析到改名
-//!   后的文件 → 旧侧被当存活 upsert，新旧拼写成两行并存，其一永久陈旧直到重扫
-//!   （旧拼写的删除事件再也不会到来）。此类旧行的清理属接线方决策（#869）。
-//! - 无去抖：同一文件的连发事件各处理一次；写入侧按 [`UPSERT_IF_CHANGED_SQL`]
-//!   消解——内容与库中一致的重复事件整行跳过（indexed_at 不动），有变化的照常
-//!   重写（幂等）。事件 channel 无界，消费端被长事务/慢盘拖住时队列会积累（十万
-//!   级事件 ≈ 数十 MB 量级），大批量灌入场景由接线方评估 coalescing
-//!   （file_watcher.rs 的防抖只覆盖 sched-*.json，参考其窗口思路而非照搬）。
-//! - 扫描与事件、事件与事件之间的并发窗：重扫中途删除的文件可能被扫描批次重新
-//!   写回（批量提交晚于事件的删除），行留到下次重扫清。同理，目录删除事件排队
-//!   期间该路径被原样重建（`rm -rf && mkdir` 的常见节奏）时，按存在性判定这条
-//!   删除会变成新实体的 upsert，旧目录的子行（旧 inode，不再有事件）残留到重扫。
-//!   需要强一致的接线方可暂停事件应用。另：目录被改名进排除名（如
-//!   `proj`→`node_modules`）后，其下文件的后续事件都带排除组件被丢弃；改名前
-//!   入库的旧行由旧路径的删除事件清掉（旧侧事件未到达时才等重扫）。
+//! Known limits (the wiring side must know):
+//! - Recursively watching `$HOME`-scale roots on Linux consumes a large
+//!   number of inotify watches and may hit `fs.inotify.max_user_watches`.
+//!   Hitting the limit during first registration: notify returns the first
+//!   registration error directly, `watch()` reports Err, this side warns and
+//!   does **not** count that root as watched — but watches registered before
+//!   the failure are not rolled back, leaving the root partially watched.
+//!   Truly silent partial watching has another source: entries that
+//!   stat-jitter or are unreadable during the registration walk are swallowed
+//!   by the backend (watch() still returns Ok and the log still reports
+//!   watched). Events from already-registered sub-watches of a partially
+//!   watched root still arrive while the root is not in the watched set:
+//!   those events fall to the out-of-root fallback and are judged over the
+//!   **full path** — if that root sits under an excluded-name ancestor
+//!   (`build`/…), its incremental events are silently dropped wholesale (scan
+//!   rows remain; rescan covers). A mid-run registration failure for a new
+//!   directory arrives as a channel `Err` (MaxFilesWatch) and warns only
+//!   once; afterwards no new directory is watched until restart. Large root
+//!   sets fall back to the lazy-triggered rescan.
+//! - A root dropped before registration stays unwatched for the watcher
+//!   thread's entire lifetime: `prepare_roots` skips roots whose
+//!   canonicalize fails or whose spelling is non-UTF-8 (warn + skip), and
+//!   while the thread is alive any later `spawn` is ignored by the
+//!   single-instance guard — there is no way to add a root to a running
+//!   watcher. Re-arming requires one of the thread's exit paths (backend
+//!   death, all-roots-failed, …) followed by a fresh `spawn`; until then the
+//!   lazy rescan is the only coverage for such roots.
+//! - The fallback rescan is **lazily triggered** (`kb_start_scan` runs when
+//!   the file-management page is entered); there is no periodic rescan.
+//!   Overflow / dropped watches can only warn, and the index stays stale
+//!   until the next rescan — the wiring side should turn the `need_rescan`
+//!   warning into an actual rescan trigger. Linux inotify's Q_OVERFLOW event
+//!   carries **no paths** (the kernel queue is shared by all roots), so only
+//!   a full all-roots rescan is possible; macOS fsevent's dropped-event
+//!   signal names the affected paths; **Windows has no dropped-events signal
+//!   at all** — backend buffer overflow is logged only to its internal `log`
+//!   (visible only when a logger is installed) and root deletion is
+//!   completely silent; both silently stop the watch (no events and no
+//!   channel Err). On Windows the lazy-triggered rescan is the only backstop.
+//! - macOS fsevent's backend-thread death is equally unobservable: an event
+//!   callback panic at the extern "C" boundary aborts the whole process
+//!   (e.g. a delivered path containing non-UTF-8 — possible on exFAT/SMB
+//!   mounts, notify's internal `to_str().expect()`), rather than unwinding
+//!   the thread; even when the backend thread dies without panicking, the
+//!   user-side tx is retained by the `FsEventWatcher` struct and never drops,
+//!   so `rx` hangs forever (the channel-closed warning never fires, the
+//!   guard never unlocks). On macOS the lazy-triggered rescan is the only
+//!   backstop; the wiring side must not assume macOS is observable or
+//!   retryable. Two further macOS-specific infidelities: fsevent's `watch()`
+//!   still returns Ok when the runloop thread spawn fails or
+//!   `FSEventStreamStart` fails (notify ignores both return values), so the
+//!   startup line reports "watched" while the backend is already dead — the
+//!   success log is not trustworthy on macOS; and multi-root registration
+//!   restarts the whole stream per root (stop+run, sinceWhen=SinceNow), so
+//!   events for earlier-registered roots inside the registration window are
+//!   lost (startup only, covered by the first scan). A volume mounted under
+//!   a root that is later ejected/yanked delivers one `Remove(Other)` on the
+//!   mount-point path while the underlying directory still stats — the
+//!   existence judgment treats it as that directory's (content-identical)
+//!   upsert, and the rows under the mount point ghost until the next rescan.
+//! - Symlinked directories inside the tree are not descended: the watcher is
+//!   constructed with `with_follow_symlinks(false)`, the same direction as
+//!   the scanner's `follow_links(false)` (notify defaults to following, so
+//!   this must be turned off explicitly at construction). The setting is
+//!   honored by the inotify/kqueue/poll backends; fsevent/Windows ignore it,
+//!   but those two backends do not descend symlinked directories anyway
+//!   (Windows' traversal behavior for junctions is unverified — when wiring,
+//!   test store parity between an event-driven and a scan-driven run over a
+//!   junction fixture, not merely that the watch registers). A symlinked
+//!   **root** itself: after canonicalization it is watched and attributed
+//!   under the entity path, with no more "empty watch / partial watch"
+//!   ambiguity.
+//! - A directory rename surfaces events only for the directory's own old and
+//!   new paths; **the files under the new path produce no events at all** —
+//!   the same shape on all three platforms (Linux inotify's watch follows
+//!   the inode and untouched children do not fire; Windows reports only the
+//!   directory's OLD_NAME/NEW_NAME; macOS FSEvents reports the directory,
+//!   not the contents): the old subtree is cleared by
+//!   [`Store::delete_tree`], and child rows are restored only by the next
+//!   rescan or a later rewrite.
+//! - The watched root itself: on Linux inotify, deleting it kills the watch
+//!   permanently (no parent watch to re-hang), and renaming it makes events
+//!   carry the old prefix forever (equivalently dead) — both rely on rescan;
+//!   macOS fsevent's stream survives by path and events resume after the
+//!   root is recreated; **Windows is completely silent**: the watch survives
+//!   by handle, and after a root rename events keep arriving under the old
+//!   prefix (the existence judgment then clears the old rows), while events
+//!   for the new location never come, with no log and no channel Err — the
+//!   lazy-triggered rescan is the only backstop.
+//! - macOS fsevent renames arrive as `RenameMode::Any` single-path events;
+//!   the old and new sides arrive independently and cannot be correlated;
+//!   judging by existence, the old-side event clears the old record as soon
+//!   as it arrives, and when it never arrives the old record waits for
+//!   rescan. But on case-insensitive filesystems (APFS default, Windows
+//!   NTFS) a **case-only rename** (`mv notes.md NOTES.MD`) pierces that
+//!   judgment: the old spelling's stat still resolves to the renamed file →
+//!   the old side is upserted as alive, old and new spellings coexist as two
+//!   rows, one of them permanently stale until rescan (a delete event for
+//!   the old spelling will never come). Cleaning up such old rows is a
+//!   wiring-side decision (#869).
+//! - No debouncing: consecutive events for the same file are each processed;
+//!   the write side resolves them via [`UPSERT_IF_CHANGED_SQL`] — repeat
+//!   events whose content matches the store skip the whole row (indexed_at
+//!   untouched), changed content rewrites as usual (idempotent). The event
+//!   channel is unbounded; when the consumer is stalled by a long
+//!   transaction or slow disk the queue accumulates (100k-scale events ≈
+//!   tens of MB); bulk-ingestion scenarios are for the wiring side to
+//!   evaluate coalescing on (file_watcher.rs's debounce covers only
+//!   sched-*.json — borrow its window idea, not its scope).
+//! - Concurrency windows between scan and events, and between events: a file
+//!   deleted mid-rescan may be written back by the scan batch (the batched
+//!   commit lands after the event's delete), and the row stays until the
+//!   next rescan. Likewise, when a path is recreated in place while its
+//!   directory-deletion event is queued (the common `rm -rf && mkdir`
+//!   rhythm), the existence judgment turns that deletion into the new
+//!   entity's upsert, and the old directory's child rows (old inode, no more
+//!   events) remain until rescan. Wiring that needs strong consistency can
+//!   pause event application. Also: after a directory is renamed into an
+//!   excluded name (`proj`→`node_modules`), subsequent events for its files
+//!   all carry the excluded component and are dropped; the old rows stored
+//!   before the rename are cleared by the old-path delete event (only
+//!   waiting for rescan when the old-side event never arrives).
 //!
-//! 当前未接线：`spawn` 尚无生产调用方（与闭源侧一致为落库待接线状态）；入口由
-//! 后续接线方在启动扫描时按根调用。watcher 是 app 级单例语义：`spawn` 内置了
-//! 防重入守卫，重复调用直接忽略；线程的**可达**退出路径（init 失败、全部根注册
-//! 失败、事件循环收尾、panic 被 catch_unwind 收容）都会释放守卫，之后可重新
-//! `spawn` 重新武装。两条已披露的例外（见已知限制）：macOS fsevent 的后端死亡
-//! 既不展开本线程也不关闭通道，守卫不解锁、无从重试；Linux inotify 的注册窗
-//! 死亡由 [`run_watcher`] 的 ManuallyDrop + catch_unwind 收容，降级为「失败告警
-//! + 可重试」（收容前的写法会把 panic 套 panic 放大成进程 abort）。诊断语义
-//! 由此分平台不等价——macOS/部分 Windows 场景不可观测，接线方不能假设统一
-//! 失败信号。需要更换根集合时，仍应先给线程补停止接口（#869），不能靠叠 spawn。
+//! Currently unwired: `spawn` has no production caller yet (the same
+//! landed-but-unwired state as the closed-source side); the follow-up wiring
+//! owner calls it per root at the startup scan. The watcher is an app-level
+//! singleton by design: `spawn` has a built-in re-entry guard and duplicate
+//! calls are ignored; the thread's **reachable** exit paths (init failure,
+//! all-roots registration failure, event-loop end, panic contained by
+//! catch_unwind) all release the guard, after which a fresh `spawn` re-arms.
+//! Two disclosed exceptions (see known limits): macOS fsevent backend death
+//! neither unwinds this thread nor closes the channel — the guard stays
+//! locked with no retry; Linux inotify's registration-window death is
+//! contained by [`run_watcher`]'s ManuallyDrop + catch_unwind, degrading to
+//! "failure warn + retryable" (the pre-containment code amplified the panic
+//! into a process abort via panic-during-unwind). Diagnostic semantics are
+//! therefore not equivalent across platforms — some macOS/Windows scenarios
+//! are unobservable, and the wiring side must not assume a uniform failure
+//! signal. To change the root set, the thread still needs a stop interface
+//! first (#869); do not stack `spawn` calls.
 
-#![allow(dead_code)] // 库先行：接线前 spawn 无生产调用方（见上方注记）
+#![allow(dead_code)] // library-first: spawn has no production caller before wiring (see the note above)
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -140,26 +223,32 @@ use super::exclude::Excluder;
 use super::scanner::{ext_of, record_from_parts};
 use super::store::{FileRecord, Store};
 
-/// 非 panicking stderr 写：stderr 关闭时 `eprintln!` 会 panic（Rust 忽略 SIGPIPE，
-/// 写失败即 panic），watcher 线程死在这类日志上会无声断掉增量索引——写失败就地
-/// 忽略（与 mod.rs 扫描线程的内联防护同款，见其注释）。展开成块表达式（而非裸
-/// 语句），在 let-else 分支体内与其他语句并列时同样可用。
+/// Non-panicking stderr write: `eprintln!` panics when stderr is closed
+/// (Rust ignores SIGPIPE, so a write failure panics), and the watcher thread
+/// dying on such a log would silently stop incremental indexing — a write
+/// failure is ignored in place (the same inline guard as mod.rs's scan
+/// thread, see its comment). Expanded as a block expression (rather than a
+/// bare statement) so it remains usable inside let-else branch bodies
+/// alongside other statements.
 macro_rules! warn {
     ($($arg:tt)*) => {{
         let _ = writeln!(std::io::stderr(), "[kb_watcher] {}", format_args!($($arg)*));
     }};
 }
 
-/// 单实例守卫：watcher 线程随 app 存活，重复 `spawn` 会叠出第二条线程对同一批根
-/// 重复消费事件（还会叠加 inotify watch 占用）。接线方要换根集合时必须先停线程。
-/// RAII：任何退出路径（init 失败、全部根注册失败、panic 展开、线程自然结束）都
-/// 释放守卫，之后可重新 `spawn` 重新武装。
+/// Single-instance guard: the watcher thread lives as long as the app, and a
+/// duplicate `spawn` would stack a second thread double-consuming events for
+/// the same roots (and double-occupy inotify watches). The wiring side must
+/// stop the thread first when changing the root set. RAII: every exit path
+/// (init failure, all-roots registration failure, panic unwind, natural
+/// thread end) releases the guard, after which a fresh `spawn` can re-arm.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct ActiveGuard;
 
 impl ActiveGuard {
-    /// 已有活跃 watcher 时返回 None（重复 `spawn` 直接忽略）。
+    /// Returns None when a watcher is already active (duplicate `spawn` is
+    /// ignored).
     fn acquire() -> Option<Self> {
         ACTIVE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -174,8 +263,14 @@ impl Drop for ActiveGuard {
     }
 }
 
-/// 启动后台 watcher 线程，监听给定根。spawn 后即返回，线程随 app 存活；
-/// 已有活跃 watcher 时本次调用直接忽略（见 [`ACTIVE`]）。
+/// Starts the background watcher thread watching the given roots. Returns
+/// immediately after spawning; the thread lives as long as the app; when a
+/// watcher is already active this call is ignored (see [`ACTIVE`]). An empty
+/// root list returns immediately without arming anything (no log either).
+/// Pass a clone of the service's `Store` — do not `open()` a second store on
+/// the same file: that is safe by design (WAL + busy_timeout, and the
+/// two-process pair is supported usage), but it buys extra lock contention
+/// for nothing.
 pub fn spawn(store: Store, roots: Vec<PathBuf>) {
     if roots.is_empty() {
         return;
@@ -185,11 +280,13 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) {
         return;
     };
     thread::spawn(move || {
-        // 守卫随线程体存活：包括 panic 被 catch_unwind 收容在内的任何退出路径都会
-        // 走到闭包结尾的 Drop 释放，spawn 不被终身闩死。
+        // The guard lives with the thread body: every exit path — including a
+        // panic contained by catch_unwind — reaches the closure's end and
+        // drops the guard there, so spawn is never latch-locked for good.
         let _active = active;
-        // 同 feature 扫描线程的同款收容（见 mod.rs）：线程 panic 只留一条可追
-        // 日志，不无声死亡。
+        // The same containment as this feature's scan thread (see mod.rs): a
+        // thread panic leaves one traceable log line instead of a silent
+        // death.
         if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_watcher(&store, &roots);
         })) {
@@ -201,14 +298,17 @@ pub fn spawn(store: Store, roots: Vec<PathBuf>) {
     });
 }
 
-/// 根集合的注册前准备：canonicalize（失败告警跳过）、同实体重复拼写去重、
-/// 非 UTF-8 拒收。独立成纯函数便于单测。
+/// Pre-registration preparation for the root set: canonicalize (failure warns
+/// and skips), dedupe duplicate spellings of one entity, reject non-UTF-8.
+/// Factored out of `run_watcher` as a pure, unit-testable function.
 ///
-/// 非 UTF-8 根必须拒收：fsevent（macOS 默认后端）的注册路径内部做
-/// `to_str().unwrap()`，非 UTF-8 根会让整个 watcher 线程 panic（catch_unwind
-/// 收容后其余根陪葬）。这个拒收在任何平台都不损失覆盖——`record_from_parts`
-/// 的 `to_str` 闸门决定了这类根下的事件路径永远装配不出一行记录，watch 了也只
-/// 产 no-op。
+/// Non-UTF-8 roots must be rejected: fsevent (the macOS default backend)
+/// does `to_str().unwrap()` inside its registration path, so a non-UTF-8
+/// root would panic the whole watcher thread (after catch_unwind contains
+/// it, the remaining roots die with it). The rejection loses no coverage on
+/// any platform — `record_from_parts`'s `to_str` gate means event paths
+/// under such a root can never assemble a row, so watching it would only
+/// ever produce no-ops.
 fn prepare_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut prepared: Vec<PathBuf> = Vec::new();
     for root in roots {
@@ -217,7 +317,7 @@ fn prepare_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
             continue;
         };
         if prepared.contains(&canonical) {
-            continue; // 同一实体的重复拼写只注册一次
+            continue; // duplicate spellings of one entity register once
         }
         if canonical.to_str().is_none() {
             warn!(
@@ -231,84 +331,110 @@ fn prepare_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     prepared
 }
 
-/// 线程体（独立于 `spawn`，便于 catch_unwind 收容）：注册所有根后循环消费事件。
+/// Thread body (factored out of `spawn` so catch_unwind can contain it):
+/// registers all roots, then consumes events.
 fn run_watcher(store: &Store, roots: &[PathBuf]) {
     let ex = Excluder::default();
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
-    // follow_symlinks(false)：notify 默认跟随软链（inotify 注册时连软链目录
-    // 一起下探），与扫描器 follow_links(false) 相反——必须在构造处显式关闭。
-    // 该配置由 inotify/kqueue/poll 后端执行；fsevent/Windows 忽略它，但那两个
-    // 后端本就不下探软链目录。
-    // ManuallyDrop 是注册窗死亡收容的一半（见下方 catch_unwind 注释）：unwind
-    // 途中不得触发 notify 的 panic-prone Drop——inotify 的 `INotifyWatcher::drop`
-    // 对死 loop 的 send(Shutdown)/wake 一律 unwrap，Drop 自身再 panic 就是
-    // panic 套 panic，进程直接 abort。
+    // follow_symlinks(false): notify follows symlinks by default (inotify's
+    // registration descends into symlinked directories too), the opposite of
+    // the scanner's follow_links(false) — must be turned off explicitly at
+    // construction. The setting is honored by the inotify/kqueue/poll
+    // backends; fsevent/Windows ignore it, but those two backends do not
+    // descend symlinked directories anyway.
+    // ManuallyDrop is one half of the registration-window death containment
+    // (see the catch_unwind comment below): notify's panic-prone Drop must
+    // not fire during unwind — inotify's `INotifyWatcher::drop` unconditionally
+    // unwraps a send(Shutdown)/wake against a dead loop, and a Drop panicking
+    // during unwind is panic-inside-panic: the process aborts outright.
     let mut watcher = std::mem::ManuallyDrop::new(
         match RecommendedWatcher::new(tx, notify::Config::default().with_follow_symlinks(false)) {
             Ok(w) => w,
             Err(e) => {
                 warn!("init failed: {e}");
-                return; // ActiveGuard::drop 释放守卫
+                return; // ActiveGuard::drop releases the guard
             }
         },
     );
-    // 根先经 prepare_roots（canonicalize/去重/非 UTF-8 拒收，见其注释）：watch
-    // 注册与事件归因统一用规范化拼写。
     let mut watched_roots: Vec<PathBuf> = Vec::new();
-    // 注册窗死亡收容：inotify 后端线程若在注册前/中死亡（notify 以 let _ = 吞掉
-    // 线程 spawn 失败、poll 失败直接 panic），`watch()` 不返回 Err 而是 panic
-    // （send/wake 的 unwrap 打在已死的 event loop 上）。收容后 forget 掉
-    // watcher——后端已死，Drop 既会再次 panic 也无从清理（fd 由死掉的 event
-    // loop 持有，随其展开已关闭）；线程按普通失败退出，守卫在闭包结尾释放，
-    // 之后 spawn 可重新武装。此路径无法单测（需要真实后端死亡），以 notify
-    // 8.2.0 源码为证（inotify.rs 的 watch_inner 与 Drop 的 unwrap）。
+    // Roots go through prepare_roots first (canonicalize / dedup / non-UTF-8
+    // rejection, see its comment): watch registration and event attribution
+    // both use the canonical spelling. Prepared once and shared by the
+    // registration and the startup line, so the "watching X/Y" denominator
+    // counts registrable roots — a deduped entity no longer reads as a
+    // partial failure.
+    let prepared = prepare_roots(roots);
+    // Registration-window death containment: if the inotify backend thread
+    // dies before/during registration (notify swallows thread-spawn failure
+    // with `let _ =`; poll failure panics directly), `watch()` does not
+    // return Err but panics (the send/wake unwraps land on a dead event
+    // loop). After containment, forget the watcher — the backend is dead, so
+    // Drop would panic again and has nothing to clean up anyway (the fd is
+    // held by the dead event loop and was closed during its unwind); the
+    // thread exits as an ordinary failure, the guard is released at closure
+    // end, and a later spawn can re-arm. This path cannot be unit-tested
+    // (it needs a real backend death); the notify 8.2.0 sources are the
+    // evidence (inotify.rs's watch_inner and Drop unwraps).
     let registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        for canonical in prepare_roots(roots) {
-            match watcher.watch(&canonical, RecursiveMode::Recursive) {
-                Ok(()) => watched_roots.push(canonical),
-                // 多半是 inotify 上限/权限；告警即可，懒触发重扫兜底。
+        for canonical in &prepared {
+            match watcher.watch(canonical, RecursiveMode::Recursive) {
+                Ok(()) => watched_roots.push(canonical.clone()),
+                // Usually the inotify limit or permissions; warn and let the
+                // lazy-triggered rescan cover it.
                 Err(e) => warn!("watch({}) failed: {e}", canonical.display()),
             }
         }
     }));
     if registration.is_err() {
-        // SAFETY: `take` 把 watcher 从 ManuallyDrop 里移出（此后 `watcher` 保持
-        // 逻辑未初始化，本函数立即 return、绝不再触碰它），外层 `forget` 抑制其
-        // panic-prone 的 Drop（见上方注释）——这正是本次收容的目的。
+        // SAFETY: `take` moves the watcher out of the ManuallyDrop (leaving
+        // `watcher` logically uninitialized; this function returns
+        // immediately and never touches it again), and the outer `forget`
+        // suppresses its panic-prone Drop (see the comment above) — which is
+        // exactly the purpose of this containment.
         std::mem::forget(unsafe { std::mem::ManuallyDrop::take(&mut watcher) });
         warn!("watcher backend died during registration; inactive until a later spawn retries");
-        return; // ActiveGuard::drop 释放守卫
+        return; // ActiveGuard::drop releases the guard
     }
-    // 注册完成（含全部根 Err 的失败态）：恢复普通所有权，后续早退走正常
-    // Drop——活着的后端需要 Drop 发 Shutdown 才能干净退出（关 fd、停线程）。
-    // 事件循环不再调用 watcher，之后唯一用途是收尾时的 forget（见下）。
+    // Registration finished (including the all-roots-Err failure state):
+    // back to ordinary ownership, so later early exits take the normal Drop —
+    // a live backend needs Drop to send Shutdown for a clean exit (close the
+    // fd, stop the thread). The event loop never touches the watcher again;
+    // its only remaining use is the forget at loop end (see below).
     let watcher = std::mem::ManuallyDrop::into_inner(watcher);
     if watched_roots.is_empty() {
         warn!("no root could be watched; inactive until a later spawn retries");
-        return; // ActiveGuard::drop 释放守卫；watcher 正常 Drop 收尾活后端
+        return; // ActiveGuard::drop releases the guard; the watcher's normal Drop winds down the live backend
     }
-    warn!("watching {}/{} root(s)", watched_roots.len(), roots.len());
+    warn!(
+        "watching {}/{} root(s)",
+        watched_roots.len(),
+        prepared.len()
+    );
 
     let mut max_files_warned = false;
     for res in rx {
         match res {
             Ok(ev) => {
-                // 后端丢事件信号（inotify Q_OVERFLOW / fsevent KERNEL_DROPPED 等，
-                // 以 EventKind::Other + Rescan flag 到达）：这是「增量索引已不可靠」
-                // 的唯一主动通知，必须喊出来，接线方据此安排重扫。
+                // The backend's dropped-events signal (inotify Q_OVERFLOW /
+                // fsevent KERNEL_DROPPED etc., arriving as EventKind::Other +
+                // the Rescan flag): this is the only proactive notice that
+                // "incremental indexing has become unreliable" — it must be
+                // shouted so the wiring side can schedule a rescan.
                 if ev.need_rescan() {
                     warn!(
                         "backend dropped events (rescan requested); \
                              index stays stale until the next scan"
                     );
                 }
-                // 事件准入（Create/Modify/Remove）由 apply 统一判（测试契约所在），
-                // 这里不再前置重复判定。
+                // Event admission (Create/Modify/Remove) is decided uniformly
+                // by `apply` (the test contract lives there); no duplicate
+                // front check here.
                 apply(&ex, store, &watched_roots, &ev);
             }
-            // 通道上的 Err：读循环 IO 错误、中途 MaxFilesWatch（notify 之后不再扩
-            // watch）等，同样不能静默吞掉。MaxFilesWatch 会对每个新目录重复到达，
-            // 只告警一次防日志风暴。
+            // An Err on the channel: read-loop IO error, mid-run
+            // MaxFilesWatch (notify stops extending watches afterwards) etc.
+            // must not be swallowed silently either. MaxFilesWatch re-arrives
+            // for every new directory; warn only once against a log storm.
             Err(e) => {
                 if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) {
                     if !max_files_warned {
@@ -324,21 +450,32 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
             }
         }
     }
-    // 循环在这里结束 = 用户侧 tx 已被全部丢弃 = 后端已死（tx 只由后端持有）。
-    // 先 forget 掉本地 watcher 再告警：inotify 的 Drop 对死 loop 的 send/wake
-    // 一律 unwrap，正常 drop 会被外层 catch_unwind 收容成第二条「thread
-    // panicked」日志——一次后端死亡报出两个故障，误导排查；forget 免掉它
-    // （后端已死，Drop 也无物可清：Windows 对死 server 的优雅 Drop 本就是
-    // no-op，inotify 的 fd 由死掉的 event loop 持有）。本告警的可达场景：
-    // Linux 后端线程死亡（event loop 展开，持有 tx 一并 drop）、两端的后端
-    // 线程 spawn 失败（notify 以 let _ = 忽略，闭包即刻丢弃）。Windows 服务
-    // 线程运行中死亡目前没有可达 panic 路径；若上游引入，在途请求持有的
-    // handler Arc 会让 tx 不 drop、rx 不收尾——届时这里也不触发（与 macOS
-    // 同形，懒触发重扫兜底）。macOS fsevent 一直如此：回调 panic 在 extern "C"
-    // 边界 abort 进程，handler Arc 由 FsEventWatcher 结构体自身持有，后端线程
-    // 死掉 tx 也不 drop——rx 永远挂起、本告警不触发、守卫不解锁。macOS 的兜底
-    // 只有懒触发重扫（见模块文档已知限制）。守卫在调用闭包结尾释放（比本条
-    // 日志晚一步），之后 spawn 可重新武装。
+    // Reaching here means the loop ended = every user-side tx clone has been
+    // dropped = the backend is gone (the backend holds the only tx). Forget
+    // the local watcher before warning: inotify's Drop unconditionally
+    // unwraps its send/wake against a dead loop, so a normal drop would be
+    // contained by the outer catch_unwind as a second "thread panicked" log —
+    // one backend death reported as two faults, misleading triage; the forget
+    // avoids it (the backend is dead and Drop has nothing to clean up: on
+    // Windows the graceful Drop against a dead server is already a no-op, and
+    // on inotify the fd is held by the dead event loop). Today's reachable
+    // scenario for this warning: a Linux backend thread dying mid-run (the
+    // event loop unwinds, dropping the tx with it). Backend thread-spawn
+    // failures never reach loop end — on Linux they surface through the
+    // registration-window containment above (the first watch() panics against
+    // the dead loop) or the no-roots early return, and on Windows through the
+    // all-roots-failed return. A Windows server thread dying mid-run has no
+    // reachable panic path today; if upstream introduces one, the in-flight
+    // request's handler Arc would keep the tx alive and rx would never close —
+    // the warning would then not fire either (same shape as macOS; the lazy
+    // rescan is the backstop). macOS fsevent has always been this way: a
+    // callback panic aborts the process at the extern "C" boundary, and the
+    // handler Arc is held by the FsEventWatcher struct itself, so the tx does
+    // not drop even when the backend thread dies — rx hangs forever, this
+    // warning never fires, and the guard stays locked. On macOS the only
+    // backstop is the lazy rescan (see the module doc's known limits). The
+    // guard is released at the calling closure's end (one step after this
+    // log), after which a spawn can re-arm.
     std::mem::forget(watcher);
     warn!(
         "event channel closed; the watcher backend is gone (index stays stale until \
@@ -346,10 +483,12 @@ fn run_watcher(store: &Store, roots: &[PathBuf]) {
     );
 }
 
-/// 事件准入：只有 Create/Modify/Remove 改变索引状态。Access（读/开/关）与
-/// Other（无 Rescan flag 的杂项）不得进入存在性判定——否则一条 Access 事件会
-/// 把「已索引但刚被删」的路径当作删除信号以外的误判源（读一个不存在的路径
-/// 不意味着索引要删它）。
+/// Event admission: only Create/Modify/Remove change index state. Access
+/// (read/open/close) and Other (miscellaneous without the Rescan flag) must
+/// not enter the existence judgment — otherwise an Access event for an
+/// "indexed but just deleted" path becomes a spurious judge outside the
+/// delete signal (reading a nonexistent path does not mean the index should
+/// drop it).
 fn apply(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
     if !matches!(
         ev.kind,
@@ -360,10 +499,14 @@ fn apply(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
     handle_event(ex, store, roots, ev);
 }
 
-/// 事件路径的组件级排除，按受监听根取**相对范围**：与扫描器的可见组件一致
-/// （walkdir 的 filter_entry 首个看到的就是根本身，其上的祖先组件扫描器永不可见）。
-/// roots 已在 spawn 里 canonicalize、与后端投递的路径拼写一致，找不到所属根正常
-/// 不会发生——保留全路径判定仅作防御（canonicalize 与注册之间的竞态等）。
+/// Component-level exclusion for event paths, taken over the **relative
+/// scope** of the watched roots: consistent with the components visible to
+/// the scanner (walkdir's filter_entry sees the root itself first; ancestor
+/// components above it are never visible to the scanner). Roots are
+/// canonicalized in spawn and match the spelling the backends deliver, so
+/// "no owning root found" normally cannot happen — the full-path judgment is
+/// kept only defensively (races between canonicalization and registration
+/// etc.).
 fn excluded(ex: &Excluder, roots: &[PathBuf], path: &Path) -> bool {
     match roots
         .iter()
@@ -376,13 +519,15 @@ fn excluded(ex: &Excluder, roots: &[PathBuf], path: &Path) -> bool {
     }
 }
 
-/// 处理单条事件：按存在性分桶（存活 → upsert，消失 → delete），每事件至多两笔
-/// 批量写（删除批、写入批各一）。独立于线程闭包，便于单元测试。
+/// Handles a single event: buckets by existence (alive → upsert, gone →
+/// delete), at most two batched writes per event (one delete batch, one
+/// upsert batch). Factored out of the thread closure for unit testing.
 fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
     let mut ups: Vec<FileRecord> = Vec::new();
     let mut dels: Vec<String> = Vec::new();
     for path in &ev.paths {
-        // 组件级排除（根自身 + 根下的 names/secrets）：churn 目录整条跳过，不 stat。
+        // Component-level exclusion (the root itself + names/secrets below
+        // it): churn directories are skipped wholesale, without a stat.
         if excluded(ex, roots, path) {
             continue;
         }
@@ -390,9 +535,12 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
             Ok(md) => {
                 let ft = md.file_type();
                 if !ft.is_file() && !ft.is_dir() {
-                    // symlink/socket/fifo 本体不入库（与扫描器一致）。但实体被原地
-                    // 替换成软链等类型时，旧路径的记录已成幽灵 → 走删除分支清掉
-                    // （库中无行时是安全 no-op，有目录行时连带子树一并清）。
+                    // The symlink/socket/fifo body does not enter the store
+                    // (same as the scanner). But when the entity was replaced
+                    // in place by a symlink or similar, the old path's record
+                    // is already a ghost → take the delete branch to clear it
+                    // (no row in the store: safe no-op; a directory row:
+                    // cleared together with its subtree).
                     dels.push(path.to_string_lossy().into_owned());
                     continue;
                 }
@@ -406,29 +554,38 @@ fn handle_event(ex: &Excluder, store: &Store, roots: &[PathBuf], ev: &Event) {
                     ups.push(rec);
                 }
             }
-            // 已删除 / rename 移走：删记录；目录连带子树（inotify 对被移走的子树
-            // 不会再有事件）。
+            // Deleted / renamed away: delete the record; a directory takes its
+            // subtree along (inotify will not deliver further events for the
+            // moved subtree).
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 dels.push(path.to_string_lossy().into_owned());
             }
-            // 权限收紧/ESTALE 等抖动：不删——误删仍存在的记录比漏一次更新更伤，
-            // 懒触发重扫会补齐。
+            // Permission tightening / ESTALE jitter: do not delete — wrongly
+            // deleting a record that still exists hurts more than missing one
+            // update; the lazy rescan covers it.
             Err(e) => warn!("stat({}) failed: {e}", path.display()),
         }
     }
-    // 写失败与 stat 抖动同类：都是「增量索引悄悄漏了一拍」。必须喊出来——索引在
-    // 下次重扫前会一直缺这条更新，静默吞掉会让「需要重扫」的信号无处可寻。
-    // 删除先于写入：同一事件若同时含「目录删除」与其下「新文件」（现役后端不会
-    // 合成这种形状，防御性保证），先删后写让新行存活，反之会被前缀删除吃掉。
+    // A failed store write is the same class as stat jitter: both are
+    // "incremental indexing silently missed a beat". It must be shouted —
+    // the index keeps missing this update until the next rescan, and
+    // swallowing it silently leaves the "needs rescan" signal nowhere to be
+    // seen. Deletes run before writes: if one event ever carried both a
+    // "directory delete" and a "new file under it" (no current backend
+    // synthesizes this shape — a defensive guarantee), delete-first lets the
+    // new row survive, while the other order would let the prefix delete eat
+    // it.
     if !dels.is_empty() {
         if let Err(e) = store.delete_tree(&dels) {
             warn!("delete({}) failed: {e}", dels.len());
         }
     }
     if !ups.is_empty() {
-        // 增量路径用消解式 upsert（内容一致的重复事件不重写行）；扫描全量
-        // 路径保持 upsert_many 的逐行触碰语义（restart 的 last_scan_finished_at
-        // 回退读 MAX(indexed_at)），见 UPSERT_IF_CHANGED_SQL。
+        // The incremental path uses the resolving upsert (repeat events with
+        // identical content do not rewrite the row); the scan's full-confirm
+        // path keeps upsert_many's touch-on-write semantics (the restart's
+        // last_scan_finished_at fallback reads MAX(indexed_at)); see
+        // UPSERT_IF_CHANGED_SQL.
         if let Err(e) = store.upsert_many_if_changed(&ups) {
             warn!("upsert({}) failed: {e}", ups.len());
         }
@@ -464,8 +621,9 @@ mod tests {
         v
     }
 
-    /// Create → upsert（字段来自真实 stat）、Remove → delete；Access 事件不进入
-    /// 存在性判定（对「已索引但已消失」的路径发 Access 不得触发删除）。
+    /// Create → upsert (fields from a real stat), Remove → delete; Access
+    /// events do not enter the existence judgment (an Access for an "indexed
+    /// but already gone" path must not trigger a delete).
     #[test]
     fn create_and_remove_events_track_the_store() {
         let base = tmp("cr");
@@ -486,8 +644,10 @@ mod tests {
             "create event upserts exactly the touched file"
         );
 
-        // Access（读/关）不改变索引状态：路径已从盘上消失但事件只是 Access——
-        // 若准入失守，这条事件会顺着 NotFound 走到删除分支。
+        // Access (read/close) does not change index state: the path has
+        // vanished from disk but the event is only Access — if admission
+        // leaked, this event would walk the NotFound branch into the delete
+        // branch.
         fs::remove_file(base.join("notes.md")).unwrap();
         apply(
             &ex,
@@ -521,8 +681,10 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 目录 Remove 事件：目录记录连带子树一并删（inotify 对子树不再有事件），
-    /// 只共享前缀字符的兄弟路径不能被误删。
+    /// A directory Remove event: the directory record is deleted together
+    /// with its subtree (inotify delivers no further events for the moved
+    /// subtree); sibling paths sharing only a prefix of characters must not
+    /// be wrongly deleted.
     #[test]
     fn dir_remove_deletes_the_subtree() {
         let base = tmp("dirsub");
@@ -573,7 +735,8 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// rename（inotify 的 Both 事件带 [from, to]）：旧路径删除、新路径入库。
+    /// A rename (inotify's Both event carries [from, to]): the old path is
+    /// deleted and the new path enters the store.
     #[test]
     fn rename_event_deletes_old_and_upserts_new() {
         let base = tmp("ren");
@@ -608,9 +771,11 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 分离的 From/To 事件与 Both 等价：Windows 后端只发分离事件、从不发 Both，
-    /// macOS 把新旧两侧各自独立到达（无法关联）——「skip From/To、Both 收尾」式
-    /// 的重构若破坏分离形状，Windows 的 rename 处理会静默坏掉，这条测试咬住它。
+    /// Separate From/To events are equivalent to Both: the Windows backend
+    /// only delivers separate events and never Both, and macOS delivers the
+    /// old and new sides independently (uncorrelatable) — a refactor of the
+    /// "skip From/To, finish with Both" style that breaks the separate shape
+    /// would silently break Windows rename handling; this test bites it.
     #[test]
     fn separate_from_to_rename_events_match_the_both_shape() {
         let base = tmp("renft");
@@ -654,18 +819,21 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 排除范围止于受监听根：根**之上**的祖先组件不再参与排除——扫描器对
-    /// `build`/`snap` 这类排除名祖先下的根照常全量入库（walkdir 从根本身走起，
-    /// 看不见上面的祖先），watcher 若按全路径判组件会把整根事件静默丢光；而根本
-    /// 身 basename 命中名单时，扫描器的 filter_entry 对首个 entry（根本身）同样
-    /// 剪枝整棵树，watcher 必须一致。
+    /// Exclusion scope stops at the watched root: ancestor components
+    /// **above** the root no longer participate — the scanner indexes roots
+    /// under excluded-name ancestors like `build`/`snap` in full (walkdir
+    /// starts at the root itself and cannot see the ancestors), so a watcher
+    /// judging components over the full path would silently drop a whole
+    /// root's events; and when the root's own basename hits the list, the
+    /// scanner's filter_entry prunes the whole tree at the first entry, so
+    /// the watcher must agree.
     #[test]
     fn exclusion_scope_stops_at_the_watched_root() {
         let base = tmp("rootscope");
-        let root = base.join("build/proj"); // 祖先 "build" ∈ SKIP_NAMES
+        let root = base.join("build/proj"); // the ancestor "build" ∈ SKIP_NAMES
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("报告.pdf"), b"r").unwrap();
-        let excluded_root = base.join("node_modules"); // 根自身 basename 命中名单
+        let excluded_root = base.join("node_modules"); // the root's own basename hits the list
         fs::create_dir_all(excluded_root.join("pkg")).unwrap();
         fs::write(excluded_root.join("pkg/x.pdf"), b"x").unwrap();
         let store = Store::open_in_memory().unwrap();
@@ -701,8 +869,11 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 排除策略与扫描器同源：churn 祖先整条跳过（即使末级是白名单类型）、无扩展名
-    /// 敏感文件不入库、带点目录按目录放行、源码排除、白名单类型入库。
+    /// Exclusion policy shares the scanner's source: churn ancestors are
+    /// skipped wholesale (even when the last component is a whitelisted
+    /// type), extensionless sensitive files never enter the store,
+    /// dot-suffixed directories pass as directories, source extensions are
+    /// excluded, whitelisted types enter the store.
     #[test]
     fn exclusion_matches_the_scanner_policy() {
         let base = tmp("excl");
@@ -749,8 +920,11 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 带点目录的删除事件同样要走完（组件级排除不吞它）：目录记录与子树都被清掉，
-    /// 而不是像旧版那样被末级扩展名判定挡在删除之外、留陈旧行等重扫。
+    /// A dot-suffixed directory's delete event must also run through
+    /// (component-level exclusion must not swallow it): the directory record
+    /// and its subtree are both cleared, instead of — like the old version —
+    /// being blocked by the last-component extension judgment outside the
+    /// delete and leaving stale rows for rescan.
     #[test]
     fn dot_suffixed_dir_delete_event_cleans_the_record() {
         let base = tmp("dotdir");
@@ -796,7 +970,8 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// symlink 本体不入库（与扫描器 to_record 拒收、follow_links(false) 一致）。
+    /// The symlink body does not enter the store (consistent with the
+    /// scanner's to_record rejection and follow_links(false)).
     #[test]
     #[cfg(unix)]
     fn symlink_events_do_not_index_the_link() {
@@ -822,10 +997,13 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 实体被原地替换成软链（`rm f && ln -s` 的常见节奏）：替换后事件的 stat
-    /// 成功但命中的是非入库类型，旧记录若还在就是幽灵 → 必须走删除分支清掉。
-    /// 无记录时（本文件 symlink 测试的形状）是安全 no-op，两条测试合起来钉住
-    /// 「非入库类型：清旧行、绝不建行」两个方向。
+    /// An entity replaced in place by a symlink (the common `rm f && ln -s`
+    /// rhythm): the replacement event's stat succeeds but hits a
+    /// non-indexable type; if the old record is still there it is a ghost →
+    /// it must take the delete branch and be cleared. With no record (the
+    /// shape of the symlink test above) this is a safe no-op; together the
+    /// two tests pin both directions of "non-indexable type: clear the old
+    /// row, never create a row".
     #[test]
     #[cfg(unix)]
     fn replacement_by_symlink_removes_the_stale_row() {
@@ -843,7 +1021,8 @@ mod tests {
         );
         assert_eq!(indexed(&store).len(), 1);
 
-        // rm 后原地 ln -s：路径上同名实体已换成交叉软链。
+        // rm followed by an in-place ln -s: the entity at that path has been
+        // swapped for a symlink to another name.
         fs::remove_file(base.join("报告.pdf")).unwrap();
         std::os::unix::fs::symlink(base.join("其他.pdf"), base.join("报告.pdf")).unwrap();
         apply(
@@ -864,8 +1043,10 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// stat 抖动（父目录权限收紧等）不得把仍存在的记录当删除处理——
-    /// `Path::exists()` 会把一切错误折叠成 false，旧版在此误删活记录。
+    /// Stat jitter (a parent directory's permission tightened) must not
+    /// treat a still-existing record as deleted — `Path::exists()` folds
+    /// every error into false, which is exactly how the old version wrongly
+    /// deleted live records.
     #[test]
     #[cfg(unix)]
     fn transient_stat_errors_do_not_delete_records() {
@@ -891,7 +1072,8 @@ mod tests {
         let readable = base.join("sub").read_dir().is_ok();
         fs::set_permissions(base.join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
         if readable {
-            // root（或忽略 mode bit 的 fs）绕过权限检查，无法制造 stat 错误，跳过。
+            // root (or a filesystem ignoring mode bits) bypasses the
+            // permission check and no stat error can be manufactured; skip.
             let _ = fs::remove_dir_all(&base);
             return;
         }
@@ -917,13 +1099,16 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 多根嵌套时事件按**最深**受监听根归因（`max_by_key`）：选出内层根后，外层根
-    /// basename（即使命中排除名单）不参与判定——扫描器对内层根照常全量入库
-    /// （walkdir 从内层根本身走起），watcher 若误选外层根会把整根事件丢光。
+    /// With multiple nested roots, events are attributed to the **deepest**
+    /// watched root (`max_by_key`): once the inner root is chosen, the outer
+    /// root's basename (even when it hits the exclusion list) does not
+    /// participate — the scanner indexes the inner root in full as usual
+    /// (walkdir starts at the inner root itself), and a watcher wrongly
+    /// choosing the outer root would drop the whole root's events.
     #[test]
     fn nested_root_events_use_the_deepest_root() {
         let base = tmp("nested");
-        let outer = base.join("node_modules"); // 外层根本身命中排除名单
+        let outer = base.join("node_modules"); // the outer root's own basename hits the list
         let inner = outer.join("proj");
         fs::create_dir_all(&inner).unwrap();
         fs::write(inner.join("报告.pdf"), b"r").unwrap();
@@ -948,27 +1133,33 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 注册前准备（纯函数）：存在的根 canonicalize、同实体（含经软链的两种拼写）
-    /// 只留一个、不存在的根跳过、非 UTF-8 根拒收。非 UTF-8 fixture 在 APFS 上造
-    /// 不出来（探针跳过），该断言在 ext4 CI（ubuntu 全量腿）上真实执行——同
-    /// `non_utf8_spellings_never_enter_the_index` 的探针习惯。
+    /// Pre-registration preparation (pure function): existing roots are
+    /// canonicalized, one entity (including both spellings via a symlink)
+    /// keeps a single entry, missing roots are skipped, non-UTF-8 roots are
+    /// rejected. The non-UTF-8 fixture cannot be created on APFS
+    /// (probe-skip); the assertion really executes on the ext4 CI (ubuntu
+    /// full leg) — the same probe convention as
+    /// `non_utf8_spellings_never_enter_the_index`.
     #[test]
     fn prepare_roots_canonicalizes_dedups_and_skips_unusable_roots() {
         let base = tmp("prep");
         let root = base.join("proj");
         fs::create_dir_all(&root).unwrap();
 
-        // mut 仅 cfg(unix) 的 fixture 注入用到；Windows 腿以 -D unused-mut 编译
-        // （round-6 review B1：无守卫时 cfg 块整体编译掉，mut 悬空红 required-gate）。
+        // mut is used only by the cfg(unix) fixture injection; the Windows
+        // leg compiles with -D unused-mut (round-6 review B1: without the
+        // guard the cfg block is compiled away entirely and the mut dangles
+        // red on required-gate).
         #[cfg_attr(not(unix), allow(unused_mut))]
         let mut inputs = vec![root.clone(), base.join("missing"), root.clone()];
-        // 软链拼写与实体路径 canonicalize 到同一路径 → 去重成一个。
+        // The symlink spelling and the entity path canonicalize to the same
+        // path → deduped to one.
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&root, base.join("link")).unwrap();
             inputs.insert(1, base.join("link"));
         }
-        // 非 UTF-8 根：造得出来才断言拒收。
+        // Non-UTF-8 root: assert rejection only when it can be created.
         #[cfg(unix)]
         {
             use std::ffi::OsStr;
@@ -989,8 +1180,11 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 根外路径走防御性全路径判定（canonicalize 后正常不可达）：命中排除组件的
-    /// 照旧丢弃，干净路径照常按存在性入库——不得因「不在任何根下」静默丢光。
+    /// Out-of-root paths take the defensive full-path judgment (normally
+    /// unreachable after canonicalization): those hitting excluded
+    /// components are dropped as before, clean paths enter the store by
+    /// existence as usual — they must not be silently dropped just for being
+    /// "under no root".
     #[test]
     fn out_of_root_paths_fall_back_to_full_path_judgment() {
         let base = tmp("fallback");
@@ -1000,22 +1194,26 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("报告.pdf"), b"r").unwrap();
-        // 排除组件的 fixture 必须能通过类型白名单（用报告.pdf 而非 id_rsa），
-        // 否则 is_skipped 会在组件门之后再次拦下它，掩盖组件门本身的回归。
+        // The excluded-component fixture must pass the type whitelist (use
+        // 报告.pdf rather than id_rsa), otherwise is_skipped would intercept
+        // it again after the component gate and mask the component gate's own
+        // regression.
         fs::create_dir_all(outside.join(".ssh")).unwrap();
         fs::write(outside.join(".ssh/报告.pdf"), b"r").unwrap();
         let store = Store::open_in_memory().unwrap();
         let ex = Excluder::default();
         let roots = vec![base.join("root")];
 
-        // 根外干净路径：全路径判定放行 → stat 存活 → 入库。
+        // Clean out-of-root path: full-path judgment passes → stat alive →
+        // enters the store.
         apply(
             &ex,
             &store,
             &roots,
             &ev(creates_file(), &[&outside.join("报告.pdf")]),
         );
-        // 根外命中排除组件的路径：全路径判定丢弃（组件级即拦，无需 stat）。
+        // Out-of-root path hitting an excluded component: full-path judgment
+        // drops it (caught at the component level, no stat needed).
         apply(
             &ex,
             &store,
@@ -1034,10 +1232,13 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
-    /// 非 UTF-8 拼写两侧都不入库（`record_from_parts` 的 `to_str` 是扫描器与
-    /// watcher 共同的最终闸门；扫描器另按 empty-name 语义在 filter_entry 剪掉
-    /// 整棵子树）——落库结果一致。这条钉住「干净叶子也不入」的语义，防止将来把
-    /// 记录装配改成 lossy 拼写造成两侧分裂。
+    /// Non-UTF-8 spellings enter the store on neither side
+    /// (`record_from_parts`'s `to_str` is the shared final gate for scanner
+    /// and watcher; the scanner additionally prunes the whole subtree at
+    /// filter_entry per its empty-name semantics) — the stored outcome
+    /// agrees. This pins the "clean leaves also stay out" semantics,
+    /// preventing a future change of record assembly to lossy spellings from
+    /// splitting the two sides.
     #[test]
     #[cfg(unix)]
     fn non_utf8_spellings_never_enter_the_index() {
@@ -1047,7 +1248,8 @@ mod tests {
         let base = tmp("nonutf8");
         let bad_dir = base.join(OsStr::from_bytes(b"\xff\xfe.dir"));
         if fs::create_dir_all(&bad_dir).is_err() {
-            // 敌意文件系统（如 APFS 拒绝非 UTF-8 名）造不出 fixture，跳过。
+            // A hostile filesystem (APFS rejects non-UTF-8 names) cannot
+            // create the fixture; skip.
             let _ = fs::remove_dir_all(&base);
             return;
         }
@@ -1067,7 +1269,8 @@ mod tests {
             &roots,
             &ev(EventKind::Create(CreateKind::Folder), &[&bad_dir]),
         );
-        // 删除事件：lossy 拼写匹配不到任何行，安全 no-op，不误删也不报错。
+        // Delete event: the lossy spelling matches no row — safe no-op, no
+        // wrong delete, no error.
         fs::remove_dir_all(&bad_dir).unwrap();
         apply(
             &ex,
