@@ -170,7 +170,17 @@ impl SessionStore {
             .join(format!("{}.json", session.metadata.id));
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
         crate::platform::filesystem::atomic_write_private(&path, &payload)
-            .with_context(|| format!("write session {}", path.display()))?;
+            // Boundary fold at the formation point (R2 SHOULD-2): this reason
+            // rides fork/create_new/import/aux command wrappers straight into
+            // toasts, so every caller's failure leaves with the storage
+            // prefix (OS user name) folded, exactly like the import
+            // boundary's fail closures.
+            .with_context(|| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "write session {}",
+                    path.display()
+                ))
+            })?;
         // Once the session JSON hits disk the list snapshot is stale (title /
         // updated_at / new session may all have changed)
         self.invalidate_list_cache();
@@ -1112,6 +1122,13 @@ impl SessionStore {
         }
 
         let _mutation = self.scheduled_mutation.lock();
+        // Allocate the id before any side effect: id exhaustion is a
+        // fallible step, and running it first keeps the loud-failure path
+        // free of an orphan empty task-workspace dir (the workspace is
+        // reused idempotently, but leaving one behind on a pure allocation
+        // error is still an avoidable error-state side effect).
+        let id =
+            self.generate_unused_session_id_with(|| format!("sched-{}", generate_session_id()))?;
         // Each run creates its own conversation; all conversations of the same
         // automation share the task workspace.
         // workspace is derived only from the stable task_id (automation_id);
@@ -1123,7 +1140,6 @@ impl SessionStore {
                 profile.workspace.display()
             )
         })?;
-        let id = format!("sched-{}", generate_session_id());
         let mode = profile.mode.as_label();
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),
