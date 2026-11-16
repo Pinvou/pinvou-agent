@@ -412,28 +412,14 @@ fn memory_profile_patch_rejection(patch: &crate::features::memory::ProfilePatch)
     }
     // r5 review: a STORED wipe-shaped label (hand-edited profile.json, or
     // data written before these guards) is emptied by `normalize` on the
-    // write-back even when the patch only touches another field. A patch
-    // that sets the label itself was already judged above by the same rule
-    // (valid replaces it, empty clears it), so only the untouched-field
-    // shape needs the stored check. Read errors fall through to
-    // `update_profile`'s own error path.
-    if let Ok(stored) = crate::features::memory::stored_wipe_shaped_identity_labels() {
-        for topic in stored {
-            let patch_sets_label = match topic {
-                "call_name" => patch.call_name.is_some(),
-                "assistant_alias" => patch.assistant_alias.is_some(),
-                _ => true,
-            };
-            if !patch_sets_label {
-                return Some(format!(
-                    "memory_profile_label_rejected: the stored {topic} label does not \
-                     survive the profile normalization and would be silently emptied by \
-                     this update; nothing was written — supply a shorter label, clear \
-                     the field, or fix the stored value by hand first"
-                ));
-            }
-        }
-    }
+    // write-back even when the patch only touches another field. That
+    // stored check lives INSIDE `update_profile`, under the same write
+    // lock as the write-back (r15 review): the lock-free pre-check here
+    // left a check-then-act window, and the auto-write path reaches
+    // update_profile without any surface pre-check at all. The in-lock
+    // refusal carries the `memory_profile_label_rejected` prefix; the
+    // command below passes it through verbatim so the editor keeps
+    // surfacing the crafted hint (r4/r12 contract).
     None
 }
 
@@ -447,7 +433,14 @@ pub async fn update_memory_profile(
         return Err(rejection);
     }
     let profile = crate::features::memory::update_profile(patch).map_err(|e| {
-        crate::platform::paths::redact_storage_prefix(&format!("update profile: {e}"))
+        // The in-lock stored-label refusal is a crafted user-facing
+        // contract — passed verbatim for the editor's prefix match
+        // (r4/r12); every other error folds the storage prefix.
+        if e.to_string().starts_with("memory_profile_label_rejected") {
+            e.to_string()
+        } else {
+            crate::platform::paths::redact_storage_prefix(&format!("update profile: {e}"))
+        }
     })?;
     let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store);
     Ok(MemoryProfileState {
