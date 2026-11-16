@@ -1119,10 +1119,64 @@ mod tests {
         assert_eq!(window.len(), 10);
     }
 
+    // PUT /api/v1/collections/{id} 必须真实可达:owner 令牌完成全量替换
+    // 改名(响应回读新名称与新描述),未认证保持 401。与回收站 v2 路由
+    // 同理——这条 rename 链路曾被整段移除过,不能只靠 service 层测试保护
+    // 路由表。突变对照:路由表去掉 .put(update_collection) 后,重命名腿
+    // 以 405 落红。
+    #[tokio::test]
+    async fn update_collection_route_serves_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0009";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "旧名".to_string(),
+                description: Some("原始描述".to_string()),
+            })
+            .unwrap();
+        let app = router(service.clone());
+
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!("/api/v1/collections/{}", collection.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"新名"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        let mut rename = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/api/v1/collections/{}", collection.id))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"新名","description":"替换描述"}"#))
+            .unwrap();
+        add_bearer(&mut rename, owner_token);
+        let response = app.oneshot(rename).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let renamed: Collection = decode_body(response).await;
+        assert_eq!(renamed.name, "新名");
+        assert_eq!(renamed.description.as_deref(), Some("替换描述"));
+    }
+
     // 客户端回收站清单必须翻页取全量:服务端按 offset 分页且不返回总数,
-    // 首窗硬编码(limit=200)会静默截断,第 201 条起对用户不可见。600 条
-    // 跨过单页上限 500 验证聚合;文档腿验证同一 helper 在 TrashedDocument
-    // 反序列化路径上也成立。走真实回环 HTTP,与 KnowledgeClient 全链路一致。
+    // 首窗硬编码(limit=200)会静默截断,第 201 条起对用户不可见。清单与
+    // 文档两条腿各 600 条,都跨过单页上限 500 验证聚合;顺序断言钉住
+    // (deleted_at DESC, id DESC)——同一 fixture 里回收时间随 id 单调,
+    // 聚合结果必须严格按 id 降序,翻页方向突变(ASC)或跨页重复都会在此
+    // 落红。文档腿同时钉住 client.documents() 非分页清单(含/不含已删)。
+    // 走真实回环 HTTP,与 KnowledgeClient 全链路一致。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trash_listing_clients_page_through_every_offset() {
         let root = tempfile::tempdir().unwrap();
@@ -1149,7 +1203,7 @@ mod tests {
                 .unwrap();
             service.trash_collection(created.id).unwrap();
         }
-        for index in 0..3 {
+        for index in 0..600 {
             let document = service
                 .upload_document(active.id, &format!("doc{index}.txt"), b"body".to_vec())
                 .await
@@ -1176,6 +1230,10 @@ mod tests {
         .expect("回收站清单翻页不得挂死")
         .unwrap();
         assert_eq!(listed.len(), 600);
+        assert!(
+            listed.windows(2).all(|pair| pair[0].id > pair[1].id),
+            "回收站清单跨页聚合必须保持 (deleted_at DESC, id DESC) 顺序"
+        );
         let documents = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             client.trashed_documents(),
@@ -1183,7 +1241,23 @@ mod tests {
         .await
         .expect("回收站文档清单翻页不得挂死")
         .unwrap();
-        assert_eq!(documents.len(), 3);
+        assert_eq!(documents.len(), 600);
+        assert!(
+            documents
+                .windows(2)
+                .all(|pair| pair[0].document.id > pair[1].document.id),
+            "回收站文档清单跨页聚合必须保持 (deleted_at DESC, id DESC) 顺序"
+        );
+        let all_documents = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.documents(active.id, true),
+        )
+        .await
+        .expect("非分页文档清单不得挂死")
+        .unwrap();
+        assert_eq!(all_documents.len(), 600);
+        let live_documents = client.documents(active.id, false).await.unwrap();
+        assert_eq!(live_documents.len(), 0);
     }
 
     // 恰好整页(500 = 单页上限)必须多取一页空结果收尾:终止条件退化成

@@ -190,6 +190,10 @@ pub struct Document {
     pub already_exists: bool,
 }
 
+/// 回收站文档条目。线形协议是官方构建的形状:`collectionName` 与文档
+/// 字段并列在同一层,因此这里用 `serde(flatten)` 摊平,而不是本仓库
+/// `StoredDocument` 那种嵌套包装——换成嵌套序列化会静默破坏与官方主机
+/// 的线形兼容,勿"统一"。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TrashedDocument {

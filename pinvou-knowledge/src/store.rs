@@ -338,6 +338,9 @@ impl Store {
             .unwrap_or(-1);
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         self.with_read_connection(|connection| {
+            // 计数子查询刻意不加 deleted_at IS NULL 过滤(与 list_collections
+            // 的在用清单不同):回收站里的知识集,其挂载文档必然全部处于
+            // 已删状态,回收站视图要报告的正是"里面还有多少东西"。
             let mut statement = connection.prepare(
                 "SELECT c.id,c.name,c.description,c.status,c.created_at,c.updated_at,c.deleted_at,\
                  (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id),\
