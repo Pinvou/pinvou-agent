@@ -1290,7 +1290,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   fetchModelList:'Fetch model list', fetchingModelList:'Fetching model list…',
   modelListTitle:'Models at this endpoint', modelListClose:'Close', modelListFilterPlaceholder:'Filter model IDs…',
   addModelRow:'Add', addAllModels:'Add all',
-  addAllConfirm:n=>`Add ${n} model${n === 1 ? '' : 's'}? Entries already saved with the same model ID and endpoint URL are skipped automatically. Continue?`,
+  addAllConfirm:n=>`Add ${n} model${n === 1 ? '' : 's'}? Entries already saved with the same model ID and service URL are skipped automatically. Continue?`,
   addAllTruncated:n=>`Long list — only the first ${n} models will be added.`,
   addedCount:n=>`Added ${n} model${n === 1 ? '' : 's'}`,
   noModelsFound:'The endpoint returned no models',
@@ -1303,7 +1303,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   modelAlreadySaved:'Saved',
   fetchUnavailable:'This build cannot fetch model lists yet',
   modelListFilterEmpty:'No models match this filter',
-  modelListTruncated:'Endpoint response was truncated; results may be incomplete',
+  modelListTruncated:'Endpoint response or context lookups stopped early; results may be incomplete',
   modelListMoreCount:n=>`…and ${n} more — refine the filter`,
   modelListMoreCountPlain:n=>`…and ${n} more`,
 });

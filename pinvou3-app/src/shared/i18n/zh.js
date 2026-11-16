@@ -1199,8 +1199,8 @@ Object.assign(dictZh.uiSettingsDetail, {
   modelAlreadySaved:'已保存',
   fetchUnavailable:'当前版本暂不支持获取模型列表',
   modelListFilterEmpty:'没有符合筛选条件的模型',
-  modelListTruncated:'端点响应被截断，结果可能不完整',
-  modelListMoreCount:n=>`还有 ${n} 个未显示 — 请缩小筛选范围`,
+  modelListTruncated:'端点响应或上下文查询提前停止，结果可能不完整',
+  modelListMoreCount:n=>`还有 ${n} 个未显示，请缩小筛选范围`,
   modelListMoreCountPlain:n=>`还有 ${n} 个未显示`,
 });
 Object.assign(dictZh.uiAcpProviders, {

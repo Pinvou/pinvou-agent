@@ -1310,7 +1310,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   modelAlreadySaved:'保存済み',
   fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
   modelListFilterEmpty:'フィルターに一致するモデルはありません',
-  modelListTruncated:'エンドポイントの応答が切り詰められたため、結果は不完全な場合があります',
+  modelListTruncated:'エンドポイントの応答またはコンテキスト取得が途中で打ち切られたため、結果は不完全な場合があります',
   modelListMoreCount:n=>`他 ${n} 件があります — フィルターで絞り込んでください`,
   modelListMoreCountPlain:n=>`他 ${n} 件があります`,
 });
