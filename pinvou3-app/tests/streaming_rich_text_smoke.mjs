@@ -24,8 +24,22 @@ let browser;
 try {
   server = await createServer({
     root: appRoot, configFile: false, appType: 'mpa', logLevel: 'error', plugins: [
-      { name: 'test-legacy-bubble', enforce: 'pre', transform(code, id) {
+      { name: 'test-conversation-commits', enforce: 'pre', transform(code, id) {
         if (id.endsWith('/src/features/chat/ChatView.jsx')) return `${code}\nexport { ChatBubble };\n`;
+        if (id.endsWith('/src/features/conversation/rich-text-dom.js')) {
+          assert.ok(code.includes('export function commitRichTextFrame('), 'commit instrumentation must remain connected');
+          return `${code.replace('export function commitRichTextFrame(', 'function commitRichTextFrameImpl(')}
+export function commitRichTextFrame(container, html, options) {
+  const cleanup = commitRichTextFrameImpl(container, html, options);
+  (globalThis.__pinvouTestCommits ||= new WeakMap()).set(container, options.markdownSource);
+  return cleanup;
+}`;
+        }
+        if (id.endsWith('/src/shared/markdown-renderer.js')) {
+          const signature = 'export function renderMarkdownSourceProbe(tokens, decorate) {';
+          assert.ok(code.includes(signature), 'diagnostic instrumentation must remain connected');
+          return code.replace(signature, () => `${signature} globalThis.__pinvouSourceProbeCalls = (globalThis.__pinvouSourceProbeCalls || 0) + 1;`);
+        }
       } }, react(),
     ],
     server: { host: '127.0.0.1', port: 0, watch: null },
@@ -61,6 +75,159 @@ try {
   );
 
 
+  // Count actual detached parser/sanitizer calls rather than timing-sensitive
+  // wall-clock limits. Each append still validates the current presentation.
+  await page.evaluate(async () => {
+    // eslint-disable-next-line import-x/no-unresolved, n/no-missing-import -- Browser-side Vite URL.
+    const { updateRichText } = await import('/src/features/conversation/rich-text-dom.js');
+    // eslint-disable-next-line import-x/no-unresolved, n/no-missing-import -- Browser-side Vite URL.
+    const { ensureCodeCopyButtons, copyCodeBlockFromButton } = await import('/src/features/conversation/code-block-copy.js');
+    const check = (value, message) => { if (!value) throw new Error(message); };
+    const labels = { copyCode: 'Copy code', copied: 'Copied', failed: 'Copy failed' };
+    const renderHtml = window.streamingFixture.renderHtml;
+    const payload = 'abcdefghijklmnopqrstuvwxyz0123456789 '.repeat(2703).slice(0, 100000);
+    for (const wrapper of ['', '- Step\n  ', '> ']) {
+      const host = document.createElement('div');
+      document.body.append(host);
+      try {
+        let source = `${wrapper}\`\`\`text\n${wrapper ? wrapper === '> ' ? '> ' : '  ' : ''}${wrapper ? 'code' : payload}`;
+        const options = wrapper ? { sourceHtmlTransform: html => html } : {};
+        const commit = value => {
+          updateRichText(host, renderHtml(value), { ...options, markdownSource: value });
+          ensureCodeCopyButtons(host, labels);
+        };
+        commit(source);
+        const pre = host.querySelector('pre');
+        const button = host.querySelector('button');
+        source += ' warm';
+        commit(source);
+        for (const success of [true, false]) {
+          let finish;
+          let copied;
+          const pending = copyCodeBlockFromButton(button, { labels, writeText: value => {
+            copied = value;
+            return new Promise(resolve => { finish = resolve; });
+          } });
+          const snapshot = host.querySelector('code').textContent;
+          for (let frame = 0; frame < 3; frame += 1) {
+            source += ' more';
+            const calls = globalThis.__pinvouSourceProbeCalls || 0;
+            commit(source);
+            check(globalThis.__pinvouSourceProbeCalls - calls === 1, 'Open code append must probe only the current frame');
+            check(host.querySelector('pre') === pre && host.querySelector('button') === button, 'Open code must keep its own controls');
+          }
+          finish(success);
+          await pending;
+          check(copied === snapshot && button.title === (success ? labels.copied : labels.failed), 'Pending copy must retain its snapshot and feedback');
+        }
+        const code = host.querySelector('code');
+        const text = code.firstChild;
+        getSelection().setBaseAndExtent(text, 0, text, 4);
+        source += `\n${wrapper === '> ' ? '> ' : wrapper ? '  ' : ''}\`\`\`\n\nMore prose`;
+        commit(source);
+        check(getSelection().toString() === snapshotPrefix(code.textContent), 'Closing a nested/open code must preserve selection');
+        check(host.querySelector('pre') === pre && host.querySelector('button') === button, 'Closure must keep the source-owned block');
+        const clean = host.cloneNode(true);
+        for (const control of clean.querySelectorAll('.pinvou-code-copy-btn, .pinvou-code-copy-live')) control.remove();
+        check(clean.innerHTML === renderHtml(source), 'Cached code closure must equal a fresh render');
+      } finally { getSelection().removeAllRanges(); host.remove(); }
+    }
+    function snapshotPrefix(text) { return text.slice(0, 4); }
+
+    for (const table of [false, true]) {
+      const host = document.createElement('div');
+      document.body.append(host);
+      try {
+        const code = '<pre class="pinvou-code-block"><code>same</code></pre>';
+        const block = table ? `<table><tr><td>${code}</td></tr></table>` : code;
+        const before = `![${block}][x]\n\n${block}`;
+        const commit = source => {
+          updateRichText(host, renderHtml(source), { markdownSource: source });
+          ensureCodeCopyButtons(host, labels);
+        };
+        commit(before); commit(`${before}\n`);
+        const buttons = [...host.querySelectorAll('button')];
+        check(buttons.length === 2, 'Retirement probe needs equal old code blocks');
+        commit(`${before}\n\n[x]: https://example.com/i.png\n\n${block}`);
+        const after = [...host.querySelectorAll('button')];
+        check(!buttons[0].isConnected && after[0] === buttons[1] && !buttons.includes(after[1]),
+          'Warm provenance cache must retire image-label code without lending feedback to appended equal code');
+      } finally { host.remove(); }
+    }
+
+    {
+      const host = document.createElement('div');
+      document.body.append(host);
+      try {
+        let source = '<pre class="pinvou-code-block"><code>same</code></pre>\n\n<pre class="pinvou-code-block"><code>same</code></pre>';
+        const commit = (value, transform) => {
+          const html = renderHtml(value);
+          updateRichText(host, transform ? transform(html) : html, { markdownSource: value,
+            sourceHtmlTransform: transform, sourceHtmlFiltered: Boolean(transform) });
+          ensureCodeCopyButtons(host, labels);
+        };
+        commit(source); source += '\n'; commit(source);
+        const buttons = [...host.querySelectorAll('button')];
+        source += '\n';
+        commit(source, html => html.replace(/<pre[\s\S]*?<\/pre>/, ''));
+        check(!buttons[0].isConnected && host.querySelector('button') === buttons[1], 'New presentation policy must retain the surviving source block');
+      } finally { host.remove(); }
+    }
+
+    {
+      const host = document.createElement('div');
+      document.body.append(host);
+      try {
+        let source = '```text\nretained';
+        const commit = value => updateRichText(host, renderHtml(value), { markdownSource: value });
+        commit(source); source += ' warm'; commit(source);
+        const text = host.querySelector('code').firstChild;
+        const original = text.replaceData;
+        let failed = false;
+        text.replaceData = () => { throw new Error('Injected commit failure'); };
+        source += ' retry';
+        try { commit(source); } catch (error) { failed = error.message === 'Injected commit failure'; }
+        finally { text.replaceData = original; }
+        check(failed, 'Failure control must interrupt the real DOM commit');
+        const calls = globalThis.__pinvouSourceProbeCalls;
+        commit(source);
+        check(globalThis.__pinvouSourceProbeCalls - calls === 1 && host.querySelector('code').textContent.includes('retry'),
+          'A failed commit must not publish its incoming diagnostic snapshot');
+      } finally { host.remove(); }
+    }
+
+    const host = document.createElement('div');
+    document.body.append(host);
+    try {
+      let source = '```text\nsame';
+      const commit = (value, options = {}) => {
+        updateRichText(host, renderHtml(value), { markdownSource: value, ...options });
+        ensureCodeCopyButtons(host, labels);
+      };
+      commit(source); source += ' warm'; commit(source);
+      const original = host.querySelector('button');
+      source += ' more';
+      // Actual DOM drift invalidates the previous snapshot instead of lending
+      // its source identity to an unrelated visible shape.
+      host.querySelector('code').firstChild.appendData(' drift');
+      let calls = globalThis.__pinvouSourceProbeCalls;
+      commit(source);
+      check(globalThis.__pinvouSourceProbeCalls - calls === 2, 'DOM drift must revalidate both frames');
+      check(host.querySelector('button') !== original, 'Invalid diagnostics must discard stale controls');
+      source += ' warm'; commit(source); source += ' again'; commit(source);
+      const retained = host.querySelector('button');
+      const replacement = source.replace('```', '~~~');
+      check(renderHtml(replacement) === renderHtml(source), 'Opening-replacement control must render equal HTML');
+      commit(replacement);
+      check(host.querySelector('button') !== retained, 'Equal HTML cannot reuse a replaced opening');
+      source = `${replacement}\n~~~\n\nTail`; commit(source);
+      source += ' warm'; commit(source);
+      calls = globalThis.__pinvouSourceProbeCalls;
+      source += ' more'; commit(source);
+      check(globalThis.__pinvouSourceProbeCalls === calls, 'Unchanged closed code must retain the zero-probe path');
+    } finally { host.remove(); }
+  });
+
   const verifyTableEndpoints = async legacy => {
     const results = await page.evaluate(async isLegacy => {
       const fixture = isLegacy ? window.legacySelectionFixture : window.streamingFixture;
@@ -72,8 +239,15 @@ try {
       document.querySelector('#root').after(external);
       const results = [];
       const commit = async text => {
+        const host = document.querySelector(selector);
+        globalThis.__pinvouTestCommits?.delete(host);
         if (isLegacy) fixture.render(text, fixture.renderHtml(text), text);
-        else { fixture.render(text); await new Promise(resolve => { setTimeout(resolve, 270); }); }
+        else fixture.render(text);
+        const started = performance.now();
+        while (globalThis.__pinvouTestCommits?.get(document.querySelector(selector)) !== text) {
+          if (performance.now() - started > 10000) throw new Error('Stream frame did not commit');
+          await new Promise(resolve => { setTimeout(resolve, 20); });
+        }
       };
       try {
         for (const animation of [false, true]) {
@@ -136,8 +310,15 @@ try {
       const { updateRichText } = await import('/src/features/conversation/rich-text-dom.js');
       const labels = { copyCode: 'Copy code', copied: 'Copied', failed: 'Copy failed' };
       const commit = async text => {
+        const host = document.querySelector(selector);
+        globalThis.__pinvouTestCommits?.delete(host);
         if (isLegacy) fixture.render(text, fixture.renderHtml(text), text);
-        else { fixture.render(text); await new Promise(resolve => { setTimeout(resolve, 270); }); }
+        else fixture.render(text);
+        const started = performance.now();
+        while (globalThis.__pinvouTestCommits?.get(document.querySelector(selector)) !== text) {
+          if (performance.now() - started > 10000) throw new Error('Stream frame did not commit');
+          await new Promise(resolve => { setTimeout(resolve, 20); });
+        }
       };
       const results = [];
       for (const animation of [false, true]) {
@@ -160,6 +341,7 @@ try {
                 // sibling count nor code text establishes source ownership.
                 const after = `${before}\n\n[x]: https://example.com/i.png${same ? `\n\n${block('same')}` : ''}`;
                 await commit(before);
+                await commit(`${before}\n`);
                 const buttons = [...document.querySelectorAll(`${selector} .pinvou-code-copy-btn`)];
                 let finish;
                 let snapshot;

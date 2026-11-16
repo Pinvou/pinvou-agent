@@ -193,6 +193,7 @@ export function updateRichText(container, html, { markdownSource, sourceHtmlTran
   const context = { previousSource, source,
     hasPresentationTransform: Boolean(previousTransform || sourceHtmlTransform || previousFiltered || sourceHtmlFiltered),
     previousBlockState: previousBlockState?.source === previousSource ? previousBlockState : null,
+    previousBlockProbe: previous.probe,
     isLiteralHtml: markdownHtmlTagIsLiteral, isClosedCode: markdownCodeIsClosed, sourceTokens: () => markdownSourceTokens(source),
     previousSourceTokens: () => markdownSourceTokens(previousSource),
     sourceDocument: container.ownerDocument,
@@ -223,6 +224,7 @@ export function updateRichText(container, html, { markdownSource, sourceHtmlTran
     transform: typeof sourceHtmlTransform === 'function' ? sourceHtmlTransform : undefined,
     filtered: sourceHtmlFiltered,
     blocks: context.nextBlockState ? { ...context.nextBlockState, keys } : undefined,
+    probe: context.nextBlockProbe,
   });
 }
 

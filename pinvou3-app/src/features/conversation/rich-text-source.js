@@ -334,7 +334,6 @@ export function sourceBlockKeys(previousRoot, root, context) {
   const tokens = context.sourceTokens();
   const cached = cachedSourceBlockKeys(previousRoot, root, tokens, context);
   if (cached) return cached;
-  const previousTokens = context.previousSourceTokens();
   const collect = (source, sequence) => {
     const origins = new WeakMap();
     sourceSpans(source, sequence, { ...context,
@@ -343,8 +342,10 @@ export function sourceBlockKeys(previousRoot, root, context) {
     }, 0);
     return origins;
   };
-  const keys = createSourceBlockKeys(previousTokens, collect(context.previousSource, previousTokens),
-    tokens, collect(context.source, tokens), context, previousRoot, root);
+  const keys = createSourceBlockKeys(() => {
+    const previousTokens = context.previousSourceTokens();
+    return { tokens: previousTokens, origins: collect(context.previousSource, previousTokens) };
+  }, tokens, collect(context.source, tokens), context, previousRoot, root);
   if (keys) context.nextBlockState = sourceBlockState(root, tokens, context, keys);
   return keys || distinctBlockKeys(previousRoot, root);
 }

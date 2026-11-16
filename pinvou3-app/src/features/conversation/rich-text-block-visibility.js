@@ -63,31 +63,58 @@ function retainedOpening(block, source, prefix) {
   return end > block.start && end <= prefix;
 }
 
-export function createSourceBlockKeys(previousTokens, previousOrigins, tokens, origins, context, previousRoot, root) {
+// Store only source ownership and the validated visible shape, not detached
+// DOM trees. Copy feedback and fade wrappers do not affect this index.
+function blockSnapshot(actual, probe) {
+  if (!probe || actual.blocks.length !== probe.blocks.length) return null;
+  const sources = new Map(probe.sources.map(block => [block.id, block]));
+  const blocks = [];
+  for (let index = 0; index < actual.blocks.length; index += 1) {
+    const block = actual.blocks[index];
+    const diagnostic = probe.blocks[index];
+    if (block.node.nodeName !== diagnostic.node.nodeName || block.start !== diagnostic.start || block.end !== diagnostic.end) return null;
+    const origin = sources.get(diagnostic.node.dataset.pinvouSourceBlock);
+    blocks.push({ name: block.node.nodeName, start: block.start, end: block.end,
+      origin: origin ? { start: origin.start, kind: origin.kind } : null });
+  }
+  return { text: actual.text, blocks };
+}
+
+function matchesSnapshot(actual, snapshot) {
+  return snapshot && actual.text === snapshot.text && actual.blocks.length === snapshot.blocks.length
+    && actual.blocks.every((block, index) => block.node.nodeName === snapshot.blocks[index].name
+      && block.start === snapshot.blocks[index].start && block.end === snapshot.blocks[index].end);
+}
+
+export function createSourceBlockKeys(previousState, tokens, origins, context, previousRoot, root) {
   const crypto = context.sourceDocument?.defaultView?.crypto;
   if (!crypto?.getRandomValues || !context.renderCurrentSourceProbe) return null;
   const nonce = Array.from(crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16)).join('');
   const actualBefore = indexBlockText(previousRoot);
   const actualAfter = indexBlockText(root);
-  const before = probeBlocks(previousTokens, previousOrigins, context.renderSourceProbe, context, actualBefore.text, nonce);
-  const after = probeBlocks(tokens, origins, context.renderCurrentSourceProbe, context, actualAfter.text, nonce);
+  // A committed diagnostic already describes the previous frame. Pure appends
+  // need only a fresh current probe, including while code fences are open.
+  let before = context.source.startsWith(context.previousSource) && context.previousBlockProbe;
+  if (!matchesSnapshot(actualBefore, before)) {
+    const previous = previousState();
+    before = blockSnapshot(actualBefore, probeBlocks(previous.tokens, previous.origins,
+      context.renderSourceProbe, context, actualBefore.text, nonce));
+  }
+  const after = blockSnapshot(actualAfter, probeBlocks(tokens, origins,
+    context.renderCurrentSourceProbe, context, actualAfter.text, nonce));
   if (!before || !after) return null;
   const keys = new WeakMap();
   const prefix = commonSourcePrefix(context);
-  for (const [side, actual, probe] of [['before', actualBefore, before], ['after', actualAfter, after]]) {
-    if (actual.blocks.length !== probe.blocks.length) return null;
-    const sources = new Map(probe.sources.map(block => [block.id, block]));
+  for (const [side, actual, snapshot] of [['before', actualBefore, before], ['after', actualAfter, after]]) {
+    const source = side === 'before' ? context.previousSource : context.source;
     for (let index = 0; index < actual.blocks.length; index += 1) {
-      const block = actual.blocks[index];
-      const diagnostic = probe.blocks[index];
-      if (block.node.nodeName !== diagnostic.node.nodeName || block.start !== diagnostic.start || block.end !== diagnostic.end) return null;
-      const origin = sources.get(diagnostic.node.dataset.pinvouSourceBlock);
-      const source = side === 'before' ? context.previousSource : context.source;
+      const origin = snapshot.blocks[index].origin;
       // Unowned or replaced openings cannot lend state to a new source block.
-      keys.set(block.node, origin && retainedOpening(origin, source, prefix)
+      keys.set(actual.blocks[index].node, origin && retainedOpening(origin, source, prefix)
         ? `source:${origin.start}` : `${nonce}:${side}:${index}`);
     }
   }
+  context.nextBlockProbe = after;
   return keys;
 }
 
