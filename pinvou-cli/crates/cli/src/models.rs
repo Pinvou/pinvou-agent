@@ -5738,8 +5738,68 @@ mod tests {
                     *hits.entry(path.clone()).or_insert(0) += 1;
                 }
                 let response = if path == "/models" {
-                    let location = format!("http://{}\u{1F}{}", addr, "/elsewhere");
-                    let _ = location;
+                    format!(
+                        "HTTP/1.1 302 Found\r\nlocation: http://{}/elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        addr
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}".to_owned()
+                };
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                let _ = std::io::Write::flush(&mut stream);
+            }
+        });
+        (format!("http://{addr}"), log)
+    }
+
+    /// The discover-lane twin of [`spawn_connection_redirect_mock`]: a
+    /// `/models` 302 WITH a `location` header pointing at a second in-mock
+    /// path (everything else answers 404). The queue mock cannot emit
+    /// headers, and a bare 302 without `location` is terminal under
+    /// reqwest's default follow policy too — the discover-lane no-follow
+    /// pin fed by that shape never bit (round-5 mutation: deleting
+    /// `Policy::none()` from `discovery_client` stayed green). Discover is
+    /// the lane that carries `x-api-key` / `x-goog-api-key` custom headers,
+    /// which reqwest does NOT strip on a redirect — the lane where a
+    /// followed hop is the credential-leak hazard this policy exists for.
+    fn spawn_discover_redirect_mock() -> (String, std::sync::Arc<DiscoverMockLog>) {
+        use std::io::Read as _;
+        use std::sync::Arc;
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind discover redirect mock listener");
+        let addr = listener.local_addr().expect("discover redirect mock listener addr");
+        let log = Arc::new(DiscoverMockLog::default());
+        let log_thread = log.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(20) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                    if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf).into_owned();
+                let target = request
+                    .split("\r\n")
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_owned();
+                let path = target.split('?').next().unwrap_or("").to_owned();
+                {
+                    let mut hits = log_thread.hits.lock().unwrap_or_else(|p| p.into_inner());
+                    *hits.entry(path.clone()).or_insert(0) += 1;
+                }
+                let response = if path == "/models" {
                     format!(
                         "HTTP/1.1 302 Found\r\nlocation: http://{}/elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
                         addr
@@ -7730,17 +7790,22 @@ mod tests {
 
     /// Redirects are NOT followed: the discovery client pins
     /// `Policy::none()` because reqwest strips only the Authorization/Cookie
-    /// family on a cross-origin redirect, so a followed 302 would carry
+    /// family on a host-or-port change, so a followed 302 would carry
     /// `x-api-key` / `x-goog-api-key` to a host the user never named. The
     /// 3xx response therefore arrives as the final status and files under
     /// plain `error` — never a second hop, never a listed/auth/unsupported
-    /// reading of whatever the redirect target would have answered.
+    /// reading of whatever the redirect target would have answered. The
+    /// 302 carries a real `location` header: a bare 302 without one is
+    /// terminal under reqwest's default follow policy too, so a no-follow
+    /// pin fed by that shape never bites (round-5 mutation: deleting
+    /// `Policy::none()` kept the old queue-mock test green while the same
+    /// mutation turned the `models test` pin red). This mock makes the
+    /// second hop real — under the mutation the follow lands on
+    /// `/elsewhere` and the final row reads `unsupported(404)`; with the
+    /// policy in place neither hop happens.
     #[test]
     fn discover_redirect_is_not_followed_and_classifies_as_error() {
-        let (base, log) = spawn_discover_mock(&discover_routes(&[(
-            "/models",
-            vec![(302u16, ""), (302, "")],
-        )]));
+        let (base, log) = spawn_discover_redirect_mock();
         let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
         assert_eq!(listing.status, ListingStatus::Error);
         assert_eq!(listing.http_status, Some(302), "the 3xx status is kept");
@@ -7750,6 +7815,11 @@ mod tests {
             log.hits_for("/models"),
             2,
             "candidate fallback + ladder, each answered once — no third hop"
+        );
+        assert_eq!(
+            log.hits_for("/elsewhere"),
+            0,
+            "the location target must never be requested"
         );
     }
 
