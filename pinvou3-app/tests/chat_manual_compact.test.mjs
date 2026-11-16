@@ -161,36 +161,39 @@ assert.equal(state.tokens.input, 131072, 'accumulated input during a compaction 
 
 // ── web/tauri source contract: the compaction handler must maintain the
 // marker inline and consume post_tokens ──
-const tauriCompaction = source.slice(source.indexOf('listen("chat:compaction"'));
+// ── web/tauri source contract: the compaction handler must maintain the
+// marker and consume post_tokens ──
+// Round-X dedup: the payload body moved verbatim into bridge-shared-helpers.js
+// (handleChatCompactionEvent); each lane keeps only its registration shell and
+// forwards. The body pins below therefore live on the shared source (the
+// single body both lanes execute), and the two shell pins guarantee neither
+// lane silently drops the registration.
+const tauriCompactionShell = 'listen("chat:compaction", function (e) { onSessionEvent(e, function () { handleChatCompactionEvent(e); }); });';
 const webSource = read('src', 'platform', 'web', 'bridge.js');
-const webCompaction = webSource.slice(webSource.indexOf('listen("chat:compaction"'));
-for (const [label, section] of [['tauri', tauriCompaction], ['web', webCompaction]]) {
-  assert.ok(section.includes('state.compactingSessions[sid] = Date.now();'), `${label}: start must set a timestamped marker (the read side heals off it)`);
-  assert.ok(section.includes('else delete state.compactingSessions[sid];'), `${label}: the terminal must clear the marker via the else branch (done/fail/cancel all covered)`);
-  assert.ok(section.includes('state.tokens = { input: postTokens, max: state.tokens.max };'), `${label}: post_tokens must be written into the usage bar`);
-  assert.ok(section.includes('postTokens <= state.tokens.max'), `${label}: the post_tokens over-window guard is retained`);
-  assert.ok(section.includes('The fallback reads the wall clock'), `${label}: the wall-clock fallback tradeoff must stay documented (the early re-enable window is an accepted cost, kept so it is not mistaken for a bug and "fixed")`);
-  // The marker-maintenance block's explicit notify must be pinned: done's
-  // post_tokens branch and addSystemItem each notify on their own, so no
-  // count assertion can tell which one notified — mutants that deleted this
-  // block's notify (start set / terminal clear stopped refreshing
-  // subscribers; both the button disable and the takeover effect went dead)
-  // were green before, so the pin is by block text.
-  assert.ok(section.includes('if (sid) {\n      if (phase === "start") {\n        state.compactingSessions[sid] = Date.now();\n        state.compactionSeq = (state.compactionSeq || 0) + 1;\n        state.compactionStarts[sid] = state.compactionSeq;\n      } else delete state.compactingSessions[sid];\n      notify();\n    }'),
-    `${label}: the marker maintenance must notify explicitly (subscriber refreshes rely on it; the post_tokens branch's notify does not cover this branch — deleting it used to be green)`);
+const sharedSource = read('src', 'shared', 'bridge-shared-helpers.js');
+const sharedCompactionBody = sharedSource.slice(sharedSource.indexOf('function handleChatCompactionEvent'));
+for (const [label, shell, laneSource] of [
+  ['tauri', tauriCompactionShell, read('src', 'platform', 'tauri', 'bridge', 'chat-events.js')],
+  ['web', 'listen("chat:compaction", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatCompactionEvent(e); }); });', webSource],
+]) {
+  assert.ok(laneSource.includes(shell), `${label}: the chat:compaction registration must stay and keep forwarding to the shared payload body`);
 }
-// The both-sides-must-move-together constraint, stated hard: from the
-// listen marker to the post_tokens block tail the two registration bodies
-// must be byte-identical — web-side drift no longer relies only on the
-// indirect coverage of the four string pins above.
-const compactionSpanTail = '        notify();\n      }\n    }';
-const spanToPostTokensTail = section => section.slice(0, section.indexOf(compactionSpanTail) + compactionSpanTail.length);
-assert.equal(spanToPostTokensTail(tauriCompaction), spanToPostTokensTail(webCompaction),
-  'the tauri/web compaction registration bodies must share a byte-identical common prefix (marker maintenance + post_tokens consumption move together)');
+assert.ok(sharedCompactionBody.includes('state.compactingSessions[sid] = Date.now();'), 'start must set a timestamped marker (the read side heals off it)');
+assert.ok(sharedCompactionBody.includes('else delete state.compactingSessions[sid];'), 'the terminal must clear the marker via the else branch (done/fail/cancel all covered)');
+assert.ok(sharedCompactionBody.includes('state.tokens = { input: postTokens, max: state.tokens.max };'), 'post_tokens must be written into the usage bar');
+assert.ok(sharedCompactionBody.includes('postTokens <= state.tokens.max'), 'the post_tokens over-window guard is retained');
+assert.ok(sharedCompactionBody.includes('The fallback reads the wall clock'), 'the wall-clock fallback tradeoff must stay documented (the early re-enable window is an accepted cost, kept so it is not mistaken for a bug and "fixed")');
+// The marker-maintenance block's explicit notify must be pinned: done's
+// post_tokens branch and addSystemItem each notify on their own, so no
+// count assertion can tell which one notified — mutants that deleted this
+// block's notify (start set / terminal clear stopped refreshing
+// subscribers; both the button disable and the takeover effect went dead)
+// were green before, so the pin is by block text.
+assert.ok(sharedCompactionBody.includes('if (sid) {\n      if (phase === "start") {\n        state.compactingSessions[sid] = Date.now();\n        state.compactionSeq = (state.compactionSeq || 0) + 1;\n        state.compactionStarts[sid] = state.compactionSeq;\n      } else delete state.compactingSessions[sid];\n      notify();\n    }'),
+  'the marker maintenance must notify explicitly (subscriber refreshes rely on it; the post_tokens branch\'s notify does not cover this branch — deleting it used to be green)');
 
 // ── bridge state wiring: the field joins the slice, both state
 // declarations, deletion/eviction clear it, eviction protection ──
-const sharedSource = read('src', 'shared', 'bridge-shared-helpers.js');
 assert.ok(sharedSource.includes('"compactingSessions"'), 'STATE_SLICE_FIELDS.chat must declare compactingSessions (both lanes share the constant in their snapshots)');
 assert.ok(sharedSource.includes('"compactionStarts"'), 'STATE_SLICE_FIELDS.chat must declare compactionStarts (the start signal must reach the UI snapshot)');
 assert.ok(sharedSource.includes('Date.now() - state.compactingSessions[id] < 15 * 60 * 1000'), 'capacity-eviction protection must read the in-flight marker against the fallback bound (an expired marker does not protect)');

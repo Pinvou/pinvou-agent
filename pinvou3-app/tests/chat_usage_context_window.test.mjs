@@ -162,23 +162,34 @@ emitUsage({ input_tokens: 45000, context_window: 262144, context_input_tokens: 9
 assert.equal(state.tokens.input, cleanInput, 'dirty 轮超窗逐请求值同样丢弃且不回落累计口径');
 
 // ── tauri/web 双端源码断言：窗口与逐请求占用都必须先于 dirty guard 消费 ──
-const tauriSection = source.slice(source.indexOf('listen("chat:usage"'), source.indexOf('listen("chat:compaction"'));
+// Debtsweep L4 dedup: the usage payload body moved verbatim into
+// bridge-shared-helpers.js (handleChatUsageEvent) and is the single body both
+// lanes execute; the lanes keep only their registration shells. The ordering
+// pin therefore lives on the shared body; the shell pins below guarantee
+// neither lane dropped the registration. Re-extended on top of the
+// usage-meter occupancy fix: the per-request context_input_tokens
+// consumption rides in the same shared body ahead of the dirty guard.
+const sharedSourceForUsage = read('src', 'shared', 'bridge-shared-helpers.js');
 const webSource = read('src', 'platform', 'web', 'bridge.js');
-const webSection = webSource.slice(webSource.indexOf('listen("chat:usage"'), webSource.indexOf('listen("chat:compaction"'));
-
-for (const [label, section] of [['tauri', tauriSection], ['web', webSection]]) {
-  const dirtyGuard = section.indexOf('turnUsageDirty[sid]) return');
-  const windowRead = section.indexOf('e.payload.context_window');
-  const ctxInputRead = section.indexOf('e.payload.context_input_tokens');
+const sharedUsageSection = sharedSourceForUsage.slice(sharedSourceForUsage.indexOf('function handleChatUsageEvent'), sharedSourceForUsage.indexOf('function handleChatCompactionEvent'));
+{
+  const label = 'shared';
+  const dirtyGuard = sharedUsageSection.indexOf('turnUsageDirty[sid]) return');
+  const windowRead = sharedUsageSection.indexOf('e.payload.context_window');
+  const ctxInputRead = sharedUsageSection.indexOf('e.payload.context_input_tokens');
   assert.ok(dirtyGuard !== -1 && windowRead !== -1, `${label}: chat:usage handler 片段完整`);
   assert.ok(windowRead < dirtyGuard, `${label}: context_window 消费必须先于 dirty guard（否则工具轮永不更新分母）`);
   assert.ok(ctxInputRead !== -1, `${label}: 逐请求占用口径消费点缺失`);
   assert.ok(ctxInputRead < dirtyGuard, `${label}: 逐请求占用必须先于 dirty guard 消费（工具轮读数冻结根因）`);
   assert.ok(windowRead < ctxInputRead, `${label}: 分母更新必须先于逐请求占用消费（同一事件先立分母）`);
-  assert.ok(section.includes('windowTok !== state.tokens.max'), `${label}: 窗口变化才更新分母`);
-  assert.ok(section.includes('windowTok > 0'), `${label}: 窗口 0 守卫保留`);
-  assert.ok(section.includes('ctxInput <= state.tokens.max'), `${label}: 逐请求超窗守卫保留（分母失真不透出超上限读数）`);
+  assert.ok(sharedUsageSection.includes('windowTok !== state.tokens.max'), `${label}: 窗口变化才更新分母`);
+  assert.ok(sharedUsageSection.includes('windowTok > 0'), `${label}: 窗口 0 守卫保留`);
+  assert.ok(sharedUsageSection.includes('ctxInput <= state.tokens.max'), `${label}: 逐请求超窗守卫保留（分母失真不透出超上限读数）`);
 }
+assert.ok(read('src', 'platform', 'tauri', 'bridge', 'chat-events.js').includes('listen("chat:usage", function (e) { onSessionEvent(e, function () { handleChatUsageEvent(e); }); });'),
+  'tauri: chat:usage registration shell must keep forwarding to the shared payload body');
+assert.ok(webSource.includes('listen("chat:usage", function (e) { onSessionEvent(e, function () { pinvouSharedweb().handleChatUsageEvent(e); }); });'),
+  'web: chat:usage registration shell must keep forwarding to the shared payload body');
 
 // ── Initial-state source assertions: neither bridge initializes with the
 // 32K fake denominator (unknown window = 0; the UI hides the meter) ──
