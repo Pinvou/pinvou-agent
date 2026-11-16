@@ -202,6 +202,8 @@ pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelSt
 
 /// 取消进行中的下载。生效点：下载闭包的每个数据块/文件/镜像边界，以及
 /// 「复查或下载完成之后、真实加载之前」的安装边界（`kb_model_download` 内）。
+/// 空闲期（无下载在飞）调用的取消会上膛，在下一次 `kb_model_download`
+/// 入口立即生效——已部署目录的热加载分支也走同一入口，故同样受其约束。
 pub fn kb_model_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
 }
@@ -287,6 +289,20 @@ pub async fn kb_model_download(
             set_model_load_error(Some(warning));
         }
     }
+    // Guard: DOWNLOADING is reset on any early exit (including `?` and cancels).
+    if DOWNLOADING.swap(true, Ordering::SeqCst) {
+        return Err("模型正在下载中".into());
+    }
+    let guard = DownloadGuard;
+    // 取消旗标在这里消费而非抹除：占位下载位与清零之间恰好落下的取消按用户
+    // 意图立即生效（原「占位→清零」顺序会把这一窗口内的取消静默吞掉）。
+    // 守卫覆盖整个流程（含下面的热加载分支），流程出口由 DownloadGuard 统一
+    // 清零，残旗不会流出；这里消费的是占位窗口内的取消与空闲期直接调
+    // kb_model_cancel 的上膛——空闲期上膛若不在入口消费，下一次真实下载会
+    // 凭空报「已取消」。此刻尚无本次流程的磁盘产物。
+    if CANCEL.swap(false, Ordering::Relaxed) {
+        return Err(pinvou_knowledge::model_download::CANCELLED.into());
+    }
     if model_directory_is_complete(&configured_dir) && !repair {
         if service.semantic_ready() {
             return Ok(current_status(&service));
@@ -303,18 +319,6 @@ pub async fn kb_model_download(
         );
         load_installed_embedder_unlocked(&service, &pool, configured_dir).await?;
         return Ok(current_status(&service));
-    }
-    // Guard: DOWNLOADING is reset on any early exit (including `?` and cancels).
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("模型正在下载中".into());
-    }
-    let guard = DownloadGuard;
-    // 取消旗标在这里消费而非抹除：占位下载位与清零之间恰好落下的取消按用户
-    // 意图立即生效（原「占位→清零」顺序会把这一窗口内的取消静默吞掉）。
-    // 流程结束后的残旗由 DownloadGuard 统一清零，这里消费的是占位窗口内的
-    // 取消与空闲期直接调 kb_model_cancel 的上膛。此刻尚无任何磁盘产物。
-    if CANCEL.swap(false, Ordering::Relaxed) {
-        return Err(pinvou_knowledge::model_download::CANCELLED.into());
     }
 
     let parent = dir
@@ -685,8 +689,9 @@ fn replace_model_directory(candidate: &Path, destination: &Path) -> Result<Optio
 }
 
 /// `DOWNLOADING` 复位守卫（任何提前 return 都复位，含 `?` 早退与取消）。
-/// 同时清掉 `CANCEL`：旗标语义收敛为「一次在飞的下载」——流程结束后迟到
-/// 的取消是 no-op，而不是残旗被下一次下载的入口消费成一个凭空的取消错误。
+/// 同时清掉 `CANCEL`，把旗标语义收敛为「一次在飞的下载」：在飞窗口内落下的
+/// 取消在流程出口就地清零、不泄漏残旗；空闲期（无守卫在飞）上膛的取消按
+/// 契约留到下一次流程入口被消费（见 kb_model_download 入口注释）。
 struct DownloadGuard;
 impl Drop for DownloadGuard {
     fn drop(&mut self) {
