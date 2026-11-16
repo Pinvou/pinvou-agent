@@ -1142,7 +1142,10 @@ impl SessionStore {
         // replace still wins — the same disclosed residual window as
         // create_aux_session ("closing that window needs a foundation-level
         // exclusive-create"). fork and the sched- namespace hold the lock
-        // across probe+persist and have no such window.
+        // across probe+persist and have no such window in-process
+        // (scheduled_mutation is process-local; the cross-process
+        // probe→rename TOCTOU stays under the repo's disclosed no-flock
+        // stance).
         let id = self.generate_unused_session_id()?;
         let mut session = create_saved_session_with_id_and_mode(
             id.clone(),

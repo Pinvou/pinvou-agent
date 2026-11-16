@@ -2743,6 +2743,15 @@ fn scheduled_delete_profile_persistence_failure_remains_retryable_after_record_c
 
 #[test]
 fn scheduled_creation_rolls_back_when_profile_write_fails() {
+    // 本测试刻意不经 isolated_store（自带 root、不依赖 PINVOU3_HOME），但
+    // 它的 create_new/create_scheduled_run 会排干进程级候选队列
+    // （store.rs TEST_GENERATED_ID_QUEUE）——默认 `cargo test` 是多线程
+    // 的，必须持 ENV_LOCK 与 wiring 钉测试串行，否则会在 wiring 测试
+    // push 之后、消费之前偷走整个队列，造成 expect_err 假红
+    // （R2 REQUIRED-2；CI 的 --test-threads=1 掩盖该竞窗）。
+    let _env_lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = std::env::temp_dir().join(format!(
         "pinvou3-scheduled-rollback-{}",
         std::time::SystemTime::now()
