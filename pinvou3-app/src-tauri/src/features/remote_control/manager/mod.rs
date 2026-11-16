@@ -559,7 +559,7 @@ enum RpcCacheEntry {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct PendingRpc {
     lease_id: String,
     command: String,
@@ -570,12 +570,47 @@ struct PendingRpc {
     dispatched_at: Instant,
 }
 
-#[derive(Debug, Clone)]
+// 手写 Debug(同 PendingRevocation 先例):args 是 invoke 面原样载荷,
+// web-allowed 命令会携带用户在表单里输入的 key(probe_endpoint_models
+// 顶层 apiKey、web_access_update_settings 嵌套的搜索凭据),派生 Debug
+// 会把它们带进日志与 panic 信息;lease/command/fingerprint 保持可见以便
+// 定位,仅 args 打码。
+impl std::fmt::Debug for PendingRpc {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingRpc")
+            .field("lease_id", &self.lease_id)
+            .field("command", &self.command)
+            .field("args", &"[redacted]")
+            .field("fingerprint", &self.fingerprint)
+            .field("dispatched_generation", &self.dispatched_generation)
+            .field("acknowledged_generation", &self.acknowledged_generation)
+            .field("dispatched_at", &self.dispatched_at)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 struct RpcDispatch {
     request_id: String,
     command: String,
     args: Value,
     bridge_generation: String,
+}
+
+// 与 PendingRpc 同理:args 里会出现用户在表单输入的 key(probe_endpoint_models
+// 顶层 apiKey、web_access_update_settings 嵌套的搜索凭据),派生 Debug 会把它
+// 们带进日志与 panic 信息;request_id/command 保持可见以便定位。
+impl std::fmt::Debug for RpcDispatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RpcDispatch")
+            .field("request_id", &self.request_id)
+            .field("command", &self.command)
+            .field("args", &"[redacted]")
+            .field("bridge_generation", &self.bridge_generation)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3367,7 +3402,7 @@ mod tests {
         load_config_from, load_or_initialize_rpc_ledger_at, load_pending_revocations_from,
         persist_pending_revocations_to, queue_pending_revocation_at,
     };
-    use super::rpc::{WebSessionScope, web_session_scope};
+    use super::rpc::{WebSessionScope, redact_secret_arg_lengths, web_session_scope};
     use super::*;
 
     const TEST_ENDPOINT_ID: &str = "ep_test";
@@ -4642,12 +4677,12 @@ mod tests {
     }
 
     /// round-3 审 M6 钉:持久化指纹绝不能成为凭据的离线爆破校验器——
-    /// args 顶层的 `apiKey`(probe_endpoint_models 是第一个 web-allowed
-    /// 凭据携带者)只以长度占位进哈希:同 key 同指纹(重放/幂等语义不变),
-    /// 不同 key 同长同指纹(冲突诊断降级为重放收口,重用 id 依然永不
-    /// 再执行),内容任何一位不同但长度相同都无法从指纹区分——拖盘者
-    /// 拿不到 verifier。其余字段(base_url 等)照常参与,mutation 把
-    /// 占位替换删掉(指纹重新覆盖 key 内容)时本测试红。
+    /// `probe_endpoint_models` 顶层 `apiKey`(camelCase wire 拼写)只以
+    /// 长度占位进哈希:同 key 同指纹(重放/幂等语义不变),不同 key 同长
+    /// 同指纹(收口语义见 rpc.rs 的指纹材料注释:旧补全可能作为答案交付,
+    /// 重放永不再执行),内容任何一位不同但长度相同都无法从指纹区分——
+    /// 拖盘者拿不到 verifier。其余字段(base_url 等)照常参与,mutation
+    /// 把占位替换删掉(指纹重新覆盖 key 内容)时本测试红。
     #[test]
     fn rpc_fingerprint_redacts_secret_arg_content_to_length_marker() {
         // 同长不同 key:指纹相同(内容不进哈希)。
@@ -4693,6 +4728,98 @@ mod tests {
         assert_ne!(
             rpc_fingerprint("delete_session", &json!({ "id": "s1" })).unwrap(),
             rpc_fingerprint("delete_session", &json!({ "id": "s2" })).unwrap()
+        );
+    }
+
+    /// round-4 审 M3 钉:递归脱敏——`web_access_update_settings` 的搜索
+    /// 凭据嵌在 `patch.search.credentials.<provider>.api_key`(serde
+    /// snake_case),顶层-only 扫描对它完全不生效。同 provider 同 key 同
+    /// 指纹、同长不同 key 同指纹(内容不进哈希)、长度不同指纹不同(长度
+    /// 占位参与)——递归、内容排除、长度参与三者必须同时成立,删掉任意
+    /// 一半(只递归不占位 / 只占位顶层)本测试红。
+    #[test]
+    fn rpc_fingerprint_redacts_nested_search_credentials_recursively() {
+        let fingerprint_for = |key: &str| {
+            rpc_fingerprint(
+                "web_access_update_settings",
+                &json!({
+                    "patch": {
+                        "search": {
+                            "provider": "metaso",
+                            "credentials": { "metaso": { "api_key": key } }
+                        }
+                    }
+                }),
+            )
+            .unwrap()
+        };
+        // 同 key 重放:指纹相同(幂等语义不变)。
+        assert_eq!(fingerprint_for("metaso-key-1"), fingerprint_for("metaso-key-1"));
+        // 同长不同 key:指纹相同(内容不进哈希)。
+        assert_eq!(fingerprint_for("metaso-key-1"), fingerprint_for("metaso-key-2"));
+        // 长度不同:指纹不同(长度占位参与哈希)。
+        assert_ne!(fingerprint_for("metaso-key-1"), fingerprint_for("metaso-key-longer"));
+        // 凭据之外的嵌套字段照常参与:provider 名不同 → 指纹不同。
+        assert_ne!(
+            rpc_fingerprint(
+                "web_access_update_settings",
+                &json!({ "patch": { "search": { "provider": "metaso" } } })
+            )
+            .unwrap(),
+            rpc_fingerprint(
+                "web_access_update_settings",
+                &json!({ "patch": { "search": { "provider": "bocha" } } })
+            )
+            .unwrap()
+        );
+    }
+
+    /// round-4 审 M3 钉:snake_case `api_key` 拼写同样脱敏(serde wire 面
+    /// 拼写;camelCase `apiKey` 由上一个测试钉住)。同长不同 key 同指纹、
+    /// 长度不同指纹不同,口径与 camelCase 完全一致。
+    #[test]
+    fn rpc_fingerprint_redacts_snake_case_api_key_spelling() {
+        assert_eq!(
+            rpc_fingerprint("probe_endpoint_models", &json!({ "api_key": "aaaa" })).unwrap(),
+            rpc_fingerprint("probe_endpoint_models", &json!({ "api_key": "bbbb" })).unwrap()
+        );
+        assert_ne!(
+            rpc_fingerprint("probe_endpoint_models", &json!({ "api_key": "aaaa" })).unwrap(),
+            rpc_fingerprint("probe_endpoint_models", &json!({ "api_key": "aaaaaaa" })).unwrap()
+        );
+    }
+
+    /// round-4 审 M3 钉:非凭据嵌套对象不受脱敏影响——键名是精确匹配
+    /// (`api_key_hint` 这类前缀/后缀同名不误伤),值原样保留并照常参与
+    /// 哈希。脱敏把非凭据值也改掉(指纹覆盖面被悄悄收窄)时本测试红。
+    #[test]
+    fn rpc_fingerprint_redaction_leaves_non_secret_nested_values_untouched() {
+        let args = json!({
+            "patch": { "search": { "api_key_hint": "keep me", "provider": "bing" } }
+        });
+        assert_eq!(redact_secret_arg_lengths(&args), args);
+        // 数组里的嵌套对象同样原样(递归不得改变非凭据分支的形状)。
+        let array_args = json!({ "items": [{ "api_key_hint": "keep" }, { "id": 1 }] });
+        assert_eq!(redact_secret_arg_lengths(&array_args), array_args);
+    }
+
+    /// round-4 审 M3 钉:占位标记的精确形状 `__redacted_len_{字节长}__`。
+    /// 直接断言脱敏后的 Value(不只是哈希相等),且在嵌套深度上命中——
+    /// 格式漂移(改词、改字节数口径)即红。
+    #[test]
+    fn rpc_fingerprint_redaction_marker_format_is_pinned() {
+        assert_eq!(
+            redact_secret_arg_lengths(&json!({
+                "patch": { "search": { "credentials": { "metaso": { "api_key": "sample-key-12" } } } }
+            })),
+            json!({
+                "patch": { "search": { "credentials": { "metaso": { "api_key": "__redacted_len_13__" } } } }
+            })
+        );
+        // 非字符串值(调用方规范化前的 null)按 0 长占位。
+        assert_eq!(
+            redact_secret_arg_lengths(&json!({ "apiKey": null })),
+            json!({ "apiKey": "__redacted_len_0__" })
         );
     }
 

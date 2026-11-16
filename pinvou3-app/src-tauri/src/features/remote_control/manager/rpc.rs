@@ -396,22 +396,40 @@ pub(super) fn tombstone_completion_cacheable(tombstone: &RpcTombstone, fingerpri
     tombstone.fingerprint == fingerprint && tombstone.acknowledged
 }
 
-/// 指纹材料里的凭据字段:web-allowed 命令的 args 里会出现用户在表单里
-/// 输入的 key(`probe_endpoint_models` 是第一个),而 admission 指纹会随
-/// tombstone 持久化到 `~/.pinvou3/web-access-rpc-ledger.json`(0600,无
-/// TTL,FIFO@512)。对凭据做**长度占位**替换——内容不进哈希,拖盘者拿
-/// 不到可离线爆破的 verifier(round-3 审 M6:本地端点 key 常是低熵口令,
-/// 无盐 sha256(known-shape args) 等价于密码破解 oracle)。完整性不变:
-/// 重用 request_id 的请求在任何指纹下都不会再执行(acknowledged →
-/// outcome_unknown,未 ack → request_not_started);同长不同 key 的 id
-/// 复用不再报 request_id_conflict 而走重放收口,牺牲的只是诊断精度。
-/// 名字按 invoke 面的凭据字段枚举;新增凭据字段须同步登记(测试钉住)。
-const RPC_FINGERPRINT_SECRET_FIELDS: &[&str] = &["apiKey"];
+/// 指纹材料里的凭据字段名:web-allowed 命令的 args 里会出现用户在表单里
+/// 输入的 key,而 admission 指纹会随 tombstone 持久化到
+/// `~/.pinvou3/web-access-rpc-ledger.json`(0600,无 TTL,FIFO@512)。对凭据
+/// 做**长度占位**替换——内容不进哈希,拖盘者拿不到可离线爆破的 verifier
+/// (round-3 审 M6:本地端点 key 常是低熵口令,无盐 sha256(known-shape
+/// args) 等价于密码破解 oracle)。
+///
+/// 匹配是**递归的具名键精确匹配**(round-4 审 M3 修订,旧注释的两条前提
+/// ——「顶层-only」「invoke 面 args 是扁平对象」——都不成立):对象与
+/// 数组逐层下走,任意深度上名字命中的键,其字符串值替换为
+/// `__redacted_len_{len}__`(非字符串值按 0 长占位)。既有载体两种形状:
+/// `probe_endpoint_models` 顶层 `apiKey`(JS camelCase 直传),
+/// `web_access_update_settings` 嵌套的
+/// `patch.search.credentials.<provider>.api_key`(serde snake_case;
+/// `SearchPrefs` 顶层遗留的 `search.api_key` 同拼写,一并覆盖)——两种
+/// wire 拼写都登记在列。
+///
+/// 已接受的边缘:嵌在**非凭据键的字符串值里**的凭据(如带 userinfo 或
+/// query key 的 URL)仍按原文参与哈希——规则只认键名,不做值内扫描。
+///
+/// 重放语义(round-4 审 m1-7 修订,此前低估为「只是诊断精度」):长度
+/// 占位让同长不同 key 折到同一指纹,id 复用不再报 request_id_conflict。
+/// 此时 Complete/Pending 缓存臂会把**旧 key 的**缓存补全当作新 key 请求
+/// 的答案交付(Pending 臂还会按旧 args 重派发),只有已确认墓碑臂是纯
+/// 抑制(应答 outcome_unknown)。重放永不再执行——任何指纹下都不会拿
+/// 新 key 重跑命令;且页面 mint 的 id 是随机数,只有 bug/恶意 id 复用
+/// 才会命中同长折叠。新增凭据字段须同步登记(测试钉住)。
+const RPC_FINGERPRINT_SECRET_FIELDS: &[&str] = &["apiKey", "api_key"];
 
-/// 把 args 顶层凭据字段的字符串值替换为长度占位(见
-/// [`RPC_FINGERPRINT_SECRET_FIELDS`]);非字符串值(调用方规范化前的
-/// null 等)原样保留。只看顶层:invoke 面的 args 是扁平对象。
-fn redact_secret_arg_lengths(args: &Value) -> Value {
+/// 把 args 任意深度上命中 [`RPC_FINGERPRINT_SECRET_FIELDS`] 的键的字符串
+/// 值替换为长度占位;非字符串值(调用方规范化前的 null 等)按 0 长占位。
+/// 对象与数组逐层递归:invoke 面的 args 会嵌套
+/// (`web_access_update_settings` 的 `patch.search.credentials.<provider>`)。
+pub(super) fn redact_secret_arg_lengths(args: &Value) -> Value {
     match args {
         Value::Object(map) => Value::Object(
             map.iter()
@@ -423,10 +441,13 @@ fn redact_secret_arg_lengths(args: &Value) -> Value {
                             Value::String(format!("__redacted_len_{len}__")),
                         );
                     }
-                    (key.clone(), value.clone())
+                    (key.clone(), redact_secret_arg_lengths(value))
                 })
                 .collect(),
         ),
+        Value::Array(values) => {
+            Value::Array(values.iter().map(redact_secret_arg_lengths).collect())
+        }
         other => other.clone(),
     }
 }

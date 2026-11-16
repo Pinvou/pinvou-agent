@@ -3460,4 +3460,44 @@ mod tests {
             assert_eq!(listing.models.len(), 1);
         }
     }
+
+    /// round-4 审钉:probe_endpoint_models 的 web 放行论据是「keyring
+    /// 盲」——表单 key 是唯一 key 来源,命令体从不解析已保存凭据(见函数
+    /// 内注释;tests/web_access_contract.test.mjs 的 GLOBAL reach 披露以
+    /// 此为前提)。该性质此前没有执行钉,谁给探测加「已保存 key 回退」
+    /// (resolve_probe_key / resolve_saved_model_key / SystemCredentialStore
+    /// / UserPrefs::load 任一出现)本测试即红,必须先回到 web 放行的披露
+    /// 里重新论证。源码契约钉,同 manager/mod.rs 的 source pin 先例。
+    #[test]
+    fn probe_endpoint_models_stays_keyring_blind() {
+        let source = include_str!("settings.rs");
+        let start = source
+            .find("fn probe_endpoint_models(")
+            .expect("probe_endpoint_models must exist");
+        let body = &source[start..];
+        // 命令体以下一个顶层项的文档注释为界(连接测试核心的 /// 块):
+        // probe_model_connection 合法调用 resolve_probe_key(它就是「已保存
+        // key 回退」本身),切片必须在它之前结束。
+        let end = body
+            .find("\n///")
+            .expect("probe_endpoint_models must be followed by the next item's doc comment");
+        let body = &body[..end];
+        assert!(
+            body.contains("empty_base_url"),
+            "the slice must cover the real command body (sanity marker)"
+        );
+        for forbidden in [
+            "resolve_probe_key",
+            "resolve_saved_model_key",
+            "SystemCredentialStore",
+            "UserPrefs::load",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "probe_endpoint_models must stay keyring-blind: its body must not reference \
+                 {forbidden} (the web allowlist disclosure rests on caller-supplied keys only; \
+                 adding a saved-key fallback requires re-arguing the web_access contract)"
+            );
+        }
+    }
 }

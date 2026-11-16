@@ -245,9 +245,11 @@ for (const command of [
 // the OpenAI-compatible ladder short-circuits loopback/private base URLs
 // (base_url_uses_local_or_private in core/endpoint_discovery.rs), so a
 // paired page also gains a port-open/closed oracle via the transport class,
-// service identification via server_kind, and the loaded model names/titles
-// of loopback/LAN services — silent (no desktop-side confirmation) and with
-// no per-command rate limit (only the shared MAX_RPC_IN_FLIGHT=32 window).
+// service identification via server_kind, and the loaded model names of
+// loopback/LAN services (ids only — the `title` field is populated only by
+// the remote anthropic/gemini native lanes; the local lanes return bare
+// ids) — silent (no desktop-side confirmation) and with no per-command rate
+// limit (only the shared MAX_RPC_IN_FLIGHT=32 window).
 // Round-3 review M5 (disclosure accuracy amendment): the reach is GLOBAL,
 // not "bounded internal-network" — the command validates only URL SHAPE,
 // not the host, and the remote ladders run unconditionally for every
@@ -256,21 +258,29 @@ for (const command of [
 // desktop as vantage and the user's IP as source; IPv6 ULAs/link-local and
 // 169.254.169.254-style cloud-metadata addresses never hit the local
 // short-circuit at all. Accepted anyway because: keyring-blind with a
-// caller-supplied key only (typed keys ride the relay by TLS like every web
-// RPC payload; the RPC ledger fingerprints args with the secret replaced by
-// its length, so the persisted hash is not an offline verifier for the key);
+// caller-supplied key only (saved credentials are never readable — but a
+// user-typed key transits the relay transport inside the paired page's RPC
+// frame: TLS terminates at the relay, so the relay operator and its logs
+// can observe it; the default localhost relay is unaffected; the RPC ledger
+// fingerprints args with the secret replaced by its length, so the
+// persisted hash is not an offline verifier for the key);
 // the sanitized response carries status codes, transport class, server kind,
-// and model entries, never the URL or key or body text; exactly one
-// caller-supplied endpoint per invocation (the shape is not a scanner, the
-// page must issue its own requests); and the model-management UI stays
-// web-hidden (modelManagement:false in platform/web/bootstrap.js), so today
-// only page JS reaches the command.
+// and model entries, never the URL or key or body text; one caller-supplied
+// endpoint per invocation — exact on the remote ladders, which stay
+// no-redirect and are pinned, while the LOCAL lane's probes ride the shared
+// probe client, which follows redirects (reqwest default, up to 10 hops);
+// only Bearer is attached there and reqwest strips it cross-origin, so no
+// credential reaches a second host, but the probe's requests may land on
+// hosts the caller-supplied URL redirects to (still a single starting
+// point; the shape is not a scanner, the page must issue its own requests);
+// and the model-management UI stays web-hidden (modelManagement:false in
+// platform/web/bootstrap.js), so today only page JS reaches the command.
 // discoverLocalVllm (the multi-candidate local discovery) stays
 // desktop-only — see tests/bridge_domain_contract.mjs.
 assert.equal(
   allowed.has('probe_endpoint_models'),
   true,
-  'probe_endpoint_models must stay web-allowlisted (keyring-blind: caller supplies the key; no saved-credential read, unlike test_model_connection; disclosed GLOBAL reach: the command accepts any caller-supplied URL and the remote ladders classify any public host — a port/service/model oracle with the desktop as vantage, bounded only by MAX_RPC_IN_FLIGHT=32 — accepted because the sanitized response never echoes the URL or key, exactly one caller-supplied endpoint per invocation, the ledger fingerprint redacts the key to its length, and the model-management UI stays web-hidden via modelManagement:false)',
+  'probe_endpoint_models must stay web-allowlisted (keyring-blind: caller supplies the key; no saved-credential read, unlike test_model_connection; disclosed GLOBAL reach: the command accepts any caller-supplied URL and the remote ladders classify any public host — a port/service/model oracle with the desktop as vantage, bounded only by MAX_RPC_IN_FLIGHT=32 — accepted because the sanitized response never echoes the URL or key, one caller-supplied endpoint per invocation with the remote ladders no-redirect and pinned while the local lane may follow redirects (Bearer stripped cross-origin), typed keys transit the relay frame where the relay operator can observe them (saved credentials never readable; localhost default unaffected), the ledger fingerprint redacts secret-named args at any depth to their length, and the model-management UI stays web-hidden via modelManagement:false)',
 );
 
 // Round-11 复审 M4:结构性互斥钉——remote_control.rs 里定义的每一个
