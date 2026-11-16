@@ -4100,26 +4100,50 @@ enum DiscoveryOllamaListing {
     Failed(EndpointModelsListing),
 }
 
-/// The transient-failure recheck: one more `/api/tags` round. A well-formed
-/// answer (2xx, any shape) or a 404/405 reconfirms the fall-back semantics
-/// (empty list is not a failure; 404 = the kind cache went stale, the server
-/// is no longer Ollama-shaped); every other outcome — the SAME transient
-/// failure twice — returns `Some` at its real classification.
-fn discovery_ollama_recheck_tags(
-    base_url: &str,
-    key: Option<&str>,
-) -> Option<EndpointModelsListing> {
-    let client = discovery_client()?;
+/// The transient-failure recheck: one more `/api/tags` round. A 404/405 or
+/// an unusable body reconfirms the fall-back semantics (404 = the kind cache
+/// went stale, the server is no longer Ollama-shaped); a well-formed EMPTY
+/// roster does too (an empty list is not a failure); every OTHER outcome
+/// branches: the SAME transient failure twice → `Failed` at its real
+/// classification, a well-formed NON-EMPTY roster → `HealthyNonEmpty` — the
+/// service is still a healthy, listing Ollama and the listing probe just
+/// hit a transient blip, so the native listing is retried once (round-5
+/// GUI parity for the round-3 m1-6 retry arm: the CLI used to collapse
+/// every well-formed recheck into the compat fallback, the round-4 M5 bug
+/// class one lane over — on an `/api`-only deployment the GUI listed
+/// native facts while the CLI reported compat rows or `unsupported(404)`).
+enum DiscoveryOllamaRecheck {
+    NotOllamaShaped,
+    Failed(EndpointModelsListing),
+    HealthyNonEmpty,
+}
+
+fn discovery_ollama_recheck_tags(base_url: &str, key: Option<&str>) -> DiscoveryOllamaRecheck {
+    let Some(client) = discovery_client() else {
+        return DiscoveryOllamaRecheck::NotOllamaShaped;
+    };
     let host = strip_v1_suffix(base_url);
     let request = apply_bearer(client.get(format!("{host}/api/tags")), key);
     match discovery_send(request) {
-        DiscoveryAnswer::Json(_, _) | DiscoveryAnswer::Unusable(_) => None,
-        DiscoveryAnswer::Status(404 | 405) => None,
-        DiscoveryAnswer::Status(status) => Some(
+        DiscoveryAnswer::Json(value, _) => {
+            if matches!(discovery_ollama_tag_names(&value), Some(names) if !names.is_empty()) {
+                DiscoveryOllamaRecheck::HealthyNonEmpty
+            } else {
+                DiscoveryOllamaRecheck::NotOllamaShaped
+            }
+        }
+        DiscoveryAnswer::Unusable(_) | DiscoveryAnswer::Status(404 | 405) => {
+            DiscoveryOllamaRecheck::NotOllamaShaped
+        }
+        DiscoveryAnswer::Status(status) => DiscoveryOllamaRecheck::Failed(
             discovery_status_listing(status).unwrap_or_else(|| error_listing(Some(status), None)),
         ),
-        DiscoveryAnswer::Transport(class) => Some(error_listing(None, Some(class))),
-        DiscoveryAnswer::BrokenBody(status) => Some(error_listing(Some(status), Some("network"))),
+        DiscoveryAnswer::Transport(class) => {
+            DiscoveryOllamaRecheck::Failed(error_listing(None, Some(class)))
+        }
+        DiscoveryAnswer::BrokenBody(status) => {
+            DiscoveryOllamaRecheck::Failed(error_listing(Some(status), Some("network")))
+        }
     }
 }
 
@@ -4137,8 +4161,23 @@ fn discovery_ollama_recheck_tags(
 /// once ([`discovery_ollama_recheck_tags`], the GUI's `ollama_native_failure`
 /// mirror — round-3 review M4a): a confirmed transient failure reports its
 /// REAL classification instead of rerunning the compat ladder, which would
-/// pin a busy Ollama as `unsupported(404)`.
+/// pin a busy Ollama as `unsupported(404)`; a healthy NON-EMPTY recheck
+/// retries the native listing once (round-5 GUI parity for the round-3
+/// m1-6 retry arm) — a retry that still fails falls back to the compat
+/// ladder, and the retry never rechecks, so the loop is bounded at one.
 fn discovery_ollama_models(base_url: &str, key: Option<&str>) -> DiscoveryOllamaListing {
+    discovery_ollama_models_inner(base_url, key, true)
+}
+
+/// [`discovery_ollama_models`] minus the recheck arm: the retry path calls
+/// this with `allow_recheck = false` so a still-failing retry falls back to
+/// the compat ladder exactly like the GUI's "重试仍失败:回落阶梯" and the
+/// failure/recheck cycle cannot loop.
+fn discovery_ollama_models_inner(
+    base_url: &str,
+    key: Option<&str>,
+    allow_recheck: bool,
+) -> DiscoveryOllamaListing {
     const DISCOVER_OLLAMA_SHOW_CAP: usize = 50;
     let Some(client) = discovery_client() else {
         return DiscoveryOllamaListing::Failed(error_listing(None, None));
@@ -4158,12 +4197,26 @@ fn discovery_ollama_models(base_url: &str, key: Option<&str>) -> DiscoveryOllama
         DiscoveryAnswer::Json(value, _) => value,
         // Round-3 review M4a: not "re-enter the compat ladder" — re-check
         // once and classify honestly (the GUI's ollama_native_failure).
-        _ => {
+        // Round-5 GUI parity: a healthy NON-EMPTY recheck retries the
+        // native listing once; the retry runs without a second recheck, so
+        // a still-failing retry falls back exactly like the GUI and the
+        // fail/recheck cycle is bounded at one.
+        _ if allow_recheck => {
             return match discovery_ollama_recheck_tags(base_url, key) {
-                Some(listing) => DiscoveryOllamaListing::Failed(listing),
-                None => DiscoveryOllamaListing::NotOllamaShaped,
+                DiscoveryOllamaRecheck::Failed(listing) => DiscoveryOllamaListing::Failed(listing),
+                DiscoveryOllamaRecheck::NotOllamaShaped => DiscoveryOllamaListing::NotOllamaShaped,
+                DiscoveryOllamaRecheck::HealthyNonEmpty => {
+                    match discovery_ollama_models_inner(base_url, key, false) {
+                        DiscoveryOllamaListing::Listed(models, truncated) => {
+                            DiscoveryOllamaListing::Listed(models, truncated)
+                        }
+                        // 重试仍失败:回落阶梯,与旧行为一致(瞬态不可硬钉)。
+                        _ => DiscoveryOllamaListing::NotOllamaShaped,
+                    }
+                }
             };
         }
+        _ => return DiscoveryOllamaListing::NotOllamaShaped,
     };
     let names = match discovery_ollama_tag_names(&value) {
         Some(names) if !names.is_empty() => names,
@@ -5766,9 +5819,11 @@ mod tests {
         use std::io::Read as _;
         use std::sync::Arc;
 
-        let listener =
-            std::net::TcpListener::bind("127.0.0.1:0").expect("bind discover redirect mock listener");
-        let addr = listener.local_addr().expect("discover redirect mock listener addr");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind discover redirect mock listener");
+        let addr = listener
+            .local_addr()
+            .expect("discover redirect mock listener addr");
         let log = Arc::new(DiscoverMockLog::default());
         let log_thread = log.clone();
         std::thread::spawn(move || {
@@ -8444,6 +8499,56 @@ mod tests {
         assert_eq!(listing.status, ListingStatus::Unsupported);
         assert_eq!(listing.server_kind, Some("ollama"));
         assert_eq!(log.hits_for("/api/tags"), 3);
+    }
+
+    /// The recheck's recovery arm (round-5 GUI parity for the round-3 m1-6
+    /// retry): a recheck that comes back healthy AND NON-EMPTY retries the
+    /// native listing once — the blip passed, so the CLI must report the
+    /// native facts (`/api/ps` loaded state + effective windows) instead of
+    /// collapsing to the compat ladder, which on an `/api`-only deployment
+    /// would report `unsupported(404)` where the GUI lists. Mirrors the
+    /// GUI's `ollama_transient_blip_retries_native_after_healthy_recheck`
+    /// fixture: tags hit 4× (kind + ladder 503 + recheck + retry), ps 2×
+    /// (ladder + retry), show 0× (ps already carried the effective window),
+    /// and the compat ladder is never entered. The retry cannot loop: it
+    /// runs without a second recheck.
+    #[test]
+    fn discover_ollama_transient_recheck_retries_native_when_healthy() {
+        let tags = r#"{"models":[{"name":"llama3:latest"}]}"#;
+        let ps = r#"{"models":[{"name":"llama3:latest","context_length":8192}]}"#;
+        let (base, log) = spawn_discover_mock(&discover_routes(&[
+            (
+                "/api/tags",
+                vec![(200u16, tags), (503, "{}"), (200u16, tags), (200u16, tags)],
+            ),
+            ("/api/ps", vec![(200u16, ps), (200u16, ps)]),
+        ]));
+        let listing = run_endpoint_discovery(&base, None, DiscoveryProtocol::OpenAiCompatible);
+        assert_eq!(
+            listing.status,
+            ListingStatus::Listed,
+            "a healthy non-empty recheck retries the native listing instead of the compat ladder"
+        );
+        assert_eq!(listing.server_kind, Some("ollama"));
+        assert!(!listing.truncated);
+        assert_eq!(listing.models.len(), 1);
+        assert_eq!(listing.models[0].id, "llama3:latest");
+        assert_eq!(
+            listing.models[0].context_window_tokens,
+            Some(8_192),
+            "the retried listing carries the /api/ps effective window"
+        );
+        assert_eq!(
+            log.hits_for("/api/tags"),
+            4,
+            "kind probe + ladder fetch + recheck + the single native retry"
+        );
+        assert_eq!(log.hits_for("/api/ps"), 2, "ladder + retry");
+        assert_eq!(
+            log.hits_for("/api/show"),
+            0,
+            "ps already carried the window"
+        );
     }
 
     /// Round-3 review minor: a malformed `has_more` ("yes" as a string)
