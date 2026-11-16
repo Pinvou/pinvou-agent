@@ -337,6 +337,34 @@ pub fn load_profile() -> io::Result<MemoryProfile> {
 
 pub fn update_profile(patch: ProfilePatch) -> io::Result<MemoryProfile> {
     let _guard = write_lock().lock();
+    // The stored wipe-shaped check runs under the same write lock as the
+    // write-back (r15 review): the surfaces' lock-free pre-check left a
+    // check-then-act window where a hand-edited or legacy wipe-shaped
+    // label could still be silently emptied by a patch touching only
+    // another field. The auto-write path (`llm_review`) reaches
+    // update_profile without any surface pre-check, so this is also that
+    // lane's only guard. Read errors fall through to load_profile's own
+    // error path, as before.
+    if let Ok(stored) = stored_wipe_shaped_identity_labels() {
+        for topic in stored {
+            let patch_sets_label = match topic {
+                "call_name" => patch.call_name.is_some(),
+                "assistant_alias" => patch.assistant_alias.is_some(),
+                _ => true,
+            };
+            if !patch_sets_label {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "memory_profile_label_rejected: the stored {topic} label does not \
+                         survive the profile normalization and would be silently emptied by \
+                         this update; nothing was written — supply a shorter label, clear \
+                         the field, or fix the stored value by hand first"
+                    ),
+                ));
+            }
+        }
+    }
     let mut profile = load_profile()?;
     if let Some(value) = patch.call_name {
         profile.identity.call_name = value;
@@ -371,7 +399,12 @@ pub fn update_profile(patch: ProfilePatch) -> io::Result<MemoryProfile> {
 /// The surface guards (app command + CLI) call this before writing and
 /// refuse with the same `memory_profile_label_rejected` contract — a patch
 /// that sets the label itself is judged by the same rule on its own value
-/// and needs no stored check (r5 review).
+/// and needs no stored check (r5 review). `update_profile` itself runs
+/// this check under the profile write lock immediately before the
+/// write-back (r15 review) — the lock-free surface pre-check left a
+/// check-then-act window, and the auto-write path (`llm_review`) has no
+/// surface pre-check at all; the surfaces keep their pre-checks for an
+/// early refusal with surface-appropriate advice.
 pub fn stored_wipe_shaped_identity_labels() -> io::Result<Vec<&'static str>> {
     let path = profile_path();
     let raw = match read_text_recovering(&path, |raw| {
