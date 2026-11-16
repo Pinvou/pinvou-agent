@@ -1690,4 +1690,83 @@ mod tests {
             assert_eq!(cleared_by_whitespace.profile.identity.call_name, "");
         });
     }
+
+    /// r13 review: the STORED wipe-shaped-label leg of the pre-guard had no
+    /// test — deleting the stored-check block shipped green. A hand-edited
+    /// profile.json carrying a wipe-shaped identity label (written before
+    /// these guards, or by anything that bypasses normalization) must refuse
+    /// a patch that does not set that label — normalize would silently empty
+    /// it on write-back — and the repair path, a patch setting the label
+    /// itself, must be judged on its own value rather than the stored one.
+    #[test]
+    fn update_memory_profile_refuses_a_stored_wipe_shaped_label_until_replaced() {
+        fn test_state(store: &SessionStore) -> State<'_, SessionStore> {
+            // SAFETY: 与上方测试相同的单引用 State newtype 构造，理由同前。
+            unsafe { std::mem::transmute::<&SessionStore, State<'_, SessionStore>>(store) }
+        }
+        crate::platform::test_support::with_temp_home("pinvou3-stored-label-guard-test", || {
+            let root = crate::platform::paths::pinvou3_home();
+            let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                root.join("scheduled"),
+            )
+            .expect("session store");
+
+            // 手写一份带擦除形状称呼的 profile.json（绕过 normalize 的写路径）。
+            let profile = crate::features::memory::load_profile().expect("load default profile");
+            let mut raw = serde_json::to_value(&profile).expect("serialize profile");
+            let mut identity = match raw.get("identity") {
+                Some(value @ serde_json::Value::Object(_)) => value.clone(),
+                _ => serde_json::to_value(&profile.identity).expect("serialize identity"),
+            };
+            identity["call_name"] = serde_json::Value::String("Christian Wolf".into());
+            raw["identity"] = identity;
+            let path = crate::features::memory::profile_path();
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("profile dir");
+            }
+            std::fs::write(
+                &path,
+                serde_json::to_string(&raw).expect("stringify profile"),
+            )
+            .expect("write hand-edited profile");
+
+            // 不触碰该字段的 patch：拒绝，存量原样保留。
+            let rejected = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    language: Some("en".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect_err("a stored wipe-shaped label must refuse untouched-field patches");
+            assert!(
+                rejected.contains("memory_profile_label_rejected") && rejected.contains("stored"),
+                "{rejected}"
+            );
+            assert_eq!(
+                crate::features::memory::stored_wipe_shaped_identity_labels().unwrap(),
+                vec!["call_name"],
+                "nothing was written: the stored label survives the refusal"
+            );
+
+            // 修复路径：patch 自己设置该字段时按新值判定，合法值替换成功。
+            let saved = tauri::async_runtime::block_on(update_memory_profile(
+                crate::features::memory::ProfilePatch {
+                    call_name: Some("阿欣".into()),
+                    ..Default::default()
+                },
+                None,
+                test_state(&store),
+            ))
+            .expect("a patch setting the label is judged on its own value");
+            assert_eq!(saved.profile.identity.call_name, "阿欣");
+            assert!(
+                crate::features::memory::stored_wipe_shaped_identity_labels()
+                    .unwrap()
+                    .is_empty(),
+                "the replaced label no longer reads as wipe-shaped"
+            );
+        });
+    }
 }
