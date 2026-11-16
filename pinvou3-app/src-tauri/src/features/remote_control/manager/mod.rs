@@ -3919,13 +3919,15 @@ mod tests {
         // The endpoint model probe is deliberately Web-allowed too: it is
         // keyring-blind (the caller supplies the key; no saved credential is
         // ever read), so a paired browser cannot use it to reach stored
-        // secrets. tests/web_access_contract.test.mjs pins the same
-        // access-policy.json entry and documents the disclosed loopback
-        // reach; this is the Rust-side positive pin, so dropping the entry
-        // from the embedded policy turns both red.
+        // secrets. Its reach is GLOBAL, not loopback-private (round-3 review
+        // M5 amendment): the command validates only URL shape, and the
+        // remote ladders classify any public host — the disclosed tradeoff
+        // and its acceptance reasons live in tests/web_access_contract.test.mjs.
+        // This is the Rust-side positive pin, so dropping the entry from the
+        // embedded policy turns both red.
         assert!(
             policy.commands.contains("probe_endpoint_models"),
-            "probe_endpoint_models must stay Web-allowed (keyring-blind endpoint probe)"
+            "probe_endpoint_models must stay Web-allowed (keyring-blind endpoint probe; GLOBAL reach disclosed in the JS contract test)"
         );
         assert!(!policy.commands.contains("list_sessions"));
         assert!(!policy.commands.contains("list_archived_sessions"));
@@ -4636,6 +4638,61 @@ mod tests {
         assert_eq!(
             rpc_fingerprint("chat", &json!({ "a": 1, "b": { "x": 2, "y": 3 } })).unwrap(),
             rpc_fingerprint("chat", &json!({ "b": { "y": 3, "x": 2 }, "a": 1 })).unwrap()
+        );
+    }
+
+    /// round-3 审 M6 钉:持久化指纹绝不能成为凭据的离线爆破校验器——
+    /// args 顶层的 `apiKey`(probe_endpoint_models 是第一个 web-allowed
+    /// 凭据携带者)只以长度占位进哈希:同 key 同指纹(重放/幂等语义不变),
+    /// 不同 key 同长同指纹(冲突诊断降级为重放收口,重用 id 依然永不
+    /// 再执行),内容任何一位不同但长度相同都无法从指纹区分——拖盘者
+    /// 拿不到 verifier。其余字段(base_url 等)照常参与,mutation 把
+    /// 占位替换删掉(指纹重新覆盖 key 内容)时本测试红。
+    #[test]
+    fn rpc_fingerprint_redacts_secret_arg_content_to_length_marker() {
+        // 同长不同 key:指纹相同(内容不进哈希)。
+        assert_eq!(
+            rpc_fingerprint(
+                "probe_endpoint_models",
+                &json!({ "baseUrl": "http://127.0.0.1:11434", "apiKey": "aaaa" })
+            )
+            .unwrap(),
+            rpc_fingerprint(
+                "probe_endpoint_models",
+                &json!({ "baseUrl": "http://127.0.0.1:11434", "apiKey": "bbbb" })
+            )
+            .unwrap()
+        );
+        // 同 key 同长但 base_url 不同:指纹不同(其余字段照常参与)。
+        assert_ne!(
+            rpc_fingerprint(
+                "probe_endpoint_models",
+                &json!({ "baseUrl": "http://127.0.0.1:11434", "apiKey": "aaaa" })
+            )
+            .unwrap(),
+            rpc_fingerprint(
+                "probe_endpoint_models",
+                &json!({ "baseUrl": "http://127.0.0.1:11435", "apiKey": "aaaa" })
+            )
+            .unwrap()
+        );
+        // 长度变化仍可区分(长度占位参与哈希)。
+        assert_ne!(
+            rpc_fingerprint(
+                "probe_endpoint_models",
+                &json!({ "baseUrl": "http://127.0.0.1:11434", "apiKey": "aaaa" })
+            )
+            .unwrap(),
+            rpc_fingerprint(
+                "probe_endpoint_models",
+                &json!({ "baseUrl": "http://127.0.0.1:11434", "apiKey": "aaaaaaa" })
+            )
+            .unwrap()
+        );
+        // 无凭据字段的命令不受影响(既有顺序无关性测试已覆盖常规形状)。
+        assert_ne!(
+            rpc_fingerprint("delete_session", &json!({ "id": "s1" })).unwrap(),
+            rpc_fingerprint("delete_session", &json!({ "id": "s2" })).unwrap()
         );
     }
 

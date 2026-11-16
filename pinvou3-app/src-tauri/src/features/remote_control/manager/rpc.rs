@@ -396,8 +396,43 @@ pub(super) fn tombstone_completion_cacheable(tombstone: &RpcTombstone, fingerpri
     tombstone.fingerprint == fingerprint && tombstone.acknowledged
 }
 
+/// 指纹材料里的凭据字段:web-allowed 命令的 args 里会出现用户在表单里
+/// 输入的 key(`probe_endpoint_models` 是第一个),而 admission 指纹会随
+/// tombstone 持久化到 `~/.pinvou3/web-access-rpc-ledger.json`(0600,无
+/// TTL,FIFO@512)。对凭据做**长度占位**替换——内容不进哈希,拖盘者拿
+/// 不到可离线爆破的 verifier(round-3 审 M6:本地端点 key 常是低熵口令,
+/// 无盐 sha256(known-shape args) 等价于密码破解 oracle)。完整性不变:
+/// 重用 request_id 的请求在任何指纹下都不会再执行(acknowledged →
+/// outcome_unknown,未 ack → request_not_started);同长不同 key 的 id
+/// 复用不再报 request_id_conflict 而走重放收口,牺牲的只是诊断精度。
+/// 名字按 invoke 面的凭据字段枚举;新增凭据字段须同步登记(测试钉住)。
+const RPC_FINGERPRINT_SECRET_FIELDS: &[&str] = &["apiKey"];
+
+/// 把 args 顶层凭据字段的字符串值替换为长度占位(见
+/// [`RPC_FINGERPRINT_SECRET_FIELDS`]);非字符串值(调用方规范化前的
+/// null 等)原样保留。只看顶层:invoke 面的 args 是扁平对象。
+fn redact_secret_arg_lengths(args: &Value) -> Value {
+    match args {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    if RPC_FINGERPRINT_SECRET_FIELDS.contains(&key.as_str()) {
+                        let len = value.as_str().map(str::len).unwrap_or(0);
+                        return (
+                            key.clone(),
+                            Value::String(format!("__redacted_len_{len}__")),
+                        );
+                    }
+                    (key.clone(), value.clone())
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 pub(super) fn rpc_fingerprint(command: &str, args: &Value) -> Result<String, String> {
-    let canonical = canonicalize_json(args);
+    let canonical = canonicalize_json(&redact_secret_arg_lengths(args));
     let encoded = serde_json::to_vec(&(command, canonical))
         .map_err(|error| format!("serialize Web RPC fingerprint: {error}"))?;
     Ok(crate::platform::hashing::sha256_hex(&encoded))
