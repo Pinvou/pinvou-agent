@@ -1,4 +1,5 @@
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use parking_lot::Mutex;
 use windows_sys::Win32::Foundation::FILETIME;
@@ -10,10 +11,10 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_EXPAND_SZ, REG_SZ, RegCloseKey, RegOpenKeyExW,
     RegQueryValueExW,
 };
-use windows_sys::Win32::System::Threading::GetSystemTimes;
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, GetSystemTimes};
 
 use super::super::CpuSnapshot;
-use super::super::cpu_math::clamp_pct;
+use super::super::cpu_math::{ProcessDeltaState, ProcessSample, clamp_pct, logical_processors};
 
 static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
 
@@ -26,12 +27,15 @@ struct SystemTimes {
 #[derive(Debug, Default)]
 struct CpuSampleState {
     system: Option<SystemTimes>,
+    process: ProcessDeltaState,
     pdh: Option<PdhCpuCounter>,
 }
 
 pub fn cpu_snapshot() -> Option<CpuSnapshot> {
+    let logical_processors = logical_processors();
     let name = cpu_name().unwrap_or_else(|| "CPU".to_string());
     let system = read_system_times();
+    let process = read_process_times();
     let state = CPU_SAMPLE_STATE.get_or_init(|| Mutex::new(CpuSampleState::default()));
     let mut state = state.lock();
 
@@ -48,6 +52,7 @@ pub fn cpu_snapshot() -> Option<CpuSnapshot> {
         .as_mut()
         .and_then(PdhCpuCounter::sample)
         .or(system_usage);
+    let process_usage_pct = state.process.absorb(process, logical_processors);
 
     if system.is_some() {
         state.system = system;
@@ -56,6 +61,8 @@ pub fn cpu_snapshot() -> Option<CpuSnapshot> {
     Some(CpuSnapshot {
         name,
         total_usage_pct,
+        process_usage_pct,
+        logical_processors,
     })
 }
 
@@ -165,6 +172,36 @@ fn read_system_times() -> Option<SystemTimes> {
     Some(SystemTimes {
         idle_100ns: filetime_to_u64(idle),
         total_100ns: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)),
+    })
+}
+
+fn read_process_times() -> Option<ProcessSample> {
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: GetCurrentProcess returns the current pseudo-handle and all
+    // FILETIME outputs are valid writable stack buffers.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    Some(ProcessSample {
+        // 100ns ticks -> seconds, exact in f64 until 2^53 ticks (~28.5
+        // accumulated CPU-years; the u64 counter itself only wraps at ~29k
+        // years). Past that the loss is ulp-level quantization and stays
+        // monotone, so the shared wraparound guard remains sound.
+        cpu_secs: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)) as f64
+            / 10_000_000.0,
+        sampled_at: Instant::now(),
     })
 }
 
@@ -292,8 +329,22 @@ mod tests {
     }
 
     #[test]
+    fn filetime_combines_low_and_high_words() {
+        // Direct pin for the second consumer this PR gave filetime_to_u64:
+        // a high/low word swap survives every FFI-path test otherwise. The
+        // words must be DISTINCT — low=1/high=1 is swap-symmetric and a
+        // swapped implementation would pass; low=1/high=2 does not.
+        let value = FILETIME {
+            dwLowDateTime: 1,
+            dwHighDateTime: 2,
+        };
+        assert_eq!(filetime_to_u64(value), (2u64 << 32) | 1);
+    }
+
+    #[test]
     fn cpu_snapshot_returns_basic_identity() {
         let snapshot = cpu_snapshot().expect("Windows CPU snapshot should include basic identity");
         assert!(!snapshot.name.trim().is_empty());
+        assert!(snapshot.logical_processors > 0);
     }
 }
