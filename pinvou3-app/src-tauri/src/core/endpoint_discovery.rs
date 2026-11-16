@@ -37,9 +37,10 @@ use serde_json::Value;
 use crate::core::model_context::{resolved_context_window, resolved_output_limit};
 use crate::core::model_endpoint::{
     LocalServerKind, apply_anthropic_auth_headers, apply_bearer, base_url_uses_local_or_private,
-    cached_ollama_show_context, error_chain_looks_like_tls, is_anthropic_endpoint, models_probe_url,
-    parse_entry_output_limit, parse_ollama_tag_names, parse_positive_u32, probe_lmstudio_models,
-    probe_local_server_kind, probe_ollama_models, strip_v1_suffix, with_opencode_session_header,
+    cached_ollama_show_context, error_chain_looks_like_tls, is_anthropic_endpoint,
+    models_probe_url, parse_entry_output_limit, parse_ollama_tag_names, parse_positive_u32,
+    probe_lmstudio_models, probe_local_server_kind, probe_ollama_models, strip_v1_suffix,
+    with_opencode_session_header,
 };
 use crate::platform::prefs::ModelPreset;
 
@@ -1315,11 +1316,8 @@ mod tests {
     /// 空白 key 不加头。
     #[tokio::test]
     async fn anthropic_ladder_sends_bearer_to_non_official_host() {
-        let mock = models_mock::spawn(&[(
-            "/v1/models",
-            200,
-            r#"{"data":[{"id":"gw-model"}]}"#.into(),
-        )]);
+        let mock =
+            models_mock::spawn(&[("/v1/models", 200, r#"{"data":[{"id":"gw-model"}]}"#.into())]);
         let listing = probe(
             &mock.base_url,
             Some("sk-gw-secret"),
@@ -1336,11 +1334,8 @@ mod tests {
         assert_eq!(mock.header_for("/v1/models", "x-api-key"), None);
         assert_eq!(mock.header_for("/v1/models", "anthropic-version"), None);
         // keyless(空白 key):Bearer 臂同样不加任何鉴权头。
-        let mock = models_mock::spawn(&[(
-            "/v1/models",
-            200,
-            r#"{"data":[{"id":"gw-free"}]}"#.into(),
-        )]);
+        let mock =
+            models_mock::spawn(&[("/v1/models", 200, r#"{"data":[{"id":"gw-free"}]}"#.into())]);
         let listing = probe(&mock.base_url, Some("   "), DiscoveryProtocol::Anthropic).await;
         assert_eq!(listing.status, ListingStatus::Listed);
         assert_eq!(mock.header_for("/v1/models", "authorization"), None);
@@ -2278,7 +2273,10 @@ mod tests {
         let mock = models_mock::spawn_seq(&[(
             "/v1beta/models",
             200,
-            vec![page_body(0, 1500, Some("t1")), page_body(1500, 1500, Some("t2"))],
+            vec![
+                page_body(0, 1500, Some("t1")),
+                page_body(1500, 1500, Some("t2")),
+            ],
         )]);
         let listing = probe(&mock.base_url, Some("gkey"), DiscoveryProtocol::Gemini).await;
         assert_eq!(listing.status, ListingStatus::Listed);

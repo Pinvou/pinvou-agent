@@ -3405,7 +3405,7 @@ mod tests {
         assert_eq!(listing.models[0].id, "claude-a");
         assert_eq!(listing.models[0].context_window_tokens, Some(200_000));
         assert_eq!(listing.models[0].max_output_tokens, Some(8_192));
-                // round-4 M6:mock 是环回地址=非官方主机,anthropic 阶梯与 Messages
+        // round-4 M6:mock 是环回地址=非官方主机,anthropic 阶梯与 Messages
         // 直连同口径走 Bearer,x-api-key 只留给 api.anthropic.com。
         assert_eq!(
             mock.header_for("/v1/models", "authorization").as_deref(),

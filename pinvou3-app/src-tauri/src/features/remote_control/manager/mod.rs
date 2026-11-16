@@ -4754,11 +4754,20 @@ mod tests {
             .unwrap()
         };
         // 同 key 重放:指纹相同(幂等语义不变)。
-        assert_eq!(fingerprint_for("metaso-key-1"), fingerprint_for("metaso-key-1"));
+        assert_eq!(
+            fingerprint_for("metaso-key-1"),
+            fingerprint_for("metaso-key-1")
+        );
         // 同长不同 key:指纹相同(内容不进哈希)。
-        assert_eq!(fingerprint_for("metaso-key-1"), fingerprint_for("metaso-key-2"));
+        assert_eq!(
+            fingerprint_for("metaso-key-1"),
+            fingerprint_for("metaso-key-2")
+        );
         // 长度不同:指纹不同(长度占位参与哈希)。
-        assert_ne!(fingerprint_for("metaso-key-1"), fingerprint_for("metaso-key-longer"));
+        assert_ne!(
+            fingerprint_for("metaso-key-1"),
+            fingerprint_for("metaso-key-longer")
+        );
         // 凭据之外的嵌套字段照常参与:provider 名不同 → 指纹不同。
         assert_ne!(
             rpc_fingerprint(

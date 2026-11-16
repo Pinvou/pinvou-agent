@@ -5763,7 +5763,8 @@ mod tests {
         assert_eq!(probe.http_status, Some(302));
         assert_eq!(log.hits_for("/models"), 1, "no second hop was followed");
         assert_eq!(
-            log.hits_for("/elsewhere"), 0,
+            log.hits_for("/elsewhere"),
+            0,
             "the location target must never be requested"
         );
     }
