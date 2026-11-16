@@ -2254,6 +2254,13 @@ mod tests {
         assert_eq!(listing.status, ListingStatus::Listed);
         assert_eq!(listing.models.len(), 2000);
         assert!(!listing.truncated, "恰好 2000 不置 truncated");
+        // keyless(round-5 审 nit,与 anthropic 臂同款):无 key 不得携带
+        // x-goog-api-key 头。
+        assert_eq!(
+            mock.header_for("/v1beta/models", "x-goog-api-key"),
+            None,
+            "keyless gemini probe must not send the api-key header"
+        );
     }
 
     /// m1-3 钉(round-4,gemini 侧):与上一条同形——第 2 页把总量推过

@@ -3269,6 +3269,13 @@ pub(crate) mod tests {
     /// 解析失败、折叠为未命中;若有人退回无界的 resp.json(),全量解析会
     /// 成功、探测误命中,本钉立即变红——这正是 M2 要挡的「超时窗口内敌意
     /// 端点撑爆内存」路径的可观察面。
+    #[test]
+    #[test]
+    fn probe_body_cap_bytes_is_pinned() {
+        // 8 MiB: the bounded-IO ceiling every kind-probe read shares with
+        // the discovery listing cap's sibling pin (round-5 review minor).
+        assert_eq!(PROBE_JSON_BODY_CAP_BYTES, 8 * 1024 * 1024);
+    }
     #[tokio::test]
     async fn kind_probe_folds_oversized_body_to_miss() {
         let _state = PROBE_STATE_TEST_MUTEX.lock().await;
@@ -3277,15 +3284,56 @@ pub(crate) mod tests {
             "1".repeat(9 * 1024 * 1024)
         );
         assert!(oversized.len() > 8 * 1024 * 1024);
-        let mock = models_mock::spawn(&[("/get_server_info", 200, oversized)]);
-        // 直探：签名探测本身必须按未命中折叠。
+        // 六处读取点逐一直探（round-5 审 minor：此前只有 sglang 一处，其余
+        // 五处单点回退为无界 json() 对整套用例不可见）。超限且整体合法的
+        // JSON 在每处都必须折叠为未命中——回退旧实现会解析成功而变红。
+        let sglang_mock = models_mock::spawn(&[("/get_server_info", 200, oversized.clone())]);
         assert!(
-            !probe_sglang_server_info(&mock.base_url, None).await,
-            "超限 body 必须折叠为探测未命中"
+            !probe_sglang_server_info(&sglang_mock.base_url, None).await,
+            "sglang: 超限 body 必须折叠为探测未命中"
         );
-        // 整链：其余签名端点默认 404，kind 落 Generic。
+        let kobold_mock = models_mock::spawn(&[("/api/extra/version", 200, oversized.clone())]);
+        assert!(
+            !probe_koboldcpp_version(&kobold_mock.base_url, None).await,
+            "koboldcpp: 超限 body 必须折叠为探测未命中"
+        );
+        let llamacpp_mock = models_mock::spawn(&[("/props", 200, oversized.clone())]);
+        assert!(
+            !probe_llamacpp_props(&llamacpp_mock.base_url, None).await,
+            "llamacpp: 超限 body 必须折叠为探测未命中"
+        );
+        let dmr_mock = models_mock::spawn(&[("/models", 200, oversized.clone())]);
+        assert!(
+            !probe_docker_model_runner(&dmr_mock.base_url, None).await,
+            "docker-model-runner: 超限 body 必须折叠为探测未命中"
+        );
+        let show_mock = models_mock::spawn(&[("/api/show", 200, oversized.clone())]);
+        assert!(
+            matches!(
+                probe_ollama_show_context(&show_mock.base_url, None, "m").await,
+                OllamaShowProbe::Unreachable
+            ),
+            "ollama /api/show: 超限 body 必须折叠为不可达（瞬态，不入缓存）"
+        );
+        // /api/ps 超限折叠为空事实，tags 照常进列表（无 ps 生效窗口）。
+        let ps_mock = models_mock::spawn(&[
+            ("/api/ps", 200, oversized.clone()),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"tags-only"}]}"#.into(),
+            ),
+        ]);
+        let probed = probe_ollama_models(&ps_mock.base_url, None).await;
+        assert!(
+            probed.as_ref().is_some_and(|probe| probe.models.len() == 1
+                && probe.models[0].id == "tags-only"
+                && probe.models[0].max_model_len.is_none()),
+            "ollama /api/ps: 超限 body 必须折叠为空事实，标签列表不受影响"
+        );
+        // 整链：其余签名端点默认 404，kind 落 Generic（sglang 超限处的原钉）。
         assert_eq!(
-            probe_local_server_kind(&mock.base_url, None).await,
+            probe_local_server_kind(&sglang_mock.base_url, None).await,
             LocalServerKind::Generic
         );
     }
