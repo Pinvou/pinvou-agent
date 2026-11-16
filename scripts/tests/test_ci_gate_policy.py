@@ -5137,19 +5137,71 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         for path in workflows:
             self._assert_lanes_bounded(path)
 
+    def _npm_ci_scan_text(self, path):
+        # Comment lines are dropped FIRST (a `# note \` comment must not
+        # swallow the next code line), backslash continuations are joined
+        # (a `timeout … npm \` + newline + `ci …` wrap is one invocation —
+        # the r14 review found the unjoined line-based matcher let a pure
+        # reflow disarm the policy), and whitespace runs are squeezed so an
+        # indent-shifted `npm   ci` cannot dodge the token match either.
+        code = "\n".join(
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.strip().startswith("#")
+        )
+        joined = re.sub(r"\\\n", " ", code)
+        return [re.sub(r"[ \t]+", " ", line.strip()) for line in joined.splitlines()]
+
     def _assert_lanes_bounded(self, path):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
+        for stripped in self._npm_ci_scan_text(path):
             npm_match = re.search(r"\bnpm( --prefix \S+)? ci\b", stripped)
             if not npm_match:
                 continue
             head = stripped[:npm_match.start()]
             self.assertRegex(
                 head,
-                r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s+$",
+                r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*$",
                 f"{path.name}: npm ci lane without a timeout bound before the invocation: {stripped!r}",
+            )
+
+    def test_shell_script_npm_ci_lanes_are_bounded(self):
+        # The r14 review found the last two unbounded npm ci lanes in the
+        # maintainer release scripts (release-deb.sh / release-macos.sh).
+        # This walker covers every shell script under scripts/ and
+        # scripts/ci/ so a future script lane cannot regress invisibly —
+        # the same all-files shape the workflow walker uses.
+        # npm-ci-bounded.sh is excluded: it IS the bound mechanism (its
+        # unbounded tail is the documented loud degrade to the job cap),
+        # and pinvou3-app/scripts/prepare-codex-bridge-runtime.sh invokes
+        # npm indirectly through an args array already pinned by
+        # test_bridge_prep_npm_ci_lanes_are_bounded.
+        script_files = sorted(
+            list((ROOT / "scripts").glob("*.sh"))
+            + list((ROOT / "scripts/ci").glob("*.sh"))
+        )
+        script_files = [p for p in script_files if p.name != "npm-ci-bounded.sh"]
+        self.assertGreaterEqual(len(script_files), 18, "scripts walk lost its coverage")
+        for path in script_files:
+            self._assert_lanes_bounded(path)
+
+    def test_release_script_npm_ci_lanes_use_the_guarded_helper(self):
+        # The release scripts run on maintainer machines, including macOS
+        # hosts where a bare `timeout` prefix is the exact exit-127 shape
+        # the r8 wave fixed for the CI lanes — so the lanes must go through
+        # the helper, not an inline timeout. The helper call leaves no
+        # `npm ci` token for the lane walker, so pin the call count here
+        # (dropping the helper or falling back to a bare timeout reds).
+        for name in ("release-deb.sh", "release-macos.sh"):
+            path = ROOT / "scripts" / name
+            code = "\n".join(self._npm_ci_scan_text(path))
+            count = code.count("npm-ci-bounded.sh")
+            self.assertEqual(
+                count, 1,
+                f"{name}: expected exactly 1 npm-ci-bounded.sh call, found {count}",
+            )
+            self.assertNotIn(
+                "npm ci", code,
+                f"{name}: npm ci must run through the bounded helper, not a raw invocation",
             )
 
     def test_non_linux_npm_ci_legs_use_the_guarded_helper(self):

@@ -22,7 +22,11 @@ for target in aarch64-apple-darwin x86_64-apple-darwin; do
 done
 
 gh release view "$TAG" >/dev/null
-(cd "$APP_DIR" && npm ci --prefer-offline --no-audit)
+# npm ci runs under the shared bounded helper's per-leg budget: a wedged
+# registry must fail this leg, not hang the maintainer terminal. The helper
+# (not a bare `timeout`) is mandatory here — macOS hosts without coreutils
+# resolve `timeout` to nothing useful (the r8 CI incident class).
+(cd "$APP_DIR" && bash "$REPO_ROOT/scripts/ci/npm-ci-bounded.sh" 900)
 (cd "$APP_DIR" && node scripts/tauri/build.js build --target universal-apple-darwin)
 
 APP_BIN="$APP_DIR/src-tauri/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
