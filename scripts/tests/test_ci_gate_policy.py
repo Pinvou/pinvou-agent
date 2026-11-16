@@ -5126,7 +5126,13 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         # workflow file could grow an unbounded npm ci lane invisibly.
         # This pin walks every workflow file in the repo with the same
         # assertion, so new files are covered the moment they appear.
-        workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+        # The walk is *.yml + *.yaml — the same both-extension shape the
+        # working-directory and pip walkers use, so a future .yaml workflow
+        # cannot slip past just this walker (r11 review minor).
+        workflows = sorted(
+            list((ROOT / ".github/workflows").glob("*.yml"))
+            + list((ROOT / ".github/workflows").glob("*.yaml"))
+        )
         self.assertTrue(workflows, "no workflow files found")
         for path in workflows:
             self._assert_lanes_bounded(path)
