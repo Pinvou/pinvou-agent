@@ -974,17 +974,24 @@ pub async fn probe_model_connection(
             if !result.ok {
                 return result;
             }
-            let configured = configured_model_name(model_id);
+            // model_id 未解析出配置名(None / 未知 id / 空白):没有匹配
+            // 目标,连限长 body 读取都不必发生——富化读取只服务命中条目,
+            // 借用激活模型名字的回退被 configured_model_name 刻意拒绝。
             // 与发现列表共用 core 的限长读取器(minor-11:同一 chunk 循环、
             // 各自上限;全部 Err 一律折叠为「无事实」,探测结果不受影响)。
-            let facts = match crate::core::endpoint_discovery::read_json_body_bounded(
-                &mut resp,
-                CONNECTION_MODELS_BODY_CAP_BYTES,
-            )
-            .await
-            {
-                Ok(value) => connection_model_facts(&value, listing_shape, configured.as_deref()),
-                Err(_) => None,
+            let facts = match configured_model_name(model_id) {
+                Some(name) => {
+                    match crate::core::endpoint_discovery::read_json_body_bounded(
+                        &mut resp,
+                        CONNECTION_MODELS_BODY_CAP_BYTES,
+                    )
+                    .await
+                    {
+                        Ok(value) => connection_model_facts(&value, listing_shape, Some(&name)),
+                        Err(_) => None,
+                    }
+                }
+                None => None,
             };
             attach_connection_model_facts(result, facts)
         }
