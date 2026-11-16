@@ -108,9 +108,11 @@ mv -f "$engine_tmp" "$ASR_DIR/sense-voice-main"
 echo "[4/5] 下载模型 $MODEL_FILE（modelscope，国内可达）…"
 # 单次尝试预算 900s（--max-time 按每次传输计时，--retry 4 最坏约
 # 5×900s）；断点续传（-C -）让超时重试从已收字节继续，整体进度单调推进，
-# 而不是每次从头重烧全部流量。单次 900s 的取值与 CLI 对同级别 ~254 MiB
-# 模型的总预算对齐（voice.rs 的 ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT 按
-# ~300 KB/s 推算——那是真正的总时钟）：600s 只够 q4_k 在 ~300 KB/s 下
+# 而不是每次从头重烧全部流量。单次 900s 的取值与 CLI 模型下载的 900s
+# 总时钟对齐（pinvou-cli voice.rs 里的字面量 .timeout(900s)，按
+# ~300 KB/s 推算；注意 src-tauri platform/download.rs 的
+# ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT 虽同为 900s，但那属于归档下载预算，
+# 勿据其推理本档位）：600s 只够 q4_k 在 ~300 KB/s 下
 # 勉强完成，q8_0 档（~250 MB）必超。
 curl --retry 4 --retry-all-errors --connect-timeout 15 --max-time 900 -C - -fsSL -o "$WORK/$MODEL_FILE" \
   "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/$MODEL_FILE"
