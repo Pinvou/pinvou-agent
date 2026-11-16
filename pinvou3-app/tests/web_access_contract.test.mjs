@@ -842,13 +842,15 @@ assert.match(chunkedUpload, /device attachment exceeds \$\{MAX_FILE_BYTES\} byte
 // an envelope-seq hole; the listener must detect the jump and debounce-refetch
 // the authoritative timeline to self-heal (instead of waiting for a
 // reconnect/session reopen), merging the snapshot and rebasing the tracker.
-assert.match(codexView, /acpEventSeqTrackerRef\.current\.note\(incoming\.sessionId, incoming\.seq\) === 'gap'[\s\S]*?acpGapResyncRef\.current\.schedule\(incoming\.sessionId\)/,
+assert.match(codexView, // The refs are init-once before any effect runs, so the tsc-hardening optional
+// chain on `.current` is a no-op at runtime; the pins accept both spellings.
+/acpEventSeqTrackerRef\.current(?:\?\.|\.)note\(incoming\.sessionId, incoming\.seq\) === 'gap'[\s\S]*?acpGapResyncRef\.current(?:\?\.|\.)schedule\(incoming\.sessionId\)/,
   'the live acp:event listener must detect envelope-seq gaps and schedule a resync');
 assert.match(codexView, /createAcpGapResyncScheduler\(sessionId => \{[\s\S]*?resyncAcpSessionAfterGap\(sessionId\);[\s\S]*?\}, \{/,
   'the gap resync must go through the bounded-retry scheduler wrapping resyncAcpSessionAfterGap');
 assert.match(codexView, /mergeAcpTimelineSnapshot\(timeline, current, sessionId\)[\s\S]*?rebaseAcpEventSeqTracker\(sessionId, timeline\)/,
   'the gap resync must merge the authoritative snapshot and rebase the tracker');
-assert.match(codexView, /acpGapResyncRef\.current\.cancel\(\)/,
+assert.match(codexView, /acpGapResyncRef\.current(?:\?\.|\.)cancel\(\)/,
   'the pending gap resync must be cancelled on unmount');
 
 assert.match(bootstrap, /sendRaw\(\{ \.\.\.value, v: protocolVersion, lease_id: this\.leaseId \}\)/);

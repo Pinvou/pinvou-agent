@@ -1336,7 +1336,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             }));
           setToolAuthStates(prev => {
             const next = { ...prev };
-            authEntries.filter(Boolean).forEach(([id, status]) => { next[id] = status; });
+            authEntries.filter(entry => entry != null).forEach(([id, status]) => { next[id] = status; });
             return next;
           });
         } catch (e) {
@@ -2001,7 +2001,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             try {
               const bs = await invokeTauri('bundle_readiness', { bundleId: dlg.backendId });
               const b = (bs && bs.bundle) || null;
-              if (b) setSelectedTool(prev => ({ ...prev, title: b.name || prev.title, desc: b.description == null ? prev.desc : b.description }));
+              if (b) setSelectedTool(prev => (prev ? { ...prev, title: b.name || prev.title, desc: b.description == null ? prev.desc : b.description } : prev));
             } catch (err) {
               console.error('bundle_readiness refresh failed:', dlg.backendId, err);
             }
@@ -2337,7 +2337,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             config={externalAuthAvailable ? configDialog : null}
             copy={storeCopy}
             onCancel={() => setConfigDialog(null)}
-            onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); if (bid === 'ima') connectIma(values); else doInstall(bid, values); }}
+            onConfirm={(values) => { const bid = configDialog?.backendId; setConfigDialog(null); if (bid === 'ima') connectIma(values); else doInstall(bid, values); }}
             onBrowserOpenError={browserOpenFailed}
           />, document.body)}
           {createPortal(<TsObsidianGuide
@@ -2349,7 +2349,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             onRetry={async () => {
               let st = null;
               try { st = await invokeTauri('detect_obsidian'); } catch { /* silent: treat not-installed as a probe failure */ }
-              if (st && st.state === 'ok') { const bid = obsidianGuide.backendId; setObsidianGuide(null); doInstall(bid, {}); }
+              if (st && st.state === 'ok') { const bid = obsidianGuide?.backendId; setObsidianGuide(null); doInstall(bid, {}); }
               else setObsidianGuide(g => g ? { ...g, ...st } : g);
             }}
           />, document.body)}

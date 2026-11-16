@@ -221,6 +221,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
   const ownerPanelTriggerRef = useRef(null);
   const ownerPeopleTabRef = useRef(null);
   const ownerHostTabRef = useRef(null);
+  /** @type {import('react').MutableRefObject<((confirmed: boolean) => void) | null>} */
   const confirmationResolverRef = useRef(null);
   const confirmationTriggerRef = useRef(null);
   const connectInFlightRef = useRef(false);
@@ -694,8 +695,8 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
             : invokeTauri('remote_kb_request_join_confirmed', {
               probe: identityProbe,
               deviceName: deviceName.trim(),
-              confirmedCaFingerprint: identityProbe.caFingerprint,
-              confirmedIdentityCode: identityProbe.identityCode,
+              confirmedCaFingerprint: identityProbe?.caFingerprint,
+              confirmedIdentityCode: identityProbe?.identityCode,
             }));
         } catch (error) {
           setConnectorError(String(error));
@@ -799,7 +800,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
         : null));
       setNotice({ type: 'success', text: successText });
       window.setTimeout(() => setHostProgress(current => (
-        current?.operation === operation && current.phase === 'complete' ? null : current
+        current?.operation === operation && current?.phase === 'complete' ? null : current
       )), 1200);
     } catch (error) {
       const message = String(error);
@@ -887,7 +888,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
 
   async function createShare() {
     const created = await run('create-share', async () => {
-      let endpoints = [selectedConnection.endpoint];
+      let endpoints = [selectedConnection?.endpoint];
       if (isLocalHostOwner) {
         endpoints = await invokeTauri('shared_kb_host_lan_endpoints');
       }

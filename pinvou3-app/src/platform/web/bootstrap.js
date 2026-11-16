@@ -662,7 +662,7 @@
           // the same connection cannot overtake the failed event. The durable
           // cursor is unchanged, so the desktop replays it after reconnect.
           this.socket = null;
-          try { sourceSocket.close(); } catch {
+          try { sourceSocket?.close(); } catch {
             this.scheduleReconnect("事件处理失败，正在重新连接…");
           }
         });
@@ -678,7 +678,7 @@
         // the state_ready=false phase.
         throw new Error(errorText("stateNotReady"));
       }
-      if (!this.desktopCapabilitiesReady || !this.allowedEvents.has(message.event)) {
+      if (!this.desktopCapabilitiesReady || !this.allowedEvents?.has(message.event)) {
         this.closePermanently(
           "incompatible_desktop",
           errorText("unnegotiatedEvent", message.event || "unknown"),
@@ -757,7 +757,7 @@
         detail: { commands: [...this.allowedCommands], events: [...this.allowedEvents] },
       }));
       this.pending.forEach((entry, id) => {
-        if (this.allowedCommands.has(entry.command)) return;
+        if (this.allowedCommands?.has(entry.command)) return;
         this.pending.delete(id);
         window.clearTimeout(entry.timeout);
         entry.reject(new Error(errorText("unsupportedCommand", entry.command)));
@@ -776,7 +776,7 @@
 
     async invokeWithRequestId(command, args, requestId) {
       await this.policyPromise;
-      if (!this.allowedCommands.has(command)) throw new Error(errorText("commandNotAllowed", command));
+      if (!this.allowedCommands?.has(command)) throw new Error(errorText("commandNotAllowed", command));
       const id = String(requestId || "").trim();
       if (!/^[A-Za-z0-9_-]{8,256}$/.test(id)) {
         throw new Error(errorText("invalidRequestId"));
@@ -801,7 +801,7 @@
     }
 
     supportsCommand(command) {
-      return this.desktopCapabilitiesReady && this.allowedCommands.has(command);
+      return this.desktopCapabilitiesReady && this.allowedCommands?.has(command);
     }
 
     supportsCapability(capability) {
@@ -873,7 +873,7 @@
 
     subscribeEvent(eventName) {
       if (!this.frontendReady) return;
-      if (!this.desktopCapabilitiesReady || !this.allowedEvents.has(eventName)) return;
+      if (!this.desktopCapabilitiesReady || !this.allowedEvents?.has(eventName)) return;
       if (this.subscribed.has(eventName)) return;
       if (!this.sendJoined({ type: "event_subscribe", event: eventName })) return;
       this.subscribed.add(eventName);

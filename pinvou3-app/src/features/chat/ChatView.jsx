@@ -991,6 +991,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const [showScrollBottom, setShowScrollBottom] = useState(false);
       const composerRef = useRef(null);
       const pendingVoiceAfterIntroRef = useRef(null);
+      /** @type {import('react').MutableRefObject<((v: boolean) => void) | null>} */
       const voiceIntroResolveRef = useRef(null);
       const voiceAsrPopoverRef = useRef(null);
       const voiceAsrInstallWasActiveRef = useRef(false);
@@ -1590,7 +1591,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, []);
       // Reference-card navigation in sent messages: reuse the session switch handed down by the main frame (with view routing).
       const handleOpenMentionSession = useCallback((sessionId) => {
-        if (onSwitchSession) onSwitchSession(sessionId);
+        const switchSession = /** @type {((id: string) => void) | null} */ (onSwitchSession);
+        if (switchSession) switchSession(sessionId);
       }, [onSwitchSession]);
       // Dragging a sidebar session row (the "move to project" drag gesture, the
       // application/x-pinvou-session payload from #462) into the composer area =
@@ -2395,6 +2397,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // Latest committed chips for the draft-stash cleanup below (the cleanup
       // runs before the switch-time restore commits, so it must read a ref).
       const sessionRefsRef = useRef([]);
+      /** @type {import('react').MutableRefObject<string | null>} */
       const mentionDraftKeyRef = useRef(null);
       // Draft keys with an in-flight send (round-15 B1/m1): the bridge
       // materializes a draft into a real session inside sendChatMessage, so
@@ -2656,6 +2659,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // setSceneCapabilityStatus below combines it with the welcome opt-in
         // result — an earlier welcome-error set would be batched away by any
         // later synchronous set in the same run (round-10 Major 1).
+        /** @type {{ kind: string, text: string, toastEpoch: number } | null} */
         let sceneStatus = null;
         let readyAutoClear = false;
         if (requirements) {
@@ -2733,7 +2737,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // The session guard inside the timeout keeps this stale closer
           // from clearing a NEWER session's fresh ready toast.
           window.setTimeout(() => setSceneCapabilityStatus((current) => (
-            current && current.kind === 'ready'
+            current && current.kind === 'ready' && sceneStatus
               && current.toastEpoch === sceneStatus.toastEpoch
               && sceneStatusKeyNow() === sceneStatusSession
               ? null
@@ -2863,7 +2867,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // and canSend staying true via hasSessionRefs must not re-dispatch
         // the same armed refs as a duplicate queued message.
         if (refsAtSend.length) setSessionRefs([]);
-        if (draftKeyAtSend.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
+        if (draftKeyAtSend?.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
         const settlePendingDraftSend = () => {
           mentionPendingDraftSendsRef.current.delete(draftKeyAtSend);
         };
@@ -3455,7 +3459,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // Scope guard for the chip restore below: switching sessions mid-send
         // must not wipe the target scope's freshly picked chips.
         const draftKeyAtSend = mentionDraftKeyRef.current;
-        if (draftKeyAtSend.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
+        if (draftKeyAtSend?.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
         // The verdict/ledger tail lives in the shared settle helper
         // (round-19 M3); this lane keeps only its text-restore glue.
         try {
@@ -3714,7 +3718,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // Scope guard: a session switch during the await moves the draft key;
           // the new scope's chips must not be wiped by this send's cleanup.
           const draftKeyAtSend = mentionDraftKeyRef.current;
-          if (draftKeyAtSend.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
+          if (draftKeyAtSend?.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
           // The verdict/ledger tail lives in the shared settle helper
           // (round-19 M3); this lane keeps its voice-ownership glue and
           // passes the RAW result (before the "restored"→false mapping) so
@@ -4488,7 +4492,6 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   /></MentionSuspense>
                 </ComposerPopover>
               </div>
-              {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the composer carries the @-mention listbox popup semantics (aria-haspopup/expanded/activedescendant), same contract as the ScheduledTasksView read-only input */}
               <textarea
                 ref={composerRef}
                 data-testid="chat-composer-input"
@@ -5089,7 +5092,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         // machine contract, not human-written content); useCopyFlash is the
         // upstream-unified copy feedback hook (#539 series), replacing the
         // original hand-rolled setCopied.
-        copyToClipboard('user-bubble', mentionSplit.text || '');
+        /** @type {(key: string, text: string) => boolean} */ (copyToClipboard)('user-bubble', mentionSplit.text || '');
       }
       function retryDelivery() {
         if (!item.clientMessageId || !bridge.available || !bridge.chat.retryFirstTurn) return;

@@ -399,6 +399,18 @@ export function createAcpEventSeqTracker() {
 // a new generation, invalidating any attempt still in flight: its late
 // completion can no longer reset the failure count, cancel the superseding
 // pending attempt, or schedule a retry after cancel().
+/**
+ * @param {(sessionId: string) => Promise<void>} resync - Performs one gap resync for a session; a rejection marks the attempt as failed.
+ * @param {object} [options] - Overrides for the retry policy and timer/callback hooks; mainly for tests.
+ * @param {number} [options.maxAttempts] - Attempt budget per gap cycle before giving up; defaults to 5.
+ * @param {number} [options.baseDelayMs] - Delay in milliseconds before the first retry; defaults to 800.
+ * @param {number} [options.maxDelayMs] - Upper bound in milliseconds for the exponential backoff; defaults to 12800.
+ * @param {typeof globalThis.setTimeout | null} [options.setTimeout] - Timer factory override; defaults to null (uses globalThis.setTimeout).
+ * @param {typeof globalThis.clearTimeout | null} [options.clearTimeout] - Timer cancel override; defaults to null (uses globalThis.clearTimeout).
+ * @param {((sessionId: string, attempt: number) => void) | null} [options.onAttempt] - Called before each resync attempt; defaults to null (no callback).
+ * @param {((sessionId: string, attempt: number, error: unknown) => void) | null} [options.onRetry] - Called when a failed attempt is rescheduled with backoff; defaults to null (no callback).
+ * @param {((sessionId: string, attempt: number, error: unknown) => void) | null} [options.onGiveUp] - Called when the attempt budget is exhausted; defaults to null (no callback).
+ */
 export function createAcpGapResyncScheduler(resync, {
   maxAttempts = 5,
   baseDelayMs = 800,
@@ -465,8 +477,9 @@ function canIndexSnapshotEnvelope(envelope) {
   try {
     const owner = Object.getOwnPropertyDescriptor(envelope, 'sessionId');
     const sequence = Object.getOwnPropertyDescriptor(envelope, 'seq');
+    const sequenceValue = sequence?.value;
     return typeof owner?.value === 'string'
-      && Number.isSafeInteger(sequence?.value) && sequence.value >= 0;
+      && Number.isSafeInteger(sequenceValue) && sequenceValue >= 0;
   } catch {
     return false;
   }
