@@ -304,7 +304,11 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     // other error shape (timeout/overflow kill, wait or
                     // capture-readback failure) is a failed attempt whose
                     // cause belongs in the round error, not a missing PATH.
-                    Err(e) if e.starts_with("spawn ") => {
+                    // The prefix is the bounded runner's shared
+                    // SPAWN_FAILURE_PREFIX constant — a reworded or
+                    // unanchored message format must fail this pin, not
+                    // silently reroute timeout kills into this arm.
+                    Err(e) if e.starts_with(crate::platform::process::SPAWN_FAILURE_PREFIX) => {
                         return Err(format!(
                             "cannot run {python_cmd} (make sure Python is installed and on PATH): {e}"
                         ));
@@ -1743,6 +1747,34 @@ mod pip_rounds_tests {
         assert_eq!(
             PIP_SATISFIED_PROBE_TIMEOUT,
             std::time::Duration::from_secs(30)
+        );
+    }
+
+    /// r10 review: the pip lane's "python3 missing" classification keyed on
+    /// the bare string literal `"spawn "` — a reworded runner message would
+    /// have silently rerouted timeout kills into the missing-Python arm.
+    /// The classification now consumes the runner's shared
+    /// SPAWN_FAILURE_PREFIX constant; this pin holds the wiring (and, via
+    /// the producer-side behavioral test in platform/process.rs, the
+    /// message shape itself).
+    #[test]
+    fn pip_spawn_classification_uses_the_shared_prefix() {
+        let source = include_str!("connectors.rs");
+        let start = source
+            .find("Only a spawn failure means")
+            .expect("spawn-failure classification comment present");
+        let window: String = source[start..]
+            .lines()
+            .take(14)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            window.contains("SPAWN_FAILURE_PREFIX"),
+            "the spawn-failure arm must classify via the shared SPAWN_FAILURE_PREFIX constant"
+        );
+        assert!(
+            !window.contains("starts_with(\"spawn \")"),
+            "the spawn-failure arm must not key on a bare string literal"
         );
     }
 

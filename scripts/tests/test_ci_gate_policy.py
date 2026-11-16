@@ -5054,10 +5054,10 @@ class WorkflowWorkingDirectoryPolicyTests(unittest.TestCase):
     granularity this typo class has bitten at, twice.
     """
 
-    WORKFLOW_FILES = tuple(sorted(
-        (ROOT / ".github/workflows").glob("*.yml")
-        + (ROOT / ".github/workflows").glob("*.yaml"),
-    ))
+    WORKFLOW_FILES = tuple(
+        sorted((ROOT / ".github/workflows").glob("*.yml"))
+        + sorted((ROOT / ".github/workflows").glob("*.yaml"))
+    )
 
     def test_workflow_working_directories_resolve_to_real_paths(self):
         for workflow in self.WORKFLOW_FILES:
@@ -5194,9 +5194,17 @@ class PipCiBoundsPolicyTests(unittest.TestCase):
                     continue
                 seen += 1
                 head = stripped[:pip_match.start()]
-                self.assertRegex(
-                    head,
-                    r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s+$",
+                # pip routes through `python3 -m`, so unlike the npm walker
+                # the bound need not sit immediately before the pip token —
+                # a real timeout/run_with_timeout invocation anywhere in the
+                # head is the contract (a trailing comment cannot match,
+                # since comment lines are skipped above and the bound must
+                # be an actual invocation).
+                self.assertIsNotNone(
+                    re.search(
+                        r"(?:^|\s)(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)(?:\s|$)",
+                        head,
+                    ),
                     f"{path.name}: pip install lane without a timeout bound before the invocation: {stripped!r}",
                 )
         self.assertEqual(
