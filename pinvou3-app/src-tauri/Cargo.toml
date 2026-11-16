@@ -222,8 +222,11 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rand = "0.10"
-# Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, hf-hub,
-# ort-sys and pinvou-knowledge still require 0.22. rmcp 3 declares
+# Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, termwiz,
+# pinvou-knowledge and this crate itself still require 0.22 (hf-hub and
+# ort-sys have no direct base64 dependency — theirs arrives transitively
+# via reqwest and ureq; verify against Cargo.lock before listing a
+# holdout here). rmcp 3 declares
 # base64 0.23 as an optional dependency enabled only by its
 # default/request-state/client-side-sse/auth-enterprise-managed/
 # server-side-http features; this graph enables just auth + client
