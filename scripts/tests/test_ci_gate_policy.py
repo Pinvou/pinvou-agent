@@ -4770,10 +4770,10 @@ class WorkflowWorkingDirectoryPolicyTests(unittest.TestCase):
     granularity this typo class has bitten at, twice.
     """
 
-    WORKFLOW_FILES = (
-        ROOT / ".github/workflows/pr-check.yml",
-        ROOT / ".github/workflows/release-packages.yml",
-    )
+    WORKFLOW_FILES = tuple(sorted(
+        (ROOT / ".github/workflows").glob("*.yml")
+        + (ROOT / ".github/workflows").glob("*.yaml"),
+    ))
 
     def test_workflow_working_directories_resolve_to_real_paths(self):
         for workflow in self.WORKFLOW_FILES:
@@ -4878,6 +4878,47 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         self.assertTrue(
             (ROOT / "scripts/ci/npm-ci-bounded.sh").exists(),
             "scripts/ci/npm-ci-bounded.sh is missing — the non-Linux npm ci legs call it",
+        )
+
+
+class PipCiBoundsPolicyTests(unittest.TestCase):
+    """Every pip install lane in CI and the journey script carries a per-leg timeout bound.
+
+    The r6 wave bounded the pip lanes under their job caps (pr-check 300s,
+    journey 1800s) in the same wedged-registry hang class the npm lanes
+    cover, but only the npm lanes got a gate walker — the r10 review showed
+    stripping the pip timeout kept the gate suite green. This class mirrors
+    NpmCiBoundsPolicyTests' walker for the pip lanes: a lane regressing to a
+    bare `pip install` re-opens the hang, and a new workflow or journey lane
+    is covered the moment it appears (the lane-count pin forces this class to
+    be extended, not silently bypassed, when a new lane ships).
+    """
+
+    def test_every_pip_install_lane_is_timeout_bounded(self):
+        paths = sorted((ROOT / ".github/workflows").glob("*.yml")) \
+            + sorted((ROOT / ".github/workflows").glob("*.yaml")) \
+            + [ROOT / "scripts/run-user-journey-tests.sh"]
+        seen = 0
+        for path in paths:
+            self.assertTrue(path.exists(), f"{path} is missing")
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                pip_match = re.search(r"\bpip3? install\b", stripped)
+                if not pip_match:
+                    continue
+                seen += 1
+                head = stripped[:pip_match.start()]
+                self.assertRegex(
+                    head,
+                    r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s+$",
+                    f"{path.name}: pip install lane without a timeout bound before the invocation: {stripped!r}",
+                )
+        self.assertEqual(
+            seen, 2,
+            "expected exactly 2 pip install lanes (pr-check fast-gate + journey); "
+            "a new lane must carry the same per-leg bound and extend this pin",
         )
 
 
