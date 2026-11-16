@@ -374,8 +374,10 @@ impl KnowledgeClient {
         .await
     }
 
+    /// 设备清单。与其它无 `_page` 后缀的清单方法一致,逐页取全量返回:
+    /// 设备数超过旧实现硬编码的 200 首窗时,多出的设备此前会静默不可见。
     pub async fn devices(&self) -> Result<Vec<DeviceGrant>, String> {
-        self.get("/api/v2/owner/devices?limit=200&offset=0").await
+        self.paged_all("/api/v2/owner/devices").await
     }
 
     pub async fn update_device(

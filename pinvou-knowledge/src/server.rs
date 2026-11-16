@@ -1283,6 +1283,77 @@ mod tests {
         assert!(error.contains("整页"), "实际错误:{error}");
     }
 
+    // client.devices() 与其它无 _page 后缀的清单方法一样必须逐页取全量:
+    // 旧实现硬编码 ?limit=200&offset=0 首窗,设备数超过 200 时其余设备
+    // 静默不可见。这里用按 limit/offset 真实切片的桩路由(与真服务端
+    // 相同的 clamp 语义)钉住 600 台设备跨页聚合与顺序;突变对照:
+    // devices() 退回单窗 ?limit=200 时,本用例恰好取到 200 ≠ 600 而落红。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn devices_client_pages_through_every_offset() {
+        #[derive(Deserialize)]
+        struct StubPageQuery {
+            limit: Option<usize>,
+            #[serde(default)]
+            offset: usize,
+        }
+        async fn paging_stub(
+            State(items): State<std::sync::Arc<Vec<DeviceGrant>>>,
+            Query(query): Query<StubPageQuery>,
+        ) -> Json<Vec<DeviceGrant>> {
+            let limit = query
+                .limit
+                .unwrap_or(200)
+                .clamp(1, crate::model::PAGE_LIMIT_CAP);
+            Json(
+                items
+                    .iter()
+                    .skip(query.offset)
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+            )
+        }
+        let devices: std::sync::Arc<Vec<DeviceGrant>> = std::sync::Arc::new(
+            (0..600)
+                .map(|index| DeviceGrant {
+                    id: format!("device-{index:03}"),
+                    name: format!("设备 {index:03}"),
+                    scope: AccessScope::Read,
+                    created_at: 0,
+                    last_seen_at: None,
+                    revoked: false,
+                })
+                .collect(),
+        );
+        let app = Router::new()
+            .route("/api/v2/owner/devices", get(paging_stub))
+            .with_state(devices);
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>()),
+        );
+
+        let client = crate::client::KnowledgeClient::new(
+            &format!("http://{address}"),
+            "stub-token-not-checked-by-the-fixtures",
+        )
+        .unwrap();
+        let listed = tokio::time::timeout(std::time::Duration::from_secs(30), client.devices())
+            .await
+            .expect("设备清单翻页不得挂死")
+            .unwrap();
+        assert_eq!(listed.len(), 600);
+        assert!(
+            listed.windows(2).all(|pair| pair[0].id < pair[1].id),
+            "设备清单跨页聚合不得重复或乱序"
+        );
+    }
+
     // 懒装载时代的廉价校验回归:空查询/超量知识集选择必须在模型装载门之前
     // 应答(200 [] / 400),冷服务(模型未装载且 model_dir 无模型文件)不得
     // 触发 568MB 冷读,也不得把本应 200/400 的请求变成 503。boot 同步装载
