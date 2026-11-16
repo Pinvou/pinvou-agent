@@ -4379,7 +4379,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
           messages.settleModelServiceErrorNotices(state);
         }
       }
-      window.PinvouModelRecovery?.settleRecoveryEvent(e.payload, state);
+      globalThis.PinvouModelRecovery?.settleRecoveryEvent(e.payload, state);
       const shellMessages = bridgeMessages();
       if (typeof shellMessages.showShellCleanupFailure === "function") {
         shellMessages.showShellCleanupFailure(e.payload, state, addSystemItem);
