@@ -46,36 +46,41 @@ pub fn redact_storage_prefix(text: &str) -> String {
     if prefix.is_empty() {
         return text.to_string();
     }
-    // Windows canonicalize yields verbatim spellings (`\\?\C:\...`, UNC as
-    // `\\?\UNC\server\share\...`) while the storage root is recorded
-    // non-verbatim, so a literal replace would miss the prefix entirely and
-    // leak the user name. Try the de-verbatimed form first; a fold there
-    // returns the normalized forward-slash form, and when nothing folds —
-    // including verbatim text outside the storage root — the original text
-    // is returned untouched (the stem is never stripped without a fold).
-    let deverbatimed = strip_windows_verbatim_stem(text);
-    let folded = deverbatimed.replace(&prefix, "~/.pinvou3");
-    if &folded != deverbatimed.as_ref() {
-        return folded.replace('\\', "/");
+    // The storage root reaches outbound reasons in several spellings, and
+    // not only at the start of the message: canonicalized artifact lanes
+    // embed `\\?\C:\...` (drive) or `\\?\UNC\server\share\...` (UNC) inside
+    // `write artifact {target}` / `staged artifact {target} vanished` style
+    // reasons, while probe/persist lanes embed the plain spelling. Fold
+    // each spelling wherever it appears — a UNC-home verbatim path contains
+    // no plain-prefix substring, so a plain-only replace misses it entirely
+    // (R2 REQUIRED-1), and a mid-text drive verbatim fold left a mangled
+    // `//?/` stem behind. Text containing none of the spellings is returned
+    // byte-identical (the root is never rewritten without a fold).
+    let mut folded = text.to_string();
+    let mut changed = false;
+    let verbatim_drive = format!(r"\\?\{}", prefix);
+    if folded.contains(&verbatim_drive) {
+        folded = folded.replace(&verbatim_drive, "~/.pinvou3");
+        changed = true;
     }
-    let folded = text.replace(&prefix, "~/.pinvou3");
-    if folded == text {
-        folded
-    } else {
+    let unc_tail = prefix.strip_prefix(r"\\").unwrap_or(prefix.as_str());
+    let verbatim_unc = format!(r"\\?\UNC\{}", unc_tail);
+    if folded.contains(&verbatim_unc) {
+        folded = folded.replace(&verbatim_unc, "~/.pinvou3");
+        changed = true;
+    }
+    let plain = folded.replace(&prefix, "~/.pinvou3");
+    if plain != folded {
+        folded = plain;
+        changed = true;
+    }
+    if changed {
+        // Round-12 复审:发生折叠时把剩余文本里的路径分隔符统一为 `/`
+        // (消费端断言/pin 的是正斜杠形态;产出是展示文本,不回喂文件系统)。
         folded.replace('\\', "/")
+    } else {
+        text.to_string()
     }
-}
-
-/// `\\?\C:\Users\...` → `C:\Users\...` and `\\?\UNC\server\share\...` →
-/// `\\server\share\...`; anything else is returned unchanged.
-fn strip_windows_verbatim_stem(text: &str) -> std::borrow::Cow<'_, str> {
-    let Some(rest) = text.strip_prefix(r"\\?\") else {
-        return text.into();
-    };
-    if let Some(unc) = rest.strip_prefix(r"UNC\") {
-        return format!(r"\\{unc}").into();
-    }
-    rest.into()
 }
 
 pub fn settings_path() -> PathBuf {
@@ -1006,6 +1011,49 @@ pub(crate) mod tests {
             "verbatim text outside the storage root must pass through unchanged"
         );
     }
+
+    /// Canonicalized paths reach outbound reasons embedded MID-text
+    /// (`write artifact {target}`, `staged artifact {target} vanished`),
+    /// never at position 0 (fix-wave R2 REQUIRED-1): both verbatim
+    /// spellings of the root must fold wherever they appear, and the drive
+    /// form must not leave the old mangled `//?/` stem behind.
+    #[test]
+    fn redact_storage_prefix_folds_midtext_verbatim_root_spellings() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", r"C:\Users\me\.pinvou3") };
+        assert_eq!(
+            redact_storage_prefix(r"write artifact \\?\C:\Users\me\.pinvou3\artifacts\f1.txt: boom"),
+            "write artifact ~/.pinvou3/artifacts/f1.txt: boom",
+            "a mid-text verbatim drive path must fold cleanly (no //?/ remnant)"
+        );
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", r"\\server\share\.pinvou3") };
+        assert_eq!(
+            redact_storage_prefix(
+                r"staged artifact \\?\UNC\server\share\.pinvou3\user\memory\snapshot.md vanished",
+            ),
+            "staged artifact ~/.pinvou3/user/memory/snapshot.md vanished",
+            "a mid-text verbatim UNC path must fold (previously leaked raw)"
+        );
+    }
+
+    /// Mixed text — plain and verbatim spellings of the root in one reason
+    /// (e.g. a rename error quoting both paths) — folds every occurrence.
+    #[test]
+    fn redact_storage_prefix_folds_mixed_spellings_in_one_text() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", r"C:\Users\me\.pinvou3") };
+        assert_eq!(
+            redact_storage_prefix(
+                r"rename C:\Users\me\.pinvou3\a.json to \\?\C:\Users\me\.pinvou3\b.json",
+            ),
+            "rename ~/.pinvou3/a.json to ~/.pinvou3/b.json",
+            "plain and verbatim occurrences of the root must both fold"
+        );
+    }
+
 
     /// Round-14 复审 M1:`ad0971d2e` 并行波插入 separators 钉时吞掉了本钉
     /// 的 `#[test]` 行,钉体静默失联(`dead_code=allow` 下零警告)。恢复
