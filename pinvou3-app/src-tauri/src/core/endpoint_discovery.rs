@@ -829,6 +829,17 @@ async fn ollama_native_failure(base_url: &str, api_key: Option<&str>) -> Option<
 }
 
 async fn ollama_discovered(base_url: &str, api_key: Option<&str>) -> Option<(Vec<RawModel>, bool)> {
+    ollama_discovered_with_budget(base_url, api_key, OLLAMA_SHOW_BUDGET).await
+}
+
+/// 带可注入 show 预算的实现(生产固定 [`OLLAMA_SHOW_BUDGET`];测试用零
+/// 预算驱动「预算即停」路径,免得真的等 20s 墙钟)。内部函数,不是公开
+/// API 面。
+async fn ollama_discovered_with_budget(
+    base_url: &str,
+    api_key: Option<&str>,
+    show_budget: Duration,
+) -> Option<(Vec<RawModel>, bool)> {
     let probe = probe_ollama_models(base_url, api_key).await?;
     let mut models = probe
         .models
@@ -847,7 +858,7 @@ async fn ollama_discovered(base_url: &str, api_key: Option<&str>) -> Option<(Vec
     let mut truncated = missing.len() > OLLAMA_SHOW_LOOKUP_CAP;
     let started = std::time::Instant::now();
     for &index in missing.iter().take(OLLAMA_SHOW_LOOKUP_CAP) {
-        if started.elapsed() >= OLLAMA_SHOW_BUDGET {
+        if started.elapsed() >= show_budget {
             truncated = true;
             break;
         }
@@ -1686,6 +1697,43 @@ mod tests {
             50,
             "逐模型补查封顶 50,不扇出到全部条目"
         );
+    }
+
+    /// G4 钉(a):预算检查先于任何 `/api/show` 请求——零预算 + 3 个缺
+    /// 窗口事实的条目必须直接置 truncated 且一次 show 都不发。把预算检查
+    /// 删掉(3 次命中)或挪到请求之后(≥1 次命中)时,`hits_for` 断言变红;
+    /// 20s 墙钟的真实值无法在测试里等待,注入零预算是唯一可观测的等价
+    /// 驱动方式。
+    #[tokio::test]
+    async fn ollama_show_budget_zero_stops_before_any_show_request() {
+        // show 补查走 60s 共享缓存;测试间端口可能复用,先清缓存防串扰。
+        clear_ollama_show_cache();
+        let mock = models_mock::spawn(&[
+            ("/api/ps", 200, r#"{"models":[]}"#.into()),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"a"},{"name":"b"},{"name":"c"}]}"#.into(),
+            ),
+            ("/api/show", 200, r#"{"parameters":"num_ctx 4096"}"#.into()),
+        ]);
+        let discovered = ollama_discovered_with_budget(&mock.base_url, None, Duration::ZERO)
+            .await
+            .expect("kind 已确认,列表必须装配");
+        assert_eq!(discovered.0.len(), 3);
+        assert!(discovered.1, "零预算必须置 truncated(预算即停语义)");
+        assert_eq!(
+            mock.hits_for("/api/show"),
+            0,
+            "预算检查必须先于任何 /api/show 请求"
+        );
+    }
+
+    /// G4 钉(b):20s 墙钟预算常量钉(与 CLI 侧的预算钉同一镜像)——
+    /// 「静默放大用户等待」必须是显式评审过的改动。
+    #[test]
+    fn ollama_show_budget_is_pinned() {
+        assert_eq!(OLLAMA_SHOW_BUDGET, Duration::from_secs(20));
     }
 
     /// 附加钉:协议映射(preset / wire)——openai 系全走兼容、anthropic /
