@@ -26,6 +26,8 @@ const DISPLAY_DOWNLOAD_BYTES: u64 =
 pub const MODEL_VERSION: &str = "bge-m3";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+// CANCEL 用 Relaxed 即可：除旗标自身外没有任何数据依赖它的顺序
+// （DOWNLOADING 才是闸），store/swap/consume 之间的先后由调用序保证。
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static MODEL_LOAD: ModelLoadCoordinator = ModelLoadCoordinator::new();
 static MODEL_LOAD_ERROR: Mutex<Option<String>> = Mutex::new(None);

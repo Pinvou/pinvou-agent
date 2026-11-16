@@ -4605,6 +4605,9 @@
     } catch (e) {
       // 用户取消（后端哨兵 "cancelled"，见 pinvou-knowledge CANCELLED）不是失败：
       // 记为中性 cancelled 态而非红色 error，下次下载启动时清除。
+      // 注意：这里按 tauri 契约按原始字符串拒绝做全等比对；web 的 RPC shim
+      // 以 Error 对象拒绝（String(e) 会带 "Error: " 前缀），若将来把下载接上
+      // web 宿主，须先归一化拒绝形态，否则取消会被误判为红色错误。
       const message = String(e);
       const cancelled = message === "cancelled";
       const failedStatus = await invoke("kb_model_status").catch(function () { return null; });
