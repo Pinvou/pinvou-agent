@@ -69,6 +69,26 @@ pub fn redact_storage_prefix(text: &str) -> String {
         folded = folded.replace(&verbatim_unc, "~/.pinvou3");
         changed = true;
     }
+    // Canonical spelling: producers that resolve their targets (artifact
+    // staging canonicalizes before formatting reasons) embed the RESOLVED
+    // path, which differs from every configured-root spelling above when
+    // the storage directory is relocated through a junction/symlink - all
+    // configured-root candidates miss that text and an absolute path ships
+    // outbound (review JensenChen28 2026-11-16 P2). Fold the resolved root
+    // too, when resolution succeeds and it is not already one of the
+    // configured-root spellings (the normal, non-relocated case).
+    if let Ok(canonical) = std::fs::canonicalize(pinvou3_home()) {
+        let canonical = canonical.display().to_string();
+        if !canonical.is_empty()
+            && canonical != prefix
+            && canonical != verbatim_drive
+            && canonical != verbatim_unc
+            && folded.contains(&canonical)
+        {
+            folded = folded.replace(&canonical, "~/.pinvou3");
+            changed = true;
+        }
+    }
     let plain = folded.replace(&prefix, "~/.pinvou3");
     if plain != folded {
         folded = plain;
@@ -1184,5 +1204,89 @@ pub(crate) mod tests {
             text,
             "an empty storage prefix must leave the text untouched"
         );
+    }
+
+    /// 配置根经目录链接重定位后,canonicalize 解析出的目标路径与配置拼写
+    /// 不同:产出该 canonical 路径的错误文本(artifact staging 等解析型
+    /// producer)必须折叠,否则绝对路径原样出站(review JensenChen28
+    /// 2026-11-16 P2)。unix 用 symlink 构造重定位(无特权要求);windows
+    /// 的 symlink_dir 需要特权,创建失败时显式打印并跳过(宿主能力限制,
+    /// 非静默吞)——CI 的 windows-rust-test 腿以特权运行时仍会实跑。
+    #[cfg(unix)]
+    #[test]
+    fn redact_storage_prefix_folds_canonical_root_behind_relocation() {
+        use std::os::unix::fs::symlink;
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let base = std::env::temp_dir().join(format!(
+            "paths-redact-canonical-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let real = base.join("relocated-root");
+        std::fs::create_dir_all(&real).expect("create relocated root");
+        let link = base.join("configured-root");
+        symlink(&real, &link).expect("create relocation symlink");
+        // SAFETY: ENV_LOCK held via locked_env; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &link) };
+
+        let canonical_root = std::fs::canonicalize(&link).expect("canonicalize through link");
+        let reason = format!(
+            "write artifact {}\\artifacts\\f1.txt: boom",
+            canonical_root.display()
+        );
+        assert_ne!(
+            canonical_root, link,
+            "the fixture must relocate the root (link and target differ)"
+        );
+        assert_eq!(
+            redact_storage_prefix(&reason),
+            "write artifact ~/.pinvou3/artifacts/f1.txt: boom",
+            "an error text carrying the canonicalized relocated root must fold"
+        );
+
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn redact_storage_prefix_folds_canonical_root_behind_relocation() {
+        use std::os::windows::fs::symlink_dir;
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let base = std::env::temp_dir().join(format!(
+            "paths-redact-canonical-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let real = base.join("relocated-root");
+        std::fs::create_dir_all(&real).expect("create relocated root");
+        let link = base.join("configured-root");
+        if symlink_dir(&real, &link).is_err() {
+            eprintln!(
+                "skipping canonical-root fold test: symlink_dir requires privilege on this host"
+            );
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+        // SAFETY: ENV_LOCK held via locked_env; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &link) };
+
+        let canonical_root = std::fs::canonicalize(&link).expect("canonicalize through link");
+        let reason = format!(
+            "write artifact {}\\artifacts\\f1.txt: boom",
+            canonical_root.display()
+        );
+        assert_ne!(
+            canonical_root, link,
+            "the fixture must relocate the root (link and target differ)"
+        );
+        assert_eq!(
+            redact_storage_prefix(&reason),
+            "write artifact ~/.pinvou3/artifacts/f1.txt: boom",
+            "an error text carrying the canonicalized relocated root must fold"
+        );
+
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
