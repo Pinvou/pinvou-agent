@@ -45,6 +45,7 @@
     "bundle:nsis:local": "powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/packaging/windows/nsis/scripts/stage-resources.ps1 -ValidateOnly && node scripts/tauri/build.js bundle --verbose --bundles nsis --config src-tauri/target/release/nsis-stage/tauri.nsis-stage.conf.json",
     "test:tauri-layout": "node tests/tauri_platform_layout.test.js",
     "test:tauri-effective-config": "node tests/tauri_effective_config.test.js",
+    "test:tauri-config-schema": "node tests/tauri_config_schema.test.js",
     "test:startup-window": "node tests/startup_window_logic.test.mjs",
     "perf:engine-startup": "node scripts/engine-startup-report.mjs",
     "perf:native-stream": "node scripts/native-stream-performance.mjs",
