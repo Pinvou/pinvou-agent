@@ -1036,12 +1036,15 @@ const CONNECTION_MODELS_BODY_CAP_BYTES: usize = 4 * 1024 * 1024;
 /// JSON(`Err` 折叠为「无事实」,不进这里),按形态取条目列表,再按
 /// monitor `parse_models_response` 的匹配语义找配置模型自己的条目——
 /// 精确 id → ASCII 大小写不敏感 → ollama `:latest` 规范形;未命中不填。
-/// OpenAI 形态直接复用 [`crate::core::model_endpoint::
-/// parse_models_response_list`](窗口 + 三形态输出上限的既有口径);
+/// OpenAI 形态(minor-9/10 与发现阶梯对齐)直接迭代条目——`{data}` 数组
+/// **或裸数组**(Together 形态,旧经 `parse_models_response_list` 的实现
+/// 不认),context 用 [`crate::core::endpoint_discovery::
+/// parse_entry_context_window`](三拼写归一取最紧、拒绝 `max_context_length`
+/// 能力上限),output 用 [`crate::core::model_endpoint::
+/// parse_entry_output_limit`](三形态取最紧)——字段名知识只此一份;
 /// anthropic / gemini 原生形态复用 [`crate::core::endpoint_discovery`]
-/// 的共享单条目解析(字段名知识只此一份,与发现翻页同源)。刻意差异:
-/// 发现侧 gemini 列表页按 `generateContent` 过滤条目,富化不过滤——
-/// 配置了哪个条目就匹配哪个。
+/// 的共享单条目解析。刻意差异:发现侧 gemini 列表页按 `generateContent`
+/// 过滤条目,富化不过滤——配置了哪个条目就匹配哪个。
 fn connection_model_facts(
     value: &serde_json::Value,
     shape: ModelsListingShape,
@@ -1050,9 +1053,22 @@ fn connection_model_facts(
     let configured = configured.map(str::trim).filter(|name| !name.is_empty())?;
     let entries: Vec<(String, Option<u32>, Option<u32>)> = match shape {
         ModelsListingShape::OpenAi => {
-            crate::core::model_endpoint::parse_models_response_list(value)?
-                .into_iter()
-                .map(|entry| (entry.id, entry.max_model_len, entry.max_output_tokens))
+            let items = value
+                .get("data")
+                .and_then(serde_json::Value::as_array)
+                .or_else(|| value.as_array())?;
+            items
+                .iter()
+                .filter_map(|item| {
+                    let id = item.get("id").and_then(serde_json::Value::as_str)?.trim();
+                    (!id.is_empty()).then(|| {
+                        (
+                            id.to_string(),
+                            crate::core::endpoint_discovery::parse_entry_context_window(item),
+                            crate::core::model_endpoint::parse_entry_output_limit(item),
+                        )
+                    })
+                })
                 .collect()
         }
         ModelsListingShape::Anthropic => value
@@ -3058,6 +3074,54 @@ mod tests {
         );
         // configured_model_name:未知 id 与 None 都不解析出名字。
         assert_eq!(configured_model_name(None), None);
+    }
+
+    /// minor-9/10 对齐钉:OpenAI 形态富化与发现阶梯同一份字段名知识——
+    /// 裸数组形态(Together)直接命中;`context_length` / `context_window`
+    /// 拼写采纳(旧经 `parse_models_response_list` 的实现只认
+    /// `max_model_len`);`max_context_length`(LM Studio 能力上限)拒绝,
+    /// 生效窗口字段不被同条目的能力上限覆盖。拒绝口径原本由富化车道
+    /// 经 `parse_models_response_list` 间接获得,现在由本车道自己钉住。
+    #[test]
+    fn connection_facts_openai_arm_matches_discovery_field_aliases() {
+        // 裸数组 + context_length 拼写。
+        let value = serde_json::from_str::<serde_json::Value>(
+            r#"[{"id":"together-x","context_length":32768,"max_output_tokens":4096}]"#,
+        )
+        .unwrap();
+        let facts = connection_model_facts(&value, ModelsListingShape::OpenAi, Some("together-x"))
+            .expect("bare array with context_length must hit");
+        assert_eq!(facts.context_window_tokens, Some(32_768));
+        assert_eq!(facts.max_output_tokens, Some(4_096));
+        // context_window 拼写同样采纳。
+        let value = serde_json::from_str::<serde_json::Value>(
+            r#"{"data":[{"id":"cw","context_window":8192}]}"#,
+        )
+        .unwrap();
+        let facts = connection_model_facts(&value, ModelsListingShape::OpenAi, Some("cw"))
+            .expect("context_window alias must hit");
+        assert_eq!(facts.context_window_tokens, Some(8_192));
+        // max_context_length 拒绝;同条目的 max_model_len 生效值照常采纳。
+        let value = serde_json::from_str::<serde_json::Value>(
+            r#"{"data":[
+                {"id":"cap-only","max_context_length":131072},
+                {"id":"mixed","max_model_len":8192,"max_context_length":131072}
+            ]}"#,
+        )
+        .unwrap();
+        // 条目本身照样命中(cap-only 匹配配置名),但能力上限不得成为
+        // context 事实——双 None。
+        let cap_only = connection_model_facts(&value, ModelsListingShape::OpenAi, Some("cap-only"))
+            .expect("the entry matches; the cap must simply not surface as a fact");
+        assert_eq!(
+            cap_only.context_window_tokens, None,
+            "capability cap must not become a context fact"
+        );
+        assert_eq!(cap_only.max_output_tokens, None);
+        let mixed = connection_model_facts(&value, ModelsListingShape::OpenAi, Some("mixed"))
+            .expect("served window entry must hit");
+        assert_eq!(mixed.context_window_tokens, Some(8_192));
+        assert_eq!(mixed.max_output_tokens, None);
     }
 
     /// 限长常量钉(round-1 fix wave):4 MiB 富化读取上限只应显式改动;

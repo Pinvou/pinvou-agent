@@ -464,8 +464,10 @@ fn terminal_from_outcome(outcome: ProbeOutcome) -> Terminal {
 /// 服务窗口——远程兼容端点不会命中本地短路,这个字段一旦被采纳就会经
 /// 空表单预填 / 批量添加落成部署事实;仓库不变量
 /// `parse_models_response_list_refuses_lmstudio_cap_alias` 对连接测试路径
-/// 钉了同一拒绝,发现路径口径一致(下方同口径拒绝测试钉住)。
-fn parse_entry_context_window(item: &Value) -> Option<u32> {
+/// 钉了同一拒绝,发现路径口径一致(下方同口径拒绝测试钉住)。`pub(crate)`:
+/// settings 的连接测试富化(minor-9/10 对齐)复用同一份字段名知识,
+/// 不再经 `parse_models_response_list` 间接获得(更窄的)旧口径。
+pub(crate) fn parse_entry_context_window(item: &Value) -> Option<u32> {
     ["max_model_len", "context_length", "context_window"]
         .into_iter()
         .filter_map(|key| item.get(key).and_then(parse_positive_u32))
