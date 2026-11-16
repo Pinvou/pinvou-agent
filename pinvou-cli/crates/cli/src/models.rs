@@ -2468,6 +2468,19 @@ fn body_read_is_timeout(error: &std::io::Error) -> bool {
         if let Some(reqwest_error) = err.downcast_ref::<reqwest::Error>() {
             return reqwest_error.is_timeout();
         }
+        // The blocking reader's client deadline surfaces as an OPAQUE
+        // hyper-util timeout: kind Other, not downcast-able to
+        // reqwest::Error or io::Error, its Display exactly the canonical
+        // std TimedOut phrase. Exact-equality is the only honest signal
+        // here (found by the round-5 stall test: the walk above never
+        // matched a real mid-body stall, so the timeout split was
+        // unreachable in practice and every stall read as a plain
+        // network cut) — a substring scan would repeat the URL-bias
+        // mistake the TLS arm fixed, exact equality cannot fire on
+        // arbitrary embedded text.
+        if err.to_string() == "operation timed out" {
+            return true;
+        }
         source = err.source();
     }
     false
@@ -7942,6 +7955,57 @@ mod tests {
         );
     }
 
+    /// The mid-body TIMEOUT split, end to end (round-3 review minor's CLI
+    /// half, still unpinned as of round 5): headers arrive, the body then
+    /// STALLS — the client deadline fires mid-read and the row is `error`
+    /// with transport `timeout` (retryable), never the fallback `network`.
+    /// No status survives (the response never completed), unlike the cut
+    /// short above. Writing this test EXPOSED a real bug: the split was
+    /// unreachable in practice — the blocking reader's deadline error is
+    /// an opaque hyper-util timeout (kind Other, downcast-free) that the
+    /// reqwest::Error-only classifier never matched, so every real stall
+    /// read as a plain network cut and the round-3 arm existed only for
+    /// synthetic errors; `body_read_is_timeout` now matches the canonical
+    /// timeout phrase by exact Display equality. Mutation: reverting the
+    /// classifier arm turns this test red (network vs timeout). Costs one
+    /// real client-timeout window (~8s): the discovery client is a fixed
+    /// 8s singleton with no per-test timeout seam, so the wiring can only
+    /// be pinned against the real deadline.
+    #[test]
+    fn discover_mid_body_stall_classifies_as_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stalled listener");
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept probe connection");
+            let mut buf = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            // Half a 200 answer: content-length promises far more than the
+            // bytes written, then the stream HOLDS (no close) — the body
+            // read can only end at the client timeout.
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 512\r\nconnection: close\r\n\r\n",
+            );
+            let _ = std::io::Write::write_all(&mut stream, br#"{"data":[{"id":"partial""#);
+            // Hold past the client timeout; the drop afterwards closes the
+            // socket and the thread without leaking either.
+            std::thread::sleep(Duration::from_secs(12));
+        });
+        // The anthropic protocol takes no local short-circuit: the ladder
+        // dials the bare listener directly, one request.
+        let listing =
+            run_endpoint_discovery(&format!("http://{addr}/"), None, DiscoveryProtocol::Anthropic);
+        assert_eq!(listing.status, ListingStatus::Error);
+        assert_eq!(
+            listing.http_status,
+            None,
+            "a timeout is not an HTTP-status failure — the response never completed"
+        );
+        assert_eq!(listing.transport.as_deref(), Some("timeout"));
+        assert!(listing.models.is_empty(), "failures carry no half data");
+        server.join().expect("stall thread joins");
+    }
+
     /// The Tachyon arm, end to end on the discover lane: a server whose
     /// `/get_server_info` carries the version field SGLang's loose signature
     /// matches (the shape every new Tachyon package exposes) but whose
@@ -8132,6 +8196,49 @@ mod tests {
                 "models-probe"
             )),
             "the affinity value matches the shared models-probe derivation"
+        );
+    }
+
+    /// The COMPAT ladder's gateway affinity header, pinned on its own
+    /// request builder (round-5 review m1: the anthropic and gemini
+    /// builders were pinned, but the compat lane — the lane the round-3
+    /// finding was originally about — had no presence assertion, so
+    /// deleting its `with_discovery_affinity` call kept every suite green
+    /// while a gateway discovery 400'd with `MissingSessionID`). Same
+    /// shared derivation, no-op off the gateway.
+    #[test]
+    fn discover_compat_request_carries_the_gateway_affinity_header() {
+        let client = discovery_client().expect("discovery client singleton");
+        let gateway = "https://opencode.ai/zen/go/v1";
+        let request = discovery_openai_request(
+            client,
+            &format!("{gateway}/models"),
+            Some("probe-key"),
+            gateway,
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .map(|value| value.to_str().expect("header ascii").to_owned()),
+            Some(pinvou3_lib::model_probe::opencode_session_id_for(
+                "models-probe"
+            )),
+            "the affinity value matches the shared models-probe derivation"
+        );
+        let request = discovery_openai_request(
+            client,
+            "https://api.example.com/v1/models",
+            Some("probe-key"),
+            "https://api.example.com/v1",
+        )
+        .build()
+        .unwrap();
+        assert!(
+            request.headers().get("x-opencode-session").is_none(),
+            "the affinity header is a gateway-only no-op off the gateway"
         );
     }
 
