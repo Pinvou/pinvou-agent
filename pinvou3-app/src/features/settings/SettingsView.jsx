@@ -881,6 +881,21 @@ function hasStoredCredential(record) {
         }
         finally { setAddingAllModels(false); setAddAllModelsConfirm(null); }
       }
+      // Escape 逐层关(round-5 审 m1,与 ACP 线 ProviderFormModal 的窗口级
+      // 监听同款;聊天线此前只有 X 按钮能关 picker):视觉顶层先关——批量
+      // 确认弹窗(z-120)先于 picker(z-100);批量保存在飞时不入(忙碌中
+      // 丢弃确认只会把「是否完成」变得不可见)。onClose 的清扫语义与 X
+      // 按钮一致(摘 picker + 行内添加结果)。
+      useEffect(() => {
+        if (!endpointPickerOpen && !addAllModelsConfirm) return undefined;
+        const onPickerKeyDown = e => {
+          if (e.key !== 'Escape') return;
+          if (addAllModelsConfirm && !addingAllModels) setAddAllModelsConfirm(null);
+          else if (endpointPickerOpen) { setEndpointPickerOpen(false); setEndpointAddResult(null); }
+        };
+        window.addEventListener('keydown', onPickerKeyDown);
+        return () => window.removeEventListener('keydown', onPickerKeyDown);
+      }, [endpointPickerOpen, addAllModelsConfirm, addingAllModels]);
       // 测试图片能力(设计 §7.3):与测试连接同一模式——表单未保存也按当前表单值发测,
       // 凭据优先用新填的 key,否则由后端按 model_id 读已保存凭据。
       function normalizeImageCapabilityTestResult(value) {

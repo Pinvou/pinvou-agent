@@ -2864,6 +2864,17 @@ async function modalWidth(page, headingText) {
       { id: 'kimi-k3', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
     ],
   }));
+  // Escape 分层关(round-5 审 m1):聊天线 picker 此前只有 X 按钮能关(ACP
+  // 线已有窗口级 Escape 分层);重新拉起 picker 后按 Escape,断言摘除。
+  await clickModalExact(page, '获取模型列表');
+  await sleep(500);
+  const pickerBeforeEscape = await page.evaluate(() => !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'));
+  await page.keyboard.press('Escape');
+  await sleep(250);
+  const escapeClosed = await page.evaluate(() => !document.querySelector('[data-testid="endpoint-model-picker-dialog"]'));
+  rec('⑥.5k10 Escape closes the chat-line endpoint picker (ACP-line parity; X was previously the only dismissal path)',
+    pickerBeforeEscape && escapeClosed,
+    JSON.stringify({ pickerBeforeEscape, escapeClosed }));
   await clickModalExact(page, '取消');
   await sleep(200);
 

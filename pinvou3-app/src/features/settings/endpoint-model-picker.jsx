@@ -156,6 +156,7 @@ const EndpointModelPicker = ({ open, onClose, listing, loading, onPick, filterab
                   className={ACTION_CLASS}>{settingsCopy.addAllModels}</button>
               )}
               <button type="button" data-testid="endpoint-model-picker-close" onClick={onClose}
+                aria-label={settingsCopy.modelListClose}
                 className="h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]"><X size={18} /></button>
             </div>
           </div>

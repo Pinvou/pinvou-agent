@@ -1295,7 +1295,7 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '�
 // uiAcpProviders クラスタに追加。
 Object.assign(dictJa.uiSettingsDetail, {
   fetchModelList:'モデル一覧を取得', fetchingModelList:'モデル一覧を取得中…',
-  modelListTitle:'エンドポイントのモデル一覧', modelListFilterPlaceholder:'モデル ID を絞り込み…',
+  modelListTitle:'エンドポイントのモデル一覧', modelListClose:'閉じる', modelListFilterPlaceholder:'モデル ID を絞り込み…',
   addModelRow:'追加', addAllModels:'すべて追加',
   addAllConfirm:n=>`${n} 件のモデルを追加します。同じモデル ID とサービスアドレスで保存済みのものは自動的にスキップされます。続行しますか？`,
   addAllTruncated:n=>`件数が多いため、先頭の ${n} 件のみ追加します。`,

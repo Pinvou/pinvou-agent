@@ -1184,7 +1184,7 @@ Object.assign(dictZh.uiChat, {
 // maxOutput 字段、测试连接自动填入的一次性提示;ACP 线复用键进 uiAcpProviders。
 Object.assign(dictZh.uiSettingsDetail, {
   fetchModelList:'获取模型列表', fetchingModelList:'正在获取模型列表…',
-  modelListTitle:'端点模型列表', modelListFilterPlaceholder:'筛选模型 ID…',
+  modelListTitle:'端点模型列表', modelListClose:'关闭', modelListFilterPlaceholder:'筛选模型 ID…',
   addModelRow:'添加', addAllModels:'全部添加',
   addAllConfirm:n=>`将添加 ${n} 个模型；与已保存模型重复（相同模型 ID 和服务地址）的会自动跳过。继续？`,
   addAllTruncated:n=>`模型较多，仅添加前 ${n} 个。`,

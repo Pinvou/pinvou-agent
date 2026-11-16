@@ -1288,7 +1288,7 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认�
 // ACP-line keys ride the uiAcpProviders cluster.
 Object.assign(dictEn.uiSettingsDetail, {
   fetchModelList:'Fetch model list', fetchingModelList:'Fetching model list…',
-  modelListTitle:'Models at this endpoint', modelListFilterPlaceholder:'Filter model IDs…',
+  modelListTitle:'Models at this endpoint', modelListClose:'Close', modelListFilterPlaceholder:'Filter model IDs…',
   addModelRow:'Add', addAllModels:'Add all',
   addAllConfirm:n=>`Add ${n} model${n === 1 ? '' : 's'}? Entries already saved with the same model ID and endpoint URL are skipped automatically. Continue?`,
   addAllTruncated:n=>`Long list — only the first ${n} models will be added.`,
