@@ -96,11 +96,11 @@ export function createBrowserSessionEpochTracker() {
 
   return {
     advance(sessionId = null) {
-      if (!isSessionId(sessionId)) {
+      if (isSessionId(sessionId)) {
+        sessionEpochs.set(sessionId, (sessionEpochs.get(sessionId) || 0) + 1);
+      } else {
         globalEpoch += 1;
         sessionEpochs.clear();
-      } else {
-        sessionEpochs.set(sessionId, (sessionEpochs.get(sessionId) || 0) + 1);
       }
       return snapshot(sessionId);
     },
@@ -124,8 +124,8 @@ export async function awaitBrowserListenerReadiness(
   registrations,
   {
     timeoutMs = 2000,
-    schedule = globalThis.setTimeout,
-    cancel = globalThis.clearTimeout,
+    schedule = setTimeout,
+    cancel = clearTimeout,
   } = {},
 ) {
   if (!Array.isArray(registrations)) throw new TypeError('registrations must be an array');
@@ -172,9 +172,9 @@ export function navigationEventSettlesPending(
   activeTab,
 ) {
   if (!pendingNavigation || typeof eventTab !== 'string' || eventTab.length === 0) return false;
-  const targetsPendingTab = pendingNavigation.tab != null
-    ? pendingNavigation.tab === eventTab
-    : eventTargetsActiveBrowserTab(eventTab, activeTab);
+  const targetsPendingTab = pendingNavigation.tab == null
+    ? eventTargetsActiveBrowserTab(eventTab, activeTab)
+    : pendingNavigation.tab === eventTab;
   return targetsPendingTab
     && typeof eventRequestId === 'string'
     && eventRequestId === pendingNavigation.requestId;

@@ -47,7 +47,7 @@ export function isActiveSpawn(item) {
  * Degenerate group shape for a single unannotated spawn item: the render
  * layer's fallback when an item somehow bypasses annotation (kept here so
  * the failure predicate stays in one place).
- * @returns {{count: number, failed: number, running: number}}
+ * @returns {{count: number, failed: number, running: number}} all-zero group counters
  */
 export function spawnGroupOf(item) {
   return {
@@ -62,7 +62,6 @@ export function spawnGroupOf(item) {
  * are shallow-copied and get `spawnGroup` (first of the sequence) or
  * `spawnGroupHidden: true` (the rest); all other items are returned by
  * reference to avoid re-rendering the whole list.
- *
  * @returns {Array} a new array; non-grouped items keep their references.
  */
 export function annotateAgentSpawnGroups(items) {
@@ -71,14 +70,14 @@ export function annotateAgentSpawnGroups(items) {
   let group = null;
   for (const item of items) {
     if (isAgentSpawnChatItem(item)) {
-      if (!group) {
-        group = spawnGroupOf(item);
-        result.push({ ...item, spawnGroup: group });
-      } else {
+      if (group) {
         group.count += 1;
         if (isFailedSpawn(item)) group.failed += 1;
         if (isActiveSpawn(item)) group.running += 1;
         result.push({ ...item, spawnGroupHidden: true });
+      } else {
+        group = spawnGroupOf(item);
+        result.push({ ...item, spawnGroup: group });
       }
       continue;
     }

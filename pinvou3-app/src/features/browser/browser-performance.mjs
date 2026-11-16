@@ -11,14 +11,14 @@ export const BROWSER_PERFORMANCE_THRESHOLDS_MS = Object.freeze({
 const samples = new Map();
 
 export function browserPerformanceNow() {
-  return globalThis.performance && typeof globalThis.performance.now === 'function'
-    ? globalThis.performance.now()
+  return globalThis.performance && typeof performance.now === 'function'
+    ? performance.now()
     : Date.now();
 }
 
 export function percentile(values, quantile) {
   if (!Array.isArray(values) || values.length === 0) return null;
-  const ordered = values.slice().sort((a, b) => a - b);
+  const ordered = [...values].sort((a, b) => a - b);
   const rank = Math.max(0, Math.ceil(quantile * ordered.length) - 1);
   return ordered[Math.min(rank, ordered.length - 1)];
 }

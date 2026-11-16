@@ -1,7 +1,7 @@
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 
 function normalizeVoiceShortcutMode(mode) {
-  if (mode === 'edit' || mode === 'voice_edit' || mode === 'draft_edit') return 'edit';
+  if (['edit', 'voice_edit', 'draft_edit'].includes(mode)) return 'edit';
   return mode === 'task' ? 'task' : 'dictation';
 }
 
@@ -35,11 +35,15 @@ function shouldIgnoreVoiceShortcutEvent(event) {
   return !event || event.repeat || Boolean(event.defaultPrevented) || isImeComposing(event);
 }
 
+const ACTIVE_VOICE_SHORTCUT_STATUSES = [
+  'requesting_permission',
+  'recording',
+  'transcribing',
+  'postprocessing',
+];
+
 function isActiveVoiceShortcutStatus(status) {
-  return status === 'requesting_permission'
-    || status === 'recording'
-    || status === 'transcribing'
-    || status === 'postprocessing';
+  return ACTIVE_VOICE_SHORTCUT_STATUSES.includes(status);
 }
 
 // Windows combo passthrough injects a synthetic Alt down within the same event batch as the

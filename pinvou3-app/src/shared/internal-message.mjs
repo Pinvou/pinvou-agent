@@ -37,7 +37,7 @@ export function isInternalRuntimeEnvelopeText(value) {
  * preamble so ordinary mentions or quoted fragments remain visible.
  */
 export function isContextUpdateRuntimeMessage(value) {
-  const text = String(value || '').trim().replace(/\r\n/g, '\n');
+  const text = String(value || '').trim().replaceAll('\r\n', '\n');
   const prefix = [
     '<context_update>',
     'Session context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):',
