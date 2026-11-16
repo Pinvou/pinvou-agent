@@ -10,7 +10,10 @@ VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 TAG="${1:-v$VERSION}"
 
 gh release view "$TAG" >/dev/null
-(cd "$APP_DIR" && npm ci --prefer-offline --no-audit && npm run build)
+# npm ci runs under the shared bounded helper's per-leg budget: a wedged
+# registry must fail this leg, not hang the maintainer terminal (the same
+# per-leg discipline every CI npm ci lane carries).
+(cd "$APP_DIR" && bash "$REPO_ROOT/scripts/ci/npm-ci-bounded.sh" 900 && npm run build)
 
 # Take the architecture from the artifact the bundler actually produced. The
 # build target comes from the host's node/Rust triple, never from dpkg, so dpkg
