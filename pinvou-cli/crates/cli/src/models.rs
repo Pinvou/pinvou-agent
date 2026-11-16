@@ -3551,14 +3551,26 @@ fn discovery_openai_entries(value: &serde_json::Value) -> Option<&Vec<serde_json
 /// model list, otherwise the parsed entries truncated to
 /// [`DISCOVER_ENTRY_CAP`] and whether the cap cut anything off (an empty
 /// array is a legal listed answer). Factored out of the network lane so the
-/// cap is testable without a server.
+/// cap is testable without a server. The cap stops PARSING at the bound
+/// (round-5 review m1 — the app lane's per-entry break, previously the CLI
+/// collected every valid row and `truncate`d after): a hostile endpoint
+/// packing minimal entries into the 8 MiB body cap no longer materializes
+/// ~640k rows (~130-190 MB transient) before the cut — the row phase now
+/// costs the same ~2001-row bound as the app.
 fn discovery_openai_models(value: &serde_json::Value) -> Option<(Vec<DiscoveredModel>, bool)> {
     const DISCOVER_ENTRY_CAP: usize = 2000;
     let entries = discovery_openai_entries(value)?;
-    let mut models: Vec<DiscoveredModel> =
-        entries.iter().filter_map(discovery_openai_entry).collect();
-    let truncated = models.len() > DISCOVER_ENTRY_CAP;
-    models.truncate(DISCOVER_ENTRY_CAP);
+    let mut models: Vec<DiscoveredModel> = Vec::new();
+    let mut truncated = false;
+    for entry in entries {
+        if let Some(model) = discovery_openai_entry(entry) {
+            if models.len() >= DISCOVER_ENTRY_CAP {
+                truncated = true;
+                break;
+            }
+            models.push(model);
+        }
+    }
     Some((models, truncated))
 }
 
