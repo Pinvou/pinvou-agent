@@ -87,6 +87,15 @@ pub struct RemoteKnowledgeProbe {
 }
 
 impl KnowledgeClient {
+    /// The owner-devices walk's page request and page-count bounds. Module
+    /// (impl) scope rather than function-local so the test module can pin the
+    /// shipped values: a silent revert to the old fixed first-page listing
+    /// must fail a test, not just a reviewer (r13 review).
+    const DEVICES_PAGE_LIMIT: usize = 500;
+    /// 200 full pages = 100k devices, ~100x any plausible real fleet; the
+    /// cap converts the pathological server from a hang into a loud error.
+    const DEVICES_MAX_PAGES: usize = 200;
+
     pub fn new(endpoint: impl Into<String>, token: impl Into<String>) -> Result<Self, String> {
         crate::ensure_tls_crypto_provider();
         let endpoint = normalize_endpoint(&endpoint.into())?;
@@ -1159,6 +1168,21 @@ mod tests {
         assert!(normalize_endpoint("http://8.8.8.8:3210").is_err());
         assert!(normalize_endpoint("http://knowledge.example.com:3210").is_err());
         assert!(normalize_endpoint("https://knowledge.example.com").is_ok());
+    }
+
+    #[test]
+    fn devices_paging_bounds_hold_shipped_values() {
+        // r13 review: the walk bounds had no pin — a silent revert to the old
+        // fixed first-page listing shipped green. The walk itself is
+        // transport-bound (no test seam), so the load-bearing contract is the
+        // values; pin them literally next to their consumers.
+        assert_eq!(KnowledgeClient::DEVICES_PAGE_LIMIT, 500);
+        assert_eq!(KnowledgeClient::DEVICES_MAX_PAGES, 200);
+        assert_eq!(
+            KnowledgeClient::DEVICES_MAX_PAGES * KnowledgeClient::DEVICES_PAGE_LIMIT,
+            100_000,
+            "200 full pages × 500 = the fleet ceiling that turns the pathological server into a loud error"
+        );
     }
 
     #[test]
