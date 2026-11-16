@@ -1081,7 +1081,13 @@ mod tests {
 
     #[test]
     fn compute_stats_aggregates_usage_and_status() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-stats-{}",
             std::time::SystemTime::now()
@@ -1089,7 +1095,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-stats";
@@ -1140,7 +1146,13 @@ mod tests {
     /// PascalCase,脏数据可能是 lowercase)。
     #[test]
     fn compute_stats_counts_interrupted_terminal_state() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-interrupted-{}",
             std::time::SystemTime::now()
@@ -1148,7 +1160,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-interrupted";
@@ -1189,8 +1201,13 @@ mod tests {
     /// (随 #562 移除的 compute_stats_on_missing_session_is_default 恢复。)
     #[test]
     fn compute_stats_on_missing_session_is_default() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // locked_env restores the previous value on scope exit (panic
+        // paths included) while the lock is still held - the hand-rolled
+        // set_var leaked the non-existent root into later tests (review
+        // JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
         unsafe {
             std::env::set_var(
                 "PINVOU3_HOME",
@@ -1213,7 +1230,13 @@ mod tests {
     /// limitreached/refused),防止局部改回大小写敏感匹配的突变存活。
     #[test]
     fn compute_stats_classifies_real_terminal_edges() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-terminal-edges-{}",
             std::time::SystemTime::now()
@@ -1221,7 +1244,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-terminal-edges";
@@ -1275,7 +1298,13 @@ mod tests {
     /// start.is_none() 跳过的突变都是绿的。
     #[test]
     fn compute_stats_excludes_orphan_assistant_done() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-orphan-{}",
             std::time::SystemTime::now()
@@ -1283,7 +1312,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-orphan-done";
@@ -1341,7 +1370,13 @@ mod tests {
     /// assistant_done,未收口时是该轮 user_start。
     #[test]
     fn compute_stats_first_last_ts_semantics() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timing-ts-semantics-{}",
             std::time::SystemTime::now()
@@ -1349,7 +1384,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         // 末轮已收口:头孤儿 done(T0)→ 轮A(T1,T2)→ 轮B(T3,T4)
