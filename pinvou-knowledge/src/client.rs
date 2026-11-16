@@ -420,7 +420,9 @@ impl KnowledgeClient {
     /// (对端完全正常),或对端未按 offset 翻页(恒回整页)。注意短页
     /// 终止假设对端页长不低于 [`PAGE_LIMIT_CAP`]:这只在本仓库对端成立
     /// (共享同一常量);外部对端若把页长压得更低,首窗即短页,循环会
-    /// 静默提前终止,该形状无法在协议内检测。
+    /// 静默提前终止,该形状无法在协议内检测。另外整个翻页过程只有单
+    /// 请求超时,没有总预算:对端若每次都在超时边缘缓慢应答,最坏拖满
+    /// 101 个单请求超时才报错;局域网成对场景按可接受处理。
     async fn paged_all<T: DeserializeOwned>(&self, base_path: &str) -> Result<Vec<T>, String> {
         let mut all = Vec::new();
         let mut offset = 0;
@@ -527,6 +529,10 @@ impl KnowledgeClient {
             .await
     }
 
+    /// 官方构建的非分页清单便捷面:不带 limit/offset,由服务端一次返回
+    /// 全量。注意响应仍受客户端 8MiB 单响应上限约束,清单很大时(数万
+    /// 条量级)会显式报错而不是静默截断;更大的清单用 [`Self::documents_page`]
+    /// 逐窗取。
     pub async fn documents(
         &self,
         collection_id: i64,

@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 
 /// 单页查询的行数上限。服务端各列表查询把显式 limit 收敛到该值
 /// (`limit.clamp(1, PAGE_LIMIT_CAP)`);客户端逐页拉全量时必须恰好以
-/// 该值翻页——更大被 clamp 缩回后短页终止会提前触发而静默截断,更小
-/// 只增加往返。服务端与客户端共用一个常量,防止两侧页长漂移。
+/// 该值翻页——终止判据是"本页行数 < 该值",所以页长取小才危险:对端
+/// 如实执行更小的页长会让首窗即短页而静默截断;取大则只会被对端按本
+/// 值 clamp 收敛,无害。服务端与客户端共用一个常量,防止两侧页长漂移
+/// (漂移后果见 client::paged_all 的短页终止说明)。
 pub(crate) const PAGE_LIMIT_CAP: usize = 500;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
