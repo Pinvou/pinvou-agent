@@ -5670,6 +5670,56 @@ fn restore_rewound_turns_round_trips_messages_and_consumes_record() {
     assert!(store.restore_rewound_turns(&id).is_err());
 }
 
+/// The per-record 8 MiB refusal (r11 review M6) must hold through the
+/// public truncate path, before any disk change (r12 review M2: the
+/// enforcement call site had no coverage — mutations showed the whole suite
+/// staying green with the refusal stripped). An oversized tail errors
+/// truthfully, leaves the transcript untouched, and writes no backup
+/// record.
+#[test]
+fn truncate_refuses_an_oversized_tail_before_any_disk_change() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let messages = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        user_text("第二轮"),
+        // The tail alone serializes past MAX_REWIND_RECORD_BYTES (8 MiB):
+        // plain ASCII so JSON escaping cannot shrink it.
+        assistant_text(&"x".repeat(8_600_000)),
+    ];
+    store
+        .update_messages(&id, messages.clone())
+        .expect("seed transcript");
+
+    let error = store
+        .truncate_to_user_turn(&id, 1, None)
+        .err()
+        .expect("an oversized tail must be refused");
+    let detail = format!("{error:#}");
+    assert!(
+        detail.contains("单条上限"),
+        "the refusal must name the per-record cap, got: {detail}"
+    );
+    // No disk change: the transcript is intact and no backup record was
+    // written.
+    assert_eq!(
+        store.load(&id).expect("load").messages,
+        messages,
+        "a refused truncate must leave the transcript byte-identical"
+    );
+    assert!(
+        store
+            .latest_rewound_turns_record(&id)
+            .expect("read")
+            .is_none(),
+        "a refused truncate must not stage a backup record"
+    );
+}
+
 /// A new turn sent after the rewind → undo is impossible; errors truthfully
 /// and the transcript is untouched.
 #[test]
