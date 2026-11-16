@@ -1182,6 +1182,29 @@ class SchemaContractWalkerTest(unittest.TestCase):
             "landed: reconcile the mirror constants with the new pinned "
             "face, flip the interim notes, and re-bless this gitlink pin")
 
+    def test_contract_smoke_help_flag_exits_fast(self):
+        # The smoke script must parse arguments before main() so -h/--help
+        # is a side-effect-free exit 0 and an unknown flag exits 2; the
+        # pre-fix shape booted every bundled MCP server before argparse
+        # reported usage. A regression that re-hides parse_args behind
+        # main() turns this red (the boots stall past the timeout or the
+        # usage lands on a non-zero path).
+        for argv, expected_exit in ((["--help"], 0), (["--no-such-flag"], 2)):
+            try:
+                probe = subprocess.run(
+                    [sys.executable, str(SMOKE), *argv],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired as exc:
+                self.fail(f"contract smoke did not exit fast on {argv}: {exc}")
+            self.assertEqual(
+                probe.returncode, expected_exit,
+                f"{argv} must exit {expected_exit}, got {probe.returncode} "
+                f"(stderr head: {probe.stderr[:200]})")
+            if argv == ["--help"]:
+                self.assertIn("usage:", probe.stdout.lower(),
+                              "--help must print the argparse usage text")
+
     @unittest.skipIf(
         not (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs").exists(),
         "pinned CodeWhale tree not populated (cannot read schema_sanitize.rs)")
