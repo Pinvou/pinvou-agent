@@ -563,8 +563,7 @@ impl SkillMarketplaceManager {
             extract_embedded_subdir(src, m.id, &staged)
                 .map_err(|e| format!("解包嵌入资源: {e}"))?;
             // 校验 SKILL.md 存在 + name 与预期一致
-            let name =
-                read_skill_name(&staged.join("SKILL.md")).ok_or("解包后 SKILL.md 缺 name 字段")?;
+            let name = read_skill_name_for_import(&staged.join("SKILL.md"))?;
             if name != m.skill_name {
                 return Err(format!(
                     "SKILL.md name '{name}' 与预期 '{}' 不符",
@@ -2051,6 +2050,33 @@ fn read_skill_name(md_path: &Path) -> Option<String> {
     read_skill_name_from_str(&read_skill_md_capped(md_path)?)
 }
 
+/// Import-lane twin of [`read_skill_name`], loud per the r8 annotation
+/// discipline: an over-cap SKILL.md (InvalidData from the capped read)
+/// must report the size cap, not masquerade as a missing-name error —
+/// a 600 KiB SKILL.md with valid frontmatter is far under the 200 MiB
+/// plugin-subtree import gate, and 「缺 name 字段」 sends the user debugging
+/// their frontmatter for a size problem (r11 review minor). Plain IO
+/// failures keep their plain message for the same reason as
+/// [`read_skill_md_capped_strict`].
+fn read_skill_name_for_import(md_path: &Path) -> Result<String, String> {
+    let mut file =
+        std::fs::File::open(md_path).map_err(|e| format!("解包后读取 SKILL.md 失败: {e}"))?;
+    let bytes = crate::platform::filesystem::read_capped(&mut file, MAX_SKILL_MD_READ_BYTES)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                format!(
+                    "解包后 SKILL.md 超过 {} KiB 审读上限，无法导入（请精简 SKILL.md 后重试）",
+                    MAX_SKILL_MD_READ_BYTES / 1024
+                )
+            } else {
+                format!("解包后读取 SKILL.md 失败: {e}")
+            }
+        })?;
+    let text =
+        String::from_utf8(bytes).map_err(|e| format!("解包后 SKILL.md 不是有效 UTF-8: {e}"))?;
+    read_skill_name_from_str(&text).ok_or_else(|| "解包后 SKILL.md 缺 name 字段".to_string())
+}
+
 /// 解析 SKILL.md frontmatter 的 `name:`(前两个 `---` 之间的第一个顶层 name 行)。
 /// `pub(crate)`：统一插件导入（plugin_import）的裸技能回退复用同一解析口径。
 /// `pub` (round-41 review): the CLI's `plugins skills install/import` uses
@@ -3123,6 +3149,46 @@ mod tests {
         assert!(!is_safe_skill_name(".."));
         assert!(!is_safe_skill_name("a/b"));
         assert!(!is_safe_skill_name("../etc"));
+    }
+
+    /// The import lane's SKILL.md errors must be attributable (r11 review
+    /// minor): an over-cap file reports the size cap (InvalidData from the
+    /// capped read), NOT the missing-name message — a valid-frontmatter
+    /// 600 KiB file is under the 200 MiB import gate and the old
+    /// `ok_or("缺 name 字段")` sent users debugging the wrong thing.
+    #[test]
+    fn skill_import_name_errors_name_the_size_cap_on_oversized_files() {
+        let dir = fresh_dir("import_name_oversize");
+        let md = dir.join("SKILL.md");
+        let oversized = format!(
+            "---\nname: big-skill\ndescription: x\n---\n\n{}",
+            "x".repeat(600 * 1024)
+        );
+        std::fs::write(&md, oversized).expect("write oversized SKILL.md");
+        let error = read_skill_name_for_import(&md).expect_err("over-cap must fail the read");
+        assert!(
+            error.contains("审读上限"),
+            "error must name the cap: {error}"
+        );
+        assert!(
+            !error.contains("缺 name"),
+            "must not masquerade as missing-name: {error}"
+        );
+
+        // Valid frontmatter under the cap parses through the same lane.
+        std::fs::write(&md, "---\nname: ok-skill\ndescription: x\n---\n\nbody").expect("rewrite");
+        assert_eq!(
+            read_skill_name_for_import(&md).expect("under-cap parses"),
+            "ok-skill"
+        );
+        // A genuinely missing name still reports the missing-name error.
+        std::fs::write(&md, "---\ndescription: no name here\n---\n\nbody").expect("rewrite");
+        let error = read_skill_name_for_import(&md).expect_err("missing name must fail");
+        assert!(
+            error.contains("缺 name"),
+            "missing name keeps its message: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn fresh_dir(tag: &str) -> PathBuf {
