@@ -949,11 +949,21 @@ impl SessionStore {
         let persisted: HashSet<String> = self.session_mode_states.read().keys().cloned().collect();
         let mut m = self.mode_states.write();
         for (id, state) in m.iter_mut() {
-            if state.mode == SerializableMode::Yolo
-                && !persisted.contains(id)
+            if !persisted.contains(id)
                 && (self.is_code_session(id) || self.session_workspace_binding(id).is_some())
             {
-                state.mode = SerializableMode::Plan;
+                if state.mode == SerializableMode::Yolo {
+                    state.mode = SerializableMode::Plan;
+                } else if state.implicit_startup_default && state.mode == SerializableMode::Auto {
+                    // 启动装载先于本谓词注册（同一 setup 钩子，装载在前）：
+                    // 无绑定 code 会话经无谓词分支把默认缓存成 Auto，重启
+                    // 后会把只读 Plan 默认静默翻成可执行（zhuowp #809 P2）。
+                    // 谓词就绪后按当前默认重解析；标记一次性消费，之后
+                    // 用户在本次运行中的显式改档不受后续 reconcile 影响。
+                    // 显式 Auto 选择落在 persisted 记录里，走不到这支。
+                    state.mode = self.resolved_default_mode(id);
+                    state.implicit_startup_default = false;
+                }
             }
         }
     }
