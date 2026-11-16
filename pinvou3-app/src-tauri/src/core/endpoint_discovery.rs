@@ -51,6 +51,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 /// 模型灌给前端没有意义,前 2000 条足够人工挑选)。
 const OPENAI_LISTING_CAP: usize = 2000;
 
+/// Anthropic / Gemini 原生列表的同一总量上限(OpenAI 阶梯已有
+/// [`OPENAI_LISTING_CAP`],原生翻页 3 页 × 1000 = 3000 条量级,同样不该
+/// 无封顶地灌给前端)。语义与 OpenAI 阶梯一致:恰好 2000 不截,超过才
+/// 截断置 `truncated`。
+const NATIVE_LISTING_CAP: usize = 2000;
+
 /// Anthropic / Gemini 翻页页数上限:每页 `limit=1000` / `pageSize=1000`,
 /// 3 页即 3000 条量级,再多视为截断而不是无限翻。
 const PAGINATION_PAGE_CAP: usize = 3;
@@ -603,6 +609,15 @@ fn parse_anthropic_page(v: &Value) -> Option<(Vec<RawModel>, bool, Option<String
     Some((models, has_more, after_id))
 }
 
+/// 原生阶梯(anthropic / gemini)的收尾:与 OpenAI 阶梯同一总量语义——
+/// 恰好 [`NATIVE_LISTING_CAP`] 不截,超过才截断并置 `truncated`(翻页
+/// 页数上限只控制请求轮数,条数上限控制灌给前端的总量,两道闸缺一不可)。
+fn finish_native_listing(mut all: Vec<RawModel>, truncated: bool) -> Terminal {
+    let truncated = truncated || all.len() > NATIVE_LISTING_CAP;
+    all.truncate(NATIVE_LISTING_CAP);
+    Terminal::Listed(all, truncated)
+}
+
 /// Anthropic 阶梯:`GET {规整 base}/models?limit=1000`,鉴权头走
 /// [`apply_anthropic_auth_headers`](`x-api-key` + `anthropic-version`,
 /// 与 Messages 直连同一口径);翻页 `has_more` + `after_id`,最多
@@ -630,12 +645,12 @@ async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Durati
                 Some((models, has_more, next_after)) => {
                     all.extend(models);
                     if !has_more {
-                        return Terminal::Listed(all, false);
+                        return finish_native_listing(all, false);
                     }
                     // has_more 但拿不到游标(末条缺 id):无法续页,按截断收尾。
                     match next_after {
                         Some(id) => after_id = Some(id),
-                        None => return Terminal::Listed(all, true),
+                        None => return finish_native_listing(all, true),
                     }
                 }
                 None => return Terminal::Unsupported(Some(200)),
@@ -643,7 +658,7 @@ async fn ladder_anthropic(base_url: &str, api_key: Option<&str>, timeout: Durati
             outcome => return terminal_from_outcome(outcome),
         }
     }
-    Terminal::Listed(all, true)
+    finish_native_listing(all, true)
 }
 
 /// Gemini 原生 API 根:剥掉 OpenAI 兼容后缀 `/openai`,再剥掉版本段
@@ -727,7 +742,7 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
                     all.extend(models);
                     match next_page_token {
                         Some(token) => page_token = Some(token),
-                        None => return Terminal::Listed(all, false),
+                        None => return finish_native_listing(all, false),
                     }
                 }
                 None => return Terminal::Unsupported(Some(200)),
@@ -735,7 +750,7 @@ async fn ladder_gemini(base_url: &str, api_key: Option<&str>, timeout: Duration)
             outcome => return terminal_from_outcome(outcome),
         }
     }
-    Terminal::Listed(all, true)
+    finish_native_listing(all, true)
 }
 
 /// Ollama 分支:[`probe_ollama_models`] 的列表(`/api/ps` 已给已加载模型
@@ -1370,6 +1385,93 @@ mod tests {
         let listing = probe(&mock.base_url, None, DiscoveryProtocol::OpenAiCompatible).await;
         assert_eq!(listing.models.len(), 2000);
         assert!(!listing.truncated);
+    }
+
+    /// minor-2 钉:原生翻页阶梯(anthropic)与 OpenAI 阶梯同一总量上限——
+    /// 3 页 × 900 = 2700 条在 2000 处截断并置 truncated;恰好 2000(2 页 ×
+    /// 1000)不截。删掉 [`finish_native_listing`] 的截断时第一段变红
+    /// (len 翻成 2700)。
+    #[tokio::test]
+    async fn anthropic_native_listing_cap_truncates_at_2000() {
+        let page_body = |start: usize, count: usize, has_more: bool| {
+            let entries = (start..start + count)
+                .map(|index| format!(r#"{{"id":"m{index}"}}"#))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(r#"{{"data":[{entries}],"has_more":{has_more}}}"#)
+        };
+        let mock = models_mock::spawn_seq(&[(
+            "/v1/models",
+            200,
+            vec![
+                page_body(0, 900, true),
+                page_body(900, 900, true),
+                page_body(1800, 900, false),
+            ],
+        )]);
+        let listing = probe(
+            &mock.base_url,
+            Some("sk-ant-cap"),
+            DiscoveryProtocol::Anthropic,
+        )
+        .await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 2000, "3×900 必须在 2000 处截断");
+        assert!(listing.truncated);
+        assert_eq!(model_of(&listing, "m0").id, "m0");
+        assert_eq!(model_of(&listing, "m1999").id, "m1999");
+        // 边界:恰好 2000 不截(与 OpenAI 阶梯 openai_listing_cap 同语义)。
+        let mock = models_mock::spawn_seq(&[(
+            "/v1/models",
+            200,
+            vec![page_body(0, 1000, true), page_body(1000, 1000, false)],
+        )]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::Anthropic).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 2000);
+        assert!(!listing.truncated, "恰好 2000 不置 truncated");
+    }
+
+    /// minor-2 钉(gemini 侧):同上一条的上限与边界语义。
+    #[tokio::test]
+    async fn gemini_native_listing_cap_truncates_at_2000() {
+        let page_body = |start: usize, count: usize, token: Option<&str>| {
+            let entries = (start..start + count)
+                .map(|index| {
+                    format!(
+                        r#"{{"name":"models/g{index}","supportedGenerationMethods":["generateContent"]}}"#
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            match token {
+                Some(token) => format!(r#"{{"models":[{entries}],"nextPageToken":"{token}"}}"#),
+                None => format!(r#"{{"models":[{entries}]}}"#),
+            }
+        };
+        let mock = models_mock::spawn_seq(&[(
+            "/v1beta/models",
+            200,
+            vec![
+                page_body(0, 900, Some("t1")),
+                page_body(900, 900, Some("t2")),
+                page_body(1800, 900, None),
+            ],
+        )]);
+        let listing = probe(&mock.base_url, Some("gkey"), DiscoveryProtocol::Gemini).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 2000, "3×900 必须在 2000 处截断");
+        assert!(listing.truncated);
+        // 边界:恰好 2000 不截。
+        let mock = models_mock::spawn_seq(&[(
+            "/v1beta/models",
+            200,
+            vec![page_body(0, 1000, Some("t1")), page_body(1000, 1000, None)],
+        )]);
+        let listing = probe(&mock.base_url, None, DiscoveryProtocol::Gemini).await;
+        assert_eq!(listing.status, ListingStatus::Listed);
+        assert_eq!(listing.models.len(), 2000);
+        assert!(!listing.truncated, "恰好 2000 不置 truncated");
     }
 
     #[tokio::test]
