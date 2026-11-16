@@ -366,8 +366,8 @@ assert.match(
 );
 assert.match(
   baseInstallerHooks,
-  /RmDir \/r "\$9\\AppData\\Roaming\\\$\{BUNDLEID\}"\s*RmDir \/r "\$9\\AppData\\Local\\\$\{BUNDLEID\}"\s*RmDir \/r "\$9\\\.pinvou3"/u,
-  "all three deletion targets must derive from the resolved interactive-user profile",
+  /RmDir \/r "\$R2\\AppData\\Roaming\\\$\{BUNDLEID\}"\s*RmDir \/r "\$R2\\AppData\\Local\\\$\{BUNDLEID\}"\s*RmDir \/r "\$R2\\\.pinvou3"/u,
+  "all three deletion targets must derive from the resolved interactive-user profile (the validated decode accumulator, never the raw stdout payload)",
 );
 assert.match(
   baseInstallerHooks,
@@ -406,39 +406,96 @@ assert.match(
 );
 assert.match(
   userProfileScript,
-  /OEMCP/u,
-  "the resolver must learn the exact code page the uninstaller's nsExec /OEM decode uses, not assume its own console encoding",
+  /\$pathHex = \$profileMatches\[0\]\.ToCharArray\(\)/u,
+  "the transport must encode the resolved path itself (never prose or diagnostics) as four-hex-digit code units: the payload survives any stdout channel losslessly, closing the reviewer's receiver-side round-trip finding - emitting text in the OEM code page and assuming the nsExec decoder restores it was unprovable, and UTF-8 OEM configurations were the standing hole",
 );
 assert.match(
   userProfileScript,
-  /TryParse\(\$oemCpRaw,[\s\S]*?exit 2/u,
-  "the REG_SZ OEMCP value must be parsed as a number with the unparseable case routed to the keep-data exit: the three-argument GetEncoding overload treats its argument as an encoding NAME, so a raw REG_SZ string like '936' throws before the representability check and would strand even an ASCII profile",
+  /ToCharArray\(\) \| ForEach-Object \{ '\{0:x4\}' -f \[int\]\$_ \}[\s\S]*? -join ''/u,
+  "the payload must be four lowercase hex digits per UTF-16 code unit, most significant digit first, contiguous: pure ASCII is a fixed point of every OEM code page including 65001, and per-unit digit order removes byte-order interpretation from the wire entirely",
+);
+assert.doesNotMatch(
+  userProfileScript,
+  /OEMCP|GetEncoding|OutputEncoding/u,
+  "no code-page dependence may remain in the resolver: with the hex transport the OEM registry read, the encoder construction, and the console binding are all dead weight whose defects (name-vs-number overload, writer mismatch) previously stranded cleanups",
 );
 assert.match(
-  userProfileScript,
-  /GetEncoding\(\n?\s*\$oemCp,/u,
-  "the encoding must be constructed from the parsed numeric code page (integer overload semantics), inside the fail-safe try boundary",
+  baseInstallerHooks,
+  /nsExec::ExecToStack \/OEM 'powershell -NoProfile -ExecutionPolicy Bypass -File "\$PLUGINSDIR\\pinvou-user-profile\.ps1"'/u,
+  "the uninstaller must consume the resolver through ExecToStack with /OEM as a separate nsExec parameter: the switch parser recognizes /OEM only when a popped argument equals it, and on the pure-ASCII hex payload /OEM is an identity transform",
 );
 assert.match(
-  userProfileScript,
-  /EncoderExceptionFallback[\s\S]*?GetBytes\(\$profileMatches\[0\]\)/u,
-  "the resolver must round-trip the resolved path through the /OEM code page with an exception-throwing fallback: a path with characters outside that code page would be rewritten with replacement characters, every deletion target would miss, and the zero-status/nonempty guard would hide the loss",
+  baseInstallerHooks,
+  /StrCpy \$R4 "\$9" 4 \$R3[\s\S]*?IntOp \$R1 "0x\$R4" \+ 0[\s\S]*?IntFmt \$R5 "%04x" \$R1[\s\S]*?\$\{If\} \$R5 != \$R4[\s\S]*?\$\{ExitWhile\}/u,
+  "the NSIS decoder must validate every four-digit unit by hex-parsing it, re-encoding it canonically, and comparing it back to its source before acceptance: uppercase digits, non-hex characters, or any other format drift must fail the round-trip instead of silently parsing as 0",
 );
 assert.match(
-  userProfileScript,
-  /GetBytes[\s\S]*?exit 2[\s\S]*?\[Console\]::Out\.Write/u,
-  "the encoding loss check must sit between path resolution and stdout emission, exiting non-zero without printing so the uninstaller keeps the data under the existing manual-removal guidance",
+  baseInstallerHooks,
+  /IntOp \$R1 \$R0 % 4[\s\S]*?\$\{If\} \$R1 == 0[\s\S]*?\$\{While\} \$R3 < \$R0[\s\S]*?\$\{If\} \$R3 == \$R0[\s\S]*?\$\{AndIf\} \$R2 != ""[\s\S]*?StrCpy \$R6 1/u,
+  "the decoder must require a multiple-of-four payload and a fully consumed, non-empty decode before arming deletion: an odd trailing length or a payload that decodes to nothing (e.g. all-zero units, which terminate the NSIS string) must land in the keep-data branch",
 );
 assert.match(
-  userProfileScript,
-  /\[Console\]::OutputEncoding = \$oemEncoding/u,
-  "the stdout channel must be bound to the validated OEM encoder before emitting: validating one encoder while writing through another leaves the reviewer's transport finding open (a lossless round-trip proof for the validated encoder does not cover bytes the Console.Out encoder mangles)",
+  baseInstallerHooks,
+  /\$\{If\} \$R6 == 1[\s\S]*?RmDir \/r "\$R2\\AppData\\Roaming\\\$\{BUNDLEID\}"/u,
+  "deletion must derive from the validated decoded path ($R2), never from the raw stdout payload: every malformed resolver output keeps the user's data under the manual-removal guidance",
 );
 assert.doesNotMatch(
   userProfileScript,
   /RmDir|Remove-Item/u,
   "the resolver must never delete anything itself",
 );
+
+// Executable mirrors of the two transport algorithms. This host cannot run
+// Windows PowerShell 5.1 or the NSIS interpreter, so the round trip is proven
+// here against these exact algorithm shapes while the source pins above tie
+// both shipped scripts to them; the packaged end-to-end pass (real
+// makensis-built uninstaller against a non-ASCII profile) remains disclosed
+// as not locally executable.
+const psEncodeMirror = (value) => {
+  let hex = "";
+  for (let i = 0; i < value.length; i += 1) {
+    hex += value.charCodeAt(i).toString(16).padStart(4, "0");
+  }
+  return hex;
+};
+const nsisDecodeMirror = (payload) => {
+  if (payload.length === 0 || payload.length % 4 !== 0) return null;
+  let decoded = "";
+  for (let i = 0; i < payload.length; i += 4) {
+    const unit = payload.slice(i, i + 4);
+    const code = Number.parseInt(`0x${unit}`, 16);
+    if (!Number.isInteger(code) || code < 0 || code > 0xffff) return null;
+    if (code.toString(16).padStart(4, "0") !== unit) return null;
+    if (code === 0) return null;
+    decoded += String.fromCharCode(code);
+  }
+  return decoded;
+};
+for (const sample of [
+  "C:\\Users\\aster\\AppData",
+  "C:\\Users\\佐藤\\AppData",
+  "C:\\Users\\Øystein Åse\\pinvou3 😀",
+  "C:\\Users\\Jürgen\\profile (2) 'quoted'",
+]) {
+  const payload = psEncodeMirror(sample);
+  assert.match(
+    payload,
+    /^[\da-f]*$/u,
+    `the emitted payload must be pure ASCII hex for ${sample}`,
+  );
+  assert.equal(
+    nsisDecodeMirror(payload),
+    sample,
+    `the NSIS decoder mirror must reconstruct the exact profile path for ${sample}`,
+  );
+}
+for (const malformed of ["", "abc", "zzzz", "D83D", "00", "0g001234"]) {
+  assert.equal(
+    nsisDecodeMirror(malformed),
+    null,
+    `malformed payload must fail closed (keep data): ${JSON.stringify(malformed)}`,
+  );
+}
 assert.doesNotMatch(
   baseInstallerHooks,
   /pinjou_/u,

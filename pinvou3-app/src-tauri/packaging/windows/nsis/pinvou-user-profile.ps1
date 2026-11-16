@@ -11,13 +11,18 @@
 # name collisions would make a name-based map pick the wrong profile or
 # none). Exits non-zero WITHOUT printing a path when the owner cannot be
 # determined unambiguously; the caller must treat any non-zero exit as
-# "keep user data" (fail safe - never guess a profile to wipe). The same
-# contract covers the stdout encoding: the uninstaller consumes this output
-# through nsExec /OEM, which decodes the byte stream with the system OEM
-# code page, so a profile path that is not representable in that code page
-# would be silently rewritten with replacement characters (the printed path
-# would stop matching the real profile) - the resolver detects that case
-# and exits non-zero before printing anything, keeping the data instead.
+# "keep user data" (fail safe - never guess a profile to wipe).
+#
+# Transport contract (lossless by construction): the path is printed as
+# LOWERCASE HEX of its UTF-16LE code units - four hex digits per unit - so
+# the stdout payload is pure ASCII. ASCII bytes are a fixed point of every
+# OEM code page (including 65001) and of the no-conversion path, so the
+# nsExec /OEM consumer decodes the payload identically regardless of the
+# system code page: no text encoding, no console output encoding, and no
+# consumer-side decoder behavior is trusted anywhere on the wire. The
+# caller decodes positionally and treats ANY malformed payload (odd hex
+# digit count, non-lowercase-hex characters, empty output) as a resolver
+# failure under the same keep-data contract as a non-zero exit.
 $ErrorActionPreference = "Stop"
 
 $sessionId = (Get-Process -Id $PID).SessionId
@@ -51,41 +56,11 @@ if ($profileMatches.Count -ne 1) {
     exit 2
 }
 
-# Loss check for the nsExec /OEM consumption (the uninstaller decodes this
-# stream with the system OEM code page): verify the resolved path survives a
-# strict round-trip through that exact encoding. With an exception-throwing
-# encoder fallback, the first unrepresentable character aborts before any
-# output, so the caller keeps the data and shows the manual-removal guidance
-# instead of deleting against a replacement-mangled prefix that would
-# silently miss every real target.
-# OEMCP is a REG_SZ numeric string ("936", "437", ...). The three-argument
-# GetEncoding overload interprets its argument as an encoding NAME, and
-# Windows PowerShell 5.1 throws on ordinary numeric strings such as "936" -
-# construction therefore happens inside the same fail-safe boundary as the
-# representability check, after the value is parsed as a number. An
-# unparseable or non-positive code page is handled like any other
-# ambiguity: exit non-zero without printing, keep the data.
-$oemCpRaw = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage' -Name OEMCP).OEMCP
-$oemCp = 0
-if (-not [int]::TryParse($oemCpRaw, [ref]$oemCp) -or $oemCp -le 0) {
-    exit 2
-}
-try {
-    $oemEncoding = [System.Text.Encoding]::GetEncoding(
-        $oemCp,
-        [System.Text.EncoderExceptionFallback]::new(),
-        [System.Text.DecoderExceptionFallback]::new()
-    )
-    # Bind the write channel to the validated encoder BEFORE emitting:
-    # Console.Out would otherwise use its own output encoding, so a path
-    # that passed the strict round-trip could still be mangled on the wire
-    # (the reviewer's transport finding). With the write channel pinned to
-    # the OEM code page, the bytes nsExec /OEM reads are exactly the bytes
-    # the strict round-trip just proved lossless; anything unrepresentable
-    # already exited above.
-    [Console]::OutputEncoding = $oemEncoding
-    [void]$oemEncoding.GetBytes($profileMatches[0])
-} catch {
-    exit 2
-}
-[Console]::Out.Write($profileMatches[0])
+# Encode for the lossless transport: each UTF-16 code unit as exactly four
+# lowercase hex digits, most significant digit first, contiguous. Emitting
+# per code unit (rather than per byte) keeps the digit order identical on
+# both sides - there is no byte-order interpretation anywhere on the wire.
+# Non-BMP characters such as emoji are stored as surrogate pairs, i.e. two
+# ordinary code units, and ride through as eight ordinary digits.
+$pathHex = $profileMatches[0].ToCharArray() | ForEach-Object { '{0:x4}' -f [int]$_ }
+[Console]::Out.Write(($pathHex -join ''))

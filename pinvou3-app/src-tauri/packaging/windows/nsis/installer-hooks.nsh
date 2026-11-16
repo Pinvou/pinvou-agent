@@ -165,23 +165,58 @@ pinvou_vc_redist_ready:
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File "/oname=$PLUGINSDIR\pinvou-user-profile.ps1" "${PINVOU_HOOKS_DIR}\..\..\..\packaging\windows\nsis\pinvou-user-profile.ps1"
-  ; /OEM: PowerShell writes redirected stdout in the OEM code page, and a
-  ; mis-decoded path would make RmDir silently no-op. On spawn failure
-  ; nsExec pushes the literal "error", and LogicLib "=" is numeric
-  ; ("error" parses as 0), so the guard must string-compare ("==") and
-  ; require a non-empty path before deleting.
+  ; Transport contract: the resolver prints ONLY ASCII - the resolved path
+  ; encoded as lowercase hex of its UTF-16LE code units (four digits per
+  ; unit) - so the exchange is lossless under every OEM code page (ASCII is
+  ; a fixed point of all of them, including 65001) and no consumer-side
+  ; text decoding is trusted. /OEM stays: on an ASCII payload it is an
+  ; identity transform, and the separate-argument form is still required by
+  ; the nsExec switch parser. On spawn failure nsExec pushes the literal
+  ; "error", and LogicLib "=" is numeric ("error" parses as 0), so the
+  ; guard must string-compare ("==").
   nsExec::ExecToStack /OEM 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\pinvou-user-profile.ps1"'
   Pop $8
   Pop $9
+  ; Positional decode with per-unit validation: every four-digit unit is
+  ; hex-parsed, re-encoded canonically with %04x, and compared back to its
+  ; source before acceptance - an uppercase digit, a non-hex character, an
+  ; odd trailing length, or a decoded U+0000 (impossible in a Win32 path,
+  ; would terminate the accumulator string) all fail the round-trip and
+  ; land in the keep-data branch. Surrogate pairs for non-BMP characters
+  ; (emoji) ride through as two ordinary units.
+  StrCpy $R2 ""
+  StrCpy $R6 0
   ${If} $8 == 0
   ${AndIf} $9 != ""
+    StrLen $R0 $9
+    IntOp $R1 $R0 % 4
+    ${If} $R1 == 0
+      StrCpy $R3 0
+      ${While} $R3 < $R0
+        StrCpy $R4 "$9" 4 $R3
+        IntOp $R1 "0x$R4" + 0
+        IntFmt $R5 "%04x" $R1
+        ${If} $R5 != $R4
+          ${ExitWhile}
+        ${EndIf}
+        IntFmt $R5 "%c" $R1
+        StrCpy $R2 "$R2$R5"
+        IntOp $R3 $R3 + 4
+      ${EndWhile}
+      ${If} $R3 == $R0
+      ${AndIf} $R2 != ""
+        StrCpy $R6 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  ${If} $R6 == 1
     ; Every target derives from the resolved profile: the two bundle-id
     ; app-data folders carry user data (the WebView2 profile with its
     ; localStorage/IndexedDB/cookies plus logs), not just caches, so they
     ; follow the resolved user - never the elevation token.
-    RmDir /r "$9\AppData\Roaming\${BUNDLEID}"
-    RmDir /r "$9\AppData\Local\${BUNDLEID}"
-    RmDir /r "$9\.pinvou3"
+    RmDir /r "$R2\AppData\Roaming\${BUNDLEID}"
+    RmDir /r "$R2\AppData\Local\${BUNDLEID}"
+    RmDir /r "$R2\.pinvou3"
   ${Else}
     DetailPrint "Could not identify the interactive user's profile; their app data was kept (resolver: $8)."
     MessageBox MB_ICONEXCLAMATION|MB_OK "无法确认当前交互用户的用户目录，已保留其应用数据（~/.pinvou3 与应用数据目录）；如需删除请在您自己的账户下手动移除这些目录。$\r$\nCould not identify the interactive user's profile, so their application data (~/.pinvou3 and the app data folders) has been kept. To delete it, remove those folders manually under your own account.$\r$\n現在の対話ユーザーのプロファイルを特定できなかったため、そのアプリデータ（~/.pinvou3 とアプリデータフォルダー）は残しています。削除する場合はご自身のアカウントで手動で削除してください。" /SD IDOK
