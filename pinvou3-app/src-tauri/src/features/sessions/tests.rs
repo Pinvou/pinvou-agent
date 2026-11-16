@@ -1333,12 +1333,17 @@ fn text_message(role: &str, text: &str) -> Message {
     }
 }
 
-fn scheduled_engine_state(messages: Vec<Message>, mode: ScheduledRunMode) -> ScheduledEngineState {
+fn scheduled_engine_state(
+    messages: Vec<Message>,
+    mode: ScheduledRunMode,
+    token_accounting: ScheduledTokenAccounting,
+) -> ScheduledEngineState {
     ScheduledEngineState {
         messages,
         system_prompt: Some(SystemPrompt::Text("scheduled system prompt".to_string())),
         model: "/engine-model".to_string(),
         mode,
+        token_accounting,
     }
 }
 
@@ -1986,7 +1991,11 @@ fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_prof
     let persisted = store
         .persist_scheduled_engine_state(
             &id,
-            scheduled_engine_state(messages.clone(), ScheduledRunMode::Yolo),
+            scheduled_engine_state(
+                messages.clone(),
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::PreservePersisted,
+            ),
         )
         .expect("persist scheduled engine state");
 
@@ -2024,6 +2033,193 @@ fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_prof
     assert_eq!(from_disk.system_prompt, persisted.system_prompt);
 }
 
+/// engine.rs 的 spawn 时点 base 读取必须走 `load_for_engine_spawn`（与两条
+/// persist 写入同一 `scheduled_mutation` 门）：裸 `store.load` 会与在途
+/// TurnComplete 落盘交错，新 incarnation 先读后写时把旧引擎最后几轮的
+/// 累计永久少记。行为级竞窗无法稳定复现，这里钉住调用点形状（换回裸读
+/// 即红）；去空白后匹配，对 rustfmt 换行不敏感。
+#[test]
+fn scheduled_spawn_base_reads_through_the_mutation_gate() {
+    let normalized: String = include_str!("../assistant/engine.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert!(
+        normalized.contains("store.load_for_engine_spawn(session_id)?"),
+        "engine spawn base must read through the scheduled_mutation gate"
+    );
+    assert!(
+        !normalized.contains("Some(store.load(session_id)?.metadata.total_tokens)"),
+        "the ungated bare load must not come back on the spawn base path"
+    );
+}
+
+#[test]
+fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts() {
+    let (store, _g) = isolated_store();
+    let scheduled = store
+        .create_scheduled_run(scheduled_profile("task-token-accounting"))
+        .expect("create scheduled run");
+    let id = scheduled.metadata.id.clone();
+
+    store
+        .persist_scheduled_token_total(&id, 0, 100)
+        .expect("persist terminal token total");
+    store
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![
+                    text_message("user", "first turn"),
+                    text_message("assistant", "incremental update"),
+                ],
+                ScheduledRunMode::Plan,
+                ScheduledTokenAccounting::PreservePersisted,
+            ),
+        )
+        .expect("persist SessionUpdated-equivalent state");
+    assert_eq!(
+        store
+            .load(&id)
+            .expect("load after update")
+            .metadata
+            .total_tokens,
+        100
+    );
+
+    let reloaded = reopen_store(&store).expect("restart before later turn");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load persisted total after restart")
+            .metadata
+            .total_tokens,
+        100,
+        "the durable total must survive the restart before cumulative writes"
+    );
+    reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "later turn")],
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: 100,
+                    engine_total_tokens: 25,
+                },
+            ),
+        )
+        .expect("persist later engine snapshot");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load first cumulative total")
+            .metadata
+            .total_tokens,
+        125,
+        "first engine snapshot lands the spawn base plus cumulative usage"
+    );
+    reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "same engine next turn")],
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: 100,
+                    engine_total_tokens: 40,
+                },
+            ),
+        )
+        .expect("persist cumulative same-engine snapshot");
+
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load accumulated total")
+            .metadata
+            .total_tokens,
+        140,
+        "same-engine cumulative usage must not be added twice"
+    );
+
+    reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "stale base lowers total")],
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: 100,
+                    engine_total_tokens: 5,
+                },
+            ),
+        )
+        .expect("persist stale-base snapshot");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load lowered total")
+            .metadata
+            .total_tokens,
+        105,
+        "combined total must replace, not max() against, the persisted value"
+    );
+
+    reloaded
+        .persist_scheduled_engine_state(
+            &id,
+            scheduled_engine_state(
+                vec![text_message("assistant", "saturating lifetime total")],
+                ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::EngineCumulative {
+                    base_total_tokens: u64::MAX - 10,
+                    engine_total_tokens: 100,
+                },
+            ),
+        )
+        .expect("persist saturating snapshot");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load saturating total")
+            .metadata
+            .total_tokens,
+        u64::MAX,
+        "the lifetime encoding must saturate at u64::MAX rather than wrap"
+    );
+
+    // persist_scheduled_token_total shares the same encoding, so the replace
+    // and saturate contracts must hold on that path too: a stale base lowers
+    // the persisted u64::MAX, and an overflowing pair clamps instead of
+    // wrapping.
+    reloaded
+        .persist_scheduled_token_total(&id, 100, 5)
+        .expect("persist stale terminal total");
+    assert_eq!(
+        reloaded
+            .load(&id)
+            .expect("load stale terminal total")
+            .metadata
+            .total_tokens,
+        105,
+        "the terminal path must replace, not max(), against the persisted value"
+    );
+    reloaded
+        .persist_scheduled_token_total(&id, u64::MAX - 10, 100)
+        .expect("persist saturating terminal total");
+    assert_eq!(
+        reopen_store(&reloaded)
+            .expect("restart after terminal saturating write")
+            .load(&id)
+            .expect("load saturating terminal total")
+            .metadata
+            .total_tokens,
+        u64::MAX,
+        "the terminal path must share the saturating encoding durably"
+    );
+}
+
 #[test]
 fn scheduled_engine_state_entry_rejects_normal_chat_without_mutation() {
     let (store, _g) = isolated_store();
@@ -2041,6 +2237,7 @@ fn scheduled_engine_state_entry_rejects_normal_chat_without_mutation() {
             scheduled_engine_state(
                 vec![text_message("user", "must not persist")],
                 ScheduledRunMode::Plan,
+                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect_err("normal chat must not use scheduled persistence");
@@ -2148,6 +2345,7 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
                 system_prompt: Some(SystemPrompt::Text("agent prompt".to_string())),
                 model: "/agent-model".to_string(),
                 mode: ScheduledRunMode::Agent,
+                token_accounting: ScheduledTokenAccounting::PreservePersisted,
             },
         )
         .expect("persist agent engine state");
@@ -2196,6 +2394,7 @@ fn scheduled_terminal_token_persistence_does_not_replace_engine_state() {
                     text_message("assistant", "retain this response"),
                 ],
                 ScheduledRunMode::Plan,
+                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect("persist cached SessionUpdated state");
@@ -2255,6 +2454,7 @@ fn scheduled_engine_persist_preserves_nonzero_token_total_across_restarts() {
             scheduled_engine_state(
                 vec![text_message("user", "first turn")],
                 ScheduledRunMode::Plan,
+                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect("persist baseline engine state");
@@ -2273,6 +2473,7 @@ fn scheduled_engine_persist_preserves_nonzero_token_total_across_restarts() {
                     text_message("assistant", "second turn"),
                 ],
                 ScheduledRunMode::Plan,
+                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect("persist later engine state");
@@ -2287,6 +2488,7 @@ fn scheduled_engine_persist_preserves_nonzero_token_total_across_restarts() {
             scheduled_engine_state(
                 vec![text_message("assistant", "third turn")],
                 ScheduledRunMode::Yolo,
+                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect("persist engine state after restart");

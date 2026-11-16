@@ -611,9 +611,42 @@ try {
     && main.includes('<AcpAgentLogo agentId={session.agent_id} className="h-[18px] w-[18px]"')
     && main.includes('<Clock size={18} />'),
   'work, Codex, and scheduled sessions must expose equally sized type icons');
-  assert.ok(navigationComponents.includes('group flex h-11 items-center')
+  assert.ok(navigationComponents.includes('group flex h-8 items-center')
     && navigationComponents.includes('flex h-5 w-5 shrink-0 items-center justify-center'),
   'all recent-session rows and their icon canvases must keep a consistent size');
+  // Rows are single-line: no per-item subtitle rendering anywhere, and no
+  // producer feeds one — the code-session folder annotation is gone (the
+  // project-view group header carries it) and the scheduled status · time
+  // string rides the right date slot instead of a second line.
+  assert.ok(!navigationComponents.includes('chat.subtitle')
+    && !main.includes('subtitle: session.workspace_kind')
+    && !main.includes("date: ''"),
+  'sidebar rows must stay single-line: no subtitle rendering and no subtitle producers');
+  assert.ok(main.includes('date: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`'),
+  'scheduled runs must surface status · time through the right date slot');
+  // The date slot is the only carrier of the scheduled 状态·时间 string since
+  // #854 folded the subtitle into it — and the old subtitle had no narrow
+  // -viewport gate, so max-sm-hiding this slot made run status and time
+  // undiscoverable on touch (no hover to swap the buttons back out). The
+  // slot stays visible everywhere, truncates under a width cap so it cannot
+  // crowd the title out of the 32px row, and the desktop hover swap to the
+  // pin/more buttons is unchanged.
+  assert.ok(navigationComponents.includes('text-[11px] mr-4 min-w-0 max-w-[45%] truncate opacity-60')
+    && !navigationComponents.includes('whitespace-nowrap group-hover:hidden group-focus-within:hidden max-sm:hidden')
+    && navigationComponents.includes('group-hover:hidden group-focus-within:hidden'),
+  'the date slot must stay visible on narrow viewports, truncate under a width cap, and keep the hover swap');
+  // Scoped negative (review follow-up): the exact-tail check above misses a
+  // partial re-add of max-sm:hidden elsewhere in the class string. Pin the
+  // slot span itself — whatever carries the width cap must never carry the
+  // narrow-hidden gate, because run status · time rides this slot.
+  {
+    const slotMatch = navigationComponents.match(/className="[^"]*max-w-\[45%\][^"]*"/);
+    assert.ok(slotMatch, 'the date slot span must stay identifiable by its width cap');
+    assert.ok(
+      !slotMatch[0].includes('max-sm:hidden'),
+      'the date slot span must not be narrow-hidden (run status · time rides it)',
+    );
+  }
   assert.ok(!main.includes("w-[280px] bg-[#1E1F20]")
     && main.includes("activeTheme === 'light'")
     && main.includes("? 'bg-[#F0F4F9]'")
@@ -710,6 +743,7 @@ try {
   const homeModeSwitcher = readFileSync(path.join(root, 'src', 'features', 'conversation', 'HomeModeSwitcher.jsx'), 'utf8');
   const iosControls = readFileSync(path.join(root, 'src', 'components', 'IosControls.jsx'), 'utf8');
   const codexLogo = readFileSync(path.join(root, 'src', 'components', 'CodexLogo.jsx'), 'utf8');
+  const monoLogo = readFileSync(path.join(root, 'src', 'components', 'MonoLogo.jsx'), 'utf8');
   const pinvouLogo = readFileSync(path.join(root, 'src', 'components', 'PinvouLogo.jsx'), 'utf8');
   const conversationView = readFileSync(path.join(root, 'src', 'features', 'conversation', 'ConversationTimeline.jsx'), 'utf8');
   const baseStyles = readFileSync(path.join(root, 'src', 'styles', 'base.css'), 'utf8');
@@ -878,6 +912,15 @@ try {
     && main.includes('<AcpAgentLogo')
     && codexView.includes('<AcpAgentLogo'),
   'ACP sessions must keep the Codex mark and expose distinct Claude/Kimi identities');
+  // Mode-distinct Pinvou identity: work lanes keep the blue brand mark
+  // (PinvouLogo), while the code-mode pinvou agent renders the same PNG as a
+  // monochrome bg-current mask (black in light theme, white in dark) — the
+  // same trick CodexLogo uses — so the two modes stay distinguishable.
+  assert.ok(acpAgentLogo.includes('PinvouMonoLogo')
+    && acpAgentLogo.includes("resolveAppAssetUrl('assets/brand/brand-blue.png')")
+    && monoLogo.includes('bg-current')
+    && !acpAgentLogo.includes('<PinvouLogo'),
+  'the code-mode pinvou agent must use the monochrome brand mask instead of the blue work-mode PinvouLogo');
   assert.ok(pinvouLogo.includes("resolveAppAssetUrl('assets/brand/brand-blue.png')")
     && chatView.includes('assistantAvatar={(')
     && chatView.includes('<PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName}')

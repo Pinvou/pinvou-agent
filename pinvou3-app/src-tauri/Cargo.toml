@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.10.18"
+version = "1.0.0"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
@@ -166,6 +166,9 @@ unicode-normalization = "0.1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
+# 会话归档导入（import_session_archive）的 xz 解码；与底座 session_export
+# 的编码端同用 liblzma static（版本对齐，复用同一锁定版本）。
+liblzma = { version = "0.4", features = ["static"] }
 
 # Session store 用：阻塞式 RwLock（sync 不需要 .await 拿读写锁）
 parking_lot = "0.12"
@@ -219,10 +222,17 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rand = "0.10"
-# Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, oauth2 5,
-# hf-hub, ort-sys and rmcp 3 all still require 0.22 (wry 0.57.1 and
-# hyper-util have moved to 0.23); a solo 0.23 bump would only add a second
-# copy. Revisit once upstreams align.
+# Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, termwiz,
+# pinvou-knowledge and this crate itself still require 0.22 (hf-hub and
+# ort-sys have no direct base64 dependency — theirs arrives transitively
+# via reqwest and ureq; verify against Cargo.lock before listing a
+# holdout here). rmcp 3 declares
+# base64 0.23 as an optional dependency enabled only by its
+# default/request-state/client-side-sse/auth-enterprise-managed/
+# server-side-http features; this graph enables just auth + client
+# (default-features = false), so rmcp adds no base64 requirement
+# here. A solo 0.23 bump would leave those holdouts on a separate
+# 0.22 copy. Revisit once upstreams align.
 base64 = "0.22"
 tempfile = "3"
 age = { version = "0.12", default-features = false }
@@ -339,10 +349,31 @@ uiautomation = "0.25"
 # which uiautomation's plain `TreeScope` enum cannot express: the flag is set
 # on the underlying `IUIAutomationCacheRequest`, and that interface has to be
 # the type from this exact `windows` version.
-windows = { version = "0.62", features = ["Win32_UI_Accessibility"] }
+# The Win32_* features beyond Accessibility serve the computer-use virtual
+# display (features/computer_use/platform/windows_virtual): hidden-desktop
+# creation (StationsAndDesktops; the API is Security-gated upstream, so
+# Win32_Security is declared here explicitly instead of riding another
+# crate's feature unification), the hidden-desktop composite capture
+# (Graphics_Gdi), the kill-on-close job object wrapping launched apps
+# (JobObjects + Threading + Security), the message-level input posts
+# (UI_Input_KeyboardAndMouse + UI_WindowsAndMessaging), and the cloaked-
+# window filter for the composite (Graphics_Dwm).
+windows = { version = "0.62", features = [
+    "Win32_UI_Accessibility",
+    "Win32_System_StationsAndDesktops",
+    "Win32_Security",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_System_JobObjects",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+] }
 
 # Process liveness probe using kill(pid, 0) semantics; see process_alive in
-# platform/os/posix.rs. Browser watch uses it to guard stale port-file deletion.
+# platform/os/posix.rs. Browser watch uses it to guard stale port-file
+# deletion. The macOS computer_use backend also reads `libc::pid_t` for the
+# self-targeted AX guard's pid comparisons.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -391,6 +422,17 @@ zbus = { version = "5.5", default-features = false, features = ["async-io"] }
 # dedicated WebKit context with automation enabled. Keep this exact version
 # aligned with Tauri's resolved runtime so the unstable runtime API cannot drift.
 tauri-runtime-wry = "=2.12.3"
+# Computer Use virtual display (features/computer_use/platform/linux_virtual):
+# pure-Rust X11 connection for Xvfb readiness polling and full-screen GetImage
+# capture. default-features = false keeps the pure-Rust RustConnection path —
+# libxcb is NOT needed and the dl-libxcb/allow-unsafe-code features must stay
+# off (a hidden Xvfb with no libxcb dependency is the point of this backend).
+# Already in the lock (global-hotkey pulls it), so this adds no new crate.
+# NOTE: x11rb 0.13 has no connect_to_display_with_auth helper; the explicit
+# cookie path is parse_display → DefaultStream::connect →
+# RustConnection::connect_to_stream_with_auth_info (see the linux_virtual
+# module docs for the verified recipe).
+x11rb = { version = "0.13", default-features = false }
 
 # =============================================================================
 # Lint gates — hard-gate design: deny only lints with a measured zero

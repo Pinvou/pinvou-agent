@@ -39,6 +39,8 @@
 //! external call paths unchanged.
 
 pub(crate) mod diagnostics;
+mod fork;
+mod import;
 mod injections;
 pub(crate) mod mode_state;
 mod retention;
@@ -130,6 +132,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+pub use self::import::{SessionImportFailure, SessionImportSummary};
 pub use crate::core::mode_state::SerializableMode;
 use crate::platform::paths;
 use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
@@ -150,6 +153,7 @@ pub use self::mode_state::{
 /// `crate::features::sessions::X` paths stay stable.
 pub use self::scheduled::{
     ChatEngineState, ScheduledEngineState, ScheduledRunMode, ScheduledRunProfile,
+    ScheduledTokenAccounting,
 };
 // Only the benchmark-gated headless runner (agentic_task) mints headless ids
 // and warns about retention eviction, so both re-exports follow its gate.
@@ -236,6 +240,25 @@ pub enum SessionKind {
 /// LLM stops after a single tool call, the bridge automatically sends a
 /// "continue" message to drive the agent loop. Reset to 0 on every
 /// user-initiated message.
+/// Test barrier for `concurrent_imports_serialize_per_archive_lane`
+/// (review round-10 follow-up, same shape as the mode-state aux-seed
+/// gate): arming the gate makes `import_archive` park right after taking
+/// the lane and flip the boundary flag, so the test lands the winner's
+/// stage + record at a provably post-lane point instead of guessing with
+/// a fixed sleep. Target-scoped to one archive path: the flags are
+/// process-global under cargo's parallel test runner, and another test's
+/// import must never park here or flip the boundary. All three are
+/// compiled out of production builds.
+#[cfg(test)]
+static IMPORT_LANE_GATE_ARMED_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static IMPORT_LANE_GATE_TARGET_FOR_TEST: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+#[cfg(test)]
+static IMPORT_LANE_AT_LANE_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[derive(Clone)]
 pub struct SessionStore {
     /// Underlying upstream session manager (durable JSON store).
@@ -345,6 +368,14 @@ pub struct SessionStore {
     /// `pinned_sessions_io`): shared by set_mode / set_mode_and_persist / the
     /// retention sweep.
     session_mode_states_io: Arc<Mutex<()>>,
+    /// Per-call lane held across each `import_archive`: two concurrent
+    /// imports of DIFFERENT archives carrying the same session id must not
+    /// interleave probe → stage → commit, or the first record to persist can
+    /// end up pointing at the second archive's artifact bytes (the r9
+    /// byte-identical convergence argument only holds within one archive's
+    /// staging). Imports are rare user actions; whole-import serialization
+    /// is the honest cheap shape.
+    session_import_lane: Arc<Mutex<()>>,
     /// In-process snapshot cache of `manager.list_sessions()`. Every upstream
     /// call does a full-directory read_dir + per-file prefix parsing, and the
     /// startup paths (boot restore / retention policy / AcpPool metadata) plus

@@ -123,23 +123,194 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   description.
 - **Model-visible schema contract** (enforced for every bundled server by the CI
   fast-gate's `mcp-server-contract-smoke.py` schema guard, self-tested in
-  `scripts/tests/test_mcp_schema_contract.py`): a tool schema must stay inside the
-  shape set the constrained-decoding route's validator (MFJS) actually accepts —
-  every `type: array` carries concretely typed `items` (an itemless array completes
-  to `[]` under constrained decoding; the k3 slides incident), every schema node is
-  a non-empty object with a concrete string `type` (or an `anyOf` union), the root
-  is a typed object without composition, no keyword outside MFJS's allowed set
-  (`oneOf`, `allOf`, `patternProperties`, `prefixItems`, `contains`,
-  `unevaluated*`, …) survives, a surviving keyword must be admissible for its
-  node's type (`default` only on scalars — never on `array`/`object`; `enum` only
-  on `string`/`number`/`integer`), `required` names unique declared properties,
-  bounds match their type and a keyword explicitly present with a null value is
-  present-and-invalid, never absent (`minLength`/`maxLength` string,
-  `minItems`/`maxItems` array, `minimum`/`maximum` numeric), and the resource
-  budgets hold (`anyOf` ≤ 10 branches, ≤ 100 total properties, property depth ≤ 5,
-  ≤ 500 total enum values, ≤ 120000 encoded bytes, and an enum above 250 entries
-  is further capped at 7500 combined literal bytes) — the validator silently
-  drops the whole tool for any of these.
+  `scripts/tests/test_mcp_schema_contract.py`): the wire follows the published
+  Moonshot documents strictly — the documents are the sole shipping basis, and a
+  live probe may only ever tighten the contract, never widen it. **Landing
+  status (2026-11-12)**: the guard pins the T11 engine pipeline
+  (`schema_sanitize.rs`), which lands on the Moonshot wire via CodeWhale #143
+  with the provider faces in #144/#145/#146/#147; until the close-out re-pin
+  lands that batch on this repository's gitlink, the parent's pinned tree
+  still runs the pre-T11 sanitizer, so this section describes the target
+  contract the pinned tree converges to, not the pinned tree's current
+  behavior. The MFJS
+  specification (https://raw.githubusercontent.com/MoonshotAI/walle/main/docs/mfjs-spec.zh.md,
+  fetched 2026-11-05) enumerates its supported keywords exactly: `description`,
+  `default`, `anyOf`, `properties`, `additionalProperties`, `items`, `type`,
+  `enum`, `required`, plus `$defs`/`$ref` under restricted support ("`$defs`
+  必须定义在 schema 的根级别 (root level)；`$ref` 仅支持引用**本文档内部**的
+  subschema"). Its closing clause governs every keyword it does not list:
+  "若官方规范中的某些概念、关键字或特性在本文档中未被提及，则表示当前 MFJS
+  尚未提供官方支持……我们不保证它们能在最终的结构化输出中产生稳定、符合预期
+  的结果". The Tool Use guide (https://platform.kimi.ai/docs/api/tool-use.md,
+  fetched 2026-11-05) adds the shape rules: "The root of `parameters` must be
+  an `object`", and `strict` defaults to true ("**`true` (default, omitting is
+  equivalent to `true`)**"), so the schema is enforced on the wire, not
+  advisory. Base rules: every `type: array` carries concretely typed `items`,
+  every schema node is a non-empty object with a concrete string `type` or an
+  `anyOf` union, `required` names unique declared properties, and a keyword
+  explicitly present with a null value is present-and-invalid, never absent.
+  Document-precise note on `default` (2026-11-05): the specification types it
+  as Any — "**类型**: Any……这儿不做类型检查，需要调用者自行保证其值类型内
+  容和所在位置期望的内容相匹配" (any position, any value, no type check) — and
+  the doc-precise engine matches the document exactly (T11:
+  `kimi_parameters_ships_default_on_any_node_without_type_check` ships a
+  `default` verbatim on every node and never checks its value), so the schema
+  guard admits `default` everywhere too. `enum` keeps its per-type placement
+  (`string`/`number`/`integer` only) and its literals must match the node's
+  type. On top of
+  the documents:
+  - **Advisory keywords are stripped, not shipped** (2026-11-05): `title`,
+    `$comment`, `$id` and the bound keywords (`minLength`/`maxLength`,
+    `minimum`/`maximum`, `minItems`/`maxItems`) sit outside the documented
+    field set ("暂不支持 `title`、`$comment` 等描述性元数据，也不支持
+    `format` 格式注解字段"), and the engine
+    (CodeWhale `strip_mfjs_advisory_keywords`) removes them from the Moonshot
+    wire before validation instead of dropping the tool — removal is
+    semantics-lossless (annotations) or loses only soft constraints (bounds).
+    Bundled servers may keep them; other providers still receive the full
+    schema, and malformed advisory values are stripped too, never rejected.
+    Enums follow the same split: a homogeneous `float`/`int`/`str` enum
+    survives ("在这儿枚举值我们只支持基础类型中的 float, int 和 str，其它基础类型
+    以及 object 和 array 暂不支持，并且不支持混合类型 (List 中的每个枚举值的
+    类型必须相同，如不可以 str + int)"); any other enum is stripped — except
+    an EMPTY (or non-array) `enum`, which the strip deliberately leaves in
+    place (the kind-homogeneity check is vacuously true on an empty list)
+    so the validator can fail the tool closed: stripping it would silently
+    widen an unsatisfiable constraint into "anything goes"
+    (`kimi_parameters_empty_enum_fails_closed_in_the_validator`).
+  - **The fail-closed set**: keywords with no removal equivalent keep the
+    baseline whole-tool drop — `pattern`, `format`, `$schema`, `prefixItems`,
+    `exclusiveMinimum`/`exclusiveMaximum`, and every other unlisted keyword
+    ("暂不支持使用 `prefixItems` 或 `unevaluatedItems` 等方式模拟实现元组
+    （Tuple）", "暂不支持如 `exclusiveMinimum`，`exclusiveMaximum`，
+    `minContains`, `maxContains` 等复杂校验定义", "暂不支持 Meta-Schemas，
+    也不支持任何基于 HTTP 的外部网络资源引用"), with `format` named by the
+    same metadata clause quoted above.
+    The validator silently drops the whole tool for any of these. Two
+    families are red in the guard as **deliberate strictness**, not
+    engine-behavior claims, because the engine rewrites them before
+    validation and a pre-sanitization guard cannot see the rewrite: (a) the
+    union keywords — a single-branch nested `allOf`/`oneOf` collapses into
+    its parent (`collapse_single_element_unions`), a nested `oneOf`
+    converts to `anyOf` (`normalize_kimi_compatibility`), and only a
+    multi-branch nested `allOf` genuinely fails closed
+    (`UnsupportedNestedAllOf`); (b) a string/number `const` — the engine
+    translates it through the const→enum landing (type inference included)
+    and ships it, while a bool/null or object/array `const` fails closed
+    (`UnsupportedConstLiteral`; the scalar set is string/number only —
+    `kimi_parameters_fails_closed_on_bool_and_null_const`); the guard reds
+    every `const`. #683's
+    `evaluate_script` was lost to the empty-`items` class (`items:{}` →
+    `MissingType`), which the engine repairs since CodeWhale #101
+    (`remove_empty_mfjs_items_schemas`, already in the pinned tree; the T11
+    face keeps it) — the guard keeps flagging that
+    repair class, never replicating it.
+  - **Root unions stay banned on Moonshot**: the Tool Use root rule is
+    unambiguous and the specification lists `anyOf` as an applicator without
+    authorizing it at a parameters root; on the conflicting documents the
+    strict face wins, so a root `oneOf`/`anyOf`/`allOf` is flattened
+    engine-side (branch properties merge; branch required groups are
+    dropped to a prompt note — the pre-2026-11-04 behavior) and
+    the schema guard stays red on one. Keep `parameters` a plain typed
+    object. Two provider exceptions, each with its own documented basis:
+    xAI admits sound all-object root unions (`sanitize_for_xai_parameters`,
+    CodeWhale #144 — pass-through restricted to pairwise-discriminable
+    unions, flattening only as fallback); and Anthropic `input_schema` is
+    documented without a root-composition ban — "A JSON Schema object
+    defining the expected parameters for the tool"
+    (https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use,
+    fetched 2026-11-05) — so CodeWhale #146 narrowed the previously
+    unconditional strip to the root-composition keywords Anthropic itself
+    has rejected with recorded 400s (`oneOf`/`allOf`/`anyOf` at the top
+    level; recorded response observations from 2025-07, stated in no
+    public document — under the posture below they are recorded context
+    that may only ever tighten the wire, and they scope this strip only)
+    on the first-party Anthropic lane, while the
+    Anthropic-compatible lanes whose own documents claim full support
+    (DeepSeek/MiniMax/Model Studio) receive `input_schema` verbatim; every
+    unrecorded keyword ships verbatim everywhere
+    (`anthropic_lane_narrows_the_recorded_root_composition_keywords`,
+    `anthropic_lane_keeps_unrecorded_keywords_verbatim`).
+  - **Resource budgets are aligned to the walle conf.go source defaults**
+    (source comparison, not a document clause; 2026-11-05): `anyOf` ≤ 500
+    branches, ≤ 3000 total properties, property depth ≤ 30, ≤ 1000 total
+    enum values, ≤ 120000 encoded bytes, and an enum above 250 entries is
+    further capped at 75000 combined literal bytes (the encoded-bytes
+    budget stays engine-local, and the enum-length entry threshold keeps
+    the engine's 250 where walle's own default is 2500 — the stricter
+    direction: more enums fall under the literal-byte cap here than
+    upstream would check; the six named budgets match walle's defaults
+    exactly). On top of
+    those the engine carries a local whole-document recursion guard,
+    structural depth ≤ 64 (`mfjs_schema_can_terminate`) — an engine
+    implementation guard, not a walle budget, but it drops a tool the same
+    way, so the guard pins it. These were
+    previously the engine's own stricter mirror policy (10/100/5/500/7500);
+    aligning them to the walle source defaults (the struct defaults in
+    `DefaultValidatorConfig()`: `MaxAnyOfItems=500`,
+    `MaxTotalPropertiesKeysNum=3000`, `MaxSchemaDepth=30`, verified against
+    MoonshotAI/walle upstream main 2026-11-05) removes the divergence —
+    loosening a budget further means changing the CodeWhale constants and
+    the mirror script in lockstep, not waiting for Moonshot.
+  - **Probe records are observations, never authority**: the 2026-11-04 live
+    probes (a root union and the unlisted keywords accepted with 200 on the
+    coding endpoint) and the k3 `slides:[]` history (27-in-a-row; the
+    2026-11-04 retest no longer reproduces it on a fresh single turn, but
+    long-context/multi-turn field loss persists — 5 of 7 calls in a real
+    user session) are recorded context. They justify tightening — the
+    route-tier keyword admission built on them lived one day and was removed
+    on exactly this insufficiency — and never widen the wire.
+- **anyOf unions and the per-layout mitigation** (2026-11-04): `anyOf` is a
+  formal MFJS applicator (the specification's Applicator section), so a
+  nested union is document-backed. The pptx `make_pptx` schema is the
+  shipped precedent: `slides.items` is an `anyOf` union of exactly one
+  `type:object` branch per layout whose `required` lists exactly the fields
+  that layout's renderer cannot draw a body without — the standing
+  mitigation for constrained decoding's minimal-completion tendency on deep
+  optional-field payloads (the previous flat schema whose only required
+  field was `layout` made Kimi K3 emit layout+title-only pages with every
+  content field dropped). The branch shape lives entirely inside the
+  documented keyword set; the 2026-11-04 probe that validated it (the only
+  fully compliant 10-page deck, at +6% bytes, against an
+  all-fields-required control falsified at +76% tokens with `strict:false`
+  having no effect) is an observation recorded alongside, not the shipping
+  basis. The resource budgets stop bounding the union only once the T11
+  batch lands: they are aligned to the walle conf.go source defaults
+  (2026-11-05 — 500 branches / 3000 properties / depth 30), so after the
+  close-out re-pin the union's ceiling is the layout count and an 11th
+  layout is an ordinary branch addition. Until that re-pin, the pinned
+  engine still runs the pre-T11 sanitizer whose anyOf cap is 10 — the
+  union sits exactly at that cap, so a new layout added before the re-pin
+  puts make_pptx over it and the pinned engine omits that one tool from
+  the request (per-tool degradation, warn-logged) instead of failing the
+  build: the remaining tools still ship, an emptied tool set omits the
+  `tools` key, and the build fails outright only when an explicit
+  `tool_choice` forces the omitted tool (verified against the pinned
+  child's `sanitize_moonshot_chat_tools` and its chat request builder,
+  2026-11-14; the guard's unit tests pin the pre-T11 face precisely so
+  this window stays loud). The nested union itself is legal on the pinned
+  engine today: it
+  keeps nested multi-branch anyOf verbatim (flattening is a
+  root-composition-only pass) and its validator accepts the union, so the
+  shape does not wait on the re-pin. The schema guard mirrors the T11
+  engine pipeline; its rules converge with that pipeline when the
+  close-out re-pin lands it on this repository's gitlink, not
+  independently.
+- **Request-shape strips carry their own documentation** (2026-11-05
+  posture): the engine's fixed-sampling strip on the Kimi Code membership
+  endpoints (`api.kimi.com`/`api.kimi.ai`, path `coding/v1` — both hosts
+  are the documented product, "Kimi Code API address — China
+  `https://api.kimi.com/coding/v1`, Overseas
+  `https://api.kimi.ai/coding/v1`") rests on the Kimi guide's own
+  instruction to omit generic sampling ("`temperature=1.0`, `top_p=0.95`,
+  `n=1`, `presence_penalty=0`, and `frequency_penalty=0` are fixed; omit
+  them from requests", "Important limits",
+  https://platform.kimi.ai/docs/guide/kimi-k3-quickstart, re-verified
+  2026-11-12; the `base_url` sentence above is published on
+  https://www.kimi.com/code/docs/en/third-party-tools/codex.html, which
+  carries no sampling-parameter content). The 2026-11-04 400 observation
+  ("invalid temperature: only 1 is allowed for this model") is the recorded
+  observation, not the basis.
 - **Pagination parameters** (existing precedent, mandatory alignment): a bounded
   count parameter (`turn_limit` in `read_session`; `limit` where a listing has
   no other count semantics) + `cursor` (opaque string, server stateless) →
@@ -244,7 +415,61 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   writes the target's session file directly: the MCP server validates and spools
   (`~/.pinvou3/messaging/spool/<spool-id>.json`), and an app-side Rust watcher performs
   the steer/dispatch through the engine pool, so the persistence actor's
-  last-writer-wins snapshots can never clobber an external edit. The delivered text
+  last-writer-wins snapshots can never clobber an external edit. A steered
+  delivery stays queued until the engine reports `SteerCommitted` for it — the
+  done marker and the spool-file removal land on commit (the marker is what a
+  keyed retry consults for dedup, and the two consumers answer it differently:
+  the app-side Rust watcher vouches by content — the marker records a SHA-256
+  fingerprint of the delivered body, so a re-spooled body whose spool file
+  still exists when the watcher reaches it is suppressed only while the
+  fingerprint still matches, a mismatching body re-delivers, and a legacy
+  empty marker vouches for nothing — while the public MCP sender answers a
+  retry by marker existence alone, reporting delivered for any surviving
+  marker including a legacy empty one, without comparing content). Watcher
+  content replay therefore applies only to a replacement body whose spool
+  file remains queued when the watcher's pass reaches it; a replacement that
+  lands inside the committed arm's re-verify-to-removal residual is removed
+  untried under the old body's marker (the µs-scale residual disclosed
+  below), not re-delivered. A dropped steer leaves the file
+  queued and re-delivers on the next poll — or later in the same pass, when
+  the drop lands ahead of the file's sorted position — bounded per process
+  (a watcher restart re-buys the cycle budget, the same per-process
+  doctrine as the retry budget disclosed below): after ten dropped cycles
+  the file is quarantined (`steer_drop_limit`; the gate sits ahead of the
+  armed-skip, so it can quarantine a file that still holds an in-flight
+  steer armed by a mid-delivery re-steer — the disposition is the same
+  whether or not the steered body already landed). A commit is not
+  guaranteed at the turn boundary: the engine settles parked steers only
+  at a drain/inject point or on an interrupt — during a live turn the
+  stream loop drains the steer channel after every stream event and the
+  turn resumes to commit accepted steers in the SAME turn (round-9), so
+  the cases that wait for the target's NEXT turn's first drain are a steer
+  that landed after the turn's last drain, and a steer parked before a
+  turn that exits FAILED (that exit settles nothing and injects
+  nothing). If no terminal
+  event ever arrives while the app keeps running (that deferral, a
+  forwarder aborted by an engine recycle, a lost Drop notification on a
+  full event channel at engine-drop time, or a forwarder task that
+  panicked on an earlier event), the wait is given up after 24h of awake
+  time (a Windows clock may count sleep) and the
+  message re-delivers; a crash loses the in-memory wait entirely, so the
+  queued file re-delivers on the first poll after restart — either way
+  possibly duplicating. The pending-file ceiling does NOT count in-flight
+  steered files against its cap (they are accepted deliveries, not
+  unattended backlog), so ordinary steering traffic cannot terminally
+  quarantine fresh arrivals (round-9: not an absolute — at fleet scale a
+  same-pass mass drop, hundreds of concurrently armed steers whose drops
+  all land inside one inter-pass gap, can push the de-armed leftovers past
+  the cap, and the tail quarantine then applies to that genuinely-queued
+  excess). Quarantine
+  audit lines carry the failure-receipt fields named after the foundation
+  agent_mail receipt (`code` / `retryable:false` / `failed_at`, plus a
+  human `reason` field; the `code` values are messaging-local classes, not
+  agent_mail enum members, so the lines are not deserializable as an
+  agent_mail receipt — the six classes emitted today are
+  `pending_file_ceiling_exceeded`, `steer_drop_limit`,
+  `panic_attempt_limit`, `removal_attempt_limit`, `poison_record`, and
+  `delivery_attempt_limit`). The delivered text
   carries a machine-readable sender header block (the session-mention block pattern
   mirrored on receive) that the timeline renders as a sender card and all three
   auto-title paths strip.
@@ -269,29 +494,103 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   confirmation under the current full-auto approval (the registered typed
   Ask rule is the latent pin awaiting the approval-mode split, not the
   `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
-  next boot; the done-marker window itself is the keyed-dedup horizon —
+  next boot; the marker write does not fsync, so a power-loss restart can
+  lose a written marker — that corner degrades to one duplicate, never
+  loss; the done-marker window itself is the keyed-dedup horizon —
   pruned after the 7-day retention, so a retried call older than that
   re-delivers; and for an UNKEYED send whose spool file persistently cannot
   be removed after delivery, the same body re-delivers on up to ten
   consecutive ~1 Hz polls before the removal-streak arm quarantines — the
   round-18 minor-3 precision: "at-least-once" covers a bounded
   ten-duplicate burst; the double-dispatch window attribution (round-21
-  minor 13): an UNKEYED resubmission re-delivers at any latency (a fresh
-  uuid spool name — the ≤30s steer window is irrelevant), while a KEYED
-  resubmission double-dispatches only inside that window and only with a
-  materially different body); a steer accepted against a mid-turn target can still be
-  dropped or lost by the foundation — when that turn is cancelled (the
-  `chat:steer_dropped` window is not yet correlated) or when the idle
-  engine is evicted/rebuilt before the steer lands, and — the third
-  trigger, round-19 MAJOR-1 — when the **app crashes/exits after the steer
-  was registered in memory but before the turn loop drains it into a
-  persisted user turn**: the keyed done-marker and spool removal are written
-  at steer registration, so that window loses the message silently and a
-  keyed retry is answered "delivered" from the marker (the only zero-trace
-  loss channel; gating the marker on `chat:steer_committed` is the recorded
-  follow-up); a macOS two-instance startup race (the single-instance
+  minor 13, re-scoped when finalization moved to the commit, round-4; the
+  mid-delivery-replacement sub-arm re-scoped again, round-7): an
+  UNKEYED resubmission re-delivers at any latency (a fresh uuid spool name
+  — the steer window is irrelevant), while a KEYED resubmission always
+  re-spools into the same pending file (the server has no visibility into
+  the armed registration — only a landed done marker suppresses the spool
+  write), and what happens then depends on the compare: a materially
+  different body releases the armed steer at the poll's stale-release gate
+  on the NEXT pass (the registration is revoked, the inherited attempt
+  budget cleared) and the newest body delivers that same pass — about one
+  poll tick; if the swap instead lands inside the delivering pass itself,
+  the post-delivery re-verify catches it before any registration exists
+  and re-queues the newest body with one attempt recorded — it delivers
+  after that identity's retry backoff (5 s fresh, up to a minute once
+  attempts accumulate), and only a swap landing while the identity is
+  already at the attempt limit clears the budget outright (the
+  exhaustion arm's replaced branch). Either way the old
+  body's terminal event ends nothing app-side (it is buffered as late and
+  ages out), so that double-dispatch window ends when the newest body's
+  own delivery lands — at whichever price the sub-arm above quotes (one
+  poll tick via the stale-release gate, one retry backoff via the
+  mid-delivery re-verify) — not at the
+  terminal event and not the 24h wait; a semantically-equal body re-spools
+  too but is held by the poll's stale-release gate without re-dispatching
+  (the dedup happens at hold time, not spool time) until the earlier
+  body's terminal event finalizes — that is the window bounded by the 24h
+  commit wait; and a keyed resubmission double-dispatches unconditionally
+  once a give-up expiry removed the registration marker-less (the prune
+  writes no marker, so there is no gate left to consult); once the
+  commit's done marker exists, the pre-spool probe answers a keyed retry
+  without spooling); a steer
+  accepted against a mid-turn target can still be
+  dropped by the foundation — when that turn is cancelled
+  (`chat:steer_dropped`) or when the engine is evicted/rebuilt before the
+  steer lands. Only the cancelled case reliably produces a correlated
+  event: an evict aborts the forwarder before the foundation drains its
+  steers, so steers still parked at drain time produce no forwarded event —
+  though the evict's cancel-side drop (the turn-interrupt settlement) can
+  race the abort and forward a `chat:steer_dropped`, in which case the file
+  merely re-delivers sooner than the 24h arm below (the round-19 MAJOR-1
+  marker-gating follow-up, landed): the done marker and spool removal land
+  on `chat:steer_committed`, a dropped steer stays queued and re-delivers
+  on the next poll (after ten dropped cycles the file is quarantined), a
+  terminal event that never arrives while the app keeps running (the
+  next-turn deferral, a forwarder aborted by a recycle, a lost Drop
+  notification, or a dead forwarder task) is given up after 24h of awake
+  time and
+  re-delivers, and a crash
+  loses the in-memory wait entirely — the queued file re-delivers on the
+  first poll after restart (this replaces the former zero-trace loss
+  channel where a keyed retry was answered "delivered" from a marker
+  written at steer-Ok); a commit whose done-marker write and spool
+  removal BOTH fail (a read-only spool root) keeps the registration
+  armed so the poll cannot loop redeliveries at full cadence — the wait
+  then expires at the 24h rate; every former loss trigger now degrades to
+  at-least-once redelivery (possibly duplicating) instead of silent loss,
+  save the ten-cycle `steer_drop_limit` quarantine above — and five lossy
+  channels that are not redeliveries: the finalizer writes the done marker
+  on the terminal event without consulting the forwarder's
+  transcript-persistence outcome, so a session persist that fails and
+  outlasts the session loses the turn's transcript while the landed
+  marker suppresses this body's keyed retries (the in-app forwarder
+  retries the full snapshot on the next event; a failure that outlasts
+  the session never lands it); a replacement landing inside the committed
+  arm's re-verify-to-removal residual is destroyed untried under the old
+  body's landed marker (µs-scale, disclosed in the arm's comment rather
+  than promised closed); and a crash between the marker write and the
+  re-verify leaves the marker answering the newest body "delivered" so
+  the skip arm removes it untried; likewise a failed unlink of the fresh
+  marker in the post-marker replacement arm leaves that skip arm to
+  remove the newest body untried at the next pass (the old body's commit
+  is real and logged; the replacement body is not re-delivered —
+  disclosed in the arm's comment); and even a successful unlink can lose
+  the race to a concurrent poll pass: a replacement landing inside the
+  finalizer's tail can be consumed untried by that pass's
+  already-delivered skip within the same interleaving (the arm's comment
+  prices this same-pass variant); a
+  macOS two-instance startup race (the single-instance
   plugin's connect-then-bind window) can run two watchers and
-  double-deliver, and the replaced-after-delivery arm can then erase the
+  double-deliver — since commit-time finalization that double-delivery
+  window spans the whole commit wait (the queued file carries no marker
+  until the winning instance's terminal event), not just one poll tick,
+  and the duplication is exactly one extra delivery while the second
+  instance's steers commit or hold (its registry then holds the file, so
+  it does not re-deliver continuously) — a second instance whose engine
+  DROPS the steer loops its own bounded drop-cycle series instead (ten
+  cycles, then its `steer_drop_limit` quarantine caps the burst) — and
+  the replaced-after-delivery arm can then erase the
   winning instance's done marker — plugin-level upstream, the marker
   interplay is disclosed here (round-19 minor 15); a send against an
   ACP/code target — keyed or not (the round-18 minor-17 correction: this
@@ -301,7 +600,8 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   ACP/code gate lives below the poll layer); a send whose spool file the
   watcher never reaches within its 256-pending-file ceiling (round-19 minor
   24: all pending files count, including ones in backoff — "due" was a
-  misnomer) is
+  misnomer; round-8: files with a steer in flight are exempt — they are
+  accepted deliveries, not backlog) is
   quarantined as the ceiling's sorted tail with no sender-visible feedback —
   including a legitimate backlog's overflow, not just hostile growth (the
   round-18 minor-17 addition); a mid-delivery keyed retry with a DIFFERENT body re-queues the

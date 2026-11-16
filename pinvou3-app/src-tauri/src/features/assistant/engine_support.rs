@@ -23,6 +23,50 @@ pub(super) fn wrap_system_reminder(body: &str, content: &str) -> String {
     format!("<system-reminder>\n{body}\n</system-reminder>\n\n{content}")
 }
 
+/// Dedup key a global desktop notification is filed under. The `':'` is
+/// load-bearing: `NotificationState::should_notify` prunes by the session
+/// prefix before the first colon, so the key must keep the session id and
+/// the event id separable.
+fn desktop_notification_key(session_id: &str, event_id: &str) -> String {
+    format!("{session_id}:{event_id}")
+}
+
+/// Shared tail of the global desktop-notification pipeline, in gate order:
+/// aux exclusion → per-kind pref gate (`check_enabled` runs only here, so
+/// aux sessions never pay the settings-file read) → per-session dedup →
+/// benchmark/eval suppression → send. Both notification kinds name no
+/// session, which is what the aux gate protects.
+fn maybe_send_desktop_notification(
+    app: &AppHandle,
+    session_id: &str,
+    notify_key: String,
+    check_enabled: impl FnOnce() -> bool,
+    send: fn(&AppHandle),
+) {
+    if !global_desktop_notification_in_scope(session_id) {
+        return;
+    }
+    if !check_enabled() {
+        return;
+    }
+    let notification_state = app
+        .try_state::<crate::platform::notifications::NotificationState>()
+        .map(|state| state.should_notify(notify_key));
+    // Eval observation runs must stay quiet, and the predicate must be
+    // checked directly: riding `unwrap_or_else` on `notification_state`
+    // would be dead code — the app setup always manages that state, so the
+    // fallback arm is unreachable and observation sessions would bubble
+    // (fresh review 2026-11-12).
+    #[cfg(feature = "benchmark-hooks")]
+    let should_notify = !crate::features::assistant::timing::eval_observation_enabled(session_id)
+        && notification_state.unwrap_or(true);
+    #[cfg(not(feature = "benchmark-hooks"))]
+    let should_notify = notification_state.unwrap_or(true);
+    if should_notify {
+        send(app);
+    }
+}
+
 pub(super) fn maybe_notify_task_completed(
     app: &AppHandle,
     session_id: &str,
@@ -33,35 +77,44 @@ pub(super) fn maybe_notify_task_completed(
     if status != TurnOutcomeStatus::Completed || error.is_some() {
         return;
     }
-    if !task_completion_notify_in_scope(session_id) {
-        return;
-    }
-    if !crate::platform::notifications::task_completion_enabled() {
-        return;
-    }
     let key = turn_id.unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
-    let notify_key = format!("{session_id}:{key}");
-    let notification_state = app
-        .try_state::<crate::platform::notifications::NotificationState>()
-        .map(|state| state.should_notify(notify_key));
-    #[cfg(feature = "benchmark-hooks")]
-    let should_notify = notification_state.unwrap_or_else(|| {
-        !crate::features::assistant::timing::eval_observation_enabled(session_id)
-    });
-    #[cfg(not(feature = "benchmark-hooks"))]
-    let should_notify = notification_state.unwrap_or(true);
-    if should_notify {
-        crate::platform::notifications::notify_task_completed(app);
-    }
+    maybe_send_desktop_notification(
+        app,
+        session_id,
+        desktop_notification_key(session_id, &key),
+        crate::platform::notifications::task_completion_enabled,
+        crate::platform::notifications::notify_task_completed,
+    );
 }
 
-/// Whether a finished turn of this session may raise the global "task
-/// completed" desktop notification. Aux side-chat turns are excluded
-/// (round-26 minor M3): the notification names no session, so an aux reply
-/// finishing while its main task still runs would pop an indistinguishable
-/// "completed" for a task that never finished — the same global-side-effect
-/// class as the round-15 memory-review exclusion (forwarder.rs).
-fn task_completion_notify_in_scope(session_id: &str) -> bool {
+/// Desktop notification when the engine parks on `request_user_input`: the
+/// model is blocked until the user answers, and without this the only signal
+/// lives inside the app window. The unattended-scheduled path cancels the
+/// input before reaching the forwarder's interactive branch, so this only
+/// fires for sessions with a human operator — save a narrow window after
+/// `wait_for_scheduled_terminal`'s external-cancel deadline, where the
+/// unattended guard has already dropped but the engine may not be dead yet
+/// (at most one pref-gated bubble per distinct input id: the engine emits
+/// once per park, and the dedup bounds only same-id repeats). Eval hosts
+/// suppress it the same way as completion notifications (observation runs
+/// must stay quiet).
+pub(super) fn maybe_notify_input_needed(app: &AppHandle, session_id: &str, input_id: &str) {
+    maybe_send_desktop_notification(
+        app,
+        session_id,
+        desktop_notification_key(session_id, input_id),
+        crate::platform::notifications::needs_input_enabled,
+        crate::platform::notifications::notify_input_needed,
+    );
+}
+
+/// Whether a turn of this session may raise a global desktop notification
+/// (task-completed or input-needed — both name no session). Aux side-chat
+/// turns are excluded (round-26 minor M3): an aux notification popping while
+/// its main task still runs would be indistinguishable from the main task's
+/// own notification — the same global-side-effect class as the round-15
+/// memory-review exclusion (forwarder.rs).
+fn global_desktop_notification_in_scope(session_id: &str) -> bool {
     crate::features::sessions::aux_side_effect_exclusion(session_id)
 }
 
@@ -311,12 +364,251 @@ pub(super) fn scheduled_tool_should_auto_approve(
 
 #[cfg(test)]
 mod tests {
-    use super::task_completion_notify_in_scope;
+    use super::{desktop_notification_key, global_desktop_notification_in_scope};
 
     #[test]
-    fn task_completion_notification_excludes_aux_sessions() {
-        assert!(!task_completion_notify_in_scope("aux-0123456789abcdef"));
-        assert!(task_completion_notify_in_scope("0123456789abcdef"));
-        assert!(task_completion_notify_in_scope("sched-daily-report"));
+    fn desktop_notification_key_keeps_session_and_event_separable() {
+        // NotificationState::should_notify prunes by the prefix before the
+        // first ':' — a separator drop (or a session-only key) would make
+        // every session share one dedup slot and let one event suppress
+        // another's notification. Pin the shape at the only key builder.
+        let key = desktop_notification_key("0123456789abcdef", "turn_ab12cd34");
+        assert_eq!(
+            key.split_once(':'),
+            Some(("0123456789abcdef", "turn_ab12cd34")),
+            "the dedup key must keep the session id separable from the event id",
+        );
+    }
+
+    #[test]
+    fn desktop_notifications_exclude_aux_sessions() {
+        assert!(!global_desktop_notification_in_scope(
+            "aux-0123456789abcdef"
+        ));
+        assert!(global_desktop_notification_in_scope("0123456789abcdef"));
+        assert!(global_desktop_notification_in_scope("sched-daily-report"));
+    }
+}
+
+#[cfg(test)]
+mod desktop_notification_wiring_pins {
+    //! The two `maybe_notify_*` wrappers pair each notification kind with
+    //! its own pref gate and sender. Swapping the pair (or the dedup-key
+    //! argument order) compiles cleanly — `fn() -> bool` and
+    //! `fn(&AppHandle)` parameter shapes are interchangeable — and no
+    //! behavior test drives the real wiring, so the pairing is pinned here
+    //! against this file's own source, the same way `forwarder.rs` pins its
+    //! call-site wiring shape.
+
+    /// Whitespace-stripped body of the fn with the given signature prefix,
+    /// after a two-pass comment strip (the same caliber as
+    /// `forwarder_body`): line-comment tails first — a `//`-commented-out
+    /// `/*` marker cannot eat live code — then closed `/* … */` spans
+    /// removed with nesting-depth tracking (review JensenChen28 4521432771
+    /// and 4525154638). The strip runs before brace matching, so a
+    /// mutation hiding braces inside comments cannot derail the body
+    /// scan. Residual exposure, unchanged: needles inside string literals
+    /// or trailing `//` mentions still satisfy a `contains` pin; the
+    /// pinned wrappers contain no braces in string or char literals (a
+    /// future edit adding one fails loudly here instead of silently
+    /// weakening the pin).
+    fn pinned_fn_body(signature: &str) -> String {
+        pinned_body_from_src(include_str!("engine_support.rs"), signature)
+    }
+
+    /// [`pinned_fn_body`] against a caller-supplied source, so the strip
+    /// caliber itself is testable against mutated sources.
+    fn pinned_body_from_src(src: &str, signature: &str) -> String {
+        let stripped = strip_block_comments(&without_line_tails(src));
+        let sig_at = stripped.find(signature).expect("pinned fn must exist");
+        let body_at = stripped[sig_at..].find('{').expect("fn body brace") + sig_at;
+        let mut depth = 0usize;
+        for (offset, ch) in stripped[body_at..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return stripped[body_at..=body_at + offset]
+                            .chars()
+                            .filter(|c| !c.is_whitespace())
+                            .collect();
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces in pinned fn body");
+    }
+
+    /// Line-comment tails dropped per line (a `//`-commented-out `/*`
+    /// marker cannot make the block pass eat live code), preserving
+    /// newlines.
+    fn without_line_tails(src: &str) -> String {
+        src.split('\n')
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Newline-preserving removal of closed `/* … */` spans, tracking
+    /// nesting depth: Rust block comments nest, so a span's balancing
+    /// close is the `*/` that returns the depth to zero, not the first
+    /// `*/` seen (review JensenChen28 4525154638, same scanner class as
+    /// the shared `comment_filtered` and `forwarder_body`). An
+    /// unterminated `/*` is kept verbatim (scan past the marker).
+    fn strip_block_comments(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(open) = rest.find("/*") {
+            let after_open = &rest[open + 2..];
+            let mut depth = 1usize;
+            let mut scan = 0usize;
+            let mut close_end = None;
+            while depth > 0 {
+                let next_open = after_open[scan..].find("/*").map(|rel| scan + rel);
+                let next_close = after_open[scan..].find("*/").map(|rel| scan + rel);
+                match (next_open, next_close) {
+                    (Some(open_at), Some(close_at)) if open_at < close_at => {
+                        depth += 1;
+                        scan = open_at + 2;
+                    }
+                    (_, Some(close_at)) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close_end = Some(close_at + 2);
+                        } else {
+                            scan = close_at + 2;
+                        }
+                    }
+                    (Some(open_at), None) => {
+                        depth += 1;
+                        scan = open_at + 2;
+                    }
+                    (None, None) => break,
+                }
+            }
+            match close_end {
+                Some(end) => {
+                    out.push_str(&rest[..open]);
+                    let inner = &after_open[..end - 2];
+                    for _ in 0..inner.matches('\n').count() {
+                        out.push('\n');
+                    }
+                    rest = &after_open[end..];
+                }
+                None => {
+                    // Unterminated block: keep it verbatim, scan past the marker.
+                    out.push_str(&rest[..open + 2]);
+                    rest = after_open;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn each_notification_kind_keeps_its_own_pref_and_sender() {
+        let input = pinned_fn_body("pub(super) fn maybe_notify_input_needed(");
+        // Key argument order is semantics: it must be (session, input).
+        // Swapping silently loses the per-session dedup pruning
+        // (should_notify prunes by the ':' prefix).
+        assert!(
+            input.contains("desktop_notification_key(session_id,input_id)"),
+            "the input notification must dedup under (session, input) argument order",
+        );
+        // Cross-kind pairing mutations (swapping the pref or the sender) are
+        // invisible to the compiler, so pin the adjacent shape.
+        assert!(
+            input.contains(
+                "needs_input_enabled,crate::platform::notifications::notify_input_needed",
+            ),
+            "the input notification must pair needs_input_enabled with notify_input_needed",
+        );
+        assert!(
+            !input.contains("task_completion") && !input.contains("notify_task_completed"),
+            "the input notification must not carry completion wiring",
+        );
+
+        let completed = pinned_fn_body("pub(super) fn maybe_notify_task_completed(");
+        assert!(
+            completed.contains("desktop_notification_key(session_id,&key)"),
+            "the completion notification must dedup under (session, turn) argument order",
+        );
+        assert!(
+            completed.contains(
+                "task_completion_enabled,crate::platform::notifications::notify_task_completed",
+            ),
+            "the completion notification must pair task_completion_enabled with notify_task_completed",
+        );
+        assert!(
+            !completed.contains("needs_input_enabled")
+                && !completed.contains("notify_input_needed"),
+            "the completion notification must not carry input wiring",
+        );
+    }
+
+    #[test]
+    fn eval_suppression_checks_the_predicate_directly() {
+        // The app setup always manages `NotificationState` (lib.rs), so an
+        // eval check riding `unwrap_or_else` on that state is unreachable —
+        // observation sessions would pass the gate and bubble. The
+        // predicate must be ANDed in front of the dedup fallback instead
+        // (fresh review 2026-11-12).
+        let gate = pinned_fn_body("fn maybe_send_desktop_notification(");
+        assert!(
+            gate.contains(
+                "!crate::features::assistant::timing::eval_observation_enabled(session_id)\
+                 &&notification_state.unwrap_or(true)",
+            ),
+            "eval suppression must AND the predicate before the dedup fallback",
+        );
+        assert!(
+            !gate.contains("unwrap_or_else"),
+            "the eval check must not ride unwrap_or_else on the always-managed dedup state",
+        );
+    }
+
+    #[test]
+    fn block_commented_wrapper_body_keeps_no_needle_alive() {
+        // Review JensenChen28 4521432771: pinned_fn_body used to strip
+        // line-comment tails only, so a compiling mutation that wrapped the
+        // executable wrapper body in `/* … */` kept every needle substring
+        // alive while the wrapper stopped issuing notifications. The block
+        // pass must remove the needle with the span.
+        let mutated = "pub(super) fn maybe_notify_input_needed(\n    session_id: &str,\n    input_id: &str,\n) {\n    /*\n    let key = desktop_notification_key(session_id, input_id);\n    crate::platform::notifications::notify_input_needed(needs_input_enabled, &key);\n    */\n}";
+        let body = pinned_body_from_src(mutated, "pub(super) fn maybe_notify_input_needed(");
+        assert!(
+            !body.contains("desktop_notification_key(session_id,input_id)"),
+            "a block-commented wrapper body must not satisfy a pin needle",
+        );
+        assert!(
+            !body.contains("notify_input_needed(needs_input_enabled"),
+            "every needle inside the commented span must be removed",
+        );
+    }
+
+    #[test]
+    fn nested_block_commented_wrapper_body_keeps_no_needle_alive() {
+        // Nesting depth (review JensenChen28 4525154638 on the shared
+        // filter; this scanner is the same class): Rust block comments
+        // nest, so the first `*/` must not close the outer span —
+        // otherwise an outer comment holding an inner `/* … */` keeps the
+        // needle's substring alive past the inner close.
+        let mutated = "pub(super) fn maybe_notify_input_needed(\n    session_id: &str,\n    input_id: &str,\n) {\n    /* outer\n    /* inner */\n    let key = desktop_notification_key(session_id, input_id);\n    */\n}";
+        let body = pinned_body_from_src(mutated, "pub(super) fn maybe_notify_input_needed(");
+        assert!(
+            !body.contains("desktop_notification_key(session_id,input_id)"),
+            "a needle behind a nested block-comment span must be removed",
+        );
+        assert!(
+            !body.contains("*/"),
+            "the balancing close must be consumed with the span",
+        );
     }
 }

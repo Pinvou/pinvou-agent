@@ -7,6 +7,7 @@ import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { copyClipboardText } from '../../shared/clipboard.js';
 import { pathBasename } from '../../shared/path-utils.js';
+import { invokeTauri } from '../../platform/tauri/client.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
 import {
   MODEL_PRESET_DEFS, PROVIDER_KIND_CODING_PLAN, PROVIDER_KIND_OFFICIAL_API, PROVIDER_KIND_CUSTOM,
@@ -411,6 +412,12 @@ function hasStoredCredential(record) {
       const [apiKey, setApiKey] = useState('');
       const [keyAction, setKeyAction] = useState(initial.__new ? 'replace' : 'keep_existing');
       const [showKey, setShowKey] = useState(false);
+      // 「此端点无需鉴权」(auth_mode="none")：云端模型的显式免鉴权声明。本地预设
+      // 有独立的 localKeyEnabled 开关，不受它控制；coding_plan 是托管入口，开关
+      // 不渲染，声明状态也不进入（手改 settings.json 的托管条目由后端归一清空）。
+      const [noAuth, setNoAuth] = useState(!initial.__new && initial.preset !== 'local_vllm' && initial.provider_kind !== PROVIDER_KIND_CODING_PLAN && initial.auth_mode === 'none');
+      // 端口输入框（base_url 行内）的行内校验错误；与 localPortError（检测框）独立。
+      const [baseUrlPortError, setBaseUrlPortError] = useState(null);
       const [localKeyEnabled, setLocalKeyEnabled] = useState(!initial.__new && initial.preset === 'local_vllm' && !!initial.has_secret);
       const [pickerOpen, setPickerOpen] = useState(!!initial.__new && initial.preset !== 'local_vllm');
       const [pickerTab, setPickerTab] = useState(initial.__scope === 'local' ? 'local' : 'cloud');
@@ -453,8 +460,6 @@ function hasStoredCredential(record) {
       // 测试图片能力(设计 §7.3):仅主动点击触发;表单关键值变化后上一次结果不再可信,清除。
       const [imageTesting, setImageTesting] = useState(false);
       const [imageTestResult, setImageTestResult] = useState(null); // { status, verified, summary } | null
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
-      useEffect(() => { setImageTestResult(null); }, [model, baseUrl, apiKey, preset]);
       const localizeProvider = group => group
         ? { ...group, ...settingsCopy.providerCatalog[group.key] }
         : null;
@@ -487,6 +492,7 @@ function hasStoredCredential(record) {
         modelId: initial.__new ? null : initial.id,
         debounceMs: 400,
         trimInputs: true,
+        noAuth,
       });
       function normalizeConnectionTestResult(value, isCodingPlanProvider) {
         if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -533,6 +539,11 @@ function hasStoredCredential(record) {
         setReasoningEffort(reasoningEffortForModelSwitch({ preset: p, model: nextModel, vendor: group.vendor || vendor, base_url: nextBaseUrl }));
         setApiKey('');
         setKeyAction(initial.__new ? 'replace' : 'keep_existing');
+        // 显式换模型/入口：免鉴权声明按记录重置。声明保存在模型条目上，手动
+        // 编辑 URL 不会自动清除（指向新端点是否免鉴权由用户判断；如需收回，
+        // 直接关开关即可），仅在显式切换模型/入口时恢复默认的鉴权规则。
+        setNoAuth(false);
+        setBaseUrlPortError(null);
         setCustomModel(!!item.custom);
         setProviderModelPickerOpen(false);
         setPickerOpen(false);
@@ -554,14 +565,69 @@ function hasStoredCredential(record) {
       }
       function handleBaseUrlChange(value) {
         setBaseUrl(value);
+        // URL 已被直接编辑：旧端口校验错误针对的是改写前的地址，随编辑清除，
+        // 避免红色提示挂在已修正的 URL 上（端口框下次输入会重新校验）。
+        setBaseUrlPortError(null);
         renormalizeReasoningEffort({ preset, model, vendor, base_url: value });
+      }
+      // 解析 http/https URL；其余 scheme（或无法解析）返回 null。端口框只在
+      // 可解析的 http(s) 地址上工作，避免 "127.0.0.1:8003"（无 scheme）被
+      // new URL 误判成 protocol="127.0.0.1:" 的怪异 URL。
+      function parseHttpUrl(value) {
+        try {
+          const parsed = new URL(value);
+          return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null;
+        } catch {
+          return null;
+        }
+      }
+      // base_url 的显式端口（无显式端口 = ''，即走 scheme 默认）。
+      // 端口框输入 → 原位改写 base_url 的端口（保留 scheme/host/path）。
+      // 校验口径与本地检测端口框一致：空串 = 移除显式端口（走 scheme 默认）；
+      // 非纯数字或超出 1-65535（含 0）只报错不改 URL，输入框值始终由 base_url
+      // 派生，因此非法输入会被弹回上一个合法值。
+      function handleBaseUrlPortChange(raw) {
+        const trimmed = raw.trim();
+        if (trimmed === '') {
+          const parsed = parseHttpUrl(baseUrl);
+          if (!parsed) return;
+          parsed.port = '';
+          setBaseUrlPortError(null);
+          handleBaseUrlChange(serializeParsedBaseUrl(parsed));
+          return;
+        }
+        const port = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+        if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+          setBaseUrlPortError(settingsCopy.localPortInvalid);
+          return;
+        }
+        const parsed = parseHttpUrl(baseUrl);
+        if (!parsed) return;
+        parsed.port = String(port);
+        setBaseUrlPortError(null);
+        handleBaseUrlChange(serializeParsedBaseUrl(parsed));
+      }
+      // URL API 的 toString 在空路径时补一个尾斜杠；只剥这个补出来的斜杠，
+      // 不顺手动用户自己写的路径尾斜杠（如 .../v1/ —— 与直接编辑 URL 行的
+      // 行为一致，手动输入不归一化）。裸主机（pathname === '/'）上用户自己
+      // 写的根斜杠无法与 WHATWG 补出的斜杠区分，会被一并剥掉（round-7
+      // review：注释如实披露这一例；HTTP 语义上两者等价，无行为影响）。
+      function serializeParsedBaseUrl(parsed) {
+        const serialized = parsed.toString();
+        return parsed.pathname === '/' ? serialized.replace(/\/$/, '') : serialized;
       }
       async function handleTest() {
         if (!bridge.available) return;
         setTesting(true); setTestResult(null);
-        const testKey = keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        // 测试连接要与保存后的鉴权形态一致：免鉴权声明生效时不携带已输入
+        // 的 key（开关开着时 key 行隐藏，但已输入的 key 仍残留 state）。
+        const testKey = !isLocalPreset && !isCodingPlan && noAuth
+          ? ''
+          : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         try {
-          const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id);
+          // noAuth 随请求下发：后端据此跳过已保存凭据回退（残留 key 不得
+          // 在保存前发往新填的 URL，与保存后的鉴权形态完全一致）。
+          const result = await bridge.models.testModelConnection(baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           setTestResult(normalizeConnectionTestResult(result, isCodingPlan));
         } catch (e) {
           setTestResult(normalizeConnectionTestResult(e, isCodingPlan));
@@ -589,9 +655,13 @@ function hasStoredCredential(record) {
       async function handleImageCapabilityTest() {
         if (!bridge.available || !bridge.models.testImageInputCapability) return;
         setImageTesting(true); setImageTestResult(null);
-        const testKey = keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        // 与 handleTest 同口径：免鉴权声明生效时不携带残留的已输入 key。
+        const testKey = !isLocalPreset && !isCodingPlan && noAuth
+          ? ''
+          : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
         try {
-          const result = await bridge.models.testImageInputCapability(model.trim(), baseUrl.trim(), testKey, initial.__new ? null : initial.id);
+          // 与 handleTest 同口径：noAuth 随请求下发，后端据此跳过已保存凭据回退。
+          const result = await bridge.models.testImageInputCapability(model.trim(), baseUrl.trim(), testKey, initial.__new ? null : initial.id, !isLocalPreset && !isCodingPlan && noAuth);
           setImageTestResult(normalizeImageCapabilityTestResult(result));
         } catch (e) {
           setImageTestResult({ status: 'error', verified: false, summary: String(e && e.message ? e.message : e), httpStatus: null });
@@ -599,15 +669,29 @@ function hasStoredCredential(record) {
         finally { setImageTesting(false); }
       }
       const isLocalPreset = preset === 'local_vllm';
+      // base_url 的解析结果：端口框的回显值与只读态都由它派生（URL 不可解析
+      // 时端口框只读置空）。
+      const parsedBaseUrl = parseHttpUrl(baseUrl);
       const showProviderModelField = !isLocalPreset && !!activeProvider && Array.isArray(activeProvider.items) && activeProvider.items.length > 0;
       const showModelIdField = isLocalPreset || customModel || showProviderModelField;
-      const showBaseUrlField = isLocalPreset
-        || (customModel && (preset === 'openai_compatible' || preset === 'openai_responses') && !isCodingPlan);
-      const showCustomCloudKeyField = !isLocalPreset && customModel;
+      // API 地址字段：本地预设始终可见（端口写在 URL 里）；云端预设全部可见
+      // （默认填官方端点，用户可改指向自建网关/带自定义端口的反代）。coding_plan
+      // 是托管入口，端点由平台管理，不开放编辑。
+      const showBaseUrlField = !isCodingPlan;
+      // 「免鉴权」的 UI 活性:noAuth 是表单状态,但托管入口上开关不渲染 ——
+      // 开着开关把 URL 改写成托管端点会让开关行消失,而载荷侧 auth_mode 与
+      // 凭据删除都已按 !isCodingPlan 同口径归一。UI 渲染(开关、Key 行、提示)
+      // 必须跟随同一口径回到未声明形态,否则出现「提示在、开关无、Key 行藏」
+      // 的死局,且开关开着时输入的 key 会被静默丢弃。
+      const noAuthActive = !isLocalPreset && !isCodingPlan && noAuth;
+      const showCustomCloudKeyField = !isLocalPreset && customModel && !noAuthActive;
       const showLocalKeyField = isLocalPreset && localKeyEnabled;
+      const showNoAuthToggle = !isLocalPreset && !isCodingPlan;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker; the keyless posture is part of the same freshness contract — a posture flip changes what a re-test would send, so the banner must not survive it (round-6 review). keyRevealError rides the same invalidation (round-7 review): the row hiding must not leave a stale reveal-failure message that reappears when the toggle flips back off.
+      useEffect(() => { setImageTestResult(null); setKeyRevealError(''); }, [model, baseUrl, apiKey, preset, noAuthActive]);
       const showDisplayNameField = isLocalPreset && !initial.__new;
       const showAliasField = !isLocalPreset;
-      const showConfigFields = showAliasField || showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField;
+      const showConfigFields = showAliasField || showDisplayNameField || showModelIdField || showBaseUrlField || showCustomCloudKeyField || showNoAuthToggle;
       const selectedProvider = isLocalPreset ? presetProviderLabel(preset, t) : (activeProvider ? (activeProvider.configTitle || activeProvider.title) : presetProviderLabel(preset, t));
       const selectedModelLabel = model || settingsCopy.customModel;
       const modalTitle = initial.__new
@@ -616,7 +700,7 @@ function hasStoredCredential(record) {
       const saveName = showDisplayNameField || isLocalPreset ? (name.trim() || settingsCopy.localModelName(model.trim())) : (model.trim() || selectedProvider);
       const credentialState = initial.credential_state || (initial.has_secret ? 'configured' : 'missing');
       const hasSavedKey = hasStoredCredential(initial);
-      const hasUsableApiKey = isLocalPreset || hasSavedKey || !!apiKey.trim();
+      const hasUsableApiKey = isLocalPreset || noAuthActive || hasSavedKey || !!apiKey.trim();
       const canSave = !!(saveName && model.trim() && baseUrl.trim() && hasUsableApiKey);
       async function toggleApiKeyVisibility() {
         const nextVisible = !showKey;
@@ -631,6 +715,16 @@ function hasStoredCredential(record) {
         }
         setShowKey(nextVisible);
       }
+      // 保存时的凭据编辑动作（云端/自定义路径）：免鉴权声明显式删除已存凭据
+      // （避免留下永远用不到的明文/钥匙串残留），本就没有凭据时 replace 落成
+      // missing 即可；其余沿用既有语义（新填/首次保存 → replace，否则保留）。
+      // 与 auth_mode 载荷同口径排除 coding_plan：托管归属随 base_url 实时
+      // 判定，开关开着时把 URL 改写成托管端点会隐藏开关行，但 noAuth 状态
+      // 残留——凭据删除不得被这个残留触发（声明不落盘却删了凭据）。
+      function cloudCredentialAction() {
+        if (!isCodingPlan && noAuth) return hasSavedKey ? 'delete' : 'replace';
+        return apiKey.trim() || initial.__new || !hasSavedKey ? 'replace' : 'keep_existing';
+      }
       // 保存只落盘,不做连接/识图探测:图片输入能力默认「自动处理」
       // (pinvou 档,内置已验证能力表兜底);需要确证时用表单内「测试图片能力」。
       async function doSave() {
@@ -640,10 +734,13 @@ function hasStoredCredential(record) {
         const outputTokens = Number(maxOutput);
         const nextKeyAction = isLocalPreset
           ? (localKeyEnabled && apiKey.trim() ? 'replace' : 'keep_existing')
-          : (apiKey.trim() || initial.__new || !hasSavedKey ? 'replace' : 'keep_existing');
+          : cloudCredentialAction();
         const nextApiKey = isLocalPreset
           ? (localKeyEnabled && apiKey.trim() ? apiKey.trim() : '')
-          : (!isLocalPreset && apiKey.trim() ? apiKey.trim() : '');
+          // noAuthActive（round-5 review）:与 noAuthActive 派生同一口径,
+          // 不用裸 noAuth——「开关开着但 URL 指向托管端点」时输入的 key
+          // 不能既显示又被静默丢弃。
+          : (!noAuthActive && apiKey.trim() ? apiKey.trim() : '');
         setSavingModel(true);
         setSaveError('');
         try {
@@ -659,6 +756,10 @@ function hasStoredCredential(record) {
             provider_kind: providerKind || null,
             vendor: vendor || null,
             endpoint_mode: endpointMode || null,
+            // 端点鉴权声明：勾选「此端点无需鉴权」存 "none"（后端归一、直通
+            // 底座 auth_mode）；默认档存 null（按 provider/端点规则决定）。
+            // coding_plan 是托管入口，不接收声明（开关对其不渲染）。
+            auth_mode: !isLocalPreset && !isCodingPlan && noAuth ? 'none' : null,
             // 图片能力/视觉模型(阶段 G):选了自身等同未配置。
             image_capability_override: imageCapability || 'pinvou',
             vision_model_id: visionModelId && visionModelId !== id ? visionModelId : null,
@@ -799,6 +900,9 @@ function hasStoredCredential(record) {
         setApiKey('');
         setKeyAction('keep_existing');
         setLocalKeyEnabled(false);
+        // 本地预设走自己的 localKeyEnabled 开关；清掉云端残留的免鉴权声明与端口错误。
+        setNoAuth(false);
+        setBaseUrlPortError(null);
         setCustomModel(true);
         setPickerOpen(false);
         // 手动添加本地模型是显式切换:未手动改过档位时回到「自动处理」。
@@ -931,6 +1035,19 @@ function hasStoredCredential(record) {
             placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
             className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
           <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
+        </div>
+      );
+      // 「此端点无需鉴权」开关行（auth_mode="none"）：云端模型的显式免鉴权声明。
+      // 开启后隐藏 API Key 输入行，保存时置 auth_mode="none" 并删除已存凭据。
+      const renderNoAuthToggleRow = (withBorder = false) => (
+        <div className={withBorder ? `min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0 ${formDivider}` : 'min-h-[54px] flex items-center gap-3 px-4 py-2.5'}>
+          {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and toggle button are siblings; the toggle carries aria-pressed itself */}
+          <label className={`shrink-0 text-[14px] leading-5 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.noAuthToggleLabel}</label>
+          <button type="button" onClick={() => setNoAuth(v => !v)} data-testid="model-form-no-auth-toggle"
+            className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${noAuth ? 'bg-[#007AFF]' : ('bg-[#D1D1D6] dark:bg-[#3A3A3C]')}`}
+            aria-pressed={noAuth}>
+            <span className={`block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${noAuth ? 'translate-x-5' : 'translate-x-0'}`} />
+          </button>
         </div>
       );
       const renderCloudProviderPicker = () => {
@@ -1315,9 +1432,10 @@ function hasStoredCredential(record) {
               {!isLocalPreset && !customModel && (
                 <section>
                   <div className={formGroup}>
-                    {renderApiKeyField({ withBorder: false })}
+                    {!noAuthActive && renderApiKeyField({ withBorder: false })}
+                    {showNoAuthToggle && renderNoAuthToggleRow(!noAuthActive)}
                   </div>
-                  {keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
+                  {!noAuthActive && keyRevealError && <div className="px-1 mt-1.5 text-[12px] leading-4 text-[#FF3B30]">{keyRevealError}</div>}
                 </section>
               )}
               {showConfigFields && (
@@ -1339,7 +1457,32 @@ function hasStoredCredential(record) {
                     {showProviderModelField && renderProviderModelField()}
                     {showModelIdField && !showProviderModelField && renderInlineField({ label: isLocalPreset ? settingsCopy.localModelId : settingsCopy.modelId, value: model, onChange: e => handleModelIdChange(e.target.value), placeholder: isLocalPreset ? '' : settingsCopy.modelIdPlaceholder })}
                     {showCustomCloudKeyField && renderApiKeyField({ withBorder: true })}
-                    {showBaseUrlField && renderInlineField({ label: t.customBaseUrl, value: baseUrl, onChange: e => handleBaseUrlChange(e.target.value) })}
+                    {showNoAuthToggle && customModel && renderNoAuthToggleRow(true)}
+                    {showBaseUrlField && renderInlineField({
+                      label: t.customBaseUrl,
+                      value: baseUrl,
+                      onChange: e => handleBaseUrlChange(e.target.value),
+                    })}
+                    {/* 端口独立成行（不并入 URL 行）：URL 行的受控 input 与同行
+                        相邻 input 在个别内核下选择/点击行为互相干扰（三连击全选
+                        失效 → 编辑 URL 打错字，settings_ui_smoke 的 Tachyon
+                        档位钉即此），独立行让 URL 行保持与既有表单一致的 DOM
+                        契约。URL 不可解析（非 http/https）时只读，值由 baseUrl
+                        派生；清空 = 移除显式端口（走 scheme 默认）。显式写默认
+                        端口（https 443 / http 80）会被 WHATWG URL 规范化丢弃
+                        （等价 URL），端口框随之回显为空，属预期行为。 */}
+                    {showBaseUrlField && renderInlineField({
+                      label: settingsCopy.localPortLabel,
+                      value: parsedBaseUrl ? (parsedBaseUrl.port || '') : '',
+                      onChange: e => handleBaseUrlPortChange(e.target.value),
+                      placeholder: settingsCopy.localPortPlaceholder,
+                      testId: 'model-form-base-url-port',
+                      inputMode: 'numeric',
+                      spellCheck: false,
+                      readOnly: !parsedBaseUrl,
+                    })}
+                    {baseUrlPortError && <div className="px-4 pb-2 text-[12px] leading-4 text-[#FF3B30]">{baseUrlPortError}</div>}
+                    {noAuthActive && <div className="px-4 pb-3 text-[12px] leading-4 text-[#8A8A8E] dark:text-[#8E8E93]">{settingsCopy.noAuthHint}</div>}
                     {/* Context window (optional for cloud models): a newly released
                         model ID not yet in the catalog cannot be resolved by it, so
                         the runtime falls back to the conservative 128K window.
@@ -1647,6 +1790,121 @@ function hasStoredCredential(record) {
     // Mirrors DOUBLE_CLICK_GUARD_MS in features/computer-use/ComputerUseConsent.jsx.
     const COMPUTER_USE_TOGGLE_GUARD_MS = 200;
     /**
+     * The virtual-display status hint lines under the preference row
+     * (extracted so the section component stays inside its
+     * cognitive-complexity budget). Driven by the status projection:
+     * "unavailable" renders the localized lead line plus the backend's
+     * English diagnostic (never localized, shown verbatim under the lead —
+     * the install guidance must stay visible exactly while a session runs
+     * on a probe-red host); a failed write replaces the status line with
+     * the error until the next attempt.
+     *
+     * R11: a live PHYSICAL session renders the dedicated live-physical
+     * line. "disabled"'s copy reads "Off —" (true about where NEW sessions
+     * will run) but contradicts a switch showing ON when the preference
+     * was flipped on mid-session — the exact artifact the R10 fix resolved
+     * for the "unavailable" leg, now completed for the "available" leg.
+     * "active" keeps its line and GAINS the live-physical line: with one
+     * virtual and one physical session both live, the aggregate word must
+     * not hide the session on the real screen. Fail-neutral: an older
+     * backend without the field keeps the previous rendering.
+     *
+     * R12: the live-physical copy is split into the FACT ("a session is
+     * currently using your real screen" — true whenever physicalSessionLive)
+     * and the future-isolation PROMISE ("new sessions will use the isolated
+     * display" — true only while the persisted preference is on AND the
+     * probe is up, i.e. never under "unavailable", and under "disabled"
+     * only while the switch is ON). The R11 single-line shape promised
+     * isolation under an OFF switch and next to the "no isolated display
+     * available" lead — an over-claim in both legs. Note the two
+     * projections: the switch binds `!== false` (default-on for a legacy
+     * backend's checked state) while the promise needs the strict
+     * `=== true` — promising isolation requires backend truth, not a
+     * default.
+     */
+    const VirtualDisplayStatusLines = ({ t, virtualError, virtualState, virtualDetail, physicalSessionLive, preferVirtual }) => {
+      const physicalLive = physicalSessionLive === true;
+      const promiseIsolated = preferVirtual === true;
+      // "disabled" + live physical + pref ON: the "Off —" copy would
+      // contradict the ON switch (the R11 artifact) — the fact + promise
+      // lines REPLACE it. With the pref OFF the "Off —" copy is true and
+      // stays, with the fact line appended.
+      const replaceDisabledLine = virtualState === 'disabled' && physicalLive && promiseIsolated;
+      const virtualHint = virtualState === 'ready'
+        ? t.uiComputerUse.virtualStateReady
+        : virtualState === 'active'
+          ? t.uiComputerUse.virtualStateActive
+          : replaceDisabledLine
+            ? null
+            : virtualState === 'disabled'
+              ? t.uiComputerUse.virtualStateDisabled
+              : null;
+      const virtualUnavailable = virtualState === 'unavailable';
+      // The FACT is true whenever a physical session is live — INCLUDING
+      // the replace-disabled leg: there the "Off —" copy is replaced, but
+      // the live-session fact must still render next to the promise (the
+      // user who flipped the preference ON mid-session must not lose the
+      // only line saying a session is driving their real screen right
+      // now; R13 — gating it on `!replaceDisabledLine` rendered the
+      // promise alone in that leg, contradicting the R12 split comment
+      // above).
+      const showFact = physicalLive;
+      // The promise rides only a state where the backend can deliver it:
+      // "active" proves the isolated stack is working, and the
+      // pref-ON "disabled" leg replaced the line above. "unavailable" (the
+      // probe is down) never promises — and neither does any leg carrying a
+      // non-empty `virtualDetail`: the detail is the backend's recorded
+      // "something is wrong" fact (e.g. the last virtual creation failed),
+      // and a live "active" row CAN ride a red snapshot (the vocabulary
+      // answers the session's own target, not the probe). Promising
+      // isolation while the next creation would resolve physical is the
+      // R18 hole; the detail gate keeps the promise silent until the
+      // backend's own fact clears (the detail renders under "unavailable").
+      const showPromise =
+        promiseIsolated &&
+        physicalLive &&
+        !virtualDetail &&
+        (replaceDisabledLine || virtualState === 'active');
+      return (
+        <>
+          <span className="block">{t.uiComputerUse.settingsVirtualHint}</span>
+          {virtualError ? (
+            <span className="block mt-0.5">
+              {/* The session truth survives the write error: a failed
+                  preference write used to replace ALL status lines,
+                  suppressing the live-physical fact while a session kept
+                  driving the user's real screen (R15). The fact is server
+                  truth, not an outcome of the failed write. */}
+              {showFact && (
+                <span className="block">{t.uiComputerUse.virtualStatePhysicalLive}</span>
+              )}
+              <span className="block">{virtualError}</span>
+            </span>
+          ) : virtualUnavailable ? (
+            <span className="block mt-0.5">
+              <span className="block">{t.uiComputerUse.virtualStateUnavailableLead}</span>
+              {virtualDetail && <span className="block">{virtualDetail}</span>}
+              {physicalLive && (
+                <span className="block">{t.uiComputerUse.virtualStatePhysicalLive}</span>
+              )}
+            </span>
+          ) : (
+            (virtualHint || showFact || showPromise) && (
+              <span className="block mt-0.5">
+                {virtualHint && <span className="block">{virtualHint}</span>}
+                {showFact && (
+                  <span className="block">{t.uiComputerUse.virtualStatePhysicalLive}</span>
+                )}
+                {showPromise && (
+                  <span className="block">{t.uiComputerUse.virtualStatePhysicalNextVirtual}</span>
+                )}
+              </span>
+            )
+          )}
+        </>
+      );
+    };
+    /**
      * Computer-use settings row as a self-contained component so the failed
      * write can surface an inline error (the old code did `catch(() => {})`,
      * so a failed enable looked like the switch bouncing back with no
@@ -1659,7 +1917,7 @@ function hasStoredCredential(record) {
      * rapid clicks cannot interleave contradictory set_enabled calls
      * (matching the consent dialog's single-flight standard).
      */
-    const ComputerUseSettingSection = ({ t }) => {
+    const ComputerUseSettingSection = ({ t, platformCapabilities }) => {
       const slice = useBridgeState(['computerUse']);
       const computerUse = (slice && slice.computerUse) || {};
       const [actionError, setActionError] = useState('');
@@ -1671,6 +1929,57 @@ function hasStoredCredential(record) {
       // consent dialog's useConsentAction flightRef.
       const flightRef = useRef({ busy: false, settledAt: 0 });
       const unsupported = computerUse.platformSupported === false;
+      // Virtual-display preference row (frozen status contract: the backend
+      // always reports `preferVirtualDisplay`). The switch binds to the
+      // PERSISTED PREFERENCE, not the derived state (review finding): an
+      // active virtual session with the preference off must show the switch
+      // OFF while the state-driven hint line below keeps describing the live
+      // session ("Agent is working in an isolated virtual display…") — the
+      // live backend's target was decided once, at creation, so the state
+      // legitimately disagrees with the preference. While the projection is
+      // still "unknown" (no authoritative read yet), the row stays RENDERED
+      // (discoverability: the user must see the option exists before the
+      // first status lands; hiding it here would fight the section's
+      // unsupported gate above, which remains the only hider) but the switch
+      // is disabled AND unchecked: unchecked because the slice's default
+      // (true, mirroring the backend default) is not an authoritative answer,
+      // and a checked-ON-disabled switch would assert a preference nobody
+      // confirmed yet. No authoritative read also means no preference write
+      // is submitted (an older backend without the command would only produce
+      // a confusing failure). Same single-flight pattern as the master toggle
+      // above, with its own ref so the two switches never block each other.
+      const virtualState = computerUse.virtualDisplayState || 'unknown';
+      const virtualUnknown = virtualState === 'unknown';
+      const virtualPref = computerUse.preferVirtualDisplay !== false;
+      const virtualDetail = typeof computerUse.virtualDisplayDetail === 'string'
+        ? computerUse.virtualDisplayDetail
+        : '';
+      const [virtualPending, setVirtualPending] = useState(false);
+      const [virtualError, setVirtualError] = useState('');
+      const virtualFlightRef = useRef({ busy: false, settledAt: 0 });
+      // Per-platform note rows: gated on the dedicated semantic capability
+      // `virtualDisplayNote` ("windows" | "macos" | "linux" from
+      // get_platform_capabilities) — the capability is the semantic source;
+      // an older proxy that keyed these rows off the dependency-installer
+      // bits (usesBundledDependencyInstaller / usesHomebrewDependencyInstaller)
+      // broke the moment installer semantics changed, so it is gone. Static
+      // product notes about the stack's real fidelity/lifecycle shape — they
+      // render whenever this platform has a note (not only while the feature
+      // toggle is on), so the absolute-sounding virtual hint above never
+      // stands on the page without its platform caveat next to it.
+      const showWindowsVirtualNote = platformCapabilities?.virtualDisplayNote === 'windows';
+      const showMacosVirtualNote = platformCapabilities?.virtualDisplayNote === 'macos';
+      const showLinuxVirtualNote = platformCapabilities?.virtualDisplayNote === 'linux';
+      // R16: when the capability is absent or unverified (an older proxy
+      // that predates `virtualDisplayNote`), all three platform note rows
+      // are skipped — the hint above, whose copy claims the display "never
+      // shows on your screen", would then stand on the page with NO caveat
+      // next to it, contradicting this block's own comment. The
+      // unknown-platform honesty line (the same fallback class the grant
+      // dialog uses) keeps the absolute claim from shipping unqualified on
+      // any backend.
+      const showUnknownVirtualNote =
+        !showWindowsVirtualNote && !showMacosVirtualNote && !showLinuxVirtualNote;
       // An emergency stop latches `stopped` without touching the toggle: the
       // switch still reads ON but every consent surface is dead until the
       // user toggles off and back on (set_enabled's re-enable is the only
@@ -1773,6 +2082,69 @@ function hasStoredCredential(record) {
               }}
             />
           </IOSRow>
+          {!unsupported && (
+            <IOSRow
+              label={t.uiComputerUse.settingsVirtualToggle}
+              desc={
+                <VirtualDisplayStatusLines
+                  t={t}
+                  virtualError={virtualError}
+                  virtualState={virtualState}
+                  virtualDetail={virtualDetail}
+                  physicalSessionLive={computerUse.physicalSessionLive}
+                  preferVirtual={computerUse.preferVirtualDisplay}
+                />
+              }
+            >
+              <IOSSwitch
+                checked={virtualUnknown ? false : virtualPref}
+                disabled={virtualPending || virtualUnknown}
+                onChange={(value) => {
+                  const flight = virtualFlightRef.current;
+                  if (flight.busy || Date.now() - flight.settledAt < COMPUTER_USE_TOGGLE_GUARD_MS) return;
+                  if (!bridge.available || !bridge.computerUse) return;
+                  flight.busy = true;
+                  setVirtualError('');
+                  setVirtualPending(true);
+                  // The wrapper re-reads the authoritative status before
+                  // resolving, so the switch and the hint line below it move
+                  // to the persisted value (or roll back on failure) without
+                  // a separate refresh here.
+                  bridge.computerUse.setVirtualDisplayPreference(value)
+                    .then(() => {
+                      flight.settledAt = Date.now();
+                    })
+                    .catch((error) => {
+                      setVirtualError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
+                    })
+                    .finally(() => {
+                      flight.busy = false;
+                      setVirtualPending(false);
+                    });
+                }}
+              />
+            </IOSRow>
+          )}
+          {showWindowsVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteWindows}
+            </div>
+          )}
+          {showMacosVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteMacos}
+            </div>
+          )}
+          {showLinuxVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteLinux}
+            </div>
+          )}
+          {showUnknownVirtualNote && (
+            <div className="px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]">
+              {t.uiComputerUse.virtualNoteUnknownPlatform}
+            </div>
+          )}
         </IOSSection>
       );
     };
@@ -1989,8 +2361,51 @@ function hasStoredCredential(record) {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, inputNeededNotif, setInputNeededNotif, setSettingsToast, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
+      // 会话备份导入（export_session 的逆操作）：命令侧自开文件对话框，用户
+      // 取消返回 null；结果按 imported/skipped_existing/failed 组 toast。
+      // 处理器住在懒加载的 SettingsView 里（不再占主入口 chunk）。
+      const [importingSessions, setImportingSessions] = useState(false);
+      const handleImportSessionArchive = useCallback(async () => {
+        // import_session_archive 不经引擎（纯本地 store + 原生对话框）：
+        // bridge 断连不拦截，只挡并发重入（r7 minor）。
+        if (importingSessions) return;
+        setImportingSessions(true);
+        try {
+          const result = await invokeTauri('import_session_archive');
+          if (!result) return;
+          // 逐条失败原因落到 console（toast 只放计数——失败串含 id/原因，
+          // 不适合塞进 pill；此前原因哪都不出现，用户只见「1 failed」无从
+          // 判断是保留 id 还是 schema 超限）。
+          for (const failure of [...(result.failed || []), ...(result.artifacts_failed || [])]) {
+            console.warn(`[sessions] import ${failure.session_id}: ${failure.reason}`);
+          }
+          const artifactsFailedCount = (result.artifacts_failed || []).length;
+          setSettingsToast({
+            // 四计数汇总 + 缺产物补救指引是长文案：单行 pill 3 秒会把「删会话
+            // 重导入」的恢复路径整个截掉（重导入又命中 skip-existing）——
+            // 长文案自带 8 秒时长（r7 minor）。
+            text: t.uiSettings.importSessionsDone(
+              (result.imported || []).length,
+              (result.skipped_existing || []).length,
+              (result.failed || []).length,
+              // 部分导入（缺 artifacts）计数：Rust SessionImportSummary.artifacts_failed。
+              artifactsFailedCount,
+            ),
+            duration: artifactsFailedCount > 0 || (result.failed || []).length > 0 ? 8000 : 3000,
+            // multiline（r8）：长文案在窄窗口上单行 truncate 仍会裁掉补救指引
+            // 的尾部——四计数汇总只在有缺产/失败时才是长文案。
+            multiline: artifactsFailedCount > 0 || (result.failed || []).length > 0,
+          });
+        } catch (error) {
+          const detail = String((error && error.message) || error || t.unknownError);
+          console.warn('import session archive failed', error);
+          setSettingsToast({ text: `${t.uiSettings.importSessionsFailed}: ${detail}`, duration: 8000, multiline: true });
+        } finally {
+          setImportingSessions(false);
+        }
+      }, [importingSessions, setSettingsToast, t]);
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
       const usesBundledDependencyInstaller = !!platformCapabilities.usesBundledDependencyInstaller;
@@ -2520,6 +2935,19 @@ function hasStoredCredential(record) {
             <IOSRow label={t.uiSettings.taskNotice} desc={t.uiSettings.taskNoticeDesc}>
               <IOSSwitch checked={taskCompletedNotif} onChange={setTaskCompletedNotif} />
             </IOSRow>
+            {/* The task-completion switch is the master switch (its payload
+                carries enabled). The input row's effective display derives as
+                intent && master and is disabled while the master is off —
+                otherwise the switch would show on yet never fire; the Rust
+                delivery gate requires the same effective rule
+                (enabled && task_completed && needs_input). */}
+            <IOSRow label={t.uiSettings.inputNotice} desc={t.uiSettings.inputNoticeDesc}>
+              <IOSSwitch
+                checked={inputNeededNotif && taskCompletedNotif}
+                disabled={!taskCompletedNotif}
+                onChange={setInputNeededNotif}
+              />
+            </IOSRow>
           </IOSSection>
           )}
           <IOSSection title={t.uiSettings.voiceShortcuts}>
@@ -2583,6 +3011,19 @@ function hasStoredCredential(record) {
               )}
             </div>
           </section>
+          )}
+          {/* 会话备份导入：桌面独占（web 车道无文件对话框，也不该触及宿主
+              会话存储），放在通用页尾部与导出入口（侧栏会话菜单）互为闭环。 */}
+          {!isWeb && setSettingsToast && (
+            <IOSSection title={t.uiSettings.sessionsSection}>
+              <IOSRow label={t.uiSettings.importSessionsArchive} desc={t.uiSettings.importSessionsDesc}>
+                <button type="button" data-testid="settings-import-sessions" disabled={importingSessions}
+                  onClick={handleImportSessionArchive}
+                  className={`min-h-8 px-3 rounded-full text-[14px] font-medium ${importingSessions ? 'opacity-60 cursor-not-allowed' : ''} ${actionButton('blue')}`}>
+                  {importingSessions ? t.uiSettings.importingSessions : t.uiSettings.importSessionsArchive}
+                </button>
+              </IOSRow>
+            </IOSSection>
           )}
         </>
         );
@@ -2788,7 +3229,7 @@ function hasStoredCredential(record) {
         return (
           <div ref={versionUpdateRef} id="settings-version-update">
             <IOSSection title={t.uiSettings.version}>
-              <IOSRow label={t.uiSettings.currentVersion} desc={t.uiSettings.beta} value={`v${currentVersion}`} />
+              <IOSRow label={t.uiSettings.currentVersion} value={`v${currentVersion}`} />
               <IOSRow label={upd && upd.available ? t.newVersionFound : t.checkUpdate} desc={updateStatusDesc}>
               <button type="button" data-settings-update-action="true" onClick={handleUpdateAction} disabled={updateButtonDisabled} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed">{updateButtonLabel}</button>
             </IOSRow>
@@ -2827,7 +3268,7 @@ function hasStoredCredential(record) {
                 </IOSRow>
               </IOSSection>
             )}
-            {canUseComputerUse && <ComputerUseSettingSection t={t} />}
+            {canUseComputerUse && <ComputerUseSettingSection t={t} platformCapabilities={platformCapabilities} />}
             {canInstallDependencies && <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}

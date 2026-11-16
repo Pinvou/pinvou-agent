@@ -27,9 +27,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use super::backend::BackendRegistry;
+use super::platform::VirtualAvailabilitySnapshot;
+use super::types::DisplayTarget;
 
 /// The validity window of a T3 confirmation: an unanswered pending must
 /// expire on its own — after expiry it reads as nonexistent and can no longer
@@ -1140,6 +1142,25 @@ pub struct ComputerUseShared {
     /// lives in this module; the OS-side termination action is forwarded to
     /// the backend here.
     pub backends: BackendRegistry,
+    /// Mirrors the persisted `computer_use.prefer_virtual_display` setting
+    /// (default TRUE — "operate on an isolated virtual display whenever
+    /// possible"). Read at backend creation for the ONE-TIME virtual-vs-
+    /// physical fallback decision, and by the status command to resolve the
+    /// `virtualDisplayState` snapshot. Replayed at startup by lib.rs next to
+    /// the master toggle.
+    display_pref: AtomicBool,
+    /// Cached global availability snapshot ("available" | "unavailable" |
+    /// "disabled" + detail) resolved from the preference and the cheap
+    /// platform probe. Refresh points: startup replay, the preference
+    /// command, and after a backend creation reports on every platform. The
+    /// probe is binary/class presence only — never a server spawn.
+    virtual_availability: RwLock<VirtualAvailabilitySnapshot>,
+    /// Per-session display-target registry: session id → the target its
+    /// backend was created for (set at backend creation, cleared at tool
+    /// teardown). The status command reads it to answer "active" — a live
+    /// session is currently driving a virtual display — which no global
+    /// probe snapshot can express.
+    session_targets: Mutex<HashMap<String, DisplayTarget>>,
 }
 
 impl Default for ComputerUseShared {
@@ -1150,7 +1171,12 @@ impl Default for ComputerUseShared {
 
 impl ComputerUseShared {
     /// `enabled` defaults to false — the tool rejects everything until the
-    /// setting is turned on.
+    /// setting is turned on. `display_pref` defaults to TRUE (the virtual
+    /// display is preferred whenever possible, per the design's
+    /// user-confirmed scope), but with the availability snapshot parked at
+    /// "unavailable": until a platform probe actually runs (startup replay /
+    /// preference command), reporting "ready" would promise a backend that
+    /// was never checked.
     pub fn new() -> Self {
         Self {
             enabled: AtomicBool::new(false),
@@ -1163,11 +1189,189 @@ impl ComputerUseShared {
             }),
             grant_requests: Mutex::new(HashSet::new()),
             backends: BackendRegistry::default(),
+            display_pref: AtomicBool::new(true),
+            virtual_availability: RwLock::new(VirtualAvailabilitySnapshot {
+                state: "unavailable",
+                detail: "the virtual display has not been probed yet".to_string(),
+            }),
+            session_targets: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// The persisted virtual-display preference (in-memory mirror, default
+    /// TRUE). Read at backend creation for the one-time target decision.
+    pub fn prefer_virtual_display(&self) -> bool {
+        self.display_pref.load(Ordering::SeqCst)
+    }
+
+    /// Flip the virtual-display preference (the settings command calls this
+    /// AFTER persisting to settings.json, same order as the master toggle)
+    /// and refresh the cached availability snapshot in the same step: a flip
+    /// that left the snapshot stale would let `virtualDisplayState` report
+    /// "ready" for a preference the user just turned off (the startup replay
+    /// and the linux backend-creation reports refresh through the same
+    /// helper). No consent sweep rides this flip: it changes where future
+    /// sessions are created, not any live consent state.
+    pub fn set_display_pref(&self, prefer_virtual: bool) {
+        self.display_pref.store(prefer_virtual, Ordering::SeqCst);
+        self.refresh_virtual_availability();
+    }
+
+    /// Cache a freshly resolved global availability snapshot (startup
+    /// replay / preference command / linux backend-creation reports).
+    pub(crate) fn set_virtual_availability(&self, snapshot: VirtualAvailabilitySnapshot) {
+        *self.virtual_availability.write() = snapshot;
+    }
+
+    /// Re-probe the platform and cache the resolved snapshot. The refresh
+    /// entry point for the startup replay and the preference command: the
+    /// probe is cheap (binary/class presence only, never a server spawn),
+    /// so this is safe on every status-affecting call.
+    pub(crate) fn refresh_virtual_availability(&self) {
+        let availability = super::platform::probe_virtual_display();
+        let snapshot =
+            super::platform::resolve_snapshot(self.prefer_virtual_display(), &availability);
+        self.set_virtual_availability(snapshot);
+    }
+
+    /// The cached global availability snapshot (status projection input).
+    pub(crate) fn virtual_availability(&self) -> VirtualAvailabilitySnapshot {
+        self.virtual_availability.read().clone()
+    }
+
+    /// Resolve the status-level `virtualDisplayState` string (frozen
+    /// vocabulary), the snapshot detail, and the physical-session-live flag
+    /// under ONE `session_targets` acquisition: the status command used to
+    /// read the state mapping and the flag through separate locks, so a
+    /// session registering between the reads produced the impossible pair
+    /// (`ready` + `physicalSessionLive: true`) for one poll cycle —
+    /// re-creating, for one render, exactly the hint contradiction the
+    /// R8/R11 mappings closed (R12).
+    ///
+    /// Vocabulary mapping: "active" wins over everything (a live session IS
+    /// driving a virtual display right now), then the cached snapshot's
+    /// "disabled" / "unavailable" / "available"→"ready".
+    ///
+    /// R8 truthfulness: a live session whose backend was created for the
+    /// PHYSICAL target (e.g. the preference was flipped on mid-session; the
+    /// target resolves once at backend creation) must not be described as
+    /// "ready" — the settings hint for "ready" claims the agent works in an
+    /// isolated display while the banner for the same session truthfully
+    /// says it is controlling the user's computer. "disabled" is the
+    /// vocabulary word whose copy states the agent uses the real screen, so
+    /// a live physical session maps there until its row is cleared (the
+    /// hint then returns to the snapshot's own truth). A virtual session
+    /// still wins: "active" describes it regardless of the preference.
+    ///
+    /// R10 refinement: "unavailable" passes through UNCHANGED for a live
+    /// physical session. Its copy claims nothing false while a physical
+    /// session runs (the agent does use the real screen), and the
+    /// "unavailable" branch is the only one that renders the snapshot's
+    /// detail — the install guidance — which must stay visible exactly
+    /// while a session runs on a host the probe rejects (the R8 blanket
+    /// "disabled" mapping hid the guidance for the whole session and read
+    /// "Off —" next to a switch showing ON). The flag is also projected as
+    /// the status payload's `physicalSessionLive` (R11), so the settings
+    /// hint can render the "a session is using your real screen" truth
+    /// instead of vocabulary words that contradict the preference switch.
+    /// Returns `(state, detail, physicalSessionLive, sessionDisplayTarget)`;
+    /// the fourth element is the session's own target row (`None` when no
+    /// session id is given or the session has no live row).
+    pub(crate) fn virtual_display_status_fields(
+        &self,
+        session_id: Option<&str>,
+    ) -> (&'static str, String, bool, Option<DisplayTarget>) {
+        let snapshot = self.virtual_availability.read();
+        let targets = self.session_targets.lock();
+        let virtual_live = targets
+            .values()
+            .any(|target| *target == DisplayTarget::Virtual);
+        let physical_live = targets
+            .values()
+            .any(|target| *target == DisplayTarget::Physical);
+        let (state, detail) = if virtual_live {
+            ("active", snapshot.detail.clone())
+        } else if physical_live {
+            match snapshot.state {
+                "unavailable" => ("unavailable", snapshot.detail.clone()),
+                _ => ("disabled", snapshot.detail.clone()),
+            }
+        } else {
+            match snapshot.state {
+                "available" => ("ready", snapshot.detail.clone()),
+                other => (other, snapshot.detail.clone()),
+            }
+        };
+        // The session's own target read under the SAME single
+        // `session_targets` acquisition as the vocabulary above (R14): the
+        // status command used to answer this via a second lock read, so a
+        // row registered between the two reads produced a transiently
+        // contradictory pair (`physicalSessionLive: false` +
+        // `sessionDisplayTarget: "physical"`, or `ready` + a physical row)
+        // for one poll cycle — the exact shape the R12 single-acquisition
+        // fix closed for the flag.
+        let session_target = session_id.and_then(|id| targets.get(id).copied());
+        (state, detail, physical_live, session_target)
+    }
+
+    /// Register the display target a session's backend was created for,
+    /// but ONLY while the feature is enabled and not stopped — both flags
+    /// are read while the `session_targets` lock is held. `stop_all`
+    /// raises the stop flag and `set_enabled(false)` stores the switch
+    /// BEFORE either takes this lock to clear the rows, so a writer that
+    /// came through a slow backend creation cannot re-win a row the sweeps
+    /// just cleared: every interleaving either sees the flag under the
+    /// lock or is erased by the sweep's own clear. Scope note (R17): that
+    /// claim covers `stop_all` and the master switch, which store their
+    /// flags first. A single-session `revoke_session` stores no flag — it
+    /// clears the grant rows and the target row directly — so a writer in
+    /// flight across a revoke can still re-win the row until the tool's
+    /// idle reaping or `Drop` clears it (narrow window, self-healing,
+    /// accepted with disclosure). The two production
+    /// writers are the lazy factory (backend creation can take seconds on
+    /// the macOS stack) and the run-path re-assert; both must use this and
+    /// not [`Self::set_session_target`] (R16: the factory used to write
+    /// unconditionally — the one unguarded writer of the row). Returns
+    /// whether the row was written.
+    pub(crate) fn set_session_target_if_live(
+        &self,
+        session_id: &str,
+        target: DisplayTarget,
+    ) -> bool {
+        let mut targets = self.session_targets.lock();
+        if !self.enabled.load(Ordering::SeqCst) || self.stop.load(Ordering::SeqCst) {
+            return false;
+        }
+        targets.insert(session_id.to_string(), target);
+        true
+    }
+
+    /// Unconditional registry write, retained for the tests that seed the
+    /// registry directly. Production writers must go through
+    /// [`Self::set_session_target_if_live`].
+    #[cfg(test)]
+    pub(crate) fn set_session_target(&self, session_id: &str, target: DisplayTarget) {
+        self.session_targets
+            .lock()
+            .insert(session_id.to_string(), target);
+    }
+
+    /// Drop the session's target row (tool teardown). Missing rows are fine.
+    pub(crate) fn clear_session_target(&self, session_id: &str) {
+        self.session_targets.lock().remove(session_id);
+    }
+
+    /// The display target the session's backend was created for (None = no
+    /// live row: tool not constructed / torn down, or an unknown session id).
+    /// The status command projects this as `sessionDisplayTarget` so the
+    /// frontend banner can pick its copy from server truth after a window
+    /// reload, where the event-derived `grantedTarget` no longer exists.
+    pub(crate) fn session_target(&self, session_id: &str) -> Option<DisplayTarget> {
+        self.session_targets.lock().get(session_id).copied()
     }
 
     /// The settings toggle (called by the integration layer's settings
@@ -1242,6 +1446,16 @@ impl ComputerUseShared {
     pub fn revoke_session(&self, session_id: &str) {
         self.sessions.lock().remove(session_id);
         self.grant_requests.lock().remove(session_id);
+        // The display-target row goes with the consent artifacts — the same
+        // R12 rule `stop_all`/`revoke_all_sessions` follow: a revoked session
+        // cannot act again, and a kept row kept `physicalSessionLive`/the
+        // "active" vocabulary reporting a live session until the idle
+        // reaping dropped the tool (the deny path hits exactly this: the row
+        // is written at factory creation, before the user answers the
+        // dialog). A revoked session that is re-granted and runs again gets
+        // its row back honestly: every admitted run re-asserts it from the
+        // backend's recorded decision (the tool layer's run() re-assert).
+        self.clear_session_target(session_id);
         let mut consent = self.consent.lock();
         consent
             .pending
@@ -1267,6 +1481,15 @@ impl ComputerUseShared {
         self.stop.store(true, Ordering::SeqCst);
         self.sessions.lock().clear();
         self.grant_requests.lock().clear();
+        // The display-target rows go with the consents — the same R12 rule
+        // `revoke_all_sessions` follows: a stopped session cannot act again,
+        // and a kept row kept `physicalSessionLive`/the "active" vocabulary
+        // reporting a live session (and a physical one at that) until the
+        // idle reaping dropped the tool. No state should survive a stop.
+        // (A stopped session that is re-granted and runs again gets its row
+        // back honestly: every admitted run re-asserts it from the backend's
+        // recorded decision — see the tool layer's run() re-assert, R14.)
+        self.session_targets.lock().clear();
         let mut consent = self.consent.lock();
         consent.pending.clear();
         consent.approved_tokens.clear();
@@ -1300,6 +1523,16 @@ impl ComputerUseShared {
     pub fn revoke_all_sessions(&self) {
         self.sessions.lock().clear();
         self.grant_requests.lock().clear();
+        // The display-target rows go with the consents: a swept session
+        // cannot act again, and keeping its row kept `physicalSessionLive`
+        // and the "active" vocabulary reporting a live session until the
+        // idle reaping finally dropped the tool — the settings hint kept
+        // saying a session was using the real screen against a
+        // switched-off feature (R12). Later audit records for such a
+        // session still resolve the correct target: the per-session
+        // ToolState cache survives the sweep, and `resolved_display_target`
+        // consults it before the preference+probe fallback chain.
+        self.session_targets.lock().clear();
         let mut consent = self.consent.lock();
         consent.pending.clear();
         consent.approved_tokens.clear();
@@ -2922,6 +3155,12 @@ mod tests {
         shared.grant_session("s2");
         let s2_pending = new_pending(&shared, "s2", "left click 3");
         assert!(shared.mint_confirmation(&s2_pending));
+        // A display-target row from a live session must clear with the
+        // sweep too (R12): the swept session cannot act again, and a kept
+        // row kept `physicalSessionLive`/the "active" vocabulary alive
+        // until the idle reaping dropped the tool.
+        shared.set_session_target("s3", DisplayTarget::Physical);
+        assert!(shared.virtual_display_status_fields(None).2);
         shared.revoke_all_sessions();
         assert!(!shared.has_active_grant("s1"));
         assert_eq!(
@@ -2930,6 +3169,11 @@ mod tests {
         );
         assert!(shared.pending_confirmation(&confirm_id).is_none());
         assert!(shared.pending_confirmation(&token_id).is_none());
+        let (_state, _detail, physical_live, _) = shared.virtual_display_status_fields(None);
+        assert!(
+            !physical_live,
+            "a swept session's display-target row must not survive the revoke"
+        );
         // Minted tokens are cleared too: after re-enabling + re-granting,
         // old tokens must not allow a confirmation-free replay.
         assert_eq!(
@@ -2941,6 +3185,96 @@ mod tests {
         // observe actions still work.
         assert!(!shared.is_stopped());
         assert!(shared.check_readonly().is_ok());
+    }
+
+    /// The emergency stop follows the same display-target rule as the
+    /// revoke: no state should survive a stop, and a kept row kept
+    /// `physicalSessionLive`/the "active" vocabulary reporting a live
+    /// session (and a physical one at that) until the idle reaping dropped
+    /// the tool (R13 — stop_all previously cleared only grants/consent).
+    #[test]
+    fn stop_all_clears_display_target_rows() {
+        let shared = enabled_shared();
+        shared.set_session_target("s1", DisplayTarget::Physical);
+        let (_state, _detail, physical_live, _) = shared.virtual_display_status_fields(None);
+        assert!(
+            physical_live,
+            "the row must be live before the stop for this pin to bite"
+        );
+        shared.stop_all();
+        assert!(shared.is_stopped());
+        let (_state, _detail, physical_live, _) = shared.virtual_display_status_fields(None);
+        assert!(
+            !physical_live,
+            "a stopped session's display-target row must not survive the stop"
+        );
+    }
+
+    /// R15: a single-session revoke clears the display-target row like
+    /// `stop_all`/`revoke_all_sessions` do. The deny path hits exactly
+    /// this: the row is written at factory creation — before the user
+    /// answers the grant dialog — and a kept row kept
+    /// `physicalSessionLive`/the "active" vocabulary reporting a live
+    /// session until idle reaping dropped the tool, contradicting the R12
+    /// "no consent state survives the withdrawal" rule.
+    #[test]
+    fn revoke_session_clears_the_display_target_row() {
+        let shared = enabled_shared();
+        assert_eq!(shared.grant_session("s1"), GrantOutcome::Granted);
+        shared.set_session_target("s1", DisplayTarget::Physical);
+        let (_state, _detail, physical_live, _) = shared.virtual_display_status_fields(None);
+        assert!(
+            physical_live,
+            "the row must be live before the revoke for this pin to bite"
+        );
+        shared.revoke_session("s1");
+        let (_state, _detail, physical_live, _) = shared.virtual_display_status_fields(None);
+        assert!(
+            !physical_live,
+            "a revoked session's display-target row must not survive the revoke"
+        );
+    }
+
+    /// R16: the guarded registry writer refuses to write the row while the
+    /// feature is disabled or the stop latch is raised, and writes again
+    /// once both clear. The race-closure property this exists for — the
+    /// flags are read while the `session_targets` lock is held, after
+    /// `stop_all`/`set_enabled(false)` have already stored theirs — is
+    /// structural (the lock is acquired before the flag reads inside
+    /// [`Self::set_session_target_if_live`]); this test pins the observable
+    /// refusal/allow behavior in every flag state.
+    #[test]
+    fn set_session_target_if_live_refuses_stopped_and_disabled() {
+        let shared = ComputerUseShared::new();
+        // Disabled (fresh guard): the lazy factory of a backend creation
+        // that outlived a master-switch-off must not re-win the row the
+        // disable sweep cleared.
+        assert!(
+            !shared.set_session_target_if_live("s1", DisplayTarget::Physical),
+            "a disabled feature must not take a display-target row"
+        );
+        shared.set_enabled(true);
+        assert!(
+            shared.set_session_target_if_live("s1", DisplayTarget::Physical),
+            "a live feature takes the row"
+        );
+        let (_state, _detail, physical_live, _) = shared.virtual_display_status_fields(None);
+        assert!(physical_live, "the row is readable once written");
+        shared.stop_all();
+        assert!(
+            !shared.set_session_target_if_live("s1", DisplayTarget::Physical),
+            "a stopped feature must not take a display-target row"
+        );
+        let (_state, _detail, physical_live, _) = shared.virtual_display_status_fields(None);
+        assert!(
+            !physical_live,
+            "the stop sweep cleared the row and the refusal kept it cleared"
+        );
+        shared.reset_stop();
+        assert!(
+            shared.set_session_target_if_live("s1", DisplayTarget::Physical),
+            "after the stop is lifted the writer admits the row again"
+        );
     }
 
     /// The off-period invariant is self-enforcing: the sweeps live inside

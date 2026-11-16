@@ -748,12 +748,12 @@ jobs:
         working-directory: pinvou3-app
         run: npm run runtime:windows:stage
 
-      # descriptor 已就绪,直接调用集成测试钉住 stageWindowsInstaller
-      # 的安装器适配(须直接调用:node --test 会丢弃未知 argv 参数,
-      # --require-staged-runtime 到不了 process.argv)。
+      # descriptor 已就绪,运行安装器集成测试钉住 stageWindowsInstaller
+      # 的安装器适配(test:windows-runtime-installer 直接调用 node,
+      # 不走 node --test,--require-staged-runtime 能到达 process.argv)。
       - name: 运行时安装器集成测试
         working-directory: pinvou3-app
-        run: node tests/windows_runtime_installer_integration.test.js --require-staged-runtime
+        run: npm run test:windows-runtime-installer
 
       - name: 验证 Windows ONNX Runtime 可加载
         working-directory: pinvou3-app

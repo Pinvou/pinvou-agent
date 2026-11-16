@@ -135,6 +135,16 @@ pub trait ComputerUseBackend: Send {
     fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
         let _ = flag;
     }
+    /// Launch an application inside the display target. Virtual backends only;
+    /// physical backends keep the default (explicit Unsupported) — opening apps
+    /// on the user's real desktop is out of scope and disruptive.
+    fn open_app(&mut self, program: &str, args: &[String]) -> Result<u32, ComputerUseError> {
+        let _ = (program, args);
+        Err(ComputerUseError::unsupported(
+            "open",
+            "launching applications is only available on a virtual display target",
+        ))
+    }
 }
 
 enum BackendRequestKind {
@@ -182,6 +192,12 @@ enum BackendRequestKind {
     },
     FocusedElement,
     ReleaseOsGrant,
+    /// Launch an app inside the display target (virtual backends; physical
+    /// backends answer with the trait's explicit-unsupported default).
+    OpenApp {
+        program: String,
+        args: Vec<String>,
+    },
     Shutdown,
 }
 
@@ -192,6 +208,8 @@ enum BackendReply {
     Unit,
     Tree(String),
     Element(Option<ElementInfo>),
+    /// The spawned child's pid (open_app).
+    Pid(u32),
 }
 
 type BackendResult = Result<BackendReply, ComputerUseError>;
@@ -206,8 +224,10 @@ struct BackendRequest {
     /// the skip, a request the caller abandoned on timeout was still
     /// executed as usual — by then the physical input lock was released
     /// and the guard would not re-check, other sessions could be injecting
-    /// at the same time, breaking the cross-session full-serialization
-    /// guarantee, and the model had already been told "the action failed").
+    /// at the same time, breaking the cross-session serialization
+    /// guarantee (which tool.rs scopes to physical targets — a virtual
+    /// session injects into its own isolated display), and the model had
+    /// already been told "the action failed").
     cancelled: Arc<AtomicBool>,
     /// Control-lane request (emergency-stop button release / OS-grant close / Shutdown):
     /// **exempt from the dequeue skip**. An action request executing late
@@ -285,6 +305,10 @@ fn dispatch(
         },
         BackendRequestKind::ReleaseOsGrant => match backend.release_os_grant() {
             Ok(()) => BackendReply::Unit,
+            Err(error) => return Some(Err(error)),
+        },
+        BackendRequestKind::OpenApp { program, args } => match backend.open_app(&program, &args) {
+            Ok(pid) => BackendReply::Pid(pid),
             Err(error) => return Some(Err(error)),
         },
         BackendRequestKind::Shutdown => return None,
@@ -965,6 +989,20 @@ impl BackendHandle {
         self.unit_control(BackendRequestKind::ReleaseOsGrant)
     }
 
+    /// Launch an application inside the backend's display target. Only
+    /// virtual backends implement it (the trait default answers
+    /// explicit-unsupported for physical backends — opening apps on the
+    /// user's real desktop is out of scope); returns the spawned child's pid.
+    pub fn open_app(&self, program: &str, args: &[String]) -> Result<u32, ComputerUseError> {
+        match self.inner.request(BackendRequestKind::OpenApp {
+            program: program.to_string(),
+            args: args.to_vec(),
+        })? {
+            BackendReply::Pid(pid) => Ok(pid),
+            _ => Err(ComputerUseError::failed("unexpected backend reply")),
+        }
+    }
+
     /// Best-effort physical button release through the control lane
     /// (bypasses the in-flight gate, queues behind any in-flight action).
     /// Emergency cleanup for sessions that may die mid-drag: a model that
@@ -979,9 +1017,11 @@ impl BackendHandle {
     pub fn emergency_mouse_up(&self) -> Result<(), ComputerUseError> {
         // Release the three buttons one by one (synthetic presses of the
         // right/middle buttons also strand on stop/drop — previously only the
-        // left button was released). For unpressed buttons, every backend's
-        // harmless no-op (consistent with the established line in the cleanup comment
-        // below); better one release too many than a stuck button.
+        // left button was released). For unpressed buttons this is harmless
+        // on the physical and Linux/Windows stacks (a no-op up), and on the
+        // macOS stack posts one unsolicited up to the resolved target —
+        // apps ignore an up for a button they do not hold; better one
+        // release too many than a stuck button.
         let mut first_err = None;
         for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
             if let Err(error) = self.unit_control(BackendRequestKind::MouseUp { button }) {
@@ -1058,7 +1098,9 @@ impl BackendRegistry {
     ///
     /// The registration is KEPT: cleanup is idempotent (the OS-grant close
     /// is take()-based inside the backend, and a mouse-up on an unpressed
-    /// button is a no-op), and a session re-granted after this revoke must
+    /// button is a no-op on the physical and Linux/Windows stacks — the
+    /// macOS stack posts one unsolicited up, same as the release path
+    /// above), and a session re-granted after this revoke must
     /// stay reachable for a later global stop
     /// ([`Self::emergency_release_all`]). Live tools leave the registry via
     /// [`Self::release_and_unregister`] on Drop.
@@ -1116,6 +1158,54 @@ impl BackendRegistry {
         for handle in handles {
             std::thread::spawn(move || emergency_cleanup(handle));
         }
+    }
+
+    /// [`Self::emergency_release_all`] plus a bounded, completion-driven
+    /// wait: returns when every spawned cleanup has finished or `grace`
+    /// has elapsed, whichever comes first. The app-exit harvest uses this
+    /// so the release grace tracks actual completion instead of a flat
+    /// sleep — healthy sub-second releases return early, a wedged cleanup
+    /// gives up at the grace (R13: the flat 2 s sleep parked the caller
+    /// for the full budget even when every release finished in
+    /// milliseconds).
+    pub fn emergency_release_all_and_wait(&self, grace: std::time::Duration) {
+        let handles: Vec<BackendHandle> = self.handles.lock().values().cloned().collect();
+        if handles.is_empty() {
+            return;
+        }
+        let count = handles.len();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        for handle in handles {
+            let tx = done_tx.clone();
+            std::thread::spawn(move || {
+                emergency_cleanup(handle);
+                let _ = tx.send(());
+            });
+        }
+        drop(done_tx);
+        // Wait exactly `count` completions within the total grace: each
+        // recv_timeout gets only the REMAINING budget, so one wedged
+        // cleanup cannot extend the wait past the caller's bound.
+        let started = std::time::Instant::now();
+        for _ in 0..count {
+            let left = grace.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                break;
+            }
+            match done_rx.recv_timeout(left) {
+                Ok(()) => {}
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Whether any session currently has a registered backend. The app-exit
+    /// harvest gates its synthetic-press release grace on this (R11):
+    /// `ComputerUseShared` is managed unconditionally, so an ungated 2 s
+    /// exit sleep taxed every quit and restart of the app — including
+    /// users who never enabled computer use — with zero sessions live.
+    pub fn has_live_sessions(&self) -> bool {
+        !self.handles.lock().is_empty()
     }
 
     /// The currently registered handle for the same session, if any. tool Drop uses it to
@@ -1193,6 +1283,7 @@ fn emergency_cleanup(handle: BackendHandle) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::DisplayTarget;
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -1208,6 +1299,8 @@ mod tests {
                 input: true,
                 ui_tree: false,
                 notes: "mock".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         }
 
@@ -1341,6 +1434,8 @@ mod tests {
                     input: false,
                     ui_tree: false,
                     notes: String::new(),
+                    target: DisplayTarget::Physical,
+                    target_note: String::new(),
                 }
             }
             fn capture(&mut self) -> Result<Capture, ComputerUseError> {
@@ -1427,6 +1522,8 @@ mod tests {
                     input: true,
                     ui_tree: false,
                     notes: "test".to_string(),
+                    target: DisplayTarget::Physical,
+                    target_note: String::new(),
                 }
             }
             fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
@@ -1590,6 +1687,8 @@ mod tests {
                 input: true,
                 ui_tree: false,
                 notes: "panic-on-type".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         }
 
@@ -1903,6 +2002,8 @@ mod tests {
                 input: true,
                 ui_tree: false,
                 notes: "probe".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         }
 
@@ -2175,6 +2276,55 @@ mod tests {
         assert_eq!(state.releases, 2);
     }
 
+    /// The bounded wait is completion-driven (R13): fast cleanups return
+    /// well inside the grace instead of paying the full budget (the
+    /// harvest's old flat sleep), and the releases still ran. The generous
+    /// grace makes the timing leg a real mutation pin — reverting the wait
+    /// to a flat `sleep(grace)` costs the full budget and fails the bound.
+    #[test]
+    fn emergency_release_all_and_wait_returns_on_completion() {
+        let state = Arc::new(Mutex::new(ProbeState::default()));
+        let registry = BackendRegistry::default();
+        let handle = probe_handle(&state);
+        registry.insert("s-wait", handle.clone());
+        // Start the backend first: a never-started (Pending) handle takes
+        // emergency_cleanup's fast path and would skip the cleanup entirely.
+        assert!(handle.capabilities().is_ok());
+        let grace = std::time::Duration::from_secs(10);
+        let started = std::time::Instant::now();
+        registry.emergency_release_all_and_wait(grace);
+        assert!(
+            started.elapsed() < grace,
+            "completion-driven wait must return before the grace elapses"
+        );
+        wait_for_cleanup(&state, |s| s.releases > 0 && !s.mouse_ups.is_empty());
+    }
+
+    /// `has_live_sessions` (R11: the app-exit harvest gates its 2 s
+    /// synthetic-press grace on this) mirrors the registry exactly: an
+    /// empty registry answers false (the ungated sleep taxed every
+    /// quit/restart of the app with zero sessions), any registration —
+    /// including one kept by a release — answers true, and only
+    /// `release_and_unregister`/removal returns it to false.
+    #[test]
+    fn has_live_sessions_tracks_the_registry() {
+        let state = Arc::new(Mutex::new(ProbeState::default()));
+        let registry = BackendRegistry::default();
+        assert!(
+            !registry.has_live_sessions(),
+            "an empty registry must answer false (the exit grace must not tax session-free apps)"
+        );
+        let handle = probe_handle(&state);
+        registry.insert("s-live", handle.clone());
+        assert!(registry.has_live_sessions());
+        // A release KEEPS the registration (see the release contract): the
+        // session is still live for the exit grace's purposes.
+        registry.emergency_release("s-live");
+        assert!(registry.has_live_sessions());
+        registry.release_and_unregister("s-live", &handle);
+        assert!(!registry.has_live_sessions());
+    }
+
     /// `release_and_unregister` (tool-Drop path) removes the registry entry
     /// synchronously AND still runs the button/grant cleanup on the detached
     /// thread.
@@ -2297,6 +2447,8 @@ mod tests {
                     input: true,
                     ui_tree: false,
                     notes: "test".to_string(),
+                    target: DisplayTarget::Physical,
+                    target_note: String::new(),
                 }
             }
             fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {

@@ -6937,7 +6937,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou-cli"
-version = "0.10.18"
+version = "1.0.0"
 dependencies = [
  "adapter-gaia",
  "adapter-smoke",
@@ -6960,7 +6960,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.10.18"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6995,7 +6995,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.10.18"
+version = "1.0.0"
 dependencies = [
  "age",
  "agent-backend-api",
@@ -7022,6 +7022,7 @@ dependencies = [
  "include_dir",
  "javascriptcore-rs",
  "libc",
+ "liblzma",
  "log",
  "msg_parser",
  "notify",
@@ -7074,6 +7075,7 @@ dependencies = [
  "windows-core 0.62.2",
  "windows-sys 0.61.2",
  "x11",
+ "x11rb",
  "xcap",
  "zbus",
  "zip",

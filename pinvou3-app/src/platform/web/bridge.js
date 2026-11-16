@@ -231,6 +231,15 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     artifactChange: { seq: 0, path: "", event: "", sessionId: "", at: 0 },
     // 多 session 并发:每个 session 是否正在生成 { session_id: bool }，会话列表显示「工作中」转圈
     sessionBusy: {},
+    // Sessions with a compaction in flight, { session_id: set-at epoch ms }.
+    // chat:compaction start sets it and done/fail/cancel clears it; the main
+    // lane's compact entry disables off it (the same mechanism as the code
+    // lane's lane.compacting). Outside the working set (not among
+    // saveWorkingSetTo's explicit fields), so session swaps don't touch it;
+    // session deletion/eviction clears it together with turnUsageDirty.
+    compactingSessions: {},
+    compactionStarts: {},
+    compactionSeq: 0,
     // 排队式输入:当前 session 生成中时积压的待发消息 [{ id, text, displayText, attachments }]
     queued: [],
     // 输入框待发附件 [{ id, basename, status:'parsing'|'ready'|'error', result, error }]
@@ -461,7 +470,6 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       manageAddFolderTitle: "Choose a folder to add to the project",
       workspacePickFolderTitle: "Choose a workspace folder",
       metricUnavailable: "Not provided",
-      betaVersionSuffix: " (Beta)",
       memoryWriteFailed: "Failed to write memory: ",
       memoryIgnoreFailed: "Failed to ignore memory: ",
       memoryNeverFailed: "Failed to update the never-ask setting: ",
@@ -592,7 +600,6 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       manageAddFolderTitle: "プロジェクトに追加するフォルダーを選択",
       workspacePickFolderTitle: "ワークスペースフォルダーを選択",
       metricUnavailable: "未提供",
-      betaVersionSuffix: " (ベータ版)",
       memoryWriteFailed: "メモリの書き込みに失敗：",
       memoryIgnoreFailed: "メモリの無視に失敗：",
       memoryNeverFailed: "「今後表示しない」の設定に失敗：",
@@ -723,7 +730,6 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       manageAddFolderTitle: "选择要添加到项目的文件夹",
       workspacePickFolderTitle: "选择工作区文件夹",
       metricUnavailable: "未提供",
-      betaVersionSuffix: " (内测版)",
       memoryWriteFailed: "记忆写入失败：",
       memoryIgnoreFailed: "忽略记忆失败：",
       memoryNeverFailed: "设置不再提示失败：",
@@ -908,6 +914,7 @@ function savePinvouSceneEventsForSession(sid, events) { return pinvouSharedweb()
   // readers so a durable-data defect cannot pose as "no data".
   function loadPersonaEventsForSession(sid) { return pinvouSharedweb().loadPersonaEventsForSession(sid); }
   function loadPinvouReviewsForSession(sid) { return pinvouSharedweb().loadPinvouReviewsForSession(sid); }
+  function raisePinvouSummonHighwater(reviews) { return pinvouSharedweb().raisePinvouSummonHighwater(reviews); }
 function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedweb().recordPinvouSceneForMessage(sid, pos, scene); }
   function recordPinvouSceneForBufferMessage(sid, buffer, pos, scene) {
     scene = normalizePinvouScene(scene);
@@ -945,6 +952,8 @@ function isProtectedScheduledBuffer(id, buf) { return pinvouSharedweb().isProtec
       cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete state.compactingSessions[id];
+      delete state.compactionStarts[id];
       // personaPlaceholderTitles is lightweight session metadata (the marker
       // for placeholder titles that auto-rename may override); rehydration
       // never restores it, so capacity eviction must keep it and only real
@@ -988,6 +997,8 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
       cancelStreamTimers(id);
       delete sessionStates[id];
       delete turnUsageDirty[id];
+      delete state.compactingSessions[id];
+      delete state.compactionStarts[id];
       // personaPlaceholderTitles survives capacity eviction (see the
       // comment at the scheduled eviction site); only purgeSessionBuffer
       // (real deletion) cleans it.
@@ -1005,6 +1016,8 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
     // Real session deletion: any stashed draft is invalidated too and must not flow back into a rebuilt buffer with the same id.
     delete evictedSessionDrafts[id];
     delete turnUsageDirty[id];
+    delete state.compactingSessions[id];
+    delete state.compactionStarts[id];
     delete personaPlaceholderTitles[id];
     delete scheduledRunSessionOwners[id];
     // The scene-events localStorage key is cleaned together with session deletion, avoiding unbounded accumulation across historical sessions.
@@ -1324,6 +1337,7 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedweb().ro
     hydrateWorkingSetFromSaved(buf, saved);
     buf.personaEvents = await loadPersonaEventsForSession(sid);
     buf.pinvouReviews = await loadPinvouReviewsForSession(sid);
+    raisePinvouSummonHighwater(buf.pinvouReviews); // 后台缓冲提交即验收抬底(r5 审 M1)
     buf.pinvouSceneEvents = await syncPinvouSceneEventsForSession(sid);
     try { buf.turnTimeline = await invoke("get_session_timeline", { sessionId: sid }) || []; } catch { buf.turnTimeline = []; }
     // 手机可能在桌面仍停留草稿页/其他 session 时先唤醒这个后台 session。
@@ -2272,6 +2286,7 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
       reportSessionSwitchFailure(new Error(bt("sessionDataInvalid")), errorScope);
       return false;
     }
+    raisePinvouSummonHighwater(pinvouReviews); // 验收后才抬底:被拒导航不得抬账目底(JensenChen28 审 P2)
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
@@ -4502,6 +4517,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     }
   }); });
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- 终态分支（start/prune-done/rewrite-done/fail/cancel）本就贴着 30 上限；r7 M2 的计数基线重置以单个条件位并入 done 腿（与 tauri 车道逐字同文，bridge-messages 计数器原语旁），内聚高于拆分
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
     if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
@@ -4518,11 +4534,68 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
+    // The compaction in-flight marker: start sets it, a terminal
+    // (done/fail/cancel) clears it, and the main lane's compact entry
+    // disables off it (the same mechanism as the code lane's
+    // lane.compacting). start stores a timestamp: the terminal event may
+    // never arrive (evicting the engine aborts its forwarder — see the
+    // reclaim_engine_entry comment in engine_pool.rs; a desktop restart on
+    // the web side loses it the same way), so the read side heals after 15
+    // minutes, the same fallback as Rust's MAX_COMPACTION_LATCH_AGE, and
+    // the entry is not disabled forever. The fallback reads the wall clock
+    // (Date.now), not a Rust-side monotonic Instant: a clock jump or resume
+    // from sleep re-enables early, and a compaction running past 15 minutes
+    // re-enables the entry before the engine finishes — the cost of a
+    // duplicate enqueue equals the Rust latch expiring (pool.compact_now
+    // does not coalesce enqueues), which is accepted; no extra
+    // monotonic-clock alignment machinery is introduced for it.
+    // The post_tokens carried by done is a post-compaction usage estimate
+    // (the forwarder gained it to refresh the usage bar; the Rust side
+    // computes it as a conservative estimated_input_tokens). The compaction
+    // turn already set turnUsageDirty, so subsequent usage accumulations
+    // are untrustworthy and the usage bar can only be refreshed by this
+    // post_tokens — it must not be swallowed by the dirty semantics.
+    const sid = e.payload && e.payload.session_id;
+    // The compactionStarts signal is persistent BY DESIGN: it survives the
+    // terminal and prune-only merges, so the UI can reconcile a manual
+    // compact marker whose start and terminal coalesced before any render
+    // (review 5874108926 follow-up) — cleared with the session.
+    // The compactionStarts signal carries the bridge's monotonic
+    // compaction sequence (NOT a wall-clock time — review 5876783763:
+    // timestamp ordering of persistent events breaks on
+    // same-millisecond collisions and clock rollbacks). It survives
+    // the terminal and prune-only merges, so the UI can reconcile a
+    // manual compact marker whose start and terminal coalesced before
+    // any render (review 5874108926 follow-up) — cleared with the
+    // session.
+    if (sid) {
+      if (phase === "start") {
+        state.compactingSessions[sid] = Date.now();
+        state.compactionSeq = (state.compactionSeq || 0) + 1;
+        state.compactionStarts[sid] = state.compactionSeq;
+      } else delete state.compactingSessions[sid];
+      notify();
+    }
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
+    if (phase === "done") {
+      // <context_update> 计数基线在真重写（after < before）后重置（r7 M2）：
+      // 压缩把旧漂移增量从磁盘转写里摘除，而客户端气泡仍携带压缩前的
+      // 老 vintage——不重置的话权威重同步会被老消费量钳在 0（序号整体
+      // 低计）。实现与 prune-only 语义见 bridge-messages 的
+      // healRuntimeContextUpdatesVintageAfterCompaction；返回是否有改动。
+      if (sid && window.PinvouBridgeMessages?.healRuntimeContextUpdatesVintageAfterCompaction?.(getBuffer(sid), state.chatItems, before, after)) {
+        notify();
+      }
+      const postTokens = Number(e.payload && e.payload.post_tokens);
+      if (Number.isFinite(postTokens) && postTokens > 0 && postTokens <= state.tokens.max) {
+        state.tokens = { input: postTokens, max: state.tokens.max };
+        notify();
+      }
+    }
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────
@@ -4646,8 +4719,8 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
 
   // ── Monitor ──────────────────────────────────────────────────────
   // pollMonitor/appQueueSnapshot/monitorFmtEqual 与格式化 fallback 统一在
-  // shared/bridge-shared-helpers.js 的 tauriMonitor/web cluster（betaVersionSuffix
-  // 键两侧同值同名）；此处仅保留 lane 内转发的公开入口。
+  // shared/bridge-shared-helpers.js 的 tauriMonitor/web cluster（翻译键
+  // 两侧同值同名）；此处仅保留 lane 内转发的公开入口。
 
 function numOr0(x) { return pinvouSharedweb().numOr0(x); }
 
@@ -4763,7 +4836,9 @@ async function getImageInputCapability(...args) { return pinvouSharedweb().getIm
   let modelsLoadSeq = 0;
 async function loadModels() { return pinvouSharedweb().loadModels(); }
   // model 对象字段须是 snake_case(SavedModel serde):
-  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
+  // {id,name,preset,context_window_tokens,max_output_tokens,reasoning_effort,model,base_url,api_key,credential_action,provider_kind,vendor,endpoint_mode,auth_mode,image_capability_override,vision_model_id,alias}
+  // （round-7 review：这 17 个是保存载荷的字段集——credential_ref /
+  // credential_state / has_secret 由后端按 credential_action 派生，前端不发送。）
  async function saveModel(model) {
    await invoke("save_model", { model });
    await loadModels();
@@ -4806,11 +4881,11 @@ async function revealModelApiKey(id) { return pinvouSharedweb().revealModelApiKe
   }
   // 切当前会话模型(chip 热切)。无 session(草稿态)时改全局默认。
 async function switchModel(sessionId, modelId) { return pinvouSharedweb().switchModel(sessionId, modelId); }
-async function testModelConnection(baseUrl, apiKey, modelId) { return pinvouSharedweb().testModelConnection(baseUrl, apiKey, modelId); }
+async function testModelConnection(baseUrl, apiKey, modelId, noAuth) { return pinvouSharedweb().testModelConnection(baseUrl, apiKey, modelId, noAuth); }
   // 测试图片输入能力(设计 §7.3):用当前表单的 model/base_url/key 发一张内置纯色图,
   // 仅由模型编辑弹窗主动点击触发,无任何启动/定时自动测试。
-async function testImageInputCapability(model, baseUrl, apiKey, modelId) { return pinvouSharedweb().testImageInputCapability(model, baseUrl, apiKey, modelId); }
-  async function probeLocalServerKind(baseUrl, apiKey, modelId) {
+async function testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth) { return pinvouSharedweb().testImageInputCapability(model, baseUrl, apiKey, modelId, noAuth); }
+  async function probeLocalServerKind(baseUrl, apiKey, modelId, noAuth) {
     // 本地/内网 OpenAI 兼容端点的服务类型探测（vllm/ollama/lmstudio/generic）。
     // Rust 侧按 base_url TTL 缓存；命令失败（web 白名单不含该命令/老版本桌面）
     // 在这里 reject，由消费方 catch 降级为「未知」——吞错伪造成 generic 会让 UI
@@ -4818,11 +4893,14 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
     // apiKey/modelId follow testModelConnection: a freshly typed form key
     // wins, otherwise the saved credential is read — authenticated vLLM
     // (--api-key) 401s on /v1/models, so probing without credentials
-    // misclassifies the authenticated endpoint as generic.
+    // misclassifies the authenticated endpoint as generic. noAuth follows the
+    // same command: the form's keyless posture suppresses both credential
+    // sources for the automatic probe (same caliber as the two test buttons).
     return invoke("probe_local_server_kind", {
       baseUrl,
       apiKey: apiKey || null,
       modelId: modelId || null,
+      noAuth: !!noAuth,
     });
   }
   // ── Super permission ─────────────────────────────────────────────

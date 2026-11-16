@@ -49,6 +49,9 @@ function createReplay(runtime, { busy = true, onAdd = () => {}, renderMarkdown =
     PLAN_TOOLS: new Set(['update_plan', 'checklist_write', 'todo_write']),
     renderMarkdown,
     isSteeredMessagePos: () => false,
+    // <context_update> 尾随计数回种钩子的 buffer 取面：无 buffer（返回
+    // null）时钩子按空操作收敛（见 setRuntimeContextUpdatesPending）。
+    getBuffer: () => null,
   });
   const lane = vm.runInContext(`(${hostSource.slice(start, end)})`, context);
   // Both addChatItem and the host hook must share the sequence cell.

@@ -25,7 +25,7 @@ fn resolve_code_session_roots(
 }
 
 /// Turn 开始前的影子 git checkpoint 前奏，`chat` 与 `accept_plan`（均发送真实
-/// 用户消息，`is_user_turn_prompt` 计数口径一致）共用。流程：执行根体积门 →
+/// 用户消息，与底座 era 计数 `count_user_turns` 同口径）共用。流程：执行根体积门 →
 /// turn 序号计数 → `create_checkpoint` → 失败/alias 冲突按级别记日志。失败/
 /// 超预算不阻断 turn（设计 §5 降级语义）。返回本轮成功登记的快照 id；发送
 /// 失败时调用方按 id 精确作废「未成活」快照（评审 M5，见各自 Err 分支）。
@@ -46,9 +46,24 @@ pub(super) async fn create_turn_checkpoint(
         if !checkpoints::execution_root_within_snapshot_budget(&execution, &ledger) {
             return Ok(None);
         }
-        // turn 序号用 is_user_turn_prompt 同口径计数（tool_result 不计入），
+        // turn 序号用底座 era 口径计数（count_user_turns /
+        // user_turn_prompt_indices；tool_result 不计入），
         // 计数失败（会话加载失败等）登记 None，前端按顺序兜底对齐。会话 JSON
         // 读取是阻塞 IO，与快照同驻 spawn_blocking。
+        // 已知残留（mixed vintage）：turn 序号在落账时按**当时**的计数口径
+        // 盖戳且不随加载重算——本 PR 之前落账的旧戳按单消息口径计数，此后
+        // 按 era 口径计数。含「用户粘贴的压缩摘要头」的 post-provenance
+        // 历史里旧戳比 era 位置低一档：目标点查不到快照时退化为「仅回退
+        // 对话」（conversationOnly），undo 计数对不上时 fail-closed 禁用——
+        // 失败方向安全，但该场景的重放/回退体验有损；根治是快照重算或序号
+        // 下发，见 fork.rs 模块文档的残留清单。
+        //
+        // 第三条失败臂（review r2，同一残留家族）：前端跳过粘贴头轮次、
+        // 后端 era 计数包含它 → 检索表 first-wins 会把「点按粘贴头之后的
+        // 轮次」解析到**粘贴头那轮的快照**——恢复的代码与对话内部一致
+        // （同一边界），但比点击点早一轮：被静默丢弃的那轮可能含助手文件
+        // 编辑。此臂不 fail-closed、也不报错，只能靠这份文字披露；根治同上
+        // （后端下发序号后三臂同时消失）。
         let turn_number = store_count
             .load(&sid_count)
             .map(|session| checkpoints::count_user_turns(&session.messages) + 1)

@@ -197,6 +197,15 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
     // 本 turn 已 present_artifact 出过成品卡的产物 path —— chat:done 兜底补卡时跳过,不重复。
     turnPresentedArtifacts: [],
     busy: false,
+    // Sessions with a compaction in flight, { session_id: set-at epoch ms }.
+    // chat:compaction start sets it and done/fail/cancel clears it; the main
+    // lane's compact entry disables off it (the same mechanism as the code
+    // lane's lane.compacting). Outside the working set (not among
+    // saveWorkingSetTo's explicit fields), so session swaps don't touch it;
+    // session deletion/eviction clears it together with turnUsageDirty.
+    compactingSessions: {},
+    compactionStarts: {},
+    compactionSeq: 0,
     monitor: null,
     backendOnline: null, // null=checking, true, false
     platformCapabilities: {
@@ -212,6 +221,12 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       // Linux. Fail-closed so the settings toggle stays disabled until
       // load_platform_capabilities corrects the slice.
       globalShortcutsAvailable: false,
+      // Semantic selector for the computer-use virtual-display note row
+      // ("windows" | "macos" | "linux"). Fail-closed "": no per-platform
+      // note renders until load_platform_capabilities answers with the
+      // compiled target's selector — the notes are desktop product copy, so
+      // the web lane (which never loads the Tauri command) simply keeps "".
+      virtualDisplayNote: "",
     },
     settings: null,
     selectedPet: "lingling",
@@ -246,6 +261,12 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       // Defaults false (fail closed): on an unsupported OS the toggle must
       // not render enabled until the first get_status corrects the slice.
       platformSupported: false,
+      // The virtual-display projection defaults (virtualDisplayState/
+      // virtualDisplayDetail/preferVirtualDisplay/physicalSessionLive/
+      // sessionDisplayTarget/grantedTarget) are seeded by the computer_use
+      // feature itself at install time — bridge/computer_use.js is their
+      // single source (R13; previously both files carried copies and no
+      // test pinned either). Do not restate them here.
       sessionId: null,
       grantRequest: null,
       confirmRequest: null,
@@ -517,7 +538,6 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       remoteTurnSyncing: "⚠️ This chat is still syncing a turn finished on another device. Try again shortly.",
       mountCollectionFailed: "Failed to mount collection: ",
       metricUnavailable: "Not provided",
-      betaVersionSuffix: " (Beta)",
       depsInstallManual: "The missing items cannot be installed in one click. Install them as described in the notes above each missing item, then re-check.",
       remoteCmdNotAllowed: cmd => "Remote control does not allow this command: " + cmd,
       remoteDialogDesktop: "Remote control uses the desktop file picker",
@@ -626,7 +646,6 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       remoteTurnSyncing: "⚠️ このセッションは別の端末で完了したターンを同期中です。しばらくしてから再試行してください。",
       mountCollectionFailed: "ナレッジセットのマウントに失敗: ",
       metricUnavailable: "未提供",
-      betaVersionSuffix: " (ベータ版)",
       depsInstallManual: "不足している項目はワンクリックでインストールできません。各不足項目の上にある説明に従ってインストールしてから、再検出してください。",
       remoteCmdNotAllowed: cmd => "リモートコントロールではこのコマンドを呼び出せません: " + cmd,
       remoteDialogDesktop: "リモートコントロールではデスクトップ側のファイル選択ダイアログを使用します",
@@ -735,7 +754,6 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       remoteTurnSyncing: "⚠️ 该会话仍在同步另一端完成的回合，请稍后重试",
       mountCollectionFailed: "挂载知识集失败: ",
       metricUnavailable: "未提供",
-      betaVersionSuffix: " (内测版)",
       depsInstallManual: "当前缺失项无法一键安装，请按上方各缺失项的说明手动安装后重新检测。",
       remoteCmdNotAllowed: cmd => "远程控制不允许调用该命令：" + cmd,
       remoteDialogDesktop: "远程控制使用桌面端文件选择器",
@@ -1675,6 +1693,13 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856()
           return (t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) || t === "<turn_meta_unchanged />";
         })) uitem2.steeredMidTurn = true;
       },
+      // <context_update> 运行时消息重放后的尾随计数回种（投影层不产生
+      // turn 但后端 era 口径计边界，见 bridge-shared-helpers 的计数说明）：
+      // 回种到会话 buffer，composer 下一气泡据此随气泡下发。
+      setRuntimeContextUpdatesPending: function (count) {
+        const buffer = getBuffer(state.activeSessionId);
+        if (buffer) buffer.runtimeContextUpdatesPending = count;
+      },
       carefulBlockedItem: function (c, tm, blockedMd) {
         return { type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" };
       },
@@ -1970,7 +1995,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const setRemoteCollectionEnabled = personasFeature.setRemoteCollectionEnabled;
   const removeRemoteCollection = personasFeature.removeRemoteCollection;
   const syncMountedCollection = personasFeature.syncMountedCollection;
-  const updaterFeature = installBridgeFeature("updater", { state, notify, invoke });
+  const updaterFeature = installBridgeFeature("updater", { state, notify, invoke, listen });
   const loadAppVersion = updaterFeature.loadAppVersion;
   const checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   const checkForUpdate = updaterFeature.checkForUpdate;
@@ -2395,6 +2420,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       confirm: computerUseFeature.confirm,
       deny: computerUseFeature.deny,
       setEnabled: computerUseFeature.setEnabled,
+      setVirtualDisplayPreference: computerUseFeature.setVirtualDisplayPreference,
       requestPermissions: computerUseFeature.requestPermissions,
       permissionStatus: computerUseFeature.permissionStatus,
     },

@@ -496,6 +496,7 @@ mod tests {
 
     fn saved_model(preset: ModelPreset, model: &str) -> SavedModel {
         SavedModel {
+            auth_mode: None,
             id: "m1".to_string(),
             name: model.to_string(),
             alias: None,

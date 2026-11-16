@@ -132,7 +132,11 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the zero-caller getStatus
   // wrapper (computer_use_get_status invoke) was removed — refreshStatus
   // owns the status read path.
-  computerUse: 'e0f4aadbba8ab68e1dd54f9ab172680657958d548e3c3da50a489931cf525388',
+  // Recomputed for the virtual-display preference: the domain gains the
+  // computer_use_set_virtual_display_preference invoke (the settings row's
+  // "prefer isolated virtual display" switch; desktop-only, off the web
+  // access-policy allowlist like the rest of the domain).
+  computerUse: '6e06e71458a8f8e347e83abda1fc39cd04ecbf80c78168abf43f3d8873cf0d75',
   multiAgent: '36821de03628eaa4ec3926b925fc96443ee1657c9dd43c67cbda13a7177ea9ba',
   // Recomputed for the subagent status flicker fix: the agent_progress listen
   // forwards the structured worker_status token (same vocabulary as the
@@ -244,12 +248,35 @@ const expectedProtocolHashes = {
   // command surface unchanged. Recomputed again in round 3: the present_artifact
   // comment now carries the web lane's exact `chat:tool_start` token so both
   // bridge lanes read byte-identically.
-  // Recovery metadata settles at chat:done and notifies after transient updates.
-  // The existing event names/payload transport stay unchanged; callback text
-  // participates in this digest, including those new consumer branches.
-  // The transient error listener now routes detached child recovery without
-  // claiming a foreground turn. Event names and payload shapes stay the same.
-  chat: '609bc8abed06c5525756308edf33fb50c66741c51ea0f63b43cb07ce6fb6a677',
+  // Recomputed for the PR #834 review-fix wave: the chat:compaction listener
+  // now stores a timestamp (not a boolean) at start so the read side can
+  // expire a lost-terminal in-flight flag with the same 15-minute backstop
+  // as the Rust MAX_COMPACTION_LATCH_AGE latch, and the comment wording no
+  // longer calls post_tokens "accurate" (Rust emits a conservative estimate).
+  // Event names, invoke shapes and the payload contract unchanged; the web
+  // twin carries the identical body.
+  // Recomputed for review 5874108926 follow-up: the chat:compaction
+  // marker-maintenance block also records the persistent per-session
+  // compactionStarts signal (no invoke/listen surface change — the body
+  // text is part of the pinned call argument).
+  // Recomputed again for review 5876783763: the marker-maintenance block
+  // also advances the monotonic compactionSeq counter (no invoke/listen
+  // surface change).
+  // Recomputed for the #835 rebase onto 60d4f3796: the chat:transcript_committed
+  // context_update ordinal resync block (review r2 fix wave) now rides the
+  // same merged listen bodies (no invoke/listen surface change).
+  // Recomputed for the r7 fix wave: the chat:compaction listener body gains
+  // the counter-baseline reset on a real rewrite (after < before: clear the
+  // session buffer's pending and the stale per-bubble runtimeContextUpdates-
+  // Before vintage so the authoritative resync heals from a consistent
+  // baseline; implemented in bridge-messages next to the other counter
+  // primitives). Same event surface — no new invoke or listen entries; the
+  // edit lives inside the existing listen(...) body.
+  chat: '21670579f0438fa02b2f69fddf1420fe5ba3b19c00a8593b85cca340c6542f27',
+  // Recomputed for this PR's recovery integration (merged with main ee60a0bbf):
+  // recovery metadata settles at chat:done and notifies after transient updates;
+  // the transient error listener routes detached child recovery without claiming
+  // a foreground turn. Event names and payload shapes stay the same.
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -356,15 +383,18 @@ const expectedProtocolHashes = {
   // set_global_shortcut_config invoke (the dedicated command owns both the
   // plugin registration and the prefs persistence; update_settings stays
   // untouched).
-  settings: '981a53b39cce9c689425c458bdab7c73119e3e8e6c2298b9a5e3160d35380ef3',
-  // Recomputed for the dead-code cleanup: the never-emitted
-  // remote_control:status / remote_control:session_created listeners were
-  // removed, and the update:progress listener plus its coalescing timer
-  // machinery were deleted with it (the backend download loop no longer has a
-  // frontend progress consumer; completion still flips updateProgress to 100
-  // in downloadAndInstallUpdate). tests/updater_progress_state.test.mjs was
-  // removed along with the machinery it pinned.
-  updater: 'e5d3ffaed0548bca3a40ee4c8138a59f9a2add9474477d924d4ecd7b8efd73e6',
+  // Recomputed for the keyless-aware tier probe: probe_local_server_kind's
+  // invoke payload gains `noAuth` (the form's keyless posture suppresses the
+  // retained form key and the saved-credential fallback for the automatic
+  // probe, same caliber as the two test commands).
+  settings: 'cded938320d66a29d605f1a3c2fb0f880f489409861bfc7c24d741f1c6e67fd1',
+  // Recomputed for the reintroduced update:progress listener: the 200 ms
+  // download-progress coalescing machinery (trailing throttle, completion
+  // flush, cancel/failure cleanup) is back as the frontend contract for the
+  // backend resuming `update:progress` emission; completion still flips
+  // updateProgress to 100 in downloadAndInstallUpdate.
+  // tests/updater_progress_state.test.mjs re-pins the machinery.
+  updater: '30a3762ee45f378d476efec934dc4be50522a02a5b9a97111191496510d4d7d4',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).
@@ -431,7 +461,16 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // (set/get super permission) and the artifact reconcile/deliverable-index
 // pair (list_workspace_files, save_session_artifacts, list_deliverable_index)
 // joined the shared base.
-const expectedSharedBaseHash = '958fd067f00e3292857d33a5e80f4d615f2b3e792a6ce431672d3e50196ff219';
+// Recomputed for the pinvu review save chain (r7 audit): the
+// save_session_pinvou_reviews invoke now captures the owning session id at
+// record time (sid) instead of reading state.activeSessionId at fire time, so
+// the queued write cannot drift into a session the user switched to while the
+// chain was pending (r5 m6 fix); the invoke/listen command set is unchanged.
+// Recomputed for the keyless-probe-posture wave: the test_model_connection /
+// test_image_input_capability invokes gained the form's noAuth posture arg
+// (the backend probe ladder must skip the saved-credential fallback while the
+// keyless declaration is active).
+const expectedSharedBaseHash = 'a8f7fb4ba64b2869897a9332995a5eeb6dd7ca38a3b3eedf54d7a06daae7eca4';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

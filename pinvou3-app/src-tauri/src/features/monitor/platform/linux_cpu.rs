@@ -1,29 +1,43 @@
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use parking_lot::Mutex;
 
 use super::super::CpuSnapshot;
-use super::super::cpu_math::{SystemDeltaState, SystemTicks};
+use super::super::cpu_math::{
+    ProcessDeltaState, ProcessSample, SystemDeltaState, SystemTicks, logical_processors,
+};
 
 /// `/proc` 中 CPU 时间的基本频率。内核 USER_HZ 在 Tauri 支持的架构
 /// （x86_64/aarch64/riscv64 等）上都恒为 100，唯一例外是已废弃的 alpha
 /// （1024，非 Tauri 目标）；Rust std 无 sysconf 接口，按 100 换算与 procps/top 一致。
 const USER_HZ: f64 = 100.0;
 
-/// CPU 名称在进程生命周期内不变，采样每秒一次也不必重复读 /proc。
+/// The CPU name is stable for the process lifetime; sampling at 1 Hz need
+/// not re-read /proc for it.
 static CPU_NAME: OnceLock<String> = OnceLock::new();
 
-static CPU_SAMPLE_STATE: OnceLock<Mutex<SystemDeltaState>> = OnceLock::new();
+static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
+
+#[derive(Debug, Default)]
+struct CpuSampleState {
+    system: SystemDeltaState,
+    process: ProcessDeltaState,
+}
 
 pub fn cpu_snapshot() -> Option<CpuSnapshot> {
     let name = cpu_name();
+    let logical_processors = logical_processors();
     let current = read_system_ticks();
-    let state = CPU_SAMPLE_STATE.get_or_init(|| Mutex::new(SystemDeltaState::default()));
+    let process = read_process_ticks();
+    let state = CPU_SAMPLE_STATE.get_or_init(|| Mutex::new(CpuSampleState::default()));
     let mut state = state.lock();
 
     Some(CpuSnapshot {
         name,
-        total_usage_pct: state.absorb(current),
+        total_usage_pct: state.system.absorb(current),
+        process_usage_pct: state.process.absorb(process, logical_processors),
+        logical_processors,
     })
 }
 
@@ -37,6 +51,15 @@ fn read_system_ticks() -> Option<SystemTicks> {
     let text = std::fs::read_to_string("/proc/stat").ok()?;
     let line = text.lines().next()?;
     parse_proc_stat_total(line)
+}
+
+fn read_process_ticks() -> Option<ProcessSample> {
+    let text = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let ticks = parse_proc_self_stat_cpu_ticks(&text)?;
+    Some(ProcessSample {
+        cpu_secs: ticks as f64 / USER_HZ,
+        sampled_at: Instant::now(),
+    })
 }
 
 /// 解析 `/proc/stat` 首行 `cpu  user nice system idle iowait irq softirq steal ...`。
@@ -61,6 +84,20 @@ fn parse_proc_stat_total(line: &str) -> Option<SystemTicks> {
         busy,
         idle: idle + iowait,
     })
+}
+
+/// Parse the utime+stime tick counts from `/proc/self/stat`. The comm field
+/// (2nd field) may contain spaces and parentheses, so fields must be located
+/// after the LAST `)`; in the remaining token sequence, tokens 12/13
+/// correspond to full-field utime(14)/stime(15).
+fn parse_proc_self_stat_cpu_ticks(text: &str) -> Option<u64> {
+    let after_comm = text.rsplit_once(')')?.1;
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    // Hygiene against a debug-build panic on corrupted input; real kernel
+    // counters are u64-bounded and cannot overflow here.
+    Some(utime.saturating_add(stime))
 }
 
 fn read_cpuinfo_model_name() -> Option<String> {
@@ -112,6 +149,57 @@ mod tests {
     }
 
     #[test]
+    fn parse_proc_self_stat_handles_spaced_comm() {
+        // comm may contain spaces/parens: fields must be located after the
+        // LAST ')'. Tokens 11/12 after ')' are utime(14)/stime(15): the
+        // fixture below is 100/200 → total 300.
+        let text = "12345 (python3 -m t) R 1 2 3 4 5 6 7 8 9 10 100 200 0 0 \
+                    20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(300));
+        // A real /proc/self/stat snapshot (comm without spaces) parses via
+        // the last ')' the same way.
+        let text = "4242 (pinvou3-tauri) S 4241 4242 4242 0 -1 4194304 12345 0 0 0 \
+                    9876 5432 0 0 20 0 12 0 0 0 0 0 0 0 0 0 0";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(9876 + 5432));
+    }
+
+    #[test]
+    fn parse_proc_self_stat_comm_with_parens_uses_the_last_paren() {
+        // The advertised comm edge: ')' inside comm. Only rsplit_once (last
+        // ')') lands on utime/stime; splitting at the FIRST ')' would read
+        // 10/100 instead of 100/200, so this fixture bites that regression.
+        let text = "999 (a)b)c) R 1 2 3 4 5 6 7 8 9 10 100 200 0 0 \
+                    20 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(300));
+    }
+
+    #[test]
+    fn parse_proc_self_stat_rejects_truncated_input() {
+        // Fewer than 12 tokens after ')': no utime → None, never a panic.
+        let text = "1 (sh) S 0 1 1 0 -1 4194560";
+        assert!(parse_proc_self_stat_cpu_ticks(text).is_none());
+    }
+
+    #[test]
+    fn parse_proc_self_stat_rejects_missing_stime() {
+        // The 12/13-token boundary: with utime reachable but stime missing
+        // the answer is None (not utime alone); one more token flips it.
+        let twelve = "1 (sh) S 0 1 1 0 -1 4194560 7 0 0 0 50";
+        assert!(parse_proc_self_stat_cpu_ticks(twelve).is_none());
+        let thirteen = "1 (sh) S 0 1 1 0 -1 4194560 7 0 0 0 50 0";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(thirteen), Some(50));
+    }
+
+    #[test]
+    fn parse_proc_self_stat_saturates_the_ticks_sum() {
+        // utime+stime is hardened with saturating_add: u64::MAX + 2 stays
+        // u64::MAX (a wrapping add would yield 1, a panicking add would
+        // abort the sampler on corrupted input).
+        let text = "1 (sh) S 0 1 1 0 -1 4194560 7 0 0 0 18446744073709551615 2";
+        assert_eq!(parse_proc_self_stat_cpu_ticks(text), Some(u64::MAX));
+    }
+
+    #[test]
     fn parse_cpuinfo_extracts_model_name() {
         let text =
             "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: AMD Ryzen 9\nflags\t: fpu\n";
@@ -129,5 +217,38 @@ mod tests {
         // （需要两次采样），但结构本身可用。
         let snapshot = cpu_snapshot().expect("Linux CPU snapshot should include basic identity");
         assert!(!snapshot.name.trim().is_empty());
+        assert!(snapshot.logical_processors > 0);
+    }
+}
+
+#[cfg(test)]
+mod smoke_tests {
+    use super::*;
+
+    /// Real-host smoke (#[ignore]): the /proc sampling chain works end to
+    /// end and the second sample yields usage. Run:
+    ///   cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib -- \
+    ///     --ignored --nocapture linux_cpu
+    #[test]
+    #[ignore]
+    fn second_sample_yields_real_usage() {
+        let _ = cpu_snapshot();
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let s = cpu_snapshot().expect("snapshot");
+        println!(
+            "name={} logical={} total={:?} process={:?}",
+            s.name, s.logical_processors, s.total_usage_pct, s.process_usage_pct
+        );
+        let v = s
+            .total_usage_pct
+            .expect("second sample should yield system usage");
+        assert!((0.0..=100.0).contains(&v), "usage should be 0-100, got {v}");
+        let p = s
+            .process_usage_pct
+            .expect("second sample should yield process usage");
+        assert!(
+            (0.0..=100.0).contains(&p),
+            "process usage should be 0-100, got {p}"
+        );
     }
 }

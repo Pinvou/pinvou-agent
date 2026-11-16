@@ -120,6 +120,7 @@ command_protocol!(
         "computer_use_confirm",
         "computer_use_deny",
         "computer_use_set_enabled",
+        "computer_use_set_virtual_display_preference",
         "computer_use_request_permissions",
         "computer_use_permission_status"
     ]
@@ -462,11 +463,13 @@ command_protocol!(
     [
         "list_sessions",
         "list_archived_sessions",
+        "fork_session",
         "create_session",
         "get_session_workspace_binding",
         "load_session",
         "delete_session",
         "export_session",
+        "import_session_archive",
         "rename_session",
         "set_session_pinned",
         "set_session_archived",

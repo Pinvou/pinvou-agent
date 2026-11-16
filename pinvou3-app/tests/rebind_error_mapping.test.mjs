@@ -179,3 +179,19 @@ test("a roots-commit failure yields its moved ids as carryover data", () => {
   assert.equal(empty.kind, "copy");
   assert.deepEqual(empty.reboundIds, []);
 });
+
+test("command-wrapped fork rejections classify via the embedded marker (r7 minor 1)", () => {
+  // The fork lane re-wraps the fence rejection as
+  // "fork_session: 工作区绑定迁移…（REBIND_IN_PROGRESS: …）" — the stable
+  // marker is buried mid-string, where the dialog-era prefix match never
+  // fires and the raw mixed-language diagnostic leaked into the toast.
+  // Copy-kind markers carry no parseable payload, so the embedded fallback
+  // is safe; SESSIONS_BUSY (which carries ids) stays prefix-only.
+  const wrapped =
+    "fork_session: 工作区绑定迁移或互斥写入进行中，请稍后重试分叉（REBIND_IN_PROGRESS: held by another fenced writer）";
+  const classified = classifyRebindError(wrapped, dictEn);
+  assert.equal(classified.kind, "copy");
+  assert.equal(classified.message, dictEn.uiProjects.rebindInProgress);
+  assert.equal(classified.passedFence, false);
+  assert.deepEqual(classified.reboundIds, []);
+});

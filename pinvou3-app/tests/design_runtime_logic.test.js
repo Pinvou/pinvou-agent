@@ -40,4 +40,10 @@ assert.ok(script.includes('data-pinvou-design-hover'));
 assert.ok(script.includes("Object.prototype.hasOwnProperty.call(payload, 'oldValue')"));
 assert.ok(script.includes('hasOriginalValue ? String(originalValue'));
 
+// Pin the full guard statement, not a fragment: a decoy occurrence in a dead
+// branch would satisfy a bare `event.source !== window.parent` needle while
+// the real handler stays unvalidated.
+assert.ok(script.includes('if (!event.source || event.source !== window.parent) return;'),
+  'control-plane messages must reject non-parent senders (sibling frames enumerate parent.frames)');
+
 console.log('design_runtime_logic: ok');

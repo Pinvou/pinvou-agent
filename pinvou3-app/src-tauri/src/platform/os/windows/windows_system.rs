@@ -95,8 +95,15 @@ pub fn read_clipboard_image(_app: &tauri::AppHandle) -> Option<Vec<u8>> {
 }
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
-    HiddenCommand::new("cmd")
-        .args(["/C", "start", ""])
+    // explorer.exe 直启而非 `cmd /C start`（r8 安全修复）：target 可能是
+    // 攻击者可控的外链（导入产物页的 open-external 中继）。`start` 经
+    // cmd.exe 解析命令行，未加引号的 `&`/`|`/`^` 会拆分命令——
+    // `https://x/?a=1&calc` 会在打开链接之外额外执行 `calc`（URL 校验只挡
+    // scheme/凭据，`&` 是合法 query 字符）；std 对不含空白/引号的参数不加
+    // 引号，无法靠调用方修补。explorer.exe 以单 argv 直收路径或 URL：
+    // 目录开窗口、文件走默认关联、http(s) 交默认浏览器——与 `start` 语义
+    // 一致且无 shell 解析层。
+    HiddenCommand::new("explorer.exe")
         .arg(target.as_ref())
         .spawn()
         .map_err(|e| format!("系统打开失败({label}): {e}"))?;

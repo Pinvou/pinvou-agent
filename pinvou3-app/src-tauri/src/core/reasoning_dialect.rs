@@ -11,9 +11,10 @@
 //! - [`kimi_supports_disabled_thinking`]：Kimi 模型门控
 //! - [`apply_reasoning_dialect_controls`]：按 dialect 写入请求体的共享 match
 //!
-//! 各 feature 的 wrapper（`review_reasoning_dialect` / `memory_review_reasoning_dialect`）
-//! 仍保留各自的 preset 分发逻辑（Kimi 分支顺序与 OpenAI 兼容回退细节有意不同），
-//! 但 URL 回退统一委托此模块。
+//! feature wrapper（`memory_review_reasoning_dialect`，memory/voice 线）仍保留
+//! 自己的 preset 分发逻辑，URL 回退统一委托此模块。品悟审查线自 2026-11-06 起
+//! 改走 `features/review` 的 `apply_review_thinking_controls`（永不关闭口径），
+//! 不再经本模块。
 
 use serde_json::{Value, json};
 

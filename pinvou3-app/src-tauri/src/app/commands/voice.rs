@@ -538,8 +538,9 @@ fn voice_postprocess_changed(mode: &str, text: &str, draft_text: Option<&str>) -
 }
 
 /// voice 域的推理控制薄壳：dialect 判定与请求体写入统一委托
-/// `core::reasoning_dialect`（与 review/memory 同一实现；本域的 preset 分发
-/// 保留 memory 同款的 model-name 回退，见下方函数注释）。
+/// `core::reasoning_dialect`（与 memory 同一实现；review 自 2026-11-06 起改走
+/// 永不关闭的 features/review::apply_review_thinking_controls，不再经本模块。
+/// 本域的 preset 分发保留 memory 同款的 model-name 回退，见下方函数注释）。
 fn apply_voice_reasoning_controls(
     body: &mut Value,
     preset: crate::platform::prefs::ModelPreset,
@@ -735,19 +736,26 @@ async fn call_voice_postprocess_model(
     let max_tokens = voice_postprocess_max_tokens(mode, retry);
     let mut body = voice_postprocess_request_body(model_name, &system, &user, max_tokens);
     apply_voice_reasoning_controls(&mut body, preset, &bridge.provider(), &base_url, model_name);
-    let resp = crate::core::model_endpoint::with_opencode_session_header(
+    let mut request = crate::core::model_endpoint::with_opencode_session_header(
         client.post(format!(
             "{}/chat/completions",
             base_url.trim_end_matches('/')
         )),
         &base_url,
         bridge.opencode_conversation_key("voice-postprocess"),
-    )
-    .bearer_auth(bridge.api_key())
-    .json(&body)
-    .send()
-    .await
-    .context("post voice postprocess chat/completions")?;
+    );
+    // A keyless-declared endpoint receives no Authorization header at all —
+    // an empty `Bearer ` would contradict the toggle's "no credentials are
+    // sent" contract (keyed records keep the bearer; undeclared empty-key
+    // records keep the historical empty-bearer shape).
+    if !bridge.effective_model_declares_no_auth() {
+        request = request.bearer_auth(bridge.api_key());
+    }
+    let resp = request
+        .json(&body)
+        .send()
+        .await
+        .context("post voice postprocess chat/completions")?;
     let resp = crate::core::model_endpoint::error_for_status_with_body(
         resp,
         "voice postprocess chat/completions status",

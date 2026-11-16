@@ -611,8 +611,16 @@ pub(super) async fn send_memory_llm_request(
     }
     let mut body = memory_review_request_body(&model_name, prompt, user_content, max_tokens);
     apply_memory_review_reasoning_controls(&mut body, preset, &provider, &base_url, &model_name);
+    // A keyless-declared endpoint receives no Authorization header at all —
+    // an empty `Bearer ` would contradict the toggle's "no credentials are
+    // sent" contract (keyed records keep the bearer; undeclared empty-key
+    // records keep the historical empty-bearer shape).
+    let mut request = client.post(url);
+    if !bridge.memory_declares_no_auth() {
+        request = request.bearer_auth(bridge.memory_api_key());
+    }
     let resp = crate::core::model_endpoint::with_opencode_session_header(
-        client.post(url).bearer_auth(bridge.memory_api_key()),
+        request,
         &base_url,
         &bridge.aux_conversation_key("memory-review"),
     )
@@ -1042,7 +1050,9 @@ fn memory_review_reasoning_dialect(
         }
         ModelPreset::Minimax => ReasoningDialect::Minimax,
         ModelPreset::Kimi => {
-            // Wave 3 统一：使用共享的 kimi_supports_disabled_thinking（与 review 一致）。
+            // Wave 3 统一：使用共享的 kimi_supports_disabled_thinking（memory/voice
+            // 共用；review 自 2026-11-06 起改走永不关闭的
+            // features/review::apply_review_thinking_controls，不再经本模块）。
             // 原 memory 用 model.contains("k2.6")||model.contains("kimi-k2") 门控更宽，
             // 统一后 kimi-k2.5 也被正确识别，k2.7/thinking 变体被正确排除。
             if kimi_supports_disabled_thinking(model) {

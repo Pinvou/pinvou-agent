@@ -10,7 +10,7 @@ import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { boundDraftNoticeMode as boundDraftNoticeModeOf } from './bound-draft-mode.js';
 import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
-import { can, isWeb } from '../../shared/platform.js';
+import { can, canInvoke, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
@@ -50,6 +50,7 @@ import {
   conversationItemsForMode,
   projectDeepSeekConversation,
 } from '../conversation/deepseek-conversation.js';
+import { forkEntriesByTurnId } from './forkTurnEntries.js';
 import {
   shouldForceScrollFollow,
   transitionConversationScrollState,
@@ -82,6 +83,7 @@ const SessionMentionMenu = mentionLazy(() =>
 const SessionMentionCards = mentionLazy(() =>
   import('./SessionMentionControls.jsx').then((m) => ({ default: m.SessionMentionCards })));
 import { PROJECT_SESSION_DRAG_TYPE, resolveSessionProjectId } from '../projects/projectGrouping.js';
+import { classifyRebindError } from '../projects/rebindErrors.js';
 import {
   buildSessionMentionBlock,
   splitSessionMentionBlock,
@@ -242,6 +244,24 @@ const MULTI_AGENT_ENABLED = can('multiAgent');
 // can() is always false, so the consent banner/dialogs render not at all and tool cards
 // fall back to the default card.
 const COMPUTER_USE_ENABLED = can('computerUse');
+
+// The manual compact entry's in-flight fallback bound (15 minutes),
+// mirroring Rust's MAX_COMPACTION_LATCH_AGE (engine_pool.rs). See the
+// compact-entry comment block inside the ChatView component for the
+// mechanism and the wall-clock tradeoff. Module scope: it is a
+// render-invariant constant, and keeping it inside the component would
+// trip react-hooks/exhaustive-deps (the heal effect reads it while its
+// dependency array has no component-local values).
+const COMPACTING_FLAG_MAX_AGE_MS = 15 * 60 * 1000;
+
+// Pre-start manual-compaction admission markers, held OUTSIDE the component
+// (zhuowp round-3 P2): main.jsx renders ChatView only for the chat view, so
+// opening settings unmounts it — a useState map would discard the admission
+// while its queued Web RPC lives on, and the remounted view would re-enable
+// the button for a second, duplicate (billed, lossy) compaction. The module
+// store survives remounts; the useState mirror inside ChatView only drives
+// re-renders and re-seeds from the store at mount.
+const manualCompactAdmissionStore = { map: {} };
 
 // Enter-to-submit guard (shared by the main input, queued-message edit, and in-bubble edit):
 // Shift+Enter still inserts a newline; Enter during IME composition confirms the candidate text
@@ -1040,6 +1060,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const activeSessionId = bs ? bs.activeSessionId : null;
       const activeSessionIdRef = useRef(activeSessionId);
       activeSessionIdRef.current = activeSessionId;
+      // ChatView 随视图切换（currentView !== 'chat'）卸载；分叉 invoke 在飞
+      // 期间用户切到设置/工具 store 时，activeSessionIdRef 冻结在卸载前的值，
+      // 仅凭它判断会「替用户在别的视图背后切会话」——卸载置否，自动切换
+      // 只在 ChatView 仍挂载时执行。
+      const chatViewMountedRef = useRef(true);
+      useEffect(() => {
+        chatViewMountedRef.current = true;
+        return () => { chatViewMountedRef.current = false; };
+      }, []);
       const computerUseCopy = t.uiComputerUse;
       const computerUseSlice = (bs && bs.computerUse) || null;
       // Fetch the authoritative computer-use state on session mount/switch: the banner and
@@ -1173,6 +1202,214 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [queuedEditCandidate, queued, activeSessionId, t, flashQueuedNotice]);
       const ctxTokens = (bs && bs.tokens) || null; // {input, max}，chat:usage 每轮更新
       const ctxPct = ctxTokens && ctxTokens.max > 0 ? ctxTokens.input / ctxTokens.max : 0;
+      // The usage readout text is its own value: the button's visible
+      // content and its screen-reader name share it. The aria-label must
+      // not overwrite the usage outright — screen readers previously heard
+      // only the action name and lost the usage readout (the very reason
+      // the control exists; round-6 review M-5) — so the composed name is
+      // readout + action hint.
+      const ctxUsageText = ctxTokens && ctxTokens.max > 0
+        ? `${t.ctxUsage} ${ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / ${formatCompactCount(ctxTokens.max)} · ${Math.round(ctxPct * 100)}%`
+        : '';
+      // Manual compact entry: clicking the ctx usage row triggers
+      // compact_now. Progress/result surface as chat:compaction system
+      // items (shared with the code lane's event stream; the bridge already
+      // renders compactStart/Done/Cancel). The command itself only enqueues
+      // the Op and returns: a compaction requested mid-turn queues until the
+      // turn ends, so both busy (the current session's turn) and
+      // compactingSessions (the bridge's chat:compaction start→terminal
+      // in-flight marker, the same mechanism as the code lane's
+      // lane.compacting) must disable the entry — otherwise a click gives no
+      // feedback before the turn ends, and a click after the button resets
+      // would enqueue the compaction twice. The manual marker is kept from
+      // the click until the bridge's start marker lands (see the effect
+      // below; the session need not stay active), not cleared when invoke
+      // returns — between enqueue and start the button must not reset, or a
+      // double click would enqueue the compaction twice.
+      // Both compactingSessions and the manual markers carry timestamps and
+      // heal at read time after 15 minutes (the same fallback as Rust's
+      // MAX_COMPACTION_LATCH_AGE, engine_pool.rs): when a terminal event is
+      // lost (the engine is evicted and aborts its forwarder, or the desktop
+      // restarts on the web side) the in-flight marker expires and the entry
+      // is not disabled forever. The fallback reads the wall clock, not a
+      // monotonic one: a clock jump or resume from sleep re-enables early
+      // (a window differs from Rust's Instant semantics; re-enqueueing an
+      // over-long compaction costs the same as the Rust latch expiring, and
+      // that tradeoff is accepted). Markers are retained PER SESSION
+      // (review 5874108926 P2): ChatView does not remount on a session
+      // switch, so a single { sid, at } slot let a queue for B overwrite the
+      // queue for A before A's bridge start arrived — switching back to A
+      // then showed no marker and a second click could enqueue a second
+      // CompactContext for A (the pool does not coalesce these), costing an
+      // extra lossy summary. The map keys markers by sid and the release
+      // paths remove only the matching entry.
+      // Seeded from the module store (not fresh state): a remount — settings
+      // round-trip re-creates this component — must inherit the still-pending
+      // admission instead of re-enabling the button over a queued Web RPC
+      // (zhuowp round-3 P2). The write-through wrapper keeps the store and
+      // the render mirror identical on every update.
+      const [manualCompactBySid, setManualCompactBySidState] = useState(manualCompactAdmissionStore.map);
+      const setManualCompactBySid = (updater) => setManualCompactBySidState((current) => {
+        const next = typeof updater === 'function' ? updater(current) : updater;
+        manualCompactAdmissionStore.map = next;
+        return next;
+      });
+      const compactingMap = bs && bs.compactingSessions;
+      // The bridge's persistent per-session start signal (set at start,
+      // survives terminals and prune-only merges, cleared with the
+      // session): lets the sweep reconcile a manual marker whose start and
+      // terminal coalesced before any render while ANOTHER session was
+      // active (review 5874108926 follow-up) — the chatItems fallback
+      // cannot, being the active session's projection only. The signal's
+      // value is the bridge's monotonic compaction sequence number (NOT a
+      // wall-clock time — review 5876783763: timestamp ordering of
+      // persistent events breaks on same-millisecond collisions and clock
+      // rollbacks), so the sweep compares sequence numbers strictly.
+      const startsMap = bs && bs.compactionStarts;
+      const compactionSeq = (bs && bs.compactionSeq) || 0;
+      const compactingStartedAt = activeSessionId && compactingMap
+        ? compactingMap[activeSessionId] : 0;
+      const compactingActive = !!(compactingStartedAt && Date.now() - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS);
+      const activeManualCompact = activeSessionId ? manualCompactBySid[activeSessionId] : undefined;
+      const manualCompactActive = !!(activeManualCompact
+        && Date.now() - activeManualCompact.at < COMPACTING_FLAG_MAX_AGE_MS);
+      const ctxCompactInFlight = compactingActive || manualCompactActive;
+      useEffect(() => {
+        // Reconcile EVERY pending marker on each bridge-flag / items change,
+        // independent of the active session (review 5874108926 follow-up):
+        // a queue for A whose start lands while B is active must release
+        // A's entry — the start-item fallback cannot do that (chatItems is
+        // the active session's projection, and a prune-only terminal even
+        // removes A's start item), so only the global flag map reconciles
+        // background sessions. Without this sweep, returning to A inside
+        // the TTL window still shows "compacting" for an already-completed
+        // compaction.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- same shape as RightDock's stale-permit revocation: start takeover and TTL expiry must release the markers synchronously on the bridge change, or a finished compaction keeps its session's button disabled until the next unrelated render
+        setManualCompactBySid(current => {
+          const now = Date.now();
+          let next = current;
+          const drop = sid => {
+            if (next === current) next = { ...current };
+            delete next[sid];
+          };
+          for (const sid of Object.keys(current)) {
+            // TTL release for every session: an entry whose terminal event
+            // was lost expires here (the same bound the read-side freshness
+            // check applies), instead of lingering until the session is
+            // deleted or evicted.
+            if (now - current[sid].at >= COMPACTING_FLAG_MAX_AGE_MS) { drop(sid); continue; }
+            // A start that landed AFTER this click reconciles the marker:
+            // the start signal carries the bridge's compaction sequence
+            // number, and the click captured the sequence snapshot — a
+            // start strictly AFTER the click has a strictly greater
+            // sequence, regardless of wall-clock collisions or rollback
+            // (review 5876783763). The signal survives the terminal and
+            // prune-only merges, so it covers starts and terminals that
+            // coalesced before any render. Any fresh start (auto or
+            // manual) takes the marker over — a click landing mid-turn may
+            // overlap a turn-internal auto compaction, and correlating by
+            // compact id would change both byte-pinned listener bodies
+            // (round-6 review M-2, recorded tradeoff).
+            const startedSeq = startsMap ? startsMap[sid] : 0;
+            // No explicit jump: this arm closes the loop body, so drop IS
+            // skip here (an explicit continue would trip sonarjs
+            // no-redundant-jump after the pre-start reconcile moved to
+            // main via #833 and this arm became the loop tail).
+            if (startedSeq > current[sid].seqAt) { drop(sid); }
+          }
+          // The ACTIVE session keeps the start-item fallback: when start and
+          // the terminal arrive in the same React batch (an instantly failing
+          // compaction, e.g. the provider 401s at once), the bridge flag
+          // never appears in any render and the flag sweep above can never
+          // see it; but start system items are an append-only projection
+          // (itemIds are monotonically increasing; a prune-only merge removes
+          // the start item — that residue falls back to the TTL), so the
+          // post-batch snapshot still contains it — releasing on "a start
+          // item newer than the click snapshot" keeps an instant failure from
+          // pinning the button for a full TTL (round-6 review M-1).
+          const entry = activeSessionId ? current[activeSessionId] : undefined;
+          if (entry) {
+            let itemTookOver = false;
+            for (let i = chatItems.length - 1; i >= 0; i--) {
+              const item = chatItems[i];
+              if (!item || item.id <= entry.itemsAt) break; // ids are monotonic; stop past the click snapshot
+              if (item.type === 'system' && item.compactPhase === 'start') { itemTookOver = true; break; }
+            }
+            if (itemTookOver) drop(activeSessionId);
+          }
+          return next;
+        });
+      }, [compactingMap, startsMap, manualCompactBySid, chatItems, activeSessionId]);
+      // Proactive fallback heal: while the entry is disabled, schedule one
+      // tick at the expiry boundary so a completely idle app still
+      // re-enables the button at the 15-minute edge — otherwise, with a
+      // lost terminal event, the button would wait for the next unrelated
+      // notify to re-render, and a click on the disabled button produces no
+      // render at all, leaving the false "compacting" state stuck. An
+      // in-flight compaction is rare, the timer exists only while one is,
+      // and the idle state pays zero overhead.
+      const [, setCompactHealTick] = useState(0);
+      useEffect(() => {
+        if (!ctxCompactInFlight) return;
+        const now = Date.now();
+        // Only still-fresh boundaries are schedulable: an already-expired
+        // bridge timestamp winning the min would fire once immediately and
+        // leave the fresh marker's expiry unscheduled (zhuowp round-3 P3).
+        const boundaries = [];
+        if (compactingStartedAt && now - compactingStartedAt < COMPACTING_FLAG_MAX_AGE_MS) {
+          boundaries.push(compactingStartedAt + COMPACTING_FLAG_MAX_AGE_MS);
+        }
+        if (activeManualCompact && now - activeManualCompact.at < COMPACTING_FLAG_MAX_AGE_MS) {
+          boundaries.push(activeManualCompact.at + COMPACTING_FLAG_MAX_AGE_MS);
+        }
+        if (!boundaries.length) return;
+        const healDelayMs = Math.min(...boundaries) - now;
+        if (healDelayMs <= 0) return;
+        const healTimer = setTimeout(() => setCompactHealTick(current => current + 1), healDelayMs);
+        return () => clearTimeout(healTimer);
+      }, [ctxCompactInFlight, compactingStartedAt, activeManualCompact]);
+      const handleManualCompact = useCallback(async () => {
+        const sid = activeSessionId;
+        if (!sid || manualCompactActive || compactingActive || busy) return;
+        // Snapshot the item-id upper bound and the compaction sequence at
+        // click time: the releases match "a start newer than the click"
+        // against them (itemIds are monotonic across the whole bridge;
+        // compactionSeq is the bridge's monotonic start counter — a start
+        // after the click has a strictly greater sequence, immune to
+        // same-millisecond collisions and clock rollback, review
+        // 5876783763).
+        const maxItemId = chatItems.reduce((max, item) => ((item && item.id > max) ? item.id : max), 0);
+        const seqAt = compactionSeq;
+        // The entry object IS this request's admission generation: the
+        // failure path clears by reference equality, so a newer request for
+        // the same session (which overwrites the slot with its own object)
+        // survives an older, late-arriving rejection (zhuowp round-3 P2).
+        const admission = { at: Date.now(), seqAt, itemsAt: maxItemId };
+        setManualCompactBySid(current => ({ ...current, [sid]: admission }));
+        try {
+          await invokeTauri('compact_now', { sessionId: sid });
+        } catch (err) {
+          const raw = String(err && err.message ? err.message : err || '');
+          // The engine starts lazily; a session that never sent a message
+          // after a restart has nothing to compact — same as the code lane,
+          // map that error to localized guidance instead of a raw error
+          // chain.
+          const detail = raw.includes('session_engine_not_running') ? t.uiCodex.nativeCompactInactive : raw;
+          flashQueuedNotice(sid, { text: `${t.uiCodex.compactFail}: ${detail}` });
+          // A failure clears ONLY this request's admission; the success path
+          // stays set until the bridge's start takes over (the effect).
+          // Reference equality pins the generation: sid-keyed clearing alone
+          // would let an old rejection erase a newer request's marker for
+          // the same session and re-enable a second click over it
+          // (zhuowp round-3 P2).
+          setManualCompactBySid(current => {
+            if (current[sid] !== admission) return current;
+            const next = { ...current };
+            delete next[sid];
+            return next;
+          });
+        }
+      }, [manualCompactActive, compactingActive, busy, activeSessionId, chatItems, compactionSeq, flashQueuedNotice, t]);
       const artifactItems = (bs && bs.artifacts) || [];
       const artifactCount = artifactItems.length;
       const latestArtifact = artifactItems[artifactItems.length - 1] || null;
@@ -1594,6 +1831,86 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+      // 「从此轮分叉」入口表：turn id → keepTurns（1-based，含当前轮）。
+      // 序号口径与 rewindEntriesByTurnId 一致，与 Rust fork_session 的底座
+      // user_turn_prompt_indices（Editable 分类）对齐：纯图片 turn 与压缩
+      // 摘要头 turn（含会话内压缩的 stamped 载体）不占序号，引擎
+      // <context_update> 运行时消息经 runtimeContextUpdatesBefore 并入
+      // （forkEntriesByTurnId / turnHasUserText）。turn 进行中（busy）与
+      // compaction 进行中（ctxCompactInFlight——空闲会话的手动压缩整个
+      // 过程 busy 都是 false，不与 busy 门重叠）整表隐藏：Rust 端忙碌门
+      // 拒绝 turn 内分叉；compaction 进行中 Rust 端也显式拒绝（不占 turn
+      // 预约，turn-active 探针对它失明，fork 命令另行探
+      // is_compaction_in_flight——见 sessions.rs fork_session），整表隐藏
+      // 与之一致，入口不以「点击必报错」的形态存在。scheduled 运行会话
+      // （Rust 侧拒绝）与 web 车道（命令不在 access-policy，canInvoke 返回
+      // false）同样不提供入口。
+      const forkSupported = !!(
+        activeSessionId
+        // 大小写不敏感对齐 Rust is_sched_session_id（eq_ignore_ascii_case）：
+        // 大写变体 id 在大小写不敏感文件系统上就是定时会话本体，前端入口
+        // 与后端拒绝必须同口径（fork_session 命令本身仍有服务端拒绝兜底）。
+        && !activeSessionId.toLowerCase().startsWith('sched-')
+        && !ctxCompactInFlight
+        && bridge.available
+        && canInvoke('fork_session')
+      );
+      // in-flight 门按会话 id 记（与取消按钮的 cancellingSessionIds 同款）：
+      // ChatView 不因切会话重挂载，单槽位会被并发分叉互相清掉——先分叉 A
+      // 再分叉 B，A 先落盘时把 B 的标记清空，B 上的再点会绕过前端门撞上
+      // Rust 预约拒绝（虚假失败 toast）。
+      const [forkBusySessionIds, setForkBusySessionIds] = useState(() => new Set());
+      const forkEntries = useMemo(
+        () => (forkSupported ? forkEntriesByTurnId(conversationProjection.turns) : null),
+        [forkSupported, conversationProjection.turns],
+      );
+      const handleForkTurn = useCallback(async (turnId, keepTurns) => {
+        if (!forkSupported || busy || ctxCompactInFlight) return;
+        const sourceSessionId = activeSessionId;
+        if (forkBusySessionIds.has(sourceSessionId)) return;
+        setForkBusySessionIds(prev => {
+          const next = new Set(prev);
+          next.add(sourceSessionId);
+          return next;
+        });
+        try {
+          const forked = await invokeTauri('fork_session', { sessionId: sourceSessionId, keepTurns });
+          // 仅当用户仍停留在源会话且 ChatView 仍挂载时自动切换；分叉落盘的
+          // 窗口内用户已切走/切到别的视图则不打断其导航——新分支经
+          // session:list_changed 去抖进入侧栏，仍可从列表进入。切换失败不
+          // 冒充 forkFailed（分支已落盘、侧栏可见），如实提示切换失败。
+          // switchToSession 的失败路径 resolve(false) 而非 reject（桥接层
+          // 内部消化后走 reportSessionSwitchFailure），布尔为假且用户仍在源
+          // 会话时补专用提示；catch 保留兜底桥接层抛错形态（r7 minor）。
+          if (forked && forked.id && chatViewMountedRef.current && activeSessionIdRef.current === sourceSessionId) {
+            let switched = true;
+            try {
+              switched = await bridge.sessions.switchToSession(forked.id);
+            } catch (switchError) {
+              const switchDetail = String((switchError && switchError.message) || switchError || t.uiConversation.unknownError);
+              flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkSwitchFailed}: ${switchDetail}` });
+            }
+            if (!switched && chatViewMountedRef.current && activeSessionIdRef.current === sourceSessionId) {
+              flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkSwitchFailed}: ${t.uiConversation.unknownError}` });
+            }
+          }
+        } catch (err) {
+          // rebind 互斥拒绝（REBIND_IN_PROGRESS 等稳定 marker）走既有分类
+          // 映射的 trilingual 文案，不把后端英文诊断尾巴原样亮给用户；其余
+          // 错误保留原始细节（unknownError 兜底）。
+          const classified = classifyRebindError(err, t);
+          const detail = classified && classified.kind === 'copy'
+            ? classified.message
+            : String((err && err.message) || err || t.uiConversation.unknownError);
+          flashQueuedNotice(sourceSessionId, { text: `${t.uiConversation.forkFailed}: ${detail}` });
+        } finally {
+          setForkBusySessionIds(prev => {
+            const next = new Set(prev);
+            next.delete(sourceSessionId);
+            return next;
+          });
+        }
+      }, [forkSupported, forkBusySessionIds, activeSessionId, busy, ctxCompactInFlight, flashQueuedNotice, t]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -3742,6 +4059,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
                     onRetry={isMultiAgentReadOnly ? undefined : retryLastTurn}
+                    forkEntries={(busy || ctxCompactInFlight) ? undefined : forkEntries}
+                    onForkTurn={!forkSupported || isMultiAgentReadOnly ? undefined : handleForkTurn}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}
@@ -3817,7 +4136,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             />
           )}
           {COMPUTER_USE_ENABLED && (
-            <ComputerUseDialogs slice={computerUseSlice} copy={computerUseCopy} />
+            <ComputerUseDialogs
+              slice={computerUseSlice}
+              copy={computerUseCopy}
+              virtualDisplayNote={(bs && bs.platformCapabilities && bs.platformCapabilities.virtualDisplayNote) || ''}
+            />
           )}
           {/* Floating Input Area */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: session-row drag-drop hot zone; the keyboard-equivalent path is the composer @ mention panel */}
@@ -4363,7 +4686,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 ctxPct >= 0.9 ? 'text-[#C5221F] dark:text-[#F28B82]'
                 : ctxPct >= 0.75 ? 'text-[#B06000] dark:text-[#F9AB00]'
                 : 'text-[#9AA0A6] dark:text-[#5F6368]'}`}>
-                {t.ctxUsage} {ctxTokens.input > 0 ? formatCompactCount(ctxTokens.input) : '—'} / {formatCompactCount(ctxTokens.max)} · {Math.round(ctxPct * 100)}%
+                <button
+                  type="button"
+                  data-testid="chat-ctx-compact"
+                  onClick={handleManualCompact}
+                  disabled={busy || ctxCompactInFlight}
+                  title={ctxCompactInFlight ? t.compactingNow : t.compactNowTip}
+                  aria-label={ctxCompactInFlight ? t.compactingNow : `${ctxUsageText}, ${t.compactNowTip}`}
+                  className="inline-flex items-center gap-1 hover:underline underline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity">
+                  {ctxCompactInFlight ? t.compactingNow : ctxUsageText}
+                </button>
               </div>
             )}
             <div className="flex items-center justify-center mt-3">

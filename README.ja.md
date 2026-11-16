@@ -14,7 +14,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#-クイックスタート)
 [![GitHub Stars](https://img.shields.io/github/stars/Pinvou/pinvou-agent?style=flat)](https://github.com/Pinvou/pinvou-agent/stargazers)
 
-[プレビュー版をダウンロード](https://github.com/Pinvou/pinvou-agent/releases) · [ウェブサイト](https://pinvou.com/) · [QQ グループ](#-コミュニティとセキュリティ) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [セキュリティ](SECURITY.md)
+[ダウンロード](https://github.com/Pinvou/pinvou-agent/releases) · [ウェブサイト](https://pinvou.com/) · [QQ グループ](#-コミュニティとセキュリティ) · [Issues](https://github.com/Pinvou/pinvou-agent/issues) · [Discussions](https://github.com/Pinvou/pinvou-agent/discussions) · [セキュリティ](SECURITY.md)
 
 <p align="center">
   <a href="https://pinvou.com/assets/videos/pinvou-agent-feature-update-2026-07.mp4">

@@ -1028,8 +1028,16 @@ const App = () => {
         }
       }, [language]);
       const [superPerm, setSuperPerm] = useState(false);
-      const defaultTaskCompletedNotif = platformCapabilities.taskCompletionNotificationsDefault !== false;
-      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultTaskCompletedNotif);
+      // Both desktop-notification switches start from the platform
+      // master-switch default (aligned with Rust NotificationPrefs::default).
+      const defaultDesktopNotificationSwitch = platformCapabilities.taskCompletionNotificationsDefault !== false;
+      const [taskCompletedNotif, setTaskCompletedNotif] = useState(defaultDesktopNotificationSwitch);
+      // inputNeededNotif stores the persisted needs_input intent; the
+      // effective display derives as intent && taskCompletedNotif in
+      // SettingsView — the task-completion switch is the master switch (its
+      // payload carries enabled), so the derivation stays truthful across the
+      // master going off->on in both directions.
+      const [inputNeededNotif, setInputNeededNotif] = useState(defaultDesktopNotificationSwitch);
       // search 后端配置:provider 默认 bing(对齐 bridge prefs::SearchProvider::default());
       // bs.settings 加载后 useEffect 同步进来。
       const [searchProvider, setSearchProvider] = useState('bing');
@@ -1276,6 +1284,11 @@ const App = () => {
         }
         const notifications = settings.notifications || {};
         setTaskCompletedNotif(notifications.task_completed !== false && notifications.enabled !== false);
+        // Backfill only the persisted intent; do not fold enabled into the
+        // input switch: the master switch's effectiveness is derived in the
+        // display layer, and folding enabled here would make a persisted
+        // needs_input unrecoverable after the master goes off->on.
+        setInputNeededNotif(notifications.needs_input !== false);
         uiPrefsInitRef.current = true;
       };
       useEffect(() => {
@@ -1385,9 +1398,12 @@ const App = () => {
         return (t.uiScheduled.runStatus[value] || value || t.uiScheduled.unknown);
       }, [t]);
 
-      // Title/subtitle derivation for scheduled run entries: sidebar entries (scheduledRunItems) and chat entry
+      // Title/date-slot derivation for scheduled run entries: sidebar entries (scheduledRunItems) and chat entry
       // decoration (decorateScheduledRunChat) share one rule to avoid drift between the two copies.
       // Without a chat, derive from the run DTO's sessionTitle; with a chat, use the chat title.
+      // Rows are single-line: the status · time string rides the right date
+      // slot instead of a second line (run sessions don't go through the
+      // regular date field — see scheduledRunItems below).
       const scheduledRunDisplayFields = useCallback((run, chat) => {
         const rawTitle = chat ? chat.title : (run.sessionTitle || '');
         const title = (!rawTitle || isDefaultChatTitle(rawTitle))
@@ -1395,7 +1411,7 @@ const App = () => {
           : rawTitle;
         return {
           title,
-          subtitle: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
+          date: `${scheduledRunLabel(run.status)} · ${formatSessionDate(run.scheduledFor || run.createdAt, language)}`,
         };
       }, [t, language, scheduledRunLabel]);
 
@@ -1455,12 +1471,10 @@ const App = () => {
         title: (!session.title || isDefaultChatTitle(session.title))
           ? t.newChat
           : session.title,
-        subtitle: session.workspace_kind === 'project'
-          ? workspaceDisplayName(session.workspace_path)
-          : t.uiCodex.temporarySession,
         date: formatSessionDate(session.updated_at || session.created_at, language),
         updatedAt: session.updated_at || session.created_at || '',
         workspacePath: session.workspace_path || '',
+        // 行是单行:文件夹归属由「项目」视图的分组组头表达,不再逐项标注。
         workspaceKind: session.workspace_kind || '',
         // §6 keychain snapshot for the "view workspace" menu entry (same
         // cwd-first shape as the chat lane's workspaceRoots).
@@ -1501,7 +1515,8 @@ const App = () => {
         .filter(run => run && run.sessionId)
         .map(run => {
           // 定时运行会话不进 bs.sessions(list_sessions 隔离 sched-*),标题/置顶
-          // 状态由后端 run DTO 直接携带。
+          // 状态由后端 run DTO 直接携带;右侧 date 槽由 displayFields 提供
+          // 「状态 · 时间」,不再置空。
           return {
             id: run.sessionId,
             ...scheduledRunDisplayFields(run),
@@ -1509,7 +1524,6 @@ const App = () => {
             pinned: !!run.pinned,
             pinnedAt: run.pinnedAt || '',
             working: run.status === 'running' || run.status === 'queued',
-            date: '',
             leadingIcon: scheduledRunIcon(run, activeTheme),
             testId: 'scheduled-run-sidebar-item',
             menuTestId: 'scheduled-run-sidebar-menu',
@@ -1597,7 +1611,16 @@ const App = () => {
       }, [sidebarCodeListActive, taskListFilter]);
       const [archiveConfirm, setArchiveConfirm] = useState(null);
       const [archiveToast, setArchiveToast] = useState(false);
+      // settingsToast 接受字符串或 { text, duration, multiline }：默认 pill 按
+      // 3 秒的短文案设计；导入汇总（四计数 + 缺产物补救指引）与导入/导出失败
+      // 详情是长文案，3 秒 + 单行截断会把恢复路径整个吞掉（r7 minor），
+      // 长文案调用方自带 duration；multiline（r8）再放开宽度截断——窄窗口上
+      // 80vw 单行仍会裁掉补救指引的尾部，改为可换行 + 圆角大卡形态。
       const [settingsToast, setSettingsToast] = useState('');
+      const settingsToastText = (settingsToast && typeof settingsToast === 'object') ? settingsToast.text : settingsToast;
+      const settingsToastDuration = (settingsToast && typeof settingsToast === 'object' && Number.isFinite(settingsToast.duration))
+        ? settingsToast.duration : 3000;
+      const settingsToastMultiline = !!(settingsToast && typeof settingsToast === 'object' && settingsToast.multiline);
       const [projectOpsBusy, setProjectOpsBusy] = useState(false);
       const [moveToProjectSession, setMoveToProjectSession] = useState(null);
       const [moveToPresetProject, setMoveToPresetProject] = useState(null);
@@ -2855,8 +2878,14 @@ const App = () => {
           if (!result) return;
           setSettingsToast(t.exportSessionDone(result.path));
         } catch (error) {
+          // Rust 侧导出前置校验的拒绝串指名文件并给出改法（「rename or
+          // remove this file and retry the export」）——只透静态文案会把
+          // 恢复路径留在 console 里（review finding）。
+          const detail = String((error && error.message) || error || t.unknownError);
           console.warn('export session archive failed', error);
-          setSettingsToast(t.exportSessionFailed);
+          // 拒绝串指名文件并给出改法（长文案）：8 秒 + 默认时长会把恢复路径
+          // 读完之前就收走（r7 minor）；multiline 放开窄窗口的单行截断（r8）。
+          setSettingsToast({ text: `${t.exportSessionFailed}: ${detail}`, duration: 8000, multiline: true });
         } finally {
           setExportingSessionIds(prev => {
             const next = new Set(prev);
@@ -3274,9 +3303,9 @@ const App = () => {
 
       useEffect(() => {
         if (!settingsToast) return;
-        const timer = setTimeout(() => setSettingsToast(''), 3000);
+        const timer = setTimeout(() => setSettingsToast(''), settingsToastDuration);
         return () => clearTimeout(timer);
-      }, [settingsToast]);
+      }, [settingsToast, settingsToastDuration]);
 
       async function handleToggleSuperPerm() {
         const target = !superPerm;
@@ -3401,19 +3430,36 @@ const App = () => {
         invokeTauri('set_pet_enabled', { enabled: !!enabled }).catch(() => {});
       }
 
-      async function handleSetTaskCompletedNotif(enabled) {
-        const nextEnabled = !!enabled;
-        const previousEnabled = taskCompletedNotif;
-        setTaskCompletedNotif(nextEnabled);
-        if (bridge.available) {
-          const saved = await bridge.settings.saveSettings({
-            notifications: { enabled: nextEnabled, task_completed: nextEnabled },
-          });
-          if (saved === false) {
-            setTaskCompletedNotif(previousEnabled);
+      // Both notification switches share one save pipeline: optimistic set ->
+      // saveSettings, rollback on failure. The task-completion switch doubles
+      // as the desktop-notification master switch (payload carries enabled);
+      // the input switch carries only its own field, and the Rust side merges
+      // by field, so no other switch resets.
+      function makeNotifToggle(getCurrent, setCurrent, payloadFor) {
+        return async (enabled) => {
+          const nextEnabled = !!enabled;
+          const previousEnabled = getCurrent();
+          setCurrent(nextEnabled);
+          if (bridge.available) {
+            const saved = await bridge.settings.saveSettings({
+              notifications: payloadFor(nextEnabled),
+            });
+            if (saved === false) {
+              setCurrent(previousEnabled);
+            }
           }
-        }
+        };
       }
+      const handleSetTaskCompletedNotif = makeNotifToggle(
+        () => taskCompletedNotif,
+        setTaskCompletedNotif,
+        (nextEnabled) => ({ enabled: nextEnabled, task_completed: nextEnabled }),
+      );
+      const handleSetInputNeededNotif = makeNotifToggle(
+        () => inputNeededNotif,
+        setInputNeededNotif,
+        (nextEnabled) => ({ needs_input: nextEnabled }),
+      );
 
       // 侧栏任务列表「按日期折叠」开关:纯 UI 偏好,写 settings.sidebar.date_grouping
       function handleSetSidebarDateGrouping(enabled) {
@@ -3762,8 +3808,11 @@ const App = () => {
             // Layer sits above modal overlays (picker backdrop is z-[200]) so a
             // failure raised under an open dialog stays visible; a filesystem
             // path in the message must not push the pill past the viewport.
-            <div className="fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] truncate rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
-              {settingsToast}
+            // multiline（r8）：长文案（导入四计数 + 补救指引 / 失败详情）在
+            // 窄窗口上单行 truncate 仍会裁掉恢复路径的尾部——换行 + 2xl 圆角
+            // 卡形态，宽度上限不变。
+            <div className={`fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl ${settingsToastMultiline ? 'whitespace-normal break-words rounded-2xl leading-5' : 'truncate rounded-full'}`}>
+              {settingsToastText}
             </div>,
             document.body
           )}
@@ -4126,7 +4175,7 @@ const App = () => {
                 遮住下滑的列表项,避免首项与上方 nav 贴死("重合")。 */}
             {isSidebarOpen && (
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 flex flex-col">
-                <div data-testid="sidebar-recents" className="pt-5 pb-2 max-sm:pt-2">
+                <div data-testid="sidebar-recents" className="pt-3 pb-2 max-sm:pt-2">
                   <div ref={taskFilterRef} className="relative mb-2">
                     {/* 第一行:「任务列表」标题 + 查看全部/筛选按钮;
                         第二行:全部/项目 胶囊 + 一键折叠(分组)按钮。
@@ -4255,7 +4304,7 @@ const App = () => {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-1">
+                  <div className="space-y-0.5">
                     {sidebarCodeListActive ? (
                       (sidebarFolderPinned.length > 0 || sidebarFolderGroups.length > 0) ? (
                         <>
@@ -4295,7 +4344,7 @@ const App = () => {
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 /></Suspense>
                                 {isOpen && (
-                                  <div className="mt-1 space-y-0.5">
+                                  <div className="space-y-0.5">
                                     {group.rows.map(renderSidebarTaskItem)}
                                   </div>
                                 )}
@@ -4326,7 +4375,7 @@ const App = () => {
                             <ChevronDown size={14} className={`shrink-0 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
                           </button>
                           {isOpen && (
-                            <div className="mt-1 space-y-0.5">
+                            <div className="space-y-0.5">
                               {group.rows.map(renderSidebarTaskItem)}
                             </div>
                           )}
@@ -4421,6 +4470,8 @@ const App = () => {
                   language={language} setLanguage={handleSetLanguage}
                   superPerm={superPerm} setSuperPerm={handleToggleSuperPerm}
                   taskCompletedNotif={taskCompletedNotif} setTaskCompletedNotif={handleSetTaskCompletedNotif}
+                  inputNeededNotif={inputNeededNotif} setInputNeededNotif={handleSetInputNeededNotif}
+                  setSettingsToast={setSettingsToast}
                   searchProvider={searchProvider} setSearchProvider={handleSetSearchProvider}
                   enabledSearchProviders={enabledSearchProviders}
                   onAddSearchProvider={handleAddSearchProvider}

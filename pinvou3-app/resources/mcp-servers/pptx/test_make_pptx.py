@@ -17,7 +17,7 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   8. 回归:不再产生调试落盘文件 ~/_make_pptx_debug.json
   9. MCP 协议冒烟(子进程):initialize / tools/list / tools/call(make_pptx)
   10. malformed-JSON salvage / fully empty loud error
-  11. slides inputSchema.items structure pinned (arrays must carry concretely typed items)
+  11. slides inputSchema per-layout anyOf pinned (branch type:object / per-branch required / layout enum partition / typed nested arrays)
   12. explicit-null optional fields are safe (DeepSeek strict mode rewrites every property required+nullable)
   13. kpi numeric 0 / agenda dict items (allowed by the schema anyOf) render as data, not swallowed by `or`
   14. null array elements (salvage path bypasses the schema) fall back instead of leaking str(None) or error pages
@@ -262,34 +262,97 @@ def test_malformed_json_salvage():
             "空/无法解析的 slides 应返回 ok:False+error,实际 %r(输入 %r)" % (r2, empty)
 
 
-# ── 11. slides schema must carry structured items (regression: k3 once completed an itemless array to []) ──
-@case("11. slides inputSchema.items structure pinned (arrays must carry concretely typed items)")
+# ── 11. slides schema must be a per-layout anyOf (regression pin: the flat
+#        single-object items only required layout, so constrained decoding
+#        channels dropped every optional content field; the per-branch
+#        required is the mitigation) ──
+@case("11. slides inputSchema per-layout anyOf pinned (branch type/required/enum partition)")
 def test_slides_schema_items_pin():
     schema = server.TOOL_DEFS[0]["inputSchema"]["properties"]["slides"]
     assert schema.get("type") == "array", "slides must be an array, got %r" % schema.get("type")
     items = schema.get("items")
     assert isinstance(items, dict) and items, "slides must carry non-empty items (Kimi-channel decoders complete an itemless array to []), got %r" % items
-    assert items.get("type") == "object", "items must be an object, got %r" % items.get("type")
-    assert items.get("required") == ["layout"], "items.required must be ['layout'], got %r" % items.get("required")
-    # The layout enum must match the LAYOUTS render table exactly (a new
-    # layout added without updating the enum must turn red here).
-    props = items.get("properties") or {}
-    assert set(props.get("layout", {}).get("enum") or []) == set(server.LAYOUTS), \
-        "layout.enum must match LAYOUTS exactly, got %r vs %r" % (props.get("layout", {}).get("enum"), sorted(server.LAYOUTS))
+    # The items node must be an anyOf union with no type sibling (MFJS:
+    # type must not sit on the same level as anyOf).
+    assert "type" not in items, "anyOf must not share its level with type, got keys %r" % sorted(items)
+    branches = items.get("anyOf")
+    assert isinstance(branches, list) and branches, "items must be an anyOf union, got %r" % branches
+    # One branch per layout. The count is the layout set, NOT a budget
+    # boundary on the TARGET face: the constrained-route resource budgets
+    # are aligned to the walle conf.go source defaults since 2026-11-05
+    # (anyOf ≤ 500 branches, ≤ 3000 properties, depth ≤ 30), but that is
+    # the T11 target budget. The currently pinned pre-T11 engine still
+    # caps anyOf at 10, so these 10 branches sit exactly AT the shipped
+    # limit — adding a layout before the close-out re-pin hits the
+    # 10-branch cap, and the pinned engine's sanitizer then omits the
+    # make_pptx tool from that request with a warning (the build keeps the
+    # remaining tools and fails outright only when an explicit tool_choice
+    # forces the omitted tool).
+    assert len(branches) == len(server.LAYOUTS), \
+        "one branch per layout (%d), got %d" % (len(server.LAYOUTS), len(branches))
+    # Per-branch required = exactly the fields the renderer reads and draws
+    # a blank body without; pure-decoration fields stay optional (the probe's
+    # all-fields-required control produced blank values + enum guessing).
+    # 2026-11-05 required final ruling: a field may be required only when
+    # leaving it blank is a business error. agenda/end render semantically
+    # complete fallback pages (table of contents / thank you) for a blank
+    # title, so title left those branches' required; the other 8 branches
+    # are unchanged.
+    expected_required = {
+        "cover": ["layout", "title"],
+        "agenda": ["layout", "items"],
+        "section": ["layout", "title"],
+        "bullets": ["layout", "title", "bullets"],
+        "two_col": ["layout", "title", "left", "right"],
+        "kpi": ["layout", "title", "items"],
+        "chart": ["layout", "title", "categories", "series"],
+        "table": ["layout", "title", "headers", "rows"],
+        "image": ["layout", "title"],
+        "end": ["layout"],
+    }
+    seen = []
+    for i, branch in enumerate(branches):
+        assert branch.get("type") == "object", \
+            "branch %d must be an explicit type:object, got %r" % (i, branch.get("type"))
+        props = branch.get("properties")
+        assert isinstance(props, dict) and props, "branch %d must declare properties" % i
+        required = branch.get("required")
+        assert isinstance(required, list) and required, "branch %d must declare required" % i
+        assert required[0] == "layout", "branch %d required must start with layout, got %r" % (i, required)
+        assert set(required) <= set(props), \
+            "branch %d required must name declared properties, diff %r" % (i, set(required) - set(props))
+        enum = props.get("layout", {}).get("enum")
+        assert isinstance(enum, list) and len(enum) == 1, \
+            "branch %d layout enum must be a single value, got %r" % (i, enum)
+        layout = enum[0]
+        assert layout in server.LAYOUTS, "branch %d names unknown layout %r" % (i, layout)
+        assert required == expected_required[layout], \
+            "layout %s required must be %r, got %r" % (layout, expected_required[layout], required)
+        seen.append(layout)
+    assert sorted(seen) == sorted(server.LAYOUTS), \
+        "branch layout enums must partition LAYOUTS exactly, diff %r" % (set(seen) ^ set(server.LAYOUTS))
+    def _branch_of(layout):
+        return next(b for b in branches if b["properties"]["layout"]["enum"] == [layout])
     # The chartType enum must match the _CHART_TYPES render table exactly.
-    assert set(props.get("chartType", {}).get("enum") or []) == set(server._CHART_TYPES), \
-        "chartType.enum must match _CHART_TYPES exactly, got %r vs %r" % (props.get("chartType", {}).get("enum"), sorted(server._CHART_TYPES))
-    # Property-name set pinned: a dropped field (the model loses that field's
-    # guidance) and an unregistered extra field must both turn red.
+    chart = _branch_of("chart")
+    assert set(chart["properties"]["chartType"].get("enum") or []) == set(server._CHART_TYPES), \
+        "chartType.enum must match _CHART_TYPES exactly, got %r vs %r" % (
+            chart["properties"]["chartType"].get("enum"), sorted(server._CHART_TYPES))
+    # Field inventory: the union of branch properties must be exactly the 17
+    # declared fields (a dropped field = the model loses that field's
+    # guidance; an unregistered extra field = drift).
+    union = set()
+    for branch in branches:
+        union |= set(branch["properties"])
     expected = {"layout", "title", "subtitle", "date", "items", "bullets", "leftTitle", "left",
                 "rightTitle", "right", "chartType", "categories", "series", "headers", "rows",
                 "caption", "image"}
-    assert set(props) == expected, \
-        "slides.items.properties must be exactly the %d declared fields, diff %r" % (len(expected), set(props) ^ expected)
+    assert union == expected, \
+        "branch properties must cover exactly the %d declared fields, diff %r" % (len(expected), union ^ expected)
     # Every nested array must carry concretely typed items (guard class:
     # reintroducing an itemless array must turn red here).
     def _assert_typed(node, path):
-        if node.get("type") != "array":
+        if not isinstance(node, dict) or node.get("type") != "array":
             return
         sub = node.get("items")
         assert isinstance(sub, dict) and sub, "%s is missing items" % path
@@ -301,22 +364,27 @@ def test_slides_schema_items_pin():
                 assert br.get("type"), "%s.anyOf[%d] lacks a concrete type" % (path, i)
         else:
             assert False, "%s.items lacks a concrete type: %r" % (path, sub.get("type"))
-    for key in ("bullets", "left", "right", "categories", "headers", "rows", "items", "series"):
-        _assert_typed(props[key], "slides.items.properties.%s" % key)
+    for branch in branches:
+        layout = branch["properties"]["layout"]["enum"][0]
+        for key, sub in branch["properties"].items():
+            _assert_typed(sub, "branch(%s).properties.%s" % (layout, key))
     # series.data's numeric array and rows' 2-D array are the two deepest
     # spots; pin their shapes separately. name stays optional: single-series
     # charts hide the legend, so a forced invented name is friction, and the
     # renderer falls back to "" either way.
-    series_items = props["series"]["items"]
+    series_items = chart["properties"]["series"]["items"]
     assert series_items.get("required") == ["data"], "series items.required must be ['data'], got %r" % series_items.get("required")
     assert series_items["properties"]["data"]["items"] == {"type": "number"}, "series.data items must be number"
-    assert props["rows"]["items"]["type"] == "array" and props["rows"]["items"]["items"] == {"type": "string"}, \
-        "rows must be a 2-D string array, got %r" % props["rows"]
+    rows = _branch_of("table")["properties"]["rows"]
+    assert rows["items"]["type"] == "array" and rows["items"]["items"] == {"type": "string"}, \
+        "rows must be a 2-D string array, got %r" % rows
     # The items anyOf dict branch must not require num: agenda pages draw
     # their own ordinals, so a label-only dict is a legal entry.
-    items_anyof = props["items"]["items"]["anyOf"]
-    dict_branch = next(br for br in items_anyof if br.get("type") == "object")
-    assert "required" not in dict_branch, "items dict branch must not require num, got %r" % dict_branch.get("required")
+    for layout in ("agenda", "kpi"):
+        items_anyof = _branch_of(layout)["properties"]["items"]["items"]["anyOf"]
+        dict_branch = next(br for br in items_anyof if br.get("type") == "object")
+        assert "required" not in dict_branch, \
+            "%s items dict branch must not require num, got %r" % (layout, dict_branch.get("required"))
 
 
 # ── 12. explicit-null optional-field safety (DeepSeek strict rewrites every

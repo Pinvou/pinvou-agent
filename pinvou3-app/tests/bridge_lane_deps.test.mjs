@@ -199,8 +199,10 @@ const EXPECTED_SURFACE = {
   // isInternalUserMessage + isKnownInternalMetadataBlock read only the
   // window.PinvouBridgeMessages classic global and their parameters, so no
   // cluster literal gains a dep; userMessageDisplayText calls them as
-  // base-local declarations.
-  sharedFnCount: 315,
+  // base-local declarations. raisePinvouSummonHighwater (zhuowp round-2 P2-2:
+  // the review-sidecar highwater commit) reads only `state`, which every
+  // consuming cluster literal already provides — no literal gains a dep.
+  sharedFnCount: 316,
 };
 
 assert.equal(

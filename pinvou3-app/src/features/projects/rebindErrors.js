@@ -110,9 +110,22 @@ function classifyRebindError(error, t) {
       reboundIds,
     };
   }
-  const marker = Object.keys(REBIND_MARKER_MESSAGE_KEYS).find((prefix) =>
+  let marker = Object.keys(REBIND_MARKER_MESSAGE_KEYS).find((prefix) =>
     message.startsWith(prefix),
   );
+  if (!marker) {
+    // Command-layer wrapping buries the marker mid-string — the fork lane
+    // re-wraps the fence rejection as
+    // "fork_session: 工作区绑定迁移…（REBIND_IN_PROGRESS: …）", so the
+    // prefix match above never fires and the raw mixed-language diagnostic
+    // leaked into the toast (r7 minor 1). Copy-kind markers carry no
+    // parseable payload (only SESSIONS_BUSY carries ids, still prefix-only
+    // above), so an `includes` fallback cannot mis-split data; a false
+    // positive would require a path containing a literal REBIND_* marker.
+    marker = Object.keys(REBIND_MARKER_MESSAGE_KEYS).find((prefix) =>
+      message.includes(prefix),
+    );
+  }
   if (marker) {
     return {
       kind: 'copy',

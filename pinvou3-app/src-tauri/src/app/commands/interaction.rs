@@ -192,7 +192,7 @@ pub async fn accept_plan(
         .reserve_turn(&session_id)
         .map_err(|error| format!("reserve accept_plan turn: {error:#}"))?;
     // 与 chat.rs 同款的 turn 快照前奏：accept_plan 发送真实用户消息（
-    // is_user_turn_prompt 计数口径一致），切 YOLO 执行恰是最高风险的一轮——
+    // 与底座 era 计数 count_user_turns 同口径），切 YOLO 执行恰是最高风险的一轮——
     // 缺快照会让其编辑只能连同前一轮一起回退（评审 M6）。失败/超预算如实记
     // 日志不阻断 turn（设计 §5 降级语义）；发送失败按 id 作废「未成活」快照。
     // Computed BEFORE the snapshot so the checkpoint label quotes this turn's

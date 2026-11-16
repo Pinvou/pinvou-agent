@@ -717,6 +717,66 @@ pub(super) fn create_session_record(
     Ok(session.metadata)
 }
 
+/// 从第 `keep_turns` 轮末尾分叉出新会话（无损 what-if 分支）。核心克隆/截断
+/// 逻辑在 [`crate::features::sessions`] 的 store 方法里（fork.rs，与 rewind
+/// 同级）；本命令只负责忙碌门、原子预约与 list_changed 事件。
+///
+/// 快照一致性：turn 进行中 messages/metadata 仍被 forwarder 更新，分叉会
+/// 携带半轮状态。与 rewind_to_turn 同一口径：先快速拒绝给出友好文案，再
+/// `reserve_turn` 原子占位并持有到落盘结束——预约窗口内新 turn 无法开始，
+/// 关闭「检查后开跑」的半轮捕获窗口。比 rewind 多一道压缩门：compaction
+/// 不占 turn 预约，turn-active 探针对它失明（engine_pool 的注释原文），
+/// 压缩进行中分叉会以点击序号漂移的快照落盘——这里显式探
+/// `is_compaction_in_flight` 拒绝（projects.rs 的探针同款）；rewind 的同款
+/// 盲区属既有行为，另行跟进。
+#[tauri::command]
+pub async fn fork_session(
+    session_id: String,
+    keep_turns: u32,
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    projects: State<'_, ProjectStore>,
+) -> Result<SessionMetadata, String> {
+    if pool.is_turn_active(&session_id) {
+        return Err("会话正在执行，请等当前轮结束再分叉".to_string());
+    }
+    if pool.is_compaction_in_flight(&session_id) {
+        return Err("会话正在压缩上下文，请等压缩结束再分叉".to_string());
+    }
+    let reservation = pool
+        .reserve_turn(&session_id)
+        .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
+    let store_inner = store.inner().clone();
+    let projects_inner = projects.inner().clone();
+    let forked = tauri::async_runtime::spawn_blocking(move || {
+        // 预约 Guard 持有到落盘结束（Drop 自动归还 slot），关闭半轮窗口。
+        let _reservation = reservation;
+        // 分支绑定复刻是 root-accepting writer（写 workspace sidecar），与
+        // create_session_durable 同守 projects rebind fence（review #484
+        // round-11 M3 的 sibling-writer 契约）：分支 sidecar 不得落在 rebind
+        // 的候选快照与翻译之间，否则带着改绑前的旧路径拼法整体逃出翻译，
+        // 分支静默绑到已不存在的目录。先于落盘取锁（round-13 minor 1 口径）：
+        // REBIND_IN_PROGRESS 拒绝时不留孤儿分支。无条件取锁——源是否绑定要
+        // 到 fork 内部才探明，rebind 进行中的 fork 本就是竞窗，最便宜且诚实
+        // 的互斥就是互斥本身（rebind 罕见且短，fork 持锁开销可忽略）。
+        let _fence = projects_inner.rebind_fence().map_err(|error| {
+            // 措辞不指认持锁方：fork 自身持 fence 期间，其他 fenced writer
+            //（项目编辑/移动/codex set_workspace）被拒时看到的也是这条
+            // REBIND_IN_PROGRESS 尾巴，指认「目录 rebind」会误导。
+            anyhow::anyhow!("工作区绑定迁移或互斥写入进行中，请稍后重试分叉（{error}）")
+        })?;
+        store_inner.fork_session_record(&session_id, keep_turns)
+    })
+    .await
+    .map_err(|error| format!("fork_session: 任务失败: {error}"))?
+    .map_err(|error| format!("fork_session: {error:#}"))?;
+    // 侧栏经 session:list_changed 去抖刷新；不发事件的命令产出的会话在
+    // 切走后 UI 不可达（review finding：fork 分支曾只存在于存储）。
+    emit_session_event(&app, "session:list_changed", &forked.id, "forked");
+    Ok(forked)
+}
+
 #[tauri::command]
 pub async fn create_session(
     set_active: Option<bool>,
@@ -1392,6 +1452,43 @@ pub async fn export_session(
         compressed_bytes: summary.compressed_bytes(),
         session_id: summary.session_id,
     }))
+}
+
+/// 导入会话归档（`export_session` 的逆操作）：弹文件选择框，把选中的
+/// tar.xz 归档（或裸 session .json）装回会话存储。已存在的 id 跳过；
+/// 结果按 imported / skipped_existing / failed 三类返回给前端组 toast。
+/// 用户取消选择返回 None。
+#[tauri::command]
+pub async fn import_session_archive(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+) -> Result<Option<crate::features::sessions::SessionImportSummary>, String> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        // 两个过滤器各司其名（单一名目「Session archive」盖两种扩展会误导
+        // 选裸记录的用户）：tar.xz 归档 / 裸 session 记录（扩展名大小写
+        // 不敏感，import_archive 同口径）。
+        .add_filter("Session archive (tar.xz)", &["tar.xz"])
+        .add_filter("Session record (json)", &["json"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|error| format!("resolve_import_path_failed: {error}"))?;
+    let store = store.inner().clone();
+    let summary = tokio::task::spawn_blocking(move || store.import_archive(&path))
+        .await
+        .map_err(|error| format!("session_import_task_failed: {error}"))?
+        .map_err(|error| format!("session_import_failed: {error:#}"))?;
+    // 只在真有记录落盘时刷新侧栏（skip/failed-only 不改变列表）。事件携带
+    // 首个导入 id 仅作日志锚点；前端按事件去抖拉全量列表。
+    if let Some(id) = summary.imported.first() {
+        emit_session_event(&app, "session:list_changed", id, "imported");
+    }
+    Ok(Some(summary))
 }
 
 /// 重命名 session 标题。普通会话与定时运行会话共用 Session 元数据。
@@ -2317,4 +2414,75 @@ fn first_send_title_source_strips_message_then_mention() {
         "真正的正文",
         "both blocks strip outermost-first, leaving the body"
     );
+}
+
+/// fork 命令层安全门的源码契约钉（r7 M3，与 projects.rs 的 live-push block
+/// 钉同一先例）：四道门没有任何行为测试可达（fork 命令体不在任何套件里跑），
+/// 删除任一门（压缩探针/预约持有/fence 获取）此前全绿。源码钉把「静默删除」
+/// 变成红灯；行为语义由 store 层 fork 测试与前端契约测试各管一段。
+#[cfg(test)]
+mod fork_command_guard_pins {
+    /// fork_session 命令体（从 `pub async fn fork_session` 到收尾事件）。
+    fn fork_command_block(source: &str) -> &str {
+        let start = source
+            .find("pub async fn fork_session")
+            .unwrap_or_else(|| panic!("fork_session command must exist"));
+        let end = source[start..]
+            .find("pub async fn create_session")
+            .unwrap_or_else(|| panic!("fork_session must be followed by create_session"));
+        &source[start..start + end]
+    }
+
+    #[test]
+    fn fork_command_pins_all_four_safety_gates() {
+        let source = include_str!("sessions.rs");
+        let block = fork_command_block(source);
+        // 门 1：turn-active 快速拒绝（友好文案先于原子预约）。针是**完整
+        // if 行**（含 `if` 与 `{`）：裸调用名针会被 `if false &&` 禁用突变
+        // 骗绿——禁用后调用文本仍在（r8 M2：r7 波声称 verified red 的正是
+        // 这个突变，但裸针实况是绿的，此轮补上）。
+        assert!(
+            block.contains("if pool.is_turn_active(&session_id) {"),
+            "the fork command must keep the turn-active fast reject (as a live `if` line, not an `if false &&`-disabled call)"
+        );
+        // 门 2：压缩探针（compaction 不占 turn 预约，turn-active 探针对它
+        // 失明——删除后压缩中分叉会以漂移序号落盘）。同为完整 if 行针
+        // （理由同门 1）。
+        assert!(
+            block.contains("if pool.is_compaction_in_flight(&session_id) {"),
+            "the fork command must keep the compaction-in-flight probe (as a live `if` line, not an `if false &&`-disabled call)"
+        );
+        // 门 3：turn 预约持有到落盘结束（关闭半轮快照窗口；guard 绑定必须
+        // 在 spawn_blocking 闭包内存活）。
+        let reserve_at = block
+            .find(".reserve_turn(&session_id)")
+            .unwrap_or_else(|| panic!("the fork command must reserve the turn slot"));
+        assert!(
+            block[reserve_at..].contains("let _reservation = reservation;"),
+            "the reservation guard must be held inside the blocking closure"
+        );
+        // 门 4：projects rebind fence 先于落盘获取（sibling-writer 契约；
+        // 删除后分支 sidecar 可落进 rebind 的候选快照-翻译窗口）。
+        let fence_at = block
+            .find("rebind_fence()")
+            .unwrap_or_else(|| panic!("the fork command must take the projects rebind fence"));
+        let fork_at = block
+            .find("fork_session_record(")
+            .unwrap_or_else(|| panic!("the fork command must call fork_session_record"));
+        assert!(
+            fence_at < fork_at,
+            "the fence must be acquired before the record write"
+        );
+        // 门序：两道快速拒绝都在原子预约之前（预约是第一个不可重入动作）。
+        let turn_at = block
+            .find("pool.is_turn_active(&session_id)")
+            .expect("turn gate");
+        let compact_at = block
+            .find("pool.is_compaction_in_flight(&session_id)")
+            .expect("compaction gate");
+        assert!(
+            turn_at < compact_at && compact_at < reserve_at,
+            "fast rejects must precede the atomic reservation"
+        );
+    }
 }

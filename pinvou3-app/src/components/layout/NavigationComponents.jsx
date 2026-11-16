@@ -145,7 +145,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
       ) : null;
       if (editing) {
         return (
-          <div className="flex h-11 items-center px-1.5">
+          <div className="flex h-8 items-center px-1.5">
             {/* biome-ignore lint/a11y/noAutofocus: clicking "Rename" enters inline editing, so focus must land on the input immediately (payload behavior) */}
             <input autoFocus value={val}
               onChange={e => setVal(e.target.value)}
@@ -173,7 +173,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
           data-drag-kind={sessionDragKind || undefined}
           title={personaTarget ? t.cpTargetMarkTitle : undefined}
           style={recentItemRowStyle(dragging, personaTarget, isDark)}
-          className={`group flex h-11 items-center rounded-full text-[15px] transition-all
+          className={`group flex h-8 items-center rounded-full text-[15px] transition-all
             ${personaTarget ? ''
               : active ? 'bg-[#E1E5EA] text-[#1F1F1F] dark:bg-[#333537] dark:text-white'
                      : 'text-[#1F1F1F] hover:bg-[#E1E5EA] dark:text-[#E3E3E3] dark:hover:bg-[#282A2C]'}`}>{/* isDark dynamic-value: 保留 (personaTarget boxShadow 运行时拼色,与 background/color 同对象) */}
@@ -206,12 +206,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
           )}
           {/* 置顶标:常驻显示在标题前,倾斜小灰标,与「置顶优先」排序呼应 */}
           {chat.pinned && <PinIcon size={12} className="shrink-0 mr-1.5 rotate-45 text-[#8A8F94] dark:text-[#9AA0A6]" />}
-          <span className="min-w-0 flex-1 pr-2">
-            <span className="block truncate whitespace-nowrap leading-5">{chat.titleContent || chat.title}</span>
-            {chat.subtitle && (
-              <span className="block truncate text-[12px] leading-4 text-[#8A8F94] dark:text-[#9AA0A6]">{chat.subtitle}</span>
-            )}
-          </span>
+          <span className="min-w-0 flex-1 truncate whitespace-nowrap pr-2">{chat.titleContent || chat.title}</span>
           {/* 等待选择时模型不在生成：橙点替代灰点，避免两个徽标叠加 */}
           {chat.working && !chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-current opacity-70 animate-pulse" title={t.riGenerating}></span>}
           {chat.waitingInput && <span className="shrink-0 mr-1 inline-block w-2 h-2 rounded-full bg-[#F9AB00] opacity-90 animate-pulse" title={t.riAwaitingInput}></span>}
@@ -227,9 +222,14 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
           ) : (
             <>
               {/* 默认: 显示日期(辨识每条会话什么时候发生);hover/active 时换成置顶/更多按钮,重命名/收纳/删除在更多菜单里。
-                  窄屏无 hover：按钮组常显、日期让位，保证触屏可达。 */}
+                  窄屏无 hover：按钮组常显；日期同样常显并以 max-w+truncate 让位——
+                  日期槽的 max-sm:hidden 与按钮组的窄屏常显(max-sm:flex)都早于公开
+                  历史(基线导入 e34024e62 即在,#473 只是给该行补了 focus-within 门);
+                  #854 把定时任务的状态·时间并进该槽,而旧副标题本无窄屏门控,状态·
+                  时间因此在触屏上不可见;#871 恢复日期槽常显,拥挤由截断控制(标题
+                  仍有 flex-1 truncate 兜底)。 */}
               {chat.date && (
-                <span className="text-[11px] mr-4 shrink-0 opacity-60 whitespace-nowrap group-hover:hidden group-focus-within:hidden max-sm:hidden text-[#5F6368] dark:text-[#9AA0A6]">
+                <span className="text-[11px] mr-4 min-w-0 max-w-[45%] truncate opacity-60 group-hover:hidden group-focus-within:hidden text-[#5F6368] dark:text-[#9AA0A6]">
                   {chat.date}
                 </span>
               )}

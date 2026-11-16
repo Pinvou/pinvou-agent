@@ -33,8 +33,8 @@ function pinvouSharedtauriMonitor() {
     } catch { monitorBaseline = null; }
   // ── Monitor ──────────────────────────────────────────────────────
   // pollMonitor/appQueueSnapshot/monitorFmtEqual 与格式化 fallback 统一在
-  // shared/bridge-shared-helpers.js 的 tauriMonitor cluster（betaVersionSuffix
-  // 键两侧同值同名）；此处仅保留 lane 内转发的公开入口。
+  // shared/bridge-shared-helpers.js 的 tauriMonitor cluster（翻译键
+  // 两侧同值同名）；此处仅保留 lane 内转发的公开入口。
 
 function numOr0(x) { return pinvouSharedtauriMonitor().numOr0(x); }
 

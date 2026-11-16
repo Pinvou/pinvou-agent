@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # CodeWhale v0.9.12 clean re-fork guard: 96 registered commits (93 maintenance commits plus two review commits and their integration merge).
-# Public maintenance has since advanced to 8e8d52fdb (99 commits, #136/#142/#148/#150/#152/#156);
-# the pinned T6 rate-limit candidate predates that advance pending CodeWhale#141.
+# Public maintenance has since advanced to 687358f7e (100 commits, ten maintained themes; r3 closed at
+# pinvou-v0.9.12-r3 with #136/#142/#148/#150/#152/#156/#157 merged); the pinned T6 rate-limit candidate
+# predates that advance pending CodeWhale#141 and this branch keeps the registered review pin.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,6 +10,12 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Registered T6 review integration; maintenance remains MAINTENANCE_BASE.
+# Public maintenance has since advanced to 687358f7e (100 commits) after
+# CodeWhale#123/#124/#129/#131/#133/#134/#135, CodeWhale#136/#142/#148/#150/#152
+# (incl. deps: rusqlite 0.41 / rmcp 3.9 / rio-vt 0.5.29), CodeWhale#156
+# (rustc/clippy 1.100 stable lint adaptation), and CodeWhale#157 (session-reader
+# read-only classification); the pinned T6 candidate predates that advance
+# pending CodeWhale#141 and does not contain those commits.
 EXPECTED_HEAD="19132162830b38aba7d900ef806427171d9203ef"
 EXPECTED_COMMITS=96
 # Published maintenance base of this integration.
@@ -332,6 +339,10 @@ fingerprints=(
   "APP|spawn 前安装 Engine session id   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.session_id = Some(session_id.to_string());"
   "APP|产品白名单复用原生 allowed_tools |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|宿主申报输出事实抵达钢丝回归        |pinvou3-app/src-tauri/src/features/assistant/route_wire_cap_tests.rs|fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies"
+  "APP|审查线材预算与主对话同链钉        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn main_wire_max_output_tokens_matches_engine_budget_for_k3"
+  "APP|审查思考永不关闭档位表钉        |pinvou3-app/src-tauri/src/features/review/mod.rs|fn review_thinking_controls_pick_lowest_tier_never_off"
+  "APP|审查线材型号规范化引擎同表钉    |pinvou3-app/src-tauri/src/features/review/mod.rs|fn canonical_wire_model_mirrors_engine_family_maps"
+  "APP|账目解码失败拒绝核账           |pinvou3-app/src-tauri/src/features/review/mod.rs|fn ledger_undecodable_issues_reject_reconcile"
   "APP|会话工具开关走动态禁用整形        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
   "APP|subagent ledger root 透传       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.subagent_state_root = Some(roots.ledger);"
   "APP|逐轮精确安全策略下发               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|turn_tool_security: Some(Arc::new(turn_tool_security))"
@@ -423,6 +434,17 @@ fingerprints=(
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
   "APP|chainable panic-hook registry module       |pinvou3-app/src-tauri/src/core/panic_hooks.rs|pub(crate) fn chain("
   "APP|worker panic redaction behavior regression |pinvou3-app/src-tauri/src/features/computer_use/backend.rs|fn worker_thread_panics_are_redacted_and_other_panics_forwarded"
+  # Scheduled-session EngineCumulative accounting kernel (registered in
+  # docs/fork-modifications.md §11): the variant is producer-unwired
+  # (tests-only) until an app-side follow-up lands, and main's 60dba2f64
+  # dead-code sweep already deleted its single-variant predecessor once.
+  # The regression test keeps the official build's name (deliberately not
+  # forkguard_-renamed), so these fingerprints pull the kernel, the shared
+  # lifetime encoding, and the test's existence into the sub-second layer —
+  # a sweep or alignment sync that silently removes them turns red here.
+  "APP|scheduled EngineCumulative accounting variant         |pinvou3-app/src-tauri/src/features/sessions/scheduled.rs|EngineCumulative {"
+  "APP|shared scheduled lifetime-total encoding              |pinvou3-app/src-tauri/src/features/sessions/retention.rs|fn scheduled_lifetime_total(base_total_tokens: u64, engine_total_tokens: u64) -> u64"
+  "APP|scheduled token-accounting contract regression       |pinvou3-app/src-tauri/src/features/sessions/tests.rs|fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts"
 )
 
 for fp in "${fingerprints[@]}"; do

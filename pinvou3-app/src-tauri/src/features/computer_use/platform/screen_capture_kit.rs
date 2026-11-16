@@ -157,8 +157,9 @@ pub(super) fn capture_region(
 
 /// CGImage (BGRA, premultiplied alpha) → tightly packed RGBA. The row copy handles stride
 /// (the source row pitch bytes_per_row may exceed width*4), swapping the R/B channels
-/// per pixel.
-fn bgra_image_to_rgba(image: &CGImage) -> Result<CapturedScreen, String> {
+/// per pixel. `pub(super)`: the virtual macOS stack (sibling module) shares this
+/// tested conversion instead of keeping a second copy of it.
+pub(super) fn bgra_image_to_rgba(image: &CGImage) -> Result<CapturedScreen, String> {
     let (width, height, bytes_per_row, bits_per_pixel) = (
         CGImage::width(Some(image)),
         CGImage::height(Some(image)),
@@ -223,8 +224,10 @@ fn bgra_image_to_rgba(image: &CGImage) -> Result<CapturedScreen, String> {
 }
 
 /// Row-copy BGRA→RGBA: `src` has a row pitch of `bytes_per_row` (may exceed `width*4`;
-/// stride padding is discarded), `dst` is tightly packed `width*height*4`.
-fn copy_bgra_to_rgba(
+/// stride padding is discarded), `dst` is tightly packed `width*height*4`. `pub(super)`:
+/// shared with the virtual macOS stack's stride pin (one row-copy implementation, two
+/// consumers, no drift).
+pub(super) fn copy_bgra_to_rgba(
     dst: &mut [u8],
     src: &[u8],
     width: usize,
