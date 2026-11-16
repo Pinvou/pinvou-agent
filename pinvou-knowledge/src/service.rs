@@ -799,7 +799,13 @@ impl KnowledgeService {
         let name = normalized_name(&request.name, "知识集")?;
         self.store
             .update_collection(id, &name, request.description.as_deref())
-            .map_err(|_| "知识集不存在或已删除".to_string())?;
+            .map_err(|error| match error {
+                // 查无此行(不存在或已进回收站)才按业务缺失报告;其余
+                // store 错误(BUSY、磁盘 I/O 等)原样透传,不把真实故障
+                // 误报成"知识集不存在"。
+                rusqlite::Error::QueryReturnedNoRows => "知识集不存在或已删除".to_string(),
+                other => other.to_string(),
+            })?;
         self.store
             .collection(id, false)
             .map_err(|error| error.to_string())?
