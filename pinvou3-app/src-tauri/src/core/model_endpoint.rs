@@ -1820,6 +1820,31 @@ pub(crate) mod models_mock {
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
+    /// 单次应答的规格:`spawn` / `spawn_seq` 用最简形态(状态码 + 响应体);
+    /// `extra_headers` 携带 `Location` 等重定向钉需要的响应头,`declared_len`
+    /// 覆盖声明长度(大于 body 实际长度 → 写完即断,覆盖「中途断流」钉)。
+    pub(crate) struct MockResponse {
+        status: u16,
+        body: String,
+        extra_headers: Vec<(String, String)>,
+        declared_len: Option<usize>,
+    }
+
+    impl MockResponse {
+        fn simple(status: u16, body: String) -> Self {
+            Self {
+                status,
+                body,
+                extra_headers: Vec::new(),
+                declared_len: None,
+            }
+        }
+    }
+
+    /// 按请求路径给出应答(无应答 → 默认 404)。线程内串行调用,`FnMut`
+    /// 足够顺序队列使用。
+    type Responder = Box<dyn FnMut(&str) -> Option<MockResponse> + Send>;
+
     pub(crate) struct ModelsMock {
         pub base_url: String,
         hits: Arc<Mutex<HashMap<String, usize>>>,
@@ -1864,12 +1889,14 @@ pub(crate) mod models_mock {
     }
 
     pub(crate) fn spawn(routes: &[(&str, u16, String)]) -> ModelsMock {
-        serve(
-            routes
-                .iter()
-                .map(|(path, status, body)| ((*path).to_string(), (*status, vec![body.clone()])))
-                .collect(),
-        )
+        let map: HashMap<String, (u16, String)> = routes
+            .iter()
+            .map(|(path, status, body)| ((*path).to_string(), (*status, body.clone())))
+            .collect();
+        serve(Box::new(move |path| {
+            map.get(path)
+                .map(|(status, body)| MockResponse::simple(*status, body.clone()))
+        }))
     }
 
     /// 顺序响应体变体:同一路径的第 n 次命中返回第 n 个响应体(队列取空后
@@ -1877,18 +1904,42 @@ pub(crate) mod models_mock {
     /// 真实两页序列(静态路由做不到——同一响应体会让客户端读到永远
     /// has_more)。
     pub(crate) fn spawn_seq(routes: &[(&str, u16, Vec<String>)]) -> ModelsMock {
-        serve(
-            routes
-                .iter()
-                .map(|(path, status, bodies)| ((*path).to_string(), (*status, bodies.clone())))
-                .collect(),
-        )
+        let mut map: HashMap<String, (u16, Vec<String>)> = routes
+            .iter()
+            .map(|(path, status, bodies)| ((*path).to_string(), (*status, bodies.clone())))
+            .collect();
+        serve(Box::new(move |path| {
+            map.get_mut(path).map(|(status, bodies)| {
+                let body = if bodies.len() > 1 {
+                    bodies.remove(0)
+                } else {
+                    bodies[0].clone()
+                };
+                MockResponse::simple(*status, body)
+            })
+        }))
     }
 
-    fn serve(routes: HashMap<String, (u16, Vec<String>)>) -> ModelsMock {
+    /// 重定向变体(M1 钉):`path` 以 302 + `Location: {location}` 应答——
+    /// 发现客户端禁用重定向([`crate::core::endpoint_discovery::
+    /// discovery_client`] 的 `Policy::none()`),该变体让测试断言「302 按
+    /// error 分类且第二跳从不发生」。
+    pub(crate) fn spawn_redirect(path: &str, location: &str) -> ModelsMock {
+        let route = path.to_string();
+        let location = location.to_string();
+        serve(Box::new(move |hit| {
+            (hit == route).then(|| MockResponse {
+                status: 302,
+                body: "{}".to_string(),
+                extra_headers: vec![("Location".to_string(), location.clone())],
+                declared_len: None,
+            })
+        }))
+    }
+
+    fn serve(mut respond: Responder) -> ModelsMock {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
         let addr = listener.local_addr().expect("mock listener addr");
-        let mut routes = routes;
         let hits: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         let hits_thread = hits.clone();
         let auth: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -1953,28 +2004,41 @@ pub(crate) mod models_mock {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(path.clone(), recorded);
-                let (status, body) = match routes.get_mut(&path) {
-                    // 顺序队列:弹出下一个响应体;只剩最后一个时重复它。
-                    Some((status, bodies)) if !bodies.is_empty() => {
-                        let body = if bodies.len() > 1 {
-                            bodies.remove(0)
-                        } else {
-                            bodies[0].clone()
+                let response = match respond(&path) {
+                    Some(mock_response) => {
+                        let reason = match mock_response.status {
+                            200 => "OK",
+                            302 => "Found",
+                            401 => "Unauthorized",
+                            404 => "Not Found",
+                            500 => "Internal Server Error",
+                            _ => "OK",
                         };
-                        (*status, body)
+                        // declared_len 覆盖大于 body 实际长度时,写完 body 即
+                        // 到达循环尾、stream 随之 drop——连接在 body 中途断开
+                        // (客户端读到传输错误而非干净的流结尾)。
+                        let declared_len = mock_response
+                            .declared_len
+                            .unwrap_or(mock_response.body.len());
+                        let mut head = format!(
+                            "HTTP/1.1 {} {reason}\r\ncontent-type: application/json\r\ncontent-length: {declared_len}\r\nconnection: close\r\n",
+                            mock_response.status
+                        );
+                        for (name, value) in &mock_response.extra_headers {
+                            head.push_str(&format!("{name}: {value}\r\n"));
+                        }
+                        head.push_str("\r\n");
+                        head.push_str(&mock_response.body);
+                        head
                     }
-                    _ => (404, "{}".to_string()),
+                    None => {
+                        let body = "{}".to_string();
+                        format!(
+                            "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
                 };
-                let reason = match status {
-                    200 => "OK",
-                    401 => "Unauthorized",
-                    404 => "Not Found",
-                    _ => "OK",
-                };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
                 let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
             }
         });

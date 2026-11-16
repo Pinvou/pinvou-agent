@@ -344,6 +344,10 @@ async fn send_classified(request: reqwest::RequestBuilder, timeout: Duration) ->
     match status.as_u16() {
         401 | 403 => return ProbeOutcome::Auth(status.as_u16()),
         404 | 405 => return ProbeOutcome::Unsupported(status.as_u16()),
+        // 3xx:客户端禁用重定向(Policy::none 下响应原样返回)。显式归类为
+        // error——落进 body 读取的旧实现把 3xx 读成 Unsupported,JSON 响应体
+        // 的 3xx 甚至会被当列表列出。
+        code if (300..400).contains(&code) => return ProbeOutcome::HttpError(code),
         code if code >= 400 => return ProbeOutcome::HttpError(code),
         _ => {}
     }
@@ -470,8 +474,9 @@ fn parse_openai_listing(v: &Value) -> Option<(Vec<RawModel>, bool)> {
 /// 是**禁用重定向**。reqwest 默认跟随 ≤10 跳,且跨源重定向只剥
 /// `Authorization`/`Cookie`/`Proxy-Authorization` 族——`x-api-key`(anthropic
 /// 阶梯)与 `x-goog-api-key`(gemini 阶梯)是自定义头,会原样发给重定向
-/// 目标,把用户 key 泄给用户从未点名的主机。禁用后 3xx 直接落
-/// [`ProbeOutcome::HttpError`] 分类,不再有第二跳。
+/// 目标,把用户 key 泄给用户从未点名的主机。禁用后 3xx 不跟随、按
+/// [`ProbeOutcome::HttpError`] 归入 error,与 CLI 一致——不再有携带 key 的
+/// 第二跳。
 fn discovery_client() -> Option<reqwest::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
     CLIENT
@@ -1210,6 +1215,31 @@ mod tests {
         assert_eq!(listing.http_status, None);
         assert_eq!(listing.transport.as_deref(), Some("timeout"));
         assert!(listing.models.is_empty());
+    }
+
+    /// M1 钉(自审补钉):禁用重定向的专用客户端下 302 不跟随,按
+    /// [`ProbeOutcome::HttpError`] 归 error。删掉显式 3xx 分支时本测试变红
+    /// (302 落进 body 读取 → `Unsupported`);同时钉住 G3:第二跳从不发生
+    /// (Location 目标 0 命中),携带 key 的请求不会重发给从未点名的主机。
+    #[tokio::test]
+    async fn redirect_is_not_followed_and_classified_as_error() {
+        let mock = models_mock::spawn_redirect("/v1/models", "/models");
+        let listing = probe(
+            &mock.base_url,
+            Some("sk-ant-redirect-secret"),
+            DiscoveryProtocol::Anthropic,
+        )
+        .await;
+        assert_eq!(listing.status, ListingStatus::Error);
+        assert_eq!(listing.http_status, Some(302));
+        assert_eq!(listing.transport, None);
+        assert!(listing.models.is_empty());
+        assert_eq!(mock.hits_for("/v1/models"), 1, "首跳发生一次");
+        assert_eq!(
+            mock.hits_for("/models"),
+            0,
+            "禁用重定向:Location 目标(第二跳)从不被请求,key 不重发"
+        );
     }
 
     #[tokio::test]
