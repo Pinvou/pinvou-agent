@@ -1084,6 +1084,7 @@ dictJa.uiSettingsDetail.memoryLoadFailed = 'メモリプロフィールの読み
 
 
 dictJa.uiSettingsDetail.memoryDeleteFailed = 'メモリの削除に失敗しました。再試行してください。';
+dictJa.uiSettingsDetail.memorySaveFailed = 'メモリプロファイルの保存に失敗しました。再試行してください。';
 
 dictJa.uiSettingsDetail.memorySourceUnavailable = '一部のメモリ情報を一時的に利用できません。前回正常に読み込んだ内容を保持しています。';
 

@@ -1080,6 +1080,7 @@ dictEn.uiSettingsDetail.memoryLoadFailed = 'Failed to load memory profile. Pleas
 
 
 dictEn.uiSettingsDetail.memoryDeleteFailed = 'Failed to delete memory. Please try again.';
+dictEn.uiSettingsDetail.memorySaveFailed = 'Failed to save memory profile. Please try again.';
 
 dictEn.uiSettingsDetail.memorySourceUnavailable = 'Some memory sources are temporarily unavailable. The last successfully loaded content is preserved.';
 

@@ -92,7 +92,26 @@ test('ordinary chat and Codex paste entries use the shared limit formatter', () 
   );
   assert.match(
     webBridge,
-    /raw === "attachment_archive_unsafe_entry"[\s\S]*?bt\("archiveUnsafeEntry"\)/,
-    'the web bridge must normalize the unsafe-archive wire code',
+    /raw === "attachment_archive_too_many_entries"[\s\S]*?bt\("archiveTooManyEntries"\)/,
+    'the web bridge must normalize and render the too-many-entries code',
   );
+  // The web user's 200 copy lives INLINE in the bridge (not in the shared
+  // dictionaries the loop above pins), so the boundary-aware value pin must
+  // cover the inline strings too — a silent revert of one language's copy
+  // back to 50 stays green without this (r12 review).
+  const inlineCopies = [
+    ...webBridge.matchAll(/archiveTooManyEntries:\s*[`'"]([^`'"]*)[`'"]/g),
+  ].map(match => match[1]);
+  assert.equal(
+    inlineCopies.length,
+    3,
+    'the web bridge must define too-many-entries copy in all three inline languages',
+  );
+  for (const copy of inlineCopies) {
+    assert.match(
+      copy,
+      /(^|\D)200(\D|$)/,
+      `the inline web copy must say 200 entries (the ingest_archive.rs cap), got: ${copy}`,
+    );
+  }
 });
