@@ -411,6 +411,16 @@ assert.match(
 );
 assert.match(
   userProfileScript,
+  /TryParse\(\$oemCpRaw,[\s\S]*?exit 2/u,
+  "the REG_SZ OEMCP value must be parsed as a number with the unparseable case routed to the keep-data exit: the three-argument GetEncoding overload treats its argument as an encoding NAME, so a raw REG_SZ string like '936' throws before the representability check and would strand even an ASCII profile",
+);
+assert.match(
+  userProfileScript,
+  /GetEncoding\(\n?\s*\$oemCp,/u,
+  "the encoding must be constructed from the parsed numeric code page (integer overload semantics), inside the fail-safe try boundary",
+);
+assert.match(
+  userProfileScript,
   /EncoderExceptionFallback[\s\S]*?GetBytes\(\$profileMatches\[0\]\)/u,
   "the resolver must round-trip the resolved path through the /OEM code page with an exception-throwing fallback: a path with characters outside that code page would be rewritten with replacement characters, every deletion target would miss, and the zero-status/nonempty guard would hide the loss",
 );

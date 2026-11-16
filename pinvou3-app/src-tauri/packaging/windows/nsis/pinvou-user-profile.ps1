@@ -58,13 +58,24 @@ if ($profileMatches.Count -ne 1) {
 # output, so the caller keeps the data and shows the manual-removal guidance
 # instead of deleting against a replacement-mangled prefix that would
 # silently miss every real target.
-$oemCp = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage' -Name OEMCP).OEMCP
-$oemEncoding = [System.Text.Encoding]::GetEncoding(
-    $oemCp,
-    [System.Text.EncoderExceptionFallback]::new(),
-    [System.Text.DecoderExceptionFallback]::new()
-)
+# OEMCP is a REG_SZ numeric string ("936", "437", ...). The three-argument
+# GetEncoding overload interprets its argument as an encoding NAME, and
+# Windows PowerShell 5.1 throws on ordinary numeric strings such as "936" -
+# construction therefore happens inside the same fail-safe boundary as the
+# representability check, after the value is parsed as a number. An
+# unparseable or non-positive code page is handled like any other
+# ambiguity: exit non-zero without printing, keep the data.
+$oemCpRaw = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage' -Name OEMCP).OEMCP
+$oemCp = 0
+if (-not [int]::TryParse($oemCpRaw, [ref]$oemCp) -or $oemCp -le 0) {
+    exit 2
+}
 try {
+    $oemEncoding = [System.Text.Encoding]::GetEncoding(
+        $oemCp,
+        [System.Text.EncoderExceptionFallback]::new(),
+        [System.Text.DecoderExceptionFallback]::new()
+    )
     [void]$oemEncoding.GetBytes($profileMatches[0])
 } catch {
     exit 2
