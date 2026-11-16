@@ -311,6 +311,17 @@ jobs:
               - 'pinvou3-app/src-tauri/src/features/feedback/**'
               - 'pinvou3-app/src-tauri/src/features/personas/**'
               - 'pinvou3-app/src-tauri/src/features/pet/**'
+              # platform/prefs/ defines the SavedModel schema the CLI reads
+              # and writes (pinvou-cli path-depends on pinvou3-tauri and
+              # constructs SavedModel literals in models.rs, so a schema
+              # field addition is a CLI compile input). Today a prefs change
+              # already fires the CLI legs transitively via rust_full (any
+              # src-tauri .rs matches); this entry asserts the coverage
+              # directly — same discipline as the feedback/personas/pet
+              # entries above — so the CLI suite keeps gating schema changes
+              # even if rust_full ever gains a prefs exclusion the way it
+              # excludes those leaf features.
+              - 'pinvou3-app/src-tauri/src/platform/prefs/**'
               # The CLI compiles the connector lock tables in with
               # `include_str!` (src-tauri/src/platform/connector_lock.rs), so
               # editing or deleting one is a CLI source change in all but
