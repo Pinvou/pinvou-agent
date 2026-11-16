@@ -220,6 +220,13 @@ for (const command of [
   // deliberately not allowlisted on the web; the web hides the whole
   // dependency section behind the dependencyInstall capability bit.
   'check_dependencies',
+  // The embedding-model install pair is desktop-only: a ~585MB native download
+  // and its cancel belong to the desktop host. The JS cancelKbModel facade
+  // exists on web as a policy-denied no-op (checkDependencies shape); keeping
+  // the commands off the policy AND in this anti-pin list means an accidental
+  // future allowlisting turns red instead of silently passing.
+  'kb_model_download',
+  'kb_model_cancel',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }

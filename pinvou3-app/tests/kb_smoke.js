@@ -129,6 +129,7 @@ function injectSource() {
           window.__KB_MODEL_STATUS__ = readyStatus;
           return Promise.resolve(readyStatus);
         }
+        case 'kb_model_cancel': return Promise.resolve();
         case 'remote_kb_connections': {
           const snapshot = window.__REMOTE_KB_CONNECTIONS__.map(connection=>({
             ...connection,scope:window.__REMOTE_KB_SCOPE__,online:true,ready:true,error:null

@@ -109,3 +109,62 @@ test('status queries and completed host downloads synchronize the desktop model'
     'knowledge-model feature must receive listen',
   );
 });
+
+test('cancelled model downloads settle as neutral state and cancel returns a promise', async () => {
+  const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+  vm.runInNewContext(bridgeSource, { window: windowObject }, { filename: 'knowledge-model.js' });
+
+  const state = {
+    kbModelSetup: {
+      downloading: false,
+      startupLoading: false,
+      startupReady: false,
+      status: { installed: false, ready: false, loading: false },
+      progress: null,
+      error: null,
+    },
+  };
+  const feature = windowObject.__PINVOU_TAURI_BRIDGE_FEATURES__['knowledge-model']({
+    state,
+    notify() {},
+    invoke: async (command) => {
+      if (command === 'kb_model_download') throw 'cancelled';
+      if (command === 'kb_model_status') return { installed: true, ready: false, loading: false };
+      return null;
+    },
+    listen() {},
+  });
+
+  // 用户取消（后端哨兵 "cancelled"）不是失败：记为中性 cancelled 态而非红色
+  // error，downloading 复位，拒绝仍原样上抛给调用方。
+  await assert.rejects(
+    () => feature.downloadKbModel(false),
+    (error) => String(error) === 'cancelled',
+  );
+  assert.equal(state.kbModelSetup.cancelled, true);
+  assert.equal(state.kbModelSetup.error, null);
+  assert.equal(state.kbModelSetup.downloading, false);
+
+  // 失败路径不受影响：非取消拒绝仍写 error。
+  state.kbModelSetup.downloading = false;
+  const failing = windowObject.__PINVOU_TAURI_BRIDGE_FEATURES__['knowledge-model']({
+    state,
+    notify() {},
+    invoke: async (command) => {
+      if (command === 'kb_model_download') throw '网络错误';
+      if (command === 'kb_model_status') return null;
+      return null;
+    },
+    listen() {},
+  });
+  await assert.rejects(
+    () => failing.downloadKbModel(false),
+    (error) => String(error) === '网络错误',
+  );
+  assert.equal(state.kbModelSetup.error, '网络错误');
+  assert.equal(state.kbModelSetup.cancelled, false);
+
+  // 两条 lane 的取消等待语义一致：cancelKbModel 返回永不 reject 的 promise。
+  assert.equal(typeof feature.cancelKbModel().then, 'function');
+  await feature.cancelKbModel();
+});
