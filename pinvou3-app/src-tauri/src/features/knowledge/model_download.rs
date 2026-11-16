@@ -200,7 +200,8 @@ pub fn kb_model_status(service: tauri::State<'_, KnowledgeService>) -> KbModelSt
     current_status(&service)
 }
 
-/// 取消进行中的下载（下次网络数据块或文件校验边界生效）。
+/// 取消进行中的下载。生效点：下载闭包的每个数据块/文件/镜像边界，以及
+/// 「复查或下载完成之后、真实加载之前」的安装边界（`kb_model_download` 内）。
 pub fn kb_model_cancel() {
     CANCEL.store(true, Ordering::Relaxed);
 }
@@ -307,8 +308,13 @@ pub async fn kb_model_download(
     if DOWNLOADING.swap(true, Ordering::SeqCst) {
         return Err("模型正在下载中".into());
     }
-    CANCEL.store(false, Ordering::Relaxed);
     let guard = DownloadGuard;
+    // 取消旗标在这里消费而非抹除：占位下载位与清零之间恰好落下的取消按用户
+    // 意图立即生效（原「占位→清零」顺序会把这一窗口内的取消静默吞掉）；平时
+    // 则顺带清掉上次残留的过期旗标。此刻尚无任何磁盘产物，无需清理。
+    if CANCEL.swap(false, Ordering::Relaxed) {
+        return Err(pinvou_knowledge::model_download::CANCELLED.into());
+    }
 
     let parent = dir
         .parent()
@@ -398,6 +404,13 @@ pub async fn kb_model_download(
             let _ = std::fs::remove_dir_all(&tmp);
             return Err("下载结果缺少完整的 ONNX 模型或 tokenizer 配置".into());
         }
+    }
+    // 取消边界（下载/复查之后、真实加载之前）：崩溃恢复的复查复用路径不经过
+    // 下载闭包，全程没有取消检查点——多秒的复查与加载窗口在这里兜底。已校验
+    // 完整的候选目录刻意保留：删掉会让下一次安装重下 ~585MB，复查路径会原样
+    // 复用它（下载中途的取消由下载 helper 负责清理残缺目录）。
+    if CANCEL.load(Ordering::Relaxed) {
+        return Err(pinvou_knowledge::model_download::CANCELLED.into());
     }
 
     // ── 2. 真实加载候选模型，再原子换入并热加载（失败时保留旧模型）──

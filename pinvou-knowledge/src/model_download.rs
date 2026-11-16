@@ -23,8 +23,9 @@ pub const KNOWLEDGE_MODEL_DOWNLOAD_BYTES: u64 = 585_565_019;
 /// cancellation checkpoint). The fallback loop tells "user cancel" (abort the whole
 /// flow) apart from "single mirror source failure" (retry the next base URL) via the
 /// `is_cancelled` flag rather than error-string matching; the flag does not depend
-/// on this constant.
-const CANCELLED: &str = "cancelled";
+/// on this constant. Exported so the desktop command layer can reuse the same
+/// sentinel at its own cancel boundaries instead of duplicating the literal.
+pub const CANCELLED: &str = "cancelled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnowledgeModelFile {
