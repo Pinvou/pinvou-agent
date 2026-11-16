@@ -158,6 +158,13 @@ pub struct SessionModeState {
     /// `sessions/_multi_agent.json` sidecar 持久化，重启不丢。
     #[serde(default)]
     pub multi_agent: bool,
+    /// 条目由启动期的 `_multi_agent.json` 装载物化（`load_multi_agent_flags`），
+    /// 其 mode 解析先于 code-session predicate 注册（生产环境两者都在 Tauri
+    /// setup 钩子里，装载在前），因此无绑定 code 会话经无谓词分支缓存了 Auto
+    /// 而非只读 Plan 默认。`reconcile_code_default_modes` 在谓词安装后对该
+    /// 类条目重解析默认并消费此标记；仅驻内存，不落盘。
+    #[serde(skip)]
+    pub(crate) implicit_startup_default: bool,
 }
 
 fn default_true() -> bool {
@@ -179,6 +186,7 @@ impl Default for SessionModeState {
             mounted_remote_collections: Vec::new(),
             mounted_collections_revision: 0,
             multi_agent: false,
+            implicit_startup_default: false,
         }
     }
 }
@@ -272,11 +280,16 @@ mod type_tests {
             mounted_remote_collections: Vec::new(),
             mounted_collections_revision: 0,
             multi_agent: false,
+            implicit_startup_default: true,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"mode\":\"plan\""));
         assert!(json.contains("\"pending_plan_id\":\"plan-1\""));
         assert!(!json.contains("plan_claim_in_flight"));
+        assert!(
+            !json.contains("implicit_startup_default"),
+            "启动隐式标记仅驻内存，不得进入落盘形状"
+        );
     }
 }
 
@@ -701,8 +714,14 @@ impl SessionStore {
                 if !session_record_absent_for_sweep(&sessions_dir, &id) {
                     // 同 set_multi_agent：物化条目用解析出的默认 mode，
                     // 避免 or_default() 把 code 会话翻成 Yolo。
-                    self.mode_state_entry(&mut m, &id, self.resolved_default_mode(&id))
-                        .multi_agent = true;
+                    // 启动期谓词尚未注册，无绑定 code 会话在此解析出的默认
+                    // 是无谓词分支的 Auto 而非只读 Plan——标记隐式来源，
+                    // 由 set_code_session_predicate 触发的 reconcile 在谓词
+                    // 就绪后重解析（zhuowp #809 P2：重启不得把 Plan 默认
+                    // 翻成可执行的 Auto，显式 Auto 有 persisted 记录保护）。
+                    let entry = self.mode_state_entry(&mut m, &id, self.resolved_default_mode(&id));
+                    entry.multi_agent = true;
+                    entry.implicit_startup_default = true;
                 } else {
                     ghosts = true;
                 }

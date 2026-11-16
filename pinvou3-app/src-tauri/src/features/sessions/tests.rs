@@ -5225,8 +5225,10 @@ fn ghost_ids_are_reconciled_away_on_load() {
 /// 从未切换过 mode 的 code 会话默认是 Plan 只读，开一次开关不能把它静默
 /// 翻成 Yolo 自动批准。`set_multi_agent`（谓词可用）物化 Plan；启动恢复
 /// 路径的装载先于 code-session predicate 注册（生产环境同样在 Tauri setup
-/// 钩子里才注册），物化的是无谓词进程的解析默认 Auto——两条恢复路都绝不
-/// 得回到 `or_default()` 的 Yolo。
+/// 钩子里才注册），物化的是无谓词进程的解析默认 Auto——该隐式默认在谓词
+/// 注册后由 reconcile 重解析回 Plan（zhuowp #809 P2：重启不得把只读 Plan
+/// 默认翻成可执行 Auto），两条恢复路都绝不得回到 `or_default()` 的 Yolo，
+/// 也不得把无谓词期缓存的 Auto 当作最终态。
 #[test]
 fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
     let (store, _guard) = isolated_store();
@@ -5251,8 +5253,51 @@ fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
 
     // 启动恢复路径：新 store 从 sidecar 恢复开关。启动时装载 multi-agent
     // flag 时 code-session predicate 尚未注册（生产环境同样如此），物化的
-    // mode 条目只能解析无谓词进程的默认——tri-mode 的 Auto。钉住的不变量：
-    // 恢复绝不物化 Yolo（or_default 的旧行为），开关本身不丢。
+    // mode 条目只能解析无谓词进程的默认——tri-mode 的 Auto（隐式来源）。
+    // 谓词注册触发的 reconcile 必须把该隐式 Auto 重解析回只读 Plan 默认；
+    // 恢复也绝不物化 Yolo（or_default 的旧行为），开关本身不丢。
+    let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
+        .expect("reboot store");
+    let second_predicate_id = id.clone();
+    reloaded.set_code_session_predicate(std::sync::Arc::new(move |candidate: &str| {
+        candidate == second_predicate_id
+    }));
+    assert!(reloaded.mode_state(&id).multi_agent, "开关恢复");
+    assert_eq!(
+        reloaded.mode_state(&id).mode,
+        SerializableMode::Plan,
+        "重启不得把只读 Plan 默认翻成可执行 Auto（隐式启动默认必须重解析）"
+    );
+}
+
+/// 显式 Auto 选择必须与隐式启动默认区分：显式选择落 persisted 记录
+/// （shared mode map + companion flag），启动装载先物化隐式条目再被
+/// persisted 记录覆盖，reconcile 对 persisted 内的条目不得触碰——
+/// 用户显式选定的 Auto 重启后保持 Auto（zhuowp #809 P2 的另一半）。
+#[test]
+fn multi_agent_startup_repair_preserves_explicit_auto_records() {
+    let (store, _guard) = isolated_store();
+    let id = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create")
+        .metadata
+        .id
+        .clone();
+    let first_predicate_id = id.clone();
+    store.set_code_session_predicate(std::sync::Arc::new(move |candidate: &str| {
+        candidate == first_predicate_id
+    }));
+
+    store.set_multi_agent(&id, true).expect("persist flag");
+    store
+        .set_mode_and_persist(&id, SerializableMode::Auto)
+        .expect("explicit auto record");
+    assert_eq!(
+        store.mode_state(&id).mode,
+        SerializableMode::Auto,
+        "显式选择当场生效"
+    );
+
     let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
         .expect("reboot store");
     let second_predicate_id = id.clone();
@@ -5263,7 +5308,7 @@ fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
     assert_eq!(
         reloaded.mode_state(&id).mode,
         SerializableMode::Auto,
-        "启动恢复不得把会话物化成 Yolo（or_default 的旧行为）"
+        "显式 Auto 记录不得被启动重解析翻转成 Plan"
     );
 }
 
