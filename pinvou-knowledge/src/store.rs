@@ -2515,6 +2515,36 @@ mod tests {
         assert_eq!(authorized.unwrap().id, "reader-1");
     }
 
+    // authorize_token 必须保持只读:sweep #661 以"写入值无读者"为由移除了
+    // last_seen_at 回写,fixwave 恢复只读后此前只靠现场注释约束。这里
+    // 直读 devices 表的 last_seen_at 列(map_device 的 None 是写死占位,
+    // 看不见真实列值),把披露钉成断言:再次授权后列值仍为 NULL——
+    // 突变对照:重新引入回写 UPDATE 后本用例落红。
+    #[test]
+    fn authorize_token_stays_read_only() {
+        let store = Store::in_memory().unwrap();
+        add_device(
+            &store,
+            "reader-1",
+            "Reader",
+            crate::model::AccessScope::Read,
+            "known-token-hash",
+        )
+        .unwrap();
+        store.authorize_token("known-token-hash").unwrap();
+        store.authorize_token("known-token-hash").unwrap();
+        let last_seen: Option<i64> = store
+            .conn
+            .lock()
+            .query_row(
+                "SELECT last_seen_at FROM devices WHERE id = 'reader-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_seen, None, "authorize_token must not write last_seen_at");
+    }
+
     #[test]
     fn device_pages_are_bounded_and_stable() {
         let store = Store::in_memory().unwrap();
