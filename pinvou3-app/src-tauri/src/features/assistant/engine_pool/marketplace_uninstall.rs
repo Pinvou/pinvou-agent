@@ -17,6 +17,17 @@ pub(super) struct RuntimeMaintenance {
     // Include engines already removed by idle reclaim/model changes: their
     // shutdown may still be queued, and they can still hold the package cwd.
     engines: Arc<SyncMutex<Vec<watch::Receiver<Option<EngineRunCompletion>>>>>,
+    #[cfg(test)]
+    waiting_for_shutdown: Arc<SyncMutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    #[cfg(test)]
+    before_retirement: Arc<
+        SyncMutex<
+            Option<(
+                tokio::sync::oneshot::Sender<()>,
+                tokio::sync::oneshot::Receiver<()>,
+            )>,
+        >,
+    >,
 }
 
 pub(crate) struct UploadUninstallGuard {
@@ -124,10 +135,16 @@ impl RuntimeMaintenance {
                     match outcome {
                         Some(EngineRunCompletion::NormalReturn) => break,
                         Some(_) => return Err(RELEASE_FAILED.to_string()),
-                        None => receipt
-                            .changed()
-                            .await
-                            .map_err(|_| RELEASE_FAILED.to_string())?,
+                        None => {
+                            #[cfg(test)]
+                            if let Some(entered) = self.waiting_for_shutdown.lock().take() {
+                                let _ = entered.send(());
+                            }
+                            receipt
+                                .changed()
+                                .await
+                                .map_err(|_| RELEASE_FAILED.to_string())?;
+                        }
                     }
                 }
             }
@@ -141,6 +158,15 @@ impl RuntimeMaintenance {
 }
 
 impl EnginePool {
+    #[cfg(test)]
+    pub(crate) fn observe_uninstall_shutdown_wait_for_test(
+        &self,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        *self.marketplace_uninstall.waiting_for_shutdown.lock() = Some(entered);
+        observed
+    }
+
     /// Called only for uploaded packages, before any uninstall state mutation.
     /// Keep this guard inside the blocking uninstall task: dropping the command
     /// future must not admit a new engine while that task is moving the package.
@@ -173,6 +199,14 @@ impl EnginePool {
         // App admission cannot observe every autonomous turn. Ask each actor
         // to seal its own complete idle boundary before using destructive
         // reclaim. A busy actor keeps its tasks, pending results and goal timer.
+        #[cfg(test)]
+        {
+            let gate = self.marketplace_uninstall.before_retirement.lock().take();
+            if let Some((entered, resume)) = gate {
+                let _ = entered.send(());
+                let _ = resume.await;
+            }
+        }
         for id in session_ids {
             let Some(engine) = self.handle_for(&id).await else {
                 continue;
@@ -190,6 +224,45 @@ impl EnginePool {
         }
         self.marketplace_uninstall.wait_for_shutdown().await?;
         Ok(guard)
+    }
+}
+
+// These fixture seams leave all release decisions to the real preparation
+// and actor handshake. They are absent from product builds.
+#[cfg(test)]
+impl EnginePool {
+    pub(crate) fn insert_uninstall_failure_for_test(&self, outcome: EngineRunCompletion) {
+        let (_sender, receipt) = watch::channel(Some(outcome));
+        self.marketplace_uninstall.engines.lock().push(receipt);
+    }
+
+    pub(crate) fn pause_uninstall_retirement_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (resume, paused) = tokio::sync::oneshot::channel();
+        *self.marketplace_uninstall.before_retirement.lock() = Some((entered, paused));
+        (observed, resume)
+    }
+
+    pub(crate) fn start_uninstall_late_turn_for_test(&self, id: &str) -> UninstallTestTurn {
+        let lifecycle = self.turn_lifecycles.for_session(id);
+        lifecycle.on_started("late-uninstall-fixture".into());
+        UninstallTestTurn(lifecycle)
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct UninstallTestTurn(Arc<TurnLifecycle>);
+
+#[cfg(test)]
+impl Drop for UninstallTestTurn {
+    fn drop(&mut self) {
+        let _ = self.0.claim_terminal();
+        self.0.finish_terminal_emission();
     }
 }
 
