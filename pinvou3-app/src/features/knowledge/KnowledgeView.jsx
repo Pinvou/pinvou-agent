@@ -832,7 +832,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const [allDocs, setAllDocs] = useState(kbCache.allDocs);
       // kb_documents 分页状态(offset 续页):hasMore 以「整页返回」推断,
       // hasMore=false 表示后面没有更多页。刷新路径(loadDocs/loadColls)重置回第 0 页。
-      const [docsPaging, setDocsPaging] = useState({ gen: 0, offset: 0, hasMore: false, loading: false });
+      const [docsPaging, setDocsPaging] = useState({ gen: 0, collId: null, offset: 0, hasMore: false, loading: false });
       const [allDocsPaging, setAllDocsPaging] = useState({ gen: 0, offset: 0, hasMore: false, loading: false });
       const [idx, setIdx] = useState(null);
       const [importError, setImportError] = useState('');
@@ -874,6 +874,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // 续页的代际取自产生这页 offset 的那次重置(docsPaging.gen),不是点击时刻的
       // 最新代际:重置在途时旧 footer 仍可见,点击会拿旧 offset 配新集发一条注定
       // 作废的请求——旧代际在落地时必被校验丢弃,这里在点击时就直接拒发。
+      // 代际之外还要盖章「这是哪个集的 offset」(docsPaging.collId):轮询曾以
+      // 闭包旧集触发的重置落地后,它本身就是最新代际,代际守卫拦不住跨集续页
+      // (r15 review)——身份不配在点击时直接拒发。
       const docsGenerationRef = useRef(0);
       const allDocsGenerationRef = useRef(0);
       const loadDocs = async (cid) => {
@@ -882,7 +885,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: 0 }) || [];
           if (generation !== docsGenerationRef.current) return;
           setDocs(page);
-          setDocsPaging({ gen: generation, offset: page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+          setDocsPaging({ gen: generation, collId: cid, offset: page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
         } catch {
           // 整表重置失败:清掉在途「加载更多」的 loading(其响应会因代际失配被
           // 丢弃、不会自己清),否则旧分页的按钮永远转圈;并把 hasMore 一并收起
@@ -899,13 +902,21 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         const cid = activeColl && activeColl.id;
         if (!cid || docsPaging.loading) return;
         if (docsPaging.gen !== docsGenerationRef.current) return;
+        // r15 review: 代际守卫只证明「没有更新的重置」,证明不了「同一集」。
+        // 索引完成轮询曾以闭包里的旧集调 loadDocs,那次重置落地后它就是最新
+        // 代际——footer 若仍可见,点击会拿旧集的 offset 配当前集发一条请求,
+        // 当前集的第 0 页就此不可达且无任何报错。续页必须带上产生 offset 的
+        // 集:身份不配在点击时直接拒发,请求本身也发给盖章的集(r5 搜索续页
+        // 同款修法移植到集内文档表)。
+        if (docsPaging.collId !== cid) return;
         const generation = docsPaging.gen;
+        const collId = docsPaging.collId;
         setDocsPaging((p) => ({ ...p, loading: true }));
         try {
-          const page = await invokeTauri('kb_documents', { collectionId: cid, limit: KB_DOCS_PAGE_SIZE, offset: docsPaging.offset }) || [];
+          const page = await invokeTauri('kb_documents', { collectionId: collId, limit: KB_DOCS_PAGE_SIZE, offset: docsPaging.offset }) || [];
           if (generation !== docsGenerationRef.current) return;
           setDocs((prev) => dedupeAppendBy(prev, page, (row) => row.id));
-          setDocsPaging({ gen: generation, offset: docsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
+          setDocsPaging({ gen: generation, collId, offset: docsPaging.offset + page.length, hasMore: page.length >= KB_DOCS_PAGE_SIZE, loading: false });
         } catch {
           if (generation === docsGenerationRef.current) setDocsPaging((p) => ({ ...p, loading: false }));
         }
@@ -1041,7 +1052,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         const id = setInterval(async () => {
           try {
             const s = await invokeTauri('kb_index_status'); replaceIndexState(s);
-            if (!s.running) { loadColls(); if (activeColl) loadDocs(activeColl.id); }
+            // 轮询回调读 ref 而非闭包:effect 故意不依赖 activeColl,闭包里
+            // 的集可能早已不是用户当前所在的集(r15 review;续页 footer 会把
+            // 这种错集落地放大成错 offset 的续页请求)。
+            if (!s.running) { loadColls(); if (activeCollRef.current) loadDocs(activeCollRef.current.id); }
           } catch { /* silently degrade */ }
         }, 1000);
         return () => clearInterval(id);
