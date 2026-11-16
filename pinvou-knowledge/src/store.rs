@@ -398,15 +398,27 @@ impl Store {
         id: i64,
         name: &str,
         description: Option<&str>,
-    ) -> rusqlite::Result<()> {
-        let changed = self.conn.lock().execute(
+    ) -> rusqlite::Result<Collection> {
+        // UPDATE 与回读同事务:响应里的名称/描述与本次写入严格一致,不会
+        // 把并发回收(或并发二次改名)误报成"知识集不存在",也不会回读
+        // 他人写入的值。行不存在或已进回收站时 UPDATE 落空、SELECT 查不到
+        // 活行,自然产生 QueryReturnedNoRows,调用方据此报告业务缺失。
+        let mut connection = self.conn.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "UPDATE collections SET name=?2,description=?3,updated_at=?4 WHERE id=?1 AND deleted_at IS NULL",
             params![id, name, description, now()],
         )?;
-        if changed == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-        Ok(())
+        let collection = transaction.query_row(
+            "SELECT c.id,c.name,c.description,c.status,c.created_at,c.updated_at,c.deleted_at,\
+             (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id AND d.deleted_at IS NULL),\
+             (SELECT COUNT(*) FROM chunks k JOIN documents d ON d.id=k.document_id WHERE k.collection_id=c.id AND d.deleted_at IS NULL) \
+             FROM collections c WHERE c.id=?1 AND c.deleted_at IS NULL",
+            params![id],
+            map_collection,
+        )?;
+        transaction.commit()?;
+        Ok(collection)
     }
 
     pub fn trash_collection(&self, id: i64) -> rusqlite::Result<()> {
