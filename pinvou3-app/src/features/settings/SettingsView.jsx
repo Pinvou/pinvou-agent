@@ -887,7 +887,7 @@ function hasStoredCredential(record) {
       // 丢弃确认只会把「是否完成」变得不可见)。onClose 的清扫语义与 X
       // 按钮一致(摘 picker + 行内添加结果)。
       useEffect(() => {
-        if (!endpointPickerOpen && !addAllModelsConfirm) return undefined;
+        if (!endpointPickerOpen && !addAllModelsConfirm) return;
         const onPickerKeyDown = e => {
           if (e.key !== 'Escape') return;
           if (addAllModelsConfirm && !addingAllModels) setAddAllModelsConfirm(null);

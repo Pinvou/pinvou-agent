@@ -3270,7 +3270,6 @@ pub(crate) mod tests {
     /// 成功、探测误命中,本钉立即变红——这正是 M2 要挡的「超时窗口内敌意
     /// 端点撑爆内存」路径的可观察面。
     #[test]
-    #[test]
     fn probe_body_cap_bytes_is_pinned() {
         // 8 MiB: the bounded-IO ceiling every kind-probe read shares with
         // the discovery listing cap's sibling pin (round-5 review minor).
