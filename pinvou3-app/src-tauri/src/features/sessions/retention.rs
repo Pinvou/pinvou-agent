@@ -170,7 +170,17 @@ impl SessionStore {
             .join(format!("{}.json", session.metadata.id));
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
         crate::platform::filesystem::atomic_write_private(&path, &payload)
-            .with_context(|| format!("write session {}", path.display()))?;
+            // Boundary fold at the formation point (R2 SHOULD-2): this reason
+            // rides fork/create_new/import/aux command wrappers straight into
+            // toasts, so every caller's failure leaves with the storage
+            // prefix (OS user name) folded, exactly like the import
+            // boundary's fail closures.
+            .with_context(|| {
+                crate::platform::paths::redact_storage_prefix(&format!(
+                    "write session {}",
+                    path.display()
+                ))
+            })?;
         // Once the session JSON hits disk the list snapshot is stale (title /
         // updated_at / new session may all have changed)
         self.invalidate_list_cache();

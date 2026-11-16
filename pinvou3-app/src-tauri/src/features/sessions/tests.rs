@@ -10335,3 +10335,61 @@ fn create_new_fails_loud_when_every_generated_candidate_is_occupied() {
         "{error:#}"
     );
 }
+
+/// persist 失败原因在形成点折叠（R2 SHOULD-2）：fork / create_new / import
+/// / aux 的命令包装都把 `write session {path}` 原样送进 toast——折叠必须
+/// 在 `save_session_atomic` 一处完成，任何调用方都不得再漏。
+#[cfg(unix)]
+#[test]
+fn save_persist_failure_reasons_fold_the_storage_prefix() {
+    use std::os::unix::fs::PermissionsExt;
+    let (store, _env) = isolated_store();
+    let created = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let mut session = store.load(&created.metadata.id).expect("load");
+    session.messages = vec![user_text("hi"), assistant_text("ok")];
+
+    let sessions_dir = store.sessions_dir();
+    let original = std::fs::metadata(&sessions_dir)
+        .expect("stat sessions dir")
+        .permissions()
+        .mode();
+    // 0o000 复原走 Drop guard：断言 panic 时不得把目录留在 0o000（与
+    // generate_unused_session_id_fails_loud_on_stat_fault 同款形状）。
+    struct RestorePermissions<'a>(&'a std::path::Path, u32);
+    impl Drop for RestorePermissions<'_> {
+        fn drop(&mut self) {
+            if std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(self.1)).is_err() {
+                eprintln!(
+                    "PERM-RESTORE-FAILED[save_persist_failure_reasons_fold_the_storage_prefix]: the sessions dir may be left 0o000"
+                );
+            }
+        }
+    }
+    // Root 判定靠已存在文件能否被 stat 到（对 root 与非 root 同形的前提
+    // 必须先成立）。
+    let probe = sessions_dir.join("probe-save.json");
+    std::fs::write(&probe, b"{}").expect("plant probe file");
+    std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o000))
+        .expect("chmod sessions dir");
+    let _restore = RestorePermissions(&sessions_dir, original);
+    if std::fs::metadata(&probe).is_ok() {
+        eprintln!(
+            "ROOT-SKIP[save_persist_failure_reasons_fold_the_storage_prefix]: running as root, the 0o000 precondition does not hold; NOT exercised"
+        );
+        return;
+    }
+    let error = store
+        .save(&session)
+        .expect_err("a 0o000 sessions dir must fail the persist loudly");
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("write session ~/.pinvou3/sessions/"),
+        "the persist reason must be storage-prefix folded: {text}"
+    );
+    assert!(
+        !text.contains("pinvou3-sessions-test-"),
+        "the persist reason must not leak the raw home prefix: {text}"
+    );
+}
