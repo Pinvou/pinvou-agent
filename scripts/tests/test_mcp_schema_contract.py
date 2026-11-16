@@ -167,7 +167,14 @@ SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # schema_sanitize.rs and the registry files byte-identical across the rebase
 # (git diff 687358f7e f47cb9f36 on those paths is empty), re-verified via the
 # layer-2 source assertions on the populated tree before flipping the pin.
-_PINNED_CODEWHALE_GITLINK = "f47cb9f36af8d3b83ac6c215de1a11cc4509aa51"
+# Re-blessed again 2026-11-16 onto the limits-audit round-6 head db4da7fde:
+# rounds r1-r6 grew the audit branch to 47 commits, and the round-6 delta
+# (00a7a6427..db4da7fde, 6 commits) touches only user_constitution.rs,
+# dispatch_runner.rs, runtime_threads.rs(+tests), session_manager.rs and the
+# computer-use exec plugin — schema_sanitize.rs and the registry files stay
+# byte-identical (git diff 687358f7e db4da7fde on those paths is empty,
+# reproduced at the pinned trees), so the layer-2 source face is unchanged.
+_PINNED_CODEWHALE_GITLINK = "db4da7fdefffb038eb683a1e0fc013c2c957533d"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 
