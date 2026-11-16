@@ -122,7 +122,10 @@ function injectSource() {
           state.installed[args.toolId]=true;
           // weather declares remote validation: the command's Ok value is the
           // discovered tool inventory the success card reports (round-2 P2).
-          if(args.toolId==='weather') return Promise.resolve(['gaode_weather_query']);
+          // Ten names (> the 8-name display cap) with one 76-char name in the
+          // reported window and two overflow probes: the card must list 8,
+          // clip the long name, and end with +2 (see the assertion below).
+          if(args.toolId==='weather') return Promise.resolve(['gaode_weather_query','gaode_weather_forecast','gaode_weather_history','gaode_air_quality','gaode_poi_search','gaode_route_plan','gaode_geofence_area','gaode_'+'x'.repeat(70),'gaode_ninth_overflow_probe','gaode_tenth_overflow_probe']);
           return Promise.resolve(null);
         case 'uninstall_marketplace_tool': state.installed[args.toolId]=false; return Promise.resolve(null);
         case 'start_marketplace_tool_oauth_login': return new Promise(resolve=>{state.oauthRequests[args.requestId]={toolId:args.toolId,resolve};});
@@ -386,6 +389,18 @@ async function visibilityBox(page, cardText, modeLabel, click) {
   }));
   rec('安装成功卡报告校验发现的工具清单',await page.evaluate(()=>
     document.body.innerText.includes('已验证，发现工具')&&document.body.innerText.includes('gaode_weather_query')));
+  // 清单远端可控，展示双重截断+溢出计数，且提示语与副标题并存（清单卡是
+  // 唯一 showInstallHint 开启的卡片）。未截断/未封顶/提示语丢失任一发生即红。
+  rec('成功卡清单截断:8 上限+超长名截断到 64+溢出计数+提示语并存',await page.evaluate(()=>{
+    const text=document.body.innerText;
+    return text.includes('gaode_weather_query')
+      && text.includes('gaode_'+'x'.repeat(58))
+      && !text.includes('x'.repeat(70))
+      && !text.includes('gaode_ninth_overflow_probe')
+      && !text.includes('gaode_tenth_overflow_probe')
+      && text.includes('+2')
+      && text.includes('新工具开关默认关闭');
+  }));
 
   // 安装成功后的「新建会话」是商城数据与聊天页之间唯一的业务交叉点。
   // 真实点击这条链路，确保新会话的工具欢迎卡能加载，并继续走原聊天发送入口。

@@ -22,6 +22,12 @@ import { applyConnectorFailure, CONNECT_CONSENT_SYNC_FAILURE_MARKER, CONNECT_GRA
 // 可重试的干净状态,而不是在用户快完成时取消。
 const OAUTH_UI_TIMEOUT_MS = 600_000;
 
+// 安装成功卡上报告的远端验证清单展示上限。tools/list 完全受远端控制：名字数
+// 与单名长度都不能信任远端（React 转义防注入但不防布局灾难），展示前双重截断。
+// 单名 64 与后端展示名上限（MAX_DISPLAY_NAME_CHARS，同文件下方）对齐。
+const MAX_REPORTED_TOOLS = 8;
+const MAX_REPORTED_TOOL_NAME_CHARS = 64;
+
 // 释放共享忙碌槽位：只释放属于自己的那次操作。
 // 连接器的完成/失败事件是**异步**送达的，期间用户完全可能已经收起了本连接器的
 // 登录弹窗（收起不取消后台流程）并发起了另一个工具操作，此时 busyId 已经易主。
@@ -743,11 +749,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <div className={`text-[17px] font-semibold mb-1.5 break-all text-slate-900 dark:text-white`}>
                     {alert.title}
                   </div>
-                  {alert.subtitle ? (
+                  {alert.subtitle && (
                     <div className={`text-[13px] leading-relaxed break-all text-slate-500 dark:text-slate-400`}>
                       {alert.subtitle}
                     </div>
-                  ) : !alert.isError && !alert.suppressHint && (
+                  )}
+                  {!alert.isError && !alert.suppressHint && (alert.showInstallHint || !alert.subtitle) && (
                     <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>
                       {alert.isInstall ? copy.installHint : copy.removeHint}
                     </div>
@@ -1862,13 +1869,35 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // production reader). Absent or empty (the tool declares no
           // validation) keeps the title-only card.
           const discoveredTools = Array.isArray(validationReport) ? validationReport : [];
+          // 清单完全受远端控制：名字数截到 MAX_REPORTED_TOOLS、余量以计数收尾，
+          // 单名再截到 MAX_REPORTED_TOOL_NAME_CHARS。React 转义防注入但不防布局
+          // 灾难——恶意/失控远端可用海量或超长名字把卡片撑成巨幕，展示长度不能
+          // 信任远端（review follow-up）。
+          const reportedTools = discoveredTools
+            .slice(0, MAX_REPORTED_TOOLS)
+            .map(toolName => (
+              toolName.length > MAX_REPORTED_TOOL_NAME_CHARS
+                ? `${toolName.slice(0, MAX_REPORTED_TOOL_NAME_CHARS)}…`
+                : toolName
+            ));
+          const overflowCount = discoveredTools.length - reportedTools.length;
           setAlert({
             visible: true,
             loading: false,
             title: hasConfig ? storeCopy.connectedQuoted(name) : storeCopy.installedQuoted(name),
-            subtitle: discoveredTools.length > 0 ? storeCopy.validatedToolsDiscovered(discoveredTools) : undefined,
+            subtitle:
+              discoveredTools.length > 0
+                ? storeCopy.validatedToolsDiscovered(
+                    overflowCount > 0 ? [...reportedTools, `+${overflowCount}`] : reportedTools,
+                  )
+                : undefined,
             isInstall: true,
             isError: false,
+            // 清单卡是唯一需要提示语与副标题并存的卡片：其余带副标题的成功卡
+            // （钉钉/腾讯会议已连接的"默认开启"提示、IMA 已连接）语义与
+            // installHint（"默认关闭"）相抵触或重复，经 showInstallHint 显式
+            // 开启，避免靠 isInstall 推断误伤（review follow-up）。
+            showInstallHint: true,
             toolId: backendId,
           });
           if (selectedTool && selectedTool.backendId === backendId) {

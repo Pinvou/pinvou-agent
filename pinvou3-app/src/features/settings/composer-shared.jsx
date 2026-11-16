@@ -3,7 +3,7 @@
 // 留在 SettingsView.jsx 里,SettingsView(3389 行)就永远进不了独立懒加载
 // chunk。抽到本模块后 SettingsView 可整体懒加载,共享件随主 chunk 常驻。
 // 组件实现与 SettingsView.jsx 原版逐字节一致。
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Cpu, Plus, Store, Users, Wrench, X } from '../../components/icons.jsx';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
@@ -279,7 +279,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       const [ready, setReady] = useState(false);
       const managedZoom = zoomMode !== 'auto-width';
       const canvasW = managedZoom ? 1440 : null;
-      const measure = () => {
+      const measure = useCallback(() => {
         try {
           const wrap = wrapRef.current;
           if (!wrap) return;
@@ -322,8 +322,14 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           ));
           if (onScaleChange) onScaleChange(scale);
         } catch { /* not ready/cross-origin; ignore */ }
-      };
+      }, [managedZoom, canvasW, zoomMode, customScale, onScaleChange]);
       useEffect(() => { setReady(false); setBox(null); naturalRef.current = null; }, [html]); // eslint-disable-line react-hooks/set-state-in-effect -- an html switch means a different artifact; synchronously clear measurement state
+      // 这两个 effect 刻意沿用参数列表而不是 measure 身份：今天唯一的
+      // onScaleChange 是稳定 setter（ArtifactsPanel 的 setHtmlScale），identity
+      // 驱动并不会多跑；真正每渲染换身份的是 onCustomScaleChange（不进 measure
+      // 依赖）。若将来调用方改传 inline onScaleChange，identity 驱动会让它们
+      // 每渲染重跑（重挂 observer/re-measure），churn 大于收益。消息监听器
+      // 一侧才需要 identity 驱动（见下）。
       // eslint-disable-next-line react-hooks/exhaustive-deps -- measure is an in-component closure; re-measure only when the zoom parameters change
       useEffect(() => { measure(); }, [zoomMode, customScale]);
       useEffect(() => {
@@ -333,11 +339,11 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         return () => ro.disconnect();
       // eslint-disable-next-line react-hooks/exhaustive-deps -- measure is an in-component closure; rebuild the observer only when the zoom parameters change
       }, [zoomMode, customScale]);
-      const applyWheelZoom = deltaY => {
+      const applyWheelZoom = useCallback(deltaY => {
         const base = box ? box.scale : customScale;
         const next = clampPreviewScale(base + (deltaY < 0 ? 0.1 : -0.1));
         if (onCustomScaleChange) onCustomScaleChange(next);
-      };
+      }, [box, customScale, onCustomScaleChange]);
       const handleWheel = event => {
         if (!managedZoom || !event.ctrlKey) return;
         event.preventDefault();
@@ -380,8 +386,13 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         };
         window.addEventListener('message', handlePreviewMessage);
         return () => window.removeEventListener('message', handlePreviewMessage);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- applyWheelZoom/measure are in-component closures; the listener mounts once and forwards via refs
-      }, [onOpenExternal]);
+      // applyWheelZoom/measure 是 useCallback 化的组件内闭包：列入依赖让
+      // 监听器闭包始终新鲜（zoomMode/customScale 变化 → applyWheelZoom/
+      // measure 身份变化 → 重挂）。此前只依赖 onOpenExternal，注释称
+      // 「mounts once / forwards via refs」并不成立——stable onOpenExternal
+      // 的调用方一旦切换 zoomMode，ctrl+滚轮转发与缩放步进就会用到过期
+      // 闭包（重挂成本与既有调用点的每渲染重挂相同）。
+      }, [onOpenExternal, managedZoom, applyWheelZoom, measure]);
       const scaled = box && box.scale !== 1;
       const scaledW = box ? Math.max(1, Math.ceil(box.w * box.scale)) : 0;
       const scaledH = box ? Math.max(1, Math.ceil(box.h * box.scale)) : 0;
