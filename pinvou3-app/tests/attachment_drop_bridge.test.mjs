@@ -162,9 +162,12 @@ for (const dictionary of [dictZh, dictEn, dictJa]) {
   await api.addPasteImage('oversized.png', [1], error => (
     formatAttachmentLimitError(error, dictionary.uiAttachments)
   ));
+  // fileTooLarge is an mb-function (its figure derives from MAX_FILE_BYTES),
+  // so compare the rendered item against the formatter's rendering of the
+  // stable code itself rather than the raw dictionary entry.
   assert.equal(
     systemItems.at(-1),
-    dictionary.uiAttachments.fileTooLarge,
+    formatAttachmentLimitError('attachment_file_too_large', dictionary.uiAttachments),
     'ordinary chat paste failures must use the shared localized limit formatter',
   );
 }

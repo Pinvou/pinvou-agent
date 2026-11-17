@@ -3,6 +3,12 @@ import fs from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+// Side-effect import: the chunked uploader is a classic script exposing
+// itself as a global (same idiom as paste-image.js), so the test can derive
+// the expected MB figure from the same MAX_FILE_BYTES constant the formatter
+// injects into the localized copy.
+import '../src/shared/chunked-file-upload.js';
+
 import {
   ATTACHMENT_LIMIT_ERROR_CODES,
   attachmentLimitErrorCode,
@@ -11,6 +17,9 @@ import {
 import { dictEn } from '../src/shared/i18n/en.js';
 import { dictJa } from '../src/shared/i18n/ja.js';
 import { dictZh } from '../src/shared/i18n/zh.js';
+
+const { MAX_FILE_BYTES: ATTACHMENT_MAX_FILE_BYTES } = globalThis.PinvouChunkedFileUpload;
+const MAX_FILE_MB = Math.round(ATTACHMENT_MAX_FILE_BYTES / (1024 * 1024));
 
 test('normalizes browser and backend attachment limit failures', () => {
   const browserError = new Error('device upload exceeds limit');
@@ -28,10 +37,24 @@ test('normalizes browser and backend attachment limit failures', () => {
 });
 
 test('renders every hard limit in all supported languages', () => {
+  // The cap itself is still 20 MB — if MAX_FILE_BYTES moves, this fails until
+  // the localized fileTooLarge copy and this pin are consciously re-checked.
+  assert.equal(MAX_FILE_MB, 20, 'MAX_FILE_BYTES moved — re-check the localized fileTooLarge copy and this pin');
   for (const dictionary of [dictZh, dictEn, dictJa]) {
+    // fileTooLarge must be an mb-function in every locale (r17): a static
+    // "20 MB" string would silently lie once the shared MAX_FILE_BYTES cap
+    // (pinned as a literal by the web_access contract test) moves. The
+    // rendered figure below is matched boundary-aware against the value
+    // COMPUTED from that constant, so a copy that bakes in a stale number
+    // (e.g. "120 MB" satisfying a bare /20/) cannot pass.
+    assert.equal(
+      typeof dictionary.uiAttachments.fileTooLarge,
+      'function',
+      'uiAttachments.fileTooLarge must be an mb-function in every locale so the figure derives from the shared cap',
+    );
     assert.match(
       formatAttachmentLimitError(ATTACHMENT_LIMIT_ERROR_CODES.fileTooLarge, dictionary.uiAttachments),
-      /50/,
+      new RegExp(`(^|\\D)${MAX_FILE_MB}(\\D|$)`),
     );
     // Track the backend cap (files/ingest_archive.rs MAX_ARCHIVE_ENTRIES,
     // raised 50→200 by the limits-audit batch — the r4 review found six user
