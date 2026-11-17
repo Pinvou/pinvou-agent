@@ -340,6 +340,24 @@ for (const language of ['zh', 'en', 'ja']) {
       `${language} dictionary misses zh keys (renders undefined): ${missing.slice(0, 10).join(', ')}`,
     );
   }
+  // 存在性断言挡不住「key 在、文案为空串」——archiveConfirmDetail 正是这
+  // 个形状（key 三语齐全，zh 值为 ''，确认框静默少一行说明）。钉住：凡 en
+  // 孪生带实质文案的叶子，zh/ja 侧不得为空白。
+  const blankCopies = [];
+  for (const language of ['zh', 'ja']) {
+    for (const key of zhKeys) {
+      const value = key.split('.').reduce((node, part) => (node == null ? node : node[part]), dict[language]);
+      const enValue = key.split('.').reduce((node, part) => (node == null ? node : node[part]), dict.en);
+      if (typeof value === 'string' && !value.trim() && typeof enValue === 'string' && enValue.trim()) {
+        blankCopies.push(`${language}:${key}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    blankCopies,
+    [],
+    `copy is blank where the en twin carries content (silent missing line): ${blankCopies.slice(0, 10).join(', ')}`,
+  );
 }
 
 // Connector card desc overlay parity (wecom): localizeTool spreads the
