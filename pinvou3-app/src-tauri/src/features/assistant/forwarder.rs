@@ -340,18 +340,24 @@ pub(crate) fn spawn_event_forwarder(
         let mut last_persisted_chat_revision: Option<String> = None;
         let mut active_transcript_seen = false;
         // Last parent-request input the engine reported for the live turn,
-        // from this session's most recent `TurnUsage` event. `TurnComplete`
-        // usage is the billing aggregate (`TurnState::add_usage` sums
-        // input_tokens over every request of the turn), so the frontend usage
-        // meter must skip it on multi-request turns and needs the per-request
-        // value to stay live: chat:usage fires once per turn, and any tool
-        // call of that turn latches the bridge's cumulative-input guard until
-        // the next send — without this field the meter only ever refreshed
-        // through a compaction. The last TurnUsage of a turn is the final
-        // parent request (reviewer consults and programmatic-child folds
-        // always precede the next parent request; subagent usage rides
-        // SubAgentMailbox, never TurnUsage), so it is the real context
-        // occupancy at turn end.
+        // from this session's most recent parent `TurnUsage` event.
+        // `TurnComplete` usage is the billing aggregate
+        // (`TurnState::add_usage` sums input_tokens over every request of
+        // the turn), so the frontend usage meter must skip it on
+        // multi-request turns and needs the per-request value to stay live:
+        // chat:usage fires once per turn, and any tool call of that turn
+        // latches the bridge's cumulative-input guard until the next send —
+        // without this field the meter only ever refreshed through a
+        // compaction. Parent requests are told apart from the other
+        // TurnUsage producers by `request_ms`: the parent emission always
+        // sets `Some`, while reviewer consults and programmatic REPL-child
+        // folds set `None` — and either can be the LAST TurnUsage of a
+        // normally-completing turn (an inline REPL FINAL fold breaks right
+        // after its fold; a guardian review of the final tool batch fires
+        // through the settlement/max-steps breaks; a cancel landing in the
+        // same window does the same on any turn), so the tracker must ignore
+        // them and keep the last parent value. Subagent usage rides
+        // SubAgentMailbox, never TurnUsage.
         let mut latest_reported_input_tokens: Option<u32> = None;
         // A typed preflight rejection completes the admitted lifecycle without
         // changing engine history. Preserve that distinction through
@@ -1767,9 +1773,11 @@ pub(crate) fn spawn_event_forwarder(
                     // 含转发/分发延迟,仅作引擎未上报完整对时的回落。
                     // benchmark-hooks 的 eval 里程碑照旧,与 self_metrics 互不影响。
                     // Per-request occupancy bookkeeping for the usage meter:
-                    // keep the freshest reported input (a zero/absent report
-                    // must not clobber an earlier request's value).
-                    if usage.input_tokens > 0 {
+                    // keep the freshest reported PARENT input (parent-only via
+                    // `request_ms` — the consult/fold producers set None and
+                    // can outlast the parent stream at turn end), and a
+                    // zero/absent report must not clobber an earlier value.
+                    if usage.input_tokens > 0 && request_ms.is_some() {
                         latest_reported_input_tokens = Some(usage.input_tokens);
                     }
                     if let Some(m) = &self_metrics {
@@ -2628,17 +2636,24 @@ mod usage_occupancy_pins {
         assert_eq!(
             flattened
                 .matches(
-                    "ifusage.input_tokens>0{latest_reported_input_tokens=Some(usage.input_tokens);}"
+                    "ifusage.input_tokens>0&&request_ms.is_some(){latest_reported_input_tokens=Some(usage.input_tokens);}"
                 )
                 .count(),
             1,
-            "TurnUsage must refresh the occupancy tracker exactly once, zero-guarded so an unreported call cannot clobber an earlier value"
+            "TurnUsage must refresh the occupancy tracker exactly once, gated to parent requests (`request_ms` is Some) and zero-guarded so an unreported call cannot clobber an earlier value"
         );
         // The TurnStarted arm owns the reset: a turn whose provider never
         // reported usage must emit a null field, not the previous turn's
-        // value (arm-scoped so a drift into another arm turns this red —
-        // same arm-boundary caliber as input_notification_pins).
+        // value. The arm-scoped count alone cannot see a reset drifting into
+        // ANOTHER arm, so first pin the whole-body count, then scope it to
+        // exactly the TurnStarted arm (same arm-boundary caliber as
+        // input_notification_pins).
         let reset = "latest_reported_input_tokens=None;";
+        assert_eq!(
+            flattened.matches(reset).count(),
+            1,
+            "the occupancy reset must exist exactly once in the whole forwarder body (a second reset anywhere is a semantics change)"
+        );
         let arm_marker = "Event::TurnStarted{";
         let arm_start = flattened
             .find(arm_marker)

@@ -147,6 +147,20 @@ context.turnUsageDirty['session-1'] = false;
 emitUsage({ input_tokens: 63000, context_window: 262144 });
 assert.equal(state.tokens.input, 63000, '无逐请求值时累计口径兜底不变');
 
+// 场景 13：逐请求值存在但载荷缺 context_window——沿用已有分母，逐请求占用照常
+// 消费（窗口未随事件更新≠消费点被跳过）。累计口径故意给不同值，钉住优先级。
+const keptMax = state.tokens.max;
+emitUsage({ input_tokens: 70000, context_input_tokens: 64000 });
+assert.equal(state.tokens.max, keptMax, '缺 context_window 不得改动分母');
+assert.equal(state.tokens.input, 64000, '缺 context_window 时逐请求占用仍按优先级消费');
+
+// 场景 14：dirty 轮 + 超窗逐请求值——丢弃且不回落累计口径。该消费点先于 dirty
+// guard 且不读 dirty 标志：dirty 与干净轮必须同行为（超窗守卫与轮次无关）。
+context.turnUsageDirty['session-1'] = true;
+const cleanInput = state.tokens.input;
+emitUsage({ input_tokens: 45000, context_window: 262144, context_input_tokens: 999999 });
+assert.equal(state.tokens.input, cleanInput, 'dirty 轮超窗逐请求值同样丢弃且不回落累计口径');
+
 // ── tauri/web 双端源码断言：窗口与逐请求占用都必须先于 dirty guard 消费 ──
 const tauriSection = source.slice(source.indexOf('listen("chat:usage"'), source.indexOf('listen("chat:compaction"'));
 const webSource = read('src', 'platform', 'web', 'bridge.js');
