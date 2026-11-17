@@ -5111,6 +5111,72 @@ _LANE_HEAD_BOUND_RX = r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*
 _PIP_INSTALL_LANE_RX = r"(?:python3? (?:-m ?)?)?(?:mpip3?|pip3?) install\b"
 
 
+# The bounds walkers' shared file discovery (the npm ci, pip install and
+# curl walkers below all walk this exact list). Workflows plus the
+# operational shell lanes, extended (r17 review) with the script-source
+# extensions a lane could otherwise hide behind: scripts/**/*.py, *.ps1
+# (e.g. build-windows-ota.ps1) and *.mjs were all outside the original
+# *.sh-only walks. scripts/tests/ stays excluded — the policy tests' own
+# probe strings are not lanes, and walking them would make every walker
+# false-red on its own pin.
+_BOUNDS_SCRIPT_SOURCE_GLOBS = ("*.py", "*.ps1", "*.mjs")
+
+
+def _bounds_walker_paths(root=ROOT):
+    """Every file the timeout/bounds walkers must scan, deterministic order."""
+    workflow_paths = sorted((root / ".github/workflows").glob("*.yml")) + sorted(
+        (root / ".github/workflows").glob("*.yaml")
+    )
+    shell_paths = (
+        sorted((root / "scripts").glob("*.sh"))
+        + sorted((root / "scripts/ci").glob("*.sh"))
+        + sorted((root / "scripts/asr").glob("*"))
+        + sorted((root / "pinvou3-app/scripts").glob("*.sh"))
+    )
+    source_paths = sorted(
+        path
+        for extension in _BOUNDS_SCRIPT_SOURCE_GLOBS
+        for path in (root / "scripts").rglob(extension)
+        if (root / "scripts" / "tests") not in path.parents
+    )
+    return workflow_paths + shell_paths + source_paths
+
+
+# The curl lane shape, shared by the curl walker and its probe pin. `curl`
+# must be followed by an argument-shaped token (dash flag, quoted string,
+# shell variable, or URL): requirement lists (`for command_name in curl
+# tar`), install lines ending in a bare `curl`, and quoted prose stay
+# unmatched, while command-prefix shapes (`sudo curl`, `xargs curl`) still
+# match because the token AFTER curl decides, not the token before it.
+_CURL_LANE_RX = r"\bcurl\s+(?=[\"'$-]|https?://)"
+# The per-transfer bounds every curl lane must carry, in either attachment
+# form (`--flag <n>` — the shape of all live lanes — or `--flag=<n>`), any
+# order relative to each other. Literal seconds only, like the npm/pip
+# head bounds: a variable-shaped value fails closed and must extend the pin.
+_CURL_CONNECT_TIMEOUT_RX = r"--connect-timeout(?:=|\s)\d+\b"
+_CURL_MAX_TIME_RX = r"--max-time(?:=|\s)\d+\b"
+
+
+def _curl_lane_violation(line):
+    """Violation message for one comment-stripped, continuation-joined lane
+    line, or None when the line is not a curl lane or carries both
+    per-transfer bounds (a wedged-registry-grade hang in one curl cannot
+    ship while this returns None)."""
+    if not re.search(_CURL_LANE_RX, line):
+        return None
+    missing = [
+        name
+        for name, bound_rx in (
+            ("--connect-timeout <n>", _CURL_CONNECT_TIMEOUT_RX),
+            ("--max-time <n>", _CURL_MAX_TIME_RX),
+        )
+        if not re.search(bound_rx, line)
+    ]
+    if not missing:
+        return None
+    return "curl lane missing " + " and ".join(missing) + ": " + repr(line)
+
+
 class NpmCiBoundsPolicyTests(unittest.TestCase):
     """Every npm ci lane in CI and the journey script carries a per-leg timeout bound.
 
@@ -5203,20 +5269,25 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
     def test_shell_script_npm_ci_lanes_are_bounded(self):
         # The r14 review found the last two unbounded npm ci lanes in the
         # maintainer release scripts (release-deb.sh / release-macos.sh).
-        # This walker covers every shell script under scripts/ and
-        # scripts/ci/ so a future script lane cannot regress invisibly —
-        # the same all-files shape the workflow walker uses.
-        # npm-ci-bounded.sh is excluded: it IS the bound mechanism (its
-        # unbounded tail is the documented loud degrade to the job cap),
-        # and pinvou3-app/scripts/prepare-codex-bridge-runtime.sh invokes
-        # npm indirectly through an args array already pinned by
-        # test_bridge_prep_npm_ci_lanes_are_bounded.
-        script_files = sorted(
-            list((ROOT / "scripts").glob("*.sh"))
-            + list((ROOT / "scripts/ci").glob("*.sh"))
-            + list((ROOT / "scripts/asr").glob("*.sh"))
-        )
-        script_files = [p for p in script_files if p.name != "npm-ci-bounded.sh"]
+        # This walker covers every file in the shared bounds-walker
+        # discovery — workflows, the operational scripts under scripts/,
+        # scripts/ci/, scripts/asr/ and pinvou3-app/scripts/, and (r17
+        # review) the script-source extensions scripts/**/*.py, *.ps1 and
+        # *.mjs a lane could otherwise hide behind — so a future lane
+        # cannot regress invisibly.
+        # Two per-file exclusions, each with its own dedicated pin:
+        # npm-ci-bounded.sh IS the bound mechanism (its unbounded tail is
+        # the documented loud degrade to the job cap);
+        # prepare-codex-bridge-runtime.sh invokes npm indirectly through an
+        # args array pinned by test_bridge_prep_npm_ci_lanes_are_bounded,
+        # and its prose WARNING line names "npm ci" without being a lane —
+        # walking it here false-reds on that echo, so the bridge-prep test
+        # stays the npm pin for that file (its curl lane is still walked by
+        # CurlBoundsPolicyTests).
+        excluded_names = ("npm-ci-bounded.sh", "prepare-codex-bridge-runtime.sh")
+        script_files = [
+            p for p in _bounds_walker_paths() if p.name not in excluded_names
+        ]
         self.assertGreaterEqual(len(script_files), 20, "scripts walk lost its coverage")
         for path in script_files:
             self._assert_lanes_bounded(path)
@@ -5241,23 +5312,23 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
             )
 
         # The shipped space-form shapes (the exact r16-M1 escape class):
-        lane("timeout --kill-after=15 600 npm --prefix pinjou3-app ci", "workflow space-form")
+        lane("timeout --kill-after=15 600 npm --prefix pinvou3-app ci", "workflow space-form")
         lane(
             "timeout --kill-after=15 300 npm --prefix ../remote-control-relay ci"
             " --prefer-offline --no-audit",
             "workflow space-form with post-ci flags",
         )
-        lane("run_required run_with_timeout 1800 npm --prefix pinjou3-app ci", "journey space-form")
+        lane("run_required run_with_timeout 1800 npm --prefix pinvou3-app ci", "journey space-form")
         # Attached-value and plain forms keep matching:
         lane("timeout --kill-after=15 600 npm --prefix=x ci", "attached value form")
         lane("timeout --kill-after=15 600 npm ci --prefer-offline --no-audit", "plain form")
         # Unbounded variants must FAIL the head check (a stripped bound is red):
         for stripped_line in (
-            "npm --prefix pinjou3-app ci",
+            "npm --prefix pinvou3-app ci",
             "npm --prefix=x ci",
             "npm ci --prefer-offline",
             # A bare `timeout` without --kill-after is not an accepted bound.
-            "timeout 600 npm --prefix pinjou3-app ci",
+            "timeout 600 npm --prefix pinvou3-app ci",
         ):
             match = re.search(_NPM_CI_LANE_RX, stripped_line)
             self.assertIsNotNone(match, f"decoy lane not matched: {stripped_line!r}")
@@ -5265,7 +5336,7 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
                 self.assertRegex(stripped_line[: match.start()], _LANE_HEAD_BOUND_RX)
         # Not lanes: the flag group only consumes dash-prefixed tokens.
         self.assertIsNone(re.search(_NPM_CI_LANE_RX, "npm run ci"))
-        self.assertIsNone(re.search(_NPM_CI_LANE_RX, "npm --prefix pinjou3-app run ci"))
+        self.assertIsNone(re.search(_NPM_CI_LANE_RX, "npm --prefix pinvou3-app run ci"))
 
     def test_release_script_npm_ci_lanes_use_the_guarded_helper(self):
         # The release scripts run on maintainer machines, including macOS
@@ -5411,14 +5482,12 @@ class PipCiBoundsPolicyTests(unittest.TestCase):
 
     def test_every_pip_install_lane_is_timeout_bounded(self):
         # The r16 review closed the npm walker's lone-lane asymmetry: this
-        # walker now covers every script under scripts/, scripts/ci/ and
-        # scripts/asr/ (the journey lane lives there) in the same all-files
-        # shape, so a future script lane is covered the moment it appears.
-        paths = sorted((ROOT / ".github/workflows").glob("*.yml")) \
-            + sorted((ROOT / ".github/workflows").glob("*.yaml")) \
-            + sorted((ROOT / "scripts").glob("*.sh")) \
-            + sorted((ROOT / "scripts/ci").glob("*.sh")) \
-            + sorted((ROOT / "scripts/asr").glob("*"))
+        # walker now covers every file in the shared bounds-walker
+        # discovery — workflows, scripts/, scripts/ci/, scripts/asr/ (the
+        # journey lane lives there), pinvou3-app/scripts/, and (r17 review)
+        # the script-source extensions scripts/**/*.py, *.ps1 and *.mjs —
+        # so a future script lane is covered the moment it appears.
+        paths = _bounds_walker_paths()
         self.assertGreaterEqual(len(paths), 20, "pip walker lost its scripts coverage")
         seen = 0
         for path in paths:
@@ -5476,6 +5545,175 @@ class PipCiBoundsPolicyTests(unittest.TestCase):
                 self.assertRegex(stripped_line[: match.start()], _LANE_HEAD_BOUND_RX)
         self.assertIsNone(re.search(_PIP_INSTALL_LANE_RX, "python3 -m pip list"))
         self.assertIsNone(re.search(_PIP_INSTALL_LANE_RX, "pip --version"))
+
+
+class CurlBoundsPolicyTests(unittest.TestCase):
+    """Every curl lane in CI and the scripts carries both per-transfer time bounds.
+
+    The r15/r16 fixwaves added `--connect-timeout` + `--max-time` to every
+    live curl site, but no test enforced it: the only pinned lane was the
+    bridge-prep download (test_bridge_prep_npm_ci_lanes_are_bounded), so
+    reverting any single curl to unbounded shipped this suite green — the
+    same wedged-endpoint hang class the npm/pip walkers exist for, one
+    regressible lane at a time. This walker walks the shared bounds-walker
+    discovery (same file sets as the npm/pip walkers) and requires BOTH
+    bounds on every curl lane, in either flag attachment form, any order.
+    """
+
+    # (file, count) of curl lanes the discovery must see; a new lane must
+    # carry both bounds (the walker enforces that by itself) and extend
+    # this inventory so the pin cannot rot into a silent no-op.
+    EXPECTED_LANE_COUNT = 13
+
+    def test_every_curl_lane_is_double_time_bounded(self):
+        paths = _bounds_walker_paths()
+        self.assertGreaterEqual(len(paths), 50, "curl walker lost its coverage")
+        seen = 0
+        for path in paths:
+            for stripped in _invocation_lines(path):
+                violation = _curl_lane_violation(stripped)
+                if violation is not None:
+                    self.fail(f"{path.name}: {violation}")
+                if re.search(_CURL_LANE_RX, stripped):
+                    seen += 1
+        self.assertEqual(
+            seen, self.EXPECTED_LANE_COUNT,
+            "expected exactly 13 curl lanes (pr-check x2, release-packages, "
+            "secret-scan, fetch-connectors, loongarch64-sysroot x3, "
+            "loongarch64-toolchain, ci-libpipewire-build, setup-sensevoice x2, "
+            "prepare-codex-bridge-runtime); a new lane must carry both bounds "
+            "and extend this pin",
+        )
+
+    def test_curl_lane_matcher_holds_both_flag_attachment_forms(self):
+        # r17 review regression pin, in the shape of the npm/pip matcher
+        # probes: the live lane shapes (space form, attached `=` form, any
+        # flag order, continuation-joined wraps) pass only with BOTH bounds;
+        # every stripped-bound variant must red; and the non-lane mentions
+        # the repo actually contains (requirement lists, apt install lines,
+        # quoted prose) must stay unmatched so the walker cannot false-red
+        # on them and get muted.
+        # Bounded live shapes (both forms, any order):
+        self.assertIsNone(_curl_lane_violation(
+            "curl --retry 3 --connect-timeout 15 --max-time 120 -fsSL"
+            ' -o /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/x.tgz"'
+        ))
+        self.assertIsNone(_curl_lane_violation(
+            "curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail"
+            " --retry 3 --retry-delay 2 --max-time 600 --connect-timeout 15"
+            ' -o "$release_file" "$release_url"'
+        ))
+        self.assertIsNone(_curl_lane_violation(
+            "curl --max-time=600 --connect-timeout=15 -fsSL https://example.com/x.tgz"
+        ))
+        self.assertIsNone(_curl_lane_violation(
+            "if curl --fail --location --retry 2 --connect-timeout 15 --max-time 600"
+            ' "$base_url/$node_archive" --output "$node_archive_path"; then'
+        ))
+        # Unbounded variants must red, naming the missing bound:
+        self.assertEqual(
+            _curl_lane_violation("curl -fsSL https://example.com/model.tgz"),
+            "curl lane missing --connect-timeout <n> and --max-time <n>:"
+            " 'curl -fsSL https://example.com/model.tgz'",
+        )
+        self.assertEqual(
+            _curl_lane_violation("curl --connect-timeout 15 -fsSL https://example.com"),
+            "curl lane missing --max-time <n>:"
+            " 'curl --connect-timeout 15 -fsSL https://example.com'",
+        )
+        self.assertEqual(
+            _curl_lane_violation("curl --max-time 120 -fsSL https://example.com"),
+            "curl lane missing --connect-timeout <n>:"
+            " 'curl --max-time 120 -fsSL https://example.com'",
+        )
+        # Command-prefix shapes still match (and their bounds are demanded):
+        self.assertIsNotNone(
+            re.search(_CURL_LANE_RX, "sudo curl -fsSL https://example.com"),
+            "sudo-prefixed curl must stay a lane",
+        )
+        self.assertIsNotNone(
+            _curl_lane_violation("xargs curl -fsSL https://example.com"),
+            "xargs-fed curl must stay a lane",
+        )
+        # Not lanes — the non-invocation mentions in the live repo:
+        self.assertIsNone(
+            _curl_lane_violation("for command_name in curl tar sha256sum strings; do"),
+            "a requirement list is not a curl lane",
+        )
+        self.assertIsNone(
+            _curl_lane_violation("required_commands=(node curl tar install mktemp)"),
+            "a dependency list is not a curl lane",
+        )
+        self.assertIsNone(
+            _curl_lane_violation(
+                "sudo apt-get install -y --no-install-recommends meson"
+                " ninja-build ca-certificates curl"
+            ),
+            "an install line ending in the bare word curl is not a lane",
+        )
+        self.assertIsNone(
+            _curl_lane_violation(
+                'echo "缺少 $t — 请先: sudo apt install build-essential git curl" >&2'
+            ),
+            "quoted prose naming curl is not a lane",
+        )
+
+    def test_bounds_walker_discovery_covers_script_source_extensions(self):
+        # r17 review: every bounds walker scanned only workflows + *.sh
+        # lanes, so a lane inside scripts/**/*.py, *.ps1 (e.g.
+        # build-windows-ota.ps1) or *.mjs escaped all of them. Prove the
+        # shared discovery now returns those extensions and that the
+        # walkers catch synthetic lanes inside them (scripts/tests/ itself
+        # stays excluded — these probe strings must not become lanes).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ops_dir = root / "scripts/ops"
+            ops_dir.mkdir(parents=True)
+            py_lane = ops_dir / "fetch-model.py"
+            py_lane.write_text(
+                "SUBPROCESS = 'npm --prefix pinvou3-app ci'\n"
+                "run('curl -fsSL https://example.com/model.tgz')\n",
+                encoding="utf-8",
+            )
+            ps1_lane = ops_dir / "build-windows-ota.ps1"
+            ps1_lane.write_text(
+                "Invoke-Expression 'curl -fsSL -o ota.zip https://example.com/ota.zip'\n",
+                encoding="utf-8",
+            )
+            mjs_lane = ops_dir / "check-lanes.mjs"
+            mjs_lane.write_text(
+                "const CMD = 'python3 -m pip install --quiet wheel';\n",
+                encoding="utf-8",
+            )
+
+            paths = _bounds_walker_paths(root)
+            for lane_file in (py_lane, ps1_lane, mjs_lane):
+                self.assertIn(lane_file, paths, f"discovery missed {lane_file.name}")
+
+            # The .py file's two lanes are visible to the npm and curl
+            # walkers, and the npm walker reds on the unbounded npm lane.
+            py_lines = _invocation_lines(py_lane)
+            self.assertTrue(
+                any(re.search(_NPM_CI_LANE_RX, line) for line in py_lines),
+                "npm walker matcher must see lanes inside .py script sources",
+            )
+            self.assertEqual(
+                sum(_curl_lane_violation(line) is not None for line in py_lines), 1,
+                "curl walker must flag the unbounded .py lane",
+            )
+            with self.assertRaises(AssertionError):
+                NpmCiBoundsPolicyTests()._assert_lanes_bounded(py_lane)
+            # The .ps1 and .mjs lanes are visible to the curl and pip
+            # matchers respectively.
+            ps1_lines = _invocation_lines(ps1_lane)
+            self.assertTrue(
+                any(_curl_lane_violation(line) is not None for line in ps1_lines),
+                "curl walker must flag the unbounded .ps1 lane",
+            )
+            self.assertTrue(
+                any(re.search(_PIP_INSTALL_LANE_RX, line) for line in _invocation_lines(mjs_lane)),
+                "pip walker matcher must see lanes inside .mjs script sources",
+            )
 
 
 if __name__ == "__main__":
