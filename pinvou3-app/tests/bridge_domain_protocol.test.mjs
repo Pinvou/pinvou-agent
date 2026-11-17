@@ -272,7 +272,10 @@ const expectedProtocolHashes = {
   // baseline; implemented in bridge-messages next to the other counter
   // primitives). Same event surface — no new invoke or listen entries; the
   // edit lives inside the existing listen(...) body.
-  chat: 'f877a9cfaeb4288eb1de8ec78beb6002d870ff7b0f4993acb1e032d4a85b546a',
+  // Recomputed on the r49 rebase onto main 4fd8642cbd: the captured
+  // chat:compaction listener body now carries main's in-flight marker
+  // bookkeeping plus the PR's real-shrink resync arm (r39-M1/r40-M1).
+  chat: '3aa4cf406c648d9485b4bf849a848b67aa1a38dd31c5ade6dc743116f7e1078e',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -515,6 +518,20 @@ for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
   assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
+// r42 minor 10: the r8 incident class - a Proxy-stub surface cannot notice a
+// dropped factory-return entry. This suite executes the REAL bridge factory,
+// so asserting the callable pins the chat-side notice landing pad the same
+// way the sessions twins are pinned by session_nav_race.
+assert.equal(typeof api.chat.addSystemItem, 'function',
+  'chat factory must export callable addSystemItem (r8 incident class / r42 minor 10)');
+// r47 minor 3 (checkpoints review): the curated-map VALUES for the two
+// sessions functions are pinned callable the same way - the presence-only
+// key assert above cannot see the r8 shape where the factory exports the
+// function but the curated map points at `undefined`.
+assert.equal(typeof api.sessions.switchToSessionInternal, 'function',
+  'sessions factory must export callable switchToSessionInternal (r47 minor 3)');
+assert.equal(typeof api.sessions.invalidateSessionBuffer, 'function',
+  'sessions factory must export callable invalidateSessionBuffer (r47 minor 3)');
 assert.equal(api.getState, undefined, 'flat state facade must not return');
 
 function sourceFiles(directory) {

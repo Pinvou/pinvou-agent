@@ -1132,6 +1132,40 @@ try {
     'NATIVE_CHAT_EVENTS must not carry a duplicate entry (a duplicate double-subscribes the event)');
   assert.equal(new Set(handledEvents).size, handledEvents.length,
     'applyNativeChatEvent must not carry a duplicate chat:* branch');
+  // ── r25 MAJOR-2：NotPrompt 同族载体重载不出幻影气泡 ─────────────
+  // [tool_search_tool_result, Text("<image path=…>")] 形态（r20-minor-4 族）
+  // 曾只匹配 tool_result 而漏过 → 重载出裸标记假气泡、时间线计数 +1、
+  // 调和门清空全部回退入口。修复后：同族全集在重载投影中同样跳过气泡。
+  {
+    const laneCarrier = createNativeLane();
+    hydrateNativeLane(laneCarrier, {
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: '起点' }] },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'ts1', name: 'tool_search', input: {} }],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_search_tool_result', tool_use_id: 'ts1', content: 'results' },
+            { type: 'text', text: '<image path="/tmp/shot.png">' },
+          ],
+        },
+      ],
+    }, []);
+    assert.equal(laneCarrier.hydrated, true);
+    assert.equal(
+      laneCarrier.items.filter(item => item.type === 'user').length,
+      1,
+      'tool_search_tool_result 载体（含图片标记文本）不得还原幻影用户气泡（r25 MAJOR-2）',
+    );
+    assert.equal(
+      laneCarrier.items.some(item => item.type === 'user' && String(item.text || '').includes('<image path=')),
+      false,
+      '裸运行时标记文本不得上屏',
+    );
+  }
 
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {

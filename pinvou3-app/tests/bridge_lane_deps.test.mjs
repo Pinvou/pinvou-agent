@@ -202,7 +202,14 @@ const EXPECTED_SURFACE = {
   // base-local declarations. raisePinvouSummonHighwater (zhuowp round-2 P2-2:
   // the review-sidecar highwater commit) reads only `state`, which every
   // consuming cluster literal already provides — no literal gains a dep.
-  sharedFnCount: 316,
+  // +1 (316): isCompactionCarrierBlocks — internal predicate of
+  // rerenderFromMessagesCore (work-mode rewind filter; references no deps,
+  // not exported from any cluster literal).
+  // +1 (317): isImageMarkerTextBlock — 仅被 rerenderFromMessagesCore 的
+  // user 分支调用（基座内局部名，不进 deps 集合），纯谓词、无副作用。
+  // +1 (318): re-audited on the r49 rebase onto main 4fd8642cbd (measured,
+  // not carried over from the pre-rebase branch head).
+  sharedFnCount: 318,
 };
 
 assert.equal(
