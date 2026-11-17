@@ -791,6 +791,11 @@ assert.match(remoteControlCommands,
   'failed Web ACP Session creation must restore its same-endpoint one-shot workspace reservation');
 assert.match(hostFilePicker, /initialPathPending[\s\S]*?path === initialPath[\s\S]*?load\(null\)/,
   'a stale recent workspace must fall back to the normal host-file root instead of trapping the picker');
+// r17 limits audit: the r5 truncation disclosure shipped unpinned — deleting
+// the `listing.truncated` consumer stayed green and an oversized host
+// directory again rendered as a plain, unexplained 5000-row list.
+assert.match(hostFilePicker, /if \(listing && listing\.truncated\) \{\s*body\.append\(element\("div", "pinvou-host-picker-empty", labels\.listingTruncated\)\);\s*\}/,
+  'the host picker must keep consuming the backend truncation marker and rendering its notice');
 // HTML5 拖放由当前可见输入框认领，再复用对应平台的上传通道。
 assert.match(chatView, /enabled=\{bridge\.available && \(!isWeb \|\| can\('deviceFileUpload'\)\)\}/,
   'browser drop must gate on the negotiated device upload capability');

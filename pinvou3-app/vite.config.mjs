@@ -688,6 +688,7 @@ function enforceLazyChunks() {
 // (endpoint-model UI rides the lazy settings chunk) and #879: the desktop
 // entry measures 495,040 B on this toolchain — the 496_000 ceiling holds
 // with ~960 B of headroom, no re-cut needed.
+// PR #847 r16 rebase re-measure: 495,163 B on this toolchain — the 496_000 ceiling holds.
 export const MAIN_ENTRY_BUDGET_BYTES = 496_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
