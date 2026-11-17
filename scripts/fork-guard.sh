@@ -422,10 +422,12 @@ fingerprints=(
   # text — zero behavior change, verified by the existing turn_loop and
   # subagent regressions named in the register. These pins hold the fork-ci
   # gate at upstream strength: --all-targets stays present, the collapsed
-  # allow-list adjacency keeps -A clippy::collapsible_if from silently
-  # returning between unnecessary_map_or and assertions_on_constants, and
+  # allow-list adjacency pins the two surviving allows byte-adjacently, and
   # each rewritten source site keeps its folded/plain form (reverting to
-  # the nested or private-link shape drops the pin and turns red).
+  # the nested or private-link shape drops the pin and turns red). The
+  # collapsible_if repayment itself is additionally enforced file-wide by
+  # the line-form absence check after the fingerprint loop: re-inserting
+  # the allow anywhere in either workflow turns red, position-independent.
   "T2|fork-ci lint 门禁保留 --all-targets       |CodeWhale/.github/workflows/fork-ci.yml|cargo clippy --workspace --all-targets --all-features --locked --"
   "T2|fork-ci collapsible_if 白名单撤除邻接钉   |CodeWhale/.github/workflows/fork-ci.yml|-A clippy::unnecessary_map_or
           -A clippy::assertions_on_constants"
@@ -486,6 +488,21 @@ for fp in "${fingerprints[@]}"; do
       fi
       ;;
   esac
+done
+
+# 2026-11-16 lint-debt batch: the collapsible_if repayment is enforced
+# file-wide, position-independent — the adjacency pin above only covers
+# insertions between the two surviving allows, so this line-form absence
+# check sweeps both workflows for any re-inserted allow line (the '^#'
+# comment that documents the repayment does not match the line form).
+bold "── 第 1.5 层：collapsible_if 豁免全文件缺席钉 ──"
+for __wf in .github/workflows/fork-ci.yml .github/workflows/release.yml; do
+  if grep -qE '^[[:space:]]*-A clippy::collapsible_if([[:space:]]|$)' "$CODEWHALE/$__wf" 2>/dev/null; then
+    red "  ✗ collapsible_if 豁免在 CodeWhale/$__wf 复活（行形态命中）"
+    fail=1
+  else
+    green "  ✓ collapsible_if 豁免未在 CodeWhale/$__wf 复活（行形态全文件缺席）"
+  fi
 done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
