@@ -28,7 +28,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// v5: knowledge_import_jobs 增加 skipped_by_excluder（显式导入的 Excluder 拒绝
 /// 文件数披露，round-51 limits audit——白名单把整个根剪空时此前只有幸存数可见）。
-/// v4→v5 迁移在 open() 的迁移分支里做容忍式 ALTER（重复列名为唯一预期失败）。
+/// v4→v5 迁移在 open() 的迁移分支里先探测列存在再补 ALTER：迁移分支本身不
+/// 容错——包括列已存在的「duplicate column name」，那一次打开会响亮失败、
+/// 下次打开走 steady state（跨进程并发迁移的一次性竞态，注释见迁移分支）。
 const SCHEMA_VERSION: i64 = 5;
 
 /// Whether a store at `version` may be deleted and rebuilt on open.
@@ -504,12 +506,14 @@ impl Store {
                 ));
             }
             w.execute_batch("PRAGMA synchronous = NORMAL;")?;
-            // A v4 steady-state store may still carry the old-shape files_au
-            // (opened before the WHEN upgrade landed; this branch skips the
-            // DDL batch, so the batch's replacement never reaches existing
-            // stores). Identify the old shape with a read-only probe
-            // (sqlite_master.sql without the WHEN clause) and run the
-            // replacement when the trigger is missing or wrong-shaped —
+            // A steady-state store may still carry the old-shape files_au:
+            // any store stamped v5 by a binary built before the WHEN upgrade
+            // landed in this tree (the DDL batch it ran never contained the
+            // replacement, and this branch skips the batch, so nothing else
+            // reaches existing stores). Identify the old shape with a
+            // read-only probe (sqlite_master.sql without the WHEN clause)
+            // and run the replacement when the trigger is missing or
+            // wrong-shaped —
             // the probe is a plain SELECT and takes no write lock, so the
             // steady-state open's two-process contention window is unchanged
             // (a present, correct trigger means neither branch fires); the
