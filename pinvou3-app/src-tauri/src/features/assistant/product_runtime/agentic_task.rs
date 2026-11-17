@@ -1424,7 +1424,8 @@ async fn run_turn(
             }
             // Mirror the fresh branch below: an explicit Plan request must
             // persist on a caller-provided session too, or the session
-            // reopens in its stale mode (the unbound default is Yolo) — the
+            // reopens in its stale mode (an unbound plain session would
+            // resolve to Auto, a reused one to whatever it ran before) — the
             // same unsafe divergence the fresh branch refuses. Failure is
             // fatal like the fresh branch. The previous mode is remembered so
             // a setup that never reaches the turn can put the caller's

@@ -23,15 +23,21 @@ function buildPlugins(mode) {
 }
 
 test('startup gates remain active in desktop and web production builds', () => {
-  // PR #787's 485_000 re-cut, PR #782's 486_000 desktop raise, the shared
-  // PR #833 + PR #834 487_000 desktop raise, PR #834's review-fix-wave
-  // 488_000 desktop raise, PR #835's 129_000 web raise, PR #835's
-  // review-fix-wave 489_000 desktop raise, PR #835's second fix wave
-  // 490_000 desktop raise, and PR #835's rebase re-measure 492_000
-  // desktop raise are measured per policy (PR #826 measured inside the
-  // ceiling current at each of its rebase bases, no raise of its own);
-  // the config comment preserves both platforms' measurements.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 492_000);
+  // PR #787's 485_000 re-cut, PR #782's 486_000 desktop raise, PR #833's
+  // 487_000 desktop raise, PR #834's review-fix-wave 488_000 desktop raise,
+  // PR #835's 129_000 web raise and its fix-wave/rebase re-measure raises to
+  // 492_000 desktop, and the tri-mode safety frontend's raises to 494_000
+  // desktop are measured per policy (PR #826 measured inside the ceiling
+  // current at each of its rebase bases, no raise of its own); the rebase
+  // re-cut onto the steer-finalized main re-measured the merged entry at
+  // 498,076 B (all lineages in one tree) and took the literal next thousand
+  // step per policy; the follow-up sync onto the fork-import main re-measured
+  // 498,064 B; the computer-use virtual-display sync (#826) re-measured
+  // 498,821 B and the web entry 126,566 B — both stay under their ceilings.
+  // The post-#887 rebase merged main's web-side evolution into the entry and
+  // CI's build:ui measured 499,001 B — the predicted 500_000 step, taken per
+  // policy. The config comment preserves each raise's measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 500_000);
   assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 129_000);
   for (const mode of ['production', 'web']) {
     const pluginNames = new Set(buildPlugins(mode).map(plugin => plugin.name));

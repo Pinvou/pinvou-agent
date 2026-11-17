@@ -79,6 +79,11 @@ const protocolSources = {
   multiAgent: ['bridge/multiagent.js'],
   projects: ['bridge/projects.js'],
   computerUse: ['bridge/computer_use.js'],
+  // Round-11 review: the web lane's wire surface had no hash at all (the
+  // per-domain hashes above cover only tauri-lane files + the shared base),
+  // so a web invoke/listen span change would not redden any contract. One
+  // whole-file entry pins the web bridge's full invoke/listen surface.
+  webWireSurface: ['../web/bridge.js'],
 };
 
 const expectedProtocolHashes = {
@@ -274,8 +279,12 @@ const expectedProtocolHashes = {
   // edit lives inside the existing listen(...) body.
   // Stream bubbles now carry htmlSource for native selection provenance.
   // This additive local state field is inside the hashed delta listener;
-  // invoke payloads and event names are unchanged.
-  chat: 'ea5066060105980417d564b45534926cb7ea7faae34eaefc29f65cc072bec73d',
+  // invoke payloads and event names are unchanged. Recomputed for the
+  // rebase onto the post-#887 main: the merged chat lane carries the
+  // tri-mode listener surface (approval_required / guardrail_denied /
+  // mode_changed and their follow-up waves) on top of main's htmlSource
+  // delta; no new invoke or listen entries.
+  chat: '593d414b679fad7072f1305b17c5f878d440e3eb353226c22f35f7ec3cde255a',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -286,7 +295,10 @@ const expectedProtocolHashes = {
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the lane-merge residual wave: toggleSuperPerm
   // (set_super_permission, get_super_permission_status) joined the shared base.
-  interaction: 'a4c231e1119499eae66fe3e0e36d9604393b85468398a062b1e271e5e2f19b20',
+  // Recomputed for the rebase onto the post-#887 main (tri-mode surface
+  // merged with main's current interaction lane); no new invoke or listen
+  // entries.
+  interaction: '5345757ac633c2fa3b89126a2e16cdce30a88dc8041b7a543114cff4ad8c9c7a',
   // Recomputed for the shared-helper dedup (see batch note above).
   knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +
@@ -362,7 +374,10 @@ const expectedProtocolHashes = {
   // main's sidecar-helper wave (#596), aux-session surface and the
   // #713/#735/#701 lane merges; the pin below is the extractor's output on
   // the merged bridge/sessions.js (rebase onto main @ 88bff8582).
-  sessions: 'acee7f6975f19302026d6619618aadf8619e51684b271d024aa705e6c1efcd17',
+  // Recomputed for the rebase onto the post-#887 main (tri-mode surface
+  // merged with main's current sessions lane); no new invoke or listen
+  // entries.
+  sessions: 'dd2f01ea3fe18e515456e13098b42afb49b1993a700c5a189a86cc9bff9ec2df',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
@@ -416,7 +431,16 @@ const expectedProtocolHashes = {
   // ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
   // projects_set_never_materialize / align_session_to_project
   // (bridge/projects.js).
-  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',};
+  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',
+  // Round-11 review: first registration — the web lane's invoke/listen
+  // surface (whole web/bridge.js file, see webWireSurface above). A span
+  // change in the web bridge now reddens this pin like the tauri domains.
+  // Recomputed for the rebase onto the post-#887 main: the merged web
+  // bridge carries main's own web-side evolution (the kb_model_cancel
+  // facade entry and the streaming htmlSource provenance fields) alongside
+  // the tri-mode admission/guardrail surface; this branch adds no web
+  // change of its own in the window — no new command or event surface.
+  webWireSurface: 'eadef127417ba37c985ffdd69eb103942b5f823e6a4a63a62256c638afdc242e',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {

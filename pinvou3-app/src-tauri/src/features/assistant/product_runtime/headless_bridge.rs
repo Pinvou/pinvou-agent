@@ -1391,6 +1391,10 @@ where
     ensure_isolated_debug_home()?;
     let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
+    // Boot fact for the forwarder's approval surface: this process has no
+    // window and no decision consumer, so an interactive ask must resolve
+    // deterministically (see crate::features::assistant::windowless_host).
+    crate::features::assistant::windowless_host::mark_windowless_host();
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     // Reuse lib.rs's single generate_context expansion point: a second
     // expansion inside this crate triggers duplicate
@@ -1574,6 +1578,9 @@ where
 {
     let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
+    // Same boot fact as run_windowless_host: no window, no decision
+    // consumer (see crate::features::assistant::windowless_host).
+    crate::features::assistant::windowless_host::mark_windowless_host();
     let joined = async_runtime.spawn(work());
     match async_runtime.block_on(joined) {
         Ok(result) => result,
@@ -1667,6 +1674,57 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
+
+    /// round-10 supplementary pin: the windowless producer side previously had zero pins — deleting the
+    /// `mark_windowless_host()` calls on both boot lanes still compiled and every windowless consumer pin stayed green
+    /// (they guard the read end of `is_windowless_host()`), and headless/agentic reuse of an
+    /// existing Yolo session would silently return to the round-9 P1 Floor-ized unattended mode. Both boot
+    /// lanes (run_windowless_host / run_bare_host) must stamp the boot fact immediately
+    /// after claiming the runtime.
+    #[test]
+    fn both_headless_boot_lanes_mark_the_host_windowless() {
+        let source = include_str!("headless_bridge.rs");
+        let stripped: String = source
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let needle = "crate::features::assistant::windowless_host::mark_windowless_host();";
+        let mut search_from = 0;
+        for _ in 0..2 {
+            let at = stripped[search_from..]
+                .find(needle)
+                .expect("each headless boot lane must stamp the windowless boot fact");
+            let absolute = search_from + at;
+            let prefix = &stripped[absolute.saturating_sub(300)..absolute];
+            assert!(
+                prefix.contains("claim_headless_host_runtime()"),
+                "the windowless stamp must sit right after the runtime claim (boot fact before any engine contact)"
+            );
+            search_from = absolute + needle.len();
+        }
+        // The needle literal declared in THIS test survives stripping as a
+        // third occurrence, so a "no further occurrence" substring check is
+        // vacuous (round-13 review: a simulated third real stamp kept the
+        // old `contains` arm green). Count exactly: two real stamps + this
+        // test's own declaration — a new boot lane (or a removed stamp)
+        // must update this pin, which turns red on the count drift itself.
+        // Round-20 review caveat: the pin can only verify lanes that DO
+        // stamp — a future headless engine lane that forgets to stamp keeps
+        // this count green (2 + needle). That miss direction fails closed
+        // on execution (asks park to their deadline instead of declining);
+        // the module doc on windowless_host.rs states the obligation for
+        // any new boot lane.
+        assert_eq!(
+            stripped.matches(needle).count(),
+            3,
+            "the windowless stamp count changed (two boot lanes + this pin's own needle \
+             literal); a new boot lane or a removed stamp must update this pin"
+        );
+    }
 
     #[test]
     fn headless_host_denies_the_undrainable_automation_family() {
