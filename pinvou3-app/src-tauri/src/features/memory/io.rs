@@ -1557,6 +1557,35 @@ pub fn confirm_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> 
     match item.kind.as_str() {
         "preference" => write_preference_unlocked(item)?,
         "profile" if matches!(item.topic.as_str(), "call_name" | "assistant_alias") => {
+            // L3 review (round-17 fixwave): this confirm arm was the last
+            // unguarded label write path. It applied the pending row's RAW
+            // content to the profile and re-normalized, so a wipe-shaped
+            // `item.content` (hand-edited or legacy `memory_pending.jsonl`
+            // row — today's shipped creators pre-clean via
+            // `clean_memory_label`) normalized to "" and the emptied label
+            // was persisted behind a success payload: the silent
+            // data-destruction class the incoming-value guard
+            // (app/commands/memory.rs), the in-lock stored guard
+            // (`update_profile`), and the CLI pre-checks all refuse. Judge
+            // the content with the shared predicate BEFORE mutating the
+            // profile, under the same write lock as the write-back. The
+            // `return` below leaves the pending row UNCONSUMED (status and
+            // `updated_at` are only rewritten after this match, and
+            // `write_pending_memory_unlocked` only runs at the end), so the
+            // user can dismiss the candidate instead.
+            let topic = item.topic.as_str();
+            if profile_label_would_be_wiped(&item.content, topic) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "memory_profile_label_rejected: the {topic} label does not survive the \
+                         profile normalization (at most twelve characters after the \
+                         punctuation/particle strip, no question shapes, not task-like); \
+                         nothing was written and the candidate stays pending — supply a \
+                         shorter label and confirm again, or dismiss the candidate instead"
+                    ),
+                ));
+            }
             let mut profile = load_profile()?;
             let value = item.content.clone();
             if item.topic == "call_name" {
