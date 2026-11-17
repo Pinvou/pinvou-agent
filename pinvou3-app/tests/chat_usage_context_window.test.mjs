@@ -116,7 +116,38 @@ emitUsage({ input_tokens: 5000, context_window: 262144 });
 assert.equal(state.tokens.max, 262144, 'denominator lands once the real window arrives');
 assert.equal(state.tokens.input, 5000);
 
-// ── tauri/web 双端源码断言：窗口消费必须先于 dirty guard ──
+// 场景 8（本次修复的时序回归）：dirty 工具轮 + 逐请求占用口径。chat:usage
+// 每轮只在 TurnComplete 发一次，而本轮任意 tool_start 会把 dirty 锁到下一轮
+// 发送——工具轮此前只能靠压缩 post_tokens 刷新，读数永远冻结在「— / … · 0%」
+// （issue: 1.0.1 上下文长度必现空白）。逐请求值（引擎最后一次父请求的
+// reported input = 回合结束时的真实占用）不是累加值，必须绕过 dirty guard。
+context.turnUsageDirty['session-1'] = true;
+emitUsage({ input_tokens: 45000, context_window: 262144, context_input_tokens: 61000 });
+assert.equal(state.tokens.max, 262144);
+assert.equal(state.tokens.input, 61000, 'dirty 工具轮必须消费逐请求占用（只吃累计口径是冻结根因）');
+
+// 场景 9：干净轮同时携带两种口径——逐请求值胜出，累计口径不得覆写。
+context.turnUsageDirty['session-1'] = false;
+emitUsage({ input_tokens: 90000, context_window: 262144, context_input_tokens: 62000 });
+assert.equal(state.tokens.input, 62000, '逐请求口径消费后同事件累计口径不得覆写');
+
+// 场景 10：逐请求值超窗（分母声明失真）——丢弃且不回落累计口径，保留上个准确值。
+const goodInput = state.tokens.input;
+emitUsage({ input_tokens: 45000, context_window: 262144, context_input_tokens: 999999 });
+assert.equal(state.tokens.input, goodInput, '超窗的逐请求值不得显示，也不得回落累计口径');
+
+// 场景 11：引擎未上报 usage（context_input_tokens 为 null）+ dirty 轮——
+// 回落旧口径：dirty 轮仍跳过累计值，读数保留上个准确值（行为不变）。
+context.turnUsageDirty['session-1'] = true;
+emitUsage({ input_tokens: 45000, context_window: 262144, context_input_tokens: null });
+assert.equal(state.tokens.input, goodInput, '未上报占用时 dirty 轮仍跳过累计口径');
+
+// 场景 12：未上报占用 + 干净轮——累计口径兜底（旧引擎/降级远端路径不变）。
+context.turnUsageDirty['session-1'] = false;
+emitUsage({ input_tokens: 63000, context_window: 262144 });
+assert.equal(state.tokens.input, 63000, '无逐请求值时累计口径兜底不变');
+
+// ── tauri/web 双端源码断言：窗口与逐请求占用都必须先于 dirty guard 消费 ──
 const tauriSection = source.slice(source.indexOf('listen("chat:usage"'), source.indexOf('listen("chat:compaction"'));
 const webSource = read('src', 'platform', 'web', 'bridge.js');
 const webSection = webSource.slice(webSource.indexOf('listen("chat:usage"'), webSource.indexOf('listen("chat:compaction"'));
@@ -124,8 +155,12 @@ const webSection = webSource.slice(webSource.indexOf('listen("chat:usage"'), web
 for (const [label, section] of [['tauri', tauriSection], ['web', webSection]]) {
   const dirtyGuard = section.indexOf('turnUsageDirty[sid]) return');
   const windowRead = section.indexOf('e.payload.context_window');
+  const ctxInputRead = section.indexOf('e.payload.context_input_tokens');
   assert.ok(dirtyGuard !== -1 && windowRead !== -1, `${label}: chat:usage handler 片段完整`);
   assert.ok(windowRead < dirtyGuard, `${label}: context_window 消费必须先于 dirty guard（否则工具轮永不更新分母）`);
+  assert.ok(ctxInputRead !== -1, `${label}: 逐请求占用口径消费点缺失`);
+  assert.ok(ctxInputRead < dirtyGuard, `${label}: 逐请求占用必须先于 dirty guard 消费（工具轮读数冻结根因）`);
+  assert.ok(windowRead < ctxInputRead, `${label}: 分母更新必须先于逐请求占用消费（同一事件先立分母）`);
   assert.ok(section.includes('windowTok !== state.tokens.max'), `${label}: 窗口变化才更新分母`);
   assert.ok(section.includes('windowTok > 0'), `${label}: 窗口 0 守卫保留`);
 }
