@@ -342,7 +342,7 @@ pub(crate) fn spawn_event_forwarder(
         // Last parent-request input the engine reported for the live turn,
         // from this session's most recent parent `TurnUsage` event.
         // `TurnComplete` usage is the billing aggregate
-        // (`TurnState::add_usage` sums input_tokens over every request of
+        // (`TurnContext::add_usage` sums input_tokens over every request of
         // the turn), so the frontend usage meter must skip it on
         // multi-request turns and needs the per-request value to stay live:
         // chat:usage fires once per turn, and any tool call of that turn
@@ -353,8 +353,8 @@ pub(crate) fn spawn_event_forwarder(
         // sets `Some`, while reviewer consults and programmatic REPL-child
         // folds set `None` — and either can be the LAST TurnUsage of a
         // normally-completing turn (an inline REPL FINAL fold breaks right
-        // after its fold; a guardian review of the final tool batch fires
-        // through the settlement/max-steps breaks; a cancel landing in the
+        // after its fold; a guardian review of the final tool batch is left
+        // last by the terminal step-loop breaks; a cancel landing in the
         // same window does the same on any turn), so the tracker must ignore
         // them and keep the last parent value. Subagent usage rides
         // SubAgentMailbox, never TurnUsage.

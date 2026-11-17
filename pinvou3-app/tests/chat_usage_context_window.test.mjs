@@ -177,6 +177,7 @@ for (const [label, section] of [['tauri', tauriSection], ['web', webSection]]) {
   assert.ok(windowRead < ctxInputRead, `${label}: 分母更新必须先于逐请求占用消费（同一事件先立分母）`);
   assert.ok(section.includes('windowTok !== state.tokens.max'), `${label}: 窗口变化才更新分母`);
   assert.ok(section.includes('windowTok > 0'), `${label}: 窗口 0 守卫保留`);
+  assert.ok(section.includes('ctxInput <= state.tokens.max'), `${label}: 逐请求超窗守卫保留（分母失真不透出超上限读数）`);
 }
 
 // ── Initial-state source assertions: neither bridge initializes with the
