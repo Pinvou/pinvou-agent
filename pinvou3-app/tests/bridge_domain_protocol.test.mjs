@@ -79,6 +79,11 @@ const protocolSources = {
   multiAgent: ['bridge/multiagent.js'],
   projects: ['bridge/projects.js'],
   computerUse: ['bridge/computer_use.js'],
+  // Round-11 review: the web lane's wire surface had no hash at all (the
+  // per-domain hashes above cover only tauri-lane files + the shared base),
+  // so a web invoke/listen span change would not redden any contract. One
+  // whole-file entry pins the web bridge's full invoke/listen surface.
+  webWireSurface: ['../web/bridge.js'],
 };
 
 const expectedProtocolHashes = {
@@ -426,7 +431,16 @@ const expectedProtocolHashes = {
   // ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
   // projects_set_never_materialize / align_session_to_project
   // (bridge/projects.js).
-  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',};
+  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',
+  // Round-11 review: first registration — the web lane's invoke/listen
+  // surface (whole web/bridge.js file, see webWireSurface above). A span
+  // change in the web bridge now reddens this pin like the tauri domains.
+  // Recomputed for the rebase onto the post-#887 main: the merged web
+  // bridge carries main's own web-side evolution (the kb_model_cancel
+  // facade entry and the streaming htmlSource provenance fields) alongside
+  // the tri-mode admission/guardrail surface; this branch adds no web
+  // change of its own in the window — no new command or event surface.
+  webWireSurface: 'eadef127417ba37c985ffdd69eb103942b5f823e6a4a63a62256c638afdc242e',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {
