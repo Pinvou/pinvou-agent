@@ -110,6 +110,11 @@ const ARTIFACT_CHAR_LIMIT: usize = 100_000;
 /// 显式标注省略条数（见 project）。
 const FACT_PROJECTION_KEEP: usize = 12;
 
+/// 每条纳入投影的 web_search 摘录截断长度（字符）；与保留条数一起由
+/// `fact_projection_literals_hold_shipped_values` 钉住（r16 审 NIT：
+/// 行为测试从常量推导期望，12→8 会全绿；500 原是裸字面量无人持有）。
+const FACT_PROJECTION_CHARS: usize = 500;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinvouPersona {
     pub id: String,
@@ -1956,7 +1961,7 @@ fn project(messages: &[Message]) -> String {
                             }
                         }
                     }
-                    "web_search" => facts.push(truncate_chars(content, 500)),
+                    "web_search" => facts.push(truncate_chars(content, FACT_PROJECTION_CHARS)),
                     _ => {}
                 },
                 _ => {}
@@ -4515,6 +4520,15 @@ mod tests {
         let p = project(&messages);
         assert!(p.contains("事实1：100 元"), "{p}");
         assert!(!p.contains("未纳入投影"), "没省略就不要标注: {p}");
+    }
+
+    /// 行为测试是 cap-relative（期望从常量推导），12→8 全绿；500 原是裸
+    /// 字面量。这里钉住两个字面量本身，静默回退（12×200→4×200 的旧口径）
+    /// 会红（r16 审 NIT）。
+    #[test]
+    fn fact_projection_literals_hold_shipped_values() {
+        assert_eq!(FACT_PROJECTION_KEEP, 12);
+        assert_eq!(FACT_PROJECTION_CHARS, 500);
     }
 
     #[test]
