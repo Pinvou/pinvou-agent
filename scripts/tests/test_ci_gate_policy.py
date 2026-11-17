@@ -4806,6 +4806,19 @@ def _invocation_lines(path):
     return [re.sub(r"[ \t]+", " ", line.strip()) for line in joined.splitlines()]
 
 
+# The npm `ci` lane shape, shared by the walkers and the r16 probe pin.
+# After `npm`, only dash-prefixed flag tokens may precede the `ci` token —
+# so `npm run ci` never matches — but each flag's value is consumed in BOTH
+# attachment forms: attached (`--prefix=x`) and space-separated
+# (`--prefix <dir>`, the form of the seven live workflow/journey lanes).
+# The r15 dash-flag-generic rewrite accepted only the attached form and
+# silently dropped every space-form lane from walker coverage (r16-M1).
+_NPM_CI_LANE_RX = r"\bnpm(?: --?[^\s=]+(?:=\S+|\s+\S+)?)* ci\b"
+# The per-leg bound that must END the head before a matched lane:
+# an inline GNU timeout with --kill-after, or the journey helper.
+_LANE_HEAD_BOUND_RX = r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*$"
+
+
 class NpmCiBoundsPolicyTests(unittest.TestCase):
     """Every npm ci lane in CI and the journey script carries a per-leg timeout bound.
 
@@ -4885,13 +4898,13 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
 
     def _assert_lanes_bounded(self, path):
         for stripped in self._npm_ci_scan_text(path):
-            npm_match = re.search(r"\bnpm(?: --?[^\s=]+(?:=\S+)?)* ci\b", stripped)
+            npm_match = re.search(_NPM_CI_LANE_RX, stripped)
             if not npm_match:
                 continue
             head = stripped[:npm_match.start()]
             self.assertRegex(
                 head,
-                r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*$",
+                _LANE_HEAD_BOUND_RX,
                 f"{path.name}: npm ci lane without a timeout bound before the invocation: {stripped!r}",
             )
 
@@ -4915,6 +4928,52 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         self.assertGreaterEqual(len(script_files), 20, "scripts walk lost its coverage")
         for path in script_files:
             self._assert_lanes_bounded(path)
+
+    def test_npm_lane_matcher_holds_space_form_flag_values(self):
+        # r16-M1 regression pin: the r15 dash-flag-generic rewrite of the
+        # lane matcher consumed only attached flag values (`--prefix=x`)
+        # and silently dropped all seven live space-form lanes
+        # (`npm --prefix <dir> ci` — pr-check.yml 753/861/895/1469/1477 and
+        # the journey script's two lanes) from walker coverage, so a
+        # bound-strip on any of them shipped this whole suite green. The
+        # matcher must accept the flag value in both attachment forms and
+        # still demand the bound at the head end in every matched shape,
+        # while `npm run ci` (and a flag-valued `run`) stays unmatched.
+        def lane(line, message):
+            match = re.search(_NPM_CI_LANE_RX, line)
+            self.assertIsNotNone(match, f"{message}: lane not matched: {line!r}")
+            self.assertRegex(
+                line[: match.start()],
+                _LANE_HEAD_BOUND_RX,
+                f"{message}: bound not required at the head end: {line!r}",
+            )
+
+        # The shipped space-form shapes (the exact r16-M1 escape class):
+        lane("timeout --kill-after=15 600 npm --prefix pinjou3-app ci", "workflow space-form")
+        lane(
+            "timeout --kill-after=15 300 npm --prefix ../remote-control-relay ci"
+            " --prefer-offline --no-audit",
+            "workflow space-form with post-ci flags",
+        )
+        lane("run_required run_with_timeout 1800 npm --prefix pinjou3-app ci", "journey space-form")
+        # Attached-value and plain forms keep matching:
+        lane("timeout --kill-after=15 600 npm --prefix=x ci", "attached value form")
+        lane("timeout --kill-after=15 600 npm ci --prefer-offline --no-audit", "plain form")
+        # Unbounded variants must FAIL the head check (a stripped bound is red):
+        for stripped_line in (
+            "npm --prefix pinjou3-app ci",
+            "npm --prefix=x ci",
+            "npm ci --prefer-offline",
+            # A bare `timeout` without --kill-after is not an accepted bound.
+            "timeout 600 npm --prefix pinjou3-app ci",
+        ):
+            match = re.search(_NPM_CI_LANE_RX, stripped_line)
+            self.assertIsNotNone(match, f"decoy lane not matched: {stripped_line!r}")
+            with self.assertRaises(AssertionError):
+                self.assertRegex(stripped_line[: match.start()], _LANE_HEAD_BOUND_RX)
+        # Not lanes: the flag group only consumes dash-prefixed tokens.
+        self.assertIsNone(re.search(_NPM_CI_LANE_RX, "npm run ci"))
+        self.assertIsNone(re.search(_NPM_CI_LANE_RX, "npm --prefix pinjou3-app run ci"))
 
     def test_release_script_npm_ci_lanes_use_the_guarded_helper(self):
         # The release scripts run on maintainer machines, including macOS
