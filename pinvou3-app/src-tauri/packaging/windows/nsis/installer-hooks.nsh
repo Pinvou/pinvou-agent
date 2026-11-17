@@ -179,9 +179,12 @@ pinvou_vc_redist_ready:
   Pop $9
   ; Positional decode with per-unit validation: every four-digit unit is
   ; hex-parsed, re-encoded canonically with %04x, and compared back to its
-  ; source before acceptance - an uppercase digit, a non-hex character, an
-  ; odd trailing length, or a decoded U+0000 (impossible in a Win32 path,
-  ; would terminate the accumulator string) all fail the round-trip and
+  ; source before acceptance - an uppercase digit, a non-hex character, or
+  ; an odd trailing length fails the round-trip. A decoded zero unit is
+  ; rejected EXPLICITLY (U+0000 cannot appear in a Win32 path and would
+  ; terminate the accumulator string; the canonical round-trip alone would
+  ; not reject it - "0000" re-encodes to "0000" and the %c append silently
+  ; contributes nothing, letting a spliced path pass). All malformed shapes
   ; land in the keep-data branch. Surrogate pairs for non-BMP characters
   ; (emoji) ride through as two ordinary units.
   StrCpy $R2 ""
@@ -197,6 +200,9 @@ pinvou_vc_redist_ready:
         IntOp $R1 "0x$R4" + 0
         IntFmt $R5 "%04x" $R1
         ${If} $R5 != $R4
+          ${ExitWhile}
+        ${EndIf}
+        ${If} $R1 == 0
           ${ExitWhile}
         ${EndIf}
         IntFmt $R5 "%c" $R1

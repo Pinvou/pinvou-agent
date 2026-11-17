@@ -401,6 +401,21 @@ assert.match(
 );
 assert.match(
   userProfileScript,
+  /WTSQuerySessionInformation/u,
+  "the session user must be confirmed against the WTS session record (the authoritative logon identity): a unique shell-owner SID is only a heuristic, and a runas-spawned or restarted foreign-SID explorer in the same session would otherwise select another account's profile for deletion",
+);
+assert.match(
+  userProfileScript,
+  /\$sessionUserSid[\s\S]*?-ine \$ownerSids\[0\][\s\S]{0,80}\{[\s\S]{0,40}exit 2/u,
+  "the resolver must require the shell-owner SID to equal the WTS session-user SID and fail closed on any disagreement: the profile match alone confirms the selected account without proving it is the session's logon user",
+);
+assert.match(
+  userProfileScript,
+  /catch \{[\s\S]{0,40}exit 2/u,
+  "the resolver must fail closed when the WTS session identity cannot be resolved to a SID (empty record, translation failure): unprovable identity means the data is retained under the manual-removal guidance",
+);
+assert.match(
+  userProfileScript,
   /exit 2/u,
   "the resolver must fail closed (non-zero exit, no path printed) when the owner is ambiguous",
 );
@@ -432,7 +447,12 @@ assert.match(
 assert.match(
   baseInstallerHooks,
   /IntOp \$R1 \$R0 % 4[\s\S]*?\$\{If\} \$R1 == 0[\s\S]*?\$\{While\} \$R3 < \$R0[\s\S]*?\$\{If\} \$R3 == \$R0[\s\S]*?\$\{AndIf\} \$R2 != ""[\s\S]*?StrCpy \$R6 1/u,
-  "the decoder must require a multiple-of-four payload and a fully consumed, non-empty decode before arming deletion: an odd trailing length or a payload that decodes to nothing (e.g. all-zero units, which terminate the NSIS string) must land in the keep-data branch",
+  "the decoder must require a multiple-of-four payload and a fully consumed, non-empty decode before arming deletion: an odd trailing length or a payload that decodes to nothing must land in the keep-data branch",
+);
+assert.match(
+  baseInstallerHooks,
+  /\$\{If\} \$R5 != \$R4[\s\S]{0,60}\$\{ExitWhile\}[\s\S]{0,60}\$\{EndIf\}[\s\S]{0,60}\$\{If\} \$R1 == 0[\s\S]{0,60}\$\{ExitWhile\}/u,
+  "the decoder must explicitly reject a decoded zero code unit: a canonical \"0000\" round-trip alone would accept it (it re-encodes to itself), and the %c append would silently contribute nothing, letting a NUL-spliced path pass validation and authorize cleanup of a path the resolver never produced",
 );
 assert.match(
   baseInstallerHooks,
@@ -489,13 +509,16 @@ for (const sample of [
     `the NSIS decoder mirror must reconstruct the exact profile path for ${sample}`,
   );
 }
-for (const malformed of ["", "abc", "zzzz", "D83D", "00", "0g001234"]) {
+for (const malformed of ["", "abc", "zzzz", "D83D", "00", "0g001234", "004100000042"]) {
   assert.equal(
     nsisDecodeMirror(malformed),
     null,
     `malformed payload must fail closed (keep data): ${JSON.stringify(malformed)}`,
   );
 }
+// "004100000042" = 'A' + U+0000 + 'B': the zero unit hides mid-payload, so
+// a length-only or decode-emptiness check would miss it while the spliced
+// "AB" result would still be non-empty.
 assert.doesNotMatch(
   baseInstallerHooks,
   /pinjou_/u,

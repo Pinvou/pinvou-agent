@@ -9,9 +9,13 @@
 # prompting user regardless of the elevation - and is matched against
 # Win32_UserProfile by SID, never by name (account renames and cross-domain
 # name collisions would make a name-based map pick the wrong profile or
-# none). Exits non-zero WITHOUT printing a path when the owner cannot be
-# determined unambiguously; the caller must treat any non-zero exit as
-# "keep user data" (fail safe - never guess a profile to wipe).
+# none). The shell-owner SID is additionally cross-checked against the WTS
+# session record's authoritative logon identity (name resolved to SID), so
+# a foreign-SID explorer in the same session cannot select another
+# account's profile. Exits non-zero WITHOUT printing a path when the owner
+# cannot be determined unambiguously or the two derivations disagree; the
+# caller must treat any non-zero exit as "keep user data" (fail safe -
+# never guess a profile to wipe).
 #
 # Transport contract (lossless by construction): the path is printed as
 # LOWERCASE HEX of its UTF-16LE code units - four hex digits per unit - so
@@ -40,6 +44,68 @@ foreach ($process in Get-CimInstance -ClassName Win32_Process -Filter "Name = 'e
 }
 $ownerSids = @($ownerSids | Select-Object -Unique)
 if ($ownerSids.Count -ne 1) {
+    exit 2
+}
+
+# Authoritative session-user binding. The shell-owner derivation above is
+# only a heuristic: explorer.exe normally runs as the session's logon
+# user, but a session can contain a foreign-SID explorer (runas-spawned,
+# or a shell restarted under a different account after the original one
+# died), and that SID's uniqueness alone would select another account's
+# profile for deletion. The WTS session record is the authoritative
+# statement of who is logged into this session, so the shell-owner SID is
+# accepted only when it matches the session user derived from that record
+# (name -> SID resolution). An empty record, an unresolvable account
+# (e.g. Entra-joined machines without a mappable local name), or any
+# disagreement is unresolvable and exits non-zero: the data is retained
+# with the manual-removal guidance instead of guessed at.
+if (-not ('Pinvou.WtsSession' -as [type])) {
+    Add-Type -TypeDefinition @'
+namespace Pinvou
+{
+    using System;
+    using System.Runtime.InteropServices;
+
+    public static class WtsSession
+    {
+        [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode)]
+        private static extern int WTSQuerySessionInformation(IntPtr server, int sessionId, int infoClass, out IntPtr buffer, out int bytesReturned);
+
+        [DllImport("wtsapi32.dll")]
+        private static extern void WTSFreeMemory(IntPtr buffer);
+
+        public static string Query(int sessionId, int infoClass)
+        {
+            IntPtr buffer;
+            int bytes;
+            if (WTSQuerySessionInformation(IntPtr.Zero, sessionId, infoClass, out buffer, out bytes) == 0)
+            {
+                return null;
+            }
+            try
+            {
+                return Marshal.PtrToStringUni(buffer);
+            }
+            finally
+            {
+                WTSFreeMemory(buffer);
+            }
+        }
+    }
+}
+'@
+}
+$sessionUser = [Pinvou.WtsSession]::Query($sessionId, 5)   # WTSUserName
+$sessionDomain = [Pinvou.WtsSession]::Query($sessionId, 7) # WTSDomain
+if ([string]::IsNullOrWhiteSpace($sessionUser) -or [string]::IsNullOrWhiteSpace($sessionDomain)) {
+    exit 2
+}
+try {
+    $sessionUserSid = ([System.Security.Principal.NTAccount] "$sessionDomain\$sessionUser").Translate([System.Security.Principal.SecurityIdentifier]).Value
+} catch {
+    exit 2
+}
+if ([string]::IsNullOrWhiteSpace($sessionUserSid) -or ($sessionUserSid -ine $ownerSids[0])) {
     exit 2
 }
 
