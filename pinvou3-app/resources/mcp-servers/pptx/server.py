@@ -476,7 +476,15 @@ def _load_cjk_font(size):
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Debian/Ubuntu
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",        # Arch/其它
-        "/System/Library/Fonts/PingFang.ttc",                       # mac(开发机)
+        # mac:PingFang 仅预装到 macOS 14(Sonoma)。macOS 15 起苹方改为按需资产字体
+        # (Font Book 手动下载;下载后落 AssetsV2/com_apple_MobileAsset_Font8/<内容hash>.asset/,
+        # 路径含内容 hash 且未必存在,无法硬编码——mpv#14878/Chromium#380313555 同类受害者)。
+        # 冬青/黑体/宋体在本机 macOS 27.3 实测仍在固定路径且 Pillow 能加载。
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     ]
     for p in candidates:
         if os.path.isfile(p):
@@ -488,63 +496,77 @@ def _load_cjk_font(size):
 
 
 def _cover_thumbnail(spec, th):
-    """画一张 16:9 封面(bg + 色条 + 标题 + 副标题 + 角标),返回 JPEG bytes;失败/无字体返回 None。"""
+    """画一张 16:9 封面(bg + 色条 + 标题 + 副标题 + 角标),返回 JPEG bytes;失败/无字体返回 None。
+    整体兜底返回 None 而不是抛异常:render() 只认 None 才走占位剥离,
+    若绘制中途抛上去,剥离不执行,模板白图又会留下(全白"封面"回归)。"""
     try:
         from PIL import Image, ImageDraw
         from io import BytesIO
     except Exception:
         return None
-    tf = _load_cjk_font(76)
-    if tf is None:
-        return None  # 没中文字体 → 放弃缩略图,避免方块
-    sf = _load_cjk_font(34) or tf
-    ff = _load_cjk_font(22) or tf
-    W, H, M = 1280, 720, 96
-    img = Image.new("RGB", (W, H), "#" + th["bg"])
-    d = ImageDraw.Draw(img)
-    d.rectangle([M, 300, M + 150, 314], fill="#" + th["accent"])  # 色条
-    # 标题优先取封面页(layout=cover)的,退回 spec 级,让缩略图跟真封面一致
-    slides = spec.get("slides", [])
-    cover = next((s for s in slides if s.get("layout") == "cover"), (slides[0] if slides else {}))
-    title = spec.get("title") or cover.get("title") or "未命名演示"
-    sub = spec.get("subtitle") or cover.get("subtitle") or ""
-    d.text((M, 196), str(title)[:32], fill="#" + th["ink"], font=tf)
-    if sub:
-        d.text((M, 344), str(sub)[:48], fill="#" + th["muted"], font=sf)
-    n = len(spec.get("slides", []))
-    d.text((M, H - 84), "Pinvou · %d 页 · %s" % (n, spec.get("theme", DEFAULT_THEME)),
-           fill="#" + th["muted"], font=ff)
-    buf = BytesIO()
-    img.save(buf, format="JPEG", quality=86)
-    return buf.getvalue()
+    try:
+        tf = _load_cjk_font(76)
+        if tf is None:
+            return None  # 没中文字体 → 放弃缩略图,避免方块
+        sf = _load_cjk_font(34) or tf
+        ff = _load_cjk_font(22) or tf
+        W, H, M = 1280, 720, 96
+        img = Image.new("RGB", (W, H), "#" + th["bg"])
+        d = ImageDraw.Draw(img)
+        d.rectangle([M, 300, M + 150, 314], fill="#" + th["accent"])  # 色条
+        # 标题优先取封面页(layout=cover)的,退回 spec 级,让缩略图跟真封面一致
+        slides = spec.get("slides", [])
+        cover = next((s for s in slides if s.get("layout") == "cover"), (slides[0] if slides else {}))
+        title = spec.get("title") or cover.get("title") or "未命名演示"
+        sub = spec.get("subtitle") or cover.get("subtitle") or ""
+        d.text((M, 196), str(title)[:32], fill="#" + th["ink"], font=tf)
+        if sub:
+            d.text((M, 344), str(sub)[:48], fill="#" + th["muted"], font=sf)
+        n = len(spec.get("slides", []))
+        d.text((M, H - 84), "Pinvou · %d 页 · %s" % (n, spec.get("theme", DEFAULT_THEME)),
+               fill="#" + th["muted"], font=ff)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=86)
+        return buf.getvalue()
+    except Exception:
+        return None  # 绘制/编码任何一步失败 → 走占位剥离,绝不留白图
 
 
 def _inject_thumbnail(pptx_path, jpeg_bytes):
-    """把封面塞进 pptx 包:docProps/thumbnail.jpeg + .rels 关系 + Content_Types(让 PowerPoint/资源管理器也认)。"""
-    if not jpeg_bytes:
-        return
+    """封面写入 pptx 包:docProps/thumbnail.jpeg + .rels 关系 + Content_Types(让 PowerPoint/资源管理器也认)。
+    jpeg_bytes 为 None 时反向剥离:python-pptx 默认模板自带一张纯白占位缩略图,
+    画不出真封面时若把它留在包里,产物卡会提取到全白图渲染成一大块空白封面
+    (macOS 15 起苹方改为按需资产字体后,mac 生成的每一份 PPT 都中招)。
+    剥离时连 .rels 里的 thumbnail 关系一起删(悬空关系会让严格解析器报错),
+    前端读不到缩略图即回退紧凑图标态。两种模式共用同一次包重写。"""
     import zipfile
     import shutil
+    import re
     tmp = pptx_path + ".tmp"
     with zipfile.ZipFile(pptx_path, "r") as zin:
         ct = zin.read("[Content_Types].xml").decode("utf-8")
         rels = zin.read("_rels/.rels").decode("utf-8")
-        if 'Extension="jpeg"' not in ct:
-            ct = ct.replace("</Types>", '<Default Extension="jpeg" ContentType="image/jpeg"/></Types>')
-        if "thumbnail.jpeg" not in rels:
-            rel = ('<Relationship Id="rIdThumb" '
-                   'Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail" '
-                   'Target="docProps/thumbnail.jpeg"/>')
-            rels = rels.replace("</Relationships>", rel + "</Relationships>")
+        if jpeg_bytes:
+            if 'Extension="jpeg"' not in ct:
+                ct = ct.replace("</Types>", '<Default Extension="jpeg" ContentType="image/jpeg"/></Types>')
+            if "thumbnail.jpeg" not in rels:
+                rel = ('<Relationship Id="rIdThumb" '
+                       'Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail" '
+                       'Target="docProps/thumbnail.jpeg"/>')
+                rels = rels.replace("</Relationships>", rel + "</Relationships>")
+        else:
+            # 剥离模式:去掉 thumbnail 关系(属性顺序无关,单标签内匹配有界)。
+            rels = re.sub(r'<Relationship\b[^>]*\bTarget="docProps/thumbnail\.jpeg"[^>]*/>', "", rels)
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
             for n in zin.namelist():
-                # 跳过这几个:Content_Types/.rels 改写后单独写;旧 thumbnail 用我们的替换(避免重复名)
+                # 跳过这几个:Content_Types/.rels 改写后单独写;旧 thumbnail 用我们的替换/移除(避免重复名)
                 if n in ("[Content_Types].xml", "_rels/.rels", "docProps/thumbnail.jpeg"):
                     continue
                 zout.writestr(n, zin.read(n))
             zout.writestr("[Content_Types].xml", ct)
             zout.writestr("_rels/.rels", rels)
-            zout.writestr("docProps/thumbnail.jpeg", jpeg_bytes)
+            if jpeg_bytes:
+                zout.writestr("docProps/thumbnail.jpeg", jpeg_bytes)
     shutil.move(tmp, pptx_path)
 
 
@@ -565,9 +587,11 @@ def render(spec, out_path):
             para(tf, "[本页渲染失败: %s]" % e, 14, "C0282D", first=True)
     prs.save(out_path)
     try:
-        _inject_thumbnail(out_path, _cover_thumbnail(spec, th))  # 封面缩略图(方案 A),失败不影响主产物
+        # 封面缩略图(方案 A):画得出真封面就注入,画不出就把模板白图占位剥掉,
+        # 两条路都不给产物卡留一张全白"封面"。失败不影响主产物。
+        _inject_thumbnail(out_path, _cover_thumbnail(spec, th))
     except Exception as e:
-        print("  (缩略图注入跳过: %s)" % e, file=sys.stderr)  # 别写 stdout,MCP 模式下会污染 JSON-RPC
+        print("  (缩略图处理跳过: %s)" % e, file=sys.stderr)  # 别写 stdout,MCP 模式下会污染 JSON-RPC
     return len(spec.get("slides", []))
 
 
