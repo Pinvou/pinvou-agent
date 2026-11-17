@@ -4059,8 +4059,13 @@ export function CodexAcpView({
                 }}
                 placeholder={codexCopy.placeholder}
                 rows={1} className="w-full min-h-[48px] max-h-48 overflow-y-auto resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
-              <div data-testid="codex-composer-footer" className="flex items-center justify-between mt-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-2 text-[10px] text-gray-400">
+              {/* Work-mode parity (ChatView composer footer): the left controls
+                  group carries flex-1 so it absorbs the free space and the
+                  voice/send cluster packs against the right edge; without it
+                  justify-between scatters the mic midway between the controls
+                  and the send button. */}
+              <div data-testid="codex-composer-footer" className="flex items-center justify-between gap-2 mt-1">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-[10px] text-gray-400">
                   {!activeId && (
                     <div className="relative min-w-0">
                       <button
@@ -4445,7 +4450,7 @@ export function CodexAcpView({
                 {busy ? (
                   <button type="button" onClick={cancel} aria-label={codexCopy.stop} title={codexCopy.stop} className="w-9 h-9 rounded-full flex items-center justify-center bg-red-500/10 text-red-500 hover:bg-red-500/15"><StopCircle size={18} /></button>
                 ) : (
-                  <>
+                  <div className="flex items-center gap-1">
                     <VoiceComposerButton
                       refProp={voiceAsrPopoverRef}
                       voiceInput={nativeVoiceInput}
@@ -4474,7 +4479,7 @@ export function CodexAcpView({
                       className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                       <Send size={16} />
                     </button>
-                  </>
+                  </div>
                 )}
               </div>
             </div>
