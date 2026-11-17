@@ -1,6 +1,6 @@
 # PINVOU Windows 端功能清单与测试用例
 
-> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。同期姊妹篇：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md)（2026-06-15 迁移接手快照）；现行 Windows 构建/CI 与私有运行时权威入口见 [`windows-rust-ci.md`](./windows-rust-ci.md) 与 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`；§5.7 的 WIN-WF-001..008 用例与 §8 清单中的「工作流启动、人工门禁…重启恢复通过」条目同属该子系统，一并作废）、§3.12 的 OTA-01..04 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现；§5.10 的 WIN-OTA-001..008 用例与 §8 清单中的「OTA 检查、下载、取消…升级结果上报通过」条目同属该链路，一并作废）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet；§5.9 的 WIN-CONN-004 用例同属该能力，一并作废）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。用例编号 `MODEL-08`、`WIN-TOOL-008` 为快照期原貌空缺，非漏排；文中版本号 `0.6.3` 为内部仓库编号，与公开 tag 序列非一一对应。其余条目经抽查与现行代码一致，正式验收前以当前代码为准。
+> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。同期姊妹篇：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md)（2026-06-15 迁移接手快照）；现行 Windows 构建/CI 与私有运行时权威入口见 [`windows-rust-ci.md`](./windows-rust-ci.md) 与 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`；§5.7 的 WIN-WF-001..008 用例与 §8 清单中的「工作流启动、人工门禁…重启恢复通过」条目同属该子系统，一并作废）、§3.12 的 OTA-01..04 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现；§5.10 的 WIN-OTA-001..008 用例与 §8 清单中的「OTA 检查、下载、取消…升级结果上报通过」条目同属该链路，一并作废）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet；§5.9 的 WIN-CONN-004 用例同属该能力，一并作废）、§3.5 的 MODEL-01「内置模型账号绑定」与 MODEL-02「后台失败缓存容错」（主干无对应实现——现行账号体系为 ACP 代理账号，见 [`codex-acp.md`](./codex-acp.md)；§5 的 WIN-MODEL-001..004A 用例同属该能力，一并作废）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。用例编号 `MODEL-08`、`WIN-TOOL-008` 为快照期原貌空缺，非漏排；文中版本号 `0.6.3` 为内部仓库编号，与公开 tag 序列非一一对应。其余条目经抽查与现行代码一致，正式验收前以当前代码为准。
 
 ## 1. 文档信息
 
@@ -114,7 +114,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 |---|---|---|---|
 | SHELL-01 | Windows 命令执行 | 基础能力 | 模型可通过 Shell 工具调用 CMD、PowerShell、WinGet 等命令 |
 | SHELL-02 | 前台实时 stdout/stderr | 可用 | Tauri 复用 session 级共享 `ShellManager`，把底座内部跟踪的前台任务完整快照转换为 `chat:tool_delta`；运行中快照尾部的半个 UTF-8 字符延迟到下一轮发送，避免中文跨读取块损坏 |
-| SHELL-03 | 长命令后台化 | 可用 | 预计超过约 5 秒的任务优先以后台任务启动并立即返回任务 ID |
+| SHELL-03 | 长命令后台化 | 可用 | 预计超过约 5 秒的任务优先以后台任务启动并立即返回任务 ID（⚠️ 快照口径：无自动 5 秒阈值；现行底座为前台默认 120 秒超时、超时终止并附后台重跑提示，显式 `background=true`/`task_shell_start` 才后台启动） |
 | SHELL-04 | 后台任务持续输出 | 可用 | 后台启动结果返回后，原工具卡继续接收 stdout/stderr；`chat:done` 不会直接清掉该任务卡 |
 | SHELL-05 | 后台任务等待/快照 | 可用 | `exec_shell_wait` 默认读取当前快照；明确等待时持续读取直到依赖满足或任务终止 |
 | SHELL-06 | 后台任务独立终态 | 可用 | 后台任务结束、失败或取消后更新工具卡终态，不依赖聊天 turn 是否已结束 |
@@ -152,8 +152,8 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 
 | 编号 | 功能 | 状态 | 用户可见行为 |
 |---|---|---|---|
-| MODEL-01 | 内置模型账号绑定 | 条件可用 | 根据设备和登录状态查询账号、模型和额度相关状态 |
-| MODEL-02 | 后台失败缓存容错 | 可用 | 暂时性请求失败保留上次已确认的账号和模型缓存；服务明确返回账号不存在时清理缓存 |
+| MODEL-01 | 内置模型账号绑定 | 条件可用 | 根据设备和登录状态查询账号、模型和额度相关状态（⚠️ 快照口径：主干无对应实现，见文首注） |
+| MODEL-02 | 后台失败缓存容错 | 可用 | 暂时性请求失败保留上次已确认的账号和模型缓存；服务明确返回账号不存在时清理缓存（⚠️ 快照口径：主干无对应实现，见文首注） |
 | MODEL-03 | 内置模型选择 | 条件可用 | 获取可用模型列表并设置默认内置模型 |
 | MODEL-04 | 第三方兼容模型 | 条件可用 | 支持本地 vLLM、DeepSeek、Kimi、OpenAI 兼容、Qwen、豆包、MiniMax、GLM、MiMo 等预设 |
 | MODEL-05 | 模型增删改与连通性测试 | 条件可用 | 保存显示名、模型名、Base URL 和凭据，测试连接后启用 |
@@ -400,11 +400,11 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 
 | 用例 ID | P | 前置条件 | 操作步骤 | 预期结果 |
 |---|---:|---|---|---|
-| WIN-MODEL-001 | P0 | 设备已有有效内置账号 | 启动并进入模型设置 | 查询到账号和模型；内置模型可选；额度状态与服务端一致 |
-| WIN-MODEL-002 | P0 | 已成功同步过账号，随后模拟后台 5xx/超时 | 重启或刷新状态 | 保留上次已确认账号和模型，不因暂时失败隐藏内置模型 |
-| WIN-MODEL-003 | P0 | 后台明确返回设备账号不存在 | 刷新状态 | 清理账号、模型和额度缓存；界面不继续展示已删除账号 |
-| WIN-MODEL-004 | P1 | 后台恢复 | 从失败状态再次刷新 | 更新为服务端最新账号和模型，不需要清空全部本地数据 |
-| WIN-MODEL-004A | P1 | 后台只返回部分账户字段或空模型列表 | 刷新状态 | 不把不完整绑定误判为可用内置模型；已确认缓存按权威/暂时失败语义处理 |
+| WIN-MODEL-001 | P0 | 设备已有有效内置账号 | 启动并进入模型设置 | 查询到账号和模型；内置模型可选；额度状态与服务端一致（⚠️ 快照口径：主干无对应实现，见文首注） |
+| WIN-MODEL-002 | P0 | 已成功同步过账号，随后模拟后台 5xx/超时 | 重启或刷新状态 | 保留上次已确认账号和模型，不因暂时失败隐藏内置模型（⚠️ 快照口径：主干无对应实现，见文首注） |
+| WIN-MODEL-003 | P0 | 后台明确返回设备账号不存在 | 刷新状态 | 清理账号、模型和额度缓存；界面不继续展示已删除账号（⚠️ 快照口径：主干无对应实现，见文首注） |
+| WIN-MODEL-004 | P1 | 后台恢复 | 从失败状态再次刷新 | 更新为服务端最新账号和模型，不需要清空全部本地数据（⚠️ 快照口径：主干无对应实现，见文首注） |
+| WIN-MODEL-004A | P1 | 后台只返回部分账户字段或空模型列表 | 刷新状态 | 不把不完整绑定误判为可用内置模型；已确认缓存按权威/暂时失败语义处理（⚠️ 快照口径：主干无对应实现，见文首注） |
 | WIN-MODEL-005 | P1 | 本地 vLLM 在 `127.0.0.1:8000` | 自动发现并测试 | 显示模型名和上下文；可保存并完成对话 |
 | WIN-MODEL-006 | P1 | vLLM 不可达 | 测试连接 | 返回明确失败原因，不把不可用模型设为活动模型 |
 | WIN-MODEL-007 | P1 | 配置兼容 API | 保存、替换、保留和删除密钥 | 凭据状态正确；UI 和设置文件不回显明文密钥 |
@@ -668,7 +668,7 @@ npm run build:nsis
 | 工具市场与 OAuth | `features/tools/`、`features/settings/SettingsView.jsx` | `bridge/marketplace.rs`、`bridge/skill_marketplace.rs` | `tests/tool_store_smoke.js`、`tests/marketplace_oauth_logic.test.js`、`scripts/mcp-server-contract-smoke.py`（仓库根，非 `pinvou3-app/scripts/`） |
 | 企业连接器 | `features/tools/ToolStoreView.jsx`、`tauri-bridge.js` | `feishu.rs`、`wecom.rs`、`dingtalk.rs` | 连接器模块测试、`tests/tool_store_smoke.js` |
 | 定时任务 | `features/scheduled/ScheduledTasksView.jsx`、`features/chat/ChatView.jsx`、`tauri-bridge.js` | `scheduled_tasks.rs`、`scheduled_executor.rs`、`bridge/sessions.rs` | `tests/scheduled_tasks_unit.test.js`、`tests/scheduled_tasks_smoke.js`、底座 `automation_manager` 测试 |
-| 桌伴公仔 | `features/pet/`、`pet-main.jsx`、`pet-menu-main.js`、`main.jsx` | `pet_window.rs`、`selected_pet.rs` | `tests/pet_*.test.mjs`、`tests/pet_selector_ui_smoke.js`、对应 Rust 测试 |
+| 桌伴公仔 | `features/pet/`、`pet-main.jsx`、`pet-menu-main.js`（已随重构删除，右键菜单并入 `PetWindow.jsx`）、`main.jsx` | `pet_window.rs`、`selected_pet.rs` | `tests/pet_*.test.mjs`、`tests/pet_selector_ui_smoke.js`、对应 Rust 测试 |
 | 远程控制 | `features/settings/SettingsView.jsx`、`tauri-bridge.js` | `remote_control/` | `remote-control-relay/test/web-ui.smoke.cjs` |
 | 监控 | `features/monitor/MonitorView.jsx`、`tauri-bridge.js` | `commands.rs`、`os/windows/windows_cpu.rs`、`windows_memory.rs` | `tests/ui_smoke.js` 及监控模块测试 |
 | 语音输入 | `features/chat/ChatView.jsx`、`tauri-bridge.js` | `voice_asr.rs`、`os/windows/windows_system.rs` | `tests/voice_input_error_logic.test.js`、`voice_asr.rs` 内模型校验和状态测试 |

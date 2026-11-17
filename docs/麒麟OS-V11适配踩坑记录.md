@@ -48,15 +48,16 @@ docker run --rm -it \
 ```
 
 容器内默认是 root，Cargo 主目录为 `/root/.cargo`。先装基础工具与 Tauri Linux 构建
-依赖（与 CI 的 ubuntu-22.04 腿同列表），再装 Rust 与 Node——22.04 系统源的 rustc
-过旧（仓库 MSRV 为 1.90，见 `src-tauri/Cargo.toml`），必须走 rustup：
+依赖（与 CI 的 ubuntu-22.04 腿同列表，含 `lld`；CI 另经 `RUSTFLAGS -C link-arg=-fuse-ld=lld`
+注入 lld 链接器，本地大链接建议照做），再装 Rust 与 Node——22.04 系统源的 rustc
+过旧（仓库 MSRV 为 1.90，见 `pinvou3-app/src-tauri/Cargo.toml`），必须走 rustup：
 
 ```bash
 apt-get update
 apt-get install -y --no-install-recommends curl ca-certificates \
   libwebkit2gtk-4.1-dev libssl-dev libayatana-appindicator3-dev \
   libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
-  build-essential pkg-config cmake
+  build-essential pkg-config cmake lld
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
@@ -180,7 +181,7 @@ exec /usr/bin/pinvou3-tauri "$@"
 
   （时点记录：该记录针对 0.5.9 时代的包；当前开源主干的 bundle 已不再携带
   `web-template` 资源，用户目录 `~/.pinvou3/web-template` 与用户生成内容按退役策略
-  保留不删（见 `features/retirement.rs`），自建包如仍内嵌该资源才需处理本项。）
+  保留不删（见 `pinvou3-app/src-tauri/src/features/retirement.rs`），自建包如仍内嵌该资源才需处理本项。）
 
 - 正式 DEB 应直接提供 `pinvou3` 命令。
 

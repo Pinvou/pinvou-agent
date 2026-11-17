@@ -67,7 +67,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - `DeepSeek-TUI/crates/tui/src/compaction.rs`：定义 `CompactionConfig` 和压缩逻辑，pinvou3 只调整本地模型和阈值。
 - `DeepSeek-TUI/crates/hooks/src/lib.rs`：定义 `HookEvent`、`HookDispatcher` 等 hook 机制，pinvou3 在 bridge 中生成 hook 配置。
 - `DeepSeek-TUI/crates/mcp/src/lib.rs`：定义 `McpManager` 与 MCP 工具/资源结构，底座经工具体系统一接入。
-- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
+- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在本仓库，属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
 
 ## pinvou3 接入边界
 
@@ -90,7 +90,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 
 - 调 `spawn_engine(engine_config, &dt_config)` 创建 CodeWhale Engine。
 - 通过 `EngineHandle::send(...)` 注入 `Op::SendMessage`、`Op::SyncSession`、`Op::SpawnSubAgent`、`Op::CompactContext` 等操作。
-- 后台读取 `EngineHandle::rx_event`，把 CodeWhale `Event` 转为 Tauri 前端事件，例如 `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:done`、`workflow:agent_progress`、`chat:compaction`。其中只有底座明确产生的 `ThinkingStarted` / `ThinkingDelta` / `ThinkingComplete` 才会形成独立思考生命周期，普通回答文本不会被推断为思考。（2026-11 注：本条的 `chat:reasoning_start/delta/done` 转发与「Thinking\* 独立思考生命周期」均为快照后行为——`chat:reasoning_*` 2026-07-29 起才加入转发，快照期 `engine.rs:444-445` 反而显式丢弃 `Event::ThinkingDelta`，思考流不单独转发成生命周期。）
+- 后台读取 `EngineHandle::rx_event`，把 CodeWhale `Event` 转为 Tauri 前端事件，例如 `chat:delta`、`chat:tool_start`、`chat:tool_end`、`chat:done`、`workflow:agent_progress`、`chat:compaction`。其中只有底座明确产生的 `ThinkingStarted` / `ThinkingDelta` / `ThinkingComplete` 才会形成独立思考生命周期，普通回答文本不会被推断为思考。（2026-11 注：本条的 `chat:reasoning_start/delta/done` 转发与「Thinking\* 独立思考生命周期」均为快照后行为——`chat:reasoning_*` 2026-07-29 起才加入转发，快照邻近可复核副本 `d49bcd40a`（2026-07-02）的 `engine.rs:449-451` 反而显式丢弃 `Event::ThinkingDelta`，思考流不单独转发成生命周期。）
 
 （2026-11 注：本段为快照后行为，快照期不成立——快照 `bridge/mod.rs` 除 Kimi→`"moonshot"` 外把 GLM/MiniMax/MiMo/豆包 预设一律映射 wire provider `"openai"`；`Zai`/`Minimax`/`XiaomiMimo`/`Volcengine` 分厂商映射与「腾讯 Coding Plan」预设为 2026-07 起的后续版本内容，Kimi `reasoning_effort = "high"` 则为 2026-11-06（`135456026`，preset catalog 刷新）才进入 pinvou3；`reasoning_stream_style` 为上游 v0.8.65 才引入的字段，不在本文声明的 v0.8.60 基线内。）模型 route 还必须区分“厂商身份”和“wire protocol”：GLM、MiniMax、MiMo、豆包、Kimi 即使都兼容 OpenAI Chat Completions，也要分别映射到底座已有的 `Zai`、`Minimax`、`XiaomiMimo`、`Volcengine`、`Moonshot` provider，才能保留各厂商的思考字段解析、回放和开关语义。字段解析与请求端开关也必须分开处理：Kimi Code 的 always-thinking 模型显式使用 `reasoning_effort = "high"`，由底座转换成 `thinking: {"type":"enabled"}`，避免工具调用前的计划落入普通 `content`；Qwen 与腾讯 Coding Plan 暂时沿用 OpenAI wire route，但显式声明 `reasoning_stream_style = "separate_field"`；未知自定义端点保持安全默认值，不注入厂商参数，也不按回答文字猜测思考内容。
 

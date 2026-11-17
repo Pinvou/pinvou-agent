@@ -374,6 +374,8 @@ MVP 不硬编码 `workspace-write + on-request` 这类未经当前 codex-acp cap
   `session/new`、`session/load` 和进程重连后先重新应用并等待确认，再开放发送。
 - Turn 运行期间禁止切换权限模式；配置请求使用
   `requested / applied / failed` 事件记录，避免无法判断某一轮实际使用了什么模式。
+  （📌 设计期口径：现行无独立 requested/applied/failed 事件通道——以 `set_model`/`set_mode`/
+  `set_config_option` 的 `Result` 与 `runtime_notice` 事件为准，见 [`codex-acp.md`](./codex-acp.md)。）
 
 ## 11. Codex ACP 对话 UI
 

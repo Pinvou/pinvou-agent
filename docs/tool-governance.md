@@ -86,7 +86,7 @@ v0.9.12 的模型侧名称以 model-visible canonical 名称为准（§2 白名�
 |---|---|---|
 | `Bash`、`File` | 保存的 v0.9.x 转录回放仍可 dispatch；经产品白名单时 `Bash` 命中 `bash` 规则可执行，`File` 无规则不可执行 | `HIDDEN_COMPAT_TOOL_NAMES = ["Bash", "File"]`（`canonical_action.rs:237`）；lib.rs `tool_allowlist_contract` |
 | `read_file`、`write_file`、`edit_file`、`git_status`/`git_diff`/`git_log`/`git_show`/`git_blame`、`exec_shell*`、`web_search`、`fetch_url`、`wait_for_dev_server`、`run_tests`、`run_verifiers` 等 | 拼写已彻底移除，`ToolRegistry::resolve` 无模糊解析，完全不能 dispatch | `RETIRED_TOOL_NAMES`（`canonical_action.rs:211`） |
-| `work_update`、`TodoWrite`、`todo`、`checklist_write`、`checklist_update`、`update_plan` | 进度工具的隐藏 replay 别名；写进白名单只是死条目，且会让进度工具整体不可见 | `tool_policy.rs:17-19`；`registry.rs:1344-1360`（`update_plan` 经 `with_plan_tool` 另行注册，约 :1365）；lib.rs 反向测试 |
+| `work_update`、`TodoWrite`、`todo`、`checklist_write`、`checklist_update`、`update_plan` | 进度工具的隐藏 replay 别名；写进白名单只是死条目，且会让进度工具整体不可见 | `tool_policy.rs:17-19`；`registry.rs:1344-1369`（`update_plan` 经 `with_plan_tool` 另行注册，`:1373`）；lib.rs 反向测试 |
 
 兼容解析：`CANONICAL_ACTION_ALIASES` 把旧名 + `action`（如 `File{read}`、`Bash{run}`）解析到现行工具，实时调用与保存的历史转录得到相同的下游行为；前端渲染器同时识别旧名与 canonical 名，以保证历史会话可读。
 
@@ -143,7 +143,7 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 - `tool_search` 只能发现白名单内且未被拒绝的工具：`allowed_tools` 同时约束首轮目录、`tool_search` 结果和实际执行（`tool_policy.rs:3-5`；lib.rs `conditional_allowlist_rules_match_model_visible_registry_entries` 以 v0.9.12 真实 registry 投影验证条件性宿主/MCP 条目均有白名单规则）。
 - canonical `write` 单次内容有 64 KiB 硬上限（`CodeWhale/crates/tui/src/tools/file_tool.rs:121`；`file/tests.rs` 断言超限写入在触盘前失败），并继续受工作区边界和审批/claim 约束。
 - canonical `bash` 执行前经命令安全分析（`CodeWhale/crates/tui/src/command_safety.rs`：命令前缀分类与危险模式预检）；破坏性命令不能被自动批准绕过。
-- 宿主额外工具经 `spawn_for_session` 的单一注入路径进入引擎（`engine_pool.rs` 的 `extra_tools` 组装与 `AppEngine::spawn_for_session` 调用，约 :2678-2740；如 `kb_tool.rs` 经 `EngineConfig.extra_tools` 注入），并继续受白名单（lib.rs、`multiagent_regression_tests.rs` 对真实 bridge 回合目录的逐项校验）和拒绝集约束。
+- 宿主额外工具经 `spawn_for_session` 的单一注入路径进入引擎（`engine_pool.rs` 的 `extra_tools` 组装（:2735-2736）与 `AppEngine::spawn_for_session` 调用（:2798，函数本体在 `features/assistant/engine.rs:1839`）；如 `kb_tool.rs` 经 `EngineConfig.extra_tools` 注入），并继续受白名单（lib.rs、`multiagent_regression_tests.rs` 对真实 bridge 回合目录的逐项校验）和拒绝集约束。
 - 宿主产生的结构化产出与审计文件写声明过的位置（会话执行根与应用审计根，见 `SessionStore::session_roots` 与 `bridge.rs::audit_workspace`）；工具不应借 canonical `write`/`edit` 扩大权限。原「三省六部」结构化产出子系统已随 bundle 0.21 完整移除（`runtime_bundle/platform/mod.rs` 变更记录），不再是安全边界的承载者。
 
 ## 8. 迁移记录

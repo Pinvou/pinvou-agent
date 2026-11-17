@@ -1,7 +1,7 @@
 # 代码模块品悟原生会话（code-native-agent）技术文档
 
 > 分支：`feat/code-native-agent`（PR #138，已 rebase 至最新 `main`）
-> 周期：2026-08-01 单日完成，共 19 个开发节点（squash 为 PR 的 6 个提交，见 §4）。
+> 周期：2026-08-01 单日完成，共 19 个开发节点（squash 为 PR 的 7 个提交，见 §4）。
 > 关联文档：`codex-acp.md`（使用与验证）、`multi-agent-acp.md`（多 agent 单一真相源）、`code-mode-解耦与权限持久化-改动说明.md`（模式解耦、能力回补与 mode 持久化的合并留档）；原 `Codex-ACP-整体架构决策.md` 的决策变更记录由本文第 3 节承接（该文档曾随主线清理下线，2026-11 已以归档形式回填至 `docs/Codex-ACP-整体架构决策.md`）。
 
 ## 1. 背景与目标
@@ -43,7 +43,7 @@
 绑项目目录的核心安全设计：
 
 - **执行根**（LLM 面向）：engine cwd、文件工具相对路径根、shell 执行目录。经 `Pinvou3Bridge` 注入的执行根解析器（共享 AcpPool 那份 `SessionAgentStore` 实例）推导；engine spawn（`engine.rs`）与 shell_workspace（`engine_pool.rs`）两个消费点经 `bridge.session_workspace` 自动同源。
-- **账本根**（应用面向）：附件、暂存、审计、产物、远程授权，恒为 `~/.pinvou3/sessions/<sid>/`（`SessionStore::execution_workspace` **一行未改**，25+ 调用点全是账本语义）。CodeWhale delegated-agent 的账本、transcript 与协调锁通过 `subagent_state_root` 使用该会话的 `workspace/`；Pinvou 专家由全局专家池生成内存 `fleet.profiles`，不写入账本根。
+- **账本根**（应用面向）：附件、暂存、审计、产物、远程授权，恒为 `~/.pinvou3/sessions/<sid>/`（📌 2026-11 修订：写档时的 `SessionStore::execution_workspace` 已随重构演进——账本根现由自由函数 `session_execution_workspace`（`codex_acp/mod.rs:1592`）与 `Pinvou3Bridge::session_roots`（`bridge.rs:913`，`SessionRoots`）承担，`execution_workspace` 现为 `AcpPool` 方法（`mod.rs:2293`）；「一行未改、25+ 调用点」为写档时点口径，账本语义本身未变）。CodeWhale delegated-agent 的账本、transcript 与协调锁通过 `subagent_state_root` 使用该会话的 `workspace/`；Pinvou 专家由全局专家池生成内存 `fleet.profiles`，不写入账本根。
 - 效果：项目目录零污染（无 `attachments/`、`.pinvou3/`、`workflow_audit.jsonl` 或 Pinvou 专家名册写入）、删会话零残留、远程下载授权面不扩大、产物面板不误扫项目。
 - 例外适配：附件引用在绑项目会话改用绝对路径（相对路径会相对项目根解析落空）。
 
@@ -143,8 +143,8 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - `features/codex/code-native-lane.js`（新增）：每会话 lane（items/busy/thinking/tokens），消费 `NATIVE_CHAT_EVENTS` 订阅清单的 18 个 `chat:*` 事件（R-1/R-3 增补后；switch 另有 `chat:plan_resolved` 分支对齐 bridge 语义：该事件由 `app/commands/interaction.rs` 的 `discard_plan` 运行时 emit 并转发远控、bridge 路径有监听，但未列入 `NATIVE_CHAT_EVENTS`，该分支经此订阅不可达。📌 2026-11 修订：此后事件清单已增补，现行 `NATIVE_CHAT_EVENTS` 为 20 项且包含 `chat:plan_resolved`（另有 `chat:transient_error`），该分支经订阅可达并幂等冻结 active 方案卡，见 `CodexAcpView.jsx` 的 `NATIVE_CHAT_EVENTS`）、hydration、乐观气泡、回声去重、shell 后台任务收口、compaction 系统项。
 - `features/codex/CodexAcpView.jsx`：按 `agent_id === 'pinvou'` 分流（发送/事件/确认卡/取消/busy），ACP 专属 UI 隐藏，工作区选择器与项目目录流程，四配置控件接入与草稿暂存，pending/busy 恢复。
 - `features/chat/composer-controls.jsx`（新增，自 ChatView 提取）：`ComposerKbSelector`/`ComposerModeChip`/`COMPOSER_ICON_BUTTON_CLASS`，可选显式会话态 props。
-- `features/settings/SettingsView.jsx`：`ComposerModelSelector` 增加显式会话态 props（sessionId/sessionModelId/onSwitchModel）；`ComposerToolMenu` 增加 `triggerVariant='pill'`。
-- `features/conversation/HomeModeSwitcher.jsx`：CODE_AGENT_OPTIONS 增加"品悟"。
+- `features/settings/SettingsView.jsx`：`ComposerModelSelector` 增加显式会话态 props（sessionId/sessionModelId/onSwitchModel）；`ComposerToolMenu` 增加 `triggerVariant='pill'`。（📌 2026-11 注：两组件现行已迁至 `src/features/settings/composer-shared.jsx`，`SettingsView.jsx` 不再直接承载。）
+- `features/conversation/HomeModeSwitcher.jsx`：CODE_AGENT_OPTIONS 增加"品悟"。（📌 2026-11 注：现行 `HomeModeSwitcher.jsx` 为 `HOME_MODE_OPTIONS`（仅 work/code 两段），"品悟"选项改经 `normalizeCodeAgents` 由后端 `agent_name` 动态注入，静态常量已不存在。）
 - `app/main.jsx`：原生会话 busy 全局监听、CodexAcpView 补传 bs 与导航回调。
 - `platform/tauri/bridge.js` + `platform/web/bridge.js`：persist 守卫——会话不在聊天列表则跳过 persist+rename。
 - `shared/i18n.js`：uiCodex 三语 key（nativeDraftHint/nativeActiveHint/nativeBlockedNotice/compactStart/compactDone/compactFail 等）。
@@ -256,6 +256,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描 AGENTS.md），
   `project_context_pack_enabled` 在 pinvou3 显式关闭；为满足审阅建议③a，
   在 app 侧（`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
+  （📌 2026-11 修订：现行基座 `PROJECT_CONTEXT_FILES` 非空且首项即 `AGENTS.md`（另四项为只读兼容回退），自动扫描仍在——「砍空」仅在写档时点的 fork 态成立；后半句 pinvou3 侧显式关闭仍为真。）
 - **注入范围**：仅对**绑定了项目目录的原生代码会话**（execution root resolver
   命中且 `is_code_session`，双门控）注入 `AGENTS.md`。覆盖项目根逐级向上到
   用户家目录为止（家目录本身不入链，`~/AGENTS.md` 不注入，避免泄露桌面/用户

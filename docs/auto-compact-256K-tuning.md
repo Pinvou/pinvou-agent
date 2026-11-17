@@ -25,7 +25,7 @@
 底座 CodeWhale **已经在 turn_loop preflight 内置了 should_compact 触发**（写档时点 turn_loop.rs:90，勿按现树查；现行触发原语为 `compaction::compaction_pressure_reached_with_billed`，见 `core/engine/turn_loop.rs` 与 `compaction.rs`），按 `token_threshold` 直接调 `compact_messages_safe` 走 LLM 摘要。但对 pinvou3 + Qwen 原生配置仍不工作，根因有二：
 
 1. 模型名 `qwen36_35b` 没 `_Nk` 后缀，`context_window_for_model` 返回 `None` → preflight 二级保险 (`recover_context_overflow`) 静默禁用。
-2. 即便加了后缀让底座识别 256K，`context_input_budget` 仍按 `TURN_MAX_OUTPUT_TOKENS = 262K` 算 input budget → `256K - 262K - 1K = 负数` → 同样返回 `None`，emergency 路径静默禁用。
+2. 即便加了后缀让底座识别 256K，`context_input_budget` 仍按 `TURN_MAX_OUTPUT_TOKENS = 262K` 算 input budget（⚠️ 写档时点常量；现行 route 级为 `API_MAX_OUTPUT_TOKENS = 65,536` + `route_output_reservation` 按窗口档位计）→ `256K - 262K - 1K = 负数` → 同样返回 `None`，emergency 路径静默禁用。
 
 会话只会一路涨到 vLLM `max_model_len` 撞墙报 400。
 
@@ -47,7 +47,7 @@ turn_loop 一个 turn 内:先判 `should_compact`(写档 era `9c8e4826` 约 :90-
 
 **修复①:`token_threshold` 200K → 190K**;锚定不变式 `token_threshold + 20K margin ≤ context_input_budget`,由回归测试 `compaction_threshold_stays_below_emergency_budget`(按 `max_output_tokens()` 动态算 budget)锁住。
 
-**修复②：本地 vLLM 的 `max_output_tokens` 由 64K → 24K**（⚠️ 写档时点口径——现行 route 级声明按窗口档位计算、机器写入的 24576 已被归一化让位，见 Round 4 节 2026-11 注；`route_limits_for_model` 与 L1 harness 一致；正式 App 不再通过全局 env 限制云端模型）。
+**修复②：本地 vLLM 的 `max_output_tokens` 由 64K → 24K**（⚠️ 写档时点口径——现行 route 级声明按窗口档位计算、机器写入的 24576 已被归一化让位，见 Round 4 节的写档时点口径注；`route_limits_for_model` 与 L1 harness 一致；正式 App 不再通过全局 env 限制云端模型）。
 - 依据:系统 prompt(写档时点 `bundle/instructions.md` §4，现树已拆分为 `instructions-{shared,work,code}.md`)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
 - 对本地 vLLM，64K 是 ~4x 设计上限的过度预留。24K 覆盖 ≤16KB 设计 + 弱模型偶尔超写到 ~24KB 的 margin，同时把**输入预算 189K(74%)→ 230,400(90%)**，自动压缩更晚触发、保留更多历史。云端 route 不复用该本地预算。
 
@@ -127,7 +127,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
             │                     │            └─ emergency 兜底
             │                     │               (recover_context_overflow,全量 input
             │                     │                > context_input_budget=230,400 强制 compact)
-            │                     └─ turn_loop preflight should_compact (nice 主路径)
+            │                     └─ turn_loop preflight should_compact (写档时点 nice 主路径;现行触发原语见文首 TL;DR)
             │                        触发 compact_messages_safe (内部先 prune_tool_result
             │                        再决定 LLM 摘要)。总量 ~195K 触发
             └─ auto_floor=60K:低于此不压缩(护极短会话 / prefix cache)
@@ -136,7 +136,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 稳态（按总量 token）：
 
 - **0–60K**：完全不动（auto_floor 下限,护 prefix cache）
-- **~195K**：`should_compact` 放行 → `compact_messages_safe`(nice 主路径)
+- **~195K**：`should_compact` 放行（写档时点判据；现行触发原语见文首 TL;DR）→ `compact_messages_safe`(nice 主路径)
   - 内部先 `prune_tool_results`（机械去重旧工具结果），剪完回到阈值下就直接返回，**省一次 LLM**
   - 否则做 LLM 摘要：末尾 4 条 + 工作集相关 pin 保留 + 旧消息总结成 system block
 - **230,400**：emergency 兜底（绕 floor 强制压缩，最多重试 2 次，救不回报 `context_overflow`）

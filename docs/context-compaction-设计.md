@@ -58,7 +58,9 @@
 
 客户机（cube-f840）翻车根因：vLLM 启动丢了 `--served-model-name qwen36_35b_256k`，
 served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口（实际
-`max_model_len=262144` 完好）→ E 降到 105,472，而写死的 190,000 > E → **倒置**，
+`max_model_len=262144` 完好）→ E 降到 128,000 − 24,576 − 1,024 = **102,400**（2026-11
+订正：原书 105,472 系误取 §6 表中 131,072 档的配对值；写档时点兜底常量即 128,000，
+见 v0.9.5 `route_budget.rs:63`），而写死的 190,000 > E → **倒置**，
 正常线永远轮不到，只剩 emergency 抖动（每次本地 trim 省 2-3K）。
 
 **单点失败：窗口来源依赖一个易丢的启动参数。** 修法 = 不靠名字，直接探测。
@@ -82,7 +84,7 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
    `model_not_found` 显式浮现）+ 存 `max_model_len`。
 3. `SavedModel`：持久化具体部署的 `context_window_tokens` / `max_output_tokens`，与发给服务端
    的 wire model alias 解耦；设置页可为任意 OpenAI-compatible 引擎配置。
-4. `bridge/mod.rs`：声明窗口与 probe 取较小值，生成同时包含 context/output 的
+4. `bridge`（📌 2026-11 注：现行路径 `features/assistant/platform/bridge.rs`，`bridge/mod.rs` 为写档时布局）：声明窗口与 probe 取较小值，生成同时包含 context/output 的
    `active_route_limits`; operator-owned endpoints (local vLLM, custom
    OpenAI-compatible / custom, excluding coding_plan) declare their output
    uniformly by window tier: >=500K→131072 / >=250K→65536 / otherwise
@@ -195,8 +197,10 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 **验收**：
 1. `cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml -- --test-threads=1`
    （bridge 测试 env 竞争，必须单线程）。
-2. 守护测试参数化四窗口，断言**同尺**不变式 `k·(T+R) + S + M ≤ E`（旧的
-   `compaction_threshold_stays_below_emergency_budget` 锁的是跨尺假不变式，一并改）；
+2. 守护测试参数化四窗口，断言**同尺**不变式 `k·(T+R) + S + 2,500（格式化常数
+   FRAMING）≤ E`——实装守卫 `forkguard_compaction_threshold_below_emergency_all_windows`
+   即此式；本节规划的 M≈15K 保守余量未进守卫（实际锁比规划更松）。旧的
+   `compaction_threshold_stays_below_emergency_budget` 锁的是跨尺假不变式，一并改；
    另断言 `probed context_tokens=Some` 时 `active_route_limits.context_tokens` 被填。
 3. `./scripts/fork-guard.sh` 必须覆盖底座 route limits/output precedence 与 app 的
    128K/256K、自定义兼容引擎结果式回归。
@@ -218,7 +222,8 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 上游 PR，属通用优化（所有本地/自托管小窗口用户受益，符合 fork-policy §2 的通用优化提上游判据——转述，原文行为「所有 CodeWhale embedder 都受益｜从最新 upstream main 提上游 PR」）。
 
 - 事实基础：真实 `usage.input_tokens` 每 turn 从 provider 免费返回，现在只喂成本统计
-  （pricing.rs）+ goal 预算（写作期约 engine.rs:1922，勿按 0.9.5 或现树查）+ footer，**从不回灌估算器**。
+  （pricing.rs）、压缩压力门（`turn_loop` 的 `compaction_pressure_reached_with_billed`——billed
+  与全量估算取大者）、goal 预算（写作期约 engine.rs:1922，勿按 0.9.5 或现树查）+ footer，**从不回灌估算器**。
 - 做法：① 回灌校准 k（`observed = real / raw_estimate`，EWMA 平滑）；② 让正常压缩
   也用 `estimated_input_tokens()`（全量）判据，与 E 同尺 → T/E 退化成同轴两个百分比，
   规则变一句话「input ≥ 75%W 温和压，≥ E 强制压」，S/M/R/档位全部消失。

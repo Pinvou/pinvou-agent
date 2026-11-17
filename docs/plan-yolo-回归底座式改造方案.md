@@ -39,6 +39,8 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 └────────────────────────────────────────────────────┘
 ```
 
+（📌 2026-11 注：`discard_plan` 现行为"放弃方案但**留在当前模式**"——不踢回 Yolo，见 `app/commands/interaction.rs` 注。）
+
 驱动状态从「显式 phase enum」改为「`mode(Plan/Yolo)` + 有无 pending plan 卡」。phase 维度全删。
 
 ## 2. 关键设计决策
@@ -50,7 +52,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 | D3 | **accept 保留执行指令注入** | 对齐底座 `"Proceed with the accepted plan."`，切 Yolo 后 AI 靠注入指令 + 共享 PlanState 续做 |
 | D4 | **砍 M2 自驱续跑** ⚠️行为变化 | 回到底座行为：执行一个 turn 后停下，用户决定是否继续。原 M2 会自动发"继续执行"循环——砍掉 |
 | D5 | **M3 收口兜底重做**（放弃旧判据） | 旧 `text_len>300` 判据是拍的、无测试支撑，放弃。重做依据"现有测试情况"评估：现状 plan 测试全是 L1 真 vLLM 端到端（`plan_ablation`/`plan_write_urge`，`#[ignore]`，靠人看收口率），M3 兜底卡逻辑**零单测覆盖**。阶段3 重做 = 先定可靠的"收口失败检测信号"（不靠字数）+ 配套建测试，触发降到 mode 维度（`mode==Plan && !plan_used`） |
-| D6 | **每轮 mode reminder 保留** | 不回退底座"指针+回查"（对 Qwen3.6 弱）。`reminder_for` 从 4 段(mode,phase)降到 2 段(mode)：Plan 一段 / Yolo 一段 |
+| D6 | **每轮 mode reminder 保留** | 不回退底座"指针+回查"（对 Qwen3.6 弱）。`reminder_for` 从 4 段(mode,phase)降到 2 段(mode)：Plan 一段 / Yolo 一段（📌 后续演进：Yolo 段的大产物分块内容已随后续裁撤删除，仅余 mode 段 + sudo 动态段，见现行 `bridge.rs` 注） |
 
 ## 3. 分阶段实施
 
@@ -69,7 +71,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 - `ModeHeader` 组件保留但不挂（或删，阶段4 收尾）
 
 **验证**：
-- headless UI 冒烟（`headless_ui_smoke_check`）：chip 渲染、点击 Yolo⇄Plan、`modeState` 刷新、激活态样式
+- headless UI 冒烟（`headless_ui_smoke_check`）：chip 渲染、点击 Yolo⇄Plan、`modeState` 刷新、激活态样式（该 harness 未随本仓库发布，仅本机留档，同 §6 口径）
 - 真机端到端（需 vLLM）：进 Plan → 发需求 → AI 调 update_plan → 卡片弹出 → ✅ → 切 Yolo 执行。确认底座 `should_stop_after_plan_tool` + ReadOnly 在 GUI 生效
 
 ### 阶段 2：后端砍 PlanPhase（一次内聚减法）
@@ -101,7 +103,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 
 **动的文件**：`bridge/mod.rs`、`src/tauri-bridge.js`、`src/index.html`
 
-- `reminder_for(mode)`：删 Ready/Executing 分支，留 Plan 一段（去"Planning 阶段"措辞）+ Yolo 大产物分块段
+- `reminder_for(mode)`：删 Ready/Executing 分支，留 Plan 一段（去"Planning 阶段"措辞）+ Yolo 大产物分块段（该 Yolo 段已随后续演进裁撤，见 D6 行注与现行 `bridge.rs` 注）
 - 删消融脚手架：`PLAN_PLANNING_NO_COLLECT`/`NO_BLOCK` 常量 + `plan_planning_reminder` 的 `PINVOU3_ABLATION` env 分发 + `ablation-clean` worktree
 - 前端清理：`chat:execution_stuck` 监听（M2 删后不再发）、`chat:plan_text_fallback` 保留（M3 改造后仍发；⚠️ 随后 §7 放弃 M3，监听已删，现行不存在）；切会话 `wasExecuting`（`tauri-bridge.js:1341`）重定义为「有 pending plan 卡」；`ModeHeader` 组件删除
 - `PlanStuckCard`（execution_stuck 分支）按 D4 处理
@@ -135,7 +137,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 ## 5. 风险与回归点
 
 1. **Plan 在 GUI 首次真跑**（阶段1 前置）：底座停 turn/ReadOnly 端到端未验证过，当新功能测
-2. **收口 10% 天花板**（D5 应对）：底座式仍依赖模型调 update_plan，~10% 会在 text 写方案——M3 兜底卡是这条防线，别一起砍（⚠️ 后续 §7 权衡后放弃 M3，防线由 chip 手切 + `plan_stuck` 双自救路径承接）
+2. **收口 10% 天花板**（D5 应对）：底座式仍依赖模型调 update_plan，~10% 会在 text 写方案（约数、无外部回执，同 D5 自认口径）——M3 兜底卡是这条防线，别一起砍（⚠️ 后续 §7 权衡后放弃 M3，防线由 chip 手切 + `plan_stuck` 双自救路径承接）
 3. **砍 M2 是行为变化**（D4）：大任务执行不再自动续跑，需用户驱动；确认产品可接受
 4. **去 phase 参数贯穿性**：阶段2 漏一个引用点就编译失败，按 §4 清单逐项核
 
@@ -155,7 +157,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 
 **为什么放弃**（推翻 §6 第 3 条原"重做"决议）：
 1. 底座 `update_plan → chat:plan_ready → 方案卡「✅就这么干」→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
-2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡直接干」。
+2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡直接动手（跳过方案）」。
 3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。
 
 **已清残骸**：`engine.rs` M3 占位注释改写为"放弃"说明；`tauri-bridge.js` 删 `PLAN_FALLBACK_KEYWORDS` / `plan_text_fallback` 监听 / `planFallbackAccept`+`planFallbackRetry`+导出 / 孤儿 bt 键 `adoptingPlan`+`adoptEcho`；顺带清同族孤儿 `executionStuckReplan`（阶段4 删 execution_stuck 后无调用方）；`index.html` 删 `PlanFallbackCard` 组件 + render 分支 + 三语 `fb*` i18n。`cargo check` exit 0、headless 5/5。**阶段1/2/3/4 全 done，方案收尾。**

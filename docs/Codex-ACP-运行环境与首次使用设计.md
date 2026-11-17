@@ -94,7 +94,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 > `PINVOU3_CODEX_PATH`→ 系统/legacy 随包**择新可兼容者**解析（`select_newest_eligible`
 > 按版本比较，旧系统 CLI 会被 `MIN_CODEX_VERSION` 过滤让位于新 legacy，并非固定
 > 「系统优先」序），见 `runtime.rs`）；登录走 codex CLI
-> （`login.rs` 路由至 `platform::codex_login_command`）而非 `codex-acp login`；认证判断现为三个 env 变量 + `~/.codex/config.toml`
+> （`login.rs` 路由至 `codex_acp::platform` 层的 `codex_login_command`，见 `platform/linux.rs` 等各平台实现）而非 `codex-acp login`；认证判断现为三个 env 变量 + `~/.codex/config.toml`
 > relay key + 真实 `codex login status` 复检。其余缺口以现行
 > [`codex-acp.md`](./codex-acp.md) 为准。
 

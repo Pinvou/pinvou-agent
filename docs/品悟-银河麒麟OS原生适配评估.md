@@ -12,7 +12,7 @@
 
 ## 1. 评估背景
 
-品悟当前已具备 Linux ARM64 DEB 发布能力（2026-11 注：loongarch64 DEB 发布腿亦已上线，见 §5.8 注；应用内 OTA 为未实施的规划能力），需要评估其面向银河麒麟桌面操作系统进行原生适配时的技术可行性、工作范围、风险和预计投入。
+品悟当前已具备 Linux ARM64 DEB 发布能力（2026-11 注：loongarch64 DEB 发布腿亦已上线，见 §5.4 注；应用内 OTA 为未实施的规划能力，见 §5.8 注），需要评估其面向银河麒麟桌面操作系统进行原生适配时的技术可行性、工作范围、风险和预计投入。
 
 本评估参考：
 
@@ -130,7 +130,7 @@ Tauri Linux 应用依赖宿主系统 glibc。当前开发机直接构建的 AMD6
 
 ### 5.2 WebKitGTK 准入
 
-品悟 Tauri 2 Linux 端依赖 `webkit2gtk = "2.0"`，生成的 DEB 会依赖（2026-11 注：按现行 `config/platforms/linux/tauri.conf.json` 的 `depends` 实测；`libgtk-3-0` 为传递依赖，不直接声明）：
+品悟 Tauri 2 Linux 端依赖 `webkit2gtk = "2.0"`，生成的 DEB 会依赖（2026-11 注：按现行 `pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.json` 的 `depends` 实测；`libgtk-3-0` 为传递依赖，不直接声明）：
 
 - `libwebkit2gtk-4.1-0 (>= 2.40)`；
 - `webkit2gtk-driver`、`libpipewire-0.3-0`、`libgbm1`、`libegl1`。

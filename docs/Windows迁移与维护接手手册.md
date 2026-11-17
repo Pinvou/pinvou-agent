@@ -18,11 +18,11 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 
 ## 2. 当前仓库结构
 
-（2026-11 注：本节表格为快照期 0.6.x 布局，路径与「当前」措辞按当时口径陈述；现行布局为 `app/` + `features/` + `platform/`，Windows 打包目标 msi+nsis 已上线。）
+（2026-11 注：本节表格为快照期 0.6.x 布局，路径与「当前」措辞按当时口径陈述；现行布局为 `app/` + `features/` + `platform/`，Windows 打包已上线——平台配置含 `msi`+`nsis` 目标，发布 CI 实际产出 nsis 安装包。）
 
 | 路径 | 作用 | Windows 接手要点 |
 |---|---|---|
-| `pinvou3-app/` | 主应用，Tauri 2.0 + Rust 后端 + 静态前端 | 迁移主战场；当前打包目标主要是 Linux `.deb`（⚠️ 快照条目：现行 Windows `msi`+`nsis` 打包已上线，见 `pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json`，§11 结论已纠正） |
+| `pinvou3-app/` | 主应用，Tauri 2.0 + Rust 后端 + 静态前端 | 迁移主战场；当前打包目标主要是 Linux `.deb`（⚠️ 快照条目：现行 Windows 打包已上线——平台配置含 `msi`+`nsis`，发布 CI 实际产出 nsis；见 `pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json`，§11 结论已纠正） |
 | `pinvou3-app/src/` | 前端入口，`index.html` + `tauri-bridge.js` + vendor JS | `tauri-bridge.js` 是前后端通信唯一集中封装 |
 | `pinvou3-app/src-tauri/` | Rust 后端、Tauri 配置、bundle 资源 | Windows 兼容主要改这里和打包配置 |
 | `DeepSeek-TUI/` | 底座 submodule，Cargo path dependency | 当前工作区该目录可能为空；必须先初始化 submodule |
@@ -336,7 +336,7 @@ Windows 迁移建议：
 }
 ```
 
-> 快照口径：当前主干已落地 Windows 打包——`pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json` 已含 `"targets": ["msi","nsis"]`（perMachine、LZMA、VC++ 检测与安装钩子齐备）；基座 `tauri.conf.json` 不再写 `targets`，按平台目录拆分。本节「必须重做」清单仅对 0.6.x 状态成立，现行契约见 `docs/windows-private-runtime-submodule.md`。
+> 快照口径：当前主干已落地 Windows 打包——`pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json` 已含 `"targets": ["msi","nsis"]`（perMachine、LZMA、VC++ 检测与安装钩子齐备；发布 CI 实际产出 nsis 安装包，msi 目标暂仅配置与本地构建）；基座 `tauri.conf.json` 不再写 `targets`，按平台目录拆分。本节「必须重做」清单仅对 0.6.x 状态成立，现行契约见 `docs/windows-private-runtime-submodule.md`。
 
 Linux 安装说明在 `pinvou3-app/INSTALL.md`，依赖 `.deb`、`apt`、`pkexec`。应用内升级也围绕 `.deb` 下载、sha256 校验、`pkexec apt` 安装。
 
@@ -358,7 +358,7 @@ Windows 迁移必须重做或拆分：
 | 风险 | 涉及模块 | 建议优先级 |
 |---|---|---|
 | `DeepSeek-TUI/` 子模块未初始化导致 Cargo path 依赖断 | Git / Cargo | P0 |
-| Tauri bundle 只配了 `deb` | `tauri.conf.json` | P0（⚠️ 快照条目：现行 Windows `msi`+`nsis` 打包已上线，见 §11 注） |
+| Tauri bundle 只配了 `deb` | `tauri.conf.json` | P0（⚠️ 快照条目：现行 Windows 打包已上线——配置含 `msi`+`nsis`，发布 CI 实际产出 nsis，见 §11 注） |
 | `HOME` 环境变量假设 | `bridge/paths.rs`、`file_ingest.rs` | P0 |
 | `which` 命令探测依赖 | `file_ingest.rs` | P0 |
 | `pkexec` / `apt` 一键安装依赖 | `file_ingest.rs`、`updater.rs` | P0 |
@@ -432,7 +432,7 @@ Windows 原生后建议增加这些测试：
 - 品悟 v2 review 已推翻并从源码移除（2026-11 注：后续新方案已设计并落地为 v4 召唤式评审，见 [`品悟v4-召唤式评审设计.md`](./品悟v4-召唤式评审设计.md)）。
 - 多 subagent 大研究 fan-out 已废弃，只保留单 + 串行。
 - Plan/YOLO 收敛已完成：`PlanPhase` 状态机已删除，composer 提供 Plan/Yolo 手切 chip（默认 Yolo），`plan_stuck` 兜底卡保留；不要再按旧 PlanPhase / plan-fallback 逻辑开发。（改造方案与决策记录见 [`plan-yolo-回归底座式改造方案.md`](./plan-yolo-回归底座式改造方案.md)。）
-- 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩（现为按路由的 `route_inline_char_budget`，结论不变）。
+- 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩（现为按路由的 `route_inline_char_budget`——窗口的 3%、封顶 10 万字符；「12K」为写档时点平铺值，结论不变）。
 
 ## 16. 推荐阅读顺序
 
@@ -490,7 +490,7 @@ Windows 原生后建议增加这些测试：
 读者阅读本文后，应能列出至少 10 个迁移风险，并为每项指出影响模块和处理方向。最低应包含：
 
 - `DeepSeek-TUI/` submodule 未初始化。
-- Tauri bundle 只配置 `.deb`。（⚠️ 快照条目：现行 Windows `msi`+`nsis` 打包已上线，见 §11 ⚠️ 注与 §2 现行路径）
+- Tauri bundle 只配置 `.deb`。（⚠️ 快照条目：现行 Windows 打包已上线——配置含 `msi`+`nsis`，发布 CI 实际产出 nsis，见 §11 ⚠️ 注与 §2 现行路径）
 - `HOME` 与 Windows `USERPROFILE` 差异。
 - `which` 不适用于 Windows。
 - `pkexec` / `apt` 是 Linux-only。
@@ -506,6 +506,6 @@ Windows 原生后建议增加这些测试：
 
 - 新增领域 agent 或工具组合：优先 `SKILL.md`，验证 skill 加载和对话效果。
 - 接外部业务 API：优先独立 MCP server，验证 MCP 注册、工具 schema 和调用结果。
-- 修改附件解析：入口 `pinvou3-app/src-tauri/src/file_ingest.rs`，验证多格式样本和缺依赖提示。
+- 修改附件解析：入口 `pinvou3-app/src-tauri/src/features/files/file_ingest.rs`，验证多格式样本和缺依赖提示。
 - 同步 DeepSeek-TUI 上游：入口 `DeepSeek-TUI/` 和 `docs/fork-modifications.md`，验证 fork guard、prompt diff、工具集合和动态激活路径。
 - 修改 Windows 打包/更新：入口 `pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json`（平台层配置，base `tauri.conf.json` 不含打包 targets）、`pinvou3-app/src-tauri/src/app/commands/updater.rs`、设置页更新入口，验证安装、升级、卸载和用户数据保留。
