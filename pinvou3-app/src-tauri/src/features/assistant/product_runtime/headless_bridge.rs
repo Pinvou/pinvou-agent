@@ -694,9 +694,6 @@ pub const MAX_STAGED_ATTACHMENTS: usize = 16;
 /// Same cap the staging copier (`copy_bounded` at the shared call sites)
 /// enforces: tied to `file_ingest::MAX_FILE_BYTES` at compile time so the
 /// request validator and the copier cannot drift apart.
-/// Deliberately an INDEPENDENT literal, not an alias of
-/// `files::file_ingest::MAX_FILE_BYTES`: the two caps guard different sides
-/// of the same handoff (validate before staging, bounded copy during).
 /// Round-51 review: the constant moved to `attachments.rs` (an
 /// unconditionally compiled module) as the single definition — the old
 /// second literal here plus the benchmark-hooks-only compile-time assert

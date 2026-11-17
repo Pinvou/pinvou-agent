@@ -1878,9 +1878,11 @@ type StagedBatch = (
 
 /// Upper bound on how long the failure arms wait for a staging task that was
 /// still running when the deadline (or a panic) dropped the setup future.
-/// Staging is capped at 16 × 50 MiB plus bounded ingest work, so this grace
-/// covers every real completion (60s ≈ 800 MiB over a ~14 MB/s slow link);
-/// expiring it degrades to the pre-fix
+/// The copy phase is capped at 16 × 50 MiB, so at realistic disk speeds it
+/// finishes within this grace (60s ≈ 800 MiB over a ~14 MB/s slow link);
+/// the ingest work inside the same task carries its own per-file kill-tree
+/// timeouts and is NOT covered — a conversion-heavy batch can exceed the
+/// grace. Expiring it degrades to the pre-fix
 /// behavior (detached task) rather than hanging the report on a wedged
 /// filesystem read.
 const STAGING_JOIN_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
@@ -2809,7 +2811,12 @@ mod tests {
     fn cap_growth_predicate_distinguishes_grown_sources() {
         let workspace = tempfile::tempdir().unwrap();
         let big = workspace.path().join("big.bin");
-        std::fs::write(&big, vec![0_u8; MAX_ATTACHMENT_BYTES as usize + 1]).unwrap();
+        // Sparse file: the predicate reads metadata only, so the cap+1 size
+        // costs no real bytes (same trick as the sibling tests above).
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT_BYTES + 1)
+            .unwrap();
         assert!(
             stage_refusal_means_cap_growth(&big),
             "a source past the per-file cap at refusal time is the cap-growth case"

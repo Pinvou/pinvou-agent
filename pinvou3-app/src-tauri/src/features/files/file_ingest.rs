@@ -988,9 +988,10 @@ mod tests {
     #[test]
     fn ingest_accepts_file_over_legacy_cap() {
         // issue #842 回归钉:旧 20 MiB 上限拒掉的体积,在新上限内必须完成摄入。
-        // 稀疏 .txt:头部写满 8 KiB 真实文本(嗅探窗口),NUL 尾巴由 set_len 补齐。
+        // 全 NUL 稀疏 .txt:set_len 直接补出 20 MiB + 1 的稀疏体量;.txt 走
+        // classify 直进文本摄入(不经过嗅探),NUL 内容不影响判定——本钉只证明
+        // 尺寸门放行 + 全管线完成。
         let tmp = std::env::temp_dir().join("pinvou3-ingest-legacy-cap-test.txt");
-        std::fs::write(&tmp, "l".repeat(8192).as_bytes()).unwrap();
         std::fs::File::create(&tmp)
             .unwrap()
             .set_len(20 * 1024 * 1024 + 1)
