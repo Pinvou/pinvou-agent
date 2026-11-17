@@ -106,9 +106,13 @@ mod tests {
     /// 字符集的 id 必须在命令层被拒而不是落盘读取。
     #[tokio::test]
     async fn get_session_stats_aggregates_and_rejects_bad_ids() {
-        let _guard = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        // locked_env snapshots PINVOU3_HOME before the fixture overwrites
+        // it and restores that value on scope exit (panic paths included)
+        // while the lock is still held - a hand-rolled lock + set_var with
+        // no restore leaked the deleted temp root into every later
+        // env-participating test (review JensenChen28 2026-11-16 P3).
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = std::env::temp_dir().join(format!(
             "pinvou3-timeline-stats-cmd-{}",
             std::time::SystemTime::now()
@@ -116,7 +120,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: platform::paths::tests::ENV_LOCK held via _env_guard.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
         let sid = "session-stats-cmd";
