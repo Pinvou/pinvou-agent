@@ -4818,6 +4818,14 @@ _NPM_CI_LANE_RX = r"\bnpm(?: --?[^\s=]+(?:=\S+|\s+\S+)?)* ci\b"
 # an inline GNU timeout with --kill-after, or the journey helper.
 _LANE_HEAD_BOUND_RX = r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*$"
 
+# The pip `install` lane shape, shared by the pip walker and its probe pin.
+# Accepts both interpreter spellings (`python3 -m pip` and `python -m pip` —
+# the bare spelling was a latent evasion) and both module spellings
+# (`pip install` / `-mpip install`); `pip list`-style non-install uses stay
+# unmatched. The bound must END the head, so a decoy invocation followed by
+# `true && pip …` cannot satisfy the anchor.
+_PIP_INSTALL_LANE_RX = r"(?:python3? (?:-m ?)?)?(?:mpip3?|pip3?) install\b"
+
 
 class NpmCiBoundsPolicyTests(unittest.TestCase):
     """Every npm ci lane in CI and the journey script carries a per-leg timeout bound.
@@ -5118,9 +5126,16 @@ class PipCiBoundsPolicyTests(unittest.TestCase):
     """
 
     def test_every_pip_install_lane_is_timeout_bounded(self):
+        # The r16 review closed the npm walker's lone-lane asymmetry: this
+        # walker now covers every script under scripts/, scripts/ci/ and
+        # scripts/asr/ (the journey lane lives there) in the same all-files
+        # shape, so a future script lane is covered the moment it appears.
         paths = sorted((ROOT / ".github/workflows").glob("*.yml")) \
             + sorted((ROOT / ".github/workflows").glob("*.yaml")) \
-            + [ROOT / "scripts/run-user-journey-tests.sh"]
+            + sorted((ROOT / "scripts").glob("*.sh")) \
+            + sorted((ROOT / "scripts/ci").glob("*.sh")) \
+            + sorted((ROOT / "scripts/asr").glob("*"))
+        self.assertGreaterEqual(len(paths), 20, "pip walker lost its scripts coverage")
         seen = 0
         for path in paths:
             self.assertTrue(path.exists(), f"{path} is missing")
@@ -5132,14 +5147,14 @@ class PipCiBoundsPolicyTests(unittest.TestCase):
                 # search accepted `env timeout … 300 true && pip install …`
                 # with pip running unbounded, and the unjoined line scanner
                 # false-red on a legitimately reflowed lane.
-                pip_match = re.search(r"(?:python3 -m )?\bm?pip3? install\b", stripped)
+                pip_match = re.search(_PIP_INSTALL_LANE_RX, stripped)
                 if not pip_match:
                     continue
                 seen += 1
                 head = stripped[:pip_match.start()]
                 self.assertRegex(
                     head,
-                    r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*$",
+                    _LANE_HEAD_BOUND_RX,
                     f"{path.name}: pip install lane without a timeout bound before the invocation: {stripped!r}",
                 )
         self.assertEqual(
@@ -5147,6 +5162,36 @@ class PipCiBoundsPolicyTests(unittest.TestCase):
             "expected exactly 2 pip install lanes (pr-check fast-gate + journey); "
             "a new lane must carry the same per-leg bound and extend this pin",
         )
+
+    def test_pip_lane_matcher_holds_both_interpreter_spellings(self):
+        # r16 review NIT (companion to the npm space-form probe): the bare
+        # `python -m pip` spelling and a script lane outside the old walk
+        # were both latent evasions. The matcher must match both interpreter
+        # spellings and demand the bound at the head end; non-install pip
+        # uses stay unmatched.
+        def lane(line, message):
+            match = re.search(_PIP_INSTALL_LANE_RX, line)
+            self.assertIsNotNone(match, f"{message}: lane not matched: {line!r}")
+            self.assertRegex(
+                line[: match.start()],
+                _LANE_HEAD_BOUND_RX,
+                f"{message}: bound not required at the head end: {line!r}",
+            )
+
+        lane("timeout --kill-after=15 300 python3 -m pip install --quiet x", "python3 form")
+        lane("run_required run_with_timeout 1800 python -m pip install --quiet x", "bare python form")
+        lane("timeout --kill-after=15 300 python3 -mpip install x", "-mpip form")
+        for stripped_line in (
+            "python3 -m pip install --quiet x",
+            "python -m pip install --quiet x",
+            "timeout 300 python3 -m pip install --quiet x",
+        ):
+            match = re.search(_PIP_INSTALL_LANE_RX, stripped_line)
+            self.assertIsNotNone(match, f"decoy lane not matched: {stripped_line!r}")
+            with self.assertRaises(AssertionError):
+                self.assertRegex(stripped_line[: match.start()], _LANE_HEAD_BOUND_RX)
+        self.assertIsNone(re.search(_PIP_INSTALL_LANE_RX, "python3 -m pip list"))
+        self.assertIsNone(re.search(_PIP_INSTALL_LANE_RX, "pip --version"))
 
 
 if __name__ == "__main__":
