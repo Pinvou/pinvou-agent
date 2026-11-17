@@ -79,6 +79,11 @@ const protocolSources = {
   multiAgent: ['bridge/multiagent.js'],
   projects: ['bridge/projects.js'],
   computerUse: ['bridge/computer_use.js'],
+  // Round-11 review: the web lane's wire surface had no hash at all (the
+  // per-domain hashes above cover only tauri-lane files + the shared base),
+  // so a web invoke/listen span change would not redden any contract. One
+  // whole-file entry pins the web bridge's full invoke/listen surface.
+  webWireSurface: ['../web/bridge.js'],
 };
 
 const expectedProtocolHashes = {
@@ -423,7 +428,22 @@ const expectedProtocolHashes = {
   // ensure_folder_projects / update_project(roots, lastPrimaryRoot) /
   // projects_set_never_materialize / align_session_to_project
   // (bridge/projects.js).
-  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',};
+  projects: 'b7b41e3f15a938ab4a5cad8e28e70efe031f382cdced92a4022badf9119027d1',
+  // Round-11 review: first registration — the web lane's invoke/listen
+  // surface (whole web/bridge.js file, see webWireSurface above). A span
+  // change in the web bridge now reddens this pin like the tauri domains.
+  // Recomputed for the rebase onto the post-#887 main: the merged web
+  // bridge carries main's own web-side evolution (the kb_model_cancel
+  // facade entry and the streaming htmlSource provenance fields) alongside
+  // the tri-mode admission/guardrail surface; this branch adds no web
+  // change of its own in the window — no new command or event surface.
+  // Recomputed for the rebase onto the #894-era main: main's usage-meter
+  // occupancy fix (#892) rewrote the chat:usage listener body (the
+  // per-request context_input_tokens reading is consumed ahead of the
+  // cumulative-input dirty guard); the extracted call set is unchanged
+  // (98 invoke/listen entries both sides) — no new command or event
+  // surface.
+  webWireSurface: '2b801a2f31834a9c828dcd2bbad56a4d5272863b5f9532149511df230fe85169',};
 
 for (const [domain, files] of Object.entries(protocolSources)) {
   const signatures = files.flatMap(file => {
