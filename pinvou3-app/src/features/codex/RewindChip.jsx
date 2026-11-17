@@ -34,7 +34,20 @@ const REWIND_FILE_LIST_INITIAL_ROWS = 100;
 const REWIND_FILE_LIST_EXPAND_STEP = 200;
 
 function ChangeFileList({ changes, copy }) {
-  const [visibleCount, setVisibleCount] = useState(REWIND_FILE_LIST_INITIAL_ROWS);
+  // 窗口随清单重置：预览刷新换了一份 changes 时，复用挂载的组件会继承上
+  // 一次的展开量，新清单从旧批大小起显（r16 审 NIT）。渲染期条件重置是
+  // React 认可的派生状态模式（重渲染先于提交、丢弃中间帧），也避开
+  // effect-setState 的级联渲染 lint。
+  const [windowState, setWindowState] = useState({
+    changes,
+    count: REWIND_FILE_LIST_INITIAL_ROWS,
+  });
+  if (windowState.changes !== changes) {
+    setWindowState({ changes, count: REWIND_FILE_LIST_INITIAL_ROWS });
+  }
+  const visibleCount = windowState.changes === changes
+    ? windowState.count
+    : REWIND_FILE_LIST_INITIAL_ROWS;
   if (!changes.length) return null;
   const visible = changes.slice(0, visibleCount);
   const hidden = changes.length - visible.length;
@@ -55,7 +68,7 @@ function ChangeFileList({ changes, copy }) {
         <button
           type="button"
           data-testid="rewind-more-files"
-          onClick={() => setVisibleCount((count) => count + REWIND_FILE_LIST_EXPAND_STEP)}
+          onClick={() => setWindowState((state) => ({ ...state, count: state.count + REWIND_FILE_LIST_EXPAND_STEP }))}
           className="w-full px-2.5 py-1.5 text-left text-[11px] text-blue-600 hover:bg-black/[0.03] hover:text-blue-700 dark:text-blue-300 dark:hover:bg-white/[0.04]"
         >
           {copy.rewindMoreFiles(hidden)}
