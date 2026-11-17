@@ -471,7 +471,10 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       return true;
     }
     case 'chat:usage': {
-      const input = Number(p.input_tokens || 0);
+      // Prefer the per-request occupancy (the last parent request's reported
+      // input); input_tokens is the billing aggregate summed over the turn's
+      // requests, which overshoots the real context size on tool turns.
+      const input = Number(p.context_input_tokens || p.input_tokens || 0);
       if (input <= 0) return false;
       // The forwarder resolves context_window for the active route. Preserve the previous
       // value when legacy or partial payloads omit it.

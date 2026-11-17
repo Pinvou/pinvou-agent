@@ -339,6 +339,26 @@ pub(crate) fn spawn_event_forwarder(
         // persist failure, or hash failure clears it.
         let mut last_persisted_chat_revision: Option<String> = None;
         let mut active_transcript_seen = false;
+        // Last parent-request input the engine reported for the live turn,
+        // from this session's most recent parent `TurnUsage` event.
+        // `TurnComplete` usage is the billing aggregate
+        // (`TurnContext::add_usage` sums input_tokens over every request of
+        // the turn), so the frontend usage meter must skip it on
+        // multi-request turns and needs the per-request value to stay live:
+        // chat:usage fires once per turn, and any tool call of that turn
+        // latches the bridge's cumulative-input guard until the next send —
+        // without this field the meter only ever refreshed through a
+        // compaction. Parent requests are told apart from the other
+        // TurnUsage producers by `request_ms`: the parent emission always
+        // sets `Some`, while reviewer consults and programmatic REPL-child
+        // folds set `None` — and either can be the LAST TurnUsage of a
+        // normally-completing turn (an inline REPL FINAL fold breaks right
+        // after its fold; a guardian review of the final tool batch is left
+        // last by the terminal step-loop breaks; a cancel landing in the
+        // same window does the same on any turn), so the tracker must ignore
+        // them and keep the last parent value. Subagent usage rides
+        // SubAgentMailbox, never TurnUsage.
+        let mut latest_reported_input_tokens: Option<u32> = None;
         // A typed preflight rejection completes the admitted lifecycle without
         // changing engine history. Preserve that distinction through
         // `chat:done` so the UI rolls back its optimistic edit.
@@ -385,6 +405,11 @@ pub(crate) fn spawn_event_forwarder(
                     ..
                 } => {
                     startup_first_output_recorded = false;
+                    // New turn owns the occupancy window: a turn where the
+                    // provider never reported usage must not inherit the
+                    // previous turn's value (the payload field stays null and
+                    // the frontend keeps its last good number).
+                    latest_reported_input_tokens = None;
                     // Publish admission from the authoritative engine event,
                     // before this serial forwarder can observe any delta or
                     // terminal event for the same turn. Reclaim uses the same
@@ -1367,9 +1392,17 @@ pub(crate) fn spawn_event_forwarder(
                     // 单独发 usage 给前端 token 进度条
                     let payload = json!({
                         "session_id": session_id,
+                        // Billing aggregate summed over the turn's requests;
+                        // consumers that must not see the overshooting sum read
+                        // context_input_tokens instead. Kept byte-identical for
+                        // self_metrics, scheduled-run totals and remote stats.
                         "input_tokens": usage.input_tokens,
                         "output_tokens": usage.output_tokens,
                         "context_window": bridge.usage_context_window(),
+                        // Last reported parent-request input = real context
+                        // occupancy at turn end (see the tracker declaration);
+                        // null when the provider never reported usage.
+                        "context_input_tokens": latest_reported_input_tokens,
                     });
                     let _ = app.emit("chat:usage", payload.clone());
                     crate::features::remote_control::forward_app_event(&app, "chat:usage", payload);
@@ -1739,6 +1772,14 @@ pub(crate) fn spawn_event_forwarder(
                     // 无工具多调用轮(续跑/reprompt)逐条累加。墙钟 Instant 重测
                     // 含转发/分发延迟,仅作引擎未上报完整对时的回落。
                     // benchmark-hooks 的 eval 里程碑照旧,与 self_metrics 互不影响。
+                    // Per-request occupancy bookkeeping for the usage meter:
+                    // keep the freshest reported PARENT input (parent-only via
+                    // `request_ms` — the consult/fold producers set None and
+                    // can outlast the parent stream at turn end), and a
+                    // zero/absent report must not clobber an earlier value.
+                    if usage.input_tokens > 0 && request_ms.is_some() {
+                        latest_reported_input_tokens = Some(usage.input_tokens);
+                    }
                     if let Some(m) = &self_metrics {
                         m.on_engine_usage(
                             &session_id,
@@ -2570,6 +2611,83 @@ mod transcript_persist_pins {
                 .count(),
             1,
             "TurnUsage must feed SelfMetrics exactly once, args in engine field order + per-call output_tokens"
+        );
+    }
+}
+
+#[cfg(test)]
+mod usage_occupancy_pins {
+    //! The chat page's usage meter receives `chat:usage` exactly once per
+    //! turn (TurnComplete), and its cumulative-input guard skips that event
+    //! on every tool-using turn. The per-request `context_input_tokens`
+    //! field is therefore the only live occupancy source, so its plumbing —
+    //! tracker refresh on TurnUsage, reset on TurnStarted, payload emission
+    //! on TurnComplete — is pinned here (same source-pin approach as the
+    //! other forwarder wiring pins above; no test drives the event loop,
+    //! and the comment stripper keeps prose mentions from satisfying a
+    //! needle).
+
+    #[test]
+    fn turn_usage_tracks_the_freshest_reported_parent_input() {
+        let flattened: String = super::transcript_persist_pins::forwarder_body()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(
+            flattened
+                .matches(
+                    "ifusage.input_tokens>0&&request_ms.is_some(){latest_reported_input_tokens=Some(usage.input_tokens);}"
+                )
+                .count(),
+            1,
+            "TurnUsage must refresh the occupancy tracker exactly once, gated to parent requests (`request_ms` is Some) and zero-guarded so an unreported call cannot clobber an earlier value"
+        );
+        // The TurnStarted arm owns the reset: a turn whose provider never
+        // reported usage must emit a null field, not the previous turn's
+        // value. The arm-scoped count alone cannot see a reset drifting into
+        // ANOTHER arm, so first pin the whole-body count, then scope it to
+        // exactly the TurnStarted arm (same arm-boundary caliber as
+        // input_notification_pins).
+        let reset = "latest_reported_input_tokens=None;";
+        assert_eq!(
+            flattened.matches(reset).count(),
+            1,
+            "the occupancy reset must exist exactly once in the whole forwarder body (a second reset anywhere is a semantics change)"
+        );
+        let arm_marker = "Event::TurnStarted{";
+        let arm_start = flattened
+            .find(arm_marker)
+            .expect("the TurnStarted arm must exist");
+        let body_at = arm_start + arm_marker.len();
+        let arm_end = flattened[body_at..]
+            .find("Event::")
+            .map_or(flattened.len(), |offset| body_at + offset);
+        assert_eq!(
+            flattened[arm_start..arm_end].matches(reset).count(),
+            1,
+            "exactly the TurnStarted arm may reset the occupancy tracker"
+        );
+    }
+
+    #[test]
+    fn turn_complete_payload_carries_the_occupancy_field_without_touching_billing() {
+        let flattened: String = super::transcript_persist_pins::forwarder_body()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(
+            flattened
+                .matches(r#""context_input_tokens":latest_reported_input_tokens,"#)
+                .count(),
+            1,
+            "chat:usage must carry the per-request occupancy exactly once, sourced from the tracker"
+        );
+        // The billing aggregate keeps feeding self_metrics: swapping it for
+        // the tracker would silently reshape scheduled-run totals and remote
+        // stats (turn.usage stays the summed billing view everywhere else).
+        assert!(
+            flattened.contains("m.on_turn_complete(&session_id,usage.input_tokens"),
+            "self_metrics must keep consuming the billing aggregate, not the occupancy tracker"
         );
     }
 }

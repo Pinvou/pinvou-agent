@@ -103,6 +103,13 @@ try {
   applyNativeChatEvent(lane, 'chat:usage', { session_id: 's1', input_tokens: 2000 });
   assert.equal(lane.tokens.input, 2000);
   assert.equal(lane.tokens.max, 64000, 'missing context_window preserves the previous maximum');
+  // 逐请求占用口径（context_input_tokens：最后一次父请求的 reported input）
+  // 优先于累计口径 input_tokens（turn 内多请求求和，工具轮会超真实占用）；
+  // 字段缺失时回落累计口径（旧引擎/降级远端不变）。
+  applyNativeChatEvent(lane, 'chat:usage', { session_id: 's1', input_tokens: 90000, context_input_tokens: 2100 });
+  assert.equal(lane.tokens.input, 2100, 'context_input_tokens takes precedence over the cumulative aggregate');
+  applyNativeChatEvent(lane, 'chat:usage', { session_id: 's1', input_tokens: 2200, context_input_tokens: null });
+  assert.equal(lane.tokens.input, 2200, 'null context_input_tokens falls back to the aggregate');
   const projection = projectNativeLane(lane, 's1');
   assert.equal(projection.turns.length, 1, '单 user 回合聚成一个 turn');
   const [turn] = projection.turns;
