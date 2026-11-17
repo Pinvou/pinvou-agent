@@ -157,12 +157,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # The pre-T11 engine face the interim window is blessed against; see
 # test_pinned_codewhale_gitlink_is_pre_t11. Re-blessed 2026-11-17 onto the
-# collapsible-if repay head f70a499d0 (CodeWhale#164): #164 only folds two
-# nested ifs into let-chains and fixes rustdoc links — the pinned sanitizer
-# face (schema_sanitize.rs, MFJS anyOf cap) is byte-identical to the
-# previously blessed 687358f7e, verified via the layer-2 source assertions
-# on a populated tree before flipping the pin.
-_PINNED_CODEWHALE_GITLINK = "f70a499d030232623cdfb89ad3234feac5cc9389"
+# collapsible-if repay wave head 617360e0b (CodeWhale#164): beyond the
+# previously blessed f70a499d0 the wave adds three commits — contributor-docs
+# alignment (572a1df4), the release.yml allowance drop (e003e4634), and a
+# fail-closed caller-ownership test pin (617360e0b) — none of which touch the
+# pinned sanitizer face (schema_sanitize.rs, MFJS anyOf cap), verified via
+# the layer-2 source assertions on a populated tree before flipping the pin.
+_PINNED_CODEWHALE_GITLINK = "617360e0b91241a37c391837b7a3da0aa61bece5"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 

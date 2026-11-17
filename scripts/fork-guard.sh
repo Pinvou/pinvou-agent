@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 100 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 104 maintenance commits (EXPECTED_COMMITS), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,9 +11,12 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # and CodeWhale#156 (rustc/clippy 1.100 stable lint adaptation),
 # and CodeWhale#157 (session-reader read-only classification) merged,
 # followed by the 2026-11-16 strict-gate alignment batch (collapsible-if
-# repay + rustdoc link fixes, fork branch chore/lint-whitelist-repay-r1).
-EXPECTED_HEAD="f70a499d030232623cdfb89ad3234feac5cc9389"
-EXPECTED_COMMITS=101
+# repay + rustdoc link fixes, fork branch chore/lint-whitelist-repay-r1)
+# extended by its 2026-11-17 review wave: contributor-docs alignment
+# (572a1df4), the release.yml allowance drop (e003e4634), and the
+# fail-closed caller-ownership test pin (617360e0b, the registered head).
+EXPECTED_HEAD="617360e0b91241a37c391837b7a3da0aa61bece5"
+EXPECTED_COMMITS=104
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
 # The immutable r1 closure must remain an ancestor of the registered head.
