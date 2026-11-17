@@ -584,7 +584,7 @@ assert.match(chatView, /bridge\.attachments\.pickAndAttach\(\)/,
   'the desktop-instance picker entry must keep using the existing remote browser');
 assert.match(chunkedUpload, /CHUNK_BYTES = 256 \* 1024/,
   'upload chunks must stay aligned with the desktop MAX_TRANSFER_CHUNK_BYTES limit');
-assert.match(chunkedUpload, /MAX_FILE_BYTES = 20 \* 1024 \* 1024/,
+assert.match(chunkedUpload, /MAX_FILE_BYTES = 50 \* 1024 \* 1024/,
   'the browser preflight must mirror file_ingest::MAX_FILE_BYTES');
 assert.match(webBridge, /PinvouChunkedFileUpload/,
   'Web chat uploads must use the shared chunk uploader');

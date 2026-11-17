@@ -3,7 +3,8 @@
   "use strict";
 
   const CHUNK_BYTES = 256 * 1024;
-  const MAX_FILE_BYTES = 20 * 1024 * 1024;
+  // Mirrors file_ingest::MAX_FILE_BYTES (50 MiB); pinned by web_access_contract.test.mjs.
+  const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
   function uploadId(prefix) {
     // 经局部变量取 crypto:打包器无法把它折叠成可静态追踪的 `crypto.randomUUID`
@@ -88,7 +89,7 @@
       throw empty;
     }
     if (file.size > MAX_FILE_BYTES) {
-      const tooLarge = new Error("device attachment exceeds 20 MB");
+      const tooLarge = new Error("device attachment exceeds 50 MB");
       tooLarge.code = "device_upload_too_large";
       throw tooLarge;
     }

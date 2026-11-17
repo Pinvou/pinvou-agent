@@ -51,10 +51,15 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 单文件硬上限 20 MB —— 超大文件就算转 md 后 token 数也炸上下文。
+/// 单文件硬上限 50 MB。原始体积与上下文占用解耦:进 prompt 的部分由内联预算
+/// (`assistant::attachments::ATTACH_INLINE_MAX_TOKENS`)按**解析后文本**封顶,
+/// 超限附件走「落盘路径 + 预览 + `read` 分页」,故该上限只需覆盖传输与子进程
+/// 转换(LibreOffice/pandoc/pdftotext,各有 kill-tree 超时)的资源预算。
+/// 典型图片型 PPT/PPTX 体积来自嵌入图片,常超旧 20 MB 上限而文本量很小
+/// (issue #842),故提到 50 MB;解压类风险仍由压缩包独立上限约束。
 /// `pub` 供 remote_control 上传链路对齐硬上限(PR #213 审查 #5:mobile upload cap 必须
-/// ≤ 此值,否则 20-64MiB 文件会被 mobile 接受但 file_ingest 静默降级为 oversize 兜底)。
-pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
+/// ≤ 此值,否则超限文件会被 mobile 接受但 file_ingest 静默降级为 oversize 兜底)。
+pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
 pub const ATTACHMENT_FILE_TOO_LARGE: &str = "attachment_file_too_large";
 pub const ATTACHMENT_ARCHIVE_TOO_MANY_ENTRIES: &str = "attachment_archive_too_many_entries";
@@ -964,10 +969,12 @@ mod tests {
 
     #[test]
     fn ingest_oversize_rejected() {
-        // 模拟超大文件：write 21MB 内容，应被拒
+        // 模拟超大文件：稀疏文件 set_len 到超限（不实际写 50 MiB），应被拒
         let tmp = std::env::temp_dir().join("pinvou3-ingest-oversize-test.bin");
-        let big = vec![0u8; (MAX_FILE_BYTES + 1024) as usize];
-        std::fs::write(&tmp, &big).unwrap();
+        std::fs::File::create(&tmp)
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1024)
+            .unwrap();
         let r = ingest(&tmp);
         assert_eq!(r.kind, "oversize");
         assert!(r.warning.is_some());
@@ -975,6 +982,25 @@ mod tests {
             ingest_attachment(&tmp).unwrap_err(),
             ATTACHMENT_FILE_TOO_LARGE
         );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn ingest_accepts_file_over_legacy_cap() {
+        // issue #842 回归钉:旧 20 MiB 上限拒掉的体积,在新上限内必须完成摄入。
+        // 稀疏 .txt:头部写满 8 KiB 真实文本(嗅探窗口),NUL 尾巴由 set_len 补齐。
+        let tmp = std::env::temp_dir().join("pinvou3-ingest-legacy-cap-test.txt");
+        std::fs::write(&tmp, "l".repeat(8192).as_bytes()).unwrap();
+        std::fs::File::create(&tmp)
+            .unwrap()
+            .set_len(20 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(
+            ingest_attachment(&tmp).is_ok(),
+            "超旧上限、新上限内的文件不得再被尺寸门拒绝"
+        );
+        let r = ingest(&tmp);
+        assert_eq!(r.kind, "text", "该体积必须走完文本摄入管线");
         std::fs::remove_file(&tmp).ok();
     }
 

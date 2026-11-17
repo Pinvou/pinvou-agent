@@ -1694,7 +1694,7 @@ impl RemoteControlManager {
 
     /// 累积浏览器本机文件的一个有界分块；最后一块 `commit` 时返回完整文件名
     /// 与字节。单文件上限收紧为 `file_ingest::MAX_FILE_BYTES`，避免传完
-    /// 20 MiB 才拿到一个 oversize 降级附件。
+    /// 50 MiB 才拿到一个 oversize 降级附件。
     pub fn append_web_attachment_upload(
         &self,
         upload_id: &str,

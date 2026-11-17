@@ -1164,7 +1164,7 @@ fn validate_attachments(attachments: &[AgenticTaskAttachment]) -> Result<()> {
     }
     // Same aggregate budget as `ProductHeadlessBackend`
     // (MAX_ATTACHMENTS_TOTAL_BYTES = 100 MiB) — the per-file cap alone
-    // allowed 320 MiB of staged attachments.
+    // allowed 800 MiB of staged attachments.
     if total_bytes > MAX_ATTACHMENTS_TOTAL_BYTES {
         anyhow::bail!(
             "agent_attachment_too_large: attachments total {total_bytes} bytes (limit \
@@ -1878,11 +1878,12 @@ type StagedBatch = (
 
 /// Upper bound on how long the failure arms wait for a staging task that was
 /// still running when the deadline (or a panic) dropped the setup future.
-/// Staging is capped at 16 × 20 MiB plus bounded ingest work, so this grace
-/// covers every real completion; expiring it degrades to the pre-fix
+/// Staging is capped at 16 × 50 MiB plus bounded ingest work, so this grace
+/// covers every real completion (60s ≈ 800 MiB over a ~14 MB/s slow link);
+/// expiring it degrades to the pre-fix
 /// behavior (detached task) rather than hanging the report on a wedged
 /// filesystem read.
-const STAGING_JOIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+const STAGING_JOIN_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Joins a staging task whose setup future was dropped before its staging
 /// await completed (deadline or panic arm). On a clean join the copies list
@@ -2098,7 +2099,7 @@ fn stage_and_ingest_batch(
             // that is tiny at `ensure_stage_size` and large by the
             // time the copy streams contributes its stat'ed size to
             // the running total — sixteen of those pass a 100 MiB
-            // budget while writing 320 MiB into the session. Re-stat
+            // budget while writing 800 MiB into the session. Re-stat
             // the destination and charge the real figure.
             let staged_path = staging_root.join(&relative);
             staged_paths.push(staged_path.clone());
@@ -2651,7 +2652,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("agent_attachment_not_found"));
 
-        // Over the per-file size cap (sparse file, no real 20 MiB write).
+        // Over the per-file size cap (sparse file, no real 50 MiB write).
         let oversized = workspace.path().join("big.bin");
         std::fs::File::create(&oversized)
             .unwrap()
@@ -2679,8 +2680,8 @@ mod tests {
     fn validate_attachments_enforces_the_total_budget() {
         let workspace = tempfile::tempdir().unwrap();
         // Six files each just under the per-file cap sum past the aggregate
-        // budget (6 × 18 MiB = 108 MiB > 100 MiB): the per-file check alone
-        // allowed 320 MiB of staged attachments, so this branch is the
+        // budget (6 × 48 MiB = 288 MiB > 100 MiB): the per-file check alone
+        // allowed 800 MiB of staged attachments, so this branch is the
         // load-bearing one. Sparse files keep the test instant.
         let attachments: Vec<_> = (0..6)
             .map(|i| {

@@ -690,7 +690,7 @@ impl ProductHeadlessBackend {
 /// engine-side `validate_attachments` check runs too late to prevent — and
 /// consumes these constants rather than drifting copies.
 pub const MAX_STAGED_ATTACHMENTS: usize = 16;
-/// Per-attachment size cap in bytes (20 MiB).
+/// Per-attachment size cap in bytes (50 MiB).
 /// Same cap the staging copier (`copy_bounded` at the shared call sites)
 /// enforces: tied to `file_ingest::MAX_FILE_BYTES` at compile time so the
 /// request validator and the copier cannot drift apart.
@@ -807,7 +807,7 @@ fn stage_attachments(
     // The pre-copy stats go stale the same way the per-file cap does: a
     // source swapped between its stat and its copy lands bytes the caller's
     // reported sizes never covered. The copier bounds each file, so the
-    // overshoot is bounded (16 × 20 MiB in this private tempdir); the batch
+    // overshoot is bounded (16 × 50 MiB in this private tempdir); the batch
     // cap is therefore re-checked once on the landed bytes after the loop —
     // the agentic lane's landed-bytes principle at batch granularity (that
     // lane re-checks per file in-loop and fails at the crossing file).

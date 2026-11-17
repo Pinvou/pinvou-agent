@@ -31,7 +31,7 @@ test('renders every hard limit in all supported languages', () => {
   for (const dictionary of [dictZh, dictEn, dictJa]) {
     assert.match(
       formatAttachmentLimitError(ATTACHMENT_LIMIT_ERROR_CODES.fileTooLarge, dictionary.uiAttachments),
-      /20/,
+      /50/,
     );
     assert.match(
       formatAttachmentLimitError(ATTACHMENT_LIMIT_ERROR_CODES.archiveTooManyEntries, dictionary.uiAttachments),
