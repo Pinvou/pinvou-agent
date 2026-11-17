@@ -618,3 +618,19 @@ mod attachment_record_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod steer_timeout_pins {
+    use super::STEER_CHAT_TIMEOUT;
+
+    /// The 20s budget deliberately sits under the frontend's 25s transport
+    /// timer so the backend's nothing-enqueued diagnosis wins that race;
+    /// nothing exercises the expiry path behaviorally (a wedged pool is not
+    /// fakeable in-process), so pin the literal like the rewind lock pin —
+    /// a silent loosening/tightening turns red (r16 review m1: the r9
+    /// sweep pinned the ACP wraps but missed this sibling).
+    #[test]
+    fn steer_chat_timeout_stays_at_20s() {
+        assert_eq!(STEER_CHAT_TIMEOUT, std::time::Duration::from_secs(20));
+    }
+}
