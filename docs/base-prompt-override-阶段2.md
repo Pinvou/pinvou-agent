@@ -28,7 +28,7 @@
 - `resources/common/bundle/base.md` = pinvou3 版 base.md（249 行）
 - `bridge/bundle.rs` 3 常量（`BASE_PROMPT_MD` + `LOCALE_PREAMBLE_ZH_HANS` + `AUTHORITY_RECAP`）+ `install_prompt_overrides()` + 3 个新 forkguard 测试（内容锚点 + override 端到端生效）
 - `bridge/mod.rs` `boot()` 调 `install_prompt_overrides()`（早于 ensure_dirs；dump_system_prompt bin 同经此 boot）
-  （2026-11 注：上两条的 `bridge/bundle.rs`、`bridge/mod.rs` 路径已迁——常量与 `install_prompt_overrides()` 现位于 `features/runtime_bundle/platform/mod.rs`，boot 调用点现位于 `features/assistant/platform/bridge.rs`。）
+  （2026-11 注：上两条的 `bridge/bundle.rs`、`bridge/mod.rs` 路径已迁——常量与 `install_prompt_overrides()` 现位于 `features/runtime_bundle/platform/mod.rs`，boot 调用点现位于 `features/assistant/platform/bridge.rs`；`AUTHORITY_RECAP` 已随清空移除，不再以常量存在（见文首归档注）。）
 - forkguard 测试 **4 passed / 0 failed**
 
 **fork-guard.sh + 文档**

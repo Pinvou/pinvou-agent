@@ -23,7 +23,7 @@
 - 不替代 DeepSeek-TUI 官方架构文档，也不逐行翻译上游源码。
 - 不修改 `DeepSeek-TUI/` 或 `pinvou3-app/` 业务代码。
 - 不重新设计 agent runtime、工具注册、会话存储、工作流调度或打包方案。
-- 不覆盖所有历史方案；分析以当前仓库检出的 `DeepSeek-TUI` 子模块和 `pinvou3-app/src-tauri/src/` 接入方式为准。
+- 不覆盖所有历史方案；分析以写档时检出的 `DeepSeek-TUI` 子模块（现更名迁移为 `CodeWhale/`，见文首注）和 `pinvou3-app/src-tauri/src/` 接入方式为准。
 
 ## 一句话定位
 

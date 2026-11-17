@@ -1,6 +1,6 @@
 # PINVOU Windows 端功能清单与测试用例
 
-> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。同期姊妹篇：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md)（2026-06-15 迁移接手快照）；现行 Windows 构建/CI 与私有运行时权威入口见 [`windows-rust-ci.md`](./windows-rust-ci.md) 与 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`；§5.7 的 WIN-WF-001..008 用例与 §8 清单中的「工作流启动、人工门禁…重启恢复通过」条目同属该子系统，一并作废）、§3.12 的 OTA-01..04 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现；§5.10 的 WIN-OTA-001..008 用例与 §8 清单中的「OTA 检查、下载、取消…升级结果上报通过」条目同属该链路，一并作废）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet；§5.9 的 WIN-CONN-004 用例同属该能力，一并作废）、§3.5 的 MODEL-01「内置模型账号绑定」与 MODEL-02「后台失败缓存容错」（主干无对应实现——现行账号体系为 ACP 代理账号，见 [`codex-acp.md`](./codex-acp.md)；§5 的 WIN-MODEL-001..004A 用例同属该能力，一并作废）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。用例编号 `MODEL-08`、`WIN-TOOL-008` 为快照期原貌空缺，非漏排；文中版本号 `0.6.3` 为内部仓库编号，与公开 tag 序列非一一对应。其余条目经抽查与现行代码一致，正式验收前以当前代码为准。
+> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。同期姊妹篇：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md)（2026-06-15 迁移接手快照）；现行 Windows 构建/CI 与私有运行时权威入口见 [`windows-rust-ci.md`](./windows-rust-ci.md) 与 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`；§5.7 的 WIN-WF-001..008 用例与 §8 清单中的「工作流启动、人工门禁…重启恢复通过」条目同属该子系统，一并作废）、§3.12 的 OTA-01..04 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现；§5.10 的 WIN-OTA-001..008 用例与 §8 清单中的「OTA 检查、下载、取消…升级结果上报通过」条目同属该链路，一并作废）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet；§5.9 的 WIN-CONN-004 用例同属该能力，一并作废）、§3.5 的 MODEL-01「内置模型账号绑定」与 MODEL-02「后台失败缓存容错」（主干无对应实现——现行账号体系为 ACP 代理账号，见 [`codex-acp.md`](./codex-acp.md)；§5.5 的 WIN-MODEL-001..004A 用例同属该能力，一并作废）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。编号空缺两处为快照期原貌、非漏排：§3.5 功能条目表的 `MODEL-08`（MODEL-07 直跳 MODEL-09）与 §5.7 用例表的 `WIN-TOOL-008`（§5.5 的 `WIN-MODEL-008` 用例存在）；文中版本号 `0.6.3` 为内部仓库编号，与公开 tag 序列非一一对应。其余条目经抽查与现行代码一致，正式验收前以当前代码为准。
 
 ## 1. 文档信息
 
@@ -8,7 +8,7 @@
 |---|---|
 | 适用产品 | PINVOU Windows 桌面端 |
 | 当前版本 | `0.6.3` |
-| 代码基线 | 主仓库 `025-architecture-migration`；DeepSeek-TUI 子模块 `c32bb73f4605`（⚠️ 快照期名为 `DeepSeek-TUI/`，后更名并迁移为现行 `CodeWhale/`——下方「主要代码依据」行即用现行名；上游基线 `v0.9.0`；重建前哈希，现对象库不可解析） |
+| 代码基线 | 主仓库 `025-architecture-migration`；DeepSeek-TUI 子模块 `c32bb73f4605`（⚠️ 快照期名为 `DeepSeek-TUI/`，后更名并迁移为现行 `CodeWhale/`——下方「主要代码依据」行即用现行名；上游基线 `v0.9.0`；重建前哈希，现对象库不可解析；同名远端分支亦已不存在，不可核对） |
 | 核对日期 | 2026-07-23 |
 | 目标架构 | Windows x64（当前随包运行时、VC++ 检测和 NSIS 资源均为 x64） |
 | 文档性质 | 依据当前代码生成的功能盘点、系统测试设计与发版验收基线 |
@@ -48,7 +48,7 @@
 | 离线 ASR 执行程序和 VAD 模型 | 中文语音输入 | 小型运行时随包安装，大型 SenseVoice 模型首次使用时下载 |
 | VC++ Redistributable | 原生运行时依赖 | 安装器检测并按需安装 |
 
-> 注（2026-11 回填）：表中精确版本号（Python 3.13.14 / Node 24.18.0 / Pandoc 3.10 / ONNX Runtime 1.20）取自内部私有 runtime lock（`private-runtimes/windows` 子模块，未随本仓库发布）；公开树可核对的是 `runtime/python|node|pandoc|onnxruntime` 目录布局与打包合同（`tests/windows_runtime_packaging_contract.test.js`）。
+> 注（2026-11 回填）：表中精确版本号（Python 3.13.14 / Node 24.18.0 / Pandoc 3.10 / ONNX Runtime 1.20）写档时取自私有 runtime lock；运行时仓库现已公开（`private-runtimes/windows` → `Pinvou/pinvou3-windows-runtime`），版本钉在公开树的 `pinvou3-app/src-tauri/config/platforms/windows/runtime/x86_64.lock.json` 与其 manifest，可核对 `runtime/python|node|pandoc|onnxruntime` 目录布局与打包合同（`pinvou3-app/tests/windows_runtime_packaging_contract.test.js`）。
 
 以下能力仍可能依赖外部环境：旧版 Office/WPS 文档、演示文稿和表格的完整转换依赖 LibreOffice；本地模型能力依赖本地 vLLM 服务；远程模型、工具市场、连接器、反馈和 OTA 依赖网络及对应服务可用（快照口径：Windows OTA 未随主线发布，见文首失效声明）。
 
@@ -173,7 +173,7 @@ Windows 下 `~/.pinvou3` 等价于 `%USERPROFILE%\.pinvou3`。主要数据包括
 | KB-05 | 混合检索 | 条件可用 | 提供关键词和语义检索；语义检索要求嵌入模型就绪 |
 | KB-06 | 嵌入模型按需下载 | 条件可用 | 下载、校验、部署、热加载并展示进度，可取消 |
 | KB-07 | 类型统计 | 可用 | 展示文件类型、知识集、文档和索引统计 |
-| KB-08 | Obsidian 探测 | 条件可用 | 检测本地 Obsidian 笔记库并引导接入 |
+| KB-08 | Obsidian 探测 | 条件可用 | 检测本地 Obsidian 笔记库并引导接入（⚠️ 快照口径：现位于工具市场 Obsidian MCP 条目的安装引导，`ToolStoreView.jsx`/`tool-common.jsx`，知识库模块无此探测） |
 | KB-09 | 会话挂载 | 条件可用 | 当前会话只检索已挂载知识集，支持卸载和切换 |
 
 ### 3.7 记忆与角色卡
@@ -569,7 +569,7 @@ npm run build:ui
 
 现有脚本已覆盖以下关键回归：
 
-- 内置模型账号暂时失败保留缓存、明确不存在时清理。
+- 内置模型账号暂时失败保留缓存、明确不存在时清理。（⚠️ 快照口径：随内置账号体系移除，主干无对应实现——现行账号体系为 ACP 代理账号，见文首注；现行脚本无此覆盖。）
 - `exec_shell`、`exec_shell_wait` 结束前的实时输出，以及 UTF-8、CRLF 和 ANSI 跨分片拼接。
 - 后台 Shell 跨 `chat:done` 保持、折叠进度、输出尾部补齐、按任务 ID 取消和独立终态。
 - 工具产物归属、记忆候选卡、品悟检阅、Plan/YOLO。

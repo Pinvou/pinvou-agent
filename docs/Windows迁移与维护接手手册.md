@@ -41,7 +41,7 @@ pinvou3 是一个本地算力桌面智能助手：`pinvou3-app/` 提供 Tauri 2.
 	branch = pinvou3-clean
 ```
 
-> 当前主干实际为：`[submodule "CodeWhale"]`（`path = CodeWhale`，无 `branch` 字段）+ `[submodule "private-runtimes/windows"]`（Windows 私有运行时，`update = none`）。
+> 当前主干实际为：`[submodule "CodeWhale"]`（`path = CodeWhale`，无 `branch` 字段）+ `[submodule "private-runtimes/windows"]`（Windows 私有运行时，`update = none`；快照块 `branch` 字段指向内部仓分支，同样不随本仓库发布）。
 
 首次克隆或当前目录为空时先执行：
 
@@ -213,6 +213,8 @@ Windows 风险集中在这里：
 | `7z` | Windows 常是 `7z.exe` | 支持 PATH 和常见安装目录 |
 | `pkexec apt install` | Linux-only | Windows 不能一键 apt；改成依赖检查 + 安装指引，或 winget/choco 可选 |
 
+> ⚠️ 快照口径（2026-11 注）：本表「当前实现」列为 2026-06 快照状态，表中建议主干均已落地——外部工具探测已收敛为跨平台 helper（`platform::os::{pdf_tool_path,pandoc_tool_path,ocr_tool_path,archive_tool_path,libreoffice_tool_path}`，`features/files/ingest_deps.rs`；`python_command()` 同经 `platform::os`），裸 `which(` 在 `features/files/` 零命中；依赖指引/安装已按平台拆分（`features/dependencies/platform/`，Windows 走 winget 探测 + UAC 安装文案）；Poppler/Tesseract/Pandoc/7-Zip 现随 Windows 安装包携带（见 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)），`.msg` 已有 Windows 原生 Rust 解析。本表仅作迁移决策史料。
+
 ## 8. 工作流链路
 
 > ⚠️ 快照章节：本节描述的工作流子系统（`workflows/`、`harness.rs`、`scheduler.py`、`build.rs::sync_workflow_bundle`、`Op::SpawnSubAgent` 链路）已在当前主干整体移除（`sansheng-liubu` 已列入 `features/retirement.rs` 退役清单），仅作历史留档，请勿据此接手。
@@ -359,9 +361,9 @@ Windows 迁移必须重做或拆分：
 |---|---|---|
 | `DeepSeek-TUI/` 子模块未初始化导致 Cargo path 依赖断 | Git / Cargo | P0 |
 | Tauri bundle 只配了 `deb` | `tauri.conf.json` | P0（⚠️ 快照条目：现行 Windows 打包已上线——配置含 `msi`+`nsis`，发布 CI 实际产出 nsis，见 §11 注） |
-| `HOME` 环境变量假设 | `bridge/paths.rs`、`file_ingest.rs` | P0 |
-| `which` 命令探测依赖 | `file_ingest.rs` | P0 |
-| `pkexec` / `apt` 一键安装依赖 | `file_ingest.rs`、`updater.rs` | P0 |
+| `HOME` 环境变量假设 | `bridge/paths.rs`、`file_ingest.rs` | P0（⚠️ 快照条目：已落地——现行 Windows 读 `USERPROFILE`，用户目录解析统一经 `platform::os`，见 §7 注） |
+| `which` 命令探测依赖 | `file_ingest.rs` | P0（⚠️ 快照条目：已落地跨平台探测 helper，见 §7 注） |
+| `pkexec` / `apt` 一键安装依赖 | `file_ingest.rs`、`updater.rs` | P0（⚠️ 快照条目：已拆平台策略 `features/dependencies/platform/`，Windows 走 winget/安装指引；updater 已拆 `features/updater/platform/`，见 §7 注与 §11 注） |
 | `.deb` 应用内升级 | `updater.rs`、前端设置页 | P0 |
 | Linux GTK/WebKit env | `lib.rs::ensure_release_env` | P1 |
 | Bash 脚本启动 | `run-dev.sh`、`scripts/*.sh` | P1 |
@@ -431,8 +433,8 @@ Windows 原生后建议增加这些测试：
 
 - 品悟 v2 review 已推翻并从源码移除（2026-11 注：后续新方案已设计并落地为 v4 召唤式评审，见 [`品悟v4-召唤式评审设计.md`](./品悟v4-召唤式评审设计.md)）。
 - 多 subagent 大研究 fan-out 已废弃，只保留单 + 串行。
-- Plan/YOLO 收敛已完成：`PlanPhase` 状态机已删除，composer 提供 Plan/Yolo 手切 chip（默认 Yolo），`plan_stuck` 兜底卡保留；不要再按旧 PlanPhase / plan-fallback 逻辑开发。（改造方案与决策记录见 [`plan-yolo-回归底座式改造方案.md`](./plan-yolo-回归底座式改造方案.md)。）
-- 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩（现为按路由的 `route_inline_char_budget`——窗口的 3%、封顶 10 万字符；「12K」为写档时点平铺值，结论不变）。
+- Plan/YOLO 收敛已完成：`PlanPhase` 状态机已删除，composer 提供 Plan/Yolo 手切 chip（默认按会话类型分流：code/workspace 绑定会话首启默认 Plan，仅未绑定普通会话默认 Yolo——`features/sessions/mode_state.rs` `resolved_default_mode`），`plan_stuck` 兜底卡保留；不要再按旧 PlanPhase / plan-fallback 逻辑开发。（改造方案与决策记录见 [`plan-yolo-回归底座式改造方案.md`](./plan-yolo-回归底座式改造方案.md)。）
+- 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩（现为按路由的 `route_inline_char_budget`——窗口的 3%×4 字符、封顶 10 万字符；「12K」为写档时点平铺值，结论不变）。
 
 ## 16. 推荐阅读顺序
 
@@ -456,14 +458,14 @@ Windows 原生后建议增加这些测试：
 
 第二阶段做跨平台抽象：
 
-- 集中重构 `paths.rs` 的用户目录解析。
-- 把外部工具探测封成跨平台 helper。
-- 把依赖安装从 Linux `apt/pkexec` 拆成平台策略。
-- 把更新器拆成 Linux `.deb` 与 Windows installer 两条路径。
+- 集中重构 `paths.rs` 的用户目录解析。（✅ 已完成：`platform/paths.rs` + `platform::os`）
+- 把外部工具探测封成跨平台 helper。（✅ 已完成：`platform::os::*_tool_path` 族）
+- 把依赖安装从 Linux `apt/pkexec` 拆成平台策略。（✅ 已完成：`features/dependencies/platform/`）
+- 把更新器拆成 Linux `.deb` 与 Windows installer 两条路径。（部分完成：Linux 侧完整；现行 Windows 无应用内更新，安装包走 GitHub Releases，`features/updater/platform/` 仅 mod+unsupported）
 
 第三阶段补 Windows 产品化：
 
-- 配置 Windows bundle target。
+- 配置 Windows bundle target。（✅ 已完成：现行配置 `msi`+`nsis`，发布 CI 实际产出 nsis，见 §11 注）
 - 处理代码签名、安装目录、卸载保留用户数据。
 - 验证附件解析工具的安装指引。
 - 补 Windows 专用 smoke tests。
@@ -491,9 +493,9 @@ Windows 原生后建议增加这些测试：
 
 - `DeepSeek-TUI/` submodule 未初始化。
 - Tauri bundle 只配置 `.deb`。（⚠️ 快照条目：现行 Windows 打包已上线——配置含 `msi`+`nsis`，发布 CI 实际产出 nsis，见 §11 ⚠️ 注与 §2 现行路径）
-- `HOME` 与 Windows `USERPROFILE` 差异。
-- `which` 不适用于 Windows。
-- `pkexec` / `apt` 是 Linux-only。
+- `HOME` 与 Windows `USERPROFILE` 差异。（⚠️ 快照条目：已落地，见 §12 注）
+- `which` 不适用于 Windows。（⚠️ 快照条目：已落地跨平台探测，见 §7 注）
+- `pkexec` / `apt` 是 Linux-only。（⚠️ 快照条目：已拆平台策略，见 §7 注）
 - `.deb` updater 不能直接用于 Windows。
 - `run-dev.sh` 和 `scripts/*.sh` 偏 Bash/Linux。
 - Poppler、Tesseract、LibreOffice、7z 的 Windows 安装和路径探测。

@@ -1,6 +1,6 @@
 # pinvou3 Skill 加载 / 卡牌池 状态
 
-> 留档日期：2026-06-03。验证基线：CodeWhale submodule `0c9542dd`（2026-07-24 重建基线前的旧史哈希，现仓库对象库中已不可解析），pinvou3-app（`card-pool-agency` 分支；§2 Side A 所提 `card-pool` 分支同为内部工作分支，两者均不随本仓库发布）。
+> 留档日期：2026-06-03。验证基线：CodeWhale submodule `0c9542dd`（2026-07-24 重建基线前的旧史哈希；不在 clean 分支线上，但对象在公开仓可解析——2026-06-02 qwen 128K context 提交），pinvou3-app（`card-pool-agency` 分支；§2 Side A 所提 `card-pool` 分支同为内部工作分支，两者均不随本仓库发布）。
 > 下面所有 file:line 是写档时的位置，改动后以代码为准。
 >
 > **2026-11 归档注记**：写档后的重构已使本文多项"当前态"描述失效，§1/§3 请勿按现状使用：
@@ -13,7 +13,7 @@
 > （⚠️ `9aaff554b`/`95502ac81` 均为父仓库 pinvou3-app 提交，非 CodeWhale 子模块提交，在子模块对象库中不可解析），
 > 仅顺带删除已死的 `WORKFLOW_HIDDEN_SKILLS` 过滤常量）并由 `cleanup_retired_skills`
 > 启动清理。§2 卡牌池机制描述仍有效（agency-agents.json 现 268 个 agent）。文中 fork patch
-> 序号（#41/#25/#26/#432 等）为重建前私有编号，与现行 [`fork-modifications.md`](./fork-modifications.md)
+> 序号（#41/#25/#26 等）为重建前私有编号（#432 是底座上游 PR 编号，见 §2 正文），与现行 [`fork-modifications.md`](./fork-modifications.md)
 > 登记编号无关。
 
 ## TL;DR
@@ -56,7 +56,7 @@ pinvou3 **fork patch #41**（`CodeWhale/crates/tui/src/skills/mod.rs:601` `skill
 
 - 数据：`pinvou3-app/src-tauri/resources/common/bundle/personas/agency-agents.json`（Side B，201 个 agency-agents-zh agent，MIT；写档时点值，现 268）。
 - 运行时：`include_str!` **编译进二进制**（快照时点为 `personas.rs:18`，现为 `features/personas/mod.rs:25`），首次访问解析进内存 `OnceLock`。**不落盘，~/.pinvou3 里没有**（主语限编译期内嵌 Side B 池；用户自创卡 source="user" 会落盘 `~/.pinvou3/user/personas/<id>.json`，见 `features/personas/mod.rs`），不被任何 SkillRegistry 发现。
-- 加持机制：选卡 → `equip_persona` 存 per-session active_persona + pending body → 该 session 首条 chat 一次性 prepend 完整 body（`personas::equip_body_injection`）+ 每 turn 注入轻锚点（`equip_anchor`）。详见 `features/personas/mod.rs`（快照时点为 `personas.rs`）。
+- 加持机制：选卡 → `equip_persona` 存 per-session active_persona + pending body → 该 session 首条 chat 一次性 prepend 完整 body（`personas::equip_body_injection`）+ 每 turn 注入轻锚点（`equip_anchor`；KV-cache 口径：锚点逐轮进当轮消息，append-only、每轮活读，不进会话钉住的 system 前缀；body 为该会话一次性进消息）。详见 `features/personas/mod.rs`（快照时点为 `personas.rs`）。
 - Side A（card-pool 分支）：pinvou2 agent-market 1078 元数据卡，机制类似但只注入摘要。
 
 ---

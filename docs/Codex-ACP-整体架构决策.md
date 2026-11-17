@@ -517,7 +517,7 @@ running -> cancelling -> ready
 
 - MVP 开发和内部体验阶段允许依赖机器已经安装的 Node 20+，优先完成 ACP 协议、会话和 UI。（2026-11 注：现行 Bridge 运行时自带私有 Node 24.22.1、适配器 2.2.2，系统 Node 依赖已移除；[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)文首注记同。）
 - 如果 adapter/node_modules 已随包提供，运行时只需要 Node；npm 仅用于未内置或损坏后的安装回退。
-- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。（2026-11 注：本条捆绑 Codex CLI 的打包决策未被采纳——落地为安装包只携带体积较小的 ACP Bridge Runtime（私有 Node + `codex-acp`），不内置大体积 Codex 平台二进制，Codex 由用户自行安装/解析（现行 `install.rs`/`runtime.rs` 解析顺序），[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)§1/§6.1 归档注及其文首 banner 记录了最终态（其 §6.4 主体为未被采纳的托管下载设计）。）
+- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。（2026-11 注：本条捆绑 Codex CLI 的打包决策未被采纳——落地为安装包只携带体积较小的 ACP Bridge Runtime（私有 Node + `codex-acp`），不内置大体积 Codex 平台二进制，Codex 由用户自行安装/解析（现行 `install.rs`/`runtime.rs` 解析顺序），[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)§6.1 归档注及其文首 banner（含 §1 的最终态修正）记录了最终态（其 §6.4 主体为未被采纳的托管下载设计）。）
 - 正式用户不需要理解或手工安装 Node/npm。
 - 保留 `PINVOU3_CODEX_ACP_BIN` 作为开发/诊断覆盖，不作为普通用户安装步骤。
 

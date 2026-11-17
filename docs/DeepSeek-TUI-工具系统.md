@@ -158,7 +158,7 @@ with_agent_tools(allow_shell) + with_todo_tool + with_plan_tool
 
 **Features 守卫（engine.rs 内，非 tool_setup）**：
 - `Feature::Subagents` → `with_subagent_tools(...)` + 启用 fork_context + mailbox
-- `Feature::Mcp` → 把 McpPool 工具注册进 registry
+- `Feature::Mcp` → McpPool 工具经 catalog 层合并注入（不注册进 ToolRegistry，与 §5 口径一致）
 
 **关键认知**：对 Agent/Yolo 而言 `Feature::ApplyPatch / WebSearch / ShellTool` 在 registry 层**没有任何效果**——`with_agent_tools` 内部已无条件添加。但 `WebSearch` 是例外中例外：它同时是 Plan 模式 web 工具的唯一开关（Plan 分支无其它 web 来源）。真正能改变 Agent/Yolo 工具列表的只有 `Subagents / Mcp / VisionModel`（外加 `memory_enabled`）。
 
@@ -227,7 +227,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 | 工具 | 入口 | 用途 |
 |---|---|---|
-| grep_files | with_search_tools | ripgrep 内容搜索 |
+| grep_files | with_search_tools | 内置 grep/ripgrep 式内容搜索（纯 Rust 自实现，不调外部 rg 进程） |
 | file_search | with_search_tools | 按文件名 / 路径搜索 |
 | project_map | with_project_tools | 仓库结构概览（生成树状摘要） |
 | recall_archive | with_recall_archive_tool | 翻历史 cycle 归档 |
@@ -274,7 +274,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 | 工具 | 入口 | 用途 |
 |---|---|---|
-| task_create / task_list / task_read / task_cancel | with_runtime_task_tools | 持久化任务管理（DeepSeek-TUI 的 RLM workflow） |
+| task_create / task_list / task_read / task_cancel | with_runtime_task_tools | 持久化任务管理（与 RLM workflow 是两套机制，rlm_* 见 §5） |
 | task_gate_run | with_runtime_task_tools | task 依赖门控 |
 | pr_attempt_record / _list / _read / _preflight | with_runtime_task_tools | PR 提交尝试记录（用于自动化迭代） |
 | todo_write / todo_add / todo_update / todo_list（另有 checklist_write / checklist_add / checklist_update / checklist_list，8 个不同名注册） | with_todo_tool | 模型自维护 TODO 清单（todo_* 与 checklist_* 两套命名） |
@@ -312,7 +312,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 | 工具 | 入口 | 用途 |
 |---|---|---|
 | diagnostics | with_diagnostics_tool | 跑 LSP 拉当前文件诊断 |
-| validate_data | with_validation_tools | JSON / YAML schema 校验 |
+| validate_data | with_validation_tools | JSON / TOML schema 校验 |
 | handle_read | with_handle_tools | 读 var_handle 大对象 |
 | retrieve_tool_result | with_tool_result_retrieval_tool | 按 tool_call_id 回取历史结果 |
 | run_tests | with_test_runner_tool | 跑测试套件 |
@@ -362,7 +362,7 @@ agent_open agent_eval agent_close
 
 `BASE_PROMPT`（v0.8.37 机制：`include_str!("prompts/base.md")`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox 和 tool_search_tool_regex / tool_search_tool_bm25 deferred discovery）。剩余工具靠模型自行从 schema 探索。
 
-Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/pr_attempt/automation 各自的 list/read 与 github 的 issue_context/pr_context）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 的 `apply_native_tool_deferral` 对 Plan/Agent 均生效、仅 Yolo 短路不做 deferral——Plan keep-list 收缩到初始可见约 16 个，其余经 ToolSearch 激活；Agent 预设经同一函数按 keep-list 保留（另含 rlm_*/task 全量/shell 家族），初始可见约 29；§6 推导的约 81 即为 Yolo 模型可见数。）
+Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/pr_attempt/automation 各自的 list/read 与 github 的 issue_context/pr_context）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 的 `apply_native_tool_deferral` 对 Plan/Agent 均生效、仅 Yolo 短路不做 deferral——Plan keep-list 收缩到初始可见约 16 个，其余经 ToolSearch 激活；Agent 预设经同一函数按 keep-list 保留（另含 rlm_*/task_* 家族 6/7——仅 task_cancel 被 defer——与 shell 家族），初始可见约 29；§6 推导的约 81 即为 Yolo 模型可见数。）
 
 ---
 

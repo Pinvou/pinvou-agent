@@ -102,7 +102,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 
 ### 3.1 目标
 
-> ⚠️ 快照口径（2026-11 注）：本节目标条目按 2026-07-23 设计稿原文保留。其中「真实 ACP `initialize + session/new` 判断可用性」「下载、安装、登录、检查、修复均有明确状态、进度和可恢复操作」「Bridge 和托管 Codex 版本固定、可审计、可校验、可回滚」对应的 ACP 握手就绪判定、`CodexRuntime*` 状态机与托管下载均未采纳（见文首 banner 与 §4 注，§10 同由文首 banner 覆盖）——现行就绪判定为 `codex --version` 兼容探测 + 登录态复查，Codex 由用户自行安装/升级，应用仅提供 brew/npm/官方脚本动作。
+> ⚠️ 快照口径（2026-11 注）：本节目标条目按 2026-07-23 设计稿原文保留。其中「真实 ACP `initialize + session/new` 判断可用性」「下载、安装、登录、检查、修复均有明确状态、进度和可恢复操作」「Bridge 和托管 Codex 版本固定、可审计、可校验、可回滚」对应的 ACP 握手就绪判定、`CodexRuntime*` 状态机与托管下载均未采纳（见文首 banner 与 §4 注，§10 同由文首 banner 覆盖）——现行就绪判定为版本兼容探测（npm 安装走快路径读 package.json，布局不符才回退 spawn `codex --version` 为权威） + 登录态复查，Codex 由用户自行安装/升级，应用仅提供 brew/npm/官方脚本动作。
 
 - 系统已有兼容 Codex 时直接复用，不重复下载大体积 Codex 平台二进制。
 - 全新 Linux 设备没有 Node、npm、Codex CLI 时，用户仍可从 Pinvou 内完成首次启用。
@@ -149,7 +149,7 @@ Pinvou 采用以下组合方案：
 | 认证和配置目录 | 复用 Codex 默认 `~/.codex` |
 | ChatGPT 登录 | Pinvou 内发起，授权页面仍由官方 Codex 流程处理 |
 | API Key | 高级备选，不作为默认首次使用路径 |
-| 健康检查 | 真实 ACP 握手，不以文件存在为结论（⚠️ 设计口径：现行就绪判定为 `codex --version` 版本兼容探测 + 登录态复查，无独立 ACP initialize 握手探针；「不以文件存在为结论」部分仍成立，见 §2 注） |
+| 健康检查 | 真实 ACP 握手，不以文件存在为结论（⚠️ 设计口径：现行就绪判定为版本兼容探测（npm 快路径 / `codex --version` 权威回退） + 登录态复查，无独立 ACP initialize 握手探针；「不以文件存在为结论」部分仍成立，见 §2 注） |
 | 后端实现 | 保持 Tauri/Rust 直连，不引入 AionCore 或额外 HTTP 服务层 |
 
 ## 5. 总体架构
@@ -385,6 +385,8 @@ Pinvou 不应：
 
 API Key 是高级备选，不是默认首次使用路径：
 
+（⚠️ 快照口径收窄（2026-11 注）：应用内录入已落地（relay provider）；凭据经操作系统凭据存储以 `CredentialReference` 保存（配置 JSON 不存明文 key，见 `providers/mod.rs` 注释）；Provider「导出」可读回含明文 key 的 JSON（UI 附警告）；凭据注入已按 Agent 泛化到 Codex/Claude/Kimi 子进程，不再「只注入 Codex」；「不提供读取原值能力」不再成立。存储半边符合本节要求，读回与注入两条按现行为准。）
+
 - 优先允许用户自己通过系统环境提供 `OPENAI_API_KEY`。
 - 如果后续增加应用内录入，必须使用操作系统凭据存储；不得明文写入
   `settings.json`、session sidecar 或 timeline。
@@ -596,7 +598,7 @@ codex-runtime://status
 现有 `prepare_codex_acp`、`login_codex_acp` 可在迁移期作为兼容入口调用新的
 `CodexRuntimeManager`，前端切换完成后再删除旧命令。
 （归档注记：这两个命令最终未落库；现行命令为 `install_acp_agent` / `login_acp_agent` /
-`submit_acp_agent_login_code` / `open_acp_agent_login_url`，见 `app/commands/codex.rs`。）
+`submit_acp_agent_login_code` / `open_acp_agent_login_url`；另有状态读取 `get_acp_agent_status`、账号切换 `switch_acp_agent_account`、卸载 `uninstall_acp_agent`（`acp_providers.rs`），见 `app/commands/codex.rs`。）
 
 ## 12. 与现有功能的隔离
 
