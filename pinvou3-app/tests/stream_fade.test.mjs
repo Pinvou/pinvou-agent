@@ -123,14 +123,15 @@ assert.match(
 // Wiring: both surfaces call the fade pass from their React effects with a
 // streaming flag and the html string they inject, imported from the
 // conversation module.
-assert.match(chatView, /import \{ applyStreamFade \} from '\.\.\/conversation\/stream-fade\.js';/);
-assert.match(chatView, /applyStreamFade\(target, \{ streaming: !!item\.streaming, html: assistantParsed\.cq\.html \|\| '' \}\);/);
-assert.match(timeline, /import \{ applyStreamFade \} from '\.\/stream-fade\.js';/);
-assert.match(timeline, /applyStreamFade\(containerRef\.current, \{ streaming, html \}\);/);
+const richTextDom = read('src', 'features', 'conversation', 'rich-text-dom.js');
+assert.match(chatView, /commitRichTextFrame\(assistantSelectionTargetRef\.current/);
+assert.match(timeline, /commitRichTextFrame\(containerRef\.current/);
+assert.match(richTextDom, /applyStreamFade\(container, \{ streaming, html \}\);\s*return observeCodeCopyButtons/);
+
 // The completion flush can coincide with no html change (final text already
 // rendered), so the streaming=false pass must still run: `streaming` must stay
 // a dependency of the install effect.
-assert.match(timeline, /\}, \[html, copyLabels, streaming\]\);/, 'the install effect must keep streaming (and html) as dependencies so the completion pass always runs');
+assert.match(timeline, /\}\), \[html, renderText, copyLabels, streaming\]\);/, 'the install effect must keep streaming (and html) as dependencies so the completion pass always runs');
 
 // The fade pass mutates the container, so it must never be wired from a
 // MutationObserver callback (recursion): the observer module must not know

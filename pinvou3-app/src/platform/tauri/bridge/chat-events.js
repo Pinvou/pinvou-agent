@@ -624,6 +624,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     item.text = context.currentStreamText;
     if (renderedStreamText.get(item) === context.currentStreamText) return false;
     item.html = renderMarkdown(context.currentStreamText);
+    item.htmlSource = context.currentStreamText;
     renderedStreamText.set(item, context.currentStreamText);
     return true;
   }
@@ -770,6 +771,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
         type: "assistant",
         text: context.currentStreamText,
         html: renderMarkdown(context.currentStreamText),
+        htmlSource: context.currentStreamText,
         time: timeStr(),
         streaming: true,
       };

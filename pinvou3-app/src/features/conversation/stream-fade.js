@@ -1,9 +1,9 @@
+import { preserveRichTextSelection } from './rich-text-selection.js';
+
 // Streaming fade-in for assistant responses.
 //
-// Streamed markdown arrives as a sanitized HTML string that is wholesale
-// re-injected into the container (dangerouslySetInnerHTML) on every render
-// tick, so per-node CSS animations would restart for the whole message each
-// tick. Instead, a DOM pass runs after each replacement and wraps ONLY text
+// Streamed Markdown arrives as sanitized HTML and is reconciled into the
+// existing message tree. A DOM pass runs after each commit and wraps ONLY text
 // beyond a per-container committed character offset in one-shot fade spans;
 // already-seen text is left as plain text nodes and never re-animates.
 //
@@ -43,8 +43,8 @@ const NODE_FILTER_ACCEPT = 1;
 const NODE_FILTER_REJECT = 3;
 
 // Stagger and hard cap: segment N of a pass starts N*12ms late, at most 48ms.
-// While streaming, spans are wholesale-deleted by the next innerHTML
-// replacement one re-parse tick later (~180-200ms): worst case a max-delay
+// While streaming, spans are unwrapped by the next reconciled HTML commit
+// one re-parse tick later (~180-200ms): worst case a max-delay
 // span is wiped at (180-48)/150 = 88% of its timeline, far enough into the
 // ease-out curve that the jump to full opacity is imperceptible. The 48ms
 // delay plus the 150ms animation intentionally budget to 198ms, inside the
@@ -253,21 +253,21 @@ function collectVisibleTextNodes(container) {
 // DOM pass: wrap newly streamed text in fade spans. Idempotent and safe to
 // call after every render; after a pass the committed offset equals the
 // current text length, so a repeated call on the same DOM is a no-op.
-// `html` (optional) is the exact string the caller injects via
-// dangerouslySetInnerHTML: when it is unchanged since this container's last
-// processed pass, React skipped the write and the DOM is known-identical, so
+// `html` (optional) is the exact string the caller commits: when it is
+// unchanged since this container's last processed pass, reconciliation skipped
+// the write and the DOM is known-identical, so
 // the whole-tree walk is skipped. This bounds the pass on the legacy bubble
 // lane, whose no-deps effect re-runs on every render (several no-op renders
 // per throttled tick); omitting `html` keeps the always-walk behavior.
 export function applyStreamFade(container, { streaming, html } = {}) {
   if (!container) return;
   // Completed render: if the final html string equals the last throttled
-  // string, React skips the dangerouslySetInnerHTML write and leftover fade
+  // string, reconciliation skips the write and leftover fade
   // spans would persist in the completed message. Reap them — but a stream
   // can end at any phase within a tick after the last wrap, so young spans
   // may still be animating; unwrapFadeSpans defers those past the age floor
   // instead of snapping partially-faded text to full opacity. (When the final
-  // html string DIFFERS, React's own write replaces the spans and there is
+  // html string DIFFERS, reconciliation unwraps the spans and there is
   // nothing to reap; that write can catch a span mid-fade, which degrades
   // that instant to the pre-feature behavior — the text appearing at once.)
   if (!streaming) {
@@ -294,7 +294,9 @@ export function applyStreamFade(container, { streaming, html } = {}) {
     committed: state ? state.committed : 0,
     total,
   });
-  if (plan.action === 'animate') wrapFadeRegion(textNodes, plan.from, total);
+  if (plan.action === 'animate') {
+    preserveRichTextSelection(container, () => wrapFadeRegion(textNodes, plan.from, total));
+  }
   // Recorded even on a 'none' pass: the (rewritten) html string was measured,
   // so until it changes again the walk can stay skipped. A streaming pass also
   // gives the deferral budget a fresh start: attempts accumulate per
@@ -314,6 +316,17 @@ export function applyStreamFade(container, { streaming, html } = {}) {
 // remove: the animation hook class is stripped so their content renders at
 // once, and the element itself is preserved.
 function unwrapFadeSpans(container, force = false) {
+  preserveRichTextSelection(container, () => unwrapFadeSpansContent(container, force));
+}
+
+// Reconcile against the parser's span-free output while preserving the text
+// nodes under renderer-owned animation wrappers. The old whole-tree write
+// also ended these animations at the next throttled commit.
+export function prepareStreamFadeUpdate(container) {
+  unwrapFadeSpans(container, true);
+}
+
+function unwrapFadeSpansContent(container, force) {
   if (typeof container.querySelectorAll !== 'function') return;
   const now = nowMs();
   let hasYoungSpans = false;

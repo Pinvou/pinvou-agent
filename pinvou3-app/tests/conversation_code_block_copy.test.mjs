@@ -468,20 +468,22 @@ function documentFromMarkdown(markdown) {
 // (纯 DOM 单测覆盖不到 React 层,与 assistant_message_actions.test.mjs 的源码钉同一模式)。
 {
   const timeline = source('features/conversation/ConversationTimeline.jsx');
-  assert.match(timeline, /ensureCodeCopyButtons\(containerRef\.current, copyLabels\)/);
-  assert.match(timeline, /return observeCodeCopyButtons\(containerRef\.current, copyLabels\)/);
+  assert.match(timeline, /commitRichTextFrame\(containerRef\.current, html, \{/);
+  assert.match(source('features/conversation/rich-text-dom.js'), /return observeCodeCopyButtons\(container, copyLabels\)/);
   assert.match(timeline, /const copyButton = findCodeCopyButton\(event\.target\);\s*\n\s*if \(copyButton\) \{\s*\n\s*event\.preventDefault\(\);\s*\n\s*copyCodeBlockFromButton\(copyButton, \{ labels: copyLabels \}\)/);
   const copyProps = timeline.match(/streaming=\{item\.status === 'in_progress'\}\s*copy=\{copy\}/g) || [];
   assert.equal(copyProps.length, 2, 'both ConversationMarkdown branches (commentary and main) must pass copy');
-  assert.match(timeline, /\}, \[html, copyLabels, streaming\]\);/, 'the install effect must depend on copyLabels (label refresh) and streaming (the completion flush can coincide with no html change)');
+  assert.match(timeline, /\}\), \[html, renderText, copyLabels, streaming\]\);/, 'the install effect must depend on copyLabels (label refresh) and streaming (the completion flush can coincide with no html change)');
   // 容器 div 的附件本身:ref/onClick 丢掉时 effect 内部与 onClick 函数体仍然完好,
   // 只有钉住挂接点才能拦住这种整体静默失效。
   assert.match(timeline, /ref=\{containerRef\}/, 'the container div must wire the ref used by the install effect');
-  assert.match(timeline, /onClick=\{onClick\}\s*\n\s*dangerouslySetInnerHTML/, 'the container div must wire the delegated click handler');
+  assert.match(timeline, /onClick=\{onClick\}\s*\/>/, 'the container div must wire the delegated click handler');
+  assert.match(timeline, /commitRichTextFrame\(containerRef\.current, html, \{/, 'streaming commits must preserve the message DOM');
   const chatView = source('features/chat/ChatView.jsx');
-  assert.match(chatView, /const target = assistantSelectionTargetRef\.current;\s*\n\s*if \(!target\) return;\s*\n\s*const labels = codeBlockCopyLabels\(t\.uiConversation\);\s*\n\s*ensureCodeCopyButtons\(target, labels\);\s*\n\s*(?:\/\/[^\n]*\n\s*)*applyStreamFade\(target, \{ streaming: !!item\.streaming, html: assistantParsed\.cq\.html \|\| '' \}\);\s*\n\s*return observeCodeCopyButtons\(target, labels\);/);
+  assert.match(chatView, /commitRichTextFrame\(assistantSelectionTargetRef\.current, assistantParsed\.cq\.html \|\| '', \{[\s\S]*?markdownSource: assistantStreaming \? item\.htmlSource : item\.text,/);
+  assert.match(chatView, /const copyLabels = codeBlockCopyLabels\(t\.uiConversation\)/);
   assert.match(chatView, /const copyButton = findCodeCopyButton\(e\.target\);/);
-  assert.match(chatView, /copyCodeBlockFromButton\(copyButton, \{ labels: codeBlockCopyLabels\(t\.uiConversation\) \}\)/);
+  assert.match(chatView, /copyCodeBlockFromButton\(copyButton, \{ labels: copyLabels \}\)/);
   assert.match(chatView, /ref=\{assistantSelectionTargetRef\}/, 'the legacy bubble div must wire the ref used by its install effect');
   const codexView = source('features/codex/CodexAcpView.jsx');
   // tempered 匹配不越出 <ConversationMarkdown .../> 自闭合范围:copy prop 换行重排

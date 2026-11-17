@@ -10,7 +10,7 @@ const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-conversation-scroll-'));
 const conversationDir = path.join(temp, 'features', 'conversation');
 mkdirSync(conversationDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
-for (const file of ['conversation-model.js', 'conversation-scroll.js']) {
+for (const file of ['conversation-model.js', 'conversation-scroll.js', 'rich-text-selection.js', 'rich-text-offsets.js', 'rich-text-syntax.js', 'rich-text-atoms.js', 'rich-text-labels.js', 'rich-text-source.js', 'rich-text-source-probe.js', 'rich-text-block-visibility.js', 'rich-text-html-tags.js', 'code-block-copy.js']) {
   copyFileSync(
     path.join(here, '..', 'src', 'features', 'conversation', file),
     path.join(conversationDir, file),
@@ -18,9 +18,14 @@ for (const file of ['conversation-model.js', 'conversation-scroll.js']) {
 }
 const sharedDir = path.join(temp, 'shared');
 mkdirSync(sharedDir, { recursive: true });
+copyFileSync(path.join(here, '..', 'src/shared/markdown-source-map.js'), path.join(sharedDir, 'markdown-source-map.js'));
 copyFileSync(
   path.join(here, '..', 'src', 'shared', 'path-utils.js'),
   path.join(sharedDir, 'path-utils.js'),
+);
+copyFileSync(
+  path.join(here, '..', 'src', 'shared', 'clipboard.js'),
+  path.join(sharedDir, 'clipboard.js'),
 );
 // conversation-scroll.js also exports the React hook wrapper
 // (useConversationBottomFollower), so the sandbox needs a resolvable 'react'.
@@ -98,7 +103,12 @@ const fakeWindow = {
 };
 const fakeDocument = { ...documentEvents, visibilityState: 'visible' };
 const scrollElement = { scrollHeight: 1000, scrollTop: 700, clientHeight: 200 };
-const contentElement = {};
+let selectionActive = false;
+const selectedNode = {};
+const contentElement = {
+  ownerDocument: { getSelection: () => ({ isCollapsed: !selectionActive, anchorNode: selectedNode }) },
+  contains: node => node === selectedNode,
+};
 let following = true;
 const restored = [];
 const flushFrame = () => {
@@ -148,6 +158,18 @@ try {
   fakeDocument.dispatch('visibilitychange');
   flushFrame();
   assert.equal(scrollElement.scrollTop, 1500, 'visible conversations must resume bottom following');
+
+  selectionActive = true;
+  scrollElement.scrollHeight = 1900;
+  observer.trigger(contentElement);
+  flushFrame();
+  assert.equal(scrollElement.scrollTop, 1500, 'stream growth must not scroll an active text selection');
+  selectionActive = false;
+  observer.trigger(contentElement);
+  selectionActive = true;
+  flushFrame();
+  assert.equal(scrollElement.scrollTop, 1500, 'a selection starting after scheduling must also cancel scroll-follow');
+  selectionActive = false;
 
   following = false;
   scrollElement.scrollTop = 900;

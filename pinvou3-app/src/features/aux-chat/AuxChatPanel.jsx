@@ -7,6 +7,7 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { constrainChatInput } from '../../shared/chat-input-limit.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
 import { transitionConversationScrollState } from '../conversation/conversation-scroll.js';
+import { hasRichTextSelection } from '../conversation/rich-text-selection.js';
 import {
   auxChatBusy,
   auxChatHasContent,
@@ -167,7 +168,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // scrolled-up reader on every new item (round-20 minor-6).
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && autoScrollRef.current) el.scrollTop = el.scrollHeight;
+    if (el && autoScrollRef.current && !hasRichTextSelection(el)) el.scrollTop = el.scrollHeight;
   }, [view.auxId, view.snapshot]);
 
   const handleComposerKeyDown = useCallback((event) => {
