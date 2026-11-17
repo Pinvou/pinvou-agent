@@ -3097,6 +3097,19 @@ fn fold_repaired_index_targets(
 mod tests {
     use super::*;
 
+    /// The 60s drain gate bounds how long a rebind holds the lane while
+    /// in-flight recaptures settle; the abandonment path has no behavioral
+    /// test (a contended pool is not fakeable in-process), so pin the
+    /// literal like the rewind lock pin (r16 review m1: the added bound
+    /// shipped unpinned).
+    #[test]
+    fn rebind_baseline_drain_deadline_stays_at_60s() {
+        assert_eq!(
+            REBIND_BASELINE_DRAIN_DEADLINE,
+            std::time::Duration::from_secs(60)
+        );
+    }
+
     /// Wire-shape lock: the bridge's applySnapshot consumes the snapshot by
     /// the projects/assignments keys, so a serde rename would silently drop
     /// every snapshot (review finding 41).

@@ -9,6 +9,11 @@ pub use super::super::posix::{
     bundled_node, make_private_dir, process_alive, try_make_private_dir,
 };
 
+/// `dbus-send` 每次调用的上限：卡死的 dbus-daemon 不得无限阻塞命令线程
+/// （与 command_exists 的 10s 探测同一纪律）；超时/失败都回退到 xdg-open。
+/// 值由 `dbus_send_timeout_stays_at_5s` 钉住。
+const DBUS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     super::super::posix::spawn_detached_and_reap(Command::new("xdg-open").arg(target.as_ref()))
         .map_err(|e| format!("系统打开失败({label}): {e}"))
@@ -35,11 +40,8 @@ pub fn reveal_target(target: &Path) -> Result<(), String> {
             ]);
             // 与下方 command_exists 的 10s 探测同一纪律：卡死的 dbus-daemon
             // 不得无限阻塞命令线程；超时/失败都回退到 xdg-open 打开父目录。
-            if crate::platform::process::output_with_timeout(
-                dbus_cmd,
-                std::time::Duration::from_secs(5),
-            )
-            .is_ok_and(|output| output.status.success())
+            if crate::platform::process::output_with_timeout(dbus_cmd, DBUS_SEND_TIMEOUT)
+                .is_ok_and(|output| output.status.success())
             {
                 return Ok(());
             }
@@ -147,6 +149,11 @@ pub fn pdf_tool_path(command: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dbus_send_timeout_stays_at_5s() {
+        assert_eq!(DBUS_SEND_TIMEOUT, std::time::Duration::from_secs(5));
+    }
 
     #[test]
     fn linux_keeps_pandoc_dependency_check_visible() {
