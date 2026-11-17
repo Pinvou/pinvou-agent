@@ -3,7 +3,10 @@
 // architecture-guard: allow-target-cfg -- the walk-error counting test needs
 // a chmod-000 subtree fixture, and mode bits are a unix concept; the veto
 // logic under test is platform-independent (any walkdir error), only the
-// fixture cannot be expressed portably.
+// fixture cannot be expressed portably. The same class covers this file's
+// other unix-only test fixtures (the non-UTF-8 scan fixture via OsStrExt raw
+// bytes, and the record_from_path test's symlink creation, likewise
+// unexpressible portably).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -121,36 +124,86 @@ fn to_record(e: &DirEntry) -> Option<FileRecord> {
     if !ft.is_file() && !ft.is_dir() {
         return None; // symlink/socket/fifo 等不入库
     }
-    let path = e.path().to_str()?.to_string();
-    let name = e.file_name().to_str()?.to_string();
-    let is_dir = ft.is_dir();
-    let md = e.metadata().ok();
-    let size = if is_dir {
-        0
-    } else {
-        md.as_ref().map(|m| m.len()).unwrap_or(0)
-    };
-    let mtime = md
-        .as_ref()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    // A metadata failure (the entry was concurrently deleted) still stores a
+    // placeholder row with size/mtime=0, preserving existing behavior.
+    record_from_parts(
+        e.path(),
+        e.file_name().to_str()?,
+        ft.is_dir(),
+        e.metadata().ok().as_ref(),
+    )
+}
+
+/// FileRecord field assembly: shared by the scanner (`to_record`, a DirEntry)
+/// and the watcher (`record_from_parts`, an event-path stat) so the two
+/// paths' record fields cannot drift — directories get size=0/ext=None,
+/// mtime in seconds, 0 before the epoch. Paths/file names that are not
+/// UTF-8 return None (consistent with the store's existing UTF-8-only
+/// constraint). With `md` = None, size/mtime are 0.
+pub(super) fn record_from_parts(
+    path: &Path,
+    name: &str,
+    is_dir: bool,
+    md: Option<&std::fs::Metadata>,
+) -> Option<FileRecord> {
     Some(FileRecord {
-        path,
-        name,
-        ext: if is_dir { None } else { ext_of(e.path()) },
-        size,
-        mtime,
+        path: path.to_str()?.to_string(),
+        name: name.to_string(),
+        ext: if is_dir { None } else { ext_of(path) },
+        size: if is_dir {
+            0
+        } else {
+            md.map(|m| m.len()).unwrap_or(0)
+        },
+        mtime: md
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
         is_dir,
     })
 }
 
 /// 小写、无点扩展名。
-fn ext_of(p: &Path) -> Option<String> {
+pub(super) fn ext_of(p: &Path) -> Option<String> {
     p.extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_lowercase())
+}
+
+/// Assembles one record from a per-path stat. Reserved single-path entry:
+/// the wiring PR's (#869) rescan/refresh goes through here; the watcher's
+/// event path does not (`handle_event` needs the stat result to dispatch
+/// NotFound/other errors first, which `Option<FileRecord>` cannot express).
+/// Uses `symlink_metadata` — no symlink following, consistent with the
+/// scanner's follow_links(false); symlink/socket etc. return None and are
+/// skipped. **Stat-failure contract**: *any* `symlink_metadata` failure —
+/// including transient jitter (EACCES on a tightened parent, ESTALE/EIO) —
+/// returns None, where the scanner for the same state stores a placeholder
+/// row (size/mtime 0) and keeps the path in its visited set; a refresh
+/// caller must therefore treat non-NotFound failures as a no-op (mirroring
+/// `handle_event`'s error arm) and never map None to a row delete, or a
+/// live file's row is dropped until rescan. **The caller must first apply
+/// the scanner's same-source
+/// exclusion policy** (component-level names/secrets +
+/// [`Excluder::is_skipped`]): this function only assembles fields and does
+/// no exclusion — the scanner path is already excluded by filter_entry, the
+/// watcher path excludes first in `handle_event`, and refresh code going
+/// through here must carry the same judgment, otherwise .ssh/keys enter the
+/// store through the single-path entry.
+#[allow(dead_code)] // watcher is library-first: only tests reference this before wiring
+pub(super) fn record_from_path(path: &Path) -> Option<FileRecord> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    let ft = md.file_type();
+    if !ft.is_file() && !ft.is_dir() {
+        return None;
+    }
+    record_from_parts(
+        path,
+        path.file_name().and_then(|s| s.to_str())?,
+        ft.is_dir(),
+        Some(&md),
+    )
 }
 
 #[cfg(test)]
@@ -158,6 +211,82 @@ mod tests {
     use super::*;
     use crate::features::knowledge::store::SearchQuery;
     use std::fs;
+
+    /// record_from_path's field assembly: file (name/ext/size/mtime),
+    /// directory (size=0, ext=None), symlink rejection — the store shape
+    /// shared by the watcher's incremental and the scanner's paths.
+    #[test]
+    fn record_from_path_builds_records_like_the_scanner() {
+        let base = std::env::temp_dir().join(format!("pinvou3_kb_rfp_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("报告.pdf"), b"hello pdf").unwrap();
+
+        let file = record_from_path(&base.join("报告.pdf")).unwrap();
+        assert_eq!(file.name, "报告.pdf");
+        assert_eq!(file.ext.as_deref(), Some("pdf"));
+        assert_eq!(file.size, 9);
+        assert!(!file.is_dir);
+        assert!(
+            file.mtime > 0,
+            "mtime is assembled from stat, must not degrade to 0"
+        );
+
+        let dir = record_from_path(&base).unwrap();
+        assert!(dir.is_dir);
+        assert_eq!(dir.ext, None, "directories get no extension");
+        assert_eq!(dir.size, 0);
+
+        // A dot-suffixed directory name likewise gets no extension (the
+        // fixture must be dotted, otherwise ext_of returns None anyway and
+        // the is_dir branch bites nothing).
+        fs::create_dir_all(base.join("backup.old")).unwrap();
+        let dotted_dir = record_from_path(&base.join("backup.old")).unwrap();
+        assert!(dotted_dir.is_dir);
+        assert_eq!(
+            dotted_dir.ext, None,
+            "a dot-suffixed directory name's ext must still be None"
+        );
+
+        // The symlink body does not enter the store (symlink_metadata does
+        // not follow), consistent with the scanner.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("报告.pdf"), base.join("link.pdf")).unwrap();
+            assert!(
+                record_from_path(&base.join("link.pdf")).is_none(),
+                "the symlink body does not enter the store"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Non-UTF-8 paths: the scanner's own semantics (to_str() failure →
+    /// skip), must not panic. Note APFS and friends reject non-UTF-8 file
+    /// names (EILSEQ), so the fixture cannot be created there — the same
+    /// probe as the chmod-000 fixture: skip when it cannot be created, no
+    /// false red on hostile filesystems.
+    #[test]
+    #[cfg(unix)]
+    fn record_from_path_skips_non_utf8_paths() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let base =
+            std::env::temp_dir().join(format!("pinvou3_kb_rfp_nonutf8_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let p = base.join(OsStr::from_bytes(b"\xff\xfe.bad"));
+        if fs::write(&p, b"x").is_err() {
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+
+        assert!(record_from_path(&p).is_none());
+
+        let _ = fs::remove_dir_all(&base);
+    }
 
     /// 不可读子树的 walk 错误必须被计数（全盘扫描据此否决该根的陈旧删除
     /// 授权，见 mod.rs `root_authorizes_deletion`）：根本体可走、子树
@@ -220,6 +349,80 @@ mod tests {
             visited_again.contains(&base.join("sub/locked.md").to_string_lossy().into_owned()),
             "the previously locked file is indexed once the subtree is readable"
         );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The scan leg's non-UTF-8 pruning (the scanner half of the watcher's
+    /// `non_utf8_spellings_never_enter_the_index`, pinning the "both sides
+    /// store the same outcome" claim on the scan side): a non-UTF-8-named
+    /// directory is pruned whole at filter_entry via the empty-name
+    /// semantics (clean leaves stay out too), and `to_record`'s `to_str`
+    /// gate catches the remaining shapes. APFS cannot create the fixture
+    /// (probe-skip); the ext4 CI (ubuntu full leg) really executes it — the
+    /// same probe convention as the chmod-000 fixture.
+    #[test]
+    #[cfg(unix)]
+    fn scan_prunes_non_utf8_names_like_the_watcher() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let base =
+            std::env::temp_dir().join(format!("pinvou3_kb_scan_nonutf8_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let bad_dir = base.join(OsStr::from_bytes(b"\xff\xfe.dir"));
+        if fs::create_dir_all(&bad_dir).is_err() {
+            // A hostile filesystem (APFS rejects non-UTF-8 names) cannot
+            // create the fixture; skip.
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        let bad_leaf = bad_dir.join(OsStr::from_bytes(b"ok.pdf"));
+        if fs::write(&bad_leaf, b"p").is_err() {
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        fs::write(base.join("报告.pdf"), b"r").unwrap();
+
+        let store = Store::open_in_memory().unwrap();
+        let ex = Excluder::default();
+        let mut visited = HashSet::new();
+        let (walked, errors) = scan(
+            &base,
+            &store,
+            &ex,
+            &HashMap::new(),
+            &mut visited,
+            |_| {},
+            || {},
+        );
+
+        assert_eq!(errors, 0, "pruning is a policy decision, not a walk error");
+        // walked is exactly 2: walkdir also yields one entry for the root
+        // itself (to_record builds a row for the root), plus the clean leaf;
+        // the pruned subtree contributes nothing (round-6 CI ext4 measured
+        // left=2).
+        assert_eq!(
+            walked, 2,
+            "only the root row and the clean sibling are countable; the pruned \
+             subtree yields nothing"
+        );
+        assert!(
+            !visited.iter().any(|p| p.contains('\u{FFFD}')),
+            "no lossy-spelled path may enter the visit set"
+        );
+        let mut indexed: Vec<String> = store.load_index().unwrap().into_keys().collect();
+        indexed.sort();
+        assert_eq!(
+            indexed,
+            vec![
+                base.to_string_lossy().into_owned(),
+                base.join("报告.pdf").to_string_lossy().into_owned(),
+            ],
+            "the root row + clean sibling are indexed; the non-UTF-8 subtree \
+             stays out entirely"
+        );
+
         let _ = fs::remove_dir_all(&base);
     }
 

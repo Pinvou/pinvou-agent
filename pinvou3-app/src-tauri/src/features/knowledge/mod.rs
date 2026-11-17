@@ -29,6 +29,11 @@ pub use model_download::{configured_model_dir, configured_model_dir_from};
 mod query;
 mod scanner;
 mod store;
+// Real-time incremental indexing (notify). Both the event side
+// (watcher::spawn) and the single-path refresh side (scanner::record_from_path)
+// are unwired; the library + tests land first, and wiring is the startup-scan
+// owner's responsibility.
+mod watcher;
 
 pub(crate) use exclude::Excluder;
 pub use import_jobs::{FailedImportFilePage, ImportJobState as IndexState};
@@ -753,6 +758,10 @@ impl KnowledgeService {
     /// 启动一轮增量扫描（后台线程，立即返回；已在跑则原样返回当前状态）。**懒触发**：由前端
     /// 进入文件管理页时调，不进页 = 零扫描。不再常驻 watcher / 周期重扫——文件管理是低频功能，
     /// 不该长期占资源。增量只处理 mtime/size 变化的文件，进页时前端先用缓存秒显、扫完再刷新。
+    /// (The incremental event side now exists as a library in `watcher.rs`;
+    /// this entry's "no resident watcher" means no periodic fallback —
+    /// whether to wire a resident event stream is a wiring decision,
+    /// trade-offs in #869.)
     pub fn start_scan(&self, roots: Vec<PathBuf>) -> ScanState {
         {
             let mut st = self.scan_state.lock();

@@ -14,7 +14,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rusqlite::{Connection, params, params_from_iter, types::Value};
+use rusqlite::{
+    Connection, OptionalExtension, TransactionBehavior, params, params_from_iter, types::Value,
+};
 use serde::{Deserialize, Serialize};
 
 /// schema 版本。v3 起包含用户创建的 L1 数据，后续版本必须提供原地迁移。
@@ -48,8 +50,12 @@ fn schema_is_disposable(version: i64) -> bool {
     (0..3).contains(&version)
 }
 
-/// 建表 + FTS5 虚表 + 同步触发器。幂等（`IF NOT EXISTS`）。
-const SCHEMA: &str = r#"
+/// Tables + FTS5 virtual table + sync triggers. Idempotent (`IF NOT EXISTS`,
+/// except for the trigger replacement pair). The trigger statement is listed
+/// separately as [`FILES_AU_TRIGGER`] (shared verbatim by the fresh-create
+/// batch and the steady-state upgrade); this constant is spliced together by
+/// [`schema_sql`].
+const SCHEMA_HEAD: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 
@@ -92,10 +98,56 @@ END;
 CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
 END;
-CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE OF name ON files BEGIN
+-- files_au is not created here (the replacement pair is listed separately as
+-- [`FILES_AU_TRIGGER`]; this batch splices the same text via [`schema_sql`]):
+-- the old trigger had no WHEN clause while the UPSERT's SET list always
+-- includes name=, and `AFTER UPDATE OF name` inspects the SET list, not the
+-- values — so writes that leave the name unchanged (the watcher's Modify
+-- events, the scanner's status refreshes) still paid a full trigram
+-- delete+insert round. WHEN makes the trigger semantics match the comment
+-- above. This batch covers only fresh creates and migrations; existing
+-- stores already in the v4 steady state are upgraded in place by open()'s
+-- read-only probe (see the FILES_AU_TRIGGER comment).
+"#;
+
+/// The paired replacement statements for files_au. DROP+CREATE is wrapped in
+/// BEGIN IMMEDIATE for atomicity: when two processes race a first-time store
+/// creation (or this same upgrade), statement-level interleaving would let
+/// the unconditional CREATE hit "already exists" — the old all-`IF NOT
+/// EXISTS` batch had no such failure mode — and with the pair atomized, the
+/// loser merely waits for the lock and replays idempotently. The SCHEMA
+/// batch (fresh create / migration) and open()'s steady-state upgrade share
+/// this one text, so the shape cannot drift
+/// (`trigger_replacement_matches_the_schema_built_shape`). The upgrade probe
+/// recognizes the old shape by the [`FILES_AU_WHEN_CLAUSE`] substring:
+/// sqlite_master.sql preserves the statement text as the trigger was
+/// created, and the old shape lacks that clause.
+const FILES_AU_TRIGGER: &str = r#"
+BEGIN IMMEDIATE;
+DROP TRIGGER IF EXISTS files_au;
+CREATE TRIGGER files_au AFTER UPDATE OF name ON files
+WHEN old.name IS NOT new.name
+BEGIN
     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
     INSERT INTO files_fts(rowid, name) VALUES (new.id, new.name);
 END;
+COMMIT;
+"#;
+
+/// The WHEN clause text unique to the new-shape `files_au`. open()'s
+/// steady-state probe uses this substring to tell the old shape (no WHEN;
+/// every upsert paid a pointless trigram rewrite) from the new one.
+/// Extracted into a constant so the probe and the trigger text share one
+/// matcher: if a future reflow of [`FILES_AU_TRIGGER`] changes the clause's
+/// wording, `trigger_replacement_matches_the_schema_built_shape` goes red
+/// instead of the silent degradation where a probe-substring mismatch
+/// replays the upgrade on every steady-state open.
+const FILES_AU_WHEN_CLAUSE: &str = "WHEN old.name IS NOT new.name";
+
+/// Tail of the fresh-create batch (the L1 knowledge base and import job
+/// tables), spliced with [`SCHEMA_HEAD`] and [`FILES_AU_TRIGGER`] into the
+/// full batch.
+const SCHEMA_TAIL: &str = r#"
 
 -- ============ L1 知识库（见 l1.rs）============
 -- 知识集：用户圈定的一批文件，内容化后供检索/问答。
@@ -191,6 +243,14 @@ CREATE TABLE IF NOT EXISTS knowledge_import_staged_chunks (
 );
 "#;
 
+/// The fresh-create batch: head (L0 tables and trigger declarations) +
+/// files_au replacement + tail (L1 tables). Idempotent (`IF NOT EXISTS`,
+/// except the files_au replacement pair — it carries its own BEGIN IMMEDIATE
+/// atomization, and repeating it is idempotent).
+fn schema_sql() -> String {
+    format!("{SCHEMA_HEAD}{FILES_AU_TRIGGER}{SCHEMA_TAIL}")
+}
+
 // hash 只剩历史库里的遗留值（去重功能已下线，不再写入/读取）；列保留 nullable 以兼容
 // 用户的既有 index.db，UPSERT 不再触碰它。
 const UPSERT_SQL: &str = r#"
@@ -200,6 +260,33 @@ ON CONFLICT(path) DO UPDATE SET
     name=excluded.name, ext=excluded.ext, size=excluded.size,
     mtime=excluded.mtime, is_dir=excluded.is_dir, status='indexed',
     indexed_at=excluded.indexed_at
+"#;
+
+/// Watcher incremental path only ([`upsert_many_if_changed`]): the only
+/// difference from [`UPSERT_SQL`] is a WHERE in the conflict branch — the
+/// whole row is skipped when its content (name/ext/size/mtime/is_dir) is
+/// fully identical to the store's. Burst events for the same file within a
+/// second, chmod and other pure-metadata churn no longer rewrite the row per
+/// event. When a row is skipped, its indexed_at keeps the time of the last
+/// actual change. The restart fallback in `last_scan_finished_at` reads
+/// `MAX(indexed_at)` (see that method), so the scan path keeps
+/// [`UPSERT_SQL`]: every row the scanner actually writes touches
+/// `indexed_at` — rows whose (mtime, size) match the snapshot are
+/// pre-skipped by the scanner and never reach the statement — which keeps
+/// the fallback's semantics unchanged while the write-amplification elision
+/// lives only on the incremental side. The WHERE uses bare column names for
+/// the old row and `excluded.` for the new one; `IS NOT` is NULL-safe
+/// (SQLite's NULL-safe comparison).
+const UPSERT_IF_CHANGED_SQL: &str = r#"
+INSERT INTO files(path, name, ext, size, mtime, is_dir, status, indexed_at)
+VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'indexed', strftime('%s','now'))
+ON CONFLICT(path) DO UPDATE SET
+    name=excluded.name, ext=excluded.ext, size=excluded.size,
+    mtime=excluded.mtime, is_dir=excluded.is_dir, status='indexed',
+    indexed_at=excluded.indexed_at
+WHERE excluded.name IS NOT name OR excluded.ext IS NOT ext
+   OR excluded.size IS NOT size OR excluded.mtime IS NOT mtime
+   OR excluded.is_dir IS NOT is_dir
 "#;
 
 /// 一条待写入的文件元数据。
@@ -410,12 +497,72 @@ impl Store {
                 ));
             }
             w.execute_batch("PRAGMA synchronous = NORMAL;")?;
+            // A v4 steady-state store may still carry the old-shape files_au
+            // (opened before the WHEN upgrade landed; this branch skips the
+            // DDL batch, so the batch's replacement never reaches existing
+            // stores). Identify the old shape with a read-only probe
+            // (sqlite_master.sql without the WHEN clause) and run the
+            // replacement when the trigger is missing or wrong-shaped —
+            // the probe is a plain SELECT and takes no write lock, so the
+            // steady-state open's two-process contention window is unchanged
+            // (a present, correct trigger means neither branch fires); the
+            // replacement statement carries its own BEGIN IMMEDIATE, so
+            // racing another process's identical upgrade just waits for the
+            // lock and replays idempotently (FTS content unchanged, a pure
+            // metadata operation). Rebuilding covers the externally-dropped
+            // trigger too — unlike an externally dropped *table*, a missing
+            // `files_au` fails nothing: DML just stops updating FTS, so
+            // renames would silently go stale in search until a rescan (the
+            // "statements fail explicitly" trade does not apply to
+            // triggers). Only `files_au` is probed and rebuilt: its shape
+            // changed in this schema generation (the WHEN clause), so
+            // existing stores legitimately carry a stale shape; `files_ai`
+            // and `files_ad` never changed shape, so an externally dropped
+            // one is tampering rather than a stale upgrade and stays under
+            // the table-level no-self-heal stance instead of a per-open
+            // rebuild. Should the replacement itself lose the
+            // busy_timeout race (a one-time migration window on stores
+            // still carrying the old shape; a >5s write-lock holder makes
+            // BEGIN IMMEDIATE time out where a pre-upgrade binary's
+            // steady-state open took no write lock at all), roll the
+            // interrupted batch back (see the rollback comment below) and
+            // report and open with the old trigger — correct, just slower —
+            // and let the next open retry the upgrade.
+            let trigger_sql: Option<String> = w
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if !trigger_sql
+                .as_deref()
+                .is_some_and(|sql| sql.contains(FILES_AU_WHEN_CLAUSE))
+            {
+                if let Err(err) = w.execute_batch(FILES_AU_TRIGGER) {
+                    // A mid-batch failure (e.g. the `files` table was dropped
+                    // externally — which silently drops the trigger with it)
+                    // leaves the batch's BEGIN IMMEDIATE transaction open:
+                    // SQLite does not auto-rollback on a statement error, and
+                    // a stranded txn would break every later
+                    // `Connection::transaction()` on this write connection
+                    // ("cannot start a transaction within a transaction"),
+                    // make plain executes ride the uncommitted batch, and
+                    // hold the write lock against the other process until
+                    // close. Roll it back explicitly (no-op when the batch
+                    // failed before BEGIN) before reporting.
+                    let _ = w.execute_batch("ROLLBACK");
+                    eprintln!(
+                        "[kb_store] files_au upgrade skipped (will retry on next open): {err}"
+                    );
+                }
+            }
         } else {
             // Fresh create / in-place v3 migration: the DDL batch and the
             // version write each take the write lock once; busy_timeout makes
             // them wait out the other process's short transaction instead of
             // failing immediately.
-            w.execute_batch(SCHEMA)?;
+            w.execute_batch(&schema_sql())?;
             w.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         }
         // 独立只读连接：WAL 下与写连接并发，扫描写锁不堵前端查询。
@@ -437,7 +584,7 @@ impl Store {
 
     #[cfg(test)]
     fn from_conn(conn: Connection) -> rusqlite::Result<Self> {
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(&schema_sql())?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         // 内存库(测试)：无并发扫描，读写共用同一连接。
         let arc = Arc::new(Mutex::new(conn));
@@ -494,6 +641,29 @@ impl Store {
         tx.commit()
     }
 
+    /// Incremental upsert (watcher only, single transaction): rows whose
+    /// content matches the store are skipped whole; see
+    /// [`UPSERT_IF_CHANGED_SQL`] for the write-amplification elision. The
+    /// insert branch is identical to [`upsert_many`]'s.
+    pub fn upsert_many_if_changed(&self, recs: &[FileRecord]) -> rusqlite::Result<()> {
+        let mut guard = self.conn.lock();
+        let tx = guard.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(UPSERT_IF_CHANGED_SQL)?;
+            for r in recs {
+                stmt.execute(params![
+                    r.path,
+                    r.name,
+                    r.ext,
+                    r.size as i64,
+                    r.mtime,
+                    r.is_dir as i64,
+                ])?;
+            }
+        }
+        tx.commit()
+    }
+
     /// 现有索引快照 `path → (mtime, size)`，给增量扫描比对用（只取未变文件可跳过 upsert）。
     pub fn load_index(&self) -> rusqlite::Result<HashMap<String, (i64, u64)>> {
         let guard = self.read.lock();
@@ -515,6 +685,132 @@ impl Store {
             let mut stmt = tx.prepare_cached("DELETE FROM files WHERE path = ?1")?;
             for p in paths {
                 stmt.execute(params![p])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// Watcher deletes: a directory record is deleted together with its
+    /// subtree, a file record degrades to an exact delete. Single transaction;
+    /// FTS is kept in sync by the triggers.
+    ///
+    /// The transaction is `Immediate`: a SELECT-first write transaction under
+    /// the deferred behavior, when its write upgrade collides in WAL with a
+    /// concurrent process's commit (GUI + headless CLI on one store is
+    /// supported usage), fails with `SQLITE_BUSY_SNAPSHOT` and the busy
+    /// handler does not retry — turning a waitable lock race into a
+    /// whole-batch delete failure that drops events. The write lock is taken
+    /// at BEGIN, so the waiting happens up front. (The library has two more
+    /// isomorphic SELECT-first write transactions: import_jobs' job
+    /// preparation and entry claiming. Those are self-recovering job-state
+    /// machines — failure returns Err and the entries stay pending for the
+    /// next retry — left unchanged here; see `prepare_items`/`claim_next`.)
+    ///
+    /// Why subtree deletion is needed: when a directory is renamed/moved
+    /// out, inotify only surfaces that directory's own event on the (still
+    /// watched) parent; its files get no events at all, and an exact delete
+    /// would leave a whole tree of "ghosts" in the index until the next
+    /// rescan. `is_dir` is probed first, and only a directory takes the
+    /// prefix delete — the prefix range rides the UNIQUE index (`path TEXT
+    /// NOT NULL UNIQUE`, BINARY ordering): an index seek plus deletion of
+    /// the hit rows, not a full-table scan; files (the vast majority of
+    /// events) keep the index exact-delete cost. Known residual gap (ghost
+    /// direction, rescan covers): the store holds a stale `is_dir=false`
+    /// row while the disk already has a directory — this call only
+    /// exact-deletes, and the subtree rows wait for rescan (the is_dir gate
+    /// is a scan-saving trade; batch merging of event streams is a
+    /// watcher-side matter).
+    ///
+    /// The prefix match is an exact range compare over
+    /// `[path + primary separator, path + separator successor)`: paths may
+    /// contain `%`/`_`/`[`, so LIKE/GLOB's pattern semantics are unusable.
+    /// The lower bound is `p + sep`; the upper bound is `p + the character
+    /// after the separator byte` (unix `/`(0x2F)→`0`(0x30), Windows
+    /// `\`(0x5C)→`]`(0x5D); both separators are ASCII, so the successor is
+    /// unambiguous) — under BINARY byte ordering, any row starting with
+    /// `p+sep` decides its comparison against the upper bound at the
+    /// separator byte itself, and extending the suffix never changes the
+    /// outcome, so the half-open interval is exactly the set of rows
+    /// byte-prefixed by `p+sep` (including a root row stored under the
+    /// `p+sep` spelling itself). Every row in the store passed
+    /// `record_from_parts`'s `to_str` gate (legal UTF-8, and UTF-8 byte
+    /// order equals code point order), so CJK/emoji paths compare exactly;
+    /// no in-app BLOB rows can exist (the only writers bind TEXT).
+    /// Externally injected BLOB rows match neither delete — SQLite's
+    /// storage-class ordering puts BLOB above every TEXT, so `path = ?` (a
+    /// TEXT binding) is not equal and the range's upper-bound comparison
+    /// also judges larger — they ghost until the next rescan; no in-app
+    /// path can reach this, recorded as the fact it is. The same miss
+    /// befalls a row spelled with a **non-primary** separator (e.g. a
+    /// `/`-spelled root row on Windows, whose bytes sort below every
+    /// `\`-prefixed range): the same ghost-until-rescan class, unreachable
+    /// while scanner and watcher share one canonical spelling (the wiring
+    /// contract).
+    ///
+    /// Separator spellings: the input tolerates a **trailing separator**
+    /// (the wiring side may pass a root PathBuf carrying `/`), and mixed
+    /// tails (`dir\/`); both are stripped in one pass by "primary
+    /// separator or `/`" before comparing. Rows, on the other hand, may be
+    /// stored under a **trailing-separator** spelling (walkdir records scan
+    /// roots verbatim; passing `--root /media/usb/` stores `/media/usb/`)
+    /// — the is_dir probe falls back to the `p + primary separator`
+    /// root-row spelling when the canonical spelling misses, and the prefix
+    /// pattern hits that row exactly, so the whole tree is still deleted.
+    ///
+    /// Whole-index inputs are skipped, not swept: an input that trims to
+    /// empty (the bare separator spelling, `/` or `\`) is dropped, and so is
+    /// a drive-root spelling (`C:` after `C:\` trims — the spelling a
+    /// Windows GUI root actually produces), because a single transient
+    /// false NotFound event must not turn into an unbounded sweep of every
+    /// indexed row; the rows wait for the rescan instead. The verbatim
+    /// spellings of the same root are guarded identically: the
+    /// canonical-spelling contract makes rows carry the `\\?\C:\…` prefix,
+    /// so such a NotFound event can arrive spelled `\\?\C:\` (which trims
+    /// to `\\?\C:`, or keeps its trailing backslash on Unix where `\` is
+    /// not MAIN_SEPARATOR) — see `is_drive_root`.
+    pub fn delete_tree(&self, paths: &[String]) -> rusqlite::Result<()> {
+        let mut guard = self.conn.lock();
+        let tx = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        {
+            let mut q = tx.prepare_cached("SELECT is_dir FROM files WHERE path = ?1")?;
+            let mut del_exact = tx.prepare_cached("DELETE FROM files WHERE path = ?1")?;
+            let mut del_sub =
+                tx.prepare_cached("DELETE FROM files WHERE path >= ?1 AND path < ?2")?;
+            for p_raw in paths {
+                let p = p_raw.trim_end_matches(|c| c == std::path::MAIN_SEPARATOR || c == '/');
+                if p.is_empty() || is_drive_root(p) || is_unc_share_root(p) {
+                    continue;
+                }
+                // A row may be stored under the canonical spelling or the
+                // "p + separator" root-row spelling; probe both. The exact
+                // DELETE only runs when the exact probe hit: it uses the
+                // same BINARY equality as the probe, so after a double miss
+                // it provably affects zero rows — and double misses are the
+                // hot path (delete events for never-indexed paths: build
+                // churn, symlink replacements).
+                let with_sep = format!("{}{}", p, std::path::MAIN_SEPARATOR);
+                let exact_hit: Option<bool> = q.query_row(params![p], |r| r.get(0)).optional()?;
+                let is_dir: Option<bool> = match exact_hit {
+                    Some(dir) => Some(dir),
+                    None => q.query_row(params![with_sep], |r| r.get(0)).optional()?,
+                };
+                if exact_hit.is_some() {
+                    del_exact.execute(params![p])?;
+                }
+                if is_dir == Some(true) {
+                    // Rows can only be `p` itself, `p + separator` (a
+                    // trailing-separator root-row spelling), or
+                    // `p + separator + descendant`; the half-open interval
+                    // `[p+sep, p+sep-successor)` is exactly that whole set
+                    // (see the method doc), so siblings sharing only prefix
+                    // characters (like `prefix-sibling.md`, or a `p0` that
+                    // exactly equals the upper bound) are not wrongly
+                    // deleted, while the trailing-separator root row itself
+                    // is caught exactly by the lower bound and cleared with
+                    // the rest.
+                    let upper = format!("{}{}", p, (std::path::MAIN_SEPARATOR as u8 + 1) as char);
+                    del_sub.execute(params![with_sep, upper])?;
+                }
             }
         }
         tx.commit()
@@ -663,6 +959,49 @@ fn escape_like(s: &str) -> String {
     s.replace(['%', '_'], "")
 }
 
+/// A trimmed delete input that is a drive-root spelling (`C:` — what `C:\`
+/// trims to; the same whole-index class as a bare-separator input for a
+/// Windows store root). The canonical-spelling contract makes rows carry the
+/// verbatim `\\?\C:\…` prefix, so the verbatim forms (`\\?\C:` after the
+/// caller's separator trim, and `\\?\C:\` whose backslash is not
+/// MAIN_SEPARATOR on Unix) denote the same root and are guarded identically.
+/// Only the exact two-character spelling matches after the prefix/backslash
+/// strip: a one-character name or a longer path ending in `:` is a legal
+/// entity name and deletes normally. Side effect of the unconditional
+/// check: on Unix a directory literally named `C:` is also skipped (legal
+/// name, ghosts until rescan) — accepted, the class is Windows-shaped and
+/// the alternative (Path::parent semantics) would make the guard
+/// platform-dependent. UNC share roots are the same whole-index class;
+/// they get their own predicate ([`is_unc_share_root`]) with the same
+/// skip semantics.
+fn is_drive_root(p: &str) -> bool {
+    let bare = p.strip_prefix(r"\\?\").unwrap_or(p).trim_end_matches('\\');
+    let b = bare.as_bytes();
+    b.len() == 2 && b[1] == b':' && b[0].is_ascii_alphabetic()
+}
+
+/// UNC share roots (`\\srv\share`, verbatim `\\?\UNC\srv\share`) are the
+/// same whole-index loss class as drive roots: one transient false NotFound
+/// for the root would range-delete every row under the share and set no
+/// rescan flag (review JensenChen28 2026-11-16 P2). Byte-based like
+/// [`is_drive_root`] (platform-independent, no `Path` semantics): exactly
+/// two non-empty components after the prefix — the share **root** only;
+/// deeper paths under the share delete normally, and drive-verbatim
+/// spellings (`\\?\C:\…`) do not match.
+pub(crate) fn is_unc_share_root(p: &str) -> bool {
+    let two_components = |tail: &str| -> bool {
+        let comps: Vec<&str> = tail.split('\\').filter(|c| !c.is_empty()).collect();
+        comps.len() == 2 && comps.iter().all(|c| !c.is_empty())
+    };
+    if let Some(tail) = p.strip_prefix(r"\\?\UNC\") {
+        return two_components(tail);
+    }
+    if let Some(tail) = p.strip_prefix(r"\\") {
+        return two_components(tail);
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -713,6 +1052,20 @@ mod tests {
             mtime,
             is_dir: false,
         }
+    }
+
+    /// Fixture paths are spelled uniformly via the primary separator: the
+    /// boundary math of delete_tree (lower bound `p+sep`, upper bound
+    /// `p + separator successor`) uses MAIN_SEPARATOR, so `/`-literal
+    /// fixtures on Windows (`\` separator, successor `]`) would turn these
+    /// pure-SQL tests all-red (rows sorted under `/` fall outside the lower
+    /// bound). Paths built here share the delete implementation's source, so
+    /// the semantics agree on any platform.
+    fn sep_path(parts: &[&str]) -> String {
+        let sep = std::path::MAIN_SEPARATOR;
+        let mut s = String::from(sep);
+        s.push_str(&parts.join(&sep.to_string()));
+        s
     }
 
     fn seed() -> Store {
@@ -1307,6 +1660,273 @@ mod tests {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
+    /// Steady-state upgrade pin: the DDL batch runs only on fresh create /
+    /// migration, and a v4 steady-state open takes the branch that skips the
+    /// batch — if an existing store still carries the old (no-WHEN) files_au,
+    /// open() must identify it via the read-only probe and replace it in
+    /// place. Only this test can see that scenario (open_in_memory always
+    /// runs the full batch, so its trigger is naturally new-shape). Also pins
+    /// upgrade idempotence (a second open leaves the shape stable).
+    #[test]
+    fn open_upgrades_a_v4_store_still_carrying_the_old_trigger_shape() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_oldtrig_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+
+        let trigger_sql = |path: &Path| {
+            let c = Connection::open(path).unwrap();
+            c.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+
+        // After a fresh binary creates the store, degrade files_au back to
+        // the old (no-WHEN) shape — exactly simulating every difference a
+        // "v4 steady-state store written by an old binary" presents to the
+        // probe.
+        drop(Store::open(&path).unwrap());
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "DROP TRIGGER files_au;
+                 CREATE TRIGGER files_au AFTER UPDATE OF name ON files
+                 BEGIN
+                     INSERT INTO files_fts(files_fts, rowid, name) VALUES('delete', old.id, old.name);
+                     INSERT INTO files_fts(rowid, name) VALUES (new.id, new.name);
+                 END;",
+            )
+            .unwrap();
+        }
+        assert!(
+            !trigger_sql(&path).contains("WHEN old.name IS NOT new.name"),
+            "fixture must start from the old (no-WHEN) shape"
+        );
+
+        // Reopen: the steady-state probe identifies the old shape →
+        // in-place replacement.
+        let store = Store::open(&path).unwrap();
+        drop(store);
+        let upgraded = trigger_sql(&path);
+        assert!(
+            upgraded.contains("WHEN old.name IS NOT new.name"),
+            "a v4 steady-state open must upgrade the old trigger in place, got: {upgraded}"
+        );
+
+        // Upgrade idempotence: open once more, shape stable, no error.
+        drop(Store::open(&path).unwrap());
+        assert_eq!(trigger_sql(&path), upgraded, "second open must be a no-op");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// An **externally dropped** `files_au` must be rebuilt on open, not
+    /// just an old-shaped one: unlike a dropped table, a missing trigger
+    /// fails nothing at DML time — renames silently stop updating FTS and
+    /// search goes stale until a rescan, so the "statements fail explicitly"
+    /// trade does not cover this class. When the trigger exists with the
+    /// right shape, the replacement batch never runs at all (the probe
+    /// short-circuits), so the steady-state open takes no write lock; when
+    /// the batch does run, it is wrapped in `BEGIN IMMEDIATE` and takes the
+    /// write lock for its whole (one-time) duration.
+    #[test]
+    fn open_rebuilds_an_externally_dropped_files_au_trigger() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_droptrig_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+
+        let trigger_sql = |path: &Path| {
+            let c = Connection::open(path).unwrap();
+            c.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
+        };
+
+        drop(Store::open(&path).unwrap());
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("DROP TRIGGER files_au;").unwrap();
+        }
+        assert!(
+            trigger_sql(&path).is_none(),
+            "fixture must start with files_au gone"
+        );
+
+        // Reopen: the probe's missing arm rebuilds the trigger in place.
+        drop(Store::open(&path).unwrap());
+        let rebuilt = trigger_sql(&path);
+        assert!(
+            rebuilt.is_some(),
+            "a missing files_au must be rebuilt on open"
+        );
+        assert!(
+            rebuilt
+                .as_deref()
+                .unwrap()
+                .contains("WHEN old.name IS NOT new.name"),
+            "the rebuilt trigger must carry the WHEN clause, got: {rebuilt:?}"
+        );
+
+        // And the rebuilt trigger actually follows renames (the FTS
+        // staleness this class would otherwise cause).
+        let store = Store::open(&path).unwrap();
+        let p = sep_path(&["t", "rebuilt.pdf"]);
+        store
+            .upsert_many(&[rec(&p, "before-name.pdf", Some("pdf"), 1, 1)])
+            .unwrap();
+        store
+            .upsert_many(&[rec(&p, "after-name.pdf", Some("pdf"), 2, 2)])
+            .unwrap();
+        let hits = |text: &str| {
+            store
+                .search(&SearchQuery {
+                    text: Some(text.into()),
+                    limit: 10,
+                    ..Default::default()
+                })
+                .unwrap()
+                .len()
+        };
+        assert_eq!(hits("before"), 0, "the rebuilt trigger must follow renames");
+        assert_eq!(hits("after"), 1);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// A failed steady-state upgrade must not strand the batch's open
+    /// transaction on the write connection. Damage shape: the `files` table
+    /// dropped externally (which silently drops `files_au` with it — the
+    /// same tampering class the rebuild path advertises), so the next
+    /// open's rebuild batch gets past `BEGIN IMMEDIATE` and fails at
+    /// `CREATE TRIGGER` ("no such table: main.files"). Without the explicit
+    /// ROLLBACK the swallowed error left the transaction open: every later
+    /// write transaction on this Store failed with "cannot start a
+    /// transaction within a transaction" and the write lock stayed held
+    /// against the other process until close. The regression signal is the
+    /// failure class of the next write: a clean missing-table error proves
+    /// the transaction machinery is intact.
+    #[test]
+    fn open_survives_a_failed_trigger_upgrade_without_stranding_the_write_lock() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_store_aufail_{}_{}.db",
+            std::process::id(),
+            suffix
+        ));
+
+        drop(Store::open(&path).unwrap());
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("DROP TABLE files;").unwrap();
+        }
+        assert!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .unwrap()
+                .is_none(),
+            "dropping files must take the trigger with it"
+        );
+
+        // Reopen: the rebuild batch fails (no `files` to hang the trigger
+        // on), the error is swallowed per the documented degradation, and
+        // open still succeeds — without stranding the write transaction.
+        let store = Store::open(&path).unwrap();
+        let err = store
+            .upsert_many(&[rec(&sep_path(&["t", "x.pdf"]), "x.pdf", Some("pdf"), 1, 1)])
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("within a transaction"),
+            "the failed upgrade stranded a transaction on the write connection: {msg}"
+        );
+        assert!(
+            msg.contains("no such table"),
+            "the next write must fail on the (tampered-away) table, not on \
+             transaction machinery, got: {msg}"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// The upgrade path and the create path share the same FILES_AU_TRIGGER
+    /// text (spliced by schema_sql); this pins that the trigger statement
+    /// text built by both routes (sqlite_master.sql) is identical, so a
+    /// future inline-back into SCHEMA cannot drift the two copies apart.
+    #[test]
+    fn trigger_replacement_matches_the_schema_built_shape() {
+        let via_schema = Connection::open_in_memory().unwrap();
+        via_schema.execute_batch(&schema_sql()).unwrap();
+        // The trigger validates referenced tables at creation, so the
+        // replacement statement needs SCHEMA_HEAD to create files/files_fts
+        // first.
+        let via_upgrade = Connection::open_in_memory().unwrap();
+        via_upgrade.execute_batch(SCHEMA_HEAD).unwrap();
+        via_upgrade.execute_batch(FILES_AU_TRIGGER).unwrap();
+        let sql = |conn: &Connection| {
+            conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(sql(&via_schema), sql(&via_upgrade));
+        // Probe-substring anti-drift pin: both the trigger const text and
+        // the schema-built stored sql must contain the WHEN clause the
+        // steady-state probe matches on — otherwise every open would
+        // misjudge the old shape and idly replay the upgrade (idempotent,
+        // but breaks the "steady-state open takes no write lock" design).
+        assert!(
+            FILES_AU_TRIGGER.contains(FILES_AU_WHEN_CLAUSE),
+            "the trigger const must keep the WHEN clause the steady-state probe matches on"
+        );
+        assert!(
+            sql(&via_schema).contains(FILES_AU_WHEN_CLAUSE),
+            "the schema-built stored sql must contain the probe substring"
+        );
+    }
+
     /// Every connection a file-backed open creates must carry the 5 s
     /// `busy_timeout`: the two-process contention case (a headless `agent
     /// run` and the GUI, or two headless runs) is exactly what the timeout
@@ -1412,5 +2032,612 @@ mod tests {
                  never wrap to unbounded"
             );
         }
+    }
+
+    /// delete_tree must degrade to an exact delete for a file record —
+    /// deleting only itself, touching no path that merely shares a prefix.
+    #[test]
+    fn delete_tree_on_a_file_is_exact() {
+        let s = Store::open_in_memory().unwrap();
+        let f = sep_path(&["a", "b", "notes.md"]);
+        let f_bak = sep_path(&["a", "b", "notes.md.bak"]);
+        let f2 = sep_path(&["a", "b", "notes.md2"]);
+        s.upsert_many(&[
+            rec(&f, "notes.md", Some("md"), 10, 1),
+            // Sibling paths sharing only prefix characters must not be
+            // wrongly deleted.
+            rec(&f_bak, "notes.md.bak", Some("bak"), 10, 1),
+            rec(&f2, "notes.md2", None, 10, 1),
+        ])
+        .unwrap();
+
+        s.delete_tree(std::slice::from_ref(&f)).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(!left.contains_key(&f));
+        assert!(left.contains_key(&f_bak));
+        assert!(left.contains_key(&f2));
+    }
+
+    /// A directory record takes its subtree: a dir rename/move-out only
+    /// surfaces the parent-path event, so the prefix delete must cover the
+    /// children; the prefix compare aligns exactly on "path + separator",
+    /// siblings sharing only prefix characters and parents are unaffected,
+    /// and CJK paths compare just as exactly (UTF-8 byte order).
+    #[test]
+    fn delete_tree_on_a_dir_removes_the_subtree_only() {
+        let s = Store::open_in_memory().unwrap();
+        let dir_p = sep_path(&["home", "u", "项目"]);
+        let dir_en_p = sep_path(&["home", "u", "proj"]);
+        let child_cjk = sep_path(&["home", "u", "项目", "报告.pdf"]);
+        let child_sub = sep_path(&["home", "u", "项目", "sub", "a.md"]);
+        let child_src = sep_path(&["home", "u", "proj", "src", "notes.md"]);
+        // Sibling sharing only prefix characters with the deleted dir
+        // (`项目` vs `项目备份`).
+        let sib_cjk = sep_path(&["home", "u", "项目备份.md"]);
+        let sib_en = sep_path(&["home", "u", "proj-notes.md"]);
+        let mut dir = rec(&dir_p, "项目", None, 0, 1);
+        dir.is_dir = true;
+        let mut dir_en = rec(&dir_en_p, "proj", None, 0, 1);
+        dir_en.is_dir = true;
+        s.upsert_many(&[
+            dir,
+            dir_en,
+            rec(&child_cjk, "报告.pdf", Some("pdf"), 8, 2),
+            rec(&child_sub, "a.md", Some("md"), 3, 3),
+            rec(&child_src, "notes.md", Some("md"), 4, 4),
+            rec(&sib_cjk, "项目备份.md", Some("md"), 5, 5),
+            rec(&sib_en, "proj-notes.md", Some("md"), 6, 6),
+        ])
+        .unwrap();
+
+        s.delete_tree(&[
+            dir_p.clone(),
+            dir_en_p.clone(),
+            // A file path mixed into the same batch must stay an exact
+            // delete.
+            sib_en.clone(),
+        ])
+        .unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(!left.contains_key(&dir_p));
+        assert!(!left.contains_key(&child_cjk));
+        assert!(!left.contains_key(&child_sub));
+        assert!(!left.contains_key(&dir_en_p));
+        assert!(!left.contains_key(&child_src));
+        assert!(!left.contains_key(&sib_en));
+        assert!(
+            left.contains_key(&sib_cjk),
+            "deleting 项目 must not touch the 项目备份.md sibling"
+        );
+    }
+
+    /// Paths not in the store (never indexed / already deleted by an earlier
+    /// path) must pass quietly without error — the watcher's delete branch
+    /// fires a delete for every NotFound event; when real paths are mixed
+    /// into the batch, unknown ones must not block the rest.
+    #[test]
+    fn delete_tree_tolerates_unknown_paths() {
+        let s = Store::open_in_memory().unwrap();
+        let real = sep_path(&["real", "notes.md"]);
+        s.upsert_many(&[rec(&real, "notes.md", Some("md"), 1, 1)])
+            .unwrap();
+        s.delete_tree(&[
+            sep_path(&["never", "indexed.md"]),
+            sep_path(&["also", "missing"]),
+            real.clone(),
+        ])
+        .unwrap();
+        assert!(s.load_index().unwrap().is_empty());
+    }
+
+    /// A scan root may be stored under a trailing-separator spelling
+    /// (walkdir records scan roots verbatim; passing `--root /media/usb/`
+    /// stores `/media/usb/`). It must still be hit when the delete input
+    /// uses the canonical spelling: the is_dir probe falls back to the
+    /// "p + separator" root-row spelling and the prefix pattern hits that
+    /// row exactly, so the whole tree is still deleted — no silent miss.
+    #[test]
+    fn delete_tree_matches_a_root_row_stored_with_a_trailing_separator() {
+        let s = Store::open_in_memory().unwrap();
+        let dir_p = sep_path(&["t", "sub"]);
+        let root_row = format!("{dir_p}{}", std::path::MAIN_SEPARATOR);
+        let child = sep_path(&["t", "sub", "a.md"]);
+        let mut dir = rec(&root_row, "sub", None, 0, 1);
+        dir.is_dir = true;
+        s.upsert_many(&[dir, rec(&child, "a.md", Some("md"), 3, 2)])
+            .unwrap();
+
+        s.delete_tree(&[dir_p]).unwrap();
+
+        assert!(
+            s.load_index().unwrap().is_empty(),
+            "a root row stored with a trailing separator must still be swept"
+        );
+    }
+
+    /// FTS stays in sync with name changes and decoupled from content-only
+    /// changes: the files_au trigger carries WHEN (an UPSERT leaving the name
+    /// unchanged no longer rewrites trigrams), a name change must still
+    /// propagate to search, and a pure size/mtime change must not disturb
+    /// the FTS row. Scope note: these assertions pin FTS **correctness**,
+    /// which holds under both trigger shapes — under the old no-WHEN shape a
+    /// content-only upsert rewrites trigrams with the identical name (a net
+    /// no-op), so search results cannot distinguish WHEN's presence; the
+    /// WHEN clause is performance-only and pinned textually by
+    /// `trigger_replacement_matches_the_schema_built_shape`. Paths
+    /// deliberately contain no search term (the LIKE
+    /// fallback matches path too, which would mask FTS's real state);
+    /// assertions use >= 3 chars to hit the FTS MATCH branch.
+    #[test]
+    fn fts_follows_name_changes_and_ignores_content_only_updates() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_many(&[rec("/t/doc-1.pdf", "报告书.pdf", Some("pdf"), 1, 1)])
+            .unwrap();
+        let hits = |text: &str| {
+            s.search(&SearchQuery {
+                text: Some(text.into()), // 3 chars → FTS5 trigram MATCH
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap()
+            .len()
+        };
+        assert_eq!(hits("报告书"), 1);
+
+        // Only size/mtime change (name unchanged): the FTS row is untouched,
+        // search still hits.
+        s.upsert_many(&[rec("/t/doc-1.pdf", "报告书.pdf", Some("pdf"), 99, 2)])
+            .unwrap();
+        assert_eq!(
+            hits("报告书"),
+            1,
+            "content-only upsert must not disturb FTS"
+        );
+
+        // Name change: the old name leaves, the new name enters.
+        s.upsert_many(&[rec("/t/doc-1.pdf", "会议纪要.pdf", Some("pdf"), 99, 3)])
+            .unwrap();
+        assert_eq!(hits("报告书"), 0, "old name must leave the FTS index");
+        assert_eq!(hits("会议纪要"), 1, "new name must enter the FTS index");
+    }
+
+    /// Trailing separators must be normalized before comparing: the wiring
+    /// side may pass a root PathBuf carrying `/`; splicing `dir` + `/`
+    /// directly would build `dir//` and silently miss the whole subtree
+    /// (ghosts until rescan).
+    #[test]
+    fn delete_tree_normalizes_a_trailing_separator() {
+        let s = Store::open_in_memory().unwrap();
+        let dir_p = sep_path(&["t", "sub"]);
+        let child = sep_path(&["t", "sub", "a.md"]);
+        let mut dir = rec(&dir_p, "sub", None, 0, 1);
+        dir.is_dir = true;
+        s.upsert_many(&[dir, rec(&child, "a.md", Some("md"), 3, 2)])
+            .unwrap();
+
+        // Input carries a trailing separator (the wiring side may pass a
+        // root PathBuf carrying `/`).
+        s.delete_tree(&[format!("{dir_p}{}", std::path::MAIN_SEPARATOR)])
+            .unwrap();
+
+        assert!(
+            s.load_index().unwrap().is_empty(),
+            "a trailing-separator path must still remove the whole subtree"
+        );
+    }
+
+    /// The prefix match must be literal: if `%`/`_`/`[` inside the deleted
+    /// directory's name were interpreted as LIKE/GLOB pattern semantics,
+    /// siblings sharing only prefix characters would be wrongly deleted. The
+    /// current range form is immune to all three (exact byte compare, no
+    /// pattern semantics).
+    #[test]
+    fn delete_tree_is_literal_about_pattern_metachars() {
+        let s = Store::open_in_memory().unwrap();
+        let dir_p = sep_path(&["home", "u", "met_100%[1]"]);
+        let child = sep_path(&["home", "u", "met_100%[1]", "报告.pdf"]);
+        // Sibling literally containing the same prefix characters: a
+        // non-pattern compare must not touch it.
+        let sib = sep_path(&["home", "u", "met_100%[1]_备份.md"]);
+        // A name that an unescaped LIKE ('met_100%[1]%') would
+        // false-positive on: must survive.
+        let other = sep_path(&["home", "u", "metX100Yfoo1Z.md"]);
+        let mut dir = rec(&dir_p, "met_100%[1]", None, 0, 1);
+        dir.is_dir = true;
+        s.upsert_many(&[
+            dir,
+            rec(&child, "报告.pdf", Some("pdf"), 8, 2),
+            rec(&sib, "met_100%[1]_备份.md", Some("md"), 5, 3),
+            rec(&other, "metX100Yfoo1Z.md", Some("md"), 6, 4),
+        ])
+        .unwrap();
+
+        s.delete_tree(std::slice::from_ref(&dir_p)).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(!left.contains_key(&dir_p));
+        assert!(!left.contains_key(&child));
+        assert!(
+            left.contains_key(&sib),
+            "literal-prefix sibling must survive"
+        );
+        assert!(
+            left.contains_key(&other),
+            "a name that unescaped-LIKE would false-positive must survive"
+        );
+    }
+
+    /// Both bounds of the prefix range must be exact: the sibling exactly at
+    /// the upper bound (`sub0` = `p + separator successor`) and the sibling
+    /// below the lower bound (`sub-…`, byte order before the separator) must
+    /// survive — widening the half-open interval by one byte-order neighbor
+    /// is a wrong delete.
+    #[test]
+    fn delete_tree_range_bounds_exclude_boundary_siblings() {
+        let s = Store::open_in_memory().unwrap();
+        let sep = std::path::MAIN_SEPARATOR;
+        // Upper bound = p + separator successor character, computed per
+        // platform (unix '/'(0x2F)→'0'(0x30), Windows '\'(0x5C)→']'(0x5D))
+        // — the same fixture pins the exact upper bound on any platform.
+        let succ = (sep as u8 + 1) as char;
+        let dir_p = sep_path(&["t", "sub"]);
+        let child = sep_path(&["t", "sub", "a.md"]);
+        // A spelling exactly at the upper-bound character: must survive.
+        let at_upper = format!("{dir_p}{succ}");
+        // A near neighbor preceding the separator's byte order ('-' < sep;
+        // both separators are ASCII): must survive.
+        let below = sep_path(&["t", "sub-文件.md"]);
+        let mut dir = rec(&dir_p, "sub", None, 0, 1);
+        dir.is_dir = true;
+        s.upsert_many(&[
+            dir,
+            rec(&child, "a.md", Some("md"), 3, 2),
+            rec(&at_upper, &format!("sub{succ}"), None, 0, 3),
+            rec(&below, "sub-文件.md", Some("md"), 4, 4),
+        ])
+        .unwrap();
+
+        s.delete_tree(std::slice::from_ref(&dir_p)).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(!left.contains_key(&child));
+        assert!(
+            left.contains_key(&at_upper),
+            "the exact upper-bound sibling must survive"
+        );
+        assert!(
+            left.contains_key(&below),
+            "a below-bound sibling must survive"
+        );
+    }
+
+    /// Write-amplification elision on the watcher's incremental path: a
+    /// repeat upsert with identical content skips the whole row (indexed_at
+    /// keeps the time of the last actual change — asserted with a sentinel
+    /// instead of the real clock, deterministically), and any content-column
+    /// change rewrites as usual. This is the WHERE pin of
+    /// [`UPSERT_IF_CHANGED_SQL`]: the WHERE-removal mutation lets
+    /// strftime('now') overwrite the sentinel and goes red.
+    #[test]
+    fn watcher_upsert_skips_a_content_identical_row() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert_many_if_changed(&[rec("/t/f.md", "f.md", Some("md"), 10, 100)])
+            .unwrap();
+        // Sentinel: set indexed_at to a definite past value.
+        s.conn
+            .lock()
+            .execute("UPDATE files SET indexed_at = 1234567890", [])
+            .unwrap();
+        s.upsert_many_if_changed(&[rec("/t/f.md", "f.md", Some("md"), 10, 100)])
+            .unwrap();
+        let at: i64 = s
+            .read
+            .lock()
+            .query_row(
+                "SELECT indexed_at FROM files WHERE path = '/t/f.md'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            at, 1234567890,
+            "a content-identical re-upsert must skip the row (sentinel must survive)"
+        );
+
+        // Any content-column change: rewrite as usual (the sentinel is
+        // replaced), row content updated.
+        s.upsert_many_if_changed(&[rec("/t/f.md", "f.md", Some("md"), 11, 100)])
+            .unwrap();
+        let (at, size): (i64, i64) = s
+            .read
+            .lock()
+            .query_row(
+                "SELECT indexed_at, size FROM files WHERE path = '/t/f.md'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(at != 1234567890, "a real change must rewrite the row");
+        assert_eq!(size, 11);
+    }
+
+    /// A delete input that names a whole filesystem root must be skipped,
+    /// not turned into an unbounded range: a bare separator spelling trims
+    /// to empty, and a drive root (`C:\`) trims to the drive-root spelling
+    /// `C:` — both are guarded (see [`is_drive_root`]). The load-bearing
+    /// scenario needs a store root row
+    /// spelled as the bare separator (walkdir records a scanned filesystem
+    /// root `/` verbatim as an is_dir row): without the empty guard the
+    /// with_sep probe fallback resolves the empty path to that row, is_dir
+    /// comes back Some(true), and the range `["/", "0")` — on unix every
+    /// absolute row — wipes the whole index. The guard's removal is inert
+    /// against every other delete_tree fixture (no row answers the probe for
+    /// the empty path), which is why this branch went unpinned.
+    #[test]
+    fn delete_tree_skips_an_input_that_trims_to_empty() {
+        let s = Store::open_in_memory().unwrap();
+        let root_row = std::path::MAIN_SEPARATOR.to_string();
+        let f = sep_path(&["t", "notes.md"]);
+        let other = sep_path(&["elsewhere", "doc.md"]);
+        let mut root = rec(&root_row, "", None, 0, 1);
+        root.is_dir = true;
+        s.upsert_many(&[
+            root,
+            rec(&f, "notes.md", Some("md"), 1, 1),
+            rec(&other, "doc.md", Some("md"), 2, 2),
+        ])
+        .unwrap();
+
+        // The bare-separator input trims to empty and must be ignored (the
+        // scanned-root row it names is cleaned by rescan, never by a
+        // whole-index subtree delete); the real path in the same batch is
+        // still deleted (the guard skips per path, not the whole batch).
+        let bare = std::path::MAIN_SEPARATOR.to_string();
+        s.delete_tree(&[bare, f.clone()]).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(
+            !left.contains_key(&f),
+            "the real path in the batch must still be deleted"
+        );
+        assert_eq!(
+            left.len(),
+            2,
+            "the separator-only input must not sweep the store (a guardless \
+             bare-separator input would wipe the whole index)"
+        );
+        assert!(left.contains_key(&root_row));
+        assert!(left.contains_key(&other));
+    }
+
+    /// A drive-root input (`C:\`, the spelling a Windows GUI root actually
+    /// produces) is the same whole-index class as the bare separator: it
+    /// trims to `C:` — non-empty, so the empty guard alone misses it — and
+    /// under the guardless flow the `with_sep` probe resolves the stored
+    /// root row to `is_dir`, whose range sweeps every row under the drive.
+    /// Fixtures use the platform separator so the sweep is real on both
+    /// platforms (unix: rows spelled `C:/…`; windows: `C:\…`).
+    #[test]
+    fn delete_tree_skips_drive_root_spellings() {
+        let s = Store::open_in_memory().unwrap();
+        let sep = std::path::MAIN_SEPARATOR;
+        let root_row = format!("C:{sep}");
+        let child = format!("C:{sep}Users{sep}notes.md");
+        let other = sep_path(&["elsewhere", "doc.md"]);
+        let mut root = rec(&root_row, "", None, 0, 1);
+        root.is_dir = true;
+        s.upsert_many(&[
+            root,
+            rec(&child, "notes.md", Some("md"), 1, 1),
+            rec(&other, "doc.md", Some("md"), 2, 2),
+        ])
+        .unwrap();
+
+        // The drive-root input must be skipped (rescan owns the rows); the
+        // unrelated path in the same batch proves the skip is per-path,
+        // not a dead call.
+        let related = sep_path(&["elsewhere", "doc2.md"]);
+        s.upsert_many(&[rec(&related, "doc2.md", Some("md"), 3, 3)])
+            .unwrap();
+        s.delete_tree(&[root_row.clone(), related.clone()]).unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(
+            left.contains_key(&root_row),
+            "the drive-root row must survive"
+        );
+        assert!(
+            left.contains_key(&child),
+            "the drive subtree must not be swept by a drive-root input"
+        );
+        assert!(
+            !left.contains_key(&related),
+            "the unrelated path in the same batch must still be deleted"
+        );
+        assert!(left.contains_key(&other));
+    }
+
+    /// Verbatim drive-root spellings must be skipped like the plain ones:
+    /// the canonical-spelling contract stores rows under the `\\?\C:\…`
+    /// prefix, so a transient NotFound for the root arrives spelled
+    /// `\\?\C:\` (or trims to `\\?\C:` on Windows, where `\` is
+    /// MAIN_SEPARATOR; on Unix the backslash survives the trim and is
+    /// handled inside `is_drive_root`) — the same whole-index class the
+    /// plain guard closes.
+    #[test]
+    fn delete_tree_skips_verbatim_drive_root_spellings() {
+        let s = Store::open_in_memory().unwrap();
+        let root_row = r"\\?\C:\";
+        let child = r"\\?\C:\Users\notes.md";
+        let other = sep_path(&["elsewhere", "doc.md"]);
+        let mut root = rec(root_row, "", None, 0, 1);
+        root.is_dir = true;
+        s.upsert_many(&[
+            root,
+            rec(child, "notes.md", Some("md"), 1, 1),
+            rec(&other, "doc.md", Some("md"), 2, 2),
+        ])
+        .unwrap();
+
+        // The verbatim inputs must both be skipped (rescan owns the rows);
+        // the unrelated path in the same batch proves the skip is per-path,
+        // not a dead call.
+        let related = sep_path(&["elsewhere", "doc2.md"]);
+        s.upsert_many(&[rec(&related, "doc2.md", Some("md"), 3, 3)])
+            .unwrap();
+        s.delete_tree(&[root_row.to_string(), r"\\?\C:".to_string(), related.clone()])
+            .unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(
+            left.contains_key(root_row),
+            "the verbatim root row must survive"
+        );
+        assert!(
+            left.contains_key(child),
+            "the verbatim drive subtree must not be swept"
+        );
+        assert!(
+            !left.contains_key(&related),
+            "the unrelated path in the same batch must still be deleted"
+        );
+        assert!(left.contains_key(&other));
+    }
+
+    /// UNC share roots (plain and verbatim) must be skipped like drive
+    /// roots: a transient false NotFound for the root during a share
+    /// disconnect would otherwise range-delete every row under the share
+    /// and set no rescan flag (review JensenChen28 2026-11-16 P2). The
+    /// deeper-path negative proves the guard protects the share ROOT only —
+    /// paths under the share delete normally. Root rows are seeded at the
+    /// EXACT spelling (no trailing separator) so the guard's teeth do not
+    /// depend on the platform MAIN_SEPARATOR arithmetic: on unix a
+    /// backslash-spelled root row sits outside the `with_sep` range, and
+    /// only the exact probe reaches it.
+    #[test]
+    fn delete_tree_skips_unc_share_root_spellings() {
+        let s = Store::open_in_memory().unwrap();
+        let plain_root = r"\\srv\share";
+        let plain_child = r"\\srv\share\notes.md";
+        let verbatim_root = r"\\?\UNC\srv\share";
+        let verbatim_child = r"\\?\UNC\srv\share\docs\a.md";
+        let other = sep_path(&["elsewhere", "doc.md"]);
+        s.upsert_many(&[
+            rec(plain_root, "", None, 0, 1),
+            rec(plain_child, "notes.md", Some("md"), 1, 1),
+            rec(verbatim_root, "", None, 0, 1),
+            rec(verbatim_child, "a.md", Some("md"), 1, 1),
+            rec(&other, "doc.md", Some("md"), 2, 2),
+        ])
+        .unwrap();
+
+        // Both root spellings must be skipped; the share-SUBTREE path and
+        // the unrelated path in the same batch prove the skip is per-path
+        // and root-anchored, not a dead call.
+        s.delete_tree(&[
+            plain_root.to_string(),
+            verbatim_root.to_string(),
+            plain_child.to_string(),
+            other.clone(),
+        ])
+        .unwrap();
+
+        let left = s.load_index().unwrap();
+        assert!(
+            left.contains_key(plain_root),
+            "the plain share-root row must survive"
+        );
+        assert!(
+            left.contains_key(verbatim_root),
+            "the verbatim share-root row must survive"
+        );
+        assert!(
+            !left.contains_key(plain_child),
+            "a path under the share must delete normally"
+        );
+        assert!(
+            !left.contains_key(&other),
+            "the unrelated path in the same batch must still be deleted"
+        );
+    }
+
+    /// `handle_event`'s delete-before-write order is load-bearing: if one
+    /// event ever carried both a directory delete and a new file under it,
+    /// the wrong order would let the prefix range delete eat the freshly
+    /// upserted child row (see the write-phase comment in watcher.rs's
+    /// `handle_event`). The contradictory shape (parent gone, child alive
+    /// under it) cannot exist on a consistent filesystem at one instant, so
+    /// the mechanism is pinned here at the store level, in both orders.
+    #[test]
+    fn delete_first_ordering_preserves_a_child_upserted_under_the_deleted_dir() {
+        let s = Store::open_in_memory().unwrap();
+        let dir = sep_path(&["t", "d"]);
+        let child = sep_path(&["t", "d", "new.md"]);
+        // The real store state before a rename-away event: the directory's
+        // own row is indexed (is_dir=true), which is what arms the subtree
+        // sweep when the delete event arrives.
+        let mut dir_row = rec(&dir, "d", None, 0, 1);
+        dir_row.is_dir = true;
+
+        // The wrong order (upsert, then the prefix delete): the child row is
+        // eaten — proving the danger the ordering guards against is real.
+        s.upsert_many(&[dir_row.clone()]).unwrap();
+        s.upsert_many_if_changed(&[rec(&child, "new.md", Some("md"), 1, 1)])
+            .unwrap();
+        s.delete_tree(std::slice::from_ref(&dir)).unwrap();
+        assert!(
+            !s.load_index().unwrap().contains_key(&child),
+            "upsert-first must lose the child row to the range delete"
+        );
+
+        // The right order (handle_event's): the delete runs first, so the
+        // freshly upserted child row survives.
+        s.upsert_many(&[dir_row]).unwrap();
+        s.delete_tree(std::slice::from_ref(&dir)).unwrap();
+        s.upsert_many_if_changed(&[rec(&child, "new.md", Some("md"), 1, 1)])
+            .unwrap();
+        assert!(
+            s.load_index().unwrap().contains_key(&child),
+            "delete-first must let the new child row survive"
+        );
+    }
+
+    /// The delete-side FTS trigger (`files_ad`) must keep parity when a
+    /// rowid is reused: delete a row, recreate the same path under a new
+    /// name — SQLite hands the INSERT the freed rowid, so a broken delete
+    /// side leaves the old name's ghost in FTS and `search` returns the
+    /// deleted file's name as a hit for a different file. The insert/update
+    /// triggers alone cannot expose this (the rowid JOIN hides a plain
+    /// ghost row), which is why the other FTS tests stay green under that
+    /// regression.
+    #[test]
+    fn fts_delete_side_does_not_ghost_a_reused_rowid() {
+        let s = Store::open_in_memory().unwrap();
+        let p = sep_path(&["t", "doc-7.pdf"]);
+        s.upsert_many(&[rec(&p, "quarterly-report.pdf", Some("pdf"), 1, 1)])
+            .unwrap();
+        let hits = |text: &str| {
+            s.search(&SearchQuery {
+                text: Some(text.into()), // 3 chars → FTS5 trigram MATCH
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap()
+            .len()
+        };
+        assert_eq!(hits("quarterly"), 1);
+
+        s.delete_tree(std::slice::from_ref(&p)).unwrap();
+        s.upsert_many(&[rec(&p, "annual-summary.pdf", Some("pdf"), 2, 2)])
+            .unwrap();
+
+        assert_eq!(
+            hits("quarterly"),
+            0,
+            "the deleted name must leave FTS even when its rowid is reused"
+        );
+        assert_eq!(hits("annual"), 1, "the recreated name must be searchable");
     }
 }
