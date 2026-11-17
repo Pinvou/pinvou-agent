@@ -1,6 +1,6 @@
 {
   "name": "pinvou3-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
@@ -73,6 +73,7 @@
     "perf:acp-snapshot": "node scripts/acp-snapshot-performance.mjs",
     "test:model-reasoning": "node tests/model_reasoning_render.test.mjs",
     "test:conversation-virtualization": "node tests/conversation_timeline_virtualization_smoke.mjs",
+    "test:streaming-rich-text": "node tests/streaming_rich_text_smoke.mjs",
     "test:codex-acp-macos-runtime": "node tests/codex_acp_macos_runtime_smoke.js",
     "test:codex-acp-windows-runtime": "node tests/codex_acp_windows_runtime_smoke.js",
     "test:session-management": "node tests/session_management_logic.test.mjs",

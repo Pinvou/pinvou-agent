@@ -11,7 +11,7 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   2. make_pptx 基本:生成合法 .pptx、可被 python-pptx 打开、页数对
   3. 落盘位置:写进会话产物目录(PINVOU3_SESSION_ARTIFACTS),绝不写进程当前目录
   4. 9 套主题全部能渲染
-  5. 封面缩略图注入:.pptx(zip)里有 docProps/thumbnail.jpeg(产物卡封面靠它)
+  5. 封面缩略图:画得出真封面 → 注入且不得是模板纯白占位图;画不出 → 剥离占位(产物卡封面靠它)
   6. 10 种 layout 全渲染、页数对、文件合法
   7. slides 传成 JSON 字符串也兼容(模型有时这么传)
   8. 回归:不再产生调试落盘文件 ~/_make_pptx_debug.json
@@ -22,6 +22,8 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   13. kpi numeric 0 / agenda dict items (allowed by the schema anyOf) render as data, not swallowed by `or`
   14. null array elements (salvage path bypasses the schema) fall back instead of leaking str(None) or error pages
   15. non-string salvage elements are dropped (reprs never render, no phantom ordinals)
+  16. 无封面时剥离模板占位缩略图(monkeypatch 强制 None,.rels 无悬空关系、包 XML 良构、pptx 仍可打开)
+  17. 封面绘制异常兜底返回 None(broken theme dict),剥离路不被异常绕过
 
 注意:测试把 PINVOU3_SESSION_ARTIFACTS 指向临时目录,不污染 ~/.pinvou3。
 """
@@ -135,15 +137,54 @@ def test_all_themes():
         assert r.get("theme") == theme, "主题应为 %s,实际 %r" % (theme, r.get("theme"))
 
 
-# ── 5. 封面缩略图注入(产物卡封面靠它)──────────────────────────────────
-@case("5. 封面缩略图 docProps/thumbnail.jpeg 注入")
+# ── 5. 封面缩略图(产物卡封面靠它)────────────────────────────────────
+# 画得出真封面 → 注入且不得是 python-pptx 默认模板那张纯白占位图
+# (占位图曾让产物卡渲染出一大块空白封面);画不出 → 剥离占位图,
+# 包里必须没有 docProps/thumbnail.jpeg(前端读不到即回退紧凑图标态)。
+def _template_placeholder_bytes():
+    """python-pptx 默认模板自带的纯白占位缩略图 bytes(256x192 全白)。"""
+    import pptx
+    tpl = os.path.join(os.path.dirname(pptx.__file__), "templates", "default.pptx")
+    with zipfile.ZipFile(tpl) as z:
+        return z.read("docProps/thumbnail.jpeg")
+
+
+def _thumbnail_uniform_colors(jpeg_bytes, cap=256):
+    """缩略图去重后的颜色数(封顶 cap;返回 None = PIL 解不开)。"""
+    try:
+        from PIL import Image
+        from io import BytesIO
+        im = Image.open(BytesIO(jpeg_bytes)).convert("RGB")
+        colors = im.getcolors(maxcolors=cap)
+    except Exception:
+        return None
+    return None if colors is None else len(colors)
+
+
+@case("5. 封面缩略图:注入真封面或剥离占位,绝不留模板白图")
 def test_cover_thumbnail():
-    r = server.make_pptx(theme="navy-gold",
-                         slides=[{"layout": "cover", "title": "封面缩略图测试", "subtitle": "x"}],
-                         filename="test_thumb")
+    deck = [{"layout": "cover", "title": "封面缩略图测试", "subtitle": "x"}]
+    r = server.make_pptx(theme="navy-gold", slides=deck, filename="test_thumb")
+    cover = server._cover_thumbnail({"slides": deck, "theme": "navy-gold"},
+                                    server.THEMES["navy-gold"])
     with zipfile.ZipFile(r["path"]) as z:
         names = z.namelist()
-    assert "docProps/thumbnail.jpeg" in names, "pptx 里应有 docProps/thumbnail.jpeg,实际: %s" % names
+        rels = z.read("_rels/.rels").decode("utf-8")
+    if cover:
+        assert "docProps/thumbnail.jpeg" in names, \
+            "画得出封面就应注入 docProps/thumbnail.jpeg,实际: %s" % names
+        with zipfile.ZipFile(r["path"]) as z:
+            got = z.read("docProps/thumbnail.jpeg")
+        assert got != _template_placeholder_bytes(), \
+            "注入的必须是真封面,不得原样保留模板纯白占位图(len=%d)" % len(got)
+        n_colors = _thumbnail_uniform_colors(got)
+        assert n_colors is None or n_colors > 1, \
+            "注入的封面缩略图不得是纯色图(去重颜色数=%r)" % n_colors
+        assert 'Target="docProps/thumbnail.jpeg"' in rels, "注入后 .rels 应带 thumbnail 关系"
+    else:
+        assert "docProps/thumbnail.jpeg" not in names, \
+            "画不出封面必须剥离模板占位缩略图,实际: %s" % names
+        assert "thumbnail" not in rels, "剥离后 .rels 不得残留 thumbnail 关系: %s" % rels
 
 
 # ── 6. 10 种 layout 全渲染 ──────────────────────────────────────────────
@@ -545,6 +586,44 @@ def test_non_string_salvage_elements_are_dropped():
     got_values = [float(v) for v in plot.series[0].values]
     assert got_values == [10.0, 30.0], \
         "series values must drop the dropped label positions, got %r" % got_values
+
+
+# ── 16. 画不出封面时的剥离回归(monkeypatch 强制 None,与机器字体无关):
+#         模板纯白占位缩略图必须被剥掉且 .rels 无悬空关系,
+#         包 XML 仍然良构、python-pptx 仍能打开(产物卡回退紧凑态靠它)。 ──
+@case("16. 无封面时剥离模板占位缩略图,.rels 无悬空关系,包仍合法")
+def test_strip_placeholder_when_no_cover():
+    original = server._cover_thumbnail
+    server._cover_thumbnail = lambda spec, th: None  # 模拟无字体/无 Pillow
+    try:
+        r = server.make_pptx(theme="business-blue",
+                             slides=[{"layout": "cover", "title": "剥离回归"}],
+                             filename="test_strip_thumb")
+    finally:
+        server._cover_thumbnail = original
+    assert r.get("ok") is True, "剥离路径不得影响主产物: %r" % r
+    with zipfile.ZipFile(r["path"]) as z:
+        names = z.namelist()
+        rels_bytes = z.read("_rels/.rels")
+        ct_bytes = z.read("[Content_Types].xml")
+    assert "docProps/thumbnail.jpeg" not in names, \
+        "无封面时包里不得残留 docProps/thumbnail.jpeg,实际: %s" % names
+    # 包内 XML 必须良构(剥离用正则删关系,坏包会让 PowerPoint 打不开)。
+    import xml.etree.ElementTree as ET
+    ET.fromstring(rels_bytes)
+    ET.fromstring(ct_bytes)
+    assert b"thumbnail" not in rels_bytes, \
+        ".rels 不得残留悬空的 thumbnail 关系: %s" % rels_bytes
+    prs = Presentation(r["path"])  # 能打开 = 剥离后的包仍是合法 pptx
+    assert len(prs.slides) == 1, "剥离后页数应为 1,实际 %d" % len(prs.slides)
+
+
+# ── 17. 封面绘制失败必须兜底返回 None(而非抛异常):render() 只认 None 才走
+#         占位剥离,绘制中途抛上去会绕过剥离、让模板白图复活。 ──
+@case("17. 封面绘制异常兜底返回 None,剥离路不被绕过")
+def test_cover_thumbnail_draw_failure_returns_none():
+    # th 缺全部颜色键 → 绘制第一步 KeyError;兜底后必须返回 None 而不是抛上去
+    assert server._cover_thumbnail({"slides": [{"layout": "cover", "title": "x"}]}, {}) is None
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────

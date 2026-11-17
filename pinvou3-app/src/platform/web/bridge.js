@@ -327,6 +327,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'prepare'|'done', downloaded, total, ready }
       error: null,
+      cancelled: false,   // 最近一次下载被用户取消（中性态，与 error 互斥；web 上 downloading 恒 false）
     },
     scheduledTasks: [],
     selectedScheduledTaskId: null,
@@ -3944,6 +3945,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
     if (!item) return false;
     item.text = currentStreamText;
     item.html = renderMarkdown(currentStreamText);
+    item.htmlSource = currentStreamText;
     return true;
   }
   // Must run inside an onSessionEvent/runSyncOnSession extent: it flushes the
@@ -4038,7 +4040,10 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
     const firstDelta = !item;
     if (item) {
       item.text = currentStreamText;
-      if (!item.html) item.html = renderMarkdown(currentStreamText);
+      if (!item.html) {
+        item.html = renderMarkdown(currentStreamText);
+        item.htmlSource = currentStreamText;
+      }
       item.streaming = true;
     } else {
       // New bubble needed (after tool card)
@@ -4048,6 +4053,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
         type: "assistant",
         text: currentStreamText,
         html: renderMarkdown(currentStreamText),
+        htmlSource: currentStreamText,
         time: timeStr(),
         streaming: true,
       });
@@ -4507,6 +4513,21 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     if (windowTok > 0 && windowTok !== state.tokens.max) {
       state.tokens.max = windowTok; // 云端真实窗口，替代 32K 假分母
       notify(); // 窗口变化也要通知 UI（即使本轮 input 不可信）
+    }
+    // 逐请求占用口径（context_input_tokens：本轮最后一次父请求的 reported
+    // input = 回合结束时真实上下文占用）。chat:usage 每轮只在 TurnComplete
+    // 发一次，而本轮任意 tool_start 都会把 turnUsageDirty 锁到下一轮发送才
+    // 解——只消费累计口径意味着工具轮的读数永远冻结在「— / … · 0%」，只有
+    // 手动压缩的 post_tokens 能刷新。逐请求值不是累加值，dirty 口径保护不
+    // 适用：先于 dirty guard 消费，且消费后不得再让累计口径覆写。
+    const ctxInput = Number(e.payload && e.payload.context_input_tokens || 0);
+    if (ctxInput > 0) {
+      // 超窗同累计口径的守卫：分母声明失真时不透出超上限数字，保留上个准确值。
+      if (ctxInput <= state.tokens.max) {
+        state.tokens = { input: ctxInput, max: state.tokens.max };
+        notify();
+      }
+      return;
     }
     if (sid && turnUsageDirty[sid]) return; // 本轮多请求，累加 input 不可信，保留上个准确值
     const input = Number(e.payload && e.payload.input_tokens || 0);
@@ -6754,6 +6775,9 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     unmountCollection,
     listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
     kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
+    // 取消进行中的模型下载(桌面同一命令);web 宿主的 access-policy 未放行
+    // kb_model_cancel 时 invoke 被拒,catch 静默(同 checkDependencies 约定)。
+    cancelKbModel: function () { return invoke("kb_model_cancel").catch(function () {}); },
     loadMemoryOverview,
     saveMemoryProfilePatch,
     updateMemoryItem,

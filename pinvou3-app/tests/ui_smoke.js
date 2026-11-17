@@ -254,6 +254,7 @@ function injectSource() {
           if(!(args&&args.repair)) return Promise.reject(new Error('mock embedding load failed'));
           window.__KB_MODEL_STATUS__={installed:true,ready:true,loading:false,failed:false,error:null};
           return Promise.resolve(window.__KB_MODEL_STATUS__);
+        case 'kb_model_cancel': return Promise.resolve();
         case 'kb_collection_list': return Promise.resolve([
           {id:7,name:'项目资料',docCount:3},
           {id:8,name:'团队规范',docCount:5},

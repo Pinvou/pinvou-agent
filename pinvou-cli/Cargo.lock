@@ -6937,7 +6937,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "adapter-gaia",
  "adapter-smoke",
@@ -6960,26 +6960,18 @@ dependencies = [
 
 [[package]]
 name = "pinvou-knowledge"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
- "anyhow",
  "base64 0.22.1",
- "calamine",
- "chrono",
- "encoding_rs",
  "fastembed",
  "futures-util",
- "if-addrs",
  "mdns-sd",
- "parking_lot",
  "rand 0.10.3",
  "reqwest 0.13.5",
- "rusqlite",
  "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "tempfile",
  "tokio",
  "url",
 ]
@@ -6995,7 +6987,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "age",
  "agent-backend-api",
@@ -10549,8 +10541,6 @@ dependencies = [
 [[package]]
 name = "unicode-width"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "unicode-xid"

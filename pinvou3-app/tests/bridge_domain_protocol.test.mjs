@@ -272,11 +272,22 @@ const expectedProtocolHashes = {
   // baseline; implemented in bridge-messages next to the other counter
   // primitives). Same event surface — no new invoke or listen entries; the
   // edit lives inside the existing listen(...) body.
-  chat: '21670579f0438fa02b2f69fddf1420fe5ba3b19c00a8593b85cca340c6542f27',
-  // Recomputed for this PR's recovery integration (merged with main ee60a0bbf):
-  // recovery metadata settles at chat:done and notifies after transient updates;
-  // the transient error listener routes detached child recovery without claiming
-  // a foreground turn. Event names and payload shapes stay the same.
+  // Stream bubbles now carry htmlSource for native selection provenance.
+  // This additive local state field is inside the hashed delta listener;
+  // invoke payloads and event names are unchanged.
+  // Recomputed for the usage-meter occupancy fix: the chat:usage listener
+  // body gains the per-request context_input_tokens consumption ahead of the
+  // cumulative-input dirty guard (chat:usage fires once per turn at
+  // TurnComplete and any tool_start latches the guard until the next send —
+  // without the per-request field the meter froze at "—/…·0%" on every
+  // tool-using conversation). Same event surface — no new invoke or listen
+  // entries.
+  // Recomputed for this PR's recovery integration (now merged with main
+  // b7f8bed76): recovery metadata settles at chat:done and notifies after
+  // transient updates; the transient error listener routes detached child
+  // recovery without claiming a foreground turn. Event names and payload
+  // shapes stay the same.
+  chat: '5f8276263c9b0dbbc1167e63239e8ef2c87eb30fb41db159a1df4fd5721b67f7',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -466,11 +477,12 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // record time (sid) instead of reading state.activeSessionId at fire time, so
 // the queued write cannot drift into a session the user switched to while the
 // chain was pending (r5 m6 fix); the invoke/listen command set is unchanged.
-// Recomputed for the keyless-probe-posture wave: the test_model_connection /
-// test_image_input_capability invokes gained the form's noAuth posture arg
-// (the backend probe ladder must skip the saved-credential fallback while the
-// keyless declaration is active).
-const expectedSharedBaseHash = 'a8f7fb4ba64b2869897a9332995a5eeb6dd7ca38a3b3eedf54d7a06daae7eca4';
+// Recomputed for the kb_model_cancel port on top of the keyless-probe-posture
+// wave: the shared-base knowledge helper gained invoke("kb_model_cancel")
+// (cancelKbModel; facade-only — same policy-denied-on-web shape as
+// checkDependencies), and the two test_model_connection /
+// test_image_input_capability invokes carry the form's noAuth posture arg.
+const expectedSharedBaseHash = 'e5f2dd4b1424474a4a047d3c654858ec9b9c24394fd129d71fffa42d1eeb92d6';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

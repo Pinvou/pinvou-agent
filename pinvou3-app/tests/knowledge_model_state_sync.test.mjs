@@ -34,6 +34,19 @@ const tauriBridge = readFileSync(
   path.join(appRoot, 'src/platform/tauri/bridge.js'),
   'utf8',
 );
+// 跨语言哨兵钉：从 Rust 侧提取 CANCELLED 常量字节，再让本文件的 mock 用
+// 「提取值」拒绝（而非硬编码字面量）。Rust 单侧改名 → mock 拒绝新值而 JS
+// 映射仍比对旧字面量 → cancelled 断言红；JS 单侧改名同理。两侧协同改名
+// 则必须连 pinvoy-knowledge 的 Rust 字节钉一起修改，属有意的契约变更。
+const kbCancelledSentinel = (() => {
+  const coreSource = readFileSync(
+    path.join(appRoot, '..', 'pinvou-knowledge', 'src', 'model_download.rs'),
+    'utf8',
+  );
+  const match = coreSource.match(/pub const CANCELLED: &str = "([^"]+)"/u);
+  assert.ok(match, 'pinvou-knowledge must declare the CANCELLED sentinel const');
+  return match[1];
+})();
 
 test('authoritative model status replaces the stale startup snapshot', () => {
   const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
@@ -108,4 +121,73 @@ test('status queries and completed host downloads synchronize the desktop model'
     /\blisten\b/u,
     'knowledge-model feature must receive listen',
   );
+});
+
+test('cancelled model downloads settle as neutral state and cancel returns a promise', async () => {
+  const windowObject = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+  vm.runInNewContext(bridgeSource, { window: windowObject }, { filename: 'knowledge-model.js' });
+
+  const state = {
+    kbModelSetup: {
+      downloading: false,
+      startupLoading: false,
+      startupReady: false,
+      status: { installed: false, ready: false, loading: false },
+      progress: null,
+      error: null,
+    },
+  };
+  const feature = windowObject.__PINVOU_TAURI_BRIDGE_FEATURES__['knowledge-model']({
+    state,
+    notify() {},
+    invoke: async (command) => {
+      // tauri 对 Result<_, String> 以原始字符串拒绝，不是 Error 对象——
+      // 仿真这一拒绝形态正是本钉的目的，故豁免 reject-errors 规则。
+      // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
+      if (command === 'kb_model_download') return Promise.reject(kbCancelledSentinel);
+      // 取消命令本身也拒绝（web/旧后端的 policy-denial 形态）：cancelKbModel
+      // 必须吞掉并 resolve，"永不 reject" 在拒绝式 mock 下才有牙。
+      // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
+      if (command === 'kb_model_cancel') return Promise.reject('commandNotAllowed: kb_model_cancel');
+      if (command === 'kb_model_status') return { installed: true, ready: false, loading: false };
+      return null;
+    },
+    listen() {},
+  });
+
+  // 用户取消（后端哨兵 = 从 Rust 源提取的 CANCELLED 字节）不是失败：记为
+  // 中性 cancelled 态而非红色 error，downloading 复位，拒绝仍原样上抛给调用方。
+  await assert.rejects(
+    () => feature.downloadKbModel(false),
+    (error) => String(error) === kbCancelledSentinel,
+  );
+  assert.equal(state.kbModelSetup.cancelled, true);
+  assert.equal(state.kbModelSetup.error, null);
+  assert.equal(state.kbModelSetup.downloading, false);
+
+  // 失败路径不受影响：非取消拒绝仍写 error。
+  state.kbModelSetup.downloading = false;
+  const failing = windowObject.__PINVOU_TAURI_BRIDGE_FEATURES__['knowledge-model']({
+    state,
+    notify() {},
+    invoke: async (command) => {
+      // eslint-disable-next-line prefer-promise-reject-errors -- raw-string rejection is the tauri contract under test
+      if (command === 'kb_model_download') return Promise.reject('网络错误');
+      if (command === 'kb_model_status') return null;
+      return null;
+    },
+    listen() {},
+  });
+  await assert.rejects(
+    () => failing.downloadKbModel(false),
+    (error) => String(error) === '网络错误',
+  );
+  assert.equal(state.kbModelSetup.error, '网络错误');
+  assert.equal(state.kbModelSetup.cancelled, false);
+
+  // 取消等待语义：cancelKbModel 永不 reject——上面的 mock 连 kb_model_cancel
+  // 本身都以 policy-denial 拒绝，吞噬在此钉死。web lane 的内联副本同形，
+  // 其存在性由 web_bridge_domain_contract 钉。
+  assert.equal(typeof feature.cancelKbModel().then, 'function');
+  await feature.cancelKbModel();
 });
