@@ -44,7 +44,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | `crates/hooks` | Hook 事件、sink、dispatcher | 当前直接接入配置，运行期由底座调度 |
 | `crates/mcp` | MCP server/client 管理、工具/资源描述、启动状态 | 间接依赖，通过底座工具体系和 MCP 配置接入 |
 | `crates/tools` | 工作区中独立的工具能力 crate | 间接依赖，主入口仍经 `crates/tui/src/tools` 和 registry |
-| `crates/core` | 共享核心类型或底层能力 | 间接依赖，仅被 `crates/app-server` 消费（v0.8.60 基线口径）；pinvou3 依赖链当时只有 `deepseek-tui`（→ `codewhale-tui`）——`codewhale-secrets` 系快照后 2026-07-02（`d49bcd40a`，原 work 分支提交）才加入（该哈希不在 main 谱系，main 谱系落地于 2026-07-24 `e34024e62` 重建基线）。（⚠️ 现行口径：pinvou3-app 已直接依赖五个基座 crate——deepseek-tui、codewhale-secrets、codewhale-core、codewhale-config、codewhale-execpolicy，其中 `codewhale-core` 自 `9c5dc603f`（#484，2026-10-20 squash 落地）起被直接消费，不再与本 crate 无关；fork 现树上本 crate 亦被 app-server/command-contract/tui 三处消费。）`deepseek_tui::core::*` 是 tui 自身模块一句仍成立 |
+| `crates/core` | 共享核心类型或底层能力 | 间接依赖，仅被 `crates/app-server` 消费（v0.8.60 基线口径）；pinvou3 依赖链当时只有 `deepseek-tui`（→ `codewhale-tui`）——`codewhale-secrets` 系快照后 2026-07-02（`d49bcd40a`，原 work 分支提交）才加入（该哈希不在 main 谱系，main 谱系落地于 2026-07-24 `e34024e62` 重建基线——pre-2026-09 主线之根，fork/main 可达；现 origin/main 根为 2026-09-09 二次重建 `050991876a`，该依赖仍承袭）。（⚠️ 现行口径：pinvou3-app 已直接依赖五个基座 crate——deepseek-tui、codewhale-secrets、codewhale-core、codewhale-config、codewhale-execpolicy，其中 `codewhale-core` 自 `9c5dc603f`（#484，2026-10-20 squash 落地）起被直接消费，不再与本 crate 无关；fork 现树上本 crate 亦被 app-server/command-contract/tui 三处消费。）`deepseek_tui::core::*` 是 tui 自身模块一句仍成立 |
 | `crates/protocol` | 协议结构 | 间接依赖，由 runtime、MCP、API 层消费 |
 | `crates/state` | 状态相关能力 | 间接依赖 |
 | `crates/secrets` | 密钥/敏感配置处理 | 间接依赖 |
@@ -67,7 +67,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - `DeepSeek-TUI/crates/tui/src/compaction.rs`：定义 `CompactionConfig` 和压缩逻辑，pinvou3 只调整本地模型和阈值。
 - `DeepSeek-TUI/crates/hooks/src/lib.rs`：定义 `HookEvent`、`HookDispatcher` 等 hook 机制，pinvou3 在 bridge 中生成 hook 配置。
 - `DeepSeek-TUI/crates/mcp/src/lib.rs`：定义 `McpManager` 与 MCP 工具/资源结构，底座经工具体系统一接入。
-- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在本仓库，属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
+- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核，`pinjou-v0.9.0-r*` refs 可达），属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
 
 ## pinvou3 接入边界
 

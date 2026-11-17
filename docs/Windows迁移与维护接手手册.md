@@ -143,7 +143,7 @@ tauri-bridge.js listen("chat:*")
 7. 启动 file watcher，监听 session 目录下新产物。
 8. 注册大量 Tauri commands。
 
-Windows 迁移时注意：`ensure_release_env()` 里有 Linux GUI 变量，如 `GDK_BACKEND`、`WEBKIT_DISABLE_COMPOSITING_MODE`、`GTK_IM_MODULE`，Windows 下应按平台条件拆分。
+Windows 迁移时注意：`ensure_release_env()` 里有 Linux GUI 变量，如 `GDK_BACKEND`、`WEBKIT_DISABLE_COMPOSITING_MODE`、`GTK_IM_MODULE`，Windows 下应按平台条件拆分。（📌 2026-11 注：已落地——Linux UI 变量现按平台收于 `platform/ui_cache.rs` 的 `LINUX_UI_ENV_DEFAULTS` 与 `cfg(target_os = "linux")` 门，Windows 构建不再携带。）
 
 ## 6. 配置、目录与持久化
 
@@ -365,13 +365,13 @@ Windows 迁移必须重做或拆分：
 | `which` 命令探测依赖 | `file_ingest.rs` | P0（⚠️ 快照条目：已落地跨平台探测 helper，见 §7 注） |
 | `pkexec` / `apt` 一键安装依赖 | `file_ingest.rs`、`updater.rs` | P0（⚠️ 快照条目：已拆平台策略 `features/dependencies/platform/`，Windows 走 winget/安装指引；updater 已拆 `features/updater/platform/`，见 §7 注与 §11 注） |
 | `.deb` 应用内升级 | `updater.rs`、前端设置页 | P0 |
-| Linux GTK/WebKit env | `lib.rs::ensure_release_env` | P1 |
-| Bash 脚本启动 | `run-dev.sh`、`scripts/*.sh` | P1 |
-| Poppler/Tesseract/LibreOffice/7z 路径 | `file_ingest.rs` | P1 |
-| Python 命令名 `python3` | `file_ingest.rs`、workflow scripts | P1 |
+| Linux GTK/WebKit env | `lib.rs::ensure_release_env` | P1（⚠️ 快照后已消解：Linux UI 变量按平台拆分至 `platform/ui_cache.rs`，见 §5 注） |
+| Bash 脚本启动 | `run-dev.sh`（现居 `pinvou3-app/` 下）、`scripts/*.sh` | P1 |
+| Poppler/Tesseract/LibreOffice/7z 路径 | `file_ingest.rs` | P1（⚠️ 快照后已消解：`platform::os::*_tool_path` 跨平台探测 + 安装包内置运行时，见 §7 注） |
+| Python 命令名 `python3` | `file_ingest.rs`、workflow scripts | P1（⚠️ 快照后已消解：`platform::os::python_command` 跨平台命令名） |
 | 工作流绝对路径注入 | `harness.rs`、workflow scripts | P1（快照条目：`harness.rs` 与工作流子系统已在主干移除，此风险随之消失） |
 | 打开文件/目录命令 | `commands.rs` | P1 |
-| vLLM 默认本机地址 | `bridge/mod.rs`、settings | P1 |
+| vLLM 默认本机地址 | `bridge/mod.rs`、settings | P1（⚠️ 快照后已消解：Windows/macOS 首启默认预设已改远端 DeepSeek，`platform/prefs/model.rs`） |
 | Windows 路径反斜杠与模型提示 | prompt / workflow | P2 |
 | fork guard Bash 脚本 | `scripts/fork-guard.sh` | P2 |
 

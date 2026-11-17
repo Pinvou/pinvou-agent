@@ -48,8 +48,10 @@ docker run --rm -it \
 ```
 
 容器内默认是 root，Cargo 主目录为 `/root/.cargo`。先装基础工具与 Tauri Linux 构建
-依赖（与 CI 的 ubuntu-22.04 腿同列表，含 `lld`；CI 另经 `RUSTFLAGS -C link-arg=-fuse-ld=lld`
-注入 lld 链接器，本地大链接建议照做），再装 Rust 与 Node——22.04 系统源的 rustc
+依赖（与 CI 的 ubuntu-22.04 发布打包腿同列表——逐字节核对，含 `lld`；pr-check 腿另装
+`time`。CI 另经 `RUSTFLAGS -C link-arg=-fuse-ld=lld` 注入 lld 链接器：rustc ≥1.90 的
+x86_64 已自链 rust-lld，该 flag 实际作用于 arm64 与旧工具链——本地大链接建议照做），
+再装 Rust 与 Node——22.04 系统源的 rustc
 过旧（仓库 MSRV 为 1.90，见 `pinvou3-app/src-tauri/Cargo.toml`），必须走 rustup：
 
 ```bash

@@ -156,7 +156,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 阶段2 已删 M3 后端 emit，前端监听器随之成死代码（永不触发）。本次评估后**决定不重做 M3，把残骸清干净**。
 
 **为什么放弃**（推翻 §6 第 3 条原"重做"决议）：
-1. 底座 `update_plan → chat:plan_ready → 方案卡「✅就这么干」→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
+1. 底座 `update_plan → chat:plan_ready → 方案卡「✅就这么干」→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时在所验范围内 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
 2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡直接动手（跳过方案）」。
 3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。
 

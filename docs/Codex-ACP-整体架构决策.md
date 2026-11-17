@@ -330,7 +330,8 @@ MVP 验收时需要用 pinvou 固定的 `codex-acp` / Codex CLI 版本验证 Cod
 > `tool_call_update` / `plan` / `available_commands` / `usage`，以及 turn / permission /
 > elicitation、`runtime_notice` / `runtime_ready` 等事件（`features/codex_acp/events.rs`），
 > 命名与本文草案不同（仅 `turn_started` / `turn_completed` / `permission_requested` /
-> `permission_resolved` 四名与草案逐字一致，其余事件名均与草案不同）。
+> `permission_resolved` 四名与草案逐字一致，其余事件名均与草案不同）。另：现行信封
+> `timestamp` 字段为字符串（`events.rs:65` `pub timestamp: String`），非本文 §9 示例中的数字毫秒值。
 
 合同规则：
 

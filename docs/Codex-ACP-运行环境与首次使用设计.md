@@ -598,7 +598,7 @@ codex-runtime://status
 现有 `prepare_codex_acp`、`login_codex_acp` 可在迁移期作为兼容入口调用新的
 `CodexRuntimeManager`，前端切换完成后再删除旧命令。
 （归档注记：这两个命令最终未落库；现行命令为 `install_acp_agent` / `login_acp_agent` /
-`submit_acp_agent_login_code` / `open_acp_agent_login_url`；另有状态读取 `get_acp_agent_status`、账号切换 `switch_acp_agent_account`、卸载 `uninstall_acp_agent`（`acp_providers.rs`），见 `app/commands/codex.rs`。）
+`submit_acp_agent_login_code` / `open_acp_agent_login_url`（以上及状态读取 `get_acp_agent_status`、账号切换 `switch_acp_agent_account` 均在 `app/commands/codex.rs`）；卸载 `uninstall_acp_agent` 在 `acp_providers.rs`。）
 
 ## 12. 与现有功能的隔离
 

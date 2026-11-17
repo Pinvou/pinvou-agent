@@ -68,7 +68,7 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 > ✅ **已实证坐实**（2026-07-02，见 §6）：写死 190K 在**健康 256K 机器上也是倒置的**。
 > 触发顺序实证（真实 `should_compact`）：262K 窗口下 emergency 在 N=198 条触发，而
 > `should_compact(T=190K)` 要到 N=255 条才触发——**紧急线先，正常线永远轮不到**。之所以
-> 长期没暴露，是 emergency 路径**也先跑 LLM 摘要**（写作期约 engine.rs:2942，勿按 0.9.5 或现树查），成功时体验与正常
+> 长期没暴露，是 emergency 路径**也先跑 LLM 摘要**（写作期约 engine.rs:2942，勿按 0.9.5 或现树查；该行号未锚定任何现存快照），成功时体验与正常
 > 路径几乎一样；直到窗口被误判成 128K，emergency 摘要救不回落到本地 trim，才以抖动暴露。
 
 ## 3. 方案总纲
@@ -78,7 +78,7 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 1. `monitor.rs`：`probe_vllm_served_model` → `probe_vllm_model_info`，返回
    `(Option<String>, Option<u32>)`（name, max_model_len）。`parse_models_response`
    已解析两者，现在只是别丢 max——纯透传，零新增请求。
-   （2026-10-09 注：本条的 max 透传从未接线 `engine_pool`；`probe_vllm_model_info` 的最后一个生产调用方（voice 后处理，#248 引入）已随 #611 移除，函数本身已随死代码清理删除；现役探测链路见 `resolve_served_model`。）
+   （2026-10-09 注：本条的 max 透传从未接线 `engine_pool`；`probe_vllm_model_info` 的最后一个生产调用方（voice 后处理，#248 引入——2026-11 订正：原书误记 #419）已随 #611 移除，函数本身已随死代码清理删除；现役探测链路见 `resolve_served_model`。）
 2. `engine_pool.rs`：探测结果两个都用，name 按 `resolve_served_model` 决策校正
    （配置名在服务列表中原样保留，仅单模型服务且不含配置名才跟随，其余保留配置名让
    `model_not_found` 显式浮现）+ 存 `max_model_len`。
@@ -96,7 +96,7 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 5. v0.9 底座只补最小 embed API：把宿主 limits 附到 resolved route；显式 route output
    优先于未知模型名的 4K 兼容 fallback，未声明 route 的上游行为不变。
 
-连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs，写作期约 :933）、请求输出 cap
+连带收益（现状白丢的）：系统提示词窗口声明跟真值走（engine.rs，写作期约 :933，该行号未锚定现存快照）、请求输出 cap
 按小窗自动钳制（context.rs，写作期约 :62）、context report 百分比 route-aware（context_report.rs，写作期约 :179；行号为本文写作期 2026-07-02、v0.8.6x 基快照，勿按 0.9.5 或现树查）。
 
 ### T 推导公式（阶段一，同尺换算 + 守护余量）

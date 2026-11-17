@@ -328,10 +328,10 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ## 6. pinvou3 实际可见的工具
 
-`build_turn_tool_registry_builder` Yolo 路径展开后约 **74 个注册**，`engine.rs` 另注入 3 个 `agent_*` 子代理工具，合计约 **77 个**（pandoc/OCR 探测失败时 75；全部为不同名注册，含
+`build_turn_tool_registry_builder` Yolo 路径展开后约 **74 个不同名注册**（构建器对同名工具按 v0.8.37 覆盖语义去重，末态 74 名，见 §8 overwrite-warn 披露），`engine.rs` 另注入 3 个 `agent_*` 子代理工具，合计约 **77 个**（pandoc/OCR 探测失败时 75；含
 exec_wait/exec_interact 两个别名）。catalog 层 `ensure_advanced_tooling`（`turn_loop.rs` 每种模式都会调用）另推送 4 个：code_execution / js_execution（Python/Node 探针门控）与
 tool_search_tool_regex / tool_search_tool_bm25（无条件推送，`base.md` 即列有这两个 deferred
-discovery 工具），模型可见合计约 **81**，探针不可用时约 79：
+discovery 工具），模型可见合计约 **81**（pandoc/OCR 探测失败时约 79，解释器探针亦不可用则约 77）：
 
 ```
 read_file write_file edit_file list_dir
