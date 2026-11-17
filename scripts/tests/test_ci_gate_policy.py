@@ -5067,7 +5067,7 @@ class WorkflowWorkingDirectoryPolicyTests(unittest.TestCase):
                 first = path.split("/")[0]
                 # A `./`-prefixed segment names the same directory as the
                 # bare form; strip the prefix so the r6 typo class cannot
-                # hide behind it (`./pinjou3-app` must resolve too).
+                # hide behind it (`./pinvou3-app` must resolve too).
                 if first.startswith("./"):
                     first = first[2:] or "."
                 self.assertTrue(
