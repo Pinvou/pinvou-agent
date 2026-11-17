@@ -175,6 +175,10 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
   // listing 的语义(乃至 auth_required 与否)属于旧 wire。
   const wireRef = useRef(wireApi);
   wireRef.current = wireApi; // eslint-disable-line react-hooks/refs -- mirror the live wire so an in-flight probe result can be discarded when the protocol toggled (round-5 review m1)
+  // key 实时镜像(review P2 2026-11-17):探测在飞时换 key,旧 key 探得的
+  // 列表不得在新 key 的表单下打开——picker 的 Add 会按当前凭证落库。
+  const apiKeyRef = useRef(apiKey);
+  apiKeyRef.current = apiKey; // eslint-disable-line react-hooks/refs -- mirror the live key so an in-flight probe result can be discarded when the credential changed
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   // 自绘确认步骤（null = 无）：'emptyKey'（新建空 key）/ 'deleteKey'（编辑删除已存密钥）
@@ -312,6 +316,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
     if (!probeEndpointModelsAvailable || fetchingModels) return;
     const probedBaseUrl = String(baseUrl || '').trim();
     const probedWire = wireApi;
+    const probedKey = String(apiKey || '').trim() || null;
     if (!probedBaseUrl) return;
     setEndpointFetchSeq(seq => seq + 1);
     setFetchingModels(true);
@@ -319,14 +324,17 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
     try {
       const listing = await bridge.models.probeEndpointModels({
         baseUrl: probedBaseUrl,
-        apiKey: String(apiKey || '').trim() || null,
-        wire: wireApi,
+        apiKey: probedKey,
+        wire: probedWire,
       });
       // 探测期间 base URL 已被改走 → 结果作废(复审 M5 同因);wire 切换了
       // 也同样作废(round-5 审 m1)——URL 没变但协议变了,listing 的语义属于
       // 旧 wire(kimi 表单是唯一带 wire 切换的面)。
       if (String(baseUrlRef.current || '').trim() !== probedBaseUrl) return;
       if (wireRef.current !== probedWire) return;
+      // review P2 2026-11-17:凭据维度并入失效键——换 key 后旧 key 探得的
+      // 列表不得在新 key 表单下打开(Add 按当前凭证落库)。
+      if ((String(apiKeyRef.current || '').trim() || null) !== probedKey) return;
       setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
       setEndpointPickerOpen(true);
     } catch (e) {
@@ -337,6 +345,8 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved, t })
       // (round-5 审 m1)。
       if (String(baseUrlRef.current || '').trim() !== probedBaseUrl) return;
       if (wireRef.current !== probedWire) return;
+      // reject 路径同键(review P2 2026-11-17)。
+      if ((String(apiKeyRef.current || '').trim() || null) !== probedKey) return;
       const connectionCopy = t.uiSettingsDetail.connectionMessages;
       if (e && typeof e === 'object' && !Array.isArray(e)) {
         const code = String(e.code || (e.ok ? 'ok' : 'unknown'));

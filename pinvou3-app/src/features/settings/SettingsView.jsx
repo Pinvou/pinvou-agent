@@ -739,6 +739,8 @@ function hasStoredCredential(record) {
         if (!bridge.available || typeof bridge.models.probeEndpointModels !== 'function' || fetchingModels) return;
         const probedBaseUrl = baseUrl.trim();
         if (!probedBaseUrl) return;
+        const probedAuth = !isLocalPreset && !isCodingPlan && noAuth ? '' : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '';
+        const probedPreset = preset;
         // 探测序号递增:picker 以此为 key 重挂,新列表的 filter/滚动干净复位。
         setEndpointFetchSeq(seq => seq + 1);
         setFetchingModels(true);
@@ -752,14 +754,17 @@ function hasStoredCredential(record) {
             // 免鉴权声明生效时不携带已输入的 key——开关开着时 key 行隐藏,
             // 但已输入的 key 仍残留 state;探测要与保存后的鉴权形态一致
             // (免鉴权记录运行时不发鉴权头),残留 key 也不得发往新填的 URL。
-            apiKey: !isLocalPreset && !isCodingPlan && noAuth
-              ? ''
-              : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : '',
-            preset,
+            apiKey: probedAuth,
+            preset: probedPreset,
           });
           // 复审 M5:探测在飞时用户改了 base URL → 这份 URL A 的结果作废
           // (baseUrlRef 是 resolve 时刻的实时输入);静默丢弃,不打扰用户。
           if (baseUrlRef.current.trim() !== probedBaseUrl) return;
+          // review P2 2026-11-17:凭据/协议维度并入失效键——在飞时换 key、
+          // 切免鉴权或换 preset,旧凭证探得的列表不得在新凭证下打开
+          // (picker 的 Add 会按当前凭证落库,旧列表的模型可能无权访问)。
+          if (probeAuthRef.current !== probedAuth) return;
+          if (probePresetRef.current !== probedPreset) return;
           setEndpointListing(listing && typeof listing === 'object' ? listing : { status: 'error', models: [] });
           setEndpointPickerOpen(true);
         } catch (e) {
@@ -767,6 +772,10 @@ function hasStoredCredential(record) {
           // URL A 的探测失败不许以红色提示挂在已改走的 URL B 表单下
           // (handleTest 的 catch 早已同款守卫,这里是补齐)。
           if (baseUrlRef.current.trim() !== probedBaseUrl) return;
+          // reject 路径同键(review P2 2026-11-17):旧凭证的探测失败同样不得
+          // 以提示挂在新凭证表单下。
+          if (probeAuthRef.current !== probedAuth) return;
+          if (probePresetRef.current !== probedPreset) return;
           setFetchModelsMessage(normalizeConnectionTestResult(e, isCodingPlan));
         }
         finally { setFetchingModels(false); }
@@ -931,6 +940,15 @@ function hasStoredCredential(record) {
         finally { setImageTesting(false); }
       }
       const isLocalPreset = preset === 'local_vllm';
+      // 端点探测的有效鉴权载荷同款镜像(review P2 2026-11-17):探测在飞时换 key
+      // 或切免鉴权姿态,旧账号的列表不得在新凭证下打开——凭据维度并入失效键。
+      // (镜像必须位于 isLocalPreset/isCodingPlan 声明之后:render 路径在此处
+      // 直读它们,声明前直读是 TDZ 崩溃——noInvalidUseBeforeDeclaration。)
+      const probeAuthRef = useRef('');
+      probeAuthRef.current = !isLocalPreset && !isCodingPlan && noAuth ? '' : keyAction === 'replace' || (isLocalPreset && localKeyEnabled) ? apiKey.trim() : ''; // eslint-disable-line react-hooks/refs -- synchronously mirror the effective auth payload
+      // 协议 preset 同款镜像:同 URL 同凭证但 preset 切换,列表语义同样属于旧协议。
+      const probePresetRef = useRef(preset);
+      probePresetRef.current = preset; // eslint-disable-line react-hooks/refs -- synchronously mirror the live protocol preset
       // base_url 的解析结果：端口框的回显值与只读态都由它派生（URL 不可解析
       // 时端口框只读置空）。
       const parsedBaseUrl = parseHttpUrl(baseUrl);

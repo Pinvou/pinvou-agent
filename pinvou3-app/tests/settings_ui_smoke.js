@@ -696,18 +696,20 @@ for (const settingsI18nSource of settingsI18nSources) {
     /if \(!isCodingPlan && noAuth\) return hasSavedKey \? 'delete' : 'replace'/,
     'the stored-credential delete action must stay scoped to non-managed keyless declarations (a stale toggle over a live coding-plan URL must not delete the credential)',
   );
-  // The keyless test-key posture exists at exactly three sites (handleTest +
-  // handleImageCapabilityTest + handleFetchModels, the latter closed in the
-  // round-5 review: a residual typed key must not ride the fetch-models
-  // probe either); a plain assert.match would stay green when only ONE site
-  // regresses, so pin the count.
+  // The keyless test-key posture exists at exactly four spellings (handleTest
+  // + handleImageCapabilityTest + handleFetchModels — the latter closed in the
+  // round-5 review: a residual typed key must not ride the fetch-models probe
+  // either — now factored into the pre-flight capture and its render mirror
+  // for the credential-dimension staleness key, review P2 2026-11-17); a
+  // plain assert.match would stay green when only ONE site regresses, so pin
+  // the count.
   const keylessTestKeySites = settingsViewSource.match(
     /!isLocalPreset && !isCodingPlan && noAuth\s*\?\s*''\s*:/g,
   ) || [];
   assert.strictEqual(
     keylessTestKeySites.length,
-    3,
-    'connection test, image-capability test, AND fetch-models must all refuse to send a typed key while the keyless declaration is active (a single-site regression must fail here)',
+    4,
+    'connection test, image-capability test, AND fetch-models (payload + capture + mirror) must all refuse to send a typed key while the keyless declaration is active (a single-site regression must fail here)',
   );
   assert.match(
     settingsViewSource,
@@ -859,8 +861,8 @@ assert.match(
 // 探测 payload 必须携带表单 wire 协议;禁止 effect/挂载期自动探测(与聊天线同一安全不变量)。
 assert.match(
   providerFormModalSource,
-  /wire:\s*wireApi,/,
-  'the ACP probe must pass the form wire protocol to probeEndpointModels',
+  /wire:\s*probedWire,/,
+  'the ACP probe must pass the form wire protocol (the pre-flight capture) to probeEndpointModels',
 );
 assert.doesNotMatch(
   providerFormModalSource,
@@ -982,6 +984,42 @@ for (const settingsI18nSource of settingsI18nSources) {
     settingsI18nSource,
     /connectionMessages:\{[^}]*tls_error:/,
     'the tls voice reused by the picker must exist in every UI language',
+  );
+}
+
+// review P2 2026-11-17 (credential dimension in the probe staleness key):
+// a probe's result must be discarded when the effective credentials or the
+// protocol preset changed mid-flight — the old account's listing must not
+// open under new credentials (the picker's Add saves rows with the CURRENT
+// credentials, which may not have access to those models). Both guard paths
+// (success and error) are pinned on both forms.
+assert.match(
+  settingsViewSource,
+  /const probeAuthRef = useRef\(''\);\s*probeAuthRef\.current = !isLocalPreset && !isCodingPlan && noAuth/,
+  'the chat lane must mirror the effective auth payload so an in-flight probe result can be discarded when the credentials moved on',
+);
+{
+  const guardCount = (settingsViewSource.match(/if \(probeAuthRef\.current !== probedAuth\) return;/g) || []).length;
+  assert.strictEqual(
+    guardCount, 2,
+    `both probe paths (success and error) must check the credential dimension, got ${guardCount}`,
+  );
+  const presetCount = (settingsViewSource.match(/if \(probePresetRef\.current !== probedPreset\) return;/g) || []).length;
+  assert.strictEqual(
+    presetCount, 2,
+    'both probe paths (success and error) must check the protocol preset dimension',
+  );
+}
+assert.match(
+  providerFormModalSource,
+  /const apiKeyRef = useRef\(apiKey\);\s*apiKeyRef\.current = apiKey;/,
+  'the ACP lane must mirror the live key so an in-flight probe result can be discarded when the credential changed',
+);
+{
+  const guardCount = (providerFormModalSource.match(/if \(\(String\(apiKeyRef\.current \|\| ''\)\.trim\(\) \|\| null\) !== probedKey\) return;/g) || []).length;
+  assert.strictEqual(
+    guardCount, 2,
+    `both ACP probe paths (success and error) must check the key dimension, got ${guardCount}`,
   );
 }
 // Memory delete / feedback close confirm-dialog wiring (no native
