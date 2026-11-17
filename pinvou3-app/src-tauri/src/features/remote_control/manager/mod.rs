@@ -1449,22 +1449,36 @@ impl RemoteControlManager {
             // comments.
             if config_path().exists() {
                 if let Err(error) = persist_config(&config) {
-                    // Persist failure: the disk latch is untouched, so memory must not rest
-                    // on the revoked side (otherwise memory/disk diverge and later benign
-                    // start/enable silently resurrect authorization). Re-latch the flag,
-                    // refresh status, and return an actionable error.
+                    // P2 (reconciliation of the durable outcome on a persist failure):
+                    // persist failure = the original file was not replaced, so the disk
+                    // still latches whatever it latched before — while the in-memory flag
+                    // was already cleared above. Propagating without handling would leave
+                    // memory "unauthorized" against a durable "authorized" side: later
+                    // status would hide the Revoke action, and a later start/resume would
+                    // resurrect the surviving durable authorization. Re-latch memory to
+                    // the pre-invalidation durable mirror (same handling as the read
+                    // failure arm; gated on the mirror so an idempotent re-revocation of
+                    // an already-revoked config does not fabricate consent), publish the
+                    // authoritative status, and propagate with an error that says plainly
+                    // the durable revocation did not take effect.
                     eprintln!(
-                        "[web-access] host-workspace revocation failed to persist, re-latching in-memory consent: {error}"
+                        "[web-access] host-workspace revocation failed to persist, durable state left unchanged: {error}"
                     );
-                    {
-                        let mut inner = self.inner.lock();
-                        if let Some(endpoint) = inner.endpoint.as_mut() {
-                            endpoint.config.allow_host_workspace = true;
+                    if durable_flag == Some(true) {
+                        {
+                            let mut inner = self.inner.lock();
+                            if let Some(endpoint) = inner.endpoint.as_mut() {
+                                endpoint.config.allow_host_workspace = true;
+                            }
                         }
+                        self.emit_status();
+                        return Err(format!(
+                            "host-workspace revocation could not be persisted; folder access remains enabled: {error}"
+                        ));
                     }
                     self.emit_status();
                     return Err(format!(
-                        "host-workspace revocation could not be persisted; folder access remains enabled: {error}"
+                        "host-workspace revocation could not be persisted; the durable side was already revoked: {error}"
                     ));
                 }
             }
@@ -7047,38 +7061,66 @@ mod tests {
                 .checked_sub(body[open..pos].chars().filter(|c| *c == '}').count())
                 .expect("brace depth cannot go negative in valid Rust")
         };
-        let mut lock_spans: Vec<(usize, usize)> = Vec::new();
-        let mut search = open;
-        while let Some(rel) = body[search..].find("self.inner.lock()") {
-            let lock_pos = search + rel;
-            let lock_depth = depth_at(lock_pos);
-            let mut close = lock_pos;
-            while close < body.len() && depth_at(close) >= lock_depth {
-                close += body[close..].chars().next().expect("valid utf8").len_utf8();
+        let sites = |needle: &str| {
+            let mut found = Vec::new();
+            let mut offset = 0usize;
+            while let Some(pos) = body[offset..].find(needle) {
+                found.push(offset + pos);
+                offset += pos + needle.len();
             }
-            lock_spans.push((lock_pos, close));
-            search = lock_pos + "self.inner.lock()".len();
-        }
+            found
+        };
+        let lock_sites = sites("self.inner.lock()");
         assert!(
-            !lock_spans.is_empty(),
-            "revoke must take the inner lock for the state invalidation"
+            !lock_sites.is_empty(),
+            "the revoke path must synchronize on the inner mutex"
         );
-        let mut emit_sites: Vec<usize> = Vec::new();
-        let mut search = open;
-        while let Some(rel) = body[search..].find("self.emit_status()") {
-            emit_sites.push(search + rel);
-            search += rel + "self.emit_status()".len();
-        }
-        assert!(!emit_sites.is_empty(), "revoke must refresh the status");
-        for emit in emit_sites {
-            for (lock_pos, lock_end) in &lock_spans {
-                assert!(
-                    emit <= *lock_pos || emit >= *lock_end,
-                    "emit_status at byte {emit} runs inside the live inner-guard span \
-                     ({lock_pos}..{lock_end}); holding the guard across it re-locks the \
-                     same non-reentrant mutex and deadlocks the revoke path",
-                );
+        let emit_sites = sites("self.emit_status()");
+        assert!(
+            !emit_sites.is_empty(),
+            "the revoke path must push the refreshed status"
+        );
+        // guard bound at `lock` is still live at `emit` when the brace depth
+        // never drops below the lock's own scope between the two sites.
+        let guard_live = |lock: usize, emit: usize| -> bool {
+            let lock_depth = depth_at(lock);
+            if depth_at(emit) < lock_depth {
+                return false;
             }
+            let mut relative = 0i32;
+            for c in body[lock..emit].chars() {
+                match c {
+                    '{' => relative += 1,
+                    '}' => {
+                        relative -= 1;
+                        if relative < 0 {
+                            return false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            true
+        };
+        // EVERY emit site must run outside the scope of EVERY live inner
+        // guard (the first-site-only form missed the persist-failure
+        // reconciliation branch, whose emit sits in a nested block after its
+        // own scoped lock - holding the non-reentrant mutex across emit
+        // re-locks on the same thread and deadlocks the revoke path).
+        for &emit in &emit_sites {
+            let offenders: Vec<usize> = lock_sites
+                .iter()
+                .copied()
+                .filter(|&lock| lock < emit && guard_live(lock, emit))
+                .collect();
+            assert!(
+                offenders.is_empty(),
+                "emit_status at byte offset {} must run outside the scope of every \
+                 live inner guard (live locks at {:?}); holding the guard across it \
+                 re-locks the same non-reentrant mutex and deadlocks the revoke path",
+                emit,
+                offenders
+            );
         }
     }
 
@@ -7121,6 +7163,21 @@ mod tests {
                     < body.find("return Err(error);").unwrap(),
             "a load failure must re-latch the durable flag BEFORE propagating the error"
         );
+        // Round-32 review (regression sensitivity): the ordering checks above only pin
+        // the branch's existence and position — deleting the real re-latch assignment
+        // inside the branch keeps them all green. Oracle: the branch body between the
+        // re-latch gate and the error propagation must contain the real assignment to
+        // endpoint.config.allow_host_workspace (the match arms carry the gate and the
+        // propagation in source order: the Err arm re-latches, then returns).
+        {
+            let relatch_at = body.find("if durable_flag == Some(true) {").unwrap();
+            let branch = &body[relatch_at..body.find("return Err(error);").unwrap()];
+            assert!(
+                branch.contains("endpoint.config.allow_host_workspace = true"),
+                "the load-failure branch must actually restore the durable latch, \
+                 not just exist before the error propagation"
+            );
+        }
         assert!(
             body.contains("persist_config(&config)"),
             "revoke must latch the consent flag into the persisted config"
@@ -7133,6 +7190,36 @@ mod tests {
             body.contains("self.emit_status();"),
             "revoke must push the refreshed status so the modal reflects the revoked row"
         );
+        // Round-32 review (persist-failure reconciliation, translated): a persist failure
+        // must not propagate through a bare `?` — it must re-latch the durable truth,
+        // publish the authoritative status, and return a contextual error. The oracle
+        // below binds three things: the in-branch assignment, the emit, and the error
+        // copy.
+        {
+            let persist_at = body
+                .find("if let Err(error) = persist_config(&config)")
+                .expect("the persist-failure reconciliation branch must exist");
+            let persist_branch = &body[persist_at..];
+            let persist_branch = &persist_branch[..persist_branch
+                .find("}\n            }")
+                .unwrap_or(persist_branch.len())];
+            assert!(
+                persist_branch.contains("endpoint.config.allow_host_workspace = true"),
+                "a persist failure must re-latch the durable truth: memory cleared \
+                 while the disk file survived would hide Revoke and let start/resume \
+                 revive the surviving authorization"
+            );
+            assert!(
+                persist_branch.contains("self.emit_status();"),
+                "a persist failure must publish the authoritative (still-authorized) \
+                 state before propagating"
+            );
+            assert!(
+                persist_branch.contains("host-workspace revocation could not be persisted"),
+                "the persist-failure error must say the revocation could not be \
+                 persisted instead of a bare propagation"
+            );
+        }
     }
 
     /// Wiring pin (Round-15 review MA1): a persist failure must re-latch the in-memory flag

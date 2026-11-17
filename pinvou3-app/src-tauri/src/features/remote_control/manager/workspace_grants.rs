@@ -21,6 +21,10 @@ struct WebWorkspaceGrant {
 /// A grant removed from the live store while Session creation is in flight.
 /// Dropping it consumes the one-shot capability; a failed creation may put it
 /// back only for the same endpoint and without extending its original TTL.
+/// `generation` stamps the store's revocation generation at reserve time: a
+/// revoke that ran while creation was in flight advances the generation, and
+/// the stale reservation must not be restored across it (复审 P3:失败撤销
+/// 重闩锁旗标后,撤销前的 in-flight reservation 不得借 restore 复活).
 #[derive(Debug)]
 pub(crate) struct WebWorkspaceGrantReservation {
     handle: String,
@@ -28,6 +32,7 @@ pub(crate) struct WebWorkspaceGrantReservation {
     path: PathBuf,
     identity: WebWorkspaceIdentity,
     expires_at: Instant,
+    generation: u64,
 }
 
 impl WebWorkspaceGrantReservation {
@@ -101,6 +106,11 @@ impl WebWorkspaceIdentity {
 pub(super) struct WebWorkspaceGrantStore {
     entries: HashMap<String, WebWorkspaceGrant>,
     order: VecDeque<String>,
+    /// Bumped by every `clear()` (each revoke, even an idempotent one).
+    /// Reservations stamped by `reserve` are only restorable while the
+    /// generation is unchanged, so a failed revocation that re-latches the
+    /// authorization flag cannot revive pre-revocation reservations.
+    revocation_generation: u64,
 }
 
 impl WebWorkspaceGrantStore {
@@ -159,6 +169,7 @@ impl WebWorkspaceGrantStore {
             path: grant.path,
             identity: grant.identity,
             expires_at: grant.expires_at,
+            generation: self.revocation_generation,
         })
     }
 
@@ -174,7 +185,12 @@ impl WebWorkspaceGrantStore {
         // reserve → revoke → 会话创建失败 → restore 会把 grant 放回已
         // 撤销授权的映射里(不变量只靠 bind-time 复查兜底)。撤销后拒绝
         // 复活,与「已发出的 grant 也随之立刻作废」的文档契约一致。
+        // 复审 P3(世代围栏):旗标可因失败撤销被重闩锁为 true,仅靠旗标
+        // 无法区分「撤销后重新授权」与「撤销失败回滚」——按世代拒绝:
+        // reserve 之后发生过任何 clear()(即撤销)的 in-flight reservation
+        // 一律不得复活,重新授权后需重新铸发句柄。
         if !allow_host_workspace
+            || reservation.generation != self.revocation_generation
             || reservation.endpoint_id != endpoint_id
             || reservation.expires_at <= now
             || self.entries.contains_key(&reservation.handle)
@@ -210,6 +226,10 @@ impl WebWorkspaceGrantStore {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+        // Every revoke advances the generation, so reservations stamped
+        // before it are refused on restore even when the authorization flag
+        // is later re-latched by a failed-revocation retry (复审 P3).
+        self.revocation_generation += 1;
     }
 }
 
@@ -317,6 +337,32 @@ mod tests {
                 false
             ),
             "a revoked host-workspace authorization must not be resurrected"
+        );
+        assert!(!store.contains(&handle));
+
+        // 复审 P3(世代围栏):reserve 之后发生过 clear()(撤销)的
+        // in-flight reservation,即使旗标重闩锁回 true(失败撤销重试态)
+        // 也不得复活——restore 按世代拒绝;重新授权后需重新铸发句柄。
+        store.issue(
+            handle.clone(),
+            "endpoint-one".to_string(),
+            path.clone(),
+            test_identity(3),
+            now,
+        );
+        let reservation = store
+            .reserve(&handle, "endpoint-one", now + Duration::from_secs(3))
+            .unwrap();
+        assert!(!store.contains(&handle));
+        store.clear();
+        assert!(
+            !store.restore(
+                reservation,
+                "endpoint-one",
+                now + Duration::from_secs(4),
+                true
+            ),
+            "a reservation stamped before a revocation must stay dead even              when the flag is re-latched to true by a failed-revocation retry"
         );
         assert!(!store.contains(&handle));
 
@@ -477,6 +523,7 @@ mod tests {
             path: workspace.clone(),
             identity: WebWorkspaceIdentity::capture(&workspace).unwrap(),
             expires_at: Instant::now() + WEB_WORKSPACE_GRANT_TTL,
+            generation: 0,
         };
         assert!(reservation.verify_bound_path(&workspace).is_ok());
         std::fs::rename(&workspace, root.join("original-workspace")).unwrap();
