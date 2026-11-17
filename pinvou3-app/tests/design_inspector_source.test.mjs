@@ -38,3 +38,25 @@ assert.match(
   /title=\{`\$\{change\.oldValue \|\| ''\} -> \$\{change\.newValue \|\| ''\}`\}/,
   'each row must carry the full old -> new values in its title',
 );
+
+// --- The element snapshot's `text` must stay FULL: the inspector's editable
+// input is seeded from this field and commitText sends the draft verbatim, so
+// a truncated seed (the old `.slice(0, 240)`) committed "prefix + one char"
+// and destroyed the document text beyond the cut. No slice may come back. ---
+const runtime = readFileSync(
+  path.join(here, '..', 'src', 'features', 'artifacts', 'design-runtime.js'),
+  'utf8',
+);
+const snapshotStart = runtime.indexOf('function snapshot(');
+assert.ok(snapshotStart >= 0, 'the snapshot function is missing');
+const snapshotRegion = runtime.slice(snapshotStart, snapshotStart + 2000);
+assert.doesNotMatch(
+  snapshotRegion,
+  /\.slice\(/,
+  'the snapshot text seed must not truncate (a .slice( re-add reds this)',
+);
+assert.match(
+  snapshotRegion,
+  /text: String\(element\.innerText \|\| element\.textContent \|\| ''\)\.trim\(\)/,
+  'the snapshot must keep seeding from the full rendered text',
+);
