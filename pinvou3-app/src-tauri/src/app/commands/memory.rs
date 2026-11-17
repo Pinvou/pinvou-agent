@@ -656,7 +656,14 @@ pub async fn confirm_pending_memory(
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::MemoryWriteEvent>>, String> {
     let event = crate::features::memory::confirm_pending_memory(&id).map_err(|e| {
-        crate::platform::paths::redact_storage_prefix(&format!("confirm pending memory: {e}"))
+        // The wipe-shaped-label refusal is a crafted user-facing
+        // contract — passed verbatim for the editor's prefix match
+        // (r4/r12); every other error folds the storage prefix.
+        if e.to_string().starts_with("memory_profile_label_rejected") {
+            e.to_string()
+        } else {
+            crate::platform::paths::redact_storage_prefix(&format!("confirm pending memory: {e}"))
+        }
     })?;
     finish_memory_write(&app, session_id, &store, event.clone(), event, Vec::new())
 }
