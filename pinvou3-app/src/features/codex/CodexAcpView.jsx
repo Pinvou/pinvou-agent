@@ -2357,7 +2357,11 @@ export function CodexAcpView({
                     ? t.uiAttachments.deviceUploadDigestInvalid
                     : uploadErrorText === 'web_attachment_integrity_mismatch'
                       ? t.uiAttachments.deviceUploadIntegrityMismatch
-                      : t.uiAttachments.deviceUploadFailed(file.name));
+                      : uploadErrorText === 'web_attachment_upload_cache_full'
+                        ? t.uiAttachments.deviceUploadCacheFull
+                        : uploadErrorText === 'web_attachment_parsed_cache_too_large'
+                          ? t.uiAttachments.deviceParsedTooLarge
+                          : t.uiAttachments.deviceUploadFailed(file.name));
           setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
             ...attachment, status: 'error', error: displayError,
           })));

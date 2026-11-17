@@ -421,6 +421,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       sessionModelStale: id => `The model selected for this conversation is no longer available (missing saved model: ${id}). Please pick a model again in this conversation.`,
       attachStillUploading: "⚠️ Attachment still uploading, try again shortly",
       deviceUploadTooLarge: name => `⚠️ ${name} exceeds the 50 MB attachment limit`,
+      deviceUploadCacheFull: "⚠️ Upload buffer is full: a large attachment is still uploading. Wait for it to finish, then retry",
+      deviceParsedTooLarge: "⚠️ The parsed attachment exceeds the 32 MB remote-desktop cache limit and cannot be added",
       archiveTooManyEntries: "the archive contains more than 50 entries and cannot be attached",
       archiveExpandedTooLarge: "the archive expands beyond 100 MB and cannot be attached",
       archiveUnsafeEntry: "the archive contains unsafe links or paths and cannot be attached",
@@ -551,6 +553,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       sessionModelStale: id => `この会話で選択したモデルの設定は無効になりました（見つからない設定: ${id}）。会話でモデルを選び直してください。`,
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 50 MB を超えています`,
+      deviceUploadCacheFull: "⚠️ アップロードバッファがいっぱいです:別の大きな添付ファイルをアップロード中です。完了してから再試行してください",
+      deviceParsedTooLarge: "⚠️ 解析後の添付ファイルがリモートデスクトップのキャッシュ上限 32 MB を超えているため追加できません",
       archiveTooManyEntries: "アーカイブに 50 個を超える項目が含まれているため添付できません",
       archiveExpandedTooLarge: "アーカイブの展開後サイズが 100 MB を超えるため添付できません",
       archiveUnsafeEntry: "アーカイブに安全でないリンクまたはパスが含まれているため添付できません",
@@ -681,6 +685,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       sessionModelStale: id => `当前会话选择的模型配置已失效（缺失配置：${id}），请在对话中重新选择模型。`,
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 50 MB 上限`,
+      deviceUploadCacheFull: "⚠️ 上传缓存已满:另一批大附件还在上传,请等待其完成后再试",
+      deviceParsedTooLarge: "⚠️ 解析后的附件超过远程桌面缓存上限 32 MB,无法添加",
       archiveTooManyEntries: "压缩包包含超过 50 个条目，无法添加",
       archiveExpandedTooLarge: "压缩包解压后超过 100 MB，无法添加",
       archiveUnsafeEntry: "压缩包包含不安全的链接或路径，无法添加",
@@ -5639,7 +5645,13 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     try {
       const result = await invoke("web_access_ingest_file", { path });
       att.status = "ready"; att.result = result;
-    } catch (e) { att.status = "error"; att.error = String(e); }
+    } catch (e) {
+      // Limit failures (oversize, parsed-result cache overflow) arrive as
+      // stable wire codes; map them so the chip shows localized copy
+      // instead of raw single-language desktop text.
+      const limitError = attachmentLimitDisplayError(e, att.basename);
+      att.status = "error"; att.error = limitError ? limitError.code : String(e);
+    }
     notify();
   }
 
@@ -5647,6 +5659,9 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     const raw = String(error && error.message ? error.message : error);
     if ((error && error.code === "device_upload_too_large") || raw === "attachment_file_too_large") {
       return { code: "attachment_file_too_large", message: bt("deviceUploadTooLarge")(fileName) };
+    }
+    if (raw === "web_attachment_parsed_cache_too_large") {
+      return { code: raw, message: bt("deviceParsedTooLarge") };
     }
     if (raw === "attachment_archive_too_many_entries") {
       return { code: raw, message: bt("archiveTooManyEntries") };
@@ -5674,6 +5689,10 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     }
     if (rawUploadError === "web_attachment_integrity_mismatch") {
       const message = bt("deviceUploadIntegrityMismatch");
+      return { code: message, message };
+    }
+    if (rawUploadError === "web_attachment_upload_cache_full") {
+      const message = bt("deviceUploadCacheFull");
       return { code: message, message };
     }
     return { code: rawUploadError, message: rawUploadError };
