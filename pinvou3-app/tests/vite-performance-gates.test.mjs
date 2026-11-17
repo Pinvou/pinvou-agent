@@ -34,8 +34,10 @@ test('startup gates remain active in desktop and web production builds', () => {
   // step per policy; the follow-up sync onto the fork-import main re-measured
   // 498,064 B; the computer-use virtual-display sync (#826) re-measured
   // 498,821 B and the web entry 126,566 B — both stay under their ceilings.
-  // The config comment preserves each raise's measurements.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 499_000);
+  // The post-#887 rebase merged main's web-side evolution into the entry and
+  // CI's build:ui measured 499,001 B — the predicted 500_000 step, taken per
+  // policy. The config comment preserves each raise's measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 500_000);
   assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 129_000);
   for (const mode of ['production', 'web']) {
     const pluginNames = new Set(buildPlugins(mode).map(plugin => plugin.name));

@@ -674,7 +674,11 @@ function enforceLazyChunks() {
 // still under 499_000 (179 B headroom; the consent/chat/computer-use surface
 // rides the entry here while the web build lazy-splits it, so the next small
 // main-side entry change takes the 500_000 step) — and the web entry measured
-// 126,566 B in build:web, staying under 129_000 (2,434 B headroom).
+// 126,566 B in build:web, staying under 129_000 (2,434 B headroom). That
+// predicted step arrived: the post-#887 rebase merged main's web-side
+// evolution into the entry and CI's build:ui measured 499,001 B — 1 B over.
+// 499_000 → 500_000, the literal next thousand step above the merged
+// measurement (999 B headroom).
 //
 // 127,596 → 127,777 B web on the local node 24 toolchain. The web ceiling
 // stays 128_000 (223 B headroom above the measured web entry).
@@ -723,7 +727,7 @@ function enforceLazyChunks() {
 // measurement. Rebase note (2026-11-14): the #833 toggle (+182 B desktop,
 // measured above) now rides this entry too; the 494_000 ceiling absorbs
 // it by subtraction, verified by a post-rebase clean build:ui.
-export const MAIN_ENTRY_BUDGET_BYTES = 499_000;
+export const MAIN_ENTRY_BUDGET_BYTES = 500_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 129_000;
 
 function mainEntryBudgetBytesFor(mode) {
