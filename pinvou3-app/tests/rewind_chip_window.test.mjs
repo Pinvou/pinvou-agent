@@ -33,6 +33,25 @@ assert.match(
 );
 assert.match(
   source,
-  /setVisibleCount\(\(count\) => count \+ REWIND_FILE_LIST_EXPAND_STEP\)/,
+  /setWindowState\(\(state\) => \(\{ \.\.\.state, count: state\.count \+ REWIND_FILE_LIST_EXPAND_STEP \}\)\)/,
   'one expander click must append exactly one batch',
 );
+// The window is per-change-set state: a preview refresh that swaps the
+// change set must reset to the initial batch instead of inheriting the
+// previous window (r16 review NIT). The reset uses React's render-time
+// derived-state pattern (conditional setState during render), NOT an
+// effect — setState-in-effect is the cascading-render lint class.
+assert.match(
+  source,
+  /if \(windowState\.changes !== changes\) \{\s*setWindowState\(\{ changes, count: REWIND_FILE_LIST_INITIAL_ROWS \}\);\s*\}/,
+  'the window must reset to the initial batch when the change set changes',
+);
+const resetPos = source.indexOf('if (windowState.changes !== changes)');
+const returnPos = source.indexOf('if (!changes.length) return null;');
+assert.ok(resetPos >= 0 && returnPos > resetPos, 'the reset must precede the early return');
+assert.doesNotMatch(
+  source,
+  /setVisibleCount\(REWIND_FILE_LIST_INITIAL_ROWS\);\s*\}, \[changes\]\)/,
+  'the reset must not be an effect (setState-in-effect cascading lint)',
+);
+
