@@ -1257,3 +1257,27 @@ mod visual_cache_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod artifact_read_cap_pins {
+    /// The command lane mirrors the review lane's Take-limited read
+    /// (metadata pre-check → `Take(cap + 1)`) to close the pre-check→read
+    /// TOCTOU; the review lane's own source pin scans only
+    /// `features/review/mod.rs`, so deleting THIS call site shipped every
+    /// suite green (r16 review m2). The >50 MiB behavioral fixture stays
+    /// waived under the r4 rationale (compile-time const vs fixture cost);
+    /// the wiring is held by a source pin, scanned over the production
+    /// region only so the needle cannot self-match.
+    #[test]
+    fn read_artifact_text_take_limited_read_stays_wired() {
+        let source = include_str!("artifacts.rs");
+        let prod_end = source
+            .find("mod visual_cache_tests {")
+            .expect("tests module present");
+        assert!(
+            source[..prod_end].contains("file.take(MAX_ARTIFACT_TEXT_BYTES + 1)"),
+            "read_artifact_text_impl must keep its Take-limited read; deleting \
+             it re-opens the pre-check→read TOCTOU the r3/r4 waves claim closed"
+        );
+    }
+}
