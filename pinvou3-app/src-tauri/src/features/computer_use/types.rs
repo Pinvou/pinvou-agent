@@ -194,8 +194,8 @@ fn parse_key_token(token: &str) -> Option<Key> {
                         // Parser accepts f1..f20: the X11 lane maps F13-F20,
                         // so the old 1..=12 parse cap made that documented
                         // support unreachable. Per-platform map_key stays the
-                        // fail-closed gate (macOS/Windows/portal error above
-                        // F12; Linux errors beyond F20).
+                        // fail-closed gate (macOS/Windows/portal/virtual-display
+                        // error above F12; Linux X11 beyond F20).
                         if (1..=20).contains(&n) {
                             return Some(Key::Function(n));
                         }
