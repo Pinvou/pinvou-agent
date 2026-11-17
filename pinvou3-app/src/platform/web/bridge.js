@@ -327,6 +327,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       status: null,       // kb_model_status 返回 { installed, ready, loading, downloading, ... }
       progress: null,     // kb_model:progress 事件 { stage:'download'|'verify'|'prepare'|'done', downloaded, total, ready }
       error: null,
+      cancelled: false,   // 最近一次下载被用户取消（中性态，与 error 互斥；web 上 downloading 恒 false）
     },
     scheduledTasks: [],
     selectedScheduledTaskId: null,
@@ -6743,6 +6744,9 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     unmountCollection,
     listCollections: function () { return invoke("kb_collection_list"); }, // 挂载选择器用
     kbModelStatus: function () { return invoke("kb_model_status"); }, // 挂载选择器门控:模型未装则不可选
+    // 取消进行中的模型下载(桌面同一命令);web 宿主的 access-policy 未放行
+    // kb_model_cancel 时 invoke 被拒,catch 静默(同 checkDependencies 约定)。
+    cancelKbModel: function () { return invoke("kb_model_cancel").catch(function () {}); },
     loadMemoryOverview,
     saveMemoryProfilePatch,
     updateMemoryItem,

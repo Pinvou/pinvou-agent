@@ -202,7 +202,10 @@ const EXPECTED_SURFACE = {
   // base-local declarations. raisePinvouSummonHighwater (zhuowp round-2 P2-2:
   // the review-sidecar highwater commit) reads only `state`, which every
   // consuming cluster literal already provides — no literal gains a dep.
-  sharedFnCount: 316,
+  // cancelKbModel (kb_model_cancel chain) reads only `invoke`; the sole
+  // consuming cluster (tauriKnowledgeModel) already passes it, so only the
+  // count moves.
+  sharedFnCount: 317,
 };
 
 assert.equal(
