@@ -5161,8 +5161,10 @@ impl AcpPool {
     /// cancellation events through `bridge` when one is available (an exit
     /// path with the runtime still in scope). Callers without a bridge —
     /// the rebind NoRuntime arm and the Missing arm of `get_or_spawn` —
-    /// pass `None`: the settlement is then only the cancelled response,
-    /// not a journal entry.
+    /// pass `None`, and so does the spawn-failure Err arm of `get_or_spawn`
+    /// as a backstop settle: a bridge may still exist there, but the
+    /// settlement is deliberately cancel-only. For all `None` callers the
+    /// settlement is then only the cancelled response, not a journal entry.
     async fn cancel_runtime_pending_cards(&self, session_id: &str, bridge: Option<&EventBridge>) {
         self.cancel_pending_permissions_with_bridge(session_id, bridge)
             .await;
