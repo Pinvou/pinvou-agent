@@ -49,8 +49,9 @@ pub mod automation_foundation {
 /// the GUI keeps calling `crate::core::model_endpoint` directly.
 pub mod model_probe {
     pub use crate::core::model_endpoint::{
-        is_anthropic_api_url, is_opencode_gateway_base_url, model_probe_http_code,
-        model_probe_transport_code, models_probe_url, opencode_session_id_for, strip_v1_suffix,
+        error_chain_looks_like_tls, is_anthropic_api_url, is_opencode_gateway_base_url,
+        model_probe_http_code, model_probe_transport_code, models_probe_url,
+        opencode_session_id_for, strip_v1_suffix,
     };
 }
 
@@ -1831,6 +1832,7 @@ pub fn run() {
             commands::codex::open_code_reader,
             commands::codex::take_code_reader_pending,
             commands::settings::test_model_connection,
+            commands::settings::probe_endpoint_models,
             commands::settings::test_image_input_capability,
             commands::voice::transcribe_voice_audio,
             commands::voice::postprocess_voice_text,

@@ -1071,6 +1071,7 @@ export function ProvidersSection({ t }) {
           initial={editing}
           onClose={() => setFormOpen(false)}
           onSaved={() => refresh()}
+          t={t}
         />
       )}
 

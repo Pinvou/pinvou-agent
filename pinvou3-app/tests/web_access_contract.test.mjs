@@ -231,6 +231,63 @@ for (const command of [
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
 
+// Round-1 review M3 (endpoint model discovery): the probe command is
+// deliberately WEB-ALLOWED, so pin the positive half of that contract the
+// same way the desktop-only half above is anti-pinned — otherwise a policy
+// edit could silently un-allowlist it and strand the ACP/settings picker on
+// web. Rationale: probe_endpoint_models is keyring-blind — the caller
+// supplies whatever key the form holds, the command never reads the local
+// keyring or saved credentials, so probing from a paired browser leaks no
+// stored secret. That is exactly why it may ride the web RPC lane while
+// test_model_connection (resolves SAVED keys by model id → keyring access)
+// and save_model (credential writes) stay desktop-only above.
+// Round-2 review M7: the grant is wider than the keyring argument alone —
+// the OpenAI-compatible ladder short-circuits loopback/private base URLs
+// (base_url_uses_local_or_private in core/endpoint_discovery.rs), so a
+// paired page also gains a port-open/closed oracle via the transport class,
+// service identification via server_kind, and the loaded model names of
+// loopback/LAN services (ids only — the `title` field is populated only by
+// the remote anthropic/gemini native lanes; the local lanes return bare
+// ids) — silent (no desktop-side confirmation) and with no per-command rate
+// limit (only the shared MAX_RPC_IN_FLIGHT=32 window).
+// Round-3 review M5 (disclosure accuracy amendment): the reach is GLOBAL,
+// not "bounded internal-network" — the command validates only URL SHAPE,
+// not the host, and the remote ladders run unconditionally for every
+// non-local URL. A paired page can classify any PUBLIC host too (dns/
+// connect/timeout/tls per invocation, http_status for >=400/3xx), with the
+// desktop as vantage and the user's IP as source; IPv6 ULAs/link-local and
+// 169.254.169.254-style cloud-metadata addresses never hit the local
+// short-circuit at all. Accepted anyway because: keyring-blind with a
+// caller-supplied key only (saved credentials are never readable — but a
+// user-typed key transits the relay transport inside the paired page's RPC
+// frame: TLS terminates at the relay, so the relay operator and its logs
+// can observe it; the default localhost relay is unaffected; the RPC ledger
+// fingerprints args with the secret replaced by its length, so the
+// persisted hash is not an offline verifier for the key);
+// the sanitized response carries status codes, transport class, server kind,
+// and model entries, never the URL or key or body text; one caller-supplied
+// endpoint per invocation — exact on the remote ladders, which stay
+// no-redirect and are pinned, while the LOCAL lane's probes ride the shared
+// probe client, which follows redirects (reqwest default, up to 10 hops);
+// only Bearer is attached there and reqwest strips it on any host-or-port
+// change (scheme is NOT compared — a same-host scheme downgrade keeps it,
+// but that host already received the key), so no credential reaches a second
+// host, but the probe's requests may land on
+// hosts the caller-supplied URL redirects to (still a single starting
+// point; the shape is not a scanner, the page must issue its own requests);
+// and today only page JS reaches the command: the probe's UI entries stay
+// off the web lane because the web bridge never populates
+// platformCapabilities.codexAcpSupported (the ACP tab's gate) and the
+// saved-model editor additionally gates on modelManagement:false
+// (platform/web/bootstrap.js).
+// discoverLocalVllm (the multi-candidate local discovery) stays
+// desktop-only — see tests/bridge_domain_contract.mjs.
+assert.equal(
+  allowed.has('probe_endpoint_models'),
+  true,
+  'probe_endpoint_models must stay web-allowlisted (keyring-blind: caller supplies the key; no saved-credential read, unlike test_model_connection; disclosed GLOBAL reach: the command accepts any caller-supplied URL and the remote ladders classify any public host — a port/service/model oracle with the desktop as vantage, bounded only by MAX_RPC_IN_FLIGHT=32 — accepted because the sanitized response never echoes the URL or key, one caller-supplied endpoint per invocation with the remote ladders no-redirect and pinned while the local lane may follow redirects (Bearer stripped on any host-or-port change; scheme is not compared), typed keys transit the relay frame where the relay operator can observe them (saved credentials never readable; localhost default unaffected), the ledger fingerprint redacts secret-named args at any depth to their length, and only page JS reaches the command today — the probe UI stays off the web lane because the web bridge never populates platformCapabilities.codexAcpSupported, with the saved-model editor additionally gated on modelManagement:false)',
+);
+
 // Round-11 复审 M4:结构性互斥钉——remote_control.rs 里定义的每一个
 // web_access_* 命令必须要么在 Web 策略里(受 positive wrapper 钉约束),
 // 要么在上面的桌面专用反钉清单里。手工反钉清单的结构性漏网

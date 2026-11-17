@@ -205,7 +205,9 @@ const EXPECTED_SURFACE = {
   // cancelKbModel (kb_model_cancel chain) reads only `invoke`; the sole
   // consuming cluster (tauriKnowledgeModel) already passes it, so only the
   // count moves.
-  sharedFnCount: 317,
+  // probeEndpointModels (endpoint model auto-discovery wave) reads only
+  // `invoke` as well; the settings cluster already passes it — count only.
+  sharedFnCount: 318,
 };
 
 assert.equal(

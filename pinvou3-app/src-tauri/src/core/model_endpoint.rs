@@ -13,6 +13,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
+use crate::core::endpoint_discovery::read_json_body_bounded;
+
 /// 探测结果 TTL 缓存：同一 base_url 的本地服务类型在短时间内不会变化。
 /// Probes are issued in parallel via `tokio::join!` (all requests share a 3s
 /// timeout; a hung endpoint costs ~3s at worst). Repeated probes across
@@ -53,8 +55,11 @@ pub struct OpenAiModelsProbe {
 /// u64 JSON number → positive u32. Self-reported values outside the u32
 /// range are always treated as undeclared: `as u32` would truncate 2^32 to
 /// 0 and 2^32+5 to 5, letting downstream code mistake a corrupted value for
-/// a real limit; non-positive values are equally invalid.
-fn parse_positive_u32(v: &serde_json::Value) -> Option<u32> {
+/// a real limit; non-positive values are equally invalid. Widened to
+/// `pub(crate)` for `core::endpoint_discovery`, which parses further
+/// self-reported shapes (anthropic / gemini / 归一化的兼容字段名) but must
+/// keep the same "非正值/越界值 = 未声明" 口径.
+pub(crate) fn parse_positive_u32(v: &serde_json::Value) -> Option<u32> {
     u32::try_from(v.as_u64()?).ok().filter(|n| *n > 0)
 }
 
@@ -88,8 +93,10 @@ pub(crate) fn parse_models_response_list(v: serde_json::Value) -> Option<Vec<Ope
 /// shape by priority could adopt a cap larger than another cap the same
 /// entry reported, breaking the only-tighten contract. Local engines
 /// usually omit the field → None, and callers must not fabricate a
-/// limit from it.
-fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
+/// limit from it. Widened to `pub(crate)` for `core::endpoint_discovery`:
+/// the discovery listing reuses the same three shapes and the same
+/// tightest-wins rule instead of growing a second output-cap parser.
+pub(crate) fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
     let direct = ["max_output_tokens", "max_completion_tokens"]
         .into_iter()
         .filter_map(|key| item.get(key).and_then(parse_positive_u32));
@@ -99,6 +106,14 @@ fn parse_entry_output_limit(item: &serde_json::Value) -> Option<u32> {
         .and_then(parse_positive_u32);
     direct.chain(top_provider).min()
 }
+
+/// 通用探测/列表读取的限长上限:8 MiB,与发现阶梯的
+/// `LISTING_BODY_CAP_BYTES` 同一量级。超时只约束时间,敌意环回端点可在
+/// 时限内推流数 GB,而 serde_json Value 树的内存放大 ~30-40 倍——本模块的
+/// 探测读取(round-3 审 minor)统一走
+/// [`crate::core::endpoint_discovery::read_json_body_bounded`] 的同一 chunk
+/// 循环,超限 body 解析失败按「探测未命中」折叠(与 json() 错误同路)。
+const PROBE_JSON_BODY_CAP_BYTES: usize = 8 * 1024 * 1024;
 
 /// 通用 OpenAI 兼容 `/models` 探测。探测地址与云端 probe / 连接测试同一口径
 /// （`models_probe_url`）：upstream 不带 `/v1` 也不补——glm `/paas/v4`、火山方舟
@@ -111,14 +126,16 @@ pub async fn probe_openai_models(base_url: &str) -> Option<OpenAiModelsProbe> {
     // Same consistency hardening as fetch_v1_models: gateway probes carry the
     // session-affinity header (feature-label key); no-op off-gateway. All
     // current callers are loopback-only, so this is latent-gap hardening.
-    let resp = with_opencode_session_header(client.get(url), base_url, "models-probe")
+    let mut resp = with_opencode_session_header(client.get(url), base_url, "models-probe")
         .send()
         .await
         .ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    let v = resp.json::<serde_json::Value>().await.ok()?;
+    let v = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()?;
     Some(OpenAiModelsProbe {
         models: parse_models_response_list(v)?,
     })
@@ -235,8 +252,10 @@ fn parse_ollama_show_context(v: serde_json::Value) -> Option<u32> {
     None
 }
 
-/// Ollama `/api/tags` 返回的已下载模型名列表（保持顺序、去重）。
-fn parse_ollama_tag_names(v: serde_json::Value) -> Vec<String> {
+/// Ollama `/api/tags` 返回的已下载模型名列表（保持顺序、去重）。`pub(crate)`:
+/// 发现阶梯的瞬态失败复核（round-4 审 m1-6）用同一份解析判定「tags 非空」，
+/// 复核口径与重试（`probe_ollama_models` 取到非空 tags 才算成功）一致。
+pub(crate) fn parse_ollama_tag_names(v: serde_json::Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if let Some(models) = v.get("models").and_then(|m| m.as_array()) {
         for item in models {
@@ -300,8 +319,13 @@ fn parse_lmstudio_v0_models(v: &serde_json::Value) -> Option<Vec<OpenAiModelInfo
 /// `--api-key` return 401 on `/v1/models`, so probing without credentials
 /// misclassifies the endpoint as Generic). `None`/blank sends no auth header
 /// (Ollama/LM Studio are auth-free by default and unaffected; services
-/// without auth ignore the Bearer header).
-fn apply_bearer(req: reqwest::RequestBuilder, bearer: Option<&str>) -> reqwest::RequestBuilder {
+/// without auth ignore the Bearer header). `pub(crate)` so the discovery
+/// ladder (`core::endpoint_discovery`) reuses the same blank-key-skips
+/// semantics instead of re-rolling header assembly.
+pub(crate) fn apply_bearer(
+    req: reqwest::RequestBuilder,
+    bearer: Option<&str>,
+) -> reqwest::RequestBuilder {
     match bearer.map(str::trim).filter(|key| !key.is_empty()) {
         Some(key) => req.bearer_auth(key),
         None => req,
@@ -367,16 +391,19 @@ pub async fn probe_ollama_models(
     let host = strip_v1_suffix(base_url)?;
     let client = shared_probe_client()?;
     // 已加载集合与生效上下文表：失败按空（全部未加载、无窗口事实），不影响已下载列表。
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败与旧 json() Err 同路折叠为空。
     let (loaded_names, ps_contexts) =
         match apply_bearer(client.get(format!("{host}/api/ps")), bearer)
             .send()
             .await
             .and_then(|r| r.error_for_status())
         {
-            Ok(resp) => match resp.json::<serde_json::Value>().await {
-                Ok(v) => (parse_ollama_ps_names(&v), parse_ollama_ps_contexts(&v)),
-                Err(_) => Default::default(),
-            },
+            Ok(mut resp) => {
+                match read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES).await {
+                    Ok(v) => (parse_ollama_ps_names(&v), parse_ollama_ps_contexts(&v)),
+                    Err(_) => Default::default(),
+                }
+            }
             Err(_) => Default::default(),
         };
     // 已下载列表：/api/tags 是必需项，失败或为空则整个候选离线。
@@ -410,14 +437,18 @@ pub async fn fetch_ollama_contexts(
 ) -> Option<std::collections::HashMap<String, u32>> {
     let host = strip_v1_suffix(base_url)?;
     let client = shared_probe_client()?;
-    let resp = apply_bearer(client.get(format!("{host}/api/ps")), bearer)
+    let mut resp = apply_bearer(client.get(format!("{host}/api/ps")), bearer)
         .send()
         .await
         .ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    let v = resp.json::<serde_json::Value>().await.ok()?;
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 None（非 Ollama 形状 → 不补查 /api/show）。
+    let v = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()?;
     let ollama_shaped = v.get("models").and_then(|m| m.as_array()).is_some();
     ollama_shaped.then(|| parse_ollama_ps_contexts(&v))
 }
@@ -446,7 +477,7 @@ pub(crate) async fn probe_ollama_show_context(
     let probe = async {
         let host = strip_v1_suffix(base_url)?;
         let client = shared_probe_client()?;
-        let resp = apply_bearer(client.post(format!("{host}/api/show")), bearer)
+        let mut resp = apply_bearer(client.post(format!("{host}/api/show")), bearer)
             .json(&serde_json::json!({ "model": model }))
             .send()
             .await
@@ -459,7 +490,9 @@ pub(crate) async fn probe_ollama_show_context(
         if !resp.status().is_success() {
             return None;
         }
-        let v = resp.json::<serde_json::Value>().await.ok()?;
+        let v = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+            .await
+            .ok()?;
         Some(parse_ollama_show_context(v))
     };
     match probe.await {
@@ -813,6 +846,35 @@ pub fn model_probe_http_code(status: reqwest::StatusCode) -> &'static str {
 /// had lost `tls_error`). The dns arm must precede the connect arm:
 /// hyper-util files resolver failures under its Connect kind, so `is_dns`
 /// only classifies if it runs first.
+/// TLS-failure keyword heuristic over a raw (already redacted, text-only)
+/// error string. `pub(crate)`: the discovery ladder's `transport_class`
+/// reuses the exact same keywords, so the "tls" class it now emits stays
+/// vocabulary-compatible with the connection test's `tls_error` wire code —
+/// one keyword list, two surfaces, no drift.
+pub(crate) fn raw_error_looks_like_tls(raw: &str) -> bool {
+    let lower = raw.to_lowercase();
+    lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl")
+}
+
+/// TLS 事实探测的 source 链版:**跳过顶层 Display,只扫 error source 链的
+/// 内层文本**。reqwest 顶层 Display 内嵌完整请求 URL,主机名/路径恰好含
+/// tls/ssl/certificate 的无关失败会命中关键字造成 URL 偏置误判
+/// (`transport_code_for` 的文档警告过同一偏置);证书事实只在 rustls /
+/// hyper 的内层错误文本里("certificate verify failed" 等)。发现阶梯的
+/// `transport_class` 与 CLI 的同臂共用这一份(单一事实源),合成 error
+/// 链即可单测——reqwest::Error 没有公开构造器,链走 `std::error::Error
+/// ::source`,与具体错误类型解耦。`pub`:CLI crate 经 lib 面引用同一份。
+pub fn error_chain_looks_like_tls(error: &(dyn std::error::Error + '_)) -> bool {
+    let mut source = error.source();
+    while let Some(err) = source {
+        if raw_error_looks_like_tls(&err.to_string()) {
+            return true;
+        }
+        source = err.source();
+    }
+    false
+}
+
 pub fn transport_code_for(
     is_timeout: bool,
     is_dns: bool,
@@ -837,7 +899,7 @@ pub fn transport_code_for(
         "dns_failed"
     } else if is_connect {
         "connection_refused"
-    } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+    } else if raw_error_looks_like_tls(display_text) {
         "tls_error"
     } else if lower.contains("dns")
         || lower.contains("lookup")
@@ -1290,12 +1352,14 @@ async fn probe_local_server_kind_uncached(base_url: &str, bearer: Option<&str>) 
 async fn probe_lmstudio_v0_only(base_url: &str, bearer: Option<&str>) -> Option<OpenAiModelsProbe> {
     let host = strip_v1_suffix(base_url)?;
     let client = shared_probe_client()?;
-    let resp = apply_bearer(client.get(format!("{host}/api/v0/models")), bearer)
+    let mut resp = apply_bearer(client.get(format!("{host}/api/v0/models")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
         .ok()?;
-    let v = resp.json::<serde_json::Value>().await.ok()?;
+    let v = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()?;
     Some(OpenAiModelsProbe {
         models: parse_lmstudio_v0_models(&v)?,
     })
@@ -1347,21 +1411,23 @@ pub(crate) async fn fetch_v1_models(
     // (401/403) are not helped by switching paths, and timeouts/connection
     // refusals mean the host is unreachable — neither is retried,
     // conservatively falling back to no facts.
-    let resp = match (resp.status().as_u16(), fallback) {
+    let mut resp = match (resp.status().as_u16(), fallback) {
         (200..=299, _) => resp,
         (404 | 405, Some(url)) => {
-            let resp = attach(apply_bearer(client.get(url), bearer))
+            let fallback_resp = attach(apply_bearer(client.get(url), bearer))
                 .send()
                 .await
                 .ok()?;
-            if !resp.status().is_success() {
+            if !fallback_resp.status().is_success() {
                 return None;
             }
-            resp
+            fallback_resp
         }
         _ => return None,
     };
-    resp.json::<serde_json::Value>().await.ok()
+    read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()
 }
 
 /// `/api/tags` 取数单一来源：GET（带可选 Bearer）→ 200 → 解析模型名列表；
@@ -1373,12 +1439,14 @@ async fn fetch_ollama_tag_names(
     host: &str,
     bearer: Option<&str>,
 ) -> Option<Vec<String>> {
-    let resp = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
+    let mut resp = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
         .ok()?;
-    let value = resp.json::<serde_json::Value>().await.ok()?;
+    let value = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
+        .await
+        .ok()?;
     Some(parse_ollama_tag_names(value))
 }
 
@@ -1409,14 +1477,16 @@ async fn probe_koboldcpp_version(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{host}/api/extra/version")), bearer)
+    let Ok(mut resp) = apply_bearer(client.get(format!("{host}/api/extra/version")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
     else {
         return false;
     };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 false（探测未命中）。
+    let Ok(v) = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES).await else {
         return false;
     };
     v.get("result")
@@ -1437,14 +1507,16 @@ async fn probe_llamacpp_props(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{host}/props")), bearer)
+    let Ok(mut resp) = apply_bearer(client.get(format!("{host}/props")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
     else {
         return false;
     };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 false（探测未命中）。
+    let Ok(v) = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES).await else {
         return false;
     };
     v.as_object().is_some_and(|obj| {
@@ -1463,14 +1535,16 @@ async fn probe_sglang_server_info(base_url: &str, bearer: Option<&str>) -> bool 
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{host}/get_server_info")), bearer)
+    let Ok(mut resp) = apply_bearer(client.get(format!("{host}/get_server_info")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
     else {
         return false;
     };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 false（探测未命中）。
+    let Ok(v) = read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES).await else {
         return false;
     };
     v.get("version").and_then(Value::as_str).is_some()
@@ -1520,14 +1594,16 @@ async fn probe_docker_model_runner(base_url: &str, bearer: Option<&str>) -> bool
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{root}/models")), bearer)
+    let Ok(mut resp) = apply_bearer(client.get(format!("{root}/models")), bearer)
         .send()
         .await
         .and_then(|r| r.error_for_status())
     else {
         return false;
     };
-    resp.json::<serde_json::Value>()
+    // 限长读取（round-4 审 M2）：超限 / 断流 / 解析失败按旧 json() Err 折叠
+    // 为 false（探测未命中）。
+    read_json_body_bounded(&mut resp, PROBE_JSON_BODY_CAP_BYTES)
         .await
         .ok()
         .is_some_and(|v| v.is_array())
@@ -1810,10 +1886,37 @@ pub(crate) mod models_mock {
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
+    /// 单次应答的规格:`spawn` / `spawn_seq` 用最简形态(状态码 + 响应体);
+    /// `extra_headers` 携带 `Location` 等重定向钉需要的响应头,`declared_len`
+    /// 覆盖声明长度(大于 body 实际长度 → 写完即断,覆盖「中途断流」钉)。
+    pub(crate) struct MockResponse {
+        status: u16,
+        body: String,
+        extra_headers: Vec<(String, String)>,
+        declared_len: Option<usize>,
+    }
+
+    impl MockResponse {
+        fn simple(status: u16, body: String) -> Self {
+            Self {
+                status,
+                body,
+                extra_headers: Vec::new(),
+                declared_len: None,
+            }
+        }
+    }
+
+    /// 按请求路径给出应答(无应答 → 默认 404)。线程内串行调用,`FnMut`
+    /// 足够顺序队列使用。
+    type Responder = Box<dyn FnMut(&str) -> Option<MockResponse> + Send>;
+
     pub(crate) struct ModelsMock {
         pub base_url: String,
         hits: Arc<Mutex<HashMap<String, usize>>>,
         auth: Arc<Mutex<HashMap<String, String>>>,
+        headers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>>,
+        queries: Arc<Mutex<HashMap<String, Vec<String>>>>,
     }
 
     impl ModelsMock {
@@ -1835,25 +1938,149 @@ pub(crate) mod models_mock {
                 .get(path)
                 .cloned()
         }
+
+        /// 最后一个命中该路径的请求所携带的任意请求头(名字按小写比较;
+        /// None = 未出现)。anthropic 的 `x-api-key` + `anthropic-version` 与
+        /// gemini 的 `x-goog-api-key` 不走 Authorization,发现阶梯的头断言
+        /// 需要这里的通用记录。
+        pub(crate) fn header_for(&self, path: &str, name: &str) -> Option<String> {
+            self.headers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)?
+                .iter()
+                .rev()
+                .find(|(header_name, _)| header_name == name)
+                .map(|(_, value)| value.clone())
+        }
+
+        /// 该路径各次命中的 query string(原始串,`?` 之后;无 query 为空
+        /// 串,按命中顺序)。G2 钉:翻页游标「真的发出去了」只能在这里
+        /// 断言——顺序响应体会让状态断言失真,删掉 `.query(...)` 的游标
+        /// 装配时既有断言全绿(每页仍返回各自的响应体)。
+        pub(crate) fn queries_for(&self, path: &str) -> Vec<String> {
+            self.queries
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(path)
+                .cloned()
+                .unwrap_or_default()
+        }
     }
 
     pub(crate) fn spawn(routes: &[(&str, u16, String)]) -> ModelsMock {
+        let map: HashMap<String, (u16, String)> = routes
+            .iter()
+            .map(|(path, status, body)| ((*path).to_string(), (*status, body.clone())))
+            .collect();
+        serve(Box::new(move |path| {
+            map.get(path)
+                .map(|(status, body)| MockResponse::simple(*status, body.clone()))
+        }))
+    }
+
+    /// 顺序响应体变体:同一路径的第 n 次命中返回第 n 个响应体(队列取空后
+    /// 重复最后一个),供翻页阶梯测试构造"第一页 has_more、第二页收尾"的
+    /// 真实两页序列(静态路由做不到——同一响应体会让客户端读到永远
+    /// has_more)。
+    pub(crate) fn spawn_seq(routes: &[(&str, u16, Vec<String>)]) -> ModelsMock {
+        let mut map: HashMap<String, (u16, Vec<String>)> = routes
+            .iter()
+            .map(|(path, status, bodies)| ((*path).to_string(), (*status, bodies.clone())))
+            .collect();
+        serve(Box::new(move |path| {
+            map.get_mut(path).map(|(status, bodies)| {
+                let body = if bodies.len() > 1 {
+                    bodies.remove(0)
+                } else {
+                    bodies[0].clone()
+                };
+                MockResponse::simple(*status, body)
+            })
+        }))
+    }
+
+    /// 重定向变体(M1 钉):`path` 以 302 + `Location: {location}` 应答——
+    /// 发现客户端禁用重定向([`crate::core::endpoint_discovery::
+    /// discovery_client`] 的 `Policy::none()`),该变体让测试断言「302 按
+    /// error 分类且第二跳从不发生」。
+    pub(crate) fn spawn_redirect(path: &str, location: &str) -> ModelsMock {
+        let route = path.to_string();
+        let location = location.to_string();
+        serve(Box::new(move |hit| {
+            (hit == route).then(|| MockResponse {
+                status: 302,
+                body: "{}".to_string(),
+                extra_headers: vec![("Location".to_string(), location.clone())],
+                declared_len: None,
+            })
+        }))
+    }
+
+    /// 截断 body 变体(G1 钉):`path` 以 `content-length: {declared_len}`
+    /// 应答但只写出 `body`,随后断开连接——客户端在 body 中途读到传输错误
+    /// (声明的长度没写满),而不是干净的流结尾;读完再断只会得到解析失败
+    /// 的分类,覆盖不了「中途断流」。
+    pub(crate) fn spawn_truncated(
+        path: &str,
+        status: u16,
+        body: &str,
+        declared_len: usize,
+    ) -> ModelsMock {
+        let route = path.to_string();
+        let body = body.to_string();
+        serve(Box::new(move |hit| {
+            (hit == route).then(|| MockResponse {
+                status,
+                body: body.clone(),
+                extra_headers: Vec::new(),
+                declared_len: Some(declared_len),
+            })
+        }))
+    }
+
+    /// 逐条「状态 + 响应体」顺序变体:同一路径的第 n 次命中返回第 n 个
+    /// (status, body)(队列取空后重复最后一个)。[`spawn_seq`] 的状态码
+    /// 是路由级的,表达不了「先 200 后 500」的瞬态失败序列(minor-7 钉:
+    /// kind 判别成功、随后原生探测 5xx)。
+    pub(crate) fn spawn_seq_status(routes: &[(&str, Vec<(u16, String)>)]) -> ModelsMock {
+        let mut map: HashMap<String, Vec<(u16, String)>> = routes
+            .iter()
+            .map(|(path, seq)| ((*path).to_string(), seq.clone()))
+            .collect();
+        serve(Box::new(move |path| {
+            map.get_mut(path).map(|seq| {
+                let (status, body) = if seq.len() > 1 {
+                    seq.remove(0)
+                } else {
+                    seq[0].clone()
+                };
+                MockResponse::simple(status, body)
+            })
+        }))
+    }
+
+    fn serve(mut respond: Responder) -> ModelsMock {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
         let addr = listener.local_addr().expect("mock listener addr");
-        let routes: Vec<(String, u16, String)> = routes
-            .iter()
-            .map(|(path, status, body)| ((*path).to_string(), *status, body.clone()))
-            .collect();
         let hits: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         let hits_thread = hits.clone();
         let auth: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let auth_thread = auth.clone();
+        let headers: Arc<Mutex<HashMap<String, Vec<(String, String)>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let headers_thread = headers.clone();
+        let queries: Arc<Mutex<HashMap<String, Vec<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let queries_thread = queries.clone();
         std::thread::spawn(move || {
-            // Serve at most 32 connections: the core tests each send 1-2
+            // Serve at most 160 connections: the core tests each send 1-2
             // requests and the finalize wiring tests also go through the kind
             // probe (7 parallel candidates), so leave headroom; this also
-            // bounds thread leaks.
-            for stream in listener.incoming().take(32) {
+            // bounds thread leaks. The discovery lane additionally exercises
+            // the Ollama per-model /api/show ladder (up to 50 sequential
+            // POSTs per listing), which is why the cap is not the old 32.
+            for stream in listener.incoming().take(160) {
                 let Ok(mut stream) = stream else { continue };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 1024];
@@ -1870,51 +2097,76 @@ pub(crate) mod models_mock {
                     }
                 }
                 let request = String::from_utf8_lossy(&buf);
-                let path = request
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("")
-                    .split('?')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
+                let target = request.split_whitespace().nth(1).unwrap_or("");
+                let mut target_parts = target.splitn(2, '?');
+                let path = target_parts.next().unwrap_or("").to_string();
+                let query = target_parts.next().unwrap_or("").to_string();
                 *hits_thread
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .entry(path.clone())
                     .or_insert(0) += 1;
-                let authorization = request
-                    .lines()
-                    .skip(1)
-                    .take_while(|line| !line.is_empty())
-                    .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
-                    .map(|line| {
-                        line.split_once(':')
-                            .unwrap_or((":", ""))
-                            .1
-                            .trim()
-                            .to_string()
-                    });
-                if let Some(value) = authorization {
+                queries_thread
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(path.clone())
+                    .or_default()
+                    .push(query);
+                let mut recorded: Vec<(String, String)> = Vec::new();
+                for line in request.lines().skip(1) {
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        recorded.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+                    }
+                }
+                if let Some((_, value)) = recorded.iter().find(|(name, _)| name == "authorization")
+                {
                     auth_thread
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .insert(path.clone(), value);
+                        .insert(path.clone(), value.clone());
                 }
-                let matched = routes.iter().find(|(route, _, _)| path == *route);
-                let (status, body) = matched
-                    .map(|(_, status, body)| (*status, body.clone()))
-                    .unwrap_or((404, "{}".to_string()));
-                let reason = match status {
-                    200 => "OK",
-                    401 => "Unauthorized",
-                    404 => "Not Found",
-                    _ => "OK",
+                headers_thread
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(path.clone(), recorded);
+                let response = match respond(&path) {
+                    Some(mock_response) => {
+                        let reason = match mock_response.status {
+                            200 => "OK",
+                            302 => "Found",
+                            401 => "Unauthorized",
+                            404 => "Not Found",
+                            500 => "Internal Server Error",
+                            _ => "OK",
+                        };
+                        // declared_len 覆盖大于 body 实际长度时,写完 body 即
+                        // 到达循环尾、stream 随之 drop——连接在 body 中途断开
+                        // (客户端读到传输错误而非干净的流结尾)。
+                        let declared_len = mock_response
+                            .declared_len
+                            .unwrap_or(mock_response.body.len());
+                        let mut head = format!(
+                            "HTTP/1.1 {} {reason}\r\ncontent-type: application/json\r\ncontent-length: {declared_len}\r\nconnection: close\r\n",
+                            mock_response.status
+                        );
+                        for (name, value) in &mock_response.extra_headers {
+                            head.push_str(&format!("{name}: {value}\r\n"));
+                        }
+                        head.push_str("\r\n");
+                        head.push_str(&mock_response.body);
+                        head
+                    }
+                    None => {
+                        let body = "{}".to_string();
+                        format!(
+                            "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    }
                 };
-                let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
                 let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
             }
         });
@@ -1922,6 +2174,8 @@ pub(crate) mod models_mock {
             base_url: format!("http://{addr}"),
             hits,
             auth,
+            headers,
+            queries,
         }
     }
 }
@@ -3003,6 +3257,83 @@ pub(crate) mod tests {
         assert_eq!(
             probe_local_server_kind(&server.url, None).await,
             LocalServerKind::Sglang
+        );
+    }
+
+    /// round-4 审 M2 钉：kind 判别端点吐出超限 body（> 8 MiB）→ 限长读取在
+    /// cap 处停读、解析失败按「探测未命中」折叠为 false → SGLang 不识别
+    /// （其余签名端点默认 404，整体落 Generic），绝不无界吃内存，也绝不把
+    /// 半截 body 当命中。旧的无界 `json()` 读取会把整个 body 推进内存；
+    /// 换用 [`read_json_body_bounded`] 后由超大 fixture 守住不回退。fixture
+    /// **整体是合法 JSON**(version 字段可解析):限长读取在 cap 处截断后必
+    /// 解析失败、折叠为未命中;若有人退回无界的 resp.json(),全量解析会
+    /// 成功、探测误命中,本钉立即变红——这正是 M2 要挡的「超时窗口内敌意
+    /// 端点撑爆内存」路径的可观察面。
+    #[test]
+    fn probe_body_cap_bytes_is_pinned() {
+        // 8 MiB: the bounded-IO ceiling every kind-probe read shares with
+        // the discovery listing cap's sibling pin (round-5 review minor).
+        assert_eq!(PROBE_JSON_BODY_CAP_BYTES, 8 * 1024 * 1024);
+    }
+    #[tokio::test]
+    async fn kind_probe_folds_oversized_body_to_miss() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        let oversized = format!(
+            "{{\"version\":\"0.4.9\",\"pad\":\"{}\"}}",
+            "1".repeat(9 * 1024 * 1024)
+        );
+        assert!(oversized.len() > 8 * 1024 * 1024);
+        // 六处读取点逐一直探（round-5 审 minor：此前只有 sglang 一处，其余
+        // 五处单点回退为无界 json() 对整套用例不可见）。超限且整体合法的
+        // JSON 在每处都必须折叠为未命中——回退旧实现会解析成功而变红。
+        let sglang_mock = models_mock::spawn(&[("/get_server_info", 200, oversized.clone())]);
+        assert!(
+            !probe_sglang_server_info(&sglang_mock.base_url, None).await,
+            "sglang: 超限 body 必须折叠为探测未命中"
+        );
+        let kobold_mock = models_mock::spawn(&[("/api/extra/version", 200, oversized.clone())]);
+        assert!(
+            !probe_koboldcpp_version(&kobold_mock.base_url, None).await,
+            "koboldcpp: 超限 body 必须折叠为探测未命中"
+        );
+        let llamacpp_mock = models_mock::spawn(&[("/props", 200, oversized.clone())]);
+        assert!(
+            !probe_llamacpp_props(&llamacpp_mock.base_url, None).await,
+            "llamacpp: 超限 body 必须折叠为探测未命中"
+        );
+        let dmr_mock = models_mock::spawn(&[("/models", 200, oversized.clone())]);
+        assert!(
+            !probe_docker_model_runner(&dmr_mock.base_url, None).await,
+            "docker-model-runner: 超限 body 必须折叠为探测未命中"
+        );
+        let show_mock = models_mock::spawn(&[("/api/show", 200, oversized.clone())]);
+        assert!(
+            matches!(
+                probe_ollama_show_context(&show_mock.base_url, None, "m").await,
+                OllamaShowProbe::Unreachable
+            ),
+            "ollama /api/show: 超限 body 必须折叠为不可达（瞬态，不入缓存）"
+        );
+        // /api/ps 超限折叠为空事实，tags 照常进列表（无 ps 生效窗口）。
+        let ps_mock = models_mock::spawn(&[
+            ("/api/ps", 200, oversized.clone()),
+            (
+                "/api/tags",
+                200,
+                r#"{"models":[{"name":"tags-only"}]}"#.into(),
+            ),
+        ]);
+        let probed = probe_ollama_models(&ps_mock.base_url, None).await;
+        assert!(
+            probed.as_ref().is_some_and(|probe| probe.models.len() == 1
+                && probe.models[0].id == "tags-only"
+                && probe.models[0].max_model_len.is_none()),
+            "ollama /api/ps: 超限 body 必须折叠为空事实，标签列表不受影响"
+        );
+        // 整链：其余签名端点默认 404，kind 落 Generic（sglang 超限处的原钉）。
+        assert_eq!(
+            probe_local_server_kind(&sglang_mock.base_url, None).await,
+            LocalServerKind::Generic
         );
     }
 
