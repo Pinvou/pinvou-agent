@@ -1876,6 +1876,9 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const discoverLocalVllm = settingsFeature.discoverLocalVllm;
   const loadModels = settingsFeature.loadModels; // startup loader (init); not on the facade
   const saveModel = settingsFeature.saveModel;
+  // Batch add-all post-loop refresh (round-1 review M9): one reload burst for
+  // up to 100 deferred saves instead of three loaders per row.
+  const reloadSavedModels = settingsFeature.reloadSavedModels;
   const revealModelApiKey = settingsFeature.revealModelApiKey;
   const deleteModel = settingsFeature.deleteModel;
   const setActiveModel = settingsFeature.setActiveModel;
@@ -1884,6 +1887,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const testModelConnection = settingsFeature.testModelConnection;
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
+  const probeEndpointModels = settingsFeature.probeEndpointModels;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
   // Dedicated global-shortcut command (update_settings is never used);
   // Rust exclusively owns persistence and registration.
@@ -2343,6 +2347,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     },
     models: {
       saveModel,
+      reloadSavedModels,
       revealModelApiKey,
       deleteModel,
       setActiveModel,
@@ -2351,6 +2356,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       testModelConnection,
       getImageInputCapability,
       testImageInputCapability,
+      probeEndpointModels,
       probeLocalServerKind,
     },
     interaction: { toggleSuperPerm,

@@ -1293,3 +1293,32 @@ Object.assign(dictEn.uiChat, {
 Object.assign(dictEn.uiChat, { modelRecoveryAgent: 'Subtask {agent}: ' });
 
 Object.assign(dictEn.uiChat, { modelRecoveryCancelled: 'Rate-limit waiting cancelled.', modelRecoveryStopped: 'Rate-limit waiting ended. See this turn’s result.' });
+
+// Endpoint model auto-discovery (spec §2.6/§2.9): fetch button + candidate
+// panel, max output field, and the one-shot filled-from-endpoint notice;
+// ACP-line keys ride the uiAcpProviders cluster.
+Object.assign(dictEn.uiSettingsDetail, {
+  fetchModelList:'Fetch model list', fetchingModelList:'Fetching model list…',
+  modelListTitle:'Models at this endpoint', modelListClose:'Close', modelListFilterPlaceholder:'Filter model IDs…',
+  addModelRow:'Add', addAllModels:'Add all',
+  addAllConfirm:n=>`Add ${n} model${n === 1 ? '' : 's'}? Entries already saved with the same model ID and service URL are skipped automatically. Continue?`,
+  addAllTruncated:n=>`Long list — only the first ${n} models will be added.`,
+  addedCount:n=>`Added ${n} model${n === 1 ? '' : 's'}`,
+  noModelsFound:'The endpoint returned no models',
+  authRequiredHint:'The endpoint requires valid credentials (401/403). Enter an API Key and retry',
+  unsupportedHint:'This endpoint does not expose a model list',
+  modelMaxOutput:'Max output', modelMaxOutputPlaceholder:'e.g. 32768',
+  modelMaxOutputHint:'Leave empty to declare automatically from the context tier; values beyond the process budget are clamped down.',
+  factSourceEndpoint:'endpoint', factSourceCatalog:'catalog',
+  filledFromEndpoint:'Filled from the endpoint probe',
+  modelAlreadySaved:'Saved',
+  fetchUnavailable:'This build cannot fetch model lists yet',
+  modelListFilterEmpty:'No models match this filter',
+  modelListTruncated:'Endpoint response or context lookups stopped early; results may be incomplete',
+  modelListMoreCount:n=>`…and ${n} more — refine the filter`,
+  modelListMoreCountPlain:n=>`…and ${n} more`,
+});
+Object.assign(dictEn.uiAcpProviders, {
+  fetchModels:'Fetch models', fetchingModels:'Fetching models…',
+  fetchUnavailable:'This build cannot fetch model lists yet',
+});

@@ -1300,3 +1300,32 @@ Object.assign(dictJa.uiChat, {
 Object.assign(dictJa.uiChat, { modelRecoveryAgent: 'サブタスク {agent}：' });
 
 Object.assign(dictJa.uiChat, { modelRecoveryCancelled: 'レート制限の待機を取り消しました。', modelRecoveryStopped: 'レート制限の待機が終了しました。このターンの結果を確認してください。' });
+
+// エンドポイントモデル自動検出(仕様 §2.6/§2.9):「モデル一覧を取得」ボタンと
+// 候補パネル、最大出力フィールド、テスト接続時の自動入力通知。ACP 側のキーは
+// uiAcpProviders クラスタに追加。
+Object.assign(dictJa.uiSettingsDetail, {
+  fetchModelList:'モデル一覧を取得', fetchingModelList:'モデル一覧を取得中…',
+  modelListTitle:'エンドポイントのモデル一覧', modelListClose:'閉じる', modelListFilterPlaceholder:'モデル ID を絞り込み…',
+  addModelRow:'追加', addAllModels:'すべて追加',
+  addAllConfirm:n=>`${n} 件のモデルを追加します。同じモデル ID とサービスアドレスで保存済みのものは自動的にスキップされます。続行しますか？`,
+  addAllTruncated:n=>`件数が多いため、先頭の ${n} 件のみ追加します。`,
+  addedCount:n=>`${n} 件のモデルを追加しました`,
+  noModelsFound:'エンドポイントはモデルを返しませんでした',
+  authRequiredHint:'エンドポイントは有効な認証情報を要求しています（401/403）。API Key を入力して再試行してください',
+  unsupportedHint:'このエンドポイントはモデル一覧に対応していません',
+  modelMaxOutput:'最大出力', modelMaxOutputPlaceholder:'例: 32768',
+  modelMaxOutputHint:'空欄ならコンテキストの段階に応じて自動で宣言されます。プロセスの予算を超える場合は小さい値が採用されます。',
+  factSourceEndpoint:'エンドポイント', factSourceCatalog:'カタログ',
+  filledFromEndpoint:'エンドポイントの検出結果から入力しました',
+  modelAlreadySaved:'保存済み',
+  fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
+  modelListFilterEmpty:'フィルターに一致するモデルはありません',
+  modelListTruncated:'エンドポイントの応答またはコンテキスト取得が途中で打ち切られたため、結果は不完全な場合があります',
+  modelListMoreCount:n=>`他 ${n} 件があります — フィルターで絞り込んでください`,
+  modelListMoreCountPlain:n=>`他 ${n} 件があります`,
+});
+Object.assign(dictJa.uiAcpProviders, {
+  fetchModels:'モデル一覧を取得', fetchingModels:'モデル一覧を取得中…',
+  fetchUnavailable:'このバージョンではまだモデル一覧を取得できません',
+});

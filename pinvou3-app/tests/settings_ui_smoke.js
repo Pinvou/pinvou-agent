@@ -22,6 +22,10 @@ const localServerTiersSource = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'features', 'settings', 'local-server-tiers.jsx'),
   'utf8',
 );
+const endpointPickerSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'endpoint-model-picker.jsx'),
+  'utf8',
+);
 const settingsI18nSources = ['zh', 'en', 'ja'].map((lang) => fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'i18n', `${lang}.js`),
   'utf8',
@@ -200,6 +204,18 @@ const localDetectEnd = settingsViewSource.indexOf('function startManualLocalMode
 assert.notStrictEqual(localDetectStart, -1, 'local picker detect handler must exist');
 assert.notStrictEqual(localDetectEnd, -1, 'local picker detect handler boundary must exist');
 const localDetectSource = settingsViewSource.slice(localDetectStart, localDetectEnd);
+// 复审 minor-14:手动添加本地模型是显式路由切换,与 applyCatalogItem 同一纪律——
+// 上一个表单残留的端点探测状态(候选列表/picker/挂起批量/添加提示)必须清空,
+// 绝不许在新表单下复用。切片钉住 startManualLocalModel 函数体,漏清任一项即红。
+const manualLocalStart = localDetectEnd;
+const manualLocalEnd = settingsViewSource.indexOf('const catalogSectionTitleClass', manualLocalStart);
+assert.notStrictEqual(manualLocalEnd, -1, 'startManualLocalModel handler boundary must exist');
+const manualLocalSource = settingsViewSource.slice(manualLocalStart, manualLocalEnd);
+assert.match(
+  manualLocalSource,
+  /setEndpointListing\(null\);\s*setEndpointPickerOpen\(false\);\s*setAddAllModelsConfirm\(null\);\s*setEndpointAddResult\(null\);/,
+  'manual local-model entry must drop the leftover probe state (listing, picker, pending batch, add notice) like applyCatalogItem does',
+);
 assert.match(
   localDetectSource,
   /customPort/,
@@ -223,6 +239,368 @@ assert.doesNotMatch(
   /setBaseUrl\(|setModel\(/,
   'local detection must not auto-fill the form; the user adds a candidate explicitly',
 );
+// ── 端点模型自动发现(规格 §2.6)源码守卫 ──────────────────────────────
+// 「获取模型列表」只允许显式点击触发:按钮 data-testid + onClick 直挂
+// handleFetchModels;禁止 effect/挂载期自动探测(与本地检测面板同一安全不变量)。
+assert.match(
+  settingsViewSource,
+  /data-testid="settings-model-fetch-lists"\s+onClick=\{handleFetchModels\}/,
+  'fetch model lists must be an explicit-click button wired to handleFetchModels',
+);
+assert.doesNotMatch(
+  settingsViewSource,
+  /useEffect\(\(\) => \{[\s\S]{0,240}probeEndpointModels/,
+  'model list probing must never run on mount/effect; explicit button click only',
+);
+assert.match(
+  settingsViewSource,
+  /typeof bridge\.models\.probeEndpointModels !== 'function' \|\| fetchingModels\) return;/,
+  'fetch handler must bail when the probe bridge method is unavailable (old desktop/web builds)',
+);
+// 复审 M5(base URL 错配竞态):结果只能属于探测时的 URL。手输改 URL 必须作废
+// 既有列表/picker/挂起批量;在飞探测 resolve 时发现 URL 已变也必须静默丢弃。
+const baseUrlChangeStart = settingsViewSource.indexOf('function handleBaseUrlChange(');
+assert.notStrictEqual(baseUrlChangeStart, -1, 'base URL change handler must exist');
+const baseUrlChangeSource = settingsViewSource.slice(baseUrlChangeStart, baseUrlChangeStart + 800);
+assert.match(
+  baseUrlChangeSource,
+  /setEndpointListing\(null\);\s*setEndpointPickerOpen\(false\);\s*setAddAllModelsConfirm\(null\);/,
+  'editing the base URL must drop the probed listing, close the picker and discard any pending batch (no URL A results under URL B)',
+);
+assert.match(
+  settingsViewSource,
+  /if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;/,
+  'an in-flight probe whose base URL changed mid-flight must be discarded at resolve time',
+);
+// 复审 M2(round-3 修订,测试连接的 resolve 时刻守卫):handleTest 快照 base
+// URL,resolve 时 URL 已变整份静默丢弃(含失败结果);端点事实按**已保存记录**
+// 的 model 字段探得,后端经 fact_model 回带事实所属模型——空字段填充守卫
+// 对齐到 fact_model(表单模型 ≠ fact_model 时不填),不再拿表单模型跟自己比
+// (旧守卫在编辑表单里未保存的 model-ID 改动下形同虚设)。切片钉住 handleTest
+// 函数体:删掉任一守卫或把 applyProbedFacts 挪到 fact_model 比较之外都会变红。
+const handleTestStart = settingsViewSource.indexOf('async function handleTest()');
+assert.notStrictEqual(handleTestStart, -1, 'connection test handler must exist');
+const handleTestSource = settingsViewSource.slice(
+  handleTestStart,
+  settingsViewSource.indexOf('async function handleFetchModels', handleTestStart),
+);
+assert.match(
+  handleTestSource,
+  /const probedBaseUrl = baseUrl\.trim\(\);/,
+  'handleTest must snapshot the base URL at click time',
+);
+assert.match(
+  handleTestSource,
+  /if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;\s*setTestResult\(normalizeConnectionTestResult\(result, isCodingPlan\)\);/,
+  'a finished connection test whose base URL moved on must be discarded entirely BEFORE setTestResult on the resolve path (same silent semantics as handleFetchModels)',
+);
+assert.match(
+  handleTestSource,
+  /const factModel = typeof result\.fact_model === 'string' \? result\.fact_model\.trim\(\) : '';/,
+  'the backend hands back the saved model name the facts actually matched (fact_model) and the fill guard must read it',
+);
+assert.match(
+  handleTestSource,
+  /if \(!factModel \|\| modelRef\.current\.trim\(\) === factModel\) applyProbedFacts\(result\);/,
+  'probed endpoint facts are per-saved-model: they must fill only while the live wire model still equals fact_model (the click-time form value compared to itself proved vacuous in edit mode)',
+);
+assert.match(
+  settingsViewSource,
+  /const modelRef = useRef\(model\);\s*modelRef\.current = model;/,
+  'the wire model must be mirrored into a render-time ref (declaration AND the render-mirror assignment) so the async resolve compares the live value — deleting the mirror line freezes the ref at mount and silently disables the fact_model comparison (runtime-covered by ⑥.5k2b/⑥.5k2c since round-4)',
+);
+// 复审 M4(添加结果的可见性):endpointAddResult 升级为 { ok, text } | null——
+// 失败曾是硬编码绿色,且 picker 打开时表单状态行被全屏遮罩挡住。钉四条形状:
+// 状态对象、.ok 双色三目、.text 渲染、prop 透传进 picker。
+assert.match(
+  settingsViewSource,
+  /setEndpointAddResult\(\{ ok: true, text: settingsCopy\.addedCount\(1\) \}\)/,
+  'a single-row add success must record { ok: true, text } (the status line colors by .ok)',
+);
+assert.match(
+  settingsViewSource,
+  /setEndpointAddResult\(\{ ok: false, text: settingsCopy\.imageCapabilitySaveFailed/,
+  'a failed row/batch save must record { ok: false, text } so the failure renders red',
+);
+assert.match(
+  settingsViewSource,
+  /endpointAddResult\.ok \? 'text-\[#137333\] dark:text-\[#93D5A6\]' : 'text-\[#FF3B30\]'/,
+  'the add-result status line must color by .ok (green success / red failure), never hardcoded green',
+);
+assert.match(
+  settingsViewSource,
+  /endpointAddResult\.text/,
+  'the add-result status line must render the notice text field (object shape, not a bare string)',
+);
+assert.match(
+  settingsViewSource,
+  /addNotice=\{endpointAddResult\}/,
+  'the chat-line picker must receive the add notice so a failed row/batch is visible while the picker stays open',
+);
+// 复审 M4(提示生命周期):新一轮探测开始与关闭 picker 都必须清空添加提示,
+// 旧结果绝不跨探测/跨开关残留。
+assert.match(
+  settingsViewSource,
+  /setFetchModelsMessage\(null\);\s*setEndpointAddResult\(null\);/,
+  'a new fetch must clear the previous add notice (stale result never survives into a fresh probe)',
+);
+assert.match(
+  settingsViewSource,
+  /onClose=\{\(\) => \{ setEndpointPickerOpen\(false\); setEndpointAddResult\(null\); \}\}/,
+  'closing the picker must clear the add notice so a reopen starts clean',
+);
+// 复审 M4(picker 内横幅):失败原因在 picker 行列表上方就地可见。
+assert.match(
+  endpointPickerSource,
+  /data-testid="endpoint-model-add-notice"/,
+  'the picker must render the add notice as an in-panel banner above the rows (the masked form status line is not enough)',
+);
+assert.match(
+  endpointPickerSource,
+  /addNotice\.ok \? 'text-\[#137333\] dark:text-\[#93D5A6\]' : 'text-\[#FF3B30\]'/,
+  'the in-picker banner must color by .ok too (red failure while the picker stays open for retry)',
+);
+// 复审 picker minor:picker 按探测序号重挂(key={endpointFetchSeq}),新列表上
+// filterDraft/滚动干净复位。
+assert.match(
+  settingsViewSource,
+  /<EndpointModelPicker\s+key=\{endpointFetchSeq\}/,
+  'the endpoint picker must remount per fetch so filter draft and scroll reset with each new listing',
+);
+// round-3 审 M3(单行添加双击重复落库):handleEndpointModelPick 需要自己的
+// 在飞守卫——ref 同步挡同一 tick 的第二次点击,state 驱动 picker 行按钮禁用
+// (保存 IPC + 刷新链路的窗口内不给可点的第二下);picker 行按钮按 pickBusy
+// 禁用。round-4 M4 补两个交错闭口:单行添加在批量确认挂起时禁入(旧快照),
+// 批量入口在单行保存在飞时禁入(快照会把在飞行当未保存)。
+const pickStart = settingsViewSource.indexOf('async function handleEndpointModelPick(row)');
+assert.notStrictEqual(pickStart, -1, 'single-row endpoint pick handler must exist');
+const pickSource = settingsViewSource.slice(pickStart, settingsViewSource.indexOf('async function handleAddAllEndpointModels()', pickStart));
+assert.match(
+  pickSource,
+  /if \(pickInFlightRef\.current \|\| savingModel \|\| addingAllModels \|\| addAllModelsConfirm\) return;/,
+  'the pick handler must re-entry-guard on a dedicated in-flight ref AND refuse while a batch confirm is pending (the pending snapshot predates the single-row save — confirming afterwards would double-save that row; round-4 review M4)',
+);
+assert.match(
+  pickSource,
+  /pickInFlightRef\.current = true;\s*setPickSavingModel\(true\);/,
+  'the pick handler must raise both the sync ref (same-tick double click) and the busy state (row-button disable) before the await',
+);
+assert.match(
+  pickSource,
+  /finally \{\s*pickInFlightRef\.current = false;\s*setPickSavingModel\(false\);\s*\}/,
+  'the in-flight flags must clear on BOTH the success and failure paths so a retry is possible',
+);
+assert.match(
+  settingsViewSource,
+  /const pickInFlightRef = useRef\(false\);/,
+  'the pick in-flight flag must be a ref (state alone cannot catch a same-tick double click)',
+);
+assert.match(
+  settingsViewSource,
+  /pickBusy=\{pickSavingModel \|\| savingModel\}/,
+  'the chat-line picker must receive the pick-busy prop',
+);
+assert.match(
+  endpointPickerSource,
+  /disabled=\{alreadySaved \|\| pickBusy\}/,
+  'the row add button must disable while a pick-save is in flight (round-3 review M3)',
+);
+assert.match(
+  endpointPickerSource,
+  /disabled=\{loading \|\| pickBusy \|\| addableCount === 0\}/,
+  'the batch add-all button must disable while a single-row save is in flight (a dedup snapshot taken then counts the in-flight row as unsaved and batch-saves it a second time, round-4 review M4)',
+);
+// round-3 审 minor(提示失效清扫):URL 变更/目录切换/手动本地路由三个失效点
+// 都要清探测失败提示,旧 URL 的红色失败提示不许挂在新表单下。
+const baseUrlHandlerStart = settingsViewSource.indexOf('function handleBaseUrlChange(value)');
+const baseUrlHandlerSource = settingsViewSource.slice(baseUrlHandlerStart, settingsViewSource.indexOf('function applyProbedFacts(', baseUrlHandlerStart));
+assert.match(
+  baseUrlHandlerSource,
+  /setFetchModelsMessage\(null\);/,
+  'a base-URL change must clear the stale fetch-failure message (round-3 review minor)',
+);
+const catalogItemHandlerSource = settingsViewSource.slice(
+  settingsViewSource.indexOf('function applyCatalogItem(group, item)'),
+  settingsViewSource.indexOf('function handleModelIdChange(value)'),
+);
+assert.match(
+  catalogItemHandlerSource,
+  /setFetchModelsMessage\(null\);/,
+  'a catalog switch must clear the stale fetch-failure message (round-3 review minor)',
+);
+const manualLocalHandlerSource = settingsViewSource.slice(
+  settingsViewSource.indexOf('function startManualLocalModel()'),
+  settingsViewSource.indexOf('const catalogSectionTitleClass', settingsViewSource.indexOf('function startManualLocalModel()')),
+);
+assert.match(
+  manualLocalHandlerSource,
+  /setFetchModelsMessage\(null\);/,
+  'the manual-local route switch must clear the stale fetch-failure message (round-3 review minor)',
+);
+// round-3 审 minor(获取失败提示的 resolve 时刻守卫):handleFetchModels 的
+// catch 与 try 同一 URL 守卫——URL A 的探测失败不许在 URL B 下渲染。
+const fetchHandlerSource = settingsViewSource.slice(
+  settingsViewSource.indexOf('async function handleFetchModels()'),
+  settingsViewSource.indexOf('function buildEndpointModelPayload(row)'),
+);
+assert.match(
+  fetchHandlerSource,
+  /catch \(e\) \{[\s\S]*?if \(baseUrlRef\.current\.trim\(\) !== probedBaseUrl\) return;[\s\S]*?setFetchModelsMessage\(/,
+  'the fetch-models reject path must carry the same resolve-time URL guard as its try path (and as handleTest)',
+);
+// round-3 审 minor(手输模型 ID 换模型):手动改 model 字段要清自动填入小字
+// (与目录项切换/chooseModel 同一纪律),旧模型的提示不许挂在新模型下。
+const modelIdHandlerSource = settingsViewSource.slice(
+  settingsViewSource.indexOf('function handleModelIdChange(value)'),
+  settingsViewSource.indexOf('function handleBaseUrlChange(value)'),
+);
+assert.match(
+  modelIdHandlerSource,
+  /setFilledFromEndpoint\(false\);/,
+  'a manual model-ID edit must clear the filled-from-endpoint hint (explicit model switch)',
+);
+// 测试连接自动填入:仅空字段、绝不覆盖非空值(规格决策 4)。取 applyProbedFacts
+// 片段钉条件,把「填空条件取反」的突变变红。复审 M6:空字段判定必须读
+// latestFieldsRef(resolve 时刻的最新输入),而不是点击瞬间捕获的闭包旧值——
+// 正则钉住 ref 读取形状,删掉空检查或回退到闭包值都会变红。
+const probedFactsStart = settingsViewSource.indexOf('function applyProbedFacts(');
+assert.notStrictEqual(probedFactsStart, -1, 'endpoint fact auto-fill helper must exist');
+const probedFactsSource = settingsViewSource.slice(probedFactsStart, probedFactsStart + 900);
+assert.match(
+  settingsViewSource,
+  /const latestFieldsRef = useRef\(\{ contextWindow, maxOutput \}\);/,
+  'the empty-field judgment must read a latest-values ref (async resolve sees current input, not click-time closure)',
+);
+assert.match(
+  probedFactsSource,
+  /!latestFieldsRef\.current\.contextWindow && Number\.isFinite\(probedContext\) && probedContext > 0/,
+  'context auto-fill must stay gated on an EMPTY context field read from the latest-values ref (never overwrite, never stale-closure)',
+);
+assert.match(
+  probedFactsSource,
+  /!latestFieldsRef\.current\.maxOutput && Number\.isFinite\(probedOutput\) && probedOutput > 0/,
+  'max output auto-fill must stay gated on an EMPTY max output field read from the latest-values ref (never overwrite, never stale-closure)',
+);
+// round-4 #851 收口 + m1-2(server_kind 闸):picker 添加的是全新记录
+// (fresh makeModelId()),但保存载荷必须与 doSave 同一口径——
+// - 凭据阶梯直接复用 cloudCredentialAction(),api_key 按 noAuthActive 口径
+//   丢弃:免鉴权声明生效时 picker 添加的记录不得再带 key/凭据要求(chat 门
+//   否则会被声明外的凭据需求挡住);
+// - auth_mode 随载荷落库、alias 与表单保存同为 null(字段对齐);
+// - listing 带 server_kind(serde snake_case)时 ollama / lm_studio 行的
+//   context_window_tokens 是运行时生效值(/api/ps 生效窗口、
+//   loaded_context_length),与 buildLocalModelPayload 同一教义只存 null——
+//   行内徽章照常显示,仅落库被闸(声明会永久 min-clamp 后续探测)。
+const endpointPayloadStart = settingsViewSource.indexOf('function buildEndpointModelPayload(row, overrides)');
+assert.notStrictEqual(endpointPayloadStart, -1, 'endpoint row payload builder must exist');
+const endpointPayloadSource = settingsViewSource.slice(
+  endpointPayloadStart,
+  settingsViewSource.indexOf('async function handleEndpointModelPick(row)', endpointPayloadStart),
+);
+assert.match(
+  endpointPayloadSource,
+  /const nextKeyAction = isLocalPreset\s*\? \(localKeyEnabled && apiKey\.trim\(\) \? 'replace' : 'keep_existing'\)\s*: cloudCredentialAction\(\);/,
+  'the picker row payload must reuse the exact doSave credential ladder (cloudCredentialAction) so a keyless declaration deletes/replaces stored credentials the same way a form save does',
+);
+assert.match(
+  endpointPayloadSource,
+  /: \(!noAuthActive && apiKey\.trim\(\) \? apiKey\.trim\(\) : ''\)/,
+  'the picker row payload must drop the typed key under the keyless declaration (same noAuthActive caliber as doSave, never the raw noAuth)',
+);
+assert.match(
+  endpointPayloadSource,
+  /alias: null,/,
+  'picker-added records must carry the same null-alias default as a form save (payload field parity)',
+);
+assert.match(
+  endpointPayloadSource,
+  /auth_mode: !isLocalPreset && !isCodingPlan && noAuth \? 'none' : null/,
+  'the picker row payload must persist the keyless declaration via auth_mode (otherwise a picker-added record re-demands credentials at the chat gate despite the form declaring the endpoint keyless)',
+);
+assert.match(
+  endpointPayloadSource,
+  /const serverKind = endpointListing && typeof endpointListing === 'object' \? endpointListing\.server_kind : null;/,
+  'the runtime-effective context gate must read server_kind off the listing the picker received (serde snake_case, no prop threading needed)',
+);
+assert.match(
+  endpointPayloadSource,
+  /const runtimeProbedLane = serverKind === 'ollama' \|\| serverKind === 'lm_studio';/,
+  'the runtime-effective context lane must be exactly ollama/lm_studio (same set as buildLocalModelPayload)',
+);
+assert.match(
+  endpointPayloadSource,
+  /context_window_tokens: runtimeProbedLane \? null : row\.contextWindowTokens,/,
+  'picker rows on ollama/lm_studio must persist a null context declaration (the row still DISPLAYS the probed value; only persistence is gated) so it cannot min-clamp later probes',
+);
+// 批量「全部添加」:应用内 SheetConfirmDialog 是硬闸门(规格决策 1;原生
+// window.confirm 在 Tauri WebView2 不渲染,见 tests/settings_window_confirm.test.mjs),
+// 必须先记录挂起批次、确认后才进入逐行保存循环;同时钉去重截断文案来源
+// (splitBatchAdd/addAllTruncated)。
+const addAllStart = settingsViewSource.indexOf('async function handleAddAllEndpointModels()');
+assert.notStrictEqual(addAllStart, -1, 'endpoint add-all handler must exist');
+const addAllEnd = settingsViewSource.indexOf('function normalizeImageCapabilityTestResult(', addAllStart);
+assert.notStrictEqual(addAllEnd, -1, 'endpoint add-all handler boundary must exist');
+const addAllSource = settingsViewSource.slice(addAllStart, addAllEnd);
+assert.match(addAllSource, /splitBatchAdd\(/, 'batch add must dedupe/cap through splitBatchAdd (model id + base_url)');
+assert.doesNotMatch(
+  addAllSource,
+  /window\.confirm\s*\(/,
+  'batch add must not call the native confirm (does not render in Tauri WebView2)',
+);
+const confirmHandlerIndex = addAllSource.indexOf('async function confirmAddAllEndpointModels()');
+assert.ok(confirmHandlerIndex !== -1, 'the confirmed batch-add handler must exist');
+const addAllEntry = addAllSource.slice(0, confirmHandlerIndex);
+assert.match(
+  addAllEntry,
+  /setAddAllModelsConfirm\(\{ addable, truncated, baseUrl: baseUrl\.trim\(\), preset \}\)/,
+  'the entry handler must only record the pending batch (with its snapshot base URL/preset, round-5 m1) in the in-app confirm state',
+);
+assert.doesNotMatch(addAllEntry, /onSave\(/, 'no save may run before the in-app confirm');
+assert.match(
+  addAllEntry,
+  /if \(addingAllModels \|\| pickInFlightRef\.current \|\| pickSavingModel \|\| savingModel \|\| !endpointListing\) return;/,
+  'the add-all entry must refuse while a single-row add is in flight (its dedup snapshot would count the in-flight row as unsaved and the confirmed batch would save it a second time, round-4 review M4) — removing any of the in-flight clauses must go red',
+);
+const addAllConfirmBody = addAllSource.slice(confirmHandlerIndex);
+assert.match(
+  addAllConfirmBody,
+  /for \(const row of addable\)/,
+  'the batch save loop must run only in the confirmed path (confirm first, saves after)',
+);
+// 复审 M9(批量 IPC 风暴):确认批量的逐行保存必须带 deferRefresh 跳过桥内
+// 逐行三连 reload,循环后(含失败路径)统一 reloadSavedModels 一次;旧行为
+// (逐行全量刷新)只允许在桥缺 reloadSavedModels 时作为回退出现。
+assert.match(
+  addAllConfirmBody,
+  /onSave\(buildEndpointModelPayload\(row, \{ baseUrl: confirmBaseUrl, preset: confirmPreset \}\), batchReloadAvailable \? \{ deferRefresh: true \} : undefined\)/,
+  'batch rows must save with deferRefresh against the confirmed snapshot URL so each row skips the three reloads (single reload after the loop; round-5 m1 snapshot)',
+);
+assert.match(
+  addAllConfirmBody,
+  /await bridge\.models\.reloadSavedModels\(\)/,
+  'the confirmed batch must refresh saved models exactly once via reloadSavedModels after the loop',
+);
+// 复审 M9(忙态闸门):批量进行中确认弹窗双按钮禁用,防重复提交/中途取消。
+assert.match(
+  settingsViewSource,
+  /confirmLabel=\{addingAllModels \? settingsCopy\.saving : settingsCopy\.addAllModels\}/,
+  'the add-all confirm must switch to the busy label while the batch saves',
+);
+assert.match(
+  settingsViewSource,
+  /busy=\{addingAllModels\}/,
+  'the add-all confirm must disable both buttons while the batch saves',
+);
+// 确认弹窗本体:同一 SheetConfirmDialog 配方,testid 供 smoke 驱动;标题/描述
+// 仍表达规格语义(数量、去重、截断)。
+const addAllDialogIndex = settingsViewSource.indexOf('testid="add-all-models-confirm"');
+assert.ok(addAllDialogIndex !== -1, 'the add-all confirm dialog must exist');
+const addAllDialogSource = settingsViewSource.slice(Math.max(0, addAllDialogIndex - 400), addAllDialogIndex + 700);
+assert.match(addAllDialogSource, /<SheetConfirmDialog/, 'the add-all confirm must reuse the shared SheetConfirmDialog');
+assert.match(addAllDialogSource, /addAllConfirm\(/, 'the dialog title must carry the deduped count and dedup notice');
+assert.match(addAllDialogSource, /addAllTruncated\(/, 'oversized listings must surface the truncation notice in the confirm');
+assert.match(addAllDialogSource, /onConfirm=\{confirmAddAllEndpointModels\}/, 'the dialog OK button must route into the confirmed batch handler');
+assert.match(addAllDialogSource, /onCancel=\{\(\) => setAddAllModelsConfirm\(null\)\}/, 'cancel must discard the pending batch without saving');
 // 添加/编辑模型弹窗的滚动必须收敛在内层 data-testid="model-form-scroll" 容器
 // （min-h-0 + flex-1 + overflow-y-auto），弹窗本体（圆角 + max-h 元素）不再自带
 // overflow-y-auto：fixed + backdrop-filter 祖先链下，个别 WebKit 内核不会为
@@ -318,16 +696,20 @@ for (const settingsI18nSource of settingsI18nSources) {
     /if \(!isCodingPlan && noAuth\) return hasSavedKey \? 'delete' : 'replace'/,
     'the stored-credential delete action must stay scoped to non-managed keyless declarations (a stale toggle over a live coding-plan URL must not delete the credential)',
   );
-  // The keyless test-key posture exists at exactly two sites (handleTest +
-  // handleImageCapabilityTest); a plain assert.match would stay green when
-  // only ONE site regresses, so pin the count.
+  // The keyless test-key posture exists at exactly four spellings (handleTest
+  // + handleImageCapabilityTest + handleFetchModels — the latter closed in the
+  // round-5 review: a residual typed key must not ride the fetch-models probe
+  // either — now factored into the pre-flight capture and its render mirror
+  // for the credential-dimension staleness key, review P2 2026-11-17); a
+  // plain assert.match would stay green when only ONE site regresses, so pin
+  // the count.
   const keylessTestKeySites = settingsViewSource.match(
     /!isLocalPreset && !isCodingPlan && noAuth\s*\?\s*''\s*:/g,
   ) || [];
   assert.strictEqual(
     keylessTestKeySites.length,
-    2,
-    'connection AND image-capability tests must both refuse to send a typed key while the keyless declaration is active (a single-site regression must fail here)',
+    4,
+    'connection test, image-capability test, AND fetch-models (payload + capture + mirror) must all refuse to send a typed key while the keyless declaration is active (a single-site regression must fail here)',
   );
   assert.match(
     settingsViewSource,
@@ -441,6 +823,205 @@ for (const settingsI18nSource of settingsI18nSources) {
     'the saved key payload must follow the same noAuthActive caliber as the derivation (a typed key must never be silently discarded under a stale toggle)',
   );
 }
+// ── ACP 线(ProviderFormModal,规格 §2.7)源码守卫 ────────────────────────────
+// 「获取模型列表」按钮仅 codex/kimi 且 base URL 非空时渲染,onClick 直挂
+// handleFetchEndpointModels;claude 的模型槽位编辑器走官方,范围外,整个文件
+// 不得出现第二个按钮分支(testid 恒出现一次)。
+const providerFormModalSource = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'settings', 'ProviderFormModal.jsx'),
+  'utf8',
+);
+assert.strictEqual(
+  (providerFormModalSource.match(/acp-provider-fetch-models/g) || []).length,
+  1,
+  'the ACP fetch-models button must exist exactly once (claude gets no such branch)',
+);
+assert.match(
+  providerFormModalSource,
+  /\(agent === 'codex' \|\| agent === 'kimi'\) && String\(baseUrl \|\| ''\)\.trim\(\) !== '' && \(\s*<button/,
+  'the ACP fetch-models button must render only for codex/kimi agents with a non-empty base URL',
+);
+assert.match(
+  providerFormModalSource,
+  /data-testid="acp-provider-fetch-models"\s+onClick=\{handleFetchEndpointModels\}/,
+  'the ACP fetch-models button must be an explicit-click button wired to handleFetchEndpointModels',
+);
+// 按钮探活:bridge.models.probeEndpointModels 缺失(老桌面/web 白名单未放行)时
+// 禁用并以三语 title 提示,与聊天线 fetchUnavailable 同一探活语义。
+assert.match(
+  providerFormModalSource,
+  /typeof bridge\?\.models\?\.probeEndpointModels === 'function'/,
+  'the ACP line must feature-detect bridge.models.probeEndpointModels before enabling the button',
+);
+assert.match(
+  providerFormModalSource,
+  /disabled=\{fetchingModels \|\| !probeEndpointModelsAvailable\}\s+title=\{probeEndpointModelsAvailable \? undefined : copy\.fetchUnavailable\}/,
+  'the ACP fetch-models button must disable with a localized title when the probe bridge method is unavailable',
+);
+// 探测 payload 必须携带表单 wire 协议;禁止 effect/挂载期自动探测(与聊天线同一安全不变量)。
+assert.match(
+  providerFormModalSource,
+  /wire:\s*probedWire,/,
+  'the ACP probe must pass the form wire protocol (the pre-flight capture) to probeEndpointModels',
+);
+assert.doesNotMatch(
+  providerFormModalSource,
+  /useEffect\(\(\) => \{[\s\S]{0,240}probeEndpointModels/,
+  'ACP model list probing must never run on mount/effect; explicit button click only',
+);
+// onPick:模型 id 走输入框同一 changeModel 通道;contextWindow 仅空字段填入,
+// 绝不覆盖非空值(与聊天线 fill-only-when-empty 同一不变量,突变取反即红)。
+assert.match(
+  providerFormModalSource,
+  /changeModel\(row\.id\)/,
+  'the ACP pick must fill the model field through the same changeModel channel as the input',
+);
+assert.match(
+  providerFormModalSource,
+  /!String\(contextWindow \|\| ''\)\.trim\(\) && Number\.isFinite\(probedContext\) && probedContext > 0/,
+  'the ACP pick must fill contextWindow ONLY when the field is empty (never overwrite a non-empty value)',
+);
+// ACP 线复用共享 picker:不传 onAddAll(批量按钮是聊天线专属)、不传 savedKeys
+// (provider 无已保存模型去重语义,组件按「无已保存」处理:行恒可添加)。
+const acpPickerStart = providerFormModalSource.indexOf('<EndpointModelPicker');
+assert.notStrictEqual(acpPickerStart, -1, 'the ACP line must reuse the shared endpoint model picker');
+const acpPickerSource = providerFormModalSource.slice(
+  acpPickerStart,
+  providerFormModalSource.indexOf('/>', acpPickerStart),
+);
+assert.match(
+  acpPickerSource,
+  /onPick=\{handleEndpointModelPick\}/,
+  'the ACP picker must route row adds through handleEndpointModelPick',
+);
+assert.doesNotMatch(
+  acpPickerSource,
+  /onAddAll=/,
+  'the ACP line must not enable the picker batch add-all (chat line only)',
+);
+assert.doesNotMatch(
+  acpPickerSource,
+  /savedKeys=/,
+  'the ACP line must omit savedKeys so picker rows stay addable (providers have no saved-model dedup)',
+);
+// 复审 ACP minor(Escape 逐层关闭):候选面板打开时 Escape 只关面板,其次二级
+// 确认层,最后才是整个表单——上层浮层不得连带下层一起消失。顺序钉死。
+assert.match(
+  providerFormModalSource,
+  /if \(event\.key === 'Escape'\) \{\s*if \(endpointPickerOpen\) setEndpointPickerOpen\(false\);\s*else if \(confirmStep\) setConfirmStep\(null\);\s*else onClose\(\);/,
+  'Escape must close the endpoint picker first, then the confirm step, then the whole form (topmost layer only)',
+);
+// 复审 M5(ACP 线同因):手输改 base URL 必须作废既有探测状态。
+assert.match(
+  providerFormModalSource,
+  /const handleBaseUrlChange = value => \{\s*setBaseUrl\(value\);\s*clearEndpointProbeState\(\);/,
+  'editing the ACP base URL must clear the probed listing and close the picker (no URL A results under URL B)',
+);
+// round-4 审 m1-1:探测失败写在本表单共享的 error 条上,失效清扫必须连同
+// 清 error——旧 URL 的红色失败条不许挂在新 URL/协议下(与聊天线
+// fetchModelsMessage 的 round-3 minor 同因;error 的其余写入方均为
+// 「上一次尝试」的过期提示,随失效点清扫无副作用)。运行时覆盖见
+// tests/acp_providers_ui_smoke.js ⑥.18c/⑥.18d。
+assert.match(
+  providerFormModalSource,
+  /const clearEndpointProbeState = \(\) => \{\s*setEndpointListing\(null\);\s*setEndpointPickerOpen\(false\);\s*setError\(''\);\s*\};/,
+  'the ACP probe-invalidation sweep must also clear the shared error state (the probe-failure banner rides it and must not survive a base-URL/wire/preset edit, round-4 review m1-1)',
+);
+// round-5 审 m1:resolve 时刻守卫必须同时比对 wire 镜像——kimi 表单是唯一
+// 带 wire 切换的面,探测在飞时切 wire,URL 不变但协议变了,旧 wire 的
+// listing(乃至 auth_required 语义)不得挂在切换后的表单下。try/catch 两条
+// resolve 路径都要有(与 URL 守卫同款双臂)。
+assert.strictEqual(
+  (providerFormModalSource.match(/if \(wireRef\.current !== probedWire\) return;/g) || []).length,
+  2,
+  'both the try and catch resolve paths must discard an in-flight probe whose wire toggled (round-5 review m1; a single-arm regression must fail here)',
+);
+// i18n:ACP 簇的探活禁用提示三语齐备(组件内不得硬编码文案)。
+for (const settingsI18nSource of settingsI18nSources) {
+  assert.match(
+    settingsI18nSource,
+    /\.uiAcpProviders,\s*\{[^}]*?fetchUnavailable:/,
+    'the ACP fetch-unavailable hint must be provided in every UI language',
+  );
+}
+// i18n(复审 picker minor):筛选空态/截断提示/N 条未显示尾注三语齐备,且死键
+// acpNoModelsFound(引用已删)不得残留。
+for (const settingsI18nSource of settingsI18nSources) {
+  assert.match(
+    settingsI18nSource,
+    /modelListFilterEmpty:/,
+    'the filtered-empty picker copy must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /modelListTruncated:/,
+    'the truncated-listing notice must be provided in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /modelListMoreCount:\s*n\s*=>/,
+    'the render-cap footer must interpolate the hidden row count in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /modelListMoreCountPlain:\s*n\s*=>/,
+    'the untouched-filter footer variant (no "refine the filter" advice) must exist in every UI language (round-3 review minor)',
+  );
+  assert.doesNotMatch(
+    settingsI18nSource,
+    /acpNoModelsFound/,
+    'the dead acpNoModelsFound key must stay deleted from every UI language',
+  );
+  // i18n(复审 minor-8):picker 的 3xx/tls 错误嗓音复用连接测试的
+  // connectionMessages.redirect / tls_error(零新增键),三语齐备在此钉死,
+  // 防止后续清理误删导致 picker 静默回落到 http_error。
+  assert.match(
+    settingsI18nSource,
+    /connectionMessages:\{[^}]*redirect:/,
+    'the redirect voice reused by the picker must exist in every UI language',
+  );
+  assert.match(
+    settingsI18nSource,
+    /connectionMessages:\{[^}]*tls_error:/,
+    'the tls voice reused by the picker must exist in every UI language',
+  );
+}
+
+// review P2 2026-11-17 (credential dimension in the probe staleness key):
+// a probe's result must be discarded when the effective credentials or the
+// protocol preset changed mid-flight — the old account's listing must not
+// open under new credentials (the picker's Add saves rows with the CURRENT
+// credentials, which may not have access to those models). Both guard paths
+// (success and error) are pinned on both forms.
+assert.match(
+  settingsViewSource,
+  /const probeAuthRef = useRef\(''\);\s*probeAuthRef\.current = !isLocalPreset && !isCodingPlan && noAuth/,
+  'the chat lane must mirror the effective auth payload so an in-flight probe result can be discarded when the credentials moved on',
+);
+{
+  const guardCount = (settingsViewSource.match(/if \(probeAuthRef\.current !== probedAuth\) return;/g) || []).length;
+  assert.strictEqual(
+    guardCount, 2,
+    `both probe paths (success and error) must check the credential dimension, got ${guardCount}`,
+  );
+  const presetCount = (settingsViewSource.match(/if \(probePresetRef\.current !== probedPreset\) return;/g) || []).length;
+  assert.strictEqual(
+    presetCount, 2,
+    'both probe paths (success and error) must check the protocol preset dimension',
+  );
+}
+assert.match(
+  providerFormModalSource,
+  /const apiKeyRef = useRef\(apiKey\);\s*apiKeyRef\.current = apiKey;/,
+  'the ACP lane must mirror the live key so an in-flight probe result can be discarded when the credential changed',
+);
+{
+  const guardCount = (providerFormModalSource.match(/if \(\(String\(apiKeyRef\.current \|\| ''\)\.trim\(\) \|\| null\) !== probedKey\) return;/g) || []).length;
+  assert.strictEqual(
+    guardCount, 2,
+    `both ACP probe paths (success and error) must check the key dimension, got ${guardCount}`,
+  );
+}
 // Memory delete / feedback close confirm-dialog wiring (no native
 // window.confirm, testid pins) is asserted by tests/settings_window_confirm.test.mjs,
 // which runs on every `npm test`; the runtime click flows below (①e/①f/①g/⑰.5)
@@ -539,10 +1120,29 @@ function injectSource() {
     var updateResponse = { available: false, current_version: '0.6.1', latest_version: '0.6.1', notes: '', platform: 'windows' };
     var updateCheckFailure = null;
     var modelTestResponse = { ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 };
+    // probe_endpoint_models 候选(规格 §2.6):含一条与 ⑥.5g 已保存的
+    // glm-5.3-flash @ https://example.com/v1 重复的行,用于钉「已保存」标记与
+    // 批量去重(此前的 cloud-deepseek 已被更早的删除流程移除,不能当重复锚点);
+    // 其余为带端点事实的全新候选。
+    var probeEndpointListing = {
+      status: 'listed',
+      http_status: 200,
+      transport: null,
+      server_kind: null,
+      truncated: false,
+      models: [
+        { id: 'glm-5.3-flash', context_window_tokens: 131072, context_from: 'catalog', max_output_tokens: null, output_from: null, loaded: null, title: null },
+        { id: 'glm-5-flash', context_window_tokens: 1048576, context_from: 'endpoint', max_output_tokens: 32768, output_from: 'endpoint', loaded: null, title: 'GLM-5 Flash' },
+        { id: 'kimi-k3', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
+      ],
+    };
     var imageTestResponse = { status: 'supported', verified: true, summary: '红色', http_status: 200 };
     var imageTestDelay = 0; // 模拟探测耗时,便于断言行内忙转态
     // save_model 失败注入:非 null 时 reject 该错误,模拟连接/写盘失败。
     var saveModelError = null;
+    // save_model 在飞窗口注入(round-4 M4 运行时钉):>0 时 save_model 延迟
+    // resolve/reject,拉长单行保存在飞窗口,供「全部添加」禁用断言驱动时序。
+    var saveModelDelay = 0;
     var dependencyCheckResponse = [];
     var memoryOverview = {
       profile: { version: 1, revision: 3, identity: { call_name: '升级前称呼', assistant_alias: 'PINVOU' }, conventions: {} },
@@ -564,6 +1164,15 @@ function injectSource() {
     var pendingDownloadReject = null;
     var probedLocalKind = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
+    // save_model 的落库体(函数声明提升,save_model 分支同步/延迟两条路径共用)。
+    function applySaveModel(args) {
+      var savedModel = Object.assign({}, args.model, {
+        has_secret: !!args.model.api_key,
+        credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
+      });
+      models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
+      return null;
+    }
     // Deliberately not stubbing window.confirm here. SettingsView now routes
     // everything through in-app confirm dialogs (the native confirm does not
     // render in Tauri WebView2); if someone reintroduces a native confirm,
@@ -619,19 +1228,26 @@ function injectSource() {
         case 'list_models': return Promise.resolve({ models: models.slice(), active_model_id: activeModelId });
         case 'reveal_model_api_key': return Promise.resolve(args.id === 'cloud-deepseek' ? 'sk-saved-deepseek' : null);
         case 'save_model':
+          // 延迟窗口内同样按 saveModelError 决定 resolve/reject:错误注入与
+          // 在飞窗口两个旋钮可以正交组合(延迟成功 / 延迟失败)。无延迟时
+          // 保持既有即时语义。
+          if (saveModelDelay) {
+            return new Promise(function (resolve, reject) {
+              setTimeout(function () {
+                if (saveModelError) reject(new Error(saveModelError));
+                else resolve(applySaveModel(args));
+              }, saveModelDelay);
+            });
+          }
           if (saveModelError) return Promise.reject(new Error(saveModelError));
-          var savedModel = Object.assign({}, args.model, {
-            has_secret: !!args.model.api_key,
-            credential_state: args.model.preset === 'local_vllm' ? 'missing' : 'configured',
-          });
-          models = models.filter(function (model) { return model.id !== savedModel.id; }).concat(savedModel);
-          return Promise.resolve(null);
+          return Promise.resolve(applySaveModel(args));
         case 'delete_model':
           models = models.filter(function (model) { return model.id !== args.id; });
           if (activeModelId === args.id) activeModelId = models[0] && models[0].id;
           return Promise.resolve(null);
         case 'set_active_model': activeModelId = args.id; return Promise.resolve(null);
         case 'test_model_connection': return Promise.resolve(Object.assign({}, modelTestResponse));
+        case 'probe_endpoint_models': return Promise.resolve(JSON.parse(JSON.stringify(probeEndpointListing)));
         case 'test_image_input_capability':
           return new Promise(function (resolve) {
             setTimeout(function () { resolve(Object.assign({}, imageTestResponse)); }, imageTestDelay);
@@ -745,9 +1361,11 @@ function injectSource() {
       setUpdateResponse: function (next) { updateResponse = Object.assign({}, updateResponse, next || {}); },
       setUpdateCheckFailure: function (message) { updateCheckFailure = message || null; },
       setModelTestResponse: function (next) { modelTestResponse = Object.assign({}, next || {}); },
+      setProbeEndpointListing: function (next) { probeEndpointListing = JSON.parse(JSON.stringify(next || { status: 'listed', models: [] })); },
       setImageTestResponse: function (next) { imageTestResponse = Object.assign({}, next || {}); },
       setImageTestDelay: function (ms) { imageTestDelay = Number(ms) || 0; },
       setSaveModelError: function (message) { saveModelError = message || null; },
+      setSaveModelDelay: function (ms) { saveModelDelay = Number(ms) || 0; },
       setModelImageCapability: function (id, override) {
         models = models.map(function (m) { return m.id === id ? Object.assign({}, m, { image_capability_override: override }) : m; });
       },
@@ -1863,6 +2481,477 @@ async function modalWidth(page, headingText) {
     document.querySelector('[data-testid="model-form-context-window"]').value);
   rec('⑥.5j oversized numeric input is truncated to 9 digits (within the u32 persist bound)', overflowTruncated === '999999999', JSON.stringify({ overflowTruncated }));
   await clickExact(page, '取消');
+  await sleep(200);
+
+  // round-5 审 m1 机制钉(装在 ⑥.5k 开始前,确保组件后续渲染捕获的都是
+  // 包裹后的引用):在桥 facade 层包一层 saveModel 记录 options——deferRefresh
+  // 不上 wire(invoke 只带 model),单看 reloadBursts===1 在 1 行批次下分不掉
+  // 「逐行 reload + 删循环后刷新」的回退实现;机制回退(丢 options)时 k6
+  // 的增量断言变红。
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.saveModelOptionLog = [];
+    const bridgeModels = window.TauriBridge && window.TauriBridge.models;
+    if (bridgeModels && typeof bridgeModels.saveModel === 'function' && !bridgeModels.__optionSpy) {
+      const orig = bridgeModels.saveModel.bind(bridgeModels);
+      bridgeModels.__optionSpy = true;
+      bridgeModels.saveModel = (model, options) => {
+        window.__SETTINGS_TEST__.saveModelOptionLog.push(options || null);
+        return orig(model, options);
+      };
+    }
+  });
+  // ⑥.5k 端点模型自动发现(规格 §2.6):显式点击「获取模型列表」→ probe 命令 →
+  // 候选面板(「已保存」行禁用)→ 逐行添加落库 → 应用内确认弹窗确认后批量添加(重复行跳过)。
+  // 表单 base URL 刻意与 ⑥.5g 已保存的 glm-5.3-flash @ https://example.com/v1
+  // 对齐,验证 (model id + base_url) 去重。
+  await clickExact(page, '添加模型');
+  await sleep(300);
+  await clickExact(page, '云端模型');
+  await sleep(150);
+  await clickExact(page, 'OpenAI Compatible');
+  await sleep(300);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    typeInto(baseUrlInput, 'https://example.com/v1');
+  });
+  await sleep(150);
+  // fill-only-when-empty(规格决策 4):测试连接返回端点事实时只填空字段。
+  // mock 的 test_model_connection 带上可选的 context/max_output 事实字段。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({
+    ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200,
+    context_window_tokens: 131072, max_output_tokens: 8192,
+  }));
+  await clickModalExact(page, '测试连接');
+  await sleep(500);
+  const probedFill = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      context: root.querySelector('[data-testid="model-form-context-window"]').value,
+      maxOutput: root.querySelector('[data-testid="model-form-max-output"]').value,
+      hintShown: !!root.querySelector('[data-testid="model-form-filled-from-endpoint"]'),
+    };
+  });
+  rec('⑥.5k1 test connection fills EMPTY context/max-output fields from endpoint facts and shows the one-shot hint',
+    probedFill.context === '131072' && probedFill.maxOutput === '8192' && probedFill.hintShown,
+    JSON.stringify(probedFill));
+  // 绝不覆盖非空值:手动填入后再次测试,返回不同事实,已填值必须原样保留。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const typeInto = (input, text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    typeInto(root.querySelector('[data-testid="model-form-context-window"]'), '999');
+    typeInto(root.querySelector('[data-testid="model-form-max-output"]'), '777');
+  });
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({
+    ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200,
+    context_window_tokens: 262144, max_output_tokens: 16384,
+  }));
+  await clickModalExact(page, '测试连接');
+  await sleep(500);
+  const keptManual = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      context: root.querySelector('[data-testid="model-form-context-window"]').value,
+      maxOutput: root.querySelector('[data-testid="model-form-max-output"]').value,
+      hintShown: !!root.querySelector('[data-testid="model-form-filled-from-endpoint"]'),
+    };
+  });
+  rec('⑥.5k2 second test with different facts must NOT overwrite manually filled values (and the hint clears)',
+    keptManual.context === '999' && keptManual.maxOutput === '777' && !keptManual.hintShown,
+    JSON.stringify(keptManual));
+  // round-4 m1-8:fact_model 比较臂的运行时钉。⑥.5k1/k2 的 mock 响应不带
+  // fact_model,比较臂此前从未在运行时跑过——删掉渲染镜像
+  // modelRef.current = model(比较退化成挂载值 ≠ fact_model 的恒假分支)
+  // 全套用例仍然全绿。事实名引用 ⑥.5g 已保存的 glm-5.3-flash(后端按
+  // 已保存记录的 model 探得并经 fact_model 回带);先清空 ⑥.5k2 手填的
+  // 字段,fill-only-when-empty 才有可观察的落点。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const clear = input => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, '');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    clear(root.querySelector('[data-testid="model-form-context-window"]'));
+    clear(root.querySelector('[data-testid="model-form-max-output"]'));
+  });
+  await sleep(150);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({
+    ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200,
+    context_window_tokens: 555000, max_output_tokens: 444,
+    fact_model: 'glm-5.3-flash',
+  }));
+  const mismatchModelInput = await page.$('input[placeholder="输入模型 ID"]');
+  await mismatchModelInput.type('glm-9-other-model', { delay: 10 });
+  await clickModalExact(page, '测试连接');
+  await sleep(500);
+  const staleFactsDropped = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      context: root.querySelector('[data-testid="model-form-context-window"]').value,
+      maxOutput: root.querySelector('[data-testid="model-form-max-output"]').value,
+      hintShown: !!root.querySelector('[data-testid="model-form-filled-from-endpoint"]'),
+    };
+  });
+  rec('⑥.5k2b facts whose fact_model differs from the live wire model must NOT fill (the per-saved-model comparison arm runs at runtime)',
+    staleFactsDropped.context === '' && staleFactsDropped.maxOutput === '' && !staleFactsDropped.hintShown,
+    JSON.stringify(staleFactsDropped));
+  // 匹配臂:表单模型改回 fact_model 同名 → 照常填入。删掉渲染镜像或破坏
+  // 比较(拿表单模型跟自己比/恒真放行)在此臂变红。
+  await page.evaluate(() => {
+    const input = document.querySelector('input[placeholder="输入模型 ID"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'glm-5.3-flash');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
+  await clickModalExact(page, '测试连接');
+  await sleep(500);
+  const matchingFactsFilled = await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    return {
+      context: root.querySelector('[data-testid="model-form-context-window"]').value,
+      maxOutput: root.querySelector('[data-testid="model-form-max-output"]').value,
+      hintShown: !!root.querySelector('[data-testid="model-form-filled-from-endpoint"]'),
+    };
+  });
+  rec('⑥.5k2c facts whose fact_model equals the live wire model fill the empty fields (render-mirror comparison stays load-bearing)',
+    matchingFactsFilled.context === '555000' && matchingFactsFilled.maxOutput === '444' && matchingFactsFilled.hintShown,
+    JSON.stringify(matchingFactsFilled));
+  // 获取模型列表:显式点击 → probe_endpoint_models(带表单 base_url + preset)。
+  await clickModalExact(page, '获取模型列表');
+  await sleep(600);
+  const endpointProbeCall = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'probe_endpoint_models');
+    return call && call.args;
+  });
+  rec('⑥.5k3 fetch button probes probe_endpoint_models with the form base URL and preset',
+    !!endpointProbeCall && endpointProbeCall.baseUrl === 'https://example.com/v1' && endpointProbeCall.preset === 'openai_compatible' && endpointProbeCall.apiKey === null,
+    JSON.stringify(endpointProbeCall));
+  // round-5 审 M1 运行时钉:免鉴权声明生效时,已输入的残留 key 绝不随
+  // 「获取模型列表」发出。输入 key → 开免鉴权(输入行隐藏但 state 残留)
+  // → 再点获取:probe args 的 apiKey 必须仍是 null——探测与保存后的鉴权
+  // 形态一致(#851;handleTest/图片能力测试早有同款臂,fetch-models 是
+  // round-5 补上的第三条路径)。旧实现漏臂时残留 key 原样发出,本步变红。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const keyInput = root.querySelector('input[placeholder="输入 API Key"]');
+    setter.call(keyInput, 'sk-residual-key');
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-no-auth-toggle"]').click());
+  await sleep(200);
+  await clickModalExact(page, '获取模型列表');
+  await sleep(600);
+  const keylessProbeCall = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'probe_endpoint_models');
+    return call && call.args;
+  });
+  rec('⑥.5k3b fetch-models under an active keyless declaration sends NO residual typed key (all three probe sites share the #851 shape-parity arm)',
+    !!keylessProbeCall && keylessProbeCall.apiKey === null && keylessProbeCall.baseUrl === 'https://example.com/v1',
+    JSON.stringify(keylessProbeCall));
+  // 还原表单:关免鉴权、清残留 key——⑥.5k4 起的落库断言(credential ladder /
+  // auth_mode)依赖默认形态,残留状态不得外溢。
+  await page.evaluate(() => document.querySelector('[data-testid="model-form-no-auth-toggle"]').click());
+  await sleep(150);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const keyInput = root.querySelector('input[placeholder="输入 API Key"]');
+    setter.call(keyInput, '');
+    keyInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(100);
+  const pickerRows = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    if (!dialog) return { open: false };
+    const rows = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')];
+    const glmRow = rows.find(node => (node.textContent || '').includes('glm-5-flash'));
+    return {
+      open: true,
+      count: rows.length,
+      savedTags: dialog.querySelectorAll('[data-testid="endpoint-model-saved-tag"]').length,
+      disabledAdds: rows.filter(row => row.querySelector('[data-testid="endpoint-model-row-add"]').disabled).length,
+      glmBadge: glmRow ? ((glmRow.textContent || '').includes('1M') && (glmRow.textContent || '').includes('33K')) : false,
+    };
+  });
+  rec('⑥.5k4 picker lists candidates with K/M badges and disables the already-saved row',
+    pickerRows.open && pickerRows.count === 3 && pickerRows.savedTags === 1 && pickerRows.disabledAdds === 1 && pickerRows.glmBadge,
+    JSON.stringify(pickerRows));
+  // 逐行添加:显式点击候选行的「添加」才写库。
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('glm-5-flash'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(700);
+  const pickedSave = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5k5 explicit row add saves the discovered draft with endpoint facts (payload parity with doSave: ladder + auth_mode + alias)',
+    !!pickedSave && pickedSave.model === 'glm-5-flash' && pickedSave.base_url === 'https://example.com/v1'
+      && pickedSave.context_window_tokens === 1048576 && pickedSave.max_output_tokens === 32768
+      && pickedSave.preset === 'openai_compatible'
+      && pickedSave.credential_action === 'replace' && pickedSave.api_key === ''
+      && pickedSave.auth_mode === null && pickedSave.alias === null,
+    JSON.stringify(pickedSave));
+  // round-4 M4 运行时钉(⑥.5k6 前奏):单行保存在飞窗口内「全部添加」必须
+  // 禁用且点击是 no-op(确认弹窗绝不出现)。harness 用 saveModelDelay 拉长
+  // 在飞窗口、saveModelError 让该行保存失败收场——kimi-k3 仍未落库,不改
+  // 变 ⑥.5k6 的去重计划;顺带钉住失败横幅(add-notice)的运行时渲染。
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setSaveModelDelay(1500);
+    window.__SETTINGS_TEST__.setSaveModelError('save exploded');
+  });
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('kimi-k3'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(300);
+  const addAllWhilePick = await page.evaluate(() => {
+    const button = document.querySelector('[data-testid="endpoint-model-add-all"]');
+    return {
+      buttonDisabled: !!button && button.disabled,
+      pickerOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+    };
+  });
+  // 在飞窗口内点「全部添加」:守卫直接 return,确认弹窗不得出现。
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
+  await sleep(250);
+  const addAllNoOp = await page.evaluate(() => ({
+    noConfirm: !document.querySelector('[data-testid="add-all-models-confirm"]'),
+    pickerStillOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+  }));
+  await sleep(1500);
+  const pickFailure = await page.evaluate(() => {
+    const banner = document.querySelector('[data-testid="endpoint-model-add-notice"]');
+    return {
+      failureBanner: !!banner,
+      // round-5 审 m1(此前仅源码钉):失败横幅必须是红色系(ok 类是绿色
+      // text-[#137333];失败臂 text-[#FF3B30])——ternary 两臂互换在此变红。
+      bannerRed: !!banner && (banner.className || '').includes('text-[#FF3B30]'),
+      bannerNotGreen: !!banner && !(banner.className || '').includes('text-[#137333]'),
+      pickerKeptOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+    };
+  });
+  rec('⑥.5k5b Add All disables and stays a no-op while a row save is in flight; the failed row keeps the picker open with the red notice banner',
+    addAllWhilePick.buttonDisabled && addAllWhilePick.pickerOpen && addAllNoOp.noConfirm
+    && addAllNoOp.pickerStillOpen && pickFailure.failureBanner && pickFailure.bannerRed && pickFailure.bannerNotGreen && pickFailure.pickerKeptOpen,
+    JSON.stringify({ addAllWhilePick, addAllNoOp, pickFailure }));
+  await page.evaluate(() => {
+    window.__SETTINGS_TEST__.setSaveModelError(null);
+    window.__SETTINGS_TEST__.setSaveModelDelay(0);
+  });
+  await sleep(150);
+  // 「全部添加」:应用内确认对话框(原生 confirm 在 WebView2 不渲染)。点按钮
+  // 后先断言对话框出现且尚未落库(保存调用数不增),点确认按钮才逐行保存;
+  // 重复行(glm-5.3-flash 已在 ⑥.5g 保存、glm-5-flash 刚保存)跳过,只落 kimi-k3。
+  const savesBeforeAddAll = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length);
+  const reloadsBeforeAddAll = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'list_models').length);
+  const optionLogBefore = await page.evaluate(() => (window.__SETTINGS_TEST__.saveModelOptionLog || []).length);
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
+  await sleep(300);
+  const addAllGate = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="add-all-models-confirm"]');
+    return {
+      shown: !!dialog,
+      title: dialog && dialog.querySelector('h3') ? dialog.querySelector('h3').textContent || '' : '',
+      savesBeforeConfirm: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length,
+    };
+  });
+  await page.evaluate(() => document.querySelector('[data-testid="add-all-models-confirm-ok"]').click());
+  await sleep(900);
+  const batchState = await page.evaluate((reloadsBefore, optionLogBefore) => {
+    const calls = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model');
+    const saved = new Set(calls.map(call => `${call.args.model.model}@${call.args.model.base_url}`));
+    return {
+      pickerClosed: !document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+      dialogClosed: !document.querySelector('[data-testid="add-all-models-confirm"]'),
+      hasKimi: saved.has('kimi-k3@https://example.com/v1'),
+      hasEndpointGlm: saved.has('glm-5-flash@https://example.com/v1'),
+      // glm-5.3-flash 只有 ⑥.5g/⑥.5i 的两次保存,批量添加不得再落一次。
+      dupSaveCalls: calls.filter(call => call.args.model.model === 'glm-5.3-flash' && call.args.model.base_url === 'https://example.com/v1').length,
+      // 复审 M9:批量逐行 deferRefresh,整个批次只允许一次 list_models 重载
+      // (旧实现逐行 reload,1 行也会打满 3 个 loader;这里钉「恰好一次」)。
+      reloadBursts: window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'list_models').length - reloadsBefore,
+      deferRefreshed: (() => {
+        const delta = (window.__SETTINGS_TEST__.saveModelOptionLog || []).slice(optionLogBefore);
+        return delta.length > 0 && delta.every(option => option && option.deferRefresh === true);
+      })(),
+    };
+  }, reloadsBeforeAddAll, optionLogBefore);
+  rec('⑥.5k6 confirmed add-all saves only non-duplicate rows, reloads once, defers per-row refresh, and closes the picker',
+    addAllGate.shown && addAllGate.savesBeforeConfirm === savesBeforeAddAll && addAllGate.title.includes('1')
+      && batchState.pickerClosed && batchState.dialogClosed && batchState.hasKimi && batchState.hasEndpointGlm && batchState.dupSaveCalls === 2
+      && batchState.reloadBursts === 1 && batchState.deferRefreshed,
+    JSON.stringify({ addAllGate, batchState }));
+  // 恢复默认 test_model_connection 响应,不污染后续流程。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setModelTestResponse({ ok: true, code: 'ok', message: '连接成功，服务可用', detail: 'HTTP 200', http_status: 200 }));
+  // round-4 m1-12:truncated 通知与渲染上限尾注的运行时钉(setProbeEndpointListing
+  // 此前是死钩子)。注入 truncated + 210 行(205 个 bulk- 前缀 + 5 个独立 id):
+  // 空筛选 → 平文尾注「还有 10 个未显示」;输入 bulk → 可见 205 行、隐藏 5 行,
+  // 尾注必须切到带「缩小筛选范围」建议的变体——三目两臂与 truncated 条件的
+  // 突变在此变红。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed', http_status: 200, transport: null, server_kind: null, truncated: true,
+    models: [
+      ...Array.from({ length: 205 }, (_, i) => ({ id: 'bulk-model-' + i, context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null })),
+      { id: 'solo-a', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+      { id: 'solo-b', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+      { id: 'solo-c', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+      { id: 'solo-d', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+      { id: 'solo-e', context_window_tokens: null, max_output_tokens: null, context_from: null, output_from: null, loaded: null, title: null },
+    ],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(600);
+  const truncatedState = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const footer = dialog && dialog.querySelector('[data-testid="endpoint-model-picker-more"]');
+    return {
+      open: !!dialog,
+      truncatedNotice: !!dialog && !!dialog.querySelector('[data-testid="endpoint-model-picker-truncated"]'),
+      footerShown: !!footer,
+      footerText: footer ? (footer.textContent || '').trim() : '',
+    };
+  });
+  rec('⑥.5k7 a truncated listing surfaces the notice and the plain-count "N more" footer while the filter is untouched',
+    truncatedState.open && truncatedState.truncatedNotice && truncatedState.footerShown
+      && truncatedState.footerText.includes('10') && !truncatedState.footerText.includes('缩小筛选范围'),
+    JSON.stringify(truncatedState));
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const input = dialog.querySelector('[data-testid="endpoint-model-filter"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'bulk');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(300);
+  const filteredFooter = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const footer = dialog && dialog.querySelector('[data-testid="endpoint-model-picker-more"]');
+    return { footerText: footer ? (footer.textContent || '').trim() : '' };
+  });
+  rec('⑥.5k7b typing a filter swaps the footer to the refine-the-filter variant with the filtered hidden count',
+    filteredFooter.footerText.includes('5') && filteredFooter.footerText.includes('缩小筛选范围'),
+    JSON.stringify(filteredFooter));
+  // round-4 m1-2 运行时钉:listing 带 server_kind:'ollama' 时,行的
+  // context_window_tokens 是运行时生效值——徽章照常显示 33K,落库必须存
+  // null(server_kind 闸;非 ollama/lm_studio 的落库臂已由 ⑥.5k5 钉住)。
+  // 同轮断言 truncated:false 下截断通知不得渲染(条件的另一侧)。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed', http_status: 200, transport: null, server_kind: 'ollama', truncated: false,
+    models: [
+      { id: 'qwen2.5-coder:32b', context_window_tokens: 32768, context_from: 'endpoint', max_output_tokens: null, output_from: null, loaded: true, title: null },
+    ],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(600);
+  const ollamaBadge = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = dialog && [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('qwen2.5-coder'));
+    return {
+      truncatedNoticeAbsent: !!dialog && !dialog.querySelector('[data-testid="endpoint-model-picker-truncated"]'),
+      rowShown: !!row,
+      badgeShown: !!row && (row.textContent || '').includes('33K'),
+    };
+  });
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')].find(node => (node.textContent || '').includes('qwen2.5-coder'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(700);
+  const ollamaRowSave = await page.evaluate(() => {
+    const call = [...window.__SETTINGS_TEST__.calls].reverse().find(item => item.cmd === 'save_model');
+    return call && call.args && call.args.model;
+  });
+  rec('⑥.5k8 ollama lane shows the runtime context badge but persists a null declaration (server_kind persistence gate)',
+    ollamaBadge.truncatedNoticeAbsent && ollamaBadge.rowShown && ollamaBadge.badgeShown
+      && !!ollamaRowSave && ollamaRowSave.model === 'qwen2.5-coder:32b' && ollamaRowSave.context_window_tokens === null,
+    JSON.stringify({ ollamaBadge, ollamaRowSave }));
+  // round-5 审 m1(键盘可达的拆批)运行时钉:批量保存循环进行中改 URL,
+  // 已确认的批次必须整体落在确认时刻的快照端点上——确认弹窗没有焦点
+  // 陷阱,键盘用户可以在循环进行中改 URL(URL 变更清扫只摘弹窗与 picker,
+  // 已开跑的循环照常推进)。saveModelDelay 拉长循环,第一行在飞时改 URL:
+  // 旧实现逐行读 live state,第二行 payload 会落到新 URL(拆批),本步变红;
+  // 快照实现下两行都落在确认时刻的 URL。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed', http_status: 200, transport: null, server_kind: null, truncated: false,
+    models: [
+      { id: 'snap-a', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
+      { id: 'snap-b', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
+    ],
+  }));
+  await clickModalExact(page, '获取模型列表');
+  await sleep(500);
+  const snapSavesBefore = await page.evaluate(() => window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').length);
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(700));
+  await page.evaluate(() => document.querySelector('[data-testid="endpoint-model-add-all"]').click());
+  await sleep(250);
+  await page.evaluate(() => document.querySelector('[data-testid="add-all-models-confirm-ok"]').click());
+  await sleep(400);
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    setter.call(baseUrlInput, 'https://moved.example.com/v1');
+    baseUrlInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(1800);
+  const snapshotBatch = await page.evaluate(savesBefore => {
+    const calls = window.__SETTINGS_TEST__.calls.filter(item => item.cmd === 'save_model').slice(savesBefore);
+    return {
+      savedModels: calls.map(call => `${call.args.model.model}@${call.args.model.base_url}`),
+      bothSnapshotted: calls.length === 2 && calls.every(call => call.args.model.base_url === 'https://example.com/v1'),
+    };
+  }, snapSavesBefore);
+  rec('⑥.5k9 a mid-batch base-URL edit cannot split the confirmed batch (both rows land on the snapshot endpoint, not the live field)',
+    snapshotBatch.bothSnapshotted && snapshotBatch.savedModels.includes('snap-a@https://example.com/v1') && snapshotBatch.savedModels.includes('snap-b@https://example.com/v1'),
+    JSON.stringify(snapshotBatch));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setSaveModelDelay(0));
+  // 还原 URL 与默认 probe 列表,不污染后续流程。
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-testid="model-form-dialog"]');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const baseUrlInput = [...root.querySelectorAll('label')].find(node => (node.textContent || '').trim() === 'API 地址').nextElementSibling;
+    setter.call(baseUrlInput, 'https://example.com/v1');
+    baseUrlInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(150);
+  // 恢复默认 probe 列表,不污染后续流程。
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbeEndpointListing({
+    status: 'listed', http_status: 200, transport: null, server_kind: null, truncated: false,
+    models: [
+      { id: 'glm-5.3-flash', context_window_tokens: 131072, context_from: 'catalog', max_output_tokens: null, output_from: null, loaded: null, title: null },
+      { id: 'glm-5-flash', context_window_tokens: 1048576, context_from: 'endpoint', max_output_tokens: 32768, output_from: 'endpoint', loaded: null, title: 'GLM-5 Flash' },
+      { id: 'kimi-k3', context_window_tokens: null, context_from: null, max_output_tokens: null, output_from: null, loaded: null, title: null },
+    ],
+  }));
+  // Escape 分层关(round-5 审 m1):聊天线 picker 此前只有 X 按钮能关(ACP
+  // 线已有窗口级 Escape 分层);重新拉起 picker 后按 Escape,断言摘除。
+  await clickModalExact(page, '获取模型列表');
+  await sleep(500);
+  const pickerBeforeEscape = await page.evaluate(() => !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'));
+  await page.keyboard.press('Escape');
+  await sleep(250);
+  const escapeClosed = await page.evaluate(() => !document.querySelector('[data-testid="endpoint-model-picker-dialog"]'));
+  rec('⑥.5k10 Escape closes the chat-line endpoint picker (ACP-line parity; X was previously the only dismissal path)',
+    pickerBeforeEscape && escapeClosed,
+    JSON.stringify({ pickerBeforeEscape, escapeClosed }));
+  await clickModalExact(page, '取消');
   await sleep(200);
 
   // A noControl model (always-thinking and not controllable, e.g. deepseek-r1)

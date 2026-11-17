@@ -67,6 +67,23 @@ function injectSource() {
     var envConflicts = [];
     var envEffectiveEntries = [];
     var nextProviderSeq = 0;
+    // 端点模型自动发现(规格 §2.7)候选:ACP 线 runtime 交互用,形状与
+    // EndpointModelsListing(serde snake_case)一致;两条候选带不同 context
+    // 长度,用于钉「onPick 填 model + contextWindow 仅空填入、绝不覆盖」。
+    var acpProbeListing = {
+      status: 'listed',
+      http_status: 200,
+      transport: null,
+      server_kind: null,
+      truncated: false,
+      models: [
+        { id: 'gpt-5.2-turbo', context_window_tokens: 262144, context_from: 'endpoint', max_output_tokens: null, output_from: null, loaded: null, title: null },
+        { id: 'gpt-5.2', context_window_tokens: 131072, context_from: 'catalog', max_output_tokens: null, output_from: null, loaded: null, title: null },
+      ],
+    };
+    // probe 失败注入(round-4 m1-1 运行时钉):非 null 时 probe_endpoint_models
+    // reject,驱动探测失败 → 共享 error 条 → URL 编辑清扫的完整链路。
+    var probeEndpointError = null;
     // 跨挂载安装自愈测试：install promise 挂起到 resolvePendingInstall，
     // 模拟真实安装进行中设置面板被关闭/切走的窗口期
     var pendingInstalls = {};
@@ -140,6 +157,12 @@ function injectSource() {
           return Promise.resolve({ imported: 1, idConflicts: 0, skipped: 0 });
         // 一次性模型探针：smoke 不验证探针内容，返回 null（前端静默回退占位快照）
         case 'probe_acp_agent_models': return Promise.resolve(null);
+        // 端点模型自动发现(规格 §2.7):显式点击「获取模型列表」才会到达;
+        // probeEndpointError 非 null 时 reject(命令层在真实后端把传输失败
+        // 映射进结果对象,这里用 reject 走前端 catch 分支,语义等价)。
+        case 'probe_endpoint_models':
+          if (probeEndpointError) return Promise.reject(new Error(probeEndpointError));
+          return Promise.resolve(JSON.parse(JSON.stringify(acpProbeListing)));
         // Stay pending instead of resolving immediately: a real install only
         // returns once finished, so pending covers the "component unmounted
         // mid-install" window (see the cross-mount heal steps at the end of
@@ -177,6 +200,7 @@ function injectSource() {
     window.__ACP_PROVIDERS_TEST__ = {
       calls: calls,
       setEnvConflicts: function (next, entries) { envConflicts = next; envEffectiveEntries = entries || []; },
+      setProbeEndpointError: function (message) { probeEndpointError = message || null; },
       // 安装中测试钩子：安装进行中的真实形态是 CLI 尚不可用（installed=false），
       // 安装入口保持渲染且按钮呈禁用 + 进行中文案
       setInstalling: function (agent, installing) {
@@ -445,10 +469,114 @@ async function clickSettingsSection(page, label) {
   rec('⑥.5 输入后候选仍全量展示', await page.evaluate(() =>
     document.querySelectorAll('[data-testid^="acp-provider-model-option-"]').length
   ) === optionCountBefore && optionCountBefore > 1);
+  // 规格 §2.7:claude 不提供「获取模型列表」(模型槽位编辑器走官方,范围外)。
+  // 此刻表单 base URL 已填——若 agent 是 codex/kimi 该按钮本应出现,缺席即证明闸门。
+  rec('⑥.13 claude 不渲染获取模型列表按钮', await page.evaluate(() =>
+    !document.querySelector('[data-testid="acp-provider-fetch-models"]')
+  ));
   await page.click('[data-testid="acp-provider-form-cancel"]');
   await sleep(300);
   await page.click('[data-testid="acp-agent-tab-codex"]');
   await sleep(400);
+
+  // 规格 §2.7 ACP 线模型发现:codex 表单 base URL 非空才出现按钮;点击显式探测
+  // probe_endpoint_models(携表单 baseUrl + key + wire)→ 候选面板 onPick 填
+  // model 字段,contextWindow 仅空字段填入、绝不覆盖。
+  const savesBeforeAcpFetch = await callCount(page, 'save_acp_provider');
+  await page.click('[data-testid="acp-provider-add"]');
+  await sleep(300);
+  rec('⑥.14 codex 未填 base URL 时无获取按钮', await page.evaluate(() =>
+    !document.querySelector('[data-testid="acp-provider-fetch-models"]')
+  ));
+  await page.type('[data-testid="acp-provider-base-url"]', 'https://relay.example.com/v1');
+  await sleep(200);
+  rec('⑥.15 codex 填 base URL 后获取按钮出现且可用', await page.evaluate(() => {
+    const button = document.querySelector('[data-testid="acp-provider-fetch-models"]');
+    return !!button && !button.disabled;
+  }));
+  await page.click('[data-testid="acp-provider-fetch-models"]');
+  await sleep(500);
+  const acpProbeCall = await page.evaluate(() => {
+    const call = [...window.__ACP_PROVIDERS_TEST__.calls].reverse().find(item => item.cmd === 'probe_endpoint_models');
+    return {
+      args: call && call.args,
+      pickerOpen: !!document.querySelector('[data-testid="endpoint-model-picker-dialog"]'),
+    };
+  });
+  rec('⑥.16 点击探测携 baseUrl/apiKey/wire 并打开候选面板', !!acpProbeCall.args
+    && acpProbeCall.args.baseUrl === 'https://relay.example.com/v1'
+    && acpProbeCall.args.apiKey === null
+    && acpProbeCall.args.wire === 'openai'
+    && acpProbeCall.pickerOpen);
+  // 候选行「添加」= onPick:模型 id 进输入框,contextWindow 空字段填入,面板关闭
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')]
+      .find(node => (node.textContent || '').includes('gpt-5.2-turbo'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(300);
+  rec('⑥.17 onPick 填 model 且 contextWindow 仅空填入并关闭面板', await page.evaluate(() =>
+    document.querySelector('[data-testid="acp-provider-model"]').value === 'gpt-5.2-turbo'
+    && document.querySelector('[data-testid="acp-provider-context-window"]').value === '262144'
+    && !document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
+  ));
+  // 绝不覆盖非空值:再次获取并选不同模型(不同长度),已填 contextWindow 必须原样保留
+  await page.click('[data-testid="acp-provider-fetch-models"]');
+  await sleep(500);
+  await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="endpoint-model-picker-dialog"]');
+    const row = [...dialog.querySelectorAll('[data-testid="endpoint-model-row"]')]
+      .find(node => (node.textContent || '').includes('gpt-5.2') && !(node.textContent || '').includes('turbo'));
+    row.querySelector('[data-testid="endpoint-model-row-add"]').click();
+  });
+  await sleep(300);
+  rec('⑥.18 二次挑选不同模型不覆盖已填 contextWindow', await page.evaluate(() =>
+    document.querySelector('[data-testid="acp-provider-model"]').value === 'gpt-5.2'
+    && document.querySelector('[data-testid="acp-provider-context-window"]').value === '262144'
+  ));
+  // 收尾(复审 ACP minor):Escape 逐层关闭——先重开候选面板,第一下 Escape 只关
+  // 面板(表单保留),第二下才关表单;随后断言全程未产生保存调用。
+  await page.click('[data-testid="acp-provider-fetch-models"]');
+  await sleep(500);
+  await page.keyboard.press('Escape');
+  await sleep(200);
+  rec('⑥.18a Escape closes the endpoint picker first and keeps the form open', await page.evaluate(() =>
+    !document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
+    && !!document.querySelector('[data-testid="acp-provider-form-dialog"]')
+  ));
+  await page.keyboard.press('Escape');
+  await sleep(200);
+  rec('⑥.18b second Escape closes the form once the picker is closed', await page.evaluate(() =>
+    !document.querySelector('[data-testid="endpoint-model-picker-dialog"]')
+    && !document.querySelector('[data-testid="acp-provider-form-dialog"]')
+  ));
+  // round-4 m1-1:探测失败写在本表单共享的 error 条上;URL 编辑的失效清扫
+  // 必须连同清 error——旧 URL 的红色失败条不许挂在新 URL 下(运行时覆盖,
+  // 源码钉在 tests/settings_ui_smoke.js 的 clearEndpointProbeState 守卫)。
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setProbeEndpointError('probe exploded'));
+  await page.click('[data-testid="acp-provider-add"]');
+  await sleep(300);
+  await page.type('[data-testid="acp-provider-base-url"]', 'https://relay-error.example.com/v1');
+  await page.click('[data-testid="acp-provider-fetch-models"]');
+  await sleep(500);
+  rec('⑥.18c probe failure surfaces the shared form error banner', await page.evaluate(() =>
+    !!document.querySelector('[data-testid="acp-provider-form-error"]')
+  ));
+  await page.evaluate(() => {
+    const input = document.querySelector('[data-testid="acp-provider-base-url"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'https://relay-edited.example.com/v1');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(200);
+  rec('⑥.18d editing the base URL clears the stale probe-error banner (invalidation sweep covers the shared error state)',
+    await page.evaluate(() => !document.querySelector('[data-testid="acp-provider-form-error"]')
+      && !document.querySelector('[data-testid="endpoint-model-picker-dialog"]')));
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setProbeEndpointError(null));
+  await page.keyboard.press('Escape');
+  await sleep(200);
+  rec('⑥.19 候选流程未产生保存调用', (await callCount(page, 'save_acp_provider')) === savesBeforeAcpFetch);
 
   // 一键切换
   await page.evaluate(() => {

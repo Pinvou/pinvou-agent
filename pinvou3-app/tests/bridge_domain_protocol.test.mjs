@@ -482,7 +482,10 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // (cancelKbModel; facade-only — same policy-denied-on-web shape as
 // checkDependencies), and the two test_model_connection /
 // test_image_input_capability invokes carry the form's noAuth posture arg.
-const expectedSharedBaseHash = 'e5f2dd4b1424474a4a047d3c654858ec9b9c24394fd129d71fffa42d1eeb92d6';
+// Recomputed again for the endpoint model auto-discovery wave on top of the
+// kb_model_cancel port: the probeEndpointModels shared facade joined the
+// shared base (invoke-only, settings cluster).
+const expectedSharedBaseHash = 'ecc2aadcfdf6ed68114d524bdebc8161973f2005aeccc6428183bb6ddfb6ee5d';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

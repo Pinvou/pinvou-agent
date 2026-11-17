@@ -4479,7 +4479,7 @@ const App = () => {
                   setSearchApiKey={handleSetSearchApiKey}
                   savedModels={(bs && bs.savedModels) || []}
                   activeModelId={bs && bs.activeModelId}
-                  onSaveModel={(m) => bridge.available && bridge.models.saveModel(m)}
+                  onSaveModel={(m, options) => bridge.available && bridge.models.saveModel(m, options)}
                   onDeleteModel={(m) => { if (bridge.available) bridge.models.deleteModel(m.id); }}
                   onSetActiveModel={(id) => bridge.available && bridge.models.setActiveModel(id)}
                   onSaveSearchConfig={handleSaveSearchConfig}
