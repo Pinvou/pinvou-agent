@@ -25,3 +25,10 @@ sha2 = "0.11"
 thiserror = "2.0"
 tokio = { version = "1.49", default-features = false }
 windows-sys = "0.61.2"
+
+# Same CJK-aware unicode-width patch the app declares (#4479): this workspace
+# resolves the full app graph (product-backend -> src-tauri -> codewhale-tui ->
+# ratatui) and would otherwise measure ambiguous-width characters with vanilla
+# width() tables, reproducing the cell-offset glitches the patch fixes.
+[patch.crates-io]
+unicode-width = { path = "../CodeWhale/patches/unicode-width-0.2.2" }

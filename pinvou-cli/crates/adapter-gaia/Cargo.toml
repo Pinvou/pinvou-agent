@@ -30,7 +30,12 @@ sha2.workspace = true
 fs4.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+# Direct uses: fs_guard.rs (Foundation handles + Storage_FileSystem metadata)
+# and dataset.rs (Storage_FileSystem). fetch.rs's ACL test reads raw
+# Win32_Security ACE constants, so Security stays declared; Authorization
+# and Threading have no remaining call sites here — the ACL helper itself
+# lives in benchmark-core, which declares its own windows-sys superset.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 arrow-array = "60.0"

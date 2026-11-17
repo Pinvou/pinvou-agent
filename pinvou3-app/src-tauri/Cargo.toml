@@ -646,3 +646,10 @@ overflow-checks = true
 # 依赖在 dev 下也做轻量优化(否则全 debug 编译,运行太慢影响本地调试体验)。
 [profile.dev.package."*"]
 opt-level = 2
+
+# 与根工作区相同的 CJK 感知 unicode-width 补丁(#4479):本应用通过 path 依赖
+# 编译 CodeWhale 的 codewhale-tui,原版 width() 对等宽歧义字符按 1 列测量,
+# CJK 终端下造成单元格错位。补丁取自子模块内的同一份拷贝,保证嵌入式 TUI
+# 与依赖它的各工作区行为一致。
+[patch.crates-io]
+unicode-width = { path = "../../CodeWhale/patches/unicode-width-0.2.2" }
