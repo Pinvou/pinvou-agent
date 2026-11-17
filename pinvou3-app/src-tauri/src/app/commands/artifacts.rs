@@ -1280,4 +1280,23 @@ mod artifact_read_cap_pins {
              it re-opens the pre-check→read TOCTOU the r3/r4 waves claim closed"
         );
     }
+
+    /// The image lane (`read_artifact_image_b64`) grew the same
+    /// Take-limited read in the r5 review, but the pin above held only the
+    /// text lane's `Take` — deleting the image lane's `Take(cap + 1)`
+    /// shipped every suite green, so a file grown between its metadata
+    /// pre-check and the read could balloon memory again (r17 limits
+    /// audit). Same production-region scan so the needle cannot self-match.
+    #[test]
+    fn read_artifact_image_take_limited_read_stays_wired() {
+        let source = include_str!("artifacts.rs");
+        let prod_end = source
+            .find("mod visual_cache_tests {")
+            .expect("tests module present");
+        assert!(
+            source[..prod_end].contains("file.take(MAX_ARTIFACT_IMAGE_BYTES + 1)"),
+            "read_artifact_image_b64 must keep its Take-limited read; deleting \
+             it re-opens the pre-check→read memory growth the r5 wave closed"
+        );
+    }
 }
