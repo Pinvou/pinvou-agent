@@ -141,6 +141,8 @@ AionUI 并不会替换 Codex 自带的 Agent 内核。它的做法是：
 | 持久化 | session 映射 + 旧 messages | 独立会话/事件体系 | ACP state + timeline sidecar + 旧消息兼容投影 |
 | 复杂度 | 低 | 高 | 中等，只补齐 Codex 必需层 |
 
+（2026-11 注：本表「pinvou 当前原型」列为快照期行为——现行事件为忠实 `acp:event` 转发（§4 注同）、权限走 `permission_requested`/`permission_resolved` 交互与可恢复卡片、持久化为 `acp-state.json` + `acp-timeline.jsonl` journal（§12.2/§12.3）。）
+
 **哪个更优：**
 
 - 只看“最快打通”，当前 pinvou 原型更轻。
@@ -452,7 +454,7 @@ running -> cancelling -> ready
 * -> disconnected / failed / shutting_down
 ```
 
-（2026-11 注：§12.1 上列状态机文本块（姊妹篇所称 `CodexRuntime*` 组件族）未被采纳——现行状态契约是 `CodexAcpStatus` 布尔投影加 `acp:install-progress` / `runtime_notice` / `runtime_ready` 事件，见姊妹篇文首 banner 与 `features/codex_acp/events.rs`。）
+（2026-11 注：§12.1 上列状态机文本块（[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)所称 `CodexRuntime*` 组件族）未被采纳——现行状态契约是 `CodexAcpStatus` 布尔投影加 `acp:install-progress` / `runtime_notice` / `runtime_ready` 事件，见姊妹篇文首 banner 与 `features/codex_acp/events.rs`。）
 
 ### 12.2 持久化分层
 
@@ -463,7 +465,7 @@ running -> cancelling -> ready
 ```
 
 - `acp-state.json`：MVP 保存 ACP session ID、adapter/Agent 版本、model、mode、permission policy 和最后状态；后续再加入 pinvou skill/MCP/persona 快照。
-- `acp-timeline.jsonl`：脱敏后、可恢复 UI 的版本化 `acp:event`。
+- `acp-timeline.jsonl`：无损、可恢复 UI 的版本化 `acp:event`。（2026-11 注：桌面 journal 无损保存原始信封；脱敏仅作用于 Web/Relay 投影——`events.rs` 的 `project_acp_event_for_web`。）
 
 三个真相源的职责：
 
@@ -511,9 +513,9 @@ running -> cancelling -> ready
 
 阶段决策：
 
-- MVP 开发和内部体验阶段允许依赖机器已经安装的 Node 20+，优先完成 ACP 协议、会话和 UI。（2026-11 注：现行 Bridge 运行时自带私有 Node 24.22.1、适配器 2.2.2，系统 Node 依赖已移除；姊妹篇《Codex-ACP-运行环境与首次使用设计》文首注记同。）
+- MVP 开发和内部体验阶段允许依赖机器已经安装的 Node 20+，优先完成 ACP 协议、会话和 UI。（2026-11 注：现行 Bridge 运行时自带私有 Node 24.22.1、适配器 2.2.2，系统 Node 依赖已移除；[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)文首注记同。）
 - 如果 adapter/node_modules 已随包提供，运行时只需要 Node；npm 仅用于未内置或损坏后的安装回退。
-- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。（2026-11 注：本条捆绑 Codex CLI 的打包决策未被采纳——落地为安装包只携带体积较小的 ACP Bridge Runtime（私有 Node + `codex-acp`），不内置大体积 Codex 平台二进制，Codex 由用户自行安装/解析（现行 `install.rs`/`runtime.rs` 解析顺序），姊妹篇《Codex-ACP-运行环境与首次使用设计》§1/§6.1 归档注及其文首 banner 记录了最终态（其 §6.4 主体为未被采纳的托管下载设计）。）
+- 正式 Linux 发布按 x64 / arm64 分架构打包 Codex ACP adapter、Codex CLI、pinvou 私有 Node runtime 及所需 native dependencies。（2026-11 注：本条捆绑 Codex CLI 的打包决策未被采纳——落地为安装包只携带体积较小的 ACP Bridge Runtime（私有 Node + `codex-acp`），不内置大体积 Codex 平台二进制，Codex 由用户自行安装/解析（现行 `install.rs`/`runtime.rs` 解析顺序），[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)§1/§6.1 归档注及其文首 banner 记录了最终态（其 §6.4 主体为未被采纳的托管下载设计）。）
 - 正式用户不需要理解或手工安装 Node/npm。
 - 保留 `PINVOU3_CODEX_ACP_BIN` 作为开发/诊断覆盖，不作为普通用户安装步骤。
 

@@ -63,11 +63,12 @@ pinvou3 **fork patch #41**（`CodeWhale/crates/tui/src/skills/mod.rs:601` `skill
 
 ## 3. 安全态 / 待决
 
-- **已屏蔽**：底座 $HOME 相对的多目录扫描（patch #41）。✅
+- **已屏蔽**：底座 $HOME 相对的多目录扫描（patch #41）。（❌ 本条已失效：patch #41 系重建前私有补丁编号，该屏蔽机制已被现行 per-session 组合目录 + materialization 取代，见顶部注记。）
 - **残留口子**：`~/.agents/skills`。谁往里丢 `SKILL.md`，模型 `load_skill` 工具即可加载，且**不显示在 pinvou3 工作流 UI**。本机该目录已存在（空）。（❌ 本条已失效：见顶部 2026-11 归档注记。）
 - **若要 airtight 隔离**：在 `skills_directories_with_home`（mod.rs:601）再去掉 `~/.agents/skills`，只留注入的 bundle 目录（1 行改动）。当前未做（❌ 已失效：现行经 materialization + `explicit_skills_root_only: true` 已收口，见顶部注记）—— 视作"用户跨工具共享 skill"的有意保留。
 
 ## 相关
 
+- 现行工具面权威口径：[`tool-governance.md`](./tool-governance.md)
 - fork 策略 / patch 登记：`docs/fork-policy.md`、`docs/fork-modifications.md`
 - 卡牌池 Side A/B 对照：worktree `card-pool`（元数据卡）vs `card-pool-agency`（全正文）

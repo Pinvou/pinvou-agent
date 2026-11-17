@@ -32,7 +32,7 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 | 职责 | 文件 |
 |---|---|
 | Pinvou 正向白名单 | `pinvou3-app/src-tauri/src/features/assistant/tool_policy.rs` |
-| 白名单正反向测试 | `pinvou3-app/src-tauri/src/lib.rs`（`mod tool_allowlist_contract`，约 :2279-2510）、`pinvou3-app/src-tauri/src/features/assistant/multiagent_regression_tests.rs`（真实 bridge 回合目录逐项校验，约 :503-513） |
+| 白名单正反向测试 | `pinvou3-app/src-tauri/src/lib.rs`（`mod tool_allowlist_contract`，约 :2367-2598）、`pinvou3-app/src-tauri/src/features/assistant/multiagent_regression_tests.rs`（真实 bridge 回合目录逐项校验，约 :503-513） |
 | 模式能力静态表 | `pinvou3-app/src-tauri/src/features/assistant/session_policy.rs` 的 `MODE_TABLE` |
 | 模式与动态拒绝整形 | `pinvou3-app/src-tauri/src/features/assistant/session_policy.rs`、`features/assistant/platform/bridge.rs::shape_disallowed_tools` |
 | 能力包与 scope 治理 | `docs/capability-governance.md` |
@@ -92,7 +92,7 @@ v0.9.12 的模型侧名称以 model-visible canonical 名称为准（§2 白名�
 
 ## 4. work / code 模式差量
 
-模式差量由编译期静态表 `MODE_TABLE` 声明（`session_policy.rs:58-75`），不再维护运行时能力档案：
+模式差量由编译期静态表 `MODE_TABLE` 声明（`session_policy.rs:56-73`），不再维护运行时能力档案：
 
 | 维度 | work（plain） | code |
 |---|---|---|
@@ -111,9 +111,9 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 
 ## 5. 动态拒绝与优先级
 
-`shape_disallowed_tools`（`features/assistant/platform/bridge.rs:1009`）在持久禁用集上按以下顺序叠加：
+`shape_disallowed_tools`（`features/assistant/platform/bridge.rs:1041`）在持久禁用集上按以下顺序叠加：
 
-1. 当前模式 `MODE_TABLE` 的 `unavailable_tools`（先并入；缺席名单不得与连接器禁用全名重叠，否则会被后续 retain 误删——`bridge.rs:1013-1017` 顺序约束）；
+1. 当前模式 `MODE_TABLE` 的 `unavailable_tools`（先并入；缺席名单不得与连接器禁用全名重叠，否则会被后续 retain 误删——`bridge.rs:1045-1048` 顺序约束）；
 2. 对应模式 scope 的连接器禁用工具（非 plain 模式先剔除 plain scope 禁用集、再并入本 scope 禁用集）；
 3. 当前模式要求且技能组合目录为空时的 `load_skill`（表字段 `skills_empty_hides_load_skill` 门控）；
 4. 知识库、会话或产品状态产生的其他动态拒绝项。

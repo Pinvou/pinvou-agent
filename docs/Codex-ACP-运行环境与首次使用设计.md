@@ -9,9 +9,9 @@
 > 全量门控 UI 同样未被采纳，现行仅保留轻量运行时提示）；§6.1 的 Node 22.x / codex-acp
 > 1.1.5 基线已过时（现行 Bridge 钉扎 Node 24.22.1、适配器 2.2.2）；§11 的 `prepare_codex_acp` /
 > `login_codex_acp` 未落库（现行命令为 `install_acp_agent` / `login_acp_agent` /
-> `submit_acp_agent_login_code` / `open_acp_agent_login_url`）；§13 的供应链管线
-> （staging / manifest / 签名）未被采纳，现行 Bridge 运行时由 `prepare-codex-bridge-runtime.sh`
-> 下载并校验。
+> `submit_acp_agent_login_code` / `open_acp_agent_login_url`）；§13 的**托管 Codex 下载**供应链
+> （签名发布索引 / CDN 托管产物）未被采纳——本地构建的 staging / manifest 校验已随现行
+> `prepare-codex-bridge-runtime.sh` 落地，现行 Bridge 运行时由该脚本下载并校验。
 >
 > 运行时现状以 [`codex-acp.md`](./codex-acp.md) 与 [`multi-agent-acp.md`](./multi-agent-acp.md) 为准。
 >
@@ -94,7 +94,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 > `PINVOU3_CODEX_PATH`→ 系统/legacy 随包**择新可兼容者**解析（`select_newest_eligible`
 > 按版本比较，旧系统 CLI 会被 `MIN_CODEX_VERSION` 过滤让位于新 legacy，并非固定
 > 「系统优先」序），见 `runtime.rs`）；登录走 codex CLI
-> （`login.rs`）而非 `codex-acp login`；认证判断现为三个 env 变量 + `~/.codex/config.toml`
+> （`login.rs` 路由至 `platform::codex_login_command`）而非 `codex-acp login`；认证判断现为三个 env 变量 + `~/.codex/config.toml`
 > relay key + 真实 `codex login status` 复检。其余缺口以现行
 > [`codex-acp.md`](./codex-acp.md) 为准。
 
@@ -102,7 +102,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
 
 ### 3.1 目标
 
-> ⚠️ 快照口径（2026-11 注）：本节目标条目按 2026-07-23 设计稿原文保留。其中「真实 ACP `initialize + session/new` 判断可用性」「下载、安装、登录、检查、修复均有明确状态、进度和可恢复操作」「Bridge 和托管 Codex 版本固定、可审计、可校验、可回滚」对应的 ACP 握手就绪判定、`CodexRuntime*` 状态机与托管下载均未采纳（见文首 banner、§4 注与 §10 注）——现行就绪判定为 `codex --version` 兼容探测 + 登录态复查，Codex 由用户自行安装/升级，应用仅提供 brew/npm/官方脚本动作。
+> ⚠️ 快照口径（2026-11 注）：本节目标条目按 2026-07-23 设计稿原文保留。其中「真实 ACP `initialize + session/new` 判断可用性」「下载、安装、登录、检查、修复均有明确状态、进度和可恢复操作」「Bridge 和托管 Codex 版本固定、可审计、可校验、可回滚」对应的 ACP 握手就绪判定、`CodexRuntime*` 状态机与托管下载均未采纳（见文首 banner 与 §4 注，§10 同由文首 banner 覆盖）——现行就绪判定为 `codex --version` 兼容探测 + 登录态复查，Codex 由用户自行安装/升级，应用仅提供 brew/npm/官方脚本动作。
 
 - 系统已有兼容 Codex 时直接复用，不重复下载大体积 Codex 平台二进制。
 - 全新 Linux 设备没有 Node、npm、Codex CLI 时，用户仍可从 Pinvou 内完成首次启用。
@@ -230,7 +230,7 @@ Bridge Runtime 始终使用 Pinvou 固定版本，不从系统查找 Node 或 `c
 
 #### `CodexAuthCoordinator`
 
-- 启动私有 Runtime 中的 `codex-acp login`。（⚠️ 快照口径：现行登录经 Codex CLI 自身（`login.rs` 的 `codex login`），见 §2 注。）
+- 启动私有 Runtime 中的 `codex-acp login`。（⚠️ 快照口径：现行登录经 Codex CLI 自身（`login.rs` 路由的 `codex login`，argv 由 platform 层构造），见 §2 注。）
 - 允许 adapter 调用系统浏览器完成官方授权。
 - 登录进程结束后不直接宣告成功，而是触发 `CodexHealthProbe`。
 - 不读取、不展示、不记录 OAuth token。
@@ -775,7 +775,7 @@ pinvou3-app/src/features/codex/
     └── RuntimeRepairCard.jsx
 ```
 
-（⚠️ 快照口径：上列前端组件均未采纳——现行运行时提示为 `src/features/codex/AcpRuntimeNotices.jsx` 轻提示。）
+（⚠️ 快照口径：除 `CodexAcpView.jsx`——已采纳，演化为现行主视图——外，上列前端组件均未采纳；现行运行时提示为 `src/features/codex/AcpRuntimeNotices.jsx` 轻提示。）
 
 构建脚本建议替换当时仅 npm 安装的脚本（2026-11 注：现行 `scripts/prepare-codex-bridge-runtime.sh` 已是该类下载＋校验脚本，本节为设计稿残留）：
 

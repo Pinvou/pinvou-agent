@@ -22,7 +22,7 @@
 | Agent 进程 | 独立子进程（ACP stdio JSON-RPC） | 进程内 CodeWhale Engine（Rust 库） |
 | 会话池 | `AcpPool` | `EnginePool` |
 | 发消息命令 | `codex_acp_prompt` | `chat`（显式 sessionId） |
-| 事件流 | `acp:event` | `chat:*`（前端订阅清单 `NATIVE_CHAT_EVENTS` 共 18 项，R-1/R-3 增补后；📌 2026-11 修订：现行已增补至 20 项，含 `chat:plan_resolved`/`chat:transient_error`，见 §8 注） |
+| 事件流 | `acp:event` | `chat:*`（前端订阅清单 `NATIVE_CHAT_EVENTS` 共 18 项，R-1/R-3 增补后；📌 2026-11 修订：现行已增补至 20 项，含 `chat:plan_resolved`/`chat:transient_error`，见 §5 注） |
 | 前端投影 | `projectAcpTimeline` | `code-native-lane.js` → `projectDeepSeekConversation` |
 | 展示层 | `ConversationTimeline`（共用） | 同左 |
 | 会话存储 | `SessionStore` + `SessionAgentStore` | 同左（`SessionMode` 模式标记，见 §3.1） |
@@ -72,13 +72,14 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 ## 4. 开发节点记录（19 个提交）
 
 > 说明：下表 hash 为作者开发期（2026-08-01）的本地节点，squash 后**不存在于本
-> 仓库**，仅供追溯阶段内容与评审思路；PR #138 实际提交为 6 个（自上而下）：
+> 仓库**，仅供追溯阶段内容与评审思路；PR #138 实际提交为 7 个（自上而下）：
 > `feat(codex): 原生代码会话后端链路、两个根与确认卡恢复` →
 > `feat(codex): 原生代码会话前端双车道与四配置控件` →
 > `feat(codex): 原生代码会话编码专用系统提示词` →
 > `docs(codex): 归档原生代码会话技术文档` →
 > `fix(codex): 清理原生代码会话车道内存泄漏并删除重复文档注释` →
-> `fix(codex): 按审阅意见收口原生代码会话三项架构建议`。
+> `fix(codex): 按审阅意见收口原生代码会话三项架构建议` →
+> `docs(codex): 修正原生代码会话文档的节点记录与实际提交对应关系`。
 
 ### 阶段一：原生会话基线（方案 A）
 
@@ -309,7 +310,7 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - **load_skill 放行联动**：code 会话组合目录非空 → `load_skill` 可用；空 →
   隐藏（spawn 初值与 `set_disallowed_all` 热刷两路都经
   `bridge.shape_disallowed_tools`）。
-- **项目级 skills**（P3 兜底）：fork #41 已砍断 workspace 并集扫描，项目技能
+- **项目级 skills**（P3 兜底）：fork #41（重建前私有补丁编号，非本仓 PR）已砍断 workspace 并集扫描，项目技能
   （`.agents/skills`、`.pinvou/skills`、`skills`、`.opencode/skills`、
   `.claude/skills`、`.cursor/skills`、`.codewhale/skills`，按上游优先级，
   `.pinvou/skills` 为 pinvou3 自有约定）在**策略开关默认关**

@@ -1,12 +1,12 @@
 # Auto Compact 调参记录 (Qwen3.6 + 256K context)
 
-> ⚠️ **方案部分已被 `docs/context-compaction-设计.md` 取代**（2026-07-02）：本文的
+> ⚠️ **方案部分已被 [`docs/context-compaction-设计.md`](./context-compaction-设计.md) 取代**（2026-07-02）：本文的
 > B1/B2 fork patch（`_Nk` 名字后缀派生窗口 + `context_input_budget` 按窗口分级）已被
 > 上游 v0.8.65 吸收进 `route_budget`/`RouteLimits`，新方案改走探测 `max_model_len` →
 > `active_route_limits.context_tokens` 官方口子，零 fork。本文保留作**推导史料**
 > （尤其倒置 bug 的发现过程、Codex review 历程、大工具输出 bound 结论仍有效）。
 >
-> **2026-11 回填注记**：本文已重新回填进文档树留档（`docs/context-compaction-设计.md`
+> **2026-11 回填注记**：本文已重新回填进文档树留档（[`docs/context-compaction-设计.md`](./context-compaction-设计.md)
 > 文首"已从当前文档树移除"的说明已同步修正）。另注：下方「实际生效以本节为准」一节
 > 记录的写死阈值（`token_threshold=190K`、`auto_floor_tokens=60K` 等）也已过时——现行
 > 阈值由 `derive_compaction_threshold` 按模型窗口动态推导
@@ -22,7 +22,7 @@
 
 ## TL;DR
 
-底座 CodeWhale **已经在 turn_loop preflight 内置了 should_compact 触发**（写档时点 turn_loop.rs:90，勿按现树查；现行触发原语为 `ContextBudget::should_compact`），按 `token_threshold` 直接调 `compact_messages_safe` 走 LLM 摘要。但对 pinvou3 + Qwen 原生配置仍不工作，根因有二：
+底座 CodeWhale **已经在 turn_loop preflight 内置了 should_compact 触发**（写档时点 turn_loop.rs:90，勿按现树查；现行触发原语为 `compaction::compaction_pressure_reached_with_billed`，见 `core/engine/turn_loop.rs` 与 `compaction.rs`），按 `token_threshold` 直接调 `compact_messages_safe` 走 LLM 摘要。但对 pinvou3 + Qwen 原生配置仍不工作，根因有二：
 
 1. 模型名 `qwen36_35b` 没 `_Nk` 后缀，`context_window_for_model` 返回 `None` → preflight 二级保险 (`recover_context_overflow`) 静默禁用。
 2. 即便加了后缀让底座识别 256K，`context_input_budget` 仍按 `TURN_MAX_OUTPUT_TOKENS = 262K` 算 input budget → `256K - 262K - 1K = 负数` → 同样返回 `None`，emergency 路径静默禁用。
@@ -47,11 +47,11 @@ turn_loop 一个 turn 内:先判 `should_compact`(写档 era `9c8e4826` 约 :90-
 
 **修复①:`token_threshold` 200K → 190K**;锚定不变式 `token_threshold + 20K margin ≤ context_input_budget`,由回归测试 `compaction_threshold_stays_below_emergency_budget`(按 `max_output_tokens()` 动态算 budget)锁住。
 
-**修复②：本地 vLLM 的 `max_output_tokens` 由 64K → 24K**（`route_limits_for_model` 与 L1 harness 一致；正式 App 不再通过全局 env 限制云端模型）。
-- 依据:系统 prompt(`bundle/instructions.md` §4)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
+**修复②：本地 vLLM 的 `max_output_tokens` 由 64K → 24K**（⚠️ 写档时点口径——现行 route 级声明按窗口档位计算、机器写入的 24576 已被归一化让位，见 Round 4 节 2026-11 注；`route_limits_for_model` 与 L1 harness 一致；正式 App 不再通过全局 env 限制云端模型）。
+- 依据:系统 prompt(写档时点 `bundle/instructions.md` §4，现树已拆分为 `instructions-{shared,work,code}.md`)**强制大产物分块写**——write_file skeleton ≤8KB → append_file chunks **≤16KB/次**;Pinvou 审查 skill 把单写 >20KB 判 `CRITICAL`。thinking 关 → 单次回复 ≈ ≤16KB chunk ≈ **3-5K tokens**。
 - 对本地 vLLM，64K 是 ~4x 设计上限的过度预留。24K 覆盖 ≤16KB 设计 + 弱模型偶尔超写到 ~24KB 的 margin，同时把**输入预算 189K(74%)→ 230,400(90%)**，自动压缩更晚触发、保留更多历史。云端 route 不复用该本地预算。
 
-### 完整阈值表（当前本地 vLLM，output=24K）
+### 完整阈值表（写档时点的本地 vLLM，output=24K）
 
 | 阈值/常量 | 值 | 作用 | 层级 |
 |---|---|---|---|
@@ -59,7 +59,7 @@ turn_loop 一个 turn 内:先判 `should_compact`(写档 era `9c8e4826` 约 :90-
 | **token_threshold** | **190,000 (~74%)** | should_compact 放行 LLM 摘要主线 | ② nice 主路径,总量 ~195K 触发 |
 | context_input_budget | **230,400 (90%)** | emergency 强制压缩硬天花板 = 256K−24,576−1,024 | ③ 安全网 |
 | emergency 时 token_threshold / auto_floor | min(190K, budget−1) / **0** | 强制压缩(绕地板) | ③ |
-| **effective_max_output** | **24,576 (24K)** | 本地 vLLM route 显式输出上限及预留；云端由底座/provider/route 能力计算 | — |
+| **effective_max_output** | **24,576 (24K)** | 本地 vLLM route 显式输出上限及预留（写档时点，现行见 Round 4 节注）；云端由底座/provider/route 能力计算 | — |
 | CONTEXT_HEADROOM | 1,024 | 余量 | — |
 | MAX_CONTEXT_RECOVERY_ATTEMPTS | 2 | emergency 救不回才报 overflow | ③ |
 | KEEP_RECENT / MIN_SUMMARIZE | 4 / 6 | 保留近 N 条 / 最少摘要条数 | — |
@@ -112,7 +112,7 @@ bridge 2 处 + fork 2 处 + 前端 1 处 + L1 harness + 回归测试：
 
 ### D. L1 harness 默认模型同步
 
-`pinvou3-app/src-tauri/tests/l1_dialog_harness.rs:445` 默认 `DEEPSEEK_MODEL=qwen36_35b_256k`，与 bridge / run-dev 一致。
+`pinvou3-app/src-tauri/tests/l1_dialog_harness.rs:445`（写作期行号，现树约 :520）默认 `DEEPSEEK_MODEL=qwen36_35b_256k`，与 bridge / run-dev 一致。
 
 ### E. ops（用户做一次）
 
@@ -156,7 +156,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 - 档位由窗口决定(`context.rs:262`):`window ≥ 500K` 用大限(180K 字符),否则小限。**pinvou3 256K < 500K → 硬压到 `TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS = 12,000` 字符/结果**(head/tail snippet + 元数据摘要)。(⚠️ 时代口径:档位数字为 `9c8e4826` 时点;现行 per-result 内联预算改为窗口 3%×4 字符、上限 `TOOL_OUTPUT_INLINE_MAX_CHARS = 100_000`(route_budget.rs `route_inline_char_budget`),256K 约 31K 字符/条;「大工具输出会被截断」的结论本身仍有效。)
 - 即单次工具输出进上下文 ≤ **~3-4K tokens**,**跳不过 nice(~195K)→ emergency(230,400)的 ~35K 缺口**。
 
-**`large_output_router`(#548 / workshop)是冗余且不完整,不要开:**
+**`large_output_router`(#548——重建前内部仓库编号，非本仓 #548；/ workshop)是冗余且不完整,不要开:**
 - synthesis 子 agent **没实现**:`registry.rs:158` 注释 "produce a structured header + truncated preview **without a live API call**";合成 prompt builder 是 `#[allow(dead_code)] // 未来 Flash 合成用`。所谓"配 synthesis 模型"无对象可配。
 - 它实际只做"截断到 **1,200 字符** + 存 workshop 变量 `last_tool_result`",比底座的 12K head/tail snippet **更激进、丢更多上下文**。`EngineConfig.workshop` 默认 `None`,保持关闭即可。
 

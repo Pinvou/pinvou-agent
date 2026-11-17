@@ -1,6 +1,6 @@
 # Plan/Yolo 回归底座式 改造方案
 
-> 状态：已完成并收尾（阶段 1/2/3/4 全 done，2026-06-25；§0–§2 与 §3/§4 的底座/前端文件名、行号、底座符号名及底座行为描述/引语（如注入文本 `"Proceed with the accepted plan."`——现行 accept 注入已改为 `accept_plan_instruction(plan_markdown)` 包裹方案全文，见 `app/commands/interaction.rs`）——如 `should_stop_after_plan_tool`（`DangerFullAccess` 则至今仍是现行 `SandboxPolicy` 枚举值，未随改造移除），现行底座已演进为 `AppMode::Plan/Agent/Operate` 与 plan handoff 交接——均为改造时旧态，仅作历史引用）。2026-11 回填留档：改造结果在当前代码中可验证——`PlanPhase` 已删除、composer `ComposerModeChip` 已上线、`plan_stuck` 兜底保留。
+> 状态：已完成并收尾（阶段 1/2/3/4 全 done，2026-06-25）。§0–§2 与 §3/§4 的底座/应用侧文件名、行号、符号名及底座行为描述/引语均为改造时旧态，仅作历史引用——例如注入文本 `"Proceed with the accepted plan."`（现行 accept 注入已改为 `accept_plan_instruction(plan_markdown)` 包裹方案全文，见 `app/commands/interaction.rs`）、`should_stop_after_plan_tool`（已不存在；`DangerFullAccess` 则至今仍是现行 `SandboxPolicy` 枚举值，未随改造移除）。现行底座已演进为 `AppMode::Plan/Agent/Operate`；plan handoff 交接现于应用层实现（`features/assistant/forwarder.rs` + `app/commands/interaction.rs`）。2026-11 回填留档：改造结果在当前代码中可验证——`PlanPhase` 已删除、composer `ComposerModeChip` 已上线、`plan_stuck` 兜底保留。
 > 目标：砍掉 app 自建的 `PlanPhase` 四态生命周期，回归底座原生的 Plan/Yolo 二态 + 底座 plan 交接闭环；模式切换入口做成 composer（信息输入栏）chip；plan 决策保留卡片形态。
 
 ## 0. 背景与判断
@@ -92,7 +92,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 
 - **改并留** plan_ready 检测（`879-898`）：去 phase 条件 → `plan_used && mode==Plan` 即 emit `chat:plan_ready`，删 `set_plan_phase(Ready)`
 - **删** M2 自驱续跑整块（`944-990`）+ `plan_has_pending`（`250-265`）+ auto-continue 计数器（`sessions.rs:411-433`）
-- **改造** M3（`992-1008`）：`mode==Plan && !plan_used && text_len>阈值` → emit `plan_text_fallback`（收口兜底，D5）
+- **改造** M3（`992-1008`）：`mode==Plan && !plan_used && text_len>阈值` → emit `plan_text_fallback`（收口兜底，D5；⚠️ 随后被 §7 阶段3 终决放弃，现行不存在）
 - `TurnPlanTracker` 删 `write_tool_used`/`assistant_text_len` 字段（仅 M2/M3 旧逻辑用），留 `plan_tool_used`+snapshots
 
 **验证**：`cargo check` + `cargo test`；真机验证 plan_ready 仍弹卡、M3 兜底卡在「写了方案没调工具」时出现
@@ -103,10 +103,10 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 
 - `reminder_for(mode)`：删 Ready/Executing 分支，留 Plan 一段（去"Planning 阶段"措辞）+ Yolo 大产物分块段
 - 删消融脚手架：`PLAN_PLANNING_NO_COLLECT`/`NO_BLOCK` 常量 + `plan_planning_reminder` 的 `PINVOU3_ABLATION` env 分发 + `ablation-clean` worktree
-- 前端清理：`chat:execution_stuck` 监听（M2 删后不再发）、`chat:plan_text_fallback` 保留（M3 改造后仍发）；切会话 `wasExecuting`（`tauri-bridge.js:1341`）重定义为「有 pending plan 卡」；`ModeHeader` 组件删除
+- 前端清理：`chat:execution_stuck` 监听（M2 删后不再发）、`chat:plan_text_fallback` 保留（M3 改造后仍发；⚠️ 随后 §7 放弃 M3，监听已删，现行不存在）；切会话 `wasExecuting`（`tauri-bridge.js:1341`）重定义为「有 pending plan 卡」；`ModeHeader` 组件删除
 - `PlanStuckCard`（execution_stuck 分支）按 D4 处理
 
-**验证**：headless 冒烟 + 真机全链回归（进 Plan→方案→accept→执行；进 Plan→方案→discard；进 Plan→写长文本不调工具→兜底卡）
+**验证**：headless 冒烟 + 真机全链回归（进 Plan→方案→accept→执行；进 Plan→方案→discard；进 Plan→写长文本不调工具→兜底卡；末项 M3 兜底随后被 §7 放弃）
 
 ## 4. 删除 / 修改清单（精确行号）
 
@@ -130,12 +130,12 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 ### 前端联动（阶段1+4）
 - 新增：`index.html` ComposerModeChip 组件 + 挂载 + i18n
 - 清理：`tauri-bridge.js:1446-1450`(execution_stuck 监听)、`:1341`(wasExecuting 重定义)；`index.html:5469-5499`(ModeHeader 删)、`:3736-3737`(stuck 卡渲染按 D4)
-- 保留：plan_ready 监听/PlanCard/accept_plan 链（`tauri-bridge.js:1410-1426`、`index.html:5244-5269`）；plan_text_fallback（M3 改造后仍用）
+- 保留：plan_ready 监听/PlanCard/accept_plan 链（`tauri-bridge.js:1410-1426`、`index.html:5244-5269`）；plan_text_fallback（M3 改造后仍用——⚠️ 随后 §7 放弃，现行不存在）
 
 ## 5. 风险与回归点
 
 1. **Plan 在 GUI 首次真跑**（阶段1 前置）：底座停 turn/ReadOnly 端到端未验证过，当新功能测
-2. **收口 10% 天花板**（D5 应对）：底座式仍依赖模型调 update_plan，~10% 会在 text 写方案——M3 兜底卡是这条防线，别一起砍
+2. **收口 10% 天花板**（D5 应对）：底座式仍依赖模型调 update_plan，~10% 会在 text 写方案——M3 兜底卡是这条防线，别一起砍（⚠️ 后续 §7 权衡后放弃 M3，防线由 chip 手切 + `plan_stuck` 双自救路径承接）
 3. **砍 M2 是行为变化**（D4）：大任务执行不再自动续跑，需用户驱动；确认产品可接受
 4. **去 phase 参数贯穿性**：阶段2 漏一个引用点就编译失败，按 §4 清单逐项核
 

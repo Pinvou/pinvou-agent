@@ -2,7 +2,7 @@
 
 > 立档 2026-07-02。本文已取代早期 256K 调参方案；旧方案对应的 fork patch 已被上游
 > v0.8.65 吸收进 `route_budget`/`RouteLimits`，不再需要 fork。早期调参推导的完整历史
-> 文档（`auto-compact-256K-tuning.md`，连同同期移除的 `base-prompt-override-阶段2.md` 与
+> 文档（[`auto-compact-256K-tuning.md`](./auto-compact-256K-tuning.md)，连同同期移除的 [`base-prompt-override-阶段2.md`](./base-prompt-override-阶段2.md) 与
 > `system-prompt-架构.md`）曾从当前文档树移除；2026-11 起前两篇已作为史料回填留档
 > （`auto-compact-256K-tuning.md` 文首有取代注记），`system-prompt-架构.md` 已在文档树，
 > 更早的其余材料仍可从本仓库 Git 历史追溯（重建基线提交 `e34024e62` 携带了它们，发布
@@ -76,7 +76,7 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 1. `monitor.rs`：`probe_vllm_served_model` → `probe_vllm_model_info`，返回
    `(Option<String>, Option<u32>)`（name, max_model_len）。`parse_models_response`
    已解析两者，现在只是别丢 max——纯透传，零新增请求。
-   （2026-10-09 注：本条的 max 透传从未接线 `engine_pool`；`probe_vllm_model_info` 的最后一个生产调用方（voice 后处理，#419 引入）已随 #611 移除，函数本身已随死代码清理删除；现役探测链路见 `resolve_served_model`。）
+   （2026-10-09 注：本条的 max 透传从未接线 `engine_pool`；`probe_vllm_model_info` 的最后一个生产调用方（voice 后处理，#459 引入）已随 #611 移除，函数本身已随死代码清理删除；现役探测链路见 `resolve_served_model`。）
 2. `engine_pool.rs`：探测结果两个都用，name 按 `resolve_served_model` 决策校正
    （配置名在服务列表中原样保留，仅单模型服务且不含配置名才跟随，其余保留配置名让
    `model_not_found` 显式浮现）+ 存 `max_model_len`。
@@ -215,7 +215,7 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 ### 上游线（并行，不阻塞一/二期）：usage 回灌 + 同尺判据
 
 **这是真正的「更优做法」，也是把 T 从 ~50% 提到 ~75% 的唯一途径**，但要动底座 +
-上游 PR，属通用优化（所有本地/自托管小窗口用户受益，符合 fork-policy §2「通用优化才提上游」）。
+上游 PR，属通用优化（所有本地/自托管小窗口用户受益，符合 fork-policy §2 的通用优化提上游判据——转述，原文行为「所有 CodeWhale embedder 都受益｜从最新 upstream main 提上游 PR」）。
 
 - 事实基础：真实 `usage.input_tokens` 每 turn 从 provider 免费返回，现在只喂成本统计
   （pricing.rs）+ goal 预算（写作期约 engine.rs:1922，勿按 0.9.5 或现树查）+ footer，**从不回灌估算器**。

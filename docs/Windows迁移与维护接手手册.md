@@ -429,7 +429,7 @@ Windows 原生后建议增加这些测试：
 
 这些内容可能还在 archived 文档或旧讨论里出现，接手时不要按它们继续开发：
 
-- 品悟 v2 review 已推翻并从源码移除，当前新方案另行设计。
+- 品悟 v2 review 已推翻并从源码移除（2026-11 注：后续新方案已设计并落地为 v4 召唤式评审，见 [`品悟v4-召唤式评审设计.md`](./品悟v4-召唤式评审设计.md)）。
 - 多 subagent 大研究 fan-out 已废弃，只保留单 + 串行。
 - Plan/YOLO 收敛已完成：`PlanPhase` 状态机已删除，composer 提供 Plan/Yolo 手切 chip（默认 Yolo），`plan_stuck` 兜底卡保留；不要再按旧 PlanPhase / plan-fallback 逻辑开发。（改造方案与决策记录见 [`plan-yolo-回归底座式改造方案.md`](./plan-yolo-回归底座式改造方案.md)。）
 - 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩（现为按路由的 `route_inline_char_budget`，结论不变）。
@@ -490,7 +490,7 @@ Windows 原生后建议增加这些测试：
 读者阅读本文后，应能列出至少 10 个迁移风险，并为每项指出影响模块和处理方向。最低应包含：
 
 - `DeepSeek-TUI/` submodule 未初始化。
-- Tauri bundle 只配置 `.deb`。
+- Tauri bundle 只配置 `.deb`。（⚠️ 快照条目：现行 Windows `msi`+`nsis` 打包已上线，见 §11 ⚠️ 注与 §2 现行路径）
 - `HOME` 与 Windows `USERPROFILE` 差异。
 - `which` 不适用于 Windows。
 - `pkexec` / `apt` 是 Linux-only。
@@ -508,4 +508,4 @@ Windows 原生后建议增加这些测试：
 - 接外部业务 API：优先独立 MCP server，验证 MCP 注册、工具 schema 和调用结果。
 - 修改附件解析：入口 `pinvou3-app/src-tauri/src/file_ingest.rs`，验证多格式样本和缺依赖提示。
 - 同步 DeepSeek-TUI 上游：入口 `DeepSeek-TUI/` 和 `docs/fork-modifications.md`，验证 fork guard、prompt diff、工具集合和动态激活路径。
-- 修改 Windows 打包/更新：入口 `pinvou3-app/src-tauri/tauri.conf.json`、`updater.rs`、设置页更新入口，验证安装、升级、卸载和用户数据保留。
+- 修改 Windows 打包/更新：入口 `pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json`（平台层配置，base `tauri.conf.json` 不含打包 targets）、`pinvou3-app/src-tauri/src/app/commands/updater.rs`、设置页更新入口，验证安装、升级、卸载和用户数据保留。

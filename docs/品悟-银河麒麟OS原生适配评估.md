@@ -12,7 +12,7 @@
 
 ## 1. 评估背景
 
-品悟当前已具备 Linux ARM64 DEB 发布能力（应用内 OTA 为未实施的规划能力，见 §5.8 注），需要评估其面向银河麒麟桌面操作系统进行原生适配时的技术可行性、工作范围、风险和预计投入。
+品悟当前已具备 Linux ARM64 DEB 发布能力（2026-11 注：loongarch64 DEB 发布腿亦已上线，见 §5.8 注；应用内 OTA 为未实施的规划能力），需要评估其面向银河麒麟桌面操作系统进行原生适配时的技术可行性、工作范围、风险和预计投入。
 
 本评估参考：
 
@@ -188,14 +188,14 @@ XMODIFIERS=@im=fcitx
 - ffmpeg、pandoc、poppler、tesseract、LibreOffice 等系统包需要确认目标架构的软件源支持。
 
 正式构建已通过 `scripts/check-linux-elf-policy.sh` 扫描包内全部 ELF 的目标架构
-和 Ubuntu 22.04 ABI 下限；麒麟适配仍应保留人工清单复核：
+和 ABI 下限（GLIBCXX_/CXXABI_ 按 Ubuntu 22.04 档；GLIBC_ 逐架构，loongarch64 为 2.38 档）；麒麟适配仍应保留人工清单复核：
 
 ```bash
 find <unpacked-package> -type f -exec file {} \; \
   | grep -E 'ELF|executable|shared object'
 ```
 
-生成资源按 target triple 管理，例如：
+生成资源按 target triple 管理（快照期示例命名，实际产物布局见下方注），例如：
 
 ```text
 sense-voice-main-x86_64-unknown-linux-gnu

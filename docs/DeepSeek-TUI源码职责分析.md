@@ -134,7 +134,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | workflow 派发子任务 | `kick_workflow` / `retry_workflow_role` | pinvou3 `harness` 生成 `HarnessAction::SpawnAgent`，commands 发送 op | `Op::SpawnSubAgent`、SubAgent runtime、`Event::AgentComplete` | 子 agent 执行，完成后 `engine.rs` 推进 harness 和前端状态 |
 | request_user_input | 工具触发用户输入 | `engine.rs` emit `chat:user_input_required`，commands 提交选择 | `Event::UserInputRequired`、`EngineHandle::submit_user_input` | 前端选择回灌到底座工具执行 |
 | 工具审批 | 底座发审批事件 | `engine.rs` 对 pinvou3 yolo 助手自动 approve | `Event::ApprovalRequired`、`EngineHandle::approve_tool_call` | 工具调用继续执行 |
-| 工具隐藏清单防回归 | Rust 测试 | `pinvou3-app/src-tauri/src/lib.rs` 的 `blocklist_contract` | `deepseek_tui::tools::pinvou3_blocklist` | 防止 fork 合并后 LLM tool schema 膨胀 |
+| 工具隐藏清单防回归（⚠️ 机制已退役，见顶部注记） | Rust 测试 | `pinvou3-app/src-tauri/src/lib.rs` 的 `blocklist_contract` | `deepseek_tui::tools::pinvou3_blocklist` | 防止 fork 合并后 LLM tool schema 膨胀 |
 
 ## 不要重复造轮子的能力
 
@@ -192,7 +192,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | 打包产物路径 | Tauri release 产物在 `pinvou3-app/src-tauri/target/release/`，bundle/msi 在 `pinvou3-app/src-tauri/target/release/bundle/` | 问 exe 位置和 msi 位置时要区分 |
 | 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort（快照后字段，2026-11 起，见上文 2026-11 注） | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
 | 搜索 provider/API key | `bridge/mod.rs` 将 pinvou3 prefs 翻译为 DeepSeek-TUI `SearchProvider` 和 `search_api_key` | 搜索不可用时先核对 provider 与 key 是否符合底座要求 |
-| 工具隐藏清单 | `lib.rs` 中 `blocklist_contract` 测试，`DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs` | 合并 fork 后若 tool schema 膨胀，先看 blocklist 是否丢失 |
+| 工具隐藏清单 | `lib.rs` 中 `blocklist_contract` 测试，`DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`（⚠️ 均已随机制退役不存在——现行白名单口径见顶部注记与 `tool-governance.md`） | 合并 fork 后若 tool schema 膨胀，先看 blocklist 是否丢失（⚠️ 本条排障路径已失效） |
 | 合并后冒烟 | `cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml`，再启动 release exe 观察 20 秒 | 确认进程未立即退出、窗口响应、日志没有 fatal |
 
 ### 合并后最小冒烟步骤

@@ -1,4 +1,4 @@
-# PINVOU 麒麟 V11 适配要点
+# 麒麟OS-V11适配踩坑记录
 
 > 验证版本：PINVOU 0.5.9
 > 验证环境：麒麟 V11 桌面版 x86_64、KVM/libvirt
@@ -15,7 +15,7 @@
 | `pinvou3` 未找到 | 实际二进制名是 `pinvou3-tauri` | 统一命令名或提供启动脚本 |
 | WebKit EGL 初始化失败并崩溃 | QXL 图形栈不兼容 | 虚拟显卡改为 VirtIO |
 | 启动时寻找 `/dev/fgt340` | 麒麟同时加载多套厂商 EGL 驱动 | 虚拟机中只加载 Mesa EGL |
-| 网页类任务可能无法运行 | 包内 esbuild 是 ARM64 | 换成 x86_64 esbuild 后再发布 |
+| 网页类任务可能无法运行 | 包内 esbuild 是 ARM64 | 换成 x86_64 esbuild 后再发布（⚠️ 快照口径：现行 bundle 已不再携带 web-template/esbuild，处置见 §5 时点记录） |
 
 ## 1. 使用兼容的 Linux 构建基线
 
