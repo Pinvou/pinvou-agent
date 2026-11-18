@@ -1187,14 +1187,20 @@ class SchemaContractWalkerTest(unittest.TestCase):
         # The smoke script must parse arguments before main() so -h/--help
         # is a side-effect-free exit 0 and an unknown flag exits 2; the
         # pre-fix shape booted every bundled MCP server before argparse
-        # reported usage. A regression that re-hides parse_args behind
-        # main() turns this red (the boots stall past the timeout or the
-        # usage lands on a non-zero path).
+        # reported usage. The ordering faces, not the wall clock, carry
+        # this pin: a regression that re-hides parse_args behind main()
+        # runs the whole contract matrix first, so --help stdout begins
+        # with the matrix's ✅ check lines (usage printed last) and an
+        # unknown flag prints them before argparse's stderr error — both
+        # red regardless of machine speed (the 30s timeout alone did NOT
+        # fire on a machine that boots the matrix in ~26s; measured in
+        # the round-8 review). The tight timeout is only a backstop; the
+        # fixed --help path costs one interpreter start.
         for argv, expected_exit in ((["--help"], 0), (["--no-such-flag"], 2)):
             try:
                 probe = subprocess.run(
                     [sys.executable, str(SMOKE), *argv],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, text=True, timeout=10,
                 )
             except subprocess.TimeoutExpired as exc:
                 self.fail(f"contract smoke did not exit fast on {argv}: {exc}")
@@ -1203,8 +1209,16 @@ class SchemaContractWalkerTest(unittest.TestCase):
                 f"{argv} must exit {expected_exit}, got {probe.returncode} "
                 f"(stderr head: {probe.stderr[:200]})")
             if argv == ["--help"]:
-                self.assertIn("usage:", probe.stdout.lower(),
-                              "--help must print the argparse usage text")
+                self.assertTrue(
+                    probe.stdout.lstrip().startswith("usage:"),
+                    "--help stdout must begin with the argparse usage; got "
+                    f"head {probe.stdout[:120]!r} — matrix output ahead of "
+                    "the usage means parse_args no longer short-circuits")
+            else:
+                self.assertEqual(
+                    probe.stdout, "",
+                    "an unknown flag must exit via argparse before any "
+                    f"matrix output; stdout head: {probe.stdout[:120]!r}")
 
     @unittest.skipIf(
         not (ROOT / "CodeWhale/crates/tui/src/tools/schema_sanitize.rs").exists(),
