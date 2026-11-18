@@ -5097,19 +5097,27 @@ def _invocation_lines(path):
 # (`--prefix <dir>`, the form of the seven live workflow/journey lanes).
 # The r15 dash-flag-generic rewrite accepted only the attached form and
 # silently dropped every space-form lane from walker coverage (r16-M1).
-# The r18 wave adds the `(?!-)` guard on the space-form value: without it
-# a dash-prefixed token after a flag parses BOTH as that flag's value and
-# as the next flag, so a failing line (`npm -! -! …` with no `ci`) makes
-# the backtracking engine enumerate a Fibonacci number of partitions —
-# CodeQL 739/740 measured exponential blowup on exactly that shape, and a
-# single crafted line in any walked file would wedge the walker. With the
-# guard, value tokens and flag tokens are disjoint classes: every
-# dash-prefixed token is a flag, every value is a non-dash token, and
-# matching is linear. The guarded corner (a dash-prefixed space-form value
-# that is not itself a valid flag, e.g. `npm --prefix - ci`) no longer
-# matches — that invocation is rejected by npm itself, so it cannot carry
-# a real lane out of walker coverage.
-_NPM_CI_LANE_RX = r"\bnpm(?: --?[^\s=]+(?:=\S+|\s+(?!-)\S+)?)* ci\b"
+# The r18 wave closes the catastrophic-backtracking class CodeQL 739/740
+# measured: unguarded, a token after a flag parsed BOTH as that flag's
+# space-form value and as the next flag, so a failing line
+# (`npm -! -! …` with no `ci`) made the engine enumerate a Fibonacci
+# number of partitions, and one crafted line in any walked file wedged
+# the walker. Two independent defenses:
+#   * `(?!-)` keeps value tokens and flag tokens in disjoint classes —
+#     a dash-prefixed token is always a flag, never a value — so the
+#     partition ambiguity is gone at the language level. The narrowed
+#     corner (a dash-prefixed space-form value that is not itself a
+#     valid flag, e.g. `npm --prefix - ci`) is rejected by npm itself
+#     and pinned below.
+#   * `(?!ci\b)` plus the possessive `*+` loop keep the greedy parse
+#     committed: without the ci guard a value could swallow the ` ci`
+#     token the trailing anchor needs and possessive matching could not
+#     give it back; with it, the committed parse is the only viable one.
+#     The possessive form is also CodeQL's documented remediation for
+#     py/redos, so the rule stays closed (the guarded but backtracking
+#     form kept the alert open on e12238aff). Possessive quantifiers
+#     need Python 3.11+; CI pins 3.12/3.x and the dev floor is 3.12.
+_NPM_CI_LANE_RX = r"\bnpm(?: --?[^\s=]+(?:=\S+|\s+(?!-)(?!ci\b)\S+)?)*+ ci\b"
 # The per-leg bound that must END the head before a matched lane:
 # an inline GNU timeout with --kill-after, or the journey helper.
 _LANE_HEAD_BOUND_RX = r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*$"
@@ -5359,18 +5367,26 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
             "timeout --kill-after=15 600 npm --prefix pinvou3-app --no-audit ci",
             "flag after a space-form value",
         )
+        # A flag directly before `ci` must match: under the possessive
+        # loop this is exactly the shape a dropped `(?!ci\b)` value guard
+        # breaks (the committed value would swallow the ` ci` anchor).
+        lane("timeout --kill-after=15 600 npm --no-audit ci", "flag directly before ci")
 
     def test_npm_lane_matcher_stays_linear_on_flag_token_runs(self):
-        # CodeQL 739/740 pin: the pre-guard matcher parsed a dash-prefixed
+        # CodeQL 739/740 pin: the unguarded matcher parsed a dash-prefixed
         # token after a flag BOTH as the flag's space-form value and as the
         # next flag, so a failing line (`npm -! -! …` with no `ci`) made the
         # backtracking engine enumerate a Fibonacci number of partitions —
         # 28 tokens already cost 60ms, doubling per +2 tokens, and one such
         # line in any walked file would wedge the walker. The `(?!-)` guard
-        # makes value and flag tokens disjoint, so these runs are linear.
-        # At this size the pre-guard matcher cannot finish before the job
-        # cap, so completing with these verdicts is the regression signal —
-        # no wall-clock assertion needed.
+        # makes value and flag tokens disjoint and the possessive loop
+        # commits the single viable parse, so these runs are linear by
+        # construction. At this size the unguarded matcher cannot finish
+        # before the job cap, so completing with these verdicts is the
+        # regression signal for a dropped guard — no wall-clock assertion
+        # needed. (Dropping only the possessive keeps runtime linear; that
+        # regression re-opens the CodeQL alert and is caught by the scan,
+        # not by this pin.)
         unbounded = "npm" + " -!" * 20000
         self.assertIsNone(re.search(_NPM_CI_LANE_RX, unbounded))
         bounded = "timeout --kill-after=15 600 " + "npm" + " -!" * 20000 + " ci"
