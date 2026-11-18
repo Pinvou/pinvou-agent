@@ -338,9 +338,9 @@ Windows 迁移建议：
 }
 ```
 
-> 快照口径：当前主干已落地 Windows 打包——`pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json` 已含 `"targets": ["msi","nsis"]`（perMachine、LZMA、VC++ 检测与安装钩子齐备；发布 CI 实际产出 nsis 安装包，msi 目标暂仅配置与本地构建）；基座 `tauri.conf.json` 不再写 `targets`，按平台目录拆分。本节「必须重做」清单仅对 0.6.x 状态成立，现行契约见 `docs/windows-private-runtime-submodule.md`。
+> 快照口径：当前主干已落地 Windows 打包——`pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json` 已含 `"targets": ["msi","nsis"]`（perMachine、LZMA、VC++ 检测与安装钩子齐备；发布 CI 实际产出 nsis 安装包，msi 目标暂仅配置与本地构建）；底座 `tauri.conf.json` 不再写 `targets`，按平台目录拆分。本节「必须重做」清单仅对 0.6.x 状态成立，现行契约见 `docs/windows-private-runtime-submodule.md`。
 
-Linux 安装说明在 `pinvou3-app/INSTALL.md`，依赖 `.deb`、`apt`、`pkexec`。应用内升级也围绕 `.deb` 下载、sha256 校验、`pkexec apt` 安装。
+Linux 安装说明在 `pinvou3-app/INSTALL.md`，依赖 `.deb`、`apt`。应用内升级也围绕 `.deb` 下载、sha256 校验、`pkexec apt` 安装（2026-11-18 订正：`pkexec` 流程属应用内升级器 `features/updater`，INSTALL.md 本文不含 `pkexec`）。
 
 Windows 迁移必须重做或拆分：
 
@@ -446,6 +446,7 @@ Windows 原生后建议增加这些测试：
 6. `docs/DeepSeek-TUI-工具系统.md`：底座工具注册与执行链路（v0.8.37 史料）。
 7. `pinvou3-app/src-tauri/src/lib.rs`、`engine_pool.rs`、`engine.rs`、`bridge/mod.rs`、`commands.rs`：后端主链路。（⚠️ 快照平铺路径已随布局重构移除——仅 `src-tauri/src/lib.rs` 本体仍在，现承载契约测试、非主链路；现行入口见 `features/assistant/platform/bridge.rs` 与 `app/commands/`）
 8. `pinvou3-app/src/tauri-bridge.js`：前端状态与事件主链路。（⚠️ 快照路径已移除，现行前端入口见 `src/features/`）
+9. `docs/DeepSeek-TUI源码职责分析.md`：底座代码地图姊妹篇——关键调用链与维护风险清单与本手册 §3/§12/§14 同源，彼处含逐层代码锚点。
 
 ## 17. 给 Windows 迁移的建议路线
 

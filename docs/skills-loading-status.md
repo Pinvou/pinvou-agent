@@ -37,7 +37,7 @@ pinvou3 **fork patch #41**（`CodeWhale/crates/tui/src/skills/mod.rs:601` `skill
 | 路径 | 谁读它 | 备注 |
 |---|---|---|
 | `~/.agents/skills` | 运行时 `load_skill` 工具（`tools/skill.rs:94` `discover_in_workspace`） | patch #41 唯一保留的全局约定 |
-| `~/.pinvou3/bundle/skills/<name>/SKILL.md` | pinvou3-app UI（`commands.rs:1090` `list_skills_v2`）+ engine 系统提示 skill 清单（`bridge/mod.rs:413` `EngineConfig.skills_dir`） | pinvou3 注入（patch #25/#26） |
+| `~/.pinvou3/bundle/skills/<name>/SKILL.md` | pinvou3-app UI（`commands.rs` `list_skills_v2`：:1086 @`400d67e277`、:1141 @`f1f4b37976`、:1166 @`bb13c99948`——2026-11-18 订正：:1090 不命中任何已提交态）+ engine 系统提示 skill 清单（`bridge/mod.rs:413` `EngineConfig.skills_dir`） | pinvou3 注入（patch #25/#26） |
 
 被移除（不再扫）：`.claude/skills`、`.opencode/skills`、`.cursor/skills`、`.codewhale/skills`、`$HOME/skills`、workspace `.agents/skills` 等所有 $HOME 相对路径。
 

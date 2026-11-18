@@ -66,7 +66,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
   用户全局安装 Codex CLI。
 - 优先使用环境变量指定、应用内置、Pinvou 私有目录中的 adapter，最后才回退到系统
   `PATH`。
-- 调用 `codex-acp login` 发起登录。
+- 调用 `codex-acp login` 发起登录。（2026-11-18 注：本句系设计稿口径——现存备份史首个实现即经 `codex login` 登录，「codex-acp login」无已录码态佐证；现行行为见下方 2026-11 注。）
 - 复用用户默认 `HOME` 下的 `~/.codex`，因此已登录用户可以继续使用自己的 Codex
   配置、skills 和 MCP。
 
@@ -266,7 +266,7 @@ platform:        linux-x64 / linux-arm64
 ```
 
 > 注（归档时现状）：现行 Bridge 实际钉扎 Node 24.22.1、codex-acp 适配器 2.2.2
-> （`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`、`features/codex_acp/mod.rs`）；
+> （`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`（Node 钉），适配器 2.2.2 钉于 `features/codex_acp/mod.rs`）；
 > 运行目录名 `codex-acp-1.1.5` 不代表适配器版本，见 `docs/codex-acp.md`。托管 Codex Runtime
 > 下载未采纳，Codex 由用户自行安装（脚本/brew/npm，应用内引导）。
 
@@ -678,7 +678,7 @@ codex-runtime://status
 
 验收：
 
-- 已安装兼容 Codex 的设备不下载托管 Codex即可进入登录或会话阶段。
+- 已安装兼容 Codex 的设备不下载托管 Codex 即可进入登录或会话阶段。
 - 没有系统 Node/npm，但存在原生 Codex 时仍可正常运行 ACP。
 - 系统 Codex 未登录时提示登录，不误触发托管下载。
 
@@ -692,7 +692,7 @@ codex-runtime://status
 
 - 干净设备没有 `node`、`npm`、`codex`、`codex-acp` 时，下载托管 Codex 后可进入
   登录阶段。
-- 下载过程不调用 npm；Linux MVP 从 OpenAI 官方 npm registry 读取固定平台归档。
+- 下载过程不调用 npm；Linux MVP 从 npm 官方 registry 读取 `@openai/codex` 固定平台归档。
 - 下载失败不影响 Pinvou 和 DeepSeek-TUI。
 - 托管 Codex 损坏可以重新下载，且系统 Codex 与 `~/.codex` 完全不变。
 

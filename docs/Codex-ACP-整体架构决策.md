@@ -1,7 +1,8 @@
 # Codex ACP 整体架构决策
 
 > 文档状态：已归档的架构决策记录（2026-11 回填自内部仓库快照）；核心决策已落地并随后续版本继续演进（现状以 [`codex-acp.md`](./codex-acp.md) / [`multi-agent-acp.md`](./multi-agent-acp.md) 为准）
-> 评审范围：本文评审的是架构与产品边界，不逐项代表实现状态。除 §9 外，正文组件名（`PermissionBroker`、`AcpRuntimeManager`、`AcpSessionAggregate` 等）与 §6/§11 的目标架构为设计构想，未按原样实现——现行实现为 `pinvou3-app/src-tauri/src/features/codex_acp/`（Rust）与 `pinvou3-app/src/features/codex/`（前端），本文与现状的逐项出入不另设对照表，以两份现状文档为准
+> 评审范围：本文评审的是架构与产品边界，不逐项代表实现状态。除 §9（自含现状注记）外，正文组件名（`PermissionBroker`、`AcpRuntimeManager`、`AcpSessionAggregate` 等）与 §6/§11 的目标架构为设计构想，未按原样实现——现行实现为 `pinvou3-app/src-tauri/src/features/codex_acp/`（Rust）与 `pinvou3-app/src/features/codex/`（前端），本文与现状的逐项出入不另设对照表，以两份现状文档为准
+> 用语说明（2026-11-18 复核）：回填时将原文中的「CodeWhale」系组件名统一书写为「DeepSeek-TUI」，§6 mermaid 节点 `WorkConversationSurface` 亦改写为 `DeepSeekConversationSurface`——此系与备份分支原文间的系统性用语替换（记录时点实体已更名 CodeWhale，替换方向与时序相反），所指工件均实存；「应用隔离 Node runtime」等旧表述亦已按现行用语书写。
 > 记录日期：2026-07-23（2026-11 归档注记：分支 `feat/codex-acp` 不在本仓库、已删除（备份谱系见姊妹篇）；基线提交 `2b84908b` 本地与公开仓均不可解析——对象随删除未入任何可及谱系）
 > 归档说明：本文为回填的历史决策记录，未纳入 [`docs/adr/`](./adr/) 编号系列；该系列编号供新决策顺延使用，历史回填不占号
 > 对应分支：`feat/codex-acp`
@@ -457,7 +458,7 @@ running -> cancelling -> ready
 * -> disconnected / failed / shutting_down
 ```
 
-（2026-11 注：§12.1 上列状态机文本块（[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)所称 `CodexRuntime*` 组件族）未被采纳——现行状态契约是 `CodexAcpStatus` 布尔投影加 `acp:install-progress` / `runtime_notice` / `runtime_ready` 事件，见姊妹篇文首 banner 与 `features/codex_acp/events.rs`。）
+（2026-11 注：§12.1 上列状态机文本块（[姊妹篇](./Codex-ACP-运行环境与首次使用设计.md)所称 `CodexRuntime*` 组件族）未被采纳——现行状态契约是 `CodexAcpStatus` 布尔投影加 `acp:install-progress` / `runtime_notice` / `runtime_ready` 事件，见姊妹篇文首 banner；`CodexAcpStatus` 在 `features/codex_acp/mod.rs`（:1026），`acp:install-progress` 在 `install.rs`，`runtime_notice`/`runtime_ready` 投影在 `events.rs`。）
 
 ### 12.2 持久化分层
 
@@ -640,7 +641,7 @@ running -> cancelling -> ready
 | skill 链接污染 workspace | 会话快照、白名单路径、原子替换、可回收管理 |
 | MCP 密钥泄露 | env 引用、日志脱敏、事件截断、持久化前清洗 |
 | 参考 Codex 后破坏 pinvou 视觉一致性 | 只参考内容结构和交互语义，颜色、字体、导航和整体布局服从 pinvou 设计体系 |
-| 正式包内置 Node 后体积增大 | x64/arm64 分架构打包并记录体积预算；MVP 先允许 system Node，不阻塞协议/UI 开发 |
+| 正式包内置 Node 后体积增大 | x64/arm64 分架构打包并记录体积预算；MVP 先允许 system Node，不阻塞协议/UI 开发（⚠️ 2026-11 注：系统 Node 依赖已移除，现行随包私有 Node 24.22.1，见 §13） |
 
 ## 18. 已确认的设计决策
 

@@ -24,10 +24,10 @@ ACP 会话仍使用独立的 ACP 事件、权限和持久化链路，不进入 C
 
 1. 开发源码首次运行前执行 `./pinvou3-app/scripts/prepare-codex-bridge-runtime.sh`；
    正式安装包会自带该 Bridge，不要求系统安装 Node/npm。
-2. 启动 `./pinvou3-app/run-dev.sh`。Pinvou 会优先检测系统 Codex：存在且版本不低于
-   0.144.6 时直接使用（低于官方最新版时仍会显示可暂缓的升级提醒，活动会话期间抑制）；
-   缺失或版本过旧时，经用户确认后按
-   [`multi-agent-acp.md`](./multi-agent-acp.md) 的安装与升级矩阵自动安装或升级。
+2. 启动 `./pinvou3-app/run-dev.sh`。Pinvou 优先 `PINVOU3_CODEX_PATH` 指定的 Codex；未设置时在内置 Bridge 随包与系统安装之间择版本最新的兼容者（不低于
+   0.144.6；低于官方最新版时仍会显示可暂缓的升级提醒，活动会话期间抑制）。
+   缺失或全部版本过旧时，经用户确认后按
+   [`multi-agent-acp.md`](./multi-agent-acp.md) 的安装与升级矩阵自动安装或升级。（2026-11-18 订正：选取序并非固定「系统优先」，现行于内置 Bridge 随包与系统安装间择版本最新的兼容者，详见 [`Codex-ACP-运行环境与首次使用设计.md`](./Codex-ACP-运行环境与首次使用设计.md) §2 注。）
 3. 在主页选择“代码”，输入框下方默认选择“临时会话”；直接发送首条消息时才创建
    会话，避免只切换模式就产生空记录。也可以在发送前切换工作目录：
    - **选择项目目录**：Codex 的进程 cwd、`session/new` 和 `session/load`
@@ -89,7 +89,7 @@ Codex 自己上报的 `/skills`、`/mcp` 等命令可直接在输入框使用。
   用户确认配置的轻量索引；品悟原生代码会话在其中以 `code_session: true` 标记，
   后端凭该标记把会话纳入代码会话列表并解析临时工作区。
 - `~/.pinvou3/acp-agent-defaults.json`：每个 ACP Agent 的新会话默认配置。
-- `~/.pinvou3/sessions/<id>/acp-state.json`：Agent、capability、model、mode、config 和最后状态。
+- `~/.pinvou3/sessions/<id>/acp-state.json`：Agent、capability、model、会话级 modes/config_options（agent 上报）和最后状态；用户确认的 mode 存 session-agents.json（`acp_mode_id`）。
 - `~/.pinvou3/sessions/<id>/acp-timeline.jsonl`：按 `seq` 追加的完整 ACP 事件时间线。
 - `~/.pinvou3/sessions/<id>/workspace/`：仅临时 Codex 会话使用的执行目录。
 
@@ -103,7 +103,7 @@ Codex 继续复用用户自己的 `HOME` 和 `~/.codex`，所以登录态、Code
 ## Provider 管理（第三方中转）
 
 三个 ACP Agent（Codex / Claude Code / Kimi）支持配置第三方中转 Provider：
-预设/自定义 base URL、wire 协议（Anthropic 兼容 / OpenAI 兼容；Kimi 表单默认「Kimi 原生」协议、另两种可切换）、模型与 API key，
+预设/自定义 base URL、wire 协议（Anthropic 兼容 / OpenAI 兼容；仅 Kimi 表单可切换 wire、默认「Kimi 原生」，Claude 固定 Anthropic 兼容、Codex 固定 Responses）、模型与 API key，
 一键切换或恢复官方登录。入口：设置 →「Provider 管理」；服务失败横幅也提供
 「管理 Provider」深链；会话 composer 可选「会话 Provider」固定本会话使用的中转
 （该选项仅 Codex 会话提供——Claude/Kimi 的 CLI 配置是进程级的，无法按会话隔离）。

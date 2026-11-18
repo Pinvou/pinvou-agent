@@ -44,7 +44,7 @@ core/engine/tool_execution.rs::execute_tool_with_lock
 ```
 
 四个关键模块：
-- `tools/spec.rs` — `ToolSpec` trait + `ToolContext` + `ToolResult`
+- `tools/spec.rs` — `ToolSpec` trait + `ToolContext` + `ToolResult`（`ToolResult` 实定义于 `crates/tools/src/lib.rs:138`，`spec.rs` 经 `pub use` 再导出）
 - `tools/registry.rs` — `ToolRegistryBuilder` 的所有 `with_*` 方法
 - `core/engine/tool_setup.rs` — 每轮按 mode + features 组装 builder
 - `core/engine/tool_execution.rs` — 实际并发与执行调度
@@ -295,7 +295,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 `agent_open / agent_eval / agent_close`（v0.8.37 仅注册这三个；`agent_result / agent_cancel / agent_list / resume_agent / delegate_to_agent` 等名字在 v0.8.37 源码中已存在、但只是未注册的历史结构体/字面量，后续各版本至现行 HEAD 也未将其注册为工具名——系被移除/替代的遗留，而非「后来才注册」）—— 起独立 sub-agent 跑子任务，需 `Feature::Subagents`。pinvou3 默认开但 UI 不支撑。
 
-### RLM（Read-Eval-Loop Model）持久会话
+### RLM（Recursive Language Model，递归语言模型）持久会话（2026-11-18 订正：原书「Read-Eval-Loop Model」系写档误展开，v0.8.37 源码全部作 Recursive Language Model——`rlm/mod.rs:1`、`commands/mod.rs:707`）
 
 `rlm_open / rlm_eval / rlm_configure / rlm_close` —— 起一个保留状态的 Python/REPL 子内核，多轮共享变量。Qwen3.6 撑不住这套编排，pinvou3 不引导。
 
@@ -362,7 +362,7 @@ agent_open agent_eval agent_close
 
 `BASE_PROMPT`（v0.8.37 机制：`include_str!("prompts/base.md")`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox 和 tool_search_tool_regex / tool_search_tool_bm25 deferred discovery）。剩余工具靠模型自行从 schema 探索。
 
-Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/pr_attempt/automation 各自的 list/read 与 github 的 issue_context/pr_context）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 的 `apply_native_tool_deferral` 对 Plan/Agent 均生效、仅 Yolo 短路不做 deferral——Plan keep-list 收缩到初始可见约 16 个（另有 catalog 恒推的 tool_search 两元工具 defer_loading=false，初始可见实为约 18），其余经 ToolSearch 激活；Agent 预设经同一函数按 keep-list 保留（另含 rlm_*/task_* 家族 6/7——仅 task_cancel 被 defer——与 shell 家族），初始可见约 29（同理计入 tool_search 两元工具则约 31）；§6 推导的约 81 即为 Yolo 模型可见数。）
+Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/pr_attempt/automation 各自的 list/read 与 github 的 issue_context/pr_context）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 的 `apply_native_tool_deferral` 对 Plan/Agent 均生效、仅 Yolo 短路不做 deferral——Plan keep-list 收缩到初始可见约 16 个（另有 catalog 恒推的 tool_search 两元工具 defer_loading=false，初始可见实为约 18），其余经 ToolSearch 激活；Agent 预设经同一函数按 keep-list 保留（另含 rlm_*、task_*、shell 家族：task_* 7 个中仅 task_cancel 被 defer；shell 家族 6 个中 exec_shell_cancel 被 defer、5 个保留），初始可见约 29（同理计入 tool_search 两元工具则约 31）；§6 推导的约 81 即为 Yolo 模型可见数。）
 
 ---
 

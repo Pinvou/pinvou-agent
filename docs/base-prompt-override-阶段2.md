@@ -33,6 +33,7 @@
 
 **fork-guard.sh + 文档**
 - 7 个品牌/内容指纹 retarget 到 pinvou3-app 文件 + 新增 #42 hook 存活指纹；`--fast` 指纹层全过
+  （2026-11-18 注：现行 `fork-guard.sh` 指纹层已重构为 T1/T3/APP 编号，`#42` 条目不复存在，hook 存活指纹现由 `set_static_prompt_composer_override` 条目承载）
 - `fork-modifications.md` prompts 段更新为 override 架构
 
 **端到端**：`dump_system_prompt` = 38746B，pinvou3 内容全在（CONSTITUTION OF PINVOU3 / running inside pinvou3 / 你正在 pinvou3 / authority pinvou3），上游内容全无（Brother Whale / RLM / CODEWHALE = 0）。与阶段1 渲染字节一致 → 行为零回退。

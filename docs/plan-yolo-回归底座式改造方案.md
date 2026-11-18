@@ -51,7 +51,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 | D2 | **不暴露 Agent** | 沿用现状（底座三态取其二）。Accept 只有一个目标=Yolo，卡片 3 选项不变 |
 | D3 | **accept 保留执行指令注入** | 对齐底座 `"Proceed with the accepted plan."`，切 Yolo 后 AI 靠注入指令 + 共享 PlanState 续做 |
 | D4 | **砍 M2 自驱续跑** ⚠️行为变化 | 回到底座行为：执行一个 turn 后停下，用户决定是否继续。原 M2 会自动发"继续执行"循环——砍掉 |
-| D5 | **M3 收口兜底重做**（放弃旧判据） | 旧 `text_len>300` 判据是拍的、无测试支撑，放弃。重做依据"现有测试情况"评估：现状 plan 测试全是 L1 真 vLLM 端到端（`plan_ablation`/`plan_write_urge`，`#[ignore]`，靠人看收口率），M3 兜底卡逻辑**零单测覆盖**。阶段3 重做 = 先定可靠的"收口失败检测信号"（不靠字数）+ 配套建测试，触发降到 mode 维度（`mode==Plan && !plan_used`） |
+| D5 | **M3 收口兜底重做**（放弃旧判据） | 旧 `text_len>300` 判据是拍的、无测试支撑，放弃。重做依据"现有测试情况"评估：当时本地 worktree 现状 plan 测试全是 L1 真 vLLM 端到端（`plan_ablation`/`plan_write_urge`，`#[ignore]`，靠人看收口率），M3 兜底卡逻辑**零单测覆盖**。阶段3 重做 = 先定可靠的"收口失败检测信号"（不靠字数）+ 配套建测试，触发降到 mode 维度（`mode==Plan && !plan_used`） |
 | D6 | **每轮 mode reminder 保留** | 不回退底座"指针+回查"（对 Qwen3.6 弱）。`reminder_for` 从 4 段(mode,phase)降到 2 段(mode)：Plan 一段 / Yolo 一段（📌 后续演进：Yolo 段的大产物分块内容已随后续裁撤删除，仅余 mode 段 + sudo 动态段，见现行 `bridge.rs` 注） |
 
 ## 3. 分阶段实施
@@ -160,4 +160,4 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡ 直接动手(跳过方案)」（渲染原文，半角括号）。
 3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。
 
-**已清残骸**：`engine.rs` M3 占位注释改写为"放弃"说明；`tauri-bridge.js` 删 `PLAN_FALLBACK_KEYWORDS` / `plan_text_fallback` 监听 / `planFallbackAccept`+`planFallbackRetry`+导出 / 孤儿 bt 键 `adoptingPlan`+`adoptEcho`；顺带清同族孤儿 `executionStuckReplan`（阶段4 删 execution_stuck 后无调用方）；`index.html` 删 `PlanFallbackCard` 组件 + render 分支 + 三语 `fb*` i18n。`cargo check` exit 0、headless 5/5。**阶段1/2/3/4 全 done，方案收尾。**
+**已清残骸**：`engine.rs` M3 占位注释改写为"放弃"说明（现行位于 `features/assistant/forwarder.rs` 注）；`tauri-bridge.js` 删 `PLAN_FALLBACK_KEYWORDS` / `plan_text_fallback` 监听 / `planFallbackAccept`+`planFallbackRetry`+导出 / 孤儿 bt 键 `adoptingPlan`+`adoptEcho`；顺带清同族孤儿 `executionStuckReplan`（阶段4 删 execution_stuck 后无调用方）；`index.html` 删 `PlanFallbackCard` 组件 + render 分支 + 三语 `fb*` i18n。`cargo check` exit 0、headless 5/5。**阶段1/2/3/4 全 done，方案收尾。**

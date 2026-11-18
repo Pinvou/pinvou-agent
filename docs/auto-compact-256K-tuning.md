@@ -95,11 +95,11 @@ bridge 2 处 + fork 2 处 + 前端 1 处 + L1 harness + 回归测试：
 
 ### B1. CodeWhale fork（已 commit 7e5288e3）
 
-`context_window_for_model`（models.rs:212）把 `_Nk` hint 检查从 deepseek 分支内部**移到所有 vendor 分支前面**。让任意 vendor 模型名都能通过 `_Nk` 后缀声明窗口。hint 用 kilo × 1000 算，256k → 256_000，与实际 262_144 差 6K（2%），在压缩计算精度内可接受。
+`context_window_for_model`（models.rs:221，`7e5288e3`/`9c8e4826` 同值；2026-11-18 订正）把 `_Nk` hint 检查从 deepseek 分支内部**移到所有 vendor 分支前面**。让任意 vendor 模型名都能通过 `_Nk` 后缀声明窗口。hint 用 kilo × 1000 算，256k → 256_000，与实际 262_144 差 6K（2%），在压缩计算精度内可接受。
 
 ### B2. CodeWhale fork（同上 commit）
 
-`context_input_budget`（engine/context.rs:366）的"reserved output"项按窗口分级：
+`context_input_budget`（engine/context.rs:388 @`7e5288e3`；`9c8e4826` 为 :377——2026-11-18 订正）的"reserved output"项按窗口分级：
 
 - `window ≥ 500K`（V4-class）：仍用 `TURN_MAX_OUTPUT_TOKENS` —— 保持上游 V4 interleaved thinking 的保守预算契约（被底座 engine 测试锁定——写档时点实存名 `internal_context_budget_tiers_reserved_output_by_window` / `effective_max_output_tokens_caps_api_request_for_large_window_models`；2026-11 核验注：原引名系写档前文本所引的 `internal_context_budget_unaffected_by_api_request_cap`——该名实存而非混写（`d4185ede5` 2026-05-06 引入、`9c8e48260`（即写档时点快照提交）随测试退役移除，故现树与写档时点快照树 0 命中）；句中两名为同一 500K 分支契约在写档时点快照的实存名（`engine/tests.rs:928`/`:947` 可复核））
 - `window < 500K`（自托管/小窗口）：使用 route-effective 输出上限；本地 vLLM route 显式携带 24K，未显式声明的云端 route 落到底座普通请求上限，并继续受 provider/catalog/route 能力收窄。App 不再默认注入 `DEEPSEEK_MAX_OUTPUT_TOKENS`。
@@ -157,7 +157,7 @@ vLLM 启动加 `--served-model-name qwen36_35b_256k`。OpenAI-compat API 协议�
 - 即单次工具输出进上下文 ≤ **~3-4K tokens**,**跳不过 nice(~195K)→ emergency(230,400)的 ~35K 缺口**。
 
 **`large_output_router`(#548——重建前内部仓库编号，非本仓 #548；/ workshop)是冗余且不完整,不要开:**
-- synthesis 子 agent **没实现**:`registry.rs:158` 注释 "produce a structured header + truncated preview **without a live API call**";合成 prompt builder 是 `#[allow(dead_code)] // 未来 Flash 合成用`。所谓"配 synthesis 模型"无对象可配。
+- synthesis 子 agent **没实现**:`registry.rs`（`7e5288e3` :155-163；`9c8e4826` 注文起 :157）注释 "For now we produce a structured header + truncated preview **without a live API call** … A follow-up can wire in the Flash client"；合成 prompt builder 未实现——2026-11-18 订正：原注「`#[allow(dead_code)] // 未来 Flash 合成用`」系写档误注，任何可核树均无此文（实文为英文注释），所谓"配 synthesis 模型"无对象可配。
 - 它实际只做"截断到 **1,200 字符** + 存 workshop 变量 `last_tool_result`",比底座的 12K head/tail snippet **更激进、丢更多上下文**。`EngineConfig.workshop` 默认 `None`,保持关闭即可。
 
 **残留极端情况:** 一个 turn 里十几个大工具**并行**调用,collective 仍可能凑够 ~35K 跳过 nice —— 此时 emergency 接住(走强制路径,不崩),概率极低,不值得为它加冗余 workshop。
@@ -170,8 +170,8 @@ B1 + B2 都是上游友好的改动，可独立 PR：
 
 | Patch | 文件 | 行数级 | PR 卖点 |
 |---|---|---|---|
-| B1 | models.rs:212 | ~5 行 | 让 `_Nk` hint 适用于任何 vendor，自托管 / 第三方部署友好 |
-| B2 | engine/context.rs:366 + 调用方 | ~25 行 | 修 < 500K 窗口模型 input budget 为负 → None 的静默禁用 bug，含双路径回归测试 |
+| B1 | models.rs:221 | ~5 行 | 让 `_Nk` hint 适用于任何 vendor，自托管 / 第三方部署友好 |
+| B2 | engine/context.rs:388 @`7e5288e3`（`9c8e4826` :377）+ 调用方 | ~25 行 | 修 < 500K 窗口模型 input budget 为负 → None 的静默禁用 bug，含双路径回归测试 |
 
 按 `docs/fork-policy.md` 的上游回流约束处理。fork 总 patch 量 ~30 行，已 commit 在 CodeWhale submodule（`pinvou3-patches` branch tip = `7e5288e3`），父仓库 gitlink 已 stage。（2026-11 注：`pinvou3-patches` 为内部仓分支、`fork` remote 指内部 fork，均不在本仓库；`7e5288e3` 为重建前哈希，本地不可解析、公开仓可解，见文首注。）
 

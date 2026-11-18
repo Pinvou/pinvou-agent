@@ -353,7 +353,7 @@ latest-amd64.json
 
 - 固定兼容构建镜像；
 - 修复包内跨架构二进制；
-- 统一 `pinvou3` 命令和 Desktop Entry；
+- 统一 `pinvou3-tauri` 命令和 Desktop Entry；
 - 完成图形栈、输入法、多屏和麦克风适配；
 - 核实或重构系统依赖；
 - 改造多架构 OTA；
