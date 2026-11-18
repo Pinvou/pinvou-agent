@@ -1878,9 +1878,12 @@ type StagedBatch = (
 
 /// Upper bound on how long the failure arms wait for a staging task that was
 /// still running when the deadline (or a panic) dropped the setup future.
-/// The copy phase is capped at 16 × 50 MiB, so at realistic disk speeds it
-/// finishes within this grace (60s ≈ 800 MiB over a ~14 MB/s slow link);
-/// the ingest work inside the same task carries its own per-file kill-tree
+/// The copy phase this grace protects is THIS agentic lane's staging batch,
+/// which the in-loop landed re-check bounds at ~150 MiB (100 MiB batch total,
+/// plus at most one ≤50 MiB in-flight file before the per-file landed check
+/// trips), so 60s covers it down to a ~2.5 MB/s slow disk — the headless
+/// eval bridge enforces its own pre/post landed checks and never waits here.
+/// The ingest work inside the same task carries its own per-file kill-tree
 /// timeouts and is NOT covered — a conversion-heavy batch can exceed the
 /// grace. Expiring it degrades to the pre-fix
 /// behavior (detached task) rather than hanging the report on a wedged
