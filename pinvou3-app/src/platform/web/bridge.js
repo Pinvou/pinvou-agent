@@ -689,7 +689,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 50 MB 上限`,
       deviceUploadCacheFull: "⚠️ 上传缓存已满：另一批大附件还在上传，请等待其完成后再试",
       deviceParsedTooLarge: "⚠️ 解析后的附件超过远程桌面缓存上限 32 MB，无法添加",
-      deviceCacheFull: "⚠️ 远程桌面附件缓存已满,请移除一个附件后重试",
+      deviceCacheFull: "⚠️ 远程桌面附件缓存已满，请移除一个附件后重试",
       archiveTooManyEntries: "压缩包包含超过 50 个条目，无法添加",
       archiveExpandedTooLarge: "压缩包解压后超过 100 MB，无法添加",
       archiveUnsafeEntry: "压缩包包含不安全的链接或路径，无法添加",
@@ -5686,8 +5686,9 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     if (limitError) return limitError;
     const rawUploadError = String(error && error.message ? error.message : error);
     if (error && error.code === "device_upload_empty") {
-      const message = bt("deviceUploadEmpty")(fileName);
-      return { code: message, message };
+      // Store the stable wire code on the chip too — the localized sentence
+      // is rendered from bt() where needed, never frozen into the code field.
+      return { code: error.code, message: bt("deviceUploadEmpty")(fileName) };
     }
     if (rawUploadError === "web_attachment_digest_invalid") {
       return { code: rawUploadError, message: bt("deviceUploadDigestInvalid") };
