@@ -4813,7 +4813,19 @@ def _invocation_lines(path):
 # (`--prefix <dir>`, the form of the seven live workflow/journey lanes).
 # The r15 dash-flag-generic rewrite accepted only the attached form and
 # silently dropped every space-form lane from walker coverage (r16-M1).
-_NPM_CI_LANE_RX = r"\bnpm(?: --?[^\s=]+(?:=\S+|\s+\S+)?)* ci\b"
+# The r18 wave adds the `(?!-)` guard on the space-form value: without it
+# a dash-prefixed token after a flag parses BOTH as that flag's value and
+# as the next flag, so a failing line (`npm -! -! …` with no `ci`) makes
+# the backtracking engine enumerate a Fibonacci number of partitions —
+# CodeQL 739/740 measured exponential blowup on exactly that shape, and a
+# single crafted line in any walked file would wedge the walker. With the
+# guard, value tokens and flag tokens are disjoint classes: every
+# dash-prefixed token is a flag, every value is a non-dash token, and
+# matching is linear. The guarded corner (a dash-prefixed space-form value
+# that is not itself a valid flag, e.g. `npm --prefix - ci`) no longer
+# matches — that invocation is rejected by npm itself, so it cannot carry
+# a real lane out of walker coverage.
+_NPM_CI_LANE_RX = r"\bnpm(?: --?[^\s=]+(?:=\S+|\s+(?!-)\S+)?)* ci\b"
 # The per-leg bound that must END the head before a matched lane:
 # an inline GNU timeout with --kill-after, or the journey helper.
 _LANE_HEAD_BOUND_RX = r"(?:timeout --kill-after=\d+ \d+|run_with_timeout \d+)\s*$"
@@ -5053,6 +5065,38 @@ class NpmCiBoundsPolicyTests(unittest.TestCase):
         # Not lanes: the flag group only consumes dash-prefixed tokens.
         self.assertIsNone(re.search(_NPM_CI_LANE_RX, "npm run ci"))
         self.assertIsNone(re.search(_NPM_CI_LANE_RX, "npm --prefix pinvou3-app run ci"))
+        # The `(?!-)` value guard pins the r18 matcher: a dash-prefixed
+        # token in the space-form value slot parses as a flag instead, and
+        # a lone-dash value (`npm --prefix - ci` — rejected by npm itself)
+        # is not a lane at all, while a real dash-prefixed flag after a
+        # flag keeps matching.
+        self.assertIsNone(re.search(_NPM_CI_LANE_RX, "npm --prefix - ci"))
+        lane(
+            "timeout --kill-after=15 600 npm --prefix pinvou3-app --no-audit ci",
+            "flag after a space-form value",
+        )
+
+    def test_npm_lane_matcher_stays_linear_on_flag_token_runs(self):
+        # CodeQL 739/740 pin: the pre-guard matcher parsed a dash-prefixed
+        # token after a flag BOTH as the flag's space-form value and as the
+        # next flag, so a failing line (`npm -! -! …` with no `ci`) made the
+        # backtracking engine enumerate a Fibonacci number of partitions —
+        # 28 tokens already cost 60ms, doubling per +2 tokens, and one such
+        # line in any walked file would wedge the walker. The `(?!-)` guard
+        # makes value and flag tokens disjoint, so these runs are linear.
+        # At this size the pre-guard matcher cannot finish before the job
+        # cap, so completing with these verdicts is the regression signal —
+        # no wall-clock assertion needed.
+        unbounded = "npm" + " -!" * 20000
+        self.assertIsNone(re.search(_NPM_CI_LANE_RX, unbounded))
+        bounded = "timeout --kill-after=15 600 " + "npm" + " -!" * 20000 + " ci"
+        match = re.search(_NPM_CI_LANE_RX, bounded)
+        self.assertIsNotNone(match, "bounded flag-token run lane not matched")
+        self.assertRegex(
+            bounded[: match.start()],
+            _LANE_HEAD_BOUND_RX,
+            "bound not required at the head end of the flag-token run",
+        )
 
     def test_release_script_npm_ci_lanes_use_the_guarded_helper(self):
         # The release scripts run on maintainer machines, including macOS
