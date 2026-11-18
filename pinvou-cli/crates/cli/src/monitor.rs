@@ -293,11 +293,18 @@ fn snapshot_payload(
             // sample pair (counter wraparound, zero elapsed wall time)" and
             // prints like the system gauge's missing reading; `cores` is the
             // per-core normalization denominator (omitted when probing
-            // failed). In THIS lane both gauges are always `-`: the snapshot
-            // is taken once per process, and a usage percentage needs an
-            // interval, so the first sample has no predecessor (the same
-            // one-shot property the `not_applicable_headless` disclosures
-            // cover for self_perf and session_uptime).
+            // failed). In THIS lane both gauges are USUALLY `-`: the
+            // snapshot is taken once per process, and the process gauge
+            // always needs a predecessor to difference against. The system
+            // gauge is platform/probe dependent: the Windows PDH counter
+            // primes its query when the query opens and collects again in
+            // the sample, so `total_usage_pct` can already be available on
+            // the first outer snapshot there (macOS/Linux need a previous
+            // system-tick sample). The renderer prints whatever reading the
+            // snapshot carries, so a valid first-sample system reading is
+            // preserved (the same one-shot property the
+            // `not_applicable_headless` disclosures cover for self_perf and
+            // session_uptime).
             let mut line = format!(
                 "Cpu: {}\t{}",
                 crate::support::collapse_control_characters(&cpu.name),

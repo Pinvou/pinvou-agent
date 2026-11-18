@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+/// 单页查询的行数上限。服务端各列表查询把显式 limit 收敛到该值
+/// (`limit.clamp(1, PAGE_LIMIT_CAP)`);客户端逐页拉全量时必须恰好以
+/// 该值翻页——终止判据是"本页行数 < 该值",所以页长取小才危险:对端
+/// 如实执行更小的页长会让首窗即短页而静默截断;取大则只会被对端按本
+/// 值 clamp 收敛,无害。服务端与客户端共用一个常量,防止两侧页长漂移
+/// (漂移后果见 client::paged_all 的短页终止说明)。
+pub(crate) const PAGE_LIMIT_CAP: usize = 500;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessScope {
@@ -182,6 +190,18 @@ pub struct Document {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub already_exists: bool,
+}
+
+/// 回收站文档条目。线形协议是官方构建的形状:`collectionName` 与文档
+/// 字段并列在同一层,因此这里用 `serde(flatten)` 摊平,而不是本仓库
+/// `StoredDocument` 那种嵌套包装——换成嵌套序列化会静默破坏与官方主机
+/// 的线形兼容,勿"统一"。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedDocument {
+    #[serde(flatten)]
+    pub document: Document,
+    pub collection_name: String,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -394,6 +414,58 @@ mod wire_compat_tests {
         ] {
             assert!(json.get(key).is_some(), "legacy key missing on wire: {key}");
         }
+    }
+
+    // 回收站文档条目的官方线形:collectionName 与文档字段并列在同一层
+    // (serde(flatten) 摊平),绝不能出现嵌套 "document" 包装——其他测试
+    // 都经同一 Rust 结构往返,改回嵌套序列化它们依然全绿,只有对着
+    // 官方形状的裸 JSON 断言能抓住这种漂移。反序列化方向同时钉住官方
+    // 载荷缺 createdAt/updatedAt(serde default 占位)时的兼容。
+    #[test]
+    fn trashed_document_keeps_the_flat_official_wire_shape() {
+        let entry = TrashedDocument {
+            document: Document {
+                id: 7,
+                collection_id: 3,
+                name: "d.txt".into(),
+                ext: Some("txt".into()),
+                size: 4,
+                sha256: "sha".into(),
+                status: "ok".into(),
+                n_chunks: 1,
+                created_at: 0,
+                updated_at: 0,
+                deleted_at: Some(123),
+                error: None,
+                already_exists: false,
+            },
+            collection_name: "知识集".into(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            json.get("collectionName"),
+            Some(&serde_json::Value::from("知识集"))
+        );
+        assert_eq!(json.get("collectionId"), Some(&serde_json::Value::from(3)));
+        assert!(
+            json.get("document").is_none(),
+            "nested wrapper would break official hosts"
+        );
+        let canned: TrashedDocument = serde_json::from_value(serde_json::json!({
+            "id": 7,
+            "collectionId": 3,
+            "name": "d.txt",
+            "ext": "txt",
+            "size": 4,
+            "sha256": "sha",
+            "status": "ok",
+            "nChunks": 1,
+            "deletedAt": 123,
+            "error": null,
+            "collectionName": "知识集",
+        }))
+        .unwrap();
+        assert_eq!(canned, entry);
     }
 
     #[test]

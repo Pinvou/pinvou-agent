@@ -761,6 +761,26 @@ impl KnowledgeService {
             .map_err(|error| error.to_string())
     }
 
+    pub fn trashed_collections_page(
+        &self,
+        limit: Option<usize>,
+        offset: usize,
+    ) -> Result<Vec<Collection>, String> {
+        self.store
+            .list_trashed_collections_page(limit, offset)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn trashed_documents_page(
+        &self,
+        limit: Option<usize>,
+        offset: usize,
+    ) -> Result<Vec<TrashedDocument>, String> {
+        self.store
+            .list_trashed_documents_page(limit, offset)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn create_collection(
         &self,
         request: CreateCollectionRequest,
@@ -769,6 +789,17 @@ impl KnowledgeService {
         self.store
             .create_collection(&name, request.description.as_deref())
             .map_err(|error| error.to_string())
+    }
+
+    pub fn update_collection(
+        &self,
+        id: i64,
+        request: CreateCollectionRequest,
+    ) -> Result<Collection, String> {
+        let name = normalized_name(&request.name, "知识集")?;
+        self.store
+            .update_collection(id, &name, request.description.as_deref())
+            .map_err(rename_error_message)
     }
 
     pub fn trash_collection(&self, id: i64) -> Result<(), String> {
@@ -1428,6 +1459,17 @@ fn normalized_name(value: &str, fallback: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+/// 改名错误只把"查无此行(不存在或已进回收站)"翻译成业务缺失;其余
+/// store 错误(BUSY、磁盘 I/O 等)原样透传,不把真实故障误报成
+/// "知识集不存在"。独立成函数以便对 BUSY 分支做单元测试(见
+/// rename_error_mapping_only_swallows_missing_rows)。
+fn rename_error_message(error: rusqlite::Error) -> String {
+    match error {
+        rusqlite::Error::QueryReturnedNoRows => "知识集不存在或已删除".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn normalized_required_name(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
@@ -1982,6 +2024,101 @@ mod tests {
             std::fs::read_dir(&service.documents_dir).unwrap().count(),
             1
         );
+    }
+
+    // PUT 更新是全量替换:None 清空描述(而非保留旧值),空白名称回落到
+    // 默认名"知识集";回收站中的知识集必须先恢复才能再改。
+    #[tokio::test]
+    async fn update_collection_full_replaces_description_and_blank_name_falls_back() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "specs".to_string(),
+                description: Some("original".to_string()),
+            })
+            .unwrap();
+
+        let renamed = service
+            .update_collection(
+                collection.id,
+                CreateCollectionRequest {
+                    name: "   ".to_string(),
+                    description: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(renamed.name, "知识集");
+        assert_eq!(renamed.description, None);
+
+        let too_long = service
+            .update_collection(
+                collection.id,
+                CreateCollectionRequest {
+                    name: "x".repeat(121),
+                    description: Some("keep".to_string()),
+                },
+            )
+            .unwrap_err();
+        assert!(too_long.contains("名称无效或过长"));
+    }
+
+    #[tokio::test]
+    async fn update_collection_rejects_trashed_collection_until_restored() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "trash-me".to_string(),
+                description: Some("desc".to_string()),
+            })
+            .unwrap();
+
+        service.trash_collection(collection.id).unwrap();
+        let error = service
+            .update_collection(
+                collection.id,
+                CreateCollectionRequest {
+                    name: "renamed".to_string(),
+                    description: Some("desc".to_string()),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error, "知识集不存在或已删除");
+
+        service.restore_collection(collection.id).unwrap();
+        let restored = service
+            .update_collection(
+                collection.id,
+                CreateCollectionRequest {
+                    name: "renamed".to_string(),
+                    description: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(restored.name, "renamed");
+        assert_eq!(restored.description, None);
+    }
+
+    // 改名错误映射只吞"查无此行":BUSY/磁盘 I/O 等真实故障必须原样
+    // 透传,而不是被误报成"知识集不存在"。此前该分支不可注入故障
+    // (仓库内无法让 SQLite 真的 BUSY),抽出 rename_error_message 后
+    // 用合成错误即可钉住两个分支。
+    #[test]
+    fn rename_error_mapping_only_swallows_missing_rows() {
+        assert_eq!(
+            rename_error_message(rusqlite::Error::QueryReturnedNoRows),
+            "知识集不存在或已删除"
+        );
+        let busy = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some("database is locked".into()),
+        );
+        assert_eq!(rename_error_message(busy), "database is locked");
     }
 
     #[tokio::test]

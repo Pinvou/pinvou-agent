@@ -11,7 +11,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use crate::embedding::{blob_to_vec, vec_to_blob};
 use crate::model::{
     AccessScope, Collection, DeviceGrant, Document, JoinRequestRecord, JoinRequestStatus,
-    SearchHit, ShareRecord, SourceChunk,
+    PAGE_LIMIT_CAP, SearchHit, ShareRecord, SourceChunk, TrashedDocument,
 };
 
 const SCHEMA_VERSION: i64 = 3;
@@ -326,6 +326,33 @@ impl Store {
         })
     }
 
+    pub fn list_trashed_collections_page(
+        &self,
+        limit: Option<usize>,
+        offset: usize,
+    ) -> rusqlite::Result<Vec<Collection>> {
+        let limit = limit
+            .map(|value| {
+                i64::try_from(value.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64)
+            })
+            .unwrap_or(-1);
+        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+        self.with_read_connection(|connection| {
+            // 计数子查询刻意不加 deleted_at IS NULL 过滤(与 list_collections
+            // 的在用清单不同):回收站里的知识集,其挂载文档必然全部处于
+            // 已删状态,回收站视图要报告的正是"里面还有多少东西"。
+            let mut statement = connection.prepare(
+                "SELECT c.id,c.name,c.description,c.status,c.created_at,c.updated_at,c.deleted_at,\
+                 (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id),\
+                 (SELECT COUNT(*) FROM chunks k WHERE k.collection_id=c.id) \
+                 FROM collections c WHERE c.deleted_at IS NOT NULL \
+                 ORDER BY c.deleted_at DESC,c.id DESC LIMIT ?1 OFFSET ?2",
+            )?;
+            let rows = statement.query_map(params![limit, offset], map_collection)?;
+            rows.collect()
+        })
+    }
+
     pub fn create_collection(
         &self,
         name: &str,
@@ -364,6 +391,34 @@ impl Store {
                 .query_row(&sql, params![id], map_collection)
                 .optional()
         })
+    }
+
+    pub fn update_collection(
+        &self,
+        id: i64,
+        name: &str,
+        description: Option<&str>,
+    ) -> rusqlite::Result<Collection> {
+        // UPDATE 与回读同事务:响应里的名称/描述与本次写入严格一致,不会
+        // 把并发回收(或并发二次改名)误报成"知识集不存在",也不会回读
+        // 他人写入的值。行不存在或已进回收站时 UPDATE 落空、SELECT 查不到
+        // 活行,自然产生 QueryReturnedNoRows,调用方据此报告业务缺失。
+        let mut connection = self.conn.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE collections SET name=?2,description=?3,updated_at=?4 WHERE id=?1 AND deleted_at IS NULL",
+            params![id, name, description, now()],
+        )?;
+        let collection = transaction.query_row(
+            "SELECT c.id,c.name,c.description,c.status,c.created_at,c.updated_at,c.deleted_at,\
+             (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id AND d.deleted_at IS NULL),\
+             (SELECT COUNT(*) FROM chunks k JOIN documents d ON d.id=k.document_id WHERE k.collection_id=c.id AND d.deleted_at IS NULL) \
+             FROM collections c WHERE c.id=?1 AND c.deleted_at IS NULL",
+            params![id],
+            map_collection,
+        )?;
+        transaction.commit()?;
+        Ok(collection)
     }
 
     pub fn trash_collection(&self, id: i64) -> rusqlite::Result<()> {
@@ -540,12 +595,43 @@ impl Store {
              LIMIT ?2 OFFSET ?3"
         );
         let limit = limit
-            .map(|value| i64::try_from(value.clamp(1, 500)).unwrap_or(500))
+            .map(|value| {
+                i64::try_from(value.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64)
+            })
             .unwrap_or(-1);
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(&sql)?;
             let rows = statement.query_map(params![collection_id, limit, offset], map_document)?;
+            rows.collect()
+        })
+    }
+
+    pub fn list_trashed_documents_page(
+        &self,
+        limit: Option<usize>,
+        offset: usize,
+    ) -> rusqlite::Result<Vec<TrashedDocument>> {
+        let limit = limit
+            .map(|value| {
+                i64::try_from(value.clamp(1, PAGE_LIMIT_CAP)).unwrap_or(PAGE_LIMIT_CAP as i64)
+            })
+            .unwrap_or(-1);
+        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+        self.with_read_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT d.id,d.collection_id,d.name,d.ext,d.size,d.sha256,d.status,d.n_chunks,\
+                 d.deleted_at,d.error,c.name \
+                 FROM documents d JOIN collections c ON c.id=d.collection_id \
+                 WHERE d.deleted_at IS NOT NULL AND c.deleted_at IS NULL \
+                 ORDER BY d.deleted_at DESC,d.id DESC LIMIT ?1 OFFSET ?2",
+            )?;
+            let rows = statement.query_map(params![limit, offset], |row| {
+                Ok(TrashedDocument {
+                    document: map_document(row)?,
+                    collection_name: row.get(10)?,
+                })
+            })?;
             rows.collect()
         })
     }
@@ -1102,7 +1188,9 @@ impl Store {
             statement
                 .query_map(
                     params![
-                        limit.map(|value| value.clamp(1, 500) as i64).unwrap_or(-1),
+                        limit
+                            .map(|value| value.clamp(1, PAGE_LIMIT_CAP) as i64)
+                            .unwrap_or(-1),
                         offset as i64
                     ],
                     map_join_request,
@@ -1265,6 +1353,10 @@ impl Store {
                 )
                 .optional()
         })?;
+        // No presence write-back here: `last_seen_at` has no reader (see
+        // `map_device`'s wire-compat placeholder), and sweep #661 removed
+        // exactly this write as verified-unread telemetry. Re-land it only
+        // together with the reader half.
         Ok(device.filter(|grant| !grant.revoked))
     }
 
@@ -1284,7 +1376,9 @@ impl Store {
             )?;
             let rows = statement.query_map(
                 params![
-                    limit.map(|value| value.clamp(1, 500) as i64).unwrap_or(-1),
+                    limit
+                        .map(|value| value.clamp(1, PAGE_LIMIT_CAP) as i64)
+                        .unwrap_or(-1),
                     offset as i64
                 ],
                 map_device,
@@ -2421,6 +2515,39 @@ mod tests {
         assert_eq!(authorized.unwrap().id, "reader-1");
     }
 
+    // authorize_token 必须保持只读:sweep #661 以"写入值无读者"为由移除了
+    // last_seen_at 回写,fixwave 恢复只读后此前只靠现场注释约束。这里
+    // 直读 devices 表的 last_seen_at 列(map_device 的 None 是写死占位,
+    // 看不见真实列值),把披露钉成断言:再次授权后列值仍为 NULL——
+    // 突变对照:重新引入回写 UPDATE 后本用例落红。
+    #[test]
+    fn authorize_token_stays_read_only() {
+        let store = Store::in_memory().unwrap();
+        add_device(
+            &store,
+            "reader-1",
+            "Reader",
+            crate::model::AccessScope::Read,
+            "known-token-hash",
+        )
+        .unwrap();
+        store.authorize_token("known-token-hash").unwrap();
+        store.authorize_token("known-token-hash").unwrap();
+        let last_seen: Option<i64> = store
+            .conn
+            .lock()
+            .query_row(
+                "SELECT last_seen_at FROM devices WHERE id = 'reader-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            last_seen, None,
+            "authorize_token must not write last_seen_at"
+        );
+    }
+
     #[test]
     fn device_pages_are_bounded_and_stable() {
         let store = Store::in_memory().unwrap();
@@ -2582,17 +2709,14 @@ mod tests {
             .unwrap();
         store.trash_collection(trashed_collection.id).unwrap();
 
-        // The recycle-bin listing is owned by the v1 includeDeleted query;
-        // this only verifies the deleted entry is still retained before the
-        // permanent delete — the cleanup behavior is covered by the
-        // permanent-delete assertions below.
-        assert!(store.document(trashed_document.id, true).unwrap().is_some());
-        assert!(
-            store
-                .collection(trashed_collection.id, true)
-                .unwrap()
-                .is_some()
-        );
+        let documents = store.list_trashed_documents_page(Some(200), 0).unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].document.id, trashed_document.id);
+        assert_eq!(documents[0].collection_name, "在用资料");
+        let collections = store.list_trashed_collections_page(Some(200), 0).unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].id, trashed_collection.id);
+        assert_eq!(collections[0].doc_count, 2);
 
         assert!(
             store
@@ -2626,6 +2750,44 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))
             .unwrap();
         assert_eq!(chunk_count, 0);
+    }
+
+    // 改名是"UPDATE+回读"同事务的原子操作:活行改名返回更新后的完整行;
+    // 回收站中的行与不存在的 id 都必须原样拒绝(QueryReturnedNoRows)。
+    // SELECT 的 deleted_at 守卫是缺失哨兵的产生者,由 unwrap_err 断言
+    // 钉住;UPDATE 的同款守卫是纵深防御——回读失败即回滚,单独去掉它
+    // 在本层不可观察(突变实证:写被回滚吞掉,全量用例依旧绿),其
+    // 价值在于不依赖回滚结构的意图表达。
+    #[test]
+    fn update_collection_renames_atomically_and_rejects_absent_rows() {
+        let store = Store::in_memory().unwrap();
+        let live = store.create_collection("旧名", Some("原始描述")).unwrap();
+        let renamed = store
+            .update_collection(live.id, "新名", Some("替换描述"))
+            .unwrap();
+        assert_eq!(renamed.name, "新名");
+        assert_eq!(renamed.description.as_deref(), Some("替换描述"));
+        assert_eq!(
+            store
+                .collection(live.id, false)
+                .unwrap()
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("替换描述")
+        );
+
+        let trashed = store.create_collection("回收站集", None).unwrap();
+        store.trash_collection(trashed.id).unwrap();
+        let error = store
+            .update_collection(trashed.id, "偷改", None)
+            .unwrap_err();
+        assert!(matches!(error, rusqlite::Error::QueryReturnedNoRows));
+        let untouched = store.collection(trashed.id, true).unwrap().unwrap();
+        assert_eq!(untouched.name, "回收站集");
+
+        let missing = store.update_collection(999_999, "ghost", None).unwrap_err();
+        assert!(matches!(missing, rusqlite::Error::QueryReturnedNoRows));
     }
 
     #[test]

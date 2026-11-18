@@ -374,8 +374,10 @@ impl KnowledgeClient {
         .await
     }
 
+    /// 设备清单。与其它无 `_page` 后缀的清单方法一致,逐页取全量返回:
+    /// 设备数超过旧实现硬编码的 200 首窗时,多出的设备此前会静默不可见。
     pub async fn devices(&self) -> Result<Vec<DeviceGrant>, String> {
-        self.get("/api/v2/owner/devices?limit=200&offset=0").await
+        self.paged_all("/api/v2/owner/devices").await
     }
 
     pub async fn update_device(
@@ -397,6 +399,71 @@ impl KnowledgeClient {
             &format!("/api/v2/owner/devices/{device_id}"),
         )
         .await
+    }
+
+    /// 逐页安全上界:短页终止依赖对端真的按 offset 翻页,对端若忽略
+    /// offset(恒回整页)会让循环无界追加同一批条目。到达 100 个整页
+    /// (约 5 万条)时再多取一页判别(见[`Self::paged_all`]),仍整页则
+    /// 快速报错而不是挂死客户端——超界报错,不静默截断。报错只说明
+    /// "清单超过分页上界,或对端未按 offset 翻页"两种可能之一,不能
+    /// 归咎对端。
+    const PAGED_MAX_PAGES: usize = 100;
+
+    /// 逐页拉全 `base_path` 清单:服务端按 offset 分页且无总数返回,只在
+    /// 短页处终止;否则首窗之外的条目会静默不可见(清单条目无上界)。页长
+    /// 恰好取 [`PAGE_LIMIT_CAP`](与服务端 clamp 上限共用一个常量,防止两
+    /// 侧漂移后短页提前触发而静默截断),边界整页由下一页空结果收尾(多
+    /// 一次空页往返,不挂死),排序键(如 (deleted_at, id))保证分页间稳定。
+    /// 整页数到达 [`Self::PAGED_MAX_PAGES`] 时再多取一页判别归属:短页说
+    /// 明对端确实持有这么多条目,把该页并入后正常收尾(50,499 条以内的
+    /// 合法清单不误报);仍是整页则报错——两种可能:清单超过分页上界
+    /// (对端完全正常),或对端未按 offset 翻页(恒回整页)。注意短页
+    /// 终止假设对端页长不低于 [`PAGE_LIMIT_CAP`]:这只在本仓库对端成立
+    /// (共享同一常量);外部对端若把页长压得更低,首窗即短页,循环会
+    /// 静默提前终止,该形状无法在协议内检测。另外整个翻页过程只有单
+    /// 请求超时,没有总预算:对端若每次都在超时边缘缓慢应答,最坏拖满
+    /// 101 个单请求超时才报错;局域网成对场景按可接受处理。
+    async fn paged_all<T: DeserializeOwned>(&self, base_path: &str) -> Result<Vec<T>, String> {
+        let mut all = Vec::new();
+        let mut offset = 0;
+        let mut full_pages = 0usize;
+        loop {
+            let page: Vec<T> = self
+                .get(&format!(
+                    "{base_path}?limit={PAGE_LIMIT_CAP}&offset={offset}"
+                ))
+                .await?;
+            let fetched = page.len();
+            all.extend(page);
+            if fetched < PAGE_LIMIT_CAP {
+                return Ok(all);
+            }
+            offset += fetched;
+            full_pages += 1;
+            if full_pages >= Self::PAGED_MAX_PAGES {
+                let probe: Vec<T> = self
+                    .get(&format!(
+                        "{base_path}?limit={PAGE_LIMIT_CAP}&offset={offset}"
+                    ))
+                    .await?;
+                if probe.len() >= PAGE_LIMIT_CAP {
+                    return Err(format!(
+                        "分页异常:已连续取到 {}+1 个整页仍未遇到短页,清单可能超过约 5 万条的分页上界,或对端未按 offset 翻页",
+                        Self::PAGED_MAX_PAGES
+                    ));
+                }
+                all.extend(probe);
+                return Ok(all);
+            }
+        }
+    }
+
+    pub async fn trashed_collections(&self) -> Result<Vec<Collection>, String> {
+        self.paged_all("/api/v2/owner/trash/collections").await
+    }
+
+    pub async fn trashed_documents(&self) -> Result<Vec<TrashedDocument>, String> {
+        self.paged_all("/api/v2/owner/trash/documents").await
     }
 
     pub async fn permanently_delete_collection(&self, id: i64) -> Result<(), String> {
@@ -439,6 +506,19 @@ impl KnowledgeClient {
         self.post("/api/v1/collections", request).await
     }
 
+    pub async fn update_collection(
+        &self,
+        id: i64,
+        request: &CreateCollectionRequest,
+    ) -> Result<Collection, String> {
+        self.send_json(
+            Method::PUT,
+            &format!("/api/v1/collections/{id}"),
+            Some(request),
+        )
+        .await
+    }
+
     pub async fn delete_collection(&self, id: i64) -> Result<(), String> {
         self.send_empty(Method::DELETE, &format!("/api/v1/collections/{id}"))
             .await
@@ -447,6 +527,22 @@ impl KnowledgeClient {
     pub async fn restore_collection(&self, id: i64) -> Result<(), String> {
         self.send_empty(Method::POST, &format!("/api/v1/collections/{id}/restore"))
             .await
+    }
+
+    /// 官方构建的非分页清单便捷面:不带 limit/offset,由服务端一次返回
+    /// 全量。注意响应仍受客户端 8MiB 单响应上限约束,清单很大时(数万
+    /// 条量级)会显式报错而不是静默截断;更大的清单用 [`Self::documents_page`]
+    /// 逐窗取。
+    pub async fn documents(
+        &self,
+        collection_id: i64,
+        include_deleted: bool,
+    ) -> Result<Vec<Document>, String> {
+        self.get(&format!(
+            "/api/v1/collections/{collection_id}/documents?includeDeleted={}",
+            if include_deleted { "true" } else { "false" }
+        ))
+        .await
     }
 
     pub async fn documents_page(
@@ -485,7 +581,7 @@ impl KnowledgeClient {
         self.upload_bytes(collection_id, filename, bytes).await
     }
 
-    async fn upload_bytes(
+    pub async fn upload_bytes(
         &self,
         collection_id: i64,
         filename: &str,

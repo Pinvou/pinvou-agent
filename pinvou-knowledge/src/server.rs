@@ -98,8 +98,16 @@ pub fn router(service: Arc<KnowledgeService>) -> Router {
             patch(owner_update_device).delete(owner_delete_device),
         )
         .route(
+            "/api/v2/owner/trash/collections",
+            get(owner_trashed_collections),
+        )
+        .route(
             "/api/v2/owner/trash/collections/{id}",
             axum::routing::delete(owner_permanently_delete_collection),
+        )
+        .route(
+            "/api/v2/owner/trash/documents",
+            get(owner_trashed_documents),
         )
         .route(
             "/api/v2/owner/trash/documents/{id}",
@@ -115,7 +123,7 @@ pub fn router(service: Arc<KnowledgeService>) -> Router {
         )
         .route(
             "/api/v1/collections/{id}",
-            axum::routing::delete(delete_collection),
+            put(update_collection).delete(delete_collection),
         )
         .route("/api/v1/collections/{id}/restore", post(restore_collection))
         .route(
@@ -378,6 +386,32 @@ fn map_device_mutation_error(error: DeviceMutationError) -> ApiError {
     }
 }
 
+async fn owner_trashed_collections(
+    State(service): State<Arc<KnowledgeService>>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> ApiResult<Json<Vec<Collection>>> {
+    require_owner_device(&service, &headers)?;
+    Ok(Json(
+        service
+            .trashed_collections_page(query.limit, query.offset)
+            .map_err(ApiError::internal)?,
+    ))
+}
+
+async fn owner_trashed_documents(
+    State(service): State<Arc<KnowledgeService>>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> ApiResult<Json<Vec<TrashedDocument>>> {
+    require_owner_device(&service, &headers)?;
+    Ok(Json(
+        service
+            .trashed_documents_page(query.limit, query.offset)
+            .map_err(ApiError::internal)?,
+    ))
+}
+
 async fn owner_permanently_delete_collection(
     State(service): State<Arc<KnowledgeService>>,
     headers: HeaderMap,
@@ -500,6 +534,20 @@ async fn create_collection(
     ))
 }
 
+async fn update_collection(
+    State(service): State<Arc<KnowledgeService>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(request): Json<CreateCollectionRequest>,
+) -> ApiResult<Json<Collection>> {
+    require_access(&service, &headers, true)?;
+    Ok(Json(
+        service
+            .update_collection(id, request)
+            .map_err(ApiError::bad_request)?,
+    ))
+}
+
 async fn delete_collection(
     State(service): State<Arc<KnowledgeService>>,
     headers: HeaderMap,
@@ -531,6 +579,8 @@ async fn documents(
     Query(query): Query<DocumentListQuery>,
 ) -> ApiResult<Json<Vec<Document>>> {
     require_access(&service, &headers, query.include_deleted)?;
+    // 缺省 limit/offset 时 documents_page 以 LIMIT -1 返回全量,与非分页
+    // 清单同一条路径,无需分支。
     let documents = service.documents_page(id, query.include_deleted, query.limit, query.offset);
     Ok(Json(documents.map_err(ApiError::internal)?))
 }
@@ -943,6 +993,673 @@ mod tests {
         assert_eq!(collections.status(), StatusCode::UNAUTHORIZED);
         let body = collections.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("访问令牌"));
+    }
+
+    // 回收站清单 v2 路由必须真实可达:GET /api/v2/owner/trash/{collections,
+    // documents} 返回 owner 作用域的清单,文档条目带所属知识集名;未认证请求
+    // 保持 401。这与客户端 trashed_* 方法一一对应,防止路由再次被整段移除。
+    #[tokio::test]
+    async fn owner_trash_listings_serve_collections_and_documents() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0004";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+
+        let active = service
+            .create_collection(CreateCollectionRequest {
+                name: "在用资料".to_string(),
+                description: None,
+            })
+            .unwrap();
+        let document = service
+            .upload_document(active.id, "doc.txt", b"body".to_vec())
+            .await
+            .unwrap();
+        service.trash_document(document.id).unwrap();
+
+        let trashed = service
+            .create_collection(CreateCollectionRequest {
+                name: "待删集".to_string(),
+                description: None,
+            })
+            .unwrap();
+        service.trash_collection(trashed.id).unwrap();
+        let app = router(service.clone());
+
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v2/owner/trash/collections?limit=10&offset=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        // 文档腿与集合腿同一守卫,未认证同样 401。突变对照:任一腿丢掉
+        // require_owner_device 后,对应腿的本断言落空。
+        let unauthenticated_documents = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v2/owner/trash/documents?limit=10&offset=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated_documents.status(), StatusCode::UNAUTHORIZED);
+
+        // 已认证但非 owner 的设备对两条回收站腿都只有 403:回收站清单是
+        // owner 专属面(比 manage 更严,已删内容的元数据不给成员看)。
+        // 突变对照:两腿换成 require_access(manage 判定)后,本腿以 200
+        // 落红。
+        let reader_credentials = crate::client::new_join_credentials();
+        let reader_join = service
+            .submit_join_request(
+                "192.168.1.31".parse().unwrap(),
+                JoinRequestCreate {
+                    device_name: "Reader".to_string(),
+                    device_token_hash: reader_credentials.device_token_hash.clone(),
+                    claim_secret: reader_credentials.claim_secret.clone(),
+                    share_secret: None,
+                },
+            )
+            .unwrap();
+        service
+            .approve_join_request(&reader_join.request.id, AccessScope::Read)
+            .unwrap();
+        for uri in [
+            "/api/v2/owner/trash/collections?limit=10&offset=0",
+            "/api/v2/owner/trash/documents?limit=10&offset=0",
+        ] {
+            let mut reader = Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            add_bearer(&mut reader, &reader_credentials.device_token);
+            let response = app.clone().oneshot(reader).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "腿 {uri}");
+        }
+
+        let mut collections = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/collections?limit=10&offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut collections, owner_token);
+        let response = app.clone().oneshot(collections).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed: Vec<Collection> = decode_body(response).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, trashed.id);
+
+        let mut documents = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/documents?limit=10&offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut documents, owner_token);
+        let response = app.oneshot(documents).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed: Vec<TrashedDocument> = decode_body(response).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].document.id, document.id);
+        assert_eq!(listed[0].collection_name, "在用资料");
+    }
+
+    // 省略 limit 的手动调用必须返回全量清单,而不是回落到某个静默截断的
+    // 默认窗——响应没有总数字段,截断对调用方不可见;owner_devices 与
+    // owner_join_requests 的约定都是 None=不限,回收站清单(知识与文档
+    // 两条腿)保持一致。201 条跨过旧的 unwrap_or(200) 默认窗:不带
+    // limit → 全量;显式 limit=10 → 仍是单窗分页语义。突变对照:任一
+    // 条 store 查询恢复 unwrap_or(200) 后,对应的不带 limit 断言恰好
+    // 取到 200 ≠ 201 而落红。
+    #[tokio::test]
+    async fn trash_listing_without_limit_lists_everything() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0008";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+        for index in 0..201 {
+            let created = service
+                .create_collection(CreateCollectionRequest {
+                    name: format!("限界集 {index:03}"),
+                    description: None,
+                })
+                .unwrap();
+            service.trash_collection(created.id).unwrap();
+        }
+        let app = router(service.clone());
+
+        let mut unbounded = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/collections?offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut unbounded, owner_token);
+        let response = app.clone().oneshot(unbounded).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed: Vec<Collection> = decode_body(response).await;
+        assert_eq!(listed.len(), 201);
+
+        let mut windowed = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/collections?limit=10&offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut windowed, owner_token);
+        let response = app.oneshot(windowed).await.unwrap();
+        let window: Vec<Collection> = decode_body(response).await;
+        assert_eq!(window.len(), 10);
+
+        // 文档腿的 None=全量约定同样钉住:客户端翻页恒带显式 limit,只有
+        // 手动 GET 才会触发缺省 limit,而文档清单的缺省分支此前同样回落
+        // unwrap_or(200)。201 条文档恰好跨过旧默认窗;突变对照:恢复
+        // unwrap_or(200) 后本断言取到 200 ≠ 201 落红。limit=0 收敛到
+        // 1 行、超界 offset 返回空,分页边界对调用方无意外。
+        let live = service
+            .create_collection(CreateCollectionRequest {
+                name: "文档宿主".to_string(),
+                description: None,
+            })
+            .unwrap();
+        for index in 0..201 {
+            let document = service
+                .upload_document(
+                    live.id,
+                    &format!("限界文档{index:03}.txt"),
+                    b"body".to_vec(),
+                )
+                .await
+                .unwrap();
+            service.trash_document(document.id).unwrap();
+        }
+        let app = router(service);
+
+        let mut documents_all = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/documents?offset=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut documents_all, owner_token);
+        let response = app.clone().oneshot(documents_all).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let documents: Vec<TrashedDocument> = decode_body(response).await;
+        assert_eq!(documents.len(), 201);
+
+        let mut zero_limit = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/documents?limit=0")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut zero_limit, owner_token);
+        let response = app.clone().oneshot(zero_limit).await.unwrap();
+        let zero_window: Vec<TrashedDocument> = decode_body(response).await;
+        assert_eq!(zero_window.len(), 1, "limit=0 收敛到单行");
+
+        let mut beyond = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v2/owner/trash/documents?limit=10&offset=9999")
+            .body(Body::empty())
+            .unwrap();
+        add_bearer(&mut beyond, owner_token);
+        let response = app.oneshot(beyond).await.unwrap();
+        let beyond_window: Vec<TrashedDocument> = decode_body(response).await;
+        assert!(beyond_window.is_empty());
+    }
+
+    // PUT /api/v1/collections/{id} 必须真实可达:owner 令牌完成全量替换
+    // 改名(响应回读新名称与新描述),未认证保持 401,只读设备保持 403。
+    // 与回收站 v2 路由同理——这条 rename 链路曾被整段移除过,不能只靠
+    // service 层测试保护路由表。突变对照:路由表去掉 .put(update_collection)
+    // 后,重命名腿以 405 落红;require_access 丢掉 manage 判定后,只读腿
+    // 以 200 落红。
+    #[tokio::test]
+    async fn update_collection_route_serves_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0009";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "旧名".to_string(),
+                description: Some("原始描述".to_string()),
+            })
+            .unwrap();
+        let app = router(service.clone());
+
+        let unauthenticated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!("/api/v1/collections/{}", collection.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"新名"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+        // 只读设备的 manage 写入必须 403(而不是 401/404):改名是管理面
+        // 操作,已认证的只读设备不能借道改写知识集。突变对照:require_access
+        // 丢掉 manage 判定后本腿以 200 落红。
+        let reader_credentials = crate::client::new_join_credentials();
+        let reader_join = service
+            .submit_join_request(
+                "192.168.1.30".parse().unwrap(),
+                JoinRequestCreate {
+                    device_name: "Reader".to_string(),
+                    device_token_hash: reader_credentials.device_token_hash.clone(),
+                    claim_secret: reader_credentials.claim_secret.clone(),
+                    share_secret: None,
+                },
+            )
+            .unwrap();
+        service
+            .approve_join_request(&reader_join.request.id, AccessScope::Read)
+            .unwrap();
+        let mut reader = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/api/v1/collections/{}", collection.id))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"越权名"}"#))
+            .unwrap();
+        add_bearer(&mut reader, &reader_credentials.device_token);
+        let response = app.clone().oneshot(reader).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let mut rename = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/api/v1/collections/{}", collection.id))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"新名","description":"替换描述"}"#))
+            .unwrap();
+        add_bearer(&mut rename, owner_token);
+        let response = app.oneshot(rename).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let renamed: Collection = decode_body(response).await;
+        assert_eq!(renamed.name, "新名");
+        assert_eq!(renamed.description.as_deref(), Some("替换描述"));
+    }
+
+    // 客户端回收站清单必须翻页取全量:服务端按 offset 分页且不返回总数,
+    // 首窗硬编码(limit=200)会静默截断,第 201 条起对用户不可见。清单与
+    // 文档两条腿各 600 条,都跨过单页上限 500 验证聚合;顺序断言钉住
+    // (deleted_at DESC, id DESC)——同一 fixture 里回收时间随 id 单调,
+    // 聚合结果必须严格按 id 降序,翻页方向突变(ASC)或跨页重复都会在此
+    // 落红。文档腿同时钉住 client.documents() 非分页清单(含/不含已删)。
+    // 走真实回环 HTTP,与 KnowledgeClient 全链路一致。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_clients_page_through_every_offset() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0006";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+
+        let active = service
+            .create_collection(CreateCollectionRequest {
+                name: "在用资料".to_string(),
+                description: None,
+            })
+            .unwrap();
+        for index in 0..600 {
+            let created = service
+                .create_collection(CreateCollectionRequest {
+                    name: format!("回收站 {index:03}"),
+                    description: None,
+                })
+                .unwrap();
+            service.trash_collection(created.id).unwrap();
+        }
+        for index in 0..600 {
+            let document = service
+                .upload_document(active.id, &format!("doc{index}.txt"), b"body".to_vec())
+                .await
+                .unwrap();
+            service.trash_document(document.id).unwrap();
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(router(service).into_make_service_with_connect_info::<SocketAddr>()),
+        );
+
+        let client =
+            crate::client::KnowledgeClient::new(&format!("http://{address}"), owner_token).unwrap();
+        let listed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("回收站清单翻页不得挂死")
+        .unwrap();
+        assert_eq!(listed.len(), 600);
+        assert!(
+            listed.windows(2).all(|pair| pair[0].id > pair[1].id),
+            "回收站清单跨页聚合必须保持 (deleted_at DESC, id DESC) 顺序"
+        );
+        let documents = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_documents(),
+        )
+        .await
+        .expect("回收站文档清单翻页不得挂死")
+        .unwrap();
+        assert_eq!(documents.len(), 600);
+        assert!(
+            documents
+                .windows(2)
+                .all(|pair| pair[0].document.id > pair[1].document.id),
+            "回收站文档清单跨页聚合必须保持 (deleted_at DESC, id DESC) 顺序"
+        );
+        let all_documents = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.documents(active.id, true),
+        )
+        .await
+        .expect("非分页文档清单不得挂死")
+        .unwrap();
+        assert_eq!(all_documents.len(), 600);
+        let live_documents = client.documents(active.id, false).await.unwrap();
+        assert_eq!(live_documents.len(), 0);
+    }
+
+    // 恰好整页(500 = 单页上限)必须多取一页空结果收尾:终止条件退化成
+    // `fetched <= 上限` 时永远只取首页(静默截断,由 600 条用例抓红),
+    // offset 不按页长推进时窗口重叠或原地重取(突变实证两用例皆红);
+    // 旧实现(200 首窗)则只返回 200 不足 500。外层 timeout 把病态
+    // 循环兜底成测试失败而非套件挂起。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_boundary_page_terminates_cleanly() {
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let owner_token = "host-owner-token-that-is-long-enough-0007";
+        service
+            .ensure_host_owner("Host PINVOU", owner_token)
+            .unwrap();
+
+        for index in 0..500 {
+            let created = service
+                .create_collection(CreateCollectionRequest {
+                    name: format!("边界集 {index:03}"),
+                    description: None,
+                })
+                .unwrap();
+            service.trash_collection(created.id).unwrap();
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(router(service).into_make_service_with_connect_info::<SocketAddr>()),
+        );
+
+        let client =
+            crate::client::KnowledgeClient::new(&format!("http://{address}"), owner_token).unwrap();
+        let listed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("整页边界必须终止")
+        .unwrap();
+        assert_eq!(listed.len(), 500);
+    }
+
+    // 对端不按 offset 翻页(恒回整页)时,短页终止永不触发,循环会无界
+    // 追加同一批条目直到内存耗尽。参考实现对 offset 有界,已由上面两用例
+    // 覆盖;这里用不识别 offset 的最小桩路由(直接回固定整页)钉住页数
+    // 上界:上界后的判别页仍是整页时必须快速报错而不是挂死或静默截断。
+    // 报错文案对"清单超过约 5 万条上界"与"对端异常"两种可能都保留余地
+    // (合法大清单在对端正常时也会走到这里),断言只钉"整页"关键词。
+    // 突变对照:放宽 paged_all 的页数上界后,本用例被外层 timeout 兜底为
+    // 失败;让判别页无条件收尾(不检查是否整页)则本用例的 unwrap_err
+    // 直接落空。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_peer_ignoring_offset_errors_at_page_cap() {
+        async fn always_full_page() -> Json<Vec<Collection>> {
+            let entry = Collection {
+                id: 1,
+                name: "病态对端".to_string(),
+                description: None,
+                status: "active".to_string(),
+                doc_count: 0,
+                chunk_count: 0,
+                total_bytes: 0,
+                created_at: 0,
+                updated_at: 0,
+                deleted_at: Some(0),
+            };
+            Json(vec![entry; crate::model::PAGE_LIMIT_CAP])
+        }
+        let app = Router::new().route("/api/v2/owner/trash/collections", get(always_full_page));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>()),
+        );
+
+        let client = crate::client::KnowledgeClient::new(
+            &format!("http://{address}"),
+            "stub-token-not-checked-by-the-fixtures",
+        )
+        .unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("页数上界必须让病态对端快速失败而非挂死")
+        .unwrap_err();
+        assert!(error.contains("整页"), "实际错误:{error}");
+    }
+
+    // client.devices() 与其它无 _page 后缀的清单方法一样必须逐页取全量:
+    // 旧实现硬编码 ?limit=200&offset=0 首窗,设备数超过 200 时其余设备
+    // 静默不可见。这里用按 limit/offset 真实切片的桩路由钉住 600 台设备
+    // 跨页聚合与顺序;缺省 limit 返回全量,与真服务端 None=不限的约定
+    // 一致(paged_all 恒带显式 limit,缺省分支仅为忠实对齐)。突变对照:
+    // devices() 退回单窗 ?limit=200 时,本用例恰好取到 200 ≠ 600 而落红。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn devices_client_pages_through_every_offset() {
+        #[derive(Deserialize)]
+        struct StubPageQuery {
+            limit: Option<usize>,
+            #[serde(default)]
+            offset: usize,
+        }
+        async fn paging_stub(
+            State(items): State<std::sync::Arc<Vec<DeviceGrant>>>,
+            Query(query): Query<StubPageQuery>,
+        ) -> Json<Vec<DeviceGrant>> {
+            let limit = query
+                .limit
+                .map(|value| value.clamp(1, crate::model::PAGE_LIMIT_CAP))
+                .unwrap_or(items.len());
+            Json(
+                items
+                    .iter()
+                    .skip(query.offset)
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+            )
+        }
+        let devices: std::sync::Arc<Vec<DeviceGrant>> = std::sync::Arc::new(
+            (0..600)
+                .map(|index| DeviceGrant {
+                    id: format!("device-{index:03}"),
+                    name: format!("设备 {index:03}"),
+                    scope: AccessScope::Read,
+                    created_at: 0,
+                    last_seen_at: None,
+                    revoked: false,
+                })
+                .collect(),
+        );
+        let app = Router::new()
+            .route("/api/v2/owner/devices", get(paging_stub))
+            .with_state(devices);
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>()),
+        );
+
+        let client = crate::client::KnowledgeClient::new(
+            &format!("http://{address}"),
+            "stub-token-not-checked-by-the-fixtures",
+        )
+        .unwrap();
+        let listed = tokio::time::timeout(std::time::Duration::from_secs(30), client.devices())
+            .await
+            .expect("设备清单翻页不得挂死")
+            .unwrap();
+        assert_eq!(listed.len(), 600);
+        assert!(
+            listed.windows(2).all(|pair| pair[0].id < pair[1].id),
+            "设备清单跨页聚合不得重复或乱序"
+        );
+    }
+
+    // 桩分页路由只认 limit/offset(与真服务端 clamp 一致),给判别分支
+    // 用例复用:两个规模各起一个服务,互不共享状态。
+    async fn spawn_collection_paging_stub(total: usize) -> String {
+        #[derive(Deserialize)]
+        struct StubPageQuery {
+            limit: Option<usize>,
+            #[serde(default)]
+            offset: usize,
+        }
+        async fn paging_stub(
+            State(items): State<std::sync::Arc<Vec<Collection>>>,
+            Query(query): Query<StubPageQuery>,
+        ) -> Json<Vec<Collection>> {
+            let limit = query
+                .limit
+                .map(|value| value.clamp(1, crate::model::PAGE_LIMIT_CAP))
+                .unwrap_or(items.len());
+            Json(
+                items
+                    .iter()
+                    .skip(query.offset)
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+            )
+        }
+        let collections: std::sync::Arc<Vec<Collection>> = std::sync::Arc::new(
+            (0..total)
+                .map(|index| Collection {
+                    id: index as i64 + 1,
+                    name: format!("大清单 {index:06}"),
+                    description: None,
+                    status: "active".to_string(),
+                    doc_count: 0,
+                    chunk_count: 0,
+                    total_bytes: 0,
+                    created_at: 0,
+                    updated_at: 0,
+                    deleted_at: Some(0),
+                })
+                .collect(),
+        );
+        let app = Router::new()
+            .route("/api/v2/owner/trash/collections", get(paging_stub))
+            .with_state(collections);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(
+            axum_server::from_tcp(listener)
+                .unwrap()
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>()),
+        );
+        format!("http://{address}")
+    }
+
+    // 合法大清单恰好压在页数上界时,判别页必须并入而不是误报:50,250 条
+    // = 100 个整页 + 250 条短尾页,paged_all 的判别分支把短判别页并入后
+    // 正常收尾——"约 5 万条以内的合法清单不误报"只有这条路径成立,此前
+    // 只有判别页整页的报错腿有测试。突变对照:丢弃判别页并入
+    // (all.extend(probe))后本用例以 50,000 ≠ 50,250 落红。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_probe_short_merges_the_tail_page() {
+        let base = spawn_collection_paging_stub(50_250).await;
+        let client =
+            crate::client::KnowledgeClient::new(&base, "stub-token-not-checked-by-the-fixtures")
+                .unwrap();
+        let listed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("合法大清单翻页不得挂死")
+        .unwrap();
+        assert_eq!(listed.len(), 50_250);
+        assert!(
+            listed.windows(2).all(|pair| pair[0].id < pair[1].id),
+            "跨页聚合不得重复或乱序"
+        );
+    }
+
+    // 对端完全正常、只是清单超过判别上界(50,500 条)时,同样必须快速
+    // 报错而不是静默截断;错误文案对"超上界"与"对端异常"两种可能都
+    // 保留余地。突变对照:判别页整页时误并入收尾,本用例的 unwrap_err
+    // 落空(该突变同时被病态对端用例钉住,这里补钉对端正常的形状)。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trash_listing_legit_peer_over_cap_errors_loudly() {
+        let base = spawn_collection_paging_stub(50_500).await;
+        let client =
+            crate::client::KnowledgeClient::new(&base, "stub-token-not-checked-by-the-fixtures")
+                .unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.trashed_collections(),
+        )
+        .await
+        .expect("页数上界必须让超界清单快速失败而非挂死")
+        .unwrap_err();
+        assert!(error.contains("整页"), "实际错误:{error}");
     }
 
     // 懒装载时代的廉价校验回归:空查询/超量知识集选择必须在模型装载门之前
