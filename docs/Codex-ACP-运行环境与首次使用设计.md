@@ -1,6 +1,6 @@
 # Codex ACP 运行环境与首次使用设计
 
-> 文档状态：已归档（2026-07-23 设计记录；分支 `feat/codex-acp` 不在本仓库）
+> 文档状态：已归档（2026-07-23 设计记录；分支 `feat/codex-acp` 已删除，历史经公开备份引用 `backup/feat-codex-acp-before-history-restore-e298ab34` 保留）
 >
 > 落地情况（2026-11 归档注记）：Bridge 打包、事件合同、权限模式与工作区模型的思路已落地；
 > §1、§5–§9、§11、§14、§15、§17 中描述的托管 Codex 下载、`CodexRuntime*` 状态机
@@ -11,7 +11,7 @@
 > `login_codex_acp` 未落库（现行命令为 `install_acp_agent` / `login_acp_agent` /
 > `submit_acp_agent_login_code` / `open_acp_agent_login_url`）；§13 的**托管 Codex 下载**供应链
 > （签名发布索引 / CDN 托管产物）未被采纳——本地构建的 staging / manifest 校验已随现行
-> `prepare-codex-bridge-runtime.sh` 落地，现行 Bridge 运行时由该脚本下载并校验。
+> `pinvou3-app/scripts/prepare-codex-bridge-runtime.sh` 落地，现行 Bridge 运行时由该脚本下载并校验。
 >
 > 运行时现状以 [`codex-acp.md`](./codex-acp.md) 与 [`multi-agent-acp.md`](./multi-agent-acp.md) 为准。
 >
@@ -86,7 +86,7 @@ Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也
    组件损坏、登录过期、Codex 配置错误、网络错误和平台不支持。
 
 > 注（2026-11 归档）：本节为快照时点状态，多处「当前」已不成立——现行已带私有
-> Node Bridge（`scripts/prepare-codex-bridge-runtime.sh` 下载并 sha256 校验 Node
+> Node Bridge（`pinvou3-app/scripts/prepare-codex-bridge-runtime.sh` 下载并 sha256 校验 Node
 > 24.22.1，`install.rs` 含随包 bridge 候选），缺口 1 已解决；bridge 构建会剪除
 > `@openai/codex` 二进制，Codex CLI 由用户自行安装（`install.rs` 按
 > `PINVOU3_CODEX_ACP_BIN`/随包/私有目录/`PATH` 顺序解析的是 **adapter**；Codex CLI
@@ -333,7 +333,7 @@ CODEX_PATH=<system-codex-or-managed-codex>
 
 ### 6.4 安装策略
 
-采用“**系统 Codex 优先 + 托管 Codex 按需下载**”：
+采用“**系统 Codex 优先 + 托管 Codex 按需下载**”（⚠️ 快照口径：现行按 `select_newest_eligible` 择新可兼容者，见 §2 注与文首 banner）：
 
 - Linux 正式安装包只内置固定 Bridge Runtime，不内置大体积 Codex 平台二进制。
 - 进入“代码”模式时先检测系统 Codex 路径、版本并执行真实 ACP 探测。
@@ -385,7 +385,7 @@ Pinvou 不应：
 
 API Key 是高级备选，不是默认首次使用路径：
 
-（⚠️ 快照口径收窄（2026-11 注）：应用内录入已落地（relay provider）；凭据经操作系统凭据存储以 `CredentialReference` 保存（配置 JSON 不存明文 key，见 `providers/mod.rs` 注释）；Provider「导出」可读回含明文 key 的 JSON（UI 附警告）；凭据注入已按 Agent 泛化到 Codex/Claude/Kimi 子进程，不再「只注入 Codex」；「不提供读取原值能力」不再成立。存储半边符合本节要求，读回与注入两条按现行为准。）
+（⚠️ 快照口径收窄（2026-11 注）：应用内录入已落地（relay provider）；凭据经操作系统凭据存储以 `CredentialReference` 保存（配置 JSON 不存明文 key，见 `providers/mod.rs` 注释）；Provider「导出」可读回含明文 key 的 JSON（UI 附警告）；凭据下发已按 Agent 泛化（Codex 注入子进程 env；Claude/Kimi 经各自 provider 配置写入），不再「只注入 Codex」；「不提供读取原值能力」不再成立。存储半边符合本节要求，读回与注入两条按现行为准。）
 
 - 优先允许用户自己通过系统环境提供 `OPENAI_API_KEY`。
 - 如果后续增加应用内录入，必须使用操作系统凭据存储；不得明文写入
@@ -779,7 +779,7 @@ pinvou3-app/src/features/codex/
 
 （⚠️ 快照口径：除 `CodexAcpView.jsx`——已采纳，演化为现行主视图——外，上列前端组件均未采纳；现行运行时提示为 `src/features/codex/AcpRuntimeNotices.jsx` 轻提示。）
 
-构建脚本建议替换当时仅 npm 安装的脚本（2026-11 注：现行 `scripts/prepare-codex-bridge-runtime.sh` 已是该类下载＋校验脚本，本节为设计稿残留）：
+构建脚本建议替换当时仅 npm 安装的脚本（2026-11 注：现行 `pinvou3-app/scripts/prepare-codex-bridge-runtime.sh` 已是该类下载＋校验脚本；本节**构建脚本清单**为设计稿残留）：
 
 ```text
 pinvou3-app/scripts/codex-runtime/

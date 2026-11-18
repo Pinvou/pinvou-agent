@@ -67,7 +67,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 - `DeepSeek-TUI/crates/tui/src/compaction.rs`：定义 `CompactionConfig` 和压缩逻辑，pinvou3 只调整本地模型和阈值。
 - `DeepSeek-TUI/crates/hooks/src/lib.rs`：定义 `HookEvent`、`HookDispatcher` 等 hook 机制，pinvou3 在 bridge 中生成 hook 配置。
 - `DeepSeek-TUI/crates/mcp/src/lib.rs`：定义 `McpManager` 与 MCP 工具/资源结构，底座经工具体系统一接入。
-- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核，`pinjou-v0.9.0-r*` refs 可达），属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
+- `DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`：fork 中的 pinvou3 工具隐藏清单，`lib.rs` 有 guard 测试防止合并时误删。（注意：该文件不在 v0.8.60 基线中，是 2026-06-29 fork 提交 `092e3c885` 引入的——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核，子模块 tag `pinvou-v0.9.0-r1..r4` 可达；author date 2026-06-29、commit date 2026-07-24 系重建链），属重建前内部 fork；机制已于 2026-08 退役，由 `PINVOU3_ALLOWED_TOOLS` 正向白名单治理取代，见 [`tool-governance.md`](./tool-governance.md)。）
 
 ## pinvou3 接入边界
 
@@ -190,7 +190,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | 用户目录路径 | `bridge/paths.rs` 和 `bridge/sessions.rs` 指向 `~/.pinvou3/...` | Windows 路径修复要注意盘符、UNC、中文用户名、rooted path |
 | session/artifact/settings 边界 | session 在 `~/.pinvou3/sessions/`，artifact 随 session 元数据，settings 在 pinvou3 用户目录 | 不要把 `~/.deepseek` 和 `~/.pinvou3` 混用 |
 | 打包产物路径 | Tauri release 产物在 `pinvou3-app/src-tauri/target/release/`，bundle/msi 在 `pinvou3-app/src-tauri/target/release/bundle/` | 问 exe 位置和 msi 位置时要区分 |
-| 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort（快照后字段，2026-11 起，见上文 2026-11 注） | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
+| 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort（字段上游 v0.8.47 起既有、快照期已用于本地 vLLM=off；2026-11 起新增的是用户可选档位与 Kimi 预设 high，见上文 2026-11 注） | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
 | 搜索 provider/API key | `bridge/mod.rs` 将 pinvou3 prefs 翻译为 DeepSeek-TUI `SearchProvider` 和 `search_api_key` | 搜索不可用时先核对 provider 与 key 是否符合底座要求 |
 | 工具隐藏清单 | `lib.rs` 中 `blocklist_contract` 测试，`DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`（⚠️ 均已随机制退役不存在——现行白名单口径见顶部注记与 `tool-governance.md`） | 合并 fork 后若 tool schema 膨胀，先看 blocklist 是否丢失（⚠️ 本条排障路径已失效） |
 | 合并后冒烟 | `cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml`，再启动 release exe 观察 20 秒 | 确认进程未立即退出、窗口响应、日志没有 fatal |
@@ -221,7 +221,7 @@ cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml
 | 工具不可用 | `DeepSeek-TUI/crates/tui/src/tools/registry.rs`、`crates/tui/src/core/engine/tool_setup.rs`、`pinvou3_blocklist.rs`、`bridge/mod.rs` features | 判断是工具未注册、被隐藏、feature 未开、还是 MCP/server 配置问题 |
 | 技能不可用 | `commands.rs::list_skills_v2`、`SkillRegistry::discover`、`bridge/paths.rs::bundle_workflow_dir` | 检查 bundle skill 目录、`SKILL.md` 是否存在、是否被 skiplist 隐藏 |
 | workflow 异常 | `commands.rs::start_workflow`、`kick_workflow`、`engine.rs::AgentComplete` 分支、`harness.rs` | 判断卡在项目初始化、SubAgent 派发、AgentComplete 回传、gate 推进还是前端状态 |
-| 模型配置异常 | `bridge/mod.rs::build_dt_config`、`build_engine_config`、用户 settings、vLLM endpoint | 检查 provider、base_url、model、api_key、reasoning_effort（快照后字段，见上文 2026-11 注）、vision config |
+| 模型配置异常 | `bridge/mod.rs::build_dt_config`、`build_engine_config`、用户 settings、vLLM endpoint | 检查 provider、base_url、model、api_key、reasoning_effort（上游 v0.8.47 起既有；2026-11 起新增用户可选档位，见上文 2026-11 注）、vision config |
 | 压缩异常 | `bridge/mod.rs` 中 `CompactionConfig`、`engine.rs` 的 `Event::Compaction*` 分支、`compaction.rs` | 判断是阈值过高、模型名不匹配、压缩事件未转译还是 context overflow |
 | MCP 不可用 | `mcp_config_path`、`DeepSeek-TUI/crates/mcp/src/lib.rs`、`ToolRegistryBuilder` MCP adapter | 先看 MCP 配置路径，再看 server 启动状态和工具是否进入 registry |
 | Hook 行为异常 | `bridge/mod.rs::build_hooks_config`、`DeepSeek-TUI/crates/hooks/src/lib.rs` | 检查 hook event 类型、sink、是否由 bridge 正确配置 |

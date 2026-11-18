@@ -103,7 +103,7 @@ Codex 继续复用用户自己的 `HOME` 和 `~/.codex`，所以登录态、Code
 ## Provider 管理（第三方中转）
 
 三个 ACP Agent（Codex / Claude Code / Kimi）支持配置第三方中转 Provider：
-预设/自定义 base URL、wire 协议（Anthropic 兼容 / OpenAI 兼容；Kimi 表单为「Kimi 原生」协议）、模型与 API key，
+预设/自定义 base URL、wire 协议（Anthropic 兼容 / OpenAI 兼容；Kimi 表单默认「Kimi 原生」协议、另两种可切换）、模型与 API key，
 一键切换或恢复官方登录。入口：设置 →「Provider 管理」；服务失败横幅也提供
 「管理 Provider」深链；会话 composer 可选「会话 Provider」固定本会话使用的中转
 （该选项仅 Codex 会话提供——Claude/Kimi 的 CLI 配置是进程级的，无法按会话隔离）。

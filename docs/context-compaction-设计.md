@@ -219,7 +219,7 @@ does not declare O (the 4K fallback applies only to the Codex OAuth route).
 ### 上游线（并行，不阻塞一/二期）：usage 回灌 + 同尺判据
 
 **这是真正的「更优做法」，也是把 T 从 ~50% 提到 ~75% 的唯一途径**，但要动底座 +
-上游 PR，属通用优化（所有本地/自托管小窗口用户受益，符合 fork-policy §2 的通用优化提上游判据——转述，原文行为「所有 CodeWhale embedder 都受益｜从最新 upstream main 提上游 PR」）。
+上游 PR，属通用优化（所有本地/自托管小窗口用户受益，符合 fork-policy §2 的通用优化提上游判据——转述，原文为「所有 CodeWhale embedder 都受益｜从最新 upstream main 提上游 PR」）。
 
 - 事实基础：真实 `usage.input_tokens` 每 turn 从 provider 免费返回，现在只喂成本统计
   （pricing.rs）、压缩压力门（`turn_loop` 的 `compaction_pressure_reached_with_billed`——billed

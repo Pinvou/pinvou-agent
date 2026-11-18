@@ -25,13 +25,13 @@
 底座 CodeWhale **已经在 turn_loop preflight 内置了 should_compact 触发**（写档时点 turn_loop.rs:90，勿按现树查；现行触发原语为 `compaction::compaction_pressure_reached_with_billed`，见 `core/engine/turn_loop.rs` 与 `compaction.rs`），按 `token_threshold` 直接调 `compact_messages_safe` 走 LLM 摘要。但对 pinvou3 + Qwen 原生配置仍不工作，根因有二：
 
 1. 模型名 `qwen36_35b` 没 `_Nk` 后缀，`context_window_for_model` 返回 `None` → preflight 二级保险 (`recover_context_overflow`) 静默禁用。
-2. 即便加了后缀让底座识别 256K，`context_input_budget` 仍按 `TURN_MAX_OUTPUT_TOKENS = 262K` 算 input budget（⚠️ 写档时点常量；现行 route 级为 `API_MAX_OUTPUT_TOKENS = 65,536` + `route_output_reservation` 按窗口档位计）→ `256K - 262K - 1K = 负数` → 同样返回 `None`，emergency 路径静默禁用。
+2. 即便（B1 修复 `_Nk` 作用域后）加了后缀让底座识别 256K，`context_input_budget` 仍按 `TURN_MAX_OUTPUT_TOKENS = 262K` 算 input budget（⚠️ 写档时点常量；现行 route 级为 `API_MAX_OUTPUT_TOKENS = 65,536` + `route_output_reservation` 按窗口档位计）→ `256K - 262K - 1K = 负数` → 同样返回 `None`，emergency 路径静默禁用。
 
 会话只会一路涨到 vLLM `max_model_len` 撞墙报 400。
 
 ## 当前实测阈值与修正（2026-06-03 核对）
 
-> 本节是对照**当前代码**(submodule HEAD = `9c8e4826`,晚于本文初版 `7e5288e3`;两哈希中仅 `9c8e4826` 可解析——`7e5288e3` 为 2026-07-24 重建前哈希,现对象库不可解析,下文其余 `7e5288e3` 引用同此)逐行核对后的更新。下方「全套修复」「Codex review 历程」是设计/推导记录,保留不动;**实际生效以本节为准**。
+> 本节是对照**写档时点代码**(当时 submodule HEAD = `9c8e4826`,晚于本文初版 `7e5288e3`;现行 gitlink 已前移至 `687358f7efde`,本节行号属 `9c8e4826` 时代——`7e5288e3` 为 2026-07-24 重建前哈希,本地对象库不可解析、公开仓 Pinvou/CodeWhale 可解,下文其余 `7e5288e3` 引用同此)逐行核对后的更新。下方「全套修复」「Codex review 历程」是设计/推导记录,保留不动;**实际生效以本节为准**。
 
 ### 修正历程（2026-06 核对 → 重调）
 
@@ -173,7 +173,7 @@ B1 + B2 都是上游友好的改动，可独立 PR：
 | B1 | models.rs:212 | ~5 行 | 让 `_Nk` hint 适用于任何 vendor，自托管 / 第三方部署友好 |
 | B2 | engine/context.rs:366 + 调用方 | ~25 行 | 修 < 500K 窗口模型 input budget 为负 → None 的静默禁用 bug，含双路径回归测试 |
 
-按 `docs/fork-policy.md` 的上游回流约束处理。fork 总 patch 量 ~30 行，已 commit 在 CodeWhale submodule（`pinvou3-patches` branch tip = `7e5288e3`），父仓库 gitlink 已 stage。（2026-11 注：`pinvou3-patches` 为内部仓分支、`fork` remote 指内部 fork，均不在本仓库；`7e5288e3` 为重建前哈希，现对象库不可解析，见文首注。）
+按 `docs/fork-policy.md` 的上游回流约束处理。fork 总 patch 量 ~30 行，已 commit 在 CodeWhale submodule（`pinvou3-patches` branch tip = `7e5288e3`），父仓库 gitlink 已 stage。（2026-11 注：`pinvou3-patches` 为内部仓分支、`fork` remote 指内部 fork，均不在本仓库；`7e5288e3` 为重建前哈希，本地不可解析、公开仓可解，见文首注。）
 
 ## Codex adversarial review 反馈历程
 
@@ -217,6 +217,8 @@ codex 抓父仓库 staged gitlink 指向 `7e5288e3`，但 `pinvou3-patches` 分�
 修复：`git -C CodeWhale push fork pinvou3-patches`（fast-forward，7 个 commit 全是 fork 工作流 patches，最新一个是 B1+B2 7e5288e3）。push 完成后远端可达，父仓库可以 commit gitlink。
 
 ## 验证
+
+（以下为重建前内部仓运行记录，现树不可复跑）
 
 - `cargo check -p pinvou3-tauri` ✅
 - `cargo test -p pinvou3-tauri --lib` **51/51** ✅（含 round 4 新增 `wire_max_output_tokens_env_sets_default_then_respects_existing`）

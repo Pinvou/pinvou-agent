@@ -467,7 +467,7 @@ running -> cancelling -> ready
 └─ acp-timeline.jsonl
 ```
 
-- `acp-state.json`：MVP 保存 ACP session ID、adapter/Agent 版本、model、mode、permission policy 和最后状态；后续再加入 pinvou skill/MCP/persona 快照。
+- `acp-state.json`：MVP 保存 ACP session ID、adapter/Agent 版本、model、mode、permission policy 和最后状态；后续再加入 pinvou skill/MCP/persona 快照。（2026-11 注：现行实际键集为 capabilities / session{session_id,current_model_id,models,modes,config_options} / workspace / lastStatus / lastSeq——adapter 版本与 permission policy 不在其中，mode 持久化于 `session-agents.json` 的 `acp_mode_id`。）
 - `acp-timeline.jsonl`：无损、可恢复 UI 的版本化 `acp:event`。（2026-11 注：桌面 journal 无损保存原始信封；脱敏仅作用于 Web/Relay 投影——`events.rs` 的 `project_acp_event_for_web`。）
 
 三个真相源的职责：
@@ -526,7 +526,7 @@ running -> cancelling -> ready
 
 - DeepSeek 现有远程协议不改。
 - MVP 不接入 Codex 富事件远程控制，也不要求老远程端展示 Codex 会话。
-- 后续会话 snapshot 增加 `backend: "codex-acp"` 标识，最终 assistant 文本可进入旧兼容摘要。
+- 后续会话 snapshot 增加 `backend: "codex-acp"` 标识（✅ 已落地：`session-agents.json` 的 `backend` 字段，序列化为 `"codex-acp"`），最终 assistant 文本可进入旧兼容摘要。
 - 后续 reasoning、tool、permission 和 plan 使用单独、版本化的 ACP timeline 数据，新远程端按 capability 渐进支持。
 - 后续远程 permission response 必须验证 session / turn / tool call / pending 状态，不允许仅用 tool call ID 跨会话回复。
 
@@ -556,7 +556,7 @@ running -> cancelling -> ready
 
 - 在主页增加“工作 / 代码”模式，移除独立 Codex Tab 和现有 DeepSeek 输入框中的 Codex backend chip。
 - 把 Codex 会话摘要并入左侧统一会话列表，底层 timeline 和运行时状态继续隔离。
-- 建立 `features/chat/acp/`。
+- 建立 `features/chat/acp/`。（2026-11 注：该计划路径从未启用——前端实际落于 `src/features/codex/`，见 §19 与文首 banner。）
 - 完成 timeline、reasoning、tool upsert、permission、plan、runtime status 和 composer。
 - 按 Codex/AionUI 的内容结构和交互语义验收，并保持 pinvou 视觉体系。
 - 强制回归 DeepSeek 原有对话。

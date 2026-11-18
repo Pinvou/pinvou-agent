@@ -8,7 +8,7 @@
 >
 > 当前结论：技术可行，无需重写为 Qt/GTK；单版本、单架构适配复杂度中等，V11 开明包、严格沙箱、官方认证及全国产 CPU 矩阵会显著提高复杂度。
 >
-> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-15 评估快照，未按当前主干逐条复核；总体「技术可行」结论仍有效，正文个别已过时的事实均已就地加注修正——§3/§5.1 的 glibc 归因出入以 [`麒麟OS-V11适配踩坑记录.md`](./麒麟OS-V11适配踩坑记录.md) 与 `scripts/check-linux-glibc-floor.sh` 为准、§5.4 SenseVoice 打包布局已改为按机器目录映射、§5.8 的「单包 OTA 清单互相覆盖」问题在现行 `latest.json` 数据模型下已不复存在（`platforms` 多平台映射，类型见 `features/updater/mod.rs`；应用内 OTA 通道本身尚未实施，§9/§10 的对应风险与决策行同步失效）、LoongArch64 构建与发布链路已于 2026-10 落地主线（仍需按 §5.4 注的原则做真机回归）。麒麟适配现行记录以踩坑记录为准。
+> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-15 评估快照，未按当前主干逐条复核；总体「技术可行」结论仍有效，正文个别已过时的事实均已就地加注修正——§3/§5.1 的 glibc 归因出入以 [`麒麟OS-V11适配踩坑记录.md`](./麒麟OS-V11适配踩坑记录.md) 与 `scripts/check-linux-glibc-floor.sh` 为准、§5.4 SenseVoice 打包布局已改为按机器目录映射、§5.8 的「单包 OTA 清单互相覆盖」问题在现行 `latest.json` 数据模型下已不复存在（`platforms` 多平台映射，类型见 `pinvou3-app/src-tauri/src/features/updater/mod.rs`；应用内 OTA 通道本身尚未实施，§9/§10 的对应风险与决策行同步失效）、LoongArch64 构建与发布链路已于 2026-10 落地主线（仍需按 §5.4 注的原则做真机回归）。麒麟适配现行记录以踩坑记录为准。
 
 ## 1. 评估背景
 
@@ -274,7 +274,7 @@ sense-voice-main-aarch64-unknown-linux-gnu
 
 当前 Linux OTA 使用单个 `latest.json`，清单只包含一个包 URL。发布第二个架构时，后上传的清单会覆盖前一个架构，导致另一架构客户端可能下载错误安装包。
 
-> 注（2026-11 归档）：现行主干 `latest.json` 的数据模型已支持按平台 `platforms` 映射（`macos-universal` / `linux-arm64` 等，含 per-platform `url/sha256/size/version` 与顶层字段回退，类型见 `features/updater/mod.rs`），本节描述的"单包 URL 互相覆盖"问题在采用该清单格式后即不复存在；注意应用内 OTA 通道本身尚未实施（`features/updater/` 各平台均为 unsupported 占位），本节其余建议按该数据模型评估即可。
+> 注（2026-11 归档）：现行主干 `latest.json` 的数据模型已支持按平台 `platforms` 映射（`macos-universal` / `linux-arm64` 等，含 per-platform `url/sha256/size/version` 与顶层字段回退，类型见 `pinvou3-app/src-tauri/src/features/updater/mod.rs`），本节描述的"单包 URL 互相覆盖"问题在采用该清单格式后即不复存在；注意应用内 OTA 通道本身尚未实施（`pinvou3-app/src-tauri/src/features/updater/` 各平台均为 unsupported 占位），本节其余建议按该数据模型评估即可。
 
 应改为以下任一协议：
 

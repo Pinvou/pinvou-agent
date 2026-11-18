@@ -17,7 +17,7 @@
 
 全部落地并验证通过：
 
-**submodule（commit `af64e9f7`，在阶段1 `5f847284` 之上；`af64e9f7` 可由父仓提交 `50752183b` 的 gitlink 佐证；`5f847284` 为 2026-07-24 重建前哈希，现对象库不可解析。`54151a4b` 则为幸存于重建的上游 commit（2026-05-27 UTC，"#2235"；提交自带 -05:00 时区故当地为 05-26），现对象库可解析，本文下方 `git show 54151a4b` 指令至今可直接复核（`git diff 54151a4b`
+**submodule（commit `af64e9f7`，在阶段1 `5f847284` 之上；`af64e9f7` 可由父仓提交 `50752183b` 的 gitlink 佐证；`5f847284` 为 2026-07-24 重建前哈希，本地对象库不可解析、公开仓 Pinvou/CodeWhale 可解（`gh api repos/Pinvou/CodeWhale/commits/5f847284` 或公开 clone `git show` 即可复核）。`54151a4b` 则为幸存于重建的上游 commit（2026-05-27 UTC，"#2235"；提交自带 -05:00 时区故当地为 05-26），现对象库可解析，本文下方 `git show 54151a4b` 指令至今可直接复核（`git diff 54151a4b`
 则因现树已分叉不再可比，见下行注））**
 - `base.md` 回退上游原文（当时验证 `git diff 54151a4b` = 0，字节一致；今现树与该 commit 已分叉，复核用下方 `git show 54151a4b:…` 直接取原文）
 - `prompts.rs` 品牌词回退 codewhale（locale / authority / doc 注释 3 处）
@@ -41,7 +41,7 @@
 
 ---
 
-## 阶段 1 已完成（commit `5f847284`，submodule pinvou3-patches 分支（内部仓分支、`fork` remote 指内部 fork，均不在本仓库）；重建前哈希，现不可解析）
+## 阶段 1 已完成（commit `5f847284`，submodule pinvou3-patches 分支（内部仓分支、`fork` remote 指内部 fork，均不在本仓库）；重建前哈希，本地不可解析、公开仓可解）
 
 `crates/tui/src/prompts.rs` 加了 3 个 `OnceLock` override + setter + `effective_*()` getter，
 三处使用点改用 getter。**向后兼容**：override 未 set → 返回原 const，行为完全不变。

@@ -113,7 +113,7 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 
 `shape_disallowed_tools`（`features/assistant/platform/bridge.rs:1041`）在持久禁用集上按以下顺序叠加：
 
-1. 当前模式 `MODE_TABLE` 的 `unavailable_tools`（先并入；缺席名单不得与连接器禁用全名重叠，否则会被后续 retain 误删——`bridge.rs:1045-1048` 顺序约束）；
+1. 当前模式 `MODE_TABLE` 的 `unavailable_tools`（先并入；缺席名单不得与连接器禁用全名重叠，否则会被后续 retain 误删——`bridge.rs:1045-1049` 顺序约束）；
 2. 对应模式 scope 的连接器禁用工具（非 plain 模式先剔除 plain scope 禁用集、再并入本 scope 禁用集）；
 3. 当前模式要求且技能组合目录为空时的 `load_skill`（表字段 `skills_empty_hides_load_skill` 门控）；
 4. 知识库、会话或产品状态产生的其他动态拒绝项。

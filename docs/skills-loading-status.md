@@ -13,7 +13,7 @@
 > （⚠️ `9aaff554b`/`95502ac81` 均为父仓库 pinvou3-app 提交，非 CodeWhale 子模块提交，在子模块对象库中不可解析），
 > 仅顺带删除已死的 `WORKFLOW_HIDDEN_SKILLS` 过滤常量）并由 `cleanup_retired_skills`
 > 启动清理。§2 卡牌池机制描述仍有效（agency-agents.json 现 268 个 agent）。文中 fork patch
-> 序号（#41/#25/#26 等）为重建前私有编号（#432 是底座上游 PR 编号，见 §1 正文），与现行 [`fork-modifications.md`](./fork-modifications.md)
+> 序号（#41/#25/#26 等）为重建前私有编号（#432 是底座上游 issue 编号，见 §1 正文），与现行 [`fork-modifications.md`](./fork-modifications.md)
 > 登记编号无关。
 
 ## TL;DR

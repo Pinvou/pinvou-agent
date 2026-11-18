@@ -8,7 +8,7 @@
 底座（CodeWhale）**本来就有**完整的 plan→执行交接闭环：
 
 1. 模型在 Plan 模式调 `update_plan` = 交接信号（`prompts/modes/plan.md` 引导）
-2. engine 层 `should_stop_after_plan_tool`（`dispatch.rs:385`）强制结束本 turn
+2. engine 层 `should_stop_after_plan_tool`（`dispatch.rs:346`，改造时点态）强制结束本 turn
 3. （TUI）自动弹 Plan Confirmation modal → 四选项 Accept(Agent)/Accept(YOLO)/Revise/Exit
 4. Accept(YOLO) → 自动 `set_mode(Yolo)` + 注入 `"Proceed with the accepted plan."` + 共享 `Arc<Mutex<PlanState>>` 不清
 
@@ -149,7 +149,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 4. ✅ **阶段顺序**：先接 chip 验证端到端，再减法。
 
 ### 遗留物处理提醒
-- `pinvou3-ablation`（`ablation-clean` 分支）worktree + `pinvou3-mode-select` worktree 里未提交的 `l1_dialog_harness.rs`（`plan_ablation`/`plan_write_urge` 消融用例，用 `PlanPhase::Planning`）= 旧消融脚手架。阶段4 删消融时一并清理（这些测试随 PlanPhase 删除会编译失败，要同步处理）。（注：这些为本机私有 worktree，不随本仓库发布；所述清理已完成。）
+- `pinvou3-ablation`（`ablation-clean` 分支）worktree + `pinvou3-mode-select` worktree 里未提交的 `l1_dialog_harness.rs`（`plan_ablation`/`plan_write_urge` 消融用例，用 `PlanPhase::Planning`）= 旧消融脚手架。阶段4 删消融时一并清理（这些测试随 PlanPhase 删除会编译失败，要同步处理）。（注：这些为本机私有 worktree，不随本仓库发布；所述清理已完成——仓内现存的 `tests/l1_dialog_harness.rs` 为清理后的瘦身版，无消融用例。）
 
 ## 7. 阶段3 终决：放弃 M3（2026-06-25）
 
@@ -157,7 +157,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 
 **为什么放弃**（推翻 §6 第 3 条原"重做"决议）：
 1. 底座 `update_plan → chat:plan_ready → 方案卡「✅就这么干」→ 切 Yolo` 这条链在 AI 调了 `update_plan` 时在所验范围内 100% 可靠（两个真机 session 端到端验过）。"有方案就能切 Yolo"已被底座保证，M3 不是这条主路的一环。
-2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡直接动手（跳过方案）」。
+2. 唯一漏的"AI 光用文本写方案、没调 update_plan"是少数情况，已有两条自救路径覆盖：① composer chip 随时手切 Yolo ② AI 真去 write/exec 撞只读时弹 `plan_stuck` 卡「⚡ 直接动手(跳过方案)」（渲染原文，半角括号）。
 3. M3 的判据本身是噪音——命中词含 markdown 粗体 `**`，几乎每条回复都误触发，净负收益。
 
 **已清残骸**：`engine.rs` M3 占位注释改写为"放弃"说明；`tauri-bridge.js` 删 `PLAN_FALLBACK_KEYWORDS` / `plan_text_fallback` 监听 / `planFallbackAccept`+`planFallbackRetry`+导出 / 孤儿 bt 键 `adoptingPlan`+`adoptEcho`；顺带清同族孤儿 `executionStuckReplan`（阶段4 删 execution_stuck 后无调用方）；`index.html` 删 `PlanFallbackCard` 组件 + render 分支 + 三语 `fb*` i18n。`cargo check` exit 0、headless 5/5。**阶段1/2/3/4 全 done，方案收尾。**

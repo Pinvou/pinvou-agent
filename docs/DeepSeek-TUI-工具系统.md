@@ -10,12 +10,12 @@
 > Plan 模式现注册只读文件/shell 之外的完整只读面）；现行工具面与迁移记录见
 > [`tool-governance.md`](./tool-governance.md)，本文请勿按现状使用。
 > 2026-11-15 修正：按 v0.8.37 tag 逐 builder 实测校正全部清单与计数（`append_file` 并不存在于
-> v0.8.37，系 2026-06-29 fork 提交 `092e3c885` 引入——该提交不在本仓库，属重建前内部 fork；`code_execution` 在 v0.8.37 已是独立
+> v0.8.37，系 2026-06-29 fork 提交 `092e3c885` 引入——该提交不在现行主干谱系（对象可在 CodeWhale 子模块按哈希复核、公开仓 Pinvou/CodeWhale 亦可解），属重建前内部 fork；`code_execution` 在 v0.8.37 已是独立
 > catalog 工具；`with_shell_tools` 含 exec_shell_wait / exec_shell_interact；v0.8.37 无
 > `/tools` slash command；web 工具含 finance 且 web_run 实名 `web.run`；task 全量
 > 23 个 / 只读 8 个，github 与 automation 均已注册；子代理仅 agent_open / agent_eval /
 > agent_close 三个；`multi_tool_use.parallel` 未注册；MCP 命名为 `mcp_<server>_<tool>`；
-> Yolo 约 77、Plan 约 39（关 WebSearch 约 35））。
+> Yolo 注册+子代理约 77（含 catalog 推送约 81，见 §6）、Plan 约 39（关 WebSearch 约 35））。
 
 ---
 
