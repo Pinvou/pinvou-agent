@@ -3677,6 +3677,38 @@ mod tests {
     }
 
     #[test]
+    fn web_attachment_upload_accepts_the_exact_aggregate_bound() {
+        let mut inner = Inner::default();
+        let mib = 1024 * 1024_usize;
+        // One retained 40 MiB upload + a 24 MiB incoming chunk lands on
+        // exactly 64 MiB: the strict > boundary must accept it (the rejection
+        // side is pinned by the 40+25 leg above; without this leg a `>` →
+        // `>=` flip stays green on that test alone).
+        append_web_attachment_upload_chunk(
+            &mut inner,
+            "upload_device_1",
+            "a.bin",
+            0,
+            40 * mib,
+            &vec![0_u8; 40 * mib],
+            false,
+            None,
+        )
+        .expect("the first upload must fit the aggregate buffer");
+        append_web_attachment_upload_chunk(
+            &mut inner,
+            "upload_device_2",
+            "b.bin",
+            0,
+            24 * mib,
+            &vec![0_u8; 24 * mib],
+            false,
+            None,
+        )
+        .expect("40 MiB retained + 24 MiB incoming must exactly fill the 64 MiB aggregate");
+    }
+
+    #[test]
     fn web_attachment_cache_overflow_surfaces_the_parsed_too_large_wire_code() {
         assert_eq!(
             web_attachment_cache_overflow(MAX_WEB_ATTACHMENT_BYTES),
