@@ -156,8 +156,11 @@ pub(super) fn read_capped_text(path: &Path) -> Result<String, String> {
         .read_to_end(&mut buffer)
         .map_err(|e| format!("读取抽取产物失败: {e}"))?;
     if buffer.len() as u64 > EXTRACTED_TEXT_READ_CAP {
+        // 报人类可读的 MB 数而非原始字节数（33554432 这类数字对用户无意义）；
+        // 该消息作为 ingest warning 原样进入附件芯片提示。
         return Err(format!(
-            "抽取文本超过 {EXTRACTED_TEXT_READ_CAP} 字节读回上限"
+            "抽取文本超过 {} MB 读回上限",
+            EXTRACTED_TEXT_READ_CAP / 1024 / 1024
         ));
     }
     Ok(String::from_utf8_lossy(&buffer).into_owned())
