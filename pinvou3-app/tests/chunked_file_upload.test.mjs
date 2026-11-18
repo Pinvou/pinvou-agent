@@ -90,6 +90,33 @@ await assert.rejects(
   error => error.code === 'device_upload_too_large',
 );
 
+// Exactly-at-cap acceptance: the strict > boundary must admit a file whose
+// size equals MAX_FILE_BYTES (the 20–50 MiB band is routine since issue
+// #842; only sizes strictly above the cap reject). Duck-typed stub keeps
+// the 50 MiB leg allocation-free — only the size metadata feeds the gate
+// and the chunk math.
+{
+  const chunks = [];
+  const file = {
+    name: 'exact-cap.bin',
+    size: uploader.MAX_FILE_BYTES,
+    slice: (start, end) => ({
+      async arrayBuffer() { return new ArrayBuffer(Math.max(0, end - start)); },
+    }),
+  };
+  const completed = await uploader.uploadFile({
+    file,
+    uploadId: 'upload_exact_cap',
+    async sendChunk(chunk) {
+      chunks.push(chunk);
+      return chunk.commit ? { handle: 'exact_cap_ok' } : null;
+    },
+    validateResult: result => Boolean(result?.handle),
+  });
+  assert.equal(completed.result.handle, 'exact_cap_ok');
+  assert.equal(chunks.filter(chunk => chunk.commit).length, 1, 'exactly one committing chunk');
+}
+
 // SHA-256 integrity: when Web Crypto is available, the whole-file digest rides
 // the committing chunk; a transport without crypto (or integrity: false)
 // sends no digest instead of failing.

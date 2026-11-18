@@ -787,6 +787,57 @@ assert.equal((i18n.match(/deviceCacheFull:/g) || []).length, 3,
 assert.match(acpErrors, /'web_attachment_cache_full'/,
   'the session-level fallback must fold the cache-full code into localized copy');
 
+// The shared formatter's code table must keep mirroring the Rust wire
+// literals one-for-one: a value drift in attachment-limit-errors.js breaks
+// chip mapping while every behavioral test stays green (the tests import the
+// module and compare it against itself).
+const limitErrors = readSource(path.join(root, 'src', 'features', 'attachments', 'attachment-limit-errors.js'), 'utf8');
+for (const [rustSource, codes] of [
+  [fileIngest, ['attachment_file_too_large', 'attachment_archive_too_many_entries', 'attachment_archive_expanded_too_large', 'attachment_archive_unsafe_entry']],
+  [remoteControlManager, ['web_attachment_upload_cache_full', 'web_attachment_parsed_cache_too_large', 'web_attachment_cache_full']],
+]) {
+  for (const code of codes) {
+    assert.match(limitErrors, new RegExp(`'${code}'`),
+      `the shared limit formatter must map ${code}`);
+    assert.match(rustSource, new RegExp(`"${code}"`),
+      `the Rust emitter must keep the ${code} literal the shared formatter mirrors`);
+  }
+}
+
+// The BT_TABLE copy names hard bounds ("50 MB" / "32 MB"); key-presence pins
+// alone let a one-sided figure edit ship a lying notice in the web chat while
+// the shared-i18n figure pins stay green (same rule as the 32 MB i18n pin
+// above, extended to the bridge's own language blocks).
+assert.equal((webBridge.match(/deviceUploadTooLarge:[^,\n]*50 MB/g) || []).length, 3,
+  'the web chat oversize notice must name the 50 MB bound in all three BT_TABLE language blocks');
+assert.equal((webBridge.match(/deviceParsedTooLarge:[^,\n]*32 MB/g) || []).length, 3,
+  'the web chat parsed-cache notice must name the 32 MB bound in all three BT_TABLE language blocks');
+
+// The zh upload-limit copy bodies are kept identical between the bridge
+// BT_TABLE and the shared i18n dict so both surfaces translate the same
+// truth; BT rows carry a sanctioned "⚠️ " notice prefix the dict rows lack
+// (a473cbcb9's "byte-identical" wording overstates this — pin the bodies
+// modulo that prefix), so a one-sided punctuation/wording edit (halfwidth
+// vs fullwidth comma) turns CI red instead of shipping split copy. BT
+// blocks are ordered en/ja/zh, so the last match is the zh row.
+const i18nZh = readSource(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8');
+const stripWarningPrefix = (value) => (value && value.startsWith('⚠️ ') ? value.slice('⚠️ '.length) : value);
+const zhBtValue = (key) => {
+  const matches = [...webBridge.matchAll(new RegExp(`${key}:\\s*"([^"]+)"`, 'g'))];
+  return matches.length ? matches.at(-1)[1] : null;
+};
+const zhDictValue = (key) => {
+  const match = i18nZh.match(new RegExp(`${key}:'([^']+)'`));
+  return match ? match[1] : null;
+};
+for (const key of ['deviceUploadCacheFull', 'deviceParsedTooLarge', 'deviceCacheFull']) {
+  assert.equal(stripWarningPrefix(zhBtValue(key)), zhDictValue(key),
+    `zh ${key} body must stay identical between the bridge BT_TABLE (minus its ⚠️ prefix) and the shared i18n dict`);
+}
+
+assert.match(chunkedUpload, /device attachment exceeds \$\{MAX_FILE_BYTES\} bytes/,
+  'the dev-facing oversize message must derive from the mirrored constant, not a stale literal');
+
 // After the watchdog skips a stalled predecessor, the web live stream shows
 // an envelope-seq hole; the listener must detect the jump and debounce-refetch
 // the authoritative timeline to self-heal (instead of waiting for a
