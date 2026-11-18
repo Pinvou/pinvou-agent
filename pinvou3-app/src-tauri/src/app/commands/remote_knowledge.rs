@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use pinvou_knowledge::client::RemoteKnowledgeProbe;
 use pinvou_knowledge::model::{
     AccessScope, Collection, DeviceGrant, Document, JoinRequestRecord, ModelStatus, SearchHit,
-    ShareCreated, ShareRecord, UpdateDeviceRequest,
+    ShareCreated, ShareRecord, TrashedDocument, UpdateDeviceRequest,
 };
 use tauri::{AppHandle, Emitter, State};
 
@@ -265,6 +265,24 @@ pub async fn remote_kb_update_device(
         .await
 }
 
+/// Rename a shared collection. Full-replace PUT: `description: None`
+/// clears the stored description rather than keeping it, so a rename-only
+/// call must echo the current description. The peer also normalizes the
+/// name: blank falls back to the default "知识集", and more than 120
+/// characters is rejected.
+#[tauri::command]
+pub async fn remote_kb_update_collection(
+    state: State<'_, RemoteKnowledgeService>,
+    server_id: String,
+    id: i64,
+    name: String,
+    description: Option<String>,
+) -> Result<Collection, String> {
+    state
+        .update_collection(&server_id, id, name, description)
+        .await
+}
+
 #[tauri::command]
 pub async fn remote_kb_remove_device(
     state: State<'_, RemoteKnowledgeService>,
@@ -272,6 +290,27 @@ pub async fn remote_kb_remove_device(
     device_id: String,
 ) -> Result<(), String> {
     state.remove_device(&server_id, &device_id).await
+}
+
+/// Trash listings aggregate every server page (the client walks offsets
+/// until a short page, and fails loudly if a peer serves one full page too
+/// many — an offset-ignoring peer must error, not loop forever), so the
+/// result is complete — not a first-window cut.
+#[tauri::command]
+pub async fn remote_kb_trashed_collections(
+    state: State<'_, RemoteKnowledgeService>,
+    server_id: String,
+) -> Result<Vec<Collection>, String> {
+    state.trashed_collections(&server_id).await
+}
+
+/// See `remote_kb_trashed_collections`: full aggregation, no truncation.
+#[tauri::command]
+pub async fn remote_kb_trashed_documents(
+    state: State<'_, RemoteKnowledgeService>,
+    server_id: String,
+) -> Result<Vec<TrashedDocument>, String> {
+    state.trashed_documents(&server_id).await
 }
 
 #[tauri::command]
