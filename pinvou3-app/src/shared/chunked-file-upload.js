@@ -89,7 +89,10 @@
       throw empty;
     }
     if (file.size > MAX_FILE_BYTES) {
-      const tooLarge = new Error("device attachment exceeds 50 MB");
+      // Dev-facing message derives from the mirrored constant so a future cap
+      // bump cannot leave this raw text lying about the bound (the chip never
+      // renders it — the code field is what surfaces).
+      const tooLarge = new Error(`device attachment exceeds ${MAX_FILE_BYTES} bytes`);
       tooLarge.code = "device_upload_too_large";
       throw tooLarge;
     }
