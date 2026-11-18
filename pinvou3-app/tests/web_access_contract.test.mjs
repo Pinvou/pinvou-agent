@@ -760,6 +760,28 @@ assert.equal((i18n.match(/deviceUploadCacheFull:/g) || []).length, 3,
 assert.equal((i18n.match(/deviceParsedTooLarge:/g) || []).length, 3,
   'the ACP parsed-cache copy must exist in all three i18n dictionaries');
 
+// The third size-bound rejection of the same lane — the 64 MiB parsed-result
+// cache TOTAL, reachable when entries pinned by in-flight submissions block
+// eviction and ordinary ~30 MiB parsed results (routine since the per-file
+// cap rose to 50 MiB, issue #842) fill the cache — follows the same
+// stable-wire-code rule as its two siblings above.
+assert.match(remoteControlManager, /WEB_ATTACHMENT_CACHE_FULL: &str = "web_attachment_cache_full"/,
+  'the attachment-cache overflow must be a stable wire code');
+assert.match(remoteControlManager, /Err\(transfer::WEB_ATTACHMENT_CACHE_FULL\.into\(\)\)/,
+  'the cache-total gate must return the stable wire code');
+assert.doesNotMatch(remoteControlManager, /远程控制附件缓存已满/,
+  'single-language cache-full errors must not cross the Relay');
+assert.match(webBridge, /raw === "web_attachment_cache_full"[\s\S]*?bt\("deviceCacheFull"\)/,
+  'the shared limit mapper must localize the cache-full code');
+assert.equal((webBridge.match(/deviceCacheFull:/g) || []).length, 3,
+  'the cache-full copy must exist in all three BT_TABLE language blocks');
+assert.match(codexView, /uploadErrorText === 'web_attachment_cache_full'[\s\S]*?uiAttachments\.deviceCacheFull/,
+  'the ACP attachment path must localize the cache-full code');
+assert.equal((i18n.match(/deviceCacheFull:/g) || []).length, 3,
+  'the ACP cache-full copy must exist in all three i18n dictionaries');
+assert.match(acpErrors, /'web_attachment_cache_full'/,
+  'the session-level fallback must fold the cache-full code into localized copy');
+
 // After the watchdog skips a stalled predecessor, the web live stream shows
 // an envelope-seq hole; the listener must detect the jump and debounce-refetch
 // the authoritative timeline to self-heal (instead of waiting for a

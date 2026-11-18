@@ -10,6 +10,7 @@ const CONTROLLED_CLIENT_ERRORS = new Set([
   'web_attachment_integrity_mismatch',
   'web_attachment_upload_cache_full',
   'web_attachment_parsed_cache_too_large',
+  'web_attachment_cache_full',
   'web_workspace_authorization_invalid',
   'web_workspace_authorization_required',
   'web_workspace_picker_unavailable',

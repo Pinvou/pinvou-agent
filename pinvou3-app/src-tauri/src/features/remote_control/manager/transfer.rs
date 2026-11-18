@@ -96,16 +96,19 @@ pub(super) fn finish_web_attachment_reservation_inner(
 pub(crate) const WEB_ATTACHMENT_DIGEST_INVALID: &str = "web_attachment_digest_invalid";
 pub(crate) const WEB_ATTACHMENT_INTEGRITY_MISMATCH: &str = "web_attachment_integrity_mismatch";
 
-/// Stable wire codes for the two size-bound rejections of the browser
-/// upload lane. At the raised per-file cap (50 MiB, issue #842) a single
-/// in-flight upload can occupy most of the 64 MiB aggregate buffer and a
-/// text-heavy upload can overflow the serialized-result cache after a full
-/// transfer, so both rejections are ordinary outcomes that must carry
-/// localized zh/en/ja copy instead of raw single-language text (same rule
-/// as the digest codes above; pinned by web_access_contract.test.mjs).
+/// Stable wire codes for the size-bound rejections of the browser upload /
+/// Web-attachment-cache lane. At the raised per-file cap (50 MiB, issue
+/// #842) a single in-flight upload can occupy most of the 64 MiB aggregate
+/// buffer, a text-heavy upload can overflow the serialized-result cache
+/// after a full transfer, and two ~30 MiB parsed results (or entries pinned
+/// by in-flight submissions, which eviction must skip) can fill the 64 MiB
+/// cache total, so all three rejections are ordinary outcomes that must
+/// carry localized zh/en/ja copy instead of raw single-language text (same
+/// rule as the digest codes above; pinned by web_access_contract.test.mjs).
 pub(crate) const WEB_ATTACHMENT_UPLOAD_CACHE_FULL: &str = "web_attachment_upload_cache_full";
 pub(crate) const WEB_ATTACHMENT_PARSED_CACHE_TOO_LARGE: &str =
     "web_attachment_parsed_cache_too_large";
+pub(crate) const WEB_ATTACHMENT_CACHE_FULL: &str = "web_attachment_cache_full";
 
 pub(super) fn append_web_attachment_upload_chunk(
     inner: &mut Inner,
