@@ -541,10 +541,13 @@ redundant_feature_names = "deny"
 # the crate-wide test ENV_LOCK discipline, plus two mkfifo FFI fixture
 # calls, plus one None-arm match block in settings.rs the first census
 # pass missed - clippy documents match arms per-arm): `cargo clippy
-# --all-targets` now reports zero hits with and
-# without dev-tools, so the deny hard-fails on test targets too, not just
-# the CI production leg's -D warnings. cfg(windows)-gated targets are not
-# clippy-compiled by CI; blocks surfacing only there stay follow-up work.
+# --all-targets` now reports zero undocumented_unsafe_blocks hits in the
+# CI form (with dev-tools; the without-dev-tools variant was verified
+# locally but CI always passes the feature), so the deny hard-fails on
+# test targets too, not just the CI production leg's -D warnings.
+# cfg(windows)- AND cfg(macos)-gated targets are not compiled by the
+# Linux CI clippy leg; every macos-gated unsafe block is documented, and
+# the windows-gated residue stays disclosed follow-up work.
 undocumented_unsafe_blocks = "deny"
 # unwrap/expect in a long-lived desktop process kills the session on panic
 # (baseline: unwrap 6 / expect 38; test code exempt). Production code is
