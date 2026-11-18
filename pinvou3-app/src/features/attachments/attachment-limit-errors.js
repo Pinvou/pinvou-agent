@@ -1,12 +1,15 @@
 export const ATTACHMENT_LIMIT_ERROR_CODES = Object.freeze({
   fileTooLarge: 'attachment_file_too_large',
+  uploadCacheFull: 'web_attachment_upload_cache_full',
+  parsedCacheTooLarge: 'web_attachment_parsed_cache_too_large',
+  attachmentCacheFull: 'web_attachment_cache_full',
   archiveTooManyEntries: 'attachment_archive_too_many_entries',
   archiveExpandedTooLarge: 'attachment_archive_expanded_too_large',
   archiveUnsafeEntry: 'attachment_archive_unsafe_entry',
 });
 
 /** @typedef {{ code?: unknown, message?: unknown }} AttachmentLimitErrorLike */
-/** @typedef {{ fileTooLarge?: string, archiveTooManyEntries?: string, archiveExpandedTooLarge?: string, archiveUnsafeEntry?: string }} AttachmentLimitCopy */
+/** @typedef {{ fileTooLarge?: string, deviceUploadCacheFull?: string, deviceParsedTooLarge?: string, deviceCacheFull?: string, archiveTooManyEntries?: string, archiveExpandedTooLarge?: string, archiveUnsafeEntry?: string }} AttachmentLimitCopy */
 
 /**
  * Normalize browser-side size failures and backend attachment rejection codes.
@@ -37,6 +40,12 @@ export function formatAttachmentLimitError(error, copy = {}) {
   switch (attachmentLimitErrorCode(error)) {
     case ATTACHMENT_LIMIT_ERROR_CODES.fileTooLarge:
       return copy.fileTooLarge || '';
+    case ATTACHMENT_LIMIT_ERROR_CODES.uploadCacheFull:
+      return copy.deviceUploadCacheFull || '';
+    case ATTACHMENT_LIMIT_ERROR_CODES.parsedCacheTooLarge:
+      return copy.deviceParsedTooLarge || '';
+    case ATTACHMENT_LIMIT_ERROR_CODES.attachmentCacheFull:
+      return copy.deviceCacheFull || '';
     case ATTACHMENT_LIMIT_ERROR_CODES.archiveTooManyEntries:
       return copy.archiveTooManyEntries || '';
     case ATTACHMENT_LIMIT_ERROR_CODES.archiveExpandedTooLarge:

@@ -46,6 +46,20 @@ test('renders every hard limit in all supported languages', () => {
       dictionary.uiAttachments.archiveUnsafeEntry,
     );
     assert.ok(dictionary.uiAttachments.archiveUnsafeEntry);
+    // The device cache codes introduced with the 50 MiB cap (issue #842)
+    // must render trilingual copy on every chip path, not just the
+    // upload/ingest system notices.
+    for (const [code, key] of [
+      [ATTACHMENT_LIMIT_ERROR_CODES.uploadCacheFull, 'deviceUploadCacheFull'],
+      [ATTACHMENT_LIMIT_ERROR_CODES.parsedCacheTooLarge, 'deviceParsedTooLarge'],
+      [ATTACHMENT_LIMIT_ERROR_CODES.attachmentCacheFull, 'deviceCacheFull'],
+    ]) {
+      assert.equal(
+        formatAttachmentLimitError(code, dictionary.uiAttachments),
+        dictionary.uiAttachments[key],
+      );
+      assert.ok(dictionary.uiAttachments[key]);
+    }
   }
   assert.equal(formatAttachmentLimitError('unrelated failure', dictZh.uiAttachments), '');
 });
