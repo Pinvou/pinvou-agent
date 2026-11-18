@@ -37,6 +37,16 @@ use super::validators::validate_session_id;
 /// `purge_all_scheduled_side_maps` caller that runs without
 /// `scheduled_mutation`. Leaf lock: only the cross-process file lock below
 /// is taken while it is held.
+///
+/// Hold discipline (r11 review M5): truncate and restore scope this guard
+/// to their map read-modify-write ONLY — never across the transcript
+/// persist. The persist runs the retention sweep, and a sweep that deletes
+/// sessions reaches `purge_rewound_turns_backups`, which re-enters this
+/// same non-reentrant mutex: a function-wide guard would deadlock the
+/// sweeper with itself while holding `scheduled_mutation` (the whole
+/// process's session writes hang). Purge additionally degrades on
+/// in-process contention (`try_lock` + skip), so a skipped holder can
+/// never wedge the delete/retention caller either.
 static REWIND_BACKUP_LOCK: Mutex<()> = Mutex::new(());
 
 /// Cross-process exclusion for `_rewound_turns.json` (round-41 review M2).
@@ -45,26 +55,61 @@ static REWIND_BACKUP_LOCK: Mutex<()> = Mutex::new(());
 /// the same whole-map sidecar: two interleaved load→mutate→persist runs
 /// each commit their own snapshot and silently drop the peer's record —
 /// and that record is the sole retention of the truncated turns
-/// (「备份是被截对话唯一的留存，不能裸截」). The blocking flock on the
-/// sibling `.json.lock` file serializes the RMW across processes and is
+/// (「备份是被截对话唯一的留存，不能裸截」). The flock on the sibling
+/// `.json.lock` file serializes the RMW across processes and is
 /// kernel-released when a holder dies — the same discipline as the
 /// settings transaction lock. Acquired only while `REWIND_BACKUP_LOCK` is
-/// already held, so it stays a leaf lock; the whole-map RMW is a
-/// millisecond-scale disk round trip, so an uncontended blocking wait is
-/// imperceptible.
+/// already held, so it stays a leaf lock. The RMW cost is pinned by the
+/// byte budgets below: at a full 32 MiB map one round trip is a ~32 MiB
+/// parse plus a serialize and an atomic write — tens-to-hundreds of
+/// milliseconds under both locks, not the millisecond scale of the
+/// pre-budget sidecar — so waiters queue under the bounded
+/// [`REWIND_BACKUP_LOCK_WAIT`] rather than sampling a negligible hold.
+///
+/// The wait is BOUNDED ([`REWIND_BACKUP_LOCK_WAIT`], the same wedged-peer
+/// hazard the purge path already degrades around with
+/// [`try_lock_rewound_turns_file`]): truncate/restore cannot take that
+/// skip twin — their sidecar write is mandatory (a truncate without its
+/// backup must not run; a restore must re-read under the lock it commits
+/// against) — so instead of the old indefinite block, a peer wedged while
+/// holding the flock (e.g. a SIGSTOP'd CLI writer) now surfaces an
+/// explicit timeout error after the bound, and the caller's transcript
+/// stays untouched.
+const REWIND_BACKUP_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn lock_rewound_turns_file() -> Result<std::fs::File> {
     let path = rewound_turns_path().with_extension("json.lock");
     let file =
         open_lock_file().with_context(|| format!("打开回退备份锁失败: {}", path.display()))?;
-    file.lock()
-        .with_context(|| format!("锁定回退备份失败: {}", path.display()))?;
-    Ok(file)
+    // Bounded acquire (same shape as prefs::try_lock_settings_file_bounded):
+    // normal contention resolves within the 25 ms poll cadence; the deadline
+    // only fires for a wedged peer, where an explicit error beats hanging
+    // every rewind/undo caller forever.
+    let deadline = std::time::Instant::now() + REWIND_BACKUP_LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    bail!(
+                        "等待回退备份锁超时（{} 秒）：另一写方长期持有（可能已挂起），已中止本次操作: {}",
+                        REWIND_BACKUP_LOCK_WAIT.as_secs(),
+                        path.display()
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(error).with_context(|| format!("锁定回退备份失败: {}", path.display()));
+            }
+        }
+    }
 }
 
 /// Path-compute → create_dir_all → open scaffold shared by the two lock
-/// twins above and below (they differ only in blocking vs `try_lock`): the
-/// create_dir_all + open half now comes from the shared platform helper
-/// [`crate::platform::filesystem::open_lock_file_with_dirs`]. The blocking
+/// twins above and below (they differ only in bounded-wait vs `try_lock`):
+/// the create_dir_all + open half now comes from the shared platform helper
+/// [`crate::platform::filesystem::open_lock_file_with_dirs`]. The waiting
 /// twin wraps any failure — including the `create_dir_all` step — in its
 /// `打开回退备份锁失败` context; the try twin degrades to `None`.
 fn open_lock_file() -> std::io::Result<std::fs::File> {
@@ -91,8 +136,27 @@ fn try_lock_rewound_turns_file() -> Option<std::fs::File> {
 /// sidecar 文件名（与 `_session_models.json` 等并列在 sessions 根下）。
 const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 /// 每个会话保留的回退备份条数上限（与 checkpoint LRU 上限一致），超出裁掉最老，
-/// 防止反复回退把 sidecar 写到无限大。
-const MAX_REWIND_BACKUPS_PER_SESSION: usize = 20;
+/// 防止反复回退把 sidecar 写到无限大。`pub(super)` 供 tests.rs 的封顶行为测试
+/// 直接引用（与 retention 上限的常量驱动测试同一模式），不是对外接口。
+pub(super) const MAX_REWIND_BACKUPS_PER_SESSION: usize = 100;
+
+/// 单条回退备份记录的序列化字节上限（r11 review M6）。条数上限不约束单条
+/// 大小：`removed_messages` 是被截 transcript 尾部的整体，一条巨型尾巴就能把
+/// 单条记录顶到数十 MiB。超限在动任何磁盘状态之前如实拒绝（与「备份写失败
+/// 则中止截断」同一失败类，transcript 未落盘）：回退是会话级反悔操作，不是
+/// 大批量数据搬运；更大的裁剪请走会话删除/分叉。
+pub(crate) const MAX_REWIND_RECORD_BYTES: usize = 8 * 1024 * 1024;
+
+/// `_rewound_turns.json` 全文件字节预算（r11 review M6）。条数上限 × 会话数
+/// 仍不约束总量：100 条 × 多 MiB 尾 × 上千会话可以把 sidecar 顶到数百 MiB，
+/// 而 retention 清理在存量达到/超过保留上限时每次都会整文件反序列化一遍
+/// （purge 路径；未超限的保存会在 purge 入口按空删除集提前返回，不产生
+/// 该成本——r12 review 把这句从「每次普通保存」收敛为真实触发条件），
+/// 解析成本因此被乘进每条消息保存并在两个锁内串行。全局预算在唯一增长点
+/// （truncate 的 RMW）按「最老记录先淘汰」收紧到预算内（刚写入的记录受
+/// 保护，备份是被截对话唯一留存），把 sidecar 总量与其每次解析成本都钉死
+/// 在常数上。淘汰只发生在 truncate 追加点；restore/purge 只缩小 map。
+pub(crate) const MAX_REWIND_TURNS_MAP_BYTES: usize = 32 * 1024 * 1024;
 
 /// 底座 compaction 摘要标记。底座现行标记是 `COMPACTION_SUMMARY_MARKER`
 /// （首句 "Another language model started to solve this problem"，随摘要检查点
@@ -291,6 +355,93 @@ fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> 
         .with_context(|| format!("写入回退备份失败: {}", path.display()))
 }
 
+/// 一条记录按落盘口径（pretty JSON）的序列化长度：预算计量与实际写出同为
+/// pretty 口径，淘汰扣减方向不会漂移。注意嵌套记录独立序列化时每行比它在
+/// map 里少两层缩进，扣减因此略微低估单条占比——淘汰会略微多淘汰几条，
+/// 最终 map 严格不超预算（偏安全方向）；「同一口径」指 pretty 与 pretty，
+/// 不是逐字节相等（r14 review 澄清）。
+fn rewound_record_serialized_len(record: &RewoundTurnsRecord) -> usize {
+    serde_json::to_vec_pretty(record)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+}
+
+/// 全局预算执行（r11 review M6，只在 truncate 追加点调用）：把 map 收紧到
+/// `budget` 字节内。淘汰次序：各会话 vec 只追加（push 在尾部），队首即该
+/// 会话最老记录，全局取 `rewound_at` 最小者（RFC3339 UTC，字典序 == 时间序）。
+/// `protected_id` 的最后一条（刚写入的新备份）永不淘汰——备份是被截对话唯一
+/// 留存，预算不得把本次回退的备份挤掉；受单条上限约束它必然 ≤
+/// `MAX_REWIND_RECORD_BYTES` < 预算，循环因此必然终止。返回淘汰条数。
+fn enforce_rewound_map_budget(
+    map: &mut HashMap<String, Vec<RewoundTurnsRecord>>,
+    budget: usize,
+    protected_id: &str,
+) -> usize {
+    // 计量失败（serde 只在非有限浮点上失败，实践不可达）时大声跳过而不是
+    // 静默按 0 处理——0 会让预算看似恒满足，本轮淘汰静默失效（r12 review）。
+    let mut total: usize = match serde_json::to_vec_pretty(&*map) {
+        Ok(bytes) => bytes.len(),
+        Err(error) => {
+            eprintln!("[sessions] rewind map budget skipped (serialize failed): {error:#}");
+            return 0;
+        }
+    };
+    let mut evicted = 0usize;
+    while total > budget {
+        let oldest = map
+            .iter()
+            .filter(|(id, records)| {
+                !records.is_empty() && !(id.as_str() == protected_id && records.len() == 1)
+            })
+            .min_by(|a, b| a.1[0].rewound_at.cmp(&b.1[0].rewound_at).then(a.0.cmp(b.0)))
+            .map(|(id, _)| id.clone());
+        let Some(id) = oldest else {
+            break;
+        };
+        let Some(records) = map.get_mut(&id) else {
+            break;
+        };
+        let Some(record) = records.first() else {
+            break;
+        };
+        total -= rewound_record_serialized_len(record).min(total);
+        records.remove(0);
+        evicted += 1;
+        if records.is_empty() {
+            map.remove(&id);
+        }
+    }
+    evicted
+}
+
+/// 从某会话的记录队列尾部弹出「正是本次反悔消费掉的那条」（r11 review M5）：
+/// restore 的两段式持锁把消费动作挪到了 transcript 持久化之后，跨进程的
+/// CLI 写方可能在两段之间追加新记录——无匹配就整段不动（消费挂起为孤儿
+/// 记录，文档化的最坏情形），不得误删对方的最新备份。匹配是复合的
+/// （r12 review）：RFC3339 字符串相等在粗时钟/NTP 步进下可能碰撞，只比
+/// `rewound_at` 会把跨进程写方同刻写入的另一条记录误当本次的消费掉；再比
+/// `kept_turns` 与 `truncated_revision` 只收紧接受面（误配降级为孤儿，
+/// 不会更糟），也不会漏配本次记录——restore 上半段已重新校验当前 turn 数
+/// 与 revision 仍与待消费记录一致。
+fn pop_matching_rewound_record(
+    records: &mut Vec<RewoundTurnsRecord>,
+    rewound_at: &str,
+    kept_turns: u32,
+    truncated_revision: &str,
+) -> bool {
+    match records.last() {
+        Some(last)
+            if last.rewound_at == rewound_at
+                && last.kept_turns == kept_turns
+                && last.truncated_revision == truncated_revision =>
+        {
+            records.pop();
+            true
+        }
+        _ => false,
+    }
+}
+
 impl SessionStore {
     /// 截断到第 `keep_turns` 个用户 turn 末尾：第 N+1 个用户 turn prompt 即截断点，
     /// 保留其前的全部消息（含第 N 轮的 assistant/tool_result）。N=0 = 全部截断
@@ -349,6 +500,22 @@ impl SessionStore {
             truncated_revision,
             removed_messages,
         };
+        // 单条字节上限（r11 review M6）：在动任何磁盘状态之前如实拒绝。此处
+        // 快照仅在内存中被 split_off，transcript 尚未落盘，与「备份写失败则
+        // 中止截断」同一失败类——编排命令对 truncate 报错的处理路径原样适用。
+        let record_len = rewound_record_serialized_len(&record);
+        if record_len == usize::MAX {
+            // 计量失败（实践不可达）：如实报错，不拿 usize::MAX 折算出荒谬
+            // 的 MiB 数字（r12 review）。
+            bail!("回退备份序列化失败，已中止回退（transcript 未改动）");
+        }
+        if record_len > MAX_REWIND_RECORD_BYTES {
+            bail!(
+                "被截段落的回退备份序列化后约 {} MiB，超过 {} MiB 单条上限，已中止回退（transcript 未改动）；更大的裁剪请删除或分叉会话",
+                record_len.div_ceil(1024 * 1024),
+                MAX_REWIND_RECORD_BYTES / (1024 * 1024),
+            );
+        }
         {
             let _backup_guard = REWIND_BACKUP_LOCK.lock();
             let _cross_process = lock_rewound_turns_file()?;
@@ -359,6 +526,9 @@ impl SessionStore {
                 let overflow = records.len() - MAX_REWIND_BACKUPS_PER_SESSION;
                 records.drain(..overflow);
             }
+            // 全局字节预算（r11 review M6）：执行在唯一增长点，刚写入的记录
+            // 受保护，其余按最老先淘汰到预算内。
+            enforce_rewound_map_budget(&mut backups, MAX_REWIND_TURNS_MAP_BYTES, id);
             persist_rewound_turns_map(&backups).context("回退备份写入失败，已中止截断")?;
         }
 
@@ -414,13 +584,20 @@ impl SessionStore {
             bail!("Cannot undo rewind for scheduled-run session '{id}'");
         }
         validate_session_id(id)?;
-        let _backup_guard = REWIND_BACKUP_LOCK.lock();
-        let _cross_process = lock_rewound_turns_file()?;
-        let mut backups = load_rewound_turns_map()?;
-        let record = backups
-            .get(id)
-            .and_then(|records| records.last().cloned())
-            .with_context(|| format!("会话 '{id}' 没有可反悔的回退记录"))?;
+        // 第一段（r11 review M5）：只在 map 读取时持有两把锁，随后立即释放，
+        // 与 truncate_to_user_turn 的 RMW 作用域同一形状。transcript 持久化
+        // 会触发 retention 清理，而清理删除会话时会走到
+        // purge_rewound_turns_backups——若把非重入的 REWIND_BACKUP_LOCK 持有
+        // 跨过持久化，清理线程会与自身死锁（scheduled_mutation 被一起钉死，
+        // 进程内全部会话写挂起）。
+        let record = {
+            let _backup_guard = REWIND_BACKUP_LOCK.lock();
+            let _cross_process = lock_rewound_turns_file()?;
+            load_rewound_turns_map()?
+                .get(id)
+                .and_then(|records| records.last().cloned())
+                .with_context(|| format!("会话 '{id}' 没有可反悔的回退记录"))?
+        };
         let mut session = self
             .manager
             .load_session_snapshot(id)
@@ -447,13 +624,46 @@ impl SessionStore {
         session.metadata.updated_at = Utc::now();
         // 先持久化 transcript 再删备份记录：本步失败时记录仍在，可重试。
         self.persist_then_reconcile(&session, "rewind undo restore")?;
-        // 记录删除失败只留孤儿数据；反悔条件②（turn 数已不等于 kept_turns）会
-        // 自然挡住重复恢复，不算失败，如实记日志。
-        if let Some(records) = backups.get_mut(id) {
-            records.pop();
-        }
-        if let Err(error) = persist_rewound_turns_map(&backups) {
-            eprintln!("[sessions] remove consumed rewind backup for {id} failed: {error:#}");
+        // 第二段（r11 review M5）：重新取锁消费记录。map 必须重读而非复用
+        // 第一段的副本——两段之间 retention 清理可能已移除本会话，跨进程 CLI
+        // 写方也可能整文件重写（其快照里没有我们看到的记录）。消费按复合
+        // 身份精确匹配队尾（rewound_at + kept_turns + truncated_revision，
+        // 见 pop_matching_rewound_record）：不匹配就整段不动（消费挂起为
+        // 孤儿记录，文档化的最坏情形），不得误删对方的最新备份。
+        // 消费段的任何失败都只留孤儿数据；反悔条件②（turn 数已不等于
+        // kept_turns）会自然挡住重复恢复，不算失败，如实记日志。
+        // （r12 review M1：取锁/重读的 `?` 同样不得外抛——transcript 在上面
+        // 一行已持久化成功，这里 Err 外抛会把「已恢复」谎报为「恢复失败
+        // （可重试；记录未消费）」，而重试必然被反悔条件①挡成不可重试，
+        // 与事实双重不符；与持久化失败同一处理：记日志、留孤儿，函数返回
+        // 成功。）
+        {
+            let consume = || -> Result<()> {
+                let _backup_guard = REWIND_BACKUP_LOCK.lock();
+                let _cross_process = lock_rewound_turns_file()?;
+                let mut backups = load_rewound_turns_map()?;
+                if let Some(records) = backups.get_mut(id) {
+                    // 只借身份字段（removed_messages 已在上方并入 transcript，
+                    // 整体借 &record 会撞上部分移动）。
+                    pop_matching_rewound_record(
+                        records,
+                        &record.rewound_at,
+                        record.kept_turns,
+                        &record.truncated_revision,
+                    );
+                }
+                if let Err(error) = persist_rewound_turns_map(&backups) {
+                    eprintln!(
+                        "[sessions] remove consumed rewind backup for {id} failed: {error:#}"
+                    );
+                }
+                Ok(())
+            };
+            if let Err(error) = consume() {
+                eprintln!(
+                    "[sessions] consume rewind backup for {id} skipped (transcript already restored; orphaned record is the documented worst case): {error:#}"
+                );
+            }
         }
         Ok(restored)
     }
@@ -464,11 +674,28 @@ impl SessionStore {
     /// truncate/restore; the delete caller already holds
     /// `scheduled_mutation`, so this lock is the supplementary line of defense
     /// outside that window (the boot sweep).
+    ///
+    /// Both locks degrade instead of wait (r11 review M5): truncate/restore
+    /// scope their guards to the map RMW, but nothing structurally prevents a
+    /// future holder from widening again — and a blocking acquire here would
+    /// deadlock the retention sweeper against a same-thread holder
+    /// (non-reentrant mutex) while pinning `scheduled_mutation`. Skipping
+    /// leaves orphaned records, which is this path's documented worst case
+    /// (they are inert: restore re-validates the session and re-consumes them
+    /// on the session's next delete).
     pub(crate) fn purge_rewound_turns_backups(ids: &[String]) {
         if ids.is_empty() || !rewound_turns_path().exists() {
             return;
         }
-        let _backup_guard = REWIND_BACKUP_LOCK.lock();
+        let _backup_guard = match REWIND_BACKUP_LOCK.try_lock() {
+            Some(guard) => guard,
+            None => {
+                eprintln!(
+                    "[sessions] rewind backup lock held in-process, purge skipped (orphaned records are the documented worst case)"
+                );
+                return;
+            }
+        };
         // The purge only rewrites when something changes, but the map load
         // itself must not race a concurrent whole-map persist, so the file
         // lock spans the read here too. Purge stays best-effort: with the
@@ -503,6 +730,334 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 10s wait is the r3 disclosed bound (bounded acquire of the
+    /// cross-process flock); the poll-loop behavior is exercised elsewhere,
+    /// but nothing pinned the VALUE — pin the literal so a silent
+    /// loosening/tightening turns red (r4 review).
+    #[test]
+    fn rewind_backup_lock_wait_stays_at_10s() {
+        assert_eq!(REWIND_BACKUP_LOCK_WAIT, std::time::Duration::from_secs(10));
+    }
+
+    /// The backup cap's seed/asserts are cap-relative (they read the
+    /// constant), so nothing held the VALUE after the 20→100 raise — pin the
+    /// shipped literal (r6 review, same rationale as the lock pin above).
+    #[test]
+    fn rewind_backup_cap_stays_at_100() {
+        assert_eq!(MAX_REWIND_BACKUPS_PER_SESSION, 100);
+    }
+
+    /// The two r11 bounds are enforced with the constants at the growth
+    /// point; the behavioral tests below run tiny budgets, so nothing would
+    /// catch a silent revert of the shipped VALUES — pin both literals.
+    #[test]
+    fn rewind_record_cap_stays_at_8mib() {
+        assert_eq!(MAX_REWIND_RECORD_BYTES, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn rewind_map_budget_stays_at_32mib() {
+        assert_eq!(MAX_REWIND_TURNS_MAP_BYTES, 32 * 1024 * 1024);
+    }
+
+    /// A padded record whose `removed_messages` carry `pad_bytes` of text.
+    fn padded_rewound_record(rewound_at: &str, pad_bytes: usize) -> RewoundTurnsRecord {
+        RewoundTurnsRecord {
+            rewound_at: rewound_at.to_string(),
+            original_revision: String::new(),
+            kept_turns: 1,
+            pre_restore_checkpoint_id: None,
+            truncated_revision: String::new(),
+            removed_messages: vec![Message {
+                role: "user".into(),
+                content: vec![deepseek_tui::models::ContentBlock::Text {
+                    text: "x".repeat(pad_bytes),
+                    cache_control: None,
+                }],
+            }],
+        }
+    }
+
+    /// Budget enforcement (r11 review M6): with a budget that fits nothing
+    /// but the protected record, every older record is evicted
+    /// oldest-first and exactly the just-written backup survives; with a
+    /// generous budget nothing is touched. The mid-budget case pins the
+    /// eviction ORDER: oldest-first evicts the two old sessions and stops
+    /// with sess-new's front+tail intact, while any newest-first or
+    /// arbitrary order leaves a different survivor set.
+    #[test]
+    fn rewind_map_budget_evicts_oldest_and_protects_the_new_record() {
+        let mut map = HashMap::new();
+        map.insert(
+            "sess-old".to_string(),
+            vec![padded_rewound_record("2026-01-01T00:00:00+00:00", 400)],
+        );
+        map.insert(
+            "sess-mid".to_string(),
+            vec![padded_rewound_record("2026-06-01T00:00:00+00:00", 400)],
+        );
+        map.insert(
+            "sess-new".to_string(),
+            vec![
+                padded_rewound_record("2026-12-01T00:00:00+00:00", 400),
+                padded_rewound_record("2026-12-02T00:00:00+00:00", 400),
+            ],
+        );
+
+        // Generous budget: the map stays untouched.
+        let mut generous = map.clone();
+        assert_eq!(
+            enforce_rewound_map_budget(&mut generous, usize::MAX, "sess-new"),
+            0
+        );
+        assert_eq!(
+            serde_json::to_vec(&generous).expect("serialize"),
+            serde_json::to_vec(&map).expect("serialize"),
+            "a generous budget must not evict anything"
+        );
+
+        // Mid budget, derived not guessed: all four records serialize to
+        // the same byte count (identical shape, same-length timestamps —
+        // the probe below uses a same-length placeholder so its serialized
+        // size matches exactly), so budget = map_total − 2×record is
+        // exactly the post-two-evictions size — oldest-first evicts
+        // sess-old then sess-mid and stops with sess-new's front AND
+        // protected tail intact. Newest-first would evict sess-new's front
+        // first and end with sess-old surviving instead: a different final
+        // set.
+        let record_bytes =
+            rewound_record_serialized_len(&padded_rewound_record("0000-00-00T00:00:00+00:00", 400));
+        // The budget counts PRETTY bytes (the persisted format), so the
+        // measurement here must be pretty too.
+        let map_total = serde_json::to_vec_pretty(&map).expect("serialize").len();
+        let mut mid = map.clone();
+        let evicted =
+            enforce_rewound_map_budget(&mut mid, map_total - 2 * record_bytes, "sess-new");
+        assert_eq!(evicted, 2);
+        assert!(mid.contains_key("sess-new"), "protected session survives");
+        assert_eq!(
+            mid["sess-new"]
+                .iter()
+                .map(|r| r.rewound_at.as_str())
+                .collect::<Vec<_>>(),
+            ["2026-12-01T00:00:00+00:00", "2026-12-02T00:00:00+00:00"],
+            "oldest-first keeps the new session whole"
+        );
+        assert_eq!(mid.len(), 1, "emptied sessions are removed from the map");
+
+        // Budget below one record: everything evictable goes except the
+        // protected just-written record (sess-new's tail). Note sess-new's
+        // FRONT (2026-12-01) is evictable while a newer sibling exists —
+        // only the tail is the protected backup — so 3 evictions run, and
+        // the loop then stops with only the protected record left even
+        // though it alone exceeds the budget (the protected record may not
+        // be evicted; the per-record cap bounds its size).
+        let evicted = enforce_rewound_map_budget(&mut map, 1, "sess-new");
+        assert_eq!(evicted, 3);
+        let remaining = map.get("sess-new").expect("protected session survives");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].rewound_at, "2026-12-02T00:00:00+00:00");
+        assert_eq!(map.len(), 1, "emptied sessions are removed from the map");
+    }
+
+    /// The restore consumer must pop exactly the record it consumed
+    /// (matched on the full record identity): a peer that appended a newer
+    /// record between the two lock windows must keep its backup.
+    #[test]
+    fn restore_consumption_matches_the_consumed_record_only() {
+        let mut records = vec![
+            padded_rewound_record("2026-01-01T00:00:00+00:00", 8),
+            padded_rewound_record("2026-02-01T00:00:00+00:00", 8),
+        ];
+        assert!(pop_matching_rewound_record(
+            &mut records,
+            "2026-02-01T00:00:00+00:00",
+            padded_rewound_record("2026-02-01T00:00:00+00:00", 8).kept_turns,
+            padded_rewound_record("2026-02-01T00:00:00+00:00", 8)
+                .truncated_revision
+                .as_str()
+        ));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].rewound_at, "2026-01-01T00:00:00+00:00");
+        // A mismatched timestamp (peer appended/rewrote meanwhile) must not
+        // remove anything.
+        assert!(!pop_matching_rewound_record(
+            &mut records,
+            "2026-09-09T00:00:00+00:00",
+            1,
+            "",
+        ));
+        assert_eq!(records.len(), 1);
+        let mut empty: Vec<RewoundTurnsRecord> = Vec::new();
+        assert!(!pop_matching_rewound_record(&mut empty, "x", 1, ""));
+    }
+
+    /// The consumption match is compound (r12 review): RFC3339 strings can
+    /// collide across a coarse clock / NTP step, so a peer record written in
+    /// the same instant but for a different truncation must NOT be consumed
+    /// — it degrades to an orphan, never to eating the peer's only backup.
+    #[test]
+    fn consumption_requires_full_identity_not_just_the_timestamp() {
+        let mut records = vec![padded_rewound_record("2026-03-01T00:00:00+00:00", 8)];
+        records[0].kept_turns = 2;
+        // Same rewound_at, different kept_turns: the peer's record must
+        // survive.
+        assert!(!pop_matching_rewound_record(
+            &mut records,
+            "2026-03-01T00:00:00+00:00",
+            1,
+            ""
+        ));
+        assert_eq!(records.len(), 1, "peer record survives a timestamp tie");
+        // Same rewound_at and kept_turns but a different truncated_revision
+        // (the tail was edited between the two truncations): still no
+        // consumption.
+        records[0].kept_turns = 1;
+        records[0].truncated_revision = "rev-peer".to_string();
+        assert!(!pop_matching_rewound_record(
+            &mut records,
+            "2026-03-01T00:00:00+00:00",
+            1,
+            "rev-ours"
+        ));
+        assert_eq!(records.len(), 1);
+        // Full identity match consumes.
+        assert!(pop_matching_rewound_record(
+            &mut records,
+            "2026-03-01T00:00:00+00:00",
+            1,
+            "rev-peer"
+        ));
+        assert!(records.is_empty());
+    }
+
+    /// Wiring pins (r12 review M2): the r11 M6 bounds live at production
+    /// call sites that no behavioral test reaches end-to-end (the 8 MiB
+    /// fixture a public-path eviction test would need outweighs the covered
+    /// risk; the refusal's public path is covered in sessions/tests.rs).
+    /// Mutations proved both call sites deletable with the whole suite
+    /// green, so the pins below give them the same mutation kill power as
+    /// the ACP wrap pins. The slices are scoped between the enclosing
+    /// `pub fn` markers — never into this test module — so these assertion
+    /// strings cannot self-match.
+    #[test]
+    fn m6_bounds_stay_wired_at_their_production_call_sites() {
+        let source = include_str!("rewind.rs");
+        let scoped = |start_marker: &str, end_marker: &str| {
+            let start = source
+                .find(start_marker)
+                .unwrap_or_else(|| panic!("{start_marker} missing from rewind.rs"));
+            let end = source[start..]
+                .find(end_marker)
+                .map(|offset| start + offset)
+                .unwrap_or_else(|| panic!("{end_marker} missing from rewind.rs"));
+            source[start..end].to_string()
+        };
+        let truncate_body = scoped(
+            "pub fn truncate_to_user_turn",
+            "pub fn latest_rewound_turns_record",
+        );
+        assert!(
+            truncate_body.contains("if record_len > MAX_REWIND_RECORD_BYTES {"),
+            "truncate must keep the per-record 8 MiB refusal wired (deleting it silently unbounds the sidecar's record size)"
+        );
+        assert!(
+            truncate_body
+                .contains("enforce_rewound_map_budget(&mut backups, MAX_REWIND_TURNS_MAP_BYTES"),
+            "truncate must keep the 32 MiB map budget enforcement wired (deleting it silently unbounds the sidecar's total size)"
+        );
+        let restore_body = scoped(
+            "pub fn restore_rewound_turns",
+            "pub(crate) fn purge_rewound_turns_backups",
+        );
+        // Whitespace-squeezed containment (rustfmt-tolerant, same lesson as
+        // the ACP wrap pins): the matcher must receive the full compound
+        // identity — dropping any argument changes the squeezed text.
+        let squeezed: String = restore_body
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(
+            squeezed.contains(
+                "pop_matching_rewound_record(records,&record.rewound_at,record.kept_turns,&record.truncated_revision"
+            ),
+            "restore must consume via the compound identity matcher"
+        );
+        // The phase-2 consume block must not propagate errors out of
+        // restore: the transcript is durably committed one line above, so a
+        // `?` there would misreport a successful restore as a retryable
+        // failure (r12 review M1). Every remaining `?;` in the region must
+        // sit inside the `consume` closure (deeper indent than the block
+        // body).
+        let phase_two = restore_body
+            .split("let consume = || -> Result<()> {")
+            .nth(1)
+            .expect("restore keeps the consume closure");
+        let closure_end = phase_two
+            .find("if let Err(error) = consume()")
+            .expect("consume result must be handled, not propagated");
+        for line in phase_two[..closure_end].lines() {
+            if line.trim_end().ends_with("?;") {
+                assert!(
+                    line.starts_with("                "),
+                    "phase-2 error handling must stay inside the closure (no `?` may escape restore after the transcript commit): {line:?}"
+                );
+            }
+        }
+    }
+
+    /// Purge degrades on in-process contention (r11 review M5): while the
+    /// backup mutex is held the purge must SKIP (sidecar untouched) instead
+    /// of blocking — a blocking acquire here deadlocks the retention
+    /// sweeper against a same-thread holder, which is exactly the shape
+    /// restore's function-wide guard used to produce. After release the
+    /// same call must succeed.
+    #[test]
+    fn purge_skips_while_the_in_process_backup_lock_is_held() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-purge-skip-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let path = rewound_turns_path();
+        let mut seeded = HashMap::new();
+        seeded.insert(
+            "sess-x".to_string(),
+            vec![padded_rewound_record("2026-01-01T00:00:00+00:00", 8)],
+        );
+        std::fs::create_dir_all(path.parent().expect("sessions root has a parent"))
+            .expect("create sessions root");
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&seeded).expect("serialize seed"),
+        )
+        .expect("seed sidecar");
+
+        let held = REWIND_BACKUP_LOCK.lock();
+        SessionStore::purge_rewound_turns_backups(&["sess-x".to_string()]);
+        assert!(
+            path.exists(),
+            "a contended purge must skip and leave the sidecar untouched"
+        );
+        let still_there: HashMap<String, Vec<RewoundTurnsRecord>> =
+            serde_json::from_slice(&std::fs::read(&path).expect("read sidecar")).expect("parse");
+        assert!(
+            still_there.contains_key("sess-x"),
+            "record survives the skipped purge"
+        );
+        drop(held);
+
+        SessionStore::purge_rewound_turns_backups(&["sess-x".to_string()]);
+        assert!(
+            !path.exists(),
+            "uncontended purge removes the record (all-empty sidecar is deleted)"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     /// Round-41 review M2: the cross-process rewind lock is a real exclusive
     /// flock at the documented sibling path. `flock(2)` conflicts between two

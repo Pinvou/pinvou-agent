@@ -24,7 +24,7 @@ class ValidateCommitTextTests(unittest.TestCase):
         )
 
     def test_github_pr_suffix_is_not_counted_towards_description_limit(self) -> None:
-        description = "a" * 50
+        description = "a" * 72
 
         self.assertEqual(
             validate_commit_msg.validate_text(
@@ -35,7 +35,7 @@ class ValidateCommitTextTests(unittest.TestCase):
         )
 
     def test_description_over_limit_is_rejected_before_github_pr_suffix(self) -> None:
-        description = "a" * 51
+        description = "a" * 73
 
         errors = validate_commit_msg.validate_text(
             f"fix: {description} (#191)",
@@ -43,10 +43,10 @@ class ValidateCommitTextTests(unittest.TestCase):
         )
 
         self.assertEqual(len(errors), 1)
-        self.assertIn("description must be 50 characters or fewer, got 51", errors[0])
+        self.assertIn("description must be 72 characters or fewer, got 73", errors[0])
 
     def test_only_terminal_github_pr_suffix_is_excluded(self) -> None:
-        description = f"{'a' * 50} (#191) followup"
+        description = f"{'a' * 73} (#191) followup"
 
         errors = validate_commit_msg.validate_text(
             f"fix: {description}",
@@ -55,7 +55,7 @@ class ValidateCommitTextTests(unittest.TestCase):
 
         self.assertEqual(len(errors), 1)
         self.assertIn(
-            f"description must be 50 characters or fewer, got {len(description)}",
+            f"description must be 72 characters or fewer, got {len(description)}",
             errors[0],
         )
 

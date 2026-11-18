@@ -70,7 +70,7 @@ v0.9.12 的模型侧名称以 model-visible canonical 名称为准（§2 白名�
 
 | 模型侧名称 | 形态 | 说明 |
 |---|---|---|
-| `bash`、`read`、`write`、`edit` | 独立小契约工具 | 文件与前台 shell 从 v0.9.x action family 迁出；`write` 单次内容硬上限 64 KiB（`CodeWhale/crates/tui/src/tools/file_tool.rs` 工具描述与 `file/tests.rs` 边界测试） |
+| `bash`、`read`、`write`、`edit` | 独立小契约工具 | 文件与前台 shell 从 v0.9.x action family 迁出；`write` 单次内容硬上限 256 KiB（`CodeWhale/crates/tui/src/tools/file_tool.rs` 工具描述与 `file/tests.rs` 边界测试） |
 | `list_dir`、`file_search`、`grep_files` | 独立小契约工具 | 重新作为独立 canonical 工具发布（`canonical_action.rs:209` "published standalone tools again"），不再是 `File` 家族的子动作 |
 | `Git`、`Web` | action family | 子动作经 `action` 参数分派，别名表见 `CANONICAL_ACTION_ALIASES`（`canonical_action.rs:19`） |
 | `terminal/run` 等 | 持久终端工具 | 精确名五件套，见 §2 |
@@ -139,7 +139,7 @@ code 会话默认 Plan 时，最终可用 action 仍受 Plan 注册面与只读 
 
 - 白名单是产品级放行边界；不引入第二套 fork-only 黑名单，不恢复 `hidden_tools` 注入（`tool_policy.rs` 头注释）。
 - `tool_search` 只能发现白名单内且未被拒绝的工具：`allowed_tools` 同时约束首轮目录、`tool_search` 结果和实际执行（`tool_policy.rs:3-5`；lib.rs `conditional_allowlist_rules_match_model_visible_registry_entries` 以 v0.9.12 真实 registry 投影验证条件性宿主/MCP 条目均有白名单规则）。
-- canonical `write` 单次内容有 64 KiB 硬上限（`CodeWhale/crates/tui/src/tools/file_tool.rs:121`；`file/tests.rs` 断言超限写入在触盘前失败），并继续受工作区边界和审批/claim 约束。
+- canonical `write` 单次内容有 256 KiB 硬上限（`CodeWhale/crates/tui/src/tools/file_tool.rs:121`；`file/tests.rs` 断言超限写入在触盘前失败），并继续受工作区边界和审批/claim 约束。
 - canonical `bash` 执行前经命令安全分析（`CodeWhale/crates/tui/src/command_safety.rs`：命令前缀分类与危险模式预检）；破坏性命令不能被自动批准绕过。
 - 宿主额外工具经 `spawn_for_session` 的单一注入路径进入引擎（`engine_pool.rs` 的 `extra_tools` 组装与 `AppEngine::spawn_for_session` 调用，约 :2678-2740；如 `kb_tool.rs` 经 `EngineConfig.extra_tools` 注入），并继续受白名单（lib.rs、`multiagent_regression_tests.rs` 对真实 bridge 回合目录的逐项校验）和拒绝集约束。
 - 宿主产生的结构化产出与审计文件写声明过的位置（会话执行根与应用审计根，见 `SessionStore::session_roots` 与 `bridge.rs::audit_workspace`）；工具不应借 canonical `write`/`edit` 扩大权限。原「三省六部」结构化产出子系统已随 bundle 0.21 完整移除（`runtime_bundle/platform/mod.rs` 变更记录），不再是安全边界的承载者。

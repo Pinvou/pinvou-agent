@@ -32,8 +32,8 @@ The fields have these meanings:
 - `type` is required and must be one of the allowed values below.
 - `scope` is optional and identifies the affected module, page, or capability, such as `session`, `search`, or `installer`.
 - `!` is optional and marks a breaking change.
-- `description` is required. Use concise English, no more than 50 characters, without ending punctuation. Automated checks validate the format, not the language.
-- The GitHub-generated terminal suffix ` (#<PR number>)` on a squash commit is platform metadata and does not count toward the 50-character description limit.
+- `description` is required. Use concise English, no more than 72 characters, without ending punctuation. Automated checks validate the format, not the language.
+- The GitHub-generated terminal suffix ` (#<PR number>)` on a squash commit is platform metadata and does not count toward the 72-character description limit.
 - The optional body and trailers must be written in English, apart from standard identifiers, paths, URLs, code, and proper names.
 
 Every human-authored commit must also include the DCO `Signed-off-by` trailer described in [`DCO.md`](../DCO.md). Create it with `git commit -s` or add `--signoff` when amending or rebasing.

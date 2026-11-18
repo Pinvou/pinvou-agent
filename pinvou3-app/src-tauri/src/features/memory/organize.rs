@@ -46,7 +46,11 @@ use super::util::{
 };
 
 const LLM_ORGANIZE_TIMEOUT: StdDuration = StdDuration::from_secs(75);
-const ORGANIZE_HISTORY_MAX_REPORTS: usize = 20;
+/// Organize-report history rows kept on disk (newest first). Reports are
+/// KB-scale diagnostics; 200 keeps a long history reviewable while still
+/// bounding the file (round-51 limits audit: 20 silently discarded the
+/// oldest reports long before the file was non-trivial).
+pub(crate) const ORGANIZE_HISTORY_MAX_REPORTS: usize = 200;
 
 /// Per-run cap on item removals (delete targets plus merge-absorbed sources):
 /// `max(ORGANIZE_REMOVAL_BUDGET_MIN, ceil(organizable_items / ORGANIZE_REMOVAL_BUDGET_RATIO))`.

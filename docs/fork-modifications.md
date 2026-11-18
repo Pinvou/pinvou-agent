@@ -61,19 +61,19 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `8e8d52fdb`，包含 #115–#122、#114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152 与 #156；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为维护候选头 `42a4a9833`（公开维护分支 `pinvou3-clean` 仍在 `687358f7e`；#154 快进合并后先行越过该钉（引用时为 `19d8d12e4`，或其已签名后继——FF 链保持完好），父仓以跟进 roll 至实时头随之追平），包含 #115–#122、#114/#125、#123/#124/#129/#131/#133/#134/#135、#136/#142/#148/#150/#152、#156、#157 与限制审计 #154；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-11-15）
+## 0. 当前状态（2026-11-16）
 
-- 当前公开维护头与父仓 gitlink：`687358f7efde6abd3592737b8ec48adc74ba5a84`（2026-11-15）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`。本轮维护分支以一个 session-reader 只读分类修复提交跟进（见 §3 表首行），父仓 gitlink 随之跟随。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 100 个提交，r1 `1fafee7e2` 之上 85 个；97 个带 DCO sign-off。未签名的提交为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署），不能声称未签名集合有界于历史两项。保留已发布历史，不改写维护分支。
+- 维护候选头与父仓 gitlink：`42a4a9833fe3fcf178fc290bca2844f931137eae`（2026-11-16，#154 round-7 修复波后；census 151）；公开维护分支 `pinvou3-clean` 仍在 `687358f7e`；#154 快进合并后分支先行越过该钉（引用时为 `19d8d12e4`，或其已签名后继），父仓以跟进 roll 至实时头随之追平（追平前公开门禁保持红色）。#123 已合入为 `e5a8af221`，#124 为 `449edbf0b`，#129 为 `4e560354c`，#131 为 `e2a0e14fd`，#133 为 `4e75c6a07`，#134 为 `8a4719fd4`，#135 为 `11cba403d`；#136 为 `37be2844f`，#142 为 `78804c83e`，#148 为 `5f15cce57`，#150 为 `e972a9a05`，#152 为 `6f7a3a748`，#156 为 `8e8d52fdb`，#157 为 `687358f7e`，限制审计 #154 为 `42a4a9833`（squash `841fe98f` + 评审修复波 r1–r7，已 rebase 到 `pinvou3-clean` `687358f7e` 之上）。本轮维护分支以限制审计分支的 rebase 跟进（见 §3 表首行），父仓 gitlink 随之跟随。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 151 个提交，r1 `1fafee7e2` 之上 136 个；148 个带 DCO sign-off。未签名的提交为 #107 `f27672935`、#116 `e9a7f48da1` 与 #157 `687358f7e`（CodeWhale 仓 squash 合入未携带签署；父仓侧跟进提交带签署；限制审计 #154 的 51 个提交全部带签署），不能声称未签名集合有界于历史两项。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：551 files, +121146/-49817，净增 71329；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：577 files, +125293/-50424，净增 74869；301 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
@@ -122,6 +122,7 @@
 
 | Commit | 主题 | 说明 |
 |---|---|---|
+| `42a4a9833` | 限制审计 | fork 限制行为全量审计批次（squash `841fe98f` + 评审修复波，分支已 rebase 到 `pinvou3-clean` `687358f7e` 之上——#156 的 1.100 lint 适配与 #157 的 session-reader 只读分类保持为祖先）：放宽误伤真实使用的上限（MAX_SESSIONS 50→1000 且 archived 豁免清理改为只对非 archived 计数、宪法子句 280→2000 带幂等截断标记、routed-usage 64→2048 且分批持久化（16 条/批，批次仅在写盘落地后清除）、ACP 轮次 50→200、路由分类器超时 4s→15s、sandbox 钳制 600s→4h、cloud prompt 4k→64k 带标记、PR title/body 96/6000→200/60000、restored 拓扑 24→64 带省略注记、cargo-test/verifier 输出改保尾部、grep 120s/250、web 搜索 25/10、write 256KiB、file_search 1000、lsp lint 路径 16→64、finance 错误摘录 120→600、子代理证据 clip 改保头 2500+尾 1500 带截断标记、终端窗口 32KiB 且 prune_output 保真实尾部、dev-server 600s、pdftotext 300s、git 输出 100k、github 摘录阈值 32KB/64KB、fleet 证据 10MB、digest 1024、display_name 钳制不拒绝、插件安装 64MB、/workflow 8000、voice 录音 60s）；补齐缺失的活性边界（git/gh 子进程 120s/60s 且 git_history 共享 git 工具的有界 runner、hooks unix-socket emit 5s、录音管道 2s 空闲超时与 10s 启动宽限、gist（/share）300s、/update 15min、remote_env git 5s、config_bundles 120s、secrets 读/写两侧 16MiB、SKILL.md 发现读取 512KiB 与 audit 上限一致+符号链接拒绝）；删除死限制（TOOL_ACTIVATION_CACHE_MAX_* 的越界文案机制——sentinel-disabled 强制执行代码保留、cfg(test)-only WALK_DEPTH、config.example.toml 30s 陈旧注释、max_subagents=10 示例注释化）；扩展侧 vscode 10s/列表 50、verifiers harness 1800s fail-closed、computer-use exec 截断标记（UTF-8 字节真实计数）、facts-drift 200；修复波另含：retention 扫描移出 lifecycle-edit 保存路径（save 路径 janitor 以 60s 最小间隔节流）、零位截断标记按纯文本解析、删除过时的 grep/file_search 预算镜像注记、forge 上界钉改 const-assert；技能文档补续跑指引。父仓同批更新 T2 指纹（write 256KiB）、会话/定时保留 500、检查点与回退备份 20→100、记忆 pending/organize 20→200 与 timed TTL 钳制 90→3650 天（字面量钉）、产物读取 50MiB 有界、archive ingest 50→200、review 与 voice 上限、CLI voice 裁剪披露、知识库 offset 分页与 skippedByExcluder 披露、vite 预算 492k→495k→496k（rebase 后三轮实测 re-cut，web 129k 不变）、提交主题 72 字符（#154）；round-5 修复波（#154 评审 r5）：搜索超时改用 walk 本地 child token（不再取消共享 per-turn token 毒化整轮）、结算快照在 settles 之后同一 mutation 锁内重建（in-gap staged usage 存活）、PR 正文 summary 轴预算化（receipts 永不被截断）、updater drain 16MiB 捕获上限、remote_env 钻取测试重现真实 grandchild 场景并记录线程/fd 保留权衡、voice Disconnected 退出 kill + tick-cap 前置、证据 clip 不再物化整块、hooks emit 失败 debug 日志、dispatch show prompt 行有界、字面量钉（digest 1024/lint 64/github 32k+64k/宪法 12-13 位边界/secrets 读取侧 16MiB）、会话 save split 文档守卫；round-5 声称的消息改写（DCO 身份一致 + 描述 ≤50 字符）经 round-6 复核证实未落地——12 个提交保留非规范作者身份（`asto` ×11、`users.noreply.github.com` ×1）、20 个主题超 50 字符；全部签署与邮箱一致、仓 DCO 门通过，已在 #154 正文披露修正而不改写历史（避免搅动各节引用的 SHA），最终树字节同一 `03ca781265`；round-6 修复波（#154 评审 r6）：监控失败结算路径 `settle_claimed_turn_failure` 改在 settles 之后同一 mutation 锁内重建快照并保存（round-5 只修了 happy path 的同形缺口——失败路上 detached-child lease 维持注册的 sink 在间隙内投递的 staged usage 曾被陈旧快照写回加 stage 清除静默抹除，且 sink 返回 true 无 journal 兜底）+ 确定性 wiring 测试（在 item-failure emit 内经 event_emit 锁停驻、持 lease 经生产投递路径注入、旧序实证红/新序绿，钉存活/空 stage/无 journal 侧）、PR 正文 summary 截断标记仅在真截断时附加（原无条件附加使每条短摘要谎报截断）、`remove_turn` 经 `turn_mutation` 与 staged append 串行化（堵 append 慢路径载入-插入窗口的幽灵 stage 条目）、computer-use exec 原始块拼接单次解码且截断丢弃尾部不完整序列（不再在管道块接缝与切断处伪造替换符；CJK 测试钉精确保留前缀 33 字符/99 字节）、宪法 12 位天花板钉武装化（恰满上限的正文使 `<=`→`<` 变异可杀）、`save_session` 文档写明保留扫描副作用与 lifecycle 编辑必须走 `save_session_edit`；round-7 修复波（#154 评审 r7）：五个 stdout-as-result git 工具点位（git_status/git_diff/git_log/git_show/git_blame）把 drain_truncated OR 进 truncated 元数据（drain 截断的输出不再被报告为完整）、computer-use exec 的错误事件诊断移出捕获上限（超限 stderr 下 spawn 错误仍可见）、verifiers harness 补挂起预检钉（版本检查/安装两个 fail-closed 路径）、exec 捕获补块拆分 join 钉（单次解码契约）、四处过时边界注释修正 |
 | `687358f7e` | T2 | 一方 session-reader 只读读取面分类修复：`mcp_session-reader_read_session` 与 `mcp_session-reader_list_sessions` 加入引擎只读辅助名单——服务端契约（游标分页、仅已完成回合、逐条截断、跨 session 前缀拒绝）使其真只读，此前被误分类为需审批的网络工具，Plan 钉死的 aux lane 唯一工具即此读取时在执行前即死锁；名单精确匹配使前缀伪装（`mcp_session-reader_read_session_export`）仍留在需审批侧。registry/tests.rs 以数据条目扩展既有只读面测试（无新增 `forkguard_*` 行为名，登记数仍 301）；父仓无镜像分类，透明 (#157) |
 | `8e8d52fdb` | T2 | rustc/clippy 1.100 stable（2026-11-09）新 lint 适配五处，等价改写无行为变化：terminal 探针测试的 `map_err(|err| io::Error::other(err.to_string()))` 对 `Infallible`（ratatui 0.30 `with_options` 返回 `B::Error`、`TestBackend::Error` 为 uninhabited）调用 `to_string()` 被稳定 never 类型后的 `unreachable_code` 证明为死代码，改为 `map_err(io::Error::other)` 直传（转换 load-bearing 保留）；`fleet/manager.rs` needless_bool 化简为 `Ok(started)`；subagent coord ledger 与 `tui/auto_review.rs` needless_bool 收尾表达式化；`tui/transcript/tests.rs` ×2 needless_range_loop 改 `per_cell[..3].iter().enumerate()`。对照纯净 `6f7a3a748` 以 1.99.1 复跑同款命令确认五处恰为 1.100 新增；all-targets 严格面遗留 2 处 collapsible_if 与 `cargo doc -Dwarnings` 的 4 处 rustdoc 私有链接错误在 1.99.1 下同样存在（既有债务，未触碰，留待后续）。首次由父仓 Windows 回归腿（codewhale-tui lib test 编译）暴露 (#156) |
 | `6f7a3a748` | deps | 升级 rusqlite 0.41.1 / libsqlite3-sys 0.39.1（捆绑 SQLite 3.54.1，关 RUSTSEC-2026-0459）、rmcp 3.9.0（关 RUSTSEC-2026-0462）、rio-vt 0.5.29（关 RUSTSEC-2026-0430）；子模块 MSRV 声明抬至 rust-version 1.89（低于父仓 1.90 下限，父仓无需动作）(#152) |
@@ -736,3 +737,137 @@ the immutable r1 closure are unchanged ancestors, and the public-head
 transition contract stays gitlink == branch head with the r3 tag pinned
 at its closure (61cb769be). The parent carries no mirrored
 classification and no other source change in this follow.
+
+## CodeWhale limits-audit follow to f47cb9f36 (2026-11-15)
+
+The submodule gitlink moves from pinvou3-clean 687358f7e to the limits-audit
+branch head f47cb9f36 (CodeWhale#154's 16 commits: the `841fe98fe` squash plus
+the review fixwave). During the parent PR's rebase onto the 2026-11-15 main,
+the companion branch was itself rebased onto 687358f7e so CodeWhale#156's
+rustc/clippy 1.100 adaptations and #157's session-reader read-only
+classification stay ancestors of the pinned head — merging the parent PR
+cannot move the parent's engine backwards. The fork line grows 100→116 commits
+above dcd4c200f (101 above r1); all 16 audit commits carry DCO sign-offs, so
+the unsigned set stays the historical three (see §0). The audit's shipped
+content on top of the previously registered 1d736ce8d fixwave adds: the
+retention scan moved off the lifecycle-edit save path, routed-usage batches
+cleared only after the write lands, the git tool's bounded runner shared with
+git_history, zero-digit truncation markers parsed as plain text, the stale
+grep/file_search budget mirror note dropped, and forge-bound upper pins
+const-asserted. fork-guard re-registers the review head (f47cb9f36) and the
+census (116), and the write-cap T2 fingerprints move 64 KiB → 256 KiB with the
+audit; the register stays at 301 forkguard_* behavior names. The maintenance
+base (11cba403d), the official v0.9.12 root (dcd4c200) and the immutable r1
+closure are unchanged ancestors, and the public-head transition contract stays
+gitlink == branch head with the r3 tag pinned at its closure (61cb769be). The
+parent side of the batch (app/CLI/frontend/docs/CI) is registered in
+pinvou-agent#847.
+
+## CodeWhale limits-audit follow to 00a7a6427 (2026-11-16)
+
+The submodule gitlink moves from the limits-audit round-4 head `f47cb9f36` to
+`00a7a6427` (CodeWhale#154 now 41 commits: the `841fe98fe` squash plus the
+r1–r4 review fixwaves plus the round-5 fixwave of 14 thematic commits). The
+round-5 wave fixes the two regressions the fresh review found in this PR's
+own earlier fixwaves — the search/file_search timeout had been cancelling the
+shared per-turn token (a timeout aborted the turn and masqueraded as a user
+stop; it now cancels a walk-local `child_token()`), and the terminal
+settlement rebuilt its snapshot before the settle awaits and saved it after,
+wiping routed-usage records staged in the gap (the snapshot is now rebuilt
+under the same mutation hold that saves, after the settles) — and carries the
+m-level hardening (PR-body summary axis budgeted so receipts always survive,
+updater drain capture cap, remote_env grandchild-shaped drain test and
+recorded thread/fd trade, voice disconnect kill plus tick-cap ordering,
+evidence clip without materializing the block, hooks emit debug log,
+bounded `/dispatch show` prompt line), five new literal pins (digest 1024,
+read_lints 64, github 32k/64k thresholds, the constitution 12/13-digit
+boundary, the secrets load-side 16 MiB refusal), and truthful session
+save-split docs. The branch history was reworded message-only: all sign-off
+identities match their authors and every description is ≤ 50 chars; the
+final tree is byte-identical to the pre-reword head (`03ca781265`). The fork
+line grows 116→141 commits above `dcd4c200f`; all 41 commits carry DCO
+sign-offs, so the unsigned set stays the historical three (see §0).
+fork-guard re-registers the review head (`00a7a6427`) and the census (141);
+the register stays at 301 forkguard_* behavior names (no new parent-side
+behavior tests; the wave's tests live in the CodeWhale side). The maintenance
+base (11cba403d), the official v0.9.12 root (dcd4c200) and the immutable r1
+closure are unchanged ancestors, and the public-head transition contract
+stays gitlink == branch head with the r3 tag pinned at its closure
+(61cb769be). The parent side of the batch is registered in pinvou-agent#847.
+
+## CodeWhale limits-audit follow to db4da7fde (2026-11-16, round-6)
+
+The submodule gitlink moves from the limits-audit round-5 head `00a7a6427` to
+`db4da7fde` (CodeWhale#154 now 47 commits: the `841fe98fe` squash plus the
+r1–r6 review fixwaves, the latest being six thematic commits). The round-6
+wave fixes the defect the fresh review found in the round-5 settlement fix
+itself: the monitor-failure terminal `settle_claimed_turn_failure` kept the
+snapshot-then-await-then-save ordering that the round-5 wave repaired only on
+the happy path, so a record a still-registered terminal-turn sink (kept alive
+by held detached-child leases) staged while the settles awaited was wiped by
+the stale snapshot's save while the stage cleared, with the sink's `Ok(true)`
+leaving no journal fallback. The failure path now mirrors the happy path
+(load under the saving mutation hold, after the settles), pinned by a
+deterministic wiring test that parks the settlement inside its item-failure
+emit, injects through the production sink path with a held lease, and was
+verified red on the pre-fix ordering. The wave also fixes the unconditionally
+appended PR-body summary truncation marker (now only on an actual cut),
+serializes `remove_turn` with the staged append under `turn_mutation`, makes
+computer-use exec capture byte-truthful end to end (single decode of
+concatenated chunks; the cut drops a trailing partial UTF-8 sequence), arms
+the constitution 12-digit ceiling pin so the ceiling mutation fails, and
+documents `save_session`'s retention side effect. Round-6 also corrected two
+stale claims the round-5 wave left in the #154 body: the message-only history
+reword never landed on the remote (12 commits keep a non-canonical author
+identity, 20 subjects exceed 50 chars; sign-offs are email-consistent and the
+repo DCO gate passes — corrected in the body rather than rewriting history,
+which would churn every cited SHA), and the durability note now carries the
+sustained-write-failure regime the code comment already disclosed.
+fork-guard re-registers the review head (`db4da7fde`) and the census (147);
+the register stays at 301 forkguard_* behavior names (no new parent-side
+behavior tests; the wave's tests live in the CodeWhale side). The maintenance
+base (11cba403d), the official v0.9.12 root (dcd4c200) and the immutable r1
+closure are unchanged ancestors, and the public-head transition contract
+stays gitlink == branch head with the r3 tag pinned at its closure
+(61cb769be). The parent side of the batch is registered in pinvou-agent#847.
+
+## CodeWhale limits-audit follow to 42a4a9833 (2026-11-16, round-7)
+
+The submodule gitlink moves from the limits-audit round-6 head `db4da7fde` to
+`42a4a9833` (CodeWhale#154 now 51 commits: the `841fe98fe` squash plus the
+r1–r7 review fixwaves, the latest being four thematic commits). The round-7
+fresh review re-derived all 85 changed files from scratch in twelve lanes and
+returned approve-level (0 blocker, 0 major, every headline constant and
+mechanism re-verified at its claimed value); the wave carries its two code
+findings and four comment corrections: the five stdout-as-result git tool
+sites (`git_status`/`git_diff`/`git_log`/`git_show`/`git_blame`) now OR the
+shared runner's `drain_truncated` into their `truncated` metadata, so output
+cut by the 2 s drain grace is no longer reported as complete; computer-use
+exec carries the `error`-event diagnostic outside the capped stderr storage
+so it survives an over-cap stderr, and the byte-truthful capture gains a
+chunk-split pin (a 3-byte char split across two pipe chunks must decode
+without a fabricated replacement character); the verifiers harness pins the
+hung-timeout paths of the version-check and install call sites (was two of
+four runtime call sites); and four stale bounds comments are corrected (the
+janitor-throttle doc no longer names the round-2 threat the round-3
+`save_session_edit` routing made moot; `save_session`'s doc no longer claims
+recurring-saves-only; `ROUTED_USAGE_FLUSH_BATCH`'s doc stands alone and
+states the sustained-failure regime's O(N²) re-serialization CPU;
+`append_routed_usage_staged` documents its `Result<bool>` semantics — false
+is a duplicate fingerprint, the per-turn cap evicts rather than rejects).
+The review's remaining items are disclosed in the #154 body as on-the-record
+residuals with behavior unchanged (ACP/MCP registries build ToolContext
+without a cancel token so walk-local timeout cancellation holds only on the
+interactive lane; the unbounded voice reader join; the UI-block amplification
+by the 60 s record cap; the reply-axis truncation-marker reach; the plugin
+download post-check buffering envelope; the skills symlink check-then-open
+shape; the subprocess-runtime rollout orphan; the vscode 8→50 refresh cost;
+the `aggregate_usage` per-thread scan meeting megabyte turn files; concurrent
+`secrets set` last-writer-wins).
+fork-guard re-registers the review head (`42a4a9833`) and the census (151);
+the register stays at 301 forkguard_* behavior names (no new parent-side
+behavior tests; the wave's tests live in the CodeWhale side). The maintenance
+base (11cba403d), the official v0.9.12 root (dcd4c200) and the immutable r1
+closure are unchanged ancestors, and the public-head transition contract
+stays gitlink == branch head with the r3 tag pinned at its closure
+(61cb769be). The parent side of the batch is registered in pinvou-agent#847.

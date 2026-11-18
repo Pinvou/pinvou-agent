@@ -1513,6 +1513,81 @@ fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
     drop(home);
 }
 
+/// L3 review (round-17 fixwave): the profile confirm arm applied the pending
+/// row's RAW content to the profile and re-normalized — the last unguarded
+/// label write path. A wipe-shaped row (hand-edited or legacy
+/// `memory_pending.jsonl`; today's shipped creators pre-clean via
+/// `clean_memory_label`) silently emptied the stored label behind a success
+/// payload. The confirm must refuse with the family's crafted
+/// `memory_profile_label_rejected` prefix, keep the candidate UNCONSUMED so
+/// the user can dismiss it instead, write nothing — and still confirm a
+/// clean candidate.
+#[test]
+fn confirm_pending_memory_refuses_wipe_shaped_profile_labels_and_keeps_them_pending() {
+    let home = IsolatedPinvouHome::new("confirm-wipe-shaped-profile-label");
+
+    // (a) 擦除形状的 call_name 候选（strip 后超长）：显式拒绝，拒绝消息带
+    // 家族前缀并点名 topic，profile 不落盘，候选保持 pending 未消费。
+    let wiped = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "call_name".to_string(),
+        content: "Christian Wolf".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    let refused =
+        confirm_pending_memory(&wiped.id).expect_err("a wipe-shaped pending label must be refused");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("memory_profile_label_rejected"),
+        "the refusal carries the family's crafted prefix: {refused}"
+    );
+    assert!(
+        refused.to_string().contains("call_name"),
+        "the refusal names the offending topic: {refused}"
+    );
+    assert!(
+        !profile_path().exists(),
+        "nothing was written: no profile file after the refusal"
+    );
+    let still_pending = load_pending_memory()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == wiped.id)
+        .expect("the refused candidate stays in the pending store");
+    assert_eq!(still_pending.status, PENDING_STATUS_PENDING);
+    assert_eq!(still_pending.content, "Christian Wolf");
+
+    // 拒绝不消费候选：用户仍可改为忽略（dismissal 分支照常工作）。
+    assert!(matches!(
+        ignore_pending_memory(&wiped.id).unwrap(),
+        PendingIgnoreOutcome::Ignored(_)
+    ));
+
+    // (b) 干净内容的候选照常确认：写库成功、行被消费为 confirmed。
+    let clean = enqueue_memory_candidate(MemorySuggestion {
+        kind: "profile".to_string(),
+        topic: "call_name".to_string(),
+        content: "Ada".to_string(),
+        source: "test".to_string(),
+    })
+    .unwrap();
+    confirm_pending_memory(&clean.id).unwrap().unwrap();
+    assert_eq!(
+        load_profile().unwrap().identity.call_name,
+        "Ada",
+        "a clean candidate still confirms"
+    );
+    let confirmed = load_pending_memory()
+        .unwrap()
+        .into_iter()
+        .find(|item| item.id == clean.id)
+        .expect("the confirmed row stays in the pending store with its decision");
+    assert_eq!(confirmed.status, PENDING_STATUS_CONFIRMED);
+    drop(home);
+}
+
 #[test]
 fn render_empty_profile_is_empty() {
     let profile = MemoryProfile {
@@ -2163,9 +2238,12 @@ fn memory_jsonl_writes_are_bounded() {
     );
     assert!(recent.len() <= RECENT_WORK_ACTIVE_MAX_STORED + RECENT_WORK_ARCHIVED_MAX_STORED);
 
-    let pending: Vec<PendingMemoryItem> = (0..120)
+    // Round-51 limits audit: the active (unconfirmed) bucket cap rose 20 →
+    // 200, so the fixture now feeds 260 pending + 60 resolved rows to still
+    // exercise the newest-first truncation the assertions pin.
+    let pending: Vec<PendingMemoryItem> = (0..320)
         .map(|i| {
-            let pending = i < 25;
+            let pending = i < 260;
             let ts = (now - Duration::minutes(i)).to_rfc3339();
             PendingMemoryItem {
                 id: format!("pending_{i}"),
@@ -2194,6 +2272,15 @@ fn memory_jsonl_writes_are_bounded() {
         PENDING_MEMORY_ACTIVE_MAX_STORED
     );
     assert!(pending.len() <= PENDING_MEMORY_ACTIVE_MAX_STORED + PENDING_MEMORY_RESOLVED_MAX_STORED);
+    // Newest-first retention: the most recent pending row survives, the
+    // overflow beyond the active cap is dropped oldest-first (same shape the
+    // never-store block below pins).
+    assert!(
+        pending
+            .iter()
+            .any(|item| item.id == "pending_0" && item.status == PENDING_STATUS_PENDING)
+    );
+    assert!(!pending.iter().any(|item| item.id == "pending_259"));
 
     let never: Vec<NeverMemoryItem> = (0..205)
         .map(|i| NeverMemoryItem {
@@ -3425,16 +3512,36 @@ fn compact_timed_memory_store_dedupes_and_enforces_capacity() {
 }
 
 #[tokio::test]
-async fn organize_history_is_bounded_to_recent_twenty() {
+async fn organize_history_is_bounded_to_recent_two_hundred() {
     let _home = IsolatedPinvouHome::new("organize-history-bound");
     enable_memory_for_tests();
     let bridge = FakeOrganizeModel {
         base_url: "http://127.0.0.1:9".to_string(),
     };
-    for _ in 0..25 {
+    for _ in 0..(crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS + 5) {
         organize_memory_with_llm(&bridge, None).await.unwrap();
     }
-    assert_eq!(load_organize_history().len(), 20);
+    assert_eq!(
+        load_organize_history().len(),
+        crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS
+    );
+}
+
+/// The audited limits' VALUES are part of the disclosure (register row in
+/// docs/fork-modifications.md), so they are pinned literally — the mechanism
+/// tests above stay green if a constant silently reverts to its old
+/// pre-audit value (20/20/90).
+#[test]
+fn audited_memory_limit_values_match_the_register() {
+    assert_eq!(PENDING_MEMORY_ACTIVE_MAX_STORED, 200);
+    assert_eq!(
+        crate::features::memory::organize::ORGANIZE_HISTORY_MAX_REPORTS,
+        200
+    );
+    assert_eq!(
+        crate::features::memory::types::TIMED_MEMORY_MAX_TTL_DAYS,
+        3650
+    );
 }
 
 #[tokio::test]

@@ -247,7 +247,13 @@ function checkedSpawn(spawn, command, args, options, label) {
   // input reaches it.
   // codeql[js/shell-command-injection-from-environment] build-time script on a trusted build machine; the only environment-derived values are npm- and OS-provided build-tool paths.
   const result = spawn(command, args, options);
-  if (result.error) throw result.error;
+  if (result.error) {
+    // spawnSync failures surface here with a null exit code — a budget
+    // expiry arrives as a bare ETIMEDOUT that names nothing about the lane
+    // (r13 review). Re-label it so the bounded-lane failure reads as one;
+    // the status branch below only sees nonzero exits.
+    throw new Error(`${label}失败：${result.error.message ?? result.error}`);
+  }
   if (result.status !== 0) {
     throw new Error(`${label}失败，退出码：${result.status ?? "unknown"}`);
   }
@@ -326,6 +332,13 @@ function prepareWindowsCodexBridge({
       nodeExecutable,
       npmArgs: WINDOWS_NPM_CI_ARGS,
     });
+    // Per-leg bound (r12 review), the same discipline as
+    // scripts/ci/npm-ci-bounded.sh: every npm ci lane in CI must fail at its
+    // own budget so a wedged registry fails the leg, not the release job's
+    // timeout-minutes window. spawnSync kills the child on expiry and
+    // surfaces a bare ETIMEDOUT through checkedSpawn's error branch, which
+    // re-labels it with this lane's budget context (r13 review).
+    const npmCiBudgetSecs = Number(process.env.NPM_CI_BUDGET_SECS || 900);
     console.log(`[codex-bridge] 使用现有 ${nodeVersion} 从锁文件准备 Windows ACP Bridge`);
     checkedSpawn(
       spawn,
@@ -335,8 +348,10 @@ function prepareWindowsCodexBridge({
         cwd: acpRoot,
         env: installEnvironment,
         stdio: "inherit",
+        timeout: npmCiBudgetSecs * 1000,
+        killSignal: "SIGKILL",
       },
-      "安装 Windows ACP Bridge",
+      `安装 Windows ACP Bridge（npm ci 上限 ${npmCiBudgetSecs} 秒，超时即失败本步）`,
     );
 
     pruneWindowsPlatformPackages(bridgeRoot);

@@ -162,7 +162,28 @@ SMOKE = ROOT / "scripts" / "mcp-server-contract-smoke.py"
 # face (schema_sanitize.rs, MFJS anyOf cap) is byte-identical to the
 # previously blessed 8e8d52fdb, verified via the layer-2 source assertions
 # on a populated tree before flipping the pin.
-_PINNED_CODEWHALE_GITLINK = "687358f7efde6abd3592737b8ec48adc74ba5a84"
+# Re-blessed again 2026-11-15 onto the limits-audit head f47cb9f36
+# (CodeWhale#154): the 16-commit audit branch replayed onto 687358f7e with
+# schema_sanitize.rs and the registry files byte-identical across the rebase
+# (git diff 687358f7e f47cb9f36 on those paths is empty), re-verified via the
+# layer-2 source assertions on the populated tree before flipping the pin.
+# Re-blessed again 2026-11-16 onto the limits-audit round-6 head db4da7fde:
+# rounds r1-r6 grew the audit branch to 47 commits, and the round-6 delta
+# (00a7a6427..db4da7fde, 6 commits) touches only user_constitution.rs,
+# dispatch_runner.rs, runtime_threads.rs(+tests), session_manager.rs and the
+# computer-use exec plugin — schema_sanitize.rs and the registry files stay
+# byte-identical (git diff 687358f7e db4da7fde on those paths is empty,
+# reproduced at the pinned trees), so the layer-2 source face is unchanged.
+# Re-blessed again 2026-11-16 onto the limits-audit round-7 head
+# 42a4a9833 (r11 review: the round-7 follow commit moved the parent gitlink
+# but skipped this re-bless — the round-6 wave's own finding class):
+# db4da7fde..42a4a9833 (4 commits) touches only runtime_threads.rs,
+# session_manager.rs, tools/git.rs, tools/git_history.rs, the verifiers
+# harness and the computer-use exec plugin — schema_sanitize.rs and the
+# registry files stay byte-identical (git diff 687358f7e 42a4a9833 on those
+# paths is empty, reproduced at the pinned tree), so the layer-2 source
+# face is unchanged and the flip is safe.
+_PINNED_CODEWHALE_GITLINK = "42a4a9833fe3fcf178fc290bca2844f931137eae"
 PPTX_SERVER = ROOT / "pinvou3-app" / "resources" / "mcp-servers" / "pptx" / "server.py"
 
 

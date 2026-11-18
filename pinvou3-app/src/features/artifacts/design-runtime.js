@@ -331,8 +331,14 @@ function buildDesignRuntimeScript() {
         label: elementLabel(element),
         tagName: element.tagName.toLowerCase(),
         className: element.className && typeof element.className === 'string' ? element.className : '',
+        // Full text is load-bearing here: the inspector's editable text input is
+        // seeded from this field, and commitText sends the draft back verbatim —
+        // seeding a truncated prefix would commit "prefix + one char" and destroy
+        // the document text beyond the cut. Display labels stay compact via
+        // elementLabel() (24-char ellipsis); snapshot is only posted on
+        // selection/mutation events, not per frame.
         // eslint-disable-next-line unicorn/prefer-dom-node-text-content -- innerText takes the rendered text (<br>/block line breaks); textContent is only the fallback for detached nodes
-        text: String(element.innerText || element.textContent || '').trim().slice(0, 240),
+        text: String(element.innerText || element.textContent || '').trim(),
         rect: {
           x: Math.round(rect.x),
           y: Math.round(rect.y),

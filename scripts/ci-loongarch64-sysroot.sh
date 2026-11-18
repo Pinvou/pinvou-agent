@@ -921,7 +921,7 @@ apt_method() {
   # wiring a pinned-key verification is a deliberate follow-up, not done
   # here.
   curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
-    --retry 3 --retry-delay 2 -o "$release_file" "$release_url" \
+    --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 600 -o "$release_file" "$release_url" \
     || fail "Release download failed: $release_url"
   local components
   components="$(sed -n 's/^Components:[[:space:]]*//p' "$release_file" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')"
@@ -933,7 +933,7 @@ apt_method() {
     index_url="$mirror/dists/$suite/$comp/binary-$DPKG_ARCH/Packages.gz"
     log "apt method: fetching $index_url"
     curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
-      --retry 3 --retry-delay 2 -o "$work_dir/Packages.$comp.gz" "$index_url" \
+      --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 600 -o "$work_dir/Packages.$comp.gz" "$index_url" \
       || fail "index download failed: $index_url"
     gzip -t "$work_dir/Packages.$comp.gz" || fail "index is not valid gzip: $work_dir/Packages.$comp.gz"
     expected_index_sha="$(release_index_sha256 "$comp/binary-$DPKG_ARCH/Packages.gz" "$release_file")"
@@ -1174,7 +1174,7 @@ PYEOF
     deb_path="$debs_dir/$(basename "$filename")"
     if [ ! -s "$deb_path" ]; then
       curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
-        --retry 3 --retry-delay 2 -o "$deb_path" "$url" \
+        --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 600 -o "$deb_path" "$url" \
         || fail "download failed: $url"
     fi
     if [ -n "$sha" ]; then

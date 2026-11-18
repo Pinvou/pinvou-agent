@@ -421,7 +421,7 @@ async function openScheduledNav(page) {
     }
     if (window.TauriBridge && window.TauriBridge.scheduled.selectScheduledTask) {
       window.TauriBridge.scheduled.selectScheduledTask('task-1');
-      if (window.TauriBridge.scheduled.refreshScheduledTaskData) window.TauriBridge.scheduled.refreshScheduledTaskData(20);
+      if (window.TauriBridge.scheduled.refreshScheduledTaskData) window.TauriBridge.scheduled.refreshScheduledTaskData(100);
       return;
     }
     throw new Error('missing created daily brief task row');
@@ -582,7 +582,7 @@ async function openScheduledNav(page) {
     }
     if (window.TauriBridge && window.TauriBridge.scheduled.selectScheduledTask) {
       window.TauriBridge.scheduled.selectScheduledTask('task-1');
-      if (window.TauriBridge.scheduled.refreshScheduledTaskData) window.TauriBridge.scheduled.refreshScheduledTaskData(20);
+      if (window.TauriBridge.scheduled.refreshScheduledTaskData) window.TauriBridge.scheduled.refreshScheduledTaskData(100);
       return;
     }
     throw new Error('missing created daily brief task row');

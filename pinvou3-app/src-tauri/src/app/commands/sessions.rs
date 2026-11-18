@@ -201,11 +201,12 @@ pub async fn list_sessions(
             .into_iter()
             .map(|metadata| {
                 let title_attachment_names = session_title_attachment_names(&store, &metadata);
-                // On a read-cache miss the sidecar is re-read; the list is ≤50
-                // entries. Bound sessions stay resident once backfilled, while
-                // unbound sessions get no negative caching — each refresh still
-                // costs on the order of ≤2 syscalls × 50 (acceptable; review #464
-                // nit: the comment must not exaggerate this as "resident after a
+                // On a read-cache miss the sidecar is re-read; the list is
+                // bounded by the retention cap. Bound sessions stay resident
+                // once backfilled, while unbound sessions get no negative
+                // caching — each refresh still costs on the order of ≤2
+                // syscalls per entry (acceptable; review #464 nit: the
+                // comment must not exaggerate this as "resident after a
                 // single N-read pass").
                 let workspace_binding = store
                     .session_workspace_binding(&metadata.id)
