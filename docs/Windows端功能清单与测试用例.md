@@ -1,6 +1,6 @@
 # PINVOU Windows 端功能清单与测试用例
 
-> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。同期姊妹篇：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md)（2026-06-15 迁移接手快照）；现行 Windows 构建/CI 与私有运行时权威入口见 [`windows-rust-ci.md`](./windows-rust-ci.md) 与 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`；§5.7 的 WIN-WF-001..008 用例与 §8 清单中的「工作流启动、人工门禁…重启恢复通过」条目同属该子系统，一并作废）、§3.12 的 OTA-01..04 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现；§5.10 的 WIN-OTA-001..008 用例与 §8 清单中的「OTA 检查、下载、取消…升级结果上报通过」条目同属该链路，一并作废）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet；§5.9 的 WIN-CONN-004 用例同属该能力，一并作废）、§3.5 的 MODEL-01「内置模型账号绑定」与 MODEL-02「后台失败缓存容错」（主干无对应实现——现行账号体系为 ACP 代理账号，见 [`codex-acp.md`](./codex-acp.md)；§5.5 的 WIN-MODEL-001..004A 用例同属该能力，一并作废）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。编号空缺两处为快照期原貌、非漏排：§3.5 功能条目表的 `MODEL-08`（MODEL-07 直跳 MODEL-09）与 §5.7 用例表的 `WIN-TOOL-008`（§5.5 的 `WIN-MODEL-008` 用例存在）；文中版本号 `0.6.3` 为内部仓库编号，与公开 tag 序列非一一对应。其余条目经抽查与现行代码一致，正式验收前以当前代码为准。
+> **注（2026-11 回填）**：本文回填自内部仓库 2026-07-23 快照（版本 `0.6.3`、基线 `025-architecture-migration`），未按当前主干逐条复核。同期姊妹篇：[`Windows迁移与维护接手手册.md`](./Windows迁移与维护接手手册.md)（2026-06-15 迁移接手快照）；现行 Windows 构建/CI 与私有运行时权威入口见 [`windows-rust-ci.md`](./windows-rust-ci.md) 与 [`windows-private-runtime-submodule.md`](./windows-private-runtime-submodule.md)。以下快照内容**不可**当作当前主干能力：§3.8 的 WF-01..09 工作流子系统（已在主干整体移除，见 `features/retirement.rs`；§5.7 的 WIN-WF-001..008 用例与 §8 清单中的「工作流启动、人工门禁…重启恢复通过」条目同属该子系统，一并作废）、§3.12 的 OTA-01..04 Windows 双层 OTA 链路（主干 `features/updater/platform/` 无 Windows 实现；§5.10 的 WIN-OTA-001..008 用例与 §8 清单中的「OTA 检查、下载、取消…升级结果上报通过」条目同属该链路，一并作废）、§3.9 的 CONN-04/05 员工门户/企业知识库连接器（主干连接器仅 feishu/wecom/dingtalk/ima/tmeet；§5.9 的 WIN-CONN-004/005 用例同属该能力，一并作废）、§3.5 的 MODEL-01「内置模型账号绑定」与 MODEL-02「后台失败缓存容错」（主干无对应实现——现行账号体系为 ACP 代理账号，见 [`codex-acp.md`](./codex-acp.md)；§5.5 的 WIN-MODEL-001..004A 用例与 §6.1 的「内置模型账号暂时失败保留缓存」项同属该能力，一并作废）；§9 追溯矩阵为 0.6.x 代码布局（子模块目录现为 `CodeWhale/`，前端/Rust 均已按 `features/`/`platform/` 重构）。编号空缺两处为快照期原貌、非漏排：§3.5 功能条目表的 `MODEL-08`（MODEL-07 直跳 MODEL-09）与 §5.7 用例表的 `WIN-TOOL-008`（§5.5 的 `WIN-MODEL-008` 用例存在）；文中版本号 `0.6.3` 为内部仓库编号，与公开 tag 序列非一一对应。其余条目经抽查与现行代码一致，正式验收前以当前代码为准。
 
 ## 1. 文档信息
 
@@ -619,7 +619,7 @@ npm run build:nsis
 
 1. **当前 Windows 发布链只面向 x64。** Embedded Python、Node.js、Pandoc、ONNX Runtime 和 VC++ 检测均使用 x64 资源；不能把 Linux ARM64 兼容代码视为 Windows ARM64 安装包支持。
 2. **定时任务要求 PINVOU 正在运行。** 当前不创建 Windows Task Scheduler 系统任务；应用关闭、关机或休眠期间错过的时段会跳过，下一次启动只安排未来时段。
-3. **Shell 不使用 PTY。** 只有子进程实际写入 stdout/stderr 管道的内容才能实时显示。部分程序检测到非交互终端后可能禁用动态进度，这属于当前设计边界。
+3. **Shell 转发不使用 PTY。** 只有子进程实际写入 stdout/stderr 管道的内容才能实时显示。部分程序检测到非交互终端后可能禁用动态进度，这属于当前设计边界。（底座 `exec_shell` 工具另支持显式 `tty` 参数按需开 PTY——不自动启用，见 SHELL-12 行。）
 4. **实时 Shell 转发不再以丢块降压。** 宿主以 250ms 轮询快照差量合并输出（64KiB 有界已发尾），作业完整输出缓冲不丢块；极端持续输出的主要风险变为内存增长，仍应限制工具卡展示量并验证最终结果。
 5. **桌伴的置顶和透明渲染依赖 Windows 窗口/WebView 能力。** 运行时置顶重申失败会降级为普通可用窗口；混合 DPI、多显示器空洞和显卡驱动环境仍需真机验收。
 6. **大型语音模型不随安装包提供。** 首次语音输入依赖网络下载；断网环境只能使用已经下载并校验的模型。

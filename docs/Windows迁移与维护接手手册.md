@@ -364,7 +364,7 @@ Windows 迁移必须重做或拆分：
 | `HOME` 环境变量假设 | `bridge/paths.rs`、`file_ingest.rs` | P0（⚠️ 快照条目：已落地——现行 Windows 读 `USERPROFILE`，用户目录解析统一经 `platform::os`（`windows_path.rs`）） |
 | `which` 命令探测依赖 | `file_ingest.rs` | P0（⚠️ 快照条目：已落地跨平台探测 helper，见 §7 注） |
 | `pkexec` / `apt` 一键安装依赖 | `file_ingest.rs`、`updater.rs` | P0（⚠️ 快照条目：已拆平台策略 `features/dependencies/platform/`，Windows 走 winget/安装指引；updater 已拆 `features/updater/platform/`（现行仅 `unsupported` 占位，见 §17）） |
-| `.deb` 应用内升级 | `updater.rs`、前端设置页 | P0 |
+| `.deb` 应用内升级 | `updater.rs`、前端设置页（⚠️ 快照平铺路径：现居 `app/commands/updater.rs` + `features/updater/platform/`） | P0 |
 | Linux GTK/WebKit env | `lib.rs::ensure_release_env` | P1（⚠️ 快照后已消解：Linux UI 变量按平台拆分至 `platform/ui_cache.rs`，见 §5 注） |
 | Bash 脚本启动 | `run-dev.sh`（现居 `pinvou3-app/` 下）、`scripts/*.sh` | P1 |
 | Poppler/Tesseract/LibreOffice/7z 路径 | `file_ingest.rs` | P1（⚠️ 快照后已消解：`platform::os::*_tool_path` 跨平台探测 + 安装包内置运行时，见 §7 注） |
@@ -384,9 +384,9 @@ Windows 迁移必须重做或拆分：
 | 新增领域 agent / 工具组合 | `SKILL.md`，放用户或 bundle skills | 直接写 Rust agent loop |
 | 新增 `/xxx` 命令 | `~/.deepseek/commands/xxx.md`（快照条目：现为 `~/.codewhale/commands/xxx.md`，`.deepseek` 仅 legacy 回退，见 §1 注） | 在 Tauri command 里硬编码 LLM 行为 |
 | 接外部业务 API | 独立 MCP server | 直接塞进底座 ToolRegistry |
-| 修改模型、base_url、API key | `bridge/prefs.rs`、`bridge/mod.rs`、设置页 | 到处读 env |
+| 修改模型、base_url、API key | `bridge/prefs.rs`、`bridge/mod.rs`、设置页（⚠️ 快照平铺路径：现居 `platform/prefs/` 与 `features/assistant/platform/bridge.rs`） | 到处读 env |
 | 改聊天 UI | `index.html` + `tauri-bridge.js` | 绕过 bridge 直接调用后端 |
-| 改 session 存储 | `bridge/sessions.rs` | 直接读写底座全局目录 |
+| 改 session 存储 | `bridge/sessions.rs`（⚠️ 快照平铺路径：现居 `features/sessions/`） | 直接读写底座全局目录 |
 | 改附件解析 | `file_ingest.rs` | 让 LLM 自己决定所有附件读取 |
 | 改工作流 | `workflows/` + `harness.rs` + bundle 快照 | 让主聊天 assistant 手工串所有角色（快照条目：工作流子系统已在主干整体移除，此维护入口已失效） |
 | 同步底座上游 | `DeepSeek-TUI` + fork guard + prompt diff | 整文件 `--theirs` 粗暴覆盖 |
@@ -444,7 +444,7 @@ Windows 原生后建议增加这些测试：
 4. `docs/fork-modifications.md`：DeepSeek-TUI fork 单一真相源。
 5. `docs/auto-compact-256K-tuning.md`：本地 Qwen3.6 256K 上下文适配（史料；写死阈值已被取代）。
 6. `docs/DeepSeek-TUI-工具系统.md`：底座工具注册与执行链路（v0.8.37 史料）。
-7. `pinvou3-app/src-tauri/src/lib.rs`、`engine_pool.rs`、`engine.rs`、`bridge/mod.rs`、`commands.rs`：后端主链路。（⚠️ 快照平铺路径已随布局重构移除，现行入口见 `features/assistant/platform/bridge.rs` 与 `app/commands/`）
+7. `pinvou3-app/src-tauri/src/lib.rs`、`engine_pool.rs`、`engine.rs`、`bridge/mod.rs`、`commands.rs`：后端主链路。（⚠️ 快照平铺路径已随布局重构移除——仅 `src-tauri/src/lib.rs` 本体仍在，现承载契约测试、非主链路；现行入口见 `features/assistant/platform/bridge.rs` 与 `app/commands/`）
 8. `pinvou3-app/src/tauri-bridge.js`：前端状态与事件主链路。（⚠️ 快照路径已移除，现行前端入口见 `src/features/`）
 
 ## 17. 给 Windows 迁移的建议路线

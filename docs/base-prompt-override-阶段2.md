@@ -22,14 +22,14 @@
 - `base.md` 回退上游原文（当时验证 `git diff 54151a4b` = 0，字节一致；今现树与该 commit 已分叉，复核用下方 `git show 54151a4b:…` 直接取原文）
 - `prompts.rs` 品牌词回退 codewhale（locale / authority / doc 注释 3 处）
 - 删除 6 个内容 forkguard 测试（职责移到 pinvou3-app），authority 测试断言回退 CodeWhale
-- 全量测试 **3349 passed / 0 failed**；hook（3 个 `set_*_override`）完好
+- 全量测试 **3349 passed / 0 failed**；hook（3 个 `set_*_override`）完好（⚠️ 本节运行数字系重建前内部仓运行记录，现树不可复跑，姊妹篇同款注）（⚠️ 本节运行数字系重建前内部仓运行记录，现树不可复跑，姊妹篇同款注）
 
 **pinvou3-app（working tree，待父仓 commit）**
 - `resources/common/bundle/base.md` = pinvou3 版 base.md（249 行）
-- `bridge/bundle.rs` 3 常量（`BASE_PROMPT_MD` + `LOCALE_PREAMBLE_ZH_HANS` + `AUTHORITY_RECAP`）+ `install_prompt_overrides()` + 3 个新 forkguard 测试（内容锚点 + override 端到端生效）
+- `bridge/bundle.rs` 3 常量（`BASE_PROMPT_MD` + `LOCALE_PREAMBLE_ZH_HANS` + `AUTHORITY_RECAP`）+ `install_prompt_overrides()` + 3 个新 forkguard 测试（内容锚点 + override 端到端生效）（⚠️ 2026-11 注：父仓 `50752183b` 落地态 `bundle.rs` 实含 2 个 `#[test]`（`ensure_extracted_behavior`/`bundled_prompt_contracts_explain_append_file_tail_only`），与「3 个 forkguard 测试」的写档口径不符，以落地提交为准）（⚠️ 2026-11 注：父仓 `50752183b` 落地态 `bundle.rs` 实含 2 个 `#[test]`（`ensure_extracted_behavior`/`bundled_prompt_contracts_explain_append_file_tail_only`），与「3 个 forkguard 测试」的写档口径不符，以落地提交为准）
 - `bridge/mod.rs` `boot()` 调 `install_prompt_overrides()`（早于 ensure_dirs；dump_system_prompt bin 同经此 boot）
   （2026-11 注：上两条的 `bridge/bundle.rs`、`bridge/mod.rs` 路径已迁——常量与 `install_prompt_overrides()` 现位于 `features/runtime_bundle/platform/mod.rs`，boot 调用点现位于 `features/assistant/platform/bridge.rs`；`AUTHORITY_RECAP` 已随清空移除，不再以常量存在（见文首归档注）。）
-- forkguard 测试 **4 passed / 0 failed**
+- forkguard 测试 **4 passed / 0 failed**（写档时点内部运行记录，现树不可复跑；落地提交态 `bundle.rs` 内 forkguard 名测试为 0，见上注）（写档时点内部运行记录，现树不可复跑；落地提交态 `bundle.rs` 内 forkguard 名测试为 0，见上注）
 
 **fork-guard.sh + 文档**
 - 7 个品牌/内容指纹 retarget 到 pinvou3-app 文件 + 新增 #42 hook 存活指纹；`--fast` 指纹层全过

@@ -178,7 +178,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 ### 4.1 调度（`core/engine/dispatch.rs`）
 
 模型一轮可能输出多个 tool_call。dispatch 决定：
-- **串行 vs 并行**：`tool_plan_is_parallel_safe` 判断（`should_parallelize_tool_batch` 为同名谓词的 `#[cfg(test)]` 测试助手）——实际谓词为 `read_only && supports_parallel && !approval_required && !interactive`（dispatch.rs:274-279；「无副作用冲突」的代码化表述）才并行
+- **串行 vs 并行**：`tool_plan_is_parallel_safe` 判断（`should_parallelize_tool_batch` 为生产谓词 `tool_plan_is_parallel_safe` 的 `#[cfg(test)]` 测试包装，两函数不同名）——实际谓词为 `read_only && supports_parallel && !approval_required && !interactive`（dispatch.rs:274-279；「无副作用冲突」的代码化表述）才并行
 - **批处理**：`multi_tool_use.parallel` 是个特殊工具，模型可以用一次调用包多个子调用
 
 ### 4.2 单次执行（`tool_execution.rs::execute_tool_with_lock`）
@@ -370,7 +370,7 @@ Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 
 
 pinvou3 不改 ToolRegistry 或 ToolSpec —— 完全复用上游（本节为 v0.8.37 时点口径；现行 fork 已触及 `tools/registry.rs`/`file.rs`/`tool_catalog.rs`，pinvou3-app bridge 侧维护工具 allowlist，见文首注记）。差异只在：
 
-1. **EngineConfig.features**：默认全 on，未自定义裁剪（这是后续可优化点）
+1. **EngineConfig.features**：除 VisionModel（features 表 default_enabled=false）外默认全 on，未自定义裁剪（这是后续可优化点；下条 image_analyze 不注册同因）
 2. **memory_enabled = false** → remember 不注册
 3. **vision_config = None + Feature::VisionModel = false** → image_analyze 不注册
 4. **allow_shell = true** + Yolo 模式 → exec_shell 等可用

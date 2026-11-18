@@ -45,7 +45,7 @@
 ### 两把尺问题（所有复杂度的根）
 
 - **T 的判据**（`should_compact`，`crates/tui/src/compaction.rs`，0.9.5 约 :765）：可摘要**子集**的 **raw 尺**（bytes÷4，无放大）。（注：子集尺判据为 ≤0.9.5 行为；现行底座压力门按全量 input 估算、触发更早，app 侧 `derive_compaction_threshold` 仍按子集模型推导。）
-- **E 的判据**（保守估算，`crates/tui/src/compaction.rs`，0.9.5 约 :749）：**全量** input 的 **conservative 尺**（raw×1.5 + system÷3 + framing）。
+- **E 的判据**（保守估算，`crates/tui/src/compaction.rs`，0.9.5 约 :753）：**全量** input 的 **conservative 尺**（raw×1.5 + system÷3 + framing）。
 
 两条线不是一把尺，差异是**乘性的 ×1.5**，不是加性的。这就是为什么 T 必须做尺换算、
 为什么阶段一 T 只能到 ~50% 而不是 75%。**真正的解法是消灭两把尺（§4 上游线），

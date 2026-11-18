@@ -7,7 +7,7 @@
 > （尤其倒置 bug 的发现过程、Codex review 历程、大工具输出 bound 结论仍有效）。
 >
 > **2026-11 回填注记**：本文已重新回填进文档树留档（[`docs/context-compaction-设计.md`](./context-compaction-设计.md)
-> 文首"已从当前文档树移除"的说明已同步修正）。另注：下方「实际生效以本节为准」一节
+> 文首"已从当前文档树移除"的说明已同步修正）。另注：下方「当前实测阈值与修正」节内的加粗句「实际生效以本节为准」
 > 记录的写死阈值（`token_threshold=190K`、`auto_floor_tokens=60K` 等）也已过时——现行
 > 阈值由 `derive_compaction_threshold` 按模型窗口动态推导
 > （`features/assistant/platform/bridge.rs`），推导脉络仍以本文为史。另注：下文提到的回归测试
@@ -101,7 +101,7 @@ bridge 2 处 + fork 2 处 + 前端 1 处 + L1 harness + 回归测试：
 
 `context_input_budget`（engine/context.rs:366）的"reserved output"项按窗口分级：
 
-- `window ≥ 500K`（V4-class）：仍用 `TURN_MAX_OUTPUT_TOKENS` —— 保持上游 V4 interleaved thinking 的保守预算契约（被底座 engine 测试锁定——写档时点实存名 `internal_context_budget_tiers_reserved_output_by_window` / `effective_max_output_tokens_caps_api_request_for_large_window_models`；2026-11 核验注：原引名在现树及写档时点快照 0 命中（底座历史可解：`d4185ede5` 引入、`9c8e48260` 随测试退役移除），疑为混写，以实存名为准）
+- `window ≥ 500K`（V4-class）：仍用 `TURN_MAX_OUTPUT_TOKENS` —— 保持上游 V4 interleaved thinking 的保守预算契约（被底座 engine 测试锁定——写档时点实存名 `internal_context_budget_tiers_reserved_output_by_window` / `effective_max_output_tokens_caps_api_request_for_large_window_models`；2026-11 核验注：原引名系写档前文本所引的 `internal_context_budget_unaffected_by_api_request_cap`——该名实存而非混写（`d4185ede5` 2026-05-06 引入、`9c8e48260`（即写档时点快照提交）随测试退役移除，故现树与写档时点快照树 0 命中）；句中两名为同一 500K 分支契约在写档时点快照的实存名（`engine/tests.rs:928`/`:947` 可复核））
 - `window < 500K`（自托管/小窗口）：使用 route-effective 输出上限；本地 vLLM route 显式携带 24K，未显式声明的云端 route 落到底座普通请求上限，并继续受 provider/catalog/route 能力收窄。App 不再默认注入 `DEEPSEEK_MAX_OUTPUT_TOKENS`。
 
 副作用：`context_input_budget` 签名简化为 `fn(model: &str) -> Option<usize>`，三处调用点（turn_loop / capacity_flow / engine）同步删第二参数；`recover_context_overflow` 删 `requested_output_tokens` 参数。
@@ -200,7 +200,7 @@ codex 抓 `build_dt_config` 没 export `DEEPSEEK_MAX_OUTPUT_TOKENS`。`effective
 
 → B2 算 `context_input_budget = 256K - 64K - 1K = 191K`（写档时按 64K=64,000 十进制粗算；严格按 `API_MAX_OUTPUT_TOKENS = 65,536` 应为 189,440，与上文初版文档核对段（2026-05-19 假设勘误处）的 189,440 同口径（非 B1 段；B1 段仅记 `256_000` 十进制窗口口径）。而非文档承诺的 ~239K），preflight emergency 提前约 48K 触发，长 turn 可能因输出预算太满而被强制压缩或 provider 400。`PINVOU3_MAX_OUTPUT_TOKENS` 和 `prefs.advanced.max_output_tokens` 的接入点（`Pinvou3Bridge::max_output_tokens()`）建好了但**没有 wire 给 engine**。
 
-当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。Community #210（内部社区帖，不在本仓库）后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束（⚠️ 写档时点口径：现行 LocalVllm 上机器写入的 24576 已作为遗留哨兵被 `normalize_route_limits` 归一化为 None、让位给窗口档位——`prefs/mod.rs` 测试明言 "legacy machine-written local 24K is normalized to unset and takes the window tiers"；24576 现仅为进程级 `max_output_tokens()` 请求预算默认，不钳 route 声明，现行档位见 Windows 手册 §10 注），云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
+当时的修复是在 `boot()` 中补写全局 `DEEPSEEK_MAX_OUTPUT_TOKENS`。Community #210（内部社区帖，不在本仓库）后该方案已撤销：全局变量会同时限制云端模型；现在本地 vLLM 由 `RouteLimits.output_tokens=24576` 显式约束（⚠️ 写档时点口径：现行 LocalVllm 上机器写入的 24576 已作为遗留哨兵被 `normalize_route_limits` 归一化为 None、让位给窗口档位——`prefs/mod.rs` 测试明言 "a legacy machine-written local 24K is normalized to unset and takes the window tiers"；24576 现仅为进程级 `max_output_tokens()` 请求预算默认，不钳 route 声明，现行档位见 Windows 手册 §10 注），云端未声明输出上限时落到底座/provider/route 能力，boot 与 release 默认环境均不再注入该变量。L1 harness 仍可为本地测试显式设置 24K。
 
 同时 round 4 把 bridge 自己的 compaction 注释里 "60K-200K 区间纯本地去重" 也删了（round 3 只改了 docs，bridge 注释漏改）。
 
