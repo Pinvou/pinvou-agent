@@ -959,7 +959,7 @@ dictZh.uiSessionMessage = { from:name=>`来自会话：${name}`, fromUnknown:'�
 // app-automations scheduled-task tool card (tool-renderers.jsx create card).
 dictZh.uiScheduledTaskTool = { listLabel:'列表', duplicateNote:'重复请求：以上显示此请求标识对应的结果。', created:'定时任务已创建', updated:'定时任务已更新', deleted:'定时任务已删除', deletedNote:'运行历史已归档，任务不再调度。', pending:'请求已提交，应用尚未确认结果——可在定时任务面板查看', promptLabel:'提示词', limitSuffix:n=>` · 限 ${n} 条`, nameQuote:n=>`「${n}」`, mismatchNote:'该幂等键曾以不同载荷处理；本次发送的字段未被应用。',updatedName:'重命名为' };
 
-Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`,  deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传', deviceUploadCacheFull:'上传缓存已满:另一批大附件还在上传,请等待其完成后再试', deviceParsedTooLarge:'解析后的附件超过远程桌面缓存上限 32 MB,无法添加', deviceCacheFull:'远程桌面附件缓存已满，请移除一个附件后重试' });
+Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`,  deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传', deviceUploadCacheFull:'上传缓存已满：另一批大附件还在上传，请等待其完成后再试', deviceParsedTooLarge:'解析后的附件超过远程桌面缓存上限 32 MB，无法添加', deviceCacheFull:'远程桌面附件缓存已满，请移除一个附件后重试' });
 
 
 // uiToolStore 词条补充（ToolStoreView / oauth-marketplace-logic）：命名空间已在 dict 主体定义，这里增量合并。

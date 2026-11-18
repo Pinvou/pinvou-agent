@@ -554,7 +554,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       sessionModelStale: id => `この会話で選択したモデルの設定は無効になりました（見つからない設定: ${id}）。会話でモデルを選び直してください。`,
       attachStillUploading: "⚠️ 添付ファイルをアップロード中です。少し待ってから送信してください",
       deviceUploadTooLarge: name => `⚠️ ${name} は添付の上限 50 MB を超えています`,
-      deviceUploadCacheFull: "⚠️ アップロードバッファがいっぱいです:別の大きな添付ファイルをアップロード中です。完了してから再試行してください",
+      deviceUploadCacheFull: "⚠️ アップロードバッファがいっぱいです：別の大きな添付ファイルをアップロード中です。完了してから再試行してください",
       deviceParsedTooLarge: "⚠️ 解析後の添付ファイルがリモートデスクトップのキャッシュ上限 32 MB を超えているため追加できません",
       deviceCacheFull: "⚠️ リモートデスクトップの添付キャッシュがいっぱいです。1つ削除してから再試行してください",
       archiveTooManyEntries: "アーカイブに 50 個を超える項目が含まれているため添付できません",
@@ -687,8 +687,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       sessionModelStale: id => `当前会话选择的模型配置已失效（缺失配置：${id}），请在对话中重新选择模型。`,
       attachStillUploading: "⚠️ 附件还在上传,请稍后再发",
       deviceUploadTooLarge: name => `⚠️ ${name} 超过附件 50 MB 上限`,
-      deviceUploadCacheFull: "⚠️ 上传缓存已满:另一批大附件还在上传,请等待其完成后再试",
-      deviceParsedTooLarge: "⚠️ 解析后的附件超过远程桌面缓存上限 32 MB,无法添加",
+      deviceUploadCacheFull: "⚠️ 上传缓存已满：另一批大附件还在上传，请等待其完成后再试",
+      deviceParsedTooLarge: "⚠️ 解析后的附件超过远程桌面缓存上限 32 MB，无法添加",
       deviceCacheFull: "⚠️ 远程桌面附件缓存已满,请移除一个附件后重试",
       archiveTooManyEntries: "压缩包包含超过 50 个条目，无法添加",
       archiveExpandedTooLarge: "压缩包解压后超过 100 MB，无法添加",
@@ -5690,16 +5690,13 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
       return { code: message, message };
     }
     if (rawUploadError === "web_attachment_digest_invalid") {
-      const message = bt("deviceUploadDigestInvalid");
-      return { code: message, message };
+      return { code: rawUploadError, message: bt("deviceUploadDigestInvalid") };
     }
     if (rawUploadError === "web_attachment_integrity_mismatch") {
-      const message = bt("deviceUploadIntegrityMismatch");
-      return { code: message, message };
+      return { code: rawUploadError, message: bt("deviceUploadIntegrityMismatch") };
     }
     if (rawUploadError === "web_attachment_upload_cache_full") {
-      const message = bt("deviceUploadCacheFull");
-      return { code: message, message };
+      return { code: rawUploadError, message: bt("deviceUploadCacheFull") };
     }
     return { code: rawUploadError, message: rawUploadError };
   }
