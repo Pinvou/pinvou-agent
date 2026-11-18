@@ -69,10 +69,9 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 - 共享链路按策略取数：`shape_disallowed_tools` 与 `build_send_message_op`（新增 `session_id` 参数）不再散 `is_code_session` 裸判断；统一查询入口为 `SessionAgentStore::session_mode()` 与 `Pinvou3Bridge::session_policy()`。
 - 效果：改一个模式的策略取值不经过另一个模式的代码路径；新增模式取值时编译器强制审查分支。详细背景与验收见 `code-mode-解耦与权限持久化-改动说明.md`。
 
-## 4. 开发节点记录（19 个提交）
+## 4. 开发节点记录（19 个开发节点）
 
-> 说明：下表 hash 为作者开发期（2026-08-01）的本地节点，squash 后**不存在于本
-> 仓库**，仅供追溯阶段内容与评审思路；PR #138 实际提交为 7 个（自上而下）：
+> 说明：下表 hash 为作者开发期（2026-08-01）的本地节点，squash 后未随分支历史发布（本地 clone 不可取），但 GitHub 保留其对象、公开 API 可解（例：`gh api repos/Pinvou/pinvou-agent/commits/241fe054a3aa` 命中且 subject 与下表一致；2026-11-18 r16 订正：原「不存在于本仓库」仅对本地对象库成立，作可解析性口径不成立），仅供追溯阶段内容与评审思路；PR #138 实际提交为 7 个（自上而下）：
 > `feat(codex): 原生代码会话后端链路、两个根与确认卡恢复` →
 > `feat(codex): 原生代码会话前端双车道与四配置控件` →
 > `feat(codex): 原生代码会话编码专用系统提示词` →

@@ -453,7 +453,7 @@ latest-amd64.json
 - [ ] 本地文件和知识库；
 - [ ] 文件监听；
 - [ ] PDF、OCR、Office 和压缩包；
-- [ ] 网页类任务和 esbuild（快照口径：esbuild 未随主线发布，现行工具树无此依赖）；
+- [ ] 网页类任务和 esbuild（快照口径：esbuild 未随主线发布（产品 bundle 与应用工具树无此依赖；底座 CodeWhale/web 的 dev overrides 仍含 esbuild））；
 - [ ] MCP server；
 - [ ] 连接器 CLI；
 - [ ] 定时任务和工作流（快照口径：工作流子系统未随主线发布，现行仅定时任务在列）；

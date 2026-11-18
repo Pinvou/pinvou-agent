@@ -101,7 +101,7 @@ bridge 2 处 + fork 2 处 + 前端 1 处 + L1 harness + 回归测试：
 
 `context_input_budget`（engine/context.rs:366）的"reserved output"项按窗口分级：
 
-- `window ≥ 500K`（V4-class）：仍用 `TURN_MAX_OUTPUT_TOKENS` —— 保持上游 V4 interleaved thinking 的保守预算契约（被底座 engine 测试锁定——写档时点实存名 `internal_context_budget_tiers_reserved_output_by_window` / `effective_max_output_tokens_caps_api_request_for_large_window_models`；2026-11 核验注：原引名在全部可解析底座工件 0 命中，疑为混写，以实存名为准）
+- `window ≥ 500K`（V4-class）：仍用 `TURN_MAX_OUTPUT_TOKENS` —— 保持上游 V4 interleaved thinking 的保守预算契约（被底座 engine 测试锁定——写档时点实存名 `internal_context_budget_tiers_reserved_output_by_window` / `effective_max_output_tokens_caps_api_request_for_large_window_models`；2026-11 核验注：原引名在现树及写档时点快照 0 命中（底座历史可解：`d4185ede5` 引入、`9c8e48260` 随测试退役移除），疑为混写，以实存名为准）
 - `window < 500K`（自托管/小窗口）：使用 route-effective 输出上限；本地 vLLM route 显式携带 24K，未显式声明的云端 route 落到底座普通请求上限，并继续受 provider/catalog/route 能力收窄。App 不再默认注入 `DEEPSEEK_MAX_OUTPUT_TOKENS`。
 
 副作用：`context_input_budget` 签名简化为 `fn(model: &str) -> Option<usize>`，三处调用点（turn_loop / capacity_flow / engine）同步删第二参数；`recover_context_overflow` 删 `requested_output_tokens` 参数。

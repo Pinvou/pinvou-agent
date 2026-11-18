@@ -55,7 +55,7 @@ pinvou3 **fork patch #41**（`CodeWhale/crates/tui/src/skills/mod.rs:601` `skill
 ## 2. 卡牌池 / persona（不是 skill）
 
 - 数据：`pinvou3-app/src-tauri/resources/common/bundle/personas/agency-agents.json`（Side B，201 个 agency-agents-zh agent，MIT；写档时点值，现 268）。
-- 运行时：`include_str!` **编译进二进制**（快照时点为 `personas.rs:18`，现为 `features/personas/mod.rs:25`），首次访问解析进内存 `OnceLock`。**不落盘，~/.pinvou3 里没有**（主语限编译期内嵌 Side B 池；用户自创卡 source="user" 会落盘 `~/.pinvou3/user/personas/<id>.json`，见 `features/personas/mod.rs`），不被任何 SkillRegistry 发现。
+- 运行时：`include_str!` **编译进二进制**（快照时点为 `personas.rs:20`（Side B 已提交态；`:18` 系未提交工作区态、不可复核），现为 `features/personas/mod.rs:25`），首次访问解析进内存 `OnceLock`。**不落盘，~/.pinvou3 里没有**（主语限编译期内嵌 Side B 池；用户自创卡 source="user" 会落盘 `~/.pinvou3/user/personas/<id>.json`，见 `features/personas/mod.rs`），不被任何 SkillRegistry 发现。
 - 加持机制：选卡 → `equip_persona` 存 per-session active_persona + pending body → 该 session 首条 chat 一次性 prepend 完整 body（`personas::equip_body_injection`）+ 每 turn 注入轻锚点（`equip_anchor`；KV-cache 口径：锚点逐轮进当轮消息，append-only、每轮活读，不进会话钉住的 system 前缀；body 为该会话一次性进消息）。详见 `features/personas/mod.rs`（快照时点为 `personas.rs`）。
 - Side A（card-pool 分支）：pinvou2 agent-market 1078 元数据卡，机制类似但只注入摘要。
 

@@ -8,7 +8,7 @@
 底座（CodeWhale）**本来就有**完整的 plan→执行交接闭环：
 
 1. 模型在 Plan 模式调 `update_plan` = 交接信号（`prompts/modes/plan.md` 引导）
-2. engine 层 `should_stop_after_plan_tool`（`dispatch.rs:346`，改造时点态）强制结束本 turn
+2. engine 层 `should_stop_after_plan_tool`（改造基线 fork `6b3059da11` 树的 `dispatch.rs:385`；2026-11-18 r16 订正：round-15 误改的 :346 系上游 v0.8.65 行号，非改造钉树行号）强制结束本 turn
 3. （TUI）自动弹 Plan Confirmation modal → 四选项 Accept(Agent)/Accept(YOLO)/Revise/Exit
 4. Accept(YOLO) → 自动 `set_mode(Yolo)` + 注入 `"Proceed with the accepted plan."` + 共享 `Arc<Mutex<PlanState>>` 不清
 

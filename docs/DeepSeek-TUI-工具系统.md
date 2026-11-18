@@ -268,7 +268,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 ### GitHub
 
-`github_issue_context / github_pr_context / github_comment / github_close_issue` — 走 GitHub API，需要 token。v0.8.37 由 `with_runtime_task_tools` 无条件注册（Agent/Yolo 全量 4 个；Plan 经 `with_runtime_read_only_task_tools` 也有 issue_context / pr_context 两个只读）。
+`github_issue_context / github_pr_context / github_comment / github_close_issue` — 经 gh CLI 访问 GitHub API，鉴权依赖 gh 本地登录态、工具 schema 无 token 参数（2026-11-18 r16 订正）。v0.8.37 由 `with_runtime_task_tools` 无条件注册（Agent/Yolo 全量 4 个；Plan 经 `with_runtime_read_only_task_tools` 也有 issue_context / pr_context 两个只读）。
 
 ### 任务 / 流程
 
@@ -311,7 +311,7 @@ Plan 模式的沙箱配合工具白名单双重保险：即使有人意外把 ex
 
 | 工具 | 入口 | 用途 |
 |---|---|---|
-| diagnostics | with_diagnostics_tool | 跑 LSP 拉当前文件诊断 |
+| diagnostics | with_diagnostics_tool | 环境自检：workspace/git 检测、sandbox 可用性、rust 工具链版本（无文件参数、不走 LSP——v0.8.37 `diagnostics.rs` description 即此；LSP 诊断系 apply_patch 等工具内部 helper）（2026-11-18 r16 订正：原「跑 LSP 拉当前文件诊断」为假） |
 | validate_data | with_validation_tools | JSON / TOML schema 校验 |
 | handle_read | with_handle_tools | 读 var_handle 大对象 |
 | retrieve_tool_result | with_tool_result_retrieval_tool | 按 tool_call_id 回取历史结果 |
@@ -362,7 +362,7 @@ agent_open agent_eval agent_close
 
 `BASE_PROMPT`（v0.8.37 机制：`include_str!("prompts/base.md")`）只显式提及核心工具（read_file / write_file / edit_file / exec_shell + exec_shell_wait / exec_shell_interact / grep_files / file_search / web_search 等，以及独立的 code_execution Python sandbox 和 tool_search_tool_regex / tool_search_tool_bm25 deferred discovery）。剩余工具靠模型自行从 schema 探索。
 
-Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/pr_attempt/automation 各自的 list/read 与 github 的 issue_context/pr_context）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 的 `apply_native_tool_deferral` 对 Plan/Agent 均生效、仅 Yolo 短路不做 deferral——Plan keep-list 收缩到初始可见约 16 个，其余经 ToolSearch 激活；Agent 预设经同一函数按 keep-list 保留（另含 rlm_*/task_* 家族 6/7——仅 task_cancel 被 defer——与 shell 家族），初始可见约 29；§6 推导的约 81 即为 Yolo 模型可见数。）
+Plan 模式约 **39 个工具**（`Feature::WebSearch` 默认开；关闭则约 35）。按 §3.2 组成展开：file 只读 3（含 retrieve_tool_result）、search 2、git 2、git history 3、diagnostics、skill、validation、handle、task 只读 8（task/pr_attempt/automation 各自的 list/read 与 github 的 issue_context/pr_context）、todo 8、plan、review、user_input、recall_archive、notify、web 4。（口径提示：39/35 为注册数；v0.8.37 的 `apply_native_tool_deferral` 对 Plan/Agent 均生效、仅 Yolo 短路不做 deferral——Plan keep-list 收缩到初始可见约 16 个（另有 catalog 恒推的 tool_search 两元工具 defer_loading=false，初始可见实为约 18），其余经 ToolSearch 激活；Agent 预设经同一函数按 keep-list 保留（另含 rlm_*/task_* 家族 6/7——仅 task_cancel 被 defer——与 shell 家族），初始可见约 29（同理计入 tool_search 两元工具则约 31）；§6 推导的约 81 即为 Yolo 模型可见数。）
 
 ---
 

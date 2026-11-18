@@ -44,7 +44,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | `crates/hooks` | Hook 事件、sink、dispatcher | 当前直接接入配置，运行期由底座调度 |
 | `crates/mcp` | MCP server/client 管理、工具/资源描述、启动状态 | 间接依赖，通过底座工具体系和 MCP 配置接入 |
 | `crates/tools` | 工作区中独立的工具能力 crate | 间接依赖，主入口仍经 `crates/tui/src/tools` 和 registry |
-| `crates/core` | 共享核心类型或底层能力 | 间接依赖，仅被 `crates/app-server` 消费（v0.8.60 基线口径）；pinvou3 依赖链当时只有 `deepseek-tui`（→ `codewhale-tui`）——`codewhale-secrets` 系快照后 2026-07-02（`d49bcd40a`，原 work 分支提交）才加入（该哈希不在 main 谱系，main 谱系落地于 2026-07-24 `e34024e62` 重建基线——pre-2026-09 主线之根，fork/main 可达；现 origin/main 根为 2026-09-09 二次重建 `050991876a`，该依赖仍承袭）。（⚠️ 现行口径：pinvou3-app 已直接依赖五个基座 crate——deepseek-tui、codewhale-secrets、codewhale-core、codewhale-config、codewhale-execpolicy，其中 `codewhale-core` 自 `9c5dc603f`（#484，2026-10-20 squash 落地）起被直接消费，不再与本 crate 无关；fork 现树上本 crate 亦被 app-server/command-contract/tui 三处消费。）`deepseek_tui::core::*` 是 tui 自身模块一句仍成立 |
+| `crates/core` | 共享核心类型或底层能力 | 间接依赖，仅被 `crates/app-server` 消费（v0.8.60 基线口径）；pinvou3 依赖链当时只有 `deepseek-tui`（→ `codewhale-tui`）——`codewhale-secrets` 系快照后 2026-07-02（`d49bcd40a`，原 work 分支提交）才加入（该哈希不在 main 谱系，main 谱系落地于 2026-07-24 `e34024e62` 重建基线——pre-2026-09 主线之根，fork/main 可达；现 origin/main 根即该 parentless 重建基线 `e34024e62`（2026-11-18 r16 订正：原注「根为 2026-09-09 二次重建 `050991876a`」系本地浅克隆误判——公开 API 下 `050991876a` 为带父提交的 #459，勿据本地 `rev-list --max-parents=0` 判根），该依赖仍承袭）。（⚠️ 现行口径：pinvou3-app 已直接依赖五个基座 crate——deepseek-tui、codewhale-secrets、codewhale-core、codewhale-config、codewhale-execpolicy，其中 `codewhale-core` 自 `9c5dc603f`（#484，2026-10-20 squash 落地）起被直接消费，不再与本 crate 无关；fork 现树上本 crate 亦被 app-server/command-contract/tui 三处消费。）`deepseek_tui::core::*` 是 tui 自身模块一句仍成立 |
 | `crates/protocol` | 协议结构 | 间接依赖，由 runtime、MCP、API 层消费 |
 | `crates/state` | 状态相关能力 | 间接依赖 |
 | `crates/secrets` | 密钥/敏感配置处理 | 间接依赖 |
@@ -190,7 +190,7 @@ pinvou3-app 是 Tauri UI、Rust wrapper、配置翻译和状态适配层：它�
 | 用户目录路径 | `bridge/paths.rs` 和 `bridge/sessions.rs` 指向 `~/.pinvou3/...` | Windows 路径修复要注意盘符、UNC、中文用户名、rooted path |
 | session/artifact/settings 边界 | session 在 `~/.pinvou3/sessions/`，artifact 随 session 元数据，settings 在 pinvou3 用户目录 | 不要把 `~/.deepseek` 和 `~/.pinvou3` 混用 |
 | 打包产物路径 | Tauri release 产物在 `pinvou3-app/src-tauri/target/release/`，bundle/msi 在 `pinvou3-app/src-tauri/target/release/bundle/` | 问 exe 位置和 msi 位置时要区分 |
-| 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort（字段上游 v0.8.47 起既有、快照期已用于本地 vLLM=off；2026-11 起新增的是用户可选档位与 Kimi 预设 high，见上文 2026-11 注） | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
+| 本地 vLLM 模型配置 | `bridge/mod.rs` 构造 provider、base_url、model、vision config、reasoning_effort（字段至迟 v0.8.47 起既有（v0.8.40 已有同量命中）、快照期已用于本地 vLLM=off；2026-11 起新增的是用户可选档位与 Kimi 预设 high，见上文 2026-11 注） | 白屏/无响应不要先猜 UI，先看配置、日志和底座事件是否返回 |
 | 搜索 provider/API key | `bridge/mod.rs` 将 pinvou3 prefs 翻译为 DeepSeek-TUI `SearchProvider` 和 `search_api_key` | 搜索不可用时先核对 provider 与 key 是否符合底座要求 |
 | 工具隐藏清单 | `lib.rs` 中 `blocklist_contract` 测试，`DeepSeek-TUI/crates/tui/src/tools/pinvou3_blocklist.rs`（⚠️ 均已随机制退役不存在——现行白名单口径见顶部注记与 `tool-governance.md`） | 合并 fork 后若 tool schema 膨胀，先看 blocklist 是否丢失（⚠️ 本条排障路径已失效） |
 | 合并后冒烟 | `cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml`，再启动 release exe 观察 20 秒 | 确认进程未立即退出、窗口响应、日志没有 fatal |
@@ -221,7 +221,7 @@ cargo build --release --manifest-path pinvou3-app/src-tauri/Cargo.toml
 | 工具不可用 | `DeepSeek-TUI/crates/tui/src/tools/registry.rs`、`crates/tui/src/core/engine/tool_setup.rs`、`pinvou3_blocklist.rs`、`bridge/mod.rs` features | 判断是工具未注册、被隐藏、feature 未开、还是 MCP/server 配置问题 |
 | 技能不可用 | `commands.rs::list_skills_v2`、`SkillRegistry::discover`、`bridge/paths.rs::bundle_workflow_dir` | 检查 bundle skill 目录、`SKILL.md` 是否存在、是否被 skiplist 隐藏 |
 | workflow 异常 | `commands.rs::start_workflow`、`kick_workflow`、`engine.rs::AgentComplete` 分支、`harness.rs` | 判断卡在项目初始化、SubAgent 派发、AgentComplete 回传、gate 推进还是前端状态 |
-| 模型配置异常 | `bridge/mod.rs::build_dt_config`、`build_engine_config`、用户 settings、vLLM endpoint | 检查 provider、base_url、model、api_key、reasoning_effort（上游 v0.8.47 起既有；2026-11 起新增用户可选档位，见上文 2026-11 注）、vision config |
+| 模型配置异常 | `bridge/mod.rs::build_dt_config`、`build_engine_config`、用户 settings、vLLM endpoint | 检查 provider、base_url、model、api_key、reasoning_effort（至迟上游 v0.8.47 起既有；2026-11 起新增用户可选档位，见上文 2026-11 注）、vision config |
 | 压缩异常 | `bridge/mod.rs` 中 `CompactionConfig`、`engine.rs` 的 `Event::Compaction*` 分支、`compaction.rs` | 判断是阈值过高、模型名不匹配、压缩事件未转译还是 context overflow |
 | MCP 不可用 | `mcp_config_path`、`DeepSeek-TUI/crates/mcp/src/lib.rs`、`ToolRegistryBuilder` MCP adapter | 先看 MCP 配置路径，再看 server 启动状态和工具是否进入 registry |
 | Hook 行为异常 | `bridge/mod.rs::build_hooks_config`、`DeepSeek-TUI/crates/hooks/src/lib.rs` | 检查 hook event 类型、sink、是否由 bridge 正确配置 |

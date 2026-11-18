@@ -2,7 +2,7 @@
 
 > 文档状态：已归档的架构决策记录（2026-11 回填自内部仓库快照）；核心决策已落地并随后续版本继续演进（现状以 [`codex-acp.md`](./codex-acp.md) / [`multi-agent-acp.md`](./multi-agent-acp.md) 为准）
 > 评审范围：本文评审的是架构与产品边界，不逐项代表实现状态。除 §9 外，正文组件名（`PermissionBroker`、`AcpRuntimeManager`、`AcpSessionAggregate` 等）与 §6/§11 的目标架构为设计构想，未按原样实现——现行实现为 `pinvou3-app/src-tauri/src/features/codex_acp/`（Rust）与 `pinvou3-app/src/features/codex/`（前端），本文与现状的逐项出入不另设对照表，以两份现状文档为准
-> 记录日期：2026-07-23（2026-11 归档注记：分支 `feat/codex-acp` 与基线提交 `2b84908b` 不在本仓库）
+> 记录日期：2026-07-23（2026-11 归档注记：分支 `feat/codex-acp` 不在本仓库、已删除（备份谱系见姊妹篇）；基线提交 `2b84908b` 本地与公开仓均不可解析——对象随删除未入任何可及谱系）
 > 归档说明：本文为回填的历史决策记录，未纳入 [`docs/adr/`](./adr/) 编号系列；该系列编号供新决策顺延使用，历史回填不占号
 > 对应分支：`feat/codex-acp`
 > 当前原型基线：`2b84908b`
@@ -467,7 +467,7 @@ running -> cancelling -> ready
 └─ acp-timeline.jsonl
 ```
 
-- `acp-state.json`：MVP 保存 ACP session ID、adapter/Agent 版本、model、mode、permission policy 和最后状态；后续再加入 pinvou skill/MCP/persona 快照。（2026-11 注：现行实际键集为 capabilities / session{session_id,current_model_id,models,modes,config_options} / workspace / lastStatus / lastSeq——adapter 版本与 permission policy 不在其中，mode 持久化于 `session-agents.json` 的 `acp_mode_id`。）
+- `acp-state.json`：MVP 保存 ACP session ID、adapter/Agent 版本、model、mode、permission policy 和最后状态；后续再加入 pinvou skill/MCP/persona 快照。（2026-11 注；2026-11-18 r16 订正：原注漏 `adapter`/`agent` 两顶层键且「adapter 版本不在其中」为假——spawn 全量重写 persist `adapter{agentId,package,version,path}` 与 `agent`，`persist_acp_state` 再插信封键 `version`/`pinvouSessionId`/`updatedAt`）：现行实际键集为 adapter{agentId,package,version,path} / agent / capabilities / session{session_id,current_model_id,models,modes,config_options} / workspace{kind,path,roots,explicit_ancestor_roots} / lastStatus / lastSeq，另加信封三键——permission policy 不在其中，mode 持久化于 `session-agents.json` 的 `acp_mode_id`。）
 - `acp-timeline.jsonl`：无损、可恢复 UI 的版本化 `acp:event`。（2026-11 注：桌面 journal 无损保存原始信封；脱敏仅作用于 Web/Relay 投影——`events.rs` 的 `project_acp_event_for_web`。）
 
 三个真相源的职责：

@@ -279,7 +279,7 @@ The saved entry holds the regression leg's build artifacts, so much of the
 dependency graph stays warm for the `all-targets-check` leg; the application
 crate's own `--all-targets --features dev-tools` metadata is the part compiled
 cold on every run. That residual cost is visible in the timing lines below.
-The `pinvou-cli` workspace joined the entry on 2026-10-15 (both legs compile
+The `pinvou-cli` workspace joined the entry on 2026-10-15 (#711, f4c267865f) (both legs compile
 it — the check leg's manifest checks and the regression leg's filtered CLI
 test runs — so its target directory needs caching here; before that every
 run cold-compiled the CLI tree on the slowest leg). Node/npm setup is absent —
