@@ -84,8 +84,13 @@ function toolLocations(name, input) {
       for (const line of input.patch.split(/\r?\n/)) {
         const marker = line.match(/^\*\*\* (?:Add|Update|Delete) File:\s*(\S.*)$/);
         if (marker) add(marker[1]);
-        const unified = line.match(/^\+\+\+\s+(?:b\/)?([^\s].*)$/);
-        if (unified) add(unified[1]);
+        const unified = line.match(/^\+\+\+\s+(?:b\/\s*)?([^\s].*)$/);
+        // `b/` 前缀吞掉尾随空白后取路径；无路径的退化头（`+++ b/ ` 尾部全
+        // 空白）旧 (.+) 捕获 trim 后为空、被 add 丢弃，[^\s] 捕获体无法再现
+        // 空捕获，按行补一枚守卫精确丢弃；裸 `+++ b/`（路径恰为 "b"）不带
+        // 尾随空白，不受守卫影响（round-8 审查：[^\s] 紧缩让 b/ 后带空格的
+        // 头回溯出字面 `b/ …` 路径，此处连同守卫一起恢复旧行为）。
+        if (unified && !/^\+\+\+\s+b\/\s+$/.test(line)) add(unified[1]);
       }
     }
   }
