@@ -492,16 +492,24 @@ done
 
 # 2026-11-16 lint-debt batch: the collapsible_if repayment is enforced
 # file-wide, position-independent — the adjacency pin above only covers
-# insertions between the two surviving allows, so this line-form absence
-# check sweeps both workflows for any re-inserted allow line (the '^#'
-# comment that documents the repayment does not match the line form).
+# insertions between the two surviving allows, so this absence check
+# sweeps both workflows for the lint name on any NON-COMMENT line: that
+# covers the line-start form, the compact (`-Aclippy::`) and equals
+# (`-A=`) forms, and mid-line insertion onto an existing cargo command
+# line, all of which the round-8 review confirmed a line-start-anchored
+# regex misses (each form really suppresses the lint under rustc 1.100).
+# The comment that documents the repayment (fork-ci.yml:48) stays green
+# by construction; prose that wants the lint name outside a comment is
+# asked to move it into one. Residual, disclosed: dynamic construction
+# of the lint name and any third workflow file are still outside this
+# sweep.
 bold "── 第 1.5 层：collapsible_if 豁免全文件缺席钉 ──"
 for __wf in .github/workflows/fork-ci.yml .github/workflows/release.yml; do
-  if grep -qE '^[[:space:]]*-A clippy::collapsible_if([[:space:]]|$)' "$CODEWHALE/$__wf" 2>/dev/null; then
-    red "  ✗ collapsible_if 豁免在 CodeWhale/$__wf 复活（行形态命中）"
+  if grep -Eq '^[[:space:]]*[^#[:space:]].*clippy::collapsible_if' "$CODEWHALE/$__wf" 2>/dev/null; then
+    red "  ✗ collapsible_if 豁免在 CodeWhale/$__wf 复活（非注释行命中：行首/紧凑/等号/行中形态均覆盖）"
     fail=1
   else
-    green "  ✓ collapsible_if 豁免未在 CodeWhale/$__wf 复活（行形态全文件缺席）"
+    green "  ✓ collapsible_if 豁免未在 CodeWhale/$__wf 复活（非注释行全文件缺席）"
   fi
 done
 
