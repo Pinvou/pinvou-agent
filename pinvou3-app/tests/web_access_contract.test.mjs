@@ -739,6 +739,15 @@ assert.doesNotMatch(remoteControlManager, /远程控制附件上传缓存超过�
   'single-language upload-buffer errors must not cross the Relay');
 assert.doesNotMatch(remoteControlManager, /解析后的附件超过远程控制桌面缓存上限/,
   'single-language cache-overflow errors must not cross the Relay');
+// The localized copy names the bound ("32 MB"); pin the Rust literal it
+// mirrors and the number inside every language so a one-sided change —
+// the constant moved without the copy, or one language drifted — turns
+// CI red instead of shipping a lying message (same rule as the 50 MiB
+// file_ingest::MAX_FILE_BYTES mirror above).
+assert.match(remoteControlManager, /MAX_WEB_ATTACHMENT_BYTES: usize = 32 \* 1024 \* 1024/,
+  'the parsed-cache bound literal must stay in sync with the localized copy');
+assert.equal((i18n.match(/deviceParsedTooLarge:[^,\n]*32 MB/g) || []).length, 3,
+  'the parsed-cache copy must name the same 32 MB bound in all three languages');
 assert.match(acpErrors, /'web_attachment_upload_cache_full'[\s\S]*?'web_attachment_parsed_cache_too_large'/,
   'the session-level fallback must fold both cache codes into localized copy');
 assert.match(webBridge, /rawUploadError === "web_attachment_upload_cache_full"[\s\S]*?bt\("deviceUploadCacheFull"\)/,
