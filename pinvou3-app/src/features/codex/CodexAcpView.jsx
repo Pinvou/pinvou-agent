@@ -2346,6 +2346,11 @@ export function CodexAcpView({
           // message (transfer.rs); map to the current-language copy instead
           // of passing the raw error through.
           const uploadErrorText = String(err?.message || '');
+          // The three web_attachment_* size-limit codes are already mapped by
+          // formatAttachmentLimitError above, in both the plain-string and
+          // {message: code} shapes; listing them here again would duplicate
+          // the shared formatter and tip this handler over the complexity
+          // lint (sonarjs/cognitive-complexity, enforced by npm run lint:ui).
           const attachmentLimitError = formatAttachmentLimitError(err, t.uiAttachments);
           const displayError = attachmentLimitError || (err?.code === 'device_upload_empty'
               ? t.uiAttachments.deviceUploadEmpty(file.name)
@@ -2357,13 +2362,7 @@ export function CodexAcpView({
                     ? t.uiAttachments.deviceUploadDigestInvalid
                     : uploadErrorText === 'web_attachment_integrity_mismatch'
                       ? t.uiAttachments.deviceUploadIntegrityMismatch
-                      : uploadErrorText === 'web_attachment_upload_cache_full'
-                        ? t.uiAttachments.deviceUploadCacheFull
-                        : uploadErrorText === 'web_attachment_parsed_cache_too_large'
-                          ? t.uiAttachments.deviceParsedTooLarge
-                          : uploadErrorText === 'web_attachment_cache_full'
-                            ? t.uiAttachments.deviceCacheFull
-                            : t.uiAttachments.deviceUploadFailed(file.name));
+                      : t.uiAttachments.deviceUploadFailed(file.name));
           setAttachmentDrafts(current => updateAcpAttachmentDraft(current, id, attachment => ({
             ...attachment, status: 'error', error: displayError,
           })));

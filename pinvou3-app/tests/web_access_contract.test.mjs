@@ -751,10 +751,8 @@ assert.equal((webBridge.match(/deviceParsedTooLarge:/g) || []).length, 3,
   'the parsed-cache copy must exist in all three BT_TABLE language blocks');
 assert.match(webBridge, /const limitError = attachmentLimitDisplayError\(e, att\.basename\)/,
   'the desktop-picked ingest path must map limit codes instead of storing raw text');
-assert.match(codexView, /uploadErrorText === 'web_attachment_upload_cache_full'[\s\S]*?uiAttachments\.deviceUploadCacheFull/,
-  'the ACP attachment path must localize the upload-buffer code');
-assert.match(codexView, /uploadErrorText === 'web_attachment_parsed_cache_too_large'[\s\S]*?uiAttachments\.deviceParsedTooLarge/,
-  'the ACP attachment path must localize the parsed-cache code');
+assert.match(codexView, /const attachmentLimitError = formatAttachmentLimitError\(err, t\.uiAttachments\)/,
+  'the ACP attachment path must localize limit codes through the shared formatter');
 assert.equal((i18n.match(/deviceUploadCacheFull:/g) || []).length, 3,
   'the ACP upload-buffer copy must exist in all three i18n dictionaries');
 assert.equal((i18n.match(/deviceParsedTooLarge:/g) || []).length, 3,
@@ -775,8 +773,6 @@ assert.match(webBridge, /raw === "web_attachment_cache_full"[\s\S]*?bt\("deviceC
   'the shared limit mapper must localize the cache-full code');
 assert.equal((webBridge.match(/deviceCacheFull:/g) || []).length, 3,
   'the cache-full copy must exist in all three BT_TABLE language blocks');
-assert.match(codexView, /uploadErrorText === 'web_attachment_cache_full'[\s\S]*?uiAttachments\.deviceCacheFull/,
-  'the ACP attachment path must localize the cache-full code');
 assert.equal((i18n.match(/deviceCacheFull:/g) || []).length, 3,
   'the ACP cache-full copy must exist in all three i18n dictionaries');
 assert.match(acpErrors, /'web_attachment_cache_full'/,
