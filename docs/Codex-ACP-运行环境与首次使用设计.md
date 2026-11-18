@@ -54,7 +54,7 @@ Pinvou 按需下载，仅在系统 Codex 缺失或不兼容时存在
 Pinvou 不全局安装 npm 包、不修改系统 `PATH`、不使用 `sudo`，也不静默改写
 `~/.codex`。下载组件损坏时只修复 `~/.pinvou3/runtimes/codex/`；Bridge 损坏时提示
 修复或重新安装 Pinvou。两者都不得删除用户的 Codex 登录、配置、skill、MCP 或会话
-数据。（⚠️ 2026-11 注：「不全局安装 npm 包」为写档时点边界——现行 `install_action_for` 提供用户显式触发的全局 CLI 安装/升级（`npm_upgrade`/`brew_upgrade`），见 §12.2 注与 :620 段；本段其余边界（PATH/sudo/静默改写）现行仍成立。）（⚠️ 2026-11 注：「不全局安装 npm 包」为写档时点边界——现行 `install_action_for` 提供用户显式触发的全局 CLI 安装/升级（`npm_upgrade`/`brew_upgrade`），见 §12.2 注与 :620 段；本段其余边界（PATH/sudo/静默改写）现行仍成立。）
+数据。（⚠️ 2026-11 注：「不全局安装 npm 包」为写档时点边界——现行 `install_action_for` 提供用户显式触发的全局 CLI 安装/升级（`npm_upgrade`/`brew_upgrade`），见 §12.2 注；本段其余边界（PATH/sudo/静默改写）现行仍成立。）
 
 ## 2. 背景和当前问题
 
@@ -796,7 +796,7 @@ pinvou3-app/scripts/codex-runtime/
 
 本文当前收敛为以下四项：
 
-1. **系统 Codex 优先**：检测路径和版本，兼容时直接使用，不重复下载大体积二进制。（⚠️ 现行按 `select_newest_eligible` 择新可兼容者，非固定系统优先，见 §2 注）（⚠️ 现行按 `select_newest_eligible` 择新可兼容者，非固定系统优先，见 §2 注）
+1. **系统 Codex 优先**：检测路径和版本，兼容时直接使用，不重复下载大体积二进制。（⚠️ 现行按 `select_newest_eligible` 择新可兼容者，非固定系统优先，见 §2 注）
 2. **缺失或不兼容时下载**：Pinvou 提供固定托管版本的一键下载，不要求用户安装
    Node/npm。
 3. **默认共享用户 `~/.codex`**：Pinvou 不创建隔离配置目录，也不静默修改用户配置。

@@ -432,7 +432,7 @@ Windows 原生后建议增加这些测试：
 这些内容可能还在 archived 文档或旧讨论里出现，接手时不要按它们继续开发：
 
 - 品悟 v2 review 已推翻并从源码移除（2026-11 注：后续新方案已设计并落地为 v4 召唤式评审，见 [`品悟v4-召唤式评审设计.md`](./品悟v4-召唤式评审设计.md)）。
-- 多 subagent 大研究 fan-out 已废弃，只保留单 + 串行。（2026-11 注；2026-11-18 r16 订正：原注引用的「4 并行 + 8 排队」系 ADR-0006 2026-08-04 保守档且双 scope 写反，已被其 2026-09-14 蜂群修订取代（「历史表述以此为准」）——现行 ADR-0006 多智能体（`features/multiagent/`）支持会话内主动委派；蜂群开启时数量边界钉在底座硬顶：直属并发 128 / 全树准入 1024（`MAX_SUBAGENTS`/`MAX_SUBAGENT_ADMISSION`）+ AIMD 自适应；「4 直属并行 / 全树排队+运行合计 8」保守档仅作非蜂群会话预留，当前仅测试可达。）
+- 多 subagent 大研究 fan-out 已废弃，只保留单 + 串行。（2026-11 注；2026-11-18 r16 订正：写档早稿（未随任何已推历史发布）曾引「4 并行 + 8 排队」系 ADR-0006 2026-08-04 保守档且双 scope 写反，已被其 2026-09-14 蜂群修订取代（「历史表述以此为准」）——现行 ADR-0006 多智能体（`features/multiagent/`）支持会话内主动委派；蜂群开启时数量边界钉在底座硬顶：直属并发 128 / 全树准入 1024（`MAX_SUBAGENTS`/`MAX_SUBAGENT_ADMISSION`）+ AIMD 自适应；「4 直属并行 / 全树排队+运行合计 8」保守档仅作非蜂群会话预留，当前仅测试可达。）
 - Plan/YOLO 收敛已完成：`PlanPhase` 状态机已删除，composer 提供 Plan/Yolo 手切 chip（默认按会话类型分流：code/workspace 绑定会话首启默认 Plan，仅未绑定普通会话默认 Yolo——`features/sessions/mode_state.rs` `resolved_default_mode`），`plan_stuck` 兜底卡保留；不要再按旧 PlanPhase / plan-fallback 逻辑开发。（改造方案与决策记录见 [`plan-yolo-回归底座式改造方案.md`](./plan-yolo-回归底座式改造方案.md)。）
 - 大工具输出额外 large_output_router 不需要，底座已有 12K/结果上下文压缩（现为按路由的 `route_inline_char_budget`——窗口的 3%×4 字符、封顶 10 万字符；「12K」为写档时点平铺值，结论不变）。
 

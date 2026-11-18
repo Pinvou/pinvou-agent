@@ -528,7 +528,7 @@ latest-amd64.json
 - 安装、启动、升级、卸载通过；
 - 完成第 8 章测试矩阵中的适用项目；
 - 无全局 sudo 免密；
-- OTA 不会跨架构下载错误包；（⚠️ 快照口径：OTA 通道未实施——现行数据模型已含 per-platform `platforms` 映射，见 §5.8 注与文首 banner）（⚠️ 快照口径：OTA 通道未实施——现行数据模型已含 per-platform `platforms` 映射，见 §5.8 注与文首 banner）
+- OTA 不会跨架构下载错误包；（⚠️ 快照口径：OTA 通道未实施——现行数据模型已含 per-platform `platforms` 映射，见 §5.8 注与文首 banner）
 - 物理机至少完成一轮核心回归；
 - 输出构建记录、测试报告、已知限制和用户安装说明。
 

@@ -104,7 +104,7 @@ pinvou3 是 GUI，用不了 TUI 的 ratatui 弹窗，所以**确认 UI 必须是
 **动的文件**：`bridge/mod.rs`、`src/tauri-bridge.js`、`src/index.html`
 
 - `reminder_for(mode)`：删 Ready/Executing 分支，留 Plan 一段（去"Planning 阶段"措辞）+ Yolo 大产物分块段（该 Yolo 段已随后续演进裁撤，见 D6 行注与现行 `bridge.rs` 注）
-- 删消融脚手架：`PLAN_PLANNING_NO_COLLECT`/`NO_BLOCK` 常量 + `plan_planning_reminder` 的 `PINVOU3_ABLATION` env 分发 + `ablation-clean` worktree（⚠️ 实际落地在阶段2 `1725aa6dc7`，非本列所属阶段4）（⚠️ 实际落地在阶段2 `1725aa6dc7`，非本列所属阶段4）
+- 删消融脚手架：`PLAN_PLANNING_NO_COLLECT`/`NO_BLOCK` 常量 + `plan_planning_reminder` 的 `PINVOU3_ABLATION` env 分发 + `ablation-clean` worktree（⚠️ 实际落地在阶段2 `1725aa6dc7`，非本列所属阶段4）
 - 前端清理：`chat:execution_stuck` 监听（M2 删后不再发）、`chat:plan_text_fallback` 计划保留（「M3 改造后仍发」系计划口径——阶段2 即删 M3 后端 emit，「仍发」态未发生；⚠️ §7 放弃 M3，监听已删，现行不存在）；切会话 `wasExecuting`（`tauri-bridge.js:1341`）重定义为「有 pending plan 卡」；`ModeHeader` 组件删除
 - `PlanStuckCard`（execution_stuck 分支）按 D4 处理
 

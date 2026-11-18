@@ -11,7 +11,7 @@
 | 代码基线 | 主仓库 `025-architecture-migration`；DeepSeek-TUI 子模块 `c32bb73f4605`（⚠️ 快照期名为 `DeepSeek-TUI/`，后更名并迁移为现行 `CodeWhale/`——下方「主要代码依据」行即用现行名；上游基线 `v0.9.0`；重建前哈希，本地对象库不可解析、公开仓 Pinvou/CodeWhale 可解可核对（2026-07-23 workflow 修复提交）；同名远端分支亦已不存在） |
 | 核对日期 | 2026-07-23 |
 | 目标架构 | Windows x64（当前随包运行时、VC++ 检测和 NSIS 资源均为 x64） |
-| 文档性质 | 依据当前代码生成的功能盘点、系统测试设计与发版验收基线 |
+| 文档性质 | 依据当前代码生成的功能盘点、系统测试设计与发版验收基线（⚠️ 快照口径：系写档时点盘点，非当前主干逐条复核，见文首 banner） |
 | 主要代码依据 | `pinvou3-app/src/`、`pinvou3-app/src-tauri/src/`、`pinvou3-app/src-tauri/packaging/windows/`、`pinvou3-app/tests/`、`CodeWhale/crates/tui/src/` |
 
 本文只记录当前仓库中已经存在的代码能力，不把规划文档中的设想直接视为已交付功能。功能状态定义如下：
@@ -562,6 +562,7 @@ npm run test:tool-store
 npm run test:pet-selector-ui
 node tests/scheduled_tasks_smoke.js
 npm run test:markdown
+npm run test:markdown-artifact-ui
 npm run validate:pet-assets -- --release
 npm run lint:ui
 npm run build:ui
